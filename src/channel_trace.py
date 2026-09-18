@@ -23,19 +23,29 @@ from __future__ import annotations
 import datetime as dt
 import json
 import pathlib
+import sys
 from collections import Counter
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import live_sidecar
 
 SIDECAR_KEY = "channel_events"
-LINES_MAX = 6            # строк на канал в хвост/нить за запись; дальше — итог
+LINES_MAX = 6            # ЭПИЗОДОВ на канал в хвост/нить за запись; дальше — итог
+#                          (счётчик по событиям съедал лимит за три флап-цикла —
+#                          Minor GLM и DS выходного круга)
+
+
+class Episode(NamedTuple):
+    label: str
+    start: float | None
+    end: float | None            # None — открыт (канал не вернулся, записи ещё идёт)
+    revived: bool                # True — канал вернулся (back/gap); False — закрыт остановкой
 NAMES = {"blackhole": "системный звук (собеседники)", "mic": "ваш микрофон"}
 ABSENT = {"blackhole": "без собеседников", "mic": "без вашего голоса"}
 
 
 def _hm(ts: float | None) -> str:
-    return dt.datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "?"
+    return dt.datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "время неизвестно"
 
 
 def _dur(seconds: float | None) -> str:
@@ -56,7 +66,10 @@ def render(ev) -> str | None:
     if ev.kind == "lost":
         if not ev.died:
             return f"⚠️ {name} не захвачен с начала записи — {absent}: {ev.reason}"
-        return f"⚠️ {name} пропал в {_hm(ev.stopped_at or ev.at)} — дальше запись {absent}"
+        # момент крика подставлять вместо границы нельзя — он позже на 66–96 с;
+        # без кадров граница неизвестна и так и говорится (Minor DS)
+        when = _hm(ev.stopped_at) if ev.stopped_at else "время неизвестно"
+        return f"⚠️ {name} пропал ({when}) — дальше запись {absent}"
     if ev.kind == "back":
         return f"✅ {name} снова пишется с {_hm(ev.at)}; {absent} было {_dur(ev.silent_s)}"
     if ev.kind == "gap":
@@ -77,7 +90,8 @@ class ChannelTrace:
         self._note = note
         self._thread_add = thread_add
         self.events: list[dict] = []
-        self._lines: Counter[str] = Counter()
+        self._episodes_shown: Counter[str] = Counter()   # эпизодов на канал уже в документах
+        self._open_shown: set[str] = set()               # открытые эпизоды, чей lost показан
         self.persist_failed = False
 
     def on_event(self, ev) -> None:
@@ -86,9 +100,18 @@ class ChannelTrace:
         text = render(ev)
         if text is None:
             return
-        if self._lines[ev.label] >= LINES_MAX:
-            return                       # флап: дальше только сайдкар и итог
-        self._lines[ev.label] += 1
+        # потолок — по эпизодам: `back` показывается, если показан его `lost`;
+        # начало нового эпизода (lost/gap) сверх потолка — только сайдкар и итог
+        if ev.kind == "back":
+            if ev.label not in self._open_shown:
+                return
+            self._open_shown.discard(ev.label)
+        else:
+            if self._episodes_shown[ev.label] >= LINES_MAX:
+                return
+            self._episodes_shown[ev.label] += 1
+            if ev.kind == "lost":
+                self._open_shown.add(ev.label)
         self._say(text, _hm(ev.at))
 
     def _persist(self) -> None:
@@ -99,6 +122,11 @@ class ChannelTrace:
                                        json.dumps(self.events, ensure_ascii=False), self.bare)
         except Exception:  # noqa: BLE001 — след не роняет запись
             ok = False
+        if not ok and not self.persist_failed:
+            # отказ долговечной записи — не молча: сайдкар и есть носитель следа
+            # для пересборки; итог тоже скажет об этом (Important GLM выходного круга)
+            print(f"след канала: сайдкар {self.live.name} не пишется — события только в "
+                  "хвосте и нити", file=sys.stderr)
         if not ok:
             self.persist_failed = True
 
@@ -111,11 +139,13 @@ class ChannelTrace:
             except Exception:  # noqa: BLE001
                 pass
 
-    def episodes(self) -> list[tuple[str, float | None, float | None, bool]]:
-        """Эпизоды (label, start, end, closed) из событий: lost открывает,
-        back/end закрывают, gap — сразу закрытый. Смена фазы того же эпизода
-        событием не является (хаб не эмитит), второго lost подряд не будет."""
-        out: list[tuple[str, float | None, float | None, bool]] = []
+    def episodes(self) -> list[Episode]:
+        """Эпизоды из событий: lost открывает, back/end закрывают, gap — сразу
+        закрытый. Смена фазы того же эпизода событием не является (хаб не эмитит).
+        Окна одного канала, наложившиеся друг на друга (дыра, отсчитанная от
+        одного и того же настоящего кадра несколькими gap), сливаются в одно —
+        иначе сумма считала бы одну тишину дважды (Important DS выходного круга)."""
+        out: list[Episode] = []
         open_: dict[str, int] = {}
         for e in self.events:
             label, kind = e["label"], e["kind"]
@@ -123,17 +153,16 @@ class ChannelTrace:
                 if label in open_:
                     continue
                 open_[label] = len(out)
-                out.append((label, e["stopped_at"] or e["at"], None, False))
+                out.append(Episode(label, e["stopped_at"] or e["at"], None, False))
             elif kind in ("back", "end"):
                 i = open_.pop(label, None)
                 if i is None:
-                    out.append((label, e["stopped_at"], e["at"], kind == "back"))
+                    out.append(Episode(label, e["stopped_at"], e["at"], kind == "back"))
                 else:
-                    lbl, start, _, _ = out[i]
-                    out[i] = (lbl, start, e["at"], kind == "back")
+                    out[i] = out[i]._replace(end=e["at"], revived=kind == "back")
             elif kind == "gap":
-                out.append((label, e["stopped_at"], e["at"], True))
-        return out
+                out.append(Episode(label, e["stopped_at"], e["at"], True))
+        return _merge_windows(out)
 
     def summary(self) -> str | None:
         """Одна строка итога: интервалы без канала и их сумма; открытый эпизод
@@ -142,16 +171,19 @@ class ChannelTrace:
         if not eps:
             return None
         parts = []
-        for label in dict.fromkeys(e[0] for e in eps):
-            mine = [e for e in eps if e[0] == label]
+        for label in dict.fromkeys(e.label for e in eps):
+            mine = [e for e in eps if e.label == label]
             spans, total = [], 0.0
-            for _, start, end, _closed in mine:
-                if start is not None and end is not None:
-                    total += max(0.0, end - start)
-                spans.append(f"{_hm(start)}–{_hm(end) if end is not None else 'до конца записи'}")
+            for ep in mine:
+                if ep.start is not None and ep.end is not None:
+                    total += max(0.0, ep.end - ep.start)
+                spans.append(f"{_hm(ep.start)}–{_hm(ep.end) if ep.end is not None else 'до конца записи'}")
             shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
             parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {_dur(total)})")
-        return "📋 запись неполная: " + "; ".join(parts)
+        text = "📋 запись неполная: " + "; ".join(parts)
+        if self.persist_failed:
+            text += " · в сайдкар след не лёг"
+        return text
 
     def close(self) -> str | None:
         """Итог при остановке — в хвост и нить, один раз. Зовётся из демона ДО
@@ -161,3 +193,18 @@ class ChannelTrace:
         if text:
             self._say(text, "")
         return text
+
+
+def _merge_windows(eps: list[Episode]) -> list[Episode]:
+    """Слить наложившиеся окна одного канала (порядок событий сохраняется)."""
+    out: list[Episode] = []
+    for ep in eps:
+        prev = next((o for o in reversed(out) if o.label == ep.label), None)
+        if (prev is not None and ep.start is not None and prev.start is not None
+                and prev.end is not None and ep.start <= prev.end):
+            merged = prev._replace(end=None if ep.end is None else max(prev.end, ep.end),
+                                   revived=ep.revived)
+            out[out.index(prev)] = merged
+            continue
+        out.append(ep)
+    return out

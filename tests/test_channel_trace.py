@@ -59,14 +59,14 @@ def test_loss_and_return_are_one_event_each_with_the_true_silence_boundary(monke
     got = []
     hub.on_channel = got.append
     t0 = time.time()
-    hub._last_frame["blackhole"] = t0 - 70            # звук встал 70 с назад
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = t0 - 70   # звук встал 70 с назад
     hub._announce_losses({"blackhole": a.Loss("рестарт не удался", retriable=True, died=True)})
     hub._announce_losses({"blackhole": a.Loss("перезапуск завис", retriable=False, died=True)})  # смена фазы
     assert [e.kind for e in got] == [a.CH_LOST], "второй крик того же эпизода событием не является"
     ev = got[0]
     assert ev.label == "blackhole" and ev.died and ev.cause == "restart_failed"
     assert abs(ev.stopped_at - (t0 - 70)) < 1e-6 and ev.stopped_at < ev.at
-    hub._last_frame["blackhole"] = time.time()        # кадр пришёл
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = time.time()   # кадр пришёл
     hub._announce_back("blackhole", 5.0)              # сторож насчитал 5 с от крика
     back = got[-1]
     assert back.kind == a.CH_BACK and back.silent_s >= 69, "длительность — от истинной границы, не от крика"
@@ -81,13 +81,13 @@ def test_a_quiet_restart_is_a_gap_event_and_stop_closes_open_episodes(monkeypatc
     got = []
     hub.on_channel = got.append
     now = time.time()
-    hub._last_frame["mic"] = now - 40
+    hub._last_frame["mic"] = hub._real_frame["mic"] = now - 40
     monkeypatch.setattr(hub, "_restart_guarded", lambda c: None)   # удачный перезапуск
     hub._sweep(now, {})
     gaps = [e for e in got if e.kind == a.CH_GAP]
     assert len(gaps) == 1 and gaps[0].label == "mic" and gaps[0].cause == "restarted"
     assert abs(gaps[0].silent_s - 40) < 1 and abs(gaps[0].stopped_at - (now - 40)) < 1
-    hub._last_frame["blackhole"] = now - 100
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = now - 100
     hub._announce_losses({"blackhole": a.Loss("умер", retriable=False, died=True)})
     hub.end_channel_episodes()
     hub.end_channel_episodes()                        # идемпотентно
@@ -139,7 +139,7 @@ def test_the_trace_lands_in_the_sidecar_the_tail_and_the_thread(tmp_path):
     assert [e["kind"] for e in events] == ["lost", "back"] and events[0]["stopped_at"] == base
     assert len(notes) == 2 and "пропал" in notes[0] and "снова пишется" in notes[1] and "3 мин" in notes[1]
     rendered = thread.render()
-    assert "пропал в" in rendered and "снова пишется" in rendered, "обе строки в нити — дедуп событий не касается"
+    assert "пропал (" in rendered and "снова пишется" in rendered, "обе строки в нити — дедуп событий не касается"
     assert "⚠️ ⚠️" not in rendered, "знак события — в тексте, рендер второй не добавляет"
 
 
@@ -168,7 +168,7 @@ def test_flapping_is_capped_in_the_documents_but_complete_in_the_sidecar(tmp_pat
         trace.on_event(_events(("lost", "blackhole", base + i * 60, base + i * 60 + 5, None, True))[0])
         trace.on_event(_events(("back", "blackhole", base + i * 60, base + i * 60 + 20, 20.0, True))[0])
     events = json.loads(live_sidecar.read(live, "2026-09-02_1021")[channel_trace.SIDECAR_KEY])
-    assert len(events) == 20 and len(notes) == channel_trace.LINES_MAX
+    assert len(events) == 20 and len(notes) == 2 * channel_trace.LINES_MAX, "потолок — по эпизодам: пара lost+back на эпизод"
     assert "около 20 с" in notes[1], "короткий эпизод виден, а не свёрнут порогом"
     summary = trace.close()
     assert summary.startswith("📋 запись неполная") and "эпизодов 10" in summary and "и ещё 2" in summary
@@ -219,3 +219,97 @@ def test_the_daemon_wires_the_trace_and_closes_it_before_spawning_the_rebuild():
     fin = src[src.index("hub.end_channel_episodes()"):]
     assert fin.index("trace.close()") < fin.index("live_sidecar.merge(") < fin.index('"rebuild_transcript.py"')
     assert 'json.dumps({"speakers"' not in src, "дамп сайдкара одной строкой снят — только слияние"
+
+
+def test_two_sidecar_writers_in_one_process_do_not_lose_each_other_s_keys(tmp_path):
+    """Стоп-слияние в главном потоке против следа канала из потока сторожа —
+    оба read-modify-write; без общего замка второй затирал бы правку первого
+    (Critical GLM выходного круга)."""
+    import threading
+    live = tmp_path / "2026-09-02_102113.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_102113")
+    base = 1_800_000_000.0
+    stop = threading.Event()
+    n = {"events": 0}
+
+    def writer():
+        while not stop.is_set():
+            trace.on_event(_events(("gap", "blackhole", base + n["events"], base + n["events"] + 1, 1.0, True))[0])
+            n["events"] += 1
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    for i in range(30):
+        assert live_sidecar.merge(live, {"speakers": i, "stamp": "2026-09-02_102113"}, bare="2026-09-02_102113")
+    stop.set()
+    t.join(5)
+    meta = json.loads((tmp_path / "2026-09-02_102113.md.live.json").read_text(encoding="utf-8"))
+    assert meta["speakers"] == 29 and meta["stamp"] == "2026-09-02_102113", "ключи стоп-слияния целы"
+    assert len(json.loads(meta[channel_trace.SIDECAR_KEY])) == n["events"], "ни одно событие не затёрто слиянием"
+
+
+def test_events_after_the_trace_is_closed_are_dropped_not_duplicated(monkeypatch):
+    """После end сторож ещё жив до stop() хаба: его «вернулся» дал бы фантомный
+    второй эпизод, а строка легла бы после итога (Important GLM 2 / DS 3)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = now - 100
+    hub._announce_losses({"blackhole": a.Loss("умер", retriable=True, died=True)})
+    hub.end_channel_episodes()
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = time.time()
+    hub._announce_back("blackhole", 3.0)                 # рестарт вернулся после закрытия
+    hub._last_frame["mic"] = hub._real_frame["mic"] = time.time() - 40
+    monkeypatch.setattr(hub, "_restart_guarded", lambda c: None)
+    hub._sweep(time.time(), {})                            # и тихий перезапуск соседа
+    assert [e.kind for e in got] == [a.CH_LOST, a.CH_END], "после закрытия следа событий нет"
+    assert [e.kind for e in hub.channel_log] == [a.CH_LOST, a.CH_END]
+
+
+def test_the_hole_boundary_is_the_real_frame_not_the_restart_stamp(monkeypatch):
+    """Удачный рестарт ставит `_last_frame = now` без единого кадра (анти-шторм);
+    граница дыры от него уезжала бы вперёд, а первый кусок тишины выпадал
+    (Important DS выходного круга). Наложившиеся окна итог сливает."""
+    _quiet(monkeypatch)
+    hub = _hub("mic")
+    got = []
+    hub.on_channel = got.append
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(a.time, "time", lambda: clock[0])       # часы под контролем: рестарт ставит time.time()
+    t0 = clock[0]
+    hub._last_frame["mic"] = hub._real_frame["mic"] = t0        # последний настоящий кадр
+    monkeypatch.setattr(hub, "_restart_guarded", lambda c: None)
+    clock[0] = t0 + 40
+    hub._sweep(clock[0], {})                                    # gap 1: 40 с тишины, рестарт «удался»
+    clock[0] = t0 + 75
+    hub._sweep(clock[0], {})                                    # анти-шторм пройден, поток всё ещё мёртв
+    gaps = [e for e in got if e.kind == a.CH_GAP]
+    assert len(gaps) == 2 and all(abs(g.stopped_at - t0) < 1 for g in gaps), "обе дыры отсчитаны от настоящего кадра"
+    live = pathlib.Path(tempfile.mkdtemp()) / "2026-09-02_1021.md"
+    trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_1021")
+    for g in gaps:
+        trace.on_event(g)
+    eps = trace.episodes()
+    assert len(eps) == 1 and eps[0].revived and abs(eps[0].end - eps[0].start - 75) < 2, "одно окно, не два наложившихся"
+    assert "эпизодов 1" in trace.summary()
+
+
+def test_a_failing_sidecar_is_reported_once_and_named_in_the_summary(tmp_path, monkeypatch, capsys):
+    live = tmp_path / "2026-09-02_1021.md"
+    monkeypatch.setattr(live_sidecar, "remember", lambda *a, **k: False)
+    trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_1021")
+    trace.on_event(_events(("lost", "mic", 1.0, 2.0, None, True))[0])
+    trace.on_event(_events(("end", "mic", 1.0, 60.0, 59.0, True))[0])
+    err = capsys.readouterr().err
+    assert err.count("не пишется") == 1 and trace.persist_failed
+    assert trace.summary().endswith("в сайдкар след не лёг")
+
+
+def test_episode_contract_is_named_not_positional():
+    ep = channel_trace.Episode("mic", 1.0, None, False)
+    assert ep.label == "mic" and ep.end is None and ep.revived is False
+    closed_by_stop = channel_trace.Episode("mic", 1.0, 5.0, False)
+    revived = channel_trace.Episode("mic", 1.0, 5.0, True)
+    assert not closed_by_stop.revived and revived.revived

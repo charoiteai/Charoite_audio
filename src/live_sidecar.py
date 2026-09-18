@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import pathlib
 import re
 
@@ -353,6 +354,15 @@ def _seconds_stamp_of_minute(value, key: str) -> bool:
         return False
 
 
+# Один замок на все read-modify-write сайдкара в процессе: с №234 у файла два
+# писателя внутри демона (след канала из потока сторожа и стоп-слияние из
+# главного), и без замка второй затирал бы правку первого между чтением и
+# записью (Critical GLM выходного круга). Чужие процессы (пересборка,
+# graph_updater) пишут после остановки демона — окно между ними закрывает
+# порядок финализации, не этот замок.
+_RMW_LOCK = threading.RLock()
+
+
 def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
     """Записать несколько ключей одним слиянием (read-modify-write), не дампом
     всего файла: стоп-дамп демона одной строкой `json.dumps({...})` затирал бы
@@ -360,9 +370,10 @@ def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
     живым писателем обязан писаться только слиянием (Critical DS и GLM
     входного круга). Правила выбора файла — те же, что у `remember`."""
     ok = True
-    for i, (key, value) in enumerate(updates.items()):
-        if not remember(live, key, value, bare):
-            ok = False
+    with _RMW_LOCK:
+        for key, value in updates.items():
+            if not remember(live, key, value, bare):
+                ok = False
     return ok
 
 
@@ -384,17 +395,18 @@ def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) 
             p = _direct(live)
         except OSError:
             return False
-    meta: dict = {}
-    if p.exists():
+    with _RMW_LOCK:
+        meta: dict = {}
+        if p.exists():
+            try:
+                loaded = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except (OSError, ValueError):
+                return False
+        meta[key] = value
         try:
-            loaded = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                meta = loaded
-        except (OSError, ValueError):
+            safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
+        except OSError:
             return False
-    meta[key] = value
-    try:
-        safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
-    except OSError:
-        return False
     return True

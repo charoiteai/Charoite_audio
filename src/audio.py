@@ -651,6 +651,12 @@ class AudioHub:
         self._warned: set[str] = set()
         self.channel_log: list[ChannelEvent] = []   # журнал событий канала за запись (№234)
         self._ended: set[str] = set()                # эпизоды, закрытые остановкой (end — один раз)
+        # последний НАСТОЯЩИЙ кадр канала — граница дыры для следа. `_last_frame`
+        # служит свежести и анти-шторму: удачный рестарт ставит в него time.time()
+        # без единого кадра, и следующая дыра отсчитывалась бы от подделки, а
+        # первый кусок тишины выпадал из интервалов (Important DS выходного круга)
+        self._real_frame: dict[str, float] = {}
+        self._channel_closed = False                 # след закрыт остановкой: событий больше нет
         self._mode = mode                          # `device` из конфига: намеренный один канал ≠ авария (DS M4)
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
         self._scream_count = 0            # криков за встречу — потолок звука LOUD_SCREAMS
@@ -884,7 +890,7 @@ class AudioHub:
                 loss.since = max(now, self._last_frame.get(lbl, 0.0))
                 # граница дыры — последний кадр, не момент крика; канала без
                 # кадров (не захвачен с начала) — начало записи неизвестно: None
-                loss.stopped_at = self._last_frame.get(lbl) or None
+                loss.stopped_at = self._real_frame.get(lbl) or None
                 if not loss.cause:
                     loss.cause = (("restart_failed" if loss.retriable else "hung")
                                   if loss.died else "start_error")
@@ -1444,7 +1450,7 @@ class AudioHub:
         # под тем же локом, что и снапшот: новый ключ в словаре во
         # время его копирования — та же гонка, что и pop у _sinks
         with self._lock:
-            self._last_frame[c.label] = time.time()
+            self._last_frame[c.label] = self._real_frame[c.label] = time.time()
             # после _closing файлы закрываются — блок в них не пишем и не кричим
             # о «сбое диска»: sink для него уже «нет» (GLM r1 I1 по #557)
             sink = None if self._closing else self._sinks.get(c.label)
@@ -1581,7 +1587,8 @@ class AudioHub:
                 if c.label not in self._lost:
                     # крика не было — дыра в записи была: ≥ порога тишины без
                     # единого события (Critical GLM входного круга по №234)
-                    self._channel_event(CH_GAP, c.label, now, now - silent, silent,
+                    real = self._real_frame.get(c.label) or (now - silent)
+                    self._channel_event(CH_GAP, c.label, now, real, now - real,
                                         Loss(msg, retriable=True, died=True, cause="restarted"))
                 if c.label in self._lost:
                     # Кричали о потере канала, а он ожил (приложение снова пишет
@@ -1645,6 +1652,11 @@ class AudioHub:
             silent = now - loss.stopped_at if loss.stopped_at else None
             self._channel_event(CH_END, label, now, loss.stopped_at, silent,
                                 Loss(loss.reason, retriable=False, died=loss.died, cause="stop"))
+        # след закрыт: сторож ещё жив до stop() хаба, и его «вернулся» после
+        # «не вернулся до конца» дал бы фантомный второй эпизод, а событие после
+        # итога легло бы в хвост уже прочитанного пересборкой черновика
+        # (Important GLM 2 и DS 3 выходного круга)
+        self._channel_closed = True
 
     def _channel_event(self, kind: str, label: str, at: float, stopped_at: float | None,
                        silent_s: float | None, loss: "Loss") -> ChannelEvent:
@@ -1655,8 +1667,11 @@ class AudioHub:
         подписчика запись не роняет."""
         ev = ChannelEvent(label=label, kind=kind, at=at, stopped_at=stopped_at,
                           silent_s=silent_s, died=loss.died,
-                          cause=loss.cause if loss.cause in CH_CAUSES else "hung",
+                          cause=loss.cause if loss.cause in CH_CAUSES else "unknown",
                           reason=loss.reason)
+        if self._channel_closed and kind != CH_END:
+            _safe_stderr(f"событие канала после закрытия следа отброшено: {kind} {label}")
+            return ev
         self.channel_log.append(ev)
         if self.on_channel is not None:
             try:
