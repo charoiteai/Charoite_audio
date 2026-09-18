@@ -227,8 +227,13 @@ def test_dossier_comes_first(tmp_path):
                                               encoding="utf-8")
     dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз", "провайдер"],
                                   "источников": 3, "собрано": "2026-08-02"}])
+    # тело сводки — из поколения, не с диска: сводка, которой обход ещё не видел,
+    # в ответе не участвует, а после обхода читается из снимка (DS C4/M2 по №296)
+    assert not s.search("что с платёжным шлюзом", limit=2).dossiers, "сводка вне снимка — вне ответа"
+    s.refresh(force=True)
     r = s.search("что с платёжным шлюзом", limit=2)
     assert r.dossiers and r.dossiers[0].startswith("📁 Досье «Платёжный шлюз»") and "ЮPay" in r.dossiers[0]
+    assert not any("Досье/" in b for b in r.blocks), "сводка не занимает слот «Найдено в графе»"
     text = gs.render(r, "что с платёжным шлюзом")
     assert text.index("📁 Досье") < text.index("Найдено в графе")
     # досье есть, фрагментов нет — только сводка, без «Найдено (0 из 0)» под ней
@@ -801,7 +806,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     показал. Теперь состояние — одно значение `Generation`, и рассинхрон
     невыразим: отдельных полей у поиска нет вовсе."""
     assert {f.name for f in dataclasses.fields(gs.Generation)} == {
-        "docs", "indeg", "catalog", "skipped", "unread"}, "снимок описан типом не целиком"
+        "docs", "indeg", "catalog", "skipped", "unread", "service", "primary", "dossiers"}, \
+        "снимок описан типом не целиком"
     s = _search(tmp_path)
     g = s.graph
     (g / "Ядра").mkdir(exist_ok=True)
@@ -814,7 +820,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     s.refresh(force=True)
 
     split = [f for f in vars(s)
-             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread")) and f != "_gen"]
+             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread", "service", "primary", "dossiers"))
+             and f != "_gen"]
     assert split == [], f"состояние индекса живёт ещё и отдельными полями: {split}"
     rels = {d.rel for d in s._gen.docs.values()}
     for key in ("ядра/старое", "ядра/канон", "старое", "канон"):
@@ -1233,7 +1240,7 @@ def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
         s.refresh(force=True)
         r = s.search("qqqzzz", limit=1)
         assert r.unread >= 1, "нечитаемый файл не назван"
-        assert "нечитаемых файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
+        assert "не открылось файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
     finally:
         locked.chmod(0o600)
 
@@ -1242,3 +1249,188 @@ def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
         assert "в архиве" not in stub.why_low, f"{v}: выдача судит о непрочитанном"
     weak = gs.Result([], 0, gs.Verdict.WEAK, query="q")
     assert "прочитанной части" in weak.why_low, weak.why_low
+
+
+# ------------------------------------------------- роль документа (№296)
+
+def test_doc_role_is_one_predicate_for_every_consumer():
+    """Роль выводится из пути один раз: служебный префикс — в ЛЮБОЙ папке (то же
+    правило, что у dossier.scan), досье — по верхней папке `dossier.DOSSIER_DIR`,
+    сравнение нормализованное; служебный побеждает досье (`Досье/_ИНДЕКС.md`).
+    Раньше обход знал только корень, переходы — только `_`, а досье — никто
+    (входной круг DS и GLM по №296)."""
+    cases = {
+        "_MOC.md": gs.SERVICE, "Служебное_ревизия.md": gs.SERVICE,
+        "Люди/_ЛЮДИ.md": gs.SERVICE, "Заметки/Служебное_отчёт.md": gs.SERVICE,
+        f"{dossier.DOSSIER_DIR}/_ИНДЕКС.md": gs.SERVICE,
+        f"{dossier.DOSSIER_DIR}/Платёжный шлюз.md": gs.DOSSIER,
+        f"{dossier.DOSSIER_DIR.lower()}/тема.md": gs.DOSSIER,
+        f"{dossier.DOSSIER_DIR}/вложенная/тема.md": gs.DOSSIER,
+        "Встречи/2026-08-01_1000.md": gs.PRIMARY, "Люди/Иван Мироненко.md": gs.PRIMARY,
+        f"Документация/{dossier.DOSSIER_DIR}.md": gs.PRIMARY,   # файл с таким именем — не папка сводок
+    }
+    for rel, role in cases.items():
+        assert gs.doc_role(rel) == role, rel
+    # роль — свойство документа: оснастка без роли получает её из того же предиката
+    d = gs.Doc("", "Люди/_ЛЮДИ.md", 0.0, "", "", 0.0, "_люди")
+    assert d.role == gs.SERVICE and gs.Doc("", "Люди/Кто-то.md", 0.0, "", "", 0.0, "кто-то").role == gs.PRIMARY
+    assert not gs.is_node_path("Люди/_ЛЮДИ.md") and gs.is_node_path("Люди/Кто-то.md")
+
+
+def test_service_files_in_subfolders_leave_the_index_but_stay_in_coverage(tmp_path):
+    """Указатель на всех людей конкурировал с заметками о людях по любому имени:
+    фильтр служебных действовал только в корне. Теперь — в любой папке, но не
+    молча: отсечённые считаются в охвате ответа (доктрина №295, GLM M6)."""
+    s = _search(tmp_path)
+    (s.graph / "Люди" / "_ЛЮДИ.md").write_text("# Люди\nУКАЗАТЕЛЬ_МАРКЕР [[Люди/Иван Мироненко]] "
+                                                "платёжный шлюз\n", encoding="utf-8")
+    s.refresh(force=True)
+    rels = {d.rel for d in s._gen.docs.values()}
+    assert "Люди/_ЛЮДИ.md" not in rels
+    assert s._gen.service == 3, "два в корне и один в подпапке — все в охвате"
+    r = s.search("платёжный шлюз", limit=20, semantic=False)
+    assert "УКАЗАТЕЛЬ_МАРКЕР" not in gs.render(r) and r.service == 3
+    assert "служебных файлов вне индекса: 3" in gs.render(gs.Result([], 0, service=3, query="x"), "x")
+    # те же слова доезжают до модели: шапка блока памяти и статус нити берут охват
+    # из того же форматтера, что фасад (DS I2 / GLM I2 выходного круга)
+    import brain
+    weak = gs.Result([], 0, gs.Verdict.WEAK, service=3, skipped=("Встречи-архив",), unread=1, query="x")
+    note = brain.scope_note(weak)
+    assert "Встречи-архив" in note and "не открылось файлов: 1" in note and "служебных файлов вне индекса: 3" in note
+    assert gs.coverage_gaps(weak) == ["Встречи-архив", "не открылось файлов: 1", "служебных файлов вне индекса: 3"]
+    # переход из узла, не документ индекса — правило одно, локального `startswith("_")` в _hops нет
+    src = (REPO / "src" / "graph_search.py").read_text(encoding="utf-8")
+    hops = src[src.index("def _hops"):src.index("def _hops") + 4000]
+    assert 'startswith("_")' not in hops and "_SERVICE_PREFIXES" not in hops
+
+
+def test_dossiers_are_link_targets_but_neither_vote_nor_take_slots(tmp_path):
+    """Сводка досье пересказывает тех, за кого голосует: буст хаба доставался
+    тому, кого она сама и упомянула (16 % голосов боевого графа). Досье остаётся
+    целью ссылок и секцией «📁», но голосов не отдаёт и слот в «Найдено в
+    графе» не берёт — иначе производное вытесняло бы первичное (DS I1)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Интеграция.md").write_text(
+        "---\ntype: досье\n---\n# Интеграция\nСВОДКА_МАРКЕР про [[Системы/Платёжный шлюз]] и "
+        "[[Люди/Иван Мироненко]]; квазар_уникальное_слово\n", encoding="utf-8")
+    (s.graph / "Встречи" / "2026-08-05_1000.md").write_text(
+        "# Обзор\nсводка: см. [[Досье/Интеграция]] квазар_уникальное_слово\n", encoding="utf-8")
+    s.refresh(force=True)
+    gen = s._gen
+    shluz = gen.catalog.live(gs.norm_text("Системы/Платёжный шлюз"))
+    assert shluz is not None
+    votes_without = gen.indeg.get(shluz.key, 0)
+    # на узел ссылаются только служебный _MOC (вне индекса) и досье — голосов ноль:
+    # ни сводка, ни указатель хаба не накручивают
+    assert votes_without == 0, gen.indeg
+    ivan = gen.catalog.live(gs.norm_text("Люди/Иван Мироненко"))
+    assert gen.indeg.get(ivan.key, 0) == 2, "две первичные встречи — два голоса, ссылка досье не считается"
+    # тот же граф, но досье считается первичным — сколько бы дало голосов
+    stats = s.vote_stats()
+    assert stats["dossier"] == 1 and stats["dossier_votes"] == 2, "две ссылки досье — два не отданных голоса"
+    assert gen.catalog.live(gs.norm_text("Досье/Интеграция")) is not None, "цель ссылок — остаётся"
+    r = s.search("квазар_уникальное_слово", limit=5, semantic=False)
+    assert _rels(r) == ["Встречи/2026-08-05_1000.md"], "слот — первичной заметке, не сводке"
+    assert "СВОДКА_МАРКЕР" not in gs.render(r)
+    # голос узлу от первичной заметки — считается
+    (s.graph / "Встречи" / "2026-08-06_1000.md").write_text("# Ещё\n[[Системы/Платёжный шлюз]]\n", encoding="utf-8")
+    s.refresh(force=True)
+    assert s._gen.indeg.get(shluz.key, 0) == votes_without + 1
+
+
+def test_dossier_blocks_read_the_generation_not_the_disk(tmp_path, monkeypatch):
+    """Тело сводки — из снимка: путь к графу в сборке ответа не участвует, тема из
+    JSON не склеивается в путь (`../` читал бы вне папки), чтение с диска на
+    каждый вопрос снято (DS C4 / M2 по №296)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Платёжный шлюз.md").write_text("---\ntype: досье\n---\n# Платёжный шлюз\nпилот, провайдер ЮPay\n",
+                                              encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз"], "источников": 3,
+                                  "собрано": "2026-08-02"},
+                                 {"тема": "../../secret", "ключи": ["платежн", "шлюз"], "источников": 1,
+                                  "собрано": "2026-08-02"}])
+    s.refresh(force=True)
+    real = pathlib.Path.read_text
+
+    def no_disk(self, *a, **kw):
+        if self.suffix == ".md":
+            raise AssertionError(f"тело досье читается с диска: {self}")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", no_disk)
+    r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
+    assert len(r.dossiers) == 1 and "ЮPay" in r.dossiers[0], "сводка из снимка; тема-путь мимо папки — пропущена"
+
+
+def test_hops_lead_to_primary_notes_only(tmp_path):
+    """Переход из узла ведёт к первичной заметке: сводка досье — производное,
+    показывать её фрагментом графа значило бы выдавать пересказ за источник."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Шлюз.md").write_text("---\ntype: досье\n---\n# Шлюз\nтокен авторизации ПЕРЕХОД_В_СВОДКУ\n", encoding="utf-8")
+    node = s.graph / "Системы" / "Платёжный шлюз.md"
+    node.write_text(node.read_text(encoding="utf-8") + "\nСм. [[Досье/Шлюз]]\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("платёжный шлюз токен", limit=4)
+    assert "ПЕРЕХОД_В_СВОДКУ" not in gs.render(r)
+
+
+def test_a_stub_pointing_at_a_dossier_does_not_smuggle_it_into_slots(tmp_path):
+    """Заглушка-редирект со стрелкой на сводку (или тёзка в «Досье/») подменялась
+    каноном-досье в `_swap_stubs` мимо разреза первичных — сводка занимала слот
+    «Найдено в графе». Гейт — в резолвере `instead_of_stub`: производное не
+    замена заглушке (выходной круг GLM I1 по №296)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Старый шлюз.md").write_text("---\ntype: досье\n---\n# Старый шлюз\nСВОДКА_ВМЕСТО_ЗАГЛУШКИ\n",
+                                           encoding="utf-8")
+    (s.graph / "Системы" / "Старый шлюз.md").write_text(_stub("Старый шлюз", "Досье/Старый шлюз"), encoding="utf-8")
+    s.refresh(force=True)
+    stub = next(d for d in s._gen.docs.values() if d.rel == "Системы/Старый шлюз.md")
+    assert stub.stub_to and s._gen.catalog.instead_of_stub(stub) is None, "сводка — не замена заглушке"
+    r = s.search("старый шлюз", limit=3, semantic=False)
+    assert not any("Досье/" in b for b in r.blocks) and "СВОДКА_ВМЕСТО_ЗАГЛУШКИ" not in gs.render(r)
+
+
+def test_dossier_theme_is_resolved_by_normalised_key_not_raw_path(tmp_path):
+    """Тема в индексе и имя файла на диске расходятся регистром или формой
+    Unicode (человек поправил заголовок узла, ночь переписала индекс; NFD от
+    macOS) — файловая система это прощала, байтовое сравнение `rel` нет. Карта
+    досье поколения — по `Doc.key`, нормализованному, как у ссылок (DS I1 / GLM
+    M3 выходного круга)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "платёжный шлюз.md").write_text("---\ntype: досье\n---\n# платёжный шлюз\nпилот, провайдер ЮPay\n",
+                                              encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз"],   # регистр + NFD «ё»
+                                  "источников": 3, "собрано": "2026-08-02"}])
+    s.refresh(force=True)
+    assert set(s._gen.dossiers) == {gs.norm_text(f"{dossier.DOSSIER_DIR}/платёжный шлюз")}
+    r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
+    assert len(r.dossiers) == 1 and "ЮPay" in r.dossiers[0], "тема нашла файл несмотря на регистр и форму"
+
+
+def test_only_primary_documents_get_vectors(tmp_path):
+    """Сводки в слоты и переходы не идут — их векторы никто не читал бы, а 256
+    файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Тема.md").write_text("---\ntype: досье\n---\n# Тема\nтекст сводки для эмбеддера\n", encoding="utf-8")
+    (s.graph / "Встречи" / "2026-08-09_1000.md").write_text("# Новая\nтекст заметки для эмбеддера\n", encoding="utf-8")
+    s.refresh(force=True)
+    pending = s.pending_vectors()
+    assert any(p.endswith("2026-08-09_1000.md") for p in pending), "первичная заметка ждёт вектора"
+    assert not any(p.endswith("Тема.md") for p in pending), "сводка вектора не ждёт"
+    s.embed_pending()
+    assert not any(p.endswith("Тема.md") for p in s._vecs)
+    d = next(d for d in s._gen.docs.values() if d.rel.endswith("Тема.md"))
+    assert d.role == gs.DOSSIER and d in s._gen.dossiers.values() and d not in s._gen.primary
