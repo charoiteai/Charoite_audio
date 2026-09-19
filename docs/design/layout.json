@@ -1,8 +1,5 @@
 {
-  "generated": {
-    "at": "2026-09-19T18:06Z",
-    "head": "85bf212"
-  },
+  "generated": "2026-09-19T18:30Z",
   "order": [
     "core",
     "llm",
@@ -18,8 +15,7 @@
       "core"
     ],
     "graph": [
-      "core",
-      "llm"
+      "core"
     ],
     "cloud": [
       "core"
@@ -43,7 +39,7 @@
       "meeting"
     ]
   },
-  "layers": {
+  "brief_layers": {
     "core": [
       "safe_write",
       "file_locks",
@@ -52,16 +48,12 @@
       "redirects",
       "config_loader",
       "exit_codes",
-      "privacy",
-      "deps",
-      "media_meta",
-      "vocabulary"
+      "privacy"
     ],
     "llm": [
       "llm",
       "model_lease",
-      "llm_health",
-      "nli"
+      "llm_health"
     ],
     "graph": [
       "graphs",
@@ -69,8 +61,7 @@
       "graph_nodes",
       "graph_links",
       "dossier",
-      "graph_search",
-      "tier3"
+      "graph_search"
     ],
     "cloud": [
       "cloud"
@@ -106,10 +97,7 @@
       "question_filter",
       "hint_guard",
       "autostop",
-      "busy_signals",
-      "fact_check",
-      "install_profile",
-      "graph_updater"
+      "busy_signals"
     ],
     "app": [
       "daemon",
@@ -119,9 +107,47 @@
       "dictate_note",
       "transcribe_file",
       "voice_memos_bridge",
-      "brain",
-      "charoite_paths"
+      "install_profile",
+      "brain"
     ]
+  },
+  "layer_overrides": {
+    "tier3": {
+      "layer": "graph",
+      "why": "бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако"
+    },
+    "nli": {
+      "layer": "llm",
+      "why": "ONNX-инференс NLI-модели; читают tier3 и daemon"
+    },
+    "deps": {
+      "layer": "core",
+      "why": "рецепт про интерпретатор и .venv; ничего из репо не импортирует"
+    },
+    "media_meta": {
+      "layer": "core",
+      "why": "разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует"
+    },
+    "vocabulary": {
+      "layer": "core",
+      "why": "декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting"
+    },
+    "fact_check": {
+      "layer": "meeting",
+      "why": "сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript"
+    },
+    "install_profile": {
+      "layer": "meeting",
+      "why": "бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting"
+    },
+    "graph_updater": {
+      "layer": "meeting",
+      "why": "до разреза (№322) целиком встречный: встречная и графовая половины в одном файле"
+    },
+    "charoite_paths": {
+      "layer": "app",
+      "why": "корни данных и кода; по брифу остаётся в app, 17 импортёров — долг №321 в allowlist"
+    }
   },
   "allowed_edges": [
     {
@@ -147,7 +173,12 @@
     {
       "from": "diarize",
       "to": "llm",
-      "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа или Protocol)"
+      "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа)"
+    },
+    {
+      "from": "graph_search",
+      "to": "llm",
+      "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
     },
     {
       "from": "graph_updater",
@@ -188,45 +219,178 @@
       "from": "stt",
       "to": "charoite_paths",
       "ticket": "№321"
+    },
+    {
+      "from": "tier3",
+      "to": "llm",
+      "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
+    },
+    {
+      "from": "tier3",
+      "to": "nli",
+      "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
     }
   ],
-  "entry_points": [
-    "scripts/bench_extract.py",
-    "scripts/cloud_review.py",
-    "scripts/dedup_graph.py",
-    "scripts/forget_meeting.py",
-    "scripts/get_models.py",
-    "scripts/graph_doctor.py",
-    "scripts/graph_search_index.py",
-    "scripts/import_meeting.py",
-    "scripts/lock_runtime_deps.py",
-    "scripts/memory_bench.py",
-    "scripts/morning_brief.py",
-    "scripts/nightly_claude_cores.py",
-    "scripts/nightly_dossier.py",
-    "scripts/nightly_dossier_review.py",
-    "scripts/protocol.py",
-    "scripts/rename_meeting.py",
-    "scripts/sign_release_manifest.py",
-    "scripts/tier3_cores.py",
-    "scripts/wait_for_idle.py",
-    "src/daemon.py",
-    "src/dictate.py",
-    "src/dictate_note.py",
-    "src/dossier.py",
-    "src/graph_search.py",
-    "src/graph_updater.py",
-    "src/graphs.py",
-    "src/llm.py",
-    "src/privacy.py",
-    "src/rebuild_transcript.py",
-    "src/retro_fill.py",
-    "src/speaker_names.py",
-    "src/transcribe_file.py"
-  ],
+  "entry_points": {
+    "scripts/bench_extract.py": {
+      "manual": true
+    },
+    "scripts/bench_models.py": {
+      "manual": true
+    },
+    "scripts/build_app_icon.sh": {
+      "manual": true
+    },
+    "scripts/build_embedded_python.sh": {
+      "manual": false
+    },
+    "scripts/check_private_markers.py": {
+      "manual": false
+    },
+    "scripts/check_test_assertions.py": {
+      "manual": false
+    },
+    "scripts/cloud_review.py": {
+      "manual": true
+    },
+    "scripts/dedup_archive.py": {
+      "manual": true
+    },
+    "scripts/dedup_graph.py": {
+      "manual": false
+    },
+    "scripts/diar_bench.py": {
+      "manual": true
+    },
+    "scripts/doctor.py": {
+      "manual": false
+    },
+    "scripts/fix_action_items.py": {
+      "manual": true
+    },
+    "scripts/forget_meeting.py": {
+      "manual": false
+    },
+    "scripts/get_models.py": {
+      "manual": false
+    },
+    "scripts/graph_doctor.py": {
+      "manual": false
+    },
+    "scripts/graph_search_index.py": {
+      "manual": false
+    },
+    "scripts/import_meeting.py": {
+      "manual": false
+    },
+    "scripts/layout_map.py": {
+      "manual": true
+    },
+    "scripts/lock_runtime_deps.py": {
+      "manual": false
+    },
+    "scripts/make_dmg.sh": {
+      "manual": false
+    },
+    "scripts/memory_bench.py": {
+      "manual": false
+    },
+    "scripts/merge_graphs.py": {
+      "manual": true
+    },
+    "scripts/migrate_placeholders.py": {
+      "manual": true
+    },
+    "scripts/morning_brief.py": {
+      "manual": false
+    },
+    "scripts/mutate_check.py": {
+      "manual": true
+    },
+    "scripts/nightly.sh": {
+      "manual": false
+    },
+    "scripts/nightly_claude_cores.py": {
+      "manual": false
+    },
+    "scripts/nightly_dossier.py": {
+      "manual": false
+    },
+    "scripts/nightly_dossier_review.py": {
+      "manual": false
+    },
+    "scripts/notarize.sh": {
+      "manual": false
+    },
+    "scripts/protocol.py": {
+      "manual": false
+    },
+    "scripts/rename_meeting.py": {
+      "manual": false
+    },
+    "scripts/sign_release_manifest.py": {
+      "manual": false
+    },
+    "scripts/stt_bench.py": {
+      "manual": true
+    },
+    "scripts/tier3_cores.py": {
+      "manual": false
+    },
+    "scripts/wait_for_idle.py": {
+      "manual": false
+    },
+    "src/daemon.py": {
+      "manual": false
+    },
+    "src/diarize.py": {
+      "manual": true
+    },
+    "src/dictate.py": {
+      "manual": false
+    },
+    "src/dictate_note.py": {
+      "manual": false
+    },
+    "src/graph_search.py": {
+      "manual": false
+    },
+    "src/graph_updater.py": {
+      "manual": false
+    },
+    "src/llm_health.py": {
+      "manual": false
+    },
+    "src/main.py": {
+      "manual": false
+    },
+    "src/mcp_server.py": {
+      "manual": true
+    },
+    "src/meeting_archive.py": {
+      "manual": true
+    },
+    "src/privacy.py": {
+      "manual": false
+    },
+    "src/rebuild_transcript.py": {
+      "manual": false
+    },
+    "src/retro_fill.py": {
+      "manual": false
+    },
+    "src/transcribe_file.py": {
+      "manual": false
+    },
+    "src/voice_memos_bridge.py": {
+      "manual": true
+    }
+  },
   "notes": {
-    "layers": "Таблица брифа владельца 19.09 с поправками архитектурного круга: tier3 — граф (импортирует llm, nli, frontmatter, redirects; не cloud), nli — llm, deps/media_meta/vocabulary — core (без зависимостей от репо), fact_check — meeting, install_profile — meeting до фазы 3 (импортирует graphs; вынос flag() в config_loader — №321), graph_updater целиком в meeting до разреза (№322), charoite_paths — app (корень снаружи — №321).",
-    "allowed_edges": "Рёбра против стрелок, существующие на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются (GLM: ручная арифметика расходилась 16/17). Карточка — где ребро снимается.",
-    "entry_points": "Пути, по которым код зовут Swift, make_app.sh, shell и python-подпроцессы. Переезд файла без правки вызывающих ломает запуск молча (DS C2/C3). Список — реальность, не желание: тест падает и на незаявленную точку, и на заявленную, которую никто не зовёт."
+    "brief_layers": "Таблица брифа владельца 19.09 дословно; правки — только через layer_overrides с обоснованием (Important DS по #594: перенос слоя одной строкой без причины легализовал бы ребро молча).",
+    "allowed": "Целевые стрелки брифа. graph → llm не разрешено: фаза 3 (№321) уводит llm из graph за Protocol/параметр; существующие рёбра graph → llm — долг в allowed_edges.",
+    "allowed_edges": "Рёбра против стрелок на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются. Карточка — где ребро снимается.",
+    "entry_points": "Исполняемые файлы (src/*.py, scripts/*.py, scripts/*.sh), которые упоминает КОД: Swift и shell без комментариев, workflow CI, python-литералы без докстрингов. Список — реальность: тест красный и на незаявленную точку, и на заявленную, которую никто не упоминает; ручной запуск объявляется manual: true.",
+    "generated": "Момент последнего --regen (allowlist и точки входа); версия файла — git."
   }
 }
