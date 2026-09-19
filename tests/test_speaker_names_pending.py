@@ -41,9 +41,12 @@ class _FakeLLM:
     """Клиент, отвечающий заготовкой; поднимать Ollama тестам не нужно."""
 
     answer: str = ""
+    lang = "ru"
 
     def __init__(self, cfg: dict):
         pass
+
+    recording_block = llm_mod.LLM.recording_block   # настоящий блок, взят до подмены llm.LLM
 
     def complete(self, *a, **k) -> str:
         return self.answer

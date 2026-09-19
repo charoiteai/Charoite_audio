@@ -327,13 +327,16 @@ def test_a_failing_sidecar_is_reported_once_and_the_summary_reflects_the_last_wr
     monkeypatch.setattr(live_sidecar, "remember", lambda *a, **k: outcome["ok"])
     trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_1021")
     trace.on_event(_events(("lost", "mic", 1.0, 2.0, None, True))[0])
-    assert trace.persist_failed and trace.summary().endswith("пометки о пропусках могли сохраниться не полностью")
+    assert trace.persist_failed
     trace.on_event(_events(("gap", "blackhole", 5.0, 40.0, 35.0, True))[0])   # второй отказ — строки нет
     outcome["ok"] = True
     trace.on_event(_events(("end", "mic", 1.0, 60.0, 59.0, True))[0])        # удалось — весь список лёг
     err = capsys.readouterr().err
     assert err.count("не пишется") == 1
-    assert not trace.persist_failed and "могли сохраниться" not in trace.summary()
+    assert not trace.persist_failed
+    # итог — только из событий: пересборка строит ту же строку из сайдкара, и
+    # рантайм-флаг отказа в документ не входит (Important DS входного круга №316)
+    assert trace.summary() == channel_trace.summary_of(trace.events)
     assert "сайдкар" not in trace.summary(), "жаргон кодовой базы в протокол не идёт"
 
 

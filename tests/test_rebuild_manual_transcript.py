@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 import graph_updater  # noqa: E402
 import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 import meeting_processing as mp  # noqa: E402
 import meeting_stamp  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
@@ -108,13 +109,14 @@ def test_edited_path_rebuilds_minutes_file_and_hashes(root, monkeypatch):
     meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
     assert meta["transcript_sha256"] == _sha("машинный текст"), "хеш стенограммы не трогаем — файл правленый"
     assert meta["minutes_sha256"] == _sha(mpath.read_text(encoding="utf-8"))
-    assert meta["minutes_source_sha256"] == _sha(rt._speech(edited))   # речь = одно определение (speech_of)
+    assert meta["minutes_source_sha256"] == meeting_source.of(live, edited).sha()   # речь = одно определение (speech_of)
 
 
 def test_second_click_without_changes_does_nothing(root, monkeypatch):
     edited = "правленый текст\n"
+    path = root / "transcripts" / "2026-09-03_1200.md"     # источник считается по пути: сайдкара ещё нет → без оговорки
     live = _meeting(root, edited, {"transcript_sha256": _sha("машинный текст"),
-                                   "minutes_source_sha256": _sha(rt._speech(edited))})
+                                   "minutes_source_sha256": meeting_source.of(path, edited).sha()})
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: pytest.fail("минутки перегенерированы без изменений"))
     assert rt.rebuild(live, CFG) == live
@@ -194,8 +196,9 @@ def test_notes_tail_edit_does_not_regenerate(root, monkeypatch):
     import transcript
     speech = "речь\n"
     text = speech + transcript.NOTES_HEAD + "\nправка в ко-мышлении\n"
+    path = root / "transcripts" / "2026-09-03_1200.md"
     live = _meeting(root, text, {"transcript_sha256": _sha("машинный"),
-                                 "minutes_source_sha256": _sha(rt._speech(speech))})
+                                 "minutes_source_sha256": meeting_source.of(path, speech).sha()})
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: pytest.fail("речь не менялась"))
     assert rt.rebuild(live, CFG) == live

@@ -74,6 +74,18 @@ def parse_blocks(text: str) -> list[dict]:
 
 NOTES_TITLE = "Ко-мышление"
 NOTES_HEAD = f"\n---\n## {NOTES_TITLE}"
+NOTES_SUFFIX = " (📌 КТ · 💎 факты · 💭 мысли)"   # заголовок хвоста в файле = NOTES_HEAD + NOTES_SUFFIX
+
+
+def append_note(text: str, line: str) -> str:
+    """Дописать строку в хвост «Ко-мышления» файла; хвоста нет — создать его
+    тем же заголовком, что `Transcript._render`. Один владелец формата хвоста:
+    пересборка дописывала бы строку итога в конец тела, и без секции она
+    уходила бы в речь и хеш источника (Critical DS входного круга по №316)."""
+    body = text.rstrip("\n")
+    if NOTES_HEAD in body:
+        return body + f"\n> {line}\n"
+    return body + f"\n{NOTES_HEAD}{NOTES_SUFFIX}\n> {line}\n"
 
 
 def speech_of(text: str) -> str:
@@ -98,6 +110,17 @@ def speech_of(text: str) -> str:
 # пересборка (rebuild_transcript.restamp_minutes) — литерал обязан совпадать,
 # поэтому живёт здесь, в общем модуле документов.
 MINUTES_DRAFT_MARK = "<!-- черновик, встреча идёт -->"
+
+
+def notes_of(text: str) -> list[str]:
+    """Строки хвоста «Ко-мышления» файла (без «> »): живые 📌/💭 и след записи.
+    Разбор получает их ОТДЕЛЬНЫМ блоком «мысли модели, не речь», а не концом
+    файла, который `debrief_excerpt` принимал за конец речи (критика DS и
+    Important GLM входного круга по №317)."""
+    cut = text.find(NOTES_HEAD)
+    if cut < 0:
+        return []
+    return [line[2:].strip() for line in text[cut:].splitlines() if line.startswith("> ")]
 
 
 def notes_start(text: str) -> int:
@@ -368,7 +391,7 @@ class Transcript:
             parts.append("")
         if self._notes:
             parts.append("---")
-            parts.append(f"## {NOTES_TITLE} (📌 КТ · 💎 факты · 💭 мысли)")
+            parts.append(f"## {NOTES_TITLE}{NOTES_SUFFIX}")
             parts.extend(f"> {n}" for n in self._notes)
         return "\n".join(parts) + "\n"
 

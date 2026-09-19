@@ -293,10 +293,11 @@ code path is shared.
 **A derivative has a passport.** Minutes, debrief and theses derive from the
 transcript, and each keeps a pair of keys in the `.md.live.json` sidecar: the
 bytes of the last machine write (`<kind>_sha256`) and the hash of the source
-speech (`<kind>_source_sha256`). Speech excludes the title and the
-"Co-thinking" tail (`transcript.speech_of`): a retitle rewrites the first
-line, and a hash with the title made the minutes "built from other speech"
-on the very first retitle. Freshness is decided in one place,
+(`<kind>_source_sha256`) — speech plus the incomplete-recording note
+(`meeting_source.MeetingSource`, see the №316/№317 paragraph below). Speech
+excludes the title and the "Co-thinking" tail (`transcript.speech_of`): a
+retitle rewrites the first line, and a hash with the title made the minutes
+"built from other speech" on the very first retitle. Freshness is decided in one place,
 `live_sidecar.derivative_state`: no file — build; machine-owned and same
 speech — do not call the model; machine-owned and speech changed — rebuild
 (previous version in `.prev/`); bytes not machine — edited by a human, leave
@@ -676,6 +677,36 @@ duration threshold — an episode that looks short in the report is a real hole;
 coalescing is by count: after six lines per channel only the stop summary goes
 into the documents ("recording incomplete: no system audio 14:32–14:35,
 14:50–until the end"). The string status contract stays — that is №310.
+
+**The incomplete-recording note is a fact about the recording, not speech; a
+derivative has one source.** Before №316/№317 a derivative (minutes, debrief,
+theses) had a single input — a text string — and every consumer decided for
+itself what to mix in: `_fit` folded, the daemon's draft cut a window,
+`debrief_excerpt` took the head and tail of the file, `speech_of` cut the
+section off. The fact "the counterparts were absent for 40 minutes" reached
+the model either as speech (MCP minutes read the whole file with the tail) or
+not at all (everyone else) — and the 18.09 minutes came out looking complete.
+The episode summary was written only by the daemon at stop: when the daemon
+died there was no line, although every event was in the sidecar. Now the
+source of a derivative is one object,
+`meeting_source.MeetingSource(speech, recording_note)`: speech
+(`transcript.speech_of`) is what folds and windows cut and what `fact_check`
+verifies quotes against; the note (`channel_trace.recording_note` — the same
+string the daemon writes at stop, `summary_of`) goes into the prompt as a
+separate block outside the transcript tag and AFTER every cut
+(`LLM.recording_block`, ru/en/zh, with the rule "never quote it as speech; do
+not read the silence of a lost channel as agreement"), into the document as a
+mechanical line (`meeting_source.with_note` — asking the model to "mention the
+gap under Risks" is unverifiable), and the passport hashes speech plus note
+(`sha()`): minutes built without the note go stale exactly once when the note
+appears, and the passport writer and the freshness reader are one function.
+Every prompt builder (the daemon's draft and "Minutes", MCP minutes, the
+rebuild, the `graph_updater` debrief, the retro pass) keeps the block after
+its own cut; the debrief takes its window from the end of SPEECH and receives
+the live tail theses as a separate "model's notes, not speech" block. The
+rebuild restores the summary from the sidecar into the "Co-thinking" tail
+through the tail's format owner (`transcript.append_note`; no section —
+creates one), with no duplicate on a second run.
 
 ## Stopping a recording
 

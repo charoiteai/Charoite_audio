@@ -26,6 +26,8 @@ import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
+import channel_trace  # noqa: E402
+import meeting_source  # noqa: E402
 import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
@@ -2488,7 +2490,10 @@ def main():
     # модели, получала в графе подпись «дословно из стенограммы» — то есть
     # проверка выдумок подтверждалась выдумкой (аудит графа 26.08, Codex
     # Critical). Сверка цитат идёт только по `speech`.
-    context = tpath.read_text(encoding="utf-8")
+    # содержание без следа записи в хвосте (строки события канала и итог
+    # «запись неполная» — факт о записи, не тема встречи и не факт памяти;
+    # Important DS выходного круга по №317)
+    context = meeting_source.content_of(tpath.read_text(encoding="utf-8"))
     # `speech` — только сказанное: секцию «Ко-мышление» в конце пишет модель
     # по ходу встречи, и цитата, найденная там, получала бы подпись живого
     # человека с его временем (круг-5 по PR #438, GLM Critical 1).
@@ -2499,7 +2504,8 @@ def main():
         speech = context
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
-        context += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
+        # тем же хелпером, что разбор: без следа записи и с потолком (круг 2 по №317)
+        context += "\n\n" + meeting_source.minutes_block(minutes_p, MINUTES_IN_PROMPT)
     # «В записи нет речи» решается ДО вопроса о папке графа: этот факт от
     # графа не зависит, а раньше при пустом graph_dir пустая запись получала
     # «готово» вместо честного empty — и хук отрабатывал на тишине
@@ -2780,10 +2786,17 @@ def main():
         # запись под гейтом (Important GLM 2).
         dpath = meeting_stamp.derivative_path(tpath, "debrief", graph)
         import transcript as transcript_mod2  # локально, как выше: модуль документов тяжёлым не считается, но шапку не трогаем
-        # хеш — от файла стенограммы, не от `context` (туда дописаны минутки):
-        # иначе паспорт разбора не совпал бы с тем, что считает retro_fill
-        speech_sha = live_sidecar.sha(transcript_mod2.speech_of(tpath.read_text(encoding="utf-8")))
-        d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", speech_sha)
+        # источник — речь + оговорка о записи, одним объектом с retro_fill и
+        # паспортом (№317): не `context` (туда дописаны минутки) и не весь файл
+        # (хвост «Ко-мышления» — мысли модели, а не конец речи)
+        file_text = tpath.read_text(encoding="utf-8")
+        source = meeting_source.of(tpath, file_text)
+        source_sha = source.sha()          # речь + оговорка, не «хеш речи» (Minor GLM круга 2)
+        # живые тезисы — без строк следа записи: итог «📋» здесь был бы подписан
+        # «заметка модели», а строкой ниже пришёл бы блоком об оговорке (Minor DS)
+        cothinking = [ln for ln in transcript_mod2.notes_of(file_text)
+                      if not channel_trace.is_trace_line(ln)][-40:]
+        d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", source_sha)
         if not live_sidecar.wants_build(d_state, live_sidecar.POLICY_LIVE):
             # сознательный пропуск, не сбой: строка говорит «оставлен», а не «не удался»
             print(f"разбор оставлен: {dpath.name} — байты не наши (правка руками или перештамповка), не перезаписываю")
@@ -2800,11 +2813,26 @@ def main():
         # Память графа — только чтобы узнавать имена, системы и термины: две
         # прошлые заметки в промпте давали разбору чужие рекомендации
         # («повестка 10:33» в разборе встречи 15:33 — ревизия L4 11.09, №241)
-        debrief = LLM(cfg).complete(
+        llm_client = LLM(cfg)
+        # Один бюджет на тело промпта (речь + тезисы + минутки): до №317 минутки
+        # лежали внутри окна `debrief_excerpt` и делили с речью те же 11 000
+        # знаков; три независимых потолка складывались бы поверх num_ctx 8192 и
+        # Ollama молча резала бы голову (Important DS круга 2)
+        speech_limit, cothinking_block, minutes_block = meeting_source.debrief_parts(
+            tpath.with_name(tpath.stem + "_minutes.md"), cothinking,
+            total=DEBRIEF_BODY_CHARS, speech_min=DEBRIEF_SPEECH_MIN,
+            minutes_cap=MINUTES_IN_PROMPT, cothinking_cap=COTHINKING_IN_DEBRIEF)
+        # Порядок блоков: речь (окно от КОНЦА РЕЧИ, не файла) → живые тезисы
+        # контура отдельным блоком (мысли модели, не речь; DS: 📌 КТ разбору
+        # полезны) → минутки → оговорка о записи после всех обрезок (№317)
+        debrief = llm_client.complete(
             (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
              f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(context)}\n\n"
-            "Составь разбор строго по разделам:\n"
+            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech, limit=speech_limit)}\n\n"
+            + cothinking_block
+            + minutes_block
+            + llm_client.recording_block(source.recording_note)
+            + "Составь разбор строго по разделам:\n"
             "# Разбор встречи\n"
             "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
             "## Задачи\n(список «- **Кто** — что — срок»; только то, что прозвучало на этой встрече)\n"
@@ -2827,13 +2855,16 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
+            # строка о неполной записи — механически, как у минуток и ретро-разбора:
+            # упомянула ли модель пропуск — непроверяемо (Important GLM выходного круга)
+            debrief = meeting_source.with_note(debrief, source.recording_note)
             # шапка честно называет автора: облачная ревизия рядом сверяет и
             # снимает ошибки, а сам разбор остаётся черновиком (№241)
             body = f"<!-- {stamp} · {title or 'встреча'} -->\n{DEBRIEF_NOTE}\n" + debrief
             if not safe_write.write_text(dpath, body, expect=d_before, expect_absent=d_before is None):
                 print(f"разбор: {dpath.name} изменился под рукой — не перезаписываю")
             else:
-                if not live_sidecar.attest(tpath, "debrief", body, speech_sha):
+                if not live_sidecar.attest(tpath, "debrief", body, source_sha):
                     print(f"разбор: паспорт не записан — следующий прогон сочтёт {dpath.name} чужим")
                 print(f"разбор: {dpath.name}")
     except _DebriefKept:
@@ -2920,7 +2951,13 @@ def main():
         sys.exit(EXIT_NO_GRAPH)
 
 
-def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> str:
+DEBRIEF_BODY_CHARS = 11000    # тело промпта разбора: речь + тезисы + минутки — прежнее окно `debrief_excerpt`
+DEBRIEF_SPEECH_MIN = 4000     # речи в разборе не меньше этого: минутки — пересказ, речь — первоисточник
+MINUTES_IN_PROMPT = 6000      # знаков минуток в промптах (финал ≤ 900, черновик — без потолка)
+COTHINKING_IN_DEBRIEF = 2000  # знаков живых тезисов в разборе
+
+
+def debrief_excerpt(transcript: str, limit: int = DEBRIEF_BODY_CHARS, head: int | None = None) -> str:
     """Что из стенограммы видит разбор встречи.
 
     Раньше — первые 11000 знаков: у часовой встречи это первые 15–20 минут,
@@ -2931,6 +2968,8 @@ def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> st
     """
     if len(transcript) <= limit:
         return transcript
+    if head is None:
+        head = limit // 2          # голова и хвост поровну — одно правило с распределителем бюджета
     tail = limit - head
     skipped = len(transcript) - head - tail
     return (transcript[:head]

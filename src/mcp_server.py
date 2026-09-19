@@ -15,6 +15,8 @@ import requests
 import action_items
 import transcript
 
+import live_sidecar
+import meeting_source
 import meeting_stamp
 from llm import LLM, LLMHTTPError
 
@@ -134,6 +136,9 @@ def sufler_make_minutes() -> str:
     if not f:
         return "Стенограмм нет."
     transcript = f.read_text(encoding="utf-8")
+    # источник — речь + оговорка о записи (№317): раньше этот путь отдавал модели
+    # ВЕСЬ файл с хвостом «Ко-мышления», и след канала читался как сказанное
+    source = meeting_source.of(f, transcript)
     mpath = f.with_name(f.stem + "_minutes.md")
     # Ни статус, ни непустоту раньше никто не проверял: удалённая или
     # переименованная модель давала 404, `.get("message", {})` превращал ошибку
@@ -146,9 +151,11 @@ def sufler_make_minutes() -> str:
         # длинная встреча — через ту же свёртку частей, что у демона: иначе Ollama
         # молча обрезала промпт, и минутки без первого часа ложились поверх полных
         # (аудит 13.09, GLM I1)
-        fitted = client.fit(transcript)
+        fitted = client.fit(source.speech)
         out = client.complete(
-            f"Стенограмма:\n\n{fitted}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок» (только участникам; дела для отсутствующих — в открытые вопросы), открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка.",
+            f"Стенограмма:\n\n{fitted}\n\n"
+            + client.recording_block(source.recording_note)   # блок снаружи речи, после свёртки
+            + "Составь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок» (только участникам; дела для отсутствующих — в открытые вопросы), открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка.",
             system="Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. Оформляешь всё списками «- …» с жирным ключом.",
             model=MODEL,  # из конфига: не тянем вторую тяжёлую модель поверх резидентной
             think=None,   # умолчание модели — как исторически у этого инструмента
@@ -176,6 +183,7 @@ def sufler_make_minutes() -> str:
     out = action_items.finalize_assignees(
         out, action_items.participants_of(transcript, owner=user_name), user_name,
         lang=str(_sufler.get("language") or "ru"))
+    out = meeting_source.with_note(out, source.recording_note)   # строка итога — механически
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
     tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
@@ -184,7 +192,12 @@ def sufler_make_minutes() -> str:
         tmp.replace(mpath)
     finally:
         tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
-    return f"Минутки сохранены: {mpath}\n\n{out[:2000]}"
+    # Паспорт производной (№309): машинные минутки без него читались пересборкой
+    # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
+    # изменились. Хеш источника — тем же объектом, что у пересборки.
+    tail = "" if live_sidecar.attest(f, "minutes", out, source.sha()) else (
+        "\n(паспорт производной не записан: сайдкар стенограммы неоднозначен)")
+    return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
 
 
 @mcp.tool()

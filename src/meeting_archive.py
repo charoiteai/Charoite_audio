@@ -25,6 +25,8 @@ import sys
 
 from charoite_paths import resolve_root
 from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, stamp_of
+import channel_trace
+import meeting_source
 import safe_write
 import graphs
 
@@ -208,7 +210,9 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     else:
         # Ярлык прежнего прогона открывал бы Obsidian на несуществующей заметке
         (folder / "Открыть в Obsidian.command").unlink(missing_ok=True)
-    _derive_extras(folder)
+    # оговорка о неполной записи — из сайдкара оригинала (факт о записи живёт
+    # там); хвост копии — запасной путь для архива без сайдкара (критика GLM круга 3)
+    _derive_extras(folder, recording_note=channel_trace.recording_note(main))
     _gen_summary(folder)
     _write_manifest(folder, stamp, pretty)
     _rebuild_index(graph)
@@ -691,7 +695,7 @@ def cothinking_notes(text: str) -> list[str]:
     return [line[2:].strip() for line in text.splitlines() if _COTHINKING_LINE.match(line)]
 
 
-def _derive_extras(folder: pathlib.Path):
+def _derive_extras(folder: pathlib.Path, recording_note: str | None = None):
     """Производные файлы: Тезисы.md и Вопросы и ответы.md из уже скопированных."""
     tr = folder / "Стенограмма.md"
     if tr.exists():  # тезисы ко-мышления: строки «> HH:MM 📌/💎/💭/🔬 …»
@@ -700,9 +704,12 @@ def _derive_extras(folder: pathlib.Path):
         # затирались цитатами ко-мышления при каждом архивировании, и паспорт
         # переставал совпадать с диском (Critical DS входного круга по №309)
         if notes and not (folder / "Тезисы.md").exists():
-            safe_write.write_text(folder / "Тезисы.md",
+            # строка о неполной записи — механически, как у остальных производных
+            # (Important DS круга 2 по №317): из сайдкара оригинала, иначе из хвоста копии
+            note = recording_note or meeting_source.note_in_tail(tr.read_text(encoding="utf-8"))
+            safe_write.write_text(folder / "Тезисы.md", meeting_source.with_note(
                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли · 🔬 переоценка)\n\n"
-                + "\n".join(f"- {n}" for n in notes) + "\n")
+                + "\n".join(f"- {n}" for n in notes) + "\n", note))
 
     qa: list[str] = []
     rb = folder / "Разбор.md"
