@@ -24,6 +24,14 @@ sys.path.insert(0, str(ROOT / "src"))
 import meeting_archive  # noqa: E402
 
 
+def _live(tmp_path):
+    """Стенограмма-владелец паспорта: с №314 у саммари нет писателя без неё
+    (Important DS круга 3), файла саммари нет → MISSING → сборка в режиме AUTO."""
+    live = tmp_path / "2026-07-15_0900.md"
+    live.write_text("# Встреча 2026-07-15_0900\n\n[09:00:00] Иван: начнём\n", encoding="utf-8")
+    return live
+
+
 def test_decisions_section_does_not_demand_an_owner(tmp_path, monkeypatch):
     """Требование исполнителя было причиной, а не оформлением.
 
@@ -47,7 +55,7 @@ def test_decisions_section_does_not_demand_an_owner(tmp_path, monkeypatch):
 
     monkeypatch.setattr(meeting_archive.__dict__.get("requests", None) or __import__("requests"),
                         "post", fake_post)
-    meeting_archive._gen_summary(folder, force=True)
+    meeting_archive._gen_summary(folder, _live(tmp_path))
 
     block = re.search(r"## Решили\n\((.*?)\)", captured.get("user", ""), re.S)
     assert block, "раздел «Решили» обязан быть в шаблоне"
@@ -71,7 +79,7 @@ def test_empty_case_still_has_an_explicit_wording(tmp_path, monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(__import__("requests"), "post", fake_post)
-    meeting_archive._gen_summary(folder, force=True)
+    meeting_archive._gen_summary(folder, _live(tmp_path))
 
     assert "решений не было" in captured.get("user", "")
 
@@ -94,7 +102,7 @@ def test_materials_reach_the_model_decisions_first(tmp_path, monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(__import__("requests"), "post", fake_post)
-    meeting_archive._gen_summary(folder, force=True)
+    meeting_archive._gen_summary(folder, _live(tmp_path))
 
     user = captured.get("user", "")
     assert user.index("=== Минутки.md ===") < user.index("=== Стенограмма.md ===")

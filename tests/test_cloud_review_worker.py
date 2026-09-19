@@ -2625,6 +2625,7 @@ def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, mon
     monkeypatch.setitem(sys.modules, "meeting_archive", type(sys)("meeting_archive"))
     sys.modules["meeting_archive"].archive_meeting = (
         lambda *a, **k: called.append("archive") or None)
+    sys.modules["meeting_archive"].SUMMARY_POLICY_LIVE = frozenset()   # политика саммари живого пути (№314)
     import io
     buf = io.StringIO()
     cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)

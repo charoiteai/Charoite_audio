@@ -271,9 +271,9 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
 
 
 def test_every_prompt_builder_puts_the_note_after_its_own_cut():
-    """Четыре сборщика промпта режут речь по-своему (окно черновика, `_fit`,
-    `debrief_excerpt`, `[:24000]`); блок оговорки у каждого — после своей
-    обрезки и снаружи речи, строка в документ — механически."""
+    """Пять сборщиков промпта режут вход по-своему (окно черновика, `_fit`,
+    `debrief_excerpt`, `[:24000]`, обрезки материалов саммари); блок оговорки у
+    каждого — после своей обрезки и снаружи речи, строка в документ — механически."""
     src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
     loop = src[src.index("def minutes_loop"):src.index("def gen_answer")]
     assert loop.index("full[-14_000:]") < loop.index("note = trace.summary()") < loop.index("llm.recording_block(note)") < loop.index("Обнови ЧЕРНОВИК")
@@ -316,6 +316,11 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert "_speech(" not in rt, "хеш голой речи как источник производной — прохода мимо MeetingSource нет"
     gu2 = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
     assert "debrief = meeting_source.with_note(debrief, source.recording_note)" in gu2, "живой разбор — со строкой итога"
+    # пятый сборщик — саммари архива (№314): блок факта после материалов, строка в документ
+    ma_src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
+    gen = ma_src[ma_src.index("def _gen_summary("):ma_src.index("def _unhide(")]
+    assert gen.index("</материалы>") < gen.index("client.recording_block(recording_note)") < gen.index("Составь саммари")
+    assert "text = meeting_source.with_note(text, recording_note)" in gen
     assert "context = meeting_source.content_of(" in gu2, "извлечение — по содержанию без следа записи"
     assert "LLM(cfg).minutes(speech, recording_note=source.recording_note)" in fin
     assert "fact_check.annotate(doc, source.canon())" in fin and "meeting_source.with_note(doc, source.recording_note)" in fin
@@ -502,4 +507,7 @@ def test_archive_theses_take_the_note_from_the_sidecar_first(tmp_path, monkeypat
     meeting_archive._derive_extras(folder, recording_note=NOTE)
     assert (folder / "Тезисы.md").read_text(encoding="utf-8").count(NOTE) == 1
     src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
-    assert "_derive_extras(folder, recording_note=channel_trace.recording_note(main))" in src
+    # оговорка читается один раз и раздаётся тезисам и саммари (Minor GLM входного круга по №314)
+    assert "recording_note = channel_trace.recording_note(main)" in src
+    assert "_derive_extras(folder, recording_note=recording_note)" in src
+    assert src[src.index("summary_pass(folder, main, "):][:60].startswith("summary_pass(folder, main, recording_note,")

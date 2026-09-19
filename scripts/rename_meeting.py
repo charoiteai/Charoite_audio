@@ -279,7 +279,17 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
         raise SystemExit(f"папка архива «{new_folder.name}» уже существует — "
                          "переименование отменено, разберите её руками")
 
+    # главная стенограмма ПОСЛЕ переезда — владелец сайдкара с паспортами
+    # производных: механическая перезапись файлов архива переставляет их хеши
+    # через неё (`live_sidecar.retouch`, №314)
+    main_after = next((t for _, t in moves if t.parent == tdir and t.name == f"{stamp}_{slug}.md"), None)
+    if main_after is None:
+        for cand in (tdir / f"{stamp}_{slug}.md", tdir / f"{stamp}.md"):
+            if cand.exists():
+                main_after = cand
+                break
     return {"moves": moves, "stamps": stamps, "old_folder": old_folder, "new_folder": new_folder,
+            "main": main_after,
             "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
 
 
@@ -367,12 +377,28 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
         # Внутри папки файлы ссылаются на неё по имени: «Подробнее:
         # [[Встречи-архив/<папка>/Минутки|…]]» и заголовок Саммари. Оставить
         # старое имя — оставить битые ссылки ровно там, куда человек смотрит.
+        # Саммари и тезисы — производные с паспортом: замена имени папки в их
+        # байтах машиной должна переставить `<вид>_sha256`, иначе паспорт объявит
+        # файл правленным руками (HUMAN) и саммари замрёт навсегда — та же вторая
+        # причина HUMAN, что у минуток до №309 (Critical DS и GLM входного круга
+        # по №314). Карта имя → вид — у владельца паспортов (`live_sidecar.ARCHIVE_KINDS`),
+        # не копия здесь (критика GLM выходного круга). Файлы без вида — прежняя
+        # текстовая замена.
+        live = p.get("main")
         for f in new_folder.glob("*.md"):
+            swap = lambda text, old=old_folder.name, new=new_folder.name: text.replace(old, new)  # noqa: E731
+            kind = live_sidecar.ARCHIVE_KINDS.get(f.name)
+            if kind and live is not None:
+                if not live_sidecar.retouch(live, kind, f, swap):
+                    # отказ — не молча: файл менялся под рукой или не читается,
+                    # старое имя папки в нём осталось (Minor DS выходного круга)
+                    print(f"{f.name}: имя папки не заменено (файл менялся под рукой или не читается)")
+                continue
             text = f.read_text(encoding="utf-8")
             if old_folder.name in text:
                 # tmp+replace: write_text усекает файл до нуля ДО записи, и обрыв
                 # (полный том iCloud, kill) оставлял пустую заметку (аудит 30.08, GLM)
-                safe_write.write_text(f, text.replace(old_folder.name, new_folder.name))
+                safe_write.write_text(f, swap(text))
 
     # Манифест meeting.meta.json — JSON с темой внутри; текстовая замена по
     # *.md его не видит, а телефоны берут карточку именно из него. Пересборка

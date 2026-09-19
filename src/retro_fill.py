@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import argparse
+import collections
 import pathlib
 import sys
 
@@ -20,8 +22,7 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
-import safe_write  # noqa: E402
-from meeting_archive import archive_meeting, cothinking_notes  # noqa: E402
+from meeting_archive import SummaryMode, SummaryOutcome, archive_meeting, cothinking_notes  # noqa: E402
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -79,7 +80,8 @@ def _theses_path(folder: pathlib.Path) -> pathlib.Path:
     return folder / "Тезисы.md"
 
 
-def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path) -> list[str]:
+def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
+            summary: str | None = None, tally: collections.Counter | None = None) -> list[str]:
     """Производные одной стенограммы по паспорту (№309), не «если файла нет».
 
     Минутки — тем же конвейером, что пересборка (`finalize_minutes` +
@@ -97,6 +99,19 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     случайно, порядком «архив раньше проверки» — Critical DS выходного круга;
     теперь это правило названо). Ретро-тезисы модели — только у встреч без
     живого ко-мышления: импорт записи, восстановление задним числом.
+
+    Саммари — производная с паспортом в том же сайдкаре (№314), пишет его
+    `archive_meeting` в режиме `SummaryMode` (значение перечисления от CLI до
+    шва — не пара «политика + флаг», где пустая политика ложна; Critical DS и
+    GLM круга 3). AUTO: MISSING/STALE строим, UNKNOWN не трогаем; ADOPT —
+    паспорт исправному легаси без модели по всему канону и ничего не строить;
+    REBUILD — то же присвоение, потом собрать остальное моделью. Без порядка
+    «сначала присвоить» rebuild переписал бы 224 исправных саммари за час
+    модели — присвоение идёт внутри `archive_meeting` перед решением о сборке,
+    по той же папке и тому же снимку канона (Critical DS кругов 1 и 2). Исход
+    саммари приходит возвратом (`Archived.summary`), отчёт его печатает, а не
+    выводит из состояния диска (Critical DS и Important GLM круга 2); `tally`
+    считает исходы по значению `action`, не по словам (Minor DS круга 3).
 
     Возвращает список собранного; одна строка stdout на встречу: что собрано и
     что пропущено с состоянием — «полная» больше не прячет HUMAN/UNKNOWN
@@ -142,7 +157,16 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     else:
         skipped.append(f"разбор {state}")
 
-    folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
+    archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem,
+                               mode=SummaryMode(summary) if summary else SummaryMode.AUTO)
+    folder = archived.folder if archived is not None else None
+    if archived is not None:
+        if tally is not None:
+            tally[archived.summary.action] += 1
+            if archived.summary.action == SummaryOutcome.SKIPPED and archived.summary.reason:
+                tally[f"причина: {archived.summary.reason.split(':')[0]}"] += 1
+        if line := archived.summary.line():
+            (made if archived.summary.made else skipped).append(line)
     if folder is not None:
         tpath = _theses_path(folder)
         # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
@@ -187,40 +211,16 @@ def _built(made: list[str], skipped: list[str], kind: str, out: str, write) -> N
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
-    """Куда ложится прежняя версия производной: `.prev/` рядом со СТЕНОГРАММОЙ у
-    всех видов — и у тезисов, чей файл живёт в папке архива внутри графа:
-    скрытый каталог в графе синкался бы iCloud и попадал под `_unhide` архива
-    (Important DS выходного круга по №309). Файл из чужой папки получает
-    префикс стема стенограммы — иначе «Тезисы.md» всех встреч легли бы в одно имя."""
-    # имя чужой папки — от голого штампа, не от стема: ретитл меняет стем, и
-    # каждое поколение получало бы своё имя навсегда (Minor GLM круга 2)
-    bare = meeting_stamp.stamp_of(live.stem) or live.stem
-    name = path.name if path.parent == live.parent else f"{bare}__{path.name}"
-    return live.parent / ".prev" / name
+    """Прежнее имя — шов живёт в `live_sidecar` (единый писатель производных, №314)."""
+    return live_sidecar.prev_path(live, path)
 
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
                       source_sha: str) -> bool:
-    """Записать производную и выдать ей паспорт. Прежняя версия — в `.prev/`
-    рядом со стенограммой (`prev_path`): уверенная, но неверная генерация не
-    должна быть невозвратной (как у минуток)."""
-    before = safe_write.stat_snapshot(path)
-    if before is not None:
-        try:
-            prev = prev_path(live, path)
-            prev.parent.mkdir(exist_ok=True)
-            safe_write.write_text(prev, path.read_text(encoding="utf-8"))
-        except OSError as e:
-            print(f"ретро: прежняя версия {path.name} не сохранена ({e}) — не перезаписываю", file=sys.stderr)
-            return False
-    # запись под гейтом «файл не менялся под рукой»: минута генерации — окно
-    # для редактора; обрыв не оставит «готовый» битый файл (аудит 13.09, GLM M6)
-    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
-        print(f"ретро: {path.name} изменился под рукой — не перезаписываю", file=sys.stderr)
-        return False
-    if not live_sidecar.attest(live, kind, body, source_sha):
-        print(f"ретро: паспорт {kind} не записан — следующая пересборка сочтёт файл чужим", file=sys.stderr)
-    return True
+    """Записалось ли: шов возвращает состояние после записи или None (№314);
+    ретро-отчёту нужен только факт записи — состояние он печатает отдельно."""
+    return live_sidecar.write_derivative(live, path, kind, body, source_sha,
+                                         log=lambda msg: print(f"ретро: {msg}", file=sys.stderr)).written
 
 
 def _minute(stem: str) -> str | None:
@@ -230,10 +230,17 @@ def _minute(stem: str) -> str | None:
 
 def main(argv: list[str] | None = None):
     harden_umask()   # минутки, разбор, архив — данные встреч, только владельцу
+    ap = argparse.ArgumentParser(
+        description="Производные стенограмм по паспорту: минутки, разбор, тезисы, архив встречи.")
+    ap.add_argument("paths", nargs="*", help="стенограммы; без них — обход всего каталога")
+    ap.add_argument("--summary", choices=("adopt", "rebuild"),
+                    help="легаси-саммари без паспорта: adopt — присвоить исправные без модели; "
+                         "rebuild — присвоить исправные и пересобрать остальные моделью")
+    ns = ap.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = load_user_or_example(ROOT)
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
-    args = sys.argv[1:] if argv is None else argv
+    args = ns.paths
     missing: list[str] = []
     if args:
         # хвост импорта — только своя стенограмма: обход всех 302 звал
@@ -264,16 +271,22 @@ def main(argv: list[str] | None = None):
     else:
         files = sorted(tdir.glob("*.md"))
     done = 0
+    tally: collections.Counter = collections.Counter()
     for f in files:
         if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
             continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
         bare = meeting_stamp.stamp_of(f.stem)
         if bare is None or f.stat().st_size < 600:
             continue
-        process(f, cfg, graph, tdir)
+        process(f, cfg, graph, tdir, summary=ns.summary, tally=tally)
         done += 1
     if not args:
         print(f"ретро: обход {tdir.name}: встреч обработано {done}")
+        if ns.summary:
+            # сводка миграции легаси — по исходам, не по словам отчёта (критика 1 GLM
+            # круга 3: без сводки про 298 легаси забывают на месяцы)
+            print("ретро: саммари — " + ", ".join(
+                f"{k} {v}" for k, v in sorted(tally.items())))
     if missing:
         sys.exit("ретро: стенограммы нет: " + ", ".join(missing))
 
