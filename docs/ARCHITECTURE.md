@@ -778,6 +778,41 @@ the event writes it (idempotent), an orphan waits an hour in the import
 folder before it is swept, because iCloud delivers a kilobyte of JSON long
 before an hour of audio. The manifest dies with the audio in retention.
 
+**System health has one rollup and two surfaces, not four private
+verdicts.** Before №139 every health signal had its own surface and its own
+lifetime: recording problems lived in `SuflerService` and only during a
+meeting; the last processing error was a line inside the menu; the nightly
+pass was visible only on the "Today" screen, and its service was created
+lazily when that screen appeared — on 19.09 `logs/nightly.json` said `slept`
+with four steps skipped and nobody had read it; Ollama was probed a second
+time from inside the menu view with the result stored in a view `@State`,
+unlocalized and hidden for a day behind "Meeting ready"; the daemon's
+`pump_alive`/`pump_failures` gauges arrived in every heartbeat since №311 and
+died at the decoder boundary. The input round (DS and GLM) converged on one
+mechanism and rejected two: extending the meeting-scoped sticky layers
+(they are cleared on every start and have no lifetime outside a meeting) and
+a new service with a `HealthReportable` protocol (a ceremony for five writers
+and one reader). Now `HealthRollup.rollup(recording:isRecording:processingError:
+ollama:nightly:)` is a pure function next to `PipelineHealthPresentation` —
+the layer that already owns "one presentation for many surfaces" — and the
+menu-bar icon and the menu status line read one verdict. The owners of the
+facts stay where they were: `PipelineHealthMonitor` (now also decoding the
+pump gauges: a dead pump is a stopped recording — critical; consecutive
+failed passes — a warning, №313), `MeetingProcessingService`,
+`OllamaRuntimeService` (the menu refreshes it instead of probing on its own),
+`NightlyStatusService` (title as a pure function; an hourly re-read so the
+icon does not show the state as of login; `.never` is "not configured" and is
+not a problem for the icon). The rank is pinned by a table test: **red is
+reserved for data loss during a live recording** (disk failure, dead pump);
+a processing error, a silent Ollama, a slept night are yellow — the source is
+kept, an hour of pipeline or a night is lost, the recording is not. The dot
+next to "Recording" is the recording's health, not a REC light: a healthy
+recording used to be red, a degraded one yellow — the reflex "drop everything
+and look at the recording" was being trained on the wrong colour. No new
+daemon, watchdog, timer for Ollama or notification stream: the verdict №68
+stands — the rollup folds signals that already exist. Free-disk pre-flight is
+a new signal and a separate card (№319).
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the

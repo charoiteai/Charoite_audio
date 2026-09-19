@@ -12,17 +12,43 @@ import SwiftUI
 /// поэтому носитель сигнала — форма символа, цвет — усилитель.
 struct MenuBarLabel: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject private var ollama = OllamaRuntimeService.shared
+    @ObservedObject private var nightly = NightlyStatusService.shared
 
     var body: some View {
-        if sufler.isRunning && sufler.pipelineStatusIsCritical {
+        // свёртка №139: красный треугольник — только «данные гибнут» при записи;
+        // жёлтый круг — деградация без потери записи (обработка, Ollama, ночь);
+        // форма разная, потому что строка меню может отрисовать монохромно
+        switch MenuBarHealth.verdict(sufler: sufler, processing: processing,
+                                     ollama: ollama, nightly: nightly).tier {
+        case .critical:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
                 .accessibilityLabel(L.t("Критическая ошибка записи",
                                         "Critical recording failure",
                                         "录音出现严重故障"))
-        } else {
+        case .degraded:
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(Theme.warning)
+                .accessibilityLabel(L.t("Есть что проверить", "Needs attention", "需要注意"))
+        case .ok:
             Image(systemName: "brain.head.profile")
         }
+    }
+}
+
+/// Один вход свёртки для обеих поверхностей меню-бара: иконка и строка
+/// читают один вердикт, а не собирают своё из четырёх сервисов.
+enum MenuBarHealth {
+    @MainActor
+    static func verdict(sufler: SuflerService, processing: MeetingProcessingService,
+                        ollama: OllamaRuntimeService, nightly: NightlyStatusService) -> HealthVerdict {
+        HealthRollup.rollup(recording: sufler.pipelineHealth.problem,
+                            isRecording: sufler.isRunning,
+                            processingError: processing.isError,
+                            ollama: ollama.state,
+                            nightly: nightly.status.state)
     }
 }
 
@@ -33,26 +59,29 @@ struct MenuBarView: View {
     @ObservedObject private var dictation = DictationService.shared
     @ObservedObject private var chat = LocalChatService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
+    @ObservedObject private var ollama = OllamaRuntimeService.shared
+    @ObservedObject private var nightly = NightlyStatusService.shared
     @State private var quick = ""
-    @State private var stackNote = ""   // здоровье стека: пусто = всё в порядке
 
     /// Что происходит прямо сейчас — одной строкой и одним цветом.
     ///
     /// Приложение живёт в меню-баре, и окно после встречи обычно закрывают.
     /// Раньше здесь были только «Идёт запись» и «Готов»: всё, что случалось
     /// с встречей после «Стоп» — обработка, готовый результат, ошибка, —
-    /// было видно только в окне, то есть чаще всего нигде.
+    /// было видно только в окне, то есть чаще всего нигде. С №139 приоритет
+    /// показа — у свёртки: проблема (запись → обработка → Ollama → ночь)
+    /// выше «Встреча готова», иначе лежащая Ollama сутки пряталась за готовой
+    /// встречей, а быстрый вопрос уходил в пустоту (Important GLM входного круга).
     private var state: (text: String, color: Color) {
+        let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
+                                            ollama: ollama, nightly: nightly)
         if sufler.isRunning {
-            let color: Color = sufler.pipelineStatusText == nil
-                ? .red
-                : (sufler.pipelineStatusIsCritical ? .red : Theme.warning)
-            return (L.t("Запись", "Recording", "录音中") + " ·", color)
+            // цвет точки — здоровье записи, не «REC»: красный только когда данные
+            // гибнут (Important DS входного круга)
+            return (L.t("Запись", "Recording", "录音中") + " ·", Self.color(for: verdict.tier))
         }
-        if processing.isError {
-            return (L.t("Ошибка — исходник сохранён",
-                        "Failed — source kept",
-                        "处理失败——原始文件已保留"), Theme.warning)
+        if let headline = verdict.headline {
+            return (headline, Self.color(for: verdict.tier))
         }
         if processing.isProcessing {
             return (L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), .accentColor)
@@ -60,8 +89,15 @@ struct MenuBarView: View {
         if processing.actionTitle != nil {
             return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), Theme.ok)
         }
-        if !stackNote.isEmpty { return (stackNote, Theme.warning) }
         return (L.t("Готов к записи", "Ready to record", "可以录音"), Theme.ok)
+    }
+
+    private static func color(for tier: HealthTier) -> Color {
+        switch tier {
+        case .ok: return Theme.ok
+        case .degraded: return Theme.warning
+        case .critical: return .red
+        }
     }
 
     var body: some View {
@@ -86,9 +122,13 @@ struct MenuBarView: View {
                         .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
                 }
             }
-            // здоровье стека проверяется при открытии меню: молча зелёный,
-            // а если Ollama лежит — видно ДО того, как вопрос уйдёт в пустоту
-            .task { await checkStack() }
+            // владельцы фактов обновляются при открытии меню: Ollama — своей пробой
+            // (второго зонда во вью больше нет — Critical GLM входного круга), ночь —
+            // чтением nightly.json; иконка и строка читают их состояния через свёртку
+            .task {
+                nightly.refresh()
+                await ollama.refresh()
+            }
 
             if let pipelineStatus = sufler.pipelineStatusText {
                 Text(pipelineStatus)
@@ -222,15 +262,6 @@ struct MenuBarView: View {
     }
 
     /// Ollama доступна? Одна лёгкая проверка при открытии меню.
-    private func checkStack() async {
-        guard let url = URL(string: AppSettings.ollamaURL + "/api/tags") else { return }
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.connectionProxyDictionary = [:]
-        cfg.timeoutIntervalForRequest = 2
-        let ok = (try? await URLSession(configuration: cfg).data(from: url)) != nil
-        stackNote = ok ? "" : "Ollama не отвечает"
-    }
-
     /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории.
     private func sendQuick() {
         let q = quick.trimmingCharacters(in: .whitespaces)
