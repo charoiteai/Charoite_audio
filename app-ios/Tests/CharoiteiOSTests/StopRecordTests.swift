@@ -47,10 +47,11 @@ final class StopRecordTests: XCTestCase {
 
     func testEveryReasonHasHumanTextAndUserIsNotShownAsProblem() {
         for reason in Recorder.StopReason.allCases {
-            XCTAssertFalse(reason.text.isEmpty, "\(reason)")
+            XCTAssertFalse(reason.text(terminal: true).isEmpty, "\(reason)")
             XCTAssertFalse(reason.text(terminal: false).isEmpty, "\(reason)")
         }
-        XCTAssertNotEqual(Recorder.StopReason.callNoResume.text, Recorder.StopReason.stalled.text)
+        XCTAssertNotEqual(Recorder.StopReason.callNoResume.text(terminal: true),
+                          Recorder.StopReason.stalled.text(terminal: true))
         // терминальный стоп по кодеку называет счёт из политики, ротация — нет (Minor DS)
         let terminal = Recorder.StopReason.encodeError.text(terminal: true)
         XCTAssertTrue(terminal.contains("\(Recorder.maxEncodeErrors)"), terminal)
@@ -118,6 +119,25 @@ final class StopRecordTests: XCTestCase {
         XCTAssertNil(orphanRec?.seconds, "длительность сироты неизвестна — не выдумываем")
         XCTAssertEqual(Recorder.StopRecord.read(nextTo: queue.appendingPathComponent("closed.caf")), honest,
                        "честная причина stop() пережила спасение")
+    }
+
+    /// Публикация пары упала после манифеста, но до аудио — манифест откатывается;
+    /// аудио уже опубликовано — манифест остаётся при нём (Important DS круга 2).
+    func testUndoPublishRemovesHalfPairButKeepsCompleteOne() throws {
+        let share = base.appendingPathComponent("share")
+        try fm.createDirectory(at: share, withIntermediateDirectories: true)
+        let dest = share.appendingPathComponent("x.caf")
+        try Data("{}".utf8).write(to: Inbox.sidecar(for: dest))
+        try Data("half".utf8).write(to: dest.appendingPathExtension("part"))
+        try Data("half".utf8).write(to: Inbox.sidecar(for: dest).appendingPathExtension("part"))
+        Inbox.undoPublish(dest: dest)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: share.path), [], "половины пары не осталось")
+
+        try Data("{}".utf8).write(to: Inbox.sidecar(for: dest))
+        try Data("audio".utf8).write(to: dest)
+        Inbox.undoPublish(dest: dest)
+        XCTAssertEqual(Set(try fm.contentsOfDirectory(atPath: share.path)), ["x.caf", "x.caf.json"],
+                       "аудио опубликовано — пара целая, откатывать нечего")
     }
 
     /// Делегат финализации помечает манифест СВОЕГО файла, где бы тот ни лежал,

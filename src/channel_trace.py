@@ -36,6 +36,8 @@ from collections import Counter
 from typing import Callable, NamedTuple
 
 import live_sidecar
+import safe_write
+import transcript
 
 SIDECAR_KEY = "channel_events"
 SUMMARY_MARK = "📋 запись неполная"   # начало строки итога; все, кто ищет её в тексте, берут отсюда
@@ -402,6 +404,38 @@ def summary_line(events: list[dict]) -> str | None:
         return None
     at = last_event_at(events)
     return f"{_hm(at)} {note}" if at else note
+
+
+def tail_with_summary(text: str, events: list[dict]) -> tuple[str, int]:
+    """Единственное правило дописывания итога в хвост документа: строка итога по
+    событиям сайдкара; уже стоит — `(text, 0)`; нет — дописать через владельца
+    формата хвоста (`transcript.append_note`). Пересборка, импорт и сверка пар
+    зовут это, а не свои условия по маркеру: три писателя с тремя гейтами
+    расходились бы молча (Important DS и GLM круга 2 по №200). Идемпотентность —
+    по самой строке: новый итог по большему списку событий ложится ниже, и
+    `note_in_tail` берёт последний (контракт читателя)."""
+    line = summary_line(events)
+    if not line or line in text:
+        return text, 0
+    return transcript.append_note(text, line), 1
+
+
+def sync_tail(live: pathlib.Path, *, log=print) -> bool:
+    """Свести хвост документа с сайдкаром — с гейтом expect по снимку
+    (`safe_write.rewrite_file`): импорт и сверка пар ходят по файлам, которые в
+    этот момент может переписывать пересборка из другого процесса под своим
+    замком; чтение → запись без гейта откатывало бы её финал (Important DS и
+    GLM круга 2). Сайдкар — источник, хвост — производная: не дописалось сейчас —
+    допишет пересборка тем же правилом. True — строка дописана."""
+    events = events_of(live)
+    if not summary_line(events):
+        return False
+    try:
+        return safe_write.rewrite_file(live, lambda text: tail_with_summary(text, events),
+                                       "итог записи в хвост") > 0
+    except safe_write.LostRace as exc:
+        log(f"итог записи в хвост не дописан ({exc}) — сайдкар записан, хвост догонит пересборка")
+        return False
 
 
 def _bare_line(line: str) -> str:

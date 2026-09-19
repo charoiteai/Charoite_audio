@@ -294,11 +294,98 @@ def test_недописанные_part_компаньона_убираются_�
     assert set(removed) == {stale_audio, stale_manifest}
 
 
+def test_хвост_пишет_один_писатель_с_гейтом_expect_а_сайдкар_источник(tmp_path, monkeypatch):
+    """Important DS и GLM круга 2: сверка дописывала хвост чтением→записью без гейта,
+    а пересборка пишет тот же файл из другого процесса — её финал откатился бы.
+    Теперь строку итога пишет один `channel_trace.sync_tail` поверх
+    `safe_write.rewrite_file`; пересборка зовёт то же правило `tail_with_summary`."""
+    import rebuild_transcript
+    import safe_write
+    body = "# Встреча 2026-09-07_1902\n\n[19:02:37] Иван: начнём\n"
+    tpath = tmp_path / "2026-09-07_1902.md"
+    tpath.write_text(body, encoding="utf-8")
+    src = tmp_path / "iphone_a.caf"
+    src.write_bytes(b"\0" * 4096)
+    im.phone_manifest(src).write_text(json.dumps(_manifest("stop", "stalled")), encoding="utf-8")
+
+    # чужая запись между чтением и записью — гейт не даёт затереть её
+    real_write = safe_write.write_text
+    calls = {"n": 0}
+
+    def racing_write(path, text, *args, **kwargs):
+        if pathlib.Path(path) == tpath:                    # сайдкар пишется тем же хелпером — не он
+            calls["n"] += 1
+            if calls["n"] == 1:
+                real_write(path, body + "[19:10:00] Пётр: правка пересборки\n")   # чужой финал лёг раньше нас
+        return real_write(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(safe_write, "write_text", racing_write)
+    ev = im.note_phone_stop(src, tpath)
+    assert ev is not None, "сайдкар — источник, он записан"
+    final = tpath.read_text(encoding="utf-8")
+    assert "правка пересборки" in final, "чужой финал не откатился"
+    assert final.count(channel_trace.SUMMARY_MARK) == 1, "вторая попытка дописала итог поверх свежего текста"
+    monkeypatch.setattr(safe_write, "write_text", real_write)
+
+    # пересборка — то же правило: строка уже стоит → без дубля; итог по большему списку — ниже
+    assert rebuild_transcript._with_recording_summary(tpath, final) == final
+    text2, n = channel_trace.tail_with_summary(final, channel_trace.events_of(tpath))
+    assert (text2, n) == (final, 0)
+    more = channel_trace.events_of(tpath) + [{"label": "blackhole", "kind": "gap", "at": 1240.0,
+                                              "stopped_at": 940.0, "silent_s": 300.0}]
+    text3, n3 = channel_trace.tail_with_summary(final, more)
+    assert n3 == 1 and text3.count(channel_trace.SUMMARY_MARK) == 2
+    assert meeting_source.note_in_tail(text3) == channel_trace.summary_of(more), "читатель берёт последний итог"
+    # структурно: у строки итога в проекте один писатель — tail_with_summary
+    for name in ("scripts/import_meeting.py", "src/rebuild_transcript.py"):
+        code = (ROOT / name).read_text(encoding="utf-8")
+        assert "append_note(" not in code, name
+
+    # неоднозначный сайдкар: ничего не записано → None, лог не врёт «догнала»
+    ambiguous = tmp_path / "amb"
+    ambiguous.mkdir()
+    a1 = ambiguous / "2026-09-07_1902.md"
+    a2 = ambiguous / "2026-09-07_1902_тема.md"
+    a1.write_text(body, encoding="utf-8")
+    a2.write_text(body, encoding="utf-8")
+    live_sidecar.remember(a1, "x", "1")
+    live_sidecar.remember(a2, "x", "1")
+    if live_sidecar.sidecar_for(a1) is None:
+        assert im.note_phone_stop(src, a1) is None
+        assert channel_trace.SUMMARY_MARK not in a1.read_text(encoding="utf-8")
+
+
+def test_сверка_не_приклеивает_манифест_к_одноимённой_чужой_записи_и_не_повторяет_ручной_стоп(tmp_path, capsys):
+    """Minor DS круга 2: прямое имя в done/ — только по полю `source`; Minor GLM:
+    ручной стоп не переобсуждается каждый скан."""
+    done = tmp_path / "done"
+    done.mkdir()
+    now = time.time()
+    foreign = done / "Recording.caf"                 # одноимённая чужая запись, приехавшая раньше
+    foreign.write_bytes(b"\0" * 10)
+    im._write_json(im.imported_sidecar(foreign), {"source": "Other.caf", "transcript": str(tmp_path / "o.md")})
+    late = tmp_path / "Recording.caf.json"
+    late.write_text(json.dumps(_manifest()), encoding="utf-8")
+    assert im.reconcile_manifests(tmp_path, now=now) == []
+    assert late.exists() and not im.phone_manifest(foreign).exists(), "имя совпало, источник — нет"
+
+    manual = done / "manual.caf"
+    manual.write_bytes(b"\0" * 10)
+    t = tmp_path / "m.md"
+    t.write_text("# Встреча\n", encoding="utf-8")
+    im._write_json(im.imported_sidecar(manual), {"source": "manual.caf", "transcript": str(t)})
+    im.phone_manifest(manual).write_text(json.dumps(_manifest("stop", "user")), encoding="utf-8")
+    capsys.readouterr()
+    im.reconcile_manifests(tmp_path, now=now)
+    im.reconcile_manifests(tmp_path, now=now)
+    assert "вручную" not in capsys.readouterr().out, "решённое не переобсуждается"
+
+
 def test_словарь_причин_совпадает_с_enum_компаньона():
     """Причина — значение из Swift-enum; текст — в channel_trace. Новая причина
     без текста показалась бы человеку сырым идентификатором."""
     swift = (ROOT / "app-ios" / "Sources" / "CharoiteiOS" / "Recorder+StopRecord.swift").read_text(encoding="utf-8")
-    enum = swift[swift.index("enum StopReason"):swift.index("var text: String")]
+    enum = swift[swift.index("enum StopReason"):swift.index("func text(terminal: Bool)")]
     import re
     raws = set()
     for line in enum.splitlines():

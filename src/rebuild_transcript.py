@@ -943,15 +943,17 @@ def _with_recording_summary(live: pathlib.Path, final_text: str) -> str:
     без секции строка ушла бы в речь и дублировалась на каждом прогоне
     (Critical DS входного круга). Уже есть — не дублировать; неоднозначный
     сайдкар (две встречи в минуту) — событий нет, и об этом говорим."""
-    line = channel_trace.summary_line(channel_trace.events_of(live))
-    if not line:
+    events = channel_trace.events_of(live)
+    if not channel_trace.summary_line(events):
         if live_sidecar.sidecar_for(live) is None:
             log("сайдкар неоднозначен — итог по каналам не восстановлен")
         return final_text
-    if channel_trace.SUMMARY_MARK in final_text:
-        return final_text
-    log("итог по каналам записи восстановлен из сайдкара")
-    return transcript.append_note(final_text, line)
+    # одно правило дописывания на всех писателей хвоста — импорт, сверку пар и
+    # пересборку (Important DS и GLM круга 2 по №200)
+    text, n = channel_trace.tail_with_summary(final_text, events)
+    if n:
+        log("итог по каналам записи восстановлен из сайдкара")
+    return text
 
 
 def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:

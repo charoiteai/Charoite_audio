@@ -194,32 +194,32 @@ def phone_event_for(src: pathlib.Path) -> dict | None:
 def note_phone_stop(src: pathlib.Path, tpath: pathlib.Path) -> dict | None:
     """Причина и момент остановки записи с телефона — событием следа канала в
     сайдкар стенограммы (`channel_events`, JSON-строкой — контракт читателя
-    `channel_trace.events_of`) и СТРОКОЙ ИТОГА в хвост «Ко-мышления»: её узнают
-    все читатели хвоста — `note_in_tail` для копий без сайдкара, пересборка,
-    `meeting_source` (Important DS выходного круга); строка события в документ
-    не идёт. Формулировки здесь нет: конвертация — `channel_trace.phone_event`,
-    слова — там же. Идемпотентно: событие телефона уже в сайдкаре — ничего не
-    пишем; сверка пар зовёт это же (`reconcile_manifests`). Возвращает событие."""
+    `channel_trace.events_of`; слияние с событиями канала, не затирание). Строка
+    итога в хвост «Ко-мышления» — через единственного писателя хвоста
+    `channel_trace.sync_tail` (гейт expect: пересборка пишет тот же файл из
+    другого процесса — Important DS и GLM круга 2). Формулировки здесь нет:
+    конвертация — `channel_trace.phone_event`, слова — там же. Идемпотентно:
+    событие телефона уже в сайдкаре — ничего не пишем. Возвращает событие,
+    только если оно лежит в сайдкаре (Minor DS круга 2: возврат = «записано»)."""
     ev = phone_event_for(src)
     if ev is None:
         if phone_manifest(src).exists():
-            print("манифест записи с телефона: остановка вручную — следа не нужно")
+            print("манифест записи с телефона: остановка вручную или битый манифест — следа не нужно")
         return None
     existing = channel_trace.events_of(tpath)
     if not any(e.get("kind") == channel_trace.KIND_STOPPED for e in existing):
         if not live_sidecar.remember(tpath, channel_trace.SIDECAR_KEY,
                                      json.dumps([*existing, ev], ensure_ascii=False)):
             print("⚠️ причина остановки записи с телефона не записана: сайдкар стенограммы неоднозначен")
-    events = channel_trace.events_of(tpath) or [*existing, ev]
-    line = channel_trace.summary_line(events)
-    try:
-        text = tpath.read_text(encoding="utf-8")
-    except OSError:
-        return ev
-    if line and channel_trace.SUMMARY_MARK not in text:
-        safe_write.write_text(tpath, transcript.append_note(text, line))
+            return None
+    channel_trace.sync_tail(tpath, log=print)
     print(f"запись с телефона: {channel_trace.render_phone(ev)}")
     return ev
+
+
+PAIR_ORPHAN_AGE = 60     # манифест в done/ без аудио: аудио уже доехало и исчезло — ждать нечего,
+#                          минута только на второго уборщика; в корне папки ждём TEMP_ORPHAN_AGE —
+#                          аудио ещё может ехать (Критика 2 GLM круга 2: политика возраста именована)
 
 
 def reconcile_manifests(folder: pathlib.Path, *, now: float | None = None) -> list[pathlib.Path]:
@@ -268,7 +268,7 @@ def reconcile_manifests(folder: pathlib.Path, *, now: float | None = None) -> li
             continue
         try:
             if not owner.exists():
-                if now - p.stat().st_mtime > 60:
+                if now - p.stat().st_mtime > PAIR_ORPHAN_AGE:
                     p.unlink(missing_ok=True)
                     touched.append(p)
                 continue
@@ -278,6 +278,8 @@ def reconcile_manifests(folder: pathlib.Path, *, now: float | None = None) -> li
                 continue
             if any(e.get("kind") == channel_trace.KIND_STOPPED for e in channel_trace.events_of(tpath)):
                 continue
+            if phone_event_for(owner) is None:
+                continue        # ручной стоп или битый манифест: события не будет ни в одном проходе (Minor GLM)
             if note_phone_stop(owner, tpath) is not None:
                 touched.append(p)
                 print(f"импорт: причина остановки {owner.name} догнала стенограмму {tpath.name}")
@@ -289,8 +291,10 @@ def reconcile_manifests(folder: pathlib.Path, *, now: float | None = None) -> li
 def _done_copy_of(done: pathlib.Path, source_name: str) -> pathlib.Path | None:
     """Копия исходника в done/ по имени ДО уникализации (поле `source`
     сайдкара импорта): `X.caf` могла уехать как `X-1.caf`."""
+    # прямое имя — тоже только по полю `source`: одноимённый файл в done/ мог
+    # приехать от другой записи, и манифест лёг бы к чужой встрече (Minor DS круга 2)
     direct = done / source_name
-    if direct.is_file() and imported_sidecar(direct).exists():
+    if direct.is_file() and (_read_json(imported_sidecar(direct)) or {}).get("source") == source_name:
         return direct
     for sc in done.glob(f".*{IMPORTED_SIDECAR_SUFFIX}"):
         meta = _read_json(sc)

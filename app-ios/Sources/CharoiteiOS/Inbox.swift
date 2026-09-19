@@ -86,6 +86,18 @@ enum Inbox {
         try movePair(audio, to: dest)
     }
 
+    /// Откат неудачной публикации пары в папке обмена: временные `.part` обоих
+    /// файлов и — если аудио так и не опубликовалось — уже выложенный манифест:
+    /// он публикуется первым, и без отката в папке лежала бы половина пары
+    /// (Important DS круга 2 по №200). Аудио на месте — манифест при нём.
+    static func undoPublish(dest: URL) {
+        let fm = FileManager.default
+        let scDest = sidecar(for: dest)
+        try? fm.removeItem(at: dest.appendingPathExtension("part"))
+        try? fm.removeItem(at: scDest.appendingPathExtension("part"))
+        if !fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: scDest) }
+    }
+
     private static func removePair(_ audio: URL) {
         let fm = FileManager.default
         try? fm.removeItem(at: audio)
@@ -449,8 +461,7 @@ enum Inbox {
             } catch {
                 // continue, а не return: один сбойный файл не должен запирать
                 // всю очередь, включая сегодняшнюю встречу.
-                try? fm.removeItem(at: part)
-                try? fm.removeItem(at: scPart)     // недописанный манифест не должен висеть в синкаемой папке (Minor GLM)
+                undoPublish(dest: dest)
                 // метка — безусловно: при занятом dest иначе усыновлялся чужой файл (GLM I2 r2)
                 try? fm.removeItem(at: pendingMark(for: f))
                 stuck.append(f.lastPathComponent)

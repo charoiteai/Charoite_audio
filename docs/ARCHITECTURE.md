@@ -744,7 +744,11 @@ terminal one ("cut off 19:02 (no stop was recorded)") and the rotation
 continued, if recording resumed, in the next file"): the phone promises the
 continuation at the moment it closes the file and cannot know whether the
 restart after the call actually happened, so the wording states the observed
-fact and not the future (output round DS). The fact is consumed by
+fact and not the future (output round DS). The tail line of the document is a derivative of the sidecar with a single
+writer under a compare-and-set gate (`channel_trace.tail_with_summary` over
+`safe_write.rewrite_file`), shared by import, reconciliation and the rebuild —
+the reconciliation walks files the rebuild may be rewriting from another
+process (round 2, DS and GLM). The fact is consumed by
 reconciliation, not by a one-shot read at import (output round GLM):
 `reconcile_manifests` runs on every scan — a manifest that arrived after its
 audio had already moved to `done/` is reunited with it through the import

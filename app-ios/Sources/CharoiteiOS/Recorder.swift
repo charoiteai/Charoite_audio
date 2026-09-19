@@ -573,7 +573,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
     private func probeArmed() {
         guard armed, !isRecording else {
-            disarm(quiet: true)
+            disarm(quiet: true)       // запись уже идёт — серия продолжается, endSeries() здесь не место (Minor DS круга 2)
             return
         }
         let now = Date()
