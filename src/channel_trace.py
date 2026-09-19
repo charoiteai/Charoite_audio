@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 from collections import Counter
 from typing import Callable, NamedTuple
@@ -61,6 +62,18 @@ def _dur(seconds: float | None) -> str:
     return f"{seconds // 60} мин"
 
 
+# Фразы строк следа — одним списком для писателя (`render`) и классификатора
+# (`is_trace_line`): второе независимое знание о форме строки расходилось бы
+# молча при третьем канале или переформулировке (Minor DS круга 2 по №317)
+PHRASE_NOT_CAPTURED = "не захвачен с начала записи"
+PHRASE_LOST = "пропал ("
+PHRASE_BACK = "снова пишется с"
+PHRASE_GAP = ": пробел в записи"
+_TRACE_RE = re.compile(
+    r"^(?:⚠️|✅) .+?(?:" + "|".join(re.escape(p) for p in
+                                  (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK, PHRASE_GAP)) + ")")
+
+
 def render(ev) -> str | None:
     """Человеческая строка события; None — строки нет (закрытие эпизода идёт
     в итог). Формулировка — по каналу и фазе: «пропал» только о канале, который
@@ -69,15 +82,15 @@ def render(ev) -> str | None:
     absent = ABSENT.get(ev.label, "без канала")
     if ev.kind == "lost":
         if not ev.died:
-            return f"⚠️ {name} не захвачен с начала записи — {absent}: {ev.reason}"
+            return f"⚠️ {name} {PHRASE_NOT_CAPTURED} — {absent}: {ev.reason}"
         # момент крика подставлять вместо границы нельзя — он позже на 66–96 с;
         # без кадров граница неизвестна и так и говорится (Minor DS)
         when = _hm(ev.stopped_at) if ev.stopped_at else "время неизвестно"
-        return f"⚠️ {name} пропал ({when}) — дальше запись {absent}"
+        return f"⚠️ {name} {PHRASE_LOST}{when}) — дальше запись {absent}"
     if ev.kind == "back":
-        return f"✅ {name} снова пишется с {_hm(ev.at)}; {absent} было {_dur(ev.silent_s)}"
+        return f"✅ {name} {PHRASE_BACK} {_hm(ev.at)}; {absent} было {_dur(ev.silent_s)}"
     if ev.kind == "gap":
-        return (f"⚠️ {name}: пробел в записи {_hm(ev.stopped_at)}–{_hm(ev.at)} "
+        return (f"⚠️ {name}{PHRASE_GAP} {_hm(ev.stopped_at)}–{_hm(ev.at)} "
                 f"({_dur(ev.silent_s)}), поток перезапущен")
     return None
 
@@ -288,18 +301,31 @@ def summary_line(events: list[dict]) -> str | None:
     return f"{_hm(at)} {note}" if at else note
 
 
-_TRACE_PREFIXES = tuple(f"{sign} {name}" for name in NAMES.values() for sign in ("⚠️", "✅"))
+def _bare_line(line: str) -> str:
+    """Строка хвоста без маркера цитаты и штампа «HH:MM »."""
+    body = line.strip()
+    if body.startswith("> "):
+        body = body[2:].strip()
+    if len(body) > 6 and body[2] == ":" and body[:2].isdigit() and body[3:5].isdigit():
+        body = body[5:].strip()
+    return body
 
 
 def is_trace_line(line: str) -> bool:
     """Строка хвоста — след записи (событие канала из `render` или итог
     `summary_of`), а не мысль модели. Единственный писатель этих строк — этот
-    модуль, поэтому и правило «что считать следом» живёт здесь: потребители
-    (извлечение графа, блок ко-мышления в разборе) не различают их по
-    префиксам сами."""
-    body = line.strip()
-    if body.startswith("> "):
-        body = body[2:].strip()
-    if len(body) > 6 and body[2] == ":" and body[:2].isdigit() and body[3:5].isdigit():
-        body = body[5:].strip()          # «HH:MM » — штамп строки хвоста
-    return body.startswith(SUMMARY_MARK) or body.startswith(_TRACE_PREFIXES)
+    модуль, поэтому и правило «что считать следом» живёт здесь и строится из
+    тех же фраз, что рендер: потребители (извлечение графа, блок ко-мышления
+    в разборе) не различают их по префиксам сами."""
+    body = _bare_line(line)
+    return body.startswith(SUMMARY_MARK) or bool(_TRACE_RE.match(body))
+
+
+def note_of_text(text: str) -> str | None:
+    """Оговорка из уже записанного хвоста стенограммы (копия в архиве, где
+    сайдкара нет): текст строки итога от маркера до конца; нет строки — None."""
+    for line in text.splitlines():
+        i = line.find(SUMMARY_MARK)
+        if i >= 0:
+            return line[i:].strip()
+    return None

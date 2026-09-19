@@ -700,9 +700,14 @@ def _derive_extras(folder: pathlib.Path):
         # затирались цитатами ко-мышления при каждом архивировании, и паспорт
         # переставал совпадать с диском (Critical DS входного круга по №309)
         if notes and not (folder / "Тезисы.md").exists():
-            safe_write.write_text(folder / "Тезисы.md",
+            import channel_trace
+            import meeting_source
+            # оговорка о неполной записи — из хвоста копии (сайдкара в архиве нет),
+            # механической строкой, как у остальных производных (Important DS круга 2 по №317)
+            safe_write.write_text(folder / "Тезисы.md", meeting_source.with_note(
                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли · 🔬 переоценка)\n\n"
-                + "\n".join(f"- {n}" for n in notes) + "\n")
+                + "\n".join(f"- {n}" for n in notes) + "\n",
+                channel_trace.note_of_text(tr.read_text(encoding="utf-8"))))
 
     qa: list[str] = []
     rb = folder / "Разбор.md"

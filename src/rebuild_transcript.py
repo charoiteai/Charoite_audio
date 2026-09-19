@@ -987,12 +987,6 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _speech(text: str) -> str:
-    """Речь источника — одним правилом на всех писателей (без H1 и без
-    «Ко-мышления»): `transcript.speech_of`, см. там про ретитл (№309)."""
-    return transcript.speech_of(text)
-
-
 def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
     """Хеш машинных минуток — в live.json, чтобы следующая пересборка тоже
     видела в них автотекст, а не правку руками. Зовётся из rebuild() после

@@ -114,13 +114,13 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     # со штампом `bare` после наката темы сайдкара нет, и хеш расходился с
     # graph_updater (Critical DS и GLM выходного круга)
     source = meeting_source.of(f, text)
-    speech_sha = source.sha()
+    source_sha = source.sha()          # речь + оговорка (Minor GLM круга 2: не «хеш речи»)
     meta = live_sidecar.read(f) or {}
     made: list[str] = []
     skipped: list[str] = []
 
     mpath = meeting_stamp.derivative_path(f, "minutes", graph)
-    state = live_sidecar.derivative_state(mpath, meta, "minutes", speech_sha)
+    state = live_sidecar.derivative_state(mpath, meta, "minutes", source_sha)
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         outcome = rt.finalize_minutes(f, text, meta, cfg, rt.minutes_names(meta))
         rt.record_minutes_passport(f, mpath, outcome, text, cfg)
@@ -132,13 +132,13 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
         skipped.append(f"минутки {state}")
 
     dpath = meeting_stamp.derivative_path(f, "debrief", graph)
-    state = live_sidecar.derivative_state(dpath, meta, "debrief", speech_sha)
+    state = live_sidecar.derivative_state(dpath, meta, "debrief", source_sha)
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
                        "Не выдумывай факты.", source.speech, DEBRIEF_PROMPT, note=source.recording_note)
         out = meeting_source.with_note(out, source.recording_note) if out else out
         _built(made, skipped, "разбор", out,
-               lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", speech_sha))
+               lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", source_sha))
     else:
         skipped.append(f"разбор {state}")
 
@@ -151,14 +151,17 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
         if cothinking_notes(text) and tpath.exists():
             skipped.append("тезисы живые")        # файл собрал архив из строк ко-мышления
         else:
-            state = live_sidecar.derivative_state(tpath, meta, "theses", speech_sha)
+            state = live_sidecar.derivative_state(tpath, meta, "theses", source_sha)
             if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
                 out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
                           source.speech, THESES_PROMPT, note=source.recording_note)
+                # строка о неполной записи — и у тезисов: паспорт говорит «собрано по
+                # источнику с оговоркой», документ обязан это показывать (Important DS круга 2)
+                out = meeting_source.with_note(out, source.recording_note) if out else out
                 _built(made, skipped, "тезисы", out,
                        lambda: _write_derivative(f, tpath, "theses",
                                                  "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
-                                                 + out + "\n", speech_sha))
+                                                 + out + "\n", source_sha))
             else:
                 skipped.append(f"тезисы {state}")
     parts = []
@@ -197,7 +200,7 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
 
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                      speech_sha: str) -> bool:
+                      source_sha: str) -> bool:
     """Записать производную и выдать ей паспорт. Прежняя версия — в `.prev/`
     рядом со стенограммой (`prev_path`): уверенная, но неверная генерация не
     должна быть невозвратной (как у минуток)."""
@@ -215,7 +218,7 @@ def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: s
     if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
         print(f"ретро: {path.name} изменился под рукой — не перезаписываю", file=sys.stderr)
         return False
-    if not live_sidecar.attest(live, kind, body, speech_sha):
+    if not live_sidecar.attest(live, kind, body, source_sha):
         print(f"ретро: паспорт {kind} не записан — следующая пересборка сочтёт файл чужим", file=sys.stderr)
     return True
 

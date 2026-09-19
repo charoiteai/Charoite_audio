@@ -41,7 +41,8 @@ def test_speech_of_ignores_the_title_and_the_notes_tail():
     speech = SPEECH.rstrip("\n")
     assert transcript.speech_of(bare) == transcript.speech_of(titled) == transcript.speech_of(with_notes) == speech
     assert transcript.speech_of(SPEECH) == speech, "без заголовка — весь текст"
-    assert rebuild_transcript._speech(with_notes) == speech, "пересборка живёт тем же правилом"
+    assert "_speech(" not in (REPO / "src" / "rebuild_transcript.py").read_text(encoding="utf-8"), \
+        "у пересборки нет своего правила речи — только transcript.speech_of через MeetingSource"
     # хвостовые переводы строк — не речь: первая же заметка ко-мышления или след
     # канала (№234) иначе сдвигали бы хеш источника на один «\n»
     assert transcript.speech_of(titled + "\n\n") == transcript.speech_of(titled + transcript.NOTES_HEAD + "\n> 10:22 📌 x\n")

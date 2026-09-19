@@ -84,8 +84,9 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
 ## 会后流水线（src/graph_updater.py）
 
 **派生物有护照。** 纪要、复盘和要点都派生自转写稿，每一个都在 `.md.live.json`
-边车里保存一对键：最后一次机器写入的字节哈希（`<kind>_sha256`）和来源语音的哈希
-（`<kind>_source_sha256`）。语音不含标题和「共同思考」尾部（`transcript.speech_of`）：
+边车里保存一对键：最后一次机器写入的字节哈希（`<kind>_sha256`）和来源的哈希
+（`<kind>_source_sha256`）——发言加上「录音不完整」的说明（`meeting_source.MeetingSource`，
+见下文 №316/№317 段落）。语音不含标题和「共同思考」尾部（`transcript.speech_of`）：
 重命名主题会改写首行，带标题的哈希让纪要在第一次重命名后就成了「由另一段语音生成」。
 新鲜度只在一处决定——`live_sidecar.derivative_state`：没有文件——生成；机器所有且
 语音相同——不调用模型；机器所有且语音变了——重建（旧版本进 `.prev/`）；字节非机器

@@ -293,10 +293,11 @@ code path is shared.
 **A derivative has a passport.** Minutes, debrief and theses derive from the
 transcript, and each keeps a pair of keys in the `.md.live.json` sidecar: the
 bytes of the last machine write (`<kind>_sha256`) and the hash of the source
-speech (`<kind>_source_sha256`). Speech excludes the title and the
-"Co-thinking" tail (`transcript.speech_of`): a retitle rewrites the first
-line, and a hash with the title made the minutes "built from other speech"
-on the very first retitle. Freshness is decided in one place,
+(`<kind>_source_sha256`) — speech plus the incomplete-recording note
+(`meeting_source.MeetingSource`, see the №316/№317 paragraph below). Speech
+excludes the title and the "Co-thinking" tail (`transcript.speech_of`): a
+retitle rewrites the first line, and a hash with the title made the minutes
+"built from other speech" on the very first retitle. Freshness is decided in one place,
 `live_sidecar.derivative_state`: no file — build; machine-owned and same
 speech — do not call the model; machine-owned and speech changed — rebuild
 (previous version in `.prev/`); bytes not machine — edited by a human, leave

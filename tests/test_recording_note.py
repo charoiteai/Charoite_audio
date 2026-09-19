@@ -286,15 +286,20 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
 
     gu = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
     block = gu[gu.index("source = meeting_source.of(tpath, file_text)"):gu.index("Составь разбор строго по разделам")]
-    assert "speech_sha = source.sha()" in block
-    assert (block.index("debrief_excerpt(source.speech)") < block.index("<ко_мышление>")
+    assert "source_sha = source.sha()" in block and "speech_sha" not in gu, "хеш источника — не «хеш речи» (GLM круга 2)"
+    assert (block.index("debrief_excerpt(source.speech, limit=speech_limit") < block.index("+ cothinking_block")
             < block.index("+ minutes_block") < block.index("llm_client.recording_block(source.recording_note)"))
+    assert "speech_limit = max(4000, DEBRIEF_BODY_CHARS - len(minutes_block) - len(cothinking_block))" in block, \
+        "один бюджет на тело промпта (DS круга 2)"
     assert "debrief_excerpt(context)" not in gu, "разбор больше не берёт окно от конца ФАЙЛА"
+    assert gu.count("meeting_source.minutes_block(") == 2, "минутки в оба промпта — одним хелпером"
+    assert 'context += "\\n\\n[МИНУТКИ]\\n" + minutes_p.read_text' not in gu, "извлечение не клеит сырые минутки (Critical DS круга 2)"
 
     rf = (ROOT / "src" / "retro_fill.py").read_text(encoding="utf-8")
     gen = rf[rf.index("def gen("):rf.index("\ndef ", rf.index("def gen(") + 1)]
     assert gen.index("transcript[:24000]") < gen.index("client.recording_block(note)") < gen.index("+ task")
-    assert rf.count("note=source.recording_note") == 2 and "speech_sha = source.sha()" in rf
+    assert rf.count("note=source.recording_note") == 2 and "source_sha = source.sha()" in rf and "speech_sha" not in rf
+    assert rf.count("meeting_source.with_note(out, source.recording_note)") == 2, "строка итога — у разбора И тезисов (DS круга 2)"
     assert "meeting_source.of(f, text)" in rf and "meeting_source.of(f, text, bare)" not in rf, \
         "источник — по прямому сайдкару, штамп bare читателю не передаётся (Critical DS/GLM круга 1)"
 
@@ -308,11 +313,10 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     fin = rt[rt.index("def finalize_minutes("):rt.index("def _fallback_restamp(")]
     assert "source = meeting_source.of(live, final_text)" in fin and "source.matches(" in fin
     assert "meeting_source.of(live, edited).matches(" in rt, "второй читатель паспорта — тем же источником"
-    assert "_sha(_speech(" not in rt, "хеш голой речи как источник производной — прохода мимо MeetingSource нет"
+    assert "_speech(" not in rt, "хеш голой речи как источник производной — прохода мимо MeetingSource нет"
     gu2 = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
     assert "debrief = meeting_source.with_note(debrief, source.recording_note)" in gu2, "живой разбор — со строкой итога"
     assert "context = meeting_source.content_of(" in gu2, "извлечение — по содержанию без следа записи"
-    assert "_capped(minutes_p2.read_text(encoding='utf-8'), MINUTES_IN_DEBRIEF)" in gu2
     assert "LLM(cfg).minutes(speech, recording_note=source.recording_note)" in fin
     assert "fact_check.annotate(doc, source.canon())" in fin and "meeting_source.with_note(doc, source.recording_note)" in fin
     passport = rt[rt.index("def record_minutes_passport("):rt.index("\ndef ", rt.index("def record_minutes_passport(") + 1)]
@@ -369,3 +373,86 @@ def test_with_note_dedups_by_the_canonical_text_not_the_mark():
     out = meeting_source.with_note(paraphrased, NOTE)
     assert out.count(NOTE) == 1 and out.count(channel_trace.SUMMARY_MARK) == 2
     assert meeting_source.with_note(out, NOTE) == out
+
+
+@pytest.mark.parametrize("kind,label,died", [(k, lbl, d) for k in ("lost", "back", "gap")
+                                             for lbl in ("blackhole", "mic") for d in (True, False)])
+def test_every_rendered_trace_line_is_recognised_as_trace(kind, label, died):
+    """Таблица kind × label × died: правило «что считать следом» строится из тех
+    же фраз, что рендер, и любая переформулировка ломает этот тест, а не молча
+    меняет извлечение (критика GLM круга 2)."""
+    import types
+    ev = types.SimpleNamespace(label=label, kind=kind, at=BASE + 300, stopped_at=BASE, silent_s=300.0,
+                               died=died, cause="hung", reason="нет кадров")
+    line = channel_trace.render(ev)
+    assert line is not None
+    assert channel_trace.is_trace_line(f"> 14:32 {line}") and channel_trace.is_trace_line(line)
+    assert channel_trace.is_trace_line("> 15:00 " + NOTE)
+    for thought in ("> 10:30 📌 КТ: смета", "10:31 💭 мысль", "⚠️ подсказки отстают", "**Инга** [10:21]:", "⏮ уже обсуждалось"):
+        assert not channel_trace.is_trace_line(thought), thought
+
+
+def test_content_filter_touches_only_the_tail():
+    """Important DS круга 2: строка речи, начинающаяся как след (правка руками),
+    не должна выпадать из извлечения — фильтр работает по хвосту."""
+    speech_line = "⚠️ ваш микрофон пропал (10:31) — сказал участник вслух"
+    text = ("# Встреча\n**Инга** [10:21]:\n" + speech_line + "\n" + transcript.NOTES_HEAD + transcript.NOTES_SUFFIX
+            + "\n> 10:32 ⚠️ ваш микрофон пропал (10:31) — дальше запись без вашего голоса\n")
+    content = meeting_source.content_of(text)
+    assert speech_line in content and "дальше запись без вашего голоса" not in content
+
+
+def test_minutes_block_for_prompts_drops_the_note_and_caps(tmp_path):
+    """Critical DS круга 2: минутки клеились к контексту извлечения сырыми —
+    строка итога, дописанная в документ механически, возвращалась темой."""
+    mpath = tmp_path / "2026-09-02_1021_minutes.md"
+    assert meeting_source.minutes_block(mpath, 6000) == ""
+    body = "# Минутки\n## Решения\n- смета до пятого\n\n" + NOTE + "\n"
+    mpath.write_text(body, encoding="utf-8")
+    block = meeting_source.minutes_block(mpath, 6000)
+    assert block.startswith("[МИНУТКИ]\n") and "смета до пятого" in block
+    assert NOTE in body and channel_trace.SUMMARY_MARK not in block, "след записи — не содержание"
+    mpath.write_text("# Минутки\n" + "- пункт\n" * 2000, encoding="utf-8")
+    capped = meeting_source.minutes_block(mpath, 600)
+    assert len(capped) < 800 and "середина минуток опущена" in capped
+
+
+def test_the_edited_transcript_path_matches_the_passport_with_the_note(tmp_path, monkeypatch):
+    """Читатель паспорта в ветке правленой стенограммы (GLM Critical круга 1):
+    паспорт с оговоркой, правка не тронула речь — «ничего не меняю», без _finish."""
+    monkeypatch.setattr(rebuild_transcript, "ROOT", tmp_path)
+    monkeypatch.setattr(rebuild_transcript, "wait_recording", lambda *a, **k: None)
+    (tmp_path / "logs").mkdir()
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-09-03_1200.md"
+    edited = "# Встреча\n**Анна** [12:00]:\nправленый руками текст\n"
+    live.write_text(edited, encoding="utf-8")
+    assert live_sidecar.remember(live, channel_trace.SIDECAR_KEY, json.dumps(EVENTS))
+    src = meeting_source.of(live, edited)
+    assert src.recording_note == NOTE
+    live_sidecar.merge(live, {"transcript_sha256": live_sidecar.sha("машинный текст"),
+                              "minutes_source_sha256": src.sha()})
+    monkeypatch.setattr(rebuild_transcript, "_finish", lambda *a, **k: pytest.fail("паспорт совпал — _finish не зовут"))
+    assert rebuild_transcript.rebuild(live, {"audio": {"samplerate": 16000}, "log": {}}) == live
+    # паспорт без оговорки (до №317) — путь «пересобираю по правленому тексту»
+    live_sidecar.merge(live, {"minutes_source_sha256": live_sidecar.sha(src.speech)})
+    called = []
+    monkeypatch.setattr(rebuild_transcript, "_finish", lambda *a, **k: called.append(a))
+    assert rebuild_transcript.rebuild(live, {"audio": {"samplerate": 16000}, "log": {}}) == live
+    assert len(called) == 1
+
+
+def test_theses_writers_add_the_note_line(tmp_path):
+    """Important DS круга 2: паспорт тезисов говорит «собрано с оговоркой», а
+    документ строки не имел; у живых тезисов архива оговорка — из хвоста копии."""
+    import meeting_archive
+    folder = tmp_path / "2026-09-02_1021 — Смета"
+    folder.mkdir()
+    (folder / "Стенограмма.md").write_text(
+        "# Встреча\nречь\n" + transcript.NOTES_HEAD + transcript.NOTES_SUFFIX
+        + "\n> 10:30 📌 КТ: смета\n> 11:00 " + NOTE + "\n", encoding="utf-8")
+    meeting_archive._derive_extras(folder)
+    theses = (folder / "Тезисы.md").read_text(encoding="utf-8")
+    assert "- 10:30 📌 КТ: смета" in theses and theses.count(NOTE) == 1
+    assert channel_trace.note_of_text("нет строки\n") is None

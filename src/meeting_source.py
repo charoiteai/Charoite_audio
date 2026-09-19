@@ -64,16 +64,6 @@ def of(live: pathlib.Path, text: str) -> MeetingSource:
     (`ChannelTrace`) — у читателей его нет."""
     return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live))
 
-
-def content_of(text: str) -> str:
-    """Содержание встречи для ИЗВЛЕЧЕНИЯ (узлы графа, факты памяти): речь и
-    живые тезисы контура, без следа записи в хвосте — строк события канала и
-    итога «запись неполная». Факт о записи не тема встречи и не факт памяти
-    (Important DS выходного круга по №317)."""
-    return "\n".join(line for line in text.splitlines()
-                     if not channel_trace.is_trace_line(line)) + ("\n" if text.endswith("\n") else "")
-
-
 def live(speech: str, note: str | None) -> MeetingSource:
     """Источник живого пути: речь из `Transcript.full()`, оговорка из
     `ChannelTrace.summary()` того же процесса."""
@@ -90,3 +80,45 @@ def with_note(doc: str, note: str | None) -> str:
     if not note or note in doc:
         return doc
     return doc.rstrip() + "\n\n" + note + "\n"
+
+
+def content_of(text: str) -> str:
+    """Содержание встречи для ИЗВЛЕЧЕНИЯ (узлы графа, факты памяти): речь и
+    живые тезисы контура, без следа записи в хвосте — строк события канала и
+    итога «запись неполная». Факт о записи не тема встречи и не факт памяти
+    (Important DS выходного круга по №317). Фильтр — только по хвосту
+    «Ко-мышления»: границу речь/хвост владеет `transcript`, строка речи с
+    похожим началом (правка руками) не трогается (Important DS круга 2)."""
+    cut = text.find(transcript.NOTES_HEAD)
+    if cut < 0:
+        return text
+    return text[:cut] + without_trace(text[cut:])
+
+
+def without_trace(text: str) -> str:
+    """Текст без строк следа записи — для документов, где речи нет (минутки в
+    промпт): строка итога дописана в них механически и в извлечении читалась
+    бы как тема встречи."""
+    kept = "\n".join(line for line in text.splitlines() if not channel_trace.is_trace_line(line))
+    return kept + ("\n" if text.endswith("\n") else "")
+
+
+def capped(text: str, limit: int, what: str = "документа") -> str:
+    """Документ в промпт с потолком: голова и хвост с честной пометкой, как у
+    `debrief_excerpt`. Потолок — свойство «документ в промпте», не места вызова
+    (Minor GLM круга 2)."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return text[:half] + f"\n\n[… середина {what} опущена …]\n\n" + text[-half:]
+
+
+def minutes_block(mpath: pathlib.Path, limit: int) -> str:
+    """Минутки для промпта (извлечение графа, разбор): один хелпер ставит метку
+    `[МИНУТКИ]`, снимает след записи (строка итога дописана в документ
+    механически и в извлечении читалась бы как тема — Critical DS круга 2) и
+    держит потолок. Файла нет — пусто."""
+    if not mpath.exists():
+        return ""
+    body = capped(without_trace(mpath.read_text(encoding="utf-8")), limit, "минуток")
+    return "[МИНУТКИ]\n" + body + "\n\n"
