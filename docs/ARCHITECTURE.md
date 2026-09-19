@@ -894,7 +894,12 @@ whatever code and prose (docs, configs) call by path, and every one of them
 must exist — a hint to the human or a README step must not lie after a move,
 but a library named by a hint is not an entry point. Mentions are read from
 code, not prose: python string literals via the AST without docstrings, Swift
-and shell without comments; the walk is over files under git only. The gate is `tests/test_import_boundaries.py`,
+and shell without comments. One inventory feeds every measurement: one walk
+over the files under git, one table that classifies each file (code, prose,
+tests, dated reviews, out of scope), one read and one parse per file — a file
+that fails to parse is a listed problem, never a traceback and never a silent
+skip; tests are shown as callers but do not make an entry point, dated review
+snapshots describe the code of their day and are not checked. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared
