@@ -45,56 +45,56 @@
 - `tier3` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 - `tier3` (graph) → `nli` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 
-## Точки входа — исполняемые файлы (кто зовёт из кода; тесты — справочно)
+## Точки входа — исполняемые файлы (кто зовёт из кода)
 
-- `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh; тесты: tests/test_import_boundaries.py, tests/test_workflows.py
+- `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh
 - `scripts/bench_extract.py` ← ручной запуск: бенчмарк извлечения, ручной прогон
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон
 - `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками
-- `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; тесты: tests/test_runtime_lock.py
+- `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh
 - `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml
 - `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml
-- `scripts/cloud_review.py` ← src/graph_updater.py; тесты: tests/test_cloud_isolation.py, tests/test_cloud_review_worker.py
+- `scripts/cloud_review.py` ← src/graph_updater.py
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками
 - `scripts/dedup_graph.py` ← scripts/nightly.sh
-- `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; тесты: tests/test_live_segments.py
-- `scripts/doctor.py` ← src/deps.py; тесты: tests/test_documented_commands.py, tests/test_get_models.py, tests/test_import_boundaries.py, tests/test_model_lease.py
+- `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон
+- `scripts/doctor.py` ← src/deps.py
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками
-- `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; тесты: tests/test_lifecycle_consistency.py
-- `scripts/get_models.py` ← app/Sources/CharoiteApp/Services/ModelPullService.swift, scripts/diar_bench.py, scripts/doctor.py, src/diarize_live.py, src/stt.py; тесты: tests/test_get_models.py, tests/test_import_boundaries.py, tests/test_live_segments.py, tests/test_no_voice_biometrics.py
+- `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift
+- `scripts/get_models.py` ← app/Sources/CharoiteApp/Services/ModelPullService.swift, scripts/diar_bench.py, scripts/doctor.py, src/diarize_live.py, src/stt.py
 - `scripts/graph_doctor.py` ← scripts/nightly.sh
 - `scripts/graph_search_index.py` ← scripts/nightly.sh
-- `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; тесты: tests/test_config_loader.py, tests/test_daemon_import_prune.py, tests/test_derivative_passport.py, tests/test_exit_codes.py, tests/test_import_meeting.py, tests/test_phone_stop_reason.py
+- `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py
 - `scripts/layout_map.py` ← ручной запуск: сторож раскладки: ручной прогон и pytest — точкой входа продукта не является
-- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; тесты: tests/test_runtime_lock.py
+- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml
-- `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; тесты: tests/test_documented_commands.py, tests/test_import_boundaries.py, tests/test_memory_bench_optional.py
-- `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; тесты: tests/test_merge_graphs.py
-- `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; тесты: tests/test_graph_hygiene.py
+- `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh
+- `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками
+- `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками
 - `scripts/morning_brief.py` ← scripts/nightly.sh
 - `scripts/mutate_check.py` ← ручной запуск: мутационная проверка тестов, ручной прогон без места в CI (№67)
-- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; тесты: tests/test_dedup_graph.py, tests/test_graph_audit_fixes.py, tests/test_import_boundaries.py, tests/test_nightly_exit.py, tests/test_tier3_safety.py, tests/test_wait_for_idle.py
-- `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; тесты: tests/test_cloud_effort.py, tests/test_cloud_isolation.py, tests/test_config_loader.py, tests/test_privacy_defaults.py
-- `scripts/nightly_dossier.py` ← scripts/nightly.sh; тесты: tests/test_config_loader.py, tests/test_dossier.py
-- `scripts/nightly_dossier_review.py` ← scripts/nightly.sh; тесты: tests/test_cloud_effort.py, tests/test_cloud_isolation.py, tests/test_config_loader.py, tests/test_privacy_defaults.py
+- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift
+- `scripts/nightly_claude_cores.py` ← scripts/nightly.sh
+- `scripts/nightly_dossier.py` ← scripts/nightly.sh
+- `scripts/nightly_dossier_review.py` ← scripts/nightly.sh
 - `scripts/notarize.sh` ← .github/workflows/release-app.yml
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift
-- `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; тесты: tests/test_lifecycle_consistency.py, tests/test_summary_passport.py
-- `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; тесты: tests/test_update_manifest_signing.py
+- `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift
+- `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh
-- `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; тесты: tests/test_audio_capture.py, tests/test_audit_0_46_мелочи.py, tests/test_channel_labels.py, tests/test_channel_trace.py, tests/test_cloud_effort.py, tests/test_cloud_isolation.py, tests/test_daemon_import_prune.py, tests/test_expand_protocol.py, tests/test_file_locks.py, tests/test_get_models.py, tests/test_import_boundaries.py, tests/test_live_loop_arbiter.py, tests/test_mcp_server.py, tests/test_meeting_stamp_contract.py, tests/test_orphan_recovery.py, tests/test_privacy_defaults.py, tests/test_private_permissions.py, tests/test_question_filter.py, tests/test_recording_note.py, tests/test_stt_loop_shadowing.py, tests/test_stt_runtime.py, tests/test_toggle_status.py
-- `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; тесты: tests/test_config_loader.py
-- `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift; тесты: tests/test_config_loader.py
-- `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; тесты: tests/test_config_loader.py, tests/test_diary.py, tests/test_mutate_check.py, tests/test_private_permissions.py
-- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/transcribe_file.py; тесты: tests/test_cloud_effort.py, tests/test_cloud_isolation.py, tests/test_derivative_passport.py, tests/test_exit_codes.py, tests/test_install_profile.py, tests/test_privacy_defaults.py, tests/test_private_permissions.py, tests/test_recording_note.py, tests/test_tier3_safety.py
-- `src/main.py` ← scripts/doctor.py; тесты: tests/test_private_permissions.py
-- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; тесты: tests/test_private_permissions.py, tests/test_recording_note.py
-- `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; тесты: tests/test_config_loader.py, tests/test_recording_note.py, tests/test_summary_passport.py
-- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; тесты: tests/test_channel_labels.py, tests/test_derivative_passport.py, tests/test_exit_codes.py, tests/test_meeting_stamp_contract.py, tests/test_orphan_recovery.py, tests/test_phone_stop_reason.py, tests/test_private_permissions.py, tests/test_rebuild_no_duplicate.py, tests/test_recording_note.py
-- `src/retro_fill.py` ← scripts/import_meeting.py; тесты: tests/test_config_loader.py, tests/test_derivative_passport.py, tests/test_recording_note.py, tests/test_summary_passport.py
-- `src/transcribe_file.py` ← scripts/import_meeting.py; тесты: tests/test_config_loader.py, tests/test_private_permissions.py
+- `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift
+- `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом
+- `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift
+- `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py
+- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/transcribe_file.py
+- `src/main.py` ← scripts/doctor.py
+- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория
+- `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками
+- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py
+- `src/retro_fill.py` ← scripts/import_meeting.py
+- `src/transcribe_file.py` ← scripts/import_meeting.py
 - `src/voice_memos_bridge.py` ← ручной запуск: мост Диктофона — отдельный процесс, поднимается руками до №210
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
@@ -117,7 +117,7 @@
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
 - `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
 - `scripts/fix_action_items.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `scripts/forget_meeting.py` ← CHANGELOG.md, PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
+- `scripts/forget_meeting.py` ← PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
 - `scripts/get_models.py` ← PRIVACY.md, README.md, ROADMAP.md, SECURITY.md, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/ROADMAP.md, docs/ru/SECURITY.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/ROADMAP.md, docs/zh/SECURITY.md
 - `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md
@@ -158,7 +158,7 @@
 - `src/mcp_server.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/meeting_archive.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/nli.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, pyproject.toml
-- `src/privacy.py` ← CHANGELOG.md, MANIFESTO.md, PRIVACY.md, SECURITY.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/PRIVACY.md, docs/ru/SECURITY.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/PRIVACY.md, docs/zh/SECURITY.md
+- `src/privacy.py` ← MANIFESTO.md, PRIVACY.md, SECURITY.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/PRIVACY.md, docs/ru/SECURITY.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/PRIVACY.md, docs/zh/SECURITY.md
 - `src/rebuild_transcript.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/USER_GUIDE.md
 - `src/redirects.py` ← docs/ru/ARCHITECTURE.md
 - `src/speaker_names.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
@@ -166,16 +166,18 @@
 - `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/transcript.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 
-## Голые имена без цели в репозитории (чужие или порождаемые скрипты)
+## Голые имена без цели в репозитории (чужие или порождаемые скрипты; не гейт)
 
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
 ## Область замера (таблица KINDS сторожа)
 
 - `docs/design/layout.md` — out: карта — производная замера, не источник
-- `tests/` — test: тесты зовут скрипты подпроцессом: связь видна, точкой входа не делает
-- `app/Tests/` — out: Swift-тесты приложения
+- `tests/` — out: тесты строят синтетические деревья: пути в них — не факты о репозитории
+- `app/Tests/` — out: Swift-тесты приложения: те же выдуманные пути
 - `docs/reviews/` — history: датированные ревью описывают код своего дня — после переезда не правятся
+- `devlog/_posts/` — history: датированные посты — снимок своего дня
+- `CHANGELOG.md` — history: релизные заметки — снимок своего дня, записи о вышедших версиях не правятся
 - `app-ios/` — out: телефон python и shell не запускает — пути там только в тексте
 - `app-android/` — out: телефон python и shell не запускает — пути там только в тексте
 - `app/build/` — out: сборка

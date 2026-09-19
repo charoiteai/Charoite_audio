@@ -898,8 +898,10 @@ and shell without comments. One inventory feeds every measurement: one walk
 over the files under git, one table that classifies each file (code, prose,
 tests, dated reviews, out of scope), one read and one parse per file — a file
 that fails to parse is a listed problem, never a traceback and never a silent
-skip; tests are shown as callers but do not make an entry point, dated review
-snapshots describe the code of their day and are not checked. The gate is `tests/test_import_boundaries.py`,
+skip; anything executable by the target patterns is code by construction, tests
+are outside the measurement (they build synthetic trees), and dated snapshots
+(reviews, release notes, posts) describe the code of their day and are not
+checked. `--regen` never writes an artifact the loader would reject. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared

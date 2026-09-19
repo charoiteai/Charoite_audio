@@ -19,6 +19,10 @@
 один `SyntaxError` (крах, пропуск, строка), битый JSON артефакта трейсбеком,
 неоднозначное голое имя терялось молча, точка конца предложения прятала путь.
 Теперь один инвентарь (`inventory`) и одна таблица видов (`KINDS`).
+Круг 4: две таблицы об одном объекте не сверены (корневой `x.sh` — цель по
+ENTRY_TARGETS и `out` по KINDS), `--regen` писал артефакт с пустой карточкой,
+который загрузка отвергает. Теперь цель — всегда код, а сверка таблиц и круг
+запись → чтение проверяются здесь над корпусом, не примерами.
 """
 from __future__ import annotations
 
@@ -80,6 +84,45 @@ def test_entry_points_are_executables_not_mentions(world):
     assert "replace.sh" in scanned.loose, "порождаемый скрипт обновления — голое имя без цели, не проблема"
 
 
+def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path):
+    """Сверка таблиц сторожа над корпусом, не примерами (Как чинить DS круга 4):
+    всё, что ENTRY_TARGETS считает исполняемым, инвентарь читает как код;
+    каждое правило KINDS, кроме `out`, действует хотя бы на один файл дерева
+    (правило, которое ни на что не действует, — память автора); что записал
+    `--regen`, то читает `load_layout`."""
+    layout, graph, _, _ = world
+    inv = lm.inventory()
+    for rel, info in inv.files.items():
+        if lm._is_target_path(rel):
+            assert info.kind == "code", f"{rel}: цель по ENTRY_TARGETS, но вид {info.kind}"
+    for prefix, kind, _why in lm.KINDS:
+        if kind == "out":
+            continue
+        hit = [r for r in inv.files if r == prefix or (prefix.endswith("/") and r.startswith(prefix))]
+        assert hit, f"правило KINDS {prefix!r} не действует ни на один файл"
+    assert lm.kind_of("release.sh") == "code", "корневой .sh — исполняемый по ENTRY_TARGETS, значит код"
+    regenerated, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
+    assert unticketed == []
+    out = tmp_path / "layout.json"
+    out.write_text(json.dumps(regenerated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    assert lm.load_layout(out)["allowed_edges"] == layout["allowed_edges"]
+
+
+def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path):
+    """`--regen` с ребром без карточки не пишет артефакт вовсе — гейт блокирующий,
+    «напечатать и продолжить» не проверка (Critical DS круга 4, тот же дефект,
+    что Minor DS круга 2, закрытый тогда печатью)."""
+    lay = tmp_path / "layout.json"
+    lay.write_text(lm.LAYOUT.read_text(encoding="utf-8"), encoding="utf-8")
+    before = lay.read_text(encoding="utf-8")
+    monkeypatch.setattr(lm, "LAYOUT", lay)
+    monkeypatch.setattr(lm, "MAP", tmp_path / "layout.md")
+    monkeypatch.setattr(lm, "regen", lambda layout, graph: (layout, [("low_mod", "top_mod")]))
+    assert lm.main(["--regen"]) == 1
+    assert lay.read_text(encoding="utf-8") == before, "артефакт с пустой карточкой не должен быть записан"
+    assert not (tmp_path / "layout.md").exists()
+
+
 def test_the_artifact_is_loaded_strictly(tmp_path):
     """Инварианты артефакта — при загрузке, и только `LayoutError`: битый JSON,
     пропавший ключ, ключ не того типа, повтор слоя в order (Critical DS и Minor
@@ -106,7 +149,9 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
     def wrong_type(d): d["allowed_edges"] = {}
     def dup_order(d): d["order"].append(d["order"][0])
     def edge_shape(d): d["allowed_edges"].append({"ticket": "№0"})
-    for bad in (dup, up, typo, no_why, no_ticket, bad_manual, empty_manual, no_key, wrong_type, dup_order, edge_shape):
+    def bad_stamp(d): d["generated"] = "x"
+    for bad in (dup, up, typo, no_why, no_ticket, bad_manual, empty_manual, no_key, wrong_type, dup_order, edge_shape,
+                bad_stamp):
         with pytest.raises(lm.LayoutError):
             lm.load_layout(write(bad))
     broken = tmp_path / "broken.json"
@@ -121,7 +166,7 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
 def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
-         "allowed_edges": [], "manual_entry_points": {}, "generated": "x"}
+         "allowed_edges": [], "manual_entry_points": {}, "generated": "2026-09-19T00:00Z"}
     d.update(over)
     return d
 
@@ -140,7 +185,7 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     graph = lm.import_graph(lm.inventory(tmp_path))
     assert graph["low_mod"] == {"top_mod"}, "ленивый импорт внутри функции обязан быть виден"
     assert lm.violations(graph, layout) == [("low_mod", "top_mod")]
-    empty = lm.Scan({}, {}, {}, {}, [])
+    empty = lm.Scan({}, {}, {}, [])
     problems = lm.check(layout, graph, empty, {}, repo=tmp_path)
     assert any("новое ребро против стрелок: low_mod" in p for p in problems)
     layout["allowed_edges"] = [{"from": "low_mod", "to": "top_mod", "ticket": "№0"},
@@ -149,12 +194,14 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     assert any("core_mod → top_mod, но такого ребра" in p for p in problems)
     assert not any("новое ребро" in p for p in problems)
     layout["allowed_edges"] = layout["allowed_edges"][:1]
-    # точки входа: гвард верхнего уровня — да, гвард внутри функции — нет (Minor DS круга 3)
+    # точки входа: гвард верхнего уровня — да; внутри функции (Minor DS круга 3) и
+    # `!=` — защита от прямого запуска (Minor DS круга 4) — нет
     (src / "cli.py").write_text("if __name__ == '__main__':\n    pass\n", encoding="utf-8")
     (src / "nested.py").write_text("def main():\n    if __name__ == '__main__':\n        pass\n", encoding="utf-8")
+    (src / "lib_only.py").write_text('if __name__ != "__main__":\n    pass\n', encoding="utf-8")
     inv = lm.inventory(tmp_path)
     graph = lm.import_graph(inv)
-    layout["brief_layers"]["low"] += ["cli", "nested"]
+    layout["brief_layers"]["low"] += ["cli", "nested", "lib_only"]
     execs = lm.executables(inv)
     assert execs == {"src/cli.py": "модуль с гвардом __main__"}, "гвард в одинарных кавычках — по AST"
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
@@ -165,24 +212,24 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     layout["manual_entry_points"] = {"src/cli.py": "руками"}
     assert lm.check(layout, graph, empty, execs, repo=tmp_path) == []
     called = lm.Scan({"src/cli.py": {"app/X.swift"}, "src/gone.py": {"app/X.swift"}},
-                     {"src/doc_gone.py": {"README.md"}}, {"src/test_gone.py": {"tests/t.py"}}, {}, [])
+                     {"src/doc_gone.py": {"README.md"}}, {"deploy.sh": {"README.md"}}, [])
     problems = lm.check(layout, graph, called, execs, repo=tmp_path)
     assert any("src/cli.py объявлен ручным, но его зовёт код" in p for p in problems)
     assert any("путь src/gone.py назван в коде (app/X.swift), а файла нет" in p for p in problems)
     assert any("src/doc_gone.py назван в документации" in p for p in problems)
-    assert not any("test_gone" in p for p in problems), "тесты строят синтетические пути — не гейт"
+    assert not any("deploy.sh" in p for p in problems), "голое имя без цели — справка на карте, не гейт"
     layout["manual_entry_points"] = {}
-    ok = lm.Scan({"src/cli.py": {"app/X.swift"}}, {}, {}, {}, [])
+    ok = lm.Scan({"src/cli.py": {"app/X.swift"}}, {}, {}, [])
     assert lm.check(layout, graph, ok, execs, repo=tmp_path) == []
     fresh = lm.render_map(layout, graph, ok, execs)
     assert lm.check(layout, graph, ok, execs, repo=tmp_path, map_text=fresh) == []
     assert any("отстал" in p for p in lm.check(layout, graph, ok, execs, repo=tmp_path, map_text=fresh + "x"))
     # regen: штамп не меняется, пока allowlist тот же
     same, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
-    assert same["generated"] == "x" and unticketed == []
+    assert same["generated"] == "2026-09-19T00:00Z" and unticketed == []
     layout["allowed_edges"] = []
     changed, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
-    assert changed["generated"] != "x" and unticketed == [("low_mod", "top_mod")]
+    assert changed["generated"] != "2026-09-19T00:00Z" and unticketed == [("low_mod", "top_mod")]
 
 
 def test_one_inventory_one_policy_for_every_file(tmp_path):
@@ -208,8 +255,10 @@ def test_one_inventory_one_policy_for_every_file(tmp_path):
     assert lm.kind_of("app/Package.resolved") == "out"
     assert lm.kind_of("app-ios/Sources/A.swift") == "out"
     assert lm.kind_of("app-android/app/build.gradle.kts") == "out"
-    assert lm.kind_of("tests/test_x.py") == "test"
+    assert lm.kind_of("tests/test_x.py") == "out"
     assert lm.kind_of("docs/reviews/2026-07-30-x.md") == "history"
+    assert lm.kind_of("CHANGELOG.md") == "history" and lm.kind_of("devlog/_posts/2026-08-19-x.md") == "history"
+    assert lm.kind_of("release.sh") == "code", "корневой .sh — цель ENTRY_TARGETS, значит код"
     assert lm.kind_of("docs/design/layout.md") == "out"
     assert lm.kind_of("docs/design/ui.html") == "out"
     assert lm.kind_of(".github/workflows/ci.yml") == "code"
@@ -223,9 +272,10 @@ def test_scanner_reads_code_not_prose(tmp_path):
     «/»; голое имя `.sh` резолвится по имени своего скрипта (`./make_app.sh`
     из CI с working-directory), чужое голое имя — на карту, неоднозначное — в
     problems (Important DS и GLM круга 3), `.py` без каталога — нет; проза
-    (md, toml) — только существование, точка конца предложения путь не прячет;
-    код вне области (телефон) и датированные ревью не читаются; тесты — только
-    справка; битый python — в problems."""
+    (md, toml) — только существование, точка конца предложения путь не прячет,
+    голое имя без цели из прозы — на карту; код вне области (телефон), тесты
+    и датированные снимки (ревью, CHANGELOG) не читаются; битый python — в
+    problems."""
     (tmp_path / "app" / "Sources").mkdir(parents=True)
     (tmp_path / "app-ios" / "Sources").mkdir(parents=True)
     (tmp_path / "scripts").mkdir()
@@ -253,8 +303,9 @@ def test_scanner_reads_code_not_prose(tmp_path):
         'def f():\n    """scripts/inner_doc.py"""\n    return 1\n', encoding="utf-8")
     (tmp_path / "src" / "broken.py").write_text("def (:\n", encoding="utf-8")
     (tmp_path / "tests" / "test_t.py").write_text('run(["scripts/get_models.py", "src/synthetic.py"])\n', encoding="utf-8")
-    (tmp_path / "README.md").write_text("Запуск: `scripts/setup.sh`, см. src/lib.py. Не бэкап src/lib.py.bak\n",
-                                        encoding="utf-8")
+    (tmp_path / "README.md").write_text("Запуск: `scripts/setup.sh` или ./deploy.sh, см. src/lib.py. "
+                                        "Не бэкап src/lib.py.bak\n", encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text("## 1.0\n- src/released.py\n", encoding="utf-8")
     (tmp_path / "docs" / "reviews" / "2026-07-30-x.md").write_text("тогда был src/old.py\n", encoding="utf-8")
     (tmp_path / "scripts" / "get_models.py").write_text("x = 1\n", encoding="utf-8")
     inv = lm.inventory(tmp_path)
@@ -266,11 +317,12 @@ def test_scanner_reads_code_not_prose(tmp_path):
     assert scanned.mentions["app/make_app.sh"] == {".github/workflows/ci.yml"}
     for phantom in ("src/comment.py", "src/comment2.py", "src/block.py", "src/trail.py", "scripts/hidden.sh",
                     "scripts/x.py", "scripts/no.py", "scripts/phantom.py", "src/comment_only.py",
-                    "scripts/inner_doc.py", "audio.py", "foreign.sh", "scripts/phone.py", "src/old.py"):
+                    "scripts/inner_doc.py", "audio.py", "foreign.sh", "scripts/phone.py", "src/old.py",
+                    "src/synthetic.py", "src/released.py"):
         assert phantom not in scanned.mentions and phantom not in scanned.prose, phantom
     assert scanned.prose == {"scripts/setup.sh": {"README.md"}, "src/lib.py": {"README.md"}}
-    assert scanned.tests == {"scripts/get_models.py": {"tests/test_t.py"}, "src/synthetic.py": {"tests/test_t.py"}}
-    assert scanned.loose == {"replace.sh": {"app/Sources/S.swift"}, "foreign.sh": {".github/workflows/ci.yml"}}
+    assert scanned.loose == {"replace.sh": {"app/Sources/S.swift"}, "foreign.sh": {".github/workflows/ci.yml"},
+                             "deploy.sh": {"README.md"}}
     assert scanned.problems == inv.problems and "src/broken.py не разбирается" in scanned.problems[0]
     assert lm.executables(inv) == {"app/make_app.sh": "скрипт", "scripts/n.sh": "скрипт",
                                    "scripts/get_models.py": "скрипт"}

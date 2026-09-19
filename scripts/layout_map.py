@@ -22,7 +22,8 @@
 - названные пути: всё, что код (Swift, shell, yml, python-литералы без
   докстрингов) и проза (документация, конфиги, toml) называют как путь к
   исполняемому файлу, обязано существовать — подсказка человеку и инструкция
-  в README не должны врать после переезда.
+  в README не должны врать после переезда; голое имя `.sh` — путь, только
+  если оно резолвится в единственный свой скрипт, иначе это справка на карте.
 
 Замер строится из ОДНОГО инвентаря (`inventory`): один обход файлов под git,
 одна таблица «что это за файл» (`KINDS`), одно чтение и один разбор на файл.
@@ -61,20 +62,25 @@ MAP = REPO / "docs" / "design" / "layout.md"
 #: Что считается исполняемым файлом: скрипты по расположению, модули `src/` — по гварду.
 ENTRY_TARGETS = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
 
-#: Классификация файла — одно решение в одном месте: первый совпавший префикс
-#: (каталог с «/» или точное имя). Виды: `code` — упоминание пути = связь «кто
-#: зовёт»; `test` — связь показывается на карте, но точкой входа не делает и
-#: ручной запуск не опровергает; `prose` — названный путь обязан существовать;
-#: `history` — датированные снимки описывают код своего дня и после переезда не
-#: правятся; `out` — не читается. Внутри `code`/`test` решает суффикс: код
-#: читается без комментариев, документация рядом с кодом — как проза, остальное
-#: — `out`. Без совпадения: проза по суффиксу, иначе `out` (Important DS круга 3:
-#: код вне `app/` читался как проза сырым текстом, .kts/.json не читались вовсе).
+#: Классификация файла — одно решение в одном месте. Исполняемый файл по
+#: ENTRY_TARGETS — всегда `code` (Critical DS круга 4: корневой `x.sh` был целью
+#: по одной таблице и `out` по другой — невидим обеим); дальше первый совпавший
+#: префикс (каталог с «/» или точное имя). Виды: `code` — упоминание пути = связь
+#: «кто зовёт»; `prose` — названный путь обязан существовать; `history` —
+#: датированные снимки (ревью, релизные заметки, посты) описывают код своего дня
+#: и после переезда не правятся; `out` — не читается. Внутри `code` решает
+#: суффикс: код читается без комментариев, документация рядом с кодом — как
+#: проза, остальное — `out`. Без совпадения: проза по суффиксу, иначе `out`
+#: (Important DS круга 3: код вне `app/` читался как проза сырым текстом,
+#: .kts/.json не читались вовсе). Каждое правило обязано действовать хотя бы на
+#: один файл дерева — это проверяет гейт.
 KINDS: tuple[tuple[str, str, str], ...] = (
     ("docs/design/layout.md", "out", "карта — производная замера, не источник"),
-    ("tests/", "test", "тесты зовут скрипты подпроцессом: связь видна, точкой входа не делает"),
-    ("app/Tests/", "out", "Swift-тесты приложения"),
+    ("tests/", "out", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
+    ("app/Tests/", "out", "Swift-тесты приложения: те же выдуманные пути"),
     ("docs/reviews/", "history", "датированные ревью описывают код своего дня — после переезда не правятся"),
+    ("devlog/_posts/", "history", "датированные посты — снимок своего дня"),
+    ("CHANGELOG.md", "history", "релизные заметки — снимок своего дня, записи о вышедших версиях не правятся"),
     ("app-ios/", "out", "телефон python и shell не запускает — пути там только в тексте"),
     ("app-android/", "out", "телефон python и shell не запускает — пути там только в тексте"),
     ("app/build/", "out", "сборка"),
@@ -107,9 +113,9 @@ class LayoutError(ValueError):
 
 class FileInfo(NamedTuple):
     """Один файл инвентаря: вид, что читает токенизатор, дерево python, исполняемость."""
-    kind: str                       # code | test | prose | history | out
+    kind: str                       # code | prose | history | out
     haystacks: tuple[str, ...]      # литералы python / текст без комментариев / сырая проза
-    tree: ast.Module | None         # только у разобранного .py в code/test
+    tree: ast.Module | None         # только у разобранного .py вида code
     executable: str | None          # почему исполняемый, иначе None
 
 
@@ -119,17 +125,18 @@ class Inventory(NamedTuple):
 
 
 class Scan(NamedTuple):
-    """Замер: связи «кто зовёт» из кода и тестов, названные пути из прозы,
-    голые имена без цели, проблемы инвентаря и сканера."""
+    """Замер: связи «кто зовёт» из кода, названные пути из прозы, голые имена
+    без цели (справка на карте: чужой или порождаемый скрипт — не гейт),
+    проблемы инвентаря и сканера."""
     mentions: dict[str, set[str]]       # путь → файлы кода, которые его называют
     prose: dict[str, set[str]]          # путь → документы/конфиги, которые его называют
-    tests: dict[str, set[str]]          # путь → тесты, которые его зовут (справка, не гейт)
-    loose: dict[str, set[str]]          # голое имя без цели в репозитории → код, который его называет
+    loose: dict[str, set[str]]          # голое имя без цели в репозитории → кто его называет
     problems: list[str]
 
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
            "allowed_edges": list, "manual_entry_points": dict, "generated": str}
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
 def load_layout(path: pathlib.Path = LAYOUT) -> dict:
@@ -150,6 +157,8 @@ def load_layout(path: pathlib.Path = LAYOUT) -> dict:
             raise LayoutError(f"нет ключа {key}")
         if not isinstance(layout[key], typ):
             raise LayoutError(f"{key}: ожидался {typ.__name__}")
+    if not _STAMP.match(layout["generated"]):
+        raise LayoutError("generated: ожидался штамп вида 2026-09-19T18:53Z")
     order = layout["order"]
     if len(set(order)) != len(order) or not all(isinstance(x, str) for x in order):
         raise LayoutError("order: повтор слоя или не строка")
@@ -192,7 +201,10 @@ def _is_target_path(rel: str) -> bool:
 # ---------------------------------------------------------------- инвентарь
 
 def kind_of(rel: str) -> str:
-    """Вид файла по таблице KINDS — единственное место, где это решается."""
+    """Вид файла — единственное место, где это решается: исполняемый по
+    ENTRY_TARGETS — код, остальное по таблице KINDS."""
+    if _is_target_path(rel):
+        return "code"
     hit = None
     for prefix, kind, _why in KINDS:
         if rel == prefix or (prefix.endswith("/") and rel.startswith(prefix)):
@@ -200,7 +212,7 @@ def kind_of(rel: str) -> str:
             break
     if hit in ("out", "history"):
         return hit
-    if hit in ("code", "test"):
+    if hit == "code":
         if rel.endswith(CODE_SUFFIXES):
             return hit
         return "prose" if rel.endswith(PROSE_SUFFIXES) else "out"
@@ -232,11 +244,14 @@ def _files(repo: pathlib.Path) -> list[str]:
 
 def _has_main_guard(tree: ast.Module) -> bool:
     """Настоящий `if __name__ == "__main__"` — узел верхнего уровня модуля
-    (Minor DS круга 3: гвард внутри функции точкой входа не делает); кавычки и
-    порядок операндов не важны, подстрока в докстринге не считается."""
+    (Minor DS круга 3: гвард внутри функции точкой входа не делает), сравнение
+    на равенство (Minor DS круга 4); кавычки и порядок операндов не важны,
+    подстрока в докстринге не считается."""
     for node in tree.body:
         if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
             continue
+        if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.Eq):
+            continue                    # `!= "__main__"` — защита от прямого запуска, не гвард
         parts = [node.test.left, *node.test.comparators]
         names = {p.id for p in parts if isinstance(p, ast.Name)}
         consts = {p.value for p in parts if isinstance(p, ast.Constant)}
@@ -444,16 +459,16 @@ def _resolve(hits: set[str], targets: set[str]) -> tuple[set[str], dict[str, lis
 
 
 def scan(inv: Inventory) -> Scan:
-    """Замер названных путей: код — упоминания как связи; тесты — связи на
-    карту; проза — только существование. Проблемы инвентаря и сканера — одним
+    """Замер названных путей: код — упоминания как связи; проза — только
+    существование; голое имя без цели откуда угодно — на карту (Important DS
+    круга 4: из прозы гасло молча). Проблемы инвентаря и сканера — одним
     списком, все они красят гейт."""
     mentions: dict[str, set[str]] = {}
     prose: dict[str, set[str]] = {}
-    tests: dict[str, set[str]] = {}
     loose: dict[str, set[str]] = {}
     problems = list(inv.problems)
     targets = set(executables(inv))
-    bucket = {"code": mentions, "test": tests, "prose": prose}
+    bucket = {"code": mentions, "prose": prose}
     for rel, info in inv.files.items():
         dest = bucket.get(info.kind)
         if dest is None:
@@ -464,10 +479,9 @@ def scan(inv: Inventory) -> Scan:
                 dest.setdefault(h, set()).add(rel)
         for name, found in sorted(ambiguous.items()):
             problems.append(f"{rel}: голое имя {name} неоднозначно ({', '.join(found)}) — назвать полным путём")
-        if info.kind == "code":
-            for name in unresolved:
-                loose.setdefault(name, set()).add(rel)
-    return Scan(mentions, prose, tests, loose, problems)
+        for name in unresolved:
+            loose.setdefault(name, set()).add(rel)
+    return Scan(mentions, prose, loose, problems)
 
 
 def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
@@ -501,8 +515,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
         problems.append(f"manual_entry_points объявляет {path}, но это не исполняемый файл — снять")
     for path in sorted(set(manual) & named):
         problems.append(f"{path} объявлен ручным, но его зовёт код ({', '.join(sorted(scanned.mentions[path]))}) — снять из manual")
-    # названные пути обязаны существовать — в коде и в прозе; тесты строят синтетические
-    # деревья с выдуманными путями, их упоминания только справка на карте
+    # названные пути обязаны существовать — в коде и в прозе
     for path, who in sorted(scanned.mentions.items()):
         if not (repo / path).is_file():
             problems.append(f"путь {path} назван в коде ({', '.join(sorted(who))}), а файла нет — переезд без правки вызывающих")
@@ -555,14 +568,11 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out.append("")
     for a, b in viol:
         out.append(f"- `{a}` ({lay[a]}) → `{b}` ({lay[b]}) — {tickets.get((a, b)) or 'без карточки'}")
-    out += ["", "## Точки входа — исполняемые файлы (кто зовёт из кода; тесты — справочно)", ""]
+    out += ["", "## Точки входа — исполняемые файлы (кто зовёт из кода)", ""]
     for path in sorted(execs):
         who = ", ".join(sorted(scanned.mentions.get(path, ())))
         manual = layout["manual_entry_points"].get(path)
-        line = f"- `{path}` ← {who or ('ручной запуск: ' + manual if manual else 'никто')}"
-        if scanned.tests.get(path):
-            line += f"; тесты: {', '.join(sorted(scanned.tests[path]))}"
-        out.append(line)
+        out.append(f"- `{path}` ← {who or ('ручной запуск: ' + manual if manual else 'никто')}")
     out += ["", "## Пути, названные кодом, но не исполняемые (подсказки и сообщения)", ""]
     for path, who in sorted(scanned.mentions.items()):
         if path not in execs:
@@ -570,7 +580,7 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out += ["", "## Пути, названные в документации и конфигах", ""]
     for path, who in sorted(scanned.prose.items()):
         out.append(f"- `{path}` ← {', '.join(sorted(who))}")
-    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты)", ""]
+    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты; не гейт)", ""]
     for name, who in sorted(scanned.loose.items()):
         out.append(f"- `{name}` ← {', '.join(sorted(who))}")
     out += ["", "## Область замера (таблица KINDS сторожа)", ""]
@@ -594,13 +604,16 @@ def main(argv: list[str] | None = None) -> int:
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)
-    unticketed: list[tuple[str, str]] = []
     if "--regen" in args:
         layout, unticketed = regen(layout, graph)
+        if unticketed:
+            # гейт блокирующий: артефакт с пустой карточкой загрузка отвергнет, поэтому он не
+            # пишется вовсе (Critical DS круга 4: «напечатать и продолжить — не проверка»)
+            for a, b in unticketed:
+                print(f"✗ ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт не записан")
+            return 1
         LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"{LAYOUT.relative_to(REPO)}: allowlist {len(layout['allowed_edges'])} рёбер")
-        for a, b in unticketed:
-            print(f"✗ ребро {a} → {b} без карточки — вписать ticket в allowed_edges, иначе загрузка откажет")
     if "--check" not in args:
         MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
         print(f"карта: {MAP.relative_to(REPO)}")
@@ -609,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")
-    return 1 if problems or unticketed else 0
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
