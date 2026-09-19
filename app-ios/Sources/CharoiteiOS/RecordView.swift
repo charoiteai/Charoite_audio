@@ -47,7 +47,7 @@ struct RecordView: View {
 
             Button {
                 if rec.isRecording {
-                    rec.stop()
+                    rec.stop(reason: .user)
                 } else if rec.armed {
                     rec.disarm()
                 } else {
@@ -237,7 +237,7 @@ struct RecordView: View {
             // Кнопка «Стоп» в Live Activity выполняется в процессе приложения
             // (LiveActivityIntent), но про сам рекордер она ничего не знает —
             // виджету он недоступен и не должен быть. Здесь и связываем.
-            RecordingControl.onStop = { [weak rec] in rec?.stop() }
+            RecordingControl.onStop = { [weak rec] in rec?.stop(reason: .user) }
             // «Начать запись» из Siri/Команд/кнопки действия — тем же типом,
             // что выбран на экране.
             RecordingControl.onStart = { [weak rec] in

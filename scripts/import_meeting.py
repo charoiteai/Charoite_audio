@@ -60,6 +60,9 @@ import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
 import media_meta  # noqa: E402
 import voice_memos_bridge  # noqa: E402
+import channel_trace  # noqa: E402
+import live_sidecar  # noqa: E402
+import transcript  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
@@ -144,6 +147,24 @@ def imported_sidecar(done_file: pathlib.Path) -> pathlib.Path:
     return done_file.with_name(f".{done_file.name}{IMPORTED_SIDECAR_SUFFIX}")
 
 
+def phone_manifest(audio: pathlib.Path) -> pathlib.Path:
+    """Манифест остановки записи с телефона (№200): `<аудио>.json` рядом —
+    имя задаёт компаньон (`Inbox.sidecar(for:)`), здесь только читаем. Едет
+    в done/ и умирает в ретеншне ПАРОЙ с аудио: оставшись в синкаемой папке,
+    он достался бы следующему файлу с тем же именем (Important DS и GLM
+    входного круга)."""
+    return audio.with_name(audio.name + channel_trace.MANIFEST_SUFFIX)
+
+
+def manifest_owner(path: pathlib.Path) -> pathlib.Path | None:
+    """Аудио, которому принадлежит манифест; None — это не манифест (скрытые
+    сайдкары импорта тоже кончаются на .json)."""
+    if path.suffix != channel_trace.MANIFEST_SUFFIX or path.name.startswith("."):
+        return None
+    owner = path.with_name(path.name[:-len(channel_trace.MANIFEST_SUFFIX)])
+    return owner if owner.suffix.lower() in AUDIO else None
+
+
 def _write_json(path: pathlib.Path, data: dict) -> None:
     safe_write.write_text(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
@@ -161,6 +182,127 @@ def _report(path: str | None, data: dict) -> None:
     копия исходника в архиве. Сканер кладёт это в сайдкар done/."""
     if path:
         _write_json(pathlib.Path(path), data)
+
+
+def phone_event_for(src: pathlib.Path) -> dict | None:
+    """Событие следа из манифеста рядом с исходником; None — манифеста нет,
+    он мусор или стоп ручной."""
+    manifest = _read_json(phone_manifest(src))
+    return channel_trace.phone_event(manifest) if manifest is not None else None
+
+
+def note_phone_stop(src: pathlib.Path, tpath: pathlib.Path) -> dict | None:
+    """Причина и момент остановки записи с телефона — событием следа канала в
+    сайдкар стенограммы (`channel_events`, JSON-строкой — контракт читателя
+    `channel_trace.events_of`; слияние с событиями канала, не затирание). Строка
+    итога в хвост «Ко-мышления» — через единственного писателя хвоста
+    `channel_trace.sync_tail` (гейт expect: пересборка пишет тот же файл из
+    другого процесса — Important DS и GLM круга 2). Формулировки здесь нет:
+    конвертация — `channel_trace.phone_event`, слова — там же. Идемпотентно:
+    событие телефона уже в сайдкаре — ничего не пишем. Возвращает событие,
+    только если оно лежит в сайдкаре (Minor DS круга 2: возврат = «записано»)."""
+    ev = phone_event_for(src)
+    if ev is None:
+        if phone_manifest(src).exists():
+            print("манифест записи с телефона: остановка вручную или битый манифест — следа не нужно")
+        return None
+    existing = channel_trace.events_of(tpath)
+    if not any(e.get("kind") == channel_trace.KIND_STOPPED for e in existing):
+        if not live_sidecar.remember(tpath, channel_trace.SIDECAR_KEY,
+                                     json.dumps([*existing, ev], ensure_ascii=False)):
+            print("⚠️ причина остановки записи с телефона не записана: сайдкар стенограммы неоднозначен")
+            return None
+    channel_trace.sync_tail(tpath, log=print)
+    print(f"запись с телефона: {channel_trace.render_phone(ev)}")
+    return ev
+
+
+PAIR_ORPHAN_AGE = 60     # манифест в done/ без аудио: аудио уже доехало и исчезло — ждать нечего,
+#                          минута только на второго уборщика; в корне папки ждём TEMP_ORPHAN_AGE —
+#                          аудио ещё может ехать (Критика 2 GLM круга 2: политика возраста именована)
+
+
+def reconcile_manifests(folder: pathlib.Path, *, now: float | None = None) -> list[pathlib.Path]:
+    """Инвариант «пара → событие в сайдкаре стенограммы» — сверкой при каждом
+    скане, а не одноразовым чтением в момент импорта (Important GLM выходного
+    круга): манифест, приехавший по синку ПОЗЖЕ аудио, лежит в корне без
+    владельца — его аудио уже в done/; ретрай-ветка повтора; стенограмма,
+    пересобранная до прихода манифеста. Три случая, один механизм:
+    1) манифест в корне без аудио: владелец уже в done/ (по полю `source`
+       сайдкара импорта) — воссоединить пару; иначе ждать час (iCloud везёт
+       аудио дольше килобайта JSON) и убрать;
+    2) манифест в done/ рядом с аудио: у сайдкара импорта есть путь стенограммы,
+       события телефона в её сайдкаре нет — дописать (`note_phone_stop`
+       идемпотентен);
+    3) манифест в done/ без аудио: мусор старше минуты (второй уборщик мог не
+       успеть).
+    Одна политика возраста на все спутники; `prune_done` знает о манифесте
+    только одно — удалить вместе с аудио."""
+    now = time.time() if now is None else now
+    touched: list[pathlib.Path] = []
+    done = folder / "done"
+    done_ok = done.is_dir() and not done.is_symlink()
+    for p in folder.glob(f"*{channel_trace.MANIFEST_SUFFIX}"):
+        owner = manifest_owner(p)
+        try:
+            if owner is None or owner.exists() or p.is_symlink() or not p.is_file():
+                continue
+            home = _done_copy_of(done, owner.name) if done_ok else None
+            if home is not None and not phone_manifest(home).exists():
+                p.replace(phone_manifest(home))
+                touched.append(phone_manifest(home))
+                print(f"импорт: манифест {p.name} догнал аудио в done/")
+                continue
+            if now - _newest_time(p.stat()) < TEMP_ORPHAN_AGE:
+                continue
+            p.unlink()
+            touched.append(p)
+            print(f"импорт: убран манифест записи без аудио — {p.name}")
+        except OSError:
+            continue
+    if not done_ok:
+        return touched
+    for p in done.glob(f"*{channel_trace.MANIFEST_SUFFIX}"):
+        owner = manifest_owner(p)
+        if owner is None:
+            continue
+        try:
+            if not owner.exists():
+                if now - p.stat().st_mtime > PAIR_ORPHAN_AGE:
+                    p.unlink(missing_ok=True)
+                    touched.append(p)
+                continue
+            meta = _read_json(imported_sidecar(owner)) or {}
+            tpath = pathlib.Path(str(meta.get("transcript") or ""))
+            if not meta.get("transcript") or not tpath.is_file():
+                continue
+            if any(e.get("kind") == channel_trace.KIND_STOPPED for e in channel_trace.events_of(tpath)):
+                continue
+            if phone_event_for(owner) is None:
+                continue        # ручной стоп или битый манифест: события не будет ни в одном проходе (Minor GLM)
+            if note_phone_stop(owner, tpath) is not None:
+                touched.append(p)
+                print(f"импорт: причина остановки {owner.name} догнала стенограмму {tpath.name}")
+        except OSError:
+            continue
+    return touched
+
+
+def _done_copy_of(done: pathlib.Path, source_name: str) -> pathlib.Path | None:
+    """Копия исходника в done/ по имени ДО уникализации (поле `source`
+    сайдкара импорта): `X.caf` могла уехать как `X-1.caf`."""
+    # прямое имя — тоже только по полю `source`: одноимённый файл в done/ мог
+    # приехать от другой записи, и манифест лёг бы к чужой встрече (Minor DS круга 2)
+    direct = done / source_name
+    if direct.is_file() and (_read_json(imported_sidecar(direct)) or {}).get("source") == source_name:
+        return direct
+    for sc in done.glob(f".*{IMPORTED_SIDECAR_SUFFIX}"):
+        meta = _read_json(sc)
+        if meta and meta.get("source") == source_name:
+            owner = done / sc.name[1:-len(IMPORTED_SIDECAR_SUFFIX)]
+            if owner.is_file():
+                return owner
+    return None
 
 
 def free_name(folder: pathlib.Path, name: str) -> pathlib.Path:
@@ -294,6 +436,9 @@ def prune_done(folder: pathlib.Path, keep_days: float, *, now: float | None = No
     for f in sorted(done.iterdir()):
         if f.is_symlink() or not f.is_file() or f.name.startswith("."):
             continue
+        if manifest_owner(f) is not None:
+            continue        # манифест телефона (№200) — спутник аудио, не копия со своим сроком:
+            #                 уходит вместе с владельцем ниже; сироты — у `reconcile_manifests`
         sidecar = imported_sidecar(f)
         meta = _read_json(sidecar)
         deadline = None
@@ -322,6 +467,7 @@ def prune_done(folder: pathlib.Path, keep_days: float, *, now: float | None = No
             continue
         removed.append(f)
         print(f"ретеншн импорта: удалена копия {f.name}")
+        phone_manifest(f).unlink(missing_ok=True)
         src = _archive_source_for(meta or {}, f, graph)
         if src is not None:
             try:
@@ -463,7 +609,10 @@ def sweep_temporaries(folder: pathlib.Path, *, now: float | None = None) -> list
     """
     now = time.time() if now is None else now
     removed: list[pathlib.Path] = []
-    for p in list(folder.glob(".*.part")) + list(folder.glob(".*.import-result.json")):
+    # `.part` компаньона (аудио и манифест) — не скрытые: `X.caf.part`, `X.caf.json.part`;
+    # после гибели процесса посреди публикации без повторной попытки они висели бы
+    # в синкаемой папке вечно (Minor DS и GLM выходного круга по №200)
+    for p in list(folder.glob("*.part")) + list(folder.glob(".*.import-result.json")):
         try:
             if p.is_symlink() or not p.is_file() or now - _newest_time(p.stat()) < TEMP_ORPHAN_AGE:
                 continue
@@ -802,6 +951,7 @@ def main() -> None:
             if not (folder / marker.name[1:-len(ERROR_MARKER_SUFFIX)]).exists():
                 marker.unlink(missing_ok=True)
         sweep_temporaries(folder)
+        reconcile_manifests(folder)
         # Мост из Диктофона: новые записи, синхронизированные iCloud на этот
         # Mac, копируются в папку импорта и идут тем же сканом. Сбой моста
         # не должен ронять импорт того, что уже лежит в папке.
@@ -851,6 +1001,11 @@ def main() -> None:
     # и дневник; транскрибируем и отдаём конвейеру заметок
     base = src.name.lower()
     if base.startswith(("note_", "diary_")) and src.suffix.lower() in AUDIO:
+        # причина — свойство файла, не встречи: у заметки нет сайдкара стенограммы,
+        # но факт «оборвана» остаётся хотя бы в логе импорта (Important DS выходного круга)
+        ev = phone_event_for(src)
+        if ev is not None:
+            print(f"запись с телефона: {channel_trace.render_phone(ev)}")
         import_voice_note(src, diary=base.startswith("diary_"))
         _report(args.result_json, {"kind": "diary" if base.startswith("diary_") else "note",
                                    "source": src.name, "size": src.stat().st_size})
@@ -880,6 +1035,7 @@ def main() -> None:
         # archive_source у повтора не пишем: ретеншн КОПИИ повтора удалял бы
         # аудио-исходник первой встречи из архива, хотя с ней ничего не случилось
         # (аудит 13.09, GLM M4); заодно нет глоба от CWD при незаданном graph_dir (GLM M7)
+        note_phone_stop(src, already)    # повтор после обрыва первого прогона — факт не теряется (Minor GLM)
         _report(args.result_json, {"kind": "meeting", "source": src.name,
                                    "size": src.stat().st_size, "repeat": True,
                                    "stamp": old_stamp, "transcript": str(already),
@@ -930,6 +1086,11 @@ def main() -> None:
     else:
         sys.exit(f"не понимаю формат {ext}: жду {sorted(AUDIO | TEXT | SUBS)}")
 
+    # Манифест компаньона (№200) — в сайдкар стенограммы событием следа ДО графа
+    # и хвоста: паспорт минуток хеширует речь вместе с оговоркой, событие после
+    # retro_fill означало бы вторую генерацию (Important DS входного круга); до
+    # ветки «пустая запись» — огрызок с причиной обрыва и есть искомый факт
+    note_phone_stop(src, tpath)
     # единый хвост: граф → минутки/разбор/тезисы/архив (идемпотентно)
     print("— обновляю граф…")
     _status("processing", tpath, "updating_graph")
@@ -1082,6 +1243,11 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
                 "delete_after": imported_at + keep_days * 86400,
             })
             f.rename(dest)
+            manifest = phone_manifest(f)
+            if manifest.exists():
+                # пара едет в done/ вместе, под именем аудио ПОСЛЕ уникализации:
+                # иначе манифест остался бы у следующего файла с тем же именем
+                manifest.replace(phone_manifest(dest))
             forget_seen_marker(f)
             error_marker(f).unlink(missing_ok=True)
             return True

@@ -63,7 +63,8 @@ final class RecorderAutoStartTests: XCTestCase {
         try Data(repeating: 1, count: Inbox.orphanMinBytes).write(to: current.appendingPathComponent("edge.caf"))
         Inbox.rescueOrphans(from: current, to: queue)
         let queued = Set((try fm.contentsOfDirectory(atPath: queue.path)))
-        XCTAssertEqual(queued, ["edge.caf"], "ровно порог — запись, ниже — пустышка")
+        XCTAssertEqual(queued, ["edge.caf", "edge.caf.json"],
+                       "ровно порог — запись (с манифестом «стопа не было», №200), ниже — пустышка")
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: current.path), [], "current/ пуст: пустышки удалены, запись уехала")
     }
 

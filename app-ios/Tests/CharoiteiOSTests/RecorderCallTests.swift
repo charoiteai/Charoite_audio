@@ -49,7 +49,7 @@ final class RecorderCallTests: XCTestCase {
         let seconds = rec.elapsed
         XCTAssertGreaterThan(seconds, 1.0, "файл не растёт после конца звонка")
 
-        rec.stop()
+        rec.stop(reason: .user)
         wait(1.0)
         XCTAssertFalse(rec.isRecording)
         // Файл ровно один — ротаций из-за звонка не было.
