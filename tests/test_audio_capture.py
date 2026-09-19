@@ -417,7 +417,7 @@ def test_частичный_отказ_open_sinks_не_оставляет_сир
     assert busy.exists() and any("ВЫКЛЮЧЕНА" in m for m in said)
 
 
-def test_зависший_перезапуск_не_останавливает_конвейер():
+def test_зависший_перезапуск_не_останавливает_конвейер(monkeypatch, tmp_path):
     """06.08: четыре записи подряд оборвались на 31-й секунде.
 
     Механика: канал системного звука не отдавал кадров, на тридцатой секунде
@@ -429,6 +429,10 @@ def test_зависший_перезапуск_не_останавливает_�
     Тест держит сторожа в рамках времени: он обязан вернуться, даже если
     перезапуск канала не возвращается никогда.
     """
+    # свой logs/ и без уведомлений: оба теста писали строку потери в БОЕВОЙ
+    # logs/capture.log рабочей установки (замер 19.09 по №310)
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
     hub = _hub()
     hub.RESTART_TIMEOUT = 0.3      # в бою пять секунд; тесту столько ждать незачем
     dead = _HangingCapture(hang_seconds=5.0)
@@ -922,7 +926,7 @@ class _RevivableCapture:
         self.restarts += 1
 
 
-def test_неудачный_рестарт_не_омолаживает_возраст_и_гейтится_антищтормом():
+def test_неудачный_рестарт_не_омолаживает_возраст_и_гейтится_антищтормом(monkeypatch, tmp_path):
     """Круг 3, GLM: главную правку — «возраст сбрасывается только при удачном
     рестарте» — не держал ни один тест. Мутация «вернуть безусловный сброс»
     делала третий контур watchdog слепым при зелёном прогоне.
@@ -931,6 +935,10 @@ def test_неудачный_рестарт_не_омолаживает_возр�
     не трогают (инвариант И-2). Повторная попытка — не раньше, чем через
     30с (_last_try), но и не позже: канал не бросается навсегда.
     """
+    # свой logs/ и без уведомлений: оба теста писали строку потери в БОЕВОЙ
+    # logs/capture.log рабочей установки (замер 19.09 по №310)
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
     hub = _hub()
     hub.RESTART_TIMEOUT = 1.0
     dead = _FailingCapture()
@@ -1135,10 +1143,9 @@ def test_предупреждение_доходит_до_ui_потому_что
     # связь с липкостью — по РЕАЛЬНОМУ тексту, а не по копии строки в тесте:
     # перестановка слов в предупреждении молча вернула бы «стёрлось через
     # секунду» при зелёном CI (№228, GLM r1 по #538)
-    import stt_runtime
     warn = next(m for m in said if "СОБЕСЕДНИКОВ" in m)
-    assert stt_runtime.is_sticky_status(warn), warn
-    assert not stt_runtime.is_recording_failure(warn), "неполная запись — не отказ записи"
+    assert warn.sticky is True, warn
+    assert warn.error is False, "неполная запись — не отказ записи"
 
 
 def test_режим_только_микрофон_не_поднимает_ложную_тревогу(tmp_path, monkeypatch):
@@ -1366,7 +1373,7 @@ def test_смерть_канала_собеседников_после_стар�
     assert mic._lost["mic"].retriable is False and mic._lost["mic"].died is True
     log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
     assert a.MIC_LOST_LOG_MARK in log and log.count(a.MIC_ONLY_LOG_MARK) == 1, "у микрофона своя метка лога"
-    assert a.stt_runtime.is_sticky_status(scream[0]), "строка про микрофон липкая, как про собеседников"
+    assert scream[0].sticky is True, "строка про микрофон липкая, как про собеседников"
 
     # микрофон — единственный канал (device: mic): не «пишется остальными», а «запись пуста»
     solo_mic = dead_hub(["mic"])
@@ -1380,7 +1387,7 @@ def test_смерть_канала_собеседников_после_стар�
     again._watch_streams()
     assert again._hung == {"blackhole"} and any("перезапуск завис" in m for m in again.said)
     assert len(calls) == 3, "уведомление — одно на потерю канала"
-    assert all(a.stt_runtime.is_sticky_status(m) for m in again.said if "перезапуск завис" in m), \
+    assert all(m.sticky is True for m in again.said if "перезапуск завис" in m), \
         "строка о потере — липкая при каждой смене, не тихая"
     calls[:] = calls[:1]                                       # дальше сценарии считают от одного
 
@@ -1411,7 +1418,7 @@ def test_смерть_канала_собеседников_после_стар�
     tick(sck)
     back = [m for m in sck.said if a.stt_runtime.MIC_BACK_NOTICE in m]
     assert len(back) == 1 and not sck._lost and not sck._warned and not sck._fail_streak, sck.said
-    assert a.stt_runtime.is_sticky_clear(back[0]), "отбой снимает липкий слой"
+    assert back[0].sticky is False and back[0].topic == a.stt_runtime.TOPIC_CHANNEL, "отбой снимает свой слой явным false"
     assert "полная" not in back[0] and "снова пишется" in back[0]
     dead_stream(sck)
     sck._last_frame["blackhole"] = a.time.time() - 40
@@ -1500,11 +1507,11 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     tick(hub, {"mic"}, err)                                                # собеседники ожили, микрофон мёртв
     back = hub.said[n_said:]
     assert hub._lost.keys() == {"mic"}, hub._lost
-    assert not any(rt.is_sticky_clear(m) for m in back), "отбой при живом-мёртвом микрофоне снял бы слой целиком (C1)"
-    sticky = [m for m in back if rt.is_sticky_status(m)]
+    assert not any(m.sticky is False for m in back), "отбой при живом-мёртвом микрофоне снял бы слой целиком (C1)"
+    sticky = [m for m in back if m.sticky is True]
     assert sticky and rt.OWNER_MIC_LOST in sticky[-1] and "по-прежнему нет: вашего микрофона" in sticky[-1], back
     tick(hub, set(), None)                                                 # ожил и микрофон
-    clear = [m for m in hub.said if rt.is_sticky_clear(m)]
+    clear = [m for m in hub.said if m.sticky is False]
     assert len(clear) == 1 and rt.OWNER_MIC_BACK in clear[0] and not hub._lost and not hub._warned, hub.said
     # следующая потеря микрофона — снова звук (потолок общий на встречу: 3); канал ещё
     # перезапускается — совет «не прерывайте», а не «перезапустите запись» (критика GLM входного круга)
@@ -1520,7 +1527,7 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     sck = hub_of(["blackhole", "mic"])
     tick(sck, {"blackhole", "mic"}, TimeoutError("не вернулся за 5с"))
     assert sck._hung == {"blackhole", "mic"} and sck._lost.keys() == {"blackhole", "mic"}
-    texts = [m for m in sck.said if rt.is_sticky_status(m)]
+    texts = [m for m in sck.said if m.sticky is True]
     assert texts and all("только собеседников" not in m and "только микрофон" not in m for m in texts), texts
     assert rt.RECORDING_EMPTY in texts[-1] and "ни собеседников, ни вас" in texts[-1]
     assert sck.live_labels() == []

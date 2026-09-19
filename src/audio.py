@@ -915,7 +915,9 @@ class AudioHub:
         verb = ("пропали" if many else "пропал") if died else ("не захвачены" if many else "не захвачен")
         lost = f"{' и '.join(lost_names)} {verb}"
         reason = "; ".join(v.reason for v in losses.values())
-        self._say(f"⚠️ {mark}: {lost}{what}. {reason}")
+        # липкость — намерение писателя, не подстрока у читателя (№310)
+        self._say(stt_runtime.Status(f"⚠️ {mark}: {lost}{what}. {reason}",
+                                     sticky=True, topic=stt_runtime.TOPIC_CHANNEL))
         # звук — на новую потерю канала и не чаще LOUD_SCREAMS за встречу:
         # флапающий поток иначе звенел бы каждые полторы минуты (GLM r2 по #541)
         loud = bool(fresh) and self._scream_count < self.LOUD_SCREAMS
@@ -952,7 +954,7 @@ class AudioHub:
             # частота потерь до сих пор была неизмерима (Minor DS входного круга)
             _safe_stderr(f"канал {label} потерян: {loss.reason}; пишут: {', '.join(self.live_labels()) or 'никто'}")
 
-    def _announce_back(self, label: str, silent: float) -> str:
+    def _announce_back(self, label: str, silent: float) -> "stt_runtime.Status | None":
         """Канал `label` ожил -> строка статуса. Потерянных не осталось —
         отбой липкой строки (`sticky: false`); кто-то ещё потерян —
         пересобранная липкая строка о нём: снимать слой целиком нельзя,
@@ -962,7 +964,7 @@ class AudioHub:
         if self._channel_closed:
             # запись остановлена: «снова пишется» после «не вернулся до конца» —
             # фантом и для статуса, не только для следа (Important DS круга 2)
-            return ""
+            return None
         loss = self._lost.pop(label, None)
         self._warned.discard(label)          # следующая потеря этого канала кричит заново
         self._fail_streak.pop(label, None)
@@ -977,12 +979,16 @@ class AudioHub:
         if not self._lost:
             back = stt_runtime.MIC_BACK_NOTICE if label == "blackhole" else stt_runtime.OWNER_MIC_BACK
             # «снова пишется», не «запись снова полная»: остальные каналы могли
-            # не открыться с начала (Important DS r2)
-            return (f"✅ {back}: {name} снова пишется; "
-                    f"без {'собеседников' if label == 'blackhole' else 'вашего микрофона'} было около {int(silent)}с")
+            # не открыться с начала (Important DS r2). Отбой слоя — явным
+            # `sticky=False` от писателя (№232, №310)
+            return stt_runtime.Status(
+                f"✅ {back}: {name} снова пишется; "
+                f"без {'собеседников' if label == 'blackhole' else 'вашего микрофона'} было около {int(silent)}с",
+                sticky=False, topic=stt_runtime.TOPIC_CHANNEL)
         mark, what, _banner = self._carrier()
         still = ", ".join(self._NAMES_GEN.get(k, k) for k in self._lost)
-        return f"⚠️ {mark}: {name} снова пишется, но в записи по-прежнему нет: {still}{what}"
+        return stt_runtime.Status(f"⚠️ {mark}: {name} снова пишется, но в записи по-прежнему нет: {still}{what}",
+                                  sticky=True, topic=stt_runtime.TOPIC_CHANNEL)
 
     # Сколько ждём перезапуск канала, прежде чем считать его безнадёжным.
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
@@ -1162,6 +1168,8 @@ class AudioHub:
                 # и он обязан нести ту же пометку, иначе незаписанный звук
                 # объявляется как безобидный (ревью 20.08, круг 4).
                 msg += ". ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть"
+                # окраска отказа — у писателя, не подстрокой у демона (№310)
+                msg = stt_runtime.Status(msg, error=True, topic=stt_runtime.TOPIC_DISK)
             self._say(msg)
 
     def _open_sinks(self):
@@ -1199,7 +1207,9 @@ class AudioHub:
                 except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
                     pass
             self._sinks = {}
-            self._say(f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить")
+            self._say(stt_runtime.Status(
+                f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить",
+                error=True, topic=stt_runtime.TOPIC_DISK))
 
     @staticmethod
     def prune_recordings(record_dir: pathlib.Path, keep_days,
@@ -1487,7 +1497,7 @@ class AudioHub:
             msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
                    "после сбоя этот звук будет не восстановить")
             _safe_stderr(msg)
-            self._say(msg)
+            self._say(stt_runtime.Status(msg, error=True, topic=stt_runtime.TOPIC_DISK))
         if dropped:
             # Вне лока: статус уходит в UI через колбэк демона, и
             # держать на нём аудиопоток нельзя. Факт записи берём
@@ -1689,12 +1699,11 @@ class AudioHub:
                 _safe_stderr(f"подписчик события канала упал: {kind} {label}")
         return ev
 
-    def _emit(self, msg: str | None) -> None:
-        if msg is not None and self.on_status is not None:
-            try:
-                self.on_status(msg)
-            except Exception:  # noqa: BLE001
-                pass
+    def _emit(self, msg) -> None:
+        """Вторая дверь к `on_status` растворена в первой: отбой канала уходил
+        через `_emit`, и разметка липкости только у `_say` потеряла бы его
+        (Critical DS и GLM входного круга по №310)."""
+        self._say(msg)
 
     def _busy(self, label: str) -> bool:
         """Канал нельзя трогать: перезапуск завис (`_hung`) или ещё в полёте
@@ -1853,20 +1862,23 @@ class AudioHub:
             # По факту записи кусков ЗА ИНТЕРВАЛ, а не по состоянию `_sinks`
             # сейчас. Гард по `_running` (первая попытка закрыть ту же ложную
             # тревогу) был хуже: он молчал и там, где кусок не записан.
-            self._say(head + "ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть "
-                             "ни пересборкой, ни повтором")
+            self._say(stt_runtime.Status(head + "ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть "
+                                         "ни пересборкой, ни повтором",
+                                         error=True, topic=stt_runtime.TOPIC_DISK))
         else:
             self._say(head + "Запись на диск не пострадала — финальная "
                              "стенограмма будет полной")
 
-    def _say(self, msg: str) -> None:
-        """Статус в UI. Отказ страховочной записи пользователь обязан увидеть
-        до конца встречи, а не узнать о нём, когда восстанавливать уже нечего."""
-        if self.on_status is not None:
-            try:
-                self.on_status(msg)
-            except Exception:  # noqa: BLE001
-                pass
+    def _say(self, msg) -> None:
+        """Статус в UI — единственная дверь к `on_status`. Голая строка —
+        обычный статус; липкость и окраску писатель ставит сам объектом
+        `stt_runtime.Status` в точке порождения (№310). None — сказать нечего."""
+        if msg is None or self.on_status is None:
+            return
+        try:
+            self.on_status(stt_runtime.as_status(msg))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _cut(self, label: str) -> np.ndarray | None:
         need = int(self.sr * self.chunk_s)

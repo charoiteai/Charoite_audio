@@ -36,6 +36,53 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertEqual(s.status, "канал собеседников восстановлен")
     }
 
+    /// №310: липкость — поле от писателя, не маркер в тексте. Текст без единого
+    /// маркера с `sticky: true` — липкий (Minor DS входного круга).
+    func testAnyTextWithStickyFlagIsSticky() {
+        let s = SuflerService()
+        s.consumeForTest(#"{"type":"status","text":"любой текст без маркеров","sticky":true,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.stickyStatus, "любой текст без маркеров")
+        s.consumeForTest(#"{"type":"status","text":"⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ как подстрока без ключа"}"#)
+        XCTAssertEqual(s.stickyStatus, "любой текст без маркеров", "маркер в тексте без ключа слой не трогает")
+    }
+
+    /// №310: у слоёв есть владелец. Отбой демона (`sticky: false`) снимает
+    /// только свою тему; слой захвата («права на микрофон нет») переживает его.
+    func testDaemonClearDoesNotDropTheCaptureLayer() {
+        let s = SuflerService()
+        s.setSticky(SuflerService.StickyTopic.capture, "Права на микрофон нет — голос владельца не запишется")
+        s.consumeForTest(#"{"type":"status","text":"\#(warning)","sticky":true,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.stickyLayers.count, 2)
+        XCTAssertEqual(s.stickyStatus, warning + " · Права на микрофон нет — голос владельца не запишется",
+                       "оба факта на экране, потеря канала первой")
+        s.consumeForTest(#"{"type":"status","text":"✅ канал снова пишется","sticky":false,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.stickyStatus, "Права на микрофон нет — голос владельца не запишется",
+                       "отбой демона снял свой слой, слой захвата остался")
+        s.consumeForTest(#"{"type":"status","text":"⚠️ снова потеря","sticky":true}"#)
+        XCTAssertEqual(s.stickyLayers[SuflerService.StickyTopic.channelLoss], "⚠️ снова потеря",
+                       "демон без topic — тема потери канала (совместимость с 0.82)")
+    }
+
+    /// Слой уведомлений уступает слою демона по приоритету и возвращается на
+    /// экран после его снятия; старт чистит все слои.
+    func testNotificationsLayerYieldsAndReturns() {
+        let s = SuflerService()
+        s.noteNotificationsDenied()
+        XCTAssertEqual(s.stickyLayers.count, 1)
+        let notice = s.stickyStatus
+        XCTAssertNotNil(notice)
+        s.consumeForTest(#"{"type":"status","text":"\#(warning)","sticky":true,"topic":"channel_loss"}"#)
+        XCTAssertTrue(s.stickyStatus?.hasPrefix(warning) == true, "потеря канала выше подсказки об уведомлениях")
+        s.consumeForTest(#"{"type":"status","text":"ожил","sticky":false,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.stickyStatus, notice, "после отбоя подсказка снова видна, а не потеряна навсегда")
+        s.noteNotificationsDenied()
+        XCTAssertEqual(s.stickyLayers.count, 1, "один раз за встречу — флаг, не гонка слотов")
+        XCTAssertLessThan(SuflerService.stickyRank[SuflerService.StickyTopic.channelLoss]!,
+                          SuflerService.stickyRank[SuflerService.StickyTopic.capture]!)
+        XCTAssertLessThan(SuflerService.stickyRank[SuflerService.StickyTopic.capture]!,
+                          SuflerService.stickyRank[SuflerService.StickyTopic.notifications]!)
+    }
+
     func testStickyWithoutErrorFlagIsStillSticky() {
         // контракт: липкость и окраска — независимые ключи; липкость не
         // зависит от error
