@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+* **audio:** конструктор хаба без ввода-вывода и один гвард на проход потребителя (№311) ([#585](https://github.com/charoiteai/Charoite_audio/issues/585)) ([45e530f](https://github.com/charoiteai/Charoite_audio/commit/45e530f))
 * **audio:** потеря любого канала — одно событие с одним липким слоем ([#581](https://github.com/charoiteai/Charoite_audio/issues/581)) ([502c7bf](https://github.com/charoiteai/Charoite_audio/commit/502c7bfc831b4d1ab92eed483980bbc92be88795))
 * **graph:** мёртвые ссылки снимаются по факту графа, доктор видит не-UTF-8 ([#571](https://github.com/charoiteai/Charoite_audio/issues/571)) ([5b18ee4](https://github.com/charoiteai/Charoite_audio/commit/5b18ee45ce92b9d3d0946f82b43908eb0e238034))
 * **graph:** отложенная сущность на повторе получает псевдоним в узле-кандидате ([#574](https://github.com/charoiteai/Charoite_audio/issues/574)) ([6135147](https://github.com/charoiteai/Charoite_audio/commit/6135147bfd10e9b4328c75e4a97ad75c80fcc540))
