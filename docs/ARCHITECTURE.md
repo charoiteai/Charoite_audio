@@ -799,10 +799,19 @@ menu-bar icon and the menu status line read one verdict. The owners of the
 facts stay where they were: `PipelineHealthMonitor` (now also decoding the
 pump gauges: a dead pump is a stopped recording — critical; consecutive
 failed passes — a warning, №313), `MeetingProcessingService`,
-`OllamaRuntimeService` (the menu refreshes it instead of probing on its own),
-`NightlyStatusService` (title as a pure function; an hourly re-read so the
-icon does not show the state as of login; `.never` is "not configured" and is
-not a problem for the icon). The rank is pinned by a table test: **red is
+`OllamaRuntimeService` (a real `.unknown` state before the first probe — the
+old default `.running` made the icon assert a fact nobody had checked),
+`NightlyStatusService` (title as a pure function; `.never` without a launchd
+agent is "not configured" and not a problem for the icon, `.never` with an
+agent is a night that never ran). Freshness belongs to the owners through one
+scheduler, `HealthClock` (first read after launch, off the icon's render
+path, then one interval for everyone; the menu opening only triggers the same
+tick) — two signals with different cadences on one icon, and a view deciding
+when to probe, were the output round's Critical. Who colours which surface is
+one policy, `HealthPresentation`: the icon takes the worst tier, the dot next
+to "Recording" takes only the recording's tier, the menu line is ordered work
+→ problem → "Meeting ready" → idle, and the processing error is the owner's
+headline (`errorHeadline`), not a third dictionary. The rank is pinned by a table test: **red is
 reserved for data loss during a live recording** (disk failure, dead pump);
 a processing error, a silent Ollama, a slept night are yellow — the source is
 kept, an hour of pipeline or a night is lost, the recording is not. The dot

@@ -4,21 +4,25 @@ import XCTest
 
 /// №139: свёртка здоровья — таблица «состояние → ярус», один вход для иконки
 /// и строки меню. Красный — только «данные гибнут» при записи; всё прочее —
-/// жёлтое; ранг источников прибит (запись → обработка → Ollama → ночь).
+/// жёлтое; ранг источников прибит (запись → обработка → Ollama → ночь); слова
+/// — только владельцев; кто красит какую поверхность — `HealthPresentation`.
 final class HealthRollupTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_758_000_000)
 
     private func verdict(recording: PipelineHealthProblem? = nil, isRecording: Bool = false,
-                         processingError: Bool = false,
+                         processingError: String? = nil,
                          ollama: OllamaRuntime = .running,
-                         nightly: NightlyState = .ok(finished: Date())) -> HealthVerdict {
+                         nightly: NightlyState = .ok(finished: Date()),
+                         agent: Bool = true) -> HealthVerdict {
         HealthRollup.rollup(recording: recording, isRecording: isRecording,
-                            processingError: processingError, ollama: ollama, nightly: nightly)
+                            processingError: processingError, ollama: ollama,
+                            nightly: nightly, nightlyAgentConfigured: agent)
     }
 
     func testAllClearWhenOwnersReportNothing() {
         XCTAssertEqual(verdict(), .allClear)
         XCTAssertNil(verdict().headline)
+        XCTAssertEqual(verdict(ollama: .unknown), .allClear, "пробы ещё не было — не сигнал и не «работает»")
     }
 
     func testRedIsReservedForDataLossDuringRecording() {
@@ -30,7 +34,8 @@ final class HealthRollupTests: XCTestCase {
         // вне записи монитор хранит прошлое — не сигнал (гейт isRunning, как у pipelineStatusText)
         XCTAssertEqual(verdict(recording: .recordingUnavailable(channels: []), isRecording: false), .allClear)
         // ничто вне записи не даёт красного
-        let worst = verdict(processingError: true, ollama: .notInstalled(canUseBrew: false),
+        let worst = verdict(processingError: "Не удалось обработать встречу — стенограмма сохранена",
+                            ollama: .notInstalled(canUseBrew: false),
                             nightly: .failed(finished: now, steps: ["ядра"]))
         XCTAssertEqual(worst.tier, .degraded)
     }
@@ -44,36 +49,107 @@ final class HealthRollupTests: XCTestCase {
             XCTAssertEqual(verdict(nightly: state).tier, .degraded, "\(state)")
             XCTAssertEqual(verdict(nightly: state).headline, NightlyStatusService.title(for: state))
         }
-        for state in [NightlyState.ok(finished: now), .running(started: now), .never] {
-            XCTAssertEqual(verdict(nightly: state), .allClear, "\(state): норма или не настроено — не проблема иконки")
+        for state in [NightlyState.ok(finished: now), .running(started: now)] {
+            XCTAssertEqual(verdict(nightly: state), .allClear, "\(state): норма")
         }
+        // .never: без агента — не настроено, не проблема иконки; с агентом — ночь не отработала ни разу
+        XCTAssertEqual(verdict(nightly: .never, agent: false), .allClear)
+        XCTAssertEqual(verdict(nightly: .never, agent: true).tier, .degraded)
+        XCTAssertEqual(verdict(nightly: .never, agent: true).headline, NightlyStatusService.title(for: .never))
     }
 
-    func testOllamaIsDegradedWheneverNotRunningWithTheOwnersWords() {
+    func testOllamaIsDegradedWheneverProbedAndNotRunningWithTheOwnersWords() {
         let down = verdict(ollama: .installedNotRunning(launcher: .brewService))
         XCTAssertEqual(down.tier, .degraded)
         XCTAssertEqual(down.headline, OllamaRuntimeService.explanation(for: .installedNotRunning(launcher: .brewService)))
         XCTAssertEqual(verdict(ollama: .notInstalled(canUseBrew: true)).tier, .degraded)
+        XCTAssertEqual(OllamaRuntimeService.actionTitle(for: .unknown), "", "кнопки у «неизвестно» нет")
+        XCTAssertFalse(OllamaRuntimeService.explanation(for: .unknown).isEmpty)
+    }
+
+    func testProcessingUsesTheOwnersHeadlineNotItsOwnWords() {
+        let owner = "Статус обработки не появился — стенограмма сохранена, проверьте logs/"
+        let v = verdict(processingError: owner)
+        XCTAssertEqual(v.signals.map(\.source), [.processing])
+        XCTAssertEqual(v.headline, owner)
+        XCTAssertEqual(verdict(processingError: ""), .allClear, "пустой заголовок — ошибки нет")
     }
 
     func testSourcesAreOrderedByRankAndWorstTierWins() {
-        let all = verdict(recording: .lagging(backlogSeconds: 30), isRecording: true, processingError: true,
+        let all = verdict(recording: .lagging(backlogSeconds: 30), isRecording: true, processingError: "ошибка",
                           ollama: .notInstalled(canUseBrew: false), nightly: .stale(finished: now))
         XCTAssertEqual(all.signals.map(\.source), [.recording, .processing, .ollama, .nightly])
         XCTAssertEqual(all.tier, .degraded)
-        let critical = verdict(recording: .pumpDead, isRecording: true, processingError: true)
+        let critical = verdict(recording: .pumpDead, isRecording: true, processingError: "ошибка")
         XCTAssertEqual(critical.tier, .critical)
         XCTAssertEqual(critical.headline, PipelineHealthPresentation.text(for: .pumpDead))
-        // Ollama показывается раньше ночи; ни одна строка не пустая и все — от владельцев
-        let two = verdict(ollama: .notInstalled(canUseBrew: false), nightly: .stale(finished: now))
-        XCTAssertEqual(two.signals.map(\.source), [.ollama, .nightly])
-        XCTAssertTrue(two.signals.allSatisfy { !$0.text.isEmpty })
+        // ранг — свойство enum (Comparable), не порядок append
+        XCTAssertLessThan(HealthSource.recording, HealthSource.nightly)
+        XCTAssertEqual(HealthSource.allCases, HealthSource.allCases.sorted())
         XCTAssertEqual(HealthSource.allCases.count, 4, "новый источник — новая строка таблицы и тест")
+    }
+
+    func testPresentationChoosesSourcePerSurface() {
+        // здоровая запись при проспанной ночи: иконка жёлтая, точка записи — зелёная
+        let v = verdict(isRecording: true, nightly: .slept(finished: now, minutes: 300, steps: ["досье"]))
+        XCTAssertEqual(HealthPresentation.iconTier(v), .degraded)
+        XCTAssertEqual(HealthPresentation.recordingDotTier(v), .ok)
+        XCTAssertEqual(HealthPresentation.iconLabel(v), NightlyStatusService.title(for: .slept(finished: now, minutes: 300, steps: ["досье"])))
+        // деградация самой записи — точка жёлтая; отказ диска — красная
+        XCTAssertEqual(HealthPresentation.recordingDotTier(verdict(recording: .lagging(backlogSeconds: 40), isRecording: true)), .degraded)
+        XCTAssertEqual(HealthPresentation.recordingDotTier(verdict(recording: .recordingUnavailable(channels: []), isRecording: true)), .critical)
+    }
+
+    func testMenuLineOrderWorkAboveProblemAboveReadyAboveIdle() {
+        let problem = verdict(nightly: .slept(finished: now, minutes: 300, steps: ["досье"]))
+        // идёт работа — живая строка владельца, жалоба не вытесняет её (Critical DS круга 1)
+        let working = HealthPresentation.menuLine(problem, isRecording: false, isProcessing: true,
+                                                  processingText: "Распознаю речь…", hasReadyMeeting: false)
+        XCTAssertEqual(working.text, "Распознаю речь…")
+        XCTAssertNil(working.tier, "цвет активности — акцент, не ярус здоровья")
+        // проблема выше терминального «Встреча готова»
+        let complaining = HealthPresentation.menuLine(problem, isRecording: false, isProcessing: false,
+                                                      processingText: nil, hasReadyMeeting: true)
+        XCTAssertEqual(complaining.text, problem.headline)
+        XCTAssertEqual(complaining.tier, .degraded)
+        // без проблем — готовность, потом покой
+        let ready = HealthPresentation.menuLine(.allClear, isRecording: false, isProcessing: false,
+                                                processingText: nil, hasReadyMeeting: true)
+        XCTAssertEqual(ready.text, L.t("Встреча готова", "Meeting ready", "会议已就绪"))
+        XCTAssertEqual(ready.tier, .ok)
+        let idle = HealthPresentation.menuLine(.allClear, isRecording: false, isProcessing: false,
+                                               processingText: nil, hasReadyMeeting: false)
+        XCTAssertEqual(idle.tier, .ok)
+        // запись — всегда «Запись ·», цвет только по записи
+        let rec = HealthPresentation.menuLine(problem, isRecording: true, isProcessing: false,
+                                              processingText: nil, hasReadyMeeting: false)
+        XCTAssertTrue(rec.text.hasSuffix("·"))
+        XCTAssertEqual(rec.tier, .ok)
     }
 
     func testTierOrderingIsTotal() {
         XCTAssertLessThan(HealthTier.ok, .degraded)
         XCTAssertLessThan(HealthTier.degraded, .critical)
         XCTAssertEqual([HealthTier.degraded, .ok, .critical].max(), .critical)
+    }
+
+    /// Структурно: слова о фактах владельцев не рождаются в свёртке, вью меню-бара
+    /// не читает ярус мимо политики представления, свежесть — у одного планировщика
+    /// (Как чинить DS и GLM круга 1).
+    func testOwnershipGatesHold() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sources = app.appendingPathComponent("Sources/CharoiteApp")
+        let rollup = try String(contentsOf: sources.appendingPathComponent("Services/HealthRollup.swift"), encoding: .utf8)
+        let rollupBody = String(rollup[rollup.range(of: "enum HealthRollup {")!.lowerBound..<rollup.range(of: "enum HealthPresentation {")!.lowerBound])
+        XCTAssertFalse(rollupBody.contains("L.t("), "свёртка не сочиняет слов о фактах владельцев")
+        let menu = try String(contentsOf: sources.appendingPathComponent("Views/MenuBar/MenuBarView.swift"), encoding: .utf8)
+        XCTAssertFalse(menu.contains("verdict.tier") || menu.contains(".tier(of:"),
+                       "вью читает ярус только через HealthPresentation")
+        XCTAssertFalse(menu.contains(".refresh()"), "свежесть — у владельцев через HealthClock, не у вью")
+        let nightly = try String(contentsOf: sources.appendingPathComponent("Services/NightlyStatusService.swift"), encoding: .utf8)
+        XCTAssertFalse(nightly.contains("Timer.scheduledTimer"), "один планировщик на приложение, не таймер на владельца")
+        XCTAssertTrue(nightly.contains("private init() {}"), "init без чтения диска на пути рендера иконки")
+        let appFile = try String(contentsOf: sources.appendingPathComponent("App/CharoiteApp.swift"), encoding: .utf8)
+        XCTAssertTrue(appFile.contains("HealthClock.start()"))
     }
 }

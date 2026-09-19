@@ -140,22 +140,16 @@ final class NightlyStatusService: ObservableObject {
     static let shared = NightlyStatusService()
 
     @Published private(set) var status = NightlyStatus(state: .never)
-    private var timer: Timer?
+    /// Наш launchd-агент прописан. `.never` без агента — «не настроено» (свежая
+    /// установка), `.never` с агентом — ночь не отработала ни разу при живом
+    /// расписании, и это уже проблема (Important DS выходного круга по №139).
+    @Published private(set) var agentConfigured = false
 
-    /// Читать состояние ночи раз в час, пока приложение живёт. Ночь меняется
-    /// дважды в сутки, но иконка меню-бара — единственная поверхность, которая
-    /// видна без окна и без открытого меню, и без внешнего тика она показывала
-    /// бы состояние на момент логина (критика 2 DS входного круга по №139).
-    /// Не сторож и не демон (вердикт №68): чтение килобайтного JSON и списка
-    /// LaunchAgents; ничего не перезапускает.
-    static let refreshEvery: TimeInterval = 3600
-
-    private init() {
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.refreshEvery, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refresh() }
-        }
-    }
+    /// В `init` диска не читаем: иконка меню-бара наблюдает сервис и создаёт
+    /// его на первом кадре, а `refresh()` перебирает `~/Library/LaunchAgents`
+    /// и читает каждый plist на главном потоке (долг №267). Первое чтение и
+    /// каденцию задаёт один планировщик владельцев (`HealthClock`), не сервис.
+    private init() {}
 
     static var statusURL: URL {
         AppSettings.charoiteRoot.appendingPathComponent("logs/nightly.json")
@@ -168,6 +162,7 @@ final class NightlyStatusService: ObservableObject {
         let agents = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
         let script = NightlyStatus.agentScriptPath(inAgentsAt: agents)
+        agentConfigured = !(script ?? "").isEmpty
         if NightlyStatus.agentPointsElsewhere(agentScript: script,
                                               root: AppSettings.charoiteRoot) {
             status = NightlyStatus(state: .foreignScript(path: script ?? ""))

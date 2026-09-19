@@ -61,7 +61,8 @@ struct PipelineStageProbe: Equatable {
     /// на границе декодера (Critical DS входного круга по №139; №313).
     /// nil — демон без поля.
     let pumpAlive: Bool?
-    /// Проходов потребителя, упавших подряд, на момент hb (0 — норма).
+    /// Проходов потребителя, упавших подряд, на момент hb (0 — норма). Счётчик
+    /// общий для блока канала и сторожа — потерю аудио по нему не утверждать.
     let pumpFailures: Int?
 
     init(stage: String, stageAgeSeconds: TimeInterval, stalled: Bool, recordingOK: Bool?,
@@ -126,10 +127,13 @@ enum PipelineHealthPresentation {
                 "⛔️ The recording thread stopped — audio is not being saved, restart the recording",
                 "⛔️ 录音线程已停止——音频未写入，请重新开始录音")
         case .pumpFailing(let count):
+            // счётчик демона считает любой упавший проход потребителя — и блок
+            // канала, и сторож; о потере аудио говорит только `recording_ok`,
+            // поэтому здесь факт владельца, не обещание потери (Important DS)
             return L.t(
-                "⚠️ Сбои потока записи подряд: \(count) — часть аудио могла не дойти до файла",
-                "⚠️ Recording thread failures in a row: \(count) — some audio may be missing from the file",
-                "⚠️ 录音线程连续失败 \(count) 次——部分音频可能未写入文件")
+                "⚠️ Сбои потока записи подряд: \(count) — проверьте logs/",
+                "⚠️ Recording thread failures in a row: \(count) — check logs/",
+                "⚠️ 录音线程连续失败 \(count) 次——请查看 logs/")
         case .stalled(let stage, let seconds):
             let age = Int(seconds.rounded(.up))
             let title = stageTitle(stage)

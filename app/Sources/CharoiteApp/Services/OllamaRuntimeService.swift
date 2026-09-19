@@ -17,6 +17,11 @@ import Foundation
 /// Поэтому приложение само отвечает на три вопроса: установлена ли Ollama,
 /// запущена ли она, и если нет — что нажать.
 enum OllamaRuntime: Equatable {
+    /// Пробы ещё не было: до №139 дефолтом стояло `.running`, и единственная
+    /// всегда видимая поверхность (иконка меню-бара) утверждала заведомо
+    /// неверный факт до первого открытия меню (Critical DS и GLM выходного
+    /// круга). Неизвестное — не сигнал и не «работает».
+    case unknown
     /// Порт отвечает — рантайм готов.
     case running
     /// Бинарь есть, сервер молчит. Знаем, чем именно поднимать.
@@ -36,7 +41,7 @@ enum OllamaRuntime: Equatable {
 final class OllamaRuntimeService: ObservableObject {
     static let shared = OllamaRuntimeService()
 
-    @Published private(set) var state: OllamaRuntime = .running
+    @Published private(set) var state: OllamaRuntime = .unknown
     @Published private(set) var busy: String?
     @Published private(set) var failure: String?
 
@@ -67,7 +72,7 @@ final class OllamaRuntimeService: ObservableObject {
     /// Что написать на кнопке. Пустая строка — кнопки нет.
     nonisolated static func actionTitle(for state: OllamaRuntime) -> String {
         switch state {
-        case .running:
+        case .running, .unknown:
             return ""
         case .installedNotRunning:
             return L.t("Запустить", "Start", "启动")
@@ -79,6 +84,10 @@ final class OllamaRuntimeService: ObservableObject {
     /// Объяснение состояния — то, что человек читает до нажатия.
     nonisolated static func explanation(for state: OllamaRuntime) -> String {
         switch state {
+        case .unknown:
+            return L.t("Проверяю локальный движок моделей…",
+                       "Checking the local model runtime…",
+                       "正在检查本地模型运行时…")
         case .running:
             return L.t("Локальный движок моделей работает",
                        "The local model runtime is running",
@@ -115,7 +124,7 @@ final class OllamaRuntimeService: ObservableObject {
         guard busy == nil else { return }
         failure = nil
         switch state {
-        case .running:
+        case .running, .unknown:
             return
         case .installedNotRunning(.brewService):
             busy = L.t("запускаю…", "starting…", "启动中…")

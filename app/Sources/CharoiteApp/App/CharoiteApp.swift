@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.migrateSettingsFromOldBundle()
         MeetingNotificationService.shared.configure()
         MeetingProcessingService.shared.startMonitoring()
+        HealthClock.start()      // свежесть владельцев здоровья для иконки меню-бара (№139)
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
         // Папка импорта переживает перезапуск: тумблер в Настройках включён —
         // следим с первого запуска, не дожидаясь открытия настроек

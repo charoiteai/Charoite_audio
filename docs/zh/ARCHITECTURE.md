@@ -334,9 +334,13 @@ enum 的 reason（每个值只与设置它的代码点一起存在——`disk_fu
 `HealthRollup.rollup(recording:isRecording:processingError:ollama:nightly:)` 是紧邻
 `PipelineHealthPresentation` 的纯函数——该层本已拥有「一种呈现——多个界面」的规则；菜单栏图标与菜单状态行
 读取同一个裁决。事实的所有者留在原地：`PipelineHealthMonitor`（现在也解码泵计量：泵死亡即录音停止——
-严重；连续失败的遍次——警告，№313）、`MeetingProcessingService`、`OllamaRuntimeService`（菜单刷新它而不是
-自行探测）、`NightlyStatusService`（标题为纯函数；每小时重读，使图标不再显示登录时的状态；`.never` 表示
-「未配置」，对图标而言不是问题）。等级由表格测试钉死：**红色只留给实时录音中的数据丢失**（磁盘故障、
+严重；连续失败的遍次——警告，№313）、`MeetingProcessingService`、`OllamaRuntimeService`（首次探测前的真实 `.unknown` 状态——旧默认值 `.running` 让图标断言一个无人
+核实的事实）、`NightlyStatusService`（标题为纯函数；没有 launchd 代理时 `.never` 表示「未配置」，对图标
+而言不是问题；有代理时 `.never` 表示夜间处理从未运行）。新鲜度归所有者，通过唯一的调度器 `HealthClock`
+（启动后首次读取，不在图标的渲染路径上，之后所有者共用一个间隔；打开菜单只是触发同一次刷新）——同一图标上
+两个信号节奏不同、由视图决定何时探测，正是输出轮的严重问题。谁给哪个界面着色是一条策略 `HealthPresentation`：
+图标取最差等级，「录音中」旁的圆点只取录音等级，菜单行顺序为工作 → 问题 → 「会议已就绪」 → 空闲，处理错误
+使用所有者的标题（`errorHeadline`），而非第三份词典。等级由表格测试钉死：**红色只留给实时录音中的数据丢失**（磁盘故障、
 泵死亡）；处理错误、沉默的 Ollama、错过的夜间处理为黄色——源文件保留，丢失的是一小时流水线或一个夜晚，
 录音无损。「录音中」旁的圆点是录音的健康，而非 REC 指示灯：过去健康的录音是红色，而降级的录音是黄色，
 「放下一切去看录音」的反射在错误的颜色上被训练。没有新的守护进程、看门狗、Ollama 定时器或通知流：

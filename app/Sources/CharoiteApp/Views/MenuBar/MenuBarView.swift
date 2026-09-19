@@ -4,12 +4,13 @@ import SwiftUI
 
 /// Иконка в системной строке — единственное, что видно ВСЕГДА.
 ///
-/// Critical конвейера (запись не пишется на диск — isCritical пропускает
-/// только .recordingUnavailable; зависший STT остаётся жёлтым статусом в
-/// меню) раньше жил только внутри выпадающего меню: пока человек его не
-/// откроет — тишина (№110, advisory GLM по #431). Теперь сам символ
-/// меняется на предупреждающий; строка меню может отрисовать монохромно,
-/// поэтому носитель сигнала — форма символа, цвет — усилитель.
+/// До №110 критикал записи жил только внутри выпадающего меню: пока человек
+/// его не откроет — тишина. С №139 иконка рисует вердикт свёртки здоровья
+/// (`HealthRollup` → `HealthPresentation.iconTier`): красный треугольник —
+/// данные гибнут при живой записи (отказ диска, мёртвый насос), жёлтый круг —
+/// деградация без потери записи (обработка, Ollama, ночь), обычный символ —
+/// сигналов нет. Строка меню может отрисовать монохромно, поэтому носитель
+/// сигнала — форма символа, цвет — усилитель.
 struct MenuBarLabel: View {
     @ObservedObject private var sufler = SuflerService.shared
     @ObservedObject private var processing = MeetingProcessingService.shared
@@ -17,21 +18,19 @@ struct MenuBarLabel: View {
     @ObservedObject private var nightly = NightlyStatusService.shared
 
     var body: some View {
-        // свёртка №139: красный треугольник — только «данные гибнут» при записи;
-        // жёлтый круг — деградация без потери записи (обработка, Ollama, ночь);
-        // форма разная, потому что строка меню может отрисовать монохромно
-        switch MenuBarHealth.verdict(sufler: sufler, processing: processing,
-                                     ollama: ollama, nightly: nightly).tier {
+        let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
+                                            ollama: ollama, nightly: nightly)
+        switch HealthPresentation.iconTier(verdict) {
         case .critical:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
-                .accessibilityLabel(L.t("Критическая ошибка записи",
-                                        "Critical recording failure",
-                                        "录音出现严重故障"))
+                .accessibilityLabel(HealthPresentation.iconLabel(verdict)
+                                    ?? L.t("Критическая ошибка записи", "Critical recording failure", "录音出现严重故障"))
         case .degraded:
             Image(systemName: "exclamationmark.circle")
                 .foregroundStyle(Theme.warning)
-                .accessibilityLabel(L.t("Есть что проверить", "Needs attention", "需要注意"))
+                .accessibilityLabel(HealthPresentation.iconLabel(verdict)
+                                    ?? L.t("Есть что проверить", "Needs attention", "需要注意"))
         case .ok:
             Image(systemName: "brain.head.profile")
         }
@@ -39,16 +38,19 @@ struct MenuBarLabel: View {
 }
 
 /// Один вход свёртки для обеих поверхностей меню-бара: иконка и строка
-/// читают один вердикт, а не собирают своё из четырёх сервисов.
+/// читают один вердикт, а не собирают своё из четырёх сервисов. Слова — только
+/// владельцев: заголовок ошибки обработки — `errorHeadline`, Ollama —
+/// `explanation(for:)`, ночь — `title(for:)`.
 enum MenuBarHealth {
     @MainActor
     static func verdict(sufler: SuflerService, processing: MeetingProcessingService,
                         ollama: OllamaRuntimeService, nightly: NightlyStatusService) -> HealthVerdict {
         HealthRollup.rollup(recording: sufler.pipelineHealth.problem,
                             isRecording: sufler.isRunning,
-                            processingError: processing.isError,
+                            processingError: processing.errorHeadline,
                             ollama: ollama.state,
-                            nightly: nightly.status.state)
+                            nightly: nightly.status.state,
+                            nightlyAgentConfigured: nightly.agentConfigured)
     }
 }
 
@@ -68,28 +70,19 @@ struct MenuBarView: View {
     /// Приложение живёт в меню-баре, и окно после встречи обычно закрывают.
     /// Раньше здесь были только «Идёт запись» и «Готов»: всё, что случалось
     /// с встречей после «Стоп» — обработка, готовый результат, ошибка, —
-    /// было видно только в окне, то есть чаще всего нигде. С №139 приоритет
-    /// показа — у свёртки: проблема (запись → обработка → Ollama → ночь)
-    /// выше «Встреча готова», иначе лежащая Ollama сутки пряталась за готовой
-    /// встречей, а быстрый вопрос уходил в пустоту (Important GLM входного круга).
+    /// было видно только в окне, то есть чаще всего нигде. С №139 порядок —
+    /// у политики представления (`HealthPresentation.menuLine`): идёт работа →
+    /// проблема → «Встреча готова» → покой; лежащая Ollama сутки пряталась за
+    /// готовой встречей (Important GLM входного круга), а после первой версии
+    /// свёртки постоянная жалоба прятала живое «Обрабатываю…» (Critical DS).
     private var state: (text: String, color: Color) {
         let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
                                             ollama: ollama, nightly: nightly)
-        if sufler.isRunning {
-            // цвет точки — здоровье записи, не «REC»: красный только когда данные
-            // гибнут (Important DS входного круга)
-            return (L.t("Запись", "Recording", "录音中") + " ·", Self.color(for: verdict.tier))
-        }
-        if let headline = verdict.headline {
-            return (headline, Self.color(for: verdict.tier))
-        }
-        if processing.isProcessing {
-            return (L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), .accentColor)
-        }
-        if processing.actionTitle != nil {
-            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), Theme.ok)
-        }
-        return (L.t("Готов к записи", "Ready to record", "可以录音"), Theme.ok)
+        let line = HealthPresentation.menuLine(verdict, isRecording: sufler.isRunning,
+                                               isProcessing: processing.isProcessing,
+                                               processingText: processing.isProcessing ? processing.statusText : nil,
+                                               hasReadyMeeting: processing.actionTitle != nil)
+        return (line.text, line.tier.map(Self.color(for:)) ?? .accentColor)
     }
 
     private static func color(for tier: HealthTier) -> Color {
@@ -122,13 +115,9 @@ struct MenuBarView: View {
                         .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
                 }
             }
-            // владельцы фактов обновляются при открытии меню: Ollama — своей пробой
-            // (второго зонда во вью больше нет — Critical GLM входного круга), ночь —
-            // чтением nightly.json; иконка и строка читают их состояния через свёртку
-            .task {
-                nightly.refresh()
-                await ollama.refresh()
-            }
+            // открытие меню — повод освежить владельцев сразу, не дожидаясь тика
+            // планировщика; самих проб во вью нет (Critical GLM входного круга)
+            .task { await HealthClock.tick() }
 
             if let pipelineStatus = sufler.pipelineStatusText {
                 Text(pipelineStatus)
