@@ -1,0 +1,232 @@
+{
+  "generated": {
+    "at": "2026-09-19T18:06Z",
+    "head": "85bf212"
+  },
+  "order": [
+    "core",
+    "llm",
+    "graph",
+    "cloud",
+    "audio",
+    "meeting",
+    "app"
+  ],
+  "allowed": {
+    "core": [],
+    "llm": [
+      "core"
+    ],
+    "graph": [
+      "core",
+      "llm"
+    ],
+    "cloud": [
+      "core"
+    ],
+    "audio": [
+      "core"
+    ],
+    "meeting": [
+      "core",
+      "llm",
+      "graph",
+      "cloud",
+      "audio"
+    ],
+    "app": [
+      "core",
+      "llm",
+      "graph",
+      "cloud",
+      "audio",
+      "meeting"
+    ]
+  },
+  "layers": {
+    "core": [
+      "safe_write",
+      "file_locks",
+      "live_gate",
+      "frontmatter",
+      "redirects",
+      "config_loader",
+      "exit_codes",
+      "privacy",
+      "deps",
+      "media_meta",
+      "vocabulary"
+    ],
+    "llm": [
+      "llm",
+      "model_lease",
+      "llm_health",
+      "nli"
+    ],
+    "graph": [
+      "graphs",
+      "graph_names",
+      "graph_nodes",
+      "graph_links",
+      "dossier",
+      "graph_search",
+      "tier3"
+    ],
+    "cloud": [
+      "cloud"
+    ],
+    "audio": [
+      "audio",
+      "stt",
+      "stt_runtime",
+      "diarize",
+      "diarize_live",
+      "owner_voice",
+      "voice_pitch",
+      "channel_labels",
+      "frame_drops"
+    ],
+    "meeting": [
+      "meeting_stamp",
+      "meeting_source",
+      "meeting_thread",
+      "meeting_processing",
+      "meeting_archive",
+      "transcript",
+      "live_sidecar",
+      "channel_trace",
+      "action_items",
+      "speaker_names",
+      "review_bridge",
+      "name_fixes",
+      "rebuild_transcript",
+      "retro_fill",
+      "lexicon",
+      "thesis_rules",
+      "question_filter",
+      "hint_guard",
+      "autostop",
+      "busy_signals",
+      "fact_check",
+      "install_profile",
+      "graph_updater"
+    ],
+    "app": [
+      "daemon",
+      "main",
+      "mcp_server",
+      "dictate",
+      "dictate_note",
+      "transcribe_file",
+      "voice_memos_bridge",
+      "brain",
+      "charoite_paths"
+    ]
+  },
+  "allowed_edges": [
+    {
+      "from": "audio",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "audio",
+      "to": "meeting_stamp",
+      "ticket": "№322"
+    },
+    {
+      "from": "channel_labels",
+      "to": "speaker_names",
+      "ticket": "№322"
+    },
+    {
+      "from": "diarize",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "diarize",
+      "to": "llm",
+      "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа или Protocol)"
+    },
+    {
+      "from": "graph_updater",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "graphs",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "llm",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "llm_health",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "meeting_archive",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "rebuild_transcript",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "retro_fill",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    },
+    {
+      "from": "stt",
+      "to": "charoite_paths",
+      "ticket": "№321"
+    }
+  ],
+  "entry_points": [
+    "scripts/bench_extract.py",
+    "scripts/cloud_review.py",
+    "scripts/dedup_graph.py",
+    "scripts/forget_meeting.py",
+    "scripts/get_models.py",
+    "scripts/graph_doctor.py",
+    "scripts/graph_search_index.py",
+    "scripts/import_meeting.py",
+    "scripts/lock_runtime_deps.py",
+    "scripts/memory_bench.py",
+    "scripts/morning_brief.py",
+    "scripts/nightly_claude_cores.py",
+    "scripts/nightly_dossier.py",
+    "scripts/nightly_dossier_review.py",
+    "scripts/protocol.py",
+    "scripts/rename_meeting.py",
+    "scripts/sign_release_manifest.py",
+    "scripts/tier3_cores.py",
+    "scripts/wait_for_idle.py",
+    "src/daemon.py",
+    "src/dictate.py",
+    "src/dictate_note.py",
+    "src/dossier.py",
+    "src/graph_search.py",
+    "src/graph_updater.py",
+    "src/graphs.py",
+    "src/llm.py",
+    "src/privacy.py",
+    "src/rebuild_transcript.py",
+    "src/retro_fill.py",
+    "src/speaker_names.py",
+    "src/transcribe_file.py"
+  ],
+  "notes": {
+    "layers": "Таблица брифа владельца 19.09 с поправками архитектурного круга: tier3 — граф (импортирует llm, nli, frontmatter, redirects; не cloud), nli — llm, deps/media_meta/vocabulary — core (без зависимостей от репо), fact_check — meeting, install_profile — meeting до фазы 3 (импортирует graphs; вынос flag() в config_loader — №321), graph_updater целиком в meeting до разреза (№322), charoite_paths — app (корень снаружи — №321).",
+    "allowed_edges": "Рёбра против стрелок, существующие на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются (GLM: ручная арифметика расходилась 16/17). Карточка — где ребро снимается.",
+    "entry_points": "Пути, по которым код зовут Swift, make_app.sh, shell и python-подпроцессы. Переезд файла без правки вызывающих ломает запуск молча (DS C2/C3). Список — реальность, не желание: тест падает и на незаявленную точку, и на заявленную, которую никто не зовёт."
+  }
+}
