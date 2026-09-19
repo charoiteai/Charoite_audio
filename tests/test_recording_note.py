@@ -154,7 +154,7 @@ def test_rebuild_restores_the_summary_from_the_sidecar_into_the_tail(tmp_path):
     final = "# Встреча 2026-09-02_1021\n\n**Инга** [10:21]:\nречь\n"
     assert rebuild_transcript._with_recording_summary(live, final) == final, "событий нет — текст прежний"
     assert live_sidecar.remember(live, channel_trace.SIDECAR_KEY, json.dumps(EVENTS))
-    stamp = channel_trace._hm(channel_trace.last_event_at(EVENTS))
+    stamp = channel_trace.summary_line(EVENTS)[:5]                      # «HH:MM» последнего события
     once = rebuild_transcript._with_recording_summary(live, final)
     assert once.count(NOTE) == 1 and transcript.NOTES_HEAD in once
     assert transcript.speech_of(once) == transcript.speech_of(final), "итог — в хвосте, не в речи"
@@ -295,6 +295,8 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     gen = rf[rf.index("def gen("):rf.index("\ndef ", rf.index("def gen(") + 1)]
     assert gen.index("transcript[:24000]") < gen.index("client.recording_block(note)") < gen.index("+ task")
     assert rf.count("note=source.recording_note") == 2 and "speech_sha = source.sha()" in rf
+    assert "meeting_source.of(f, text)" in rf and "meeting_source.of(f, text, bare)" not in rf, \
+        "источник — по прямому сайдкару, штамп bare читателю не передаётся (Critical DS/GLM круга 1)"
 
     mcp = (ROOT / "src" / "mcp_server.py").read_text(encoding="utf-8")
     fn = mcp[mcp.index("def sufler_make_minutes"):mcp.index("def sufler_hints")]
@@ -304,8 +306,66 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
 
     rt = (ROOT / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
     fin = rt[rt.index("def finalize_minutes("):rt.index("def _fallback_restamp(")]
-    assert "source = meeting_source.of(live, final_text)" in fin and "== source.sha()" in fin
+    assert "source = meeting_source.of(live, final_text)" in fin and "source.matches(" in fin
+    assert "meeting_source.of(live, edited).matches(" in rt, "второй читатель паспорта — тем же источником"
+    assert "_sha(_speech(" not in rt, "хеш голой речи как источник производной — прохода мимо MeetingSource нет"
+    gu2 = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    assert "debrief = meeting_source.with_note(debrief, source.recording_note)" in gu2, "живой разбор — со строкой итога"
+    assert "context = meeting_source.content_of(" in gu2, "извлечение — по содержанию без следа записи"
+    assert "_capped(minutes_p2.read_text(encoding='utf-8'), MINUTES_IN_DEBRIEF)" in gu2
     assert "LLM(cfg).minutes(speech, recording_note=source.recording_note)" in fin
     assert "fact_check.annotate(doc, source.canon())" in fin and "meeting_source.with_note(doc, source.recording_note)" in fin
     passport = rt[rt.index("def record_minutes_passport("):rt.index("\ndef ", rt.index("def record_minutes_passport(") + 1)]
     assert "meeting_source.of(live, final_text).sha()" in passport, "паспорт — тем же объектом, что fresh-проверка"
+
+
+def test_a_titled_meeting_reads_the_same_sidecar_on_every_path(tmp_path, monkeypatch):
+    """Critical DS и GLM круга 1: после наката темы сайдкар лежит под именем с
+    темой; чтение по посекундному штампу `bare` видело пустоту, и ретро-обход
+    считал хеш без оговорки, пока живой путь — с ней. Один сайдкар на всех."""
+    _quiet(monkeypatch)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-09-02_1021_Смета.md"
+    text = "# Встреча 2026-09-02_1021 — Смета\n" + SPEECH
+    live.write_text(text, encoding="utf-8")
+    assert live_sidecar.remember(live, channel_trace.SIDECAR_KEY, json.dumps(EVENTS))
+    assert [p.name for p in tdir.glob("*.live.json")] == ["2026-09-02_1021_Смета.md.live.json"]
+    src = meeting_source.of(live, text)
+    assert src.recording_note == NOTE, "источник читает прямой сайдкар файла с темой"
+    cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "m"},
+           "log": {"transcripts_dir": "transcripts"}, "sufler": {"user_name": "Владелец"}}
+    made = retro_fill.process(live, cfg, tmp_path / "graph", tdir)
+    assert "разбор" in " ".join(made)
+    meta = live_sidecar.read(live)
+    assert meta["debrief_source_sha256"] == src.sha() == meta["minutes_source_sha256"]
+    assert src.matches(meta["debrief_source_sha256"]) and not src.matches(live_sidecar.sha(src.speech))
+    _FakeLLM.calls = []
+    again = retro_fill.process(live, cfg, tmp_path / "graph", tdir)
+    assert _FakeLLM.calls == [], f"второй прогон по тому же источнику модель не зовёт: {again}"
+
+
+def test_content_for_extraction_keeps_theses_and_drops_the_recording_trace():
+    """Important DS круга 1: след записи в хвосте (событие канала, итог) уходил
+    в извлечение узлов графа как содержание встречи."""
+    tail = (transcript.NOTES_HEAD + transcript.NOTES_SUFFIX
+            + "\n> 10:30 📌 КТ: смета\n"
+            + "> 10:32 ⚠️ системный звук (собеседники) пропал (10:31) — дальше запись без собеседников\n"
+            + "> 10:40 ✅ системный звук (собеседники) снова пишется с 10:40; без собеседников было 9 мин\n"
+            + f"> 11:00 {NOTE}\n")
+    text = "# Встреча\n**Инга** [10:21]:\nречь про ⚠️ и 📋 в самой речи\n" + tail
+    content = meeting_source.content_of(text)
+    assert "речь про ⚠️ и 📋 в самой речи" in content and "📌 КТ: смета" in content
+    assert "пропал (10:31)" not in content and "снова пишется" not in content and NOTE not in content
+    assert transcript.speech_of(content) == transcript.speech_of(text), "речь не тронута"
+    assert meeting_source.content_of("# Встреча\nречь\n") == "# Встреча\nречь\n"
+    assert channel_trace.summary_line(EVENTS).endswith(NOTE) and channel_trace.summary_line([]) is None
+
+
+def test_with_note_dedups_by_the_canonical_text_not_the_mark():
+    """Критика DS круга 1: модель, пересказавшая оговорку своими словами с тем
+    же значком, не должна отменять машинную строку с интервалами и суммой."""
+    paraphrased = "# Минутки\n## Риски\n- " + channel_trace.SUMMARY_MARK + ": часть встречи без собеседников\n"
+    out = meeting_source.with_note(paraphrased, NOTE)
+    assert out.count(NOTE) == 1 and out.count(channel_trace.SUMMARY_MARK) == 2
+    assert meeting_source.with_note(out, NOTE) == out

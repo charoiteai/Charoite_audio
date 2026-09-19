@@ -44,12 +44,34 @@ class MeetingSource:
     def sha(self) -> str:
         return live_sidecar.sha(self.canon())
 
+    def matches(self, stored) -> bool:
+        """Собрана ли производная по ЭТОМУ источнику: сравнение хеша из паспорта
+        — только здесь. Второй читатель `minutes_source_sha256` в пересборке
+        сравнивал с голой речью и после появления оговорки не совпадал никогда
+        (Critical GLM / Important DS выходного круга по №317)."""
+        stored = live_sidecar.valid_sha(stored)
+        return stored is not None and stored == self.sha()
 
-def of(live: pathlib.Path, text: str, bare: str | None = None) -> MeetingSource:
+
+def of(live: pathlib.Path, text: str) -> MeetingSource:
     """Источник по файлу стенограммы и его сайдкару — единственный способ
     получить и речь, и оговорку; прямое чтение файла у потребителя производных
-    источником не считается."""
-    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live, bare))
+    источником не считается. Сайдкар — только прямой (`live_sidecar.sidecar_for`
+    без штампа): ретро-обход передавал сюда посекундный штамп `bare`, а после
+    наката темы сайдкар под ним не существует — оговорка терялась, и два
+    писателя одной производной считали разные хеши (Critical DS и GLM
+    выходного круга по №317). Штамп нужен только писателю до переезда пары
+    (`ChannelTrace`) — у читателей его нет."""
+    return MeetingSource(transcript.speech_of(text), channel_trace.recording_note(live))
+
+
+def content_of(text: str) -> str:
+    """Содержание встречи для ИЗВЛЕЧЕНИЯ (узлы графа, факты памяти): речь и
+    живые тезисы контура, без следа записи в хвосте — строк события канала и
+    итога «запись неполная». Факт о записи не тема встречи и не факт памяти
+    (Important DS выходного круга по №317)."""
+    return "\n".join(line for line in text.splitlines()
+                     if not channel_trace.is_trace_line(line)) + ("\n" if text.endswith("\n") else "")
 
 
 def live(speech: str, note: str | None) -> MeetingSource:
@@ -62,6 +84,9 @@ def with_note(doc: str, note: str | None) -> str:
     """Механически дописать оговорку в конец документа: поручение модели
     «отметь пропуск в Рисках» непроверяемо, а протокол без строки внешне
     неотличим от полного (критика GLM входного круга). Уже есть — не дублировать."""
-    if not note or channel_trace.SUMMARY_MARK in doc:
+    # дедуп — по каноническому тексту, не по маркеру: модель, пересказавшая
+    # оговорку своими словами с тем же значком, не должна отменять машинную
+    # строку с интервалами и суммой (критика DS выходного круга)
+    if not note or note in doc:
         return doc
     return doc.rstrip() + "\n\n" + note + "\n"

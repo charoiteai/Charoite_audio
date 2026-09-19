@@ -110,7 +110,10 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     stamp = meeting_stamp.graph_key(tdir, f.stem, graph)
     slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
     text = f.read_text(encoding="utf-8")
-    source = meeting_source.of(f, text, bare)          # речь + оговорка о записи (№317)
+    # речь + оговорка о записи (№317) — по ПРЯМОМУ сайдкару, как у живого пути:
+    # со штампом `bare` после наката темы сайдкара нет, и хеш расходился с
+    # graph_updater (Critical DS и GLM выходного круга)
+    source = meeting_source.of(f, text)
     speech_sha = source.sha()
     meta = live_sidecar.read(f) or {}
     made: list[str] = []

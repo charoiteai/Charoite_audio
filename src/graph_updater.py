@@ -26,6 +26,7 @@ import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
+import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
 import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
@@ -2489,7 +2490,10 @@ def main():
     # модели, получала в графе подпись «дословно из стенограммы» — то есть
     # проверка выдумок подтверждалась выдумкой (аудит графа 26.08, Codex
     # Critical). Сверка цитат идёт только по `speech`.
-    context = tpath.read_text(encoding="utf-8")
+    # содержание без следа записи в хвосте (строки события канала и итог
+    # «запись неполная» — факт о записи, не тема встречи и не факт памяти;
+    # Important DS выходного круга по №317)
+    context = meeting_source.content_of(tpath.read_text(encoding="utf-8"))
     # `speech` — только сказанное: секцию «Ко-мышление» в конце пишет модель
     # по ходу встречи, и цитата, найденная там, получала бы подпись живого
     # человека с его временем (круг-5 по PR #438, GLM Critical 1).
@@ -2787,7 +2791,10 @@ def main():
         file_text = tpath.read_text(encoding="utf-8")
         source = meeting_source.of(tpath, file_text)
         speech_sha = source.sha()
-        cothinking = transcript_mod2.notes_of(file_text)[-40:]
+        # живые тезисы — без строк следа записи: итог «📋» здесь был бы подписан
+        # «заметка модели», а строкой ниже пришёл бы блоком об оговорке (Minor DS)
+        cothinking = [ln for ln in transcript_mod2.notes_of(file_text)
+                      if not channel_trace.is_trace_line(ln)][-40:]
         d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", speech_sha)
         if not live_sidecar.wants_build(d_state, live_sidecar.POLICY_LIVE):
             # сознательный пропуск, не сбой: строка говорит «оставлен», а не «не удался»
@@ -2807,7 +2814,10 @@ def main():
         # («повестка 10:33» в разборе встречи 15:33 — ревизия L4 11.09, №241)
         llm_client = LLM(cfg)
         minutes_p2 = tpath.with_name(tpath.stem + "_minutes.md")
-        minutes_block = (f"[МИНУТКИ]\n{minutes_p2.read_text(encoding='utf-8')}\n\n"
+        # потолок: минутки шли внутрь окна `debrief_excerpt` и резались вместе с
+        # ним; отдельным блоком без потолка они выталкивали бы из num_ctx 8192
+        # голову промпта (Important DS выходного круга)
+        minutes_block = (f"[МИНУТКИ]\n{_capped(minutes_p2.read_text(encoding='utf-8'), MINUTES_IN_DEBRIEF)}\n\n"
                          if minutes_p2.exists() else "")
         # Порядок блоков: речь (окно от КОНЦА РЕЧИ, не файла) → живые тезисы
         # контура отдельным блоком (мысли модели, не речь; DS: 📌 КТ разбору
@@ -2843,6 +2853,9 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
+            # строка о неполной записи — механически, как у минуток и ретро-разбора:
+            # упомянула ли модель пропуск — непроверяемо (Important GLM выходного круга)
+            debrief = meeting_source.with_note(debrief, source.recording_note)
             # шапка честно называет автора: облачная ревизия рядом сверяет и
             # снимает ошибки, а сам разбор остаётся черновиком (№241)
             body = f"<!-- {stamp} · {title or 'встреча'} -->\n{DEBRIEF_NOTE}\n" + debrief
@@ -2934,6 +2947,18 @@ def main():
     # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.
     if not graph_ok and not graph_off:
         sys.exit(EXIT_NO_GRAPH)
+
+
+MINUTES_IN_DEBRIEF = 6000   # знаков минуток в промпте разбора (финал ≤ 900, черновик — без потолка)
+
+
+def _capped(text: str, limit: int) -> str:
+    """Документ в промпт с потолком: голова и хвост с честной пометкой, как у
+    `debrief_excerpt`."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return text[:half] + "\n\n[… середина минуток опущена …]\n\n" + text[-half:]
 
 
 def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> str:

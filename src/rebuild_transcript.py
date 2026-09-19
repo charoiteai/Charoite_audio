@@ -498,7 +498,9 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # пересборка живого черновика) — как прежде, распознаём.
     edited = human_edited_transcript(live, meta)
     if edited is not None:
-        if live_sidecar.valid_sha((meta or {}).get("minutes_source_sha256")) == _sha(_speech(edited)):
+        # тем же источником (речь + оговорка), что писатель паспорта: сравнение
+        # с голой речью после появления оговорки не совпадало никогда (№317)
+        if meeting_source.of(live, edited).matches((meta or {}).get("minutes_source_sha256")):
             log("стенограмма правлена руками, минутки уже собраны по этому тексту — "
                 "ничего не меняю")
             return live
@@ -941,18 +943,15 @@ def _with_recording_summary(live: pathlib.Path, final_text: str) -> str:
     без секции строка ушла бы в речь и дублировалась на каждом прогоне
     (Critical DS входного круга). Уже есть — не дублировать; неоднозначный
     сайдкар (две встречи в минуту) — событий нет, и об этом говорим."""
-    events = channel_trace.events_of(live)
-    note = channel_trace.summary_of(events)
-    if not note:
+    line = channel_trace.summary_line(channel_trace.events_of(live))
+    if not line:
         if live_sidecar.sidecar_for(live) is None:
             log("сайдкар неоднозначен — итог по каналам не восстановлен")
         return final_text
     if channel_trace.SUMMARY_MARK in final_text:
         return final_text
-    at = channel_trace.last_event_at(events)
-    stamp = channel_trace._hm(at) if at else ""
     log("итог по каналам записи восстановлен из сайдкара")
-    return transcript.append_note(final_text, f"{stamp} {note}".strip())
+    return transcript.append_note(final_text, line)
 
 
 def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
@@ -1101,8 +1100,8 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # микрофона; GLM Minor-5).
     source = meeting_source.of(live, final_text)
     speech = source.speech
-    if current is not None and live_sidecar.valid_sha(
-            meta.get("minutes_source_sha256") if isinstance(meta, dict) else None) == source.sha():
+    if current is not None and source.matches(
+            meta.get("minutes_source_sha256") if isinstance(meta, dict) else None):
         # машинные минутки уже собраны по этой самой речи: повторный клик без
         # правок не должен перегенерировать протокол — обещание стояло в
         # комментарии при записи хеша, а читал хеш только путь правленой

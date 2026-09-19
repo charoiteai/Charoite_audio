@@ -243,14 +243,15 @@ def summary_of(events: list[dict]) -> str | None:
     return SUMMARY_MARK + ": " + "; ".join(parts)
 
 
-def events_of(live: pathlib.Path, bare: str | None = None) -> list[dict]:
+def events_of(live: pathlib.Path) -> list[dict]:
     """События канала из сайдкара стенограммы. Писатель `_persist` кладёт
     список JSON-СТРОКОЙ (контракт `remember` — строковые значения), читатель
     обязан это знать — пара писатель/читатель в одном модуле (Important GLM
     входного круга по №316). Мусор, чужой тип, неоднозначный сайдкар → []:
-    нет событий — нет оговорки, поведение как до №234."""
+    нет событий — нет оговорки, поведение как до №234. Сайдкар — прямой:
+    штамп `bare` знает только писатель до переезда пары (см. `meeting_source.of`)."""
     try:
-        meta = live_sidecar.read(live, bare) or {}
+        meta = live_sidecar.read(live) or {}
     except Exception:  # noqa: BLE001
         return []
     raw = meta.get(SIDECAR_KEY)
@@ -264,12 +265,41 @@ def events_of(live: pathlib.Path, bare: str | None = None) -> list[dict]:
     return raw
 
 
-def recording_note(live: pathlib.Path, bare: str | None = None) -> str | None:
+def recording_note(live: pathlib.Path) -> str | None:
     """Оговорка о неполной записи по сайдкару — та же строка, что демон пишет
     на стопе; None, если событий нет."""
-    return summary_of(events_of(live, bare))
+    return summary_of(events_of(live))
 
 
 def last_event_at(events: list[dict]) -> float | None:
     ats = [e.get("at") for e in events if isinstance(e.get("at"), (int, float))]
     return max(ats) if ats else None
+
+
+def summary_line(events: list[dict]) -> str | None:
+    """Готовая строка итога для хвоста «Ко-мышления» — со штампом последнего
+    события, как у строк живого контура. Формат строки целиком здесь:
+    пересборка не собирает её по кусочкам из приватных хелперов (Minor DS и
+    GLM выходного круга по №316)."""
+    note = summary_of(events)
+    if not note:
+        return None
+    at = last_event_at(events)
+    return f"{_hm(at)} {note}" if at else note
+
+
+_TRACE_PREFIXES = tuple(f"{sign} {name}" for name in NAMES.values() for sign in ("⚠️", "✅"))
+
+
+def is_trace_line(line: str) -> bool:
+    """Строка хвоста — след записи (событие канала из `render` или итог
+    `summary_of`), а не мысль модели. Единственный писатель этих строк — этот
+    модуль, поэтому и правило «что считать следом» живёт здесь: потребители
+    (извлечение графа, блок ко-мышления в разборе) не различают их по
+    префиксам сами."""
+    body = line.strip()
+    if body.startswith("> "):
+        body = body[2:].strip()
+    if len(body) > 6 and body[2] == ":" and body[:2].isdigit() and body[3:5].isdigit():
+        body = body[5:].strip()          # «HH:MM » — штамп строки хвоста
+    return body.startswith(SUMMARY_MARK) or body.startswith(_TRACE_PREFIXES)
