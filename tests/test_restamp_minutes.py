@@ -11,6 +11,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import llm as llm_mod  # noqa: E402
 import rebuild_transcript  # noqa: E402
 import transcript  # noqa: E402
 
@@ -200,10 +201,14 @@ class _FakeLLM:
     answer = "# Минутки\n**Участники:** Инга, Марк\n## Поручения\n- [ ] **Инга** — прислать смету — до 05.09\n"
     fail = False
 
+    lang = "ru"
+
     def __init__(self, cfg):
         pass
 
-    def minutes(self, text):
+    recording_block = llm_mod.LLM.recording_block   # настоящий блок, взят до подмены llm.LLM
+
+    def minutes(self, text, recording_note=None):
         _FakeLLM.calls.append(text)
         if _FakeLLM.fail:
             raise RuntimeError("ollama лежит")
@@ -313,7 +318,7 @@ def test_document_that_appeared_during_generation_is_not_overwritten(tmp_path, m
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
 
     class _LateWriter(_FakeLLM):
-        def minutes(self, text):
+        def minutes(self, text, recording_note=None):
             mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
             yield _FakeLLM.answer
 
@@ -359,7 +364,7 @@ def test_foreign_overwrite_of_draft_plus_model_failure_is_not_claimed(tmp_path, 
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
 
     class _OverwriteThenFail(_FakeLLM):
-        def minutes(self, text):
+        def minutes(self, text, recording_note=None):
             mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
             raise RuntimeError("ollama лежит")
             yield  # noqa: unreachable
@@ -399,7 +404,7 @@ def test_model_failure_with_late_foreign_file_does_not_claim_it(tmp_path, monkey
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
 
     class _LateThenFail(_FakeLLM):
-        def minutes(self, text):
+        def minutes(self, text, recording_note=None):
             mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
             raise RuntimeError("ollama лежит")
             yield  # noqa: unreachable — генератор

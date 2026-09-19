@@ -17,6 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import llm  # noqa: E402
 import mcp_server  # noqa: E402
 
 
@@ -92,6 +93,9 @@ def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypat
     seen = {}
 
     class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+
         def fit(self, transcript):
             return "[сжато: сводки частей]"
 

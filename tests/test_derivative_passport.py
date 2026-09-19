@@ -21,6 +21,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import live_sidecar  # noqa: E402
+import llm as llm_mod  # noqa: E402
 import meeting_archive  # noqa: E402
 import meeting_stamp  # noqa: E402
 import rebuild_transcript  # noqa: E402
@@ -40,7 +41,8 @@ def test_speech_of_ignores_the_title_and_the_notes_tail():
     speech = SPEECH.rstrip("\n")
     assert transcript.speech_of(bare) == transcript.speech_of(titled) == transcript.speech_of(with_notes) == speech
     assert transcript.speech_of(SPEECH) == speech, "без заголовка — весь текст"
-    assert rebuild_transcript._speech(with_notes) == speech, "пересборка живёт тем же правилом"
+    assert "_speech(" not in (REPO / "src" / "rebuild_transcript.py").read_text(encoding="utf-8"), \
+        "у пересборки нет своего правила речи — только transcript.speech_of через MeetingSource"
     # хвостовые переводы строк — не речь: первая же заметка ко-мышления или след
     # канала (№234) иначе сдвигали бы хеш источника на один «\n»
     assert transcript.speech_of(titled + "\n\n") == transcript.speech_of(titled + transcript.NOTES_HEAD + "\n> 10:22 📌 x\n")
@@ -91,11 +93,16 @@ def test_debrief_path_follows_the_graph_key_like_graph_updater(tmp_path):
 
 class _FakeLLM:
     calls: list[str] = []
+    lang = "ru"
 
     def __init__(self, cfg):
         pass
 
-    def minutes(self, text):
+    # настоящий блок об оговорке (тесты №317 ищут его в промпте); берётся до
+    # подмены llm.LLM подделкой — иначе рекурсия
+    recording_block = llm_mod.LLM.recording_block
+
+    def minutes(self, text, recording_note=None):
         _FakeLLM.calls.append(("minutes", text))
         yield "# Минутки\n**Участники:** Инга\n## Поручения\n- [ ] **Инга** — смета — до 05.09\n"
 
@@ -229,7 +236,7 @@ def test_import_tail_runs_retro_fill_for_its_own_transcript_only():
     assert 'str(CODE / "src" / "retro_fill.py"), str(tpath)]' in src
     gu = (REPO / "src" / "graph_updater.py").read_text(encoding="utf-8")
     i = gu.index("derivative_state(dpath")
-    assert i < gu.index("debrief = LLM(cfg).complete("), "владение разбора — до вызова модели"
+    assert i < gu.index("debrief = llm_client.complete("), "владение разбора — до вызова модели"
     assert "expect=d_before" in gu and 'live_sidecar.attest(tpath, "debrief"' in gu
 
 
