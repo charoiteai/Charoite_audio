@@ -221,8 +221,10 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
                       source_sha: str) -> bool:
+    """Записалось ли: шов возвращает состояние после записи или None (№314);
+    ретро-отчёту нужен только факт записи — состояние он печатает отдельно."""
     return live_sidecar.write_derivative(live, path, kind, body, source_sha,
-                                         log=lambda msg: print(f"ретро: {msg}", file=sys.stderr))
+                                         log=lambda msg: print(f"ретро: {msg}", file=sys.stderr)) is not None
 
 
 def _minute(stem: str) -> str | None:
