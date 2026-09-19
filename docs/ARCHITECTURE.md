@@ -828,6 +828,50 @@ a line in the document (№317), not as a stray line inside a minutes excerpt.
 The manifest carries no copy of the passport state — readers ask
 `summary_state()`.
 
+**System health has one rollup and two surfaces, not four private
+verdicts.** Before №139 every health signal had its own surface and its own
+lifetime: recording problems lived in `SuflerService` and only during a
+meeting; the last processing error was a line inside the menu; the nightly
+pass was visible only on the "Today" screen, and its service was created
+lazily when that screen appeared — on 19.09 `logs/nightly.json` said `slept`
+with four steps skipped and nobody had read it; Ollama was probed a second
+time from inside the menu view with the result stored in a view `@State`,
+unlocalized and hidden for a day behind "Meeting ready"; the daemon's
+`pump_alive`/`pump_failures` gauges arrived in every heartbeat since №311 and
+died at the decoder boundary. The input round (DS and GLM) converged on one
+mechanism and rejected two: extending the meeting-scoped sticky layers
+(they are cleared on every start and have no lifetime outside a meeting) and
+a new service with a `HealthReportable` protocol (a ceremony for five writers
+and one reader). Now `HealthRollup.rollup(recording:isRecording:processingError:
+ollama:nightly:)` is a pure function next to `PipelineHealthPresentation` —
+the layer that already owns "one presentation for many surfaces" — and the
+menu-bar icon and the menu status line read one verdict. The owners of the
+facts stay where they were: `PipelineHealthMonitor` (now also decoding the
+pump gauges: a dead pump is a stopped recording — critical; consecutive
+failed passes — a warning, №313), `MeetingProcessingService`,
+`OllamaRuntimeService` (a real `.unknown` state before the first probe — the
+old default `.running` made the icon assert a fact nobody had checked),
+`NightlyStatusService` (title as a pure function; `.never` without a launchd
+agent is "not configured" and not a problem for the icon, `.never` with an
+agent is a night that never ran). Freshness belongs to the owners through one
+scheduler, `HealthClock` (first read after launch, off the icon's render
+path, then one interval for everyone; the menu opening only triggers the same
+tick) — two signals with different cadences on one icon, and a view deciding
+when to probe, were the output round's Critical. Who colours which surface is
+one policy, `HealthPresentation`: the icon takes the worst tier, the dot next
+to "Recording" takes only the recording's tier, the menu line is ordered work
+→ problem → "Meeting ready" → idle, and the processing error is the owner's
+headline (`errorHeadline`), not a third dictionary. The rank is pinned by a table test: **red is
+reserved for data loss during a live recording** (disk failure, dead pump);
+a processing error, a silent Ollama, a slept night are yellow — the source is
+kept, an hour of pipeline or a night is lost, the recording is not. The dot
+next to "Recording" is the recording's health, not a REC light: a healthy
+recording used to be red, a degraded one yellow — the reflex "drop everything
+and look at the recording" was being trained on the wrong colour. No new
+daemon, watchdog, timer for Ollama or notification stream: the verdict №68
+stands — the rollup folds signals that already exist. Free-disk pre-flight is
+a new signal and a separate card (№319).
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the
