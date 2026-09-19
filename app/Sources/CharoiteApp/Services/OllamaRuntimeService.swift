@@ -110,7 +110,11 @@ final class OllamaRuntimeService: ObservableObject {
     // MARK: - Действия
 
     func refresh() async {
-        let responding = await Self.responds()
+        // проба не состоялась (задача отменена — вью меню закрылась раньше ответа):
+        // факт неизвестен, прежнее состояние не трогаем. `try?` превращал отмену в
+        // «порт молчит», и иконка утверждала «не запущен» при живом движке до
+        // следующего тика (Critical DS / Important GLM круга 2 по №139)
+        guard let responding = await Self.responds(), !Task.isCancelled else { return }
         let brew = Self.brewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         state = Self.decide(responding: responding,
                             brewBinary: brew,
@@ -147,7 +151,7 @@ final class OllamaRuntimeService: ObservableObject {
         // Сервер поднимается не мгновенно: ждём ответа порта, а не факта
         // запуска процесса — иначе скажем «готово» раньше времени.
         for _ in 0..<20 {
-            if await Self.responds() { break }
+            if await Self.responds() == true { break }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         busy = nil
@@ -161,17 +165,25 @@ final class OllamaRuntimeService: ObservableObject {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    private static func responds() async -> Bool {
+    /// Три исхода, не два: ответил / не ответил / проба не состоялась (nil).
+    /// Отмена задачи — не «порт молчит».
+    private static func responds() async -> Bool? {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/tags") else { return false }
         let cfg = URLSessionConfiguration.ephemeral
         // Локальный адрес мимо системного прокси: 13.08 прокси в системных
         // настройках отправлял в туннель даже обращения к 127.0.0.1.
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 3
-        guard let (_, response) = try? await URLSession(configuration: cfg).data(from: url) else {
+        do {
+            let (_, response) = try await URLSession(configuration: cfg).data(from: url)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch is CancellationError {
+            return nil
+        } catch let error as URLError where error.code == .cancelled {
+            return nil
+        } catch {
             return false
         }
-        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     private func run(_ tool: String, _ args: [String]) async {

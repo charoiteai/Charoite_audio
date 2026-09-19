@@ -90,7 +90,7 @@ enum HealthRollup {
     static func rollup(recording: PipelineHealthProblem?, isRecording: Bool,
                        processingError: String?,
                        ollama: OllamaRuntime,
-                       nightly: NightlyState, nightlyAgentConfigured: Bool = false) -> HealthVerdict {
+                       nightly: NightlyState, nightlyAgentConfigured: Bool) -> HealthVerdict {
         var signals: [HealthSignal] = []
         if isRecording, let recording {
             signals.append(HealthSignal(source: .recording,
@@ -132,21 +132,40 @@ enum HealthPresentation {
     /// Строка меню: идёт работа → проблема → терминальное состояние → покой.
     /// «Проблема выше готовности» писалось про терминальное «Встреча готова»,
     /// а не про живое «Обрабатываю…» — у него другого места в меню нет.
-    static func menuLine(_ verdict: HealthVerdict, isRecording: Bool, isProcessing: Bool,
-                         processingText: String?, hasReadyMeeting: Bool) -> (text: String, tier: HealthTier?) {
+    /// Значение — перечисление, а не пара «текст + ярус?», где nil означал бы
+    /// цвет активности: смешение «активность/здоровье» в одном необязательном
+    /// поле — тот класс, из которого вырос Critical круга 1 (критика DS круга 2).
+    static func menuLine(_ verdict: HealthVerdict, isRecording: Bool,
+                         activityText: String?, hasReadyMeeting: Bool) -> MenuLine {
         if isRecording {
-            return (L.t("Запись", "Recording", "录音中") + " ·", recordingDotTier(verdict))
+            return .recording(recordingDotTier(verdict))
         }
-        if isProcessing {
-            return (processingText ?? L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), nil)
+        if let activityText, !activityText.isEmpty {
+            return .activity(activityText)
         }
         if let headline = verdict.headline {
-            return (headline, verdict.tier)
+            return .problem(headline, verdict.tier)
         }
-        if hasReadyMeeting {
-            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), .ok)
+        return hasReadyMeeting ? .ready : .idle
+    }
+}
+
+/// Что показывает строка меню. Каждый случай сам знает свои слова.
+enum MenuLine: Equatable {
+    case recording(HealthTier)
+    case activity(String)
+    case problem(String, HealthTier)
+    case ready
+    case idle
+
+    var text: String {
+        switch self {
+        case .recording: return L.t("Запись", "Recording", "录音中") + " ·"
+        case .activity(let text): return text
+        case .problem(let text, _): return text
+        case .ready: return L.t("Встреча готова", "Meeting ready", "会议已就绪")
+        case .idle: return L.t("Готов к записи", "Ready to record", "可以录音")
         }
-        return (L.t("Готов к записи", "Ready to record", "可以录音"), .ok)
     }
 }
 
@@ -171,29 +190,38 @@ extension NightlyStatus {
 /// с разной каденцией на одной иконке (ночь — раз в час, Ollama — никогда вне
 /// меню) — ровно Critical выходного круга. Не сторож (№68): ничего не
 /// перезапускает, читает килобайт JSON и пробует локальный порт.
+///
+/// Тик живёт вне жизненного цикла вью: `.task` меню отменялся при закрытии
+/// поповера, отмена доезжала до пробы Ollama и превращалась в «порт молчит»
+/// (круг 2). Вью только просит тик (`requestTick`), пролёты коалесцируются.
 @MainActor
 enum HealthClock {
     static let interval: TimeInterval = 10 * 60
-    private static var task: Task<Void, Never>?
+    private static var loop: Task<Void, Never>?
+    private static var inFlight: Task<Void, Never>?
 
     static func start() {
-        guard task == nil else { return }
-        task = Task { @MainActor in
+        guard loop == nil else { return }
+        loop = Task { @MainActor in
             while !Task.isCancelled {
-                await tick()
+                await requestTick().value
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
     }
 
-    static func stop() {
-        task?.cancel()
-        task = nil
-    }
-
-    static func tick() async {
-        NightlyStatusService.shared.refresh()
-        await OllamaRuntimeService.shared.refresh()
+    /// Освежить владельцев сейчас (открытие меню). Идущий пролёт не дублируется
+    /// и не отменяется вызывающим: задача — своя, не структурированная под вью.
+    @discardableResult
+    static func requestTick() -> Task<Void, Never> {
+        if let inFlight { return inFlight }
+        let task = Task { @MainActor in
+            NightlyStatusService.shared.refresh()
+            await OllamaRuntimeService.shared.refresh()
+            inFlight = nil
+        }
+        inFlight = task
+        return task
     }
 }
 

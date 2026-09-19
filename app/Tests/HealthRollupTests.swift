@@ -103,28 +103,23 @@ final class HealthRollupTests: XCTestCase {
     func testMenuLineOrderWorkAboveProblemAboveReadyAboveIdle() {
         let problem = verdict(nightly: .slept(finished: now, minutes: 300, steps: ["досье"]))
         // идёт работа — живая строка владельца, жалоба не вытесняет её (Critical DS круга 1)
-        let working = HealthPresentation.menuLine(problem, isRecording: false, isProcessing: true,
-                                                  processingText: "Распознаю речь…", hasReadyMeeting: false)
-        XCTAssertEqual(working.text, "Распознаю речь…")
-        XCTAssertNil(working.tier, "цвет активности — акцент, не ярус здоровья")
-        // проблема выше терминального «Встреча готова»
-        let complaining = HealthPresentation.menuLine(problem, isRecording: false, isProcessing: false,
-                                                      processingText: nil, hasReadyMeeting: true)
-        XCTAssertEqual(complaining.text, problem.headline)
-        XCTAssertEqual(complaining.tier, .degraded)
+        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: "Распознаю речь…",
+                                                   hasReadyMeeting: false), .activity("Распознаю речь…"))
+        // владелец отдал nil (ошибка вместо работы) — слот активности не занят, показана проблема (Important DS круга 2)
+        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: nil, hasReadyMeeting: true),
+                       .problem(problem.headline!, .degraded))
+        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: "", hasReadyMeeting: false),
+                       .problem(problem.headline!, .degraded))
         // без проблем — готовность, потом покой
-        let ready = HealthPresentation.menuLine(.allClear, isRecording: false, isProcessing: false,
-                                                processingText: nil, hasReadyMeeting: true)
-        XCTAssertEqual(ready.text, L.t("Встреча готова", "Meeting ready", "会议已就绪"))
-        XCTAssertEqual(ready.tier, .ok)
-        let idle = HealthPresentation.menuLine(.allClear, isRecording: false, isProcessing: false,
-                                               processingText: nil, hasReadyMeeting: false)
-        XCTAssertEqual(idle.tier, .ok)
-        // запись — всегда «Запись ·», цвет только по записи
-        let rec = HealthPresentation.menuLine(problem, isRecording: true, isProcessing: false,
-                                              processingText: nil, hasReadyMeeting: false)
+        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, hasReadyMeeting: true), .ready)
+        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, hasReadyMeeting: false), .idle)
+        XCTAssertEqual(MenuLine.ready.text, L.t("Встреча готова", "Meeting ready", "会议已就绪"))
+        // запись — всегда «Запись ·», ярус только по записи
+        let rec = HealthPresentation.menuLine(problem, isRecording: true, activityText: nil, hasReadyMeeting: false)
+        XCTAssertEqual(rec, .recording(.ok))
         XCTAssertTrue(rec.text.hasSuffix("·"))
-        XCTAssertEqual(rec.tier, .ok)
+        XCTAssertEqual(HealthPresentation.menuLine(verdict(recording: .pumpDead, isRecording: true), isRecording: true,
+                                                   activityText: nil, hasReadyMeeting: false), .recording(.critical))
     }
 
     func testTierOrderingIsTotal() {
@@ -139,16 +134,37 @@ final class HealthRollupTests: XCTestCase {
     func testOwnershipGatesHold() throws {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let sources = app.appendingPathComponent("Sources/CharoiteApp")
+        func body(of type: String, in text: String) throws -> String {
+            // тело типа — от объявления до следующего объявления верхнего уровня
+            let start = try XCTUnwrap(text.range(of: type), "\(type) не найден")
+            let tail = text[start.upperBound...]
+            let end = tail.range(of: "\n}\n")?.upperBound ?? tail.endIndex
+            return String(tail[..<end])
+        }
         let rollup = try String(contentsOf: sources.appendingPathComponent("Services/HealthRollup.swift"), encoding: .utf8)
-        let rollupBody = String(rollup[rollup.range(of: "enum HealthRollup {")!.lowerBound..<rollup.range(of: "enum HealthPresentation {")!.lowerBound])
-        XCTAssertFalse(rollupBody.contains("L.t("), "свёртка не сочиняет слов о фактах владельцев")
+        XCTAssertFalse(try body(of: "enum HealthRollup {", in: rollup).contains("L.t("),
+                       "свёртка не сочиняет слов о фактах владельцев")
+        XCTAssertFalse(try body(of: "enum HealthPresentation {", in: rollup).contains("L.t("),
+                       "политика поверхностей не сочиняет слов о фактах владельцев")
+        XCTAssertFalse(rollup.contains("static func stop()"), "мёртвого API у планировщика нет")
+
         let menu = try String(contentsOf: sources.appendingPathComponent("Views/MenuBar/MenuBarView.swift"), encoding: .utf8)
-        XCTAssertFalse(menu.contains("verdict.tier") || menu.contains(".tier(of:"),
-                       "вью читает ярус только через HealthPresentation")
-        XCTAssertFalse(menu.contains(".refresh()"), "свежесть — у владельцев через HealthClock, не у вью")
+        for forbidden in ["verdict.tier", ".tier(of:", "statusText", ".refresh()", "await HealthClock.tick"] {
+            XCTAssertFalse(menu.contains(forbidden), "вью меню-бара читает только политику и владельцев: \(forbidden)")
+        }
+        XCTAssertTrue(menu.contains("HealthClock.requestTick()"), "открытие меню лишь просит тик вне своего жизненного цикла")
+
         let nightly = try String(contentsOf: sources.appendingPathComponent("Services/NightlyStatusService.swift"), encoding: .utf8)
         XCTAssertFalse(nightly.contains("Timer.scheduledTimer"), "один планировщик на приложение, не таймер на владельца")
-        XCTAssertTrue(nightly.contains("private init() {}"), "init без чтения диска на пути рендера иконки")
+        XCTAssertNotNil(nightly.range(of: #"private init\(\)\s*\{\s*\}"#, options: .regularExpression),
+                        "init без тела: чтение диска не на пути рендера иконки")
+        let today = try String(contentsOf: sources.appendingPathComponent("Views/Workspace/TodayWorkspaceView.swift"), encoding: .utf8)
+        XCTAssertTrue(today.contains("NightlyStatus.isProblem("), "«Сегодня» красит ночь той же политикой, что иконка")
+
+        let ollama = try String(contentsOf: sources.appendingPathComponent("Services/OllamaRuntimeService.swift"), encoding: .utf8)
+        XCTAssertTrue(ollama.contains("static func responds() async -> Bool?"), "у пробы три исхода: отмена — не «порт молчит»")
+        XCTAssertTrue(ollama.contains("!Task.isCancelled"), "отменённая проба не пишет state")
+
         let appFile = try String(contentsOf: sources.appendingPathComponent("App/CharoiteApp.swift"), encoding: .utf8)
         XCTAssertTrue(appFile.contains("HealthClock.start()"))
     }

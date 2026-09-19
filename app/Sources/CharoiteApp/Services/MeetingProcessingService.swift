@@ -825,6 +825,16 @@ final class MeetingProcessingService: ObservableObject {
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
+    /// Слова идущей работы для узких поверхностей: стадия обработки, и только
+    /// когда это не ошибка. `statusText` проверяет ошибки раньше снимка, а
+    /// политика строки меню ставит работу выше проблемы — при `pipelineSilent`
+    /// с последующим снимком `.processing` оба флага истинны, и текст ошибки
+    /// уехал бы в слот активности цветом «всё идёт» (Important DS круга 2 по №139).
+    var activityText: String? {
+        guard isProcessing, !isError else { return nil }
+        return statusText
+    }
+
     /// Заголовок ошибки обработки для узких поверхностей (строка меню-бара,
     /// свёртка здоровья) — первая строка `statusText`, словами владельца:
     /// третий словарь слов о том же факте расходился бы с окном «Встречи» и

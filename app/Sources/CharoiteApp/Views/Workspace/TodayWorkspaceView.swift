@@ -242,12 +242,16 @@ struct TodayWorkspaceView: View {
     /// строка, всё остальное подсвечено.
     private var nightlyRow: some View {
         HStack(spacing: 8) {
+            // цвет и вес — по той же политике, что у иконки меню-бара (`.never` без
+            // агента — не настроено, не тревога); `needsAttention` — только «показывать
+            // ли строку» (Important DS круга 2 по №139)
+            let problem = NightlyStatus.isProblem(nightly.status.state, agentConfigured: nightly.agentConfigured)
             Image(systemName: nightly.icon)
                 .font(.caption)
-                .foregroundStyle(nightly.needsAttention ? Theme.warning : Color.secondary)
+                .foregroundStyle(problem ? Theme.warning : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(nightly.title)
-                    .font(.caption.weight(nightly.needsAttention ? .medium : .regular))
+                    .font(.caption.weight(problem ? .medium : .regular))
                 Text(nightly.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

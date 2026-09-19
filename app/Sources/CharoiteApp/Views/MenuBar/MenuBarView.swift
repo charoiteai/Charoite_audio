@@ -79,10 +79,13 @@ struct MenuBarView: View {
         let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
                                             ollama: ollama, nightly: nightly)
         let line = HealthPresentation.menuLine(verdict, isRecording: sufler.isRunning,
-                                               isProcessing: processing.isProcessing,
-                                               processingText: processing.isProcessing ? processing.statusText : nil,
+                                               activityText: processing.activityText,
                                                hasReadyMeeting: processing.actionTitle != nil)
-        return (line.text, line.tier.map(Self.color(for:)) ?? .accentColor)
+        switch line {
+        case .recording(let tier), .problem(_, let tier): return (line.text, Self.color(for: tier))
+        case .activity: return (line.text, .accentColor)
+        case .ready, .idle: return (line.text, Theme.ok)
+        }
     }
 
     private static func color(for tier: HealthTier) -> Color {
@@ -117,7 +120,7 @@ struct MenuBarView: View {
             }
             // открытие меню — повод освежить владельцев сразу, не дожидаясь тика
             // планировщика; самих проб во вью нет (Critical GLM входного круга)
-            .task { await HealthClock.tick() }
+            .task { HealthClock.requestTick() }
 
             if let pipelineStatus = sufler.pipelineStatusText {
                 Text(pipelineStatus)
@@ -250,8 +253,8 @@ struct MenuBarView: View {
         }
     }
 
-    /// Ollama доступна? Одна лёгкая проверка при открытии меню.
-    /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории.
+    /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории
+    /// (здоровье движка — у `OllamaRuntimeService`, строка меню его уже показала).
     private func sendQuick() {
         let q = quick.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
