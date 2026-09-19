@@ -329,6 +329,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
     /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
     private var currentKind: Kind = .meeting
+    /// Стем первого файла серии: после ротаций куски одной встречи несут его в манифесте (№200)
+    private var seriesStem: String?
 
     /// Сколько терпим неподвижное `currentTime`, прежде чем поднять тревогу.
     /// Три секунды: короче — ложные срабатывания на дрожании таймера, длиннее —
@@ -491,6 +493,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             if !rotating {                    // новая встреча — серия ошибок кодека и причина стопа чисты (DS I1 r2)
                 encodeErrors = 0
                 lastStopReason = nil
+                seriesStem = url.deletingPathExtension().lastPathComponent
             }
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
@@ -626,7 +629,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                 self.lastResult = L.t("Аудиослужба перезапущена — файл сохранён, продолжаю встречу новым",
                                       "Audio service reset — file kept, continuing the meeting in a new one",
                                       "音频服务已重置 — 文件已保留，以新文件继续会议")
-                self.rotateFile()
+                self.rotateFile(reason: .mediaReset)
             }
         })
         observers.append(nc.addObserver(
@@ -713,7 +716,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                          "通话后一分钟内麦克风未恢复 — 关闭文件并以新文件继续")
         // Задачу окна снимает stop() внутри rotateFile; сама ротация держит
         // свою фоновую задачу до исхода отложенного старта (GLM I2 по #530).
-        rotateFile()
+        rotateFile(reason: .callNoResume)
     }
 
     private func beginAfterCallTask() {
@@ -757,7 +760,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                            staleDate: Date().addingTimeInterval(900)))
     }
 
-    func stop() {
+    /// Единственная точка, где запись перестаёт быть записью: причина —
+    /// обязательный параметр, компилятор не даст появиться пути остановки без
+    /// неё (входной круг DS и GLM по №200). Манифест `<файл>.json` пишется здесь,
+    /// до отдачи файла в очередь, и едет с ним парой.
+    func stop(reason: StopReason) {
         guard let r = recorder else { return }
         r.stop()                       // финализация контейнера
         timer?.invalidate()
@@ -776,6 +783,18 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         let url = r.url
         let seconds = elapsed
         recorder = nil
+        let record = StopRecord(kind: rotating ? .rotate : .stop, reason: reason, at: Date(),
+                                seconds: seconds, series: seriesStem)
+        do {
+            try record.write(nextTo: url)
+        } catch {
+            // без манифеста Mac увидит запись как «стоп не зафиксирован» — скажем об этом
+            lastResult = L.t("Причина остановки не записана: \(error.localizedDescription)",
+                             "Stop reason not recorded: \(error.localizedDescription)",
+                             "未记录停止原因：\(error.localizedDescription)")
+        }
+        // строка причины — производная значения; ручной стоп причины не показывает
+        lastStopReason = reason == .user ? nil : reason.text
         if let a = activity {
             activity = nil
             Task { await a.end(nil, dismissalPolicy: .immediate) }
@@ -913,7 +932,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         lastResult = L.t("Запись не поднялась — закрываю файл и начинаю новый",
                          "Could not resume — closing the file and starting a new one",
                          "无法恢复 — 正在关闭文件并开始新的录音")
-        rotateFile()
+        rotateFile(reason: .stalled)
     }
 
     /// Закрыть текущий файл и продолжить встречу в следующем.
@@ -924,12 +943,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// сегментов `iphone_*` — отдельная карточка). Если вход после стопа занят,
     /// старт взводится и поднимется сам — при открытом приложении: в фоне
     /// таймер проб не тикает (GLM M5).
-    private func rotateFile() {
+    private func rotateFile(reason: StopReason) {
         let kind = currentKind
         rotating = true                   // свой флаг: rotateTask гаснет от истечения бюджета (DS I1 r2)
-        lastStopReason = lastResult       // причина смены файла переживёт статус доставки (DS I2 r2)
         beginRotateTask()
-        stop()
+        stop(reason: reason)              // причина — параметром, не копией lastResult (Important GLM по №200)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self else { return }
             defer {
@@ -954,13 +972,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                 self.lastResult = L.t("Сбой записи (\(error?.localizedDescription ?? "кодек")) — закрываю файл и продолжаю встречу новым",
                                       "Recording error (\(error?.localizedDescription ?? "codec")) — closing the file and continuing in a new one",
                                       "录音错误（\(error?.localizedDescription ?? "编解码器")）— 关闭文件并以新文件继续")
-                self.rotateFile()
+                self.rotateFile(reason: .encodeError)
             } else {
                 self.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек") — \(Self.maxEncodeErrors) раза подряд, запись остановлена",
                                       "Recording error: \(error?.localizedDescription ?? "codec") — \(Self.maxEncodeErrors) times in a row, recording stopped",
                                       "录音错误：\(error?.localizedDescription ?? "编解码器") — 连续 \(Self.maxEncodeErrors) 次，录音已停止")
-                self.lastStopReason = self.lastResult
-                self.stop()
+                self.stop(reason: .encodeError)
             }
         }
     }
@@ -968,10 +985,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder,
                                                      successfully flag: Bool) {
         guard !flag else { return }
+        let url = recorder.url
         Task { @MainActor [weak self] in
-            self?.lastResult = L.t("Запись завершилась с ошибкой — файл может быть неполным",
-                                   "Recording finished with an error — file may be incomplete",
-                                   "录音异常结束 — 文件可能不完整")
+            // исход финализации приходит асинхронно и после ротации относится к
+            // СТАРОМУ файлу: пометка — в его манифест, а не в статус здоровой
+            // записи (Critical DS входного круга по №200)
+            StopRecord.markUnfinalized(audio: url)
+            guard let self, self.recorder == nil || self.recorder === recorder else { return }
+            self.lastResult = L.t("Запись завершилась с ошибкой — файл может быть неполным",
+                                  "Recording finished with an error — file may be incomplete",
+                                  "录音异常结束 — 文件可能不完整")
         }
     }
 

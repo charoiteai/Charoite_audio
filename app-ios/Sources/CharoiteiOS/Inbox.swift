@@ -53,6 +53,31 @@ enum Inbox {
     /// для файлов, записанных прежними версиями.
     private static let audioExts: Set<String> = ["caf", "m4a"]
 
+    /// Манифест записи (№200): `<файл>.json` рядом с аудио — причина и момент
+    /// остановки. Единица очереди — ПАРА: аудио уезжает, спасается, уходит в
+    /// Sent и удаляется вместе с манифестом, иначе причина остаётся на телефоне
+    /// ровно в тех сценариях, ради которых её пишут (Critical DS входного круга).
+    static func sidecar(for audio: URL) -> URL {
+        audio.appendingPathExtension("json")
+    }
+
+    /// Перенести аудио и его манифест одним движением; манифест — если есть.
+    private static func movePair(_ audio: URL, to dest: URL) throws {
+        let fm = FileManager.default
+        try fm.moveItem(at: audio, to: dest)
+        let sc = sidecar(for: audio)
+        if fm.fileExists(atPath: sc.path) {
+            try? fm.removeItem(at: sidecar(for: dest))
+            try? fm.moveItem(at: sc, to: sidecar(for: dest))
+        }
+    }
+
+    private static func removePair(_ audio: URL) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: audio)
+        try? fm.removeItem(at: sidecar(for: audio))
+    }
+
     static var queuedCount: Int {
         queued.count
     }
@@ -159,10 +184,18 @@ enum Inbox {
             // Секундный огрызок настоящей записи весит больше порога.
             let bytes = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             if bytes < orphanMinBytes {
-                try? fm.removeItem(at: f)
+                removePair(f)
                 continue
             }
-            try? fm.moveItem(at: f, to: uniqueName(in: queue, like: f))
+            // Файл никто не закрыл (процесс убит, суспенд без `.ended`, краш): факт —
+            // «стопа не было», время — mtime последнего кадра. Манифест, который
+            // stop() успел написать до гибели, не перезаписывается (Important GLM)
+            if Recorder.StopRecord.read(nextTo: f) == nil {
+                let at = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+                try? Recorder.StopRecord(kind: .stop, reason: .noStop, at: at, seconds: nil, series: nil)
+                    .write(nextTo: f)
+            }
+            try? movePair(f, to: uniqueName(in: queue, like: f))
         }
     }
 
@@ -265,7 +298,7 @@ enum Inbox {
             return
         }
         do {
-            try fm.moveItem(at: file, to: uniqueName(in: outbox, like: file))
+            try movePair(file, to: uniqueName(in: outbox, like: file))
         } catch {
             // Раньше ошибка глушилась `try?`, и файл оставался в tmp — то есть
             // терялся при первой же уборке системы. Молчать здесь нельзя.
@@ -358,6 +391,19 @@ enum Inbox {
             let dest = uniqueName(in: dir, like: f)
             let part = dest.appendingPathExtension("part")
             do {
+                // Манифест — первым и под тем же именем, что уедет аудио (dest считается один
+                // раз): сканер на Mac стартует по аудио и к этому моменту уже видит причину;
+                // второй uniqueName для манифеста приклеил бы его к чужой старой встрече
+                // (Important GLM входного круга по №200)
+                let sc = sidecar(for: f)
+                if fm.fileExists(atPath: sc.path) {
+                    let scDest = sidecar(for: dest)
+                    let scPart = scDest.appendingPathExtension("part")
+                    try? fm.removeItem(at: scPart)
+                    try? fm.removeItem(at: scDest)
+                    try fm.copyItem(at: sc, to: scPart)
+                    try fm.moveItem(at: scPart, to: scDest)
+                }
                 try? fm.removeItem(at: part)
                 try fm.copyItem(at: f, to: part)
                 // Из очереди убираем, только когда iCloud ВЫГРУЗИЛ файл. Проверка
@@ -525,14 +571,14 @@ enum Inbox {
         // сначала файл, потом метка: падение между ними иначе оставляло файл в очереди
         // без метки, и подтверждённая копия ехала второй раз (DS I2 r1 по #565)
         defer { try? fm.removeItem(at: pendingMark(for: file)) }
-        guard (try? fm.moveItem(at: file, to: uniqueName(in: sent, like: file))) != nil else {
+        guard (try? movePair(file, to: uniqueName(in: sent, like: file))) != nil else {
             // Переложить не вышло — из очереди файл убрать всё равно надо,
             // иначе он поедет в iCloud на каждом flush по кругу.
-            try? fm.removeItem(at: file)
+            removePair(file)
             return
         }
         let old = recordings(in: sent).dropFirst(keepSent)
-        for f in old { try? fm.removeItem(at: f) }
+        for f in old { removePair(f) }
     }
 
     /// Замок одного прохода flush — актор вместо гонки на статике.

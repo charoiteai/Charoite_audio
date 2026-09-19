@@ -708,6 +708,43 @@ rebuild restores the summary from the sidecar into the "Co-thinking" tail
 through the tail's format owner (`transcript.append_note`; no section —
 creates one), with no duplicate on a second run.
 
+**Why a phone recording stopped is a value that travels with the file.** On
+07.09 one meeting arrived on the Mac as three pieces with no call in between,
+and the reason was nowhere on disk: the companion's `stop()` released the
+session and handed the file over, `lastStopReason` was a localized string for
+the screen that died with the process, and the Mac saw three ordinary
+meetings. Before №200 the stop paths had no reason to name: the codec series,
+the post-call budget, the stall watchdog and the media reset each wrote their
+own string. Now the only function where `isRecording` becomes false takes a
+mandatory `stop(reason:)` — the compiler is the gate, no new stop path can
+close a file without naming why — and the recorder writes a manifest
+`<file>.json` next to the audio (`Recorder.StopRecord`: kind stop|rotate, a
+reason from a closed enum where every value exists only together with the code
+point that sets it — `disk_full` is not in the list because nothing detects
+it, `at`, seconds, the series stem so that segments of one meeting know each
+other, `finalized_ok` set by the finalization delegate for ITS file, not the
+current recorder's). The unit of the queue is the pair: `Inbox` moves, rescues,
+publishes (manifest first under `.part`, audio last, both under the same
+uniquified name so a name collision in iCloud cannot glue the manifest to last
+week's meeting), retires and deletes audio and manifest together. An orphan in
+`current/` without a manifest gets `no_stop` with the last frame's mtime — the
+fact "nothing closed this file", not the guess "the process was killed"; a
+manifest that `stop()` managed to write before the process died is kept. On
+the Mac `import_meeting` converts the manifest into an event of the same trace
+that owns lost channels (`channel_trace.phone_event`, kind `stopped`, the
+reason in `reason` — `cause` belongs to the hub's dictionary) before
+`graph_updater` and before the "no speech" exit, so the derivative passport
+hashes speech plus the note on the first generation; the wording, the tail
+line and the trace-line classifier live in `channel_trace` only. A manual stop
+produces no event. A terminal involuntary stop is part of the incomplete-
+recording summary; a rotation is only a tail line ("closed 19:02 (microphone
+did not come back after the call) — continued in the next file"): until the
+segments are glued (№260) the segment is complete as a file and calling it
+incomplete would devalue the note. The manifest travels to `done/` with the
+audio, dies with it in retention, and an orphan manifest in the import folder
+is swept only after an hour — iCloud delivers a kilobyte of JSON long before
+an hour of audio.
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the
