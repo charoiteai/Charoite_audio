@@ -22,7 +22,6 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
-import safe_write  # noqa: E402
 from meeting_archive import SummaryMode, SummaryOutcome, archive_meeting, cothinking_notes  # noqa: E402
 from meeting_processing import find_final_transcript  # noqa: E402
 
