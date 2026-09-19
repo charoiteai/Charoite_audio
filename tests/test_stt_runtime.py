@@ -213,26 +213,30 @@ def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
     assert heartbeat.index("try:") < heartbeat.index("hub.health_snapshot")
 
 
-def test_отказ_записи_на_диск_красится_по_подстроке():
-    assert stt_runtime.is_recording_failure(
-        "⚠️ подсказки отстают… ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть") is True
-    assert stt_runtime.is_recording_failure("канал не открылся") is False
+def test_статус_несёт_намерение_писателя_а_не_подстроку():
+    """№310: липкость и окраска — поля `Status`, поставленные писателем; JSON
+    собирает одна функция контрактного модуля. Подстрока маркера в тексте
+    ключа не даёт никогда — мутация «вернуть классификатор» падает здесь."""
+    plain = stt_runtime.status_event("👥 живая диаризация голосов включена")
+    assert plain == {"type": "status", "text": "👥 живая диаризация голосов включена", "error": False}
+    # текст с маркером, но без намерения — обычный статус: слой не трогает
+    marker_only = stt_runtime.status_event(f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: как подстрока")
+    assert "sticky" not in marker_only and marker_only["error"] is False
+    disk_text = stt_runtime.status_event("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: как подстрока")
+    assert disk_text["error"] is False and "sticky" not in disk_text
 
-
-def test_запись_без_собеседников_липкая_но_не_отказ():
-    """№228: предупреждение про всю встречу держится до конца записи; отказом
-    записи (флаг error, гейт критикала диска в приложении) оно не считается —
-    красный липкому приложение даёт само; отказ диска липким не объявляется —
-    его держит heartbeat."""
-    warn = f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: системный звук не захвачен, пишем только микрофон."
-    assert stt_runtime.is_sticky_status(warn) is True and stt_runtime.is_recording_failure(warn) is False
-    assert stt_runtime.is_sticky_status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон") is False
-    assert stt_runtime.is_sticky_status("👥 живая диаризация голосов включена") is False
-    # отбой липкого: канал ожил посреди встречи (№232) — снимает, но сам не липкий и не отказ
-    back = f"✅ {stt_runtime.MIC_BACK_NOTICE}: канал собеседников ожил, запись снова полная"
-    assert stt_runtime.is_sticky_clear(back) is True
-    assert stt_runtime.is_sticky_status(back) is False and stt_runtime.is_recording_failure(back) is False
-    assert stt_runtime.is_sticky_clear(warn) is False
+    warn = stt_runtime.Status("любой текст про всю встречу", sticky=True, topic=stt_runtime.TOPIC_CHANNEL)
+    ev = stt_runtime.status_event(warn)
+    assert ev["sticky"] is True and ev["topic"] == "channel_loss" and ev["error"] is False, "липкое — не отказ"
+    back = stt_runtime.Status("канал ожил", sticky=False, topic=stt_runtime.TOPIC_CHANNEL)
+    assert stt_runtime.status_event(back)["sticky"] is False, "отбой — явный false"
+    disk = stt_runtime.Status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон", error=True, topic=stt_runtime.TOPIC_DISK)
+    ev = stt_runtime.status_event(disk)
+    assert ev["error"] is True and "sticky" not in ev, "отказ диска — error, не липкое: его держит heartbeat"
+    assert ev["topic"] == "disk", "что писатель поставил, то и на проводе — тема без липкости не выбрасывается (круг по №310)"
+    # Status — строка: CLI и уведомления печатают её как текст
+    assert isinstance(warn, str) and f"{warn}" == "любой текст про всю встречу" and "всю встречу" in warn
+    assert stt_runtime.as_status("x").sticky is None and stt_runtime.as_status(warn) is warn
 
 
 def test_realtime_factor_turns_milliseconds_into_a_verdict():
@@ -436,3 +440,45 @@ def test_channel_label_follows_the_last_added_piece_or_stays():
     assert stt_runtime.next_channel_label("Собеседник", []) == "Собеседник"
     assert stt_runtime.next_channel_label(None, []) is None
 
+
+
+def test_демон_и_хаб_не_разбирают_статус_по_подстрокам():
+    """№310: классификаторов по подстрокам в src/ нет; демон сериализует
+    объект писателя одной функцией; у хаба одна дверь к on_status."""
+    import pathlib as _p
+    src = _p.Path(__file__).resolve().parent.parent / "src"
+    daemon = (src / "daemon.py").read_text(encoding="utf-8")
+    assert "hub.on_status = lambda s: emit(stt_runtime.status_event(s))" in daemon
+    for name in ("is_sticky_status", "is_sticky_clear", "is_recording_failure", "STICKY_WARNINGS", "STICKY_CLEARS"):
+        assert not any(name in (src / f).read_text(encoding="utf-8") for f in ("daemon.py", "audio.py", "stt_runtime.py", "main.py")), name
+    audio = (src / "audio.py").read_text(encoding="utf-8")
+    assert audio.count("self.on_status(") == 1, "к on_status ведёт одна дверь — _say"
+    assert "def _emit(self, msg) -> None:" in audio and "self._say(msg)" in audio[audio.index("def _emit("):audio.index("def _emit(") + 400]
+
+
+def test_темы_липких_слоёв_одинаковы_в_python_и_swift():
+    """Два литерала в двух языках без гейта: переименование темы в Python
+    прошло бы оба набора тестов, а слой в приложении сменил бы место (Minor DS
+    круга по №310)."""
+    import pathlib as _p
+    swift = (_p.Path(__file__).resolve().parent.parent / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "SuflerService+Sticky.swift").read_text(encoding="utf-8")
+    assert f'static let channelLoss = "{stt_runtime.TOPIC_CHANNEL}"' in swift
+    assert 'static let capture = "capture"' in swift and 'static let notifications = "notifications"' in swift
+
+
+def test_дверь_статуса_пишет_в_stderr_только_недоставленный_отказ(capsys):
+    """Minor GLM круга по №310: подписчик упал (приложение закрыто) — отказ
+    диска оставляет след у двери, обычный статус — нет."""
+    import audio as a
+    hub = a.AudioHub({"audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                                "vad_energy_db": -45.0, "record": False, "device": "auto"},
+                      "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}, captures=[])
+
+    def broken(_):
+        raise BrokenPipeError("приложение закрыто")
+    hub.on_status = broken
+    hub._say("обычный статус")
+    hub._say(stt_runtime.Status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон", error=True, topic=stt_runtime.TOPIC_DISK))
+    err = capsys.readouterr().err
+    assert "не дошёл до подписчика" in err and "диск полон" in err and "обычный статус" not in err

@@ -676,7 +676,28 @@ as a `system` thread line without dedup and without cloud editing. There is no
 duration threshold — an episode that looks short in the report is a real hole;
 coalescing is by count: after six lines per channel only the stop summary goes
 into the documents ("recording incomplete: no system audio 14:32–14:35,
-14:50–until the end"). The string status contract stays — that is №310.
+14:50–until the end"). The string status contract was closed in №310, below.
+
+**Stickiness is set by the writer; layers in the app are owned (№310).** The
+daemon classified hub status lines by substring against three and two Russian
+markers (`is_sticky_status`, `is_sticky_clear`, `is_recording_failure`): a
+reworded line or a fourth marker changed stickiness silently, and the channel
+"back" notice left the hub through a second door, `_emit`, where no marking
+would have applied at all. Now a hub status is `stt_runtime.Status`, a `str`
+subclass with `sticky` (True sets a layer, False clears it, None is an
+ordinary status), `error` and `topic`; the fields are set where the line is
+born (`_announce_losses`, `_announce_back`, the four disk failures), a single
+door `_say` leads to `on_status`, and one function of the contract module,
+`status_event`, builds the JSON: `error` always, `sticky` and `topic` only when
+set. No substring classifiers remain in `src/`. In the app, instead of one
+`String?` shared by three writers, `stickyLayers` are keyed by topic:
+`channel_loss` (daemon), `capture` (the microphone did not join the
+ScreenCaptureKit stream), `notifications` (notification permission denied);
+each writer clears only its own layer, the daemon's clear no longer wipes "no
+microphone permission", the on-screen line joins all live layers in priority
+order with " · ", and Start clears them all. On the wire the boolean `sticky`
+stays next to `topic`: app 0.82 reads only the boolean, and a new daemon
+without a topic lands in the channel-loss layer.
 
 **The incomplete-recording note is a fact about the recording, not speech; a
 derivative has one source.** Before №316/№317 a derivative (minutes, debrief,

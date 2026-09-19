@@ -18,15 +18,17 @@ extension SuflerService {
 
     /// Баннеры автостопа и потери захвата «показываются всегда», но при отказе в
     /// праве система их молча глотает, и код об этом не узнавал (аудит 13.09,
-    /// GLM I1). Говорим об этом в окне один раз за встречу — липко, пока не придёт
-    /// предупреждение важнее (липкий слот чистится каждым стартом).
+    /// GLM I1). Говорим об этом в окне один раз за встречу своим слоем: раньше
+    /// строка писалась «если слот пуст» и терялась при любом более важном
+    /// предупреждении; теперь её место решает приоритет слоёв, а «один раз за
+    /// встречу» держит флаг `notificationsDeniedShown` (№310).
     func noteNotificationsDenied() {
         guard !notificationsDeniedShown else { return }
         notificationsDeniedShown = true
-        guard stickyStatus == nil else { return }
-        stickyStatus = L.t("Уведомления выключены: об автостопе и потере захвата скажет только это окно",
-                           "Notifications are off: autostop and capture loss are reported only in this window",
-                           "通知已关闭：自动停止和捕获丢失只会在此窗口提示")
+        setSticky(StickyTopic.notifications,
+                  L.t("Уведомления выключены: об автостопе и потере захвата скажет только это окно",
+                      "Notifications are off: autostop and capture loss are reported only in this window",
+                      "通知已关闭：自动停止和捕获丢失只会在此窗口提示"))
     }
 
     /// Почему микрофона нет в потоке ScreenCaptureKit — липкая строка на всю встречу

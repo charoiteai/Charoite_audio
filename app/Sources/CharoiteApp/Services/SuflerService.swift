@@ -49,12 +49,17 @@ final class SuflerService: ObservableObject {
     /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
     @Published var statusErrorFromDaemon = false   // setter внутренний: пишет SuflerService+Status
 
-    /// Липкое предупреждение демона (`status` с `sticky: true`): «собеседников
-    /// в записи не будет» — про всю встречу, а не про момент. Обычные статусы
-    /// его не снимают (нелипкий error жил доли секунды: сразу после старта
-    /// демон шлёт «👥 живая диаризация…», и предупреждение исчезало — №228);
-    /// снимается явным `sticky: false` от демона или новым стартом.
-    @Published var stickyStatus: String?           // setter внутренний: пишет SuflerService+Status
+    /// Липкие предупреждения про всю встречу — слоями по владельцу (№310):
+    /// `channel_loss` демона, `capture` захвата, `notifications`. Один `String?`
+    /// на троих давал отбой демона поверх чужого слоя. Приоритет, серьёзность и
+    /// чтение — в `SuflerService+Sticky.swift`; старт чистит все слои.
+    @Published private(set) var stickyLayers: [String: String] = [:]
+
+    /// Поставить или снять липкий слой. Снятие адресуется теме: кто поставил,
+    /// тот и снимает (№232 для канала, №310 для остальных).
+    func setSticky(_ topic: String, _ text: String?) {
+        if let text { stickyLayers[topic] = text } else { stickyLayers.removeValue(forKey: topic) }
+    }
 
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
     /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
@@ -299,7 +304,7 @@ final class SuflerService: ObservableObject {
         }
         status = L.t("Запускаю…", "Starting…", "启动中…")
         clearErrorFlags()
-        stickyStatus = nil          // новая встреча — прошлое предупреждение не её
+        stickyLayers = [:]          // новая встреча — прошлые предупреждения не её, все слои
         notificationsDeniedShown = false   // липкий слот чистится каждую встречу — и подсказка о нём тоже (критика GLM по #564)
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
@@ -432,7 +437,7 @@ final class SuflerService: ObservableObject {
                 } else if capture.micFallback != .none {
                     // микрофон в поток не попал — демон пишет его отдельно (аудит 13.09, DS I1)
                     // а предупреждение — на всю встречу (DS I2 по #564)
-                    self.stickyStatus = Self.micFallbackText(capture.micFallback)
+                    self.setSticky(StickyTopic.capture, Self.micFallbackText(capture.micFallback))
                 }
                 SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
@@ -833,10 +838,12 @@ final class SuflerService: ObservableObject {
                 // Липкое — отдельный слой: ключ есть только у липких и у явного
                 // снятия; статус без ключа его не трогает (№228). `sticky: false`
                 // шлёт демон, когда умерший посреди встречи канал собеседников
-                // ожил (№232): слой снимается, текст «снова пишется» идёт обычным
-                // статусом (строка выше уже присвоила `status = text`)
+                // ожил (№232): снимается ровно СВОЙ слой — тема из `topic`, у
+                // демона без темы — потеря канала (№310); слои захвата и
+                // уведомлений отбой демона не трогает
                 if let sticky = obj["sticky"] as? Bool {
-                    stickyStatus = sticky ? text : nil
+                    let topic = (obj["topic"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? StickyTopic.channelLoss
+                    setSticky(topic, sticky ? text : nil)
                 }
             case "transcript":
                 let spk = obj["speaker"] as? String ?? ""

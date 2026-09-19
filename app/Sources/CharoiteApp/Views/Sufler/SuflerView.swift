@@ -242,7 +242,8 @@ struct SuflerView: View {
                 isError: sufler.statusIsError,
                 healthText: sufler.pipelineStatusText,
                 sticky: sufler.stickyStatus,
-                status: sufler.status)
+                status: sufler.status,
+                info: sufler.stickyInfo)
         }
         if !sufler.isRunning, let processingStatus = processing.statusText {
             return processingStatus
@@ -256,7 +257,7 @@ struct SuflerView: View {
     /// служебная строка.
     static func liveStatusText(stopConfirmPending: Bool, criticalHealthText: String?,
                                errorFromDaemon: Bool, isError: Bool, healthText: String?,
-                               sticky: String?, status: String) -> String {
+                               sticky: String?, status: String, info: String? = nil) -> String {
         // Подтверждение Stop требует немедленного второго действия.
         if stopConfirmPending { return status }
         // Отказ диска важнее вспомогательного слоя; capture/restart error
@@ -281,6 +282,9 @@ struct SuflerView: View {
         // выше служебных строк — иначе «👥 диаризация включена» через
         // секунду прятала его до конца встречи (№228)
         if let sticky { return sticky }
+        // Слой-справка («уведомления выключены») — хвостом к живой строке:
+        // видна всю встречу, но не прячет «⚡ отвечаю» и не красит его (№310)
+        if let info, !info.isEmpty { return status.isEmpty ? info : status + " · " + info }
         return status
     }
 
@@ -518,7 +522,7 @@ struct SuflerView: View {
             Text(displayedStatus)
                 .font(statusIsProblem ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusColor)
-                .lineLimit(statusIsProblem ? 2 : 1)
+                .lineLimit(sufler.isRunning && sufler.stickyProblemCount > 1 ? 3 : (statusIsProblem ? 2 : 1))
                 .fixedSize(horizontal: false, vertical: statusIsProblem)
                 .textSelection(.enabled)
 
