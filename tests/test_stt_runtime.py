@@ -462,7 +462,7 @@ def test_темы_липких_слоёв_одинаковы_в_python_и_swift(
     круга по №310)."""
     import pathlib as _p
     swift = (_p.Path(__file__).resolve().parent.parent / "app" / "Sources" / "CharoiteApp" / "Services"
-             / "SuflerService.swift").read_text(encoding="utf-8")
+             / "SuflerService+Sticky.swift").read_text(encoding="utf-8")
     assert f'static let channelLoss = "{stt_runtime.TOPIC_CHANNEL}"' in swift
     assert 'static let capture = "capture"' in swift and 'static let notifications = "notifications"' in swift
 
