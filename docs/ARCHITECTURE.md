@@ -778,6 +778,56 @@ the event writes it (idempotent), an orphan waits an hour in the import
 folder before it is swept, because iCloud delivers a kilobyte of JSON long
 before an hour of audio. The manifest dies with the audio in retention.
 
+**The archive summary is a derivative with a passport; its source is what the
+model was fed, not the speech.** `Саммари.md` — the one-minute digest, the first
+file people open — was built once (`_gen_summary` skipped any non-empty file)
+and never refreshed, while the cloud review kept rewriting the minutes it was
+built from (№238/№239): on 19.09, 74 of 298 archive folders held a summary
+older than its minutes. The input round (DS and GLM) converged on one
+mechanism and caught three holes in the plan: the summary's source cannot be
+"speech + note" like the other derivatives — speech never changes after the
+meeting, so the passport would stay FRESH forever; a second write seam in
+`meeting_archive` would fork the gates of `retro_fill._write_derivative`; and
+`rename_meeting` rewrote the summary's bytes with a bare `replace` (the folder
+name lives in its H1 and links), so with a passport every renamed meeting
+would freeze in HUMAN forever. Now the source of the `summary` kind is the
+canon of inputs (`summary_source_sha`: the capped materials from minutes,
+theses, debrief and the transcript tail, the extracted decisions, the
+recording note — never the prompt template words or the config language: the
+config says what language NEW documents get and may not rewrite old ones);
+`live_sidecar` owns both halves of the passport contract — `derivative_state`
+decides, `write_derivative` (moved from `retro_fill`, one seam for every kind:
+snapshot → `.prev/` → expect gate → attest, and no passport for a transcript
+that does not exist) writes, `retouch` re-stamps the bytes hash after a
+mechanical rewrite while keeping the source. One policy for the live path and
+the retro pass — MISSING/STALE: a new meeting is MISSING, a review delivery
+ages the summary through the minutes (STALE), and no automatic path touches
+UNKNOWN — not knowing about 298 legacy files is no reason to rewrite them with
+the model on first touch. A FRESH rebuild is excluded for summaries —
+everything that affects the output is already in the hash. An empty file is
+MISSING for every kind — the oracle, not each writer, says so. The outcome
+travels by return value along the whole chain of seams (`write_derivative` →
+`summary_pass` → `archive_meeting` → caller) as a value (`SummaryOutcome`:
+adopted / built / kept / skipped / failed / refused), never re-derived from the
+disk one level up — the retro report used to print "skipped: fresh" about a
+file the machine had just rewritten. The pass mode travels the same way as an
+enum (`SummaryMode`: auto / adopt / rebuild) with one translator into a policy
+next to the policies — not as a "policy + flag" pair: an empty policy is falsy
+in Python, and a default substituted by truthiness on the seam silently turned
+"build nothing" into the default. Legacy summaries without a passport are
+handled only by explicit commands: `retro_fill --summary=adopt` gives a
+passport (plus a `summary_adopted` mark) to the sound ones without the model —
+materials not newer than the file, our own document structure, and the
+recording note either empty or already in the text — and builds nothing;
+`--summary=rebuild` adopts first, then rebuilds the rest (224 sound and 74
+stale of 298 on 19.09); the pass prints a tally of outcomes at the end.
+Adoption runs inside `archive_meeting` after the material copies are
+refreshed, on the same folder and the same canon snapshot as the build. The
+recording note reaches the summary as a fact block after the materials and as
+a line in the document (№317), not as a stray line inside a minutes excerpt.
+The manifest carries no copy of the passport state — readers ask
+`summary_state()`.
+
 **System health has one rollup and two surfaces, not four private
 verdicts.** Before №139 every health signal had its own surface and its own
 lifetime: recording problems lived in `SuflerService` and only during a

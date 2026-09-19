@@ -22,6 +22,24 @@ import dedup_archive as dd  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _folders_for, archive_meeting  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_live_model(monkeypatch):
+    """`archive_meeting` собирает саммари моделью — тесты архива ходили в живой
+    `requests.post` на локальный сервер (замер 19.09: 8 обращений из 5 тестов и на
+    main, и после №314). Тест не платит модели и не зависит от того, поднята ли
+    она: подделка отвечает готовым саммари."""
+    import requests
+
+    class _Resp:
+        status_code = 200
+        text = ""
+        headers: dict = {}
+        def json(self): return {"message": {"content": "**Суть** встреча.\n\n## Решили\n- **Пункт** — принят\n"}}
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+
+
 @pytest.fixture()
 def graph(tmp_path: Path) -> Path:
     (tmp_path / ARCHIVE_DIR).mkdir()
@@ -127,7 +145,7 @@ def test_archive_takes_only_files_of_this_meeting(graph, tmp_path):
     (tdir / "2026-08-03_113012.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
     (tdir / "2026-08-03_113012_minutes.md").write_text("СОСЕДНИЕ МИНУТКИ", encoding="utf-8")
 
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка").folder
 
     assert folder is not None
     assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
@@ -147,7 +165,7 @@ def test_untitled_meeting_with_seconds_archives_its_own_files(graph, tmp_path):
     (tdir / "2026-08-03_113045.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
     (tdir / "2026-08-03_1130_Планёрка.md").write_text("ДРУГАЯ", encoding="utf-8")
 
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "", files_key="2026-08-03_113012")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "", files_key="2026-08-03_113012").folder
 
     assert folder is not None
     assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
@@ -178,15 +196,14 @@ def test_empty_summary_is_regenerated(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(ma, "_history_context", lambda f: calls.append(f) or "")
     monkeypatch.setattr(ma, "decisions_of", lambda f: [])
+    live = tmp_path / "2026-08-03_1130.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
     (folder / "Саммари.md").write_text("готовое саммари", encoding="utf-8")
-    ma._gen_summary(folder)
-    assert not calls, "непустое саммари не пересобирается"
+    # готовое без паспорта — UNKNOWN: живой путь его не трогает (№314)
+    assert ma._gen_summary(folder, live) == "unknown" and not calls
     (folder / "Саммари.md").write_text("", encoding="utf-8")
-    try:
-        ma._gen_summary(folder)
-    except Exception:   # noqa: BLE001 — дальше модель, нам важен только вход в генерацию
-        pass
-    assert calls, "пустое саммари должно уйти на пересборку"
+    ma._gen_summary(folder, live)
+    assert calls, "пустое саммари — MISSING, уходит на пересборку"
 
 
 def test_archive_does_not_link_a_note_that_is_not_in_this_graph(graph, tmp_path):
@@ -201,7 +218,7 @@ def test_archive_does_not_link_a_note_that_is_not_in_this_graph(graph, tmp_path)
     (tdir / "2026-08-03_1130_Планёрка.md").write_text("стенограмма", encoding="utf-8")
 
     # заметки в этом графе нет
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка").folder
     assert folder is not None
     link = (folder / "Граф.md").read_text(encoding="utf-8")
     assert "[[Встречи/2026-08-03_1130]]" not in link, link
