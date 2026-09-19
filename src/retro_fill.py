@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import pathlib
 import sys
 
@@ -22,8 +23,7 @@ import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
 import safe_write  # noqa: E402
-from meeting_archive import (  # noqa: E402
-    SUMMARY_POLICY_NONE, SUMMARY_POLICY_REBUILD, archive_meeting, cothinking_notes)
+from meeting_archive import SummaryMode, SummaryOutcome, archive_meeting, cothinking_notes  # noqa: E402
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -82,7 +82,7 @@ def _theses_path(folder: pathlib.Path) -> pathlib.Path:
 
 
 def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
-            summary: str | None = None) -> list[str]:
+            summary: str | None = None, tally: collections.Counter | None = None) -> list[str]:
     """Производные одной стенограммы по паспорту (№309), не «если файла нет».
 
     Минутки — тем же конвейером, что пересборка (`finalize_minutes` +
@@ -102,16 +102,17 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     живого ко-мышления: импорт записи, восстановление задним числом.
 
     Саммари — производная с паспортом в том же сайдкаре (№314), пишет его
-    `archive_meeting` одной политикой на живой путь и обход (MISSING/STALE).
-    Легаси без паспорта (UNKNOWN) обход не трогает — только явно:
-    `summary="adopt"` — паспорт исправному легаси без модели по всему канону и
-    ничего не строить; `summary="rebuild"` — то же присвоение, потом собрать
-    остальное (MISSING/STALE/UNKNOWN) моделью. Без порядка «сначала adopt»
-    rebuild переписал бы 224 исправных саммари за час модели — поэтому
-    присвоение идёт внутри `archive_meeting` перед решением о сборке, по той же
-    папке и тому же снимку канона (Critical DS кругов 1 и 2). Исход саммари
-    приходит возвратом (`Archived.summary`), отчёт его печатает, а не выводит
-    из состояния диска (Critical DS и Important GLM круга 2).
+    `archive_meeting` в режиме `SummaryMode` (значение перечисления от CLI до
+    шва — не пара «политика + флаг», где пустая политика ложна; Critical DS и
+    GLM круга 3). AUTO: MISSING/STALE строим, UNKNOWN не трогаем; ADOPT —
+    паспорт исправному легаси без модели по всему канону и ничего не строить;
+    REBUILD — то же присвоение, потом собрать остальное моделью. Без порядка
+    «сначала присвоить» rebuild переписал бы 224 исправных саммари за час
+    модели — присвоение идёт внутри `archive_meeting` перед решением о сборке,
+    по той же папке и тому же снимку канона (Critical DS кругов 1 и 2). Исход
+    саммари приходит возвратом (`Archived.summary`), отчёт его печатает, а не
+    выводит из состояния диска (Critical DS и Important GLM круга 2); `tally`
+    считает исходы по значению `action`, не по словам (Minor DS круга 3).
 
     Возвращает список собранного; одна строка stdout на встречу: что собрано и
     что пропущено с состоянием — «полная» больше не прячет HUMAN/UNKNOWN
@@ -157,12 +158,16 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     else:
         skipped.append(f"разбор {state}")
 
-    policy = {None: None, "adopt": SUMMARY_POLICY_NONE, "rebuild": SUMMARY_POLICY_REBUILD}[summary]
     archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem,
-                               policy=policy, adopt=summary is not None)
+                               mode=SummaryMode(summary) if summary else SummaryMode.AUTO)
     folder = archived.folder if archived is not None else None
-    if archived is not None and (line := archived.summary.line()):
-        (made if archived.summary.made else skipped).append(line)
+    if archived is not None:
+        if tally is not None:
+            tally[archived.summary.action] += 1
+            if archived.summary.action == SummaryOutcome.SKIPPED and archived.summary.reason:
+                tally[f"причина: {archived.summary.reason.split(':')[0]}"] += 1
+        if line := archived.summary.line():
+            (made if archived.summary.made else skipped).append(line)
     if folder is not None:
         tpath = _theses_path(folder)
         # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
@@ -266,20 +271,23 @@ def main(argv: list[str] | None = None):
                 files.append(f)
     else:
         files = sorted(tdir.glob("*.md"))
-    done = adopted = rebuilt = 0
+    done = 0
+    tally: collections.Counter = collections.Counter()
     for f in files:
         if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
             continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
         bare = meeting_stamp.stamp_of(f.stem)
         if bare is None or f.stat().st_size < 600:
             continue
-        made = process(f, cfg, graph, tdir, summary=ns.summary)
+        process(f, cfg, graph, tdir, summary=ns.summary, tally=tally)
         done += 1
-        adopted += "саммари присвоено" in made
-        rebuilt += "саммари" in made
     if not args:
-        tail = f"; саммари присвоено {adopted}, пересобрано {rebuilt}" if ns.summary else ""
-        print(f"ретро: обход {tdir.name}: встреч обработано {done}{tail}")
+        print(f"ретро: обход {tdir.name}: встреч обработано {done}")
+        if ns.summary:
+            # сводка миграции легаси — по исходам, не по словам отчёта (критика 1 GLM
+            # круга 3: без сводки про 298 легаси забывают на месяцы)
+            print("ретро: саммари — " + ", ".join(
+                f"{k} {v}" for k, v in sorted(tally.items())))
     if missing:
         sys.exit("ретро: стенограммы нет: " + ", ".join(missing))
 

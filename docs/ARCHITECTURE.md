@@ -808,14 +808,19 @@ everything that affects the output is already in the hash. An empty file is
 MISSING for every kind — the oracle, not each writer, says so. The outcome
 travels by return value along the whole chain of seams (`write_derivative` →
 `summary_pass` → `archive_meeting` → caller) as a value (`SummaryOutcome`:
-adopted / built / kept / skipped / failed), never re-derived from the disk one
-level up — the retro report used to print "skipped: fresh" about a file the
-machine had just rewritten. Legacy summaries without a passport are handled
-only by explicit commands: `retro_fill --summary=adopt` gives a passport (plus
-a `summary_adopted` mark) to the sound ones without the model — materials not
-newer than the file, our own document structure, and the recording note either
-empty or already in the text — and builds nothing; `--summary=rebuild` adopts
-first, then rebuilds the rest (224 sound and 74 stale of 298 on 19.09).
+adopted / built / kept / skipped / failed / refused), never re-derived from the
+disk one level up — the retro report used to print "skipped: fresh" about a
+file the machine had just rewritten. The pass mode travels the same way as an
+enum (`SummaryMode`: auto / adopt / rebuild) with one translator into a policy
+next to the policies — not as a "policy + flag" pair: an empty policy is falsy
+in Python, and a default substituted by truthiness on the seam silently turned
+"build nothing" into the default. Legacy summaries without a passport are
+handled only by explicit commands: `retro_fill --summary=adopt` gives a
+passport (plus a `summary_adopted` mark) to the sound ones without the model —
+materials not newer than the file, our own document structure, and the
+recording note either empty or already in the text — and builds nothing;
+`--summary=rebuild` adopts first, then rebuilds the rest (224 sound and 74
+stale of 298 on 19.09); the pass prints a tally of outcomes at the end.
 Adoption runs inside `archive_meeting` after the material copies are
 refreshed, on the same folder and the same canon snapshot as the build. The
 recording note reaches the summary as a fact block after the materials and as

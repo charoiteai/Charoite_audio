@@ -171,7 +171,10 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
     return derivative_state(path, read(live), kind, source_sha)
 
 
-def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) -> bool:
+ADOPT_OK = None      # исход присвоения: None — присвоено, иначе причина строкой
+
+
+def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) -> str | None:
     """Присвоить производную без паспорта (UNKNOWN): паспорт на ТЕКУЩИЕ байты и
     текущий источник плюс отметка `<вид>_adopted` с датой — читатель паспорта
     видит, что это не машинная запись, а признание легаси (критика GLM
@@ -180,24 +183,30 @@ def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) ->
     Живому пути присвоение запрещено: UNKNOWN там либо строится политикой,
     либо остаётся незнанием (схождение DS и GLM выходного круга).
 
+    Возвращает None, если присвоено, иначе причину словами (№277 «причина как
+    значение»; Minor DS круга 3: одна выдуманная причина на четыре отказа).
     Гейт снимка защищает не файл (его adopt не пишет), а паспорт: байты,
     изменившиеся между чтением и записью, получили бы паспорт на прежний
-    текст и на следующем чтении стали HUMAN — замороженным без причины (Minor
-    DS круга 2). Три ключа — одним слиянием: паспорт без отметки навсегда
-    выдавал бы присвоенное за машинную запись (Minor DS и GLM круга 2)."""
+    текст и на следующем чтении стали HUMAN (Minor DS круга 2). Три ключа —
+    одним слиянием (Minor DS и GLM круга 2)."""
+    if not live.is_file():
+        return "стенограммы нет"
     meta = read(live) or {}
-    if derivative_state(path, meta, kind, source_sha) != UNKNOWN or not live.is_file():
-        return False
+    state = derivative_state(path, meta, kind, source_sha)
+    if state != UNKNOWN:
+        return f"состояние {state}, присваивать нечего"
     before = safe_write.stat_snapshot(path)
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return False
+        return "файл не читается"
     if before is None or safe_write.stat_snapshot(path) != before:
-        return False
+        return "файл менялся под рукой"
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return merge(live, {f"{kind}_sha256": sha(text), f"{kind}_source_sha256": source_sha,
-                        f"{kind}_adopted": stamp})
+    if not merge(live, {f"{kind}_sha256": sha(text), f"{kind}_source_sha256": source_sha,
+                        f"{kind}_adopted": stamp}):
+        return "сайдкар не записался"
+    return ADOPT_OK
 
 
 # Файлы папки архива встречи, у которых есть паспорт в сайдкаре стенограммы:
@@ -498,13 +507,11 @@ def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
     всего файла: стоп-дамп демона одной строкой `json.dumps({...})` затирал бы
     всё, что записали во время встречи (`channel_events`, №234) — сайдкар с
     живым писателем обязан писаться только слиянием (Critical DS и GLM
-    входного круга). Правила выбора файла — те же, что у `remember`."""
-    ok = True
+    входного круга). Правила выбора файла — те же, что у `remember`. Одно
+    чтение и одна запись на весь словарь: цикл `remember` по ключам оставлял
+    паспорт без отметки при отказе на третьем ключе (Minor DS круга 3 по №314)."""
     with _RMW_LOCK:
-        for key, value in updates.items():
-            if not remember(live, key, value, bare):
-                ok = False
-    return ok
+        return _merge_locked(live, dict(updates), bare)
 
 
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
@@ -514,10 +521,10 @@ def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) 
     файла (усыновление легаси переименовывает): иначе два писателя могли бы
     переименовать по-разному (Minor DS круга 2 по №234)."""
     with _RMW_LOCK:
-        return _remember_locked(live, key, value, bare)
+        return _merge_locked(live, {key: value}, bare)
 
 
-def _remember_locked(live: pathlib.Path, key: str, value: str, bare: str | None) -> bool:
+def _merge_locked(live: pathlib.Path, updates: dict, bare: str | None) -> bool:
     p = sidecar_for(live, bare)
     if p is None:
         return False
@@ -540,7 +547,7 @@ def _remember_locked(live: pathlib.Path, key: str, value: str, bare: str | None)
                 meta = loaded
         except (OSError, ValueError):
             return False
-    meta[key] = value
+    meta.update(updates)
     try:
         safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
     except OSError:

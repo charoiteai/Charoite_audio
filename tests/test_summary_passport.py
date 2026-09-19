@@ -55,7 +55,7 @@ def test_summary_is_built_once_then_fresh_until_materials_change(tmp_path, monke
     folder, live = _folder(tmp_path)
     calls: list = []
     _fake_model(monkeypatch, calls)
-    state = ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD)
+    state = ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD)
     # возвращается состояние ПОСЛЕ записи — от шва, не «то, что было» (Important
     # DS и GLM выходного круга: манифест называл свежее саммари missing/stale)
     assert state == live_sidecar.FRESH and len(calls) == 1
@@ -64,22 +64,22 @@ def test_summary_is_built_once_then_fresh_until_materials_change(tmp_path, monke
     meta = live_sidecar.read(live)
     assert live_sidecar.valid_sha(meta["summary_sha256"]) and live_sidecar.valid_sha(meta["summary_source_sha256"])
     # тот же источник — FRESH, модель не зовётся ни живой, ни ретро-политикой
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD) == live_sidecar.FRESH
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY) == live_sidecar.FRESH
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.FRESH
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.AUTO) == live_sidecar.FRESH
     assert len(calls) == 1
     # ревизия переписала минутки — STALE, пересборка, прежняя версия в .prev/ у стенограммы
     (folder / "Минутки.md").write_text("## Решения\n1. Решение отменено ревизией.\n", encoding="utf-8")
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY) == live_sidecar.FRESH
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.AUTO) == live_sidecar.FRESH
     assert len(calls) == 2
     prev = live_sidecar.prev_path(live, out)
     assert prev.exists() and prev.parent.name == ".prev" and prev.parent.parent == live.parent
     # правка руками — HUMAN, не трогается ни одной политикой
     out.write_text(out.read_text(encoding="utf-8") + "\nМоя правка.\n", encoding="utf-8")
     (folder / "Минутки.md").write_text("## Решения\n1. Ещё одно.\n", encoding="utf-8")
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD) == live_sidecar.HUMAN
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.HUMAN
     assert len(calls) == 2 and "Моя правка." in out.read_text(encoding="utf-8")
-    # и ручной force — тоже: «собери, хоть и свежее», не «перепиши человека» (Minor DS)
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD, force=True) == live_sidecar.HUMAN
+    # и явная пересборка — тоже: REBUILD строит UNKNOWN, но не «перепиши человека»
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.HUMAN
     assert len(calls) == 2
 
 
@@ -99,7 +99,7 @@ def test_source_canon_is_inputs_not_prompt_words_and_note_reaches_prompt_and_doc
     assert "_config_lang" not in canon and "SUMMARY_SECTIONS" not in canon and "_history_context" not in canon
     calls: list = []
     _fake_model(monkeypatch, calls)
-    ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD, recording_note=NOTE)
+    ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD, recording_note=NOTE)
     prompt = calls[0]
     assert NOTE in prompt and prompt.index("</материалы>") < prompt.index(NOTE), "блок факта — после материалов"
     text = (folder / "Саммари.md").read_text(encoding="utf-8")
@@ -125,12 +125,16 @@ def test_legacy_summary_is_adopted_only_by_the_explicit_command_and_by_the_whole
     # живой путь и обход (одна политика): UNKNOWN не присваивается и не строится —
     # незнание о легаси не повод переписывать его моделью на первом касании
     # (критика DS и GLM круга 2, схождение)
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY) == live_sidecar.UNKNOWN
-    assert calls == [] and (live_sidecar.read(live) or {}) == {} or "summary_adopted" not in live_sidecar.read(live)
-    # явная пересборка (--summary=rebuild без годного к присвоению) строит моделью
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD) == live_sidecar.FRESH
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.AUTO) == live_sidecar.UNKNOWN
+    assert calls == []
+    assert "summary_adopted" not in (live_sidecar.read(live) or {})
+    # REBUILD сначала присваивает исправное (материалы не новее) — без модели
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.FRESH
+    assert calls == [] and "было" in out.read_text(encoding="utf-8") and live_sidecar.read(live)["summary_adopted"]
+    # протухшее (материалы новее) REBUILD строит моделью
+    (folder / "Минутки.md").write_text("## Решения\n1. Свежее решение.\n", encoding="utf-8")
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.FRESH
     assert len(calls) == 1 and "было" not in out.read_text(encoding="utf-8")
-    assert "summary_adopted" not in live_sidecar.read(live)
     # обход UNKNOWN не трогает (№309)
     folder2 = tmp_path / "2026-09-19 11-00 — Другая"
     folder2.mkdir()
@@ -141,7 +145,7 @@ def test_legacy_summary_is_adopted_only_by_the_explicit_command_and_by_the_whole
         os.utime(folder2 / name, (old, old))
     live2 = tmp_path / "2026-09-19_1100.md"
     live2.write_text("# Встреча\n", encoding="utf-8")
-    assert ma._gen_summary(folder2, live2, policy=ma.SUMMARY_POLICY) == live_sidecar.UNKNOWN
+    assert ma._gen_summary(folder2, live2, mode=ma.SummaryMode.AUTO) == live_sidecar.UNKNOWN
     assert len(calls) == 1
     # явное присвоение согласованного легаси — без модели, с отметкой
     assert ma.adopt_summary(folder2, live2, None) == "присвоено"
@@ -189,7 +193,7 @@ def test_empty_derivative_is_missing_not_attestable(tmp_path):
     assert live_sidecar.derivative_state(p, meta, "minutes", src) == live_sidecar.MISSING
     live = tmp_path / "2026-09-19_1000.md"
     live.write_text("# Встреча\n", encoding="utf-8")
-    assert live_sidecar.adopt(live, "summary", p, src) is False
+    assert live_sidecar.adopt(live, "summary", p, src) == "состояние missing, присваивать нечего"
 
 
 def test_write_derivative_returns_the_state_after_writing(tmp_path):
@@ -237,7 +241,7 @@ def test_retouch_keeps_the_passport_alive_on_mechanical_rewrite(tmp_path, monkey
     folder, live = _folder(tmp_path)
     calls: list = []
     _fake_model(monkeypatch, calls)
-    ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_REBUILD)
+    ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD)
     out = folder / "Саммари.md"
     before = live_sidecar.read(live)["summary_sha256"]
     assert live_sidecar.retouch(live, "summary", out, lambda t: t.replace("Тема", "Новая тема"))
@@ -264,24 +268,26 @@ def test_retouch_keeps_the_passport_alive_on_mechanical_rewrite(tmp_path, monkey
     assert "ещё правка" in out.read_text(encoding="utf-8") and "руками" not in out.read_text(encoding="utf-8")
 
 
-def test_archive_meeting_threads_policy_and_the_manifest_carries_no_copy_of_the_state(tmp_path, monkeypatch):
-    """Политика — параметр archive_meeting (Critical GLM входного круга), одна на
-    живой путь и обход (MISSING/STALE), выведена из общей (Important DS круга 1);
-    UNKNOWN строит только явная REBUILD (критика DS и GLM круга 2). Состояния
-    саммари в манифесте НЕТ: копия расходилась с паспортом после каждой записи
-    и обнулялась переименованием (Important DS и GLM круга 1) — читатель
-    спрашивает `summary_state()`."""
+def test_archive_meeting_threads_the_mode_and_the_manifest_carries_no_copy_of_the_state(tmp_path, monkeypatch):
+    """Режим прохода — значение перечисления от CLI до шва (Critical DS и GLM
+    круга 3: пустая политика ложна, `policy or DEFAULT` на шве подменял
+    «не строить ничего» дефолтом). Гейт — отрицательный: на швах записи нет
+    подстановки политики по истинности. Одна политика на живой путь и обход
+    (MISSING/STALE), UNKNOWN — только REBUILD. Состояния саммари в манифесте
+    НЕТ: копия расходилась с паспортом после каждой записи и обнулялась
+    переименованием (Important DS и GLM круга 1)."""
     src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
-    assert "policy: frozenset[str] | None = None, adopt: bool = False" in src
-    assert "policy=policy or SUMMARY_POLICY, adopt=adopt" in src
+    assert "policy or " not in src and "policy=policy" not in src, "политика не пересекает шов как множество"
+    assert "mode: SummaryMode = SummaryMode.AUTO) -> Archived | None" in src and " or SummaryMode" not in src
     assert "summary_state=" not in src and '"summary_state"' not in src
-    gu = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
-    cr = (ROOT / "scripts" / "cloud_review.py").read_text(encoding="utf-8")
-    assert "SUMMARY_POLICY" not in gu and "SUMMARY_POLICY" not in cr, "живой путь идёт политикой по умолчанию"
-    assert ma.SUMMARY_POLICY == live_sidecar.POLICY_RETRO
-    assert ma.SUMMARY_POLICY_REBUILD == live_sidecar.POLICY_LIVE - {live_sidecar.FRESH}
-    assert ma.SUMMARY_POLICY_NONE == frozenset()
-    assert live_sidecar.UNKNOWN not in ma.SUMMARY_POLICY and live_sidecar.FRESH not in ma.SUMMARY_POLICY_REBUILD
+    for name in ("graph_updater.py", "cloud_review.py"):
+        text = (ROOT / ("src" if name == "graph_updater.py" else "scripts") / name).read_text(encoding="utf-8")
+        assert "SUMMARY_POLICY" not in text and "SummaryMode" not in text, "живой путь идёт режимом по умолчанию"
+    assert ma.SummaryMode.AUTO.policy == ma.SUMMARY_POLICY == live_sidecar.POLICY_RETRO
+    assert ma.SummaryMode.REBUILD.policy == live_sidecar.POLICY_LIVE - {live_sidecar.FRESH}
+    assert ma.SummaryMode.ADOPT.policy == frozenset() and not ma.SummaryMode.AUTO.adopts
+    assert live_sidecar.UNKNOWN not in ma.SUMMARY_POLICY
+    assert ma.SummaryMode("adopt") is ma.SummaryMode.ADOPT
     folder, live = _folder(tmp_path)
     assert "summary_state" not in ma.build_manifest(folder, "2026-09-19_1000", "Тема")
     assert ma.summary_state(folder, live, None) == live_sidecar.MISSING
@@ -305,7 +311,7 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     o = ma.summary_pass(folder, live, None)
     assert (o.action, o.state, o.made, o.line()) == (O.BUILT, live_sidecar.FRESH, True, "саммари")
     # FRESH: не трогаем ни одной политикой
-    o = ma.summary_pass(folder, live, None, policy=ma.SUMMARY_POLICY_REBUILD)
+    o = ma.summary_pass(folder, live, None, mode=ma.SummaryMode.REBUILD)
     assert (o.action, o.state, o.line()) == (O.KEPT, live_sidecar.FRESH, "саммари fresh") and len(calls) == 1
     # STALE: строим
     (folder / "Минутки.md").write_text("## Решения\n1. Иначе.\n", encoding="utf-8")
@@ -313,7 +319,7 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     # HUMAN: KEPT даже при rebuild и adopt
     out = folder / "Саммари.md"
     out.write_text(out.read_text(encoding="utf-8") + "\nправка\n", encoding="utf-8")
-    o = ma.summary_pass(folder, live, None, policy=ma.SUMMARY_POLICY_REBUILD, adopt=True)
+    o = ma.summary_pass(folder, live, None, mode=ma.SummaryMode.REBUILD)
     assert (o.action, o.state) == (O.KEPT, live_sidecar.HUMAN) and len(calls) == 2
     # UNKNOWN: по умолчанию SKIPPED; adopt с негодным легаси — SKIPPED с причиной; rebuild — BUILT
     folder2 = tmp_path / "2026-09-19 11-00 — Другая"
@@ -324,10 +330,17 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     live2.write_text("# Встреча\n", encoding="utf-8")
     o = ma.summary_pass(folder2, live2, None)
     assert (o.action, o.state, o.line()) == (O.SKIPPED, live_sidecar.UNKNOWN, "саммари unknown")
-    o = ma.summary_pass(folder2, live2, None, policy=ma.SUMMARY_POLICY_NONE, adopt=True)
+    o = ma.summary_pass(folder2, live2, None, mode=ma.SummaryMode.ADOPT)
     assert (o.action, o.reason, o.line()) == (O.SKIPPED, "не наш документ", "саммари unknown: не наш документ")
     assert len(calls) == 2, "adopt не платит модели"
-    o = ma.summary_pass(folder2, live2, None, policy=ma.SUMMARY_POLICY_REBUILD, adopt=True)
+    # ADOPT на MISSING — тоже без модели, причина словами (Important DS круга 3)
+    (folder2 / "Саммари.md").unlink()
+    o = ma.summary_pass(folder2, live2, None, mode=ma.SummaryMode.ADOPT)
+    assert (o.action, o.state, o.reason) == (O.SKIPPED, live_sidecar.MISSING, "файла нет") and len(calls) == 2
+    (folder2 / "Саммари.md").write_text("", encoding="utf-8")
+    assert ma.summary_pass(folder2, live2, None, mode=ma.SummaryMode.ADOPT).reason == "файл пуст" and len(calls) == 2
+    (folder2 / "Саммари.md").write_text("# чужой\n", encoding="utf-8")
+    o = ma.summary_pass(folder2, live2, None, mode=ma.SummaryMode.REBUILD)
     assert (o.action, o.state) == (O.BUILT, live_sidecar.FRESH) and len(calls) == 3
     # FAILED: модель молчит — исход FAILED, состояние честное (MISSING)
     folder3 = tmp_path / "2026-09-19 12-00 — Третья"
@@ -337,7 +350,21 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     live3.write_text("# Встреча\n", encoding="utf-8")
     _fake_model(monkeypatch, calls, answer="")
     o = ma.summary_pass(folder3, live3, None)
-    assert (o.action, o.state, o.made) == (O.FAILED, live_sidecar.MISSING, False) and o.line().startswith("саммари — ")
+    assert (o.action, o.state, o.made, o.reason) == (O.FAILED, live_sidecar.MISSING, False, "модель не ответила")
+    assert o.line() == "саммари — модель не ответила"
+    # REFUSED: файл появился под рукой за время генерации — повтор бессмыслен, различаем (критика GLM круга 3)
+    _fake_model(monkeypatch, calls)
+    import safe_write
+    real = safe_write.write_text
+    out3 = folder3 / "Саммари.md"
+    def racing(path, body, **kw):
+        if path == out3 and "expect" in kw:
+            out3.write_text("правка человека", encoding="utf-8")
+        return real(path, body, **kw)
+    monkeypatch.setattr(safe_write, "write_text", racing)
+    o = ma.summary_pass(folder3, live3, None)
+    assert o.action == O.REFUSED and o.state == live_sidecar.UNKNOWN and "отклонена" in o.reason
+    assert out3.read_text(encoding="utf-8") == "правка человека"
 
 
 def test_archive_meeting_returns_the_summary_outcome_and_adopts_after_copying_materials(tmp_path, monkeypatch):
@@ -367,27 +394,24 @@ def test_archive_meeting_returns_the_summary_outcome_and_adopts_after_copying_ma
     calls: list = []
     _fake_model(monkeypatch, calls)
     res = ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem,
-                             policy=ma.SUMMARY_POLICY_NONE, adopt=True)
+                             mode=ma.SummaryMode.ADOPT)
     assert isinstance(res, ma.Archived) and res.folder.name == "2026-09-19 10-00 — Тема"
     # копия минуток обновилась ДО присвоения → минутки новее саммари → отказ, модель не звалась
     assert res.summary.action == ma.SummaryOutcome.SKIPPED and res.summary.reason.startswith("материалы новее")
     assert calls == [] and "было" in (res.folder / "Саммари.md").read_text(encoding="utf-8")
+    # ADOPT через НАСТОЯЩИЙ archive_meeting на STALE и на MISSING — модель молчит (Critical
+    # DS и GLM круга 3: `policy or DEFAULT` строил MISSING/STALE в режиме adopt)
+    live_sidecar.attest(live, "summary", (res.folder / "Саммари.md").read_text(encoding="utf-8"), "0" * 64)  # наши байты, канон другой → STALE
+    res = ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem, mode=ma.SummaryMode.ADOPT)
+    assert (res.summary.action, res.summary.state) == (ma.SummaryOutcome.SKIPPED, live_sidecar.STALE) and calls == []
+    (res.folder / "Саммари.md").unlink()
+    res = ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem, mode=ma.SummaryMode.ADOPT)
+    assert (res.summary.action, res.summary.reason) == (ma.SummaryOutcome.SKIPPED, "файла нет") and calls == []
     # rebuild: присвоить нечего — строим моделью, исход BUILT
     res = ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem,
-                             policy=ma.SUMMARY_POLICY_REBUILD, adopt=True)
+                             mode=ma.SummaryMode.REBUILD)
     assert res.summary.action == ma.SummaryOutcome.BUILT and len(calls) == 1
     # по умолчанию: FRESH → KEPT, исключённая встреча → None
     assert ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem).summary.action == ma.SummaryOutcome.KEPT
     (graph / ma.ARCHIVE_DIR / "_исключено.md").write_text("2026-09-19_1000 — тест\n", encoding="utf-8")
     assert ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem) is None
-
-
-def test_without_live_the_old_behaviour_stays(tmp_path, monkeypatch):
-    """Тесты и миграция зовут `_gen_summary(folder)` без стенограммы — паспорта
-    нет, поведение прежнее: собрать, если файла нет или он пуст."""
-    folder, _ = _folder(tmp_path)
-    calls: list = []
-    _fake_model(monkeypatch, calls)
-    assert ma._gen_summary(folder) is None and len(calls) == 1
-    assert ma._gen_summary(folder) is None and len(calls) == 1, "непустой файл — не пересобирать"
-    assert ma._gen_summary(folder, force=True) is None and len(calls) == 2

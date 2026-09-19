@@ -323,7 +323,7 @@ def test_live_cothinking_theses_are_kept_and_the_model_is_not_paid_for_them(tmp_
     folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
     folder.mkdir(parents=True)
 
-    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None, adopt=False):
+    def fake_archive(graph, tdir_, stamp, slug, files_key=None, mode=None):
         (folder / "Стенограмма.md").write_text(live.read_text(encoding="utf-8"), encoding="utf-8")
         meeting_archive._derive_extras(folder)
         return meeting_archive.Archived(folder, meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None))
@@ -377,7 +377,7 @@ def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
-    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None: seen.append(f) or [])
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None: seen.append(f) or [])
     retro_fill.main([str(tdir / "2026-09-02_1021.md")])          # путь до ретитла
     assert seen == [final.resolve()]
     stray = tmp_path / "2026-09-05_1200.md"
@@ -496,26 +496,27 @@ def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_
     os.utime(folder / "Минутки.md", (old, old))
     seen: list = []
 
-    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None, adopt=False):
+    def fake_archive(graph, tdir_, stamp, slug, files_key=None, mode=None):
         # как настоящий: сначала копии материалов, потом один проход по саммари
-        seen.append((policy, adopt))
+        seen.append(mode)
         (folder / "Стенограмма.md").write_text(live.read_text(encoding="utf-8"), encoding="utf-8")
         os.utime(folder / "Стенограмма.md", (old, old))
-        outcome = meeting_archive.summary_pass(folder, live, None,
-                                               policy=policy or meeting_archive.SUMMARY_POLICY, adopt=adopt)
+        # режим пробрасывается как есть — фейк не повторяет выражений боевого кода
+        # (круг 3: фейк с `policy or DEFAULT` воспроизводил баг, который должен ловить)
+        outcome = meeting_archive.summary_pass(folder, live, None, mode=mode)
         return meeting_archive.Archived(folder, outcome)
     monkeypatch.setattr(retro_fill, "archive_meeting", fake_archive)
     monkeypatch.setattr(meeting_archive, "load_user_or_example", lambda root: _cfg(tmp_path), raising=False)
     # без флага: легаси UNKNOWN не трогается, состояние в отчёте есть
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
-    assert seen == [(None, False)] and "саммари" not in made
+    assert seen == [meeting_archive.SummaryMode.AUTO] and "саммари" not in made
     out = capsys.readouterr().out
     assert "пропущено:" in out and "саммари unknown" in out
     assert "было" in (folder / "Саммари.md").read_text(encoding="utf-8")
     # adopt: паспорт без модели, отчёт «собрано: саммари присвоено» и ничего про «пропущено: саммари»
     n = len(_FakeLLM.calls)
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, summary="adopt")
-    assert seen[-1] == (meeting_archive.SUMMARY_POLICY_NONE, True)
+    assert seen[-1] is meeting_archive.SummaryMode.ADOPT
     assert "саммари присвоено" in made and len(_FakeLLM.calls) == n
     assert live_sidecar.read(live)["summary_adopted"] and "было" in (folder / "Саммари.md").read_text(encoding="utf-8")
     out = capsys.readouterr().out
@@ -523,7 +524,7 @@ def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_
     # ревизия переписала минутки → STALE; rebuild собирает моделью, отчёт «собрано: саммари»
     (folder / "Минутки.md").write_text("## Решения\n1. Отменено ревизией.\n", encoding="utf-8")
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, summary="rebuild")
-    assert seen[-1] == (meeting_archive.SUMMARY_POLICY_REBUILD, True)
+    assert seen[-1] is meeting_archive.SummaryMode.REBUILD
     assert made.count("саммари") == 1 and "саммари присвоено" not in made
     assert "было" not in (folder / "Саммари.md").read_text(encoding="utf-8")
     out = capsys.readouterr().out
@@ -538,7 +539,7 @@ def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
-    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None: calls.append(summary) or [])
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None: calls.append(summary) or [])
     retro_fill.main(["--summary=adopt", str(live)])
     retro_fill.main([str(live)])
     assert calls == ["adopt", None]

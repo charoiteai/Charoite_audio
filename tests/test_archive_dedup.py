@@ -196,15 +196,14 @@ def test_empty_summary_is_regenerated(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(ma, "_history_context", lambda f: calls.append(f) or "")
     monkeypatch.setattr(ma, "decisions_of", lambda f: [])
+    live = tmp_path / "2026-08-03_1130.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
     (folder / "Саммари.md").write_text("готовое саммари", encoding="utf-8")
-    ma._gen_summary(folder)
-    assert not calls, "непустое саммари не пересобирается"
+    # готовое без паспорта — UNKNOWN: живой путь его не трогает (№314)
+    assert ma._gen_summary(folder, live) == "unknown" and not calls
     (folder / "Саммари.md").write_text("", encoding="utf-8")
-    try:
-        ma._gen_summary(folder)
-    except Exception:   # noqa: BLE001 — дальше модель, нам важен только вход в генерацию
-        pass
-    assert calls, "пустое саммари должно уйти на пересборку"
+    ma._gen_summary(folder, live)
+    assert calls, "пустое саммари — MISSING, уходит на пересборку"
 
 
 def test_archive_does_not_link_a_note_that_is_not_in_this_graph(graph, tmp_path):
