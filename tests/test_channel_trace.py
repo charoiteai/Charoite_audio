@@ -386,7 +386,7 @@ def test_producers_are_silent_after_the_trace_is_closed(monkeypatch):
     hub._announce_losses({"blackhole": a.Loss("умер", retriable=True, died=True)})
     hub.end_channel_episodes()
     said.clear()
-    assert hub._announce_back("blackhole", 3.0) == "" and said == [] and "blackhole" in hub._lost
+    assert hub._announce_back("blackhole", 3.0) is None and said == [] and "blackhole" in hub._lost
     hub._announce_losses({"mic": a.Loss("умер", retriable=False, died=True)})
     assert "mic" not in hub._lost and said == []
 
