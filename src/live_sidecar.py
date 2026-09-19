@@ -8,11 +8,22 @@
 сайдкар принадлежит стенограмме, и пишутся хеши последней МАШИННОЙ
 записи файлов (`transcript_sha256`, `minutes_sha256`, `minutes_source_sha256`):
 совпадение с диском означает, что текста никто не касался. Контракт
-`<вид>_source_sha256` — хеш ИСТОЧНИКА производной, а это речь плюс оговорка
-о неполной записи (`meeting_source.MeetingSource.sha()`, №317), не голая
-речь: писатель паспорта и читатель свежести берут его одной функцией. Модуль лёгкий
-(без STT/диаризации), чтобы его звал и graph_updater (круг 1 по #489:
-DS+GLM Critical — ретитл менял байты после снятия хеша).
+`<вид>_source_sha256` — хеш ИСТОЧНИКА производной: того, что владелец вида
+подал модели. У видов от речи (минутки, разбор, тезисы) это речь плюс
+оговорка о неполной записи (`meeting_source.MeetingSource.sha()`, №317), не
+голая речь; у саммари (№314) — канон материалов (обрезки минуток, тезисов,
+разбора, хвоста стенограммы, список решений, оговорка), потому что речь после
+встречи не меняется, а минутки меняет ревизия. Инвариант один на всех: писатель
+паспорта и читатель свежести берут источник ОДНОЙ функцией (урок №317).
+Вторая половина контракта — запись: `write_derivative` — единственный шов, через
+который машина пишет производную и переставляет паспорт (снимок → `.prev/` →
+гейт expect → attest), `retouch` — механическая перезапись байтов готового
+файла (переименование встречи) с перестановкой хеша байтов при прежнем
+источнике: до №314 rename_meeting правил `Саммари.md` голым `replace`, и с
+паспортом файл замер бы в HUMAN навсегда (Critical DS и GLM входного круга).
+Модуль лёгкий (без STT/диаризации), чтобы его звал и graph_updater (круг 1 по
+#489: DS+GLM Critical — ретитл менял байты после снятия хеша), и
+meeting_archive на голом python3.
 """
 from __future__ import annotations
 
@@ -21,6 +32,8 @@ import json
 import threading
 import pathlib
 import re
+
+import sys
 
 import meeting_stamp
 import safe_write
@@ -103,6 +116,70 @@ def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
     Обёртка над `remember` — сайдкара нет — создаст; неоднозначный — False."""
     return (remember(live, f"{kind}_sha256", sha(file_text), bare)
             and remember(live, f"{kind}_source_sha256", source_sha, bare))
+
+
+def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
+    """Куда ложится прежняя версия производной: `.prev/` рядом со СТЕНОГРАММОЙ у
+    всех видов — и у тезисов и саммари, чьи файлы живут в папке архива внутри
+    графа: скрытый каталог в графе синкался бы iCloud и попадал под `_unhide`
+    архива (Important DS выходного круга по №309). Файл из чужой папки получает
+    префикс стема стенограммы — иначе «Тезисы.md» всех встреч легли бы в одно имя."""
+    # имя чужой папки — от голого штампа, не от стема: ретитл меняет стем, и
+    # каждое поколение получало бы своё имя навсегда (Minor GLM круга 2)
+    bare = meeting_stamp.stamp_of(live.stem) or live.stem
+    name = path.name if path.parent == live.parent else f"{bare}__{path.name}"
+    return live.parent / ".prev" / name
+
+
+def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
+                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> bool:
+    """Записать производную и выдать ей паспорт — единственный машинный
+    писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
+    стенограммой (`prev_path`): уверенная, но неверная генерация не должна быть
+    невозвратной. Запись под гейтом «файл не менялся под рукой»: минута
+    генерации — окно для редактора; обрыв не оставит «готовый» битый файл.
+    Паспорт — только живой стенограмме: сайдкар без владельца — сирота
+    (Important DS входного круга по №314)."""
+    before = safe_write.stat_snapshot(path)
+    if before is not None:
+        try:
+            prev = prev_path(live, path)
+            prev.parent.mkdir(exist_ok=True)
+            safe_write.write_text(prev, path.read_text(encoding="utf-8"))
+        except OSError as e:
+            log(f"прежняя версия {path.name} не сохранена ({e}) — не перезаписываю")
+            return False
+    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
+        log(f"{path.name} изменился под рукой — не перезаписываю")
+        return False
+    if not live.is_file():
+        log(f"паспорт {kind} не записан: стенограммы {live.name} нет — сайдкар был бы сиротой")
+        return True
+    if not attest(live, kind, body, source_sha):
+        log(f"паспорт {kind} не записан — следующая пересборка сочтёт файл чужим")
+    return True
+
+
+def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> bool:
+    """Механическая перезапись готовой производной (замена имени папки при
+    переименовании встречи): байты меняет машина, источник — нет, поэтому
+    переставляется только `<вид>_sha256`. Файл без паспорта или правленный
+    руками (HUMAN) переписывается как раньше, паспорт не трогается: чужое не
+    присваиваем. `transform(text) -> text`; False — запись не сделана."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    new_text = transform(text)
+    if new_text == text:
+        return True
+    meta = read(live) or {}
+    ours = valid_sha(meta.get(f"{kind}_sha256")) == sha(text)
+    if not safe_write.write_text(path, new_text):
+        return False
+    if ours and live.is_file():
+        remember(live, f"{kind}_sha256", sha(new_text))
+    return True
 
 
 def valid_sha(value) -> str | None:

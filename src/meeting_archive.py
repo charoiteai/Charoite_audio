@@ -26,6 +26,7 @@ import sys
 from charoite_paths import resolve_root
 from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, stamp_of
 import channel_trace
+import live_sidecar
 import meeting_source
 import safe_write
 import graphs
@@ -122,7 +123,8 @@ def _folders_for(graph: pathlib.Path, stamp: str) -> list[pathlib.Path]:
 
 
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
-                    files_key: str | None = None) -> pathlib.Path | None:
+                    files_key: str | None = None,
+                    policy: frozenset[str] | None = None) -> pathlib.Path | None:
     """Собирает/обновляет папку встречи; возвращает её путь (None — исключена).
 
     `files_key` — стем главного файла встречи («2026-08-03_113012» у ещё не
@@ -211,10 +213,16 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
         # Ярлык прежнего прогона открывал бы Obsidian на несуществующей заметке
         (folder / "Открыть в Obsidian.command").unlink(missing_ok=True)
     # оговорка о неполной записи — из сайдкара оригинала (факт о записи живёт
-    # там); хвост копии — запасной путь для архива без сайдкара (критика GLM круга 3)
-    _derive_extras(folder, recording_note=channel_trace.recording_note(main))
-    _gen_summary(folder)
-    _write_manifest(folder, stamp, pretty)
+    # там); хвост копии — запасной путь для архива без сайдкара (критика GLM круга 3).
+    # Читается один раз: и тезисы, и саммари получают одно значение (Minor GLM по №314)
+    recording_note = channel_trace.recording_note(main)
+    _derive_extras(folder, recording_note=recording_note)
+    # политика — свойство вызывающего пути: живой (разбор после встречи, доставка
+    # ревизии) строит и легаси без паспорта, ретро-обход и CLI — только MISSING/STALE;
+    # дефолт консервативный (Critical GLM входного круга по №314)
+    summary_state = _gen_summary(folder, main, policy=policy or SUMMARY_POLICY_RETRO,
+                                 recording_note=recording_note)
+    _write_manifest(folder, stamp, pretty, summary_state=summary_state)
     _rebuild_index(graph)
     # Флаг снимаем со ВСЕГО графа, а не только с архивной папки.
     # iCloud метит UF_HIDDEN что угодно в своём контейнере, и на папках
@@ -368,8 +376,13 @@ def _manifest_duration(transcript: str) -> int | None:
     return span or None
 
 
-def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
-    """Производный индекс встречи; все поля можно восстановить из Markdown."""
+def build_manifest(folder: pathlib.Path, stamp: str, title: str,
+                   summary_state: str | None = None) -> dict:
+    """Производный индекс встречи; все поля можно восстановить из Markdown.
+    `summary_state` — состояние паспорта саммари на момент сборки (fresh / stale /
+    human / unknown): протокол участникам и утренний бриф берут решения и
+    поручения из саммари, и им надо уметь отличить свежее от замороженного
+    правкой (критика 2 GLM и Important 2 DS входного круга по №314)."""
     summary_path = folder / "Саммари.md"
     transcript_path = folder / "Стенограмма.md"
     summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
@@ -399,16 +412,19 @@ def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
         "action_items": _manifest_items(summary, section_names("tasks")),
         "open_questions": _manifest_items(summary, section_names("questions")),
         "files": files,
+        "summary_state": summary_state,
         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
 
 
-def _write_manifest(folder: pathlib.Path, stamp: str, title: str) -> None:
+def _write_manifest(folder: pathlib.Path, stamp: str, title: str,
+                    summary_state: str | None = None) -> None:
     """Атомарно обновить манифест после сборки человекочитаемых файлов."""
     path = folder / "meeting.meta.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps(build_manifest(folder, stamp, title), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(build_manifest(folder, stamp, title, summary_state=summary_state),
+                   ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     tmp.replace(path)
@@ -563,36 +579,111 @@ def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section:
     return ("\n\n".join(out_blocks)).strip()
 
 
-def _gen_summary(folder: pathlib.Path, force: bool = False):
+# Обрезки материалов — константы канона: они входят в хеш источника саммари.
+# Смена потолка — законный повод пересобрать (модель увидит другое).
+SUMMARY_CAPS = (("Минутки.md", 3500), ("Тезисы.md", 1500), ("Разбор.md", 2000), ("Стенограмма.md", 4000))
+# У саммари всё, что влияет на вывод, уже в хеше материалов: FRESH-пересборка
+# была бы 13 секундами модели и новым текстом самого читаемого файла при каждом
+# касании без повода (критика 1 GLM входного круга по №314). Живой путь строит
+# MISSING/STALE и легаси без паспорта (UNKNOWN) — как у минуток; ретро — только
+# MISSING/STALE (массовый бэкфилл UNKNOWN запрещён решением входного круга №309).
+SUMMARY_POLICY_LIVE = frozenset({live_sidecar.MISSING, live_sidecar.STALE, live_sidecar.UNKNOWN})
+SUMMARY_POLICY_RETRO = live_sidecar.POLICY_RETRO
+
+
+def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
+    """Что модель увидит как материалы: имя файла → обрезка по канону (у
+    стенограммы важнее конец — итоги, у остальных — начало). Одна функция для
+    промпта и для хеша источника: писатель паспорта и читатель свежести не
+    расходятся (урок №317)."""
+    parts: list[tuple[str, str]] = []
+    for name, cap in SUMMARY_CAPS:
+        f = folder / name
+        if f.exists():
+            text = f.read_text(encoding="utf-8")
+            parts.append((name, text[-cap:] if name == "Стенограмма.md" else text[:cap]))
+    return parts
+
+
+def summary_source_sha(materials: list[tuple[str, str]], decided: list[str],
+                       recording_note: str | None) -> str:
+    """Хеш источника саммари — канон входов, НЕ рендер промпта: слова шаблона и
+    язык конфига в него не входят. Правка формулировки промпта не старит
+    саммари; смена языка конфига говорит, на чём писать НОВОЕ, и не имеет права
+    переписывать документы прошлого языка (Important DS и Minor GLM входного
+    круга по №314). История (ядра, прошлые саммари) — тоже вне: её смена меняет
+    раздел связи с прошлым, не факты встречи."""
+    canon = json.dumps({"materials": materials, "decided": decided, "note": recording_note or ""},
+                       ensure_ascii=False, sort_keys=True)
+    return live_sidecar.sha(canon)
+
+
+def _legacy_summary_consistent(out: pathlib.Path, folder: pathlib.Path) -> bool:
+    """Саммари без паспорта, у которого ни один материал не новее его самого:
+    собрано по текущим материалам — можно выдать паспорт на текущие байты без
+    модели. Иначе на первом живом касании модель переписала бы 224 из 298
+    исправных саммари боевого архива, а правка руками в них неотличима от
+    нашей записи (Critical DS входного круга по №314). Материал новее — знания
+    нет, UNKNOWN остаётся, и живая политика пересоберёт (74 из 298 на 19.09)."""
+    try:
+        own = out.stat().st_mtime
+        return all((folder / name).stat().st_mtime <= own + 1
+                   for name, _ in SUMMARY_CAPS if (folder / name).exists())
+    except OSError:
+        return False
+
+
+def _gen_summary(folder: pathlib.Path, live: pathlib.Path | None = None, *,
+                 policy: frozenset[str] = SUMMARY_POLICY_RETRO,
+                 recording_note: str | None = None, force: bool = False) -> str | None:
     """Саммари.md — выжимка встречи на минуту чтения (первое, что открывают).
 
     Формат по практикам минуток: суть одной строкой → решили → поручения
     (кто/что/срок) → открытое. 100-300 слов, списки, без таблиц.
-    """
+
+    С №314 саммари — производная с паспортом в сайдкаре стенограммы `live`
+    (вид `summary`): источник — канон материалов (`summary_source_sha`),
+    состояние — `live_sidecar.derivative_state`, строить ли — политика
+    вызывающего; правленное руками (HUMAN) не трогается никогда. Замер 19.09:
+    74 из 298 саммари боевого архива были старше своих минуток — ревизия
+    (№238/№239) переписывала минутки, саммари собиралось один раз. Оговорка о
+    неполной записи — блоком факта в промпт после материалов и строкой в
+    документ (№317), а не строкой внутри обрезки минуток. Без `live` (тесты,
+    миграция) — прежнее поведение «собрать, если файла нет»; `force` — только
+    для ручного прогона. Возвращает состояние паспорта до записи."""
     out = folder / "Саммари.md"
-    # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08);
-    # stat под try: файл может исчезнуть между проверками (luna r1)
-    try:
-        ready = out.stat().st_size > 0
-    except OSError:
-        ready = False
-    if ready and not force:
-        return
-    src_parts: list[str] = []
-    for name, cap in (("Минутки.md", 3500), ("Тезисы.md", 1500),
-                      ("Разбор.md", 2000), ("Стенограмма.md", 4000)):
-        f = folder / name
-        if f.exists():
-            text = f.read_text(encoding="utf-8")
-            # у стенограммы важнее конец (итоги), у остальных — начало
-            src_parts.append(f"=== {name} ===\n" +
-                             (text[-cap:] if name == "Стенограмма.md" else text[:cap]))
-    if not src_parts:
-        return
-    history = _history_context(folder)
+    materials = summary_materials(folder)
+    if not materials:
+        return None
     # Решения — отдельным блоком, а не «найди в материалах»: они уже записаны
     # минутками структурно, и искать их заново модель умеет через раз.
     decided = decisions_of(folder)
+    source_sha = summary_source_sha(materials, decided, recording_note)
+    state: str | None = None
+    if live is not None:
+        meta = live_sidecar.read(live) or {}
+        state = live_sidecar.derivative_state(out, meta, "summary", source_sha)
+        if state == live_sidecar.UNKNOWN and out.exists() and _legacy_summary_consistent(out, folder):
+            # разовая аттестация исправного легаси без модели — паспорт на текущие байты
+            try:
+                if live.is_file() and live_sidecar.attest(live, "summary", out.read_text(encoding="utf-8"),
+                                                          source_sha):
+                    state = live_sidecar.FRESH
+            except OSError:
+                pass
+        if not force and not live_sidecar.wants_build(state, policy):
+            return state
+    else:
+        # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08);
+        # stat под try: файл может исчезнуть между проверками (luna r1)
+        try:
+            ready = out.stat().st_size > 0
+        except OSError:
+            ready = False
+        if ready and not force:
+            return None
+    src_parts = [f"=== {name} ===\n{text}" for name, text in materials]
+    history = _history_context(folder)
     words = SUMMARY_SECTIONS[_config_lang()]
     decided_block = (f"\n\n=== Решения встречи (перенеси их в раздел «{words['decisions']}», "
                      "сократив каждое до строки) ===\n"
@@ -617,10 +708,11 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
         # GLM: единственный нетривиальный импорт у него — meeting_archive).
         from config_loader import load_user_or_example
         cfg = load_user_or_example(ROOT)
-        text = LLM(cfg).complete(
+        client = LLM(cfg)
+        text = client.complete(
             "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
-            + "\n</материалы>\n\n"
-            f"Составь саммари {_lang_name()} по шаблону "
+            + "\n</материалы>\n\n" + client.recording_block(recording_note)
+            + f"Составь саммари {_lang_name()} по шаблону "
             "(заголовки — дословно как здесь):\n"
             f"**{words['gist']}** …\n\n"
             f"## {words['topics']}\n(до 3 пунктов «- **тема** — что по ней», не проза)\n\n"
@@ -657,17 +749,26 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
             # зависеть от того, разглядела ли модель их в этот раз.
             text = _force_decisions(text, decided)
             text = _trim_summary(text)  # лимит гарантирует код, не промпт
+            # оговорка о неполной записи — строкой в документ, как у минуток (№317)
+            text = meeting_source.with_note(text, recording_note)
             date = folder.name[:10]
             # progressive disclosure: из выжимки видно, куда идти за деталями
             deeper = " · ".join(
                 f"[[{ARCHIVE_DIR}/{folder.name}/{n}|{n}]]"
                 for n in ("Минутки", "Разбор", "Стенограмма")
                 if (folder / f"{n}.md").exists())
-            safe_write.write_text(out, f"---\ntype: саммари\nдата: {date}\n---\n\n"
-                                  f"# Саммари — {folder.name}\n\n{text}\n"
-                                  + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""))
+            body = (f"---\ntype: саммари\nдата: {date}\n---\n\n"
+                    f"# Саммари — {folder.name}\n\n{text}\n"
+                    + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""))
+            if live is not None:
+                # единственный шов записи производных с паспортом (.prev, гейт expect)
+                live_sidecar.write_derivative(live, out, "summary", body, source_sha,
+                                              log=lambda msg: print(f"саммари: {msg}", file=sys.stderr))
+            else:
+                safe_write.write_text(out, body)
     except Exception as e:  # noqa: BLE001
         print(f"саммари: {e}", file=sys.stderr)
+    return state
 
 
 def _unhide(path: pathlib.Path):

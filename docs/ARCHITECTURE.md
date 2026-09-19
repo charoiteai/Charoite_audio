@@ -778,6 +778,39 @@ the event writes it (idempotent), an orphan waits an hour in the import
 folder before it is swept, because iCloud delivers a kilobyte of JSON long
 before an hour of audio. The manifest dies with the audio in retention.
 
+**The archive summary is a derivative with a passport; its source is what the
+model was fed, not the speech.** `Саммари.md` — the one-minute digest, the first
+file people open — was built once (`_gen_summary` skipped any non-empty file)
+and never refreshed, while the cloud review kept rewriting the minutes it was
+built from (№238/№239): on 19.09, 74 of 298 archive folders held a summary
+older than its minutes. The input round (DS and GLM) converged on one
+mechanism and caught three holes in the plan: the summary's source cannot be
+"speech + note" like the other derivatives — speech never changes after the
+meeting, so the passport would stay FRESH forever; a second write seam in
+`meeting_archive` would fork the gates of `retro_fill._write_derivative`; and
+`rename_meeting` rewrote the summary's bytes with a bare `replace` (the folder
+name lives in its H1 and links), so with a passport every renamed meeting
+would freeze in HUMAN forever. Now the source of the `summary` kind is the
+canon of inputs (`summary_source_sha`: the capped materials from minutes,
+theses, debrief and the transcript tail, the extracted decisions, the
+recording note — never the prompt template words or the config language: the
+config says what language NEW documents get and may not rewrite old ones);
+`live_sidecar` owns both halves of the passport contract — `derivative_state`
+decides, `write_derivative` (moved from `retro_fill`, one seam for every kind:
+snapshot → `.prev/` → expect gate → attest, and no passport for a transcript
+that does not exist) writes, `retouch` re-stamps the bytes hash after a
+mechanical rewrite while keeping the source. The policy travels with the
+caller of `archive_meeting`: the live path (post-meeting pipeline, review
+delivery) builds MISSING/STALE and legacy without a passport, the retro pass
+and the CLI only MISSING/STALE; a FRESH rebuild is excluded for summaries —
+everything that affects the output is already in the hash. Legacy summaries
+whose materials are not newer than themselves get a passport on the current
+bytes without the model (224 of 298), the rest stay UNKNOWN until a live touch
+rebuilds them. The recording note reaches the summary as a fact block after
+the materials and as a line in the document (№317), not as a stray line inside
+a minutes excerpt, and `meeting.meta.json` carries `summary_state` so the
+protocol and the morning brief can tell fresh from frozen-by-hand.
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the

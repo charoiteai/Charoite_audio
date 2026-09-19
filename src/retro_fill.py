@@ -187,40 +187,14 @@ def _built(made: list[str], skipped: list[str], kind: str, out: str, write) -> N
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
-    """Куда ложится прежняя версия производной: `.prev/` рядом со СТЕНОГРАММОЙ у
-    всех видов — и у тезисов, чей файл живёт в папке архива внутри графа:
-    скрытый каталог в графе синкался бы iCloud и попадал под `_unhide` архива
-    (Important DS выходного круга по №309). Файл из чужой папки получает
-    префикс стема стенограммы — иначе «Тезисы.md» всех встреч легли бы в одно имя."""
-    # имя чужой папки — от голого штампа, не от стема: ретитл меняет стем, и
-    # каждое поколение получало бы своё имя навсегда (Minor GLM круга 2)
-    bare = meeting_stamp.stamp_of(live.stem) or live.stem
-    name = path.name if path.parent == live.parent else f"{bare}__{path.name}"
-    return live.parent / ".prev" / name
+    """Прежнее имя — шов живёт в `live_sidecar` (единый писатель производных, №314)."""
+    return live_sidecar.prev_path(live, path)
 
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
                       source_sha: str) -> bool:
-    """Записать производную и выдать ей паспорт. Прежняя версия — в `.prev/`
-    рядом со стенограммой (`prev_path`): уверенная, но неверная генерация не
-    должна быть невозвратной (как у минуток)."""
-    before = safe_write.stat_snapshot(path)
-    if before is not None:
-        try:
-            prev = prev_path(live, path)
-            prev.parent.mkdir(exist_ok=True)
-            safe_write.write_text(prev, path.read_text(encoding="utf-8"))
-        except OSError as e:
-            print(f"ретро: прежняя версия {path.name} не сохранена ({e}) — не перезаписываю", file=sys.stderr)
-            return False
-    # запись под гейтом «файл не менялся под рукой»: минута генерации — окно
-    # для редактора; обрыв не оставит «готовый» битый файл (аудит 13.09, GLM M6)
-    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
-        print(f"ретро: {path.name} изменился под рукой — не перезаписываю", file=sys.stderr)
-        return False
-    if not live_sidecar.attest(live, kind, body, source_sha):
-        print(f"ретро: паспорт {kind} не записан — следующая пересборка сочтёт файл чужим", file=sys.stderr)
-    return True
+    return live_sidecar.write_derivative(live, path, kind, body, source_sha,
+                                         log=lambda msg: print(f"ретро: {msg}", file=sys.stderr))
 
 
 def _minute(stem: str) -> str | None:
