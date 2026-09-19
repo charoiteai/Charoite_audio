@@ -20,6 +20,10 @@
 сумма, открытые эпизоды — «до конца записи»; после `close` след закрыт и
 события не принимает — гейт у владельца, не только у излучателя (критика GLM
 круга 2).
+
+Третий источник событий — запись на телефоне (№200): компаньон везёт рядом с
+аудио манифест остановки, импорт на Mac конвертирует его в событие
+`KIND_STOPPED` этого же следа (`phone_event`), строка и итог — здесь.
 """
 from __future__ import annotations
 
@@ -32,6 +36,8 @@ from collections import Counter
 from typing import Callable, NamedTuple
 
 import live_sidecar
+import safe_write
+import transcript
 
 SIDECAR_KEY = "channel_events"
 SUMMARY_MARK = "📋 запись неполная"   # начало строки итога; все, кто ищет её в тексте, берут отсюда
@@ -45,8 +51,34 @@ class Episode(NamedTuple):
     start: float | None
     end: float | None            # None — открыт (канал не вернулся, записи ещё идёт)
     revived: bool                # True — канал вернулся (back/gap); False — закрыт остановкой
-NAMES = {"blackhole": "системный звук (собеседники)", "mic": "ваш микрофон"}
+PHONE = "phone"          # метка записи компаньона: канал у неё один, событие — остановка файла
+NAMES = {"blackhole": "системный звук (собеседники)", "mic": "ваш микрофон", PHONE: "запись на телефоне"}
 ABSENT = {"blackhole": "без собеседников", "mic": "без вашего голоса"}
+
+# --- Запись на телефоне (№200) ---------------------------------------------
+# Компаньон пишет рядом с аудио манифест `<файл>.json` (`Recorder.StopRecord`):
+# kind stop|rotate, reason из закрытого списка, at (ISO 8601), seconds, series,
+# finalized_ok. На Mac импорт превращает его в событие следа ЭТОГО модуля и
+# ничего не формулирует сам (Critical GLM входного круга): формулировка,
+# классификатор строк и участие в итоге — у одного владельца, как у №234.
+MANIFEST_SUFFIX = ".json"        # имя манифеста = имя аудио + суффикс (контракт `Inbox.sidecar(for:)`)
+KIND_STOPPED = "stopped"         # запись на телефоне закрыта не человеком; эпизодом отсутствия канала
+#                                  не является — `episodes_of` его не видит (Critical DS и GLM: `end`
+#                                  делал бы каждую импортированную встречу «неполной»). Ротация — тоже
+#                                  невольная остановка записи В ЭТОМ ФАЙЛЕ: продолжение обещано телефоном
+#                                  в момент закрытия, а состоится ли — он не знает (старт после звонка
+#                                  мог не подняться). Поэтому в итог входят обе, а формулировка ротации
+#                                  не утверждает будущего (Critical DS выходного круга)
+PHONE_REASONS = {                # причина — значение из enum компаньона; текст — здесь, один раз
+    "call_no_resume": "микрофон не вернулся после звонка",
+    "media_reset": "аудиослужба перезапущена",
+    "encode_error": "сбой кодека",
+    "stalled": "запись не поднялась после застоя",
+    "no_stop": "стоп не зафиксирован — приложение не закрыло файл",
+}
+PHRASE_CUT = "оборвана"          # терминальный стоп: дальше встреча не записана
+PHRASE_SPLIT = "прервана"        # ротация: файл закрыт не человеком, продолжение — если запись возобновилась
+PHRASE_CONTINUED = "продолжение, если запись возобновилась, следующим файлом"
 
 
 def _hm(ts: float | None) -> str:
@@ -73,8 +105,9 @@ PHRASE_GAP = ": пробел в записи"
 # классификатор ловил строки модели вида «⚠️ подрядчик пропал (…)» и вырезал
 # их из промптов (Important DS и Minor GLM круга 3 по №317)
 _TRACE_RE = re.compile(
-    r"^(?:⚠️|✅) (?:" + "|".join(re.escape(n) for n in NAMES.values()) + r")"
-    r"(?: (?:" + "|".join(re.escape(p) for p in (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK)) + r")"
+    r"^(?:⚠️|✅|⏹) (?:" + "|".join(re.escape(n) for n in NAMES.values()) + r")"
+    r"(?: (?:" + "|".join(re.escape(p) for p in (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK,
+                                                  PHRASE_CUT, PHRASE_SPLIT)) + r")"
     r"|" + re.escape(PHRASE_GAP) + r")")
 
 
@@ -97,6 +130,66 @@ def render(ev) -> str | None:
         return (f"⚠️ {name}{PHRASE_GAP} {_hm(ev.stopped_at)}–{_hm(ev.at)} "
                 f"({_dur(ev.silent_s)}), поток перезапущен")
     return None
+
+
+def _epoch(value) -> float | None:
+    """ISO 8601 манифеста (`2026-09-07T16:02:37Z`) → секунды эпохи; мусор → None
+    («время неизвестно» в строке, а не ложный момент)."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.timestamp()
+
+
+def phone_event(manifest) -> dict | None:
+    """Событие следа из манифеста компаньона; None — события нет: ручной стоп
+    (`user`) — не факт о неполноте, мусор — не факт вовсе. `terminal` различает
+    стоп и ротацию для читателей (склейка серии, №260); в итог входят обе.
+    Поле `cause` занято словарём причин хаба (`audio.CH_CAUSES`), причина
+    телефона — `reason` (Critical DS входного круга)."""
+    if not isinstance(manifest, dict):
+        return None
+    kind, reason = manifest.get("kind"), manifest.get("reason")
+    if kind not in ("stop", "rotate") or not isinstance(reason, str) or not reason or reason == "user":
+        return None
+    ev: dict = {"label": PHONE, "kind": KIND_STOPPED, "at": _epoch(manifest.get("at")),
+                "reason": reason, "terminal": kind == "stop"}
+    for key in ("seconds", "series", "finalized_ok"):
+        if manifest.get(key) is not None:
+            ev[key] = manifest[key]
+    return ev
+
+
+def _phone_reason(ev: dict) -> str:
+    why = PHONE_REASONS.get(ev.get("reason"), str(ev.get("reason")))
+    if ev.get("finalized_ok") is False:
+        why += ", файл не финализирован"
+    return why
+
+
+def _phone_text(ev: dict) -> str:
+    """Одна формулировка события телефона — для строки события и для итога."""
+    when, why = _hm(ev.get("at")), _phone_reason(ev)
+    if ev.get("terminal"):
+        return f"{NAMES[PHONE]} {PHRASE_CUT} {when} ({why})"
+    return f"{NAMES[PHONE]} {PHRASE_SPLIT} {when} ({why}) — {PHRASE_CONTINUED}"
+
+
+def render_phone(ev: dict) -> str | None:
+    """Человеческая строка события телефона (лог импорта, нить); None — не оно.
+    В документы событие попадает не этой строкой, а итогом `summary_of`: его
+    узнают все читатели хвоста (`note_in_tail`, пересборка, `meeting_source`),
+    а строка события — только классификатор (Important DS выходного круга)."""
+    if ev.get("kind") != KIND_STOPPED:
+        return None
+    return f"⏹ {_phone_text(ev)}"
 
 
 class ChannelTrace:
@@ -231,6 +324,8 @@ def episodes_of(events: list[dict]) -> list[Episode]:
                 out[i] = out[i]._replace(end=e.get("at"), revived=kind == "back")
         elif kind == "gap":
             out.append(Episode(label, e.get("stopped_at"), e.get("at"), True))
+        # KIND_STOPPED (телефон, №200) — не эпизод отсутствия канала: файл закрыт,
+        # интервала «без канала» у него нет; в итог он входит своей строкой
     return _merge_windows(out)
 
 
@@ -242,7 +337,12 @@ def summary_of(events: list[dict]) -> str | None:
     процесса (флаг отказа записи) сюда не входит: документ обязан
     восстанавливаться из сайдкара целиком (Important DS входного круга)."""
     eps = episodes_of(events)
-    if not eps:
+    # невольная остановка записи на телефоне — часть итога, и терминальная, и
+    # ротация: запись В ЭТОМ ФАЙЛЕ прервана не человеком, документ по нему — не
+    # вся встреча; состоялось ли продолжение, телефон в момент закрытия не знает,
+    # и формулировка этого не утверждает (Critical DS выходного круга по №200)
+    cuts = [e for e in events if e.get("kind") == KIND_STOPPED]
+    if not eps and not cuts:
         return None
     parts = []
     for label in dict.fromkeys(e.label for e in eps):
@@ -257,6 +357,7 @@ def summary_of(events: list[dict]) -> str | None:
         shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
         total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
         parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
+    parts.extend(_phone_text(e) for e in cuts)
     return SUMMARY_MARK + ": " + "; ".join(parts)
 
 
@@ -303,6 +404,38 @@ def summary_line(events: list[dict]) -> str | None:
         return None
     at = last_event_at(events)
     return f"{_hm(at)} {note}" if at else note
+
+
+def tail_with_summary(text: str, events: list[dict]) -> tuple[str, int]:
+    """Единственное правило дописывания итога в хвост документа: строка итога по
+    событиям сайдкара; уже стоит — `(text, 0)`; нет — дописать через владельца
+    формата хвоста (`transcript.append_note`). Пересборка, импорт и сверка пар
+    зовут это, а не свои условия по маркеру: три писателя с тремя гейтами
+    расходились бы молча (Important DS и GLM круга 2 по №200). Идемпотентность —
+    по самой строке: новый итог по большему списку событий ложится ниже, и
+    `note_in_tail` берёт последний (контракт читателя)."""
+    line = summary_line(events)
+    if not line or line in text:
+        return text, 0
+    return transcript.append_note(text, line), 1
+
+
+def sync_tail(live: pathlib.Path, *, log=print) -> bool:
+    """Свести хвост документа с сайдкаром — с гейтом expect по снимку
+    (`safe_write.rewrite_file`): импорт и сверка пар ходят по файлам, которые в
+    этот момент может переписывать пересборка из другого процесса под своим
+    замком; чтение → запись без гейта откатывало бы её финал (Important DS и
+    GLM круга 2). Сайдкар — источник, хвост — производная: не дописалось сейчас —
+    допишет пересборка тем же правилом. True — строка дописана."""
+    events = events_of(live)
+    if not summary_line(events):
+        return False
+    try:
+        return safe_write.rewrite_file(live, lambda text: tail_with_summary(text, events),
+                                       "итог записи в хвост") > 0
+    except safe_write.LostRace as exc:
+        log(f"итог записи в хвост не дописан ({exc}) — сайдкар записан, хвост догонит пересборка")
+        return False
 
 
 def _bare_line(line: str) -> str:
