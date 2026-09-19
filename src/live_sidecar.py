@@ -35,6 +35,7 @@ import re
 
 import datetime
 import sys
+import typing
 
 import meeting_stamp
 import safe_write
@@ -137,8 +138,26 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
     return live.parent / ".prev" / name
 
 
+class WriteOutcome(typing.NamedTuple):
+    """Исход записи производной — значением, не `None` на три истории (Important
+    DS круга 4 по №314): `state` — состояние после записи тем же оракулом
+    (FRESH при удавшемся паспорте, UNKNOWN без владельца), None — запись не
+    состоялась; `refused` — почему: RACE («файл менялся под рукой» — повтор
+    бессмыслен) или PREV («прежняя версия не сохранена» — сбой диска, повтор
+    имеет смысл)."""
+    state: str | None
+    refused: str | None = None
+
+    RACE: typing.ClassVar[str] = "race"
+    PREV: typing.ClassVar[str] = "prev"
+
+    @property
+    def written(self) -> bool:
+        return self.state is not None
+
+
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> str | None:
+                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
     стенограммой (`prev_path`): уверенная, но неверная генерация не должна быть
@@ -147,10 +166,10 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
     Паспорт — только живой стенограмме: сайдкар без владельца — сирота
     (Important DS входного круга по №314).
 
-    Возвращает состояние производной ПОСЛЕ записи тем же оракулом
-    `derivative_state` (FRESH при удавшемся паспорте, UNKNOWN без него) — или
-    None, если запись не состоялась. Вызывающий не пересобирает знание сам и
-    не может записать промежуточное (Important DS и GLM выходного круга)."""
+    Возвращает `WriteOutcome`: состояние производной ПОСЛЕ записи тем же
+    оракулом `derivative_state` или причину отказа значением. Вызывающий не
+    пересобирает знание сам и не гадает, какая ветка отказала (Important DS и
+    GLM круга 1; Important DS круга 4)."""
     before = safe_write.stat_snapshot(path)
     if before is not None:
         try:
@@ -159,16 +178,30 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
             safe_write.write_text(prev, path.read_text(encoding="utf-8"))
         except OSError as e:
             log(f"прежняя версия {path.name} не сохранена ({e}) — не перезаписываю")
-            return None
+            return WriteOutcome(None, WriteOutcome.PREV)
     if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
         log(f"{path.name} изменился под рукой — не перезаписываю")
-        return None
+        return WriteOutcome(None, WriteOutcome.RACE)
     if not live.is_file():
         log(f"паспорт {kind} не записан: стенограммы {live.name} нет — сайдкар был бы сиротой")
-        return UNKNOWN
+        return WriteOutcome(UNKNOWN)
     if not attest(live, kind, body, source_sha):
         log(f"паспорт {kind} не записан — следующая пересборка сочтёт файл чужим")
-    return derivative_state(path, read(live), kind, source_sha)
+    return WriteOutcome(derivative_state(path, read(live), kind, source_sha))
+
+
+def missing_reason(path: pathlib.Path) -> str:
+    """Почему производная MISSING — словами, одним `stat` у оракула: «файла
+    нет», «файл пуст», «файл не читается». Оракул различает состояния, но не
+    причины; причину читатель не должен добирать вторым чтением диска мимо
+    него (Important DS круга 4 по №314)."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return "файла нет"
+    except OSError:
+        return "файл не читается"
+    return "файл пуст" if size == 0 else "файл есть"
 
 
 ADOPT_OK = None      # исход присвоения: None — присвоено, иначе причина строкой
@@ -189,12 +222,12 @@ def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) ->
     изменившиеся между чтением и записью, получили бы паспорт на прежний
     текст и на следующем чтении стали HUMAN (Minor DS круга 2). Три ключа —
     одним слиянием (Minor DS и GLM круга 2)."""
-    if not live.is_file():
-        return "стенограммы нет"
     meta = read(live) or {}
     state = derivative_state(path, meta, kind, source_sha)
     if state != UNKNOWN:
         return f"состояние {state}, присваивать нечего"
+    if not live.is_file():
+        return "стенограммы нет"
     before = safe_write.stat_snapshot(path)
     try:
         text = path.read_text(encoding="utf-8")

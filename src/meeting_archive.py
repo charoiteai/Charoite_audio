@@ -739,6 +739,7 @@ def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str |
     (Important DS круга 2: присвоение по папке другого резолвера и до обновления
     копий материалов давало паспорт на старый канон, и модель всё равно
     работала). HUMAN не строится ни одним режимом."""
+    mode = SummaryMode(mode)      # единственная нормализация на границе: голая строка — ValueError здесь
     materials = summary_materials(folder)
     if not materials:
         return SummaryOutcome(SummaryOutcome.NONE, None, "материалов нет")
@@ -758,7 +759,7 @@ def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str |
                 if reason is live_sidecar.ADOPT_OK:
                     return SummaryOutcome(SummaryOutcome.ADOPTED, live_sidecar.FRESH)
         elif state == live_sidecar.MISSING:
-            reason = "файл пуст" if out.exists() else "файла нет"
+            reason = live_sidecar.missing_reason(out)     # причина — у оракула, не вторым чтением здесь
     if state == live_sidecar.HUMAN or not live_sidecar.wants_build(state, mode.policy):
         action = SummaryOutcome.KEPT if state in (live_sidecar.FRESH, live_sidecar.HUMAN) else SummaryOutcome.SKIPPED
         return SummaryOutcome(action, state, reason)
@@ -802,7 +803,9 @@ def _gen_summary(folder: pathlib.Path, live: pathlib.Path, *,
     саммари боевого архива были старше своих минуток — ревизия (№238/№239)
     переписывала минутки, саммари собиралось один раз. Это обёртка над
     `summary_pass` (один проход, исход значением), возвращает состояние
-    паспорта ПОСЛЕ прохода. Писателя без стенограммы больше нет: файл без
+    паспорта ПОСЛЕ прохода. Боевых вызывающих у обёртки нет — единственная
+    точка прохода в проде `archive_meeting`; обёртка держится для тестов
+    состояний (Minor DS круга 4). Писателя без стенограммы больше нет: файл без
     паспорта в модуле-владельце паспортов — обход шва по построению, и с
     политикой MISSING/STALE он не пересобрался бы уже никогда (Important DS
     круга 3); `force` снят — «пересобрать» выражается режимом."""
@@ -903,12 +906,16 @@ def _build_summary(folder: pathlib.Path, live: pathlib.Path, materials: list[tup
                     + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""))
             # единственный шов записи производных с паспортом (.prev, гейт expect);
             # состояние после записи — от шва (Important DS и GLM круга 1)
-            state = live_sidecar.write_derivative(
+            wrote = live_sidecar.write_derivative(
                 live, out, "summary", body, source_sha,
                 log=lambda msg: print(f"саммари: {msg}", file=sys.stderr))
-            if state is None:
+            if wrote.refused == live_sidecar.WriteOutcome.RACE:
                 return failed(SummaryOutcome.REFUSED, "запись отклонена: файл менялся под рукой")
-            return SummaryOutcome(SummaryOutcome.BUILT, state)
+            if not wrote.written:
+                # прежняя версия не сохранилась (диск, права на .prev) — файл не тронут,
+                # повтор имеет смысл: это FAILED, не REFUSED (Important DS круга 4)
+                return failed(SummaryOutcome.FAILED, "прежняя версия не сохранена — повторить позже")
+            return SummaryOutcome(SummaryOutcome.BUILT, wrote.state)
         return failed(SummaryOutcome.FAILED, "модель не ответила")
     except Exception as e:  # noqa: BLE001
         print(f"саммари: {e}", file=sys.stderr)

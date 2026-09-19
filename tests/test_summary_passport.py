@@ -14,6 +14,8 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -203,8 +205,9 @@ def test_write_derivative_returns_the_state_after_writing(tmp_path):
     live.write_text("# Встреча\n", encoding="utf-8")
     out = tmp_path / "Саммари.md"
     src = live_sidecar.sha("канон")
-    assert live_sidecar.write_derivative(live, out, "summary", "тело", src, log=lambda m: None) == live_sidecar.FRESH
-    assert live_sidecar.write_derivative(live, out, "summary", "тело 2", src, log=lambda m: None) == live_sidecar.FRESH
+    assert live_sidecar.write_derivative(live, out, "summary", "тело", src, log=lambda m: None).state == live_sidecar.FRESH
+    wrote = live_sidecar.write_derivative(live, out, "summary", "тело 2", src, log=lambda m: None)
+    assert (wrote.state, wrote.refused, wrote.written) == (live_sidecar.FRESH, None, True)
     # гонка: файл изменился под рукой между решением и записью — None, байты человека целы
     import safe_write
     real = safe_write.write_text
@@ -214,8 +217,23 @@ def test_write_derivative_returns_the_state_after_writing(tmp_path):
         return real(path, body, **kw)
     import unittest.mock as um
     with um.patch.object(safe_write, "write_text", racing):
-        assert live_sidecar.write_derivative(live, out, "summary", "тело 3", src, log=lambda m: None) is None
+        wrote = live_sidecar.write_derivative(live, out, "summary", "тело 3", src, log=lambda m: None)
+    assert (wrote.state, wrote.refused) == (None, live_sidecar.WriteOutcome.RACE)
     assert out.read_text(encoding="utf-8") == "правка человека"
+    # прежняя версия не сохранилась (.prev — обычный файл): файл не тронут, причина PREV,
+    # не «файл менялся под рукой» (Important DS круга 4)
+    prev_dir = live_sidecar.prev_path(live, out).parent
+    import shutil
+    shutil.rmtree(prev_dir, ignore_errors=True)
+    prev_dir.write_text("x", encoding="utf-8")
+    wrote = live_sidecar.write_derivative(live, out, "summary", "тело 4", src, log=lambda m: None)
+    assert (wrote.state, wrote.refused) == (None, live_sidecar.WriteOutcome.PREV)
+    assert out.read_text(encoding="utf-8") == "правка человека"
+    prev_dir.unlink()
+    # причины MISSING — у оракула, одним stat
+    assert live_sidecar.missing_reason(tmp_path / "нет.md") == "файла нет"
+    (tmp_path / "пусто.md").write_text("", encoding="utf-8")
+    assert live_sidecar.missing_reason(tmp_path / "пусто.md") == "файл пуст"
 
 
 def test_write_seam_lives_in_live_sidecar_and_refuses_orphan_passports(tmp_path):
@@ -228,7 +246,7 @@ def test_write_seam_lives_in_live_sidecar_and_refuses_orphan_passports(tmp_path)
         live_sidecar.prev_path(tmp_path / "a.md", tmp_path / "x" / "Тезисы.md")
     ghost = tmp_path / "нет.md"
     out = tmp_path / "Саммари.md"
-    assert live_sidecar.write_derivative(ghost, out, "summary", "тело", "a" * 64, log=lambda m: None) == live_sidecar.UNKNOWN
+    assert live_sidecar.write_derivative(ghost, out, "summary", "тело", "a" * 64, log=lambda m: None).state == live_sidecar.UNKNOWN
     assert out.read_text(encoding="utf-8") == "тело"
     assert not live_sidecar._direct(ghost).exists(), "сайдкар без владельца не создаётся"
 
@@ -365,6 +383,24 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     o = ma.summary_pass(folder3, live3, None)
     assert o.action == O.REFUSED and o.state == live_sidecar.UNKNOWN and "отклонена" in o.reason
     assert out3.read_text(encoding="utf-8") == "правка человека"
+    # сбой сохранения прежней версии — FAILED (повтор имеет смысл), файл не тронут (Important DS круга 4)
+    monkeypatch.setattr(safe_write, "write_text", real)
+    out3.unlink()
+    prev_dir = live_sidecar.prev_path(live3, out3).parent
+    prev_dir.mkdir(exist_ok=True)
+    out3.write_text("старое машинное", encoding="utf-8")
+    live_sidecar.attest(live3, "summary", "старое машинное", "1" * 64)          # STALE: паспорт на другой канон
+    import shutil
+    shutil.rmtree(prev_dir)
+    prev_dir.write_text("x", encoding="utf-8")
+    o = ma.summary_pass(folder3, live3, None)
+    assert (o.action, o.state) == (O.FAILED, live_sidecar.STALE) and "прежняя версия" in o.reason
+    assert out3.read_text(encoding="utf-8") == "старое машинное"
+    prev_dir.unlink()
+    # голая строка режима нормализуется на границе шва, мусор — ValueError (Minor DS круга 4)
+    assert ma.summary_pass(folder3, live3, None, mode="adopt").action == O.SKIPPED
+    with pytest.raises(ValueError):
+        ma.summary_pass(folder3, live3, None, mode="all")
 
 
 def test_archive_meeting_returns_the_summary_outcome_and_adopts_after_copying_materials(tmp_path, monkeypatch):
