@@ -898,7 +898,10 @@ and shell without comments. One inventory feeds every measurement: one walk
 over the files under git, one table that classifies each file (code, prose,
 tests, dated reviews, out of scope), one read and one parse per file — a file
 that fails to parse is a listed problem, never a traceback and never a silent
-skip; anything executable by the target patterns is code by construction, tests
+skip; a candidate entry point by location is code by construction (python
+becomes an entry point only with a real `__main__` guard, a shell script by
+itself), and a table rule that disagrees with a candidate is a red line, not a
+silent priority; tests
 are outside the measurement (they build synthetic trees), and dated snapshots
 (reviews, release notes, posts) describe the code of their day and are not
 checked. `--regen` never writes an artifact the loader would reject. The gate is `tests/test_import_boundaries.py`,

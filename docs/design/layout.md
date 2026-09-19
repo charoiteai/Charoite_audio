@@ -166,29 +166,27 @@
 - `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/transcript.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 
-## Голые имена без цели в репозитории (чужие или порождаемые скрипты; не гейт)
+## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка; неоднозначные красят гейт)
 
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
-## Область замера (таблица KINDS сторожа)
+## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 
-- `docs/design/layout.md` — out: карта — производная замера, не источник
-- `tests/` — out: тесты строят синтетические деревья: пути в них — не факты о репозитории
-- `app/Tests/` — out: Swift-тесты приложения: те же выдуманные пути
-- `docs/reviews/` — history: датированные ревью описывают код своего дня — после переезда не правятся
-- `devlog/_posts/` — history: датированные посты — снимок своего дня
-- `CHANGELOG.md` — history: релизные заметки — снимок своего дня, записи о вышедших версиях не правятся
-- `app-ios/` — out: телефон python и shell не запускает — пути там только в тексте
-- `app-android/` — out: телефон python и shell не запускает — пути там только в тексте
-- `app/build/` — out: сборка
-- `app/.build/` — out: сборка
-- `.build/` — out: сборка
-- `build/` — out: сборка
-- `.venv/` — out: окружение
-- `node_modules/` — out: чужой код
-- `.git/` — out: служебный каталог git
-- `app/` — code: приложение зовёт python и shell
-- `scripts/` — code: скрипты зовут друг друга и модули
-- `src/` — code: модули зовут скрипты и подсказывают пути человеку
-- `.github/` — code: workflow CI — источник запуска
-- `.pre-commit-config.yaml` — code: хуки — источник запуска
+- `docs/design/layout.md` — out (git): карта — производная замера, не источник
+- `tests/` — out (git): тесты строят синтетические деревья: пути в них — не факты о репозитории
+- `app/Tests/` — out (git): Swift-тесты приложения: те же выдуманные пути
+- `docs/reviews/` — history (git): датированные ревью описывают код своего дня — после переезда не правятся
+- `devlog/_posts/` — history (git): датированные посты — снимок своего дня
+- `CHANGELOG.md` — history (git): релизные заметки — снимок своего дня, записи о вышедших версиях не правятся
+- `app/build/` — out (walk): сборка
+- `app/.build/` — out (walk): сборка
+- `.build/` — out (walk): сборка
+- `build/` — out (walk): сборка
+- `.venv/` — out (walk): окружение
+- `node_modules/` — out (walk): чужой код
+- `.git/` — out (walk): служебный каталог git
+- `app/` — code (git): приложение зовёт python и shell
+- `scripts/` — code (git): скрипты зовут друг друга и модули
+- `src/` — code (git): модули зовут скрипты и подсказывают пути человеку
+- `.github/` — code (git): workflow CI — источник запуска
+- `.pre-commit-config.yaml` — code (git): хуки — источник запуска

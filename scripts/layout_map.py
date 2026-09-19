@@ -15,15 +15,18 @@
 - слои: каждый модуль `src/` отнесён, лишних имён нет; рёбра импортов — по AST,
   включая ленивые внутри функций;
 - рёбра против стрелок: замер = allowlist, в обе стороны;
-- точки входа = исполняемые файлы репозитория (скрипты `scripts/*`, `app/*.sh`,
-  `*.sh` в корне, модули `src/*.py` с настоящим гвардом `__main__` по AST);
+- точки входа = исполняемые файлы репозитория: кандидаты по расположению
+  (`src/*.py`, `scripts/*`, `app/*.sh`, `*.sh` в корне), из них python — только
+  с настоящим гвардом `__main__` по AST, shell — по факту;
   каждая либо названа кодом, либо объявлена ручной с обоснованием; названные
   кодом библиотеки точками входа НЕ являются (Critical DS и GLM круга 2);
 - названные пути: всё, что код (Swift, shell, yml, python-литералы без
   докстрингов) и проза (документация, конфиги, toml) называют как путь к
   исполняемому файлу, обязано существовать — подсказка человеку и инструкция
-  в README не должны врать после переезда; голое имя `.sh` — путь, только
-  если оно резолвится в единственный свой скрипт, иначе это справка на карте.
+  в README не должны врать после переезда; голое имя `.sh` — путь, если в
+  репозитории ровно один скрипт с таким именем; несколько — проблема гейта
+  («назвать полным путём»); ни одного — справка на карте (чужой или
+  порождаемый скрипт).
 
 Замер строится из ОДНОГО инвентаря (`inventory`): один обход файлов под git,
 одна таблица «что это за файл» (`KINDS`), одно чтение и один разбор на файл.
@@ -59,42 +62,46 @@ SRC = REPO / "src"
 LAYOUT = REPO / "docs" / "design" / "layout.json"
 MAP = REPO / "docs" / "design" / "layout.md"
 
-#: Что считается исполняемым файлом: скрипты по расположению, модули `src/` — по гварду.
-ENTRY_TARGETS = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
+#: Кандидаты в точки входа по расположению; исполняемым кандидата делает гвард
+#: `__main__` (python) или сам факт shell-скрипта (Minor DS круга 5: «цель» читалась
+#: как «исполняемый», а `src/graph_search.py` — кандидат, но не исполняемый).
+ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
 
-#: Классификация файла — одно решение в одном месте. Исполняемый файл по
-#: ENTRY_TARGETS — всегда `code` (Critical DS круга 4: корневой `x.sh` был целью
-#: по одной таблице и `out` по другой — невидим обеим); дальше первый совпавший
-#: префикс (каталог с «/» или точное имя). Виды: `code` — упоминание пути = связь
-#: «кто зовёт»; `prose` — названный путь обязан существовать; `history` —
-#: датированные снимки (ревью, релизные заметки, посты) описывают код своего дня
-#: и после переезда не правятся; `out` — не читается. Внутри `code` решает
-#: суффикс: код читается без комментариев, документация рядом с кодом — как
-#: проза, остальное — `out`. Без совпадения: проза по суффиксу, иначе `out`
-#: (Important DS круга 3: код вне `app/` читался как проза сырым текстом,
-#: .kts/.json не читались вовсе). Каждое правило обязано действовать хотя бы на
-#: один файл дерева — это проверяет гейт.
-KINDS: tuple[tuple[str, str, str], ...] = (
-    ("docs/design/layout.md", "out", "карта — производная замера, не источник"),
-    ("tests/", "out", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
-    ("app/Tests/", "out", "Swift-тесты приложения: те же выдуманные пути"),
-    ("docs/reviews/", "history", "датированные ревью описывают код своего дня — после переезда не правятся"),
-    ("devlog/_posts/", "history", "датированные посты — снимок своего дня"),
-    ("CHANGELOG.md", "history", "релизные заметки — снимок своего дня, записи о вышедших версиях не правятся"),
-    ("app-ios/", "out", "телефон python и shell не запускает — пути там только в тексте"),
-    ("app-android/", "out", "телефон python и shell не запускает — пути там только в тексте"),
-    ("app/build/", "out", "сборка"),
-    ("app/.build/", "out", "сборка"),
-    (".build/", "out", "сборка"),
-    ("build/", "out", "сборка"),
-    (".venv/", "out", "окружение"),
-    ("node_modules/", "out", "чужой код"),
-    (".git/", "out", "служебный каталог git"),
-    ("app/", "code", "приложение зовёт python и shell"),
-    ("scripts/", "code", "скрипты зовут друг друга и модули"),
-    ("src/", "code", "модули зовут скрипты и подсказывают пути человеку"),
-    (".github/", "code", "workflow CI — источник запуска"),
-    (".pre-commit-config.yaml", "code", "хуки — источник запуска"),
+#: Классификация файла — одна таблица и один решатель `decide()`; `kind_of`,
+#: отсечение каталогов при обходе без git и раздел карты читают его решение, а не
+#: сопоставляют префиксы сами (Critical DS круга 5: корпусная сверка держала свою
+#: копию сопоставления и не видела правило-тень). Кандидат в точки входа
+#: (ENTRY_CANDIDATES) — всегда `code`; правило таблицы, желающее кандидату
+#: другого вида, — конфликт и красный гейт, не тихий приоритет (Critical DS
+#: круга 4: корневой `x.sh` был целью по одной таблице и `out` по другой).
+#: Дальше первый совпавший префикс (каталог с «/» или точное имя). Виды: `code`
+#: — упоминание пути = связь «кто зовёт»; `prose` — названный путь обязан
+#: существовать; `history` — датированные снимки (ревью, релизные заметки, посты)
+#: описывают код своего дня и после переезда не правятся; `out` — не читается.
+#: Внутри `code` решает суффикс: код читается без комментариев, документация
+#: рядом с кодом — как проза, остальное — `out`. Без совпадения: проза по
+#: суффиксу, иначе `out` (Important DS круга 3). Область: `git` — правило обязано
+#: побеждать хотя бы на одном файле под git (иначе оно память автора — гейт);
+#: `walk` — только для обхода без git (каталоги, которых в индексе не бывает).
+KINDS: tuple[tuple[str, str, str, str], ...] = (
+    ("docs/design/layout.md", "out", "git", "карта — производная замера, не источник"),
+    ("tests/", "out", "git", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
+    ("app/Tests/", "out", "git", "Swift-тесты приложения: те же выдуманные пути"),
+    ("docs/reviews/", "history", "git", "датированные ревью описывают код своего дня — после переезда не правятся"),
+    ("devlog/_posts/", "history", "git", "датированные посты — снимок своего дня"),
+    ("CHANGELOG.md", "history", "git", "релизные заметки — снимок своего дня, записи о вышедших версиях не правятся"),
+    ("app/build/", "out", "walk", "сборка"),
+    ("app/.build/", "out", "walk", "сборка"),
+    (".build/", "out", "walk", "сборка"),
+    ("build/", "out", "walk", "сборка"),
+    (".venv/", "out", "walk", "окружение"),
+    ("node_modules/", "out", "walk", "чужой код"),
+    (".git/", "out", "walk", "служебный каталог git"),
+    ("app/", "code", "git", "приложение зовёт python и shell"),
+    ("scripts/", "code", "git", "скрипты зовут друг друга и модули"),
+    ("src/", "code", "git", "модули зовут скрипты и подсказывают пути человеку"),
+    (".github/", "code", "git", "workflow CI — источник запуска"),
+    (".pre-commit-config.yaml", "code", "git", "хуки — источник запуска"),
 )
 CODE_SUFFIXES = (".swift", ".sh", ".py", ".yml", ".yaml", ".plist")
 PROSE_SUFFIXES = (".md", ".toml", ".in", ".txt", ".yml", ".yaml", ".cfg", ".ini")
@@ -139,13 +146,14 @@ _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_override
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
-def load_layout(path: pathlib.Path = LAYOUT) -> dict:
+def load_layout(path: pathlib.Path | None = None) -> dict:
     """Строгая загрузка: любой дефект артефакта — `LayoutError`, единственный
     тип, который ловит `main`. Сначала паспорт схемы (файл читается, ключи на
     месте и нужного типа — Critical DS круга 3: битый JSON и пропавший ключ
     падали трейсбеком), потом инварианты: слои попарно не пересекаются,
     `order`/`allowed` согласованы, стрелки вниз, у поправок слоя, ручных точек
     входа и рёбер allowlist есть обоснование или карточка."""
+    path = path or LAYOUT
     try:
         layout = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -189,39 +197,62 @@ def load_layout(path: pathlib.Path = LAYOUT) -> dict:
         if not e.get("ticket"):
             raise LayoutError(f"ребро {e['from']} → {e['to']} без карточки")
     for path_, why in layout["manual_entry_points"].items():
-        if not _is_target_path(path_) or not isinstance(why, str) or not why:
+        if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
     return layout
 
 
-def _is_target_path(rel: str) -> bool:
-    return any(pathlib.PurePosixPath(rel).match(p) and rel.count("/") == p.count("/") for p in ENTRY_TARGETS)
+def _is_candidate(rel: str) -> bool:
+    return any(pathlib.PurePosixPath(rel).match(p) and rel.count("/") == p.count("/") for p in ENTRY_CANDIDATES)
 
 
 # ---------------------------------------------------------------- инвентарь
 
-def kind_of(rel: str) -> str:
-    """Вид файла — единственное место, где это решается: исполняемый по
-    ENTRY_TARGETS — код, остальное по таблице KINDS."""
-    if _is_target_path(rel):
-        return "code"
-    hit = None
-    for prefix, kind, _why in KINDS:
+class Decision(NamedTuple):
+    kind: str               # code | prose | history | out
+    by: str                 # "candidate" | "rule" | "default"
+    rule: int | None        # индекс правила KINDS, накрывающего путь (и у кандидата тоже)
+    conflict: str | None    # правило таблицы, желающее кандидату не-code — красный гейт
+
+
+def _rule(rel: str) -> int | None:
+    """Индекс первого правила KINDS, чей префикс (каталог с «/» или точное имя)
+    накрывает путь — единственное сопоставление префиксов в модуле."""
+    for i, (prefix, _kind, _scope, _why) in enumerate(KINDS):
         if rel == prefix or (prefix.endswith("/") and rel.startswith(prefix)):
-            hit = kind
-            break
-    if hit in ("out", "history"):
-        return hit
-    if hit == "code":
-        if rel.endswith(CODE_SUFFIXES):
-            return hit
-        return "prose" if rel.endswith(PROSE_SUFFIXES) else "out"
+            return i
+    return None
+
+
+def _by_suffix(base: str, rel: str) -> str:
+    if base == "code" and rel.endswith(CODE_SUFFIXES):
+        return "code"
     return "prose" if rel.endswith(PROSE_SUFFIXES) else "out"
 
 
+def decide(rel: str) -> Decision:
+    """Единственный решатель вида файла: кандидат в точки входа — код, иначе
+    первое правило таблицы, иначе суффикс. Кто решил — часть ответа, чтобы
+    сверка таблиц над корпусом читала решение, а не переписывала политику."""
+    i = _rule(rel)
+    if _is_candidate(rel):
+        conflict = KINDS[i][0] if i is not None and KINDS[i][1] != "code" else None
+        return Decision("code", "candidate", i, conflict)
+    if i is None:
+        return Decision(_by_suffix("", rel), "default", None, None)
+    kind = KINDS[i][1]
+    return Decision(kind if kind in ("out", "history") else _by_suffix(kind, rel), "rule", i, None)
+
+
+def kind_of(rel: str) -> str:
+    return decide(rel).kind
+
+
 def _pruned(rel_dir: str) -> bool:
-    """Обход без git: каталоги вида `out` не открываются вовсе."""
-    return any(kind == "out" and prefix.endswith("/") and rel_dir + "/" == prefix for prefix, kind, _ in KINDS)
+    """Обход без git: каталог, который таблица целиком относит к `out`, не
+    открывается вовсе — то же правило, что у файлов внутри него."""
+    i = _rule(rel_dir + "/")
+    return i is not None and KINDS[i][1] == "out"
 
 
 def _files(repo: pathlib.Path) -> list[str]:
@@ -317,7 +348,11 @@ def inventory(repo: pathlib.Path = REPO) -> Inventory:
     files: dict[str, FileInfo] = {}
     problems: list[str] = []
     for rel in _files(repo):
-        kind = kind_of(rel)
+        d = decide(rel)
+        kind = d.kind
+        if d.conflict:
+            problems.append(f"{rel}: кандидат в точки входа, но правило KINDS {d.conflict!r} хочет другого вида — "
+                            f"снять правило или шаблон")
         if kind in ("out", "history"):
             files[rel] = FileInfo(kind, (), None, None)
             continue
@@ -344,11 +379,11 @@ def inventory(repo: pathlib.Path = REPO) -> Inventory:
         else:
             hays = (_strip_comments(text, "#"),)
         executable = None
-        if kind == "code" and _is_target_path(rel):
-            if rel.startswith("src/"):
-                executable = "модуль с гвардом __main__" if tree is not None and _has_main_guard(tree) else None
+        if kind == "code" and _is_candidate(rel):
+            if rel.endswith(".py"):
+                executable = "python с гвардом __main__" if tree is not None and _has_main_guard(tree) else None
             else:
-                executable = "скрипт"
+                executable = "shell-скрипт"
         files[rel] = FileInfo(kind, hays, tree, executable)
     return Inventory(files, problems)
 
@@ -384,8 +419,9 @@ def import_graph(inv: Inventory) -> dict[str, set[str]]:
 
 
 def executables(inv: Inventory) -> dict[str, str]:
-    """Исполняемые файлы: путь → почему исполняемый. Библиотека `src/` без
-    гварда исполняемой не является, что бы про неё ни говорили подсказки."""
+    """Исполняемые файлы: путь → почему исполняемый. Python-кандидат без гварда
+    (библиотека в `src/` или хелпер в `scripts/`) исполняемым не является, что бы
+    про него ни говорили подсказки; shell-скрипт исполняем по расположению."""
     return {rel: info.executable for rel, info in sorted(inv.files.items()) if info.executable}
 
 
@@ -580,12 +616,12 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out += ["", "## Пути, названные в документации и конфигах", ""]
     for path, who in sorted(scanned.prose.items()):
         out.append(f"- `{path}` ← {', '.join(sorted(who))}")
-    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты; не гейт)", ""]
+    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка; неоднозначные красят гейт)", ""]
     for name, who in sorted(scanned.loose.items()):
         out.append(f"- `{name}` ← {', '.join(sorted(who))}")
-    out += ["", "## Область замера (таблица KINDS сторожа)", ""]
-    for prefix, kind, why in KINDS:
-        out.append(f"- `{prefix}` — {kind}: {why}")
+    out += ["", "## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)", ""]
+    for prefix, kind, scope, why in KINDS:
+        out.append(f"- `{prefix}` — {kind} ({scope}): {why}")
     return "\n".join(out) + "\n"
 
 
@@ -593,10 +629,12 @@ def main(argv: list[str] | None = None) -> int:
     """Один выходной тракт для всех режимов: расхождения считаются одним
     `check()` и печатаются одним циклом; режим меняет только то, что пишется
     на диск, и код выхода (Important DS круга 3: `--regen` выходил зелёным при
-    красном гейте)."""
+    красном гейте). Ребро без карточки блокирует запись артефакта и карты —
+    загрузка такой артефакт отвергнет (Critical DS круга 4), но отчёт о прочих
+    расхождениях печатается тем же прогоном (Important DS круга 5)."""
     args = sys.argv[1:] if argv is None else argv
     try:
-        layout = load_layout()
+        layout = load_layout(LAYOUT)
     except LayoutError as e:
         print(f"✗ {LAYOUT.relative_to(REPO)}: {e}")
         return 1
@@ -604,21 +642,19 @@ def main(argv: list[str] | None = None) -> int:
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)
+    blocked: list[str] = []
     if "--regen" in args:
         layout, unticketed = regen(layout, graph)
-        if unticketed:
-            # гейт блокирующий: артефакт с пустой карточкой загрузка отвергнет, поэтому он не
-            # пишется вовсе (Critical DS круга 4: «напечатать и продолжить — не проверка»)
-            for a, b in unticketed:
-                print(f"✗ ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт не записан")
-            return 1
-        LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(f"{LAYOUT.relative_to(REPO)}: allowlist {len(layout['allowed_edges'])} рёбер")
-    if "--check" not in args:
+        blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
+                   for a, b in unticketed]
+        if not blocked:
+            LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(f"{LAYOUT.relative_to(REPO)}: allowlist {len(layout['allowed_edges'])} рёбер")
+    if "--check" not in args and not blocked:
         MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
         print(f"карта: {MAP.relative_to(REPO)}")
     map_text = MAP.read_text(encoding="utf-8") if MAP.exists() else None
-    problems = check(layout, graph, scanned, execs, map_text=map_text)
+    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text)
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")

@@ -23,6 +23,10 @@
 ENTRY_TARGETS и `out` по KINDS), `--regen` писал артефакт с пустой карточкой,
 который загрузка отвергает. Теперь цель — всегда код, а сверка таблиц и круг
 запись → чтение проверяются здесь над корпусом, не примерами.
+Круг 5: корпусная сверка держала свою копию сопоставления префиксов и не
+видела правило-тень. Теперь один решатель `decide()` — таблица, отсечение
+каталогов, карта и этот тест читают его решение; конфликт «кандидат против
+правила» — красная строка гейта, не тихий приоритет.
 """
 from __future__ import annotations
 
@@ -39,20 +43,21 @@ import layout_map as lm  # noqa: E402
 
 @pytest.fixture(scope="module")
 def world():
+    """Один инвентарь на модуль тестов — как обещает шапка сторожа."""
     inv = lm.inventory()
-    return lm.load_layout(), lm.import_graph(inv), lm.scan(inv), lm.executables(inv)
+    return lm.load_layout(), lm.import_graph(inv), lm.scan(inv), lm.executables(inv), inv
 
 
 def test_layout_matches_the_code(world):
     """Один гейт: расхождений между раскладкой и кодом нет. Каждая строка —
     готовое действие."""
-    layout, graph, scanned, execs = world
+    layout, graph, scanned, execs, _ = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"))
     assert not problems, "\n".join(problems)
 
 
 def test_layer_table_is_complete_and_the_arrows_point_down(world):
-    layout, graph, _, _ = world
+    layout, graph, _, _, _ = world
     assert set(layout["order"]) == set(layout["brief_layers"]) == set(layout["allowed"])
     assert not lm.unassigned(graph, layout) and not lm.stale_layers(graph, layout)
     lay = lm.layer_of(layout)
@@ -72,7 +77,7 @@ def test_entry_points_are_executables_not_mentions(world):
     релизный CI голым именем с working-directory), модули `src/` с гвардом.
     Библиотека, названная подсказкой, точкой входа не является (Critical DS и
     GLM круга 2). Путь в конце предложения документации виден (GLM круга 3)."""
-    layout, _, scanned, execs = world
+    layout, _, scanned, execs, _ = world
     assert "app/make_app.sh" in execs and "scripts/nightly.sh" in execs and "src/daemon.py" in execs
     assert ".github/workflows/release-app.yml" in scanned.mentions["app/make_app.sh"]
     for lib in ("src/privacy.py", "src/graph_search.py", "src/llm_health.py"):
@@ -84,23 +89,42 @@ def test_entry_points_are_executables_not_mentions(world):
     assert "replace.sh" in scanned.loose, "порождаемый скрипт обновления — голое имя без цели, не проблема"
 
 
-def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path):
-    """Сверка таблиц сторожа над корпусом, не примерами (Как чинить DS круга 4):
-    всё, что ENTRY_TARGETS считает исполняемым, инвентарь читает как код;
-    каждое правило KINDS, кроме `out`, действует хотя бы на один файл дерева
-    (правило, которое ни на что не действует, — память автора); что записал
-    `--regen`, то читает `load_layout`."""
-    layout, graph, _, _ = world
-    inv = lm.inventory()
+def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monkeypatch):
+    """Сверка таблиц сторожа над корпусом через единственный решатель `decide()`
+    (Critical DS круга 5: своя копия сопоставления не видела правило-тень):
+    каждое правило области `git` побеждает хотя бы на одном файле дерева;
+    кандидат в точки входа — всегда код и никогда не в конфликте с правилом;
+    что записал `--regen`, то читает `load_layout`. Отрицания: правило-тень
+    перед кандидатом — конфликт в проблемах инвентаря; мёртвое правило в конце
+    таблицы — падение проверки побед."""
+    layout, graph, _, _, inv = world
+    covered: dict[int, int] = {}
     for rel, info in inv.files.items():
-        if lm._is_target_path(rel):
-            assert info.kind == "code", f"{rel}: цель по ENTRY_TARGETS, но вид {info.kind}"
-    for prefix, kind, _why in lm.KINDS:
-        if kind == "out":
-            continue
-        hit = [r for r in inv.files if r == prefix or (prefix.endswith("/") and r.startswith(prefix))]
-        assert hit, f"правило KINDS {prefix!r} не действует ни на один файл"
-    assert lm.kind_of("release.sh") == "code", "корневой .sh — исполняемый по ENTRY_TARGETS, значит код"
+        d = lm.decide(rel)
+        assert d.kind == info.kind
+        assert d.conflict is None, f"{rel}: {d.conflict}"
+        if lm._is_candidate(rel):
+            assert d.by == "candidate" and d.kind == "code", f"{rel}: кандидат решён не как код ({d.by})"
+        if d.rule is not None:
+            covered[d.rule] = covered.get(d.rule, 0) + 1
+    for i, (prefix, _kind, scope, _why) in enumerate(lm.KINDS):
+        if scope == "git":
+            assert covered.get(i, 0) > 0, f"правило KINDS {prefix!r} не накрывает ни одного файла под git"
+    assert lm.decide("release.sh").by == "candidate", "корневой .sh — кандидат, значит код"
+    # правило-тень перед кандидатом: решение остаётся «код», конфликт — строка проблемы
+    shadow = (("scripts/get_models.py", "out", "git", "тень"),) + lm.KINDS
+    monkeypatch.setattr(lm, "KINDS", shadow)
+    d = lm.decide("scripts/get_models.py")
+    assert d.kind == "code" and d.conflict == "scripts/get_models.py"
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "get_models.py").write_text("x = 1\n", encoding="utf-8")
+    assert any("кандидат в точки входа, но правило KINDS" in p for p in lm.inventory(tmp_path).problems)
+    # мёртвое правило после более широкого — не побеждает никогда
+    dead = lm.KINDS[1:] + (("scripts/never.py", "out", "git", "мёртвое"),)
+    monkeypatch.setattr(lm, "KINDS", dead)
+    assert lm.decide("scripts/never.py").rule != len(dead) - 1, "правило после более широкого не накрывает ничего"
+    monkeypatch.undo()
+    # круг запись → чтение
     regenerated, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
     assert unticketed == []
     out = tmp_path / "layout.json"
@@ -108,12 +132,16 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path):
     assert lm.load_layout(out)["allowed_edges"] == layout["allowed_edges"]
 
 
-def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path):
-    """`--regen` с ребром без карточки не пишет артефакт вовсе — гейт блокирующий,
-    «напечатать и продолжить» не проверка (Critical DS круга 4, тот же дефект,
-    что Minor DS круга 2, закрытый тогда печатью)."""
+def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path, capsys):
+    """`--regen` с ребром без карточки не пишет ни артефакт, ни карту — гейт
+    блокирующий, «напечатать и продолжить» не проверка (Critical DS круга 4);
+    но отчёт о прочих расхождениях печатается тем же прогоном, а не после
+    правки карточки (Important DS круга 5). `LAYOUT` подменяется целиком:
+    и чтение, и запись идут в копию (Minor DS круга 5)."""
     lay = tmp_path / "layout.json"
-    lay.write_text(lm.LAYOUT.read_text(encoding="utf-8"), encoding="utf-8")
+    data = json.loads(lm.LAYOUT.read_text(encoding="utf-8"))
+    data["manual_entry_points"]["scripts/phantom_manual.py"] = "ручная точка, которой нет — второе расхождение"
+    lay.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     before = lay.read_text(encoding="utf-8")
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", tmp_path / "layout.md")
@@ -121,6 +149,9 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     assert lm.main(["--regen"]) == 1
     assert lay.read_text(encoding="utf-8") == before, "артефакт с пустой карточкой не должен быть записан"
     assert not (tmp_path / "layout.md").exists()
+    out = capsys.readouterr().out
+    assert "ребро low_mod → top_mod без карточки" in out
+    assert "scripts/phantom_manual.py, но это не исполняемый файл" in out, "отчёт тем же прогоном, не после правки"
 
 
 def test_the_artifact_is_loaded_strictly(tmp_path):
@@ -203,7 +234,7 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     graph = lm.import_graph(inv)
     layout["brief_layers"]["low"] += ["cli", "nested", "lib_only"]
     execs = lm.executables(inv)
-    assert execs == {"src/cli.py": "модуль с гвардом __main__"}, "гвард в одинарных кавычках — по AST"
+    assert execs == {"src/cli.py": "python с гвардом __main__"}, "гвард в одинарных кавычках — по AST"
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
     assert any("исполняемый файл src/cli.py никто не зовёт" in p for p in problems)
     layout["manual_entry_points"] = {"src/cli.py": "руками", "src/top_mod.py": "ошибка: библиотека"}
@@ -324,8 +355,8 @@ def test_scanner_reads_code_not_prose(tmp_path):
     assert scanned.loose == {"replace.sh": {"app/Sources/S.swift"}, "foreign.sh": {".github/workflows/ci.yml"},
                              "deploy.sh": {"README.md"}}
     assert scanned.problems == inv.problems and "src/broken.py не разбирается" in scanned.problems[0]
-    assert lm.executables(inv) == {"app/make_app.sh": "скрипт", "scripts/n.sh": "скрипт",
-                                   "scripts/get_models.py": "скрипт"}
+    assert lm.executables(inv) == {"app/make_app.sh": "shell-скрипт", "scripts/n.sh": "shell-скрипт"}, \
+        "scripts/get_models.py без гварда — хелпер, не точка входа (круг 5)"
     # второй скрипт с тем же именем: голое имя из CI — проблема, а не тихий выбор
     (tmp_path / "scripts" / "make_app.sh").write_text("x=1\n", encoding="utf-8")
     scanned = lm.scan(lm.inventory(tmp_path))
