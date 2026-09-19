@@ -825,6 +825,14 @@ final class MeetingProcessingService: ObservableObject {
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
+    /// Результат последней встречи готов — предикат владельца для строки меню.
+    /// `actionTitle != nil` означает «есть кнопка» и истинно также для пустой
+    /// записи и ошибки: «Встреча готова» зелёным для записи без речи —
+    /// Important GLM круга 3 по №139.
+    var isResultReady: Bool {
+        snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .ready } == true
+    }
+
     /// Слова идущей работы для узких поверхностей: стадия обработки, и только
     /// когда это не ошибка. `statusText` проверяет ошибки раньше снимка, а
     /// политика строки меню ставит работу выше проблемы — при `pipelineSilent`

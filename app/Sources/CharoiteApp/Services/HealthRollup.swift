@@ -199,13 +199,20 @@ enum HealthClock {
     static let interval: TimeInterval = 10 * 60
     private static var loop: Task<Void, Never>?
     private static var inFlight: Task<Void, Never>?
+    private static var lastTick: Date = .distantPast
 
     static func start() {
         guard loop == nil else { return }
         loop = Task { @MainActor in
             while !Task.isCancelled {
+                // сон — от последнего пролёта, чьим бы он ни был: тик из меню на
+                // 599-й секунде не должен давать второй полный скан на 600-й (Minor DS круга 3)
+                let due = max(0, interval - Date().timeIntervalSince(lastTick))
+                if due > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(due * 1_000_000_000))
+                    continue
+                }
                 await requestTick().value
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
     }
@@ -218,6 +225,7 @@ enum HealthClock {
         let task = Task { @MainActor in
             NightlyStatusService.shared.refresh()
             await OllamaRuntimeService.shared.refresh()
+            lastTick = Date()
             inFlight = nil
         }
         inFlight = task

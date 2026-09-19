@@ -251,15 +251,6 @@ final class NightlyStatusService: ObservableObject {
         }
     }
 
-    /// Показывать ли строку вообще. Успешный прогон — норма, о ней достаточно
-    /// одной спокойной строки; всё остальное требует внимания.
-    var needsAttention: Bool {
-        switch status.state {
-        case .ok, .running: return false
-        case .failed, .slept, .interrupted, .stale, .never, .foreignScript: return true
-        }
-    }
-
     var icon: String {
         switch status.state {
         case .running: return "moon.stars"

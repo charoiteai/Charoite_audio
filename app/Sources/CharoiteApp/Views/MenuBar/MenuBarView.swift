@@ -80,7 +80,7 @@ struct MenuBarView: View {
                                             ollama: ollama, nightly: nightly)
         let line = HealthPresentation.menuLine(verdict, isRecording: sufler.isRunning,
                                                activityText: processing.activityText,
-                                               hasReadyMeeting: processing.actionTitle != nil)
+                                               hasReadyMeeting: processing.isResultReady)
         switch line {
         case .recording(let tier), .problem(_, let tier): return (line.text, Self.color(for: tier))
         case .activity: return (line.text, .accentColor)

@@ -122,6 +122,33 @@ final class HealthRollupTests: XCTestCase {
                                                    activityText: nil, hasReadyMeeting: false), .recording(.critical))
     }
 
+    /// Поведение, не подстрочник: проба «не состоялась» (nil) не трогает state, «порт
+    /// молчит» (false) — пишет (Minor DS круга 3 по №139).
+    @MainActor
+    func testInconclusiveProbeKeepsTheOwnersState() async {
+        let service = OllamaRuntimeService.shared
+        let saved = OllamaRuntimeService.probe
+        defer { OllamaRuntimeService.probe = saved }
+        OllamaRuntimeService.probe = { true }
+        await service.refresh()
+        XCTAssertEqual(service.state, .running)
+        OllamaRuntimeService.probe = { nil }
+        await service.refresh()
+        XCTAssertEqual(service.state, .running, "неизвестность не перезаписывает факт")
+        OllamaRuntimeService.probe = { false }
+        await service.refresh()
+        XCTAssertNotEqual(service.state, .running, "отказ соединения — факт «не запущен / не установлен»")
+        XCTAssertNotEqual(service.state, .unknown)
+    }
+
+    func testOnlyConnectionRefusalCountsAsSilence() {
+        XCTAssertTrue(OllamaRuntimeService.refused(.cannotConnectToHost))
+        XCTAssertTrue(OllamaRuntimeService.refused(.cannotFindHost))
+        for code in [URLError.Code.timedOut, .cancelled, .networkConnectionLost, .notConnectedToInternet, .badServerResponse] {
+            XCTAssertFalse(OllamaRuntimeService.refused(code), "\(code): неизвестность, не факт")
+        }
+    }
+
     func testTierOrderingIsTotal() {
         XCTAssertLessThan(HealthTier.ok, .degraded)
         XCTAssertLessThan(HealthTier.degraded, .critical)
@@ -149,10 +176,19 @@ final class HealthRollupTests: XCTestCase {
         XCTAssertFalse(rollup.contains("static func stop()"), "мёртвого API у планировщика нет")
 
         let menu = try String(contentsOf: sources.appendingPathComponent("Views/MenuBar/MenuBarView.swift"), encoding: .utf8)
-        for forbidden in ["verdict.tier", ".tier(of:", "statusText", ".refresh()", "await HealthClock.tick"] {
+        for forbidden in ["verdict.tier", ".tier(of:", "statusText", "actionTitle != nil", "await HealthClock.tick"] {
             XCTAssertFalse(menu.contains(forbidden), "вью меню-бара читает только политику и владельцев: \(forbidden)")
         }
         XCTAssertTrue(menu.contains("HealthClock.requestTick()"), "открытие меню лишь просит тик вне своего жизненного цикла")
+        // ни одна вью не освежает владельца здоровья сама — правило для всех поверхностей (Important DS круга 3)
+        let views = try FileManager.default.subpathsOfDirectory(atPath: sources.appendingPathComponent("Views").path)
+            .filter { $0.hasSuffix(".swift") }
+        for rel in views {
+            let text = try String(contentsOf: sources.appendingPathComponent("Views/\(rel)"), encoding: .utf8)
+            XCTAssertFalse(text.contains("nightly.refresh()") || text.contains("ollama.refresh()")
+                           || text.contains("NightlyStatusService.shared.refresh()"),
+                           "\(rel): свежесть ночи и Ollama — у HealthClock, не у вью")
+        }
 
         let nightly = try String(contentsOf: sources.appendingPathComponent("Services/NightlyStatusService.swift"), encoding: .utf8)
         XCTAssertFalse(nightly.contains("Timer.scheduledTimer"), "один планировщик на приложение, не таймер на владельца")
@@ -163,7 +199,7 @@ final class HealthRollupTests: XCTestCase {
 
         let ollama = try String(contentsOf: sources.appendingPathComponent("Services/OllamaRuntimeService.swift"), encoding: .utf8)
         XCTAssertTrue(ollama.contains("static func responds() async -> Bool?"), "у пробы три исхода: отмена — не «порт молчит»")
-        XCTAssertTrue(ollama.contains("!Task.isCancelled"), "отменённая проба не пишет state")
+        XCTAssertFalse(ollama.contains("var needsAttention"), "мёртвых предикатов у владельцев нет")
 
         let appFile = try String(contentsOf: sources.appendingPathComponent("App/CharoiteApp.swift"), encoding: .utf8)
         XCTAssertTrue(appFile.contains("HealthClock.start()"))

@@ -109,12 +109,17 @@ final class OllamaRuntimeService: ObservableObject {
 
     // MARK: - Действия
 
+    /// Шов пробы: тесты подменяют его и проверяют поведение «nil → state не
+    /// изменился» без живого порта (Minor DS круга 3 по №139).
+    static var probe: () async -> Bool? = { await responds() }
+
     func refresh() async {
-        // проба не состоялась (задача отменена — вью меню закрылась раньше ответа):
-        // факт неизвестен, прежнее состояние не трогаем. `try?` превращал отмену в
-        // «порт молчит», и иконка утверждала «не запущен» при живом движке до
-        // следующего тика (Critical DS / Important GLM круга 2 по №139)
-        guard let responding = await Self.responds(), !Task.isCancelled else { return }
+        // проба не состоялась (задача отменена — вью меню закрылась раньше ответа;
+        // таймаут при занятой генерацией модели; обрыв соединения): факт неизвестен,
+        // прежнее состояние не трогаем. `try?` превращал любую ошибку в «порт молчит»,
+        // и иконка утверждала «не запущен» при живом движке до следующего тика
+        // (Critical DS / Important GLM круга 2, Important DS и GLM круга 3 по №139)
+        guard let responding = await Self.probe(), !Task.isCancelled else { return }
         let brew = Self.brewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         state = Self.decide(responding: responding,
                             brewBinary: brew,
@@ -165,8 +170,12 @@ final class OllamaRuntimeService: ObservableObject {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Три исхода, не два: ответил / не ответил / проба не состоялась (nil).
-    /// Отмена задачи — не «порт молчит».
+    /// Три исхода, не два: ответил (true) / порт точно молчит (false) / проба не
+    /// состоялась (nil). «Молчит» — только отказ соединения: слушателя на порту
+    /// нет. Отмена, таймаут (движок занят генерацией 35b и не успевает за 3 с),
+    /// обрыв соединения и прочие транспортные сбои — неизвестность, не факт:
+    /// иначе иконка предлагала бы «Запустить» поверх живого движка — второй
+    /// экземпляр на порту 11434 (№118).
     private static func responds() async -> Bool? {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/tags") else { return false }
         let cfg = URLSessionConfiguration.ephemeral
@@ -177,13 +186,16 @@ final class OllamaRuntimeService: ObservableObject {
         do {
             let (_, response) = try await URLSession(configuration: cfg).data(from: url)
             return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch is CancellationError {
-            return nil
-        } catch let error as URLError where error.code == .cancelled {
-            return nil
+        } catch let error as URLError {
+            return Self.refused(error.code) ? false : nil
         } catch {
-            return false
+            return nil
         }
+    }
+
+    /// Коды, означающие «на порту никто не слушает»; всё остальное — неизвестность.
+    nonisolated static func refused(_ code: URLError.Code) -> Bool {
+        code == .cannotConnectToHost || code == .cannotFindHost
     }
 
     private func run(_ tool: String, _ args: [String]) async {

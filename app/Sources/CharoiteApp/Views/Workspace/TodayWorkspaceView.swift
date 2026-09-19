@@ -228,7 +228,9 @@ struct TodayWorkspaceView: View {
         }
         .padding(14)
         .onAppear {
-            nightly.refresh()
+            // свежесть ночи — у планировщика владельцев, не у вью (второй путь
+            // мимо коалесценции — Important DS круга 3 по №139)
+            HealthClock.requestTick()
             version.refresh()
         }
     }
@@ -242,9 +244,9 @@ struct TodayWorkspaceView: View {
     /// строка, всё остальное подсвечено.
     private var nightlyRow: some View {
         HStack(spacing: 8) {
-            // цвет и вес — по той же политике, что у иконки меню-бара (`.never` без
-            // агента — не настроено, не тревога); `needsAttention` — только «показывать
-            // ли строку» (Important DS круга 2 по №139)
+            // строка показывается всегда (успешная ночь — одна спокойная строка);
+            // цвет и вес — по той же политике, что у иконки меню-бара: `.never` без
+            // агента — не настроено, не тревога (Important DS круга 2 по №139)
             let problem = NightlyStatus.isProblem(nightly.status.state, agentConfigured: nightly.agentConfigured)
             Image(systemName: nightly.icon)
                 .font(.caption)
@@ -333,7 +335,7 @@ struct TodayWorkspaceView: View {
         if sufler.isRunning { return L.t("Стенограмма, нить и подсказки обновляются в разделе «Встреча».",
                                         "Transcript, thread and hints are updating in Meeting.",
                                         "逐字稿、脉络与提示正在「会议」中更新。") }
-        if let status = processing.statusText, processing.isProcessing { return status }
+        if let status = processing.activityText { return status }   // слот работы — только работа (Minor GLM круга 3)
         if let ready = processing.snapshot, ready.state == .ready { return ready.title }
         if let event = calendar.today.first {
             return L.t("Ближайшая встреча · \(Self.time(event.start))",
