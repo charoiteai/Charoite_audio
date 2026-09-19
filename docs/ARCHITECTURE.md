@@ -799,24 +799,29 @@ config says what language NEW documents get and may not rewrite old ones);
 decides, `write_derivative` (moved from `retro_fill`, one seam for every kind:
 snapshot → `.prev/` → expect gate → attest, and no passport for a transcript
 that does not exist) writes, `retouch` re-stamps the bytes hash after a
-mechanical rewrite while keeping the source. The policy travels with the
-caller of `archive_meeting`: the live path (post-meeting pipeline, review
-delivery) builds MISSING/STALE and legacy without a passport, the retro pass
-and the CLI only MISSING/STALE; a FRESH rebuild is excluded for summaries —
+mechanical rewrite while keeping the source. One policy for the live path and
+the retro pass — MISSING/STALE: a new meeting is MISSING, a review delivery
+ages the summary through the minutes (STALE), and no automatic path touches
+UNKNOWN — not knowing about 298 legacy files is no reason to rewrite them with
+the model on first touch. A FRESH rebuild is excluded for summaries —
 everything that affects the output is already in the hash. An empty file is
-MISSING for every kind — the oracle, not each writer, says so. The write seam
-returns the state *after* writing, so no caller records a stale "before"
-picture. Legacy summaries without a passport are never adopted by the live
-path: `retro_fill --summary=adopt` gives a passport (plus a `summary_adopted`
-mark) to the sound ones without the model — materials not newer than the
-file, our own document structure, and the recording note either empty or
-already in the text — and `--summary=rebuild` adopts first, then rebuilds the
-rest with the live policy (224 sound and 74 stale of 298 on 19.09; without
-the order the rebuild would spend an hour of model on sound files). The
-recording note reaches the summary as a fact block after the materials and
-as a line in the document (№317), not as a stray line inside a minutes
-excerpt. The manifest carries no copy of the passport state: a copy diverged
-from the passport after every write — readers ask `summary_state()`.
+MISSING for every kind — the oracle, not each writer, says so. The outcome
+travels by return value along the whole chain of seams (`write_derivative` →
+`summary_pass` → `archive_meeting` → caller) as a value (`SummaryOutcome`:
+adopted / built / kept / skipped / failed), never re-derived from the disk one
+level up — the retro report used to print "skipped: fresh" about a file the
+machine had just rewritten. Legacy summaries without a passport are handled
+only by explicit commands: `retro_fill --summary=adopt` gives a passport (plus
+a `summary_adopted` mark) to the sound ones without the model — materials not
+newer than the file, our own document structure, and the recording note either
+empty or already in the text — and builds nothing; `--summary=rebuild` adopts
+first, then rebuilds the rest (224 sound and 74 stale of 298 on 19.09).
+Adoption runs inside `archive_meeting` after the material copies are
+refreshed, on the same folder and the same canon snapshot as the build. The
+recording note reaches the summary as a fact block after the materials and as
+a line in the document (№317), not as a stray line inside a minutes excerpt.
+The manifest carries no copy of the passport state — readers ask
+`summary_state()`.
 
 ## Stopping a recording
 

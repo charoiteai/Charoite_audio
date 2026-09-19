@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -22,6 +23,7 @@ import re
 import shutil
 import stat as _stat
 import sys
+import typing
 
 from charoite_paths import resolve_root
 from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, stamp_of
@@ -122,10 +124,24 @@ def _folders_for(graph: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+class Archived(typing.NamedTuple):
+    """Исход архивации: папка и что стало с саммари. Исход едет возвратом по
+    цепочке швов (`write_derivative` → `summary_pass` → `archive_meeting` →
+    вызывающий), а не пересобирается чтением диска этажом выше — на этом дважды
+    сошлись DS и GLM выходных кругов по №314 (круг 1 — шов записи, круг 2 —
+    архивация выбрасывала исход, и отчёт ретро-обхода врал «пропущено» о только
+    что пересобранном)."""
+    folder: pathlib.Path
+    summary: "SummaryOutcome"
+
+
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
                     files_key: str | None = None,
-                    policy: frozenset[str] | None = None) -> pathlib.Path | None:
-    """Собирает/обновляет папку встречи; возвращает её путь (None — исключена).
+                    policy: frozenset[str] | None = None, adopt: bool = False) -> Archived | None:
+    """Собирает/обновляет папку встречи; возвращает папку и исход саммари
+    (None — встреча исключена). `policy` — какие состояния саммари строить
+    (по умолчанию `SUMMARY_POLICY`), `adopt` — присвоить легаси без паспорта
+    по канону перед решением о сборке (только явная команда).
 
     `files_key` — стем главного файла встречи («2026-08-03_113012» у ещё не
     переименованной посекундной встречи, «2026-08-03_1130_Планёрка» после
@@ -217,10 +233,9 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # Читается один раз: и тезисы, и саммари получают одно значение (Minor GLM по №314)
     recording_note = channel_trace.recording_note(main)
     _derive_extras(folder, recording_note=recording_note)
-    # политика — свойство вызывающего пути: живой (разбор после встречи, доставка
-    # ревизии) строит и легаси без паспорта, ретро-обход и CLI — только MISSING/STALE;
-    # дефолт консервативный (Critical GLM входного круга по №314)
-    _gen_summary(folder, main, policy=policy or SUMMARY_POLICY_RETRO, recording_note=recording_note)
+    # саммари — после обновления копий материалов, одним проходом «решить →
+    # присвоить → построить», исход значением (Critical DS и Important GLM круга 2)
+    summary = summary_pass(folder, main, recording_note, policy=policy or SUMMARY_POLICY, adopt=adopt)
     _write_manifest(folder, stamp, pretty)
     _rebuild_index(graph)
     # Флаг снимаем со ВСЕГО графа, а не только с архивной папки.
@@ -232,7 +247,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # не смотрит, но и графу незачем оставаться помеченным: он же открывается
     # в Finder и Obsidian.
     _unhide(graph)
-    return folder
+    return Archived(folder, summary)
 
 
 # Названия разделов саммари на трёх языках. Одно место на весь модуль:
@@ -579,14 +594,16 @@ def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section:
 SUMMARY_CAPS = (("Минутки.md", 3500), ("Тезисы.md", 1500), ("Разбор.md", 2000), ("Стенограмма.md", 4000))
 # У саммари всё, что влияет на вывод, уже в хеше материалов: FRESH-пересборка
 # была бы 13 секундами модели и новым текстом самого читаемого файла при каждом
-# касании без повода (критика 1 GLM входного круга по №314). Живой путь строит
-# MISSING/STALE и легаси без паспорта (UNKNOWN) — как у минуток, минус FRESH;
-# выведено из общей политики, а не набрано литералами (Important DS выходного
-# круга). Ретро — только MISSING/STALE (массовый бэкфилл UNKNOWN запрещён
-# решением входного круга №309); легаси присваивается или пересобирается
-# только явной командой `retro_fill --summary=adopt|rebuild`.
-SUMMARY_POLICY_LIVE = live_sidecar.POLICY_LIVE - {live_sidecar.FRESH}
-SUMMARY_POLICY_RETRO = live_sidecar.POLICY_RETRO
+# касании без повода (критика 1 GLM входного круга по №314). Одна политика на
+# живой путь и обход — MISSING/STALE: доставка ревизии старит саммари через
+# минутки (STALE), новая встреча — MISSING, и ни один автоматический путь не
+# трогает UNKNOWN — незнание о 298 легаси не повод переписывать их моделью на
+# первом касании (критика DS и GLM круга 2, схождение). UNKNOWN строит только
+# явная команда `retro_fill --summary=rebuild` (после присвоения исправных),
+# `--summary=adopt` не строит ничего — только присваивает.
+SUMMARY_POLICY = live_sidecar.POLICY_RETRO
+SUMMARY_POLICY_REBUILD = live_sidecar.POLICY_LIVE - {live_sidecar.FRESH}
+SUMMARY_POLICY_NONE: frozenset[str] = frozenset()
 
 
 def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
@@ -648,30 +665,98 @@ def summary_adoptable(folder: pathlib.Path, recording_note: str | None) -> str |
     return None
 
 
-def adopt_summary(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None) -> str:
-    """Явное присвоение легаси-саммари (команда `retro_fill --summary=adopt`), не
-    живой путь: исход строкой для отчёта — «присвоено», «уже с паспортом» или
-    причина отказа. Присвоение — `live_sidecar.adopt` (паспорт на текущие байты
-    плюс отметка `summary_adopted`)."""
+@dataclasses.dataclass(frozen=True)
+class SummaryOutcome:
+    """Что случилось с саммари за один проход — значение, не строка отчёта и не
+    состояние, из которого исход выводят задним числом (№277 «причина как
+    значение»; Critical DS круга 2 по №314). `state` — состояние паспорта после
+    прохода, `reason` — почему не присвоено или не построено."""
+    ADOPTED = "adopted"    # легаси получило паспорт без модели
+    BUILT = "built"        # собрано моделью и записано с паспортом
+    KEPT = "kept"          # не трогали: FRESH или HUMAN
+    SKIPPED = "skipped"    # политика не строит это состояние (UNKNOWN вне rebuild, MISSING при adopt)
+    FAILED = "failed"      # модель не ответила или запись отклонена
+    NONE = "none"          # материалов нет — саммари не о чём
+
+    action: str
+    state: str | None
+    reason: str | None = None
+
+    def line(self) -> str | None:
+        """Слова отчёта — одно место на все вызывающие (Minor GLM круга 2:
+        пересказ оракула в каждом отчёте расходился с ним словами)."""
+        if self.action == self.NONE:
+            return None
+        if self.action == self.ADOPTED:
+            return "саммари присвоено"
+        if self.action == self.BUILT:
+            return "саммари"
+        if self.action == self.FAILED:
+            return f"саммари — {self.reason}"
+        tail = f": {self.reason}" if self.reason else ""
+        return f"саммари {self.state}{tail}"
+
+    @property
+    def made(self) -> bool:
+        return self.action in (self.ADOPTED, self.BUILT)
+
+
+def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None, *,
+                 policy: frozenset[str] = SUMMARY_POLICY, adopt: bool = False) -> SummaryOutcome:
+    """Один проход по саммари встречи: один снимок канона → решить оракулом →
+    при `adopt` присвоить легаси по канону → построить по политике → исход
+    значением. Присвоение и сборка делят снимок канона и папку (Important DS
+    круга 2: присвоение по папке другого резолвера и до обновления копий
+    материалов давало паспорт на старый канон, и модель всё равно работала).
+    HUMAN не строится ни одной политикой."""
     materials = summary_materials(folder)
     if not materials:
-        return "материалов нет"
+        return SummaryOutcome(SummaryOutcome.NONE, None, "материалов нет")
+    decided = decisions_of(folder)
+    source_sha = summary_source_sha(materials, decided, recording_note)
     out = folder / "Саммари.md"
-    source_sha = summary_source_sha(materials, decisions_of(folder), recording_note)
-    state = live_sidecar.derivative_state(out, live_sidecar.read(live) or {}, "summary", source_sha)
-    if state != live_sidecar.UNKNOWN:
-        return f"уже с паспортом ({state})" if state != live_sidecar.MISSING else "файла нет"
-    why = summary_adoptable(folder, recording_note)
-    if why is not None:
-        return why
-    return "присвоено" if live_sidecar.adopt(live, "summary", out, source_sha) else "паспорт не записался"
+    meta = live_sidecar.read(live) or {}
+    state = live_sidecar.derivative_state(out, meta, "summary", source_sha)
+    reason = None
+    if adopt and state == live_sidecar.UNKNOWN:
+        reason = summary_adoptable(folder, recording_note)
+        if reason is None:
+            if live_sidecar.adopt(live, "summary", out, source_sha):
+                return SummaryOutcome(SummaryOutcome.ADOPTED, live_sidecar.FRESH)
+            reason = "паспорт не записался"
+    if state == live_sidecar.HUMAN or not live_sidecar.wants_build(state, policy):
+        action = SummaryOutcome.KEPT if state in (live_sidecar.FRESH, live_sidecar.HUMAN) else SummaryOutcome.SKIPPED
+        return SummaryOutcome(action, state, reason)
+    built = _build_summary(folder, live, materials, decided, source_sha, recording_note)
+    if built is None:
+        # отказ записи означает, что файл менялся под рукой — прежнее состояние
+        # недействительно, переспросить оракул один раз (Minor GLM круга 2)
+        state = live_sidecar.derivative_state(out, live_sidecar.read(live) or {}, "summary", source_sha)
+        return SummaryOutcome(SummaryOutcome.FAILED, state, "модель не ответила или запись отклонена")
+    return SummaryOutcome(SummaryOutcome.BUILT, built)
+
+
+def adopt_summary(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None) -> str:
+    """Присвоить легаси-саммари без модели — исход словами (для отчёта и тестов):
+    «присвоено», «уже с паспортом (fresh)» или причина отказа."""
+    o = summary_pass(folder, live, recording_note, policy=SUMMARY_POLICY_NONE, adopt=True)
+    if o.action == SummaryOutcome.ADOPTED:
+        return "присвоено"
+    if o.reason:
+        return o.reason
+    if o.state == live_sidecar.MISSING:
+        return "файл пуст" if (folder / "Саммари.md").exists() else "файла нет"
+    if o.state == live_sidecar.HUMAN and not live_sidecar.valid_sha((live_sidecar.read(live) or {}).get("summary_sha256")):
+        return "не наш документ (не UTF-8)"
+    return f"уже с паспортом ({o.state})" if o.state != live_sidecar.UNKNOWN else "не присвоено"
 
 
 def summary_state(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None) -> str | None:
-    """Состояние саммари для читателя (отчёт ретро-обхода): тот же канон и тот
-    же оракул, что у писателя; None — материалов нет. В манифест состояние не
-    копируется: копия расходилась бы с паспортом при каждой записи (Important
-    DS и GLM выходного круга по №314) — кто хочет знать, спрашивает здесь."""
+    """Состояние саммари для читателя (диагностика, тесты): тот же канон и тот
+    же оракул, что у писателя; None — материалов нет. Отчёт ретро-обхода этим
+    НЕ пользуется — он печатает исход `summary_pass`, полученный возвратом
+    (Critical DS круга 2). В манифест состояние не копируется (Important DS и
+    GLM круга 1)."""
     materials = summary_materials(folder)
     if not materials:
         return None
@@ -681,7 +766,7 @@ def summary_state(folder: pathlib.Path, live: pathlib.Path, recording_note: str 
 
 
 def _gen_summary(folder: pathlib.Path, live: pathlib.Path | None = None, *,
-                 policy: frozenset[str] = SUMMARY_POLICY_RETRO,
+                 policy: frozenset[str] = SUMMARY_POLICY,
                  recording_note: str | None = None, force: bool = False) -> str | None:
     """Саммари.md — выжимка встречи на минуту чтения (первое, что открывают).
 
@@ -693,39 +778,41 @@ def _gen_summary(folder: pathlib.Path, live: pathlib.Path | None = None, *,
     состояние — `live_sidecar.derivative_state`, строить ли — политика
     вызывающего; правленное руками (HUMAN) не трогается никогда. Замер 19.09:
     74 из 298 саммари боевого архива были старше своих минуток — ревизия
-    (№238/№239) переписывала минутки, саммари собиралось один раз. Оговорка о
-    неполной записи — блоком факта в промпт после материалов и строкой в
-    документ (№317), а не строкой внутри обрезки минуток. Без `live` (тесты,
-    миграция) — прежнее поведение «собрать, если файла нет»; `force` — только
-    для ручного прогона и не отменяет HUMAN. Легаси без паспорта живой путь
-    не присваивает — только явная команда `retro_fill --summary=adopt`
-    (`adopt_summary`). Возвращает состояние паспорта ПОСЛЕ записи (от шва
-    `write_derivative`) или текущее, если записи не было."""
+    (№238/№239) переписывала минутки, саммари собиралось один раз. С `live`
+    это обёртка над `summary_pass` (один проход, исход значением), возвращает
+    состояние паспорта ПОСЛЕ прохода; `force` — ручной прогон: строит и свежее,
+    HUMAN не отменяет. Без `live` (тесты, миграция) — прежнее поведение
+    «собрать, если файла нет или он пуст», паспорта нет, возвращает None."""
+    if live is not None:
+        pol = policy | {live_sidecar.FRESH, live_sidecar.UNKNOWN} if force else policy
+        return summary_pass(folder, live, recording_note, policy=pol).state
     out = folder / "Саммари.md"
     materials = summary_materials(folder)
     if not materials:
         return None
-    # Решения — отдельным блоком, а не «найди в материалах»: они уже записаны
-    # минутками структурно, и искать их заново модель умеет через раз.
+    # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08);
+    # stat под try: файл может исчезнуть между проверками (luna r1)
+    try:
+        ready = out.stat().st_size > 0
+    except OSError:
+        ready = False
+    if ready and not force:
+        return None
     decided = decisions_of(folder)
-    source_sha = summary_source_sha(materials, decided, recording_note)
+    _build_summary(folder, None, materials, decided,
+                   summary_source_sha(materials, decided, recording_note), recording_note)
+    return None
+
+
+def _build_summary(folder: pathlib.Path, live: pathlib.Path | None, materials: list[tuple[str, str]],
+                   decided: list[str], source_sha: str, recording_note: str | None) -> str | None:
+    """Собрать саммари моделью и записать: с `live` — через единственный шов
+    `live_sidecar.write_derivative` (снимок в `.prev`, гейт expect, паспорт),
+    возвращает состояние после записи; None — модель не ответила, запись
+    отклонена или исключение. Без `live` — голая запись, возвращает FRESH как
+    «записано» без паспорта (миграция и тесты старого пути)."""
+    out = folder / "Саммари.md"
     state: str | None = None
-    if live is not None:
-        meta = live_sidecar.read(live) or {}
-        state = live_sidecar.derivative_state(out, meta, "summary", source_sha)
-        # HUMAN не отменяется и ручным прогоном: `force` — «собери, хоть файл и свежий»,
-        # не «перепиши правку человека» (Minor DS выходного круга)
-        if state == live_sidecar.HUMAN or (not force and not live_sidecar.wants_build(state, policy)):
-            return state
-    else:
-        # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08);
-        # stat под try: файл может исчезнуть между проверками (luna r1)
-        try:
-            ready = out.stat().st_size > 0
-        except OSError:
-            ready = False
-        if ready and not force:
-            return None
     src_parts = [f"=== {name} ===\n{text}" for name, text in materials]
     history = _history_context(folder)
     words = SUMMARY_SECTIONS[_config_lang()]
@@ -806,13 +893,12 @@ def _gen_summary(folder: pathlib.Path, live: pathlib.Path | None = None, *,
                     + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""))
             if live is not None:
                 # единственный шов записи производных с паспортом (.prev, гейт expect);
-                # состояние после записи — от шва, не «то, что было до» (Important
-                # DS и GLM выходного круга); отказ записи оставляет прежнее знание
+                # состояние после записи — от шва (Important DS и GLM круга 1)
                 state = live_sidecar.write_derivative(
                     live, out, "summary", body, source_sha,
-                    log=lambda msg: print(f"саммари: {msg}", file=sys.stderr)) or state
-            else:
-                safe_write.write_text(out, body)
+                    log=lambda msg: print(f"саммари: {msg}", file=sys.stderr))
+            elif safe_write.write_text(out, body):
+                state = live_sidecar.FRESH
     except Exception as e:  # noqa: BLE001
         print(f"саммари: {e}", file=sys.stderr)
     return state

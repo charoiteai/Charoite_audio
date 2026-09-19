@@ -145,7 +145,7 @@ def test_archive_takes_only_files_of_this_meeting(graph, tmp_path):
     (tdir / "2026-08-03_113012.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
     (tdir / "2026-08-03_113012_minutes.md").write_text("СОСЕДНИЕ МИНУТКИ", encoding="utf-8")
 
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка").folder
 
     assert folder is not None
     assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
@@ -165,7 +165,7 @@ def test_untitled_meeting_with_seconds_archives_its_own_files(graph, tmp_path):
     (tdir / "2026-08-03_113045.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
     (tdir / "2026-08-03_1130_Планёрка.md").write_text("ДРУГАЯ", encoding="utf-8")
 
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "", files_key="2026-08-03_113012")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "", files_key="2026-08-03_113012").folder
 
     assert folder is not None
     assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
@@ -219,7 +219,7 @@ def test_archive_does_not_link_a_note_that_is_not_in_this_graph(graph, tmp_path)
     (tdir / "2026-08-03_1130_Планёрка.md").write_text("стенограмма", encoding="utf-8")
 
     # заметки в этом графе нет
-    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка").folder
     assert folder is not None
     link = (folder / "Граф.md").read_text(encoding="utf-8")
     assert "[[Встречи/2026-08-03_1130]]" not in link, link

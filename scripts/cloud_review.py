@@ -1180,14 +1180,15 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
                      f"({e.reason}) — файл рядом со стенограммой\n")
         except OSError:
             pass                      # нет/недоступен — упадёт ниже в общий except
-        from meeting_archive import SUMMARY_POLICY_LIVE, archive_meeting
+        from meeting_archive import archive_meeting
         slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
         if slug[:1].isdigit():
             slug = ""   # остаток «30» у посекундного стема — секунды, не тема (ревью 17.08)
-        # ревизия переписала минутки — саммари по ним устарело; живая политика
-        # пересоберёт STALE и легаси без паспорта (№314)
-        folder = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
-                                 files_key=transcript.stem, policy=SUMMARY_POLICY_LIVE)
+        # ревизия переписала минутки — саммари по ним STALE, и политика по
+        # умолчанию его пересоберёт; легаси без паспорта не трогается (№314)
+        archived = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
+                                   files_key=transcript.stem)
+        folder = archived.folder if archived is not None else None
         # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
         # стема стенограммы (у посекундной без темы они расходятся): кладём
         # копию в папку явно, а не надеемся на глоб.

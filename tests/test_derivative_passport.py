@@ -323,10 +323,10 @@ def test_live_cothinking_theses_are_kept_and_the_model_is_not_paid_for_them(tmp_
     folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
     folder.mkdir(parents=True)
 
-    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None):
+    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None, adopt=False):
         (folder / "Стенограмма.md").write_text(live.read_text(encoding="utf-8"), encoding="utf-8")
         meeting_archive._derive_extras(folder)
-        return folder
+        return meeting_archive.Archived(folder, meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None))
     monkeypatch.setattr(retro_fill, "archive_meeting", fake_archive)
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
     assert "тезисы" not in made
@@ -338,7 +338,8 @@ def test_live_cothinking_theses_are_kept_and_the_model_is_not_paid_for_them(tmp_
     live2.write_text("# Встреча 2026-09-03_1100\n" + SPEECH, encoding="utf-8")
     folder2 = tmp_path / "graph" / "Встречи-архив" / "2026-09-03_1100"
     folder2.mkdir()
-    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: folder2)
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: meeting_archive.Archived(
+        folder2, meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None)))
     _FakeLLM.calls = []
     assert "тезисы" in retro_fill.process(live2, _cfg(tmp_path), tmp_path / "graph", tdir)
     meta = live_sidecar.read(live2)
@@ -432,7 +433,9 @@ def test_live_theses_are_judged_by_the_file_the_archive_made(tmp_path, monkeypat
                           text="# Встреча 2026-09-02_1021\n" + SPEECH + "> 10:22 📌 смета к пятому\n")
     folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
     folder.mkdir(parents=True)
-    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: folder)   # файла тезисов архив НЕ создал
+    none = meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None)
+    monkeypatch.setattr(retro_fill, "archive_meeting",
+                        lambda *a, **k: meeting_archive.Archived(folder, none))   # файла тезисов архив НЕ создал
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
     assert "тезисы" in made and (folder / "Тезисы.md").exists(), "нет файла — к модели, как у встречи без живого контура"
 
@@ -462,69 +465,82 @@ def test_the_archive_takes_the_debrief_the_writers_own_not_the_alphabetical_twin
     ours.write_text("наш разбор\n", encoding="utf-8")
     twin = tdir / "2026-09-02_102113_разбор.md"              # старое имя от стема — под префиксом
     twin.write_text("двойня по стему\n", encoding="utf-8")
-    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem)
+    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem).folder
     assert (folder / "Разбор.md").read_text(encoding="utf-8") == "наш разбор\n"
     # ожидаемого нет — прежний порядок: что нашлось по префиксу
     ours.unlink()
     (folder / "Разбор.md").unlink()
-    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem)
+    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem).folder
     assert (folder / "Разбор.md").read_text(encoding="utf-8") == "двойня по стему\n"
 
 
 def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_rest(tmp_path, monkeypatch, capsys):
     """Critical DS выходного круга по №314: у 74 протухших легаси-саммари не было
-    ни одного пути к пересборке (ретро — MISSING/STALE, живой путь их не
-    касается), а состояние саммари в отчёте ретро не печаталось. Явный флаг:
-    `--summary=adopt` присваивает согласованное легаси без модели,
-    `--summary=rebuild` — то же присвоение, потом живая политика для
-    остального; без флага саммари в отчёте есть, а легаси не трогается."""
+    ни одного пути к пересборке, а состояние саммари в отчёте ретро не
+    печаталось. Явный флаг: `--summary=adopt` — присвоить согласованное легаси
+    без модели и ничего не строить, `--summary=rebuild` — присвоить, потом
+    собрать остальное. Круг 2 (DS Critical, GLM Important): присвоение и
+    сборка — внутри `archive_meeting` по одной папке и одному снимку канона,
+    исход едет возвратом (`Archived.summary`), отчёт печатает его, а не
+    выводит из состояния диска — «пропущено: саммари fresh» о только что
+    пересобранном больше невозможно."""
     import os
     import time
     live, tdir = _meeting(tmp_path, monkeypatch)
     folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02 10-21 — Смета"
     folder.mkdir(parents=True)
-    legacy = "---\nтип: саммари\n---\n\n# Саммари — старое\n\nСуть: было.\n".replace("тип", "type")
+    legacy = "---\ntype: саммари\nдата: 2026-09-02\n---\n\n# Саммари — старое\n\nСуть: было.\n"
     (folder / "Минутки.md").write_text("## Решения\n1. Первое.\n", encoding="utf-8")
     (folder / "Саммари.md").write_text(legacy, encoding="utf-8")
     old = time.time() - 3600
     os.utime(folder / "Минутки.md", (old, old))
-    policies: list = []
+    seen: list = []
 
-    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None):
-        policies.append(policy)
+    def fake_archive(graph, tdir_, stamp, slug, files_key=None, policy=None, adopt=False):
+        # как настоящий: сначала копии материалов, потом один проход по саммари
+        seen.append((policy, adopt))
         (folder / "Стенограмма.md").write_text(live.read_text(encoding="utf-8"), encoding="utf-8")
         os.utime(folder / "Стенограмма.md", (old, old))
-        meeting_archive._gen_summary(folder, live, policy=policy or meeting_archive.SUMMARY_POLICY_RETRO)
-        return folder
+        outcome = meeting_archive.summary_pass(folder, live, None,
+                                               policy=policy or meeting_archive.SUMMARY_POLICY, adopt=adopt)
+        return meeting_archive.Archived(folder, outcome)
     monkeypatch.setattr(retro_fill, "archive_meeting", fake_archive)
     monkeypatch.setattr(meeting_archive, "load_user_or_example", lambda root: _cfg(tmp_path), raising=False)
     # без флага: легаси UNKNOWN не трогается, состояние в отчёте есть
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
-    assert policies == [None] and "саммари" not in made
-    assert "саммари unknown" in capsys.readouterr().out
+    assert seen == [(None, False)] and "саммари" not in made
+    out = capsys.readouterr().out
+    assert "пропущено:" in out and "саммари unknown" in out
     assert "было" in (folder / "Саммари.md").read_text(encoding="utf-8")
-    # adopt: паспорт без модели, отчёт «присвоено»
+    # adopt: паспорт без модели, отчёт «собрано: саммари присвоено» и ничего про «пропущено: саммари»
     n = len(_FakeLLM.calls)
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, summary="adopt")
+    assert seen[-1] == (meeting_archive.SUMMARY_POLICY_NONE, True)
     assert "саммари присвоено" in made and len(_FakeLLM.calls) == n
     assert live_sidecar.read(live)["summary_adopted"] and "было" in (folder / "Саммари.md").read_text(encoding="utf-8")
-    assert "саммари присвоено" in capsys.readouterr().out
-    # ревизия переписала минутки → STALE; rebuild пересобирает моделью живой политикой
+    out = capsys.readouterr().out
+    assert "собрано: саммари присвоено" in out and "пропущено: саммари" not in out
+    # ревизия переписала минутки → STALE; rebuild собирает моделью, отчёт «собрано: саммари»
     (folder / "Минутки.md").write_text("## Решения\n1. Отменено ревизией.\n", encoding="utf-8")
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, summary="rebuild")
-    assert policies[-1] == meeting_archive.SUMMARY_POLICY_LIVE
-    assert "саммари" in made and "саммари присвоено" not in made
+    assert seen[-1] == (meeting_archive.SUMMARY_POLICY_REBUILD, True)
+    assert made.count("саммари") == 1 and "саммари присвоено" not in made
     assert "было" not in (folder / "Саммари.md").read_text(encoding="utf-8")
-    assert "саммари не присвоено: уже с паспортом (stale)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "собрано:" in out and "саммари" in out.split("собрано:")[1].split(";")[0] and "пропущено: саммари" not in out
+    # второй rebuild подряд — FRESH, «пропущено: саммари fresh», модель молчит
+    n = len(_FakeLLM.calls)
+    retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, summary="rebuild")
+    assert len(_FakeLLM.calls) == n and "саммари fresh" in capsys.readouterr().out
     # CLI: флаг доходит до process, без флага — None
-    seen: list = []
+    calls: list = []
     monkeypatch.setattr(retro_fill, "ROOT", tmp_path)
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
-    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None: seen.append(summary) or [])
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None: calls.append(summary) or [])
     retro_fill.main(["--summary=adopt", str(live)])
     retro_fill.main([str(live)])
-    assert seen == ["adopt", None]
+    assert calls == ["adopt", None]
     with pytest.raises(SystemExit):
         retro_fill.main(["--summary=all", str(live)])

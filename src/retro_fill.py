@@ -23,7 +23,7 @@ import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
 import safe_write  # noqa: E402
 from meeting_archive import (  # noqa: E402
-    SUMMARY_POLICY_LIVE, _folders_for, adopt_summary, archive_meeting, cothinking_notes, summary_state)
+    SUMMARY_POLICY_NONE, SUMMARY_POLICY_REBUILD, archive_meeting, cothinking_notes)
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -102,14 +102,16 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     живого ко-мышления: импорт записи, восстановление задним числом.
 
     Саммари — производная с паспортом в том же сайдкаре (№314), пишет его
-    `archive_meeting` по политике ретро (MISSING/STALE). Легаси без паспорта
-    (UNKNOWN) обход не трогает — присвоить или пересобрать его можно только
-    явно: `summary="adopt"` — паспорт исправному легаси без модели по всему
-    канону (`adopt_summary`), `summary="rebuild"` — то же присвоение, а
-    остальное (MISSING/STALE/UNKNOWN) собрать моделью живой политикой. Без
-    порядка «сначала adopt» rebuild переписал бы 224 исправных саммари за час
-    модели — поэтому rebuild включает adopt (Critical DS выходного круга).
-    Состояние саммари после прогона — в отчёте всегда.
+    `archive_meeting` одной политикой на живой путь и обход (MISSING/STALE).
+    Легаси без паспорта (UNKNOWN) обход не трогает — только явно:
+    `summary="adopt"` — паспорт исправному легаси без модели по всему канону и
+    ничего не строить; `summary="rebuild"` — то же присвоение, потом собрать
+    остальное (MISSING/STALE/UNKNOWN) моделью. Без порядка «сначала adopt»
+    rebuild переписал бы 224 исправных саммари за час модели — поэтому
+    присвоение идёт внутри `archive_meeting` перед решением о сборке, по той же
+    папке и тому же снимку канона (Critical DS кругов 1 и 2). Исход саммари
+    приходит возвратом (`Archived.summary`), отчёт его печатает, а не выводит
+    из состояния диска (Critical DS и Important GLM круга 2).
 
     Возвращает список собранного; одна строка stdout на встречу: что собрано и
     что пропущено с состоянием — «полная» больше не прячет HUMAN/UNKNOWN
@@ -155,23 +157,13 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     else:
         skipped.append(f"разбор {state}")
 
-    if summary is not None:
-        # присвоение — ДО архивации: иначе rebuild собрал бы моделью то, что
-        # можно было признать без неё
-        folder = next(iter(_folders_for(graph, stamp)), None)   # свежая папка этой встречи
-        if folder is not None:
-            outcome = adopt_summary(folder, f, source.recording_note)
-            (made if outcome == "присвоено" else skipped).append(
-                "саммари присвоено" if outcome == "присвоено" else f"саммари не присвоено: {outcome}")
-    folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem,
-                             policy=SUMMARY_POLICY_LIVE if summary == "rebuild" else None)
+    policy = {None: None, "adopt": SUMMARY_POLICY_NONE, "rebuild": SUMMARY_POLICY_REBUILD}[summary]
+    archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem,
+                               policy=policy, adopt=summary is not None)
+    folder = archived.folder if archived is not None else None
+    if archived is not None and (line := archived.summary.line()):
+        (made if archived.summary.made else skipped).append(line)
     if folder is not None:
-        st = summary_state(folder, f, source.recording_note)
-        if st is not None:
-            if summary == "rebuild" and st == live_sidecar.FRESH and "саммари присвоено" not in made:
-                made.append("саммари")
-            else:
-                skipped.append(f"саммари {st}")
         tpath = _theses_path(folder)
         # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
         # копию перебила легаси-производная без строк ко-мышления, файла нет —

@@ -392,7 +392,7 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
                 if not live_sidecar.retouch(live, kind, f, swap):
                     # отказ — не молча: файл менялся под рукой или не читается,
                     # старое имя папки в нём осталось (Minor DS выходного круга)
-                    print(f"{f.name}: имя папки не заменено — файл менялся под рукой")
+                    print(f"{f.name}: имя папки не заменено (файл менялся под рукой или не читается)")
                 continue
             text = f.read_text(encoding="utf-8")
             if old_folder.name in text:

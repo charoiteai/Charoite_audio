@@ -178,16 +178,26 @@ def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) ->
     выходного круга по №314). Годится ли файл — решает вызывающий по своему
     канону; здесь только гейт «паспорта нет, файл есть и непуст» и запись.
     Живому пути присвоение запрещено: UNKNOWN там либо строится политикой,
-    либо остаётся незнанием (схождение DS и GLM выходного круга)."""
+    либо остаётся незнанием (схождение DS и GLM выходного круга).
+
+    Гейт снимка защищает не файл (его adopt не пишет), а паспорт: байты,
+    изменившиеся между чтением и записью, получили бы паспорт на прежний
+    текст и на следующем чтении стали HUMAN — замороженным без причины (Minor
+    DS круга 2). Три ключа — одним слиянием: паспорт без отметки навсегда
+    выдавал бы присвоенное за машинную запись (Minor DS и GLM круга 2)."""
     meta = read(live) or {}
     if derivative_state(path, meta, kind, source_sha) != UNKNOWN or not live.is_file():
         return False
+    before = safe_write.stat_snapshot(path)
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
+    if before is None or safe_write.stat_snapshot(path) != before:
+        return False
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return attest(live, kind, text, source_sha) and remember(live, f"{kind}_adopted", stamp)
+    return merge(live, {f"{kind}_sha256": sha(text), f"{kind}_source_sha256": source_sha,
+                        f"{kind}_adopted": stamp})
 
 
 # Файлы папки архива встречи, у которых есть паспорт в сайдкаре стенограммы:

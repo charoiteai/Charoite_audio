@@ -2895,11 +2895,10 @@ def main():
         # Ключ файлов — стем стенограммы: у посекундной встречи без темы это
         # «…113012», и минутный глоб взял бы файлы соседней встречи той же
         # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
-        from meeting_archive import SUMMARY_POLICY_LIVE
-        # живой путь после встречи: саммари строится и у легаси без паспорта (№314)
-        arch_folder = archive_meeting(graph, tpath.parent, stamp, title,
-                                      files_key=tpath.stem, policy=SUMMARY_POLICY_LIVE)
-        print(f"архив встречи: {arch_folder.name}")
+        # саммари — по паспорту одной политикой с обходом: новая встреча MISSING,
+        # ревизия старит через минутки; легаси без паспорта живой путь не трогает (№314)
+        archived = archive_meeting(graph, tpath.parent, stamp, title, files_key=tpath.stem)
+        print(f"архив встречи: {archived.folder.name}" if archived else "архив встречи: исключена")
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")
 
