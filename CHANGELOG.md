@@ -5,6 +5,21 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.83.0](https://github.com/charoiteai/Charoite_audio/compare/v0.82.0...v0.83.0) (2026-09-19)
+
+
+### Features
+
+* **app:** свёртка здоровья систем для иконки и строки меню-бара (№139, №313) ([#592](https://github.com/charoiteai/Charoite_audio/issues/592)) ([8b3311b](https://github.com/charoiteai/Charoite_audio/commit/8b3311b302d7de323f1cc9e8824c49ba94872ead))
+* **archive:** саммари — производная с паспортом по канону материалов; единый шов записи производных (№314) ([#593](https://github.com/charoiteai/Charoite_audio/issues/593)) ([85bf212](https://github.com/charoiteai/Charoite_audio/commit/85bf212f358500f62779bc359d33f2a35506cd21))
+* **phone:** причина остановки записи на телефоне — манифест парой с аудио и след на Mac (№200) ([#591](https://github.com/charoiteai/Charoite_audio/issues/591)) ([247f90c](https://github.com/charoiteai/Charoite_audio/commit/247f90cd64b939a9e64a44bfbb9c63db159181a5))
+
+
+### Bug Fixes
+
+* **minutes:** оговорка о неполной записи в промпт производных и итог из сайдкара ([#588](https://github.com/charoiteai/Charoite_audio/issues/588)) ([c81e686](https://github.com/charoiteai/Charoite_audio/commit/c81e686fa440b10e56af92deb1455ff0b40f53bd))
+* **status:** липкость статуса ставит писатель, слои в приложении по владельцу ([#590](https://github.com/charoiteai/Charoite_audio/issues/590)) ([0c13889](https://github.com/charoiteai/Charoite_audio/commit/0c13889da7014ad128d5a878ae17e9806fe96a16))
+
 ## [0.82.0](https://github.com/charoiteai/Charoite_audio/compare/v0.81.3...v0.82.0) (2026-09-19)
 
 
