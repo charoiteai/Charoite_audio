@@ -62,7 +62,11 @@ ABSENT = {"blackhole": "без собеседников", "mic": "без ваш�
 MANIFEST_SUFFIX = ".json"        # имя манифеста = имя аудио + суффикс (контракт `Inbox.sidecar(for:)`)
 KIND_STOPPED = "stopped"         # запись на телефоне закрыта не человеком; эпизодом отсутствия канала
 #                                  не является — `episodes_of` его не видит (Critical DS и GLM: `end`
-#                                  делал бы каждую импортированную встречу «неполной»)
+#                                  делал бы каждую импортированную встречу «неполной»). Ротация — тоже
+#                                  невольная остановка записи В ЭТОМ ФАЙЛЕ: продолжение обещано телефоном
+#                                  в момент закрытия, а состоится ли — он не знает (старт после звонка
+#                                  мог не подняться). Поэтому в итог входят обе, а формулировка ротации
+#                                  не утверждает будущего (Critical DS выходного круга)
 PHONE_REASONS = {                # причина — значение из enum компаньона; текст — здесь, один раз
     "call_no_resume": "микрофон не вернулся после звонка",
     "media_reset": "аудиослужба перезапущена",
@@ -71,8 +75,8 @@ PHONE_REASONS = {                # причина — значение из enum
     "no_stop": "стоп не зафиксирован — приложение не закрыло файл",
 }
 PHRASE_CUT = "оборвана"          # терминальный стоп: дальше встреча не записана
-PHRASE_SPLIT = "закрыта"         # ротация: файл цел, продолжение — следующим файлом
-PHRASE_CONTINUED = "продолжение следующим файлом"
+PHRASE_SPLIT = "прервана"        # ротация: файл закрыт не человеком, продолжение — если запись возобновилась
+PHRASE_CONTINUED = "продолжение, если запись возобновилась, следующим файлом"
 
 
 def _hm(ts: float | None) -> str:
@@ -144,11 +148,10 @@ def _epoch(value) -> float | None:
 
 def phone_event(manifest) -> dict | None:
     """Событие следа из манифеста компаньона; None — события нет: ручной стоп
-    (`user`) — не факт о неполноте, мусор — не факт вовсе. Ротация — событие
-    (в хвосте видно, где кончился файл), но НЕ оговорка: сегмент как файл цел,
-    встреча продолжена следующим (критика GLM входного круга) — до склейки №260.
+    (`user`) — не факт о неполноте, мусор — не факт вовсе. `terminal` различает
+    стоп и ротацию для читателей (склейка серии, №260); в итог входят обе.
     Поле `cause` занято словарём причин хаба (`audio.CH_CAUSES`), причина
-    телефона — `reason` (Critical DS)."""
+    телефона — `reason` (Critical DS входного круга)."""
     if not isinstance(manifest, dict):
         return None
     kind, reason = manifest.get("kind"), manifest.get("reason")
@@ -169,24 +172,22 @@ def _phone_reason(ev: dict) -> str:
     return why
 
 
-def render_phone(ev: dict) -> str | None:
-    """Человеческая строка события телефона; None — не оно."""
-    if ev.get("kind") != KIND_STOPPED:
-        return None
+def _phone_text(ev: dict) -> str:
+    """Одна формулировка события телефона — для строки события и для итога."""
     when, why = _hm(ev.get("at")), _phone_reason(ev)
     if ev.get("terminal"):
-        return f"⏹ {NAMES[PHONE]} {PHRASE_CUT} {when} ({why})"
-    return f"⏹ {NAMES[PHONE]} {PHRASE_SPLIT} {when} ({why}) — {PHRASE_CONTINUED}"
+        return f"{NAMES[PHONE]} {PHRASE_CUT} {when} ({why})"
+    return f"{NAMES[PHONE]} {PHRASE_SPLIT} {when} ({why}) — {PHRASE_CONTINUED}"
 
 
-def phone_line(ev: dict) -> str | None:
-    """Строка события телефона для хвоста «Ко-мышления» — со штампом, как
-    у `summary_line`."""
-    text = render_phone(ev)
-    if not text:
+def render_phone(ev: dict) -> str | None:
+    """Человеческая строка события телефона (лог импорта, нить); None — не оно.
+    В документы событие попадает не этой строкой, а итогом `summary_of`: его
+    узнают все читатели хвоста (`note_in_tail`, пересборка, `meeting_source`),
+    а строка события — только классификатор (Important DS выходного круга)."""
+    if ev.get("kind") != KIND_STOPPED:
         return None
-    at = ev.get("at")
-    return f"{_hm(at)} {text}" if at else text
+    return f"⏹ {_phone_text(ev)}"
 
 
 class ChannelTrace:
@@ -334,9 +335,11 @@ def summary_of(events: list[dict]) -> str | None:
     процесса (флаг отказа записи) сюда не входит: документ обязан
     восстанавливаться из сайдкара целиком (Important DS входного круга)."""
     eps = episodes_of(events)
-    # терминальный невольный стоп на телефоне — часть итога: дальше встреча не
-    # записана; ротация в итог не входит — файл цел (критика GLM входного круга по №200)
-    cuts = [e for e in events if e.get("kind") == KIND_STOPPED and e.get("terminal")]
+    # невольная остановка записи на телефоне — часть итога, и терминальная, и
+    # ротация: запись В ЭТОМ ФАЙЛЕ прервана не человеком, документ по нему — не
+    # вся встреча; состоялось ли продолжение, телефон в момент закрытия не знает,
+    # и формулировка этого не утверждает (Critical DS выходного круга по №200)
+    cuts = [e for e in events if e.get("kind") == KIND_STOPPED]
     if not eps and not cuts:
         return None
     parts = []
@@ -352,8 +355,7 @@ def summary_of(events: list[dict]) -> str | None:
         shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
         total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
         parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
-    for e in cuts:
-        parts.append(f"{NAMES[PHONE]} {PHRASE_CUT} {_hm(e.get('at'))} ({_phone_reason(e)})")
+    parts.extend(_phone_text(e) for e in cuts)
     return SUMMARY_MARK + ": " + "; ".join(parts)
 
 

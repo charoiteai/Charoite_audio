@@ -330,7 +330,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
     private var currentKind: Kind = .meeting
     /// Стем первого файла серии: после ротаций куски одной встречи несут его в манифесте (№200)
-    private var seriesStem: String?
+    private(set) var seriesStem: String?   // internal(set) только для тестов серии
 
     /// Сколько терпим неподвижное `currentTime`, прежде чем поднять тревогу.
     /// Три секунды: короче — ложные срабатывания на дрожании таймера, длиннее —
@@ -493,6 +493,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             if !rotating {                    // новая встреча — серия ошибок кодека и причина стопа чисты (DS I1 r2)
                 encodeErrors = 0
                 lastStopReason = nil
+            }
+            // серия — с первого файла до конца сессии (терминальный стоп, отмена или
+            // истечение взвода), а не до конца ротации: продолжение, стартовавшее из
+            // взвода после неудачной ротации, иначе получало бы чужой стем (Minor GLM по №200)
+            if seriesStem == nil {
                 seriesStem = url.deletingPathExtension().lastPathComponent
             }
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -502,6 +507,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         } catch {
             try? FileManager.default.removeItem(at: url)
             disarm(quiet: true)
+            endSeries()
             lastResult = L.t("Запись не стартовала: \(error.localizedDescription)",
                              "Recording failed: \(error.localizedDescription)",
                              "录音失败：\(error.localizedDescription)")
@@ -512,6 +518,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private func startFailed(_ failure: StartFailure, kind: Kind, message: String) {
         guard Self.shouldArm(after: failure) else {
             disarm(quiet: true)
+            endSeries()
             lastResult = message
             return
         }
@@ -543,10 +550,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     /// Человек передумал: та же большая кнопка во взведённом состоянии.
+    /// Сессия записи кончилась: следующий файл — новая серия.
+    private func endSeries() {
+        seriesStem = nil
+    }
+
     func disarm(quiet: Bool = false) {
         armTimer?.invalidate()
         armTimer = nil
         guard armed else { return }
+        if !quiet { endSeries() }         // человек отменил ожидание — продолжения не будет
         armed = false
         armedAt = nil
         lastProbeAt = nil
@@ -568,6 +581,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         lastProbeAt = now
         if Self.armExpired(lastProbeAt: previous, now: now) {
             disarm(quiet: true)
+            endSeries()
             let m = Self.armLifetimeMinutes
             lastResult = L.t("Ожидание микрофона истекло (\(m) мин) — нажмите запись",
                              "Waiting for the microphone expired (\(m) min) — tap record",
@@ -794,7 +808,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                              "未记录停止原因：\(error.localizedDescription)")
         }
         // строка причины — производная значения; ручной стоп причины не показывает
-        lastStopReason = reason == .user ? nil : reason.text
+        lastStopReason = reason == .user ? nil : reason.text(terminal: !rotating)
+        if !rotating { endSeries() }      // терминальный стоп закрывает серию
         if let a = activity {
             activity = nil
             Task { await a.end(nil, dismissalPolicy: .immediate) }

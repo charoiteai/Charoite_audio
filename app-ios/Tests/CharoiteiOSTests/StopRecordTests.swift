@@ -48,8 +48,36 @@ final class StopRecordTests: XCTestCase {
     func testEveryReasonHasHumanTextAndUserIsNotShownAsProblem() {
         for reason in Recorder.StopReason.allCases {
             XCTAssertFalse(reason.text.isEmpty, "\(reason)")
+            XCTAssertFalse(reason.text(terminal: false).isEmpty, "\(reason)")
         }
         XCTAssertNotEqual(Recorder.StopReason.callNoResume.text, Recorder.StopReason.stalled.text)
+        // терминальный стоп по кодеку называет счёт из политики, ротация — нет (Minor DS)
+        let terminal = Recorder.StopReason.encodeError.text(terminal: true)
+        XCTAssertTrue(terminal.contains("\(Recorder.maxEncodeErrors)"), terminal)
+        XCTAssertNotEqual(terminal, Recorder.StopReason.encodeError.text(terminal: false))
+        XCTAssertEqual(Recorder.StopReason.stalled.text(terminal: true), Recorder.StopReason.stalled.text(terminal: false))
+    }
+
+    /// Пара переезжает целиком или не переезжает вовсе: манифест, оставшийся в
+    /// старой папке, — половина пары, которой пара не допускает (Minor GLM).
+    func testMovePairIsAllOrNothing() throws {
+        let src = base.appendingPathComponent("src"), dst = base.appendingPathComponent("dst")
+        try fm.createDirectory(at: src, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dst, withIntermediateDirectories: true)
+        let audio = src.appendingPathComponent("pair.caf")
+        try Data(repeating: 1, count: Inbox.orphanMinBytes).write(to: audio)
+        try Recorder.StopRecord(kind: .stop, reason: .stalled, at: Date(timeIntervalSince1970: 1_788_000_000),
+                                seconds: 5, series: "pair").write(nextTo: audio)
+        // цель аудио занята каталогом — moveItem аудио упадёт, манифест обязан вернуться
+        try fm.createDirectory(at: dst.appendingPathComponent("pair.caf"), withIntermediateDirectories: true)
+        XCTAssertThrowsError(try Inbox.movePairForTesting(audio, to: dst.appendingPathComponent("pair.caf")))
+        XCTAssertTrue(fm.fileExists(atPath: Inbox.sidecar(for: audio).path), "манифест вернулся к аудио")
+        XCTAssertFalse(fm.fileExists(atPath: Inbox.sidecar(for: dst.appendingPathComponent("pair.caf")).path))
+        // свободная цель — уехали оба
+        try fm.removeItem(at: dst.appendingPathComponent("pair.caf"))
+        try Inbox.movePairForTesting(audio, to: dst.appendingPathComponent("pair.caf"))
+        XCTAssertEqual(Set(try fm.contentsOfDirectory(atPath: dst.path)), ["pair.caf", "pair.caf.json"])
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: src.path), [])
     }
 
     /// Сирота в current/: манифеста нет — «стопа не было» со временем последнего

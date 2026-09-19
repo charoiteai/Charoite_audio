@@ -61,15 +61,29 @@ enum Inbox {
         audio.appendingPathExtension("json")
     }
 
-    /// Перенести аудио и его манифест одним движением; манифест — если есть.
+    /// Перенести аудио и его манифест одним движением — всё или ничего: манифест
+    /// первым (его отказ — отказ пары), аудио вторым, при отказе аудио манифест
+    /// возвращается назад. Половина пары в другой папке — ровно то, чего пара
+    /// не допускает (Minor GLM выходного круга по №200).
     private static func movePair(_ audio: URL, to dest: URL) throws {
         let fm = FileManager.default
-        try fm.moveItem(at: audio, to: dest)
-        let sc = sidecar(for: audio)
-        if fm.fileExists(atPath: sc.path) {
-            try? fm.removeItem(at: sidecar(for: dest))
-            try? fm.moveItem(at: sc, to: sidecar(for: dest))
+        let sc = sidecar(for: audio), scDest = sidecar(for: dest)
+        let hasManifest = fm.fileExists(atPath: sc.path)
+        if hasManifest {
+            try? fm.removeItem(at: scDest)
+            try fm.moveItem(at: sc, to: scDest)
         }
+        do {
+            try fm.moveItem(at: audio, to: dest)
+        } catch {
+            if hasManifest { try? fm.moveItem(at: scDest, to: sc) }
+            throw error
+        }
+    }
+
+    /// Шов для теста контракта «всё или ничего»; в коде приложения не зовётся.
+    static func movePairForTesting(_ audio: URL, to dest: URL) throws {
+        try movePair(audio, to: dest)
     }
 
     private static func removePair(_ audio: URL) {
@@ -390,6 +404,8 @@ enum Inbox {
             }
             let dest = uniqueName(in: dir, like: f)
             let part = dest.appendingPathExtension("part")
+            let scDest = sidecar(for: dest)
+            let scPart = scDest.appendingPathExtension("part")
             do {
                 // Манифест — первым и под тем же именем, что уедет аудио (dest считается один
                 // раз): сканер на Mac стартует по аудио и к этому моменту уже видит причину;
@@ -397,8 +413,6 @@ enum Inbox {
                 // (Important GLM входного круга по №200)
                 let sc = sidecar(for: f)
                 if fm.fileExists(atPath: sc.path) {
-                    let scDest = sidecar(for: dest)
-                    let scPart = scDest.appendingPathExtension("part")
                     try? fm.removeItem(at: scPart)
                     try? fm.removeItem(at: scDest)
                     try fm.copyItem(at: sc, to: scPart)
@@ -436,6 +450,7 @@ enum Inbox {
                 // continue, а не return: один сбойный файл не должен запирать
                 // всю очередь, включая сегодняшнюю встречу.
                 try? fm.removeItem(at: part)
+                try? fm.removeItem(at: scPart)     // недописанный манифест не должен висеть в синкаемой папке (Minor GLM)
                 // метка — безусловно: при занятом dest иначе усыновлялся чужой файл (GLM I2 r2)
                 try? fm.removeItem(at: pendingMark(for: f))
                 stuck.append(f.lastPathComponent)

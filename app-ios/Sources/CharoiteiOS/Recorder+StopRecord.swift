@@ -21,8 +21,22 @@ extension Recorder {
         case stalled                           // файл не растёт, resume не помог → ротация
         case noStop = "no_stop"                // сирота в current/: стоп не зафиксирован
 
-        /// Строка для экрана и хвоста — производная значения, не наоборот.
-        var text: String {
+        /// Строка для экрана — производная значения, не наоборот.
+        var text: String { text(terminal: true) }
+
+        /// Терминальный стоп и ротация одной причины звучат по-разному: у ротации
+        /// встреча продолжена новым файлом, у стопа — остановлена. Счёт сбоев кодека —
+        /// из политики, а не строкой сбоку (Minor DS выходного круга по №200).
+        func text(terminal: Bool) -> String {
+            switch self {
+            case .encodeError where terminal:
+                let n = Recorder.maxEncodeErrors
+                return L.t("Сбой записи (кодек) \(n) раза подряд — запись остановлена",
+                           "Recording error (codec) \(n) times in a row — recording stopped",
+                           "录音错误（编解码器）连续 \(n) 次 — 录音已停止")
+            default:
+                break
+            }
             switch self {
             case .user:
                 return L.t("Остановлена вручную", "Stopped manually", "手动停止")

@@ -734,16 +734,24 @@ the Mac `import_meeting` converts the manifest into an event of the same trace
 that owns lost channels (`channel_trace.phone_event`, kind `stopped`, the
 reason in `reason` — `cause` belongs to the hub's dictionary) before
 `graph_updater` and before the "no speech" exit, so the derivative passport
-hashes speech plus the note on the first generation; the wording, the tail
-line and the trace-line classifier live in `channel_trace` only. A manual stop
-produces no event. A terminal involuntary stop is part of the incomplete-
-recording summary; a rotation is only a tail line ("closed 19:02 (microphone
-did not come back after the call) — continued in the next file"): until the
-segments are glued (№260) the segment is complete as a file and calling it
-incomplete would devalue the note. The manifest travels to `done/` with the
-audio, dies with it in retention, and an orphan manifest in the import folder
-is swept only after an hour — iCloud delivers a kilobyte of JSON long before
-an hour of audio.
+hashes speech plus the note on the first generation; the wording and the
+trace-line classifier live in `channel_trace` only, and the document gets the
+same summary line that every tail reader already knows (`note_in_tail`, the
+rebuild, `meeting_source`), not a second kind of line. A manual stop produces
+no event. Both involuntary stops enter the incomplete-recording summary — the
+terminal one ("cut off 19:02 (no stop was recorded)") and the rotation
+("interrupted 19:02 (microphone did not come back after the call) —
+continued, if recording resumed, in the next file"): the phone promises the
+continuation at the moment it closes the file and cannot know whether the
+restart after the call actually happened, so the wording states the observed
+fact and not the future (output round DS). The fact is consumed by
+reconciliation, not by a one-shot read at import (output round GLM):
+`reconcile_manifests` runs on every scan — a manifest that arrived after its
+audio had already moved to `done/` is reunited with it through the import
+sidecar's `source` field, a manifest lying in `done/` whose transcript lacks
+the event writes it (idempotent), an orphan waits an hour in the import
+folder before it is swept, because iCloud delivers a kilobyte of JSON long
+before an hour of audio. The manifest dies with the audio in retention.
 
 ## Stopping a recording
 
