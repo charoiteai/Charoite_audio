@@ -66,17 +66,40 @@ final class SuflerService: ObservableObject {
     static let stickyRank: [String: Int] = [StickyTopic.channelLoss: 0, StickyTopic.capture: 1,
                                             StickyTopic.notifications: 2]
 
-    /// Липкая строка для окна: все живые слои по приоритету через « · ».
-    /// Показывать только верхний означало бы молчать всю встречу о втором
-    /// факте («ваших реплик в записи нет» под «собеседников не будет») —
-    /// критика DS входного круга по №310.
-    var stickyStatus: String? {
-        let ordered = stickyLayers.sorted { a, b in
+    /// Серьёзность темы: слои-проблемы («собеседников не будет», «права на
+    /// микрофон нет») стоят выше живой строки и красятся красным; слои-справки
+    /// (уведомления выключены) едут хвостом за живой строкой и не красят её.
+    /// Одна политика «слой есть → красный и выше статуса» прятала бы живую
+    /// строку всю встречу ради справки (Important DS выходного круга по №310).
+    /// Неизвестная тема — проблема: писатель липкого предупреждения без своей
+    /// строки здесь считается серьёзным, пока не сказано иное.
+    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications]
+
+    private var orderedLayers: [(key: String, value: String)] {
+        stickyLayers.sorted { a, b in
             let ra = Self.stickyRank[a.key] ?? 100, rb = Self.stickyRank[b.key] ?? 100
             return ra != rb ? ra < rb : a.key < b.key
         }
-        return ordered.isEmpty ? nil : ordered.map(\.value).joined(separator: " · ")
     }
+
+    /// Слои-проблемы одной строкой по приоритету через « · ». Показывать
+    /// только верхний означало бы молчать всю встречу о втором факте («ваших
+    /// реплик в записи нет» под «собеседников не будет») — критика DS входного
+    /// круга по №310.
+    var stickyStatus: String? {
+        let problems = orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }
+        return problems.isEmpty ? nil : problems.map(\.value).joined(separator: " · ")
+    }
+
+    /// Слои-справки — хвостом к живой строке, не вместо неё.
+    var stickyInfo: String? {
+        let infos = orderedLayers.filter { Self.stickyInfoTopics.contains($0.key) }
+        return infos.isEmpty ? nil : infos.map(\.value).joined(separator: " · ")
+    }
+
+    /// Сколько слоёв-проблем живо — вид даёт им больше строк, чем одной
+    /// (Important GLM выходного круга: два слоя обрезались двумя строками).
+    var stickyProblemCount: Int { orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }.count }
 
     /// Поставить или снять липкий слой. Снятие адресуется теме: кто поставил,
     /// тот и снимает (№232 для канала, №310 для остальных).

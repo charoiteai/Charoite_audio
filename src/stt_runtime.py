@@ -181,13 +181,15 @@ def status_event(msg) -> dict:
     """Единственное место, где статус становится JSON для приложения (№310).
     `error` — всегда (обычный статус снимает красный, контракт Swift `consume`),
     `sticky` и `topic` — только когда писатель их поставил: статус без ключа
-    липкий слой не трогает (№228)."""
+    `sticky` липкий слой не трогает (№228); тема идёт и без липкости."""
     st = as_status(msg)
     ev = {"type": "status", "text": str(st), "error": bool(st.error)}
     if st.sticky is not None:
         ev["sticky"] = bool(st.sticky)
-        if st.topic:
-            ev["topic"] = st.topic
+    if st.topic:
+        # что писатель поставил, то и на проводе: тема отказа диска без
+        # липкости молча выбрасывалась (Minor DS и GLM выходного круга)
+        ev["topic"] = st.topic
     return ev
 
 

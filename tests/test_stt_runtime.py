@@ -233,6 +233,7 @@ def test_статус_несёт_намерение_писателя_а_не_п�
     disk = stt_runtime.Status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон", error=True, topic=stt_runtime.TOPIC_DISK)
     ev = stt_runtime.status_event(disk)
     assert ev["error"] is True and "sticky" not in ev, "отказ диска — error, не липкое: его держит heartbeat"
+    assert ev["topic"] == "disk", "что писатель поставил, то и на проводе — тема без липкости не выбрасывается (круг по №310)"
     # Status — строка: CLI и уведомления печатают её как текст
     assert isinstance(warn, str) and f"{warn}" == "любой текст про всю встречу" and "всю встречу" in warn
     assert stt_runtime.as_status("x").sticky is None and stt_runtime.as_status(warn) is warn
@@ -453,3 +454,31 @@ def test_демон_и_хаб_не_разбирают_статус_по_подс
     audio = (src / "audio.py").read_text(encoding="utf-8")
     assert audio.count("self.on_status(") == 1, "к on_status ведёт одна дверь — _say"
     assert "def _emit(self, msg) -> None:" in audio and "self._say(msg)" in audio[audio.index("def _emit("):audio.index("def _emit(") + 400]
+
+
+def test_темы_липких_слоёв_одинаковы_в_python_и_swift():
+    """Два литерала в двух языках без гейта: переименование темы в Python
+    прошло бы оба набора тестов, а слой в приложении сменил бы место (Minor DS
+    круга по №310)."""
+    import pathlib as _p
+    swift = (_p.Path(__file__).resolve().parent.parent / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "SuflerService.swift").read_text(encoding="utf-8")
+    assert f'static let channelLoss = "{stt_runtime.TOPIC_CHANNEL}"' in swift
+    assert 'static let capture = "capture"' in swift and 'static let notifications = "notifications"' in swift
+
+
+def test_дверь_статуса_пишет_в_stderr_только_недоставленный_отказ(capsys):
+    """Minor GLM круга по №310: подписчик упал (приложение закрыто) — отказ
+    диска оставляет след у двери, обычный статус — нет."""
+    import audio as a
+    hub = a.AudioHub({"audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                                "vad_energy_db": -45.0, "record": False, "device": "auto"},
+                      "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}, captures=[])
+
+    def broken(_):
+        raise BrokenPipeError("приложение закрыто")
+    hub.on_status = broken
+    hub._say("обычный статус")
+    hub._say(stt_runtime.Status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон", error=True, topic=stt_runtime.TOPIC_DISK))
+    err = capsys.readouterr().err
+    assert "не дошёл до подписчика" in err and "диск полон" in err and "обычный статус" not in err

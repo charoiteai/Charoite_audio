@@ -1875,10 +1875,15 @@ class AudioHub:
         `stt_runtime.Status` в точке порождения (№310). None — сказать нечего."""
         if msg is None or self.on_status is None:
             return
+        st = stt_runtime.as_status(msg)
         try:
-            self.on_status(stt_runtime.as_status(msg))
+            self.on_status(st)
         except Exception:  # noqa: BLE001
-            pass
+            if st.error:
+                # единственный канал доставки отказа записи упал (приложение
+                # закрыто, BrokenPipe) — след в stderr у двери, а не у каждого
+                # из четырёх писателей (Minor GLM выходного круга по №310)
+                _safe_stderr(f"статус об отказе не дошёл до подписчика: {st}")
 
     def _cut(self, label: str) -> np.ndarray | None:
         need = int(self.sr * self.chunk_s)

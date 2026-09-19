@@ -69,12 +69,15 @@ final class StickyStatusTests: XCTestCase {
         let s = SuflerService()
         s.noteNotificationsDenied()
         XCTAssertEqual(s.stickyLayers.count, 1)
-        let notice = s.stickyStatus
+        let notice = s.stickyInfo
         XCTAssertNotNil(notice)
+        XCTAssertNil(s.stickyStatus, "справка — не проблема: живую строку не прячет и не красит (Important DS круга по №310)")
         s.consumeForTest(#"{"type":"status","text":"\#(warning)","sticky":true,"topic":"channel_loss"}"#)
-        XCTAssertTrue(s.stickyStatus?.hasPrefix(warning) == true, "потеря канала выше подсказки об уведомлениях")
+        XCTAssertEqual(s.stickyStatus, warning, "потеря канала — слой-проблема, подсказка в него не подмешивается")
+        XCTAssertEqual(s.stickyInfo, notice)
         s.consumeForTest(#"{"type":"status","text":"ожил","sticky":false,"topic":"channel_loss"}"#)
-        XCTAssertEqual(s.stickyStatus, notice, "после отбоя подсказка снова видна, а не потеряна навсегда")
+        XCTAssertNil(s.stickyStatus, "проблем не осталось")
+        XCTAssertEqual(s.stickyInfo, notice, "после отбоя подсказка на месте, а не потеряна навсегда")
         s.noteNotificationsDenied()
         XCTAssertEqual(s.stickyLayers.count, 1, "один раз за встречу — флаг, не гонка слотов")
         XCTAssertLessThan(SuflerService.stickyRank[SuflerService.StickyTopic.channelLoss]!,
@@ -113,5 +116,14 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertEqual(pick(isError: true, sticky: warning, status: "⛔️ Захват звука потерян"),
                        "⛔️ Захват звука потерян", "свежая ошибка выше липкого")
         XCTAssertEqual(pick(), "👥 диаризация")
+        // слой-справка едет хвостом за живой строкой, не вместо неё; при пустой строке — сам
+        XCTAssertEqual(SuflerView.liveStatusText(stopConfirmPending: false, criticalHealthText: nil,
+                                                 errorFromDaemon: false, isError: false, healthText: nil,
+                                                 sticky: nil, status: "⚡ отвечаю", info: "Уведомления выключены"),
+                       "⚡ отвечаю · Уведомления выключены")
+        XCTAssertEqual(SuflerView.liveStatusText(stopConfirmPending: false, criticalHealthText: nil,
+                                                 errorFromDaemon: false, isError: false, healthText: nil,
+                                                 sticky: warning, status: "⚡ отвечаю", info: "Уведомления выключены"),
+                       warning, "слой-проблема выше и живой строки, и справки")
     }
 }
