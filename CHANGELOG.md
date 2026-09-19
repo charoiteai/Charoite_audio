@@ -5,6 +5,33 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.0](https://github.com/charoiteai/Charoite_audio/compare/v0.81.3...v0.82.0) (2026-09-19)
+
+
+### Features
+
+* **audio:** след пропажи канала в документах встречи — событие хаба из одной точки (№234) ([#587](https://github.com/charoiteai/Charoite_audio/issues/587)) ([12e6818](https://github.com/charoiteai/Charoite_audio/commit/12e68189345de6431b561370884cca272ffc958b))
+* **memory:** память подсказок без сервера — индекс графа в процессе демона ([#577](https://github.com/charoiteai/Charoite_audio/issues/577)) ([78feef5](https://github.com/charoiteai/Charoite_audio/commit/78feef592fe2dbe7aaff6943e359ae18cb58376c))
+
+
+### Bug Fixes
+
+* **audio:** конструктор хаба без ввода-вывода и один гвард на проход потребителя (№311) ([#585](https://github.com/charoiteai/Charoite_audio/issues/585)) ([45e530f](https://github.com/charoiteai/Charoite_audio/commit/45e530f))
+* **audio:** потеря любого канала — одно событие с одним липким слоем ([#581](https://github.com/charoiteai/Charoite_audio/issues/581)) ([502c7bf](https://github.com/charoiteai/Charoite_audio/commit/502c7bfc831b4d1ab92eed483980bbc92be88795))
+* **graph:** мёртвые ссылки снимаются по факту графа, доктор видит не-UTF-8 ([#571](https://github.com/charoiteai/Charoite_audio/issues/571)) ([5b18ee4](https://github.com/charoiteai/Charoite_audio/commit/5b18ee45ce92b9d3d0946f82b43908eb0e238034))
+* **graph:** отложенная сущность на повторе получает псевдоним в узле-кандидате ([#574](https://github.com/charoiteai/Charoite_audio/issues/574)) ([6135147](https://github.com/charoiteai/Charoite_audio/commit/6135147bfd10e9b4328c75e4a97ad75c80fcc540))
+* **graph:** папка архива не ссылается на заметку, которой в графе нет ([#573](https://github.com/charoiteai/Charoite_audio/issues/573)) ([3d3f018](https://github.com/charoiteai/Charoite_audio/commit/3d3f018edfbd7ef61d1bce3168645f03f7b9f7d3))
+* **graph:** параллельное ядро и узел-двойник ссылаются друг на друга ([#575](https://github.com/charoiteai/Charoite_audio/issues/575)) ([ccdb6bb](https://github.com/charoiteai/Charoite_audio/commit/ccdb6bb555c8e6e76acd7dbd7c258248529b34bb))
+* **graph:** причина отказа записи — значение, а не текст в чужом модуле ([#572](https://github.com/charoiteai/Charoite_audio/issues/572)) ([d616e30](https://github.com/charoiteai/Charoite_audio/commit/d616e306ce4df29bc8456f5a918e185b07e5739e))
+* **graph:** след автосклейки в шапке узла, вето из узла, писатель через гейт обновления ([#576](https://github.com/charoiteai/Charoite_audio/issues/576)) ([0ca6abf](https://github.com/charoiteai/Charoite_audio/commit/0ca6abf8e3f3165eeced4fcd0b5e7f2fb0dd672f))
+* **graph:** текст с нечитаемыми символами не уезжает в граф ([#569](https://github.com/charoiteai/Charoite_audio/issues/569)) ([ca6c06f](https://github.com/charoiteai/Charoite_audio/commit/ca6c06fd00a8798f0d9d1e1bb013edcba9df9c45))
+* **llm:** аренда модели у клиента — перезапуск сервера щадит живую генерацию (№264) ([#582](https://github.com/charoiteai/Charoite_audio/issues/582)) ([67f4b7c](https://github.com/charoiteai/Charoite_audio/commit/67f4b7c459b8dc7e110fa1c0cd56b3c453fd7393))
+* **memory:** ответ не утверждает, что непрочитанное проверено ([#579](https://github.com/charoiteai/Charoite_audio/issues/579)) ([efe1914](https://github.com/charoiteai/Charoite_audio/commit/efe19142ffd52dec5493944eb0b31f7e52db29ba))
+* **memory:** роль документа при чтении — досье не голосуют и не берут слот, указатели вне индекса (№296) ([#584](https://github.com/charoiteai/Charoite_audio/issues/584)) ([4b2f327](https://github.com/charoiteai/Charoite_audio/commit/4b2f327149d12db1e723d42ac17ca8a03642c30e))
+* **memory:** ссылка ведёт туда, куда написано — ключ связи стал путём ([#580](https://github.com/charoiteai/Charoite_audio/issues/580)) ([c7456c1](https://github.com/charoiteai/Charoite_audio/commit/c7456c101512489ea8fc24153282fbfd63580a33))
+* **memory:** ссылка на слитый узел ведёт к канону, а не к заглушке ([#578](https://github.com/charoiteai/Charoite_audio/issues/578)) ([8c7cf1f](https://github.com/charoiteai/Charoite_audio/commit/8c7cf1f40ae2236060ebd7693c4c6217a33954c1))
+* **minutes:** паспорт производной — владелец и источник решают свежесть, а не «если файла нет» (№309) ([#586](https://github.com/charoiteai/Charoite_audio/issues/586)) ([7155293](https://github.com/charoiteai/Charoite_audio/commit/71552933c91376c24e3083890ecd430d4cccc1bd))
+
 ## [0.81.3](https://github.com/charoiteai/Charoite_audio/compare/v0.81.2...v0.81.3) (2026-09-14)
 
 
