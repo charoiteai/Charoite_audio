@@ -49,68 +49,16 @@ final class SuflerService: ObservableObject {
     /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
     @Published var statusErrorFromDaemon = false   // setter внутренний: пишет SuflerService+Status
 
-    /// Липкие предупреждения про всю встречу — слоями по владельцу (№310).
-    /// Ключ — тема: `channel_loss` от демона (`status` с `sticky` и `topic`),
-    /// `capture` — микрофон не попал в поток ScreenCaptureKit, `notifications`
-    /// — отказ в праве на уведомления. Один `String?` на троих означал, что
-    /// отбой демона (`sticky: false`, канал ожил) снимал и «права на микрофон
-    /// нет», вернуть которое было некому (входной круг DS и GLM по №310).
-    /// Обычные статусы слои не трогают (№228); каждый писатель снимает только
-    /// свой; новый старт чистит все.
+    /// Липкие предупреждения про всю встречу — слоями по владельцу (№310):
+    /// `channel_loss` демона, `capture` захвата, `notifications`. Один `String?`
+    /// на троих давал отбой демона поверх чужого слоя. Приоритет, серьёзность и
+    /// чтение — в `SuflerService+Sticky.swift`; старт чистит все слои.
     @Published private(set) var stickyLayers: [String: String] = [:]
-
-    /// Приоритет слоёв на экране: потеря канала выше фолбэка захвата, тот
-    /// выше подсказки об уведомлениях; неизвестные темы — после известных.
-    /// Явный ранг вместо порядка кейсов: «меньший rawValue выигрывает»
-    /// читается как опечатка (Minor DS входного круга).
-    static let stickyRank: [String: Int] = [StickyTopic.channelLoss: 0, StickyTopic.capture: 1,
-                                            StickyTopic.notifications: 2]
-
-    /// Серьёзность темы: слои-проблемы («собеседников не будет», «права на
-    /// микрофон нет») стоят выше живой строки и красятся красным; слои-справки
-    /// (уведомления выключены) едут хвостом за живой строкой и не красят её.
-    /// Одна политика «слой есть → красный и выше статуса» прятала бы живую
-    /// строку всю встречу ради справки (Important DS выходного круга по №310).
-    /// Неизвестная тема — проблема: писатель липкого предупреждения без своей
-    /// строки здесь считается серьёзным, пока не сказано иное.
-    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications]
-
-    private var orderedLayers: [(key: String, value: String)] {
-        stickyLayers.sorted { a, b in
-            let ra = Self.stickyRank[a.key] ?? 100, rb = Self.stickyRank[b.key] ?? 100
-            return ra != rb ? ra < rb : a.key < b.key
-        }
-    }
-
-    /// Слои-проблемы одной строкой по приоритету через « · ». Показывать
-    /// только верхний означало бы молчать всю встречу о втором факте («ваших
-    /// реплик в записи нет» под «собеседников не будет») — критика DS входного
-    /// круга по №310.
-    var stickyStatus: String? {
-        let problems = orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }
-        return problems.isEmpty ? nil : problems.map(\.value).joined(separator: " · ")
-    }
-
-    /// Слои-справки — хвостом к живой строке, не вместо неё.
-    var stickyInfo: String? {
-        let infos = orderedLayers.filter { Self.stickyInfoTopics.contains($0.key) }
-        return infos.isEmpty ? nil : infos.map(\.value).joined(separator: " · ")
-    }
-
-    /// Сколько слоёв-проблем живо — вид даёт им больше строк, чем одной
-    /// (Important GLM выходного круга: два слоя обрезались двумя строками).
-    var stickyProblemCount: Int { orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }.count }
 
     /// Поставить или снять липкий слой. Снятие адресуется теме: кто поставил,
     /// тот и снимает (№232 для канала, №310 для остальных).
     func setSticky(_ topic: String, _ text: String?) {
         if let text { stickyLayers[topic] = text } else { stickyLayers.removeValue(forKey: topic) }
-    }
-
-    enum StickyTopic {
-        static let channelLoss = "channel_loss"      // тема демона по умолчанию (демон 0.82 без topic)
-        static let capture = "capture"
-        static let notifications = "notifications"
     }
 
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
