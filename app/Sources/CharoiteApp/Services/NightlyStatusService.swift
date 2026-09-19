@@ -140,8 +140,16 @@ final class NightlyStatusService: ObservableObject {
     static let shared = NightlyStatusService()
 
     @Published private(set) var status = NightlyStatus(state: .never)
+    /// Наш launchd-агент прописан. `.never` без агента — «не настроено» (свежая
+    /// установка), `.never` с агентом — ночь не отработала ни разу при живом
+    /// расписании, и это уже проблема (Important DS выходного круга по №139).
+    @Published private(set) var agentConfigured = false
 
-    private init() { refresh() }
+    /// В `init` диска не читаем: иконка меню-бара наблюдает сервис и создаёт
+    /// его на первом кадре, а `refresh()` перебирает `~/Library/LaunchAgents`
+    /// и читает каждый plist на главном потоке (долг №267). Первое чтение и
+    /// каденцию задаёт один планировщик владельцев (`HealthClock`), не сервис.
+    private init() {}
 
     static var statusURL: URL {
         AppSettings.charoiteRoot.appendingPathComponent("logs/nightly.json")
@@ -154,6 +162,7 @@ final class NightlyStatusService: ObservableObject {
         let agents = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
         let script = NightlyStatus.agentScriptPath(inAgentsAt: agents)
+        agentConfigured = !(script ?? "").isEmpty
         if NightlyStatus.agentPointsElsewhere(agentScript: script,
                                               root: AppSettings.charoiteRoot) {
             status = NightlyStatus(state: .foreignScript(path: script ?? ""))
@@ -170,8 +179,12 @@ final class NightlyStatusService: ObservableObject {
 
     // MARK: - Как это выглядит на «Сегодня»
 
-    var title: String {
-        switch status.state {
+    var title: String { Self.title(for: status.state) }
+
+    /// Заголовок состояния — чистая функция: её же читает свёртка здоровья
+    /// (`HealthRollup`), не заводя второй словарь слов о ночи.
+    nonisolated static func title(for state: NightlyState) -> String {
+        switch state {
         case .running:
             return L.t("Ночная обработка идёт", "Nightly pass is running", "夜间处理进行中")
         case .ok:
@@ -235,15 +248,6 @@ final class NightlyStatusService: ObservableObject {
             return L.t("launchd запускает \(path) — граф правит другая копия кода",
                        "launchd runs \(path) — the graph is edited by another copy of the code",
                        "launchd 运行的是 \(path) —— 图谱正被另一份代码修改")
-        }
-    }
-
-    /// Показывать ли строку вообще. Успешный прогон — норма, о ней достаточно
-    /// одной спокойной строки; всё остальное требует внимания.
-    var needsAttention: Bool {
-        switch status.state {
-        case .ok, .running: return false
-        case .failed, .slept, .interrupted, .stale, .never, .foreignScript: return true
         }
     }
 

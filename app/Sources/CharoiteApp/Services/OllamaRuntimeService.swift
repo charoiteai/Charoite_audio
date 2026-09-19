@@ -17,6 +17,11 @@ import Foundation
 /// Поэтому приложение само отвечает на три вопроса: установлена ли Ollama,
 /// запущена ли она, и если нет — что нажать.
 enum OllamaRuntime: Equatable {
+    /// Пробы ещё не было: до №139 дефолтом стояло `.running`, и единственная
+    /// всегда видимая поверхность (иконка меню-бара) утверждала заведомо
+    /// неверный факт до первого открытия меню (Critical DS и GLM выходного
+    /// круга). Неизвестное — не сигнал и не «работает».
+    case unknown
     /// Порт отвечает — рантайм готов.
     case running
     /// Бинарь есть, сервер молчит. Знаем, чем именно поднимать.
@@ -36,7 +41,7 @@ enum OllamaRuntime: Equatable {
 final class OllamaRuntimeService: ObservableObject {
     static let shared = OllamaRuntimeService()
 
-    @Published private(set) var state: OllamaRuntime = .running
+    @Published private(set) var state: OllamaRuntime = .unknown
     @Published private(set) var busy: String?
     @Published private(set) var failure: String?
 
@@ -67,7 +72,7 @@ final class OllamaRuntimeService: ObservableObject {
     /// Что написать на кнопке. Пустая строка — кнопки нет.
     nonisolated static func actionTitle(for state: OllamaRuntime) -> String {
         switch state {
-        case .running:
+        case .running, .unknown:
             return ""
         case .installedNotRunning:
             return L.t("Запустить", "Start", "启动")
@@ -79,6 +84,10 @@ final class OllamaRuntimeService: ObservableObject {
     /// Объяснение состояния — то, что человек читает до нажатия.
     nonisolated static func explanation(for state: OllamaRuntime) -> String {
         switch state {
+        case .unknown:
+            return L.t("Проверяю локальный движок моделей…",
+                       "Checking the local model runtime…",
+                       "正在检查本地模型运行时…")
         case .running:
             return L.t("Локальный движок моделей работает",
                        "The local model runtime is running",
@@ -100,8 +109,17 @@ final class OllamaRuntimeService: ObservableObject {
 
     // MARK: - Действия
 
+    /// Шов пробы: тесты подменяют его и проверяют поведение «nil → state не
+    /// изменился» без живого порта (Minor DS круга 3 по №139).
+    static var probe: () async -> Bool? = { await responds() }
+
     func refresh() async {
-        let responding = await Self.responds()
+        // проба не состоялась (задача отменена — вью меню закрылась раньше ответа;
+        // таймаут при занятой генерацией модели; обрыв соединения): факт неизвестен,
+        // прежнее состояние не трогаем. `try?` превращал любую ошибку в «порт молчит»,
+        // и иконка утверждала «не запущен» при живом движке до следующего тика
+        // (Critical DS / Important GLM круга 2, Important DS и GLM круга 3 по №139)
+        guard let responding = await Self.probe(), !Task.isCancelled else { return }
         let brew = Self.brewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         state = Self.decide(responding: responding,
                             brewBinary: brew,
@@ -115,7 +133,7 @@ final class OllamaRuntimeService: ObservableObject {
         guard busy == nil else { return }
         failure = nil
         switch state {
-        case .running:
+        case .running, .unknown:
             return
         case .installedNotRunning(.brewService):
             busy = L.t("запускаю…", "starting…", "启动中…")
@@ -138,7 +156,7 @@ final class OllamaRuntimeService: ObservableObject {
         // Сервер поднимается не мгновенно: ждём ответа порта, а не факта
         // запуска процесса — иначе скажем «готово» раньше времени.
         for _ in 0..<20 {
-            if await Self.responds() { break }
+            if await Self.responds() == true { break }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         busy = nil
@@ -152,17 +170,32 @@ final class OllamaRuntimeService: ObservableObject {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    private static func responds() async -> Bool {
+    /// Три исхода, не два: ответил (true) / порт точно молчит (false) / проба не
+    /// состоялась (nil). «Молчит» — только отказ соединения: слушателя на порту
+    /// нет. Отмена, таймаут (движок занят генерацией 35b и не успевает за 3 с),
+    /// обрыв соединения и прочие транспортные сбои — неизвестность, не факт:
+    /// иначе иконка предлагала бы «Запустить» поверх живого движка — второй
+    /// экземпляр на порту 11434 (№118).
+    private static func responds() async -> Bool? {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/tags") else { return false }
         let cfg = URLSessionConfiguration.ephemeral
         // Локальный адрес мимо системного прокси: 13.08 прокси в системных
         // настройках отправлял в туннель даже обращения к 127.0.0.1.
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 3
-        guard let (_, response) = try? await URLSession(configuration: cfg).data(from: url) else {
-            return false
+        do {
+            let (_, response) = try await URLSession(configuration: cfg).data(from: url)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch let error as URLError {
+            return Self.refused(error.code) ? false : nil
+        } catch {
+            return nil
         }
-        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Коды, означающие «на порту никто не слушает»; всё остальное — неизвестность.
+    nonisolated static func refused(_ code: URLError.Code) -> Bool {
+        code == .cannotConnectToHost || code == .cannotFindHost
     }
 
     private func run(_ tool: String, _ args: [String]) async {

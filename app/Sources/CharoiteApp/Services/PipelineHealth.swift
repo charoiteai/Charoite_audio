@@ -55,6 +55,25 @@ struct PipelineStageProbe: Equatable {
     /// `stt_progress` замерзает вместе с STT — ровно тогда, когда отказ
     /// диска важнее всего (круг-1 GLM, I1). nil — демон без поля.
     let recordingOK: Bool?
+    /// Потребитель аудио (`_pump`): он пишет блоки каждого канала в файл и в
+    /// STT-буфер, поэтому мёртвый насос — это остановленная запись, а не
+    /// «гибнет потребитель». Оба поля приезжали в каждом hb с №311 и умирали
+    /// на границе декодера (Critical DS входного круга по №139; №313).
+    /// nil — демон без поля.
+    let pumpAlive: Bool?
+    /// Проходов потребителя, упавших подряд, на момент hb (0 — норма). Счётчик
+    /// общий для блока канала и сторожа — потерю аудио по нему не утверждать.
+    let pumpFailures: Int?
+
+    init(stage: String, stageAgeSeconds: TimeInterval, stalled: Bool, recordingOK: Bool?,
+         pumpAlive: Bool? = nil, pumpFailures: Int? = nil) {
+        self.stage = stage
+        self.stageAgeSeconds = stageAgeSeconds
+        self.stalled = stalled
+        self.recordingOK = recordingOK
+        self.pumpAlive = pumpAlive
+        self.pumpFailures = pumpFailures
+    }
 
     static func decode(_ object: [String: Any]) -> PipelineStageProbe? {
         guard let stage = object["stt_stage"] as? String,
@@ -64,18 +83,29 @@ struct PipelineStageProbe: Equatable {
         return PipelineStageProbe(stage: stage,
                                   stageAgeSeconds: age,
                                   stalled: stalled,
-                                  recordingOK: object["recording_ok"] as? Bool)
+                                  recordingOK: object["recording_ok"] as? Bool,
+                                  pumpAlive: object["pump_alive"] as? Bool,
+                                  pumpFailures: nonnegativeNumber(object["pump_failures"]).map { Int($0) })
     }
 }
 
 enum PipelineHealthProblem: Equatable {
     case recordingUnavailable(channels: [String])
+    /// Поток-потребитель аудио остановился: блоки не доходят ни до файла, ни до
+    /// STT — запись стоит, хотя захват жив (№313).
+    case pumpDead
     case stalled(stage: String, seconds: TimeInterval)
+    /// Проходы потребителя падают подряд: часть блоков могла не дойти до файла.
+    case pumpFailing(count: Int)
     case lagging(backlogSeconds: TimeInterval)
 
+    /// Красный — только «данные гибнут»: отказ диска и мёртвый насос. Зависший
+    /// STT, сбои проходов и отставание — жёлтые: аудио на диске есть.
     var isCritical: Bool {
-        if case .recordingUnavailable = self { return true }
-        return false
+        switch self {
+        case .recordingUnavailable, .pumpDead: return true
+        case .stalled, .pumpFailing, .lagging: return false
+        }
     }
 }
 
@@ -91,6 +121,19 @@ enum PipelineHealthPresentation {
                 "⛔️ Аудио не пишется на диск\(scope) — освободите место",
                 "⛔️ Audio is not being saved\(scope) — free disk space",
                 "⛔️ 音频未写入磁盘\(scope)——请释放磁盘空间")
+        case .pumpDead:
+            return L.t(
+                "⛔️ Поток записи остановился — аудио не пишется, перезапустите запись",
+                "⛔️ The recording thread stopped — audio is not being saved, restart the recording",
+                "⛔️ 录音线程已停止——音频未写入，请重新开始录音")
+        case .pumpFailing(let count):
+            // счётчик демона считает любой упавший проход потребителя — и блок
+            // канала, и сторож; о потере аудио говорит только `recording_ok`,
+            // поэтому здесь факт владельца, не обещание потери (Important DS)
+            return L.t(
+                "⚠️ Сбои потока записи подряд: \(count) — проверьте logs/",
+                "⚠️ Recording thread failures in a row: \(count) — check logs/",
+                "⚠️ 录音线程连续失败 \(count) 次——请查看 logs/")
         case .stalled(let stage, let seconds):
             let age = Int(seconds.rounded(.up))
             let title = stageTitle(stage)
@@ -156,9 +199,17 @@ struct PipelineHealthMonitor: Equatable {
             return .recordingUnavailable(
                 channels: progress?.failedRecordingChannels ?? [])
         }
+        // мёртвый насос — данные гибнут: выше зависшего STT; сбои проходов —
+        // предупреждение, выше отставания (№313; ранг прибит тестом)
+        if let stageProbe, stageProbe.pumpAlive == false {
+            return .pumpDead
+        }
         if let stageProbe, stageProbe.stalled {
             return .stalled(stage: stageProbe.stage,
                             seconds: stageProbe.stageAgeSeconds)
+        }
+        if let stageProbe, let failures = stageProbe.pumpFailures, failures > 0 {
+            return .pumpFailing(count: failures)
         }
         if let progress, progress.state == .lagging {
             return .lagging(backlogSeconds: progress.backlogSeconds)
