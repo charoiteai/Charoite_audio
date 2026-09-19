@@ -21,6 +21,8 @@ import fcntl
 import hashlib
 import live_sidecar
 import json
+import meeting_source
+import channel_trace
 import os
 import pathlib
 import re
@@ -758,6 +760,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         body.append(m.group(0).lstrip("\n"))
 
     final_text = "\n".join(body).rstrip() + "\n"
+    final_text = _with_recording_summary(live, final_text)
     # Канон написаний из графа (№149): «Гельского» → «Вельского»,
     # «крам» → «КРАМ» — только по подтверждённым алиасам узлов; похожие
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
@@ -930,6 +933,28 @@ def canonize_file(path: pathlib.Path, cfg: dict) -> None:
         log(f"лексикон в минутках: файл изменился под рукой (попытка {attempt})")
 
 
+def _with_recording_summary(live: pathlib.Path, final_text: str) -> str:
+    """Итог по эпизодам канала — из сайдкара, не только от демона на стопе
+    (№316): при SIGKILL демона строки итога нет, а события в сайдкаре — все.
+    Та же строка, что писал бы демон (`channel_trace.summary_of`), в хвост
+    «Ко-мышления» через владельца формата хвоста (`transcript.append_note`):
+    без секции строка ушла бы в речь и дублировалась на каждом прогоне
+    (Critical DS входного круга). Уже есть — не дублировать; неоднозначный
+    сайдкар (две встречи в минуту) — событий нет, и об этом говорим."""
+    events = channel_trace.events_of(live)
+    note = channel_trace.summary_of(events)
+    if not note:
+        if live_sidecar.sidecar_for(live) is None:
+            log("сайдкар неоднозначен — итог по каналам не восстановлен")
+        return final_text
+    if channel_trace.SUMMARY_MARK in final_text:
+        return final_text
+    at = channel_trace.last_event_at(events)
+    stamp = channel_trace._hm(at) if at else ""
+    log("итог по каналам записи восстановлен из сайдкара")
+    return transcript.append_note(final_text, f"{stamp} {note}".strip())
+
+
 def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     """Записать финальную стенограмму, сохранив то, что было до неё.
 
@@ -1005,8 +1030,11 @@ def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: st
         return
     try:
         _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+        # источник — речь + оговорка о записи, тем же объектом, что читает
+        # fresh-проверка в finalize_minutes: писатель и читатель физически не
+        # могут разъехаться (Critical DS / Important GLM входного круга по №317)
         if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256",
-                                                          _sha(_speech(final_text))):
+                                                          meeting_source.of(live, final_text).sha()):
             # Без этого хеша minutes_names сочтёт минутки живыми и следующая
             # перештамповка возьмёт имена live.json на нумерацию пересборки
             # (DS I3 по #551): сказать громко, пока минутки нетронуты
@@ -1071,9 +1099,10 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # создании с нуля: существующий черновик сам доказывает, что встреча
     # короткой не была, а финал бывает короче живого текста (эхо-фильтр
     # микрофона; GLM Minor-5).
-    speech = _speech(final_text)
+    source = meeting_source.of(live, final_text)
+    speech = source.speech
     if current is not None and live_sidecar.valid_sha(
-            meta.get("minutes_source_sha256") if isinstance(meta, dict) else None) == _sha(speech):
+            meta.get("minutes_source_sha256") if isinstance(meta, dict) else None) == source.sha():
         # машинные минутки уже собраны по этой самой речи: повторный клик без
         # правок не должен перегенерировать протокол — обещание стояло в
         # комментарии при записи хеша, а читал хеш только путь правленой
@@ -1092,7 +1121,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     _yield_to_live("минутки", cap=600)
     t0 = time.monotonic()
     try:
-        doc = "".join(LLM(cfg).minutes(speech)).strip()
+        doc = "".join(LLM(cfg).minutes(speech, recording_note=source.recording_note)).strip()
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
@@ -1101,7 +1130,11 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
     # стенограммой и чекбоксы в формат окна «Задачи».
-    doc = action_items.normalize(fact_check.annotate(doc, speech))
+    # сверка фактов — по тому же множеству, что видела модель (речь + оговорка):
+    # иначе «всего 140 мин» из оговорки уходило бы в сноску как выдумка (DS I5)
+    doc = action_items.normalize(fact_check.annotate(doc, source.canon()))
+    # строка о неполной записи — механически, не поручением модели (критика GLM)
+    doc = meeting_source.with_note(doc, source.recording_note)
     # Поручение тому, кого на встрече не было, — пометка, не задача (05.09:
     # минутки приписали поручение упомянутому, а не присутствующему).
     # Владелец — одним написанием ДО пометки (порядок — контракт функции):

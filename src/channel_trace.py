@@ -33,6 +33,7 @@ from typing import Callable, NamedTuple
 import live_sidecar
 
 SIDECAR_KEY = "channel_events"
+SUMMARY_MARK = "📋 запись неполная"   # начало строки итога; все, кто ищет её в тексте, берут отсюда
 LINES_MAX = 6            # ЭПИЗОДОВ на канал в хвост/нить за запись; дальше — итог
 #                          (счётчик по событиям съедал лимит за три флап-цикла —
 #                          Minor GLM и DS выходного круга)
@@ -153,56 +154,11 @@ class ChannelTrace:
                 pass
 
     def episodes(self) -> list[Episode]:
-        """Эпизоды из событий: lost открывает, back/end закрывают, gap — сразу
-        закрытый. Смена фазы того же эпизода событием не является (хаб не эмитит).
-        Окна одного канала, наложившиеся друг на друга (дыра, отсчитанная от
-        одного и того же настоящего кадра несколькими gap), сливаются в одно —
-        иначе сумма считала бы одну тишину дважды (Important DS выходного круга)."""
-        out: list[Episode] = []
-        open_: dict[str, int] = {}
-        for e in self.events:
-            label, kind = e["label"], e["kind"]
-            if kind == "lost":
-                if label in open_:
-                    continue
-                open_[label] = len(out)
-                # граница — как в событии; None — «время неизвестно», а не момент
-                # крика (Important DS круга 2: рендер уже отказался его подставлять)
-                out.append(Episode(label, e["stopped_at"], None, False))
-            elif kind in ("back", "end"):
-                i = open_.pop(label, None)
-                if i is None:
-                    out.append(Episode(label, e["stopped_at"], e["at"], kind == "back"))
-                else:
-                    out[i] = out[i]._replace(end=e["at"], revived=kind == "back")
-            elif kind == "gap":
-                out.append(Episode(label, e["stopped_at"], e["at"], True))
-        return _merge_windows(out)
+        return episodes_of(self.events)
 
     def summary(self) -> str | None:
-        """Одна строка итога: интервалы без канала и их сумма; открытый эпизод
-        — «до конца записи». Нет эпизодов — None."""
-        eps = self.episodes()
-        if not eps:
-            return None
-        parts = []
-        for label in dict.fromkeys(e.label for e in eps):
-            mine = [e for e in eps if e.label == label]
-            spans, total, unknown = [], 0.0, False
-            for ep in mine:
-                if ep.start is not None and ep.end is not None:
-                    total += max(0.0, ep.end - ep.start)
-                else:
-                    unknown = True            # граница неизвестна — сумму не выдумываем
-                spans.append(f"{_hm(ep.start)}–{_hm(ep.end) if ep.end is not None else 'до конца записи'}")
-            shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
-            total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
-            parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
-        text = "📋 запись неполная: " + "; ".join(parts)
-        if self.persist_failed:
-            # слова читателя протокола, не кодовой базы (Minor GLM круга 2)
-            text += " · пометки о пропусках могли сохраниться не полностью"
-        return text
+        """Одна строка итога по накопленным событиям (см. `summary_of`)."""
+        return summary_of(self.events)
 
     def close(self) -> str | None:
         """Итог при остановке — в хвост и нить, один раз. Зовётся из демона ДО
@@ -231,3 +187,89 @@ def _merge_windows(eps: list[Episode]) -> list[Episode]:
         last[ep.label] = len(out)
         out.append(ep)
     return out
+
+
+def episodes_of(events: list[dict]) -> list[Episode]:
+    """Эпизоды из событий: lost открывает, back/end закрывают, gap — сразу
+    закрытый. Смена фазы того же эпизода событием не является (хаб не эмитит).
+    Окна одного канала, наложившиеся друг на друга (дыра, отсчитанная от
+    одного и того же настоящего кадра несколькими gap), сливаются в одно —
+    иначе сумма считала бы одну тишину дважды (Important DS выходного круга)."""
+    out: list[Episode] = []
+    open_: dict[str, int] = {}
+    for e in events:
+        label, kind = e.get("label", "?"), e.get("kind")
+        if kind == "lost":
+            if label in open_:
+                continue
+            open_[label] = len(out)
+            # граница — как в событии; None — «время неизвестно», а не момент
+            # крика (Important DS круга 2: рендер уже отказался его подставлять)
+            out.append(Episode(label, e.get("stopped_at"), None, False))
+        elif kind in ("back", "end"):
+            i = open_.pop(label, None)
+            if i is None:
+                out.append(Episode(label, e.get("stopped_at"), e.get("at"), kind == "back"))
+            else:
+                out[i] = out[i]._replace(end=e.get("at"), revived=kind == "back")
+        elif kind == "gap":
+            out.append(Episode(label, e.get("stopped_at"), e.get("at"), True))
+    return _merge_windows(out)
+
+
+def summary_of(events: list[dict]) -> str | None:
+    """Одна строка итога по списку событий: интервалы без канала и их сумма;
+    открытый эпизод — «до конца записи». Нет эпизодов — None. Единственный
+    рендер итога: демон на стопе, пересборка из сайдкара (№316) и промпты
+    производных (№317) получают одну и ту же строку. Ничего из памяти
+    процесса (флаг отказа записи) сюда не входит: документ обязан
+    восстанавливаться из сайдкара целиком (Important DS входного круга)."""
+    eps = episodes_of(events)
+    if not eps:
+        return None
+    parts = []
+    for label in dict.fromkeys(e.label for e in eps):
+        mine = [e for e in eps if e.label == label]
+        spans, total, unknown = [], 0.0, False
+        for ep in mine:
+            if ep.start is not None and ep.end is not None:
+                total += max(0.0, ep.end - ep.start)
+            else:
+                unknown = True            # граница неизвестна — сумму не выдумываем
+            spans.append(f"{_hm(ep.start)}–{_hm(ep.end) if ep.end is not None else 'до конца записи'}")
+        shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
+        total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
+        parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
+    return SUMMARY_MARK + ": " + "; ".join(parts)
+
+
+def events_of(live: pathlib.Path, bare: str | None = None) -> list[dict]:
+    """События канала из сайдкара стенограммы. Писатель `_persist` кладёт
+    список JSON-СТРОКОЙ (контракт `remember` — строковые значения), читатель
+    обязан это знать — пара писатель/читатель в одном модуле (Important GLM
+    входного круга по №316). Мусор, чужой тип, неоднозначный сайдкар → []:
+    нет событий — нет оговорки, поведение как до №234."""
+    try:
+        meta = live_sidecar.read(live, bare) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    raw = meta.get(SIDECAR_KEY)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list) or not all(isinstance(e, dict) for e in raw):
+        return []
+    return raw
+
+
+def recording_note(live: pathlib.Path, bare: str | None = None) -> str | None:
+    """Оговорка о неполной записи по сайдкару — та же строка, что демон пишет
+    на стопе; None, если событий нет."""
+    return summary_of(events_of(live, bare))
+
+
+def last_event_at(events: list[dict]) -> float | None:
+    ats = [e.get("at") for e in events if isinstance(e.get("at"), (int, float))]
+    return max(ats) if ats else None

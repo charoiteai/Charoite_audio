@@ -49,6 +49,7 @@ from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import channel_trace  # noqa: E402
 import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 import privacy  # noqa: E402
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
@@ -2706,6 +2707,9 @@ def main():
             # что у финальных минуток (_fit) и debrief_excerpt.
             if len(full) > 18_000:
                 full = full[:3_000] + "\n\n[… середина опущена …]\n\n" + full[-14_000:]
+            # оговорка о неполной записи — блоком ПОСЛЕ обрезки окна, снаружи
+            # стенограммы; та же строка потом ляжет в черновик механически (№317)
+            note = trace.summary()
             try:
                 with hint_slot("черновик минуток", timeout=1.0, quiet=True) as got:
                     if not got:
@@ -2716,7 +2720,8 @@ def main():
                     out = _collect(
                       llm.stream(
                         f"Стенограмма встречи (идёт, реплики по спикерам):\n\n{full}\n\n"
-                        "Обнови ЧЕРНОВИК минуток (markdown): участники (из контекста), "
+                        + llm.recording_block(note)
+                        + "Обнови ЧЕРНОВИК минуток (markdown): участники (из контекста), "
                         "темы, решения, поручения списком «- **Кто** — что — срок», "
                         "открытые вопросы. Только факты.",
                         model=cfg["sufler"].get("think_model", llm.small),
@@ -2743,6 +2748,7 @@ def main():
                     out = action_items.finalize_assignees(
                         out, action_items.participants_set(tr.participants(), owner=owner_name),
                         owner_name, lang=llm.lang)
+                    out = meeting_source.with_note(out, note)   # строка итога — не поручение модели
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
                     # если за это время человек нажал «Протокол», финальные
@@ -2838,8 +2844,11 @@ def main():
             manual_evt.clear()
             chunks: list[str] = []
             ok = True
+            # источник = речь + оговорка о записи: оговорка уходит в промпт
+            # отдельным блоком после свёртки, в документ — строкой (№317)
+            source = meeting_source.live(tr.full() or "(пусто)", trace.summary())
             try:
-                for tok in llm.minutes(tr.full() or "(пусто)"):
+                for tok in llm.minutes(source.speech, recording_note=source.recording_note):
                     chunks.append(tok)
                     emit({"type": "hint", "text": tok, "manual": True})
             except Exception as e:  # noqa: BLE001
@@ -2855,7 +2864,9 @@ def main():
                 mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
                 # сверка номеров задач и дат со стенограммой: выдуманный
                 # номер внешне неотличим от настоящего, но в тексте его нет
-                doc = fact_check.annotate("".join(chunks), tr.full())
+                # сверка — по речи И оговорке: минуты пропажи канала, взятые
+                # моделью из блока о записи, не должны помечаться как выдуманные
+                doc = fact_check.annotate("".join(chunks), source.canon())
                 # Поручения — в формат, который видит окно «Задачи». Модель
                 # формулирует их правильно (имя, суть, срок), но заворачивает
                 # в свой markdown и теряет скобки чекбокса: на рабочем графе
@@ -2865,6 +2876,7 @@ def main():
                 doc = action_items.finalize_assignees(          # канон владельца → пометка (№188)
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
                     owner_name, lang=llm.lang)
+                doc = meeting_source.with_note(doc, source.recording_note)
                 # Через временное имя: обрыв посреди write_text оставлял бы
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)

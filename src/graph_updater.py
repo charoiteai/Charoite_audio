@@ -26,6 +26,7 @@ import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
@@ -2780,9 +2781,13 @@ def main():
         # запись под гейтом (Important GLM 2).
         dpath = meeting_stamp.derivative_path(tpath, "debrief", graph)
         import transcript as transcript_mod2  # локально, как выше: модуль документов тяжёлым не считается, но шапку не трогаем
-        # хеш — от файла стенограммы, не от `context` (туда дописаны минутки):
-        # иначе паспорт разбора не совпал бы с тем, что считает retro_fill
-        speech_sha = live_sidecar.sha(transcript_mod2.speech_of(tpath.read_text(encoding="utf-8")))
+        # источник — речь + оговорка о записи, одним объектом с retro_fill и
+        # паспортом (№317): не `context` (туда дописаны минутки) и не весь файл
+        # (хвост «Ко-мышления» — мысли модели, а не конец речи)
+        file_text = tpath.read_text(encoding="utf-8")
+        source = meeting_source.of(tpath, file_text)
+        speech_sha = source.sha()
+        cothinking = transcript_mod2.notes_of(file_text)[-40:]
         d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", speech_sha)
         if not live_sidecar.wants_build(d_state, live_sidecar.POLICY_LIVE):
             # сознательный пропуск, не сбой: строка говорит «оставлен», а не «не удался»
@@ -2800,11 +2805,22 @@ def main():
         # Память графа — только чтобы узнавать имена, системы и термины: две
         # прошлые заметки в промпте давали разбору чужие рекомендации
         # («повестка 10:33» в разборе встречи 15:33 — ревизия L4 11.09, №241)
-        debrief = LLM(cfg).complete(
+        llm_client = LLM(cfg)
+        minutes_p2 = tpath.with_name(tpath.stem + "_minutes.md")
+        minutes_block = (f"[МИНУТКИ]\n{minutes_p2.read_text(encoding='utf-8')}\n\n"
+                         if minutes_p2.exists() else "")
+        # Порядок блоков: речь (окно от КОНЦА РЕЧИ, не файла) → живые тезисы
+        # контура отдельным блоком (мысли модели, не речь; DS: 📌 КТ разбору
+        # полезны) → минутки → оговорка о записи после всех обрезок (№317)
+        debrief = llm_client.complete(
             (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
              f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(context)}\n\n"
-            "Составь разбор строго по разделам:\n"
+            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech)}\n\n"
+            + (("<ко_мышление>\n" + "\n".join(cothinking) + "\n</ко_мышление>\n"
+                "Это заметки модели по ходу встречи, не речь участников.\n\n") if cothinking else "")
+            + minutes_block
+            + llm_client.recording_block(source.recording_note)
+            + "Составь разбор строго по разделам:\n"
             "# Разбор встречи\n"
             "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
             "## Задачи\n(список «- **Кто** — что — срок»; только то, что прозвучало на этой встрече)\n"

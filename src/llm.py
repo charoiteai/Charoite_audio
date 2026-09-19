@@ -120,6 +120,23 @@ STREAM_TIMEOUT = (10.0, 120.0)
 #: модели или медленной машине молчит дольше двух минут — им прежний потолок
 #: (DS r1 критика / GLM r1 M5 по #558).
 DOC_STREAM_TIMEOUT = (10.0, 300.0)
+
+# Оговорка о неполной записи — факт о ЗАПИСИ, не речь: блок снаружи тегов
+# стенограммы, ПОСЛЕ свёртки `_fit` и любой обрезки (иначе уедет в сводку
+# части или отброшенную середину), с правилом «не цитировать как сказанное»
+# (№317). Формулировки промпта живут здесь, рядом с остальными; данные (текст
+# оговорки) отдаёт channel_trace (Important DS входного круга).
+RECORDING_BLOCK = {
+    "ru": ("<о_записи>\n{note}\n</о_записи>\n"
+           "Это факт о записи, не речь участников: не цитируй его как сказанное; "
+           "молчание пропавшего канала не толкуй как согласие или отсутствие возражений.\n\n"),
+    "en": ("<recording>\n{note}\n</recording>\n"
+           "This is a fact about the recording, not a participant's words: never quote it as speech; "
+           "do not read the silence of a lost channel as agreement or absence of objections.\n\n"),
+    "zh": ("<recording>\n{note}\n</recording>\n"
+           "这是关于录音本身的事实，不是参会者的发言：不要把它当作有人说过的话引用；"
+           "丢失通道的沉默不能理解为同意或没有异议。\n\n"),
+}
 #: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
 CLOUD_FIRST_TOKEN = 30.0
 #: Во сколько раз терпеливее к шлюзу, который шлёт keepalive: он
@@ -1247,12 +1264,21 @@ class LLM:
         half = limit // 2
         return transcript[:half] + "\n\n[… середина встречи опущена …]\n\n" + transcript[-half:]
 
-    def minutes(self, transcript: str) -> Iterator[str]:
+    def recording_block(self, note: str | None) -> str:
+        """Блок оговорки для промпта на языке модели; пусто, если оговорки нет.
+        Словарь — на уровне модуля: подделки клиента в тестах берут этот метод
+        как есть, и через `self`/`LLM` до него не дотянуться."""
+        if not note:
+            return ""
+        return RECORDING_BLOCK.get(self.lang, RECORDING_BLOCK["ru"]).format(note=note)
+
+    def minutes(self, transcript: str, recording_note: str | None = None) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
         transcript = self._fit(transcript)
+        block = self.recording_block(recording_note)   # после _fit — свёртка его не трогает
         if self.lang == "zh":
             return self._doc_stream(
-                f"<transcript>\n{transcript}\n</transcript>\n\n"
+                f"<transcript>\n{transcript}\n</transcript>\n\n" + block +
                 "按以下模板用 markdown 写会议纪要：\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
                    "# 会议纪要\n"
@@ -1275,7 +1301,7 @@ class LLM:
             )
         if self.lang == "en":
             return self._doc_stream(
-                f"<transcript>\n{transcript}\n</transcript>\n\n"
+                f"<transcript>\n{transcript}\n</transcript>\n\n" + block +
                 "Write meeting minutes in markdown using this template:\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
                    "# Meeting minutes\n"
@@ -1301,7 +1327,7 @@ class LLM:
         return self._doc_stream(
             # Данные отделены тегами от инструкций, правила — позитивные
             # («пиши так»), а не отрицания: qwen следует им заметно лучше
-            f"<стенограмма>\n{transcript}\n</стенограмма>\n\n"
+            f"<стенограмма>\n{transcript}\n</стенограмма>\n\n" + block +
             "Составь минутки встречи в markdown по шаблону:\n"
             + (self.minutes_template + "\n\n" if self.minutes_template else
                "# Минутки встречи\n"

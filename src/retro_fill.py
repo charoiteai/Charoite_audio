@@ -18,9 +18,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
+import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
 import safe_write  # noqa: E402
-import transcript  # noqa: E402
 from meeting_archive import archive_meeting, cothinking_notes  # noqa: E402
 from meeting_processing import find_final_transcript  # noqa: E402
 
@@ -59,10 +59,13 @@ THESES_PROMPT = (
 )
 
 
-def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
+def gen(cfg: dict, system: str, transcript: str, task: str, note: str | None = None) -> str:
+    """Один вызов модели по речи; оговорка о записи — блоком ПОСЛЕ обрезки
+    речи, снаружи её (№317)."""
     try:
-        return LLM(cfg).complete(
-            f"Стенограмма встречи:\n\n{transcript[:24000]}\n\n{task}",
+        client = LLM(cfg)
+        return client.complete(
+            f"Стенограмма встречи:\n\n{transcript[:24000]}\n\n" + client.recording_block(note) + task,
             system=system, model=cfg["llm"]["model"], think=False,
             temperature=0.3, num_ctx=16384, timeout=900)
     except LLMHTTPError as e:
@@ -107,7 +110,8 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     stamp = meeting_stamp.graph_key(tdir, f.stem, graph)
     slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
     text = f.read_text(encoding="utf-8")
-    speech_sha = live_sidecar.sha(transcript.speech_of(text))
+    source = meeting_source.of(f, text, bare)          # речь + оговорка о записи (№317)
+    speech_sha = source.sha()
     meta = live_sidecar.read(f) or {}
     made: list[str] = []
     skipped: list[str] = []
@@ -128,7 +132,8 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     state = live_sidecar.derivative_state(dpath, meta, "debrief", speech_sha)
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                       "Не выдумывай факты.", transcript.speech_of(text), DEBRIEF_PROMPT)
+                       "Не выдумывай факты.", source.speech, DEBRIEF_PROMPT, note=source.recording_note)
+        out = meeting_source.with_note(out, source.recording_note) if out else out
         _built(made, skipped, "разбор", out,
                lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", speech_sha))
     else:
@@ -146,7 +151,7 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
             state = live_sidecar.derivative_state(tpath, meta, "theses", speech_sha)
             if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
                 out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
-                          transcript.speech_of(text), THESES_PROMPT)
+                          source.speech, THESES_PROMPT, note=source.recording_note)
                 _built(made, skipped, "тезисы", out,
                        lambda: _write_derivative(f, tpath, "theses",
                                                  "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
