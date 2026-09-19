@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+from typing import NamedTuple
 
 import channel_trace
 import live_sidecar
@@ -122,3 +123,39 @@ def minutes_block(mpath: pathlib.Path, limit: int) -> str:
         return ""
     body = capped(without_trace(mpath.read_text(encoding="utf-8")), limit, "минуток")
     return "[МИНУТКИ]\n" + body + "\n\n"
+
+
+def note_in_tail(text: str) -> str | None:
+    """Оговорка из уже записанного хвоста стенограммы (копия в архиве без
+    сайдкара): последняя строка итога в хвосте «Ко-мышления», тем же правилом,
+    каким её узнаёт `is_trace_line`. Последняя, не первая: пересборка
+    дописывает свежий итог ниже строки демона (Minor DS и GLM круга 3)."""
+    cut = text.find(transcript.NOTES_HEAD)
+    if cut < 0:
+        return None
+    for line in reversed(text[cut:].splitlines()):
+        body = channel_trace._bare_line(line)
+        if body.startswith(channel_trace.SUMMARY_MARK):
+            return body
+    return None
+
+
+class DebriefParts(NamedTuple):
+    speech_limit: int
+    cothinking_block: str
+    minutes_block: str
+
+
+def debrief_parts(mpath: pathlib.Path, cothinking: list[str], *, total: int, speech_min: int,
+                  minutes_cap: int, cothinking_cap: int) -> DebriefParts:
+    """Распределить один бюджет тела промпта разбора: речь не меньше
+    `speech_min`, потом живые тезисы (до `cothinking_cap`), потом минутки —
+    из остатка. Сумма блоков не превышает `total` по построению: пол у речи
+    больше не четвёртый потолок поверх бюджета (Important DS и GLM круга 3)."""
+    cothinking_block = (("<ко_мышление>\n" + capped("\n".join(cothinking), cothinking_cap, "тезисов")
+                         + "\n</ко_мышление>\nЭто заметки модели по ходу встречи, не речь участников.\n\n")
+                        if cothinking else "")
+    minutes_limit = min(minutes_cap, max(0, total - speech_min - len(cothinking_block) - 80))
+    block = minutes_block(mpath, minutes_limit) if minutes_limit >= 200 else ""
+    speech_limit = max(speech_min, total - len(cothinking_block) - len(block))
+    return DebriefParts(speech_limit, cothinking_block, block)

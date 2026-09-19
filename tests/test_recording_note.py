@@ -289,10 +289,10 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert "source_sha = source.sha()" in block and "speech_sha" not in gu, "хеш источника — не «хеш речи» (GLM круга 2)"
     assert (block.index("debrief_excerpt(source.speech, limit=speech_limit") < block.index("+ cothinking_block")
             < block.index("+ minutes_block") < block.index("llm_client.recording_block(source.recording_note)"))
-    assert "speech_limit = max(4000, DEBRIEF_BODY_CHARS - len(minutes_block) - len(cothinking_block))" in block, \
-        "один бюджет на тело промпта (DS круга 2)"
+    assert "meeting_source.debrief_parts(" in block, "один бюджет на тело промпта — распределителем (DS/GLM круга 3)"
     assert "debrief_excerpt(context)" not in gu, "разбор больше не берёт окно от конца ФАЙЛА"
-    assert gu.count("meeting_source.minutes_block(") == 2, "минутки в оба промпта — одним хелпером"
+    assert gu.count("meeting_source.minutes_block(") == 1 and gu.count("meeting_source.debrief_parts(") == 1, \
+        "минутки в оба промпта — хелпером meeting_source (извлечение напрямую, разбор через распределитель)"
     assert 'context += "\\n\\n[МИНУТКИ]\\n" + minutes_p.read_text' not in gu, "извлечение не клеит сырые минутки (Critical DS круга 2)"
 
     rf = (ROOT / "src" / "retro_fill.py").read_text(encoding="utf-8")
@@ -376,7 +376,7 @@ def test_with_note_dedups_by_the_canonical_text_not_the_mark():
 
 
 @pytest.mark.parametrize("kind,label,died", [(k, lbl, d) for k in ("lost", "back", "gap")
-                                             for lbl in ("blackhole", "mic") for d in (True, False)])
+                                             for lbl in channel_trace.NAMES for d in (True, False)])
 def test_every_rendered_trace_line_is_recognised_as_trace(kind, label, died):
     """Таблица kind × label × died: правило «что считать следом» строится из тех
     же фраз, что рендер, и любая переформулировка ломает этот тест, а не молча
@@ -388,7 +388,10 @@ def test_every_rendered_trace_line_is_recognised_as_trace(kind, label, died):
     assert line is not None
     assert channel_trace.is_trace_line(f"> 14:32 {line}") and channel_trace.is_trace_line(line)
     assert channel_trace.is_trace_line("> 15:00 " + NOTE)
-    for thought in ("> 10:30 📌 КТ: смета", "10:31 💭 мысль", "⚠️ подсказки отстают", "**Инга** [10:21]:", "⏮ уже обсуждалось"):
+    for thought in ("> 10:30 📌 КТ: смета", "10:31 💭 мысль", "⚠️ подсказки отстают", "**Инга** [10:21]:", "⏮ уже обсуждалось",
+                    # фраза следа без имени канала — строка модели, не след (Important DS / Minor GLM круга 3)
+                    "⚠️ Подрядчик пропал (не отвечает с пятницы) — риск срыва поставки",
+                    "⚠️ Демо снова пишется с нуля — скрин перезаписан", "✅ Смета: пробел в записи закрыт"):
         assert not channel_trace.is_trace_line(thought), thought
 
 
@@ -455,4 +458,48 @@ def test_theses_writers_add_the_note_line(tmp_path):
     meeting_archive._derive_extras(folder)
     theses = (folder / "Тезисы.md").read_text(encoding="utf-8")
     assert "- 10:30 📌 КТ: смета" in theses and theses.count(NOTE) == 1
-    assert channel_trace.note_of_text("нет строки\n") is None
+    assert meeting_source.note_in_tail("нет строки\n") is None
+
+
+def test_debrief_budget_holds_by_construction(tmp_path):
+    """Important DS и GLM круга 3: пол у речи поверх трёх потолков ломал сумму;
+    распределитель отдаёт речи не меньше минимума, минуткам — остаток."""
+    mpath = tmp_path / "2026-09-02_1021_minutes.md"
+    mpath.write_text("# Минутки\n" + "- пункт\n" * 2000, encoding="utf-8")   # 16 000 знаков черновика
+    thoughts = [f"10:{i:02d} 📌 КТ номер {i}: " + "слово " * 20 for i in range(60)]  # > 2000 знаков тезисов
+    parts = meeting_source.debrief_parts(mpath, thoughts, total=11000, speech_min=4000,
+                                         minutes_cap=6000, cothinking_cap=2000)
+    assert parts.speech_limit >= 4000
+    assert parts.speech_limit + len(parts.cothinking_block) + len(parts.minutes_block) <= 11000
+    assert "середина минуток опущена" in parts.minutes_block and "середина тезисов опущена" in parts.cothinking_block
+    # короткая встреча без минуток и тезисов — вся речь в прежнее окно
+    empty = meeting_source.debrief_parts(tmp_path / "нет.md", [], total=11000, speech_min=4000,
+                                         minutes_cap=6000, cothinking_cap=2000)
+    assert empty == (11000, "", "")
+
+
+def test_note_in_tail_takes_the_last_summary_line_of_the_tail_only():
+    """Minor DS и GLM круга 3: читатель строки итога — тем же правилом, что
+    классификатор, по хвосту, последнюю (свежую) строку."""
+    older = channel_trace.SUMMARY_MARK + ": без собеседников 10:00–10:05 (эпизодов 1, всего 5 мин)"
+    text = ("# Встреча\nречь про строку " + channel_trace.SUMMARY_MARK + " в интерфейсе\n"
+            + transcript.NOTES_HEAD + transcript.NOTES_SUFFIX
+            + "\n> 10:30 📌 КТ: показать " + channel_trace.SUMMARY_MARK + " красным\n"
+            + "> 10:40 " + older + "\n> 11:00 " + NOTE + "\n")
+    assert meeting_source.note_in_tail(text) == NOTE
+    assert meeting_source.note_in_tail("# Встреча\nречь " + channel_trace.SUMMARY_MARK + "\n") is None
+
+
+def test_archive_theses_take_the_note_from_the_sidecar_first(tmp_path, monkeypatch):
+    """Критика GLM круга 3: факт о записи живёт в сайдкаре оригинала; хвост
+    копии — запасной путь, если сайдкара нет."""
+    import meeting_archive
+    folder = tmp_path / "2026-09-02_1021 — Смета"
+    folder.mkdir()
+    (folder / "Стенограмма.md").write_text(
+        "# Встреча\nречь\n" + transcript.NOTES_HEAD + transcript.NOTES_SUFFIX + "\n> 10:30 📌 КТ: смета\n",
+        encoding="utf-8")
+    meeting_archive._derive_extras(folder, recording_note=NOTE)
+    assert (folder / "Тезисы.md").read_text(encoding="utf-8").count(NOTE) == 1
+    src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
+    assert "_derive_extras(folder, recording_note=channel_trace.recording_note(main))" in src

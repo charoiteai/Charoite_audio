@@ -2818,19 +2818,17 @@ def main():
         # лежали внутри окна `debrief_excerpt` и делили с речью те же 11 000
         # знаков; три независимых потолка складывались бы поверх num_ctx 8192 и
         # Ollama молча резала бы голову (Important DS круга 2)
-        minutes_block = meeting_source.minutes_block(
-            tpath.with_name(tpath.stem + "_minutes.md"), MINUTES_IN_PROMPT)
-        cothinking_block = (("<ко_мышление>\n" + meeting_source.capped("\n".join(cothinking), COTHINKING_IN_DEBRIEF, "тезисов")
-                             + "\n</ко_мышление>\nЭто заметки модели по ходу встречи, не речь участников.\n\n")
-                            if cothinking else "")
-        speech_limit = max(4000, DEBRIEF_BODY_CHARS - len(minutes_block) - len(cothinking_block))
+        speech_limit, cothinking_block, minutes_block = meeting_source.debrief_parts(
+            tpath.with_name(tpath.stem + "_minutes.md"), cothinking,
+            total=DEBRIEF_BODY_CHARS, speech_min=DEBRIEF_SPEECH_MIN,
+            minutes_cap=MINUTES_IN_PROMPT, cothinking_cap=COTHINKING_IN_DEBRIEF)
         # Порядок блоков: речь (окно от КОНЦА РЕЧИ, не файла) → живые тезисы
         # контура отдельным блоком (мысли модели, не речь; DS: 📌 КТ разбору
         # полезны) → минутки → оговорка о записи после всех обрезок (№317)
         debrief = llm_client.complete(
             (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
              f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech, limit=speech_limit, head=speech_limit // 2)}\n\n"
+            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(source.speech, limit=speech_limit)}\n\n"
             + cothinking_block
             + minutes_block
             + llm_client.recording_block(source.recording_note)
@@ -2954,11 +2952,12 @@ def main():
 
 
 DEBRIEF_BODY_CHARS = 11000    # тело промпта разбора: речь + тезисы + минутки — прежнее окно `debrief_excerpt`
+DEBRIEF_SPEECH_MIN = 4000     # речи в разборе не меньше этого: минутки — пересказ, речь — первоисточник
 MINUTES_IN_PROMPT = 6000      # знаков минуток в промптах (финал ≤ 900, черновик — без потолка)
 COTHINKING_IN_DEBRIEF = 2000  # знаков живых тезисов в разборе
 
 
-def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> str:
+def debrief_excerpt(transcript: str, limit: int = DEBRIEF_BODY_CHARS, head: int | None = None) -> str:
     """Что из стенограммы видит разбор встречи.
 
     Раньше — первые 11000 знаков: у часовой встречи это первые 15–20 минут,
@@ -2969,6 +2968,8 @@ def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> st
     """
     if len(transcript) <= limit:
         return transcript
+    if head is None:
+        head = limit // 2          # голова и хвост поровну — одно правило с распределителем бюджета
     tail = limit - head
     skipped = len(transcript) - head - tail
     return (transcript[:head]

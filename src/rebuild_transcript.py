@@ -1017,7 +1017,8 @@ def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: st
     модели перештампованный файл терял признак автотекста навсегда (DS r1
     Imp-1/Imp-2 по #483). Хеш речи-источника — только после настоящей
     регенерации: перештамповка не собирала минутки из этого текста (DS I1 /
-    GLM I2 r2); речь — без H1 и «Ко-мышления» (`transcript.speech_of`)."""
+    GLM I2 r2); источник — речь плюс оговорка о записи, одним объектом
+    `meeting_source.MeetingSource` (№317)."""
     canonize_file(mpath, cfg)
     if outcome == "human":
         return

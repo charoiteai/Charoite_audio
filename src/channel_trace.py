@@ -69,9 +69,13 @@ PHRASE_NOT_CAPTURED = "не захвачен с начала записи"
 PHRASE_LOST = "пропал ("
 PHRASE_BACK = "снова пишется с"
 PHRASE_GAP = ": пробел в записи"
+# грамматика следа целиком: знак + имя канала из NAMES + фраза; без имени
+# классификатор ловил строки модели вида «⚠️ подрядчик пропал (…)» и вырезал
+# их из промптов (Important DS и Minor GLM круга 3 по №317)
 _TRACE_RE = re.compile(
-    r"^(?:⚠️|✅) .+?(?:" + "|".join(re.escape(p) for p in
-                                  (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK, PHRASE_GAP)) + ")")
+    r"^(?:⚠️|✅) (?:" + "|".join(re.escape(n) for n in NAMES.values()) + r")"
+    r"(?: (?:" + "|".join(re.escape(p) for p in (PHRASE_NOT_CAPTURED, PHRASE_LOST, PHRASE_BACK)) + r")"
+    r"|" + re.escape(PHRASE_GAP) + r")")
 
 
 def render(ev) -> str | None:
@@ -319,13 +323,3 @@ def is_trace_line(line: str) -> bool:
     в разборе) не различают их по префиксам сами."""
     body = _bare_line(line)
     return body.startswith(SUMMARY_MARK) or bool(_TRACE_RE.match(body))
-
-
-def note_of_text(text: str) -> str | None:
-    """Оговорка из уже записанного хвоста стенограммы (копия в архиве, где
-    сайдкара нет): текст строки итога от маркера до конца; нет строки — None."""
-    for line in text.splitlines():
-        i = line.find(SUMMARY_MARK)
-        if i >= 0:
-            return line[i:].strip()
-    return None
