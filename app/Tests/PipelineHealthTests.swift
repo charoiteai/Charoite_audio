@@ -191,5 +191,52 @@ final class PipelineHealthTests: XCTestCase {
         XCTAssertTrue(service.contains("nextHealth.acceptHeartbeat(obj)"))
         XCTAssertTrue(meeting.contains("sufler.pipelineStatusText"))
         XCTAssertTrue(menu.contains("sufler.pipelineStatusText"))
+        // №139: иконка и строка меню читают один вердикт свёртки, а не собирают
+        // своё из сервисов; второго зонда Ollama во вью нет
+        XCTAssertEqual(menu.components(separatedBy: "MenuBarHealth.verdict(").count - 1, 2)
+        XCTAssertFalse(menu.contains("checkStack"), "проба Ollama — у OllamaRuntimeService, не во вью")
+        XCTAssertFalse(menu.contains("stackNote"))
+    }
+
+    /// №313: датчики насоса из hb доезжают до проблемы записи, а не умирают в
+    /// декодере; мёртвый насос — критикал (запись стоит), сбои проходов —
+    /// предупреждение; ранг относительно диска и STT прибит.
+    func testHeartbeatPumpGaugesBecomeProblemsWithPinnedRank() throws {
+        var monitor = PipelineHealthMonitor()
+        monitor.acceptProgress(try progress())
+        monitor.acceptHeartbeat(try object("""
+        {"type":"hb","stt_stage":"transcription","stt_stage_age_seconds":1.0,"stt_stalled":false,
+         "recording_ok":true,"pump_alive":true,"pump_failures":0}
+        """))
+        XCTAssertNil(monitor.problem, "живой насос без сбоев — норма")
+
+        monitor.acceptHeartbeat(try object("""
+        {"type":"hb","stt_stage":"transcription","stt_stage_age_seconds":1.0,"stt_stalled":false,
+         "recording_ok":true,"pump_alive":true,"pump_failures":3}
+        """))
+        XCTAssertEqual(monitor.problem, .pumpFailing(count: 3))
+        XCTAssertEqual(monitor.problem?.isCritical, false, "сбои проходов — предупреждение")
+
+        monitor.acceptHeartbeat(try object("""
+        {"type":"hb","stt_stage":"transcription","stt_stage_age_seconds":120.0,"stt_stalled":true,
+         "recording_ok":true,"pump_alive":false,"pump_failures":0}
+        """))
+        XCTAssertEqual(monitor.problem, .pumpDead, "мёртвый насос выше зависшего STT")
+        XCTAssertEqual(monitor.problem?.isCritical, true, "запись стоит — данные гибнут")
+
+        monitor.acceptHeartbeat(try object("""
+        {"type":"hb","stt_stage":"transcription","stt_stage_age_seconds":1.0,"stt_stalled":false,
+         "recording_ok":false,"pump_alive":false,"pump_failures":0}
+        """))
+        XCTAssertEqual(monitor.problem, .recordingUnavailable(channels: []), "отказ диска — выше всего")
+
+        // старый демон без полей — контракт совместимости: насос не судится
+        monitor = PipelineHealthMonitor()
+        monitor.acceptHeartbeat(try heartbeat(age: 1.0, stalled: false, recordingOK: true))
+        XCTAssertNil(monitor.problem)
+        for problem in [PipelineHealthProblem.pumpDead, .pumpFailing(count: 2)] {
+            XCTAssertFalse(PipelineHealthPresentation.text(for: problem).isEmpty)
+        }
+        XCTAssertTrue(PipelineHealthPresentation.text(for: .pumpFailing(count: 2)).contains("2"))
     }
 }

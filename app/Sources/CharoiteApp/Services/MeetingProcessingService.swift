@@ -825,6 +825,37 @@ final class MeetingProcessingService: ObservableObject {
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
+    /// Результат последней встречи готов — предикат владельца для строки меню.
+    /// `actionTitle != nil` означает «есть кнопка» и истинно также для пустой
+    /// записи и ошибки: «Встреча готова» зелёным для записи без речи —
+    /// Important GLM круга 3 по №139.
+    var isResultReady: Bool {
+        snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .ready } == true
+    }
+
+    /// Слова идущей работы для узких поверхностей: стадия обработки, и только
+    /// когда это не ошибка. `statusText` проверяет ошибки раньше снимка, а
+    /// политика строки меню ставит работу выше проблемы — при `pipelineSilent`
+    /// с последующим снимком `.processing` оба флага истинны, и текст ошибки
+    /// уехал бы в слот активности цветом «всё идёт» (Important DS круга 2 по №139).
+    var activityText: String? {
+        guard isProcessing, !isError else { return nil }
+        return statusText
+    }
+
+    /// Заголовок ошибки обработки для узких поверхностей (строка меню-бара,
+    /// свёртка здоровья) — первая строка `statusText`, словами владельца:
+    /// третий словарь слов о том же факте расходился бы с окном «Встречи» и
+    /// со статусом на «Сегодня» (Critical DS выходного круга по №139). nil —
+    /// ошибки нет.
+    var errorHeadline: String? {
+        guard isError else { return nil }
+        let text = statusText ?? L.t("Не удалось обработать встречу — стенограмма сохранена",
+                                     "Could not process the meeting — the transcript was kept",
+                                     "会议处理失败——逐字稿已保留")
+        return text.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? text
+    }
+
     var actionTitle: String? {
         guard let snapshot else { return nil }
         switch MeetingProcessingPolicy.resolvedState(snapshot) {

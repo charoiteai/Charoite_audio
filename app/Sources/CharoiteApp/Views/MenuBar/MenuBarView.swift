@@ -4,25 +4,53 @@ import SwiftUI
 
 /// Иконка в системной строке — единственное, что видно ВСЕГДА.
 ///
-/// Critical конвейера (запись не пишется на диск — isCritical пропускает
-/// только .recordingUnavailable; зависший STT остаётся жёлтым статусом в
-/// меню) раньше жил только внутри выпадающего меню: пока человек его не
-/// откроет — тишина (№110, advisory GLM по #431). Теперь сам символ
-/// меняется на предупреждающий; строка меню может отрисовать монохромно,
-/// поэтому носитель сигнала — форма символа, цвет — усилитель.
+/// До №110 критикал записи жил только внутри выпадающего меню: пока человек
+/// его не откроет — тишина. С №139 иконка рисует вердикт свёртки здоровья
+/// (`HealthRollup` → `HealthPresentation.iconTier`): красный треугольник —
+/// данные гибнут при живой записи (отказ диска, мёртвый насос), жёлтый круг —
+/// деградация без потери записи (обработка, Ollama, ночь), обычный символ —
+/// сигналов нет. Строка меню может отрисовать монохромно, поэтому носитель
+/// сигнала — форма символа, цвет — усилитель.
 struct MenuBarLabel: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject private var ollama = OllamaRuntimeService.shared
+    @ObservedObject private var nightly = NightlyStatusService.shared
 
     var body: some View {
-        if sufler.isRunning && sufler.pipelineStatusIsCritical {
+        let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
+                                            ollama: ollama, nightly: nightly)
+        switch HealthPresentation.iconTier(verdict) {
+        case .critical:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
-                .accessibilityLabel(L.t("Критическая ошибка записи",
-                                        "Critical recording failure",
-                                        "录音出现严重故障"))
-        } else {
+                .accessibilityLabel(HealthPresentation.iconLabel(verdict)
+                                    ?? L.t("Критическая ошибка записи", "Critical recording failure", "录音出现严重故障"))
+        case .degraded:
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(Theme.warning)
+                .accessibilityLabel(HealthPresentation.iconLabel(verdict)
+                                    ?? L.t("Есть что проверить", "Needs attention", "需要注意"))
+        case .ok:
             Image(systemName: "brain.head.profile")
         }
+    }
+}
+
+/// Один вход свёртки для обеих поверхностей меню-бара: иконка и строка
+/// читают один вердикт, а не собирают своё из четырёх сервисов. Слова — только
+/// владельцев: заголовок ошибки обработки — `errorHeadline`, Ollama —
+/// `explanation(for:)`, ночь — `title(for:)`.
+enum MenuBarHealth {
+    @MainActor
+    static func verdict(sufler: SuflerService, processing: MeetingProcessingService,
+                        ollama: OllamaRuntimeService, nightly: NightlyStatusService) -> HealthVerdict {
+        HealthRollup.rollup(recording: sufler.pipelineHealth.problem,
+                            isRecording: sufler.isRunning,
+                            processingError: processing.errorHeadline,
+                            ollama: ollama.state,
+                            nightly: nightly.status.state,
+                            nightlyAgentConfigured: nightly.agentConfigured)
     }
 }
 
@@ -33,35 +61,39 @@ struct MenuBarView: View {
     @ObservedObject private var dictation = DictationService.shared
     @ObservedObject private var chat = LocalChatService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
+    @ObservedObject private var ollama = OllamaRuntimeService.shared
+    @ObservedObject private var nightly = NightlyStatusService.shared
     @State private var quick = ""
-    @State private var stackNote = ""   // здоровье стека: пусто = всё в порядке
 
     /// Что происходит прямо сейчас — одной строкой и одним цветом.
     ///
     /// Приложение живёт в меню-баре, и окно после встречи обычно закрывают.
     /// Раньше здесь были только «Идёт запись» и «Готов»: всё, что случалось
     /// с встречей после «Стоп» — обработка, готовый результат, ошибка, —
-    /// было видно только в окне, то есть чаще всего нигде.
+    /// было видно только в окне, то есть чаще всего нигде. С №139 порядок —
+    /// у политики представления (`HealthPresentation.menuLine`): идёт работа →
+    /// проблема → «Встреча готова» → покой; лежащая Ollama сутки пряталась за
+    /// готовой встречей (Important GLM входного круга), а после первой версии
+    /// свёртки постоянная жалоба прятала живое «Обрабатываю…» (Critical DS).
     private var state: (text: String, color: Color) {
-        if sufler.isRunning {
-            let color: Color = sufler.pipelineStatusText == nil
-                ? .red
-                : (sufler.pipelineStatusIsCritical ? .red : Theme.warning)
-            return (L.t("Запись", "Recording", "录音中") + " ·", color)
+        let verdict = MenuBarHealth.verdict(sufler: sufler, processing: processing,
+                                            ollama: ollama, nightly: nightly)
+        let line = HealthPresentation.menuLine(verdict, isRecording: sufler.isRunning,
+                                               activityText: processing.activityText,
+                                               hasReadyMeeting: processing.isResultReady)
+        switch line {
+        case .recording(let tier), .problem(_, let tier): return (line.text, Self.color(for: tier))
+        case .activity: return (line.text, .accentColor)
+        case .ready, .idle: return (line.text, Theme.ok)
         }
-        if processing.isError {
-            return (L.t("Ошибка — исходник сохранён",
-                        "Failed — source kept",
-                        "处理失败——原始文件已保留"), Theme.warning)
+    }
+
+    private static func color(for tier: HealthTier) -> Color {
+        switch tier {
+        case .ok: return Theme.ok
+        case .degraded: return Theme.warning
+        case .critical: return .red
         }
-        if processing.isProcessing {
-            return (L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), .accentColor)
-        }
-        if processing.actionTitle != nil {
-            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), Theme.ok)
-        }
-        if !stackNote.isEmpty { return (stackNote, Theme.warning) }
-        return (L.t("Готов к записи", "Ready to record", "可以录音"), Theme.ok)
     }
 
     var body: some View {
@@ -86,9 +118,9 @@ struct MenuBarView: View {
                         .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
                 }
             }
-            // здоровье стека проверяется при открытии меню: молча зелёный,
-            // а если Ollama лежит — видно ДО того, как вопрос уйдёт в пустоту
-            .task { await checkStack() }
+            // открытие меню — повод освежить владельцев сразу, не дожидаясь тика
+            // планировщика; самих проб во вью нет (Critical GLM входного круга)
+            .task { HealthClock.requestTick() }
 
             if let pipelineStatus = sufler.pipelineStatusText {
                 Text(pipelineStatus)
@@ -221,17 +253,8 @@ struct MenuBarView: View {
         }
     }
 
-    /// Ollama доступна? Одна лёгкая проверка при открытии меню.
-    private func checkStack() async {
-        guard let url = URL(string: AppSettings.ollamaURL + "/api/tags") else { return }
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.connectionProxyDictionary = [:]
-        cfg.timeoutIntervalForRequest = 2
-        let ok = (try? await URLSession(configuration: cfg).data(from: url)) != nil
-        stackNote = ok ? "" : "Ollama не отвечает"
-    }
-
-    /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории.
+    /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории
+    /// (здоровье движка — у `OllamaRuntimeService`, строка меню его уже показала).
     private func sendQuick() {
         let q = quick.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
