@@ -510,4 +510,4 @@ def test_archive_theses_take_the_note_from_the_sidecar_first(tmp_path, monkeypat
     # оговорка читается один раз и раздаётся тезисам и саммари (Minor GLM входного круга по №314)
     assert "recording_note = channel_trace.recording_note(main)" in src
     assert "_derive_extras(folder, recording_note=recording_note)" in src
-    assert "recording_note=recording_note)" in src[src.index("summary_state = _gen_summary("):][:200]
+    assert "recording_note=recording_note)" in src[src.index("_gen_summary(folder, main,"):][:200]

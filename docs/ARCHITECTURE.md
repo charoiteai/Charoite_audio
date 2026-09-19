@@ -803,13 +803,20 @@ mechanical rewrite while keeping the source. The policy travels with the
 caller of `archive_meeting`: the live path (post-meeting pipeline, review
 delivery) builds MISSING/STALE and legacy without a passport, the retro pass
 and the CLI only MISSING/STALE; a FRESH rebuild is excluded for summaries —
-everything that affects the output is already in the hash. Legacy summaries
-whose materials are not newer than themselves get a passport on the current
-bytes without the model (224 of 298), the rest stay UNKNOWN until a live touch
-rebuilds them. The recording note reaches the summary as a fact block after
-the materials and as a line in the document (№317), not as a stray line inside
-a minutes excerpt, and `meeting.meta.json` carries `summary_state` so the
-protocol and the morning brief can tell fresh from frozen-by-hand.
+everything that affects the output is already in the hash. An empty file is
+MISSING for every kind — the oracle, not each writer, says so. The write seam
+returns the state *after* writing, so no caller records a stale "before"
+picture. Legacy summaries without a passport are never adopted by the live
+path: `retro_fill --summary=adopt` gives a passport (plus a `summary_adopted`
+mark) to the sound ones without the model — materials not newer than the
+file, our own document structure, and the recording note either empty or
+already in the text — and `--summary=rebuild` adopts first, then rebuilds the
+rest with the live policy (224 sound and 74 stale of 298 on 19.09; without
+the order the rebuild would spend an hour of model on sound files). The
+recording note reaches the summary as a fact block after the materials and
+as a line in the document (№317), not as a stray line inside a minutes
+excerpt. The manifest carries no copy of the passport state: a copy diverged
+from the passport after every write — readers ask `summary_state()`.
 
 ## Stopping a recording
 

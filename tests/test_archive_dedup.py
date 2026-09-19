@@ -22,6 +22,24 @@ import dedup_archive as dd  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _folders_for, archive_meeting  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_live_model(monkeypatch):
+    """`archive_meeting` собирает саммари моделью — тесты архива ходили в живой
+    `requests.post` на локальный сервер (замер 19.09: 8 обращений из 5 тестов и на
+    main, и после №314). Тест не платит модели и не зависит от того, поднята ли
+    она: подделка отвечает готовым саммари."""
+    import requests
+
+    class _Resp:
+        status_code = 200
+        text = ""
+        headers: dict = {}
+        def json(self): return {"message": {"content": "**Суть** встреча.\n\n## Решили\n- **Пункт** — принят\n"}}
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+
+
 @pytest.fixture()
 def graph(tmp_path: Path) -> Path:
     (tmp_path / ARCHIVE_DIR).mkdir()

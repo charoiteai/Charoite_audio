@@ -56,7 +56,9 @@ def test_summary_is_built_once_then_fresh_until_materials_change(tmp_path, monke
     calls: list = []
     _fake_model(monkeypatch, calls)
     state = ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_LIVE)
-    assert state == live_sidecar.MISSING and len(calls) == 1
+    # возвращается состояние ПОСЛЕ записи — от шва, не «то, что было» (Important
+    # DS и GLM выходного круга: манифест называл свежее саммари missing/stale)
+    assert state == live_sidecar.FRESH and len(calls) == 1
     out = folder / "Саммари.md"
     assert out.exists() and "Первое" in out.read_text(encoding="utf-8")
     meta = live_sidecar.read(live)
@@ -67,7 +69,7 @@ def test_summary_is_built_once_then_fresh_until_materials_change(tmp_path, monke
     assert len(calls) == 1
     # ревизия переписала минутки — STALE, пересборка, прежняя версия в .prev/ у стенограммы
     (folder / "Минутки.md").write_text("## Решения\n1. Решение отменено ревизией.\n", encoding="utf-8")
-    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_RETRO) == live_sidecar.STALE
+    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_RETRO) == live_sidecar.FRESH
     assert len(calls) == 2
     prev = live_sidecar.prev_path(live, out)
     assert prev.exists() and prev.parent.name == ".prev" and prev.parent.parent == live.parent
@@ -76,6 +78,9 @@ def test_summary_is_built_once_then_fresh_until_materials_change(tmp_path, monke
     (folder / "Минутки.md").write_text("## Решения\n1. Ещё одно.\n", encoding="utf-8")
     assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_LIVE) == live_sidecar.HUMAN
     assert len(calls) == 2 and "Моя правка." in out.read_text(encoding="utf-8")
+    # и ручной force — тоже: «собери, хоть и свежее», не «перепиши человека» (Minor DS)
+    assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_LIVE, force=True) == live_sidecar.HUMAN
+    assert len(calls) == 2
 
 
 def test_source_canon_is_inputs_not_prompt_words_and_note_reaches_prompt_and_document(tmp_path, monkeypatch):
@@ -90,7 +95,7 @@ def test_source_canon_is_inputs_not_prompt_words_and_note_reaches_prompt_and_doc
     assert a != ma.summary_source_sha(mats, decided, NOTE), "оговорка — часть источника"
     assert a != ma.summary_source_sha(mats, [], None), "список решений — часть источника"
     src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
-    canon = src[src.index("def summary_source_sha("):src.index("def _legacy_summary_consistent(")]
+    canon = src[src.index("def summary_source_sha("):src.index("SUMMARY_HEAD = ")]
     assert "_config_lang" not in canon and "SUMMARY_SECTIONS" not in canon and "_history_context" not in canon
     calls: list = []
     _fake_model(monkeypatch, calls)
@@ -101,37 +106,105 @@ def test_source_canon_is_inputs_not_prompt_words_and_note_reaches_prompt_and_doc
     assert text.count(channel_trace.SUMMARY_MARK) == 1
 
 
-def test_legacy_summary_gets_a_passport_without_the_model_when_materials_are_older(tmp_path, monkeypatch):
-    """Critical DS входного круга: у 298 саммари боевого архива паспортов нет;
-    живая политика переписала бы моделью все — и правленные руками тоже.
-    Согласованное легаси (материалы не новее саммари) аттестуется на текущие
-    байты без модели; протухшее (минутки новее) остаётся UNKNOWN → живой путь
-    пересоберёт, ретро — пропустит."""
+def test_legacy_summary_is_adopted_only_by_the_explicit_command_and_by_the_whole_canon(tmp_path, monkeypatch):
+    """Схождение DS и GLM выходного круга: присвоение легаси по mtime в живом
+    пути — третий смысл паспорта, и оно замораживало саммари без оговорки о
+    записи (Critical GLM). Живой путь UNKNOWN не присваивает — строит по
+    политике; присваивает только `adopt_summary` (retro_fill --summary=adopt),
+    по всему канону: материалы не новее, документ наш по структуре, оговорка
+    пуста или уже в тексте. Присвоенное помечено `summary_adopted`."""
     folder, live = _folder(tmp_path)
     out = folder / "Саммари.md"
-    out.write_text("# Саммари — старое\n\nСуть: было.\n", encoding="utf-8")
+    legacy = "---\ntype: саммари\nдата: 2026-09-19\n---\n\n# Саммари — старое\n\nСуть: было.\n"
+    out.write_text(legacy, encoding="utf-8")
     old = time.time() - 3600
-    os.utime(folder / "Минутки.md", (old, old))
-    os.utime(folder / "Стенограмма.md", (old, old))
+    for name in ("Минутки.md", "Стенограмма.md"):
+        os.utime(folder / name, (old, old))
     calls: list = []
     _fake_model(monkeypatch, calls)
+    # живой путь: UNKNOWN строится моделью, а не присваивается молча
     assert ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_LIVE) == live_sidecar.FRESH
-    assert calls == [] and "было" in out.read_text(encoding="utf-8")
-    assert live_sidecar.derivative_state(out, live_sidecar.read(live), "summary",
-                                         ma.summary_source_sha(ma.summary_materials(folder),
-                                                               ma.decisions_of(folder), None)) == live_sidecar.FRESH
-    # протухшее легаси: минутки новее саммари
+    assert len(calls) == 1 and "было" not in out.read_text(encoding="utf-8")
+    assert "summary_adopted" not in live_sidecar.read(live)
+    # ретро-политика UNKNOWN не трогает (№309)
     folder2 = tmp_path / "2026-09-19 11-00 — Другая"
     folder2.mkdir()
-    (folder2 / "Саммари.md").write_text("# Саммари — старое\n\nСуть: было.\n", encoding="utf-8")
-    os.utime(folder2 / "Саммари.md", (old, old))
-    (folder2 / "Минутки.md").write_text("## Решения\n1. Свежее.\n", encoding="utf-8")
+    (folder2 / "Минутки.md").write_text("## Решения\n1. Первое решение принято.\n", encoding="utf-8")
+    (folder2 / "Стенограмма.md").write_text("# Встреча\n\n[11:00:00] Иван: начнём\n", encoding="utf-8")
+    (folder2 / "Саммари.md").write_text(legacy, encoding="utf-8")
+    for name in ("Минутки.md", "Стенограмма.md"):
+        os.utime(folder2 / name, (old, old))
     live2 = tmp_path / "2026-09-19_1100.md"
     live2.write_text("# Встреча\n", encoding="utf-8")
     assert ma._gen_summary(folder2, live2, policy=ma.SUMMARY_POLICY_RETRO) == live_sidecar.UNKNOWN
-    assert calls == [], "ретро не бэкфиллит UNKNOWN (№309)"
-    assert ma._gen_summary(folder2, live2, policy=ma.SUMMARY_POLICY_LIVE) == live_sidecar.UNKNOWN
-    assert len(calls) == 1 and "Свежее" in calls[0], "живой путь пересобрал протухшее легаси"
+    assert len(calls) == 1
+    # явное присвоение согласованного легаси — без модели, с отметкой
+    assert ma.adopt_summary(folder2, live2, None) == "присвоено"
+    meta = live_sidecar.read(live2)
+    assert meta["summary_adopted"].startswith("2026") and "было" in (folder2 / "Саммари.md").read_text(encoding="utf-8")
+    assert ma.summary_state(folder2, live2, None) == live_sidecar.FRESH
+    assert ma.adopt_summary(folder2, live2, None) == "уже с паспортом (fresh)"
+    assert len(calls) == 1
+    # отказы — по всему канону, причина словами
+    folder3 = tmp_path / "2026-09-19 12-00 — Третья"
+    folder3.mkdir()
+    (folder3 / "Минутки.md").write_text("## Решения\n1. Свежее.\n", encoding="utf-8")
+    (folder3 / "Саммари.md").write_text(legacy, encoding="utf-8")
+    os.utime(folder3 / "Саммари.md", (old, old))
+    live3 = tmp_path / "2026-09-19_1200.md"
+    live3.write_text("# Встреча\n", encoding="utf-8")
+    assert ma.adopt_summary(folder3, live3, None) == "материалы новее: Минутки.md"
+    os.utime(folder3 / "Минутки.md", (old - 10, old - 10))
+    assert ma.adopt_summary(folder3, live3, NOTE) == "без оговорки о записи", "Critical GLM: паспорт без ноты замёрз бы"
+    (folder3 / "Саммари.md").write_text(legacy + "\n" + NOTE + "\n", encoding="utf-8")
+    os.utime(folder3 / "Саммари.md", (old, old))
+    assert ma.adopt_summary(folder3, live3, NOTE) == "присвоено", "оговорка уже в тексте — канон полный"
+    (folder3 / "Саммари.md").write_text("# Чужой файл\n", encoding="utf-8")
+    live4 = tmp_path / "2026-09-19_1300.md"
+    live4.write_text("# Встреча\n", encoding="utf-8")
+    assert ma.adopt_summary(folder3, live4, None) == "не наш документ"
+    (folder3 / "Саммари.md").write_text("", encoding="utf-8")
+    assert ma.adopt_summary(folder3, live4, None) == "файла нет", "пустой файл — MISSING, не легаси"
+    assert "summary_adopted" not in (live_sidecar.read(live4) or {})
+
+
+def test_empty_derivative_is_missing_not_attestable(tmp_path):
+    """Critical DS выходного круга: пустой файл — след оборванной записи; до
+    паспорта `_gen_summary` проверял `st_size > 0`, с паспортом пустое саммари
+    аттестовалось бы FRESH навсегда. Правило — у единственного оракула, для
+    всех видов."""
+    p = tmp_path / "Саммари.md"
+    p.write_text("", encoding="utf-8")
+    src = live_sidecar.sha("канон")
+    assert live_sidecar.derivative_state(p, {}, "summary", src) == live_sidecar.MISSING
+    meta = {"summary_sha256": live_sidecar.sha(""), "summary_source_sha256": src}
+    assert live_sidecar.derivative_state(p, meta, "summary", src) == live_sidecar.MISSING, "паспорт на пустоту не спасает"
+    assert live_sidecar.derivative_state(p, meta, "minutes", src) == live_sidecar.MISSING
+    live = tmp_path / "2026-09-19_1000.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    assert live_sidecar.adopt(live, "summary", p, src) is False
+
+
+def test_write_derivative_returns_the_state_after_writing(tmp_path):
+    """Important DS и GLM выходного круга: шов знает исход записи — он и отдаёт
+    состояние; вызывающий не пересобирает знание сам."""
+    live = tmp_path / "2026-09-19_1000.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    out = tmp_path / "Саммари.md"
+    src = live_sidecar.sha("канон")
+    assert live_sidecar.write_derivative(live, out, "summary", "тело", src, log=lambda m: None) == live_sidecar.FRESH
+    assert live_sidecar.write_derivative(live, out, "summary", "тело 2", src, log=lambda m: None) == live_sidecar.FRESH
+    # гонка: файл изменился под рукой между решением и записью — None, байты человека целы
+    import safe_write
+    real = safe_write.write_text
+    def racing(path, body, **kw):
+        if path == out and "expect" in kw:
+            out.write_text("правка человека", encoding="utf-8")
+        return real(path, body, **kw)
+    import unittest.mock as um
+    with um.patch.object(safe_write, "write_text", racing):
+        assert live_sidecar.write_derivative(live, out, "summary", "тело 3", src, log=lambda m: None) is None
+    assert out.read_text(encoding="utf-8") == "правка человека"
 
 
 def test_write_seam_lives_in_live_sidecar_and_refuses_orphan_passports(tmp_path):
@@ -144,7 +217,7 @@ def test_write_seam_lives_in_live_sidecar_and_refuses_orphan_passports(tmp_path)
         live_sidecar.prev_path(tmp_path / "a.md", tmp_path / "x" / "Тезисы.md")
     ghost = tmp_path / "нет.md"
     out = tmp_path / "Саммари.md"
-    assert live_sidecar.write_derivative(ghost, out, "summary", "тело", "a" * 64, log=lambda m: None)
+    assert live_sidecar.write_derivative(ghost, out, "summary", "тело", "a" * 64, log=lambda m: None) == live_sidecar.UNKNOWN
     assert out.read_text(encoding="utf-8") == "тело"
     assert not live_sidecar._direct(ghost).exists(), "сайдкар без владельца не создаётся"
 
@@ -171,26 +244,42 @@ def test_retouch_keeps_the_passport_alive_on_mechanical_rewrite(tmp_path, monkey
     assert "рукой" in out.read_text(encoding="utf-8")
     assert live_sidecar.read(live)["summary_sha256"] == after["summary_sha256"]
     assert live_sidecar.derivative_state(out, live_sidecar.read(live), "summary", src_sha) == live_sidecar.HUMAN
-    # rename_meeting идёт через retouch для паспортных файлов
+    # rename_meeting идёт через retouch для паспортных файлов; карта имя → вид —
+    # у владельца паспортов, не копия в скрипте (критика GLM выходного круга)
     rn = (ROOT / "scripts" / "rename_meeting.py").read_text(encoding="utf-8")
-    assert "live_sidecar.retouch(live, kind, f, swap)" in rn and '"Саммари.md": "summary"' in rn
+    assert "live_sidecar.retouch(live, kind, f, swap)" in rn and "live_sidecar.ARCHIVE_KINDS.get(f.name)" in rn
+    assert '"Саммари.md": "summary"' not in rn and live_sidecar.ARCHIVE_KINDS["Саммари.md"] == "summary"
+    # гейт expect: файл изменился под рукой между чтением и записью — отказ, правка цела
+    def racing(text):
+        out.write_text(text + "\nещё правка\n", encoding="utf-8")
+        return text.replace("рукой", "руками")
+    assert live_sidecar.retouch(live, "summary", out, racing) is False
+    assert "ещё правка" in out.read_text(encoding="utf-8") and "руками" not in out.read_text(encoding="utf-8")
 
 
-def test_archive_meeting_threads_policy_and_records_summary_state(tmp_path, monkeypatch):
-    """Политика — параметр archive_meeting (Critical GLM входного круга),
-    манифест несёт summary_state (критика GLM / Important DS)."""
+def test_archive_meeting_threads_policy_and_the_manifest_carries_no_copy_of_the_state(tmp_path, monkeypatch):
+    """Политика — параметр archive_meeting (Critical GLM входного круга) и
+    выведена из общей, не набрана литералами (Important DS выходного круга).
+    Состояния саммари в манифесте НЕТ: копия расходилась с паспортом после
+    каждой записи и обнулялась переименованием (Important DS и GLM выходного
+    круга) — читатель спрашивает `summary_state()`."""
     src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
     assert "policy: frozenset[str] | None = None" in src
     assert "policy=policy or SUMMARY_POLICY_RETRO" in src
-    assert '"summary_state": summary_state' in src
+    assert "summary_state=" not in src and '"summary_state"' not in src
     gu = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
     cr = (ROOT / "scripts" / "cloud_review.py").read_text(encoding="utf-8")
     assert "policy=SUMMARY_POLICY_LIVE" in gu and "policy=SUMMARY_POLICY_LIVE" in cr
+    assert ma.SUMMARY_POLICY_LIVE == live_sidecar.POLICY_LIVE - {live_sidecar.FRESH}
     assert live_sidecar.FRESH not in ma.SUMMARY_POLICY_LIVE, "FRESH-пересборка саммари — шум (критика GLM)"
-    folder, _ = _folder(tmp_path)
-    m = ma.build_manifest(folder, "2026-09-19_1000", "Тема", summary_state=live_sidecar.STALE)
-    assert m["summary_state"] == live_sidecar.STALE
-    assert ma.build_manifest(folder, "2026-09-19_1000", "Тема")["summary_state"] is None
+    folder, live = _folder(tmp_path)
+    assert "summary_state" not in ma.build_manifest(folder, "2026-09-19_1000", "Тема")
+    assert ma.summary_state(folder, live, None) == live_sidecar.MISSING
+    calls: list = []
+    _fake_model(monkeypatch, calls)
+    ma._gen_summary(folder, live, policy=ma.SUMMARY_POLICY_LIVE)
+    assert ma.summary_state(folder, live, None) == live_sidecar.FRESH
+    assert ma.summary_state(tmp_path / "пусто", live, None) is None
 
 
 def test_without_live_the_old_behaviour_stays(tmp_path, monkeypatch):

@@ -33,6 +33,7 @@ import threading
 import pathlib
 import re
 
+import datetime
 import sys
 
 import meeting_stamp
@@ -93,6 +94,11 @@ def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sh
     try:
         if not path.exists():
             return MISSING
+        # пустой файл — след оборванной записи, не документ: собрать, а не
+        # аттестовать пустоту (Critical DS выходного круга по №314: `_gen_summary`
+        # до паспорта проверял `st_size > 0`, с паспортом проверка пропала)
+        if path.stat().st_size == 0:
+            return MISSING
     except OSError:
         return UNKNOWN
     meta = meta if isinstance(meta, dict) else {}
@@ -132,14 +138,19 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
 
 
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> bool:
+                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> str | None:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
     стенограммой (`prev_path`): уверенная, но неверная генерация не должна быть
     невозвратной. Запись под гейтом «файл не менялся под рукой»: минута
     генерации — окно для редактора; обрыв не оставит «готовый» битый файл.
     Паспорт — только живой стенограмме: сайдкар без владельца — сирота
-    (Important DS входного круга по №314)."""
+    (Important DS входного круга по №314).
+
+    Возвращает состояние производной ПОСЛЕ записи тем же оракулом
+    `derivative_state` (FRESH при удавшемся паспорте, UNKNOWN без него) — или
+    None, если запись не состоялась. Вызывающий не пересобирает знание сам и
+    не может записать промежуточное (Important DS и GLM выходного круга)."""
     before = safe_write.stat_snapshot(path)
     if before is not None:
         try:
@@ -148,16 +159,41 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
             safe_write.write_text(prev, path.read_text(encoding="utf-8"))
         except OSError as e:
             log(f"прежняя версия {path.name} не сохранена ({e}) — не перезаписываю")
-            return False
+            return None
     if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
         log(f"{path.name} изменился под рукой — не перезаписываю")
-        return False
+        return None
     if not live.is_file():
         log(f"паспорт {kind} не записан: стенограммы {live.name} нет — сайдкар был бы сиротой")
-        return True
+        return UNKNOWN
     if not attest(live, kind, body, source_sha):
         log(f"паспорт {kind} не записан — следующая пересборка сочтёт файл чужим")
-    return True
+    return derivative_state(path, read(live), kind, source_sha)
+
+
+def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) -> bool:
+    """Присвоить производную без паспорта (UNKNOWN): паспорт на ТЕКУЩИЕ байты и
+    текущий источник плюс отметка `<вид>_adopted` с датой — читатель паспорта
+    видит, что это не машинная запись, а признание легаси (критика GLM
+    выходного круга по №314). Годится ли файл — решает вызывающий по своему
+    канону; здесь только гейт «паспорта нет, файл есть и непуст» и запись.
+    Живому пути присвоение запрещено: UNKNOWN там либо строится политикой,
+    либо остаётся незнанием (схождение DS и GLM выходного круга)."""
+    meta = read(live) or {}
+    if derivative_state(path, meta, kind, source_sha) != UNKNOWN or not live.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return attest(live, kind, text, source_sha) and remember(live, f"{kind}_adopted", stamp)
+
+
+# Файлы папки архива встречи, у которых есть паспорт в сайдкаре стенограммы:
+# имя → вид. Одна карта на проект — переименование встречи (`rename_meeting`)
+# берёт её отсюда, а не держит копию (критика GLM выходного круга по №314).
+ARCHIVE_KINDS = {"Саммари.md": "summary", "Тезисы.md": "theses"}
 
 
 def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> bool:
@@ -166,6 +202,9 @@ def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> boo
     переставляется только `<вид>_sha256`. Файл без паспорта или правленный
     руками (HUMAN) переписывается как раньше, паспорт не трогается: чужое не
     присваиваем. `transform(text) -> text`; False — запись не сделана."""
+    # снимок ДО чтения: правка редактора между чтением и записью не затирается —
+    # тот же гейт, что у `write_derivative` (Minor DS и GLM выходного круга)
+    before = safe_write.stat_snapshot(path)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -175,7 +214,7 @@ def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> boo
         return True
     meta = read(live) or {}
     ours = valid_sha(meta.get(f"{kind}_sha256")) == sha(text)
-    if not safe_write.write_text(path, new_text):
+    if not safe_write.write_text(path, new_text, expect=before):
         return False
     if ours and live.is_file():
         remember(live, f"{kind}_sha256", sha(new_text))

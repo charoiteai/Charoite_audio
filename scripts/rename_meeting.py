@@ -381,14 +381,18 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
         # байтах машиной должна переставить `<вид>_sha256`, иначе паспорт объявит
         # файл правленным руками (HUMAN) и саммари замрёт навсегда — та же вторая
         # причина HUMAN, что у минуток до №309 (Critical DS и GLM входного круга
-        # по №314). Файлы без вида — прежняя текстовая замена.
-        kinds = {"Саммари.md": "summary", "Тезисы.md": "theses"}
+        # по №314). Карта имя → вид — у владельца паспортов (`live_sidecar.ARCHIVE_KINDS`),
+        # не копия здесь (критика GLM выходного круга). Файлы без вида — прежняя
+        # текстовая замена.
         live = p.get("main")
         for f in new_folder.glob("*.md"):
             swap = lambda text, old=old_folder.name, new=new_folder.name: text.replace(old, new)  # noqa: E731
-            kind = kinds.get(f.name)
+            kind = live_sidecar.ARCHIVE_KINDS.get(f.name)
             if kind and live is not None:
-                live_sidecar.retouch(live, kind, f, swap)
+                if not live_sidecar.retouch(live, kind, f, swap):
+                    # отказ — не молча: файл менялся под рукой или не читается,
+                    # старое имя папки в нём осталось (Minor DS выходного круга)
+                    print(f"{f.name}: имя папки не заменено — файл менялся под рукой")
                 continue
             text = f.read_text(encoding="utf-8")
             if old_folder.name in text:
