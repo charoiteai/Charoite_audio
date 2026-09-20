@@ -132,6 +132,13 @@ def check_config() -> dict:
     return cfg
 
 
+def _tagged(name: str) -> str:
+    """Полное имя модели с тегом: Ollama держит `nomic` и `nomic:latest` за
+    разные имена, и сверка по префиксу хвалила бы модель, которой сервер
+    ответит 404 (круг 1 по коду, GLM M5; круг 2 — то же для чат-модели)."""
+    return name if ":" in name else f"{name}:latest"
+
+
 def check_ollama(cfg: dict) -> None:
     # На облачном движке чат-модели локально нет по замыслу, но Ollama всё
     # равно нужна: на ней живут эмбеддинги. Проверяем её напрямую и не
@@ -157,7 +164,7 @@ def check_ollama(cfg: dict) -> None:
     main = "" if cloud else str(cfg.get("llm", {}).get("model", ""))
     if cloud:
         line(OK, "чат идёт через облачный шлюз — локальная чат-модель не нужна")
-    if main and not any(m.startswith(main.split(":")[0]) for m in models):
+    if main and _tagged(main) not in models:
         line(FAIL, f"модель llm.model «{main}» не найдена", f"ollama pull {main}")
     elif main:
         line(OK, f"основная модель: {main}")
@@ -171,8 +178,7 @@ def check_ollama(cfg: dict) -> None:
     # Сверяем с тегом: `nomic` и `nomic-embed-text:latest` — разные имена для
     # Ollama, и по префиксу доктор похвалил бы модель, которой `/api/embed`
     # ответит 404 (круг 1 по коду, GLM M5).
-    full = want if ":" in want else f"{want}:latest"
-    if full in models:
+    if _tagged(want) in models:
         line(OK, f"{want} (семантический поиск)")
     else:
         line(WARN, f"{want} не установлена — поиск будет чисто лексическим",

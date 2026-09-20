@@ -214,23 +214,23 @@ def embedder(cfg: dict, *, model: str | None = None,
     поиска; теперь она у того, кто вообще знает про сервер.
     """
     if not cfg:
+        if model is not None:
+            raise ValueError(
+                "модель названа, а конфига нет: считать её негде — "
+                "пустой конфиг значит «моделей нет»")
         return Embedder(lambda texts, timeout: [], NO_MODEL)
     name = embed_model_name(cfg, model)
 
+    # Спрашиваем политику сразу, при сборке: иначе владелец узнает о своей
+    # настройке только с первым вектором, а на пустом кэше поиск за встречу
+    # не спросит ни одного — отказ так и останется неназванным (круг 2, DS I5).
+    try:
+        privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as exc:
+        _say_once(f"эмбеддинги недоступны: {exc}")
+
     def run(texts: list[str], timeout: float) -> list[list[float]]:
-        try:
-            return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
-        except OSError as exc:                      # сеть: отказ, таймаут, обрыв
-            raise SeamTransportError(str(exc)) from exc
-        except RuntimeError as exc:
-            # Политика адреса (`privacy`) отказала: чужая машина без
-            # allow_remote, открытый http наружу, взведённый рубильник. Для
-            # графа это тот же исход «векторов нет», но для владельца — его
-            # собственная настройка, и молчать о ней нельзя: раньше такой
-            # отказ доезжал до контура подсказок и до конца сеанса выглядел
-            # как «память ещё прогревается» (круг 1 по коду, обе головы).
-            _say_once(f"эмбеддинги недоступны: {exc}")
-            raise SeamTransportError(str(exc)) from exc
+        return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
 
     return Embedder(run, name)
 
@@ -257,8 +257,18 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
     }
     if keep_alive:
         payload["keep_alive"] = keep_alive
-    r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
-                      json=payload, timeout=timeout)
+    try:
+        url = privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as exc:
+        # Отказ политики — такой же исход «векторов не будет», как оборванная
+        # сеть, и объявить это обязана дверь, а не каждый вызывающий: через
+        # неё ходят и шов, и дежавю, и ревизия ядер (круг 2, DS I4 / GLM I1).
+        _say_once(f"эмбеддинги недоступны: {exc}")
+        raise SeamTransportError(str(exc), policy=True) from exc
+    try:
+        r = requests.post(url + "/api/embed", json=payload, timeout=timeout)
+    except OSError as exc:                         # отказ, таймаут, обрыв
+        raise SeamTransportError(str(exc)) from exc
     if r.status_code != 200:
         # 503 на занятом сервере приходит с не-JSON телом — раньше здесь
         # падал ValueError из r.json(), а не честное «векторов нет»

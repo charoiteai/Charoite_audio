@@ -199,6 +199,9 @@ def needles(query: str) -> tuple[list[str], list[str]]:
 
 
 REASON_EMBED = "модель эмбеддингов занята или не ответила"
+#: Отказ политики — не занятость сервера, а настройка владельца, и слова
+#: должны вести чинить её, а не перезапускать Ollama (круг 2 по №321, DS I3).
+REASON_POLICY = "адрес модели запрещён политикой — смотрите llm.allow_remote"
 REASON_CACHE = "кэш векторов собран не весь"
 
 
@@ -823,6 +826,7 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embedder = embedder
+        self._refused_by_policy = False   # последний отказ шва был по политике адреса
         self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -1036,7 +1040,11 @@ class GraphSearch:
         """
         try:
             return self._embedder.run(texts, timeout)
-        except OSError:
+        except OSError as exc:
+            # Вид отказа запоминаем: для контура это один исход «векторов нет»,
+            # а владельцу нужны разные слова — «сервер занят» и «вы запретили
+            # этот адрес» ведут чинить разное.
+            self._refused_by_policy = bool(getattr(exc, "policy", False))
             return []
 
     def load_vectors(self) -> int:
@@ -1329,7 +1337,12 @@ class GraphSearch:
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
         status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
-        reason = "" if status is not Verdict.UNVERIFIED else (REASON_CACHE if sem_used else REASON_EMBED)
+        if status is not Verdict.UNVERIFIED:
+            reason = ""
+        elif sem_used:
+            reason = REASON_CACHE
+        else:
+            reason = REASON_POLICY if self._refused_by_policy else REASON_EMBED
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)

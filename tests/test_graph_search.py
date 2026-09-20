@@ -745,6 +745,9 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
     # а это ровно тот сценарий, ради которого константа заведена (DS M3 круга 1)
     assert seen["model"] == "own-model" and seen["keep_alive"] == "30m"
 
+    with pytest.raises(ValueError):
+        llm.embedder({}, model="own")      # считать негде: пин без адреса — ошибка вызывающего
+
     seen.clear()
     quiet = llm.embedder({})
     assert quiet.run(["текст"], 5) == [] and not seen, "конфига нет — в сеть не ходим вовсе"
@@ -789,6 +792,10 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     import llm
 
     monkeypatch.setattr(llm, "_said", set())
+    # рубильник офлайна проверяется раньше allow_remote: на машине, где он
+    # взведён, причина была бы другой, и тест краснел бы от окружения (GLM I2)
+    for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
+        monkeypatch.delenv(k, raising=False)
     cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
     e = llm.embedder(cfg)
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
@@ -796,6 +803,8 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
     assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
+    assert r.reason == gs.REASON_POLICY, \
+        "владельцу названа его настройка, а не занятость сервера"
     said = capsys.readouterr().err
     assert "allow_remote" in said, "причина названа владельцу, а не проглочена"
     (_graph(tmp_path) / "Системы" / "Ещё.md").write_text(
