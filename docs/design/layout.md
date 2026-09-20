@@ -188,7 +188,7 @@
 - `node_modules/` — out (walk): чужой код
 - `.git/` — out (walk): служебный каталог git
 - `app/` — code (git): приложение зовёт python и shell
-- `scripts/` — code (insurance): все файлы — кандидаты; страховка на подкаталог скриптов
-- `src/` — code (insurance): все файлы — кандидаты; страховка на подпакет в src/
+- `scripts/` — code (git): скрипты зовут друг друга и модули; проза по суффиксу (README)
+- `src/` — code (git): модули зовут скрипты и подсказывают пути человеку
 - `.github/` — code (git): workflow CI — источник запуска
 - `.pre-commit-config.yaml` — code (git): хуки — источник запуска

@@ -31,6 +31,11 @@ ENTRY_TARGETS и `out` по KINDS), `--regen` писал артефакт с п�
 при переписывании, суффиксный фолбэк дал правдоподобный вид, всё осталось
 зелёным. Теперь таблица — утверждённые данные (копия с порядком здесь),
 живость правила измеряется удалением, отсечение при обходе слабее решателя.
+Круг 7 (две головы): живость мерялась только у правил области `git`, а
+опечатка в префиксе правила обхода проходила зелёной; тест, закрывавший
+недостижимую инструкцию про карту, не падал при откате фикса. Теперь живость
+меряется пробой вида у каждого правила, снимок накрывает обе константы
+политики, а тесты на закрытие проверены мутацией.
 """
 from __future__ import annotations
 
@@ -96,6 +101,8 @@ def test_entry_points_are_executables_not_mentions(world):
 #: Утверждённая таблица видов — копия KINDS без колонки why, с порядком (первый
 #: совпавший префикс побеждает). Правка политики — правка в двух файлах, которую
 #: ревьюер обязан прочитать (Critical DS круга 6: правила выпадали молча).
+APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
+
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
     ("tests/", "out", "git"),
@@ -113,20 +120,28 @@ APPROVED_KINDS = (
     ("node_modules/", "out", "walk"),
     (".git/", "out", "walk"),
     ("app/", "code", "git"),
-    ("scripts/", "code", "insurance"),
-    ("src/", "code", "insurance"),
+    ("scripts/", "code", "git"),
+    ("src/", "code", "git"),
     (".github/", "code", "git"),
     (".pre-commit-config.yaml", "code", "git"),
 )
 
-#: Пути, вид которых держится на правиле, а не на суффиксе — ожидание независимо
-#: от `decide` (Important DS круга 6: сверка решения с самим собой не проверка).
+#: Пути, вид которых держится на ПРАВИЛЕ: без своего правила каждый решался бы
+#: иначе. Ожидание независимо от `decide` (Important DS круга 6: сверка решения
+#: с самим собой не проверка).
 RULE_DEPENDENT = {
     "app-ios/README.md": "out", "app-ios/project.yml": "out", "app-android/README.md": "out",
     "app-android/gradle/libs.versions.toml": "out", "app/Tests/X.swift": "out", "tests/README.md": "out",
     "docs/reviews/2026-07-30-x.md": "history", "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",
     "app/Sources/A.swift": "code", ".github/workflows/ci.yml": "code", ".pre-commit-config.yaml": "code",
-    "docs/design/layout.md": "out", "config/config.example.yaml": "prose", "README.md": "prose",
+    "docs/design/layout.md": "out",
+}
+
+#: Пути, вид которых даёт суффиксный фолбэк без всякого правила — он был злодеем
+#: круга 5 (правдоподобный вид вместо выпавшей политики), поэтому прибит тоже
+#: (Minor GLM круга 7: комментарий врал про четыре записи из семнадцати).
+SUFFIX_PINNED = {
+    "config/config.example.yaml": "prose", "README.md": "prose",
     "docs/design/ui.html": "out", "app/Package.resolved": "out",
 }
 
@@ -151,8 +166,20 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     проблемах инвентаря; правило после более широкого — не накрывает ничего."""
     layout, graph, _, _, inv = world
     assert tuple(r[:3] for r in lm.KINDS) == APPROVED_KINDS, "таблица KINDS изменилась — обнови утверждённую копию осознанно"
+    assert lm.ENTRY_CANDIDATES == APPROVED_ENTRY_CANDIDATES, "шаблоны кандидатов — та же политика, снимок обязателен"
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
+        won = lm.decide(rel).rule
+        assert won is not None, f"{rel} решён без правила — место ему в SUFFIX_PINNED"
+        assert _decide_with(lm.KINDS[:won] + lm.KINDS[won + 1:], rel).kind != kind, \
+            f"{rel} держится не на своём правиле — место ему в SUFFIX_PINNED"
+    for rel, kind in SUFFIX_PINNED.items():
+        assert lm.kind_of(rel) == kind, rel
+    # каталоги кандидатов выводятся из шаблонов, и ни один не отсекается обходом
+    assert lm.candidate_dirs() == {"", "app", "scripts", "src"}
+    for pat in lm.ENTRY_CANDIDATES:
+        parent = str(pathlib.PurePosixPath(pat).parent)
+        assert not lm._pruned("" if parent == "." else parent), pat
     covered: dict[int, int] = {}
     decisions: dict[str, str] = {}
     for rel, info in inv.files.items():
@@ -163,13 +190,18 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
         decisions[rel] = d.kind
         if d.rule is not None:
             covered[d.rule] = covered.get(d.rule, 0) + 1
-    for i, (prefix, _kind, scope, _why) in enumerate(lm.KINDS):
+    for i, (prefix, kind, scope, _why) in enumerate(lm.KINDS):
         without = lm.KINDS[:i] + lm.KINDS[i + 1:]
-        changes = sum(1 for rel in inv.files if _decide_with(without, rel).kind != decisions[rel])
+        # живость — проба своего вида: удаление правила обязано изменить её вид.
+        # Корпус для этого не годится: правило обхода (`build/`, `.venv/`) не
+        # накрывает под git ничего, и опечатка в префиксе прошла бы зелёной
+        # (Important DS круга 7).
+        pr = lm.probe(prefix, kind)
+        assert _decide_with(without, pr).kind != lm.decide(pr).kind, \
+            f"правило KINDS {prefix!r} ничего не решает: вид пробы {pr} без него тот же"
+        # область — факт о корпусе: git накрывает файлы под git, walk не накрывает
         if scope == "git":
-            assert changes > 0, f"правило KINDS {prefix!r}: удаление не меняет вид ни одного файла — оно память автора"
-        elif scope == "insurance":
-            assert covered.get(i, 0) > 0 and changes == 0, f"правило {prefix!r} объявлено страховкой, но решает"
+            assert covered.get(i, 0) > 0, f"правило {prefix!r} области git не накрывает ни одного файла под git"
         else:
             assert scope == "walk" and covered.get(i, 0) == 0, f"правило {prefix!r} области walk накрывает файлы под git"
     assert lm.decide("release.sh").by == "candidate", "корневой .sh — кандидат, значит код"
@@ -187,11 +219,21 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     monkeypatch.setattr(lm, "KINDS", dead)
     assert lm.decide("scripts/never.py").rule != len(dead) - 1, "правило после более широкого не накрывает ничего"
     monkeypatch.undo()
-    # отсечение при обходе строго слабее решателя: всё, что отсекается, decide назвал бы out
-    for rel in inv.files:
-        parent = str(pathlib.PurePosixPath(rel).parent)
-        if parent != "." and lm._pruned(parent):
-            assert lm.decide(rel).kind == "out" and not lm._is_candidate(rel), rel
+    # отсечение слабее решателя и на глубине: тень над каталогом кандидатов не
+    # прячет ни файл в нём, ни файл в его подкаталоге (Minor DS круга 7: петля по
+    # корпусу была тождественно истинной)
+    monkeypatch.setattr(lm, "KINDS", (("scripts/", "out", "git", "тень"),) + lm.KINDS)
+    (tmp_path / "scripts" / "sub").mkdir()
+    (tmp_path / "scripts" / "sub" / "deep.py").write_text("x = 1\n", encoding="utf-8")
+    assert not lm._pruned("scripts"), "каталог кандидатов под тенью не отсекается"
+    assert lm._pruned("scripts/sub"), "каталог без кандидатов отсекается законно — там нечего прятать"
+    files = lm.inventory(tmp_path).files
+    assert "scripts/get_models.py" in files, "кандидат виден, конфликт дойдёт до гейта"
+    assert "scripts/sub/deep.py" not in files
+    # свойство: отсечённый каталог не может содержать кандидата ни по одному шаблону
+    for pat in lm.ENTRY_CANDIDATES:
+        assert not lm._pruned(str(pathlib.PurePosixPath(pat).parent / "x").rsplit("/", 1)[0] or "")
+    monkeypatch.undo()
     # круг запись → чтение
     regenerated, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
     assert unticketed == []
@@ -207,13 +249,15 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     правки карточки (Important DS круга 5). `LAYOUT` подменяется целиком:
     и чтение, и запись идут в копию (Minor DS круга 5)."""
     lay = tmp_path / "layout.json"
+    stale_map = tmp_path / "layout.md"
+    stale_map.write_text("устаревшая карта\n", encoding="utf-8")
     data = json.loads(lm.LAYOUT.read_text(encoding="utf-8"))
     data["manual_entry_points"]["scripts/phantom_manual.py"] = "ручная точка, которой нет — второе расхождение"
     data["allowed_edges"].append({"from": "x_mod", "to": "y_mod", "ticket": "№0"})   # устаревшая запись allowlist
     lay.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     before = lay.read_text(encoding="utf-8")
     monkeypatch.setattr(lm, "LAYOUT", lay)
-    monkeypatch.setattr(lm, "MAP", tmp_path / "layout.md")
+    monkeypatch.setattr(lm, "MAP", stale_map)
 
     def fake_regen(layout, graph):
         layout["allowed_edges"] = [e for e in layout["allowed_edges"] if e["from"] != "x_mod"]   # черновик «чинит» запись
@@ -221,12 +265,21 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     monkeypatch.setattr(lm, "regen", fake_regen)
     assert lm.main(["--regen"]) == 1
     assert lay.read_text(encoding="utf-8") == before, "артефакт с пустой карточкой не должен быть записан"
-    assert not (tmp_path / "layout.md").exists()
+    assert stale_map.read_text(encoding="utf-8") == "устаревшая карта\n", "карта не переписана"
     out = capsys.readouterr().out
     assert "ребро low_mod → top_mod без карточки" in out
     assert "scripts/phantom_manual.py, но это не исполняемый файл" in out, "отчёт тем же прогоном, не после правки"
     assert "x_mod → y_mod, но такого ребра" in out, "отчёт по раскладке на диске, а не по несохранённому черновику (DS круга 6)"
+    # мутация: карта на диске заведомо устаревшая, но при блокировке о ней не судят —
+    # убери `not blocked` из main, и строка появится (обе головы круга 7)
     assert "отстал от кода" not in out, "карта не писалась — строка о её свежести недостижима"
+    # без блокировки та же устаревшая карта краснеет, а пропавшая — тоже
+    monkeypatch.setattr(lm, "regen", lambda layout, graph: (layout, []))
+    lm.main(["--check"])
+    assert "отстал от кода" in capsys.readouterr().out, "вне блокировки устаревшая карта — расхождение"
+    stale_map.unlink()
+    lm.main(["--check"])
+    assert "нет — перегенерировать" in capsys.readouterr().out, "пропавшая карта — расхождение, а не зелёный гейт"
 
 
 def test_the_artifact_is_loaded_strictly(tmp_path):
@@ -370,6 +423,46 @@ def test_one_inventory_one_policy_for_every_file(tmp_path):
     assert lm.kind_of(".github/workflows/ci.yml") == "code"
     assert lm.kind_of("config/config.example.yaml") == "prose"
     assert lm.kind_of(".pre-commit-config.yaml") == "code"
+
+
+def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_path, capsys):
+    """`--report` печатает факты для постановки фазы: кто читает переменную
+    корня (и стоит ли чтение выше вставки в `sys.path` — тогда переход на модуль
+    корней требует переноса строки), кто выводит корень из положения файла, кто
+    зовёт шов. Три круга постановки фазы 3 дали Critical на расхождении ручного
+    перечня с фактом — список работ обязан быть выводом замера."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "src" / "lib.py").write_text(
+        'import os, pathlib\n'
+        'ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or pathlib.Path(__file__).resolve().parent.parent)\n'
+        'HERE = pathlib.Path(__file__).resolve().parent\n'            # одна ступень — не корень
+        'HELP = "по умолчанию CHAROITE_ROOT, как у демона"\n'          # строка в справке — не чтение
+        'def f(cfg):\n    return LLM(cfg)\n', encoding="utf-8")
+    (tmp_path / "scripts" / "early.py").write_text(
+        'import os, sys, pathlib\n'
+        'ROOT = os.getenv("CHAROITE_ROOT") or "."\n'
+        'sys.path.insert(0, "src")\n'
+        'import llm\n'
+        'x = llm.LLM({})\n'
+        'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    (tmp_path / "scripts" / "late.py").write_text(
+        'import os, sys\n'
+        'sys.path.insert(0, "src")\n'
+        'ROOT = os.environ["CHAROITE_ROOT"]\n'
+        'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    text = lm.report(lm.inventory(tmp_path))
+    assert "## Читатели переменной CHAROITE_ROOT (3)" in text
+    assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ первой вставки sys.path (3)" in text
+    assert "`scripts/late.py`:3" in text and "ВЫШЕ первой вставки" not in text.split("late.py")[1].split("\n")[0]
+    assert "`src/lib.py`:2" in text
+    roots_block = text.split("## Корень из положения файла")[1].split("## Точки сборки")[0]
+    assert roots_block.splitlines()[0].endswith("(1)"), roots_block.splitlines()[0]
+    assert "`src/lib.py`:2" in roots_block and "early.py" not in roots_block
+    assert "**LLM** (2)" in text, "шов считается и по голому имени, и по `llm.LLM`"
+    assert "**GraphSearch** (0): нет" in text
+    # справка argparse и одна ступень `.parent` — не факты
+    assert "HELP" not in text and "`src/lib.py`:3" not in text
 
 
 def test_scanner_reads_code_not_prose(tmp_path):

@@ -44,6 +44,7 @@
     .venv/bin/python scripts/layout_map.py            # карта в docs/design/layout.md
     .venv/bin/python scripts/layout_map.py --check    # то же, что тест, кодом выхода
     .venv/bin/python scripts/layout_map.py --regen    # allowlist по факту + карта
+    .venv/bin/python scripts/layout_map.py --report   # замер швов для постановки фазы
 """
 from __future__ import annotations
 
@@ -82,9 +83,11 @@ ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.s
 #: рядом с кодом — как проза, остальное — `out`. Без совпадения: проза по
 #: суффиксу, иначе `out` (Important DS круга 3). Область: `git` — удаление
 #: правила меняет вид хотя бы одного файла под git (иначе оно память автора —
-#: гейт); `insurance` — сегодня решает только через кандидатов и записано как
-#: страховка на подкаталоги; `walk` — только для обхода без git (каталоги,
-#: которых в индексе не бывает; под git такое правило не накрывает ничего).
+#: гейт); `walk` — правило накрывает ноль файлов под git (каталог существует
+#: только на диске: сборки, окружения). Живость меряется пробой своего вида
+#: (`probe(prefix, kind)`): удаление правила обязано изменить вид пробы, иначе
+#: правило ничего не решает (Important DS круга 7: у правил области `walk`
+#: живость не мерялась ничем, опечатка в префиксе проходила зелёной).
 #: Сама таблица — утверждённые данные: её копия с порядком лежит в гейте
 #: (Critical DS круга 6: два правила выпали при переписывании, суффиксный
 #: фолбэк дал правдоподобный вид, и ни одна проверка не заметила).
@@ -105,8 +108,8 @@ KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("node_modules/", "out", "walk", "чужой код"),
     (".git/", "out", "walk", "служебный каталог git"),
     ("app/", "code", "git", "приложение зовёт python и shell"),
-    ("scripts/", "code", "insurance", "все файлы — кандидаты; страховка на подкаталог скриптов"),
-    ("src/", "code", "insurance", "все файлы — кандидаты; страховка на подпакет в src/"),
+    ("scripts/", "code", "git", "скрипты зовут друг друга и модули; проза по суффиксу (README)"),
+    ("src/", "code", "git", "модули зовут скрипты и подсказывают пути человеку"),
     (".github/", "code", "git", "workflow CI — источник запуска"),
     (".pre-commit-config.yaml", "code", "git", "хуки — источник запуска"),
 )
@@ -255,17 +258,32 @@ def kind_of(rel: str) -> str:
     return decide(rel).kind
 
 
-#: Каталоги, в которых лежат кандидаты в точки входа (по ENTRY_CANDIDATES) —
-#: отсечение при обходе никогда их не пропускает: решение о файле сильнее.
-_CANDIDATE_DIRS = frozenset(str(pathlib.PurePosixPath(p).parent).replace(".", "") for p in ENTRY_CANDIDATES)
+def candidate_dirs() -> frozenset[str]:
+    """Каталоги, в которых лежат кандидаты в точки входа — одна точка вывода из
+    `ENTRY_CANDIDATES` (Minor DS и GLM круга 7: текстовая замена точки вырезала
+    её из имени каталога, и защита терялась молча)."""
+    out = set()
+    for pat in ENTRY_CANDIDATES:
+        parent = str(pathlib.PurePosixPath(pat).parent)
+        out.add("" if parent == "." else parent)
+    return frozenset(out)
+
+
+def probe(prefix: str, kind: str) -> str:
+    """Путь-проба правила: файл, на котором видно, что правило решает. Для
+    правила-каталога — файл внутри с суффиксом, который без правила дал бы
+    другой вид; для правила-имени — сам путь."""
+    if not prefix.endswith("/"):
+        return prefix
+    return prefix + ("probe.swift" if kind == "code" else "probe.md")
 
 
 def _pruned(rel_dir: str) -> bool:
     """Обход без git: каталог, который таблица целиком относит к `out`, не
-    открывается вовсе — но только если в нём не может быть кандидата: отсечение
-    строго слабее `decide`, иначе правило-тень над `scripts/` спрятало бы
-    конфликт от гейта в обходе без git (Important DS круга 6)."""
-    if rel_dir in _CANDIDATE_DIRS:
+    открывается вовсе — но только если в нём и ниже не может быть кандидата:
+    отсечение строго слабее `decide`, иначе правило-тень над `scripts/` спрятало
+    бы конфликт от гейта в обходе без git (Important DS круга 6)."""
+    if any(rel_dir == d or d.startswith(rel_dir + "/") for d in candidate_dirs()):
         return False
     i = _rule(rel_dir + "/")
     return i is not None and KINDS[i][1] == "out"
@@ -536,12 +554,112 @@ def scan(inv: Inventory) -> Scan:
     return Scan(mentions, prose, loose, problems)
 
 
+#: Что считает `--report`: имя факта → как он читается в дереве. Списки работ фазы
+#: (кто читает переменную корня, кто считает корень от своего файла, кто собирает
+#: шов) берутся отсюда, а не из памяти автора: три круга постановки фазы 3 дали
+#: Critical на расхождении ручного перечня с фактом (10 скриптов против 22, 10
+#: мест сборки против 11).
+def _env_reads(tree: ast.Module, var: str) -> list[int]:
+    """Строки, где модуль читает переменную окружения `var` сам: `os.environ.get`,
+    `os.getenv`, `os.environ[...]`. Строка в справке argparse вызовом не является."""
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            reader = (isinstance(fn, ast.Attribute) and (
+                (isinstance(fn.value, ast.Attribute) and isinstance(fn.value.value, ast.Name)
+                 and fn.value.value.id == "os" and fn.value.attr == "environ" and fn.attr == "get")
+                or (isinstance(fn.value, ast.Name) and fn.value.id == "os" and fn.attr == "getenv")))
+            if reader and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == var:
+                out.append(node.lineno)
+        elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
+              and isinstance(node.value.value, ast.Name) and node.value.value.id == "os"
+              and node.value.attr == "environ" and isinstance(node.slice, ast.Constant)
+              and node.slice.value == var):
+            out.append(node.lineno)
+    return sorted(out)
+
+
+def _file_roots(tree: ast.Module) -> list[int]:
+    """Строки с цепочкой `__file__ … .parent.parent` — корень, выведенный из
+    положения файла. Одна ступень (`sys.path`-шим) не считается."""
+    out = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute) and node.attr == "parent"
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "parent"
+                and "__file__" in ast.unparse(node)):
+            out.append(node.lineno)
+    return sorted(set(out))
+
+
+def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
+    """Строки вызовов по имени: `LLM(`, `GraphSearch(`, `graphs.graph_dir(` и т. п.
+    Имя сравнивается по последнему сегменту, чтобы ловить и `llm.LLM`, и `LLM`."""
+    out: dict[str, list[int]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = ast.unparse(node.func)
+        for name in names:
+            if callee == name or callee.endswith("." + name):
+                out.setdefault(name, []).append(node.lineno)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _first_path_insert(tree: ast.Module) -> int | None:
+    """Строка первой вставки в `sys.path` — импорт модулей из `src/` возможен
+    только после неё (Critical DS: чтение корня стояло выше вставки в 13 скриптах)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append"):
+            return node.lineno
+    return None
+
+
+def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
+           seams: tuple[str, ...] = ("LLM", "GraphSearch", "shared", "judge", "revise",
+                                     "graph_dir", "resolve_root", "code_root", "harden_umask",
+                                     "trim_log", "night_wait_cap")) -> str:
+    """Факты о швах для постановки фазы: кто читает переменную корня (и стоит ли
+    чтение выше вставки в `sys.path` — тогда переход на модуль корней требует
+    переноса строки), кто выводит корень из положения файла, кто зовёт шов.
+    Вывод — не оценка и не план: это замер, который бриф цитирует."""
+    env: list[str] = []
+    roots: list[str] = []
+    seam_hits: dict[str, list[str]] = {}
+    for rel, info in sorted(inv.files.items()):
+        if info.tree is None or not rel.endswith(".py"):
+            continue
+        lines = _env_reads(info.tree, env_var)
+        if lines:
+            insert = _first_path_insert(info.tree)
+            order = ""
+            if insert is not None and lines[0] < insert:
+                order = f"; чтение в строке {lines[0]} ВЫШЕ первой вставки sys.path ({insert})"
+            elif insert is None and rel.startswith("scripts/"):
+                order = "; вставки sys.path в файле нет"
+            env.append(f"- `{rel}`:{','.join(map(str, lines))}{order}")
+        fr = _file_roots(info.tree)
+        if fr:
+            roots.append(f"- `{rel}`:{','.join(map(str, fr))}")
+        for name, hits in _calls(info.tree, seams).items():
+            seam_hits.setdefault(name, []).append(f"`{rel}`:{','.join(map(str, hits))}")
+    out = [f"# Замер швов (`scripts/layout_map.py --report`), модулей {len(inv.files)}", "",
+           f"## Читатели переменной {env_var} ({len(env)})", ""] + (env or ["- нет"])
+    out += ["", f"## Корень из положения файла — цепочка `__file__ … .parent.parent` ({len(roots)})", ""]
+    out += roots or ["- нет"]
+    out += ["", "## Точки сборки швов", ""]
+    for name in seams:
+        who = seam_hits.get(name, [])
+        out.append(f"- **{name}** ({len(who)}): " + (", ".join(who) if who else "нет"))
+    return "\n".join(out) + "\n"
+
+
 def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
     return {(e["from"], e["to"]) for e in layout["allowed_edges"]}
 
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
-          repo: pathlib.Path = REPO, *, map_text: str | None = None) -> list[str]:
+          repo: pathlib.Path = REPO, *, map_text: str | None = None, map_state: str = "unknown") -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны."""
     problems: list[str] = list(scanned.problems)
@@ -574,7 +692,11 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     for path, who in sorted(scanned.prose.items()):
         if not (repo / path).is_file():
             problems.append(f"путь {path} назван в документации или конфиге ({', '.join(sorted(who))}), а файла нет")
-    if map_text is not None and map_text != render_map(layout, graph, scanned, execs):
+    # три состояния карты, а не перегруженный None: свежая / отстала / её нет
+    # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
+    if map_state == "missing":
+        problems.append(f"{MAP.name} нет — перегенерировать: scripts/layout_map.py")
+    elif map_text is not None and map_text != render_map(layout, graph, scanned, execs):
         problems.append(f"{MAP.name} отстал от кода — перегенерировать: scripts/layout_map.py")
     return problems
 
@@ -655,6 +777,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"✗ {LAYOUT.relative_to(REPO)}: {e}")
         return 1
     inv = inventory()
+    if "--report" in args:
+        print(report(inv), end="")
+        return 0
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)
@@ -672,9 +797,15 @@ def main(argv: list[str] | None = None) -> int:
     if "--check" not in args and not blocked:
         MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
         print(f"карта: {MAP.relative_to(REPO)}")
-    # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась
-    map_text = MAP.read_text(encoding="utf-8") if MAP.exists() and not blocked else None
-    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text)
+    # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась,
+    # и судить о ней нечем (состояние `skipped`, а не «свежая»)
+    if blocked:
+        map_text, map_state = None, "skipped"
+    elif MAP.exists():
+        map_text, map_state = MAP.read_text(encoding="utf-8"), "present"
+    else:
+        map_text, map_state = None, "missing"
+    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state)
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")
