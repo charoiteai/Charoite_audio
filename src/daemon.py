@@ -3308,7 +3308,7 @@ def main():
                 pass
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
-                 str(pathlib.Path(__file__).parent / "rebuild_transcript.py"), str(tr.path)],
+                 str(CODE / "src" / "rebuild_transcript.py"), str(tr.path)],
                 start_new_session=True, stdin=subprocess.DEVNULL,
                 stdout=glog, stderr=subprocess.STDOUT,
             )

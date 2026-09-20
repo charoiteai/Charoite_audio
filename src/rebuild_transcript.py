@@ -1424,7 +1424,7 @@ def main():
         publish(status.processing, live, "updating_graph")
         _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
-            [sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"), str(live)],
+            [sys.executable, str(CODE / "src" / "graph_updater.py"), str(live)],
             check=False,
         )
         if result.returncode == EXIT_NO_SPEECH:

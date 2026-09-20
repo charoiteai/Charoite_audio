@@ -24,6 +24,12 @@
 - `tier3` → graph: бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако
 - `vocabulary` → core: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
 
+## Корень выводит один модуль — объявленные исключения
+
+Канон: `src/charoite_paths.py`. Область правила: `src/`.
+
+- `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
+
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
 Всего 6.
@@ -78,7 +84,7 @@
 - `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом
 - `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift
 - `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py
-- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/transcribe_file.py
+- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py
 - `src/main.py` ← scripts/doctor.py
 - `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория
 - `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками

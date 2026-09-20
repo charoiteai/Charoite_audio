@@ -232,9 +232,15 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
             raise LayoutError(f"ребро allowlist без from/to: {e!r}")
         if not e.get("ticket"):
             raise LayoutError(f"ребро {e['from']} → {e['to']} без карточки")
-    for path_, why in layout["root_exemptions"].items():
-        if not isinstance(why, str) or not why:
-            raise LayoutError(f"исключение из правила корня {path_}: нужно непустое обоснование")
+    known = {name for name, _, _ in ROOT_SHAPES}
+    for path_, shapes in layout["root_exemptions"].items():
+        if not isinstance(shapes, dict) or not shapes:
+            raise LayoutError(f"исключение из правила корня {path_}: нужна карта «форма → обоснование»")
+        for name, why in shapes.items():
+            if name not in known:
+                raise LayoutError(f"исключение {path_}: форма {name!r} не из ROOT_SHAPES")
+            if not isinstance(why, str) or not why:
+                raise LayoutError(f"исключение {path_} по форме {name}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
         if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
@@ -712,16 +718,88 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
     return sorted(out)
 
 
+#: Функции канона, которым положение файла отдают на вход: подъём вверх делают
+#: они, а не вызывающий.
+ROOT_CANON_CALLS = ("resolve_root", "code_root")
+#: Вызовы, куда путь от `__file__` уходит целиком и корнем не становится.
+ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
+#: Конструкторы пути: обернуть `__file__` можно, уйти вверх от него — нет.
+ROOT_PATH_CALLS = ("Path", "PurePath", "PurePosixPath")
+
+
 def _file_roots(tree: ast.Module) -> list[int]:
-    """Строки с цепочкой `__file__ … .parent.parent` — корень, выведенный из
-    положения файла. Одна ступень (`sys.path`-шим) не считается."""
+    """Строки, где модуль распоряжается собственным положением на диске сам.
+
+    Правило перевёрнуто и спрашивает не «какой цепочкой выведен корень», а
+    «куда уходит `__file__`»: написаний подъёма много (`.parent.parent`,
+    `parents[1]`, `dirname(dirname(…))`, хелпер с параметром), и перечислять
+    их значит отставать на одно написание за круг. Первая редакция ловила
+    только `__file__ … .parent.parent`; вторая добавила индекс и `dirname`, но
+    хелпер с параметром — написание, которым сделан сам канон, — проходил мимо
+    обеих (Critical DS кругов 1 и 2, воспроизведено пробой).
+
+    Законны ровно три назначения, и все три проверяются по МЕСТУ узла, а не по
+    виду выражения вокруг него:
+
+    * аргумент канона (`ROOT_CANON_CALLS`) — подъём там и положен;
+    * аргумент вставки пути (`ROOT_BOOTSTRAP_CALLS`) — это bootstrap, не корень;
+    * внутри конструктора пути (`ROOT_PATH_CALLS`) без подъёма — путь к самому
+      себе, например для перезапуска процесса.
+
+    Всё остальное — расхождение, включая передачу `__file__` в любую другую
+    функцию: что она сделает с положением файла, замер знать не может, а
+    исторически делала именно подъём. Замер по боевому коду на 20.09: канон 25
+    вхождений, конструктор пути 13, чужих вызовов ноль — то есть правило
+    строгое, но никого сегодня не задевает.
+    """
+    legit: set[tuple[int, int]] = set()
+    climb_ok: set[tuple[int, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+        where = (legit if name in ROOT_CANON_CALLS or ast.unparse(fn) in ROOT_BOOTSTRAP_CALLS
+                 else climb_ok if name in ROOT_PATH_CALLS else None)
+        if where is None:
+            continue
+        for arg in node.args:
+            for n in ast.walk(arg):
+                if isinstance(n, ast.Name) and n.id == "__file__":
+                    where.add((n.lineno, n.col_offset))
     out = []
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and node.attr == "parent"
-                and isinstance(node.value, ast.Attribute) and node.value.attr == "parent"
-                and "__file__" in ast.unparse(node)):
-            out.append(node.lineno)
+        if not (isinstance(node, ast.Name) and node.id == "__file__"):
+            continue
+        key = (node.lineno, node.col_offset)
+        if key in legit:
+            continue
+        if key in climb_ok and not _climbs(tree, node):
+            continue            # `Path(__file__)` без подъёма — путь к себе
+        out.append(node.lineno)
     return sorted(set(out))
+
+
+def _climbs(tree: ast.Module, target: ast.Name) -> bool:
+    """Уходит ли выражение вокруг `__file__` вверх по дереву каталогов.
+
+    Подъём — обращение к каталогу-владельцу: `.parent`, `.parents[…]`,
+    `dirname`. Проверяется по предкам узла, а не по написанию цепочки, поэтому
+    имя промежуточной переменной значения не имеет.
+    """
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    cur = target
+    for _ in range(8):
+        cur = parents.get(cur)
+        if cur is None:
+            return False
+        if isinstance(cur, ast.Attribute) and cur.attr in ("parent", "parents"):
+            return True
+        if isinstance(cur, ast.Call):
+            fn = cur.func
+            if (fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")) == "dirname":
+                return True
+    return False
 
 
 def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
@@ -777,7 +855,7 @@ ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
     ("env", lambda tree: _env_reads(tree, ENV_ROOT_VAR),
      f"читает {ENV_ROOT_VAR} сам"),
     ("file", _file_roots,
-     "выводит корень из положения файла цепочкой __file__ … .parent.parent"),
+     "распоряжается собственным положением на диске сам — это дело канона"),
 )
 
 
@@ -799,30 +877,48 @@ def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
     return out
 
 
-def root_problems(derivations: dict[str, dict[str, list[int]]],
-                  exemptions: dict[str, str] | None = None) -> list[str]:
+def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
+                  exemptions: dict[str, dict[str, str]] | None = None) -> list[str]:
     """Расхождения правила «корень выводит один модуль» — строками.
 
     Отдельная функция, потому что её зовёт гейт, а считает инвентарь: так новую
     форму нельзя добавить в замер и забыть в гейте.
 
-    `exemptions` — решения человека из артефакта: файл → обоснование. Не список
-    прощённых имён, а объявленные исключения по устройству, и сверяются они в обе
-    стороны, как всё в этом гейте: исключение, которое больше не выводит корень, —
+    `exemptions` — решения человека из артефакта: файл → ФОРМА → обоснование. Не
+    список прощённых имён, а объявленные исключения по устройству, и сверяются они
+    в обе стороны, как всё в этом гейте: исключение, которого больше нет в замере, —
     расхождение, его надо снять.
+
+    Исключение даётся на форму, а не на файл целиком: обоснование покрывает одну
+    форму, а прощение файла молчало бы и о любой другой. Единственное сегодняшнее
+    исключение — рецепт зависимостей: ему нельзя импортировать канон по его же
+    контракту, но если он однажды начнёт ещё и читать переменную, это второй канон,
+    и гейт обязан сказать (обе головы круга 2, независимо).
+
+    `derivations is None` значит «вызывающий о выводе корня не спрашивает»: тогда
+    молчат обе стороны. Раньше молчала только первая, и незаданный замер печатал
+    «исключение больше не выводит корень» про живое исключение — тот же
+    перегруженный `None`, за который платили гейтом свежести карты (круг 9).
     """
+    if derivations is None:
+        return []
     hint = {name: text for name, _, text in ROOT_SHAPES}
     exempt = exemptions or {}
     out = []
     for rel, shapes in sorted(derivations.items()):
-        if rel == ENV_ROOT_OWNER or rel in exempt or not rel.startswith(ENV_ROOT_ENFORCED):
+        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
             continue
         for name, lines in sorted(shapes.items()):
+            if name in exempt.get(rel, {}):
+                continue
             out.append(f"{rel}:{','.join(map(str, lines))} {hint[name]} — "
                        f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "
                        f"иначе копия разойдётся с каноном")
-    for rel in sorted(set(exempt) - set(derivations)):
-        out.append(f"root_exemptions объявляет {rel}, но корень он больше не выводит — снять")
+    for rel, shapes in sorted(exempt.items()):
+        gone = sorted(set(shapes) - set(derivations.get(rel, {})))
+        for name in gone:
+            out.append(f"root_exemptions прощает {rel} форму «{name}», но замер её "
+                       f"больше не находит — снять")
     return out
 
 
@@ -883,10 +979,20 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
     if disputed:
         out += ["", f"## Спорный вид — файлы в замере есть, но политика конфликтует ({len(disputed)})", ""]
         out += [f"- {p.text}" for p in disputed]
-    out += ["", f"## Читатели переменной {env_var} (формы: {', '.join(ENV_READ_FORMS)}) — {len(env)}", ""]
+    # Заголовки и счётчики берутся из той же таблицы форм, что судит гейт: пока они
+    # были литералами, замер описывал две формы, а гейт мог считать третью, и долг
+    # по ней был невидим человеку (Important GLM круга 2).
+    shape_hint = {name: text for name, _, text in ROOT_SHAPES}
+    out += ["", f"## Кто выводит корень сам, форма «env» — {shape_hint['env']} ({len(env)})", ""]
     out += env or ["- нет"]
-    out += ["", f"## Корень из положения файла — цепочка `__file__ … .parent.parent` ({len(roots)})", ""]
+    out += ["", f"## Кто выводит корень сам, форма «file» — {shape_hint['file']} ({len(roots)})", ""]
     out += roots or ["- нет"]
+    missing = [n for n, _, _ in ROOT_SHAPES if n not in ("env", "file")]
+    if missing:
+        # третья форма заведена в таблице, но секции ей никто не написал: замер обязан
+        # сказать об этом вслух, а не молчать о долге, который гейт уже считает
+        out += ["", f"## Формы без раздела в замере — {', '.join(missing)}", "",
+                "- гейт их судит, а человек не видит: дописать раздел в report()"]
     out += ["", "## Точки сборки швов", ""]
     for name in seams:
         who = seam_hits.get(name, [])
@@ -950,7 +1056,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе.
     # Форм вывода несколько (`ROOT_SHAPES`) — первая редакция правила считала только
     # чтение переменной и пропускала тот самый дефект, ради которого заводилась
-    problems += root_problems(roots or {}, layout["root_exemptions"])
+    problems += root_problems(roots, layout["root_exemptions"])
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -1005,6 +1111,13 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out += ["", "## Поправки к таблице брифа (с обоснованием)", ""]
     for m, ov in sorted(layout["layer_overrides"].items()):
         out.append(f"- `{m}` → {ov['layer']}: {ov['why']}")
+    out += ["", "## Корень выводит один модуль — объявленные исключения", ""]
+    out.append(f"Канон: `{ENV_ROOT_OWNER}`. Область правила: "
+               + ", ".join(f"`{p}`" for p in ENV_ROOT_ENFORCED) + ".")
+    out.append("")
+    for rel, shapes in sorted(layout["root_exemptions"].items()):
+        for name, why in sorted(shapes.items()):
+            out.append(f"- `{rel}`, форма «{name}»: {why}")
     out += ["", "## Рёбра против стрелок (allowlist с карточками на снятие)", ""]
     viol = violations(graph, layout)
     tickets = {(e["from"], e["to"]): e.get("ticket", "") for e in layout["allowed_edges"]}
