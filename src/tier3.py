@@ -434,6 +434,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         return out
     out["ran"] = True
     out["stopped"] = False
+    tried = 0          # сколько пар дошло до суда: ниже по ним судят сам прогон
 
     pairs = []
     for i in range(len(cores)):
@@ -467,6 +468,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                 out["stopped"] = True
                 break
         try:
+            tried += 1
             ab = judge.entail(a["repr"], b["repr"])
             ba = judge.entail(b["repr"], a["repr"])
         except Exception as e:  # noqa: BLE001 — одна пара не валит ревизию
@@ -523,6 +525,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
             # сказать вызывающему отдельно от лога правок
             out["skipped"].append(f"«{whole['name']}» — хаб ({whole_count[whole['name']]} "
                                   f"вложений), ссылки не вписываем")
+
+    if tried and out["failed"] == tried:
+        # Судья поднялся и ответил на пробную пару, но отказал на КАЖДОЙ
+        # настоящей: модель исчезла во время прогона, сессия начала падать.
+        # Прогон не состоялся — иначе отметка инкремента уедет вперёд, а имена
+        # отказавших ядер обрежутся списком ожидания и не вернутся никогда
+        # (круг 1 по коду 2б, DS C1). Готовность спрашивается в начале, но
+        # судится прогон по тому, что вышло.
+        out["ran"] = False
+        return out
 
     def _pair(a: dict, b: dict) -> str:
         return f"«{a['name']}» ↔ «{b['name']}»"

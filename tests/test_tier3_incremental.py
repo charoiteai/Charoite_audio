@@ -234,6 +234,8 @@ def test_a_judge_that_goes_deaf_mid_run_returns_the_pair_to_focus(tmp_path):
                      judge=fake_judge(entail=deaf))
     assert r["failed"] == 1 and r["failed_names"] == {"Одно", "Другое"}
     assert r["dups"] == [], "ничего не слил вслепую"
+    assert r["ran"] is False, \
+        "ни одна пара не судилась — прогон не состоялся, и отметка не двигается"
 
 
 def test_ran_is_false_when_the_judge_did_not_come(tmp_path, monkeypatch):
