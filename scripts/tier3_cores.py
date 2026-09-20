@@ -24,6 +24,8 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import nli  # noqa: E402
+import llm  # noqa: E402
 import live_gate  # noqa: E402
 import install_profile  # noqa: E402
 import tier3  # noqa: E402
@@ -100,8 +102,10 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # дневной путь (graph_updater) — ту, что выбрал владелец. Две шкалы на одном
     # графе значат, что найденный одним прогоном дубль невидим другому
     # (круг 5 по №321, DS I1).
+    cfg = graphs.load_config()
     r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
-                     cfg=graphs.load_config())
+                     embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
+                     judge=nli.judge())
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.

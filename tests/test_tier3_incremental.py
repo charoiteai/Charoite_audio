@@ -27,8 +27,30 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 
+import pytest  # noqa: E402
 import tier3  # noqa: E402
 import tier3_cores  # noqa: E402
+
+def fake_embedder(vectors=None):
+    """Векторизатор-подделка: заданные векторы или по одному на ядро."""
+    from model_seam import Embedder
+
+    def run(texts, timeout):
+        return vectors if vectors is not None else [[1.0, 0.0] for _ in texts]
+
+    return Embedder(run, "test-fake")
+
+
+def fake_judge(p=0.0, ready=True, refused="", entail=None):
+    """Судья-подделка. По умолчанию доступен, готов и ничего не подтверждает.
+
+    Отдельный `entail` — чтобы проверять отказ судьи посреди прогона: он
+    бросает, а не возвращает ноль, и пара обязана вернуться в фокус.
+    """
+    from model_seam import Judge
+
+    return Judge(lambda: ready, entail or (lambda a, b: p), refused)
+
 
 EMPTY = {"dups": [], "nests": [], "border": [], "log": [],
          "pending_merges": [], "skipped": [], "ran": True}
@@ -42,24 +64,24 @@ def _graph(tmp_path: pathlib.Path, *names: str) -> pathlib.Path:
     return graph
 
 
-def test_the_revision_asks_the_canon_for_the_model_name(monkeypatch):
-    """Ревизия не пришпиливает имя модели: его выбирает владелец.
+def test_the_revision_asks_the_seam_and_does_not_name_the_model(monkeypatch):
+    """Ревизия не знает ни имени модели, ни транспорта — только шов.
 
     Пришпиленное «bge-m3» заставляло её считать векторы моделью, которой на
-    машине может не быть, — прогон молча ничего не находил, а доктор при этом
-    хвалил ту модель, что стоит в конфиге (круг 4 по №321, GLM I2). Откат
-    литерала этот тест красит.
+    машине может не быть; потом имя переехало в канон, а теперь и канона она не
+    видит: чем считать — решение того, кто собирал пару (кусок 2б по №321).
     """
     seen = {}
 
-    def spy(cfg, texts, model=None, keep_alive=None, timeout=20):
-        seen["model"] = model
+    def run(texts, timeout):
+        seen["texts"], seen["timeout"] = texts, timeout
         return [[1.0, 0.0] for _ in texts]
 
-    monkeypatch.setattr(tier3.llm, "embed", spy)
-    tier3._embed_all([{"repr": "ядро"}], {"sufler": {"embed_model": "own-model"}})
-    assert seen["model"] is None, "имя не пришпилено — его резолвит канон по конфигу"
-
+    from model_seam import Embedder
+    tier3._embed_all([{"repr": "ядро"}], Embedder(run, "чем-угодно"))
+    assert seen["texts"] == ["ядро"] and seen["timeout"] == 120
+    assert "llm" not in dir(tier3) and "nli" not in dir(tier3), \
+        "ревизия больше не импортирует слой моделей"
 
 def test_changed_since_takes_only_fresh_cores(tmp_path):
     graph = _graph(tmp_path, "Старое", "Свежее", "_служебное")
@@ -148,9 +170,70 @@ def test_stamp_is_taken_before_the_run_not_after(tmp_path, monkeypatch):
 def test_revise_reports_that_it_ran(tmp_path, monkeypatch):
     """ran отличает «чисто» от «ревизия не состоялась»."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.nli, "is_available", lambda: False)
+    assert tier3.revise(graph, embedder=fake_embedder(),
+                        judge=fake_judge(refused="нет модели"))["ran"] is False
 
-    assert tier3.revise(graph)["ran"] is False
+
+def test_the_factory_builds_a_judge_that_refuses_loudly(monkeypatch):
+    """Сама фабрика, а не только контракт: нет модели — отказ, а не ноль.
+
+    Прошлые тесты проверяли, что ревизия правильно обходится с отказавшим
+    судьёй. Этот проверяет, что судья действительно отказывает: подмена
+    `entail_prob` нулём в реализации осталась бы незамеченной (мутация круга
+    2б).
+    """
+    import nli
+
+    monkeypatch.setattr(nli, "is_available", lambda: False)
+    j = nli.judge()
+    assert j.refused, "дешёвая фаза посчитана при сборке и названа словами"
+    assert j.ready() is False
+    with pytest.raises(OSError):        # SeamTransportError — его подкласс
+        j.entail("а", "б")
+
+    # вторая ветка: файлы на месте, но сессия не собралась (битый ONNX) —
+    # раньше здесь возвращался ноль, неотличимый от честного «не следует»
+    monkeypatch.setattr(nli, "is_available", lambda: True)
+    monkeypatch.setattr(nli, "_load", lambda: None)
+    monkeypatch.setattr(nli, "_session", None)
+    with pytest.raises(OSError):
+        nli.judge().entail("а", "б")
+
+
+def test_a_broken_seam_is_not_a_lying_ollama(tmp_path):
+    """Шов не той формы обязан долететь до человека, а не стать «лежит Ollama».
+
+    `except` вокруг эмбеддингов сужен до транспортного отказа намеренно: пока
+    он ловил всё, ночник годами печатал бы «ревизия не состоялась — лежит
+    Ollama» на сломанном коде (круг 2 по 2б, GLM C2).
+    """
+    from model_seam import Embedder
+
+    graph = _graph(tmp_path, "Одно", "Другое")
+    wrong = Embedder(lambda texts: [], "шов-без-таймаута")   # забыли параметр
+    with pytest.raises(TypeError):
+        tier3.revise(graph, embedder=wrong, judge=fake_judge())
+
+
+def test_a_judge_that_goes_deaf_mid_run_returns_the_pair_to_focus(tmp_path):
+    """Судья отказал посреди прогона — пара не судилась, и это видно.
+
+    Раньше `entail_prob` при пропавшей модели отдавал 0.0, неотличимый от
+    честного «не следует»: прогон считался состоявшимся, отметка инкремента
+    уезжала вперёд, а пара не возвращалась в фокус уже никогда (аудит 17.08 и
+    круг 2 по куску 2б, обе головы независимо). Теперь отказ — исключение, и
+    имена попадают в `failed_names`, которые ночь вернёт адресно.
+    """
+    graph = _graph(tmp_path, "Одно", "Другое")
+
+    def deaf(a, b):
+        from model_seam import SeamTransportError
+        raise SeamTransportError("судья исчез посреди прогона")
+
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
+                     judge=fake_judge(entail=deaf))
+    assert r["failed"] == 1 and r["failed_names"] == {"Одно", "Другое"}
+    assert r["dups"] == [], "ничего не слил вслепую"
 
 
 def test_ran_is_false_when_the_judge_did_not_come(tmp_path, monkeypatch):
@@ -159,22 +242,15 @@ def test_ran_is_false_when_the_judge_did_not_come(tmp_path, monkeypatch):
     --since-last, и свежие ядра навсегда выпадали из инкремента
     (аудит DeepSeek 17.08)."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3.nli, "ready", lambda: False)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0]] * len(cores))
-
-    assert tier3.revise(graph)["ran"] is False
+    assert tier3.revise(graph, embedder=fake_embedder(),
+                        judge=fake_judge(ready=False))["ran"] is False
 
 
 def test_incomplete_embeddings_do_not_crash_and_do_not_count_as_a_run(tmp_path, monkeypatch):
     """llm.embed при ошибке сервера отдаёт `[]` — раньше IndexError валил CLI
     ночи (аудит DeepSeek 17.08); теперь — «прогон не состоялся»."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [])
-
-    r = tier3.revise(graph)
+    r = tier3.revise(graph, embedder=fake_embedder([]), judge=fake_judge())
     assert r["ran"] is False and r["dups"] == []
 
 
@@ -183,18 +259,15 @@ def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
     tier3_cores никогда не сдвинет отметку --since-last и каждая ночь
     пересуживает всё с нуля (мутационный прогон 21.08)."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
     # Одинаковые эмбеддинги: пара проходит префильтр, суд реально идёт по
     # циклу и спрашивает потолок ночи; с ортогональными пара отсекалась до
     # цикла и stopped=False держалось инициализацией, а не прогоном
     # (ревью 22.08: Sonnet 5 и DeepSeek независимо).
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [1.0, 0.0]])
-    monkeypatch.setattr(tier3.nli, "entail_prob", lambda a, b: 0.0)
     asked = []
     monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: asked.append(1) or False)
 
-    r = tier3.revise(graph)
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
+                     judge=fake_judge())
     assert asked, "суд не дошёл до цикла пар — тест держал бы инициализацию"
     assert r["ran"] is True and r["stopped"] is False
 
@@ -203,10 +276,8 @@ def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
     """Обрыв потолком ночи — stopped=True: недосуженные ядра остаются в
     инкременте на следующую ночь, отметка не двигается."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [1.0, 0.0]])
     monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: True)
 
-    r = tier3.revise(graph)
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
+                     judge=fake_judge())
     assert r["ran"] is True and r["stopped"] is True
