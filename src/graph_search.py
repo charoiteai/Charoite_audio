@@ -826,7 +826,11 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embedder = embedder
-        self._refused_by_policy = False   # последний отказ шва был по политике адреса
+        # Политика могла отказать ещё при сборке способности — и тогда ни одного
+        # вектора не спросят вовсе: кэш пуст, семантика пропускается до вызова
+        # шва. Причина обязана быть известна сразу, иначе владельцу называют
+        # занятость сервера вместо его собственной настройки.
+        self._refused_by_policy = bool(embedder.refused)
         self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -1044,7 +1048,7 @@ class GraphSearch:
             # Вид отказа запоминаем: для контура это один исход «векторов нет»,
             # а владельцу нужны разные слова — «сервер занят» и «вы запретили
             # этот адрес» ведут чинить разное.
-            self._refused_by_policy = bool(getattr(exc, "policy", False))
+            self._refused_by_policy = self._refused_by_policy or bool(getattr(exc, "policy", False))
             return []
 
     def load_vectors(self) -> int:

@@ -798,8 +798,14 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
         monkeypatch.delenv(k, raising=False)
     cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
     e = llm.embedder(cfg)
+    assert e.refused, "фабрика знает отказ сразу — его не надо ждать от первого вектора"
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
     s.refresh(force=True)
+    # Боевой путь демона: кэш пуст, потому что собрать его тот же отказ и не дал.
+    # Поиск в этом случае шов не спрашивает вовсе — и раньше причина бралась из
+    # памяти о последнем исключении, которого не было (круг 3 по коду, обе головы).
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert r.reason == gs.REASON_POLICY, "причина известна и без единого вызова шва"
     assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
     assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED

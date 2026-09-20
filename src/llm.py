@@ -224,15 +224,17 @@ def embedder(cfg: dict, *, model: str | None = None,
     # Спрашиваем политику сразу, при сборке: иначе владелец узнает о своей
     # настройке только с первым вектором, а на пустом кэше поиск за встречу
     # не спросит ни одного — отказ так и останется неназванным (круг 2, DS I5).
+    refused = ""
     try:
         privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused as exc:
+        refused = str(exc)
         _say_once(f"эмбеддинги недоступны: {exc}")
 
     def run(texts: list[str], timeout: float) -> list[list[float]]:
         return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
 
-    return Embedder(run, name)
+    return Embedder(run, name, refused)
 
 
 def embed(cfg: dict, texts: list[str], model: str | None = None,
