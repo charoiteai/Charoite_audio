@@ -140,18 +140,18 @@ def cloud_llm_url(cfg: dict, env: dict | None = None) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get("cloud_base_url") or DEFAULT_CLOUD_LLM_URL).strip()
     if not raw:
-        raise RuntimeError(
+        raise PrivacyRefused(
             "llm.engine = cloud, но llm.cloud_base_url не задан: укажите "
             "адрес OpenAI-совместимого шлюза (…/v1)")
     if any(env.get(k) for k in KILL_SWITCHES):
-        raise RuntimeError(
+        raise PrivacyRefused(
             f"llm.engine = cloud запрещён рубильником "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))}")
     url = raw.rstrip("/")
     scheme = urllib.parse.urlsplit(url).scheme
     host = urllib.parse.urlsplit(url).hostname
     if scheme != "https" and not _is_loopback(host):
-        raise RuntimeError(
+        raise PrivacyRefused(
             f"llm.cloud_base_url = {raw}: только https — по http ключ "
             "уходит открытым текстом (loopback разрешён для тестов)")
     return url
@@ -166,7 +166,7 @@ def llm_engine(cfg: dict) -> str:
     """
     raw = str((cfg.get("llm") or {}).get("engine") or "ollama").strip().lower()
     if raw not in ("ollama", "mlx-server", "cloud"):
-        raise RuntimeError(
+        raise PrivacyRefused(
             f"llm.engine = {raw!r}: неизвестный движок, знаю ollama, "
             "mlx-server и cloud")
     return raw
@@ -255,6 +255,16 @@ def _is_private_host(host: str | None) -> bool:
         return False
 
 
+class PrivacyRefused(RuntimeError):
+    """Политика запретила адрес: чужая машина, открытый http наружу, рубильник.
+
+    Свой класс, а не голый `RuntimeError`: потребителю нужно отличать «нельзя
+    по настройке владельца» от любого другого сбоя в том же вызове. Пока класс
+    был общим, ловящий обязан был угадывать, что ещё бросает соседний код, —
+    и либо ловил лишнее, либо пропускал своё (круг 2 по коду, GLM I1).
+    """
+
+
 def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get(key) or default)
@@ -263,11 +273,11 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     host = parts.hostname
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
-        raise RuntimeError(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
+        raise PrivacyRefused(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
     if _is_loopback(host):
         return url
     if any(env.get(k) for k in KILL_SWITCHES):
-        raise RuntimeError(
+        raise PrivacyRefused(
             f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
             "любой выход наружу")
@@ -276,13 +286,13 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
     # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
     if scheme == "http" and not _is_private_host(host):
-        raise RuntimeError(
+        raise PrivacyRefused(
             f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
             "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
             "(llm.allow_remote этого не снимает)")
     if (cfg.get("llm") or {}).get("allow_remote") is True:
         return url
-    raise RuntimeError(
+    raise PrivacyRefused(
         f"llm.{key} = {raw} указывает не на эту машину. Чароит локальный "
         "по умолчанию: чтобы слать запросы на другой адрес, поставьте в "
         "config.yaml явное llm.allow_remote: true")

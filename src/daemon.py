@@ -2303,7 +2303,6 @@ def main():
         if gdir is None:
             return
         cores_dir = gdir / "Ядра"
-        emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
         margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
         # Авто-бриф в начале встречи: как только по первым репликам понятна
         # тема — один раз вытащить контекст из архива (топ-ядра: статус +
@@ -2321,7 +2320,7 @@ def main():
             # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
             # генерацией — лучше пропустить проход дежавю, чем держать поток
             # заблокированным две минуты
-            return llm_embed(cfg, texts, model=emb_model, timeout=20)
+            return llm_embed(cfg, texts, timeout=20)
 
         def cosine(a: list[float], b: list[float]) -> float:
             num = sum(x * y for x, y in zip(a, b))

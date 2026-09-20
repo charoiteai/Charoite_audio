@@ -96,7 +96,12 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
                 return True
             print(f"=== {graph.name}: инкремент, свежих ядер {len(only)}",
                   flush=True)
-    r = tier3.revise(graph, only_names=only, apply=apply, mark=mark)
+    # Конфиг обязателен: без него ревизия берёт дефолтную модель эмбеддингов, а
+    # дневной путь (graph_updater) — ту, что выбрал владелец. Две шкалы на одном
+    # графе значат, что найденный одним прогоном дубль невидим другому
+    # (круг 5 по №321, DS I1).
+    r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
+                     cfg=graphs.load_config())
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.

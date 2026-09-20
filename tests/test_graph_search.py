@@ -29,6 +29,8 @@ sys.path.insert(0, str(REPO / "src"))
 import dossier  # noqa: E402
 import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
+import model_seam  # noqa: E402
+from model_seam import DEFAULT_EMBED_MODEL, Embedder  # noqa: E402
 
 
 _SYNONYMS = {"поставщик": "провайдер", "поставщика": "провайдер", "gateway": "шлюз"}   # «семантика» подделки: синоним — то же слово
@@ -45,6 +47,18 @@ def fake_embed(texts: list[str], timeout: float) -> list[list[float]]:
         n = math.sqrt(sum(x * x for x in v)) or 1.0
         out.append([x / n for x in v])
     return out
+
+
+def fake_embedder(fn=fake_embed, model: str = "test-fake") -> Embedder:
+    """Подделка способности целиком — функция и имя, под которым она считает.
+
+    Тест не вправе собирать половину: имя подписывает кэш векторов, и пара из
+    разных моделей — ровно тот дрейф, против которого шов и сделан. Имя своё, а
+    не боевое: подделка считает по таблице синонимов, и подписывать её векторы
+    именем bge-m3 значит класть на диск манифест, который настоящая установка
+    прочтёт как свой (круг 1 по коду, DS I3).
+    """
+    return Embedder(fn, model)
 
 
 def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -85,7 +99,7 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
 def _search(tmp_path, **kw) -> gs.GraphSearch:
     """Индекс с векторами блоков: без семантики гейт всегда «⚠» (замер 17.09), так
     что уверенная выдача, переходы и досье проверяются с подделкой эмбеддинга."""
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed, **kw)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), **kw)
     s.refresh(force=True)
     s.embed_pending()
     return s
@@ -121,7 +135,7 @@ def test_index_skips_archive_transcript_copies_hidden_and_service_files(tmp_path
 
 def test_refresh_follows_mtime_and_removals(tmp_path):
     clock = {"t": 1_000_000.0}
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed, now=lambda: clock["t"])
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"])
     assert not s.ready and not s.search("шлюз").ready
     s.refresh(force=True)
     assert s.ready and s.size == 8
@@ -258,7 +272,7 @@ def test_dossier_comes_first(tmp_path):
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
     s.refresh(force=True)
     assert s.pending_vectors() and s.embed_pending(budget_s=0) == 0, "нулевой бюджет — ни одного вызова"
     n = s.embed_pending()
@@ -270,7 +284,7 @@ def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_
     assert blocks > n, "у узла с секциями — несколько блоков, не один вектор на файл"
     assert s._vec_manifest.name.startswith("Работа-") and len(s._vec_manifest.stem.split("-")[-1]) == 8, "имя кэша — по пути графа, не по имени папки"
     # новый экземпляр читает кэш с диска; изменившийся файл снова ждёт вектора
-    s2 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
     s2.refresh(force=True)
     assert s2.load_vectors() == n and not s2.pending_vectors()
     node = s.graph / "Системы" / "Платёжный шлюз.md"
@@ -285,7 +299,7 @@ def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_
     assert "Системы/Поставщик.md" not in _rels(s2.search("провайдер", limit=4, semantic=False))
     assert "Системы/Поставщик.md" in _rels(s2.search("провайдер", limit=4)), "синоним — только через вектор"
     # сервер эмбеддингов не ответил — чистая лексика, без падения
-    s3 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=lambda t, to: [])
+    s3 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []))
     s3.refresh(force=True)
     assert s3.embed_pending() == 0
     assert _rels(s3.search("платёжный шлюз", limit=2))[0] == "Системы/Платёжный шлюз.md"
@@ -320,10 +334,17 @@ def test_shared_index_is_one_per_graph(tmp_path, monkeypatch):
     monkeypatch.setattr(gs, "_shared", {})
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
-    a = gs.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g)
-    b = gs.shared({}, graph_dir=g)
+    a = gs.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g, embedder=fake_embedder())
+    b = gs.shared({}, graph_dir=g, embedder=fake_embedder())
     assert a is b
-    assert gs.shared({"sufler": {}}, graph_dir=None) is None, "граф не настроен — индекса нет"
+    assert gs.shared({"sufler": {}}, graph_dir=None, embedder=fake_embedder()) is None, \
+        "граф не настроен — индекса нет"
+    # модель — часть личности индекса: под её именем подписаны и векторы в памяти,
+    # и кэш на диске. Пока ключом был только путь, второй позвавший получал чужой
+    # векторизатор молча, а свой передать уже не мог (круг 2 по №321, DS C1 / GLM C1)
+    other = gs.shared({}, graph_dir=g, embedder=fake_embedder(model="other-model"))
+    assert other is not a, "другая модель — другой индекс, а не тихая подмена"
+    assert other.cache_key() != a.cache_key()
 
 
 @pytest.mark.parametrize("graph, bench", [("demo/graph", "config/memory_bench_demo.yaml"),
@@ -332,7 +353,7 @@ def test_shared_index_is_one_per_graph(tmp_path, monkeypatch):
 def test_demo_bench_facts_are_retrieved_without_a_model(tmp_path, graph, bench):
     """Три вопроса демо-бенча: обязательный факт — в найденном тексте (retrieval),
     синтез моделью здесь не при чём. Тот же контур, что у подсказок на встрече."""
-    s = gs.GraphSearch(REPO / graph, {}, data_dir=tmp_path / "data", embed=lambda t, to: [])
+    s = gs.GraphSearch(REPO / graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []))
     s.refresh(force=True)
     cases = yaml.safe_load((REPO / bench).read_text(encoding="utf-8"))
     for case in cases:
@@ -389,13 +410,15 @@ def test_gate_without_semantics_is_unverified_and_synonym_semantics_is_confident
     def busy(texts, timeout):
         calls["embed"] += 1
         return []
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=busy)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(busy))
     s.refresh(force=True)
+    s.embed_pending()          # занятый сервер отвечает без векторов — собирать нечего
     r = s.search("интеграцию платёжного шлюза ведёт Иван до пятницы срок", limit=3)
+    assert calls["embed"], "шов вызван: без этого «занят» неотличимо от «не спрашивали»"
     assert not r.sem_used and r.status is gs.Verdict.UNVERIFIED and r.blocks, "нашли по словам, но не подтвердили — «⚠» с причиной"
     assert "не проверены" in r.why_low and s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.UNVERIFIED
     # семантика есть: синоним даёт уверенность без единого общего слова
-    s2 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
     s2.refresh(force=True)
     (s.graph / "Системы" / "Поставщик.md").write_text("# Поставщик\nпоставщик платежей: договор подписан\n", encoding="utf-8")
     s2.refresh(force=True)
@@ -423,7 +446,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     исчезнувшего файла уходит из памяти, второй писатель уступает по локу."""
     clock = {"t": 1_700_000_000.0}
     now = lambda: clock["t"]  # noqa: E731
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
     s.refresh(force=True)
     n = s.embed_pending()
     manifest = s._vec_manifest
@@ -431,7 +454,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     # битый манифест: 0 векторов, но не навсегда — починили, часы ушли — загрузилось
     good = manifest.read_text(encoding="utf-8")
     manifest.write_text("{", encoding="utf-8")
-    s2 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
     s2.refresh(force=True)
     assert s2.load_vectors() == 0
     manifest.write_text(good, encoding="utf-8")
@@ -462,12 +485,12 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     fourth_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
     assert fourth_blob != third_blob and fourth_blob.exists() and third_blob.exists() and not first_blob.exists()
     # чужая запись (ночь, апдейтер): манифест новее — экземпляр перечитывает, а не живёт старым
-    fresh = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    fresh = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
     fresh.refresh(force=True)
     assert fresh.load_vectors() >= 1 and str(s.graph / "Системы" / "Третий.md") in fresh._vecs
     # ... и уже загрузивший экземпляр видит чужую запись по mtime манифеста, а не живёт старым (GLM M6 r2)
     (s.graph / "Системы" / "Четвёртый.md").write_text("# Четвёртый\nещё узел с достаточно длинным текстом для блока\n", encoding="utf-8")
-    other = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    other = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
     other.refresh(force=True)
     clock["t"] += 2
     assert other.embed_pending() >= 1
@@ -476,7 +499,8 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     fresh.search("четвёртый узел", limit=2)   # через поиск, не через load_vectors: короткое замыкание по непустым векторам гасило перечитывание (GLM I1 r3)
     assert str(s.graph / "Системы" / "Четвёртый.md") in fresh._vecs, "новый манифест на диске — перечитан без перезапуска"
     # ключ кэша: сменилась модель или нарезка — кэш холодный целиком (DS I2 r2)
-    cold = gs.GraphSearch(s.graph, {"sufler": {"embed_model": "other-model"}}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    cold = gs.GraphSearch(s.graph, data_dir=tmp_path / "data",
+                          embedder=fake_embedder(model="other-model"), now=now)
     cold.refresh(force=True)
     assert cold.load_vectors() == 0 and len(cold.pending_vectors()) == cold.size
     # файл исчез — вектор уходит из памяти вместе с ним (DS M3)
@@ -493,7 +517,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     holder.close()
     assert s2.embed_pending() == 1
     # сервер эмбеддингов не ответил — причина названа (DS I5 / GLM M5 r2)
-    mute = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=lambda t, to: [], now=now)
+    mute = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []), now=now)
     mute.refresh(force=True)
     (s.graph / "Системы" / "Новый узел.md").write_text("# Новый узел\nдостаточно длинный текст для блока и вектора\n", encoding="utf-8")
     mute.refresh(force=True)
@@ -509,7 +533,7 @@ def test_indexing_stops_on_live_recording_and_respects_the_budget(tmp_path):
         calls.append(timeout)
         clock["t"] += 10.0
         return fake_embed(texts, timeout)
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=embed, now=lambda: clock["t"])
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(embed), now=lambda: clock["t"])
     s.refresh(force=True)
     assert s.embed_pending(budget_s=0) == 0 and calls == [] and "бюджет" in s.note
     live = {"on": False}
@@ -531,7 +555,7 @@ def test_metacharacters_in_graph_name_do_not_break_generation_cleanup(tmp_path):
     g = tmp_path / "Граф [тест]"
     (g / "Системы").mkdir(parents=True)
     (g / "Системы" / "Узел.md").write_text("# Узел\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
-    s = gs.GraphSearch(g, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s = gs.GraphSearch(g, data_dir=tmp_path / "data", embedder=fake_embedder())
     s.refresh(force=True)
     aged = time.time() - gs.BLOB_GRACE_S - 1
     for i in range(3):
@@ -550,7 +574,7 @@ def test_reader_retries_when_writer_publishes_between_manifest_and_blob(tmp_path
     s = _search(tmp_path)
     manifest = s._vec_manifest
     stale = json.loads(manifest.read_text(encoding="utf-8"))
-    r = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    r = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
     r.refresh(force=True)
     real_read = pathlib.Path.read_text
     state = {"n": 0}
@@ -584,7 +608,7 @@ def test_semantic_fallback_fragment_skips_frontmatter(tmp_path):
 def test_node_files_keep_twice_as_many_chunks(tmp_path):
     """Узел человека с длинной историей: лимит блоков вдвое выше, чем у заметки —
     середина истории не исчезает целиком (GLM r2, критика 1)."""
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
     long = "# Иван\n" + "\n\n".join(f"## Встреча {i}\n" + f"встреча {i} " + "слово " * 90 for i in range(40))
     (s.graph / "Люди" / "Иван Долгий.md").write_text(long, encoding="utf-8")
     (s.graph / "Встречи" / "2026-08-09_1000.md").write_text(long, encoding="utf-8")
@@ -634,33 +658,206 @@ def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
     assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.WEAK
 
 
-def test_key_change_in_live_process_drops_vectors_before_search_and_indexing(tmp_path):
-    """Модель эмбеддингов сменилась в конфиге живого процесса — векторы в памяти
-    считаны другой моделью, косинус с ними — шум: сброс до поиска и до сборки (DS I1 r3)."""
+def test_a_foreign_key_on_disk_is_a_cold_cache_and_does_not_latch_the_retry(tmp_path):
+    """Кэш на диске собран другой моделью — он чужой, а не «векторов нет».
+
+    Смену модели у ЖИВОГО экземпляра больше проверять нечего: способность
+    приходит парой в конструктор и не переставляется, а смену модели в процессе
+    держит ключ `shared()` — там она даёт другой индекс, а не сброс у этого
+    (круг 3 по №321: два владельца одной заботы, один без боевого триггера).
+    Осталось то, что боевое: чужой ключ на диске обязан читаться как холодный,
+    и штамп неудачи не должен защёлкивать семантику до VEC_RETRY_S, когда свой
+    кэш уже собран (DS M1 r4).
+    """
     s = _search(tmp_path)
     assert s.vectors and s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
-    s.cfg["sufler"] = {"embed_model": "other-model"}
-    r = s.search("платёжный шлюз", limit=2)
-    assert s.vectors == 0 and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
-    assert len(s.pending_vectors()) == s.size and s.embed_pending() == s.size
-    assert json.loads(s._vec_manifest.read_text(encoding="utf-8"))["key"] == s.cache_key()
-    assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
-    # штамп неудачи сбрасывается вместе с векторами: чужой ключ на диске → поиск (штамп) →
-    # смена модели → свой кэш собран → поиск сразу с векторами, а не через VEC_RETRY_S (DS M1 r4)
     clock = {"t": 1_700_000_000.0}
-    t = gs.GraphSearch(s.graph, {"sufler": {"embed_model": "third"}}, data_dir=tmp_path / "data",
-                       embed=fake_embed, now=lambda: clock["t"])
+    t = gs.GraphSearch(s.graph, data_dir=tmp_path / "data",
+                       embedder=fake_embedder(model="third"), now=lambda: clock["t"])
     t.refresh(force=True)
+    assert t.load_vectors() == 0, "кэш подписан чужой моделью — читать его нельзя"
     assert not t.search("платёжный шлюз", limit=2).sem_used and t._vecs_tried_at is not None
-    t.cfg["sufler"] = {"embed_model": "other-model"}     # на диске — кэш под этот ключ
+    assert len(t.pending_vectors()) == t.size and t.embed_pending() == t.size
+    assert json.loads(t._vec_manifest.read_text(encoding="utf-8"))["key"] == t.cache_key()
+    # свой кэш собран — поиск идёт с векторами сразу, а не через VEC_RETRY_S
     assert t.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
+
+
+def test_a_dead_server_degrades_to_words_but_a_broken_seam_shouts(tmp_path):
+    """Два исхода, которые нельзя путать: сервер лёг и шов сломан.
+
+    Сервер лёг — это `OSError` (так requests сообщает про сеть), и подсказка на
+    встрече важнее семантики: отдаём лексику. Шов сломан — векторизатор не той
+    сигнатуры, опечатка в поле — это `TypeError`, и он обязан долететь до
+    человека. Широкий `except` делал их неразличимыми: неделя подсказок без
+    семантики, в которой ни один тест не покраснеет (круг 3 по №321, обе головы).
+    """
+    calls = {"n": 0}
+
+    def dead(texts, timeout):
+        calls["n"] += 1
+        raise ConnectionError("Ollama не отвечает")
+
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(dead))
+    s.refresh(force=True)
+    assert s.embed_pending() == 0, "транспорт лёг — векторов не собрали и не упали"
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert calls["n"], "шов вызван — иначе деградация проверена на пустом месте"
+    assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
+
+    wrong = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d2",
+                           embedder=fake_embedder(lambda texts: []))   # забыли timeout
+    wrong.refresh(force=True)
+    with pytest.raises(TypeError):
+        wrong.embed_pending()
+
+
+def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, monkeypatch):
+    """Проводка целиком: фабрика слоя моделей → индекс → ключ кэша и запрос.
+
+    Раньше каждый из трёх носителей ехал отдельно и терялся поодиночке: имя —
+    вторым чтением конфига в самом поиске, резидентность — литералом в вызове,
+    «конфига нет — в сеть не ходим» — гардом внутри. Теперь их несёт пара, и
+    проверяются они вместе, на одном пути.
+    """
+    import llm
+
+    seen = {}
+
+    class Reply:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"embeddings": [[1.0, 0.0]]}
+
+    def post(url, json=None, timeout=None):
+        seen.update(json)
+        return Reply()
+
+    monkeypatch.setattr(llm.requests, "post", post)
+    cfg = {"sufler": {"embed_model": "own-model"}}
+    e = llm.embedder(cfg)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
+    assert s.cache_key().startswith("own-model|"), "кэш подписывает тот, кто считает"
+    assert e.run(["текст"], 5) == [[1.0, 0.0]]
+    # литералом, не константой: сверка с тем, что сторожишь, пропустит «30m» → «5m»,
+    # а это ровно тот сценарий, ради которого константа заведена (DS M3 круга 1)
+    assert seen["model"] == "own-model" and seen["keep_alive"] == "30m"
+
+    with pytest.raises(ValueError):
+        llm.embedder({}, model="own")      # считать негде: пин без адреса — ошибка вызывающего
+
+    seen.clear()
+    quiet = llm.embedder({})
+    assert quiet.run(["текст"], 5) == [] and not seen, "конфига нет — в сеть не ходим вовсе"
+    assert quiet.model == model_seam.NO_MODEL, \
+        "«моделей нет» — своя подпись: иначе первый позвавший без конфига застолбит индекс графа"
+
+
+@pytest.mark.parametrize("cfg, pin, expect", [
+    ({}, None, model_seam.DEFAULT_EMBED_MODEL),                 # ни конфига, ни пина
+    ({"sufler": {}}, None, model_seam.DEFAULT_EMBED_MODEL),     # секция есть, ключа нет
+    ({"sufler": {"embed_model": ""}}, None, model_seam.DEFAULT_EMBED_MODEL),   # пустое = незаданное
+    ({"sufler": {"embed_model": "own"}}, None, "own"),          # выбор владельца
+    ({}, "pinned", "pinned"),                                   # пин без конфига
+    ({"sufler": {"embed_model": "own"}}, "pinned", "pinned"),   # пин сильнее конфига
+])
+def test_the_name_is_resolved_in_one_place_and_the_pin_wins(cfg, pin, expect):
+    """Явное имя → конфиг владельца → дефолт поставки, ровно в таком порядке.
+
+    Резолвер один на проект и живёт в шве, а не рядом с транспортом: имя
+    спрашивают оба берега и доктор, которому слой моделей недоступен (он тянет
+    requests, а доктор обязан печатать рецепт до установки пакетов).
+
+    Пин проверяется отдельной строкой, потому что первая редакция этого куска
+    объявила три ступени в докстринге и реализовала одну: параметр молча
+    игнорировался, и ревизия ядер, пришпилившая себе модель явно, незаметно
+    поехала бы за конфигом (круг 1 по коду, GLM C1). Пять мутаций и 2186
+    зелёных тестов этого не заметили — датчика не было.
+    """
+    assert model_seam.embed_model_name(cfg, pin) == expect
+
+
+def test_an_empty_cache_is_not_a_busy_server(tmp_path):
+    """Кэша нет — значит собирать было нечего, а не «модель занята».
+
+    Семантику поиск включает только при непустом кэше, то есть на свежем графе
+    шов не спрашивают ни разу. Прежняя таблица в этом случае объявляла владельцу
+    занятость сервера — утверждение о мире, которого никто не проверял: Ollama
+    жива и к ней не обращались (круг 4 по №321, DS C1).
+    """
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s.refresh(force=True)
+    assert s.vectors == 0, "кэш пуст: векторы никто не собирал"
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert r.status is gs.Verdict.UNVERIFIED and r.reason == gs.REASON_CACHE
+
+
+def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, monkeypatch, capsys):
+    """Политика запретила адрес — подсказка живёт лексикой, но владелец слышит.
+
+    `privacy` отказывает `RuntimeError`, когда адрес не этой машины без
+    allow_remote, схема не http(s) или взведён рубильник. Для графа это тот же
+    исход «векторов нет»; нормализует его поставщик, потому что только он знает
+    и про политику, и про транспорт. Прежняя редакция ловила у потребителя
+    голый OSError — и отказ политики доезжал до контура подсказок, где до конца
+    сеанса выглядел как «память ещё прогревается» (круг 1 по коду, обе головы).
+    """
+    import llm
+
+    monkeypatch.setattr(llm, "_said", set())
+    # рубильник офлайна проверяется раньше allow_remote: на машине, где он
+    # взведён, причина была бы другой, и тест краснел бы от окружения (GLM I2)
+    for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
+    e = llm.embedder(cfg)
+    assert e.refused, "фабрика знает отказ сразу — его не надо ждать от первого вектора"
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
+    s.refresh(force=True)
+    # Боевой путь демона: кэш пуст, потому что собрать его тот же отказ и не дал.
+    # Поиск в этом случае шов не спрашивает вовсе — и раньше причина бралась из
+    # памяти о последнем исключении, которого не было (круг 3 по коду, обе головы).
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    # Не «похоже на правду», а дословно то, что сказал отказавший: политика
+    # отвечает по трём разным настройкам, и общая константа увела бы владельца
+    # крутить ручку, которая его случай не снимает (круг 4, GLM C1).
+    assert r.reason == e.refused and "10.1.2.3" in r.reason
+    assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
+    assert s.note == e.refused, \
+        "заметка сборки и выдача говорят об одном состоянии одними словами (круг 5, GLM I1)"
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
+    assert r.reason == e.refused, "и после вызова шва причина та же — от источника"
+    said = capsys.readouterr().err
+    assert "allow_remote" in said, "причина названа владельцу, а не проглочена"
+    (_graph(tmp_path) / "Системы" / "Ещё.md").write_text(
+        "# Ещё\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
+    s.refresh(force=True)
+    assert s.embed_pending() == 0                  # шов зовётся снова и снова отказывает
+    assert "allow_remote" not in capsys.readouterr().err, "один раз за процесс, не на каждый вопрос"
+
+
+def test_the_cache_key_is_a_contract_not_a_value(tmp_path):
+    """Формат ключа — обещание всем уже собранным кэшам.
+
+    Ключ лежит в манифесте и сверяется целиком: поехал формат или дефолтное имя
+    модели — и у каждого владельца граф переэмбеддится заново, часами bge-m3.
+    Поэтому он проверяется побайтово, а не на самосогласованность (GLM I5 r3).
+    """
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data",
+                       embedder=fake_embedder(model=DEFAULT_EMBED_MODEL))
+    assert s.cache_key() == (f"bge-m3:latest|chunks{gs.CHUNK_VERSION}|{gs.CHUNK_CHARS}"
+                             f"|{gs.MAX_CHUNKS}|{gs.MAX_CHUNKS_NODE}")
+    assert DEFAULT_EMBED_MODEL == "bge-m3:latest", "дефолт поставки — боевое значение, не заглушка"
 
 
 def test_without_a_lock_nothing_is_written(tmp_path, monkeypatch):
     """Замок не взялся (том без flock, EMFILE): два писателя без замка стёрли бы блоб
     друг друга уборкой — не пишем вовсе, причина в note (DS I2 / GLM M4 r3)."""
     import fcntl
-    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
     s.refresh(force=True)
     monkeypatch.setattr(fcntl, "flock", lambda *a: (_ for _ in ()).throw(OSError(1, "Operation not permitted")))
     assert s.embed_pending() == 0 and "без замка" in s.note and not s._vec_manifest.exists()
@@ -673,11 +870,11 @@ def test_first_cache_read_is_not_throttled_by_a_zero_clock_and_foreign_key_is_no
     же чтении (DS M3 r3). Чужой ключ на диске у прогретого экземпляра — одна неудача и
     пауза VEC_RETRY_S, а не чтение манифеста каждым поиском (GLM M3 r3)."""
     s = _search(tmp_path)
-    zero = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=lambda: 0.0)
+    zero = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: 0.0)
     zero.refresh(force=True)
     assert zero.load_vectors() == s.vectors, "первое чтение — сразу, без оглядки на часы"
     clock = {"t": 1_700_000_000.0}
-    warm = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=lambda: clock["t"])
+    warm = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"])
     warm.refresh(force=True)
     assert warm.load_vectors() == s.vectors
     foreign = json.loads(s._vec_manifest.read_text(encoding="utf-8"))
@@ -1216,7 +1413,7 @@ def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
     bare = tmp_path / "Голый"
     (bare / "Люди").mkdir(parents=True)
     (bare / "Люди" / "Иван.md").write_text("# Иван\nВедёт интеграцию.\n", encoding="utf-8")
-    s2 = gs.GraphSearch(bare, {}, data_dir=tmp_path / "d2", embed=fake_embed)
+    s2 = gs.GraphSearch(bare, data_dir=tmp_path / "d2", embedder=fake_embedder())
     s2.refresh(force=True)
     empty2 = s2.search("qqqzzz", limit=2)
     assert s2.exclude and empty2.skipped == (), "названо исключённым то, чего в графе нет"

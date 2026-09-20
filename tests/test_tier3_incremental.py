@@ -42,6 +42,25 @@ def _graph(tmp_path: pathlib.Path, *names: str) -> pathlib.Path:
     return graph
 
 
+def test_the_revision_asks_the_canon_for_the_model_name(monkeypatch):
+    """Ревизия не пришпиливает имя модели: его выбирает владелец.
+
+    Пришпиленное «bge-m3» заставляло её считать векторы моделью, которой на
+    машине может не быть, — прогон молча ничего не находил, а доктор при этом
+    хвалил ту модель, что стоит в конфиге (круг 4 по №321, GLM I2). Откат
+    литерала этот тест красит.
+    """
+    seen = {}
+
+    def spy(cfg, texts, model=None, keep_alive=None, timeout=20):
+        seen["model"] = model
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(tier3.llm, "embed", spy)
+    tier3._embed_all([{"repr": "ядро"}], {"sufler": {"embed_model": "own-model"}})
+    assert seen["model"] is None, "имя не пришпилено — его резолвит канон по конфигу"
+
+
 def test_changed_since_takes_only_fresh_cores(tmp_path):
     graph = _graph(tmp_path, "Старое", "Свежее", "_служебное")
     old = graph / "Ядра" / "Старое.md"

@@ -29,6 +29,7 @@ import live_sidecar  # noqa: E402
 import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
 import safe_write  # noqa: E402
+import llm  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
@@ -3281,7 +3282,7 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
         return
     try:
         import graph_search
-        mem = graph_search.GraphSearch(graph, cfg)
+        mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg))
         mem.refresh(force=True)
         # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
         # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)

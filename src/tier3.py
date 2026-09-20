@@ -155,8 +155,13 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
 def _embed_all(cores: list[dict], cfg: dict) -> list[list[float]]:
     # Адрес и транспорт — через llm.embed (единая точка): прежний хардкод
     # 127.0.0.1:11434 игнорировал llm.base_url из конфига (аудит 14.08).
+    # Имя — у канона, а не литералом: владелец вправе поставить свою модель в
+    # `sufler.embed_model`, и пришпиленное «bge-m3» заставляло ревизию судить по
+    # векторам модели, которой на машине может не быть — прогон молча ничего не
+    # находил (круг 4 по №321, GLM I2). Резидентность здесь своя: ночной проход
+    # держит модель дольше живого контура.
     return llm.embed(cfg, [c["repr"] for c in cores],
-                     model="bge-m3", keep_alive="60m", timeout=120)
+                     keep_alive="60m", timeout=120)
 
 
 def _cos(a: list[float], b: list[float]) -> float:
