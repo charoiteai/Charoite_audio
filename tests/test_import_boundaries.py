@@ -64,58 +64,77 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        env_readers=lm.env_root_readers(inv))
+                        roots=lm.root_derivations(inv))
     assert not problems, "\n".join(problems)
 
 
-def test_the_root_of_data_has_exactly_one_reader_where_the_rule_is_already_in_force(world):
-    """Корень данных выводит один модуль — канон. Правило счётное, а не список
-    прощённых имён: у области `ENV_ROOT_ENFORCED` читатель ровно один, и это сам
-    канон.
+def test_the_root_is_derived_by_one_module_in_every_shape(world):
+    """Корень выводит один модуль — канон, и это счёт по ВСЕМ формам вывода.
 
-    Повод — три независимых дрейфа: модуль графов скопировал разбор значения и
-    потерял `strip`, ревизия ядер скопировала уже починенный разбор и потеряла
-    `resolve`, мутатор — то же самое. Каждая копия несла в соседнем комментарии
-    ссылку на канон, то есть договорённость была и не помогла."""
+    Первая редакция правила считала только чтение переменной, и этого хватало
+    ровно до первой проверки: дефект, ради которого правило заводилось (модели
+    искались от положения файла), чтения переменной не содержал вовсе — гейт
+    оставался зелёным при возврате дефекта. Поэтому форм теперь таблица, и тест
+    проверяет каждую, а не «ту, о которой вспомнили» (Critical DS выходного
+    круга, воспроизведено возвратом прежней строки)."""
     layout, graph, scanned, execs, inv = world
-    readers = lm.env_root_readers(inv)
-    assert lm.ENV_ROOT_OWNER in readers, (
-        "канон обязан читать переменную сам — иначе правило сторожит пустоту")
-    enforced = {rel for rel in readers if rel.startswith(lm.ENV_ROOT_ENFORCED)}
-    assert enforced == {lm.ENV_ROOT_OWNER}, (
-        f"в области {lm.ENV_ROOT_ENFORCED} читателей кроме канона быть не должно: "
-        f"{sorted(enforced - {lm.ENV_ROOT_OWNER})}")
+    derivations = lm.root_derivations(inv)
+    exempt = layout["root_exemptions"]
+
+    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file"}, (
+        "формы вывода корня — утверждённый список; новая форма это правка политики, "
+        "которую обязан прочитать ревьюер")
+    assert lm.ENV_ROOT_OWNER in derivations, (
+        "канон обязан выводить корень сам — иначе правило сторожит пустоту")
+
+    enforced = {rel for rel in derivations
+                if rel.startswith(lm.ENV_ROOT_ENFORCED) and rel != lm.ENV_ROOT_OWNER}
+    assert enforced == set(exempt), (
+        f"в области {lm.ENV_ROOT_ENFORCED} корень выводит канон и объявленные исключения, "
+        f"больше никто: лишние {sorted(enforced - set(exempt))}, "
+        f"исчезнувшие {sorted(set(exempt) - enforced)}")
+    assert all(exempt.values()), "у исключения обязано быть непустое обоснование"
+
     # область — не потолок: скрипты ещё не переведены и обязаны быть видны замеру,
     # иначе «правило выполнено» означало бы «замер их не искал»
-    assert any(rel.startswith("scripts/") for rel in readers), (
-        "скрипты-читатели должны оставаться в замере как долг следующего куска")
+    assert sum(1 for rel in derivations if rel.startswith("scripts/")) > 10, (
+        "скрипты-нарушители должны оставаться в замере как долг следующего куска")
 
-    # мутация: читатель в области краснит гейт, канон — нет
-    probe = dict(readers)
-    probe["src/probe_reader.py"] = [7]
-    problems = lm.check(layout, graph, scanned, execs, env_readers=probe)
-    assert any("src/probe_reader.py:7 читает CHAROITE_ROOT" in p for p in problems), \
-        "читатель вне канона в области обязан быть расхождением"
-    # сверяем НАЧАЛО строки: имя канона стоит и в подсказке («взять корень у …»),
-    # поэтому проверка на вхождение сработала бы на любом нарушителе
-    assert not any(p.startswith(lm.ENV_ROOT_OWNER) for p in problems), \
-        "сам канон читать переменную обязан, это не расхождение"
-    assert not any(p.startswith("scripts/") and "читает CHAROITE_ROOT" in p for p in problems), \
-        "вне области правило молчит: скрипты переводятся следующим куском"
+    # мутация по КАЖДОЙ форме: нарушитель в области краснит гейт, канон и исключение — нет
+    for shape, _, hint in lm.ROOT_SHAPES:
+        probe = dict(derivations)
+        probe["src/probe_derive.py"] = {shape: [7]}
+        problems = lm.check(layout, graph, scanned, execs, roots=probe,
+                            map_text=lm.MAP.read_text(encoding="utf-8"))
+        assert any(p.startswith("src/probe_derive.py:7") and hint in p for p in problems), \
+            f"форма {shape} в области обязана быть расхождением"
+        assert not any(p.startswith(lm.ENV_ROOT_OWNER) for p in problems), \
+            "сам канон выводит корень по определению, это не расхождение"
+        assert not any(p.startswith(tuple(exempt)) for p in problems), \
+            "объявленное исключение молчит, пока оно объявлено"
+        assert not any(p.startswith("scripts/") for p in problems), \
+            "вне области правило молчит: скрипты переводятся следующим куском"
+
+    # обратная сторона: объявленное исключение, которое больше не выводит корень, — расхождение
+    stale = lm.check(layout, graph, scanned, execs,
+                     roots={k: v for k, v in derivations.items() if k not in exempt},
+                     map_text=lm.MAP.read_text(encoding="utf-8"))
+    assert any("больше не выводит — снять" in p for p in stale), \
+        "исключение сверяется в обе стороны, как всё в этом гейте"
 
 
-def test_the_gate_is_actually_asked_about_the_readers(monkeypatch, capsys):
-    """Правило живо только если главный тракт передаёт читателей в гейт.
+def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
+    """Правило живо только если главный тракт передаёт замер в гейт.
 
     Мутация здесь — не подмена кода, а подмена данных: канон объявляется
-    нарушителем. Если `main` перестанет спрашивать замер о читателях, строка
-    не появится, и правило умрёт молча — как умирал гейт свежести карты, пока
-    состояние не сделали явным (круг 9)."""
-    monkeypatch.setattr(lm, "ENV_ROOT_OWNER", "src/никто_такой_не_читает.py")
+    нарушителем. Если `main` перестанет спрашивать замер, строка не появится,
+    и правило умрёт молча — как умирал гейт свежести карты, пока состояние не
+    сделали явным (круг 9)."""
+    monkeypatch.setattr(lm, "ENV_ROOT_OWNER", "src/никто_такой_не_выводит.py")
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
-    assert "читает CHAROITE_ROOT сам" in out, (
-        "main обязан спросить замер о читателях и отдать их в check")
+    assert "взять корень у" in out, (
+        "main обязан спросить замер о выводе корня и отдать его в check")
 
 
 def test_layer_table_is_complete_and_the_arrows_point_down(world):
@@ -437,7 +456,8 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
 def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
-         "allowed_edges": [], "manual_entry_points": {}, "generated": "2026-09-19T00:00Z"}
+         "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
+         "generated": "2026-09-19T00:00Z"}
     d.update(over)
     return d
 

@@ -170,7 +170,8 @@ MAP_STATES = ("present", "missing", "skipped")
 MapState = Literal["present", "missing", "skipped"]      # тот же кортеж, гейт сверяет их равенство
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
-           "allowed_edges": list, "manual_entry_points": dict, "generated": str}
+           "allowed_edges": list, "manual_entry_points": dict, "root_exemptions": dict,
+           "generated": str}
 
 #: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
 #: импортов. Всё остальное в записи — решение человека (карточка, и что добавят
@@ -231,6 +232,9 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
             raise LayoutError(f"ребро allowlist без from/to: {e!r}")
         if not e.get("ticket"):
             raise LayoutError(f"ребро {e['from']} → {e['to']} без карточки")
+    for path_, why in layout["root_exemptions"].items():
+        if not isinstance(why, str) or not why:
+            raise LayoutError(f"исключение из правила корня {path_}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
         if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
@@ -747,14 +751,14 @@ ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
 }
 
 
-#: Единственный модуль, которому положено читать переменную корня данных: он и
-#: есть канон (`resolve_root`, `code_root`). Правило родилось из трёх независимых
-#: случаев дрейфа: модуль графов скопировал разбор значения и потерял `strip`
-#: (починено кругом по PR #385), ревизия ядер скопировала уже починенный разбор и
-#: потеряла `resolve`, мутатор — то же самое. Копия со ссылкой на канон в соседнем
-#: комментарии отдрейфовала в момент написания, поэтому договорённости мало: нужен
-#: счёт (обе головы входного круга №321 сошлись на инварианте против списка
-#: прощённых имён).
+#: Единственный модуль, которому положено выводить корень: он и есть канон
+#: (`resolve_root`, `code_root`). Правило родилось из четырёх независимых случаев
+#: дрейфа: модуль графов скопировал разбор значения и потерял `strip` (починено
+#: кругом по PR #385), ревизия ядер скопировала уже починенный разбор и потеряла
+#: `resolve`, мутатор — то же самое, у скрипта моделей нет даже `strip`. Каждая
+#: копия несла рядом ссылку на канон, то есть договорённость не просто не
+#: сработала — она давала ложную уверенность (обе головы кругов №321).
+ENV_ROOT_VAR = "CHAROITE_ROOT"
 ENV_ROOT_OWNER = "src/charoite_paths.py"
 
 #: Где инвариант уже обязан выполняться. Скрипты переводятся следующим куском
@@ -763,20 +767,62 @@ ENV_ROOT_OWNER = "src/charoite_paths.py"
 #: Область — не потолок и не амнистия: она сокращается и расширению не подлежит.
 ENV_ROOT_ENFORCED = ("src/",)
 
+#: Формы вывода корня — таблица, а не одно правило. Первая редакция счёта ловила
+#: только чтение переменной, и этого хватало ровно до первой проверки: дефект, из-за
+#: которого правило и завели (модели искались от положения файла), чтения переменной
+#: не содержал вовсе — вернуть прежнюю строку, и гейт оставался зелёным при всех
+#: тестах (Critical DS выходного круга, воспроизведено). Новая форма — запись здесь,
+#: а не ещё один цикл в гейте.
+ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
+    ("env", lambda tree: _env_reads(tree, ENV_ROOT_VAR),
+     f"читает {ENV_ROOT_VAR} сам"),
+    ("file", _file_roots,
+     "выводит корень из положения файла цепочкой __file__ … .parent.parent"),
+)
 
-def env_root_readers(inv: Inventory, var: str = "CHAROITE_ROOT") -> dict[str, list[int]]:
-    """Кто читает переменную корня данных сам — файл → строки.
 
-    Один источник для замера и для гейта: пока `report` считал читателей внутри
-    себя, гейт о них не знал вовсе и правило нечем было выразить.
+def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
+    """Кто выводит корень сам и какой формой — файл → форма → строки.
+
+    Грамматика форм одна на всех (`ROOT_SHAPES` поверх `_env_reads`/`_file_roots`):
+    замер печатает их человеку с порядком строк и заметками, гейт считает
+    нарушителей. До этого гейт о находках не знал вовсе и правило нечем было
+    выразить.
     """
-    out: dict[str, list[int]] = {}
+    out: dict[str, dict[str, list[int]]] = {}
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        lines = _env_reads(info.tree, var)
-        if lines:
-            out[rel] = lines
+        found = {name: lines for name, finder, _ in ROOT_SHAPES if (lines := finder(info.tree))}
+        if found:
+            out[rel] = found
+    return out
+
+
+def root_problems(derivations: dict[str, dict[str, list[int]]],
+                  exemptions: dict[str, str] | None = None) -> list[str]:
+    """Расхождения правила «корень выводит один модуль» — строками.
+
+    Отдельная функция, потому что её зовёт гейт, а считает инвентарь: так новую
+    форму нельзя добавить в замер и забыть в гейте.
+
+    `exemptions` — решения человека из артефакта: файл → обоснование. Не список
+    прощённых имён, а объявленные исключения по устройству, и сверяются они в обе
+    стороны, как всё в этом гейте: исключение, которое больше не выводит корень, —
+    расхождение, его надо снять.
+    """
+    hint = {name: text for name, _, text in ROOT_SHAPES}
+    exempt = exemptions or {}
+    out = []
+    for rel, shapes in sorted(derivations.items()):
+        if rel == ENV_ROOT_OWNER or rel in exempt or not rel.startswith(ENV_ROOT_ENFORCED):
+            continue
+        for name, lines in sorted(shapes.items()):
+            out.append(f"{rel}:{','.join(map(str, lines))} {hint[name]} — "
+                       f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "
+                       f"иначе копия разойдётся с каноном")
+    for rel in sorted(set(exempt) - set(derivations)):
+        out.append(f"root_exemptions объявляет {rel}, но корень он больше не выводит — снять")
     return out
 
 
@@ -855,15 +901,17 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
           map_state: MapState = "present",
-          env_readers: dict[str, list[int]] | None = None) -> list[str]:
+          roots: dict[str, dict[str, list[int]]] | None = None) -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
     спрашивает»); `missing` — карты нет, это расхождение; `skipped` — прогон её
     не писал и судить нечем. Четвёртого состояния нет: оно вело себя как
     `present`, а докстринг обещал обратное, и на этом держался главный гейт
-    (Important GLM круга 9). `env_readers` — то же соглашение: `None` значит
-    «вызывающий о читателях переменной корня не спрашивает»."""
+    (Important GLM круга 9). `roots` — то же соглашение: `None` значит
+    «вызывающий о выводе корня не спрашивает». Главный тракт спрашивает всегда,
+    и это сторожит отдельный тест: правило, которое можно выключить забывчивостью
+    вызывающего, — не правило."""
     if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
@@ -897,15 +945,12 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     for path, who in sorted(scanned.prose.items()):
         if not (repo / path).is_file():
             problems.append(f"путь {path} назван в документации или конфиге ({', '.join(sorted(who))}), а файла нет")
-    # корень данных выводит один модуль: копия правил разбора трижды отдрейфовала
+    # корень данных выводит один модуль: копия правил разбора четырежды отдрейфовала
     # от канона, на который сама же ссылалась в комментарии (№321). Инвариант, а не
-    # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе
-    for rel, lines in sorted((env_readers or {}).items()):
-        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
-            continue
-        problems.append(
-            f"{rel}:{','.join(map(str, lines))} читает CHAROITE_ROOT сам — "
-            f"взять корень у {ENV_ROOT_OWNER} (resolve_root), иначе копия разойдётся с каноном")
+    # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе.
+    # Форм вывода несколько (`ROOT_SHAPES`) — первая редакция правила считала только
+    # чтение переменной и пропускала тот самый дефект, ради которого заводилась
+    problems += root_problems(roots or {}, layout["root_exemptions"])
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -1035,7 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         map_text, map_state = None, "missing"
     problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
-                               env_readers=env_root_readers(inv))
+                               roots=root_derivations(inv))
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")
