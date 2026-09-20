@@ -36,3 +36,18 @@ def test_moment_comes_from_the_flag_and_falls_back_to_now(monkeypatch):
     assert abs((dn._moment() - dt.datetime.now()).total_seconds()) < 5
     monkeypatch.setattr(sys, "argv", ["dictate_note.py", "--text"])
     assert abs((dn._moment() - dt.datetime.now()).total_seconds()) < 5
+
+
+def test_граф_спрашивается_на_вызове_а_не_на_импорте(tmp_path, monkeypatch):
+    """Заметка и дневник идут в граф, названный СЕЙЧАС, а не на импорте.
+
+    Снимок на импорте считался раньше фикстур: в шелле владельца (переменная
+    графа экспортирована — этим включают демо-граф) процесс держал его путь
+    до конца прогона, и `--diary` писал в живой граф, а изоляция окружения
+    этого уже не догоняла (круг 11 по коду №327, DS C1).
+    """
+    import dictate_note
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(tmp_path / "поздний-граф"))
+    monkeypatch.delenv("SUFLER_DIARY_DIR", raising=False)
+    assert dictate_note._graph() == tmp_path / "поздний-граф"
+    assert dictate_note.diary_dir() == tmp_path / "Дневник"
