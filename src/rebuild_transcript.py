@@ -1274,7 +1274,7 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
         f"(в очереди {len(pending)}, попытка {int(pending[0].get('attempts', 0)) + 1})")
     env = dict(os.environ, CHAROITE_NO_RETRY="1")
     subprocess.Popen(
-        ["nice", "-n", "10", sys.executable, str(pathlib.Path(__file__)), str(target)],
+        ["nice", "-n", "10", sys.executable, str(CODE / "src" / "rebuild_transcript.py"), str(target)],
         start_new_session=True, env=env,
         # по полному имени файла, не по 15 знакам: две встречи одной минуты
         # (и две минутные встречи прежних версий) писали в один лог, и второй
@@ -1424,7 +1424,7 @@ def main():
         publish(status.processing, live, "updating_graph")
         _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
-            [sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"), str(live)],
+            [sys.executable, str(CODE / "src" / "graph_updater.py"), str(live)],
             check=False,
         )
         if result.returncode == EXIT_NO_SPEECH:

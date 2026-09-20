@@ -68,6 +68,7 @@ import hint_guard  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
+    MODELS_DIR,
     code_root,
     harden_existing,
     harden_umask,
@@ -674,8 +675,8 @@ def main():
     spk_tracker = None
     voice_names: dict[int, str] = {}
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
-    emb_model = ROOT / "models" / "diar" / "embedding.onnx"
-    seg_model = ROOT / "models" / "diar" / "segmentation.onnx"
+    emb_model = ROOT / MODELS_DIR / "diar" / "embedding.onnx"
+    seg_model = ROOT / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
         from diarize_live import (SegmentTracker, SpeakerTracker,
                                   availability_note, jobs_for, tracker_kind)
@@ -3307,7 +3308,7 @@ def main():
                 pass
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
-                 str(pathlib.Path(__file__).parent / "rebuild_transcript.py"), str(tr.path)],
+                 str(CODE / "src" / "rebuild_transcript.py"), str(tr.path)],
                 start_new_session=True, stdin=subprocess.DEVNULL,
                 stdout=glog, stderr=subprocess.STDOUT,
             )

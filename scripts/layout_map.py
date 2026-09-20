@@ -170,7 +170,15 @@ MAP_STATES = ("present", "missing", "skipped")
 MapState = Literal["present", "missing", "skipped"]      # тот же кортеж, гейт сверяет их равенство
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
-           "allowed_edges": list, "manual_entry_points": dict, "generated": str}
+           "allowed_edges": list, "manual_entry_points": dict, "root_exemptions": dict,
+           "generated": str}
+
+#: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
+#: импортов. Всё остальное в записи — решение человека (карточка, и что добавят
+#: дальше), и `regen` обязан перенести его дословно. Граница нужна именно как
+#: список: пока её не было, запись собиралась из трёх полей заново, и любое
+#: четвёртое исчезало без следа (входной круг №325).
+MEASURED_EDGE_FIELDS = ("from", "to")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
@@ -224,6 +232,15 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
             raise LayoutError(f"ребро allowlist без from/to: {e!r}")
         if not e.get("ticket"):
             raise LayoutError(f"ребро {e['from']} → {e['to']} без карточки")
+    known = {name for name, _, _ in ROOT_SHAPES}
+    for path_, shapes in layout["root_exemptions"].items():
+        if not isinstance(shapes, dict) or not shapes:
+            raise LayoutError(f"исключение из правила корня {path_}: нужна карта «форма → обоснование»")
+        for name, why in shapes.items():
+            if name not in known:
+                raise LayoutError(f"исключение {path_}: форма {name!r} не из ROOT_SHAPES")
+            if not isinstance(why, str) or not why:
+                raise LayoutError(f"исключение {path_} по форме {name}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
         if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
@@ -701,16 +718,182 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
     return sorted(out)
 
 
-def _file_roots(tree: ast.Module) -> list[int]:
-    """Строки с цепочкой `__file__ … .parent.parent` — корень, выведенный из
-    положения файла. Одна ступень (`sys.path`-шим) не считается."""
-    out = []
+#: Функции канона, которым положение файла отдают на вход: подъём вверх делают
+#: они, а не вызывающий. Имя проверяется вместе с происхождением — локальная
+#: функция с тем же именем каноном не становится (Important обеих голов круга 3).
+ROOT_CANON_CALLS = ("resolve_root", "code_root")
+#: Вызовы, куда путь от `__file__` уходит целиком и корнем не становится.
+ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
+
+
+def _canon_names(tree: ast.Module) -> set[str]:
+    """Имена, под которыми в модуль пришли функции канона — включая псевдонимы.
+
+    Совпадения по последнему сегменту имени мало: локальная `def code_root(m)`
+    получала бы прощение, а `from charoite_paths import resolve_root as root_of`
+    краснел бы на верном коде (обе головы круга 3, независимо).
+    """
+    out: set[str] = set()
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and node.attr == "parent"
-                and isinstance(node.value, ast.Attribute) and node.value.attr == "parent"
-                and "__file__" in ast.unparse(node)):
-            out.append(node.lineno)
-    return sorted(set(out))
+        if isinstance(node, ast.ImportFrom) and node.module == "charoite_paths":
+            if any(a.name == "*" for a in node.names):
+                out |= set(ROOT_CANON_CALLS)          # `import *` приносит канон под своими именами
+            out |= {a.asname or a.name for a in node.names if a.name in ROOT_CANON_CALLS}
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "charoite_paths":
+                    # `charoite_paths.resolve_root(...)` — сегмент имени, а модуль назван
+                    out |= {f"{a.asname or a.name}.{n}" for n in ROOT_CANON_CALLS}
+    return out
+
+
+def _call_args(node: ast.Call):
+    """Все аргументы вызова: позиционные, распакованные и по имени.
+
+    Ключевые обходились не всюду, и законный `resolve_root(module_file=__file__)`
+    краснел на верном коде (Critical DS круга 3).
+    """
+    yield from node.args
+    yield from (kw.value for kw in node.keywords)
+
+
+#: Что можно построить вокруг `__file__` внутри законного аргумента: обернуть в
+#: путь, привести к строке, привести к абсолютному. Подъём в этот список не
+#: входит — `resolve_root(Path(__file__).parent.parent)` отдал бы канону чужой
+#: путь, и данные уехали бы мимо переменной корня целиком (Critical обеих голов
+#: круга 4). Список закрытый: прощается форма выражения, а не всё поддерево.
+#: Конструкторы пути прощаются ТОЛЬКО в форме с модулем (`pathlib.Path(...)`):
+#: голое имя может быть локальной тёзкой с подъёмом внутри, ровно как было с
+#: именем канона (Important GLM круга 7). Встроенное `str` в этой форме не
+#: бывает и остаётся голым.
+ARG_TRANSPARENT_QUALIFIED = ("Path", "PurePath", "PurePosixPath", "resolve", "absolute")
+ARG_TRANSPARENT_BARE = ("str",)
+ARG_TRANSPARENT = ARG_TRANSPARENT_QUALIFIED + ARG_TRANSPARENT_BARE
+
+
+#: Компонент пути, который поднимает вверх не атрибутом, а значением. Сравнивать
+#: строку целиком мало: `'../..'`, `'../'` и `'../src'` — те же подъёмы, записанные
+#: одним литералом, и `PurePosixPath` нормализует их к тем же частям (Critical
+#: обеих голов круга 6). Поэтому константа разбирается как путь.
+ROOT_CLIMB_PART = ".."
+
+
+def _climbs_by_value(value: object) -> bool:
+    """Константа уводит путь от файла? Разбор пути, а не равенство строк.
+
+    Два способа увести: подняться вверх компонентом `..` и обнулить всё
+    предыдущее якорем — соединение с абсолютным путём выбрасывает `__file__`
+    из выражения целиком, и канон получил бы корень диска (Important DS круга
+    7). Байты приводятся к строке: сегодня ни одна прозрачная обёртка их не
+    принимает, но связка «никто не принимает байты» нигде не записана, и
+    добавление одной функции в список сделало бы `b'..'` молчащим (Minor GLM).
+    """
+    if isinstance(value, bytes):
+        value = os.fsdecode(value)
+    if not isinstance(value, str):
+        return False
+    parts = pathlib.PurePosixPath(value).parts
+    return ROOT_CLIMB_PART in parts or pathlib.PurePosixPath(value).is_absolute()
+
+
+def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
+    """Узлы `__file__` в аргументе, если ВСЁ выражение вокруг них безопасно.
+
+    Прощение структурное, а не однопутевое: узел законен только когда разобраны
+    все его дети. Прежний обход спускался в первого ребёнка и выбрасывал
+    остальные, поэтому `Path(__file__, '..', '..')` внутри законного вызова
+    проходил молча — подъём прятался в хвостовых аргументах, которые никто не
+    смотрел (Critical обеих голов круга 5, воспроизведено).
+
+    Безопасны: сам `__file__`, строковая или числовая константа без компонента
+    подъёма, прозрачная обёртка (`ARG_TRANSPARENT`) со всеми безопасными
+    детьми, и до `steps` обращений к родительскому каталогу. `steps` разный у
+    двух назначений: канону путь отдают как есть (0 — подъём делает он сам),
+    вставке пути кладут каталог модуля (1). Всё прочее — не прощается.
+    """
+    found: list[ast.Name] = []
+    if _walk_safe(arg, steps, found):
+        yield from found
+
+
+def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
+    """Всё выражение безопасно? Попутно собирает найденные `__file__`."""
+    if isinstance(node, ast.Name):
+        if node.id == "__file__":
+            found.append(node)
+            return True
+        return False                      # переменная-посредник непрозрачна
+    if isinstance(node, ast.Constant):
+        return not _climbs_by_value(node.value)
+    if isinstance(node, ast.Call):
+        fn = node.func
+        qualified = isinstance(fn, ast.Attribute)
+        name = fn.attr if qualified else getattr(fn, "id", "")
+        allowed = ARG_TRANSPARENT_QUALIFIED if qualified else ARG_TRANSPARENT_BARE
+        if name not in allowed:
+            return False
+        kids = list(node.args) + [kw.value for kw in node.keywords]
+        # `p.resolve()` — получатель несёт путь, его надо разобрать; `pathlib.Path(...)`
+        # — слева имя модуля, данных в нём нет. Различаем по форме: выражение против
+        # голого имени (иначе законная вставка пути краснеет на слове «pathlib»)
+        if isinstance(fn, ast.Attribute) and not isinstance(fn.value, ast.Name):
+            kids.append(fn.value)
+        return all(_walk_safe(k, steps, found) for k in kids)
+    if isinstance(node, ast.Attribute):
+        if node.attr in ARG_TRANSPARENT:
+            return _walk_safe(node.value, steps, found)
+        if node.attr == "parent" and steps > 0:
+            return _walk_safe(node.value, steps - 1, found)
+        return False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _walk_safe(node.left, steps, found) and _walk_safe(node.right, steps, found)
+    return False
+
+
+def _file_roots(tree: ast.Module) -> list[int]:
+    """Строки, где `__file__` стоит НЕ в одном из двух разрешённых мест.
+
+    Три круга подряд правило пыталось распознать подъём вверх — сначала по
+    цепочке `.parent.parent`, потом по индексу и `dirname`, потом по предкам
+    узла. Каждый раз следующий круг находил написание, которое предикат не
+    видит: хелпер с параметром, обёртку над конструктором пути, промежуточную
+    переменную, компонент `..`, цепочку длиннее бюджета предков. Положение файла
+    — материал, который течёт через присваивания и вызовы, и догонять его
+    предикатом значит отставать на одно написание за круг.
+
+    Поэтому предиката больше нет. `__file__` имеет право стоять ровно в двух
+    местах: аргументом функции канона (подъём живёт внутри канона, где его видно
+    человеком) и аргументом вставки пути (bootstrap, корнем не становится). Всё
+    остальное — расхождение, независимо от того, что с ним делают дальше: путь к
+    себе для перезапуска берётся от `code_root`, как соседние вызовы того же
+    файла. Обе головы круга 3 пришли к этому независимо.
+
+    Граница правила названа честно: подъём НАД результатом канона
+    (`dirname(code_root(__file__))`) оно не ловит — `__file__` там стоит в
+    законном месте. Это другой класс: не «модуль сам выводит корень» (четыре
+    случая дрейфа, ради которых правило и заведено), а «взял у канона и
+    испортил» — одиночная ошибка, видимая в диффе. В боевом коде таких мест
+    ноль (замер по `src/` и `scripts/`), а закрытие потребовало бы вернуть
+    предикат подъёма, от которого этот круг и избавился. Если случай появится,
+    его место — тест канона «результат абсолютный и не поднимается», а не
+    здесь (Critical GLM круга 3, отклонён с обоснованием; хвост в №321).
+    """
+    canon = _canon_names(tree)
+    legit: set[tuple[int, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        full = ast.unparse(node.func)
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        if not ((name in canon or full in canon) or full in ROOT_BOOTSTRAP_CALLS):
+            continue
+        steps = 1 if full in ROOT_BOOTSTRAP_CALLS else 0
+        for arg in _call_args(node):
+            for n in _plain_file_arg(arg, steps=steps):
+                legit.add((n.lineno, n.col_offset))
+    return sorted({node.lineno for node in ast.walk(tree)
+                   if isinstance(node, ast.Name) and node.id == "__file__"
+                   and (node.lineno, node.col_offset) not in legit})
 
 
 def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
@@ -738,6 +921,99 @@ ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
                                             f"функции ({ev.inner_insert})"),
     "no_insert": lambda ev, info: "; вставки sys.path в файле нет" if info.executable else "",
 }
+
+
+#: Единственный модуль, которому положено выводить корень: он и есть канон
+#: (`resolve_root`, `code_root`). Правило родилось из четырёх независимых случаев
+#: дрейфа: модуль графов скопировал разбор значения и потерял `strip` (починено
+#: кругом по PR #385), ревизия ядер скопировала уже починенный разбор и потеряла
+#: `resolve`, мутатор — то же самое, у скрипта моделей нет даже `strip`. Каждая
+#: копия несла рядом ссылку на канон, то есть договорённость не просто не
+#: сработала — она давала ложную уверенность (обе головы кругов №321).
+ENV_ROOT_VAR = "CHAROITE_ROOT"
+ENV_ROOT_OWNER = "src/charoite_paths.py"
+
+#: Где инвариант уже обязан выполняться. Скрипты переводятся следующим куском
+#: фазы 3: у 12 из них чтение стоит выше вставки в `sys.path`, то есть канон в
+#: этот момент ещё нельзя импортировать, и перевод требует правки bootstrap.
+#: Область — не потолок и не амнистия: она сокращается и расширению не подлежит.
+ENV_ROOT_ENFORCED = ("src/",)
+
+#: Формы вывода корня — таблица, а не одно правило. Первая редакция счёта ловила
+#: только чтение переменной, и этого хватало ровно до первой проверки: дефект, из-за
+#: которого правило и завели (модели искались от положения файла), чтения переменной
+#: не содержал вовсе — вернуть прежнюю строку, и гейт оставался зелёным при всех
+#: тестах (Critical DS выходного круга, воспроизведено). Новая форма — запись здесь,
+#: а не ещё один цикл в гейте.
+ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
+    ("env", lambda tree: _env_reads(tree, ENV_ROOT_VAR),
+     f"читает {ENV_ROOT_VAR} сам"),
+    ("file", _file_roots,
+     "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
+)
+
+
+def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
+    """Кто выводит корень сам и какой формой — файл → форма → строки.
+
+    Грамматика форм одна на всех (`ROOT_SHAPES` поверх `_env_reads`/`_file_roots`):
+    замер печатает их человеку с порядком строк и заметками, гейт считает
+    нарушителей. До этого гейт о находках не знал вовсе и правило нечем было
+    выразить.
+    """
+    out: dict[str, dict[str, list[int]]] = {}
+    for rel, info in sorted(inv.files.items()):
+        if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
+            continue
+        found = {name: lines for name, finder, _ in ROOT_SHAPES if (lines := finder(info.tree))}
+        if found:
+            out[rel] = found
+    return out
+
+
+def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
+                  exemptions: dict[str, dict[str, str]] | None = None) -> list[str]:
+    """Расхождения правила «корень выводит один модуль» — строками.
+
+    Отдельная функция, потому что её зовёт гейт, а считает инвентарь: так новую
+    форму нельзя добавить в замер и забыть в гейте.
+
+    `exemptions` — решения человека из артефакта: файл → ФОРМА → обоснование. Не
+    список прощённых имён, а объявленные исключения по устройству, и сверяются они
+    в обе стороны, как всё в этом гейте: исключение, которого больше нет в замере, —
+    расхождение, его надо снять.
+
+    Исключение даётся на форму, а не на файл целиком: обоснование покрывает одну
+    форму, а прощение файла молчало бы и о любой другой. Единственное сегодняшнее
+    исключение — рецепт зависимостей: ему нельзя импортировать канон по его же
+    контракту, но если он однажды начнёт ещё и читать переменную, это второй канон,
+    и гейт обязан сказать (обе головы круга 2, независимо).
+
+    `derivations is None` значит «вызывающий о выводе корня не спрашивает»: тогда
+    молчат обе стороны. Раньше молчала только первая, и незаданный замер печатал
+    «исключение больше не выводит корень» про живое исключение — тот же
+    перегруженный `None`, за который платили гейтом свежести карты (круг 9).
+    """
+    if derivations is None:
+        return []
+    hint = {name: text for name, _, text in ROOT_SHAPES}
+    exempt = exemptions or {}
+    out = []
+    for rel, shapes in sorted(derivations.items()):
+        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
+            continue
+        for name, lines in sorted(shapes.items()):
+            if name in exempt.get(rel, {}):
+                continue
+            out.append(f"{rel}:{','.join(map(str, lines))} {hint[name]} — "
+                       f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "
+                       f"иначе копия разойдётся с каноном")
+    for rel, shapes in sorted(exempt.items()):
+        gone = sorted(set(shapes) - set(derivations.get(rel, {})))
+        for name in gone:
+            out.append(f"root_exemptions прощает {rel} форму «{name}», но замер её "
+                       f"больше не находит — снять")
+    return out
 
 
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
@@ -797,10 +1073,20 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
     if disputed:
         out += ["", f"## Спорный вид — файлы в замере есть, но политика конфликтует ({len(disputed)})", ""]
         out += [f"- {p.text}" for p in disputed]
-    out += ["", f"## Читатели переменной {env_var} (формы: {', '.join(ENV_READ_FORMS)}) — {len(env)}", ""]
+    # Заголовки и счётчики берутся из той же таблицы форм, что судит гейт: пока они
+    # были литералами, замер описывал две формы, а гейт мог считать третью, и долг
+    # по ней был невидим человеку (Important GLM круга 2).
+    shape_hint = {name: text for name, _, text in ROOT_SHAPES}
+    out += ["", f"## Кто выводит корень сам, форма «env» — {shape_hint['env']} ({len(env)})", ""]
     out += env or ["- нет"]
-    out += ["", f"## Корень из положения файла — цепочка `__file__ … .parent.parent` ({len(roots)})", ""]
+    out += ["", f"## Кто выводит корень сам, форма «file» — {shape_hint['file']} ({len(roots)})", ""]
     out += roots or ["- нет"]
+    missing = [n for n, _, _ in ROOT_SHAPES if n not in ("env", "file")]
+    if missing:
+        # третья форма заведена в таблице, но секции ей никто не написал: замер обязан
+        # сказать об этом вслух, а не молчать о долге, который гейт уже считает
+        out += ["", f"## Формы без раздела в замере — {', '.join(missing)}", "",
+                "- гейт их судит, а человек не видит: дописать раздел в report()"]
     out += ["", "## Точки сборки швов", ""]
     for name in seams:
         who = seam_hits.get(name, [])
@@ -814,14 +1100,18 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
-          map_state: MapState = "present") -> list[str]:
+          map_state: MapState = "present",
+          roots: dict[str, dict[str, list[int]]] | None = None) -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
     спрашивает»); `missing` — карты нет, это расхождение; `skipped` — прогон её
     не писал и судить нечем. Четвёртого состояния нет: оно вело себя как
     `present`, а докстринг обещал обратное, и на этом держался главный гейт
-    (Important GLM круга 9)."""
+    (Important GLM круга 9). `roots` — то же соглашение: `None` значит
+    «вызывающий о выводе корня не спрашивает». Главный тракт спрашивает всегда,
+    и это сторожит отдельный тест: правило, которое можно выключить забывчивостью
+    вызывающего, — не правило."""
     if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
@@ -855,6 +1145,12 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     for path, who in sorted(scanned.prose.items()):
         if not (repo / path).is_file():
             problems.append(f"путь {path} назван в документации или конфиге ({', '.join(sorted(who))}), а файла нет")
+    # корень данных выводит один модуль: копия правил разбора четырежды отдрейфовала
+    # от канона, на который сама же ссылалась в комментарии (№321). Инвариант, а не
+    # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе.
+    # Форм вывода несколько (`ROOT_SHAPES`) — первая редакция правила считала только
+    # чтение переменной и пропускала тот самый дефект, ради которого заводилась
+    problems += root_problems(roots, layout["root_exemptions"])
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -869,14 +1165,25 @@ def regen(layout: dict, graph: dict[str, set[str]]) -> tuple[dict, list[tuple[st
     карточки — вернуть вызывающему, чтобы напечатать (Minor DS круга 2: regen
     писал артефакт, который следующая загрузка отвергала трейсбеком). Штамп
     `generated` меняется только вместе с allowlist (Minor DS круга 3).
-    Слои, поправки и ручные точки входа — решения, их regen не трогает."""
-    tickets = {(e["from"], e["to"]): e.get("ticket", "") for e in layout["allowed_edges"]}
+    Слои, поправки и ручные точки входа — решения, их regen не трогает.
+
+    Внутри записи ребра то же правило: замер владеет только `from`/`to`
+    (`MEASURED_EDGE_FIELDS`), остальные поля — решение человека и переносятся
+    как есть. Раньше запись собиралась из трёх полей заново, и любое
+    добавленное поле молча исчезало при первом же `--regen`, пока гейт
+    оставался зелёным: обещание докстринга выше не выполнялось ровно для
+    рёбер (обе головы входного круга №325 независимо, 20.09)."""
+    kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
     fresh = violations(graph, layout)
-    edges = [{"from": a, "to": b, "ticket": tickets.get((a, b), "")} for a, b in fresh]
+    edges = []
+    for a, b in fresh:
+        prev = kept.get((a, b), {})
+        decided = {k: v for k, v in prev.items() if k not in MEASURED_EDGE_FIELDS and k != "ticket"}
+        edges.append({"from": a, "to": b, "ticket": prev.get("ticket", ""), **decided})
     if edges != layout["allowed_edges"]:
         layout["allowed_edges"] = edges
         layout["generated"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    return layout, [(a, b) for a, b in fresh if not tickets.get((a, b))]
+    return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
 
 
 def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str]) -> str:
@@ -898,6 +1205,13 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out += ["", "## Поправки к таблице брифа (с обоснованием)", ""]
     for m, ov in sorted(layout["layer_overrides"].items()):
         out.append(f"- `{m}` → {ov['layer']}: {ov['why']}")
+    out += ["", "## Корень выводит один модуль — объявленные исключения", ""]
+    out.append(f"Канон: `{ENV_ROOT_OWNER}`. Область правила: "
+               + ", ".join(f"`{p}`" for p in ENV_ROOT_ENFORCED) + ".")
+    out.append("")
+    for rel, shapes in sorted(layout["root_exemptions"].items()):
+        for name, why in sorted(shapes.items()):
+            out.append(f"- `{rel}`, форма «{name}»: {why}")
     out += ["", "## Рёбра против стрелок (allowlist с карточками на снятие)", ""]
     viol = violations(graph, layout)
     tickets = {(e["from"], e["to"]): e.get("ticket", "") for e in layout["allowed_edges"]}
@@ -972,7 +1286,8 @@ def main(argv: list[str] | None = None) -> int:
         map_text, map_state = MAP.read_text(encoding="utf-8"), "present"
     else:
         map_text, map_state = None, "missing"
-    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state)
+    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
+                               roots=root_derivations(inv))
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")

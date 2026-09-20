@@ -72,6 +72,41 @@ review gates, and who answers for what — is documented in
 | every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard |
 | nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
 
+### The layout guard
+
+`docs/design/layout.json` is the single source of truth for how `src/` is laid
+out: which layer a module belongs to, which import edges point the wrong way,
+which files are entry points, and which modules may derive the data root
+themselves. `docs/design/layout.md` is a generated map of the same facts — it is
+never edited by hand.
+
+If a PR turns that check red, the message names the fix. The usual cases:
+
+| Message | What it means |
+|---|---|
+| new edge against the arrows | the import crosses a layer boundary — untangle it, or add it to `allowed_edges` **with a ticket** |
+| `allowed_edges` holds X → Y, but that edge is gone | the debt was paid, remove the entry |
+| file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
+| map is stale | run `.venv/bin/python scripts/layout_map.py` |
+
+```bash
+.venv/bin/python scripts/layout_map.py           # regenerate the map
+.venv/bin/python scripts/layout_map.py --check   # what CI runs, as an exit code
+.venv/bin/python scripts/layout_map.py --regen   # allowlist from the measurement
+.venv/bin/python scripts/layout_map.py --report  # the seams, for planning work
+```
+
+Every entry that grants an exception — an edge against the arrows, a manual
+entry point, a module allowed to derive the root — requires a ticket or a
+written reason, and the guard compares the artifact with the code **in both
+directions**: an entry that no longer matches reality is just as red as a
+violation that is not declared. The list can only shrink by itself; it grows
+only through a diff a human wrote and a reviewer read.
+
+The `KINDS` table in the guard is pinned by a copy inside the test on purpose —
+the comment there explains why. Changing the policy means changing two files,
+and that is the point.
+
 iOS tests live in the nightly run on purpose: the simulator takes a while
 to boot, and keeping that in the fast PR check would teach everyone to wait.
 At night there is time.

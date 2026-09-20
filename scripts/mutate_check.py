@@ -346,11 +346,16 @@ def main(argv: list[str]) -> int:
     # (3) началась живая встреча — прерываемся между мутантами.
     sys.path.insert(0, str(root / "src"))
     import busy_signals  # noqa: E402
-    # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки);
-    # канон разбора — как charoite_paths (strip + expanduser), иначе
-    # «~/charoite» в env кладёт лок в литеральную «~» (круг-1, DS Minor).
-    env_root = (os.environ.get("CHAROITE_ROOT") or "").strip()
-    data_root = (pathlib.Path(env_root).expanduser() if env_root else root)
+    import charoite_paths  # noqa: E402
+    # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки). Канон
+    # целиком, а не его пересказ: прежняя копия брала strip и expanduser, но
+    # теряла resolve, и относительное значение переменной уводило лок в каталог,
+    # зависящий от cwd — гвард «машина занята живой встречей» смотрел не туда и
+    # молча пропускал старт. Запасной корень канона (`parent.parent` от скрипта
+    # в `scripts/`) совпадает с git-корнем клона, так что «канон сюда не
+    # подставляется» было моей ошибкой, а не свойством кода (обе головы
+    # выходного круга №321). «~/charoite» лечил ещё круг-1 (DS Minor).
+    data_root = charoite_paths.resolve_root(__file__)
     if not args.force:
         busy = busy_signals.machine_busy(data_root)
         if busy:

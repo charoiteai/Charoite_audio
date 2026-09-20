@@ -21,10 +21,18 @@ ONNX-экспорте: model.onnx, tokenizer.json, config.json (экспорт �
 
 from __future__ import annotations
 
-import pathlib
 import threading
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "models" / "nli"
+from charoite_paths import MODELS_DIR, resolve_root
+
+# Модели — ДАННЫЕ, а не поставка: `/models/` стоит в .gitignore, в подписанный
+# бандл каталог не попадает, и качает их скрипт моделей в корень данных. Так же
+# их ищет диаризация (`diarize.SEG_MODEL`). Раньше здесь стояла цепочка от
+# положения файла, то есть корень КОДА: в репозитории оба корня совпадают и
+# дефект был невидим, а во вложенной установке модель лежала в одном месте, а
+# искалась в другом — `is_available()` честно отвечал False, и смысловой дедуп
+# тезисов молча выключался навсегда (обе головы входного круга №321).
+_DIR = resolve_root(__file__) / MODELS_DIR / "nli"
 
 _lock = threading.Lock()
 _session = None

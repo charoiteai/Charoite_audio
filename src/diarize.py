@@ -28,13 +28,13 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import MODELS_DIR, resolve_root
 from config_loader import load_user_or_example
 
 ROOT = resolve_root(__file__)
 
-SEG_MODEL = ROOT / "models" / "diar" / "segmentation.onnx"
-EMB_MODEL = ROOT / "models" / "diar" / "embedding.onnx"
+SEG_MODEL = ROOT / MODELS_DIR / "diar" / "segmentation.onnx"
+EMB_MODEL = ROOT / MODELS_DIR / "diar" / "embedding.onnx"
 
 
 

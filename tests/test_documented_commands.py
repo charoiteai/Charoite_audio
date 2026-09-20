@@ -32,8 +32,17 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 # «python3 scripts/foo.py …», «python src/bar.py …», «.venv/bin/python scripts/foo.py»
 _CMD = re.compile(r"(?P<runner>\.venv/bin/python|python3?)\s+(?P<script>(?:src|scripts)/[\w./-]+\.py)")
 
-# Документация для пользователя: её читают до того, как разберутся в устройстве.
-USER_DOCS = ("README.md", "docs/ru/README.md", "docs/zh/README.md",
+# Документы, которые обещают человеку команду: их читают до того, как разберутся
+# в устройстве, и соврать там дороже всего. `CONTRIBUTING.md` — только английский
+# канон: переводы docs-guard не сторожит, и держать в списке три расходящиеся
+# копии значило бы сторожить не то (входной круг №325, обе головы).
+# Честно про эффект: для команд, которым хватает stdlib (сторож раскладки —
+# такой), этот тест зелен по построению, и мутация раннера его не роняет.
+# Существование самого пути сторожит не он, а гейт раскладки (`scanned.prose`,
+# проверено мутацией). Запись здесь работает на будущее: команда к скрипту с
+# зависимостями попадёт под проверку сразу, а не после того, как кто-то
+# вспомнит про список.
+USER_DOCS = ("README.md", "docs/ru/README.md", "docs/zh/README.md", "CONTRIBUTING.md",
              "docs/SETUP.md", "docs/ru/SETUP.md", "docs/zh/SETUP.md",
              "docs/USER_GUIDE.md", "docs/ru/USER_GUIDE.md",
              "docs/DATA_AND_RECOVERY.md", "docs/ru/DATA_AND_RECOVERY.md",

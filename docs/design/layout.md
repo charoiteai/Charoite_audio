@@ -1,20 +1,20 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-19T18:53Z. Модулей 64.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T07:27Z. Модулей 64.
 
 ## Слои и направление стрелок
 
-- **core** (зависит от: —; модулей 11): `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `privacy`, `redirects`, `safe_write`, `vocabulary`
+- **core** (зависит от: —; модулей 12): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `privacy`, `redirects`, `safe_write`, `vocabulary`
 - **llm** (зависит от: core; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: core; модулей 7): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `graphs`, `tier3`
 - **cloud** (зависит от: core; модулей 1): `cloud`
 - **audio** (зависит от: core; модулей 9): `audio`, `channel_labels`, `diarize`, `diarize_live`, `frame_drops`, `owner_voice`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: core, llm, graph, cloud, audio; модулей 23): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`
-- **app** (зависит от: core, llm, graph, cloud, audio, meeting; модулей 9): `brain`, `charoite_paths`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
+- **app** (зависит от: core, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
 ## Поправки к таблице брифа (с обоснованием)
 
-- `charoite_paths` → app: корни данных и кода; по брифу остаётся в app, 17 импортёров — долг №321 в allowlist
+- `charoite_paths` → core: корни данных и кода; машинный замер: из репозитория не импортирует ничего, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)
 - `deps` → core: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
@@ -24,24 +24,20 @@
 - `tier3` → graph: бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако
 - `vocabulary` → core: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
 
+## Корень выводит один модуль — объявленные исключения
+
+Канон: `src/charoite_paths.py`. Область правила: `src/`.
+
+- `src/deps.py`, форма «file»: рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)
+
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
-Всего 16.
+Всего 6.
 
-- `audio` (audio) → `charoite_paths` (app) — №321
 - `audio` (audio) → `meeting_stamp` (meeting) — №322
 - `channel_labels` (audio) → `speaker_names` (meeting) — №322
-- `diarize` (audio) → `charoite_paths` (app) — №321
 - `diarize` (audio) → `llm` (llm) — №322 (LLM.complete для имён спикеров — вызов точки входа)
 - `graph_search` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
-- `graph_updater` (meeting) → `charoite_paths` (app) — №321
-- `graphs` (graph) → `charoite_paths` (app) — №321
-- `llm` (llm) → `charoite_paths` (app) — №321
-- `llm_health` (llm) → `charoite_paths` (app) — №321
-- `meeting_archive` (meeting) → `charoite_paths` (app) — №321
-- `rebuild_transcript` (meeting) → `charoite_paths` (app) — №321
-- `retro_fill` (meeting) → `charoite_paths` (app) — №321
-- `stt` (audio) → `charoite_paths` (app) — №321
 - `tier3` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 - `tier3` (graph) → `nli` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 
@@ -88,7 +84,7 @@
 - `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом
 - `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift
 - `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py
-- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/transcribe_file.py
+- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py
 - `src/main.py` ← scripts/doctor.py
 - `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория
 - `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками
@@ -99,6 +95,7 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/graph_search.py` ← scripts/memory_bench.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
@@ -121,7 +118,7 @@
 - `scripts/get_models.py` ← PRIVACY.md, README.md, ROADMAP.md, SECURITY.md, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/ROADMAP.md, docs/ru/SECURITY.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/ROADMAP.md, docs/zh/SECURITY.md
 - `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md
-- `scripts/layout_map.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `scripts/layout_map.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/ru/SECURITY.md, docs/zh/SECURITY.md, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/README.md, docs/zh/demo/README.md
@@ -140,7 +137,7 @@
 - `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/brain.py` ← docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md
-- `src/charoite_paths.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `src/charoite_paths.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/cloud.py` ← docs/ARCHITECTURE.md, docs/MODELS.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/zh/MODELS.md
 - `src/config_loader.py` ← docs/design/OVERHAUL_2026-08.md
 - `src/daemon.py` ← SECURITY.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md

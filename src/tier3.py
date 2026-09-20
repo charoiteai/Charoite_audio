@@ -39,6 +39,7 @@ import shutil
 
 import os
 
+import charoite_paths
 import llm
 import live_gate
 import nli
@@ -315,13 +316,20 @@ def auto_apply_allowed(cfg: dict) -> bool:
 
 
 def _data_root() -> pathlib.Path:
-    """Корень ДАННЫХ установки: там лежит лок демона, по нему судят о встрече."""
-    raw = (os.environ.get("CHAROITE_ROOT") or "").strip()
-    # strip+expanduser как в charoite_paths.resolve_root: «~» или хвостовой
-    # пробел в переменной уводили поиск daemon.lock мимо демона, и гейт
-    # «уступаю живой встрече» молча не срабатывал (круг-2 DS, M5).
-    return (pathlib.Path(raw).expanduser() if raw
-            else pathlib.Path(__file__).resolve().parent.parent)
+    """Корень ДАННЫХ установки: там лежит лок демона, по нему судят о встрече.
+
+    Канон, а не копия его правил. Прежняя копия воспроизводила `strip` и
+    `expanduser`, но теряла `resolve`, хотя комментарий рядом ссылался на
+    канон: при относительном значении переменной лок искался от текущего
+    каталога, а launchd и ручной запуск дают разный текущий каталог — гейт
+    «уступаю живой встрече» молча не срабатывал, и ночная ревизия ядер шла
+    поверх живой встречи. Тот же круг-2 (DS, M5) долечил «~» и пробел, а
+    относительность осталась (обе головы входного круга №321).
+
+    Ленивость сохранена: `resolve_root` — функция и читает переменную в
+    момент вызова, а значение к моменту гейта может отличаться от значения
+    на импорте."""
+    return charoite_paths.resolve_root(__file__)
 
 
 def night_wait_cap(default: float = 3600.0, now=None) -> float | None:
