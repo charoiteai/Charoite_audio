@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-19T18:53Z",
+  "generated": "2026-09-20T07:27Z",
   "order": [
     "core",
     "llm",
@@ -9,36 +9,6 @@
     "meeting",
     "app"
   ],
-  "allowed": {
-    "core": [],
-    "llm": [
-      "core"
-    ],
-    "graph": [
-      "core"
-    ],
-    "cloud": [
-      "core"
-    ],
-    "audio": [
-      "core"
-    ],
-    "meeting": [
-      "core",
-      "llm",
-      "graph",
-      "cloud",
-      "audio"
-    ],
-    "app": [
-      "core",
-      "llm",
-      "graph",
-      "cloud",
-      "audio",
-      "meeting"
-    ]
-  },
   "brief_layers": {
     "core": [
       "safe_write",
@@ -111,6 +81,36 @@
       "brain"
     ]
   },
+  "allowed": {
+    "core": [],
+    "llm": [
+      "core"
+    ],
+    "graph": [
+      "core"
+    ],
+    "cloud": [
+      "core"
+    ],
+    "audio": [
+      "core"
+    ],
+    "meeting": [
+      "core",
+      "llm",
+      "graph",
+      "cloud",
+      "audio"
+    ],
+    "app": [
+      "core",
+      "llm",
+      "graph",
+      "cloud",
+      "audio",
+      "meeting"
+    ]
+  },
   "layer_overrides": {
     "tier3": {
       "layer": "graph",
@@ -145,16 +145,11 @@
       "why": "до разреза (№322) целиком встречный: встречная и графовая половины в одном файле"
     },
     "charoite_paths": {
-      "layer": "app",
-      "why": "корни данных и кода; по брифу остаётся в app, 17 импортёров — долг №321 в allowlist"
+      "layer": "core",
+      "why": "корни данных и кода; машинный замер: из репозитория не импортирует ничего, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)"
     }
   },
   "allowed_edges": [
-    {
-      "from": "audio",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
     {
       "from": "audio",
       "to": "meeting_stamp",
@@ -167,11 +162,6 @@
     },
     {
       "from": "diarize",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "diarize",
       "to": "llm",
       "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа)"
     },
@@ -179,46 +169,6 @@
       "from": "graph_search",
       "to": "llm",
       "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
-    },
-    {
-      "from": "graph_updater",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "graphs",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "llm",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "llm_health",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "meeting_archive",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "rebuild_transcript",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "retro_fill",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "stt",
-      "to": "charoite_paths",
-      "ticket": "№321"
     },
     {
       "from": "tier3",
@@ -231,13 +181,6 @@
       "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
     }
   ],
-  "notes": {
-    "brief_layers": "Таблица брифа владельца 19.09 дословно; правки — только через layer_overrides с обоснованием (Important DS по #594: перенос слоя одной строкой без причины легализовал бы ребро молча).",
-    "allowed": "Целевые стрелки брифа. graph → llm не разрешено: фаза 3 (№321) уводит llm из graph за Protocol/параметр; существующие рёбра graph → llm — долг в allowed_edges.",
-    "allowed_edges": "Рёбра против стрелок на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются. Карточка — где ребро снимается.",
-    "generated": "Момент последнего --regen (allowlist); версия файла — git.",
-    "manual_entry_points": "Исполняемые файлы (скрипты и модули src/ с гвардом __main__), которые из кода репозитория никто не зовёт: запускает человек или внешний конфиг. Обоснование обязательно; ручную пометку гейт снимает, как только файл начинает звать код. Список исполняемых и кто их зовёт — замер, не решение: смотри docs/design/layout.md."
-  },
   "manual_entry_points": {
     "scripts/bench_extract.py": "бенчмарк извлечения, ручной прогон",
     "scripts/bench_models.py": "бенчмарк моделей, ручной прогон",
@@ -254,5 +197,17 @@
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
     "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+  },
+  "root_exemptions": {
+    "src/deps.py": {
+      "file": "рецепт про интерпретатор: по своему докстрингу не может импортировать ничего, иначе упадёт первым — в том числе канон путей. Цепочка ведёт к .venv, то есть к корню КОДА, а не данных (обе головы круга №321)"
+    }
+  },
+  "notes": {
+    "brief_layers": "Таблица брифа владельца 19.09 дословно; правки — только через layer_overrides с обоснованием (Important DS по #594: перенос слоя одной строкой без причины легализовал бы ребро молча).",
+    "allowed": "Целевые стрелки брифа. graph → llm не разрешено: фаза 3 (№321) уводит llm из graph за Protocol/параметр; существующие рёбра graph → llm — долг в allowed_edges.",
+    "allowed_edges": "Рёбра против стрелок на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются. Карточка — где ребро снимается.",
+    "generated": "Момент последнего --regen (allowlist); версия файла — git.",
+    "manual_entry_points": "Исполняемые файлы (скрипты и модули src/ с гвардом __main__), которые из кода репозитория никто не зовёт: запускает человек или внешний конфиг. Обоснование обязательно; ручную пометку гейт снимает, как только файл начинает звать код. Список исполняемых и кто их зовёт — замер, не решение: смотри docs/design/layout.md."
   }
 }

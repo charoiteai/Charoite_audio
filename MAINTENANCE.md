@@ -32,6 +32,21 @@ evidence, not a performance.
 6. Red CI blocks the merge. Green CI merges by squash; release-please
    cuts versioned releases.
 
+### Guards are not to be silenced
+
+A guard that goes red states a fact about the tree, and the maintainer's job is
+to change the fact, not the guard. Three rules follow, and they bind the AI
+maintainer as much as anyone:
+
+- A failing check is never made green by regenerating the artifact it compares
+  against, by widening a rule's scope, or by declaring an exception without a
+  ticket and a written reason.
+- An exception is a decision, so it is written down where a reviewer reads it —
+  in the artifact, next to the thing it excuses, with the reason in plain words.
+- Numbers in those reasons come from the measurement, not from memory. A count
+  typed by hand drifts from the code the day after it is written, and nothing in
+  the repository can catch it.
+
 Autonomous overnight runs exist and are routine — they go through the
 same review and CI gates as daytime work. Nothing merges on a red
 pipeline, at any hour.

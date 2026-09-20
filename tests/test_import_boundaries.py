@@ -62,9 +62,188 @@ def world():
 def test_layout_matches_the_code(world):
     """Один гейт: расхождений между раскладкой и кодом нет. Каждая строка —
     готовое действие."""
-    layout, graph, scanned, execs, _ = world
-    problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"))
+    layout, graph, scanned, execs, inv = world
+    problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
+                        roots=lm.root_derivations(inv))
     assert not problems, "\n".join(problems)
+
+
+def test_the_root_is_derived_by_one_module_in_every_shape(world):
+    """Корень выводит один модуль — канон, и это счёт по ВСЕМ формам вывода.
+
+    Первая редакция правила считала только чтение переменной, и этого хватало
+    ровно до первой проверки: дефект, ради которого правило заводилось (модели
+    искались от положения файла), чтения переменной не содержал вовсе — гейт
+    оставался зелёным при возврате дефекта. Поэтому форм теперь таблица, и тест
+    проверяет каждую, а не «ту, о которой вспомнили» (Critical DS выходного
+    круга, воспроизведено возвратом прежней строки)."""
+    layout, graph, scanned, execs, inv = world
+    derivations = lm.root_derivations(inv)
+    exempt = layout["root_exemptions"]
+
+    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file"}, (
+        "формы вывода корня — утверждённый список; новая форма это правка политики, "
+        "которую обязан прочитать ревьюер")
+    assert lm.ENV_ROOT_OWNER in derivations, (
+        "канон обязан выводить корень сам — иначе правило сторожит пустоту")
+
+    enforced = {(rel, shape) for rel, shapes in derivations.items()
+                if rel.startswith(lm.ENV_ROOT_ENFORCED) and rel != lm.ENV_ROOT_OWNER
+                for shape in shapes}
+    declared = {(rel, shape) for rel, shapes in exempt.items() for shape in shapes}
+    assert enforced == declared, (
+        f"в области {lm.ENV_ROOT_ENFORCED} корень выводит канон и объявленные ФОРМЫ "
+        f"исключений, больше никто: лишние {sorted(enforced - declared)}, "
+        f"исчезнувшие {sorted(declared - enforced)}")
+    assert all(why for shapes in exempt.values() for why in shapes.values()), \
+        "у исключения обязано быть непустое обоснование на каждую форму"
+
+    # каждая форма обязана иметь ЖИВОЙ пример в боевом коде: матчёр, не находящий
+    # ничего, проходит и пин таблицы, и синтетические пробы — правило тогда
+    # сторожит пустоту, и об этом не узнает ни один тест (GLM круга 2, вопрос 3)
+    found = {shape for shapes in derivations.values() for shape in shapes}
+    assert found == {name for name, _, _ in lm.ROOT_SHAPES}, (
+        f"форма без единого живого примера сторожит пустоту: "
+        f"{sorted({n for n, _, _ in lm.ROOT_SHAPES} - found)}")
+
+    # область — не потолок: скрипты ещё не переведены и обязаны быть видны замеру,
+    # иначе «правило выполнено» означало бы «замер их не искал»
+    assert sum(1 for rel in derivations if rel.startswith("scripts/")) > 10, (
+        "скрипты-нарушители должны оставаться в замере как долг следующего куска")
+
+    # мутация по КАЖДОЙ форме: нарушитель в области краснит гейт, канон и исключение — нет
+    for shape, _, hint in lm.ROOT_SHAPES:
+        probe = dict(derivations)
+        probe["src/probe_derive.py"] = {shape: [7]}
+        problems = lm.check(layout, graph, scanned, execs, roots=probe,
+                            map_text=lm.MAP.read_text(encoding="utf-8"))
+        assert any(p.startswith("src/probe_derive.py:7") and hint in p for p in problems), \
+            f"форма {shape} в области обязана быть расхождением"
+        assert not any(p.startswith(lm.ENV_ROOT_OWNER) for p in problems), \
+            "сам канон выводит корень по определению, это не расхождение"
+        assert not any(p.startswith(tuple(exempt)) for p in problems), \
+            "объявленное исключение молчит, пока оно объявлено"
+        assert not any(p.startswith("scripts/") for p in problems), \
+            "вне области правило молчит: скрипты переводятся следующим куском"
+
+    # обратная сторона: объявленное исключение, которое больше не выводит корень, — расхождение
+    stale = lm.check(layout, graph, scanned, execs,
+                     roots={k: v for k, v in derivations.items() if k not in exempt},
+                     map_text=lm.MAP.read_text(encoding="utf-8"))
+    assert any("больше не находит — снять" in p for p in stale), \
+        "исключение сверяется в обе стороны, как всё в этом гейте"
+
+    # прощение даётся на ФОРМУ, а не на файл: у прощённого файла появляется вторая
+    # форма — она обязана краснеть. Без этой пробы откат к прощению файла целиком
+    # проходит зелёным, потому что у сегодняшнего исключения форма всего одна
+    # (проверено мутацией; обе головы круга 2 независимо)
+    rel = sorted(exempt)[0]
+    other = next(n for n, _, _ in lm.ROOT_SHAPES if n not in exempt[rel])
+    widened = {**derivations, rel: {**derivations.get(rel, {}), other: [1]}}
+    problems = lm.check(layout, graph, scanned, execs, roots=widened,
+                        map_text=lm.MAP.read_text(encoding="utf-8"))
+    assert any(p.startswith(f"{rel}:1") for p in problems), (
+        f"{rel} прощён по форме {sorted(exempt[rel])}, а форма «{other}» у него новая — "
+        f"прощение файла целиком молчало бы и о ней")
+
+    # незаданный замер молчит обеими сторонами: раньше он печатал «исключение
+    # больше не находится» про живое исключение — перегруженный None, за который
+    # уже платили гейтом свежести карты (Important GLM круга 2, воспроизведено)
+    silent = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"))
+    assert not any("root_exemptions" in p or "взять корень у" in p for p in silent), \
+        "без замера корней правило не судит вовсе — ни нарушителей, ни исключения"
+
+
+def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
+    """Форма «модуль распоряжается своим положением» проверяется НАЗНАЧЕНИЕМ
+    узла, а не написанием выражения вокруг него.
+
+    Три редакции правила подряд пытались распознать подъём предикатом, и
+    каждый следующий круг находил написание, которое предикат не видит: хелпер
+    с параметром, обёртку над конструктором пути, промежуточную переменную,
+    компонент `..`, цепочку длиннее бюджета предков. Предиката больше нет:
+    `__file__` законен ровно в двух местах, и проба держит каждое написание из
+    всех трёх кругов плюс оба законных случая, включая псевдоним канона и
+    вызов по имени параметра.
+    """
+    probe = "\n".join([
+        "# проба: все способы уйти вверх от своего файла",
+        "import os",
+        "import pathlib",
+        "import sys",
+        "from charoite_paths import resolve_root as root_of",
+        "",
+        "",
+        "def _up(m):",
+        "    return pathlib.Path(m).resolve().parent.parent",
+        "",
+        "",
+        "def code_root(m):",                      # локальная тёзка канона, не импорт
+        "    return pathlib.Path(m).resolve().parent.parent",
+        "",
+        "",
+        "def Path(m):",                            # локальная тёзка конструктора пути
+        "    return pathlib.Path(m).resolve().parent.parent",
+        "",
+        "",
+        "CLIMB_HELPER = _up(__file__)",
+        "CLIMB_INDEX = pathlib.Path(__file__).resolve().parents[1]",
+        "CLIMB_DIRNAME = os.path.dirname(os.path.dirname(__file__))",
+        "CLIMB_WRAPPED = _up(pathlib.Path(__file__))",
+        "CLIMB_DOTDOT = pathlib.Path(__file__, '..', '..')",
+        "CLIMB_VIA_VAR = pathlib.Path(__file__)",
+        "CLIMB_LONG = pathlib.Path(__file__).resolve().absolute().expanduser().parent.parent",
+        "CLIMB_SELF = pathlib.Path(__file__)",
+        "CLIMB_INTO_CANON = root_of(pathlib.Path(__file__).parent.parent)",
+        "CLIMB_TWO_STEPS = sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))",
+        "CLIMB_SHADOW = code_root(__file__)",
+        "CLIMB_DOTDOT_IN_BOOTSTRAP = sys.path.insert(0, str(pathlib.Path(__file__, '..', '..')))",
+        "CLIMB_DOTDOT_IN_CANON = root_of(pathlib.Path(__file__, '..'))",
+        "CLIMB_DOTDOT_DIVIDED = sys.path.insert(0, str(pathlib.Path(__file__).parent / '..'))",
+        "CLIMB_DOTDOT_PACKED = sys.path.insert(0, str(pathlib.Path(__file__).parent / '../..'))",
+        "CLIMB_DOTDOT_SLASH = sys.path.insert(0, str(pathlib.Path(__file__, '../')))",
+        "CLIMB_DOTDOT_WITH_TAIL = sys.path.insert(0, str(pathlib.Path(__file__).parent / '../src'))",
+        "CLIMB_ABSOLUTE = root_of(pathlib.Path(__file__, '/etc'))",
+        "CLIMB_BYTES = sys.path.insert(0, str(pathlib.Path(__file__, b'..')))",
+        "CLIMB_BARE_PATH = sys.path.insert(0, str(Path(__file__)))",
+        "OK_CANON = root_of(__file__)",
+        "OK_ALIAS = root_of(module_file=__file__)",
+        "sys.path.insert(0, str(pathlib.Path(__file__).parent))",
+        "sys.path.insert(0, str(pathlib.Path(__file__).parent / 'src'))",
+    ])
+    lines = probe.splitlines()
+    hits = set(lm._file_roots(ast.parse(probe)))
+    climbing = {i for i, line in enumerate(lines, 1) if line.startswith("CLIMB_")}
+    legit = {i for i, line in enumerate(lines, 1)
+             if line.startswith(("OK_", "sys.path"))}
+    assert climbing <= hits, (
+        f"подъём вверх не пойман: {[lines[i-1] for i in sorted(climbing - hits)]}")
+    assert not (legit & hits), (
+        f"законное назначение объявлено нарушением: {[lines[i-1] for i in sorted(legit & hits)]}")
+    # канон и вставка пути — не просто «не ловятся», а названы списком
+    assert set(lm.ROOT_CANON_CALLS) == {"resolve_root", "code_root"}
+    assert set(lm.ROOT_BOOTSTRAP_CALLS) == {"sys.path.insert", "sys.path.append"}
+    # имя канона без импорта каноном не делает: `ROOT_CANON_CALLS` — источник имён
+    # для разбора импортов, а не список прощённых слов. Без этой пробы локальная
+    # тёзка возвращала весь класс одним `def` (Critical обеих голов круга 4)
+    assert any(l.startswith("def code_root(") for l in lines), \
+        "проба обязана держать ЛОКАЛЬНУЮ функцию с точным именем канона"
+    assert lm._canon_names(ast.parse("x = 1")) == set(), \
+        "без импорта канона в модуле нет ни одного законного имени"
+
+
+def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
+    """Правило живо только если главный тракт передаёт замер в гейт.
+
+    Мутация здесь — не подмена кода, а подмена данных: канон объявляется
+    нарушителем. Если `main` перестанет спрашивать замер, строка не появится,
+    и правило умрёт молча — как умирал гейт свежести карты, пока состояние не
+    сделали явным (круг 9)."""
+    monkeypatch.setattr(lm, "ENV_ROOT_OWNER", "src/никто_такой_не_выводит.py")
+    assert lm.main(["--check"]) == 1
+    out = capsys.readouterr().out
+    assert "взять корень у" in out, (
+        "main обязан спросить замер о выводе корня и отдать его в check")
 
 
 def test_layer_table_is_complete_and_the_arrows_point_down(world):
@@ -273,6 +452,36 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.load_layout(out)["allowed_edges"] == layout["allowed_edges"]
 
 
+def test_regen_owns_only_the_measured_fields_of_an_edge(monkeypatch, tmp_path):
+    """`--regen` переписывает то, что мерит (`from`/`to`), и переносит дословно
+    всё остальное в записи ребра: карточку и любое поле-решение, которое туда
+    добавят. Раньше запись собиралась из трёх полей заново, поэтому первый же
+    реген стирал добавленное поле молча — гейт оставался зелёным, и дефект
+    ловился только чтением диффа (обе головы входного круга №325 независимо).
+
+    Граница — список, а не случайность: `MEASURED_EDGE_FIELDS` называет поля
+    замера, и тест сверяет, что решения этим списком не задеты."""
+    layout = lm.load_layout(lm.LAYOUT)
+    graph = lm.import_graph(lm.inventory())
+    assert layout["allowed_edges"], "артефакт без рёбер — тесту нечего переносить"
+    edge = layout["allowed_edges"][0]
+    decided = {"until": "2026-10-31", "owner": "фаза 3"}
+    layout["allowed_edges"][0] = {**edge, **decided}
+
+    fresh, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
+    kept = {(e["from"], e["to"]): e for e in fresh["allowed_edges"]}[(edge["from"], edge["to"])]
+
+    assert unticketed == [], "у всех рёбер артефакта есть карточка"
+    for key, value in decided.items():
+        assert kept.get(key) == value, f"поле-решение {key} потеряно регеном"
+    assert kept["ticket"] == edge["ticket"], "карточка переносится, как и раньше"
+    assert set(lm.MEASURED_EDGE_FIELDS) == {"from", "to"}, (
+        "замер владеет только парой модулей; расширение списка — правка политики, "
+        "а не деталь (снимок здесь, как APPROVED_KINDS выше)")
+    assert set(kept) - set(lm.MEASURED_EDGE_FIELDS) == {"ticket", *decided}, (
+        "regen не должен ни добавлять полей от себя, ни терять чужие")
+
+
 def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path, capsys):
     """`--regen` с ребром без карточки не пишет ни артефакт, ни карту — гейт
     блокирующий, «напечатать и продолжить» не проверка (Critical DS круга 4);
@@ -356,7 +565,8 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
 def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
-         "allowed_edges": [], "manual_entry_points": {}, "generated": "2026-09-19T00:00Z"}
+         "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
+         "generated": "2026-09-19T00:00Z"}
     d.update(over)
     return d
 
@@ -484,11 +694,14 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
         'ROOT = os.environ["CHAROITE_ROOT"]\n'
         'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
     text = lm.report(lm.inventory(tmp_path))
-    assert "## Читатели переменной CHAROITE_ROOT (формы:" in text and "— 3" in text
+    # заголовки секций замера идут из таблицы форм: имя формы и её фраза — те же,
+    # по которым судит гейт (Important GLM круга 2)
+    hint = {name: h for name, _, h in lm.ROOT_SHAPES}
+    assert f"## Кто выводит корень сам, форма «env» — {hint['env']} (3)" in text
     assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ вставки sys.path на импорте (3)" in text
     assert "`scripts/late.py`:3" in text and "ВЫШЕ вставки" not in text.split("late.py")[1].split("\n")[0]
     assert "`src/lib.py`:2" in text
-    roots_block = text.split("## Корень из положения файла")[1].split("## Точки сборки")[0]
+    roots_block = text.split("форма «file»")[1].split("## Точки сборки")[0]
     assert roots_block.splitlines()[0].endswith("(1)"), roots_block.splitlines()[0]
     assert "`src/lib.py`:2" in roots_block and "early.py" not in roots_block
     assert "**LLM** (2)" in text, "шов считается и по голому имени, и по `llm.LLM`"
