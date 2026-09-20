@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-19T18:53Z",
+  "generated": "2026-09-20T07:27Z",
   "order": [
     "core",
     "llm",
@@ -145,16 +145,11 @@
       "why": "до разреза (№322) целиком встречный: встречная и графовая половины в одном файле"
     },
     "charoite_paths": {
-      "layer": "app",
-      "why": "корни данных и кода; по брифу остаётся в app, 17 импортёров — долг №321 в allowlist"
+      "layer": "core",
+      "why": "корни данных и кода; машинный замер: из репозитория не импортирует ничего, как и все восемь модулей core, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 12 рёбер долга из 16. Перенос вниз снимает все 12 и не создаёт ни одного нового (проверено вычислением нарушений до и после, №321, фаза 3)"
     }
   },
   "allowed_edges": [
-    {
-      "from": "audio",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
     {
       "from": "audio",
       "to": "meeting_stamp",
@@ -167,11 +162,6 @@
     },
     {
       "from": "diarize",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "diarize",
       "to": "llm",
       "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа)"
     },
@@ -179,46 +169,6 @@
       "from": "graph_search",
       "to": "llm",
       "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
-    },
-    {
-      "from": "graph_updater",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "graphs",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "llm",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "llm_health",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "meeting_archive",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "rebuild_transcript",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "retro_fill",
-      "to": "charoite_paths",
-      "ticket": "№321"
-    },
-    {
-      "from": "stt",
-      "to": "charoite_paths",
-      "ticket": "№321"
     },
     {
       "from": "tier3",

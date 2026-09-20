@@ -747,6 +747,39 @@ ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
 }
 
 
+#: Единственный модуль, которому положено читать переменную корня данных: он и
+#: есть канон (`resolve_root`, `code_root`). Правило родилось из трёх независимых
+#: случаев дрейфа: модуль графов скопировал разбор значения и потерял `strip`
+#: (починено кругом по PR #385), ревизия ядер скопировала уже починенный разбор и
+#: потеряла `resolve`, мутатор — то же самое. Копия со ссылкой на канон в соседнем
+#: комментарии отдрейфовала в момент написания, поэтому договорённости мало: нужен
+#: счёт (обе головы входного круга №321 сошлись на инварианте против списка
+#: прощённых имён).
+ENV_ROOT_OWNER = "src/charoite_paths.py"
+
+#: Где инвариант уже обязан выполняться. Скрипты переводятся следующим куском
+#: фазы 3: у 12 из них чтение стоит выше вставки в `sys.path`, то есть канон в
+#: этот момент ещё нельзя импортировать, и перевод требует правки bootstrap.
+#: Область — не потолок и не амнистия: она сокращается и расширению не подлежит.
+ENV_ROOT_ENFORCED = ("src/",)
+
+
+def env_root_readers(inv: Inventory, var: str = "CHAROITE_ROOT") -> dict[str, list[int]]:
+    """Кто читает переменную корня данных сам — файл → строки.
+
+    Один источник для замера и для гейта: пока `report` считал читателей внутри
+    себя, гейт о них не знал вовсе и правило нечем было выразить.
+    """
+    out: dict[str, list[int]] = {}
+    for rel, info in sorted(inv.files.items()):
+        if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
+            continue
+        lines = _env_reads(info.tree, var)
+        if lines:
+            out[rel] = lines
+    return out
+
+
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
            seams: tuple[str, ...] = ("LLM", "GraphSearch", "shared", "judge", "revise",
                                      "graph_dir", "resolve_root", "code_root", "harden_umask",
@@ -821,14 +854,16 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
-          map_state: MapState = "present") -> list[str]:
+          map_state: MapState = "present",
+          env_readers: dict[str, list[int]] | None = None) -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
     спрашивает»); `missing` — карты нет, это расхождение; `skipped` — прогон её
     не писал и судить нечем. Четвёртого состояния нет: оно вело себя как
     `present`, а докстринг обещал обратное, и на этом держался главный гейт
-    (Important GLM круга 9)."""
+    (Important GLM круга 9). `env_readers` — то же соглашение: `None` значит
+    «вызывающий о читателях переменной корня не спрашивает»."""
     if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
@@ -862,6 +897,15 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     for path, who in sorted(scanned.prose.items()):
         if not (repo / path).is_file():
             problems.append(f"путь {path} назван в документации или конфиге ({', '.join(sorted(who))}), а файла нет")
+    # корень данных выводит один модуль: копия правил разбора трижды отдрейфовала
+    # от канона, на который сама же ссылалась в комментарии (№321). Инвариант, а не
+    # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе
+    for rel, lines in sorted((env_readers or {}).items()):
+        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
+            continue
+        problems.append(
+            f"{rel}:{','.join(map(str, lines))} читает CHAROITE_ROOT сам — "
+            f"взять корень у {ENV_ROOT_OWNER} (resolve_root), иначе копия разойдётся с каноном")
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -990,7 +1034,8 @@ def main(argv: list[str] | None = None) -> int:
         map_text, map_state = MAP.read_text(encoding="utf-8"), "present"
     else:
         map_text, map_state = None, "missing"
-    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state)
+    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
+                               env_readers=env_root_readers(inv))
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")

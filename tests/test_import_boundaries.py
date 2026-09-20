@@ -62,9 +62,60 @@ def world():
 def test_layout_matches_the_code(world):
     """Один гейт: расхождений между раскладкой и кодом нет. Каждая строка —
     готовое действие."""
-    layout, graph, scanned, execs, _ = world
-    problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"))
+    layout, graph, scanned, execs, inv = world
+    problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
+                        env_readers=lm.env_root_readers(inv))
     assert not problems, "\n".join(problems)
+
+
+def test_the_root_of_data_has_exactly_one_reader_where_the_rule_is_already_in_force(world):
+    """Корень данных выводит один модуль — канон. Правило счётное, а не список
+    прощённых имён: у области `ENV_ROOT_ENFORCED` читатель ровно один, и это сам
+    канон.
+
+    Повод — три независимых дрейфа: модуль графов скопировал разбор значения и
+    потерял `strip`, ревизия ядер скопировала уже починенный разбор и потеряла
+    `resolve`, мутатор — то же самое. Каждая копия несла в соседнем комментарии
+    ссылку на канон, то есть договорённость была и не помогла."""
+    layout, graph, scanned, execs, inv = world
+    readers = lm.env_root_readers(inv)
+    assert lm.ENV_ROOT_OWNER in readers, (
+        "канон обязан читать переменную сам — иначе правило сторожит пустоту")
+    enforced = {rel for rel in readers if rel.startswith(lm.ENV_ROOT_ENFORCED)}
+    assert enforced == {lm.ENV_ROOT_OWNER}, (
+        f"в области {lm.ENV_ROOT_ENFORCED} читателей кроме канона быть не должно: "
+        f"{sorted(enforced - {lm.ENV_ROOT_OWNER})}")
+    # область — не потолок: скрипты ещё не переведены и обязаны быть видны замеру,
+    # иначе «правило выполнено» означало бы «замер их не искал»
+    assert any(rel.startswith("scripts/") for rel in readers), (
+        "скрипты-читатели должны оставаться в замере как долг следующего куска")
+
+    # мутация: читатель в области краснит гейт, канон — нет
+    probe = dict(readers)
+    probe["src/probe_reader.py"] = [7]
+    problems = lm.check(layout, graph, scanned, execs, env_readers=probe)
+    assert any("src/probe_reader.py:7 читает CHAROITE_ROOT" in p for p in problems), \
+        "читатель вне канона в области обязан быть расхождением"
+    # сверяем НАЧАЛО строки: имя канона стоит и в подсказке («взять корень у …»),
+    # поэтому проверка на вхождение сработала бы на любом нарушителе
+    assert not any(p.startswith(lm.ENV_ROOT_OWNER) for p in problems), \
+        "сам канон читать переменную обязан, это не расхождение"
+    assert not any(p.startswith("scripts/") and "читает CHAROITE_ROOT" in p for p in problems), \
+        "вне области правило молчит: скрипты переводятся следующим куском"
+
+
+def test_the_gate_is_actually_asked_about_the_readers(monkeypatch, capsys):
+    """Правило живо только если главный тракт передаёт читателей в гейт.
+
+    Мутация здесь — не подмена кода, а подмена данных: канон объявляется
+    нарушителем. Если `main` перестанет спрашивать замер о читателях, строка
+    не появится, и правило умрёт молча — как умирал гейт свежести карты, пока
+    состояние не сделали явным (круг 9)."""
+    monkeypatch.setattr(lm, "ENV_ROOT_OWNER", "src/никто_такой_не_читает.py")
+    assert lm.main(["--check"]) == 1
+    out = capsys.readouterr().out
+    assert "читает CHAROITE_ROOT сам" in out, (
+        "main обязан спросить замер о читателях и отдать их в check")
 
 
 def test_layer_table_is_complete_and_the_arrows_point_down(world):

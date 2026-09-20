@@ -1,20 +1,20 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-19T18:53Z. Модулей 64.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T07:27Z. Модулей 64.
 
 ## Слои и направление стрелок
 
-- **core** (зависит от: —; модулей 11): `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `privacy`, `redirects`, `safe_write`, `vocabulary`
+- **core** (зависит от: —; модулей 12): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `privacy`, `redirects`, `safe_write`, `vocabulary`
 - **llm** (зависит от: core; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: core; модулей 7): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `graphs`, `tier3`
 - **cloud** (зависит от: core; модулей 1): `cloud`
 - **audio** (зависит от: core; модулей 9): `audio`, `channel_labels`, `diarize`, `diarize_live`, `frame_drops`, `owner_voice`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: core, llm, graph, cloud, audio; модулей 23): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`
-- **app** (зависит от: core, llm, graph, cloud, audio, meeting; модулей 9): `brain`, `charoite_paths`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
+- **app** (зависит от: core, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
 ## Поправки к таблице брифа (с обоснованием)
 
-- `charoite_paths` → app: корни данных и кода; по брифу остаётся в app, 17 импортёров — долг №321 в allowlist
+- `charoite_paths` → core: корни данных и кода; машинный замер: из репозитория не импортирует ничего, как и все восемь модулей core, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 12 рёбер долга из 16. Перенос вниз снимает все 12 и не создаёт ни одного нового (проверено вычислением нарушений до и после, №321, фаза 3)
 - `deps` → core: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
@@ -26,22 +26,12 @@
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
-Всего 16.
+Всего 6.
 
-- `audio` (audio) → `charoite_paths` (app) — №321
 - `audio` (audio) → `meeting_stamp` (meeting) — №322
 - `channel_labels` (audio) → `speaker_names` (meeting) — №322
-- `diarize` (audio) → `charoite_paths` (app) — №321
 - `diarize` (audio) → `llm` (llm) — №322 (LLM.complete для имён спикеров — вызов точки входа)
 - `graph_search` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
-- `graph_updater` (meeting) → `charoite_paths` (app) — №321
-- `graphs` (graph) → `charoite_paths` (app) — №321
-- `llm` (llm) → `charoite_paths` (app) — №321
-- `llm_health` (llm) → `charoite_paths` (app) — №321
-- `meeting_archive` (meeting) → `charoite_paths` (app) — №321
-- `rebuild_transcript` (meeting) → `charoite_paths` (app) — №321
-- `retro_fill` (meeting) → `charoite_paths` (app) — №321
-- `stt` (audio) → `charoite_paths` (app) — №321
 - `tier3` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 - `tier3` (graph) → `nli` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 
@@ -99,6 +89,7 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/graph_search.py` ← scripts/memory_bench.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
