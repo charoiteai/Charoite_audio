@@ -256,8 +256,8 @@ def test_названный_корень_не_отменяется_переме�
     assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный
 
 
-def test_забыть_корень_не_оставляет_детей_без_корня(tmp_path):
-    """Дверь сброса снимает названный корень, но не значение для детей.
+def test_забыть_корень_возвращает_мир_в_состояние_до_вызова(tmp_path):
+    """Дверь сброса отзывает публикацию: как будто её и не было.
 
     Прямой свидетель самой двери, а не вывод из чужого сценария: в круге 3
     этой мутации был назначен тест, который её увидеть не мог, — и точечный
@@ -270,26 +270,50 @@ def test_забыть_корень_не_оставляет_детей_без_к�
     sys.path.insert(0, str(ROOT / "src"))
     import charoite_paths
     названный = charoite_paths.use_data_root(tmp_path / "данные")
+    assert os.environ.get("CHAROITE_ROOT") == str(названный)   # пока назван — дети знают
     charoite_paths.forget_data_root()
-    assert os.environ.get("CHAROITE_ROOT") == str(названный)   # дети не осиротели
-    # но за ПРОЦЕСС своё эхо больше не отвечает: забыли — значит забыли
+    # публикация отозвана: мир вернулся в состояние до вызова — переменной не
+    # было, и её снова нет; процесс корня не знает и волен назвать заново
+    assert os.environ.get("CHAROITE_ROOT") is None
     assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) != названный
-    другой = charoite_paths.use_data_root(tmp_path / "другой")  # и назвать можно заново
+    другой = charoite_paths.use_data_root(tmp_path / "другой")
     assert другой == (tmp_path / "другой").resolve()
 
 
-def test_чужая_переменная_после_сброса_остаётся_сильнее(tmp_path, monkeypatch):
-    """Эхо канона сбрасывается, решение приложения — нет.
+def test_сброс_возвращает_решение_приложения_а_не_корень_кода(tmp_path, monkeypatch):
+    """Боевой порядок: приложение назвало корень, точка входа повторила его.
 
-    Переменная служит двум делам: вход от приложения и канал для детей.
-    Отличать одно от другого обязан канон — иначе либо сброс не работает
-    (своё эхо отвечает за процесс), либо теряется решение владельца.
+    Приложение ставит `CHAROITE_ROOT` ДО старта python, демон читает её и
+    зовёт `use_data_root` с тем же путём — после нормализации значения
+    совпадают дословно. Отличать «своё эхо» от «решения приложения» по тексту
+    в таком порядке невозможно: попытка это делать выбрасывала решение
+    владельца, и процесс после сброса уходил на корень КОДА — в бандле на
+    подписанную read-only папку (круг 5 по коду №327, DS C1).
+
+    Дверь отзывает публикацию, а не маскирует значение: в переменной снова
+    то, что было до неё, и процесс продолжает отвечать корнем приложения.
     """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    от_приложения = (tmp_path / "от-приложения").resolve()
+    monkeypatch.setenv("CHAROITE_ROOT", str(от_приложения))          # до старта
+    charoite_paths.use_data_root(от_приложения)                      # точка входа повторила
+    charoite_paths.forget_data_root()
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == от_приложения
+    assert os.environ.get("CHAROITE_ROOT") == str(от_приложения)
+    with pytest.raises(RuntimeError):                                # назвал приложение — не нам менять
+        charoite_paths.use_data_root(tmp_path / "другой")
+    assert charoite_paths.use_data_root(tmp_path / "другой", replace=True) \
+        == (tmp_path / "другой").resolve()
+
+
+def test_чужая_переменная_без_публикации_остаётся_сильнее(tmp_path, monkeypatch):
+    """Сбрасывать нечего — решение приложения не трогаем вовсе."""
     sys.path.insert(0, str(ROOT / "src"))
     import charoite_paths
     от_приложения = tmp_path / "от-приложения"
     monkeypatch.setenv("CHAROITE_ROOT", str(от_приложения))
-    charoite_paths.forget_data_root()                           # сбрасывать нечего
+    charoite_paths.forget_data_root()
     assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == от_приложения.resolve()
     with pytest.raises(RuntimeError):
         charoite_paths.use_data_root(tmp_path / "другой")
