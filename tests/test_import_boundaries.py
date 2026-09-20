@@ -158,17 +158,20 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
     """Форма «модуль распоряжается своим положением» проверяется НАЗНАЧЕНИЕМ
     узла, а не написанием выражения вокруг него.
 
-    Две прошлые редакции правила перечисляли написания и обе пропускали
-    хелпер с параметром — то самое написание, которым сделан канон (Critical DS
-    кругов 1 и 2). Здесь стоит проба на каждый способ: три подъёма обязаны
-    краснеть, два законных назначения — молчать. Новое написание подъёма
-    (`parents[2]`, своя обёртка) ловится тем же предикатом без правки таблицы.
+    Три редакции правила подряд пытались распознать подъём предикатом, и
+    каждый следующий круг находил написание, которое предикат не видит: хелпер
+    с параметром, обёртку над конструктором пути, промежуточную переменную,
+    компонент `..`, цепочку длиннее бюджета предков. Предиката больше нет:
+    `__file__` законен ровно в двух местах, и проба держит каждое написание из
+    всех трёх кругов плюс оба законных случая, включая псевдоним канона и
+    вызов по имени параметра.
     """
     probe = "\n".join([
         "# проба: все способы уйти вверх от своего файла",
         "import os",
         "import pathlib",
         "import sys",
+        "from charoite_paths import code_root, resolve_root as root_of",
         "",
         "",
         "def _up(m):",
@@ -178,14 +181,20 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
         "CLIMB_HELPER = _up(__file__)",
         "CLIMB_INDEX = pathlib.Path(__file__).resolve().parents[1]",
         "CLIMB_DIRNAME = os.path.dirname(os.path.dirname(__file__))",
-        "SELF_PATH = pathlib.Path(__file__)",
+        "CLIMB_WRAPPED = _up(pathlib.Path(__file__))",
+        "CLIMB_DOTDOT = pathlib.Path(__file__, '..', '..')",
+        "CLIMB_VIA_VAR = pathlib.Path(__file__)",
+        "CLIMB_LONG = pathlib.Path(__file__).resolve().absolute().expanduser().parent.parent",
+        "CLIMB_SELF = pathlib.Path(__file__)",
+        "OK_CANON = code_root(__file__)",
+        "OK_ALIAS = root_of(module_file=__file__)",
         "sys.path.insert(0, str(pathlib.Path(__file__).parent))",
     ])
     lines = probe.splitlines()
     hits = set(lm._file_roots(ast.parse(probe)))
     climbing = {i for i, line in enumerate(lines, 1) if line.startswith("CLIMB_")}
     legit = {i for i, line in enumerate(lines, 1)
-             if line.startswith(("SELF_PATH", "sys.path"))}
+             if line.startswith(("OK_", "sys.path"))}
     assert climbing <= hits, (
         f"подъём вверх не пойман: {[lines[i-1] for i in sorted(climbing - hits)]}")
     assert not (legit & hits), (

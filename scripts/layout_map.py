@@ -719,87 +719,86 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
 
 
 #: Функции канона, которым положение файла отдают на вход: подъём вверх делают
-#: они, а не вызывающий.
+#: они, а не вызывающий. Имя проверяется вместе с происхождением — локальная
+#: функция с тем же именем каноном не становится (Important обеих голов круга 3).
 ROOT_CANON_CALLS = ("resolve_root", "code_root")
 #: Вызовы, куда путь от `__file__` уходит целиком и корнем не становится.
 ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
-#: Конструкторы пути: обернуть `__file__` можно, уйти вверх от него — нет.
-ROOT_PATH_CALLS = ("Path", "PurePath", "PurePosixPath")
+
+
+def _canon_names(tree: ast.Module) -> set[str]:
+    """Имена, под которыми в модуль пришли функции канона — включая псевдонимы.
+
+    Совпадения по последнему сегменту имени мало: локальная `def code_root(m)`
+    получала бы прощение, а `from charoite_paths import resolve_root as root_of`
+    краснел бы на верном коде (обе головы круга 3, независимо).
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "charoite_paths":
+            out |= {a.asname or a.name for a in node.names if a.name in ROOT_CANON_CALLS}
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "charoite_paths":
+                    # `charoite_paths.resolve_root(...)` — сегмент имени, а модуль назван
+                    out |= {f"{a.asname or a.name}.{n}" for n in ROOT_CANON_CALLS}
+    return out
+
+
+def _call_args(node: ast.Call):
+    """Все аргументы вызова: позиционные, распакованные и по имени.
+
+    Ключевые обходились не всюду, и законный `resolve_root(module_file=__file__)`
+    краснел на верном коде (Critical DS круга 3).
+    """
+    yield from node.args
+    yield from (kw.value for kw in node.keywords)
 
 
 def _file_roots(tree: ast.Module) -> list[int]:
-    """Строки, где модуль распоряжается собственным положением на диске сам.
+    """Строки, где `__file__` стоит НЕ в одном из двух разрешённых мест.
 
-    Правило перевёрнуто и спрашивает не «какой цепочкой выведен корень», а
-    «куда уходит `__file__`»: написаний подъёма много (`.parent.parent`,
-    `parents[1]`, `dirname(dirname(…))`, хелпер с параметром), и перечислять
-    их значит отставать на одно написание за круг. Первая редакция ловила
-    только `__file__ … .parent.parent`; вторая добавила индекс и `dirname`, но
-    хелпер с параметром — написание, которым сделан сам канон, — проходил мимо
-    обеих (Critical DS кругов 1 и 2, воспроизведено пробой).
+    Три круга подряд правило пыталось распознать подъём вверх — сначала по
+    цепочке `.parent.parent`, потом по индексу и `dirname`, потом по предкам
+    узла. Каждый раз следующий круг находил написание, которое предикат не
+    видит: хелпер с параметром, обёртку над конструктором пути, промежуточную
+    переменную, компонент `..`, цепочку длиннее бюджета предков. Положение файла
+    — материал, который течёт через присваивания и вызовы, и догонять его
+    предикатом значит отставать на одно написание за круг.
 
-    Законны ровно три назначения, и все три проверяются по МЕСТУ узла, а не по
-    виду выражения вокруг него:
+    Поэтому предиката больше нет. `__file__` имеет право стоять ровно в двух
+    местах: аргументом функции канона (подъём живёт внутри канона, где его видно
+    человеком) и аргументом вставки пути (bootstrap, корнем не становится). Всё
+    остальное — расхождение, независимо от того, что с ним делают дальше: путь к
+    себе для перезапуска берётся от `code_root`, как соседние вызовы того же
+    файла. Обе головы круга 3 пришли к этому независимо.
 
-    * аргумент канона (`ROOT_CANON_CALLS`) — подъём там и положен;
-    * аргумент вставки пути (`ROOT_BOOTSTRAP_CALLS`) — это bootstrap, не корень;
-    * внутри конструктора пути (`ROOT_PATH_CALLS`) без подъёма — путь к самому
-      себе, например для перезапуска процесса.
-
-    Всё остальное — расхождение, включая передачу `__file__` в любую другую
-    функцию: что она сделает с положением файла, замер знать не может, а
-    исторически делала именно подъём. Замер по боевому коду на 20.09: канон 25
-    вхождений, конструктор пути 13, чужих вызовов ноль — то есть правило
-    строгое, но никого сегодня не задевает.
+    Граница правила названа честно: подъём НАД результатом канона
+    (`dirname(code_root(__file__))`) оно не ловит — `__file__` там стоит в
+    законном месте. Это другой класс: не «модуль сам выводит корень» (четыре
+    случая дрейфа, ради которых правило и заведено), а «взял у канона и
+    испортил» — одиночная ошибка, видимая в диффе. В боевом коде таких мест
+    ноль (замер по `src/` и `scripts/`), а закрытие потребовало бы вернуть
+    предикат подъёма, от которого этот круг и избавился. Если случай появится,
+    его место — тест канона «результат абсолютный и не поднимается», а не
+    здесь (Critical GLM круга 3, отклонён с обоснованием; хвост в №321).
     """
+    canon = _canon_names(tree) | set(ROOT_CANON_CALLS)
     legit: set[tuple[int, int]] = set()
-    climb_ok: set[tuple[int, int]] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        fn = node.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-        where = (legit if name in ROOT_CANON_CALLS or ast.unparse(fn) in ROOT_BOOTSTRAP_CALLS
-                 else climb_ok if name in ROOT_PATH_CALLS else None)
-        if where is None:
+        full = ast.unparse(node.func)
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        if not ((name in canon or full in canon) or full in ROOT_BOOTSTRAP_CALLS):
             continue
-        for arg in node.args:
+        for arg in _call_args(node):
             for n in ast.walk(arg):
                 if isinstance(n, ast.Name) and n.id == "__file__":
-                    where.add((n.lineno, n.col_offset))
-    out = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Name) and node.id == "__file__"):
-            continue
-        key = (node.lineno, node.col_offset)
-        if key in legit:
-            continue
-        if key in climb_ok and not _climbs(tree, node):
-            continue            # `Path(__file__)` без подъёма — путь к себе
-        out.append(node.lineno)
-    return sorted(set(out))
-
-
-def _climbs(tree: ast.Module, target: ast.Name) -> bool:
-    """Уходит ли выражение вокруг `__file__` вверх по дереву каталогов.
-
-    Подъём — обращение к каталогу-владельцу: `.parent`, `.parents[…]`,
-    `dirname`. Проверяется по предкам узла, а не по написанию цепочки, поэтому
-    имя промежуточной переменной значения не имеет.
-    """
-    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
-    cur = target
-    for _ in range(8):
-        cur = parents.get(cur)
-        if cur is None:
-            return False
-        if isinstance(cur, ast.Attribute) and cur.attr in ("parent", "parents"):
-            return True
-        if isinstance(cur, ast.Call):
-            fn = cur.func
-            if (fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")) == "dirname":
-                return True
-    return False
+                    legit.add((n.lineno, n.col_offset))
+    return sorted({node.lineno for node in ast.walk(tree)
+                   if isinstance(node, ast.Name) and node.id == "__file__"
+                   and (node.lineno, node.col_offset) not in legit})
 
 
 def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
@@ -855,7 +854,7 @@ ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
     ("env", lambda tree: _env_reads(tree, ENV_ROOT_VAR),
      f"читает {ENV_ROOT_VAR} сам"),
     ("file", _file_roots,
-     "распоряжается собственным положением на диске сам — это дело канона"),
+     "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
 )
 
 
