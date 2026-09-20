@@ -171,6 +171,13 @@ MapState = Literal["present", "missing", "skipped"]      # тот же корт�
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
            "allowed_edges": list, "manual_entry_points": dict, "generated": str}
+
+#: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
+#: импортов. Всё остальное в записи — решение человека (карточка, и что добавят
+#: дальше), и `regen` обязан перенести его дословно. Граница нужна именно как
+#: список: пока её не было, запись собиралась из трёх полей заново, и любое
+#: четвёртое исчезало без следа (входной круг №325).
+MEASURED_EDGE_FIELDS = ("from", "to")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
@@ -869,14 +876,25 @@ def regen(layout: dict, graph: dict[str, set[str]]) -> tuple[dict, list[tuple[st
     карточки — вернуть вызывающему, чтобы напечатать (Minor DS круга 2: regen
     писал артефакт, который следующая загрузка отвергала трейсбеком). Штамп
     `generated` меняется только вместе с allowlist (Minor DS круга 3).
-    Слои, поправки и ручные точки входа — решения, их regen не трогает."""
-    tickets = {(e["from"], e["to"]): e.get("ticket", "") for e in layout["allowed_edges"]}
+    Слои, поправки и ручные точки входа — решения, их regen не трогает.
+
+    Внутри записи ребра то же правило: замер владеет только `from`/`to`
+    (`MEASURED_EDGE_FIELDS`), остальные поля — решение человека и переносятся
+    как есть. Раньше запись собиралась из трёх полей заново, и любое
+    добавленное поле молча исчезало при первом же `--regen`, пока гейт
+    оставался зелёным: обещание докстринга выше не выполнялось ровно для
+    рёбер (обе головы входного круга №325 независимо, 20.09)."""
+    kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
     fresh = violations(graph, layout)
-    edges = [{"from": a, "to": b, "ticket": tickets.get((a, b), "")} for a, b in fresh]
+    edges = []
+    for a, b in fresh:
+        prev = kept.get((a, b), {})
+        decided = {k: v for k, v in prev.items() if k not in MEASURED_EDGE_FIELDS and k != "ticket"}
+        edges.append({"from": a, "to": b, "ticket": prev.get("ticket", ""), **decided})
     if edges != layout["allowed_edges"]:
         layout["allowed_edges"] = edges
         layout["generated"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    return layout, [(a, b) for a, b in fresh if not tickets.get((a, b))]
+    return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
 
 
 def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str]) -> str:

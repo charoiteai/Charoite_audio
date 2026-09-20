@@ -273,6 +273,36 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.load_layout(out)["allowed_edges"] == layout["allowed_edges"]
 
 
+def test_regen_owns_only_the_measured_fields_of_an_edge(monkeypatch, tmp_path):
+    """`--regen` переписывает то, что мерит (`from`/`to`), и переносит дословно
+    всё остальное в записи ребра: карточку и любое поле-решение, которое туда
+    добавят. Раньше запись собиралась из трёх полей заново, поэтому первый же
+    реген стирал добавленное поле молча — гейт оставался зелёным, и дефект
+    ловился только чтением диффа (обе головы входного круга №325 независимо).
+
+    Граница — список, а не случайность: `MEASURED_EDGE_FIELDS` называет поля
+    замера, и тест сверяет, что решения этим списком не задеты."""
+    layout = lm.load_layout(lm.LAYOUT)
+    graph = lm.import_graph(lm.inventory())
+    assert layout["allowed_edges"], "артефакт без рёбер — тесту нечего переносить"
+    edge = layout["allowed_edges"][0]
+    decided = {"until": "2026-10-31", "owner": "фаза 3"}
+    layout["allowed_edges"][0] = {**edge, **decided}
+
+    fresh, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
+    kept = {(e["from"], e["to"]): e for e in fresh["allowed_edges"]}[(edge["from"], edge["to"])]
+
+    assert unticketed == [], "у всех рёбер артефакта есть карточка"
+    for key, value in decided.items():
+        assert kept.get(key) == value, f"поле-решение {key} потеряно регеном"
+    assert kept["ticket"] == edge["ticket"], "карточка переносится, как и раньше"
+    assert set(lm.MEASURED_EDGE_FIELDS) == {"from", "to"}, (
+        "замер владеет только парой модулей; расширение списка — правка политики, "
+        "а не деталь (снимок здесь, как APPROVED_KINDS выше)")
+    assert set(kept) - set(lm.MEASURED_EDGE_FIELDS) == {"ticket", *decided}, (
+        "regen не должен ни добавлять полей от себя, ни терять чужие")
+
+
 def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path, capsys):
     """`--regen` с ребром без карточки не пишет ни артефакт, ни карту — гейт
     блокирующий, «напечатать и продолжить» не проверка (Critical DS круга 4);
