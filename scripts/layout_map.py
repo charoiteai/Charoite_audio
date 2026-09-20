@@ -44,7 +44,7 @@
     .venv/bin/python scripts/layout_map.py            # карта в docs/design/layout.md
     .venv/bin/python scripts/layout_map.py --check    # то же, что тест, кодом выхода
     .venv/bin/python scripts/layout_map.py --regen    # allowlist по факту + карта
-    .venv/bin/python scripts/layout_map.py --report   # замер швов для постановки фазы
+    .venv/bin/python scripts/layout_map.py --report   # замер швов (только код, артефакт не нужен)
 """
 from __future__ import annotations
 
@@ -136,15 +136,28 @@ class FileInfo(NamedTuple):
     executable: str | None          # почему исполняемый, иначе None
 
 
+class Problem(NamedTuple):
+    """Проблема инвентаря как значение, а не голая строка: потребители должны
+    отличать «корпус неполон» от «политика конфликтует» (Critical GLM круга 9 —
+    одна и та же строка печаталась как «не вошло в замер» у файла, который в
+    замер вошёл). `kind`: `parse` / `read` — файла в замере нет; `conflict` —
+    файл в замере, но его вид спорный."""
+    kind: str
+    text: str
+
+    def __str__(self) -> str:
+        return self.text
+
+
 class Inventory(NamedTuple):
     files: dict[str, FileInfo]
-    problems: list[str]             # файл не читается / не разбирается — факт, не исключение
+    problems: list[Problem]         # файл не читается / не разбирается / спорный вид — факт, не исключение
 
 
 class Scan(NamedTuple):
     """Замер: связи «кто зовёт» из кода, названные пути из прозы, голые имена
     без цели (справка на карте: чужой или порождаемый скрипт — не гейт),
-    проблемы инвентаря и сканера."""
+    проблемы инвентаря и сканера (строками: гейту класс не важен)."""
     mentions: dict[str, set[str]]       # путь → файлы кода, которые его называют
     prose: dict[str, set[str]]          # путь → документы/конфиги, которые его называют
     loose: dict[str, set[str]]          # голое имя без цели в репозитории → кто его называет
@@ -389,20 +402,20 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
     от инвентаря."""
     repo = repo or REPO
     files: dict[str, FileInfo] = {}
-    problems: list[str] = []
+    problems: list[Problem] = []
     for rel in _files(repo):
         d = decide(rel)
         kind = d.kind
         if d.conflict:
-            problems.append(f"{rel}: кандидат в точки входа, но правило KINDS {d.conflict!r} хочет другого вида — "
-                            f"снять правило или шаблон")
+            problems.append(Problem("conflict", f"{rel}: кандидат в точки входа, но правило KINDS {d.conflict!r} "
+                                                f"хочет другого вида — снять правило или шаблон"))
         if kind in ("out", "history"):
             files[rel] = FileInfo(kind, (), None, None)
             continue
         try:
             text = (repo / rel).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            problems.append(f"{rel} не читается ({e.strerror or e}) — упоминания из него не собраны")
+            problems.append(Problem("read", f"{rel} не читается ({e.strerror or e}) — упоминания из него не собраны"))
             files[rel] = FileInfo(kind, (), None, None)
             continue
         tree = None
@@ -412,8 +425,8 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
             try:
                 tree = ast.parse(text, filename=rel)
             except SyntaxError as e:
-                problems.append(f"{rel} не разбирается ({e.msg}, строка {e.lineno}) — "
-                                f"упоминания и импорты из него не собраны")
+                problems.append(Problem("parse", f"{rel} не разбирается ({e.msg}, строка {e.lineno}) — "
+                                                 f"упоминания и импорты из него не собраны"))
                 files[rel] = FileInfo(kind, (), None, None)
                 continue
             hays = tuple(_python_literals(tree))
@@ -545,7 +558,7 @@ def scan(inv: Inventory) -> Scan:
     mentions: dict[str, set[str]] = {}
     prose: dict[str, set[str]] = {}
     loose: dict[str, set[str]] = {}
-    problems = list(inv.problems)
+    problems = [p.text for p in inv.problems]
     targets = set(executables(inv))
     bucket = {"code": mentions, "prose": prose}
     for rel, info in inv.files.items():
@@ -578,13 +591,11 @@ def _env_reads(tree: ast.Module, var: str) -> list[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
-            # формы из ENV_READ_FORMS: os.environ.get / os.getenv / environ.get (from os import environ)
-            reader = isinstance(fn, ast.Attribute) and ast.unparse(fn) in ("os.environ.get", "os.getenv", "environ.get")
+            reader = isinstance(fn, ast.Attribute) and ast.unparse(fn) in ENV_READ_CALLS
             if reader and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == var:
                 out.append(node.lineno)
         elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value == var:
-            base = ast.unparse(node.value)
-            if base in ("os.environ", "environ"):
+            if ast.unparse(node.value) in ENV_READ_SUBSCRIPTS:
                 out.append(node.lineno)
     return sorted(out)
 
@@ -616,18 +627,25 @@ def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
 
 
 def _first_path_insert(tree: ast.Module) -> int | None:
-    """Наименьшая строка вставки в `sys.path` — импорт модулей из `src/` возможен
-    только после неё (Critical DS: чтение корня стояло выше вставки в 13 скриптах).
-    Именно минимум по строке, а не первый узел обхода (Important GLM круга 8:
-    `ast.walk` идёт в ширину, и «первая» вставка могла оказаться не верхней)."""
-    return min((node.lineno for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append")),
+    """Наименьшая строка вставки в `sys.path` НА ВЕРХНЕМ УРОВНЕ модуля — импорт
+    модулей из `src/` возможен только после неё (Critical DS: чтение корня стояло
+    выше вставки в 13 скриптах). Минимум по строке, а не первый узел обхода
+    (Important GLM круга 8: `ast.walk` идёт в ширину); и только верхний уровень,
+    а не всё дерево (Critical DS круга 9: вставка внутри функции на импорте
+    модуля не срабатывает, её строка «первой» не является)."""
+    return min((node.lineno for stmt in tree.body for node in ast.walk(stmt)
+                if isinstance(stmt, ast.Expr)
+                and isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append")),
                default=None)
 
 
 #: Формы чтения переменной окружения, которые распознаёт замер — грамматика, а не
-#: «все способы»: снимок лежит в гейте, расширение — осознанная правка двух файлов.
-ENV_READ_FORMS = ("os.environ.get", "os.getenv", "os.environ[...]", "environ.get", "environ[...]")
+#: «все способы». Вызовы и подписки разведены, потому что ими пользуется сам
+#: распознаватель: шапка отчёта печатает то, чем он работает, а не параллельный
+#: список (Important DS круга 9 — расширить список и забыть код было можно).
+ENV_READ_CALLS = ("os.environ.get", "os.getenv", "environ.get")
+ENV_READ_SUBSCRIPTS = ("os.environ", "environ")
+ENV_READ_FORMS = ENV_READ_CALLS + tuple(f"{b}[...]" for b in ENV_READ_SUBSCRIPTS)
 
 
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
@@ -643,11 +661,18 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
     seam_hits: dict[str, list[str]] = {}
     parsed = 0
     outside = 0
+    unruled: list[str] = []
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py"):
             continue
         if info.kind in ("out", "history"):
-            outside += 1                    # тесты, снимки: замер их не читает по политике
+            # «по политике» — только если так решило ПРАВИЛО; файл, до которого
+            # правила не дотянулись (будущий `packages/…`), — не политика, а дыра
+            # в таблице, и о нём надо сказать (Important DS круга 9)
+            if decide(rel).by == "rule":
+                outside += 1
+            else:
+                unruled.append(rel)
             continue
         if info.tree is None:
             continue                        # не разобрался — он уже в inv.problems, разделом ниже
@@ -666,11 +691,22 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
             roots.append(f"- `{rel}`:{','.join(map(str, fr))}")
         for name, hits in _calls(info.tree, seams).items():
             seam_hits.setdefault(name, []).append(f"`{rel}`:{','.join(map(str, hits))}")
+    unread = [p for p in inv.problems if p.kind in ("parse", "read")]
+    disputed = [p for p in inv.problems if p.kind == "conflict"]
     out = [f"# Замер швов (`scripts/layout_map.py --report`): python-модулей в области {parsed}, "
-           f"вне области по политике {outside}, всего файлов под git {len(inv.files)}", ""]
+           f"вне области по правилу {outside}, без правила {len(unruled)}, "
+           f"всего файлов под git {len(inv.files)}", ""]
     # непрочитанное — первым разделом: замер, построенный на неполном корпусе, врёт
-    # ровно тем, ради чего он заведён (Critical DS и GLM круга 8, независимо)
-    out += [f"## Не вошло в замер ({len(inv.problems)})", ""] + [f"- {p}" for p in inv.problems or ["нет"]]
+    # ровно тем, ради чего он заведён (Critical DS и GLM круга 8, независимо).
+    # Спорный вид — отдельный раздел: такой файл в замер ВОШЁЛ (Critical GLM круга 9).
+    out += [f"## Не прочитано — этих файлов в замере нет ({len(unread)})", ""]
+    out += [f"- {p.text}" for p in unread] or ["- нет"]
+    if unruled:
+        out += ["", f"## Python вне области, но и без правила — таблица их не знает ({len(unruled)})", ""]
+        out += [f"- `{rel}`" for rel in unruled]
+    if disputed:
+        out += ["", f"## Спорный вид — файлы в замере есть, но политика конфликтует ({len(disputed)})", ""]
+        out += [f"- {p.text}" for p in disputed]
     out += ["", f"## Читатели переменной {env_var} (формы: {', '.join(ENV_READ_FORMS)}) — {len(env)}", ""]
     out += env or ["- нет"]
     out += ["", f"## Корень из положения файла — цепочка `__file__ … .parent.parent` ({len(roots)})", ""]
@@ -688,13 +724,15 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
-          map_state: Literal["present", "missing", "skipped", "unknown"] = "unknown") -> list[str]:
+          map_state: Literal["present", "missing", "skipped"] = "present") -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
-    Каждое множество сверяется в обе стороны. `map_state`: `present` — карта на
-    диске и сверяется с `map_text`; `missing` — её нет (расхождение); `skipped` —
-    прогон её не писал и судить нечем; `unknown` — вызывающий о карте не
-    спрашивает (тесты)."""
-    if map_state not in ("present", "missing", "skipped", "unknown"):
+    Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
+    сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
+    спрашивает»); `missing` — карты нет, это расхождение; `skipped` — прогон её
+    не писал и судить нечем. Четвёртого состояния нет: оно вело себя как
+    `present`, а докстринг обещал обратное, и на этом держался главный гейт
+    (Important GLM круга 9)."""
+    if map_state not in ("present", "missing", "skipped"):
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
     problems: list[str] = list(scanned.problems)
@@ -806,16 +844,19 @@ def main(argv: list[str] | None = None) -> int:
     загрузка такой артефакт отвергнет (Critical DS круга 4), но отчёт о прочих
     расхождениях печатается тем же прогоном (Important DS круга 5)."""
     args = sys.argv[1:] if argv is None else argv
+    inv = inventory(REPO)
+    if "--report" in args and "--check" not in args:
+        # замер читает только код: артефакт ему не нужен и не должен его хоронить
+        # (Critical GLM и Important DS круга 9 — в середине переделки артефакт
+        # правят руками, и битый артефакт убивал замер целиком)
+        print(report(inv), end="")
+        # замер на неполном корпусе — не замер; спорный вид корпус не сокращает
+        return 1 if any(p.kind in ("parse", "read") for p in inv.problems) else 0
     try:
         layout = load_layout(LAYOUT)
     except LayoutError as e:
         print(f"✗ {LAYOUT.relative_to(REPO)}: {e}")
         return 1
-    inv = inventory(REPO)
-    if "--report" in args and "--check" not in args:
-        print(report(inv), end="")
-        # замер на неполном корпусе — не замер: код выхода честный
-        return 1 if inv.problems else 0
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)

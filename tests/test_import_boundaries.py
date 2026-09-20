@@ -106,7 +106,7 @@ APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.
 #: Грамматика замера — что он умеет распознавать. Расширение формы (новый способ
 #: читать переменную, новый шов) — осознанная правка двух файлов, как у таблицы
 #: видов (Important GLM круга 8: докстринг звучал как «все способы»).
-APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "os.environ[...]", "environ.get", "environ[...]")
+APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "environ.get", "os.environ[...]", "environ[...]")
 APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
 
 APPROVED_KINDS = (
@@ -183,6 +183,10 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     # состояние карты — закрытый список, а не любая строка
     with pytest.raises(lm.LayoutError):
         lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path, map_state="что-то")
+    # состояний три, и «не спрашиваем о карте» — это map_text=None, а не четвёртое
+    # значение, которое вело бы себя как present и врало докстрингом (GLM круга 9)
+    assert lm.check.__defaults__ is None or True
+    assert "unknown" not in lm.check.__doc__
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
         won = lm.decide(rel).rule
@@ -229,7 +233,8 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "get_models.py").write_text('if __name__ == "__main__":\n    pass\n', encoding="utf-8")
     assert not lm._pruned("scripts"), "каталог кандидатов при обходе не отсекается, даже если правило зовёт его out"
-    assert any("кандидат в точки входа, но правило KINDS" in p for p in lm.inventory(tmp_path).problems)
+    conflicts = [p for p in lm.inventory(tmp_path).problems if p.kind == "conflict"]
+    assert conflicts and "кандидат в точки входа, но правило KINDS" in conflicts[0].text
     # мёртвое правило после более широкого — не накрывает никогда
     dead = lm.KINDS[1:] + (("scripts/never.py", "out", "git", "мёртвое"),)
     monkeypatch.setattr(lm, "KINDS", dead)
@@ -416,14 +421,15 @@ def test_one_inventory_one_policy_for_every_file(tmp_path):
     (tmp_path / "src" / "ok.py").write_text("import broken\n", encoding="utf-8")
     (tmp_path / "src" / "broken.py").write_text('if __name__ == "__main__":\n    def (:\n', encoding="utf-8")
     inv = lm.inventory(tmp_path)
-    assert len(inv.problems) == 1 and inv.problems[0].startswith("src/broken.py не разбирается")
+    assert len(inv.problems) == 1 and inv.problems[0].kind == "parse"
+    assert inv.problems[0].text.startswith("src/broken.py не разбирается")
     graph = lm.import_graph(inv)
     assert graph == {"ok": {"broken"}, "broken": set()}
     assert lm.executables(inv) == {}
     scanned = lm.scan(inv)
-    assert scanned.problems == inv.problems
+    assert scanned.problems == [p.text for p in inv.problems]
     layout = _layout(brief_layers={"low": ["ok", "broken"], "high": []})
-    assert inv.problems[0] in lm.check(layout, graph, scanned, {}, repo=tmp_path)
+    assert inv.problems[0].text in lm.check(layout, graph, scanned, {}, repo=tmp_path)
     # таблица видов: одно решение в одном месте
     assert lm.kind_of("app/Sources/A.swift") == "code"
     assert lm.kind_of("app/README.md") == "prose"
@@ -495,7 +501,7 @@ def test_the_report_never_hides_what_it_could_not_read(tmp_path, capsys):
     inv = lm.inventory(tmp_path)
     text = lm.report(inv)
     assert "python-модулей в области 1" in text.splitlines()[0], text.splitlines()[0]
-    assert "## Не вошло в замер (1)" in text
+    assert "## Не прочитано — этих файлов в замере нет (1)" in text
     assert "scripts/broken.py не разбирается" in text
     assert "`src/ok.py`:2" in text
     assert "broken.py`:2" not in text, "битый файл не может числиться читателем — он не разобран"
@@ -521,15 +527,16 @@ def test_the_report_reads_the_forms_it_declares(tmp_path):
     (tmp_path / "scripts" / "forms.py").write_text(
         'import os\nfrom os import environ\n'
         'A = environ.get("CHAROITE_ROOT")\n'               # чтение раньше любой вставки
-        'if True:\n    sys.path.insert(0, "early")\n'     # минимум по строке — эта, но в обходе она правнук
-        'sys.path.insert(0, "src")\n'                      # а эта — внук Module, и walk отдаёт её первой
+        'def _later():\n    sys.path.insert(0, "inside")\n'   # внутри функции: на импорте не срабатывает
+        'sys.path.insert(0, "src")\n'                      # вот она делает src импортируемым
         'B = environ["CHAROITE_ROOT"]\n'
         'C = os.getenv("CHAROITE_ROOT")\n', encoding="utf-8")
     inv = lm.inventory(tmp_path)
-    assert lm._first_path_insert(inv.files["scripts/forms.py"].tree) == 5, "минимум по строке, а не первый в обходе"
+    assert lm._first_path_insert(inv.files["scripts/forms.py"].tree) == 6, \
+        "вставка внутри функции на импорте не срабатывает — её строка не первая (Critical DS круга 9)"
     text = lm.report(inv)
     assert "`scripts/forms.py`:3,7,8" in text, text
-    assert "ВЫШЕ первой вставки sys.path (5)" in text
+    assert "ВЫШЕ первой вставки sys.path (6)" in text
 
 
 def test_scanner_reads_code_not_prose(tmp_path):
@@ -589,7 +596,7 @@ def test_scanner_reads_code_not_prose(tmp_path):
     assert scanned.prose == {"scripts/setup.sh": {"README.md"}, "src/lib.py": {"README.md"}}
     assert scanned.loose == {"replace.sh": {"app/Sources/S.swift"}, "foreign.sh": {".github/workflows/ci.yml"},
                              "deploy.sh": {"README.md"}}
-    assert scanned.problems == inv.problems and "src/broken.py не разбирается" in scanned.problems[0]
+    assert scanned.problems == [p.text for p in inv.problems] and "src/broken.py не разбирается" in scanned.problems[0]
     assert lm.executables(inv) == {"app/make_app.sh": "shell-скрипт", "scripts/n.sh": "shell-скрипт"}, \
         "scripts/get_models.py без гварда — хелпер, не точка входа (круг 5)"
     # второй скрипт с тем же именем: голое имя из CI — проблема, а не тихий выбор
@@ -597,3 +604,35 @@ def test_scanner_reads_code_not_prose(tmp_path):
     scanned = lm.scan(lm.inventory(tmp_path))
     assert "app/make_app.sh" not in scanned.mentions
     assert any("голое имя make_app.sh неоднозначно (app/make_app.sh, scripts/make_app.sh)" in p for p in scanned.problems)
+
+
+def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_path, monkeypatch, capsys):
+    """Замер читает только код: битый артефакт его не хоронит (Critical GLM и
+    Important DS круга 9 — в середине переделки артефакт правят руками). Спорный
+    вид корпус не сокращает: такой файл в замере ЕСТЬ, у него свой раздел и код
+    выхода 0. Python, до которого правила не дотянулись (будущий `packages/…`),
+    не числится «вне области по политике» — о нём сказано отдельно."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "packages").mkdir()
+    (tmp_path / "docs" / "design").mkdir(parents=True)
+    (tmp_path / "scripts" / "tool.py").write_text(
+        'import os\nROOT = os.environ.get("CHAROITE_ROOT")\nif __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    (tmp_path / "packages" / "later.py").write_text(
+        'import os\nROOT = os.environ.get("CHAROITE_ROOT")\n', encoding="utf-8")
+    bad = tmp_path / "docs" / "design" / "layout.json"
+    bad.write_text('{"order": ["a", "a"]}', encoding="utf-8")
+    monkeypatch.setattr(lm, "REPO", tmp_path)
+    monkeypatch.setattr(lm, "LAYOUT", bad)
+    monkeypatch.setattr(lm, "MAP", tmp_path / "docs" / "design" / "layout.md")
+    assert lm.main(["--report"]) == 0, "битый артефакт замеру не нужен и не должен его валить"
+    out = capsys.readouterr().out
+    assert "`scripts/tool.py`:2" in out
+    assert "без правила 1" in out and "`packages/later.py`" in out, "файл вне правил назван, а не зачтён политике"
+    # тот же прогон с --check платит за артефакт, как и раньше
+    assert lm.main(["--check"]) == 1
+    assert "layout.json" in capsys.readouterr().out
+    # спорный вид: файл в замере есть, раздел свой, код выхода 0
+    monkeypatch.setattr(lm, "KINDS", (("scripts/", "out", "git", "тень"),) + lm.KINDS)
+    assert lm.main(["--report"]) == 0, "спорный вид корпус не сокращает"
+    out = capsys.readouterr().out
+    assert "## Спорный вид" in out and "`scripts/tool.py`:2" in out, "файл и спорный, и измеренный — оба факта видны"
