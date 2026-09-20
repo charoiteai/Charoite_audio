@@ -167,8 +167,12 @@ def check_ollama(cfg: dict) -> None:
     # и хвалит ту, которой не считает. Модуль шва без зависимостей: доктор
     # обязан печатать рецепт и на машине, где ещё нечем ходить в сеть.
     import model_seam as _seam
-    want = str((cfg.get("sufler") or {}).get("embed_model") or _seam.DEFAULT_EMBED_MODEL)
-    if any(m.startswith(want.split(":")[0]) for m in models):
+    want = _seam.embed_model_name(cfg)
+    # Сверяем с тегом: `nomic` и `nomic-embed-text:latest` — разные имена для
+    # Ollama, и по префиксу доктор похвалил бы модель, которой `/api/embed`
+    # ответит 404 (круг 1 по коду, GLM M5).
+    full = want if ":" in want else f"{want}:latest"
+    if full in models:
         line(OK, f"{want} (семантический поиск)")
     else:
         line(WARN, f"{want} не установлена — поиск будет чисто лексическим",

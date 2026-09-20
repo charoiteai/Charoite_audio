@@ -37,7 +37,8 @@ import requests
 import charoite_paths
 import model_lease
 import privacy
-from model_seam import DEFAULT_EMBED_MODEL, Embedder
+from model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
+                        SeamTransportError, embed_model_name)
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
 # на занятой модели отвечает 503 за ~250 мс вместо того, чтобы поставить
@@ -184,15 +185,19 @@ MLX_MAX_TOKENS_DEFAULT = 4096
 EMBED_KEEP_ALIVE = "30m"
 
 
-def embed_model_name(cfg: dict, model: str | None = None) -> str:
-    """Чем считаем векторы: явное имя, конфиг владельца или дефолт поставки.
+_said: set[str] = set()
 
-    Единственный резолвер на проект. Раньше эта строчка жила в трёх местах —
-    здесь, в ключе дискового кэша поиска и в контуре дежавю, — и каждая копия
-    была отдельной возможностью разойтись. Имя подписывает кэш векторов, так
-    что расхождение стоит не ошибки, а часов пересчёта у каждого владельца.
+
+def _say_once(text: str) -> None:
+    """Сказать владельцу один раз за жизнь процесса.
+
+    Отказ политики повторяется на каждом вопросе; в журнале встречи это был бы
+    шум, из-за которого настоящую причину не видно.
     """
-    return str((cfg.get("sufler") or {}).get("embed_model") or DEFAULT_EMBED_MODEL)
+    if text in _said:
+        return
+    _said.add(text)
+    print(text, file=sys.stderr, flush=True)
 
 
 def embedder(cfg: dict, *, model: str | None = None,
@@ -208,12 +213,24 @@ def embedder(cfg: dict, *, model: str | None = None,
     стучаться на localhost пачками. Эту гарантию раньше держал гард внутри
     поиска; теперь она у того, кто вообще знает про сервер.
     """
-    name = embed_model_name(cfg, model)
     if not cfg:
-        return Embedder(lambda texts, timeout: [], name)
+        return Embedder(lambda texts, timeout: [], NO_MODEL)
+    name = embed_model_name(cfg, model)
 
     def run(texts: list[str], timeout: float) -> list[list[float]]:
-        return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
+        try:
+            return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
+        except OSError as exc:                      # сеть: отказ, таймаут, обрыв
+            raise SeamTransportError(str(exc)) from exc
+        except RuntimeError as exc:
+            # Политика адреса (`privacy`) отказала: чужая машина без
+            # allow_remote, открытый http наружу, взведённый рубильник. Для
+            # графа это тот же исход «векторов нет», но для владельца — его
+            # собственная настройка, и молчать о ней нельзя: раньше такой
+            # отказ доезжал до контура подсказок и до конца сеанса выглядел
+            # как «память ещё прогревается» (круг 1 по коду, обе головы).
+            _say_once(f"эмбеддинги недоступны: {exc}")
+            raise SeamTransportError(str(exc)) from exc
 
     return Embedder(run, name)
 

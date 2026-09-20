@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO / "src"))
 import dossier  # noqa: E402
 import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
+import model_seam  # noqa: E402
 from model_seam import DEFAULT_EMBED_MODEL, Embedder  # noqa: E402
 
 
@@ -48,12 +49,14 @@ def fake_embed(texts: list[str], timeout: float) -> list[list[float]]:
     return out
 
 
-def fake_embedder(fn=fake_embed, model: str = DEFAULT_EMBED_MODEL) -> Embedder:
+def fake_embedder(fn=fake_embed, model: str = "test-fake") -> Embedder:
     """Подделка способности целиком — функция и имя, под которым она считает.
 
     Тест не вправе собирать половину: имя подписывает кэш векторов, и пара из
-    разных моделей — ровно тот дрейф, против которого шов и сделан. Дефолтное
-    имя боевое, чтобы ключ кэша в тестах совпадал с ключом установки.
+    разных моделей — ровно тот дрейф, против которого шов и сделан. Имя своё, а
+    не боевое: подделка считает по таблице синонимов, и подписывать её векторы
+    именем bge-m3 значит класть на диск манифест, который настоящая установка
+    прочтёт как свой (круг 1 по коду, DS I3).
     """
     return Embedder(fn, model)
 
@@ -738,12 +741,68 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
     assert s.cache_key().startswith("own-model|"), "кэш подписывает тот, кто считает"
     assert e.run(["текст"], 5) == [[1.0, 0.0]]
-    assert seen["model"] == "own-model" and seen["keep_alive"] == llm.EMBED_KEEP_ALIVE
+    # литералом, не константой: сверка с тем, что сторожишь, пропустит «30m» → «5m»,
+    # а это ровно тот сценарий, ради которого константа заведена (DS M3 круга 1)
+    assert seen["model"] == "own-model" and seen["keep_alive"] == "30m"
 
     seen.clear()
     quiet = llm.embedder({})
     assert quiet.run(["текст"], 5) == [] and not seen, "конфига нет — в сеть не ходим вовсе"
-    assert quiet.model == DEFAULT_EMBED_MODEL, "имя известно и без конфига: кэш надо чем-то подписать"
+    assert quiet.model == model_seam.NO_MODEL, \
+        "«моделей нет» — своя подпись: иначе первый позвавший без конфига застолбит индекс графа"
+
+
+@pytest.mark.parametrize("cfg, pin, expect", [
+    ({}, None, model_seam.DEFAULT_EMBED_MODEL),                 # ни конфига, ни пина
+    ({"sufler": {}}, None, model_seam.DEFAULT_EMBED_MODEL),     # секция есть, ключа нет
+    ({"sufler": {"embed_model": ""}}, None, model_seam.DEFAULT_EMBED_MODEL),   # пустое = незаданное
+    ({"sufler": {"embed_model": "own"}}, None, "own"),          # выбор владельца
+    ({}, "pinned", "pinned"),                                   # пин без конфига
+    ({"sufler": {"embed_model": "own"}}, "pinned", "pinned"),   # пин сильнее конфига
+])
+def test_the_name_is_resolved_in_one_place_and_the_pin_wins(cfg, pin, expect):
+    """Явное имя → конфиг владельца → дефолт поставки, ровно в таком порядке.
+
+    Резолвер один на проект и живёт в шве, а не рядом с транспортом: имя
+    спрашивают оба берега и доктор, которому слой моделей недоступен (он тянет
+    requests, а доктор обязан печатать рецепт до установки пакетов).
+
+    Пин проверяется отдельной строкой, потому что первая редакция этого куска
+    объявила три ступени в докстринге и реализовала одну: параметр молча
+    игнорировался, и ревизия ядер, пришпилившая себе модель явно, незаметно
+    поехала бы за конфигом (круг 1 по коду, GLM C1). Пять мутаций и 2186
+    зелёных тестов этого не заметили — датчика не было.
+    """
+    assert model_seam.embed_model_name(cfg, pin) == expect
+
+
+def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, monkeypatch, capsys):
+    """Политика запретила адрес — подсказка живёт лексикой, но владелец слышит.
+
+    `privacy` отказывает `RuntimeError`, когда адрес не этой машины без
+    allow_remote, схема не http(s) или взведён рубильник. Для графа это тот же
+    исход «векторов нет»; нормализует его поставщик, потому что только он знает
+    и про политику, и про транспорт. Прежняя редакция ловила у потребителя
+    голый OSError — и отказ политики доезжал до контура подсказок, где до конца
+    сеанса выглядел как «память ещё прогревается» (круг 1 по коду, обе головы).
+    """
+    import llm
+
+    monkeypatch.setattr(llm, "_said", set())
+    cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
+    e = llm.embedder(cfg)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
+    s.refresh(force=True)
+    assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
+    said = capsys.readouterr().err
+    assert "allow_remote" in said, "причина названа владельцу, а не проглочена"
+    (_graph(tmp_path) / "Системы" / "Ещё.md").write_text(
+        "# Ещё\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
+    s.refresh(force=True)
+    assert s.embed_pending() == 0                  # шов зовётся снова и снова отказывает
+    assert "allow_remote" not in capsys.readouterr().err, "один раз за процесс, не на каждый вопрос"
 
 
 def test_the_cache_key_is_a_contract_not_a_value(tmp_path):
@@ -753,7 +812,8 @@ def test_the_cache_key_is_a_contract_not_a_value(tmp_path):
     модели — и у каждого владельца граф переэмбеддится заново, часами bge-m3.
     Поэтому он проверяется побайтово, а не на самосогласованность (GLM I5 r3).
     """
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data",
+                       embedder=fake_embedder(model=DEFAULT_EMBED_MODEL))
     assert s.cache_key() == (f"bge-m3:latest|chunks{gs.CHUNK_VERSION}|{gs.CHUNK_CHARS}"
                              f"|{gs.MAX_CHUNKS}|{gs.MAX_CHUNKS_NODE}")
     assert DEFAULT_EMBED_MODEL == "bge-m3:latest", "дефолт поставки — боевое значение, не заглушка"
