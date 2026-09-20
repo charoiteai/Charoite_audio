@@ -26,11 +26,21 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_без_переменной_корень_прежний():
+def test_без_переменной_корень_прежний(tmp_path):
+    """Корень без переменной — папка НАД модулем, и это меряется на чужом дереве.
+
+    Ожидание строит фикстура, а не та же формула `parent.parent`, что и
+    проверяемый код: пока обе стороны считались одинаково, перенос модуля на
+    ступень двигал их вместе и тест оставался зелёным на сломанном каноне
+    (GLM C3 по №327).
+    """
     sys.path.insert(0, str(ROOT / "src"))
     from charoite_paths import resolve_root
-    fake = ROOT / "src" / "audio.py"
-    assert resolve_root(str(fake)) == ROOT
+    корень = tmp_path / "установка"
+    (корень / "src").mkdir(parents=True)
+    fake = корень / "src" / "audio.py"
+    fake.touch()
+    assert resolve_root(str(fake)) == корень.resolve()
 
 
 def test_переменная_переопределяет_корень(tmp_path, monkeypatch):
@@ -70,8 +80,10 @@ def test_корень_кода_переменную_не_слушает(tmp_path
     """Данные переносятся, код — нет. `src/` лежит там, где лежит."""
     sys.path.insert(0, str(ROOT / "src"))
     from charoite_paths import code_root
-    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
-    assert code_root(str(ROOT / "src" / "audio.py")) == ROOT
+    поставка = tmp_path / "поставка"
+    (поставка / "src").mkdir(parents=True)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "данные"))
+    assert code_root(str(поставка / "src" / "audio.py")) == поставка.resolve()
 
 
 def _root_reaches_code(tree: ast.AST) -> list[str]:
@@ -110,7 +122,7 @@ def test_за_кодом_никто_не_ходит_через_корень_да
 def test_ночные_скрипты_пишут_в_корень_данных(tmp_path):
     """Конфиг и отметки ночного цикла — у человека, а не в бандле.
 
-    Оба места нашлись ревью 19.08 в одной ветке: `graphs.CONFIG` вёл к
+    Оба места нашлись ревью 19.08 в одной ветке: конфиг графа вёл к
     config.yaml рядом с кодом (во вложенной установке его там нет — ночь
     читала бы дефолты и игнорировала выключатели профиля), а
     `tier3_cores.STAMPS` писал отметку прогона в read-only бандл — то есть
@@ -121,7 +133,7 @@ def test_ночные_скрипты_пишут_в_корень_данных(tmp
     code = (
         "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, 'scripts')\n"
         "import graphs, tier3_cores\n"
-        "print(graphs.CONFIG); print(tier3_cores.STAMPS)\n"
+        "print(graphs.config_path()); print(tier3_cores.STAMPS)\n"
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                          capture_output=True, text=True, timeout=120)

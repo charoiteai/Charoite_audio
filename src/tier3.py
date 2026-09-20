@@ -336,7 +336,8 @@ def _data_root() -> pathlib.Path:
     Ленивость сохранена: `resolve_root` — функция и читает переменную в
     момент вызова, а значение к моменту гейта может отличаться от значения
     на импорте."""
-    return charoite_paths.resolve_root(__file__)
+    import graphs
+    return graphs.data_root()
 
 
 def night_wait_cap(default: float = 3600.0, now=None) -> float | None:

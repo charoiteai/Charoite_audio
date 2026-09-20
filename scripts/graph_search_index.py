@@ -39,7 +39,7 @@ def main() -> int:
     if graph is None or not graph.is_dir():
         print(f"граф не найден: {graph}")
         return 2
-    root = graphs.DATA_ROOT      # корень данных — одна точка (resolve_root), не своя копия (DS M4)
+    root = graphs.data_root()      # корень данных — одна точка (resolve_root), не своя копия (DS M4)
     if not args.stats and not args.force and live_gate.daemon_alive(root):
         # индексация занимает модель эмбеддингов минутами — на встрече слот
         # принадлежит подсказкам; ночь и пауза между встречами дособерут
