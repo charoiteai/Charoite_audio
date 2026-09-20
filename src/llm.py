@@ -37,6 +37,7 @@ import requests
 import charoite_paths
 import model_lease
 import privacy
+from model_seam import DEFAULT_EMBED_MODEL, Embedder
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
 # на занятой модели отвечает 503 за ~250 мс вместо того, чтобы поставить
@@ -176,9 +177,55 @@ def cloud_key(cfg: dict) -> str:
 MLX_MAX_TOKENS_DEFAULT = 4096
 
 
+#: Сколько Ollama держит модель эмбеддингов в памяти после запроса. Контуры
+#: встречи спрашивают её десятки раз за час: без резидентности каждый вопрос
+#: владельца после паузы платил бы загрузку 1.2 ГБ внутри своего таймаута, а
+#: таймаут короткий — семантика просто не успевала бы.
+EMBED_KEEP_ALIVE = "30m"
+
+
+def embed_model_name(cfg: dict, model: str | None = None) -> str:
+    """Чем считаем векторы: явное имя, конфиг владельца или дефолт поставки.
+
+    Единственный резолвер на проект. Раньше эта строчка жила в трёх местах —
+    здесь, в ключе дискового кэша поиска и в контуре дежавю, — и каждая копия
+    была отдельной возможностью разойтись. Имя подписывает кэш векторов, так
+    что расхождение стоит не ошибки, а часов пересчёта у каждого владельца.
+    """
+    return str((cfg.get("sufler") or {}).get("embed_model") or DEFAULT_EMBED_MODEL)
+
+
+def embedder(cfg: dict, *, model: str | None = None,
+             keep_alive: str | None = EMBED_KEEP_ALIVE) -> Embedder:
+    """Собрать векторизатор для того, кому нельзя знать про Ollama.
+
+    Отдаёт пару «функция и имя»: имя нужно получателю, чтобы подписать кэш, а
+    считать он всё равно не умеет. Обе половины родом из одного вызова, поэтому
+    подписать чужие векторы привычным именем нечем.
+
+    Пустой конфиг — не «возьми дефолты», а «моделей нет»: так индексатор без
+    `config.yaml` и демо-прогон бенча остаются в лексике вместо того, чтобы
+    стучаться на localhost пачками. Эту гарантию раньше держал гард внутри
+    поиска; теперь она у того, кто вообще знает про сервер.
+    """
+    name = embed_model_name(cfg, model)
+    if not cfg:
+        return Embedder(lambda texts, timeout: [], name)
+
+    def run(texts: list[str], timeout: float) -> list[list[float]]:
+        return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
+
+    return Embedder(run, name)
+
+
 def embed(cfg: dict, texts: list[str], model: str | None = None,
           keep_alive: str | None = None, timeout: float = 20) -> list[list[float]]:
     """Эмбеддинги через /api/embed. Пустой список — сервер не ответил векторами.
+
+    Прямой вызов — для разовых контуров, которым резидентность не нужна
+    (дежавю на встрече спрашивает раз в сорок секунд и делит слот с чат-моделью).
+    Всё, что векторизует регулярно, получает `embedder()`: он несёт и имя, и
+    время жизни модели.
 
     Всегда Ollama (privacy.llm_base_url), независимо от llm.engine:
     mlx_lm.server эмбеддингов не отдаёт, bge-m3 остаётся здесь.
@@ -188,7 +235,7 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
     проход, чем стоять заблокированным (замер дежавю).
     """
     payload: dict = {
-        "model": model or (cfg.get("sufler") or {}).get("embed_model", "bge-m3:latest"),
+        "model": embed_model_name(cfg, model),
         "input": texts,
     }
     if keep_alive:

@@ -161,11 +161,18 @@ def check_ollama(cfg: dict) -> None:
         line(FAIL, f"модель llm.model «{main}» не найдена", f"ollama pull {main}")
     elif main:
         line(OK, f"основная модель: {main}")
-    if any(m.startswith("bge-m3") for m in models):
-        line(OK, "bge-m3 (семантический поиск)")
+    # Имя спрашиваем у шва способности, а не у литерала: владелец вправе
+    # поставить другую модель в `sufler.embed_model`, и доктор про неё обязан
+    # знать — иначе он ругается на отсутствие той, которой никто не пользуется,
+    # и хвалит ту, которой не считает. Модуль шва без зависимостей: доктор
+    # обязан печатать рецепт и на машине, где ещё нечем ходить в сеть.
+    import model_seam as _seam
+    want = str((cfg.get("sufler") or {}).get("embed_model") or _seam.DEFAULT_EMBED_MODEL)
+    if any(m.startswith(want.split(":")[0]) for m in models):
+        line(OK, f"{want} (семантический поиск)")
     else:
-        line(WARN, "bge-m3 не установлена — поиск будет чисто лексическим",
-             "ollama pull bge-m3   # ~1.2 ГБ")
+        line(WARN, f"{want} не установлена — поиск будет чисто лексическим",
+             f"ollama pull {want}")
 
 
 def check_stt(cfg: dict) -> None:

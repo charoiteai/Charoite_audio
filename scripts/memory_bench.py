@@ -36,6 +36,7 @@ import deps  # noqa: E402
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import yaml  # noqa: E402
+import llm  # noqa: E402
 from llm import LLM  # noqa: E402
 
 SNIPPET = 1200   # как в боевом RAG приложения
@@ -236,7 +237,8 @@ def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
     import graph_search
     mem = _INDEX.get(str(graph))
     if mem is None:
-        mem = _INDEX[str(graph)] = graph_search.GraphSearch(graph, cfg or {})
+        mem = _INDEX[str(graph)] = graph_search.GraphSearch(
+            graph, embedder=llm.embedder(cfg or {}))
         mem.refresh(force=True)
         mem.load_vectors()
     result = mem.search(query, limit=LIMIT_FILES, snippet_chars=SNIPPET)
@@ -371,7 +373,10 @@ def main() -> None:
         # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
         # своих вопросах, без модели. Пороги — в src/graph_search.py.
         import graph_search
-        mem = graph_search.GraphSearch(graph, cfg if not args.demo else {})
+        # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
+        # векторизатор: демо меряет лексику, не ходя в сеть
+        mem = graph_search.GraphSearch(
+            graph, embedder=llm.embedder(cfg if not args.demo else {}))
         mem.refresh(force=True)
         mem.load_vectors()
         print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")

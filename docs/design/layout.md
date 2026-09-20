@@ -1,10 +1,10 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T07:27Z. Модулей 64.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T11:58Z. Модулей 65.
 
 ## Слои и направление стрелок
 
-- **core** (зависит от: —; модулей 12): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `privacy`, `redirects`, `safe_write`, `vocabulary`
+- **core** (зависит от: —; модулей 13): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `model_seam`, `privacy`, `redirects`, `safe_write`, `vocabulary`
 - **llm** (зависит от: core; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: core; модулей 7): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `graphs`, `tier3`
 - **cloud** (зависит от: core; модулей 1): `cloud`
@@ -20,6 +20,7 @@
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
 - `media_meta` → core: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
+- `model_seam` → core: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
 - `tier3` → graph: бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако
 - `vocabulary` → core: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
@@ -32,12 +33,11 @@
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
-Всего 6.
+Всего 5.
 
 - `audio` (audio) → `meeting_stamp` (meeting) — №322
 - `channel_labels` (audio) → `speaker_names` (meeting) — №322
 - `diarize` (audio) → `llm` (llm) — №322 (LLM.complete для имён спикеров — вызов точки входа)
-- `graph_search` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 - `tier3` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 - `tier3` (graph) → `nli` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 
