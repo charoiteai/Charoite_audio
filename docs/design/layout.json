@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-20T11:58Z",
+  "generated": "2026-09-20T17:26Z",
   "order": [
     "core",
     "llm",
@@ -168,16 +168,6 @@
       "from": "diarize",
       "to": "llm",
       "ticket": "№322 (LLM.complete для имён спикеров — вызов точки входа)"
-    },
-    {
-      "from": "tier3",
-      "to": "llm",
-      "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
-    },
-    {
-      "from": "tier3",
-      "to": "nli",
-      "ticket": "№321 (llm/nli из graph — Protocol или параметр)"
     }
   ],
   "manual_entry_points": {

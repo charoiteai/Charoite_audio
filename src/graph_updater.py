@@ -30,6 +30,7 @@ import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
 import safe_write  # noqa: E402
 import llm  # noqa: E402
+import nli  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
@@ -2695,7 +2696,9 @@ def main():
             # имя из встречи может вести в заглушку слитого ядра — фокус ревизии
             # берём по канону, иначе слитое ядро не пересматривается (хвост 20.08, GLM)
             focus = [resolve_core_path(graph / "Ядра", c["имя"], graph).stem for c in cores]
-            rep = tier3.revise(graph, only_names=focus, mark=True, apply=auto, cfg=cfg)
+            rep = tier3.revise(graph, only_names=focus, mark=True, apply=auto,
+                               embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
+                               judge=nli.judge())
             # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
             # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
             # а здесь был бы двойным эхом каждой правки

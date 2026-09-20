@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T11:58Z. Модулей 65.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z. Модулей 65.
 
 ## Слои и направление стрелок
 
@@ -33,13 +33,11 @@
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
-Всего 5.
+Всего 3.
 
 - `audio` (audio) → `meeting_stamp` (meeting) — №322
 - `channel_labels` (audio) → `speaker_names` (meeting) — №322
 - `diarize` (audio) → `llm` (llm) — №322 (LLM.complete для имён спикеров — вызов точки входа)
-- `tier3` (graph) → `llm` (llm) — №321 (llm/nli из graph — Protocol или параметр)
-- `tier3` (graph) → `nli` (llm) — №321 (llm/nli из graph — Protocol или параметр)
 
 ## Точки входа — исполняемые файлы (кто зовёт из кода)
 

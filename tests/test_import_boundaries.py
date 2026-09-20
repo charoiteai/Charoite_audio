@@ -257,14 +257,18 @@ def test_layer_table_is_complete_and_the_arrows_point_down(world):
             assert not outside, f"{m} ({layer}) импортирует {sorted(outside)}"
         if layer == "graph":
             assert not {d for d in graph[m] if lay[d] == "meeting"}, f"{m} тянет meeting: {sorted(graph[m])}"
-    # долг фазы 3 виден на доске: graph → llm не разрешён стрелками, а живёт в
-    # allowlist с карточкой. Утверждается СОСТАВ остатка, а не одна пара: иначе
-    # снятие ребра красит тест на ровном месте, а возврат долга проходит молча
-    # (круг 3 по №321, DS C1/I3). Кусок 2б обязан тронуть эту строку.
+    # Фаза 3 закрыта: графовый слой не ходит в модели ни разрешением, ни долгом.
+    # Утверждается ОТСУТСТВИЕ долга у слоя, а не его состав: пустое множество не
+    # придётся править на каждом следующем куске, а возврат ребра красит тест
+    # сразу. Остальной долг проверяется свойством — у каждой записи есть карточка
+    # (круги 3 по №321 и 2 по куску 2б).
     assert "llm" not in layout["allowed"]["graph"]
     debt = {(a, b) for a, b in lm.allowlist_edges(layout) if lay.get(a) == "graph"}
-    assert debt == {("tier3", "llm"), ("tier3", "nli")}, \
-        "долг графового слоя изменился — снять запись или назвать новую карточкой"
+    assert not debt, f"графовый слой снова в долгу перед моделями: {sorted(debt)}"
+    for a, b in lm.allowlist_edges(layout):
+        card = next((e.get("ticket", "") for e in layout["allowed_edges"]
+                     if (e["from"], e["to"]) == (a, b)), "")
+        assert card.startswith("№"), f"долг {a} → {b} без карточки: {card!r}"
 
 
 def test_entry_points_are_executables_not_mentions(world):
