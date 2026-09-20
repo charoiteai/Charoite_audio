@@ -44,6 +44,7 @@ import pathlib
 import sys
 
 import pytest
+import typing
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -185,7 +186,10 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
         lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path, map_state="что-то")
     # состояний три, и «не спрашиваем о карте» — это map_text=None, а не четвёртое
     # значение, которое вело бы себя как present и врало докстрингом (GLM круга 9)
-    assert lm.check.__defaults__ is None or True
+    # состояний ровно три: четвёртое вело бы себя как present, а докстринг обещал
+    # обратное, и на этом держался главный гейт (Important GLM круга 9)
+    states = typing.get_args(typing.get_type_hints(lm.check)["map_state"])
+    assert states == ("present", "missing", "skipped"), states
     assert "unknown" not in lm.check.__doc__
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
@@ -475,8 +479,8 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
         'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
     text = lm.report(lm.inventory(tmp_path))
     assert "## Читатели переменной CHAROITE_ROOT (формы:" in text and "— 3" in text
-    assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ первой вставки sys.path (3)" in text
-    assert "`scripts/late.py`:3" in text and "ВЫШЕ первой вставки" not in text.split("late.py")[1].split("\n")[0]
+    assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ вставки sys.path на импорте (3)" in text
+    assert "`scripts/late.py`:3" in text and "ВЫШЕ вставки" not in text.split("late.py")[1].split("\n")[0]
     assert "`src/lib.py`:2" in text
     roots_block = text.split("## Корень из положения файла")[1].split("## Точки сборки")[0]
     assert roots_block.splitlines()[0].endswith("(1)"), roots_block.splitlines()[0]
@@ -532,11 +536,26 @@ def test_the_report_reads_the_forms_it_declares(tmp_path):
         'B = environ["CHAROITE_ROOT"]\n'
         'C = os.getenv("CHAROITE_ROOT")\n', encoding="utf-8")
     inv = lm.inventory(tmp_path)
-    assert lm._first_path_insert(inv.files["scripts/forms.py"].tree) == 6, \
+    ev = lm.module_events(inv.files["scripts/forms.py"].tree, "CHAROITE_ROOT")
+    assert ev.top_insert == 6 and ev.inner_insert == 5, \
         "вставка внутри функции на импорте не срабатывает — её строка не первая (Critical DS круга 9)"
+    assert ev.top_reads == [3, 7, 8] and ev.inner_reads == []
+    assert ev.order == "read_before_insert"
     text = lm.report(inv)
     assert "`scripts/forms.py`:3,7,8" in text, text
-    assert "ВЫШЕ первой вставки sys.path (6)" in text
+    assert "ВЫШЕ вставки sys.path на импорте (6)" in text
+    # исход — значение, а не фраза: вставка только внутри функции и чтение при вызове
+    # различаются классами, а не текстом (Critical DS круга 10, третий заход по месту)
+    (tmp_path / "scripts" / "lazy.py").write_text(
+        'import os, sys\n'
+        'def main():\n    sys.path.insert(0, "src")\n    return os.environ.get("CHAROITE_ROOT")\n', encoding="utf-8")
+    ev2 = lm.module_events(lm.inventory(tmp_path).files["scripts/lazy.py"].tree, "CHAROITE_ROOT")
+    assert ev2.top_insert is None and ev2.inner_insert == 3 and ev2.inner_reads == [4]
+    assert ev2.order == "insert_only_inside", "«вставки нет» было бы ложью — она есть, но не на импорте"
+    out = lm.report(lm.inventory(tmp_path))
+    assert "вставки sys.path на импорте нет, есть внутри функции (3)" in out
+    assert "читается при вызове (строки 4), не на импорте" in out
+    assert "`scripts/lazy.py`:4; вставки sys.path в файле нет" not in out
 
 
 def test_scanner_reads_code_not_prose(tmp_path):

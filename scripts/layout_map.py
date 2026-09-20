@@ -581,7 +581,60 @@ def scan(inv: Inventory) -> Scan:
 #: шов) берутся отсюда, а не из памяти автора: три круга постановки фазы 3 дали
 #: Critical на расхождении ручного перечня с фактом (10 скриптов против 22, 10
 #: мест сборки против 11).
-def _env_reads(tree: ast.Module, var: str) -> list[int]:
+#: Формы чтения переменной окружения, которые распознаёт замер — грамматика, а не
+#: «все способы». Вызовы и подписки разведены, потому что ими пользуется сам
+#: распознаватель: шапка отчёта печатает то, чем он работает, а не параллельный
+#: список (Important DS круга 9 — расширить список и забыть код было можно).
+ENV_READ_CALLS = ("os.environ.get", "os.getenv", "environ.get")
+ENV_READ_SUBSCRIPTS = ("os.environ", "environ")
+ENV_READ_FORMS = ENV_READ_CALLS + tuple(f"{b}[...]" for b in ENV_READ_SUBSCRIPTS)
+
+
+class ModuleEvents(NamedTuple):
+    """События модуля в одной системе координат: что исполняется НА ИМПОРТЕ
+    (верхний уровень) и что только при вызове (внутри функции или класса).
+    Третий круг подряд по этому месту (8: обход в ширину, 9: минимум по всему
+    дереву, 10: фраза «вставки нет» при вставке внутри функции) — поэтому здесь
+    исход значением, а не строкой: у фразы нет способа обойти класс."""
+    top_reads: list[int]        # чтение переменной на импорте
+    inner_reads: list[int]      # чтение при вызове — с порядком импорта не спорит
+    top_insert: int | None      # вставка в sys.path на импорте
+    inner_insert: int | None    # вставка только внутри функции
+
+    @property
+    def order(self) -> str:
+        """Исход сравнения: `ok` — читает после вставки или вставка не нужна;
+        `read_before_insert` — читает раньше, чем `src/` станет импортируемым;
+        `insert_only_inside` — вставка есть, но на импорте не срабатывает;
+        `no_insert` — вставки нет вовсе."""
+        if self.top_reads and self.top_insert is not None and self.top_reads[0] < self.top_insert:
+            return "read_before_insert"
+        if self.top_insert is None:
+            return "insert_only_inside" if self.inner_insert is not None else "no_insert"
+        return "ok"
+
+
+def module_events(tree: ast.Module, var: str) -> ModuleEvents:
+    """Один обход: чтения переменной и вставки `sys.path`, разведённые по
+    уровню (Critical DS круга 10 — их мерили двумя независимыми обходами в
+    разных областях видимости, и номер строки чтения внутри функции сравнивался
+    с номером верхнеуровневой вставки)."""
+    top_reads, inner_reads = [], []
+    top_insert = inner_insert = None
+    for stmt in tree.body:
+        at_top = isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.If, ast.Try, ast.With))
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append"):
+                if at_top:
+                    top_insert = node.lineno if top_insert is None else min(top_insert, node.lineno)
+                else:
+                    inner_insert = node.lineno if inner_insert is None else min(inner_insert, node.lineno)
+        for lineno in _env_reads(stmt, var):
+            (top_reads if at_top else inner_reads).append(lineno)
+    return ModuleEvents(sorted(top_reads), sorted(inner_reads), top_insert, inner_insert)
+
+
+def _env_reads(tree: ast.AST, var: str) -> list[int]:
     """Строки, где модуль читает переменную окружения `var` сам — формы из
     `ENV_READ_FORMS` (включая `environ.get` после `from os import environ`, Important
     GLM круга 8). Это грамматика, а не «все способы»: динамический ридер
@@ -626,28 +679,6 @@ def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
-def _first_path_insert(tree: ast.Module) -> int | None:
-    """Наименьшая строка вставки в `sys.path` НА ВЕРХНЕМ УРОВНЕ модуля — импорт
-    модулей из `src/` возможен только после неё (Critical DS: чтение корня стояло
-    выше вставки в 13 скриптах). Минимум по строке, а не первый узел обхода
-    (Important GLM круга 8: `ast.walk` идёт в ширину); и только верхний уровень,
-    а не всё дерево (Critical DS круга 9: вставка внутри функции на импорте
-    модуля не срабатывает, её строка «первой» не является)."""
-    return min((node.lineno for stmt in tree.body for node in ast.walk(stmt)
-                if isinstance(stmt, ast.Expr)
-                and isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append")),
-               default=None)
-
-
-#: Формы чтения переменной окружения, которые распознаёт замер — грамматика, а не
-#: «все способы». Вызовы и подписки разведены, потому что ими пользуется сам
-#: распознаватель: шапка отчёта печатает то, чем он работает, а не параллельный
-#: список (Important DS круга 9 — расширить список и забыть код было можно).
-ENV_READ_CALLS = ("os.environ.get", "os.getenv", "environ.get")
-ENV_READ_SUBSCRIPTS = ("os.environ", "environ")
-ENV_READ_FORMS = ENV_READ_CALLS + tuple(f"{b}[...]" for b in ENV_READ_SUBSCRIPTS)
-
-
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
            seams: tuple[str, ...] = ("LLM", "GraphSearch", "shared", "judge", "revise",
                                      "graph_dir", "resolve_root", "code_root", "harden_umask",
@@ -677,15 +708,19 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
         if info.tree is None:
             continue                        # не разобрался — он уже в inv.problems, разделом ниже
         parsed += 1
-        lines = _env_reads(info.tree, env_var)
+        ev = module_events(info.tree, env_var)
+        lines = ev.top_reads + ev.inner_reads
         if lines:
-            insert = _first_path_insert(info.tree)
-            order = ""
-            if insert is not None and lines[0] < insert:
-                order = f"; чтение в строке {lines[0]} ВЫШЕ первой вставки sys.path ({insert})"
-            elif insert is None and rel.startswith("scripts/"):
-                order = "; вставки sys.path в файле нет"
-            env.append(f"- `{rel}`:{','.join(map(str, lines))}{order}")
+            note = {
+                "read_before_insert": f"; чтение в строке {ev.top_reads[0] if ev.top_reads else '?'} ВЫШЕ "
+                                      f"вставки sys.path на импорте ({ev.top_insert})",
+                "insert_only_inside": f"; вставки sys.path на импорте нет, есть внутри функции ({ev.inner_insert})",
+                "no_insert": "; вставки sys.path в файле нет" if rel.startswith("scripts/") else "",
+                "ok": "",
+            }[ev.order]
+            if ev.inner_reads:
+                note += f"; читается при вызове (строки {','.join(map(str, ev.inner_reads))}), не на импорте"
+            env.append(f"- `{rel}`:{','.join(map(str, sorted(lines)))}{note}")
         fr = _file_roots(info.tree)
         if fr:
             roots.append(f"- `{rel}`:{','.join(map(str, fr))}")
