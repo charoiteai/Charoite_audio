@@ -103,6 +103,12 @@ def test_entry_points_are_executables_not_mentions(world):
 #: ревьюер обязан прочитать (Critical DS круга 6: правила выпадали молча).
 APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
 
+#: Грамматика замера — что он умеет распознавать. Расширение формы (новый способ
+#: читать переменную, новый шов) — осознанная правка двух файлов, как у таблицы
+#: видов (Important GLM круга 8: докстринг звучал как «все способы»).
+APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "os.environ[...]", "environ.get", "environ[...]")
+APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
+
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
     ("tests/", "out", "git"),
@@ -167,6 +173,16 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     layout, graph, _, _, inv = world
     assert tuple(r[:3] for r in lm.KINDS) == APPROVED_KINDS, "таблица KINDS изменилась — обнови утверждённую копию осознанно"
     assert lm.ENTRY_CANDIDATES == APPROVED_ENTRY_CANDIDATES, "шаблоны кандидатов — та же политика, снимок обязателен"
+    assert lm.ENV_READ_FORMS == APPROVED_ENV_READ_FORMS, "грамматика замера — политика, снимок обязателен"
+    assert lm.PROBE_SUFFIX == APPROVED_PROBE_SUFFIX, "суффиксы проб — политика, снимок обязателен"
+    # у каждого вида таблицы есть различимая проба, иначе правило нечем доказать
+    for _p, kind, _s, _w in lm.KINDS:
+        assert kind in lm.PROBE_SUFFIX, kind
+    with pytest.raises(lm.LayoutError):
+        lm.probe("x/", "невиданный вид")
+    # состояние карты — закрытый список, а не любая строка
+    with pytest.raises(lm.LayoutError):
+        lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path, map_state="что-то")
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
         won = lm.decide(rel).rule
@@ -452,7 +468,7 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
         'ROOT = os.environ["CHAROITE_ROOT"]\n'
         'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
     text = lm.report(lm.inventory(tmp_path))
-    assert "## Читатели переменной CHAROITE_ROOT (3)" in text
+    assert "## Читатели переменной CHAROITE_ROOT (формы:" in text and "— 3" in text
     assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ первой вставки sys.path (3)" in text
     assert "`scripts/late.py`:3" in text and "ВЫШЕ первой вставки" not in text.split("late.py")[1].split("\n")[0]
     assert "`src/lib.py`:2" in text
@@ -463,6 +479,57 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
     assert "**GraphSearch** (0): нет" in text
     # справка argparse и одна ступень `.parent` — не факты
     assert "HELP" not in text and "`src/lib.py`:3" not in text
+
+
+def test_the_report_never_hides_what_it_could_not_read(tmp_path, capsys):
+    """Замер не молчит о непрочитанном: файл с ошибкой разбора — строка раздела
+    «Не вошло в замер» и код выхода 1 (Critical DS и GLM круга 8, независимо:
+    замер, построенный убрать расхождение перечня с фактом, сам был ему уязвим).
+    Шапка считает то, что называет; `--report` не перебивает `--check`."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "ok.py").write_text('import os\nROOT = os.environ.get("CHAROITE_ROOT")\n', encoding="utf-8")
+    (tmp_path / "scripts" / "broken.py").write_text('import os\nos.environ["CHAROITE_ROOT"]\ndef (:\n', encoding="utf-8")
+    (tmp_path / "tests" / "test_x.py").write_text('import os\nos.getenv("CHAROITE_ROOT")\n', encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    text = lm.report(inv)
+    assert "python-модулей в области 1" in text.splitlines()[0], text.splitlines()[0]
+    assert "## Не вошло в замер (1)" in text
+    assert "scripts/broken.py не разбирается" in text
+    assert "`src/ok.py`:2" in text
+    assert "broken.py`:2" not in text, "битый файл не может числиться читателем — он не разобран"
+    assert "tests/test_x.py" not in text, "тесты вне области замера по той же политике, что у гейта"
+    # код выхода честный: замер на неполном корпусе — не замер
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
+    try:
+        monkeypatch.setattr(lm, "REPO", tmp_path)
+        assert lm.main(["--report"]) == 1, "непрочитанный файл обязан краснить код выхода"
+        (tmp_path / "scripts" / "broken.py").write_text("x = 1\n", encoding="utf-8")
+        assert lm.main(["--report"]) == 0
+    finally:
+        monkeypatch.undo()
+    capsys.readouterr()
+
+
+def test_the_report_reads_the_forms_it_declares(tmp_path):
+    """Грамматика замера: `os.environ.get`, `os.getenv`, `os.environ[...]` и обе
+    формы после `from os import environ` (Important GLM круга 8). Минимальная
+    строка вставки в `sys.path`, а не первый узел обхода."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "forms.py").write_text(
+        'import os\nfrom os import environ\n'
+        'A = environ.get("CHAROITE_ROOT")\n'               # чтение раньше любой вставки
+        'if True:\n    sys.path.insert(0, "early")\n'     # минимум по строке — эта, но в обходе она правнук
+        'sys.path.insert(0, "src")\n'                      # а эта — внук Module, и walk отдаёт её первой
+        'B = environ["CHAROITE_ROOT"]\n'
+        'C = os.getenv("CHAROITE_ROOT")\n', encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    assert lm._first_path_insert(inv.files["scripts/forms.py"].tree) == 5, "минимум по строке, а не первый в обходе"
+    text = lm.report(inv)
+    assert "`scripts/forms.py`:3,7,8" in text, text
+    assert "ВЫШЕ первой вставки sys.path (5)" in text
 
 
 def test_scanner_reads_code_not_prose(tmp_path):

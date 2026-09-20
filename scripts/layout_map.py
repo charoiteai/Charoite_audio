@@ -56,7 +56,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -269,13 +269,21 @@ def candidate_dirs() -> frozenset[str]:
     return frozenset(out)
 
 
+#: Вид → суффикс пробы, который БЕЗ правила даёт другой вид (знание о различимости
+#: живёт здесь и больше нигде; вид без такого суффикса — ошибка, а не «проба есть»).
+PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
+
+
 def probe(prefix: str, kind: str) -> str:
     """Путь-проба правила: файл, на котором видно, что правило решает. Для
-    правила-каталога — файл внутри с суффиксом, который без правила дал бы
-    другой вид; для правила-имени — сам путь."""
+    правила-каталога — файл внутри с суффиксом, который без правила дал бы другой
+    вид; для правила-имени — сам путь (Important GLM круга 8: для вида `prose`
+    проба `.md` была неотличима от фолбэка)."""
     if not prefix.endswith("/"):
         return prefix
-    return prefix + ("probe.swift" if kind == "code" else "probe.md")
+    if kind not in PROBE_SUFFIX:
+        raise LayoutError(f"вид {kind!r} нечем доказать: нет суффикса пробы в PROBE_SUFFIX")
+    return prefix + PROBE_SUFFIX[kind]
 
 
 def _pruned(rel_dir: str) -> bool:
@@ -375,10 +383,11 @@ def _python_literals(tree: ast.Module) -> list[str]:
     return out
 
 
-def inventory(repo: pathlib.Path = REPO) -> Inventory:
+def inventory(repo: pathlib.Path | None = None) -> Inventory:
     """Один обход, одна классификация, одно чтение и один разбор на файл.
     Всё дальнейшее (`import_graph`, `executables`, `scan`) — чистые функции
     от инвентаря."""
+    repo = repo or REPO
     files: dict[str, FileInfo] = {}
     problems: list[str] = []
     for rel in _files(repo):
@@ -560,23 +569,23 @@ def scan(inv: Inventory) -> Scan:
 #: Critical на расхождении ручного перечня с фактом (10 скриптов против 22, 10
 #: мест сборки против 11).
 def _env_reads(tree: ast.Module, var: str) -> list[int]:
-    """Строки, где модуль читает переменную окружения `var` сам: `os.environ.get`,
-    `os.getenv`, `os.environ[...]`. Строка в справке argparse вызовом не является."""
+    """Строки, где модуль читает переменную окружения `var` сам — формы из
+    `ENV_READ_FORMS` (включая `environ.get` после `from os import environ`, Important
+    GLM круга 8). Это грамматика, а не «все способы»: динамический ридер
+    (`getattr(os, "environ")`) в замер не попадёт. Строка в справке argparse
+    вызовом не является."""
     out = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
-            reader = (isinstance(fn, ast.Attribute) and (
-                (isinstance(fn.value, ast.Attribute) and isinstance(fn.value.value, ast.Name)
-                 and fn.value.value.id == "os" and fn.value.attr == "environ" and fn.attr == "get")
-                or (isinstance(fn.value, ast.Name) and fn.value.id == "os" and fn.attr == "getenv")))
+            # формы из ENV_READ_FORMS: os.environ.get / os.getenv / environ.get (from os import environ)
+            reader = isinstance(fn, ast.Attribute) and ast.unparse(fn) in ("os.environ.get", "os.getenv", "environ.get")
             if reader and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == var:
                 out.append(node.lineno)
-        elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
-              and isinstance(node.value.value, ast.Name) and node.value.value.id == "os"
-              and node.value.attr == "environ" and isinstance(node.slice, ast.Constant)
-              and node.slice.value == var):
-            out.append(node.lineno)
+        elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value == var:
+            base = ast.unparse(node.value)
+            if base in ("os.environ", "environ"):
+                out.append(node.lineno)
     return sorted(out)
 
 
@@ -607,12 +616,18 @@ def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
 
 
 def _first_path_insert(tree: ast.Module) -> int | None:
-    """Строка первой вставки в `sys.path` — импорт модулей из `src/` возможен
-    только после неё (Critical DS: чтение корня стояло выше вставки в 13 скриптах)."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append"):
-            return node.lineno
-    return None
+    """Наименьшая строка вставки в `sys.path` — импорт модулей из `src/` возможен
+    только после неё (Critical DS: чтение корня стояло выше вставки в 13 скриптах).
+    Именно минимум по строке, а не первый узел обхода (Important GLM круга 8:
+    `ast.walk` идёт в ширину, и «первая» вставка могла оказаться не верхней)."""
+    return min((node.lineno for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append")),
+               default=None)
+
+
+#: Формы чтения переменной окружения, которые распознаёт замер — грамматика, а не
+#: «все способы»: снимок лежит в гейте, расширение — осознанная правка двух файлов.
+ENV_READ_FORMS = ("os.environ.get", "os.getenv", "os.environ[...]", "environ.get", "environ[...]")
 
 
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
@@ -626,9 +641,17 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
     env: list[str] = []
     roots: list[str] = []
     seam_hits: dict[str, list[str]] = {}
+    parsed = 0
+    outside = 0
     for rel, info in sorted(inv.files.items()):
-        if info.tree is None or not rel.endswith(".py"):
+        if not rel.endswith(".py"):
             continue
+        if info.kind in ("out", "history"):
+            outside += 1                    # тесты, снимки: замер их не читает по политике
+            continue
+        if info.tree is None:
+            continue                        # не разобрался — он уже в inv.problems, разделом ниже
+        parsed += 1
         lines = _env_reads(info.tree, env_var)
         if lines:
             insert = _first_path_insert(info.tree)
@@ -643,8 +666,13 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
             roots.append(f"- `{rel}`:{','.join(map(str, fr))}")
         for name, hits in _calls(info.tree, seams).items():
             seam_hits.setdefault(name, []).append(f"`{rel}`:{','.join(map(str, hits))}")
-    out = [f"# Замер швов (`scripts/layout_map.py --report`), модулей {len(inv.files)}", "",
-           f"## Читатели переменной {env_var} ({len(env)})", ""] + (env or ["- нет"])
+    out = [f"# Замер швов (`scripts/layout_map.py --report`): python-модулей в области {parsed}, "
+           f"вне области по политике {outside}, всего файлов под git {len(inv.files)}", ""]
+    # непрочитанное — первым разделом: замер, построенный на неполном корпусе, врёт
+    # ровно тем, ради чего он заведён (Critical DS и GLM круга 8, независимо)
+    out += [f"## Не вошло в замер ({len(inv.problems)})", ""] + [f"- {p}" for p in inv.problems or ["нет"]]
+    out += ["", f"## Читатели переменной {env_var} (формы: {', '.join(ENV_READ_FORMS)}) — {len(env)}", ""]
+    out += env or ["- нет"]
     out += ["", f"## Корень из положения файла — цепочка `__file__ … .parent.parent` ({len(roots)})", ""]
     out += roots or ["- нет"]
     out += ["", "## Точки сборки швов", ""]
@@ -659,9 +687,16 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
-          repo: pathlib.Path = REPO, *, map_text: str | None = None, map_state: str = "unknown") -> list[str]:
+          repo: pathlib.Path | None = None, *, map_text: str | None = None,
+          map_state: Literal["present", "missing", "skipped", "unknown"] = "unknown") -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
-    Каждое множество сверяется в обе стороны."""
+    Каждое множество сверяется в обе стороны. `map_state`: `present` — карта на
+    диске и сверяется с `map_text`; `missing` — её нет (расхождение); `skipped` —
+    прогон её не писал и судить нечем; `unknown` — вызывающий о карте не
+    спрашивает (тесты)."""
+    if map_state not in ("present", "missing", "skipped", "unknown"):
+        raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
+    repo = repo or REPO
     problems: list[str] = list(scanned.problems)
     for m in unassigned(graph, layout):
         problems.append(f"модуль src/{m}.py не отнесён ни к одному слою в {LAYOUT.name}")
@@ -776,10 +811,11 @@ def main(argv: list[str] | None = None) -> int:
     except LayoutError as e:
         print(f"✗ {LAYOUT.relative_to(REPO)}: {e}")
         return 1
-    inv = inventory()
-    if "--report" in args:
+    inv = inventory(REPO)
+    if "--report" in args and "--check" not in args:
         print(report(inv), end="")
-        return 0
+        # замер на неполном корпусе — не замер: код выхода честный
+        return 1 if inv.problems else 0
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)
