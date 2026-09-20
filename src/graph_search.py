@@ -199,9 +199,6 @@ def needles(query: str) -> tuple[list[str], list[str]]:
 
 
 REASON_EMBED = "модель эмбеддингов занята или не ответила"
-#: Отказ политики — не занятость сервера, а настройка владельца, и слова
-#: должны вести чинить её, а не перезапускать Ollama (круг 2 по №321, DS I3).
-REASON_POLICY = "адрес модели запрещён политикой — смотрите llm.allow_remote"
 REASON_CACHE = "кэш векторов собран не весь"
 
 
@@ -826,11 +823,12 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embedder = embedder
-        # Политика могла отказать ещё при сборке способности — и тогда ни одного
-        # вектора не спросят вовсе: кэш пуст, семантика пропускается до вызова
-        # шва. Причина обязана быть известна сразу, иначе владельцу называют
-        # занятость сервера вместо его собственной настройки.
-        self._refused_by_policy = bool(embedder.refused)
+        # Причина отказа — СЛОВА источника, а не бит. Политика говорит «нельзя»
+        # по трём разным настройкам, и совет про allow_remote снимает только
+        # одну из них: на рубильнике офлайна и на открытом http наружу владелец
+        # правил бы ручку, которая ничего не меняет. Слова у способности уже
+        # есть — их надо донести, а не заменить константой (круг 4, GLM C1).
+        self._refusal = embedder.refused
         self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -1048,7 +1046,8 @@ class GraphSearch:
             # Вид отказа запоминаем: для контура это один исход «векторов нет»,
             # а владельцу нужны разные слова — «сервер занят» и «вы запретили
             # этот адрес» ведут чинить разное.
-            self._refused_by_policy = self._refused_by_policy or bool(getattr(exc, "policy", False))
+            if getattr(exc, "policy", False) and not self._refusal:
+                self._refusal = str(exc)
             return []
 
     def load_vectors(self) -> int:
@@ -1343,10 +1342,16 @@ class GraphSearch:
         status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
         if status is not Verdict.UNVERIFIED:
             reason = ""
-        elif sem_used:
+        elif self._refusal:
+            reason = self._refusal        # слова того, кто отказал, а не наша догадка
+        elif sem_used or not self.vectors:
+            # Либо семантика была, но покрытия не хватило, либо кэша нет вовсе
+            # и шов не спрашивали ни разу. Сказать во втором случае «модель
+            # занята» — утверждение о мире, которого мы не проверяли: Ollama
+            # жива, к ней просто не обращались (круг 4, DS C1).
             reason = REASON_CACHE
         else:
-            reason = REASON_POLICY if self._refused_by_policy else REASON_EMBED
+            reason = REASON_EMBED
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)

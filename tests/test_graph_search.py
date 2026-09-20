@@ -779,6 +779,21 @@ def test_the_name_is_resolved_in_one_place_and_the_pin_wins(cfg, pin, expect):
     assert model_seam.embed_model_name(cfg, pin) == expect
 
 
+def test_an_empty_cache_is_not_a_busy_server(tmp_path):
+    """Кэша нет — значит собирать было нечего, а не «модель занята».
+
+    Семантику поиск включает только при непустом кэше, то есть на свежем графе
+    шов не спрашивают ни разу. Прежняя таблица в этом случае объявляла владельцу
+    занятость сервера — утверждение о мире, которого никто не проверял: Ollama
+    жива и к ней не обращались (круг 4 по №321, DS C1).
+    """
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s.refresh(force=True)
+    assert s.vectors == 0, "кэш пуст: векторы никто не собирал"
+    r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
+    assert r.status is gs.Verdict.UNVERIFIED and r.reason == gs.REASON_CACHE
+
+
 def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, monkeypatch, capsys):
     """Политика запретила адрес — подсказка живёт лексикой, но владелец слышит.
 
@@ -805,12 +820,14 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     # Поиск в этом случае шов не спрашивает вовсе — и раньше причина бралась из
     # памяти о последнем исключении, которого не было (круг 3 по коду, обе головы).
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
-    assert r.reason == gs.REASON_POLICY, "причина известна и без единого вызова шва"
+    # Не «похоже на правду», а дословно то, что сказал отказавший: политика
+    # отвечает по трём разным настройкам, и общая константа увела бы владельца
+    # крутить ручку, которая его случай не снимает (круг 4, GLM C1).
+    assert r.reason == e.refused and "10.1.2.3" in r.reason
     assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
     assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
-    assert r.reason == gs.REASON_POLICY, \
-        "владельцу названа его настройка, а не занятость сервера"
+    assert r.reason == e.refused, "и после вызова шва причина та же — от источника"
     said = capsys.readouterr().err
     assert "allow_remote" in said, "причина названа владельцу, а не проглочена"
     (_graph(tmp_path) / "Системы" / "Ещё.md").write_text(
