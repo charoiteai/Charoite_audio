@@ -765,44 +765,60 @@ def _call_args(node: ast.Call):
 ARG_TRANSPARENT = ("Path", "PurePath", "PurePosixPath", "str", "resolve", "absolute")
 
 
-def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
-    """Узлы `__file__` в аргументе, вокруг которых нет ничего, кроме прозрачных
-    обёрток и разрешённого числа ступеней вверх.
+#: Компоненты пути, которые поднимают вверх не атрибутом, а значением.
+ROOT_CLIMB_PARTS = ("..",)
 
-    Поддерево целиком не прощается: подъём внутри аргумента — такой же вывод
-    корня, как снаружи. `steps` разный у двух назначений: канону путь отдают как
-    есть (0 — подъём делает он сам), вставке пути кладут каталог модуля
-    (1 — `Path(__file__).parent`, идиома bootstrap). Две ступени не законны
-    нигде: `Path(__file__).parent.parent / "src"` — это уже вывод корня кода, и
-    в скриптах таких восемь (Critical DS круга 4, на будущее расширение области).
+
+def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
+    """Узлы `__file__` в аргументе, если ВСЁ выражение вокруг них безопасно.
+
+    Прощение структурное, а не однопутевое: узел законен только когда разобраны
+    все его дети. Прежний обход спускался в первого ребёнка и выбрасывал
+    остальные, поэтому `Path(__file__, '..', '..')` внутри законного вызова
+    проходил молча — подъём прятался в хвостовых аргументах, которые никто не
+    смотрел (Critical обеих голов круга 5, воспроизведено).
+
+    Безопасны: сам `__file__`, строковая или числовая константа без компонента
+    подъёма, прозрачная обёртка (`ROOT_TRANSPARENT`) со всеми безопасными
+    детьми, и до `steps` обращений к родительскому каталогу. `steps` разный у
+    двух назначений: канону путь отдают как есть (0 — подъём делает он сам),
+    вставке пути кладут каталог модуля (1). Всё прочее — не прощается.
     """
-    node, climbed = arg, 0
-    for _ in range(8):
-        if isinstance(node, ast.Name) and node.id == "__file__":
-            yield node
-            return
-        if isinstance(node, ast.Call):
-            fn = node.func
-            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-            if name not in ARG_TRANSPARENT:
-                return
-            node = node.args[0] if node.args else getattr(fn, "value", None)
-            if node is None:
-                return
-            continue
-        if isinstance(node, ast.Attribute):
-            if node.attr in ARG_TRANSPARENT:
-                node = node.value
-                continue
-            if node.attr == "parent" and climbed < steps:
-                climbed += 1
-                node = node.value
-                continue
-            return
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            node = node.left          # `Path(__file__).parent / "src"` — сток слева
-            continue
-        return
+    found: list[ast.Name] = []
+    if _walk_safe(arg, steps, found):
+        yield from found
+
+
+def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
+    """Всё выражение безопасно? Попутно собирает найденные `__file__`."""
+    if isinstance(node, ast.Name):
+        if node.id == "__file__":
+            found.append(node)
+            return True
+        return False                      # переменная-посредник непрозрачна
+    if isinstance(node, ast.Constant):
+        return not (isinstance(node.value, str) and node.value in ROOT_CLIMB_PARTS)
+    if isinstance(node, ast.Call):
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+        if name not in ARG_TRANSPARENT:
+            return False
+        kids = list(node.args) + [kw.value for kw in node.keywords]
+        # `p.resolve()` — получатель несёт путь, его надо разобрать; `pathlib.Path(...)`
+        # — слева имя модуля, данных в нём нет. Различаем по форме: выражение против
+        # голого имени (иначе законная вставка пути краснеет на слове «pathlib»)
+        if isinstance(fn, ast.Attribute) and not isinstance(fn.value, ast.Name):
+            kids.append(fn.value)
+        return all(_walk_safe(k, steps, found) for k in kids)
+    if isinstance(node, ast.Attribute):
+        if node.attr in ARG_TRANSPARENT:
+            return _walk_safe(node.value, steps, found)
+        if node.attr == "parent" and steps > 0:
+            return _walk_safe(node.value, steps - 1, found)
+        return False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _walk_safe(node.left, steps, found) and _walk_safe(node.right, steps, found)
+    return False
 
 
 def _file_roots(tree: ast.Module) -> list[int]:
