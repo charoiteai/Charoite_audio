@@ -55,7 +55,13 @@ def _корень_данных_не_протекает():
 @pytest.fixture(autouse=True)
 def _data_root_in_tmp(tmp_path, monkeypatch, request):
     mod = sys.modules.get("cloud_review")
-    if mod is not None and request.node.get_closest_marker("настоящий_корень_ревизии") is None:
+    свой_корень = request.node.get_closest_marker("настоящий_корень_ревизии") is not None
+    if свой_корень:
+        # маркер снимает подмену, но не изоляцию: непропатченный `_root` спросит
+        # канон, а канон при живой переменной ответит каталогом теста — снимки и
+        # карантин ревизии физически не выйдут за tmp (круг 4 по коду №327, DS I2)
+        monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "изоляция"))
+    if mod is not None and not свой_корень:
         # корень данных облачной ревизии — функция канона (№327), подменяем её,
         # а не бывшую константу модуля. Тест про сам этот корень просит маркер
         # и получает настоящую функцию: раздевать фикстуру `monkeypatch.undo()`

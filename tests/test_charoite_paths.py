@@ -271,6 +271,25 @@ def test_забыть_корень_не_оставляет_детей_без_к�
     import charoite_paths
     названный = charoite_paths.use_data_root(tmp_path / "данные")
     charoite_paths.forget_data_root()
-    assert charoite_paths._given is None                       # назвать можно заново
     assert os.environ.get("CHAROITE_ROOT") == str(названный)   # дети не осиротели
-    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный
+    # но за ПРОЦЕСС своё эхо больше не отвечает: забыли — значит забыли
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) != названный
+    другой = charoite_paths.use_data_root(tmp_path / "другой")  # и назвать можно заново
+    assert другой == (tmp_path / "другой").resolve()
+
+
+def test_чужая_переменная_после_сброса_остаётся_сильнее(tmp_path, monkeypatch):
+    """Эхо канона сбрасывается, решение приложения — нет.
+
+    Переменная служит двум делам: вход от приложения и канал для детей.
+    Отличать одно от другого обязан канон — иначе либо сброс не работает
+    (своё эхо отвечает за процесс), либо теряется решение владельца.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    от_приложения = tmp_path / "от-приложения"
+    monkeypatch.setenv("CHAROITE_ROOT", str(от_приложения))
+    charoite_paths.forget_data_root()                           # сбрасывать нечего
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == от_приложения.resolve()
+    with pytest.raises(RuntimeError):
+        charoite_paths.use_data_root(tmp_path / "другой")

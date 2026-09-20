@@ -158,6 +158,6 @@ def test_корень_ревизии_у_канона_а_не_своя_копия
     Переменную перетираем после названия корня: канон обязан ответить
     названным.
     """
-    названный = charoite_paths.use_data_root(tmp_path / "данные")
+    названный = charoite_paths.use_data_root(tmp_path / "данные", replace=True)
     os.environ["CHAROITE_ROOT"] = str(tmp_path / "перетёртый")
     assert cloud_review._root() == названный
