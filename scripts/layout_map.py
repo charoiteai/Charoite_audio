@@ -762,7 +762,13 @@ def _call_args(node: ast.Call):
 #: входит — `resolve_root(Path(__file__).parent.parent)` отдал бы канону чужой
 #: путь, и данные уехали бы мимо переменной корня целиком (Critical обеих голов
 #: круга 4). Список закрытый: прощается форма выражения, а не всё поддерево.
-ARG_TRANSPARENT = ("Path", "PurePath", "PurePosixPath", "str", "resolve", "absolute")
+#: Конструкторы пути прощаются ТОЛЬКО в форме с модулем (`pathlib.Path(...)`):
+#: голое имя может быть локальной тёзкой с подъёмом внутри, ровно как было с
+#: именем канона (Important GLM круга 7). Встроенное `str` в этой форме не
+#: бывает и остаётся голым.
+ARG_TRANSPARENT_QUALIFIED = ("Path", "PurePath", "PurePosixPath", "resolve", "absolute")
+ARG_TRANSPARENT_BARE = ("str",)
+ARG_TRANSPARENT = ARG_TRANSPARENT_QUALIFIED + ARG_TRANSPARENT_BARE
 
 
 #: Компонент пути, который поднимает вверх не атрибутом, а значением. Сравнивать
@@ -773,10 +779,21 @@ ROOT_CLIMB_PART = ".."
 
 
 def _climbs_by_value(value: object) -> bool:
-    """Строка-константа поднимает вверх? Разбор пути, а не равенство строк."""
+    """Константа уводит путь от файла? Разбор пути, а не равенство строк.
+
+    Два способа увести: подняться вверх компонентом `..` и обнулить всё
+    предыдущее якорем — соединение с абсолютным путём выбрасывает `__file__`
+    из выражения целиком, и канон получил бы корень диска (Important DS круга
+    7). Байты приводятся к строке: сегодня ни одна прозрачная обёртка их не
+    принимает, но связка «никто не принимает байты» нигде не записана, и
+    добавление одной функции в список сделало бы `b'..'` молчащим (Minor GLM).
+    """
+    if isinstance(value, bytes):
+        value = os.fsdecode(value)
     if not isinstance(value, str):
         return False
-    return ROOT_CLIMB_PART in pathlib.PurePosixPath(value).parts
+    parts = pathlib.PurePosixPath(value).parts
+    return ROOT_CLIMB_PART in parts or pathlib.PurePosixPath(value).is_absolute()
 
 
 def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
@@ -789,7 +806,7 @@ def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
     смотрел (Critical обеих голов круга 5, воспроизведено).
 
     Безопасны: сам `__file__`, строковая или числовая константа без компонента
-    подъёма, прозрачная обёртка (`ROOT_TRANSPARENT`) со всеми безопасными
+    подъёма, прозрачная обёртка (`ARG_TRANSPARENT`) со всеми безопасными
     детьми, и до `steps` обращений к родительскому каталогу. `steps` разный у
     двух назначений: канону путь отдают как есть (0 — подъём делает он сам),
     вставке пути кладут каталог модуля (1). Всё прочее — не прощается.
@@ -810,8 +827,10 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
         return not _climbs_by_value(node.value)
     if isinstance(node, ast.Call):
         fn = node.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-        if name not in ARG_TRANSPARENT:
+        qualified = isinstance(fn, ast.Attribute)
+        name = fn.attr if qualified else getattr(fn, "id", "")
+        allowed = ARG_TRANSPARENT_QUALIFIED if qualified else ARG_TRANSPARENT_BARE
+        if name not in allowed:
             return False
         kids = list(node.args) + [kw.value for kw in node.keywords]
         # `p.resolve()` — получатель несёт путь, его надо разобрать; `pathlib.Path(...)`
