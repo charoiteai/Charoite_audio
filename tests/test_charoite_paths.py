@@ -319,6 +319,43 @@ def test_чужая_переменная_без_публикации_остаё�
         charoite_paths.use_data_root(tmp_path / "другой")
 
 
+def test_переходы_пары_опубликовать_отозвать(tmp_path):
+    """Таблица состояний двери целиком, а не по одной ветке.
+
+    Мутатор такие переходы не порождает (он меняет операторы, а не удаляет
+    присваивания), и на отсутствии `_published = None` весь набор оставался
+    зелёным: повторная публикация переставала запоминать, что лежало в
+    переменной, и второй отзыв уносил чужое значение — тот же класс «чужое
+    пропало» (DS I4 круга 7).
+
+    Заодно закреплён исход «переменную переписал третий»: дверь свою запись
+    не возвращает, а процесс продолжает отвечать чужим значением — это
+    выбор, а не побочный эффект (DS I3 круга 7).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths as cp
+    аудио = str(ROOT / "src" / "audio.py")
+
+    # 1. публикация на пустом окружении → отзыв возвращает пустоту
+    cp.use_data_root(tmp_path / "п1")
+    cp.forget_data_root()
+    assert os.environ.get("CHAROITE_ROOT") is None
+
+    # 2. третий положил своё → публикация → отзыв возвращает ЕГО значение
+    os.environ["CHAROITE_ROOT"] = str(tmp_path / "третий")
+    cp.use_data_root(tmp_path / "п2", replace=True)
+    assert os.environ["CHAROITE_ROOT"] == str((tmp_path / "п2").resolve())
+    cp.forget_data_root()
+    assert os.environ["CHAROITE_ROOT"] == str(tmp_path / "третий")
+
+    # 3. после отзыва процесс отвечает тем, что лежит в переменной
+    assert cp.resolve_root(аудио) == (tmp_path / "третий").resolve()
+
+    # 4. и назвать свой корень поверх чужого нельзя без replace
+    with pytest.raises(RuntimeError):
+        cp.use_data_root(tmp_path / "п3")
+
+
 def test_отзыв_не_трогает_чужую_запись_в_переменной(tmp_path):
     """Между публикацией и отзывом в переменную мог записать кто-то третий.
 
