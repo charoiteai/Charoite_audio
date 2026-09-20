@@ -171,10 +171,14 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
         "import os",
         "import pathlib",
         "import sys",
-        "from charoite_paths import code_root, resolve_root as root_of",
+        "from charoite_paths import resolve_root as root_of",
         "",
         "",
         "def _up(m):",
+        "    return pathlib.Path(m).resolve().parent.parent",
+        "",
+        "",
+        "def code_root(m):",                      # локальная тёзка канона, не импорт
         "    return pathlib.Path(m).resolve().parent.parent",
         "",
         "",
@@ -186,9 +190,13 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
         "CLIMB_VIA_VAR = pathlib.Path(__file__)",
         "CLIMB_LONG = pathlib.Path(__file__).resolve().absolute().expanduser().parent.parent",
         "CLIMB_SELF = pathlib.Path(__file__)",
-        "OK_CANON = code_root(__file__)",
+        "CLIMB_INTO_CANON = root_of(pathlib.Path(__file__).parent.parent)",
+        "CLIMB_TWO_STEPS = sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))",
+        "CLIMB_SHADOW = code_root(__file__)",
+        "OK_CANON = root_of(__file__)",
         "OK_ALIAS = root_of(module_file=__file__)",
         "sys.path.insert(0, str(pathlib.Path(__file__).parent))",
+        "sys.path.insert(0, str(pathlib.Path(__file__).parent / 'src'))",
     ])
     lines = probe.splitlines()
     hits = set(lm._file_roots(ast.parse(probe)))
@@ -202,6 +210,13 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
     # канон и вставка пути — не просто «не ловятся», а названы списком
     assert set(lm.ROOT_CANON_CALLS) == {"resolve_root", "code_root"}
     assert set(lm.ROOT_BOOTSTRAP_CALLS) == {"sys.path.insert", "sys.path.append"}
+    # имя канона без импорта каноном не делает: `ROOT_CANON_CALLS` — источник имён
+    # для разбора импортов, а не список прощённых слов. Без этой пробы локальная
+    # тёзка возвращала весь класс одним `def` (Critical обеих голов круга 4)
+    assert any(l.startswith("def code_root(") for l in lines), \
+        "проба обязана держать ЛОКАЛЬНУЮ функцию с точным именем канона"
+    assert lm._canon_names(ast.parse("x = 1")) == set(), \
+        "без импорта канона в модуле нет ни одного законного имени"
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):

@@ -736,6 +736,8 @@ def _canon_names(tree: ast.Module) -> set[str]:
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "charoite_paths":
+            if any(a.name == "*" for a in node.names):
+                out |= set(ROOT_CANON_CALLS)          # `import *` приносит канон под своими именами
             out |= {a.asname or a.name for a in node.names if a.name in ROOT_CANON_CALLS}
         elif isinstance(node, ast.Import):
             for a in node.names:
@@ -753,6 +755,54 @@ def _call_args(node: ast.Call):
     """
     yield from node.args
     yield from (kw.value for kw in node.keywords)
+
+
+#: Что можно построить вокруг `__file__` внутри законного аргумента: обернуть в
+#: путь, привести к строке, привести к абсолютному. Подъём в этот список не
+#: входит — `resolve_root(Path(__file__).parent.parent)` отдал бы канону чужой
+#: путь, и данные уехали бы мимо переменной корня целиком (Critical обеих голов
+#: круга 4). Список закрытый: прощается форма выражения, а не всё поддерево.
+ARG_TRANSPARENT = ("Path", "PurePath", "PurePosixPath", "str", "resolve", "absolute")
+
+
+def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
+    """Узлы `__file__` в аргументе, вокруг которых нет ничего, кроме прозрачных
+    обёрток и разрешённого числа ступеней вверх.
+
+    Поддерево целиком не прощается: подъём внутри аргумента — такой же вывод
+    корня, как снаружи. `steps` разный у двух назначений: канону путь отдают как
+    есть (0 — подъём делает он сам), вставке пути кладут каталог модуля
+    (1 — `Path(__file__).parent`, идиома bootstrap). Две ступени не законны
+    нигде: `Path(__file__).parent.parent / "src"` — это уже вывод корня кода, и
+    в скриптах таких восемь (Critical DS круга 4, на будущее расширение области).
+    """
+    node, climbed = arg, 0
+    for _ in range(8):
+        if isinstance(node, ast.Name) and node.id == "__file__":
+            yield node
+            return
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name not in ARG_TRANSPARENT:
+                return
+            node = node.args[0] if node.args else getattr(fn, "value", None)
+            if node is None:
+                return
+            continue
+        if isinstance(node, ast.Attribute):
+            if node.attr in ARG_TRANSPARENT:
+                node = node.value
+                continue
+            if node.attr == "parent" and climbed < steps:
+                climbed += 1
+                node = node.value
+                continue
+            return
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            node = node.left          # `Path(__file__).parent / "src"` — сток слева
+            continue
+        return
 
 
 def _file_roots(tree: ast.Module) -> list[int]:
@@ -783,7 +833,7 @@ def _file_roots(tree: ast.Module) -> list[int]:
     его место — тест канона «результат абсолютный и не поднимается», а не
     здесь (Critical GLM круга 3, отклонён с обоснованием; хвост в №321).
     """
-    canon = _canon_names(tree) | set(ROOT_CANON_CALLS)
+    canon = _canon_names(tree)
     legit: set[tuple[int, int]] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -792,10 +842,10 @@ def _file_roots(tree: ast.Module) -> list[int]:
         name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
         if not ((name in canon or full in canon) or full in ROOT_BOOTSTRAP_CALLS):
             continue
+        steps = 1 if full in ROOT_BOOTSTRAP_CALLS else 0
         for arg in _call_args(node):
-            for n in ast.walk(arg):
-                if isinstance(n, ast.Name) and n.id == "__file__":
-                    legit.add((n.lineno, n.col_offset))
+            for n in _plain_file_arg(arg, steps=steps):
+                legit.add((n.lineno, n.col_offset))
     return sorted({node.lineno for node in ast.walk(tree)
                    if isinstance(node, ast.Name) and node.id == "__file__"
                    and (node.lineno, node.col_offset) not in legit})
