@@ -164,6 +164,10 @@ class Scan(NamedTuple):
     problems: list[str]
 
 
+#: Состояния карты — один источник для сигнатуры, проверки и гейта (Important DS
+#: круга 11: подсказка типа и проверка были двумя независимыми списками).
+MAP_STATES = ("present", "missing", "skipped")
+
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
            "allowed_edges": list, "manual_entry_points": dict, "generated": str}
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
@@ -591,8 +595,9 @@ ENV_READ_FORMS = ENV_READ_CALLS + tuple(f"{b}[...]" for b in ENV_READ_SUBSCRIPTS
 
 
 class ModuleEvents(NamedTuple):
-    """События модуля в одной системе координат: что исполняется НА ИМПОРТЕ
-    (верхний уровень) и что только при вызове (внутри функции или класса).
+    """События модуля в одной системе координат: что исполняется НА ИМПОРТЕ и что
+    только при вызове (внутри тела функции; тело класса, декораторы и значения по
+    умолчанию исполняются на импорте — Critical DS круга 11).
     Третий круг подряд по этому месту (8: обход в ширину, 9: минимум по всему
     дереву, 10: фраза «вставки нет» при вставке внутри функции) — поэтому здесь
     исход значением, а не строкой: у фразы нет способа обойти класс."""
@@ -602,7 +607,7 @@ class ModuleEvents(NamedTuple):
     inner_insert: int | None    # вставка только внутри функции
 
     @property
-    def order(self) -> str:
+    def order(self) -> Literal["ok", "read_before_insert", "insert_only_inside", "no_insert"]:
         """Исход сравнения: `ok` — читает после вставки или вставка не нужна;
         `read_before_insert` — читает раньше, чем `src/` станет импортируемым;
         `insert_only_inside` — вставка есть, но на импорте не срабатывает;
@@ -614,34 +619,52 @@ class ModuleEvents(NamedTuple):
         return "ok"
 
 
+def _levels(node: ast.AST, at_import: bool = True):
+    """Узлы дерева с пометкой «исполняется на импорте». При вызове — только тело
+    функции; тело класса, декораторы и значения по умолчанию исполняются на
+    импорте (Critical DS круга 11: уровень брался у модульного оператора целиком,
+    и всё под `class` объявлялось «при вызове»). Правило инвертировано — список
+    того, что считается верхним уровнем, забыть расширить больше нельзя."""
+    yield node, at_import
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # заголовок функции (декораторы, умолчания, аннотации) — на импорте, тело — нет
+            for part in [*getattr(child, "decorator_list", []), *(d for d in child.args.defaults if d),
+                         *(d for d in child.args.kw_defaults if d)]:
+                yield from _levels(part, at_import)
+            body = child.body if isinstance(child.body, list) else [child.body]
+            for stmt in body:
+                yield from _levels(stmt, False)
+        else:
+            yield from _levels(child, at_import)
+
+
 def module_events(tree: ast.Module, var: str) -> ModuleEvents:
-    """Один обход: чтения переменной и вставки `sys.path`, разведённые по
-    уровню (Critical DS круга 10 — их мерили двумя независимыми обходами в
-    разных областях видимости, и номер строки чтения внутри функции сравнивался
-    с номером верхнеуровневой вставки)."""
+    """Один обход: чтения переменной и вставки `sys.path`, разведённые по тому,
+    исполняется ли узел на импорте (Critical DS круга 10 — их мерили двумя
+    независимыми обходами в разных областях видимости, и номер строки чтения
+    внутри функции сравнивался с номером верхнеуровневой вставки)."""
     top_reads, inner_reads = [], []
     top_insert = inner_insert = None
-    for stmt in tree.body:
-        at_top = isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.If, ast.Try, ast.With))
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append"):
-                if at_top:
-                    top_insert = node.lineno if top_insert is None else min(top_insert, node.lineno)
-                else:
-                    inner_insert = node.lineno if inner_insert is None else min(inner_insert, node.lineno)
-        for lineno in _env_reads(stmt, var):
-            (top_reads if at_top else inner_reads).append(lineno)
-    return ModuleEvents(sorted(top_reads), sorted(inner_reads), top_insert, inner_insert)
+    for node, at_import in _levels(tree):
+        if isinstance(node, ast.Call) and ast.unparse(node.func) in ("sys.path.insert", "sys.path.append"):
+            if at_import:
+                top_insert = node.lineno if top_insert is None else min(top_insert, node.lineno)
+            else:
+                inner_insert = node.lineno if inner_insert is None else min(inner_insert, node.lineno)
+        for lineno in _env_reads(node, var, deep=False):
+            (top_reads if at_import else inner_reads).append(lineno)
+    return ModuleEvents(sorted(set(top_reads)), sorted(set(inner_reads)), top_insert, inner_insert)
 
 
-def _env_reads(tree: ast.AST, var: str) -> list[int]:
+def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
     """Строки, где модуль читает переменную окружения `var` сам — формы из
     `ENV_READ_FORMS` (включая `environ.get` после `from os import environ`, Important
     GLM круга 8). Это грамматика, а не «все способы»: динамический ридер
     (`getattr(os, "environ")`) в замер не попадёт. Строка в справке argparse
     вызовом не является."""
     out = []
-    for node in ast.walk(tree):
+    for node in (ast.walk(tree) if deep else [tree]):
         if isinstance(node, ast.Call):
             fn = node.func
             reader = isinstance(fn, ast.Attribute) and ast.unparse(fn) in ENV_READ_CALLS
@@ -711,13 +734,18 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
         ev = module_events(info.tree, env_var)
         lines = ev.top_reads + ev.inner_reads
         if lines:
-            note = {
-                "read_before_insert": f"; чтение в строке {ev.top_reads[0] if ev.top_reads else '?'} ВЫШЕ "
-                                      f"вставки sys.path на импорте ({ev.top_insert})",
-                "insert_only_inside": f"; вставки sys.path на импорте нет, есть внутри функции ({ev.inner_insert})",
-                "no_insert": "; вставки sys.path в файле нет" if rel.startswith("scripts/") else "",
-                "ok": "",
-            }[ev.order]
+            # выбор по классу исхода, а не словарь: словарь вычислял все четыре строки
+            # разом и падал на чужом классе (вердикт круга 11 назвал эту защиту мёртвой
+            # веткой — проверка показала обратное, находка отклонена)
+            if ev.order == "read_before_insert":
+                note = (f"; чтение в строке {ev.top_reads[0]} ВЫШЕ вставки sys.path "
+                        f"на импорте ({ev.top_insert})")
+            elif ev.order == "insert_only_inside":
+                note = f"; вставки sys.path на импорте нет, есть внутри функции ({ev.inner_insert})"
+            elif ev.order == "no_insert":
+                note = "; вставки sys.path в файле нет" if info.executable else ""
+            else:
+                note = ""
             if ev.inner_reads:
                 note += f"; читается при вызове (строки {','.join(map(str, ev.inner_reads))}), не на импорте"
             env.append(f"- `{rel}`:{','.join(map(str, sorted(lines)))}{note}")
@@ -759,7 +787,7 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
-          map_state: Literal["present", "missing", "skipped"] = "present") -> list[str]:
+          map_state: str = "present") -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
@@ -767,7 +795,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     не писал и судить нечем. Четвёртого состояния нет: оно вело себя как
     `present`, а докстринг обещал обратное, и на этом держался главный гейт
     (Important GLM круга 9)."""
-    if map_state not in ("present", "missing", "skipped"):
+    if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
     problems: list[str] = list(scanned.problems)

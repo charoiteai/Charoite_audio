@@ -39,12 +39,12 @@ ENTRY_TARGETS и `out` по KINDS), `--regen` писал артефакт с п�
 """
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import sys
 
 import pytest
-import typing
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -188,8 +188,7 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     # значение, которое вело бы себя как present и врало докстрингом (GLM круга 9)
     # состояний ровно три: четвёртое вело бы себя как present, а докстринг обещал
     # обратное, и на этом держался главный гейт (Important GLM круга 9)
-    states = typing.get_args(typing.get_type_hints(lm.check)["map_state"])
-    assert states == ("present", "missing", "skipped"), states
+    assert lm.MAP_STATES == ("present", "missing", "skipped"), lm.MAP_STATES
     assert "unknown" not in lm.check.__doc__
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
@@ -655,3 +654,40 @@ def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_pa
     assert lm.main(["--report"]) == 0, "спорный вид корпус не сокращает"
     out = capsys.readouterr().out
     assert "## Спорный вид" in out and "`scripts/tool.py`:2" in out, "файл и спорный, и измеренный — оба факта видны"
+
+
+#: Формы языка и уровень исполнения: что считается «на импорте», а что «при вызове».
+#: Корпус рядом с классификатором — добавить форму, не объявив ожидание, нельзя
+#: (Important DS и GLM круга 11: таблица типов операторов была обречена).
+LEVEL_SHAPES = (
+    ("x = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("if True:\n    x = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("try:\n    x = os.environ.get('CHAROITE_ROOT')\nexcept Exception:\n    pass", "top"),
+    ("with open('f') as fh:\n    x = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("for i in []:\n    x = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("while False:\n    x = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("class C:\n    X = os.environ.get('CHAROITE_ROOT')", "top"),
+    ("def f(d=os.environ.get('CHAROITE_ROOT')):\n    pass", "top"),
+    ("@deco(os.environ.get('CHAROITE_ROOT'))\ndef f():\n    pass", "top"),
+    ("def f():\n    x = os.environ.get('CHAROITE_ROOT')", "inner"),
+    ("class C:\n    def m(self):\n        x = os.environ.get('CHAROITE_ROOT')", "inner"),
+    ("f = lambda: os.environ.get('CHAROITE_ROOT')", "inner"),
+)
+
+
+def test_the_level_of_a_node_is_measured_by_scope_not_by_statement_type():
+    """Уровень исполнения — свойство узла, а не модульного оператора (Critical DS
+    круга 11: всё под `class` объявлялось «при вызове», хотя тело класса,
+    декораторы и умолчания исполняются на импорте). Корпус форм рядом с
+    классификатором: забыть новую форму языка нельзя."""
+    for src, level in LEVEL_SHAPES:
+        ev = lm.module_events(ast.parse("import os\n" + src), "CHAROITE_ROOT")
+        got = "top" if ev.top_reads else ("inner" if ev.inner_reads else "нет чтения")
+        assert got == level, f"{src!r}: ждали {level}, получили {got}"
+    # вставка внутри функции — не на импорте, даже если функция объявлена выше
+    ev = lm.module_events(ast.parse("import sys\ndef f():\n    sys.path.insert(0, 'x')\n"), "CHAROITE_ROOT")
+    assert ev.top_insert is None and ev.inner_insert == 3 and ev.order == "insert_only_inside"
+    # исход read_before_insert печатается без падения — словарь фраз вычислял все ветки
+    ev2 = lm.module_events(ast.parse("import os, sys\nR = os.environ.get('CHAROITE_ROOT')\nsys.path.insert(0, 'x')\n"),
+                           "CHAROITE_ROOT")
+    assert ev2.order == "read_before_insert" and ev2.top_reads == [2]
