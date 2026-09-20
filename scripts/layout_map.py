@@ -765,8 +765,18 @@ def _call_args(node: ast.Call):
 ARG_TRANSPARENT = ("Path", "PurePath", "PurePosixPath", "str", "resolve", "absolute")
 
 
-#: Компоненты пути, которые поднимают вверх не атрибутом, а значением.
-ROOT_CLIMB_PARTS = ("..",)
+#: Компонент пути, который поднимает вверх не атрибутом, а значением. Сравнивать
+#: строку целиком мало: `'../..'`, `'../'` и `'../src'` — те же подъёмы, записанные
+#: одним литералом, и `PurePosixPath` нормализует их к тем же частям (Critical
+#: обеих голов круга 6). Поэтому константа разбирается как путь.
+ROOT_CLIMB_PART = ".."
+
+
+def _climbs_by_value(value: object) -> bool:
+    """Строка-константа поднимает вверх? Разбор пути, а не равенство строк."""
+    if not isinstance(value, str):
+        return False
+    return ROOT_CLIMB_PART in pathlib.PurePosixPath(value).parts
 
 
 def _plain_file_arg(arg: ast.AST, *, steps: int = 0):
@@ -797,7 +807,7 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
             return True
         return False                      # переменная-посредник непрозрачна
     if isinstance(node, ast.Constant):
-        return not (isinstance(node.value, str) and node.value in ROOT_CLIMB_PARTS)
+        return not _climbs_by_value(node.value)
     if isinstance(node, ast.Call):
         fn = node.func
         name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
