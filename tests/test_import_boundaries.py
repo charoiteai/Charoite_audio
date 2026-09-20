@@ -192,8 +192,10 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.MAP_STATES == ("present", "missing", "skipped"), lm.MAP_STATES
     # кортеж и тип — одно и то же: иначе «один источник» куплен ценой типа (DS круга 12)
     assert typing.get_args(lm.MapState) == lm.MAP_STATES
-    assert typing.get_args(typing.get_type_hints(lm.ModuleEvents.order.fget)["return"]) == \
-        ("ok", "read_before_insert", "insert_only_inside", "no_insert")
+    orders = typing.get_args(typing.get_type_hints(lm.ModuleEvents.order.fget)["return"])
+    assert orders == ("ok", "read_before_insert", "insert_only_inside", "no_insert")
+    # каждый исход обязан иметь фразу: иначе пятый молча не печатался бы (DS круга 13)
+    assert set(lm.ORDER_NOTES) == set(orders)
     assert "unknown" not in lm.check.__doc__
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
@@ -567,6 +569,12 @@ def test_the_report_reads_the_forms_it_declares(tmp_path):
     text2 = lm.report(lm.inventory(tmp_path))
     assert "`scripts/tool2.py`:2; вставки sys.path в файле нет" in text2
     assert "`scripts/helper.py`:2\n" in text2, "у не-исполняемого файла заметки о вставке нет"
+    # вторая половина критерия: файл вне шаблонов кандидатов тоже молчит, даже с гвардом
+    (tmp_path / "scripts" / "sub").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "sub" / "deep2.py").write_text(
+        'import os\nR = os.environ.get("CHAROITE_ROOT")\nif __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    text3 = lm.report(lm.inventory(tmp_path))
+    assert "deep2.py" not in text3 or "вставки sys.path в файле нет" not in text3.split("deep2.py")[1].split("\n")[0]
     assert "читается при вызове (строки 4), не на импорте" in out
     assert "`scripts/lazy.py`:4; вставки sys.path в файле нет" not in out
 
@@ -692,6 +700,11 @@ LEVEL_SHAPES = (
     ("def f():\n    x = os.environ.get('CHAROITE_ROOT')", "inner"),
     ("class C:\n    def m(self):\n        x = os.environ.get('CHAROITE_ROOT')", "inner"),
     ("f = lambda: os.environ.get('CHAROITE_ROOT')", "inner"),
+    ("def f(cb=lambda: os.environ.get('CHAROITE_ROOT')):\n    pass", "inner"),   # лямбда в заголовке
+    ("def outer():\n    def inner(d=os.environ.get('CHAROITE_ROOT')):\n        pass", "inner"),
+    ("g = (os.environ.get('CHAROITE_ROOT') for _ in [1])", "inner"),             # генератор ленив
+    ("g = (x for x in os.environ.get('CHAROITE_ROOT'))", "top"),                 # источник первого for — сразу
+    ("L = [os.environ.get('CHAROITE_ROOT') for _ in [1]]", "top"),               # включение вычисляется целиком
 )
 
 

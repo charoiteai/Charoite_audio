@@ -56,7 +56,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import Literal, NamedTuple
+from typing import Callable, Literal, NamedTuple
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -630,18 +630,36 @@ def _levels(node: ast.AST, at_import: bool = True):
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # всё, кроме тела, — заголовок: декораторы, умолчания, аннотации,
-            # возвращаемый тип. Они вычисляются на импорте. Перечислять их поимённо
-            # нельзя: такой список уже забыли один раз (Critical DS круга 12 —
-            # аннотации и `returns` в него не попали), поэтому инверсия и здесь.
+            # возвращаемый тип. Перечислять их поимённо нельзя: такой список уже
+            # забыли один раз (Critical DS круга 12 — аннотации и `returns` в него
+            # не попали), поэтому инверсия и здесь. Оговорка про аннотации: под
+            # `from __future__ import annotations` (PEP 563) они не вычисляются
+            # вовсе — замер этого не различает, потому что чтения корня в
+            # аннотациях в проекте нет; различение дороже пользы (Important GLM
+            # круга 13, принято как упрощение с записью).
             for field, value in ast.iter_fields(child):
                 if field == "body":
                     continue
-                for node in (value if isinstance(value, list) else [value]):
-                    if isinstance(node, ast.AST):
-                        yield from _levels(node, at_import)
+                for part in (value if isinstance(value, list) else [value]):
+                    if isinstance(part, ast.AST):
+                        yield from _levels(part, at_import)
             body = child.body if isinstance(child.body, list) else [child.body]
             for stmt in body:
                 yield from _levels(stmt, False)
+        elif isinstance(child, ast.GeneratorExp):
+            # генератор ленив: сразу вычисляется только источник первого `for`,
+            # остальное — при итерации (Important DS круга 13). Списковые и
+            # словарные включения вычисляются целиком и сюда не попадают.
+            first = child.generators[0] if child.generators else None
+            if first is not None:
+                yield from _levels(first.iter, at_import)
+            for part in ast.iter_child_nodes(child):
+                if part is not first:
+                    yield from _levels(part, False)
+            if first is not None:
+                for part in ast.iter_child_nodes(first):
+                    if part is not first.iter:
+                        yield from _levels(part, False)
         else:
             yield from _levels(child, at_import)
 
@@ -709,6 +727,19 @@ def _calls(tree: ast.Module, names: tuple[str, ...]) -> dict[str, list[int]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+#: Исход порядка → фраза отчёта. Таблица, а не цепочка `if`: полноту сверяет гейт
+#: по тому же `Literal`, иначе пятый исход молча не печатался бы (Important DS
+#: круга 13). Значения — функции: вычисляется только своя ветка.
+ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
+    "ok": lambda ev, info: "",
+    "read_before_insert": lambda ev, info: (f"; чтение в строке {ev.top_reads[0]} ВЫШЕ вставки "
+                                            f"sys.path на импорте ({ev.top_insert})"),
+    "insert_only_inside": lambda ev, info: (f"; вставки sys.path на импорте нет, есть внутри "
+                                            f"функции ({ev.inner_insert})"),
+    "no_insert": lambda ev, info: "; вставки sys.path в файле нет" if info.executable else "",
+}
+
+
 def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
            seams: tuple[str, ...] = ("LLM", "GraphSearch", "shared", "judge", "revise",
                                      "graph_dir", "resolve_root", "code_root", "harden_umask",
@@ -741,18 +772,7 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
         ev = module_events(info.tree, env_var)
         lines = ev.top_reads + ev.inner_reads
         if lines:
-            # выбор по классу исхода, а не словарь: словарь вычислял все четыре строки
-            # разом и падал на чужом классе (вердикт круга 11 назвал эту защиту мёртвой
-            # веткой — проверка показала обратное, находка отклонена)
-            if ev.order == "read_before_insert":
-                note = (f"; чтение в строке {ev.top_reads[0]} ВЫШЕ вставки sys.path "
-                        f"на импорте ({ev.top_insert})")
-            elif ev.order == "insert_only_inside":
-                note = f"; вставки sys.path на импорте нет, есть внутри функции ({ev.inner_insert})"
-            elif ev.order == "no_insert":
-                note = "; вставки sys.path в файле нет" if info.executable else ""
-            else:
-                note = ""
+            note = ORDER_NOTES[ev.order](ev, info)
             if ev.inner_reads:
                 note += f"; читается при вызове (строки {','.join(map(str, ev.inner_reads))}), не на импорте"
             env.append(f"- `{rel}`:{','.join(map(str, sorted(lines)))}{note}")
