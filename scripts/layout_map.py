@@ -167,6 +167,7 @@ class Scan(NamedTuple):
 #: Состояния карты — один источник для сигнатуры, проверки и гейта (Important DS
 #: круга 11: подсказка типа и проверка были двумя независимыми списками).
 MAP_STATES = ("present", "missing", "skipped")
+MapState = Literal["present", "missing", "skipped"]      # тот же кортеж, гейт сверяет их равенство
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
            "allowed_edges": list, "manual_entry_points": dict, "generated": str}
@@ -628,10 +629,16 @@ def _levels(node: ast.AST, at_import: bool = True):
     yield node, at_import
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            # заголовок функции (декораторы, умолчания, аннотации) — на импорте, тело — нет
-            for part in [*getattr(child, "decorator_list", []), *(d for d in child.args.defaults if d),
-                         *(d for d in child.args.kw_defaults if d)]:
-                yield from _levels(part, at_import)
+            # всё, кроме тела, — заголовок: декораторы, умолчания, аннотации,
+            # возвращаемый тип. Они вычисляются на импорте. Перечислять их поимённо
+            # нельзя: такой список уже забыли один раз (Critical DS круга 12 —
+            # аннотации и `returns` в него не попали), поэтому инверсия и здесь.
+            for field, value in ast.iter_fields(child):
+                if field == "body":
+                    continue
+                for node in (value if isinstance(value, list) else [value]):
+                    if isinstance(node, ast.AST):
+                        yield from _levels(node, at_import)
             body = child.body if isinstance(child.body, list) else [child.body]
             for stmt in body:
                 yield from _levels(stmt, False)
@@ -787,7 +794,7 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
-          map_state: str = "present") -> list[str]:
+          map_state: MapState = "present") -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не

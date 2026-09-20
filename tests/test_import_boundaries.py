@@ -43,6 +43,7 @@ import ast
 import json
 import pathlib
 import sys
+import typing
 
 import pytest
 
@@ -189,6 +190,10 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     # состояний ровно три: четвёртое вело бы себя как present, а докстринг обещал
     # обратное, и на этом держался главный гейт (Important GLM круга 9)
     assert lm.MAP_STATES == ("present", "missing", "skipped"), lm.MAP_STATES
+    # кортеж и тип — одно и то же: иначе «один источник» куплен ценой типа (DS круга 12)
+    assert typing.get_args(lm.MapState) == lm.MAP_STATES
+    assert typing.get_args(typing.get_type_hints(lm.ModuleEvents.order.fget)["return"]) == \
+        ("ok", "read_before_insert", "insert_only_inside", "no_insert")
     assert "unknown" not in lm.check.__doc__
     for rel, kind in RULE_DEPENDENT.items():
         assert lm.kind_of(rel) == kind, rel
@@ -553,6 +558,15 @@ def test_the_report_reads_the_forms_it_declares(tmp_path):
     assert ev2.order == "insert_only_inside", "«вставки нет» было бы ложью — она есть, но не на импорте"
     out = lm.report(lm.inventory(tmp_path))
     assert "вставки sys.path на импорте нет, есть внутри функции (3)" in out
+    # «вставка обязательна» спрашивается у вида файла: библиотека без гварда молчит,
+    # исполняемый скрипт — нет (Important DS круга 12: критерий не держала ни одна проверка)
+    (tmp_path / "scripts" / "helper.py").write_text('import os\nR = os.environ.get("CHAROITE_ROOT")\n',
+                                                    encoding="utf-8")
+    (tmp_path / "scripts" / "tool2.py").write_text(
+        'import os\nR = os.environ.get("CHAROITE_ROOT")\nif __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    text2 = lm.report(lm.inventory(tmp_path))
+    assert "`scripts/tool2.py`:2; вставки sys.path в файле нет" in text2
+    assert "`scripts/helper.py`:2\n" in text2, "у не-исполняемого файла заметки о вставке нет"
     assert "читается при вызове (строки 4), не на импорте" in out
     assert "`scripts/lazy.py`:4; вставки sys.path в файле нет" not in out
 
@@ -669,6 +683,12 @@ LEVEL_SHAPES = (
     ("class C:\n    X = os.environ.get('CHAROITE_ROOT')", "top"),
     ("def f(d=os.environ.get('CHAROITE_ROOT')):\n    pass", "top"),
     ("@deco(os.environ.get('CHAROITE_ROOT'))\ndef f():\n    pass", "top"),
+    ("def f() -> os.environ['CHAROITE_ROOT']:\n    pass", "top"),
+    ("def f(a: os.environ['CHAROITE_ROOT']):\n    pass", "top"),
+    ("def f(*args: os.environ['CHAROITE_ROOT']):\n    pass", "top"),
+    ("def f(*, k: os.environ['CHAROITE_ROOT'] = 1):\n    pass", "top"),
+    ("async def f(a: os.environ['CHAROITE_ROOT']):\n    pass", "top"),
+    ("async def f():\n    x = os.environ.get('CHAROITE_ROOT')", "inner"),
     ("def f():\n    x = os.environ.get('CHAROITE_ROOT')", "inner"),
     ("class C:\n    def m(self):\n        x = os.environ.get('CHAROITE_ROOT')", "inner"),
     ("f = lambda: os.environ.get('CHAROITE_ROOT')", "inner"),
@@ -684,6 +704,11 @@ def test_the_level_of_a_node_is_measured_by_scope_not_by_statement_type():
         ev = lm.module_events(ast.parse("import os\n" + src), "CHAROITE_ROOT")
         got = "top" if ev.top_reads else ("inner" if ev.inner_reads else "нет чтения")
         assert got == level, f"{src!r}: ждали {level}, получили {got}"
+    # заголовок функции обходится целиком, а не поимённым списком: аннотации и
+    # возвращаемый тип вычисляются на импорте (Critical DS круга 12)
+    hdr = lm.module_events(ast.parse("import os\ndef f(a: os.environ['CHAROITE_ROOT']) -> None:\n    pass\n"),
+                           "CHAROITE_ROOT")
+    assert hdr.top_reads == [2] and hdr.inner_reads == []
     # вставка внутри функции — не на импорте, даже если функция объявлена выше
     ev = lm.module_events(ast.parse("import sys\ndef f():\n    sys.path.insert(0, 'x')\n"), "CHAROITE_ROOT")
     assert ev.top_insert is None and ev.inner_insert == 3 and ev.order == "insert_only_inside"
