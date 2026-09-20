@@ -40,9 +40,8 @@ import shutil
 import os
 
 import charoite_paths
-import llm
 import live_gate
-import nli
+from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
@@ -152,16 +151,19 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
     return cores
 
 
-def _embed_all(cores: list[dict], cfg: dict) -> list[list[float]]:
-    # Адрес и транспорт — через llm.embed (единая точка): прежний хардкод
-    # 127.0.0.1:11434 игнорировал llm.base_url из конфига (аудит 14.08).
-    # Имя — у канона, а не литералом: владелец вправе поставить свою модель в
-    # `sufler.embed_model`, и пришпиленное «bge-m3» заставляло ревизию судить по
-    # векторам модели, которой на машине может не быть — прогон молча ничего не
-    # находил (круг 4 по №321, GLM I2). Резидентность здесь своя: ночной проход
-    # держит модель дольше живого контура.
-    return llm.embed(cfg, [c["repr"] for c in cores],
-                     keep_alive="60m", timeout=120)
+#: Сколько ночь держит модель эмбеддингов: проход по ядрам идёт пачками и
+#: длится дольше живого контура, которому хватает получаса.
+TIER3_KEEP_ALIVE = "60m"
+
+
+def _embed_all(cores: list[dict], embedder: Embedder) -> list[list[float]]:
+    """Векторы всех ядер через шов: ревизия не знает, кто и чем их считает.
+
+    Резидентность и имя модели решены тем, кто собирал пару: у ночного прохода
+    они свои (модель держится дольше живого контура), и ревизии об этом знать
+    нечего.
+    """
+    return embedder.run([c["repr"] for c in cores], 120)
 
 
 def _cos(a: list[float], b: list[float]) -> float:
@@ -357,8 +359,8 @@ def night_wait_cap(default: float = 3600.0, now=None) -> float | None:
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
-           apply: bool = False, mark: bool = False,
-           cfg: dict | None = None) -> dict:
+           apply: bool = False, mark: bool = False, *,
+           embedder: Embedder, judge: Judge) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
     Два права, а не одно, потому что цена у правок разная:
@@ -400,7 +402,10 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                  # который на его данных ничего не делает, хуже молчания
                  "pending_merges": [], "skipped": []}
     folder = graph / "Ядра"
-    if not folder.is_dir() or not nli.is_available():
+    # Дешёвая фаза судьи — до чтения ядер и до эмбеддингов: на установке без
+    # NLI-модели (слой опциональный) ревизия иначе прочитала бы весь корпус и
+    # разбудила эмбеддер впустую после каждой встречи (круг 1 по 2б, обе головы).
+    if not folder.is_dir() or judge.refused:
         return out
     cores = load_cores(folder)
     if len(cores) < 2:
@@ -408,11 +413,14 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     focus = ({c["name"] for c in cores} if not only_names
              else {n for n in only_names})
     try:
-        # cfg передаёт graph_updater; CLI без конфига падает на дефолт
-        # privacy.llm_base_url({}) — тот же локальный адрес, что раньше.
-        embs = _embed_all(cores, cfg or {})
-    except Exception:
-        return out  # Ollama лежит — не мешаем пайплайну
+        embs = _embed_all(cores, embedder)
+    except SeamTransportError:
+        # Сервер занят, лежит или адрес запрещён политикой — ревизия уборочная,
+        # она не мешает пайплайну. Ошибка проводки (`TypeError` от шва не той
+        # формы) сюда не попадает намеренно: она обязана долететь до человека,
+        # иначе ночник годами печатает «лежит Ollama» на сломанном коде
+        # (круг 2 по 2б, GLM C2).
+        return out
     # llm.embed при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
     # не найдена»): раньше это доезжало до IndexError в цикле пар и валило
     # CLI ночи (аудит DeepSeek 17.08). Неполный ответ = прогон не состоялся.
@@ -422,10 +430,11 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     # битой ONNX-модели entail_prob тихо возвращает 0.0, суд «ничего не
     # находит», а ran=True двигал отметку --since-last — и свежие ядра
     # навсегда выпадали из инкремента (аудит DeepSeek 17.08).
-    if not nli.ready():
+    if not judge.ready():
         return out
     out["ran"] = True
     out["stopped"] = False
+    tried = 0          # сколько пар дошло до суда: ниже по ним судят сам прогон
 
     pairs = []
     for i in range(len(cores)):
@@ -459,8 +468,9 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                 out["stopped"] = True
                 break
         try:
-            ab = nli.entail_prob(a["repr"], b["repr"])
-            ba = nli.entail_prob(b["repr"], a["repr"])
+            tried += 1
+            ab = judge.entail(a["repr"], b["repr"])
+            ba = judge.entail(b["repr"], a["repr"])
         except Exception as e:  # noqa: BLE001 — одна пара не валит ревизию
             # ...но и молчать нельзя: пара НЕ судилась, а отметка
             # --since-last двигалась по ran=True — и пара не возвращалась в
@@ -515,6 +525,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
             # сказать вызывающему отдельно от лога правок
             out["skipped"].append(f"«{whole['name']}» — хаб ({whole_count[whole['name']]} "
                                   f"вложений), ссылки не вписываем")
+
+    if tried and out["failed"] == tried:
+        # Судья поднялся и ответил на пробную пару, но отказал на КАЖДОЙ
+        # настоящей: модель исчезла во время прогона, сессия начала падать.
+        # Прогон не состоялся — иначе отметка инкремента уедет вперёд, а имена
+        # отказавших ядер обрежутся списком ожидания и не вернутся никогда
+        # (круг 1 по коду 2б, DS C1). Готовность спрашивается в начале, но
+        # судится прогон по тому, что вышло.
+        out["ran"] = False
+        return out
 
     def _pair(a: dict, b: dict) -> str:
         return f"«{a['name']}» ↔ «{b['name']}»"
