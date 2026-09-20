@@ -164,3 +164,23 @@ def test_both_env_names_same_priority(monkeypatch):
     assert graphs.env_override() == "/py/g"
     monkeypatch.setenv("SUFLER_GRAPH_DIR", "")
     assert graphs.env_override() is None
+
+
+def test_конфиг_читается_из_корня_данных_а_битый_не_роняет(tmp_path):
+    """`load_config` отдаёт содержимое, а не «что-нибудь непустое».
+
+    Мутант `return yaml.safe_load(...) or {}` → `return None` пережил прогон:
+    ни один тест не смотрел, ЧТО прочитано, — только что не упало. Пути
+    fail-closed: битый или отсутствующий конфиг даёт пустой словарь, и
+    конвейер идёт на дефолтах, а не падает посреди встречи (штатный мутатор
+    на дельте №327, выживший 1 из 3).
+    """
+    данные = charoite_paths.use_data_root(tmp_path / "данные")
+    (данные / "config").mkdir(parents=True)
+    assert graphs.load_config() == {}                       # файла нет
+    graphs.config_path().write_text("sufler:\n  graph_dir: ~/g\n", encoding="utf-8")
+    assert graphs.load_config() == {"sufler": {"graph_dir": "~/g"}}
+    graphs.config_path().write_text("не: [ямл", encoding="utf-8")
+    assert graphs.load_config() == {}                       # битый — не авария
+    graphs.config_path().write_text("", encoding="utf-8")
+    assert graphs.load_config() == {}                       # пустой — тоже словарь
