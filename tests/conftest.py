@@ -5,9 +5,46 @@
 корень кода. К 22.08 там лежало 69 каталогов «Работа-*» от тестовых графов.
 Корень данных для каждого теста — его tmp_path.
 """
+import os
+import pathlib
 import sys
 
 import pytest
+
+# `src/` в пути: фикстуры conftest трогают канон путей раньше, чем первый
+# тест успеет вставить его себе сам.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+import charoite_paths  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _корень_данных_не_протекает():
+    """Корень процесса — состояние, а не аргумент: возвращаем как было.
+
+    `charoite_paths.use_data_root` пишет и в модульную переменную, и в
+    окружение (дети процесса читают его оттуда). Тест, который корень назвал,
+    иначе оставил бы его следующему — и тот судил бы чужую установку, зеленея
+    по чужой причине. Заодно снимаем внешнюю `CHAROITE_ROOT`: её экспортируют
+    и приложение, и `scripts/nightly.sh`, а тест канона корней в таком шелле
+    краснел бы по причине окружения (круг 1 по коду №327, DS M3).
+
+    Руками, а не через `monkeypatch`: у теста и фикстуры он ОДИН, и
+    `monkeypatch.undo()` в теле теста (так делает
+    `test_graph_hygiene.py:1804`) откатил бы заодно и этот сброс — корень
+    предыдущего теста вернулся бы посреди следующего.
+    """
+    был, было = charoite_paths._given, os.environ.get("CHAROITE_ROOT")
+    charoite_paths._given = None
+    os.environ.pop("CHAROITE_ROOT", None)
+    try:
+        yield
+    finally:
+        charoite_paths._given = был
+        if было is None:
+            os.environ.pop("CHAROITE_ROOT", None)
+        else:
+            os.environ["CHAROITE_ROOT"] = было
 
 
 @pytest.fixture(autouse=True)

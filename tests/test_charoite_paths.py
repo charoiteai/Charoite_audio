@@ -23,6 +23,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -127,7 +129,8 @@ def test_ночные_скрипты_пишут_в_корень_данных(tmp
     читала бы дефолты и игнорировала выключатели профиля), а
     `tier3_cores.STAMPS` писал отметку прогона в read-only бандл — то есть
     падал бы PermissionError на первой же ночи. Проверяем в отдельном
-    процессе: пути считаются на импорте.
+    процессе: отметка ночи по-прежнему считается на импорте, а конфиг графа
+    с №327 — на вызове, и оба обязаны лечь в корень ДАННЫХ.
     """
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
     code = (
@@ -141,3 +144,99 @@ def test_ночные_скрипты_пишут_в_корень_данных(tmp
     config, stamps = out.stdout.strip().splitlines()
     assert pathlib.Path(config) == tmp_path.resolve() / "config" / "config.yaml"
     assert pathlib.Path(stamps).parent == tmp_path.resolve() / "logs"
+
+
+# ---------------------------------------------------------------- №327: кто хозяин корня
+
+def test_названный_корень_сильнее_переменной(tmp_path, monkeypatch):
+    """Точка входа называет корень — он и отвечает, что бы ни было в окружении.
+
+    Ожидание строит фикстура. Названный сильнее переменной потому, что он
+    единственный не догадка: приложение знает папку владельца из своих
+    настроек, а `CHAROITE_ROOT` могла остаться от прошлого запуска.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    из_переменной, названный = tmp_path / "переменная", tmp_path / "названный"
+    monkeypatch.setenv("CHAROITE_ROOT", str(из_переменной))
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == из_переменной.resolve()
+    assert charoite_paths.use_data_root(названный) == названный.resolve()
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный.resolve()
+
+
+def test_названный_корень_уезжает_детям_в_окружение(tmp_path):
+    """Дети считают корень сами — и обязаны получить тот же ответ.
+
+    Ночные скрипты, индексатор и облачный воркер запускаются отдельными
+    процессами и строят корень по `CHAROITE_ROOT`. Назови корень только
+    внутри процесса — ребёнок судил бы о живой встрече по чужому
+    `logs/daemon.lock` (круг 1 по коду №327, DS I2).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    названный = tmp_path / "данные-человека"
+    код = (
+        f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+        "import charoite_paths, os, subprocess, sys\n"
+        f"charoite_paths.use_data_root({str(названный)!r})\n"
+        "print(subprocess.run([sys.executable, '-c',"
+        " 'import os; print(os.environ.get(\"CHAROITE_ROOT\", \"(нет)\"))'],"
+        " capture_output=True, text=True).stdout.strip())\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    out = subprocess.run([sys.executable, "-c", код], cwd=ROOT, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-400:]
+    assert pathlib.Path(out.stdout.strip()) == названный.resolve()
+
+
+@pytest.mark.parametrize("пусто", ["", "   ", None])
+def test_пустой_корень_отказ_а_не_текущий_каталог(tmp_path, monkeypatch, пусто):
+    """Пустое поле настроек — не «здесь», а отсутствие ответа.
+
+    `Path("").resolve()` — это каталог, из которого запустили процесс, а
+    `Path(" ")` — подкаталог с пробелом в имени. Обе догадки уводят записи и
+    граф туда, откуда запустили: дефект карточки №36 вернулся бы через новую
+    дверь (круг 1 по коду №327, DS C1 и GLM M4).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError):
+        charoite_paths.use_data_root(пусто)
+    assert charoite_paths._given is None
+
+
+def test_второй_корень_отказ_а_не_тихая_перезапись(tmp_path):
+    """Корень называют один раз: объекты, собранные до, пишут по старому пути.
+
+    Поиск графа кэширует каталог векторов в конструкторе. Перезапиши корень
+    посреди работы — писатель остался бы в одном каталоге, а читатель ушёл в
+    другой; это тот же класс, что №36 (круг 1 по коду №327, обе головы).
+    Повтор с тем же значением безвреден и разрешён: точка входа может
+    назвать корень дважды по одному и тому же конфигу.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    первый = charoite_paths.use_data_root(tmp_path / "первый")
+    assert charoite_paths.use_data_root(tmp_path / "первый") == первый   # повтор — молча
+    with pytest.raises(RuntimeError):
+        charoite_paths.use_data_root(tmp_path / "второй")
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == первый
+
+
+def test_названный_корень_не_отменяется_переменной_посреди_работы(tmp_path, monkeypatch):
+    """Решение точки входа сильнее окружения — и остаётся сильнее потом.
+
+    Корень уезжает в `CHAROITE_ROOT` ради детей процесса, но канал этот
+    общий: переменную вправе переписать кто угодно — чужая библиотека, тест,
+    соседний код. Названный корень так отменяться не должен, иначе половина
+    процесса продолжит писать по старому пути, а половина уйдёт по новому
+    (мутация круга 2 по №327: без этой ветки защита держалась только на
+    окружении и ни одним тестом не проверялась).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    названный = charoite_paths.use_data_root(tmp_path / "названный")
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "перетёртый"))
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный

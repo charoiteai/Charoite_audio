@@ -7,9 +7,10 @@
 раскрывается, относительный — от корня данных, SUFLER_GRAPH_DIR
 перекрывает конфиг, пусто — None (а не «.», который молча лил граф в cwd).
 
-Сам корень данных приходит от вызывающего (`use_data_root`), а выводом из
-положения модуля заканчивается — это последняя догадка, верная только пока
-модуль лежит в дереве репозитория. Поэтому ожидание здесь строит фикстура.
+Сам корень данных называет точка входа (`charoite_paths.use_data_root`), а
+выводом из положения модуля порядок заканчивается — это последняя догадка,
+верная только пока модуль лежит в дереве репозитория. Поэтому ожидание здесь
+строит фикстура.
 Пока обе стороны считались одной формулой (`graphs.DATA_ROOT` против
 `parent.parent` в проверяемом коде), перенос модуля двигал их вместе и тест
 оставался зелёным на сломанном корне (GLM C3 по №327) — ровно тот случай,
@@ -23,20 +24,10 @@ import textwrap
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
-
-
-@pytest.fixture(autouse=True)
-def _корень_не_протекает(monkeypatch):
-    """Заданный корень — состояние процесса, а не аргумент вызова.
-
-    Тест, который его задал, обязан вернуть как было: иначе следующий судит
-    чужую установку и зеленеет по чужой причине. Приватное имя здесь
-    сознательно: снимать корень продукту незачем, а тесту — обязательно.
-    """
-    monkeypatch.setattr(graphs, "_root", None)
 
 
 def test_resolve_relative_from_given_root_not_cwd(tmp_path, monkeypatch):
@@ -44,31 +35,26 @@ def test_resolve_relative_from_given_root_not_cwd(tmp_path, monkeypatch):
     откуда_запустили = tmp_path / "откуда-запустили"
     откуда_запустили.mkdir(parents=True)
     monkeypatch.chdir(откуда_запустили)       # cwd не влияет
-    graphs.use_data_root(данные)
+    charoite_paths.use_data_root(данные)
     assert graphs.resolve("demo/graph") == данные / "demo" / "graph"
     чужой = tmp_path / "чужой-корень"
     assert graphs.resolve("demo/graph", root=чужой) == чужой / "demo" / "graph"
 
 
-def test_use_data_root_принимает_тильду_и_относительный(tmp_path, monkeypatch):
-    """Корень задаёт человек — значит, задаёт как пишут люди.
-
-    `~/charoite-data` из конфига приложения и `данные` из скрипта обязаны
-    стать абсолютным путём в точке задания, а не в точке чтения: иначе
-    относительный корень снова означал бы «от cwd того, кто позвал».
-    """
+def test_конфиг_считается_от_названного_корня(tmp_path, monkeypatch):
+    """Конфиг — производная корня, а не константа импорта."""
     monkeypatch.chdir(tmp_path)
-    assert graphs.use_data_root("~/charoite-data") == (pathlib.Path.home() / "charoite-data").resolve()
-    assert graphs.use_data_root("данные") == (tmp_path / "данные").resolve()
-    assert graphs.config_path() == (tmp_path / "данные").resolve() / "config" / "config.yaml"
+    данные = charoite_paths.use_data_root(tmp_path / "данные")
+    assert graphs.config_path() == данные / "config" / "config.yaml"
 
 
-def test_data_root_заданный_сильнее_переменной(tmp_path, monkeypatch):
-    из_переменной, заданный = tmp_path / "из-переменной", tmp_path / "заданный"
+def test_data_root_названный_сильнее_переменной(tmp_path, monkeypatch):
+    """Граф видит тот же порядок, что и канон: названный корень сильнее env."""
+    из_переменной, названный = tmp_path / "из-переменной", tmp_path / "названный"
     monkeypatch.setenv("CHAROITE_ROOT", str(из_переменной))
     assert graphs.data_root() == из_переменной.resolve()
-    graphs.use_data_root(заданный)
-    assert graphs.data_root() == заданный.resolve()
+    charoite_paths.use_data_root(названный)
+    assert graphs.data_root() == названный.resolve()
 
 
 def test_пробельная_переменная_корня_не_относительный_корень(tmp_path, monkeypatch):
@@ -104,9 +90,9 @@ def test_перенесённый_модуль_берёт_корень_у_выз
     данные = tmp_path / "данные-человека"
     код = textwrap.dedent(f"""
         import sys; sys.path.insert(0, {str(пакет)!r})
-        import graphs
+        import charoite_paths, graphs
         print(graphs.config_path())
-        graphs.use_data_root({str(данные)!r})
+        charoite_paths.use_data_root({str(данные)!r})
         print(graphs.config_path())
     """)
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}   # без CHAROITE_ROOT
@@ -130,7 +116,7 @@ def test_resolve_empty_is_none_not_dot(raw):
 
 def test_env_overrides_config(tmp_path, monkeypatch):
     данные = (tmp_path / "данные").resolve()
-    graphs.use_data_root(данные)
+    charoite_paths.use_data_root(данные)
     for name in graphs.ENV_GRAPH_NAMES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(graphs.ENV_GRAPH, "rel/test-graph")

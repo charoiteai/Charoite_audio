@@ -669,7 +669,7 @@ def _journal_unlinked(name: str, gone: list[str]) -> None:
     кандидат на узел или алиас, а не раствориться в логе прогона (GLM r2,
     критика 1). Сбой записи журнала перенос не останавливает."""
     try:
-        log = graph_updater.ROOT / "logs" / "graph_unlinked.log"
+        log = graph_updater._root() / "logs" / "graph_unlinked.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         # ротация: журнал растёт с каждым прогоном (DS r3 M2) — старше
         # полумегабайта уезжает в .old, одно поколение

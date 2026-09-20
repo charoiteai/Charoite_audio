@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import charoite_paths  # noqa: E402
 import graph_updater as gu  # noqa: E402
 
 
@@ -27,7 +28,7 @@ def test_latest_transcript_ignores_derived_files(tmp_path, monkeypatch):
         f = tdir / name
         f.write_text("производный", encoding="utf-8")
         os.utime(f, (200, 200))       # моложе стенограммы
-    monkeypatch.setattr(gu, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
 
     assert gu.latest_transcript() == live
 
