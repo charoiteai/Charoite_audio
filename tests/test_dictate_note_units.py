@@ -6,6 +6,7 @@ import datetime as dt
 import os
 import pathlib
 import sys
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -51,3 +52,29 @@ def test_граф_спрашивается_на_вызове_а_не_на_имп
     monkeypatch.delenv("SUFLER_DIARY_DIR", raising=False)
     assert dictate_note._graph() == tmp_path / "поздний-граф"
     assert dictate_note.diary_dir() == tmp_path / "Дневник"
+
+
+def test_заметка_ложится_в_папку_заметок_названного_графа(tmp_path, monkeypatch):
+    """Путь заметки — `<граф>/Заметки`, и он тоже считается на вызове.
+
+    Мутация `_graph() / "Заметки"` → `_graph() * "Заметки"` пережила прогон
+    (штатный мутатор, дельта круга 12): место записи заметки не проверял
+    никто. Сама модель здесь не нужна — обработка вспомогательна, и при её
+    отказе заметка всё равно обязана лечь в граф.
+    """
+    import dictate_note
+    # `main()` ставит боевую маску (0o077) на весь процесс — вернём как было,
+    # иначе следующий тест прав судит чужой umask и падает по нашей причине.
+    прежняя = os.umask(0o022)
+    os.umask(прежняя)
+    monkeypatch.setattr(dictate_note, "harden_umask", lambda: прежняя)
+    graph = tmp_path / "граф"
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
+    monkeypatch.setattr(dictate_note, "_llm", types.SimpleNamespace(
+        complete=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("модели нет"))))
+    monkeypatch.setattr(dictate_note, "_record_and_transcribe", lambda *a, **k: "проверить счётчики")
+    monkeypatch.setattr(dictate_note.sys, "argv", ["dictate_note.py"])
+    dictate_note.main()
+    заметки = list((graph / "Заметки").glob("*.md"))
+    assert заметки, "заметка не легла в Заметки названного графа"
+    assert "проверить счётчики" in заметки[0].read_text(encoding="utf-8")
