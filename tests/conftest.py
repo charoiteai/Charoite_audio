@@ -1,7 +1,7 @@
 """Общие фикстуры.
 
 Снимки и карантин графа из тестов cloud_review ложились в настоящий
-`backups/` репозитория: `backup_root()` берёт `cloud_review.ROOT`, а он —
+`backups/` репозитория: `backup_root()` берёт корень облачной ревизии, а он —
 корень кода. К 22.08 там лежало 69 каталогов «Работа-*» от тестовых графов.
 Корень данных для каждого теста — его tmp_path.
 """
@@ -33,17 +33,19 @@ def _корень_данных_не_протекает():
     `monkeypatch.undo()` в теле теста (так делает
     `test_graph_hygiene.py:1804`) откатил бы заодно и этот сброс — корень
     предыдущего теста вернулся бы посреди следующего.
+
+    Через публичную дверь канона, а не записью в приватный глобал: после
+    упаковки тот же тест может импортировать канон из пакета — это другой
+    объект модуля со своим состоянием, и запись «мимо двери» до него не
+    достанет (круг 2 по коду №327, DS I3).
     """
-    был, было = charoite_paths._given, os.environ.get("CHAROITE_ROOT")
-    charoite_paths._given = None
-    os.environ.pop("CHAROITE_ROOT", None)
+    было = os.environ.get("CHAROITE_ROOT")
+    charoite_paths.forget_data_root()
     try:
         yield
     finally:
-        charoite_paths._given = был
-        if было is None:
-            os.environ.pop("CHAROITE_ROOT", None)
-        else:
+        charoite_paths.forget_data_root()
+        if было is not None:
             os.environ["CHAROITE_ROOT"] = было
 
 
@@ -51,7 +53,9 @@ def _корень_данных_не_протекает():
 def _data_root_in_tmp(tmp_path, monkeypatch):
     mod = sys.modules.get("cloud_review")
     if mod is not None:
-        monkeypatch.setattr(mod, "ROOT", tmp_path / "data")
+        # корень данных облачной ревизии — функция канона (№327), подменяем её,
+        # а не бывшую константу модуля
+        monkeypatch.setattr(mod, "_root", lambda: tmp_path / "data")
     # Граф по умолчанию — пустой каталог в tmp (существует, чтобы
     # install_profile.graph_enabled не гас из-за отсутствия папки, но без
     # папок-маркеров: тесты «vault не найден» ждут ноль графов), а не рабочий

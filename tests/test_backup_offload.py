@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
@@ -55,7 +56,7 @@ def test_backup_graph_writes_next_to_data(tmp_path, monkeypatch):
     """Полный снимок: файлы на месте, но в корне данных, а не в графе."""
     g = _graph(tmp_path)
     data = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", data)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=data: _к)
 
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
 
@@ -73,7 +74,7 @@ def test_snapshot_survives_rewrite_of_the_original(tmp_path, monkeypatch):
     Обсидиане, и запись на месте не запрещена никем.
     """
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
 
     node = g / "Встречи" / "2026-08-21_1103.md"
@@ -105,7 +106,7 @@ def test_clone_is_used_and_gives_an_independent_file(tmp_path):
 def test_copy_is_the_fallback_when_clone_fails(tmp_path, monkeypatch):
     """Не APFS, другой том, старая система — снимок всё равно полный."""
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     monkeypatch.setattr(cloud_review, "_clone", lambda src, dst: False)
 
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
@@ -129,7 +130,7 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
     backup_graph только создаёт, а rotate_snapshots зовётся в конце run()
     и не трогает ни свой срез, ни чужие файлы."""
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     root = cloud_review.backup_root(g)
 
     first = cloud_review.backup_graph(g, "2026-12-31_2359")   # «сосед» со штампом новее
@@ -145,3 +146,18 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
     assert (root / "заметка-пользователя.txt").exists(), "ротация трогает не-каталоги"
 
 
+
+
+def test_корень_ревизии_у_канона_а_не_своя_копия(tmp_path, monkeypatch):
+    """Облачная ревизия спрашивает корень у канона — седьмой копии правила нет.
+
+    Своя копия читала `CHAROITE_ROOT` сама и теряла `strip()`/`resolve()`:
+    в одном прогоне снимки графа и карантин уезжали по одному корню, а
+    журнал несвязанных узлов — по другому (круг 2 по коду №327, DS I1).
+    Переменную перетираем после названия корня: канон обязан ответить
+    названным.
+    """
+    monkeypatch.undo()          # снять подмену корня из общей фикстуры conftest
+    названный = charoite_paths.use_data_root(tmp_path / "данные")
+    os.environ["CHAROITE_ROOT"] = str(tmp_path / "перетёртый")
+    assert cloud_review._root() == названный

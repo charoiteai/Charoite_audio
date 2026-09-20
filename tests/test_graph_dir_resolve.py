@@ -49,12 +49,16 @@ def test_конфиг_считается_от_названного_корня(tm
 
 
 def test_data_root_названный_сильнее_переменной(tmp_path, monkeypatch):
-    """Граф видит тот же порядок, что и канон: названный корень сильнее env."""
-    из_переменной, названный = tmp_path / "из-переменной", tmp_path / "названный"
-    monkeypatch.setenv("CHAROITE_ROOT", str(из_переменной))
-    assert graphs.data_root() == из_переменной.resolve()
-    charoite_paths.use_data_root(названный)
-    assert graphs.data_root() == названный.resolve()
+    """Граф видит тот же порядок, что и канон: названный корень сильнее env.
+
+    Переменную здесь перетирают ПОСЛЕ того, как корень назван: так это и
+    случается в жизни — общий канал, писать в него вправе кто угодно, а
+    решение точки входа отменяться не должно.
+    """
+    названный = charoite_paths.use_data_root(tmp_path / "названный")
+    assert graphs.data_root() == названный
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "перетёртый"))
+    assert graphs.data_root() == названный
 
 
 def test_пробельная_переменная_корня_не_относительный_корень(tmp_path, monkeypatch):

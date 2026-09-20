@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import threading
 
 
 #: Корень данных, НАЗВАННЫЙ точкой входа. Пока не назван — выводится, как
@@ -41,6 +42,12 @@ import pathlib
 #: разъехаться сам с собой — граф читал названный корень, а слой моделей
 #: выводил свой из положения файла (круг 1 по коду №327, DS C2).
 _given: pathlib.Path | None = None
+
+#: Проверка «корень уже назван?» и запись — одно действие. Потоки у демона
+#: есть, и два вызова без замка оба увидели бы «не назван»: победил бы
+#: последний, ровно тот тихий второй корень, который отказ и запрещает
+#: (круг 2 по коду №327, DS M1).
+_lock = threading.Lock()
 
 
 def normalize_root(path) -> pathlib.Path:
@@ -52,9 +59,16 @@ def normalize_root(path) -> pathlib.Path:
     записи, стенограммы и граф туда, откуда запустили, — ровно дефект
     карточки №36, из-за которого граф писался в одно место, а искался в
     другом. Отказ громче ошибки в пути (круг 1 по коду №327, обе головы).
+
+    Вырожденная точка отсекается отдельно, и это не перестраховка:
+    `pathlib.Path("")` — это уже `PosixPath('.')`, объект истинный, и до
+    проверки «пусто» доезжает строка `"."`. То есть пустое значение,
+    завёрнутое в `Path` где-то по дороге (типовая форма для скриптов:
+    `Path(os.environ.get("CHAROITE_ROOT", ""))`), проходило гейт, который
+    для той же пустой строки отказывал (круг 2 по коду №327, GLM I1).
     """
     s = str(path or "").strip()
-    if not s:
+    if not s or s == ".":
         raise ValueError(
             "корень данных не задан: пустое значение — не путь, а текущий "
             "каталог процесса")
@@ -79,15 +93,39 @@ def use_data_root(path) -> pathlib.Path:
     после — читать новый. Писатель в одном месте, читатель в другом — тот
     же класс, что и №36. Повтор с тем же значением безвреден и разрешён.
     """
-    global _given
     root = normalize_root(path)
-    if _given is not None and _given != root:
-        raise RuntimeError(
-            f"корень данных процесса уже назван ({_given}), второй "
-            f"({root}) разошёлся бы с уже собранными путями")
-    _given = root
-    os.environ["CHAROITE_ROOT"] = str(root)
+    with _lock:
+        global _given
+        действующий = _given or _from_env()
+        if действующий is not None and действующий != root:
+            raise RuntimeError(
+                f"корень данных процесса уже назван ({действующий}), второй "
+                f"({root}) разошёлся бы с уже отведёнными путями; чтобы "
+                f"сменить его осознанно — forget_data_root()")
+        _given = root
+        os.environ["CHAROITE_ROOT"] = str(root)
     return root
+
+
+def forget_data_root() -> None:
+    """Забыть названный корень — процесс волен назвать его заново.
+
+    Явная дверь вместо тихой перезаписи. Нужна двоим: тесту, который в одном
+    процессе проигрывает разные установки, и будущему реплею стадий
+    конвейера (№324), где смена корня — осознанное действие, а не побочный
+    эффект второго вызова. Всё, что было отведено от старого корня, после
+    этого недостоверно — поэтому дверь отдельная и называется честно.
+    """
+    global _given
+    with _lock:
+        _given = None
+        os.environ.pop("CHAROITE_ROOT", None)
+
+
+def _from_env() -> pathlib.Path | None:
+    """Корень из окружения; пусто и пробельное — не задан."""
+    env = (os.environ.get("CHAROITE_ROOT") or "").strip()
+    return pathlib.Path(env).expanduser().resolve() if env else None
 
 
 def resolve_root(module_file: str) -> pathlib.Path:
@@ -105,9 +143,9 @@ def resolve_root(module_file: str) -> pathlib.Path:
     """
     if _given is not None:
         return _given
-    env = (os.environ.get("CHAROITE_ROOT") or "").strip()
-    if env:
-        return pathlib.Path(env).expanduser().resolve()
+    из_окружения = _from_env()
+    if из_окружения is not None:
+        return из_окружения
     return pathlib.Path(module_file).resolve().parent.parent
 
 
@@ -122,9 +160,6 @@ def code_root(module_file: str) -> pathlib.Path:
     """
     return pathlib.Path(module_file).resolve().parent.parent
 
-
-#: Корень данных для модулей, которым достаточно значения по умолчанию.
-ROOT = resolve_root(__file__)
 
 #: Корень кода: `CODE_ROOT / "src"`, `CODE_ROOT / "scripts"`.
 CODE_ROOT = code_root(__file__)
@@ -198,7 +233,7 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     # делили бы один каталог — ротация одного стирала бы снимок другого,
     # а restore возвращал бы файлы чужого графа (круг по PR #363, DeepSeek).
     digest = hashlib.sha256(str(g).encode("utf-8")).hexdigest()[:8]
-    base = (root or ROOT) / BACKUPS_DIR / f"{g.name}-{digest}"
+    base = (root or resolve_root(__file__)) / BACKUPS_DIR / f"{g.name}-{digest}"
     return base / kind
 
 
@@ -209,7 +244,7 @@ def harden_existing(root: pathlib.Path | None = None) -> int:
     сколько путей поправила; ошибки прав на отдельных файлах не должны
     ронять запуск — встреча важнее.
     """
-    base = root or ROOT
+    base = root or resolve_root(__file__)
     fixed = 0
     for name in PRIVATE_DIRS:
         d = base / name

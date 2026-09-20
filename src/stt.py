@@ -54,8 +54,10 @@ class STT:
 
             model = pathlib.Path(s.get("sensevoice_model", "models/stt/sensevoice.onnx"))
             if not model.is_absolute():
-                from charoite_paths import ROOT
-                model = ROOT / model
+                # корень спрашиваем на использовании: запомненный при импорте
+                # не знал бы корня, названного точкой входа позже (№327)
+                from charoite_paths import resolve_root
+                model = resolve_root(__file__) / model
             tokens = model.with_name("tokens.txt")
             if not model.exists() or not tokens.exists():
                 raise FileNotFoundError(

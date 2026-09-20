@@ -46,9 +46,22 @@ import sys
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
 CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень ДАННЫХ — у канона, своей копии правила здесь нет.
+
+    Копия читала переменную сама и теряла `strip()`/`resolve()`:
+    `CHAROITE_ROOT="   "` давала относительный `Path('   ')`, и снимки графа,
+    карантин и журнал несвязанных узлов уезжали от текущего каталога, пока
+    канон отвечал верным корнем — два корня в одном прогоне (круг 2 по коду
+    №327, DS I1). Функция, а не константа: корень называет точка входа, и
+    происходит это позже импорта.
+    """
+    return resolve_root(__file__)
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -325,7 +338,7 @@ def backup_root(graph: pathlib.Path) -> pathlib.Path:
     """Каталог со снимками этого графа — в данных Чароита, не в графе."""
     # root — корень ДАННЫХ этой установки (CHAROITE_ROOT), а не папка кода:
     # у вложенной установки они разные, и снимки обязаны лечь к данным.
-    return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=ROOT)
+    return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=_root())
 
 
 def _own_dir(graph: pathlib.Path, stamp: str) -> pathlib.Path:
@@ -449,7 +462,7 @@ def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
 
 def quarantine_root(graph: pathlib.Path) -> pathlib.Path:
     """Карантин — рядом со снимками, вне графа, те же права 0700."""
-    return charoite_paths.graph_backups(graph, QUARANTINE_KIND, root=ROOT)
+    return charoite_paths.graph_backups(graph, QUARANTINE_KIND, root=_root())
 
 
 def quarantine(path: pathlib.Path, base: pathlib.Path, qdir: pathlib.Path, *,
@@ -669,7 +682,7 @@ def _journal_unlinked(name: str, gone: list[str]) -> None:
     кандидат на узел или алиас, а не раствориться в логе прогона (GLM r2,
     критика 1). Сбой записи журнала перенос не останавливает."""
     try:
-        log = graph_updater._root() / "logs" / "graph_unlinked.log"
+        log = _root() / "logs" / "graph_unlinked.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         # ротация: журнал растёт с каждым прогоном (DS r3 M2) — старше
         # полумегабайта уезжает в .old, одно поколение
@@ -1078,7 +1091,7 @@ def review_delivered(transcript: pathlib.Path) -> bool:
     шанса (критика DS по #550). Нет статуса — нет и подтверждения."""
     try:
         from meeting_processing import MeetingStatusStore
-        return MeetingStatusStore(ROOT).review_state(transcript) == "ok"
+        return MeetingStatusStore(_root()).review_state(transcript) == "ok"
     except Exception as e:  # noqa: BLE001 — статус вторичен: без него второй прогон идёт
         print(f"этап ревизии не прочитан: {e}")
         return False
@@ -1103,7 +1116,7 @@ STATE_UNKNOWN = "?"   # статус не прочитался — не «ста
 def _review_state(transcript: pathlib.Path) -> str | None:
     try:
         from meeting_processing import MeetingStatusStore
-        return MeetingStatusStore(ROOT).review_state(transcript)
+        return MeetingStatusStore(_root()).review_state(transcript)
     except Exception:  # noqa: BLE001 — статус вторичен, но «не знаю» ≠ «нет»
         return STATE_UNKNOWN
 
@@ -1232,7 +1245,7 @@ def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
     поверх «ok» разрешён: это осознанный повтор обработки."""
     try:
         from meeting_processing import MeetingStatusStore
-        store = MeetingStatusStore(ROOT)
+        store = MeetingStatusStore(_root())
         # терминальность «ok» — внутри store.review, одной записью (GLM r2 по #556)
         if store.review(transcript, state, note) is None and state in ("failed", "retrying"):
             print(f"этап ревизии не понижен до «{state}»: статуса нет или ревизия уже доставлена («ok»)")
@@ -1267,7 +1280,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # живой гейт до паузы и после неё: встреча, идущая в момент сбоя, не
         # складывает своё время с паузой, а начавшаяся в паузу — не получает
         # облако под собой (DS r1 M3 по #546)
-        gate = lambda: live_gate.wait_while_live(ROOT, log=lambda s: _log_line(log, s), what="повтор ревизии")  # noqa: E731
+        gate = lambda: live_gate.wait_while_live(_root(), log=lambda s: _log_line(log, s), what="повтор ревизии")  # noqa: E731
         gate()
         _sleep(RETRY_DELAY)
         gate()
@@ -1364,7 +1377,7 @@ def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path) -> None
     иначе никто не догонял (GLM r2 по #545). Только чтение заметок графа и
     вызовы brain; сбой — строка в лог, не код выхода."""
     try:
-        lines = graph_updater.pay_brain_debts(graph, ROOT / "logs" / "brain_sent", skip=stamp)
+        lines = graph_updater.pay_brain_debts(graph, _root() / "logs" / "brain_sent", skip=stamp)
     except Exception as e:  # noqa: BLE001 — чужие долги не важнее своей ревизии
         lines = [f"долги памяти других встреч не проверены: {e}"]
     if not lines:
@@ -1803,7 +1816,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # с ошибочным решением: граф здесь источник, а не ревизия.
         if published and may_edit and note_path is not None:
             try:
-                mark = ROOT / "logs" / "brain_sent" / f"{stamp}.txt"
+                mark = _root() / "logs" / "brain_sent" / f"{stamp}.txt"
                 lines.append("[cloud-review] " + graph_updater.resend_to_brain_after_review(
                     stamp, note_path, note_before, mark) + "\n")
             except Exception as e:  # noqa: BLE001 — память не важнее ревизии
