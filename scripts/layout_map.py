@@ -80,13 +80,20 @@ ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.s
 #: описывают код своего дня и после переезда не правятся; `out` — не читается.
 #: Внутри `code` решает суффикс: код читается без комментариев, документация
 #: рядом с кодом — как проза, остальное — `out`. Без совпадения: проза по
-#: суффиксу, иначе `out` (Important DS круга 3). Область: `git` — правило обязано
-#: побеждать хотя бы на одном файле под git (иначе оно память автора — гейт);
-#: `walk` — только для обхода без git (каталоги, которых в индексе не бывает).
+#: суффиксу, иначе `out` (Important DS круга 3). Область: `git` — удаление
+#: правила меняет вид хотя бы одного файла под git (иначе оно память автора —
+#: гейт); `insurance` — сегодня решает только через кандидатов и записано как
+#: страховка на подкаталоги; `walk` — только для обхода без git (каталоги,
+#: которых в индексе не бывает; под git такое правило не накрывает ничего).
+#: Сама таблица — утверждённые данные: её копия с порядком лежит в гейте
+#: (Critical DS круга 6: два правила выпали при переписывании, суффиксный
+#: фолбэк дал правдоподобный вид, и ни одна проверка не заметила).
 KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("docs/design/layout.md", "out", "git", "карта — производная замера, не источник"),
     ("tests/", "out", "git", "тесты строят синтетические деревья: пути в них — не факты о репозитории"),
     ("app/Tests/", "out", "git", "Swift-тесты приложения: те же выдуманные пути"),
+    ("app-ios/", "out", "git", "телефон python и shell не запускает — пути там только в тексте"),
+    ("app-android/", "out", "git", "телефон python и shell не запускает — пути там только в тексте"),
     ("docs/reviews/", "history", "git", "датированные ревью описывают код своего дня — после переезда не правятся"),
     ("devlog/_posts/", "history", "git", "датированные посты — снимок своего дня"),
     ("CHANGELOG.md", "history", "git", "релизные заметки — снимок своего дня, записи о вышедших версиях не правятся"),
@@ -98,8 +105,8 @@ KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("node_modules/", "out", "walk", "чужой код"),
     (".git/", "out", "walk", "служебный каталог git"),
     ("app/", "code", "git", "приложение зовёт python и shell"),
-    ("scripts/", "code", "git", "скрипты зовут друг друга и модули"),
-    ("src/", "code", "git", "модули зовут скрипты и подсказывают пути человеку"),
+    ("scripts/", "code", "insurance", "все файлы — кандидаты; страховка на подкаталог скриптов"),
+    ("src/", "code", "insurance", "все файлы — кандидаты; страховка на подпакет в src/"),
     (".github/", "code", "git", "workflow CI — источник запуска"),
     (".pre-commit-config.yaml", "code", "git", "хуки — источник запуска"),
 )
@@ -248,9 +255,18 @@ def kind_of(rel: str) -> str:
     return decide(rel).kind
 
 
+#: Каталоги, в которых лежат кандидаты в точки входа (по ENTRY_CANDIDATES) —
+#: отсечение при обходе никогда их не пропускает: решение о файле сильнее.
+_CANDIDATE_DIRS = frozenset(str(pathlib.PurePosixPath(p).parent).replace(".", "") for p in ENTRY_CANDIDATES)
+
+
 def _pruned(rel_dir: str) -> bool:
     """Обход без git: каталог, который таблица целиком относит к `out`, не
-    открывается вовсе — то же правило, что у файлов внутри него."""
+    открывается вовсе — но только если в нём не может быть кандидата: отсечение
+    строго слабее `decide`, иначе правило-тень над `scripts/` спрятало бы
+    конфликт от гейта в обходе без git (Important DS круга 6)."""
+    if rel_dir in _CANDIDATE_DIRS:
+        return False
     i = _rule(rel_dir + "/")
     return i is not None and KINDS[i][1] == "out"
 
@@ -616,7 +632,7 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out += ["", "## Пути, названные в документации и конфигах", ""]
     for path, who in sorted(scanned.prose.items()):
         out.append(f"- `{path}` ← {', '.join(sorted(who))}")
-    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка; неоднозначные красят гейт)", ""]
+    out += ["", "## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)", ""]
     for name, who in sorted(scanned.loose.items()):
         out.append(f"- `{name}` ← {', '.join(sorted(who))}")
     out += ["", "## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)", ""]
@@ -644,16 +660,20 @@ def main(argv: list[str] | None = None) -> int:
     execs = executables(inv)
     blocked: list[str] = []
     if "--regen" in args:
-        layout, unticketed = regen(layout, graph)
+        # черновик отдельно от загруженного: при блокировке отчёт идёт по тому, что лежит
+        # на диске, а не по несохранённой правке (Important DS круга 6)
+        fresh, unticketed = regen(json.loads(json.dumps(layout)), graph)
         blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
                    for a, b in unticketed]
         if not blocked:
+            layout = fresh
             LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"{LAYOUT.relative_to(REPO)}: allowlist {len(layout['allowed_edges'])} рёбер")
     if "--check" not in args and not blocked:
         MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
         print(f"карта: {MAP.relative_to(REPO)}")
-    map_text = MAP.read_text(encoding="utf-8") if MAP.exists() else None
+    # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась
+    map_text = MAP.read_text(encoding="utf-8") if MAP.exists() and not blocked else None
     problems = blocked + check(layout, graph, scanned, execs, map_text=map_text)
     for p in problems:
         print("✗", p)

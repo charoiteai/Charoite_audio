@@ -166,7 +166,7 @@
 - `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/transcript.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 
-## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка; неоднозначные красят гейт)
+## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
 
@@ -175,6 +175,8 @@
 - `docs/design/layout.md` — out (git): карта — производная замера, не источник
 - `tests/` — out (git): тесты строят синтетические деревья: пути в них — не факты о репозитории
 - `app/Tests/` — out (git): Swift-тесты приложения: те же выдуманные пути
+- `app-ios/` — out (git): телефон python и shell не запускает — пути там только в тексте
+- `app-android/` — out (git): телефон python и shell не запускает — пути там только в тексте
 - `docs/reviews/` — history (git): датированные ревью описывают код своего дня — после переезда не правятся
 - `devlog/_posts/` — history (git): датированные посты — снимок своего дня
 - `CHANGELOG.md` — history (git): релизные заметки — снимок своего дня, записи о вышедших версиях не правятся
@@ -186,7 +188,7 @@
 - `node_modules/` — out (walk): чужой код
 - `.git/` — out (walk): служебный каталог git
 - `app/` — code (git): приложение зовёт python и shell
-- `scripts/` — code (git): скрипты зовут друг друга и модули
-- `src/` — code (git): модули зовут скрипты и подсказывают пути человеку
+- `scripts/` — code (insurance): все файлы — кандидаты; страховка на подкаталог скриптов
+- `src/` — code (insurance): все файлы — кандидаты; страховка на подпакет в src/
 - `.github/` — code (git): workflow CI — источник запуска
 - `.pre-commit-config.yaml` — code (git): хуки — источник запуска

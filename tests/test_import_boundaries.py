@@ -27,6 +27,10 @@ ENTRY_TARGETS и `out` по KINDS), `--regen` писал артефакт с п�
 видела правило-тень. Теперь один решатель `decide()` — таблица, отсечение
 каталогов, карта и этот тест читают его решение; конфликт «кандидат против
 правила» — красная строка гейта, не тихий приоритет.
+Круг 6: таблица проверялась только против себя самой — два правила выпали
+при переписывании, суффиксный фолбэк дал правдоподобный вид, всё осталось
+зелёным. Теперь таблица — утверждённые данные (копия с порядком здесь),
+живость правила измеряется удалением, отсечение при обходе слабее решателя.
 """
 from __future__ import annotations
 
@@ -89,41 +93,105 @@ def test_entry_points_are_executables_not_mentions(world):
     assert "replace.sh" in scanned.loose, "порождаемый скрипт обновления — голое имя без цели, не проблема"
 
 
+#: Утверждённая таблица видов — копия KINDS без колонки why, с порядком (первый
+#: совпавший префикс побеждает). Правка политики — правка в двух файлах, которую
+#: ревьюер обязан прочитать (Critical DS круга 6: правила выпадали молча).
+APPROVED_KINDS = (
+    ("docs/design/layout.md", "out", "git"),
+    ("tests/", "out", "git"),
+    ("app/Tests/", "out", "git"),
+    ("app-ios/", "out", "git"),
+    ("app-android/", "out", "git"),
+    ("docs/reviews/", "history", "git"),
+    ("devlog/_posts/", "history", "git"),
+    ("CHANGELOG.md", "history", "git"),
+    ("app/build/", "out", "walk"),
+    ("app/.build/", "out", "walk"),
+    (".build/", "out", "walk"),
+    ("build/", "out", "walk"),
+    (".venv/", "out", "walk"),
+    ("node_modules/", "out", "walk"),
+    (".git/", "out", "walk"),
+    ("app/", "code", "git"),
+    ("scripts/", "code", "insurance"),
+    ("src/", "code", "insurance"),
+    (".github/", "code", "git"),
+    (".pre-commit-config.yaml", "code", "git"),
+)
+
+#: Пути, вид которых держится на правиле, а не на суффиксе — ожидание независимо
+#: от `decide` (Important DS круга 6: сверка решения с самим собой не проверка).
+RULE_DEPENDENT = {
+    "app-ios/README.md": "out", "app-ios/project.yml": "out", "app-android/README.md": "out",
+    "app-android/gradle/libs.versions.toml": "out", "app/Tests/X.swift": "out", "tests/README.md": "out",
+    "docs/reviews/2026-07-30-x.md": "history", "CHANGELOG.md": "history", "devlog/_posts/2026-08-19-x.md": "history",
+    "app/Sources/A.swift": "code", ".github/workflows/ci.yml": "code", ".pre-commit-config.yaml": "code",
+    "docs/design/layout.md": "out", "config/config.example.yaml": "prose", "README.md": "prose",
+    "docs/design/ui.html": "out", "app/Package.resolved": "out",
+}
+
+
+def _decide_with(table, rel):
+    saved = lm.KINDS
+    lm.KINDS = table
+    try:
+        return lm.decide(rel)
+    finally:
+        lm.KINDS = saved
+
+
 def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monkeypatch):
-    """Сверка таблиц сторожа над корпусом через единственный решатель `decide()`
-    (Critical DS круга 5: своя копия сопоставления не видела правило-тень):
-    каждое правило области `git` побеждает хотя бы на одном файле дерева;
-    кандидат в точки входа — всегда код и никогда не в конфликте с правилом;
-    что записал `--regen`, то читает `load_layout`. Отрицания: правило-тень
-    перед кандидатом — конфликт в проблемах инвентаря; мёртвое правило в конце
-    таблицы — падение проверки побед."""
+    """Таблица видов — утверждённые данные; её живость меряется над корпусом
+    через единственный решатель `decide()`: правило области `git` меняет вид хотя
+    бы одного файла под git при удалении; `insurance` накрывает файлы, но
+    решает только через кандидатов; `walk` под git не накрывает ничего (критика
+    DS круга 6: рукой поставленная область не выводит правило из-под гейта);
+    кандидат — всегда код и никогда не в конфликте; что записал `--regen`, то
+    читает `load_layout`. Отрицания: правило-тень перед кандидатом — конфликт в
+    проблемах инвентаря; правило после более широкого — не накрывает ничего."""
     layout, graph, _, _, inv = world
+    assert tuple(r[:3] for r in lm.KINDS) == APPROVED_KINDS, "таблица KINDS изменилась — обнови утверждённую копию осознанно"
+    for rel, kind in RULE_DEPENDENT.items():
+        assert lm.kind_of(rel) == kind, rel
     covered: dict[int, int] = {}
+    decisions: dict[str, str] = {}
     for rel, info in inv.files.items():
         d = lm.decide(rel)
-        assert d.kind == info.kind
-        assert d.conflict is None, f"{rel}: {d.conflict}"
+        assert d.kind == info.kind and d.conflict is None, f"{rel}: {d}"
         if lm._is_candidate(rel):
             assert d.by == "candidate" and d.kind == "code", f"{rel}: кандидат решён не как код ({d.by})"
+        decisions[rel] = d.kind
         if d.rule is not None:
             covered[d.rule] = covered.get(d.rule, 0) + 1
     for i, (prefix, _kind, scope, _why) in enumerate(lm.KINDS):
+        without = lm.KINDS[:i] + lm.KINDS[i + 1:]
+        changes = sum(1 for rel in inv.files if _decide_with(without, rel).kind != decisions[rel])
         if scope == "git":
-            assert covered.get(i, 0) > 0, f"правило KINDS {prefix!r} не накрывает ни одного файла под git"
+            assert changes > 0, f"правило KINDS {prefix!r}: удаление не меняет вид ни одного файла — оно память автора"
+        elif scope == "insurance":
+            assert covered.get(i, 0) > 0 and changes == 0, f"правило {prefix!r} объявлено страховкой, но решает"
+        else:
+            assert scope == "walk" and covered.get(i, 0) == 0, f"правило {prefix!r} области walk накрывает файлы под git"
     assert lm.decide("release.sh").by == "candidate", "корневой .sh — кандидат, значит код"
-    # правило-тень перед кандидатом: решение остаётся «код», конфликт — строка проблемы
-    shadow = (("scripts/get_models.py", "out", "git", "тень"),) + lm.KINDS
+    # правило-тень перед кандидатом: решение остаётся «код», конфликт — строка проблемы, и в обходе без git тоже
+    shadow = (("scripts/", "out", "git", "тень"),) + lm.KINDS
     monkeypatch.setattr(lm, "KINDS", shadow)
     d = lm.decide("scripts/get_models.py")
-    assert d.kind == "code" and d.conflict == "scripts/get_models.py"
+    assert d.kind == "code" and d.conflict == "scripts/"
     (tmp_path / "scripts").mkdir()
-    (tmp_path / "scripts" / "get_models.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "scripts" / "get_models.py").write_text('if __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    assert not lm._pruned("scripts"), "каталог кандидатов при обходе не отсекается, даже если правило зовёт его out"
     assert any("кандидат в точки входа, но правило KINDS" in p for p in lm.inventory(tmp_path).problems)
-    # мёртвое правило после более широкого — не побеждает никогда
+    # мёртвое правило после более широкого — не накрывает никогда
     dead = lm.KINDS[1:] + (("scripts/never.py", "out", "git", "мёртвое"),)
     monkeypatch.setattr(lm, "KINDS", dead)
     assert lm.decide("scripts/never.py").rule != len(dead) - 1, "правило после более широкого не накрывает ничего"
     monkeypatch.undo()
+    # отсечение при обходе строго слабее решателя: всё, что отсекается, decide назвал бы out
+    for rel in inv.files:
+        parent = str(pathlib.PurePosixPath(rel).parent)
+        if parent != "." and lm._pruned(parent):
+            assert lm.decide(rel).kind == "out" and not lm._is_candidate(rel), rel
     # круг запись → чтение
     regenerated, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
     assert unticketed == []
@@ -141,17 +209,24 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     lay = tmp_path / "layout.json"
     data = json.loads(lm.LAYOUT.read_text(encoding="utf-8"))
     data["manual_entry_points"]["scripts/phantom_manual.py"] = "ручная точка, которой нет — второе расхождение"
+    data["allowed_edges"].append({"from": "x_mod", "to": "y_mod", "ticket": "№0"})   # устаревшая запись allowlist
     lay.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     before = lay.read_text(encoding="utf-8")
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", tmp_path / "layout.md")
-    monkeypatch.setattr(lm, "regen", lambda layout, graph: (layout, [("low_mod", "top_mod")]))
+
+    def fake_regen(layout, graph):
+        layout["allowed_edges"] = [e for e in layout["allowed_edges"] if e["from"] != "x_mod"]   # черновик «чинит» запись
+        return layout, [("low_mod", "top_mod")]
+    monkeypatch.setattr(lm, "regen", fake_regen)
     assert lm.main(["--regen"]) == 1
     assert lay.read_text(encoding="utf-8") == before, "артефакт с пустой карточкой не должен быть записан"
     assert not (tmp_path / "layout.md").exists()
     out = capsys.readouterr().out
     assert "ребро low_mod → top_mod без карточки" in out
     assert "scripts/phantom_manual.py, но это не исполняемый файл" in out, "отчёт тем же прогоном, не после правки"
+    assert "x_mod → y_mod, но такого ребра" in out, "отчёт по раскладке на диске, а не по несохранённому черновику (DS круга 6)"
+    assert "отстал от кода" not in out, "карта не писалась — строка о её свежести недостижима"
 
 
 def test_the_artifact_is_loaded_strictly(tmp_path):
