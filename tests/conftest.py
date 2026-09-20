@@ -40,21 +40,27 @@ def _корень_данных_не_протекает():
     достанет (круг 2 по коду №327, DS I3).
     """
     было = os.environ.get("CHAROITE_ROOT")
-    charoite_paths.forget_data_root()
+    charoite_paths.forget_data_root()          # снимает только названный корень
+    os.environ.pop("CHAROITE_ROOT", None)      # окружением распоряжается тест
     try:
         yield
     finally:
         charoite_paths.forget_data_root()
-        if было is not None:
+        if было is None:
+            os.environ.pop("CHAROITE_ROOT", None)
+        else:
             os.environ["CHAROITE_ROOT"] = было
 
 
 @pytest.fixture(autouse=True)
-def _data_root_in_tmp(tmp_path, monkeypatch):
+def _data_root_in_tmp(tmp_path, monkeypatch, request):
     mod = sys.modules.get("cloud_review")
-    if mod is not None:
+    if mod is not None and request.node.get_closest_marker("настоящий_корень_ревизии") is None:
         # корень данных облачной ревизии — функция канона (№327), подменяем её,
-        # а не бывшую константу модуля
+        # а не бывшую константу модуля. Тест про сам этот корень просит маркер
+        # и получает настоящую функцию: раздевать фикстуру `monkeypatch.undo()`
+        # нельзя — он снимает и изоляцию графа, а с ней тест уходит в рабочий
+        # граф владельца (круг 3 по коду №327, DS I2).
         monkeypatch.setattr(mod, "_root", lambda: tmp_path / "data")
     # Граф по умолчанию — пустой каталог в tmp (существует, чтобы
     # install_profile.graph_enabled не гас из-за отсутствия папки, но без

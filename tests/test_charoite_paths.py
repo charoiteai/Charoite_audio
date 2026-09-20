@@ -169,8 +169,9 @@ def test_действующий_корень_не_переименовывает
     with pytest.raises(RuntimeError):
         charoite_paths.use_data_root(другой)
     assert charoite_paths.use_data_root(из_переменной) == из_переменной.resolve()   # то же — молча
-    charoite_paths.forget_data_root()
-    assert charoite_paths.use_data_root(другой) == другой.resolve()
+    # осознанная смена — одной операцией: окна «корня нет вовсе» не бывает
+    assert charoite_paths.use_data_root(другой, replace=True) == другой.resolve()
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == другой.resolve()
 
 
 def test_названный_корень_уезжает_детям_в_окружение(tmp_path):
@@ -252,4 +253,24 @@ def test_названный_корень_не_отменяется_переме�
     import charoite_paths
     названный = charoite_paths.use_data_root(tmp_path / "названный")
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "перетёртый"))
+    assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный
+
+
+def test_забыть_корень_не_оставляет_детей_без_корня(tmp_path):
+    """Дверь сброса снимает названный корень, но не значение для детей.
+
+    Прямой свидетель самой двери, а не вывод из чужого сценария: в круге 3
+    этой мутации был назначен тест, который её увидеть не мог, — и точечный
+    прогон объявил бы мутацию мёртвой (DS C1 круга 3).
+
+    Снимать заодно и переменную нельзя: между «забыть» и «назвать заново»
+    процесс и его дети отвечали бы корнем КОДА, а в бандловой установке это
+    подписанная read-only папка (DS I1 круга 3).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    названный = charoite_paths.use_data_root(tmp_path / "данные")
+    charoite_paths.forget_data_root()
+    assert charoite_paths._given is None                       # назвать можно заново
+    assert os.environ.get("CHAROITE_ROOT") == str(названный)   # дети не осиротели
     assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == названный

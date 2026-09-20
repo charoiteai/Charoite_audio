@@ -148,7 +148,8 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
 
 
 
-def test_корень_ревизии_у_канона_а_не_своя_копия(tmp_path, monkeypatch):
+@pytest.mark.настоящий_корень_ревизии
+def test_корень_ревизии_у_канона_а_не_своя_копия(tmp_path):
     """Облачная ревизия спрашивает корень у канона — седьмой копии правила нет.
 
     Своя копия читала `CHAROITE_ROOT` сама и теряла `strip()`/`resolve()`:
@@ -157,7 +158,6 @@ def test_корень_ревизии_у_канона_а_не_своя_копия
     Переменную перетираем после названия корня: канон обязан ответить
     названным.
     """
-    monkeypatch.undo()          # снять подмену корня из общей фикстуры conftest
     названный = charoite_paths.use_data_root(tmp_path / "данные")
     os.environ["CHAROITE_ROOT"] = str(tmp_path / "перетёртый")
     assert cloud_review._root() == названный

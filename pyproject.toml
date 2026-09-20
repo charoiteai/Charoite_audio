@@ -65,3 +65,6 @@ timeout = 120
 filterwarnings = [
     "error::pytest.PytestUnhandledThreadExceptionWarning",
 ]
+markers = [
+    "настоящий_корень_ревизии: тест смотрит на сам корень облачной ревизии — общая фикстура его не подменяет",
+]
