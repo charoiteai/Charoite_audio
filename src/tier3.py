@@ -39,7 +39,6 @@ import shutil
 
 import os
 
-import charoite_paths
 import live_gate
 from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged

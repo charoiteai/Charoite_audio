@@ -1195,10 +1195,25 @@ The shipped code and the working files are deliberately separated.
 - **Data** — recordings, transcripts, logs, models, `config/config.yaml`. These
   belong to the user and live in the working folder.
 
-`CHAROITE_ROOT` names the working folder: the app passes it to the daemon on
-launch and every python module reads the root from there
-(`src/charoite_paths.py`). Without the variable the root is derived from the
-file location, so running from a repository behaves exactly as before.
+The entry point names the working folder. The root is owned by the path canon
+(`src/charoite_paths.py`): `use_data_root(path)` sets it for the process,
+`resolve_root` answers with the named root before `CHAROITE_ROOT`, and the
+variable stays the channel for children — nightly scripts, the indexer, the
+cloud worker — which derive the root themselves. The app still passes
+`CHAROITE_ROOT` to the daemon on launch; without it and without a named root
+the root is derived from the file location, so running from a repository
+behaves exactly as before.
+
+The order matters because deriving from the file location answers a different
+question: where the CODE lives. While code and data share one tree the answers
+coincide by accident; from an installed package the same formula yields
+`site-packages`, and the pipeline would silently read defaults instead of the
+owner's settings. So the root is named, not guessed: an empty value is
+refused, a second root different from the active one is refused, and a
+deliberate change goes through `use_data_root(..., replace=True)`. Writing to
+the variable is a publication: the canon remembers what was there before it
+and `forget_data_root()` restores that value — but only while the variable is
+still its own (#327).
 
 The reason is simple: the bundle is signed and read-only. Meeting recordings
 cannot be written into it, and keeping the code in a user folder would mean

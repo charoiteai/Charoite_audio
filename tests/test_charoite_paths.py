@@ -183,7 +183,6 @@ def test_названный_корень_уезжает_детям_в_окруж
     `logs/daemon.lock` (круг 1 по коду №327, DS I2).
     """
     sys.path.insert(0, str(ROOT / "src"))
-    import charoite_paths
     названный = tmp_path / "данные-человека"
     код = (
         f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r})\n"
