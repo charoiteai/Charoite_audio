@@ -825,6 +825,8 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     # крутить ручку, которая его случай не снимает (круг 4, GLM C1).
     assert r.reason == e.refused and "10.1.2.3" in r.reason
     assert s.embed_pending() == 0, "отказ политики — не повод валить сборку векторов"
+    assert s.note == e.refused, \
+        "заметка сборки и выдача говорят об одном состоянии одними словами (круг 5, GLM I1)"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
     assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
     assert r.reason == e.refused, "и после вызова шва причина та же — от источника"

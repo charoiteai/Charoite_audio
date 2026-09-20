@@ -1219,7 +1219,11 @@ class GraphSearch:
             part = queue[i:i + batch]
             embs = self._embed([t for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
             if len(embs) != len(part):
-                self.note = "сервер эмбеддингов не ответил — недобранное дособерём позже"   # (DS I5 / GLM M5 r2)
+                # Причина — та же строка, что видит владелец в выдаче: два канала об
+                # одном состоянии не должны спорить. Заметка винила сервер там, где
+                # отказала настройка (круг 5 по №321, GLM I1).
+                self.note = self._refusal or \
+                    "сервер эмбеддингов не ответил — недобранное дособерём позже"
                 break
             for (p, mtime, idx, total, _), emb in zip(part, embs):
                 if not emb:
