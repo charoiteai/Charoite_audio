@@ -317,3 +317,19 @@ def test_чужая_переменная_без_публикации_остаё�
     assert charoite_paths.resolve_root(str(ROOT / "src" / "audio.py")) == от_приложения.resolve()
     with pytest.raises(RuntimeError):
         charoite_paths.use_data_root(tmp_path / "другой")
+
+
+def test_отзыв_не_трогает_чужую_запись_в_переменной(tmp_path):
+    """Между публикацией и отзывом в переменную мог записать кто-то третий.
+
+    Отзыв возвращает СВОЮ запись, а не откатывает переменную вслепую: иначе
+    чужое значение исчезало бы вовсе (когда до публикации переменной не было)
+    или подменялось прежним. Класс «чужая запись пропала» внесла бы сама
+    правка отзыва (круг 6 по коду №327, DS I1).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    charoite_paths.use_data_root(tmp_path / "наш")
+    os.environ["CHAROITE_ROOT"] = str(tmp_path / "от-третьего")   # чужая запись
+    charoite_paths.forget_data_root()
+    assert os.environ.get("CHAROITE_ROOT") == str(tmp_path / "от-третьего")

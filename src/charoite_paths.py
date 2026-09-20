@@ -141,7 +141,7 @@ def use_data_root(path, *, replace: bool = False) -> pathlib.Path:
 
 
 def forget_data_root() -> None:
-    """Забыть названный корень, оставив его значение детям.
+    """Отозвать публикацию корня: переменная — как до неё, процесс — без корня.
 
     Дверь для тех, кто следом называет корень заново или заканчивает работу:
     тест между прогонами, утилита на выходе. Штатная смена корня идёт не
@@ -164,10 +164,16 @@ def forget_data_root() -> None:
     with _lock:
         _given = None
         if _published is not None:
-            if _before_env is None:
-                os.environ.pop("CHAROITE_ROOT", None)
-            else:
-                os.environ["CHAROITE_ROOT"] = _before_env
+            # Возвращаем только СВОЮ запись: если между публикацией и отзывом
+            # в переменную положил кто-то третий, его значение — не наше дело.
+            # Безусловный откат выбрасывал бы чужую запись (при пустом
+            # `_before_env` — вовсе), а это новый класс «чужое пропало»
+            # (круг 6 по коду №327, DS I1).
+            if os.environ.get("CHAROITE_ROOT") == _published:
+                if _before_env is None:
+                    os.environ.pop("CHAROITE_ROOT", None)
+                else:
+                    os.environ["CHAROITE_ROOT"] = _before_env
             _published = None
 
 
