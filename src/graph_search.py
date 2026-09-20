@@ -62,8 +62,8 @@ import dossier  # noqa: E402
 import frontmatter  # noqa: E402
 import graph_nodes  # noqa: E402
 import graphs  # noqa: E402
+from model_seam import Embedder  # noqa: E402
 import redirects  # noqa: E402
-import llm as _llm  # noqa: E402
 import safe_write  # noqa: E402
 import uuid  # noqa: E402
 
@@ -782,8 +782,9 @@ def _unit(vec: Sequence[float]) -> array.array:
 
 
 class GraphSearch:
-    """Индекс одного графа и поиск по нему. Один экземпляр на процесс и граф
-    (см. shared()); обновление индекса и поиск — из разных потоков.
+    """Индекс одного графа и поиск по нему. Один экземпляр на процесс, граф и
+    модель эмбеддингов (см. shared()); обновление индекса и поиск — из разных
+    потоков.
 
     Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
     связей, охват обхода). После инициализации его пишет ТОЛЬКО `_publish` —
@@ -813,16 +814,21 @@ class GraphSearch:
     полузаписанной пары; писателей сериализует flock рядом с манифестом.
     """
 
-    def __init__(self, graph_dir: pathlib.Path, cfg: dict | None = None, *,
+    def __init__(self, graph_dir: pathlib.Path, *,
+                 embedder: Embedder,
                  data_dir: pathlib.Path | None = None,
                  exclude: Iterable[str] = EXCLUDE_DIRS,
-                 embed: Callable[[list[str], float], list[list[float]]] | None = None,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
-        self.cfg = cfg or {}
         self.exclude = tuple(exclude)
         self._now = now
-        self._embed_fn = embed
+        self._embedder = embedder
+        # Причина отказа — СЛОВА источника, а не бит. Политика говорит «нельзя»
+        # по трём разным настройкам, и совет про allow_remote снимает только
+        # одну из них: на рубильнике офлайна и на открытом http наружу владелец
+        # правил бы ручку, которая ничего не меняет. Слова у способности уже
+        # есть — их надо донести, а не заменить константой (круг 4, GLM C1).
+        self._refusal = embedder.refused
         self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -835,7 +841,6 @@ class GraphSearch:
         self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
         self._vecs_tried_at: float | None = None   # None — не пробовали: часы могут считать от нуля (DS M3 r3)
-        self._vecs_key: str | None = None          # ключ, под который собраны векторы в памяти
         self._manifest_seen = 0.0   # mtime манифеста при последней загрузке: чужая запись — перечитать
         self.note = ""              # последнее «почему не сделали» для CLI и журнала
 
@@ -885,8 +890,12 @@ class GraphSearch:
 
     def cache_key(self) -> str:
         """Всё, что определяет содержимое кэша, кроме файлов: модель эмбеддингов и
-        правила нарезки. Сменилось — кэш холодный целиком (круг 2 по #577, DS I2)."""
-        model = str((self.cfg.get("sufler") or {}).get("embed_model", "bge-m3:latest"))
+        правила нарезки. Сменилось — кэш холодный целиком (круг 2 по #577, DS I2).
+
+        Имя берётся у шва, а не у конфига: считает векторы он, ему и подписывать.
+        Пока имя выводилось здесь отдельно, подменённый векторизатор писал чужое
+        пространство под привычным именем — и кэш врал молча."""
+        model = self._embedder.model
         return f"{model}|chunks{CHUNK_VERSION}|{CHUNK_CHARS}|{MAX_CHUNKS}|{MAX_CHUNKS_NODE}"
 
     def refresh(self, force: bool = False) -> bool:
@@ -1021,13 +1030,24 @@ class GraphSearch:
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
-        if self._embed_fn is not None:
-            return self._embed_fn(texts, timeout)
-        if not self.cfg:
-            return []
+        """Векторы через шов. Транспорт лёг — отдаём пусто и идём лексикой.
+
+        Ловим ровно `OSError`: всё, чем requests сообщает о сети (отказ
+        соединения, таймаут, оборванный ответ), наследует именно его. Ошибка
+        проводки — не той сигнатуры векторизатор, опечатка в имени поля — это
+        `TypeError`/`AttributeError`, и она обязана долететь до человека.
+        Широкий `except` здесь означал бы недели подсказок без семантики, в
+        которых ни один тест не покраснеет: «сервер занят» и «я сломал шов»
+        выглядят для вызывающего одинаково.
+        """
         try:
-            return _llm.embed(self.cfg, texts, keep_alive="30m", timeout=timeout)
-        except Exception:  # noqa: BLE001 — сервер занят или лежит: лексика и без него
+            return self._embedder.run(texts, timeout)
+        except OSError as exc:
+            # Вид отказа запоминаем: для контура это один исход «векторов нет»,
+            # а владельцу нужны разные слова — «сервер занят» и «вы запретили
+            # этот адрес» ведут чинить разное.
+            if getattr(exc, "policy", False) and not self._refusal:
+                self._refusal = str(exc)
             return []
 
     def load_vectors(self) -> int:
@@ -1035,7 +1055,6 @@ class GraphSearch:
         неизменяемый плоский float32. Неудача не защёлкивается — повтор не чаще
         VEC_RETRY_S: защёлка гасила семантику на всю встречу после одного
         совпадения с писателем (круг 1 по #577, DS I1 / GLM I1)."""
-        self._drop_foreign_vectors()
         try:
             seen = self._vec_manifest.stat().st_mtime
         except OSError:
@@ -1063,29 +1082,6 @@ class GraphSearch:
             self._vecs_tried_at = None
             self._manifest_seen = seen
             return len(self._vecs)
-
-    def _drop_foreign_vectors(self) -> None:
-        """Ключ кэша сменился в живом процессе (модель эмбеддингов в конфиге) —
-        векторы в памяти считаны другой моделью, косинус с вектором запроса новой
-        — шум, а не свидетельство (DS I1 r3). Сброс до чтения кэша и до сборки.
-        Сегодня это страховка: демон читает cfg один раз на старте и не мутирует
-        его, чужой кэш на диске под старым ключом сюда не проходит; триггер
-        станет боевым с хот-релоадом конфига (GLM r5, критика 2)."""
-        key = self.cache_key()
-        with self._lock:
-            if self._vecs_key not in (None, key):
-                self._reset_vectors()
-            self._vecs_key = key
-
-    def _reset_vectors(self) -> None:
-        """До холодного состояния — все поля памяти о кэше разом: штамп неудачи
-        поштучно забывали, и после смены ключа поиск до VEC_RETRY_S шёл без
-        векторов при готовом кэше на диске (DS M1 r4)."""
-        with self._lock:
-            self._vecs.clear()
-            self._vecs_loaded = False
-            self._manifest_seen = 0.0
-            self._vecs_tried_at = None
 
     def _read_cache(self, retry: bool):
         """Пара «манифест → блоб» и mtime прочитанного манифеста. Блоб исчез между
@@ -1223,7 +1219,11 @@ class GraphSearch:
             part = queue[i:i + batch]
             embs = self._embed([t for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
             if len(embs) != len(part):
-                self.note = "сервер эмбеддингов не ответил — недобранное дособерём позже"   # (DS I5 / GLM M5 r2)
+                # Причина — та же строка, что видит владелец в выдаче: два канала об
+                # одном состоянии не должны спорить. Заметка винила сервер там, где
+                # отказала настройка (круг 5 по №321, GLM I1).
+                self.note = self._refusal or \
+                    "сервер эмбеддингов не ответил — недобранное дособерём позже"
                 break
             for (p, mtime, idx, total, _), emb in zip(part, embs):
                 if not emb:
@@ -1344,7 +1344,18 @@ class GraphSearch:
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
         status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
-        reason = "" if status is not Verdict.UNVERIFIED else (REASON_CACHE if sem_used else REASON_EMBED)
+        if status is not Verdict.UNVERIFIED:
+            reason = ""
+        elif self._refusal:
+            reason = self._refusal        # слова того, кто отказал, а не наша догадка
+        elif sem_used or not self.vectors:
+            # Либо семантика была, но покрытия не хватило, либо кэша нет вовсе
+            # и шов не спрашивали ни разу. Сказать во втором случае «модель
+            # занята» — утверждение о мире, которого мы не проверяли: Ollama
+            # жива, к ней просто не обращались (круг 4, DS C1).
+            reason = REASON_CACHE
+        else:
+            reason = REASON_EMBED
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
@@ -1541,14 +1552,24 @@ _shared: dict[str, GraphSearch] = {}
 _shared_lock = threading.Lock()
 
 
-def shared(cfg: dict, graph_dir: pathlib.Path | None = None) -> GraphSearch | None:
-    """Один индекс на процесс и граф; None — граф не настроен."""
+def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
+           embedder: Embedder) -> GraphSearch | None:
+    """Один индекс на процесс, граф и модель; None — граф не настроен.
+
+    Модель — часть ключа, потому что она часть содержимого: под её именем
+    подписаны и векторы в памяти, и кэш на диске. Пока ключом был только путь,
+    второй позвавший молча получал индекс, собранный чужим векторизатором, и
+    передать свой уже не мог — параметр оказывался совещательным.
+
+    Способность приходит параметром: индекс не имеет права знать, откуда
+    берутся модели, — за этим и стоит гейт раскладки.
+    """
     gdir = graph_dir or graphs.graph_dir(cfg)
     if gdir is None:
         return None
-    key = str(gdir)
+    key = f"{gdir}\n{embedder.model}"
     with _shared_lock:
         gs = _shared.get(key)
         if gs is None:
-            gs = _shared[key] = GraphSearch(gdir, cfg)
+            gs = _shared[key] = GraphSearch(gdir, embedder=embedder)
         return gs

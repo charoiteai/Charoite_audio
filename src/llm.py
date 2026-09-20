@@ -37,6 +37,8 @@ import requests
 import charoite_paths
 import model_lease
 import privacy
+from model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
+                        SeamTransportError, embed_model_name)
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
 # на занятой модели отвечает 503 за ~250 мс вместо того, чтобы поставить
@@ -176,9 +178,73 @@ def cloud_key(cfg: dict) -> str:
 MLX_MAX_TOKENS_DEFAULT = 4096
 
 
+#: Сколько Ollama держит модель эмбеддингов в памяти после запроса. Контуры
+#: встречи спрашивают её десятки раз за час: без резидентности каждый вопрос
+#: владельца после паузы платил бы загрузку 1.2 ГБ внутри своего таймаута, а
+#: таймаут короткий — семантика просто не успевала бы.
+EMBED_KEEP_ALIVE = "30m"
+
+
+_said: set[str] = set()
+
+
+def _say_once(text: str) -> None:
+    """Сказать владельцу один раз за жизнь процесса.
+
+    Отказ политики повторяется на каждом вопросе; в журнале встречи это был бы
+    шум, из-за которого настоящую причину не видно.
+    """
+    if text in _said:
+        return
+    _said.add(text)
+    print(text, file=sys.stderr, flush=True)
+
+
+def embedder(cfg: dict, *, model: str | None = None,
+             keep_alive: str | None = EMBED_KEEP_ALIVE) -> Embedder:
+    """Собрать векторизатор для того, кому нельзя знать про Ollama.
+
+    Отдаёт пару «функция и имя»: имя нужно получателю, чтобы подписать кэш, а
+    считать он всё равно не умеет. Обе половины родом из одного вызова, поэтому
+    подписать чужие векторы привычным именем нечем.
+
+    Пустой конфиг — не «возьми дефолты», а «моделей нет»: так индексатор без
+    `config.yaml` и демо-прогон бенча остаются в лексике вместо того, чтобы
+    стучаться на localhost пачками. Эту гарантию раньше держал гард внутри
+    поиска; теперь она у того, кто вообще знает про сервер.
+    """
+    if not cfg:
+        if model is not None:
+            raise ValueError(
+                "модель названа, а конфига нет: считать её негде — "
+                "пустой конфиг значит «моделей нет»")
+        return Embedder(lambda texts, timeout: [], NO_MODEL)
+    name = embed_model_name(cfg, model)
+
+    # Спрашиваем политику сразу, при сборке: иначе владелец узнает о своей
+    # настройке только с первым вектором, а на пустом кэше поиск за встречу
+    # не спросит ни одного — отказ так и останется неназванным (круг 2, DS I5).
+    refused = ""
+    try:
+        privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as exc:
+        refused = str(exc)
+        _say_once(f"эмбеддинги недоступны: {exc}")
+
+    def run(texts: list[str], timeout: float) -> list[list[float]]:
+        return embed(cfg, texts, model=name, keep_alive=keep_alive, timeout=timeout)
+
+    return Embedder(run, name, refused)
+
+
 def embed(cfg: dict, texts: list[str], model: str | None = None,
           keep_alive: str | None = None, timeout: float = 20) -> list[list[float]]:
     """Эмбеддинги через /api/embed. Пустой список — сервер не ответил векторами.
+
+    Прямой вызов — для разовых контуров, которым резидентность не нужна
+    (дежавю на встрече спрашивает раз в сорок секунд и делит слот с чат-моделью).
+    Всё, что векторизует регулярно, получает `embedder()`: он несёт и имя, и
+    время жизни модели.
 
     Всегда Ollama (privacy.llm_base_url), независимо от llm.engine:
     mlx_lm.server эмбеддингов не отдаёт, bge-m3 остаётся здесь.
@@ -188,13 +254,23 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
     проход, чем стоять заблокированным (замер дежавю).
     """
     payload: dict = {
-        "model": model or (cfg.get("sufler") or {}).get("embed_model", "bge-m3:latest"),
+        "model": embed_model_name(cfg, model),
         "input": texts,
     }
     if keep_alive:
         payload["keep_alive"] = keep_alive
-    r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
-                      json=payload, timeout=timeout)
+    try:
+        url = privacy.llm_base_url(cfg)
+    except privacy.PrivacyRefused as exc:
+        # Отказ политики — такой же исход «векторов не будет», как оборванная
+        # сеть, и объявить это обязана дверь, а не каждый вызывающий: через
+        # неё ходят и шов, и дежавю, и ревизия ядер (круг 2, DS I4 / GLM I1).
+        _say_once(f"эмбеддинги недоступны: {exc}")
+        raise SeamTransportError(str(exc), policy=True) from exc
+    try:
+        r = requests.post(url + "/api/embed", json=payload, timeout=timeout)
+    except OSError as exc:                         # отказ, таймаут, обрыв
+        raise SeamTransportError(str(exc)) from exc
     if r.status_code != 200:
         # 503 на занятом сервере приходит с не-JSON телом — раньше здесь
         # падал ValueError из r.json(), а не честное «векторов нет»

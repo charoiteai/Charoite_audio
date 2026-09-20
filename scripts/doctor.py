@@ -132,6 +132,13 @@ def check_config() -> dict:
     return cfg
 
 
+def _tagged(name: str) -> str:
+    """Полное имя модели с тегом: Ollama держит `nomic` и `nomic:latest` за
+    разные имена, и сверка по префиксу хвалила бы модель, которой сервер
+    ответит 404 (круг 1 по коду, GLM M5; круг 2 — то же для чат-модели)."""
+    return name if ":" in name else f"{name}:latest"
+
+
 def check_ollama(cfg: dict) -> None:
     # На облачном движке чат-модели локально нет по замыслу, но Ollama всё
     # равно нужна: на ней живут эмбеддинги. Проверяем её напрямую и не
@@ -157,15 +164,25 @@ def check_ollama(cfg: dict) -> None:
     main = "" if cloud else str(cfg.get("llm", {}).get("model", ""))
     if cloud:
         line(OK, "чат идёт через облачный шлюз — локальная чат-модель не нужна")
-    if main and not any(m.startswith(main.split(":")[0]) for m in models):
+    if main and _tagged(main) not in models:
         line(FAIL, f"модель llm.model «{main}» не найдена", f"ollama pull {main}")
     elif main:
         line(OK, f"основная модель: {main}")
-    if any(m.startswith("bge-m3") for m in models):
-        line(OK, "bge-m3 (семантический поиск)")
+    # Имя спрашиваем у шва способности, а не у литерала: владелец вправе
+    # поставить другую модель в `sufler.embed_model`, и доктор про неё обязан
+    # знать — иначе он ругается на отсутствие той, которой никто не пользуется,
+    # и хвалит ту, которой не считает. Модуль шва без зависимостей: доктор
+    # обязан печатать рецепт и на машине, где ещё нечем ходить в сеть.
+    import model_seam as _seam
+    want = _seam.embed_model_name(cfg)
+    # Сверяем с тегом: `nomic` и `nomic-embed-text:latest` — разные имена для
+    # Ollama, и по префиксу доктор похвалил бы модель, которой `/api/embed`
+    # ответит 404 (круг 1 по коду, GLM M5).
+    if _tagged(want) in models:
+        line(OK, f"{want} (семантический поиск)")
     else:
-        line(WARN, "bge-m3 не установлена — поиск будет чисто лексическим",
-             "ollama pull bge-m3   # ~1.2 ГБ")
+        line(WARN, f"{want} не установлена — поиск будет чисто лексическим",
+             f"ollama pull {want}")
 
 
 def check_stt(cfg: dict) -> None:

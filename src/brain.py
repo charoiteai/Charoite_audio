@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import graph_search  # noqa: E402
+import llm  # noqa: E402
 
 MemoryNotReady = graph_search.NotReady          # индекс прогревается — попробовать позже
 MemoryUnavailable = graph_search.Unavailable    # граф не настроен — памяти не будет
@@ -129,7 +130,7 @@ def warm(cfg: dict) -> graph_search.GraphSearch | None:
     """Прогрев на старте демона: обход графа и векторы блоков из кэша. None —
     граф не настроен. Вызывать из фонового потока: холодный обход рабочего
     графа — секунды, первый вопрос владельца их ждать не должен."""
-    mem = graph_search.shared(cfg)
+    mem = graph_search.shared(cfg, embedder=llm.embedder(cfg))
     if mem is None:
         return None
     mem.refresh(force=True)
@@ -149,7 +150,7 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     деградирует по-своему и различает «подождать» и «не будет» (GLM M8 по #577).
     `timeout` — потолок на вектор запроса: половина бюджета вызывающего, чтобы
     лексика успела в любом случае."""
-    mem = graph_search.shared(cfg)
+    mem = graph_search.shared(cfg, embedder=llm.embedder(cfg))
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars,
