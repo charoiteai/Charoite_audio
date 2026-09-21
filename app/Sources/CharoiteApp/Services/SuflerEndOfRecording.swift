@@ -39,7 +39,14 @@ extension SuflerService {
     /// встреча поверх законченной; именно так автостоп (тишина/потолок)
     /// превратился бы в конвейер пустых записей каждые пять минут, поэтому
     /// автостоп и идёт через обычный stop(), выставляющий userStopped.
-    enum RestartDecision { case none, restart, giveUp }
+    /// Решение и ЕГО ПОВОД — одно значение.
+    ///
+    /// `.giveUp` наступает по двум разным причинам: демон назвал
+    /// детерминированный отказ либо не помогли три попытки. Пока повод жил
+    /// отдельным полем, ветка сервиса переспрашивала не то, чем решение
+    /// принималось, и при незнакомой причине с исчерпанными попытками
+    /// показывала чужой замороженный текст (круг 3 по коду №332, DS C1).
+    enum RestartDecision: Equatable { case none, restart, giveUp, giveUpFatal(String) }
 
     /// Причина, названная самим демоном: повтор её не лечит.
     ///
@@ -54,7 +61,7 @@ extension SuflerService {
     nonisolated static func restartDecision(wasRecording: Bool, userStopped: Bool,
                                             attempts: Int,
                                             daemonReason: String? = nil) -> RestartDecision {
-        if let daemonReason, fatalReasons.contains(daemonReason) { return .giveUp }
+        if let daemonReason, fatalReasons.contains(daemonReason) { return .giveUpFatal(daemonReason) }
         guard wasRecording, !userStopped else { return .none }
         return attempts < 3 ? .restart : .giveUp
     }

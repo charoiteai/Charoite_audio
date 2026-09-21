@@ -35,7 +35,14 @@ final class AutostopTests: XCTestCase {
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: true, userStopped: false,
                                           attempts: 0, daemonReason: "root_unnamed"),
-            .giveUp, "детерминированный отказ не должен тратить попытки перезапуска")
+            .giveUpFatal("root_unnamed"),
+            "детерминированный отказ не должен тратить попытки перезапуска")
+        // повод отказа — часть решения: ветка сервиса не может переспросить
+        // другое поле и показать чужой текст (круг 3, DS C1)
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 3, daemonReason: "нечто новое"),
+            .giveUp, "исчерпанные попытки — это НЕ названный демоном отказ")
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: true, userStopped: false,
                                           attempts: 0, daemonReason: "нечто новое"),
