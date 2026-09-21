@@ -1329,6 +1329,38 @@ def _без_ленивого(node: ast.AST):
         yield from _без_ленивого(c)
 
 
+def _хелперы_корня(tree: ast.Module) -> set[str]:
+    """Имена функций модуля, которые сами спрашивают корень (прямо или через
+    такой же хелпер).
+
+    Снимок делается не только прямым вызовом канона: `_CFG = _cfg()` на
+    верхнем уровне `src/mcp_server.py` читает конфиг по неназванному корню —
+    `_cfg()` внутри зовёт `_root()`, а тот канон. Граница «свой хелпер
+    статически не виден» была названа честно, но живой случай нашёлся сразу
+    (круг по решению №332, DS C3; замер: форма возвращала пусто).
+
+    Транзитивность считается до неподвижной точки: хелпер, зовущий хелпера,
+    тоже считается спрашивающим.
+    """
+    тела = {n.name: n for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    свои: set[str] = set()
+    менялось = True
+    while менялось:
+        менялось = False
+        for имя, узел in тела.items():
+            if имя in свои:
+                continue
+            for v in ast.walk(узел):
+                if not isinstance(v, ast.Call):
+                    continue
+                зовут = v.func.attr if isinstance(v.func, ast.Attribute) else getattr(v.func, "id", "")
+                if зовут == DATA_ROOT_CALL or зовут in свои:
+                    свои.add(имя); менялось = True
+                    break
+    return свои
+
+
 def _root_snapshots(tree: ast.Module) -> list[int]:
     """Строки, где ответ канона о корне ДАННЫХ запоминается НА ИМПОРТЕ.
 
@@ -1345,6 +1377,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     снимок на импорте верен весь процесс. Ловится только корень данных.
     """
     out: list[int] = []
+    свои_хелперы = _хелперы_корня(tree)
     for node in _на_импорте(tree.body):
         # «связать имя с ответом» — не только присваивание: моржовый оператор и
         # значение по умолчанию у аргумента вычисляются при импорте ровно так же
@@ -1369,7 +1402,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
             if not isinstance(inner, ast.Call):
                 continue
             имя = inner.func.attr if isinstance(inner.func, ast.Attribute) else getattr(inner.func, "id", "")
-            if имя == DATA_ROOT_CALL:
+            if имя == DATA_ROOT_CALL or имя in свои_хелперы:
                 out.append(node.lineno)
                 break
     return sorted(set(out))
