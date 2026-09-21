@@ -1224,6 +1224,18 @@ answered «no». The layout guard knows this shape as `snapshot` and counts
 everything executed at import time — a class body, an `if`, a `try` — except
 `if __name__ == "__main__"`, which does not run on import at all.
 
+The guard reads text, so its reach ends where text stops being the evidence,
+and the boundary is named rather than implied: a method called on import
+(`X = A().root()`), a wrapper taken as a value (`functools.partial`), and a
+helper imported from another module all pass it silently. Those are caught by
+behaviour instead — the witness in `tests/test_backup_offload.py`, which asks
+every registered module for the root after the entry point has renamed it and
+then looks for the *previous* root as a value anywhere in the engine — and,
+once the canon starts refusing an unnamed root, by the refusal itself. Chasing
+each new way of writing the same freeze with one more heuristic is how the rule
+spent five review rounds; the shapes list stays a cheap detector of the common
+cases, not the guarantee.
+
 The order matters because deriving from the file location answers a different
 question: where the CODE lives. While code and data share one tree the answers
 coincide by accident; from an installed package the same formula yields

@@ -1238,12 +1238,18 @@ def _заведомо_мертва(node: ast.stmt) -> bool:
     `if TYPE_CHECKING:` — типовой приём для импортов ради аннотаций, `if False:`
     и `if 0:` — выключенный код. Считать их исполняемыми значит красить гейт на
     том, чего в рантайме нет (круг 3 по коду №329, DS I5).
+
+    Ложность условия считает сам питон (`literal_eval`), а не перечисление
+    узлов: `if []:` и `if ():` — то же выключение, но это `List` и `Tuple`, и
+    предикат по `Constant` их не видел (круг 5 по коду №329, DS M3).
     """
     if not isinstance(node, (ast.If, ast.While)):
         return False
     т = node.test
-    if isinstance(т, ast.Constant) and not т.value:
-        return True
+    try:
+        return not ast.literal_eval(т)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        pass                      # условие не известно на импорте — судим по форме ниже
     if isinstance(т, ast.Name):
         return т.id == "TYPE_CHECKING"
     # `typing.TYPE_CHECKING` — та же идиома в форме атрибута (круг 4, GLM I3)
@@ -1320,45 +1326,108 @@ def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
 
 
 def _без_ленивого(node: ast.AST):
-    """Обход узла, не заходящий в ленивые тела: лямбда и включения считаются
-    при ВЫЗОВЕ, а не при импорте (круг 4 по коду №329, GLM I2)."""
-    if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+    """Обход узла, не заходящий в ленивые тела.
+
+    Ленивы лямбда, тело функции и ГЕНЕРАТОР: `(_root() / n for n in ...)` не
+    спрашивает корень, пока его не начнут перебирать (круг 4 по коду №329,
+    GLM I2; генератор — круг 5, DS M2). Списковое, множественное и словарное
+    включения, наоборот, вычисляются на месте и остаются под правилом.
+
+    Граница названа честно: немедленно вызванная лямбда `(lambda: канон())()`
+    корень на импорте спрашивает, а правило её не видит — ловит поведение.
+    """
+    if isinstance(node, (ast.Lambda, ast.GeneratorExp, ast.FunctionDef, ast.AsyncFunctionDef)):
         return
     yield node
     for c in ast.iter_child_nodes(node):
         yield from _без_ленивого(c)
 
 
-def _хелперы_корня(tree: ast.Module) -> set[str]:
-    """Имена функций модуля, которые сами спрашивают корень (прямо или через
-    такой же хелпер).
+def _имя(узел: ast.expr) -> str:
+    """Короткое имя ссылки на функцию: `f` и `mod.f` — оба «f»."""
+    return узел.attr if isinstance(узел, ast.Attribute) else getattr(узел, "id", "")
 
-    Снимок делается не только прямым вызовом канона: `_CFG = _cfg()` на
-    верхнем уровне `src/mcp_server.py` читает конфиг по неназванному корню —
-    `_cfg()` внутри зовёт `_root()`, а тот канон. Граница «свой хелпер
-    статически не виден» была названа честно, но живой случай нашёлся сразу
-    (круг по решению №332, DS C3; замер: форма возвращала пусто).
 
-    Транзитивность считается до неподвижной точки: хелпер, зовущий хелпера,
-    тоже считается спрашивающим.
+def _спросит_корень(call: ast.Call, свои: set[str]) -> bool:
+    """Этот вызов даст ответ канона о корне данных.
+
+    Одно правило на все места, где вопрос задаётся (замыкание имён и проба
+    формы): раньше выражение «имя вызываемого» стояло тремя дословными
+    копиями, и они расходились по строгости (круг 5 по коду №329, DS I1).
+
+    Имя канона засчитывается и через точку (`charoite_paths.resolve_root(...)`
+    — законная запись), а СВОИ имена — только голым вызовом: у чужого объекта
+    метод-тёзка живёт своей жизнью, и `json.load(...)` не становится снимком
+    оттого, что в модуле есть свой `load`, читающий корень.
     """
-    тела = {n.name: n for n in ast.walk(tree)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    свои: set[str] = set()
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr == DATA_ROOT_CALL
+    имя = getattr(call.func, "id", "")
+    return имя == DATA_ROOT_CALL or имя in свои
+
+
+def _имена_корня(tree: ast.Module) -> set[str]:
+    """Имена МОДУЛЬНОГО уровня, вызов которых даёт ответ канона о корне данных.
+
+    Смысл «это спросит корень» имя получает двумя способами, и оба считаются
+    ОДНИМ замыканием до неподвижной точки, а не двумя детективами:
+
+    * функция модуля зовёт канон или уже известное имя — `_CFG = _cfg()` на
+      верхнем уровне `src/mcp_server.py` читал конфиг по неназванному корню
+      (живой дефект, круг по решению №332, DS C3);
+    * имя связано с каноном без вызова — `_r = resolve_root`, а следом
+      `X = _r(__file__)`: полноценный снимок, у которого на месте вызова стоит
+      псевдоним (круг 5 по коду №329, GLM I2).
+
+    Область видимости — модуль, и только он. Раньше таблица строилась обходом
+    всего дерева (`ast.walk`), из-за чего методы классов и вложенные функции
+    ложились в неё по ГОЛОМУ имени и затирали друг друга: два класса с методом
+    `model()` — одно ведро, выигрывал объявленный позже. Это давало промах в
+    одну сторону и ложную красноту в другую — на честном коде, где снимка нет
+    (круг 5 по коду №329, GLM I1). Питон различает эти имена скоупом, значит и
+    таблица обязана: в неё идут только определения самого модуля.
+
+    Границы, которые гейт не закрывает и закрывать не будет (их ловит не текст,
+    а поведение — свидетель `tests/test_backup_offload.py` и отказ канона на
+    неназванном корне, №332):
+
+    * метод класса, спрашивающий корень, при вызове на импорте (`X = A().m()`);
+    * обёртка над каноном как ЗНАЧЕНИЕ — `functools.partial(resolve_root)`;
+    * хелпер, импортированный из чужого модуля (замыкание не выходит за файл).
+    """
+    # тело класса при импорте исполняется, и `_на_импорте` честно отдаёт его
+    # содержимое — но объявленные там имена принадлежат КЛАССУ, а не модулю:
+    # позвать их именем модуля нельзя, и в таблице модульных имён им не место
+    в_классе = {id(n) for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for n in c.body}
+    исполняется = [n for n in _на_импорте(tree.body) if id(n) not in в_классе]
+    функции = {n.name: n for n in исполняется
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    псевдонимы: dict[str, str] = {}
+    for n in исполняется:
+        цели = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        значение = getattr(n, "value", None)
+        if isinstance(значение, (ast.Name, ast.Attribute)) and len(цели) == 1 and isinstance(цели[0], ast.Name):
+            псевдонимы[цели[0].id] = _имя(значение)
+
+    знают: set[str] = set()
     менялось = True
     while менялось:
         менялось = False
-        for имя, узел in тела.items():
-            if имя in свои:
+        for имя, узел in функции.items():
+            if имя in знают:
                 continue
-            for v in ast.walk(узел):
-                if not isinstance(v, ast.Call):
-                    continue
-                зовут = v.func.attr if isinstance(v.func, ast.Attribute) else getattr(v.func, "id", "")
-                if зовут == DATA_ROOT_CALL or зовут in свои:
-                    свои.add(имя); менялось = True
-                    break
-    return свои
+            # тело, и только оно: корень в ЗНАЧЕНИИ ПО УМОЛЧАНИЮ или в
+            # декораторе замораживается на строке самого `def` — она и
+            # краснеет, а вызов такой функции свежего ответа уже не даёт.
+            # Ленивое внутри тела (`return lambda: канон()`) тоже не считается
+            # вопросом: спросит тот, кто вызовет лямбду (круг 5, DS «вопрос 1»)
+            if any(isinstance(v, ast.Call) and _спросит_корень(v, знают)
+                   for st in узел.body for v in _без_ленивого(st)):
+                знают.add(имя); менялось = True
+        for имя, источник in псевдонимы.items():
+            if имя not in знают and (источник == DATA_ROOT_CALL or источник in знают):
+                знают.add(имя); менялось = True
+    return знают
 
 
 def _root_snapshots(tree: ast.Module) -> list[int]:
@@ -1377,7 +1446,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     снимок на импорте верен весь процесс. Ловится только корень данных.
     """
     out: list[int] = []
-    свои_хелперы = _хелперы_корня(tree)
+    знают_корень = _имена_корня(tree)
     for node in _на_импорте(tree.body):
         # «связать имя с ответом» — не только присваивание: моржовый оператор и
         # значение по умолчанию у аргумента вычисляются при импорте ровно так же
@@ -1391,6 +1460,10 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
             части += node.args.defaults + [k for k in node.args.kw_defaults if k]
             части += node.decorator_list
         else:
+            # декоратор КЛАССА вычисляется на импорте ровно как декоратор
+            # функции; класс идёт этой веткой, и без строки ниже правило знало
+            # только половину случая (круг 5 по коду №329, DS I3)
+            части += getattr(node, "decorator_list", [])
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 части.append(node.value)
             части += [n for n in _без_ленивого(node) if isinstance(n, ast.NamedExpr)]
@@ -1401,8 +1474,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
         for inner in [i for часть in части for i in _без_ленивого(часть)]:
             if not isinstance(inner, ast.Call):
                 continue
-            имя = inner.func.attr if isinstance(inner.func, ast.Attribute) else getattr(inner.func, "id", "")
-            if имя == DATA_ROOT_CALL or имя in свои_хелперы:
+            if _спросит_корень(inner, знают_корень):
                 out.append(node.lineno)
                 break
     return sorted(set(out))
