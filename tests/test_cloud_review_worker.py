@@ -255,8 +255,8 @@ def test_deleting_a_node_without_author_section_is_a_violation(tmp_path):
     person = graph / "Люди" / "Иванов.md"
     person.parent.mkdir()
     person.write_text("# Иванов\n- **Роль:** аналитик\n", encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    cloud_review.snapshot(graph)
+    cloud_review.backup_graph(graph, "2026-07-15_1400")
     def renamed(pen):                                       # «переименовал»
         (pen / "Люди" / "Иванов.md").rename(pen / "Люди" / "Иванов И.md")
 
@@ -978,7 +978,6 @@ def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     transcript, rev, log = _meeting(tmp_path)
-    doc = graph / "Документация" / "Стенограммы встреч" / f"{stamp}.md"
 
     class Result:
         returncode = 0
@@ -1394,7 +1393,6 @@ def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch)
         kwargs["stdout"].write(_REPORT)
         return Result()
 
-    real = cloud_review.safe_write.write_text
     def flaky(path, text, *a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)

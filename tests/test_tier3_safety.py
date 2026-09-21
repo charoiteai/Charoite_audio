@@ -31,7 +31,6 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
-import nli  # noqa: E402
 import tier3  # noqa: E402
 
 # Ровно тот формат, который пишет graph_updater.upsert_core:
