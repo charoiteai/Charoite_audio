@@ -22,13 +22,22 @@ from stt import STT  # noqa: E402
 from charoite_paths import resolve_root
 from config_loader import load_user_or_example
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 
 SR = 16000
 
 
 def main():
-    cfg = load_user_or_example(ROOT)
+    cfg = load_user_or_example(_root())
     frames: list[np.ndarray] = []
     stt_box: dict = {}
     t = threading.Thread(target=lambda: stt_box.update(stt=STT(cfg)), daemon=True)

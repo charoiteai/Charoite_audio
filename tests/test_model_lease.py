@@ -23,6 +23,7 @@ import textwrap
 import time
 
 import pytest
+import charoite_paths
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -285,7 +286,7 @@ def test_reader_failure_is_reported_once_and_does_not_block_restart(tmp_path, mo
     """Сенсор недоступен (каталог не читается, ошибка внутри читателя) — это не
     «никого»: одна строка в лог, перезапуск решается как прежде. Молча
     выключенная защита неотличима от честной пустоты (I3 DS / M2 GLM)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "_sensor_reported", False)
     monkeypatch.setattr(llm_health, "_sensor_worked", False)     # ветка «не работал ни разу»: флаги — на процесс
     monkeypatch.setattr(model_lease, "live", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("нет доступа")))
@@ -404,7 +405,7 @@ def test_slow_server_with_a_live_lease_is_not_restarted(tmp_path, monkeypatch):
     """Грейс истёк, проба SLOW — но у нашего процесса живая аренда: сервер
     занят длинной работой, а не завис. Перезапуска нет, вызывающий идёт в
     очередь (True). Раньше здесь тикала константа и убивала работу (12.08)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.SLOW)
     monkeypatch.setattr(llm_health, "_restart",
                         lambda cfg, log, **kw: pytest.fail("живую работу перезапуском не убивают"))
@@ -421,7 +422,7 @@ def test_slow_server_with_a_live_lease_is_not_restarted(tmp_path, monkeypatch):
 
 def test_slow_server_with_only_a_stalled_lease_is_restarted(tmp_path, monkeypatch):
     """Аренда есть, но прогресса нет дольше порога — это зависание, перезапуск как прежде."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.SLOW)
     calls = []
     monkeypatch.setattr(llm_health, "_restart", lambda cfg, log, **kw: (calls.append(1), True)[1])
@@ -436,7 +437,7 @@ def test_slow_server_with_only_a_stalled_lease_is_restarted(tmp_path, monkeypatc
 
 def test_lease_on_another_server_does_not_block_ours(tmp_path, monkeypatch):
     """Аренда облачного шлюза не держит перезапуск локальной Ollama (I6 DS)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.SLOW)
     calls = []
     monkeypatch.setattr(llm_health, "_restart", lambda cfg, log, **kw: (calls.append(1), True)[1])
@@ -454,7 +455,7 @@ def test_restart_itself_refuses_over_a_live_lease_unless_forced(tmp_path, monkey
     наследует защиту; force — ручной аварийный перезапуск, и у него есть
     вызывающий (`force_restart` ← doctor --restart-llm), а не только тесты
     (I2 DS / M4 GLM)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     ran = []
     monkeypatch.setattr(llm_health.subprocess, "run", lambda *a, **kw: ran.append(a[0]))
     monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
@@ -484,7 +485,7 @@ def test_restart_never_touches_a_server_that_is_not_ours(tmp_path, monkeypatch):
     вызывающим (ensure_alive); `--restart-llm` на облачной или удалённой
     установке убил бы ЛОКАЛЬНУЮ Ollama с эмбеддером и доложил об успехе (круг 2
     DS I1). Запрет — в самом перезапуске, его наследует и force."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     ran = []
     monkeypatch.setattr(llm_health.subprocess, "run", lambda *a, **kw: ran.append(a[0]))
     monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
@@ -535,7 +536,7 @@ def test_a_filesystem_without_flock_drops_the_record_not_the_sensor(tmp_path, mo
         monkeypatch.setattr(model_lease.fcntl, "flock", flock)
         live = model_lease.live(tmp_path, server=SRV)
         assert [x["path"] for x in live] == [str(st.path)], "своя аренда видна, чужая без замка не судится"
-        monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+        charoite_paths.use_data_root(tmp_path, replace=True)
         assert llm_health.busy_with_ours(LOCAL) is not None, "сенсор не упал"
 
 
@@ -543,7 +544,7 @@ def test_restart_deferred_for_a_fresh_lease_means_queue_not_failure(tmp_path, mo
     """Аренда появилась между проверкой SLOW-ветки и kill: `_restart` отказал —
     это очередь за живой работой (True, как при BUSY), а не «не оживили»
     (круг 2 DS M2)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.SLOW)
     monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
     monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
@@ -575,7 +576,7 @@ def test_a_sensor_that_worked_and_broke_holds_the_restart(tmp_path, monkeypatch)
     ПОСЛЕ успешных чтений — каталог снесён, права сменились — держит перезапуск
     до ручного --restart-llm: иначе каждый SLOW кончался бы перезапуском под
     живую работу, системно и без голоса в логе (круг 2 GLM, критика 1)."""
-    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(llm_health, "_sensor_reported", False)
     monkeypatch.setattr(llm_health, "_sensor_worked", False)
     said: list[str] = []

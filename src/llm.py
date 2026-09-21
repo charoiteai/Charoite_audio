@@ -368,6 +368,21 @@ class LLM:
         except Exception:
             return set()
 
+    def document_model(self) -> str:
+        """Модель для документов — назначенная конфигом, без тихой лестницы.
+
+        `resolve_model()` подставляет fallback или small, если основная не
+        скачана: для живой подсказки это верно (лучше слабый ответ сейчас, чем
+        никакого), для минуток — нет. Документ, написанный четырёхмиллиардной
+        моделью вместо назначенной, выглядит так же и ничем не помечен; пусть
+        лучше ollama ответит 404, а инструмент скажет владельцу «проверьте
+        настройку модели» (круг 6 по коду №329, DS I1).
+
+        На mlx-server имя своё: сервер обслуживает одну модель, с которой
+        запущен, и ollama-тег ему ничего не говорит.
+        """
+        return self.mlx_model if self.engine == "mlx-server" else self.model
+
     def resolve_model(self) -> str:
         """Основная, если скачана; иначе fallback (чтобы прототип работал сразу).
 
@@ -540,11 +555,20 @@ class LLM:
     # своей аренды на диске уже нет и вопрос «свой или чужой» не возникает.
     # Мимо швов к модели ходят только embed() (0,2 с, убить не жалко) и проба
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
-    _ROOT = charoite_paths.resolve_root(__file__)
+    def _root(self) -> pathlib.Path:
+        """Корень данных — на вызове: аренду пишет этот процесс, а читает её
+        сторож здоровья по ТЕКУЩЕМУ корню (`llm_health.busy_with_ours`).
+
+        Поле класса вычислялось при импорте, то есть раньше, чем точка входа
+        называла корень: писатель клал аренду в один каталог, читатель искал в
+        другом — «наша генерация в полёте» отвечало «нет», и сторож убивал
+        сервер под живой генерацией (круг 1 по коду №329, GLM C1).
+        """
+        return charoite_paths.resolve_root(__file__)
 
     def lease_dir(self) -> pathlib.Path:
         """Куда этот процесс кладёт аренды модели."""
-        return model_lease.lease_dir(self._ROOT)
+        return model_lease.lease_dir(self._root())
 
     def lease_stamp(self) -> str:
         """Строка в лог старта: каталог аренд, отпечаток адреса сервера (сам
@@ -552,14 +576,16 @@ class LLM:
         в разных процессах обязаны сходиться по обоим (круг 2 DS I2/M4)."""
         import hashlib
         fp = hashlib.sha256(self.base.encode("utf-8")).hexdigest()[:8]
-        bad = model_lease.selfcheck(self._ROOT)
-        return f"{self.lease_dir()} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
+        корень = self._root()            # один ответ канона на всю операцию: иначе
+        bad = model_lease.selfcheck(корень)     # каталог в строке и проверенный каталог
+        каталог = model_lease.lease_dir(корень)  # могли бы оказаться разными (круг 2, DS I2)
+        return f"{каталог} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
 
     def _lease(self, kind: str, timeout) -> model_lease.Lease:
         """Аренда на один запрос; порог зависания — из read-таймаута этого же
         запроса (тот самый, по которому транспорт сам оборвёт молчание)."""
         read = timeout[1] if isinstance(timeout, tuple) else timeout
-        return model_lease.Lease(self._ROOT, server=self.base, engine=self.engine,
+        return model_lease.Lease(self._root(), server=self.base, engine=self.engine,
                                  kind=kind, read_timeout=read)
 
     @staticmethod

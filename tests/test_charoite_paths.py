@@ -72,7 +72,7 @@ def test_модули_демона_уважают_переменную(tmp_path)
     code = (
         "import sys; sys.path.insert(0, 'src')\n"
         "import audio, daemon, meeting_archive\n"
-        "print(audio.ROOT); print(daemon.ROOT); print(meeting_archive.ROOT)\n"
+        "print(audio._root()); print(daemon._root()); print(meeting_archive._root())\n"
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                          capture_output=True, text=True, timeout=120)

@@ -62,7 +62,6 @@ import media_meta  # noqa: E402
 import voice_memos_bridge  # noqa: E402
 import channel_trace  # noqa: E402
 import live_sidecar  # noqa: E402
-import transcript  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 

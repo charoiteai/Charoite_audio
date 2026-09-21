@@ -16,6 +16,7 @@ import wave
 
 import numpy as np
 import pytest
+import charoite_paths
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -431,7 +432,7 @@ def test_зависший_перезапуск_не_останавливает_�
     """
     # свой logs/ и без уведомлений: оба теста писали строку потери в БОЕВОЙ
     # logs/capture.log рабочей установки (замер 19.09 по №310)
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
     hub = _hub()
     hub.RESTART_TIMEOUT = 0.3      # в бою пять секунд; тесту столько ждать незачем
@@ -458,7 +459,7 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     Отказ канала собеседников с №230 ещё и кричит — уведомление и capture.log
     здесь подменены, чтобы тест не стучался в боевой лог и центр уведомлений.
     """
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
     class _Failing:
         label = "blackhole"
@@ -891,10 +892,11 @@ def test_манифест_screencapturekit_живой_только_с_расту
     import json, os
     sysraw = tmp_path / "s.raw"
     sysraw.write_bytes(b"\0\0" * 100)
-    man = tmp_path / "sck.json"
+    man = tmp_path / "data" / "sck_stream.json"     # путь производный от корня данных
+    man.parent.mkdir(parents=True, exist_ok=True)
     man.write_text(json.dumps({"engine": "screencapturekit", "samplerate": 16000,
                                "format": "s16le", "system": str(sysraw)}))
-    monkeypatch.setattr(a, "SCK_STREAM_MANIFEST", man)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     assert a.fresh_sck_manifest() is not None, "живой манифест не распознан"
     old = time.time() - 60
     os.utime(sysraw, (old, old))
@@ -937,7 +939,7 @@ def test_неудачный_рестарт_не_омолаживает_возр�
     """
     # свой logs/ и без уведомлений: оба теста писали строку потери в БОЕВОЙ
     # logs/capture.log рабочей установки (замер 19.09 по №310)
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
     hub = _hub()
     hub.RESTART_TIMEOUT = 1.0
@@ -1042,7 +1044,7 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     said = []
     hub = _hub(captures=[type("_Mic", (), {"label": "mic"})()])   # как в бою при auto: микрофон открыт (текст — по составу, r2 #541)
     hub.on_status = said.append
-    monkeypatch.setattr(a, "ROOT", tmp_path)          # свой logs/, боевой не трогаем
+    charoite_paths.use_data_root(tmp_path, replace=True)          # свой logs/, боевой не трогаем
     calls = []
     # Popen, а не run: уведомление пускается без ожидания, чтобы залипший
     # osascript не отодвигал открытие каналов (круг 1, 10.09).
@@ -1114,7 +1116,7 @@ def _hub_cfg(device="auto"):
 
 def _no_system_channel(monkeypatch, tmp_path):
     """Машина без канала собеседников: ни потока приложения, ни устройства."""
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
     monkeypatch.setattr(a, "find_system_audio", lambda: None)
     monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
@@ -1176,7 +1178,7 @@ def test_режим_только_микрофон_не_поднимает_лож
 def _system_device_that_fails_to_open(monkeypatch, tmp_path, *, fail=True):
     """Машина с устройством собеседников (BlackHole найден), у которого start()
     падает: занято другим процессом, отозвано. Микрофон открывается."""
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
     monkeypatch.setattr(a, "find_system_audio", lambda: 7)
     monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
@@ -1233,7 +1235,7 @@ def test_отказ_потока_sck_при_старте_не_винит_ни_п
     потока открывается. Причина — только отказ при старте: BlackHole на этой
     машине не искали (DS и GLM r1 по #537 — раньше в крик попадало ложное
     «устройства системного звука не видно» и совет проверить право)."""
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(a, "fresh_sck_manifest",
                         lambda: {"samplerate": 16000, "system": "/tmp/sys.pcm", "mic": "/tmp/mic.pcm"})
     monkeypatch.setattr(a, "find_system_audio", lambda: None)
@@ -1312,7 +1314,7 @@ def test_смерть_канала_собеседников_после_стар�
     не знал, что собеседников в записи больше нет. Тот же крик, что на старте
     (№230), но один на встречу: после крика на старте сторож молчит, повторный
     проход сторожа не кричит, микрофон про собеседников не кричит."""
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     calls = []
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
 
@@ -1464,7 +1466,7 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     оба канала один поток и умирают вместе: текст «ни собеседников, ни вас»,
     а не «дальше только собеседники». I2 — отказ микрофона на старте — крик,
     не тихая строка (зеркало №230)."""
-    monkeypatch.setattr(a, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     calls = []
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
 
@@ -1843,7 +1845,7 @@ def test_mixed_loss_phases_are_announced_not_raised(monkeypatch):
     said: list[str] = []
     hub.on_status = said.append
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
-    monkeypatch.setattr(a, "ROOT", pathlib.Path(tempfile.mkdtemp()))
+    charoite_paths.use_data_root(pathlib.Path(tempfile.mkdtemp()), replace=True)
     hub._announce_losses({"mic": a.Loss("умер", retriable=False, died=True),
                           "blackhole": a.Loss("не открылся", retriable=False, died=False)})
     assert set(hub._lost) == {"mic", "blackhole"} and said, "обе потери объявлены"

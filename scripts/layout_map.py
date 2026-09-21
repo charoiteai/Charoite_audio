@@ -1108,24 +1108,28 @@ ROOT_CANON_CALLS = ("resolve_root", "code_root")
 ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
 
 
-def _canon_names(tree: ast.Module) -> set[str]:
+def _canon_names(tree: ast.Module, только: tuple[str, ...] = ROOT_CANON_CALLS) -> set[str]:
     """Имена, под которыми в модуль пришли функции канона — включая псевдонимы.
 
     Совпадения по последнему сегменту имени мало: локальная `def code_root(m)`
     получала бы прощение, а `from charoite_paths import resolve_root as root_of`
     краснел бы на верном коде (обе головы круга 3, независимо).
+
+    `только` сужает набор до одной функции канона: форме `snapshot` интересен
+    ровно корень ДАННЫХ, а снимок корня КОДА (`CODE = code_root(__file__)`)
+    законен весь процесс — код лежит там, где лежит.
     """
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "charoite_paths":
             if any(a.name == "*" for a in node.names):
-                out |= set(ROOT_CANON_CALLS)          # `import *` приносит канон под своими именами
-            out |= {a.asname or a.name for a in node.names if a.name in ROOT_CANON_CALLS}
+                out |= set(только)                    # `import *` приносит канон под своими именами
+            out |= {a.asname or a.name for a in node.names if a.name in только}
         elif isinstance(node, ast.Import):
             for a in node.names:
                 if a.name == "charoite_paths":
                     # `charoite_paths.resolve_root(...)` — сегмент имени, а модуль назван
-                    out |= {f"{a.asname or a.name}.{n}" for n in ROOT_CANON_CALLS}
+                    out |= {f"{a.asname or a.name}.{n}" for n in только}
     return out
 
 
@@ -1232,6 +1236,267 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
     return False
 
 
+def _заведомо_мертва(node: ast.stmt) -> bool:
+    """Ветка, тело которой при импорте не исполняется по условию.
+
+    `if TYPE_CHECKING:` — типовой приём для импортов ради аннотаций, `if False:`
+    и `if 0:` — выключенный код. Считать их исполняемыми значит красить гейт на
+    том, чего в рантайме нет (круг 3 по коду №329, DS I5).
+
+    Ложность условия считает сам питон (`literal_eval`), а не перечисление
+    узлов: `if []:` и `if ():` — то же выключение, но это `List` и `Tuple`, и
+    предикат по `Constant` их не видел (круг 5 по коду №329, DS M3).
+    """
+    if not isinstance(node, (ast.If, ast.While)):
+        return False
+    т = node.test
+    try:
+        return not ast.literal_eval(т)
+    except Exception:             # noqa: BLE001 — `if 1/0:` считается по-настоящему
+        pass                      # условие не известно на импорте — судим по форме ниже
+    if isinstance(т, ast.Name):
+        return т.id == "TYPE_CHECKING"
+    # `typing.TYPE_CHECKING` — та же идиома в форме атрибута (круг 4, GLM I3)
+    return isinstance(т, ast.Attribute) and т.attr == "TYPE_CHECKING"
+
+
+def _гвард_точки_входа(node: ast.stmt) -> str:
+    """Сравнение с `__main__` в условии: `"=="`, `"!="` или `""` (не гвард).
+
+    `if __name__ == "__main__":` — единственная ветка модуля, которая при
+    импорте не исполняется вовсе: корень, спрошенный там, спросила сама точка
+    входа. Но отбрасывать весь узел нельзя — `else` у такого гварда идёт
+    именно при импорте, а `!=` переворачивает обе ветки (круг 2 по коду №329,
+    GLM C2).
+    """
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return ""
+    if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], (ast.Eq, ast.NotEq)):
+        return ""
+    левое, правое = node.test.left, node.test.comparators[0]
+    if not (isinstance(левое, ast.Name) and левое.id == "__name__"):
+        return ""
+    if not (isinstance(правое, ast.Constant) and правое.value == "__main__"):
+        return ""
+    return "==" if isinstance(node.test.ops[0], ast.Eq) else "!="
+
+
+def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
+    """Узлы, которые ВЫПОЛНЯЮТСЯ при импорте модуля.
+
+    Не «верхний уровень файла»: при импорте исполняется и тело класса, и всё,
+    что обёрнуто в `if` / `try` / `with` / `for` — а `try: ROOT = …` это типовой
+    bootstrap-приём, которым обложены скрипты следующего куска. Первая редакция
+    обходила только `tree.body`, и живой снимок полем класса в `src/llm.py`
+    (писатель аренд модели) был ей невидим (круг 1 по коду №329: GLM C1 про
+    класс, DS C1 про остальные обёртки).
+
+    Тела функций сюда не входят: там вычисление ленивое, в этом вся правка.
+    Граница названа честно: `ROOT = свой_хелпер()`, где канон зовётся ВНУТРИ
+    хелпера, статически отсюда не виден — такую запись ловит не гейт, а
+    свидетель поведения (`tests/test_backup_offload.py`, список
+    `СПРОСИТЬ_КОРЕНЬ`).
+    """
+    out: list[ast.stmt] = []
+    for node in тело:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.append(node)                    # ради ЗНАЧЕНИЙ ПО УМОЛЧАНИЮ: они считаются
+            continue                            # на импорте, а тело — нет, в этом вся правка
+        if _заведомо_мертва(node):
+            # мёртв только блок; `else` у него при импорте исполняется — тот же
+            # случай, что с гвардом точки входа (круг 4 по коду №329, DS I1)
+            out += _на_импорте(getattr(node, "orelse", []))
+            continue
+        гвард = _гвард_точки_входа(node)
+        if гвард:
+            # при импорте идёт ровно одна половина гварда: у `==` — else,
+            # у `!=` — сам блок; вторая принадлежит запуску как скрипту
+            assert isinstance(node, ast.If)
+            out += _на_импорте(node.orelse if гвард == "==" else node.body)
+            continue
+        out.append(node)
+        # дети — ВСЕ, через обход самого ast: список имён полей («body», «orelse»,
+        # «handlers»…) пропустил `match`/`case`, потому что его ветки лежат в
+        # `cases[i].body` — перечислять поля значит отставать на одну конструкцию
+        # языка (круг 2 по коду №329, DS C1 = GLM C2)
+        дети = [c for c in ast.iter_child_nodes(node) if isinstance(c, (ast.stmt, ast.match_case,
+                                                                       ast.ExceptHandler))]
+        вложенные: list[ast.stmt] = []
+        for c in дети:
+            вложенные += c.body if isinstance(c, (ast.match_case, ast.ExceptHandler)) else [c]
+        if вложенные:
+            out += _на_импорте(вложенные)
+    return out
+
+
+def _без_ленивого(node: ast.AST):
+    """Обход узла, не заходящий в ленивые тела.
+
+    Ленивы лямбда, тело функции и ГЕНЕРАТОР: `(_root() / n for n in ...)` не
+    спрашивает корень, пока его не начнут перебирать (круг 4 по коду №329,
+    GLM I2; генератор — круг 5, DS M2). Списковое, множественное и словарное
+    включения, наоборот, вычисляются на месте и остаются под правилом.
+
+    Граница названа честно: немедленно вызванная лямбда `(lambda: канон())()`
+    корень на импорте спрашивает, а правило её не видит — ловит поведение.
+    """
+    if isinstance(node, (ast.Lambda, ast.GeneratorExp, ast.FunctionDef, ast.AsyncFunctionDef)):
+        return
+    yield node
+    for c in ast.iter_child_nodes(node):
+        yield from _без_ленивого(c)
+
+
+def _имя(узел: ast.expr) -> str:
+    """Короткое имя ссылки на функцию: `f` и `mod.f` — оба «f»."""
+    return узел.attr if isinstance(узел, ast.Attribute) else getattr(узел, "id", "")
+
+
+def _имена_канона_данных(tree: ast.Module) -> set[str]:
+    """Имена корня ДАННЫХ в этом модуле: само имя канона и его псевдонимы.
+
+    Точечная запись приходит как `модуль.resolve_root` — на месте вызова
+    сравнивается последний сегмент, поэтому режем его здесь же.
+    """
+    имена = {n.rsplit(".", 1)[-1] for n in _canon_names(tree, (DATA_ROOT_CALL,))}
+    return имена | {DATA_ROOT_CALL}
+
+
+def _спросит_корень(call: ast.Call, свои: set[str], канон: set[str] | None = None) -> bool:
+    """Этот вызов даст ответ канона о корне данных.
+
+    Одно правило на все места, где вопрос задаётся (замыкание имён и проба
+    формы): раньше выражение «имя вызываемого» стояло тремя дословными
+    копиями, и они расходились по строгости (круг 5 по коду №329, DS I1).
+
+    Имя канона засчитывается и через точку (`charoite_paths.resolve_root(...)`
+    — законная запись), а СВОИ имена — только голым вызовом: у чужого объекта
+    метод-тёзка живёт своей жизнью, и `json.load(...)` не становится снимком
+    оттого, что в модуле есть свой `load`, читающий корень.
+    """
+    канон = {DATA_ROOT_CALL} if канон is None else канон
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr in канон
+    имя = getattr(call.func, "id", "")
+    return имя in канон or имя in свои
+
+
+def _имена_корня(tree: ast.Module) -> set[str]:
+    """Имена МОДУЛЬНОГО уровня, вызов которых даёт ответ канона о корне данных.
+
+    Смысл «это спросит корень» имя получает двумя способами, и оба считаются
+    ОДНИМ замыканием до неподвижной точки, а не двумя детективами:
+
+    * функция модуля зовёт канон или уже известное имя — `_CFG = _cfg()` на
+      верхнем уровне `src/mcp_server.py` читал конфиг по неназванному корню
+      (живой дефект, круг по решению №332, DS C3);
+    * имя связано с каноном без вызова — `_r = resolve_root`, а следом
+      `X = _r(__file__)`: полноценный снимок, у которого на месте вызова стоит
+      псевдоним (круг 5 по коду №329, GLM I2).
+
+    Область видимости — модуль, и только он. Раньше таблица строилась обходом
+    всего дерева (`ast.walk`), из-за чего методы классов и вложенные функции
+    ложились в неё по ГОЛОМУ имени и затирали друг друга: два класса с методом
+    `model()` — одно ведро, выигрывал объявленный позже. Это давало промах в
+    одну сторону и ложную красноту в другую — на честном коде, где снимка нет
+    (круг 5 по коду №329, GLM I1). Питон различает эти имена скоупом, значит и
+    таблица обязана: в неё идут только определения самого модуля.
+
+    Границы, которые гейт не закрывает и закрывать не будет (их ловит не текст,
+    а поведение — свидетель `tests/test_backup_offload.py` и отказ канона на
+    неназванном корне, №332):
+
+    * метод класса, спрашивающий корень, при вызове на импорте (`X = A().m()`);
+    * обёртка над каноном как ЗНАЧЕНИЕ — `functools.partial(resolve_root)`;
+    * хелпер, импортированный из чужого модуля (замыкание не выходит за файл).
+    """
+    # тело класса при импорте исполняется, и `_на_импорте` честно отдаёт его
+    # содержимое — но объявленные там имена принадлежат КЛАССУ, а не модулю:
+    # позвать их именем модуля нельзя, и в таблице модульных имён им не место
+    в_классе = {id(n) for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for n in c.body}
+    исполняется = [n for n in _на_импорте(tree.body) if id(n) not in в_классе]
+    функции = {n.name: n for n in исполняется
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    псевдонимы: dict[str, str] = {}
+    for n in исполняется:
+        цели = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        значение = getattr(n, "value", None)
+        if isinstance(значение, (ast.Name, ast.Attribute)) and len(цели) == 1 and isinstance(цели[0], ast.Name):
+            псевдонимы[цели[0].id] = _имя(значение)
+
+    канон = _имена_канона_данных(tree)
+    знают: set[str] = set()
+    менялось = True
+    while менялось:
+        менялось = False
+        for имя, узел in функции.items():
+            if имя in знают:
+                continue
+            # тело, и только оно: корень в ЗНАЧЕНИИ ПО УМОЛЧАНИЮ или в
+            # декораторе замораживается на строке самого `def` — она и
+            # краснеет, а вызов такой функции свежего ответа уже не даёт.
+            # Ленивое внутри тела (`return lambda: канон()`) тоже не считается
+            # вопросом: спросит тот, кто вызовет лямбду (круг 5, DS «вопрос 1»)
+            if any(isinstance(v, ast.Call) and _спросит_корень(v, знают, канон)
+                   for st in узел.body for v in _без_ленивого(st)):
+                знают.add(имя); менялось = True
+        for имя, источник in псевдонимы.items():
+            if имя not in знают and (источник in канон or источник in знают):
+                знают.add(имя); менялось = True
+    return знают
+
+
+def _root_snapshots(tree: ast.Module) -> list[int]:
+    """Строки, где ответ канона о корне ДАННЫХ запоминается НА ИМПОРТЕ.
+
+    Третья форма вывода корня — и самая тихая: `ROOT = resolve_root(__file__)`
+    на верхнем уровне выглядит как обращение к канону, поэтому две прежние
+    формы её не видят (`__file__` стоит аргументом канона — законно; чтения
+    переменной нет вовсе). А вред тот же, что у своей копии правила: значение
+    снимается РАНЬШЕ, чем точка входа успевает назвать корень, и процесс
+    разъезжается сам с собой — половина модулей живёт в названном корне, другая
+    в выведенном из положения файла, молча (замер 21.09: назвать корень после
+    импорта такого модуля — два разных ответа в одном процессе).
+
+    Корень КОДА (`code_root`) здесь не при чём: код лежит там, где лежит, его
+    снимок на импорте верен весь процесс. Ловится только корень данных.
+    """
+    out: list[int] = []
+    знают_корень = _имена_корня(tree)
+    канон_модуля = _имена_канона_данных(tree)
+    for node in _на_импорте(tree.body):
+        # «связать имя с ответом» — не только присваивание: моржовый оператор и
+        # значение по умолчанию у аргумента вычисляются при импорте ровно так же
+        # (круг 2 по коду №329, DS I3)
+        части: list[ast.expr] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # у функции на импорте считаются значения по умолчанию И декораторы;
+            # в тело заходить нельзя — ленивый морж `(r := resolve_root(...))`
+            # внутри функции это ровно та запись, которую правило советует
+            # взамен снимка (круг 3, DS C1 = GLM I1; декораторы — круг 4, DS I2)
+            части += node.args.defaults + [k for k in node.args.kw_defaults if k]
+            части += node.decorator_list
+        else:
+            # декоратор КЛАССА вычисляется на импорте ровно как декоратор
+            # функции; класс идёт этой веткой, и без строки ниже правило знало
+            # только половину случая (круг 5 по коду №329, DS I3)
+            части += getattr(node, "decorator_list", [])
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                части.append(node.value)
+            части += [n for n in _без_ленивого(node) if isinstance(n, ast.NamedExpr)]
+        if not части:
+            continue
+        # обход без ленивых тел: `X = lambda: resolve_root(...)` считается при
+        # ВЫЗОВЕ лямбды, а не при импорте (круг 4 по коду №329, GLM I2)
+        for inner in [i for часть in части for i in _без_ленивого(часть)]:
+            if not isinstance(inner, ast.Call):
+                continue
+            if _спросит_корень(inner, знают_корень, канон_модуля):
+                out.append(node.lineno)
+                break
+    return sorted(set(out))
+
+
 def _file_roots(tree: ast.Module) -> list[int]:
     """Строки, где `__file__` стоит НЕ в одном из двух разрешённых мест.
 
@@ -1315,6 +1580,11 @@ ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
 ENV_ROOT_VAR = "CHAROITE_ROOT"
 ENV_ROOT_OWNER = "src/charoite_paths.py"
 
+#: Функция канона, отвечающая про корень ДАННЫХ. Её ответ имеет право звучать
+#: на каждом обращении и не имеет права запоминаться на импорте (форма
+#: `snapshot` ниже).
+DATA_ROOT_CALL = "resolve_root"
+
 #: Где инвариант уже обязан выполняться. Скрипты переводятся следующим куском
 #: фазы 3: у 12 из них чтение стоит выше вставки в `sys.path`, то есть канон в
 #: этот момент ещё нельзя импортировать, и перевод требует правки bootstrap.
@@ -1332,6 +1602,8 @@ ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
      f"читает {ENV_ROOT_VAR} сам"),
     ("file", _file_roots,
      "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
+    ("snapshot", _root_snapshots,
+     f"запоминает ответ {DATA_ROOT_CALL} на импорте — раньше, чем точка входа назвала корень"),
 )
 
 
@@ -1642,6 +1914,11 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     return "\n".join(out) + "\n"
 
 
+#: Что понимает командная строка. Больше ничего она не понимает — и говорит
+#: об этом вслух, вместо того чтобы выполнить не тот режим.
+РЕЖИМЫ = ("--report", "--regen", "--check")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Один выходной тракт для всех режимов: расхождения считаются одним
     `check()` и печатаются одним циклом; режим меняет только то, что пишется
@@ -1650,6 +1927,13 @@ def main(argv: list[str] | None = None) -> int:
     загрузка такой артефакт отвергнет (Critical DS круга 4), но отчёт о прочих
     расхождениях печатается тем же прогоном (Important DS круга 5)."""
     args = sys.argv[1:] if argv is None else argv
+    # режимы — списком: разбора аргументов тут нет, и незнакомое слово молча
+    # игнорировалось. «Только посмотреть» с опечаткой в флаге писало карту на
+    # диск (круг 6 по коду №329, DS M4)
+    чужие = [a for a in args if a not in РЕЖИМЫ]
+    if чужие:
+        print(f"✗ неизвестные аргументы: {' '.join(чужие)}; режимы: {' '.join(sorted(РЕЖИМЫ))}")
+        return 2
     inv = inventory(REPO)
     if "--report" in args and "--check" not in args:
         # замер читает только код: артефакт ему не нужен и не должен его хоронить

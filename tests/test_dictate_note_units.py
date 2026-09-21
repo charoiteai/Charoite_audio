@@ -51,10 +51,10 @@ def test_граф_спрашивается_на_вызове_а_не_на_имп
     import dictate_note
     monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(tmp_path / "поздний-граф"))
     monkeypatch.delenv("SUFLER_DIARY_DIR", raising=False)
-    # `cfg` снят на импорте — на машине с настоящим config.yaml ключ
+    # `cfg()` читается по корню на вызове — на машине с настоящим config.yaml ключ
     # `diary_dir` перекрыл бы fallback, и тест зеленел бы только там, где
     # конфига нет (круг 12 по коду №327, DS C2).
-    monkeypatch.setitem(dictate_note.cfg["sufler"], "diary_dir", "")
+    monkeypatch.setitem(dictate_note.cfg()["sufler"], "diary_dir", "")
     assert dictate_note._graph() == tmp_path / "поздний-граф"
     assert dictate_note.diary_dir() == tmp_path / "Дневник"
 
@@ -78,8 +78,9 @@ def test_заметка_ложится_в_папку_заметок_назван
     monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
     # снимок конфига подменяем целиком: править чужой ин-плейс значит менять
     # словарь, который в этом же процессе держит кто угодно (DS M2 круга 13)
-    monkeypatch.setattr(dictate_note, "cfg", {"sufler": {"diary_dir": ""}, "stt": {"backend": "gigaam"}})
-    monkeypatch.setattr(dictate_note, "_llm", types.SimpleNamespace(
+    конфиг = {"sufler": {"diary_dir": ""}, "stt": {"backend": "gigaam"}}
+    monkeypatch.setattr(dictate_note, "cfg", lambda: конфиг)
+    monkeypatch.setattr(dictate_note, "_llm", lambda: types.SimpleNamespace(
         complete=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("модели нет"))))
     monkeypatch.setattr(dictate_note.sys, "argv", ["dictate_note.py", "--text"])
     monkeypatch.setattr(dictate_note.sys, "stdin", io.StringIO("проверить счётчики"))

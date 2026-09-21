@@ -27,11 +27,21 @@ from transcript import Transcript, is_noise  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 console = Console()
 
+
 def load_cfg() -> dict:
-    return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
 
 
 def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):
@@ -67,7 +77,7 @@ def main():
     # Один штамп на запись и стенограмму — как в демоне (daemon.py): иначе на
     # границе секунды файлы каналов и .md расходятся именами, и пересборка
     # запись не находит (контракт meeting_stamp; аудит DeepSeek 16.08).
-    tr = Transcript(ROOT / cfg["log"]["transcripts_dir"])
+    tr = Transcript(_root() / cfg["log"]["transcripts_dir"])
     hub = AudioHub.for_meeting(cfg, stamp=tr.stamp)
 
     console.print(f"Аудио: [green]{' + '.join(hub.sources)}[/green] · STT: [green]{cfg['stt']['backend']}[/green] · LLM: [green]{model}[/green]")

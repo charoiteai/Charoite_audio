@@ -87,6 +87,7 @@ If a PR turns that check red, the message names the fix. The usual cases:
 | new edge against the arrows | the import crosses a layer boundary — untangle it, or add it to `allowed_edges` **with a ticket** |
 | `allowed_edges` holds X → Y, but that edge is gone | the debt was paid, remove the entry |
 | file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
+| file remembers the canon's answer at import | ask on call (`def _root(): return resolve_root(__file__)`), don't freeze it in a module constant or a class field — the value would be taken before the entry point names the root |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
 
 ```bash

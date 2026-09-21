@@ -48,7 +48,7 @@ jobs:
         # Тесты линтуются тоже: до 21.09 их смотрел только pre-commit, и
         # неиспользуемый импорт в тесте доезжал до main на машине без хука
         # (круг 15 по коду №327, DS C1).
-        run: pipx run "ruff==${RUFF_VERSION}" check --select E9,F src/ tests/
+        run: pipx run "ruff==${RUFF_VERSION}" check --select E9,F src/ tests/ scripts/
       - name: Byte-compile all sources
         run: python -m compileall -q src/
       # Покрытие такого не ловит: тест без единой проверки покрывает строки

@@ -35,6 +35,7 @@ logs/mlx_server.log. Загрузка 20+ ГБ весов занимает де�
 from __future__ import annotations
 
 import os
+import pathlib
 import platform
 import shutil
 import signal
@@ -53,7 +54,16 @@ import privacy
 from charoite_paths import resolve_root, trim_log
 from llm import DEFAULT_MLX_MODEL
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 
 # Проба должна пережить холодный старт: 23-гигабайтная модель поднимается с
 # диска десятки секунд, и принять это за поломку значило бы перезапускать
@@ -243,11 +253,11 @@ def busy_with_ours(cfg: dict, *, now: float | None = None,
     кончался бы перезапуском под живую работу (круг 2 GLM, критика 1)."""
     global _sensor_reported, _sensor_worked
     try:
-        leases = model_lease.live(ROOT, server=_base_url(cfg), now=now)
+        leases = model_lease.live(_root(), server=_base_url(cfg), now=now)
     except Exception as exc:  # noqa: BLE001 — мусор в служебной папке не роняет решение о перезапуске
         if log is not None and not _sensor_reported:
             _sensor_reported = True
-            log(f"LLM: аренды модели не прочитались ({model_lease.lease_dir(ROOT)}: "
+            log(f"LLM: аренды модели не прочитались ({model_lease.lease_dir(_root())}: "
                 f"{type(exc).__name__}: {exc}) — "
                 + ("перезапуск держится до ручного --restart-llm: сенсор работал и перестал"
                    if _sensor_worked else "перезапуск решается как прежде, без них"))
@@ -365,9 +375,9 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None], *, force: bool = False) 
             pass                     # умер сам — то, чего и добивались
     model = str((cfg.get("llm") or {}).get("mlx_model") or DEFAULT_MLX_MODEL)
     port = urllib.parse.urlsplit(url).port or 8080
-    (ROOT / "logs").mkdir(exist_ok=True)
-    trim_log(ROOT / "logs" / "mlx_server.log")   # потолок append-лога
-    logf = (ROOT / "logs" / "mlx_server.log").open("a")
+    (_root() / "logs").mkdir(exist_ok=True)
+    trim_log(_root() / "logs" / "mlx_server.log")   # потолок append-лога
+    logf = (_root() / "logs" / "mlx_server.log").open("a")
     try:
         subprocess.Popen(
             [sys.executable, "-m", "mlx_lm", "server",

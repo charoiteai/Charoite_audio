@@ -112,7 +112,7 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     retry_old.write_text("имена: Дмитрий", encoding="utf-8")
     os.utime(retry_old, (stale, stale))
 
-    monkeypatch.setattr(d, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     d._prune_graph_logs({"audio": {"record_keep_days": 2}})
 
     assert not old.exists(), "старый лог с содержимым встречи остался"

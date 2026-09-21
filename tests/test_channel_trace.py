@@ -10,6 +10,7 @@
 стоп-дамп сайдкара одной строкой стирал бы всё, что записано во время встречи.
 """
 from __future__ import annotations
+import charoite_paths
 
 import json
 import pathlib
@@ -47,9 +48,7 @@ def _hub(*labels):
 
 def _quiet(monkeypatch):
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
-    monkeypatch.setattr(a, "ROOT", pathlib.Path(tempfile.mkdtemp()))
-
-
+    charoite_paths.use_data_root(pathlib.Path(tempfile.mkdtemp()), replace=True)
 def test_loss_and_return_are_one_event_each_with_the_true_silence_boundary(monkeypatch):
     """Граница дыры — последний кадр, не момент крика: крик опаздывает на порог
     сторожа и рестарты (Critical GLM). Смена фазы того же эпизода — не событие."""

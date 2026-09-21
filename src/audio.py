@@ -20,7 +20,16 @@ import stt_runtime
 
 from charoite_paths import resolve_root
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 
 
 def list_devices() -> list[dict]:
@@ -50,7 +59,9 @@ def find_system_audio() -> int | None:
     return find_device("blackhole")
 
 
-SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
+def _sck_stream_manifest() -> pathlib.Path:
+    """Манифест потока лежит в данных — путь считается на вызове (№329)."""
+    return _root() / "data" / "sck_stream.json"
 # Метка своей строки в capture.log: этот же лог мы читаем, чтобы назвать
 # причину, и без метки причиной становилось бы наше собственное
 # предупреждение с прошлой встречи.
@@ -166,7 +177,7 @@ def fresh_sck_manifest() -> dict | None:
     Audio taps, стоивших четырёх подвесов звука 06–07.08. Микрофон в том же
     манифесте означает, что PortAudio этой встрече не нужен вовсе.
     """
-    return _fresh_manifest(SCK_STREAM_MANIFEST, "system")
+    return _fresh_manifest(_sck_stream_manifest(), "system")
 
 
 class TapStreamCapture:
@@ -602,7 +613,7 @@ class AudioHub:
         # догоняет; здесь по умолчанию пусто, чтобы AudioHub оставался
         # самодостаточным в тестах и в CLI.
         self.protect_stamps: abc.Collection[str] = frozenset()
-        self.record_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
+        self.record_dir = _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
         self.captures: list = list(captures)
         self.sources: list[str] = list(sources)
         self._bufs: dict[str, np.ndarray] = {}
@@ -735,7 +746,7 @@ class AudioHub:
             why.append(f"канал собеседников найден, но не открылся при старте: {start_error}")
         if sck_missing:
             why.append("ScreenCaptureKit не поднялся (нет свежего "
-                       f"{SCK_STREAM_MANIFEST.name}; проверить право «Запись экрана»)")
+                       f"{_sck_stream_manifest().name}; проверить право «Запись экрана»)")
         if bh_missing:
             why.append("устройства системного звука не видно")
         tail = self._capture_log_tail()
@@ -761,7 +772,7 @@ class AudioHub:
         микрофон) — иначе строка о микрофоне стала бы «причиной» смерти
         собеседников."""
         try:
-            log = ROOT / "logs" / "capture.log"
+            log = _root() / "logs" / "capture.log"
             tail = [ln.strip() for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
                     if ln.strip() and not any(mark in ln for mark in LOSS_LOG_MARKS)]
             return tail[-1] if tail else None
@@ -944,7 +955,7 @@ class AudioHub:
         for label, loss in losses.items():
             log_mark = MIC_ONLY_LOG_MARK if label == "blackhole" else MIC_LOST_LOG_MARK
             try:
-                log = ROOT / "logs" / "capture.log"
+                log = _root() / "logs" / "capture.log"
                 log.parent.mkdir(parents=True, exist_ok=True)
                 with open(log, "a", encoding="utf-8") as fh:
                     fh.write(f"{datetime.datetime.now():%F %H:%M:%S} {log_mark}: {loss.reason}\n")

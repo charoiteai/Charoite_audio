@@ -21,6 +21,7 @@ ONNX-экспорте: model.onnx, tokenizer.json, config.json (экспорт �
 
 from __future__ import annotations
 
+import pathlib
 import threading
 
 from charoite_paths import MODELS_DIR, resolve_root
@@ -28,12 +29,20 @@ from model_seam import Judge, SeamTransportError
 
 # Модели — ДАННЫЕ, а не поставка: `/models/` стоит в .gitignore, в подписанный
 # бандл каталог не попадает, и качает их скрипт моделей в корень данных. Так же
-# их ищет диаризация (`diarize.SEG_MODEL`). Раньше здесь стояла цепочка от
+# их ищет диаризация (`diarize._seg_model()`). Раньше здесь стояла цепочка от
 # положения файла, то есть корень КОДА: в репозитории оба корня совпадают и
 # дефект был невидим, а во вложенной установке модель лежала в одном месте, а
 # искалась в другом — `is_available()` честно отвечал False, и смысловой дедуп
 # тезисов молча выключался навсегда (обе головы входного круга №321).
-_DIR = resolve_root(__file__) / MODELS_DIR / "nli"
+def _dir() -> pathlib.Path:
+    """Где лежит модель — по корню данных НА ВЫЗОВЕ.
+
+    Снимок на импорте брался раньше, чем точка входа называла корень: модель
+    искалась в выведенном из положения файла каталоге, `is_available()` честно
+    отвечал False, и смысловой дедуп тезисов молча выключался (№329, тот же
+    класс, что закрывали входным кругом №321).
+    """
+    return resolve_root(__file__) / MODELS_DIR / "nli"
 
 _lock = threading.Lock()
 _session = None
@@ -45,7 +54,7 @@ def is_available() -> bool:
     """Модель на диске и пакеты на месте (без загрузки самой модели)."""
     if _failed:
         return False
-    if not (_DIR / "model.onnx").exists() or not (_DIR / "tokenizer.json").exists():
+    if not (_dir() / "model.onnx").exists() or not (_dir() / "tokenizer.json").exists():
         return False
     try:
         import onnxruntime  # noqa: F401
@@ -64,13 +73,13 @@ def _load():
             import onnxruntime as ort
             from tokenizers import Tokenizer
 
-            _tokenizer = Tokenizer.from_file(str(_DIR / "tokenizer.json"))
+            _tokenizer = Tokenizer.from_file(str(_dir() / "tokenizer.json"))
             # один поток: NLI зовётся из фоновых потоков демона, где рядом
             # живёт STT — не отбирать у него ядра ради миллисекунд
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 2
             _session = ort.InferenceSession(
-                str(_DIR / "model.onnx"), opts, providers=["CPUExecutionProvider"])
+                str(_dir() / "model.onnx"), opts, providers=["CPUExecutionProvider"])
         except Exception:
             _failed = True
 
@@ -151,7 +160,7 @@ def judge() -> Judge:
     и не возвращает те, которые честно разошлись.
     """
     why = "" if is_available() else (
-        f"NLI-модель не найдена в {_DIR} или нет onnxruntime/tokenizers — "
+        f"NLI-модель не найдена в {_dir()} или нет onnxruntime/tokenizers — "
         "смысловой дедуп ядер выключен")
 
     def _ready() -> bool:

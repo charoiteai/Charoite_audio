@@ -81,7 +81,7 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
     derivations = lm.root_derivations(inv)
     exempt = layout["root_exemptions"]
 
-    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file"}, (
+    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file", "snapshot"}, (
         "формы вывода корня — утверждённый список; новая форма это правка политики, "
         "которую обязан прочитать ревьюер")
     assert lm.ENV_ROOT_OWNER in derivations, (
@@ -230,6 +230,91 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
         "проба обязана держать ЛОКАЛЬНУЮ функцию с точным именем канона"
     assert lm._canon_names(ast.parse("x = 1")) == set(), \
         "без импорта канона в модуле нет ни одного законного имени"
+
+
+def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
+    """Форма `snapshot` держит все написания пяти кругов — и свои границы.
+
+    До этой пробы форму не пинил ни один тест: единственный живой экземпляр
+    (`_CFG = _cfg()` в `mcp_server`) правка №329 убрала, гейт стал зелёным с
+    нулём находок, и инверсия проверки прошла бы мимо CI — работоспособность
+    держалась ручным замером брифа (круг 5 по коду №329, DS I2).
+
+    Строки `FREEZE_` обязаны краснеть, `OK_` — нет. Граница названа списком, а
+    не умолчанием: метод класса, вызванный на импорте, частичное применение и
+    хелпер из чужого модуля правило пропускает СОЗНАТЕЛЬНО — их ловит
+    свидетель поведения (`tests/test_backup_offload.py`), а не текст.
+    """
+    probe = "\n".join([
+        "import functools",
+        "from typing import TYPE_CHECKING",
+        "import charoite_paths",
+        "from charoite_paths import resolve_root",
+        "from charoite_paths import resolve_root as корень",
+        "from charoite_paths import code_root",
+        "",
+        "def _root():",
+        "    return resolve_root(__file__)",
+        "",
+        "def _cfg():",
+        "    return _root()",                     # хелпер через хелпера — транзитивно
+        "",
+        "def _ленивый():",
+        "    return lambda: resolve_root(__file__)",
+        "",
+        "class Чужой:",
+        "    def _root(self):",                   # тёзка модульного хелпера в классе
+        "        return 'не корень'",
+        "",
+        "class Мой:",
+        "    FREEZE_CLASS_FIELD = resolve_root(__file__)",
+        "",
+        "_алиас = resolve_root",
+        "_частично = functools.partial(resolve_root)",
+        "",
+        "FREEZE_DIRECT = resolve_root(__file__)",
+        "FREEZE_IMPORT_ALIAS = корень(__file__)",
+        "OK_CODE_ROOT = code_root(__file__)",
+        "FREEZE_DOTTED = charoite_paths.resolve_root(__file__)",
+        "FREEZE_HELPER = _root()",
+        "FREEZE_CHAIN = _cfg()",
+        "FREEZE_ALIAS = _алиас(__file__)",
+        "FREEZE_ANN: object = resolve_root(__file__)",
+        "if (FREEZE_WALRUS := resolve_root(__file__)):",
+        "    pass",
+        "def _с_умолчанием(к=resolve_root(__file__)):",
+        "    return к",
+        "if False:",
+        "    pass",
+        "else:",
+        "    FREEZE_DEAD_ELSE = resolve_root(__file__)",
+        "if []:",
+        "    OK_DEAD_LIST = resolve_root(__file__)",
+        "if __name__ == '__main__':",
+        "    OK_ENTRY_POINT = resolve_root(__file__)",
+        "else:",
+        "    FREEZE_ENTRY_ELSE = resolve_root(__file__)",
+        "OK_LAMBDA = lambda: resolve_root(__file__)",           # noqa: E731 — в пробе это текст
+        "OK_GENERATOR = (resolve_root(__file__) for _ in range(1))",
+        "OK_FOREIGN_METHOD = Чужой()._root()",
+        "OK_PARTIAL = _частично(__file__)",
+        "OK_TYPING = TYPE_CHECKING",
+    ])
+    lines = probe.splitlines()
+    hits = set(lm._root_snapshots(ast.parse(probe)))
+    замораживают = {i for i, line in enumerate(lines, 1)
+                    if line.lstrip().startswith(("FREEZE_", "if (FREEZE_", "def _с_умолчанием"))}
+    законные = {i for i, line in enumerate(lines, 1) if line.lstrip().startswith("OK_")}
+    assert замораживают <= hits, (
+        f"снимок не пойман: {[lines[i-1] for i in sorted(замораживают - hits)]}")
+    assert not (законные & hits), (
+        f"ленивое или чужое объявлено снимком: {[lines[i-1] for i in sorted(законные & hits)]}")
+    # границы — списком, а не умолчанием: иначе «пропускает» и «не умеет»
+    # перестают различаться, и пропуск однажды примут за решение
+    свои = lm._имена_корня(ast.parse(probe))
+    assert свои == {"_root", "_cfg", "_алиас"}, свои
+    # корень КОДА — не эта форма: код лежит там, где лежит, его снимок верен
+    assert lm._имена_канона_данных(ast.parse(probe)) == {"resolve_root", "корень"}
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
