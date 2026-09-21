@@ -488,3 +488,30 @@ def test_демон_называет_корень_и_отказ_виден_сн�
         f"отказ не пришёл типом, который приложение рисует красным; "
         f"на stdout было: {прогон.stdout[:400]!r}")
     assert "CHAROITE_ROOT" in отказы[0]["text"], "в отказе нет рецепта"
+
+
+@pytest.mark.корень_называет_тест
+def test_чужая_догадка_не_принимается_входом_за_решение_владельца(tmp_path, monkeypatch):
+    """«Корень уже есть в процессе» — не то же самое, что «корень назвали».
+
+    Ранний возврат `_given`, добавленный кругом 1, отдавал корень, названный
+    КЕМ УГОДНО: библиотекой, обвязкой, повторным вызовом. Провенанс нигде не
+    хранился, и «точка входа обязана назвать корень» тихо превращалось в
+    «в процессе уже есть корень» (круг 2 по коду №332, DS C2).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    мнимый = tmp_path / "src" / "точка_входа.py"
+    мнимый.parent.mkdir(parents=True)
+    мнимый.write_text("", encoding="utf-8")
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+
+    # кто-то до входа вывел корень догадкой — ровно прежний дефект
+    charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
+
+    with pytest.raises(charoite_paths.RootNotNamed) as отказ:
+        charoite_paths.require_data_root(str(мнимый))     # вход догадку не разрешал
+    assert "догадкой" in str(отказ.value)
+    charoite_paths.forget_data_root()

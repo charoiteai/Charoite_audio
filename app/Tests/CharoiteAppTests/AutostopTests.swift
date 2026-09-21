@@ -25,6 +25,23 @@ final class AutostopTests: XCTestCase {
             .restart)
     }
 
+    /// Отказ, названный самим демоном, повтором не лечится.
+    ///
+    /// «Корень данных не назван» — детерминированный отказ: окружение процесса
+    /// от трёх попыток не изменится, а человек вместо рецепта, который демон
+    /// уже прислал, увидит трижды «восстанавливаю» и потом «нажмите ещё раз»
+    /// (круг 2 по коду №332, DS C1).
+    func testDaemonNamedFatalReasonSkipsRestarts() {
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "root_unnamed"),
+            .giveUp, "детерминированный отказ не должен тратить попытки перезапуска")
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "нечто новое"),
+            .restart, "незнакомая причина — прежнее поведение, а не тихий отказ")
+    }
+
     func testRecoveryGivesUpAfterThreeAttempts() {
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: true, userStopped: false, attempts: 3),

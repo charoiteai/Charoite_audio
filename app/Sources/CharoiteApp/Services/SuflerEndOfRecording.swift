@@ -41,8 +41,20 @@ extension SuflerService {
     /// автостоп и идёт через обычный stop(), выставляющий userStopped.
     enum RestartDecision { case none, restart, giveUp }
 
+    /// Причина, названная самим демоном: повтор её не лечит.
+    ///
+    /// «Корень данных не назван» — отказ детерминированный: ни одна из трёх
+    /// попыток не изменит окружение процесса, а человек три раза увидит
+    /// «восстанавливаю» вместо рецепта, который демон уже прислал. Причина
+    /// приходит ЗНАЧЕНИЕМ (`reason` в статусе), а не подстрокой текста —
+    /// подстроку не перевести на другой язык и не проверить (№277, №310;
+    /// круг 2 по коду №332, DS C1).
+    nonisolated static let fatalReasons: Set<String> = ["root_unnamed"]
+
     nonisolated static func restartDecision(wasRecording: Bool, userStopped: Bool,
-                                            attempts: Int) -> RestartDecision {
+                                            attempts: Int,
+                                            daemonReason: String? = nil) -> RestartDecision {
+        if let daemonReason, fatalReasons.contains(daemonReason) { return .giveUp }
         guard wasRecording, !userStopped else { return .none }
         return attempts < 3 ? .restart : .giveUp
     }

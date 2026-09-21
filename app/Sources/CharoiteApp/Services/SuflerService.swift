@@ -179,6 +179,11 @@ final class SuflerService: ObservableObject {
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
+    /// Причина, которую демон назвал сам перед смертью (`reason` в статусе).
+    /// Детерминированный отказ — «корень данных не назван» — повтором не
+    /// лечится: три попытки только затрут рецепт, который демон уже прислал
+    /// (круг 2 по коду №332, DS C1).
+    private var daemonFatalReason: String?
     /// Потери захвата за одну встречу — отдельный потолок: restartAttempts
     /// обнуляется первой же строкой стенограммы, и цикл «потеря → рестарт →
     /// резервный микрофон → снова потеря» был бы бесконечным (Codex, круг-2
@@ -582,13 +587,28 @@ final class SuflerService: ObservableObject {
         // ли встреча прямо сейчас и надо ли что-то делать руками.
         switch Self.restartDecision(wasRecording: wasRecording,
                                     userStopped: userStopped,
-                                    attempts: restartAttempts) {
+                                    attempts: restartAttempts,
+                                    daemonReason: daemonFatalReason) {
         case .none:
             endSleepGuard()   // записи больше нет — маку можно спать
             status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
             return
         case .giveUp:
+            // Демон назвал причину сам — его текст УЖЕ несёт рецепт, и наш
+            // «нажмите ещё раз» тут вреден: нажимать бессмысленно, пока
+            // запускающий не скажет, где данные (DS C1).
+            if daemonFatalReason != nil {
+                daemonFatalReason = nil
+                endSleepGuard()
+                statusIsError = true
+                preservedFailure = status          // текст демона, а не наш
+                guard let token = lifecycleGate.beginStop() else { return }
+                cleanupDisposition = .preserveFailure
+                publishLifecycle()
+                beginCaptureShutdown(token: token)
+                return
+            }
             if let reason = captureLossReason {
                 captureLossReason = nil
                 endSleepGuard()
@@ -835,6 +855,10 @@ final class SuflerService: ObservableObject {
                 // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
                 statusIsError = obj["error"] as? Bool ?? false
                 statusErrorFromDaemon = statusIsError
+                // Причина отказа — значением рядом с текстом: по ней решается,
+                // имеет ли смысл повтор. Снимается любым не-ошибочным статусом,
+                // иначе одна давняя причина запрещала бы перезапуск навсегда.
+                daemonFatalReason = statusIsError ? obj["reason"] as? String : nil
                 // Липкое — отдельный слой: ключ есть только у липких и у явного
                 // снятия; статус без ключа его не трогает (№228). `sticky: false`
                 // шлёт демон, когда умерший посреди встречи канал собеседников

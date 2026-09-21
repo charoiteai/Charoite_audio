@@ -193,18 +193,26 @@ _last_error: dict[str, float] = {}
 _ERROR_REPEAT_S = 300.0
 
 
-def emit_error(text: str):
+def emit_error(text: str, reason: str = ""):
     """Статус о сбое: приложение красит его как отказ, обычный статус — нет.
 
     Один и тот же текст не чаще раза в пять минут: с мёртвой моделью нить
     ретраит каждый тик и слала бы «модель занята» до конца встречи (тот же
     приём, что quiet_loop_warn — «на смене текста»).
+
+    `reason` — машинная причина рядом с человеческим текстом: приёмник,
+    решающий «повторять ли запуск», обязан читать значение, а не искать
+    подстроку (№277, №310). Незнакомые ключи `consume` игнорирует, поэтому
+    поле безопасно для старых сборок приложения.
     """
     now = time.monotonic()
     if now - _last_error.get(text, -_ERROR_REPEAT_S) < _ERROR_REPEAT_S:
         return
     _last_error[text] = now
-    emit({"type": "status", "text": text, "error": True})
+    событие = {"type": "status", "text": text, "error": True}
+    if reason:
+        событие["reason"] = reason
+    emit(событие)
 
 
 def start_brief(cfg: dict) -> str:
@@ -544,7 +552,7 @@ def main():
         # тип, которого не знает ни один приёмник: `default: break` в Swift
         # молча гасил его, да ещё и отмечал демона живым его же предсмертным
         # сообщением (круг 1 по коду №332, обе головы независимо).
-        emit_error(str(e))          # владелец формы статуса-ошибки, не третья ручная сборка
+        emit_error(str(e), reason="root_unnamed")   # причина — значением, текст — человеку
         print(e, file=sys.stderr, flush=True)
         return EXIT_ROOT_UNNAMED
     # Разово чиним уже созданное — установки до правки лежат с правами 0644.

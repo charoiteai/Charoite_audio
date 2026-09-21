@@ -48,6 +48,13 @@ import threading
 #: выводил свой из положения файла (круг 1 по коду №327, DS C2).
 _given: pathlib.Path | None = None
 
+#: ОТКУДА взялся действующий корень: «назвал владелец» или «вывели догадкой».
+#: Значение само по себе этого не помнит, а разница существенная: догадку
+#: точка входа не вправе принять молча за решение человека — ровно поэтому
+#: `use_data_root(resolve_root(__file__))` и был дефектом (круг 2 по коду
+#: №332, DS C2).
+_origin: str | None = None
+
 #: Проверка «корень уже назван?» и запись — одно действие. Потоки у демона
 #: есть, и два вызова без замка оба увидели бы «не назван»: победил бы
 #: последний, ровно тот тихий второй корень, который отказ и запрещает
@@ -91,7 +98,7 @@ def normalize_root(path) -> pathlib.Path:
     return pathlib.Path(s).expanduser().resolve()
 
 
-def use_data_root(path, *, replace: bool = False) -> pathlib.Path:
+def use_data_root(path, *, replace: bool = False, origin: str = "owner") -> pathlib.Path:
     """Точка входа называет корень данных процесса.
 
     Пока код и данные лежали в одном дереве, корень можно было вывести из
@@ -139,7 +146,9 @@ def use_data_root(path, *, replace: bool = False) -> pathlib.Path:
         global _published, _before_env
         if _published is None:                 # первая публикация в процессе
             _before_env = os.environ.get("CHAROITE_ROOT")
+        global _origin
         _given = root
+        _origin = origin
         _published = str(root)
         os.environ["CHAROITE_ROOT"] = _published
     return root
@@ -173,6 +182,8 @@ def forget_data_root() -> None:
     global _given, _published
     with _lock:
         _given = None
+        global _origin
+        _origin = None
         if _published is not None:
             # Возвращаем только СВОЮ запись: если между публикацией и отзывом
             # в переменную положил кто-то третий, его значение — не наше дело.
@@ -239,12 +250,19 @@ def require_data_root(module_file: str, *, guess_from_code: bool = False) -> pat
     №332, DS I1).
     """
     if _given is not None:
-        return _given                      # корень этого процесса уже назван
+        if _origin == "guess" and not guess_from_code:
+            # корень процессу уже дали, но ДОГАДКОЙ — принять её за решение
+            # владельца значит вернуть ровно тот дефект, от которого заведён
+            # этот конструктор (круг 2 по коду №332, DS C2)
+            raise RootNotNamed(
+                f"корень данных этого процесса ({_given}) выведен догадкой, а не назван. "
+                f"Передайте CHAROITE_ROOT=/путь/к/данным или назовите догадку явно")
+        return _given                      # корень этого процесса уже назван владельцем
     из_окружения = _from_env()
     if из_окружения is not None:
         return use_data_root(из_окружения)
     if guess_from_code:
-        return use_data_root(code_root(module_file))
+        return use_data_root(code_root(module_file), origin="guess")
     raise RootNotNamed(
         "корень данных не назван: где лежат записи, стенограммы и граф — "
         "знает тот, кто запускает, а не этот файл. Передайте "
