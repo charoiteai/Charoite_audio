@@ -335,6 +335,12 @@ def test_прогон_переживает_переменную_корня_в_о
     r = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
          str(ROOT / "tests" / "test_config_loader.py")],
-        capture_output=True, text=True, timeout=120, cwd=ROOT, env=окружение)
+        # Потолок ВДВОЕ ниже потолка самого теста (`pyproject.toml`, 120 с):
+        # иначе первым срабатывает внешний, тест умирает как «джоб убит по
+        # таймауту», и сообщение ниже не печатается никогда — ровно та
+        # диагностика, от которой проект ушёл (круг 21 по коду №327, DS I1).
+        capture_output=True, text=True, timeout=60, cwd=ROOT, env=окружение)
+    # Код возврата накрывает и ошибку сборки (2), и ошибку конфигурации (4);
+    # второе утверждение про слово «error» в stdout ловило бы имя теста с этим
+    # словом и краснело по чужой причине (DS M3).
     assert r.returncode == 0, f"сборка упала с корнем в окружении:\n{r.stdout}{r.stderr}"
-    assert "error" not in r.stdout.lower(), r.stdout
