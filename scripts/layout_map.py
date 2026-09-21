@@ -1232,6 +1232,21 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
     return False
 
 
+def _заведомо_мертва(node: ast.stmt) -> bool:
+    """Ветка, тело которой при импорте не исполняется по условию.
+
+    `if TYPE_CHECKING:` — типовой приём для импортов ради аннотаций, `if False:`
+    и `if 0:` — выключенный код. Считать их исполняемыми значит красить гейт на
+    том, чего в рантайме нет (круг 3 по коду №329, DS I5).
+    """
+    if not isinstance(node, (ast.If, ast.While)):
+        return False
+    т = node.test
+    if isinstance(т, ast.Constant) and not т.value:
+        return True
+    return isinstance(т, ast.Name) and т.id == "TYPE_CHECKING"
+
+
 def _гвард_точки_входа(node: ast.stmt) -> str:
     """Сравнение с `__main__` в условии: `"=="`, `"!="` или `""` (не гвард).
 
@@ -1274,6 +1289,9 @@ def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             out.append(node)                    # ради ЗНАЧЕНИЙ ПО УМОЛЧАНИЮ: они считаются
             continue                            # на импорте, а тело — нет, в этом вся правка
+        if _заведомо_мертва(node):
+            continue                            # `if False:` / `if TYPE_CHECKING:` при импорте
+                                                # не исполняются (круг 3 по коду №329, DS I5)
         гвард = _гвард_точки_входа(node)
         if гвард:
             # при импорте идёт ровно одна половина гварда: у `==` — else,
@@ -1317,11 +1335,16 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
         # значение по умолчанию у аргумента вычисляются при импорте ровно так же
         # (круг 2 по коду №329, DS I3)
         части: list[ast.expr] = []
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-            части.append(node.value)
-        части += [n for n in ast.walk(node) if isinstance(n, ast.NamedExpr)]
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            части += [d for d in node.args.defaults + [k for k in node.args.kw_defaults if k]]
+            # у функции на импорте считаются ТОЛЬКО значения по умолчанию; в тело
+            # заходить нельзя — ленивый морж `(r := resolve_root(...))` внутри
+            # функции это ровно та запись, которую правило и советует взамен
+            # снимка (круг 3 по коду №329, DS C1 = GLM I1)
+            части += node.args.defaults + [k for k in node.args.kw_defaults if k]
+        else:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                части.append(node.value)
+            части += [n for n in ast.walk(node) if isinstance(n, ast.NamedExpr)]
         if not части:
             continue
         for inner in [i for часть in части for i in ast.walk(часть)]:

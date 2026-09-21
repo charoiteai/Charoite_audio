@@ -306,7 +306,7 @@ def test_корень_переживает_undo_в_теле_теста(monkeypat
     # здоровья), а не через геттер — иначе «перенесли снимок в `__init__`»
     # осталось бы зелёным (круг 2 по коду №329, DS C3/I1, GLM I3)
     "nli": lambda м: м._dir().parent.parent,
-    "llm": lambda м: м.LLM({"llm": {"model": "проба"}, "sufler": {"role": "проба"}}).lease_dir().parent.parent,
+    "llm": None,        # спрашивается ниже через движок, созданный ДО именования
 }
 
 
@@ -327,22 +327,37 @@ def test_модуль_отвечает_текущим_корнем_а_не_за�
 
     from conftest import МОДУЛИ_БЕЗ_СНИМКА
 
+    прежний = charoite_paths.resolve_root(charoite_paths.__file__)
     названный = charoite_paths.use_data_root(tmp_path / "новый-корень", replace=True)
+    assert названный != прежний, "предпосылка: корень действительно сменился"
     for имя in МОДУЛИ_БЕЗ_СНИМКА:
         модуль = sys.modules.get(имя)        # взят уже импортированным, а не импортируется здесь
         assert модуль is not None, f"{имя} не импортирован обвязкой — свидетель бессилен"
-        ответ = КАК_СПРОСИТЬ.get(имя, lambda м: м._root())(модуль)
+        спросить = КАК_СПРОСИТЬ.get(имя, lambda м: м._root())
+        if спросить is None:
+            continue                     # у `llm` своя проверка ниже, на живом объекте
+        ответ = спросить(модуль)
         assert ответ == названный, f"{имя} держит замороженный корень: {ответ}"
     # снимок мог переехать в объект: `self._ROOT = resolve_root(...)` в
     # `__init__` ответил бы верно, если объект создан после называния корня —
     # поэтому ищем не момент, а СЛЕД: путь, осевший в атрибуте (круг 2 по
     # коду №329, GLM I3)
-    движок = sys.modules["llm"].LLM({"llm": {"model": "проба"}, "sufler": {"role": "проба"}})
-    осевшие = {имя: v for имя, v in vars(движок).items() if isinstance(v, pathlib.Path)}
-    assert not осевшие, f"корень осел в объекте LLM: {осевшие}"
-    assert not [имя for имя in vars(type(движок)) if имя.isupper() and
-                isinstance(getattr(type(движок), имя, None), pathlib.Path)], \
-        "поле класса вернулось: корень снова снимается на импорте"
+    from conftest import ДВИЖОК_ДО_ИМЕНОВАНИЯ as движок
+    assert движок is not None, "обвязка не создала движок до называния корня"
+    # след ищем по ЗНАЧЕНИЮ, а не по типу: `pathlib.Path` в атрибуте сам по себе
+    # законен (кэш каталога модели, путь конфига), незаконен ПРЕЖНИЙ корень —
+    # тот, что был до переименования (круг 3 по коду №329, DS I6 = GLM I3)
+    # объект создан ДО называния корня: если снимок осел в `__init__` и его
+    # читает `_root()`, аренда уедет в прежний каталог — ловим это ответом, а
+    # не формой (круг 3 по коду №329, GLM I3)
+    assert движок.lease_dir().parent.parent == названный, (
+        f"движок, созданный до называния корня, держит прежний: "
+        f"{движок.lease_dir().parent.parent}")
+    следы = {имя: v for имя, v in vars(движок).items()
+             if isinstance(v, pathlib.Path) and (v == прежний or прежний in v.parents)}
+    следы |= {имя: v for имя, v in vars(type(движок)).items()
+              if isinstance(v, pathlib.Path) and (v == прежний or прежний in v.parents)}
+    assert not следы, f"прежний корень осел в LLM и переименование его не догнало: {следы}"
 
 def test_прогон_переживает_переменную_корня_в_окружении(tmp_path, request):
     """`CHAROITE_ROOT` в шелле не должен ронять сборку всего прогона.
@@ -400,10 +415,10 @@ def test_реестр_модулей_без_снимка_полон():
     код = (
         "import ast,pathlib\n"
         "есть=[]\n"
-        "for p in sorted(pathlib.Path('src').glob('*.py')):\n"
+        "for p in sorted(pathlib.Path('src').rglob('*.py')):\n"
         "    t=ast.parse(p.read_text(encoding='utf-8'))\n"
         "    if any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in ('_root','_dir')\n"
-        "           for n in t.body): есть.append(p.stem)\n"
+        "           for n in ast.walk(t)): есть.append(p.stem)\n"
         "print(' '.join(есть))"
     )
     out = subprocess.run([_sys.executable, "-c", код], cwd=корень,
