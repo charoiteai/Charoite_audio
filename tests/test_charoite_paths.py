@@ -382,3 +382,64 @@ def test_отзыв_не_трогает_чужую_запись_в_переме�
     os.environ["CHAROITE_ROOT"] = str(tmp_path / "от-третьего")   # чужая запись
     charoite_paths.forget_data_root()
     assert os.environ.get("CHAROITE_ROOT") == str(tmp_path / "от-третьего")
+
+
+@pytest.mark.корень_называет_тест
+def test_вход_без_явного_источника_получает_отказ_а_не_догадку(monkeypatch):
+    """Точка входа обязана НАЗВАТЬ корень, а не переспросить канон.
+
+    `use_data_root(resolve_root(__file__))` выглядел как называние, но был
+    узакониванием догадки: ответ третьего пункта канона ложился в `_given` и
+    публиковался в окружение — дети читали догадку как решение владельца, а
+    `_given` сильнее переменной, поэтому никакой позднейший отказ до такого
+    процесса уже не добирался (входной круг по №332, DS C1).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+    with pytest.raises(charoite_paths.RootNotNamed) as отказ:
+        charoite_paths.require_data_root(__file__)
+    # в отказе — рецепт, а не только диагноз: читает его человек у терминала
+    assert "CHAROITE_ROOT" in str(отказ.value) and "не назван" in str(отказ.value)
+
+
+@pytest.mark.корень_называет_тест
+def test_вход_берёт_корень_из_окружения_и_публикует_его(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    charoite_paths.forget_data_root()
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+
+    названный = charoite_paths.require_data_root(__file__)
+
+    assert названный == данные.resolve()
+    assert charoite_paths.resolve_root(__file__) == данные.resolve(), "корень не назван процессу"
+
+
+@pytest.mark.корень_называет_тест
+def test_догадка_доступна_только_названной_вслух(tmp_path, monkeypatch):
+    """`guess_from_code=True` — то же самое, но видно в строке вызова.
+
+    Ручной прогон из checkout остаётся возможным; отличие в том, что намерение
+    угадать написано у вызывающего и попадает в отчёт гейта, а не прячется
+    третьим ответом библиотеки.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    # мнимое дерево во временном каталоге: сторож изоляции прав, называть
+    # боевой корень репозитория тесту нельзя даже ради проверки догадки
+    мнимый = tmp_path / "src" / "точка_входа.py"
+    мнимый.parent.mkdir(parents=True)
+    мнимый.write_text("", encoding="utf-8")
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+
+    названный = charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
+
+    assert названный == tmp_path.resolve()
