@@ -1212,6 +1212,18 @@ cloud worker — which derive the root themselves. The app still passes
 the root is derived from the file location, so running from a repository
 behaves exactly as before.
 
+The answer is asked for, never remembered. `ROOT = resolve_root(__file__)` at
+module level — or the same line as a class field — looks like a call to the
+canon, but it is a snapshot: the value is taken while the module is being
+imported, which is earlier than the entry point gets to name the root. The
+process then disagrees with itself in silence — half the modules live in the
+named root, half in the one derived from the file location. That is how the
+model lease broke: the writer stored it under the frozen root while the health
+watchdog looked under the current one, so «our generation is in flight»
+answered «no». The layout guard knows this shape as `snapshot` and counts
+everything executed at import time — a class body, an `if`, a `try` — except
+`if __name__ == "__main__"`, which does not run on import at all.
+
 The order matters because deriving from the file location answers a different
 question: where the CODE lives. While code and data share one tree the answers
 coincide by accident; from an installed package the same formula yields
