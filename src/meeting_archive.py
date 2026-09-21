@@ -34,7 +34,16 @@ import meeting_source
 import safe_write
 import graphs
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 ARCHIVE_DIR = "Встречи-архив"
 # суффикс исходника → человеческое имя в папке встречи
 NICE = [
@@ -352,7 +361,7 @@ def _config_lang() -> str:
     """
     try:
         import yaml
-        cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
         lang = str((cfg.get("sufler") or {}).get("language", "ru")).strip().lower()
     except Exception:  # noqa: BLE001 — язык документа не повод ронять архив
         return "ru"
@@ -851,7 +860,7 @@ def _build_summary(folder: pathlib.Path, live: pathlib.Path, materials: list[tup
         # пакетов — morning_brief живёт на голом python3 (круг-1 по #418,
         # GLM: единственный нетривиальный импорт у него — meeting_archive).
         from config_loader import load_user_or_example
-        cfg = load_user_or_example(ROOT)
+        cfg = load_user_or_example(_root())
         client = LLM(cfg)
         text = client.complete(
             "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
@@ -1055,9 +1064,9 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
 
 if __name__ == "__main__":
     import yaml
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
-    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    tdir = _root() / cfg["log"]["transcripts_dir"]
     if "--all" in sys.argv:
         n = migrate_all(graph, tdir)
         print(f"архив: {n} встреч в {graph / ARCHIVE_DIR}")

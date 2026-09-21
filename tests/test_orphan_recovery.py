@@ -29,6 +29,7 @@ import sys
 import time
 
 import pytest
+import charoite_paths
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -46,7 +47,7 @@ def data_root(tmp_path, monkeypatch):
 
     (tmp_path / "recordings").mkdir()
     (tmp_path / "transcripts").mkdir()
-    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(daemon, "emit", lambda *_a, **_k: None)
     monkeypatch.setattr(daemon, "_prune_graph_logs", lambda *_a, **_k: None)
     return tmp_path

@@ -25,7 +25,16 @@ from transcript import Transcript, is_noise  # noqa: E402
 from charoite_paths import harden_umask, resolve_root
 from config_loader import load_user_or_example
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 
 SEG_S = 25.0
 OVERLAP_S = 1.0
@@ -95,7 +104,7 @@ def main():
     src = pathlib.Path(sys.argv[1]).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
-    cfg = load_user_or_example(ROOT)
+    cfg = load_user_or_example(_root())
     stt = STT(cfg)
     wav = to_wav16k(src, pcm_rate=int(cfg["audio"]["samplerate"]))
     with wave.open(str(wav), "rb") as w:
@@ -119,7 +128,7 @@ def main():
     day = sys.argv[3] if len(sys.argv) > 3 else f"{mt:%Y-%m-%d}"
     stamp = f"{day}_{hhmm}"
 
-    out_dir = ROOT / cfg["log"]["transcripts_dir"]
+    out_dir = _root() / cfg["log"]["transcripts_dir"]
     tpath = out_dir / f"{stamp}.md"
     parts: list[str] = []
     prev = ""

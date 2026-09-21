@@ -31,10 +31,26 @@ from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 from charoite_paths import MODELS_DIR, resolve_root
 from config_loader import load_user_or_example
 
-ROOT = resolve_root(__file__)
 
-SEG_MODEL = ROOT / MODELS_DIR / "diar" / "segmentation.onnx"
-EMB_MODEL = ROOT / MODELS_DIR / "diar" / "embedding.onnx"
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
+
+
+def _seg_model() -> pathlib.Path:
+    """Модели диаризации лежат в данных — путь на вызове (№329)."""
+    return _root() / MODELS_DIR / "diar" / "segmentation.onnx"
+
+
+def _emb_model() -> pathlib.Path:
+    """Модель эмбеддингов говорящего — там же, в данных, и тоже на вызове."""
+    return _root() / MODELS_DIR / "diar" / "embedding.onnx"
 
 
 
@@ -50,6 +66,7 @@ def _scratch_dir() -> pathlib.Path:
     d = pathlib.Path(tempfile.mkdtemp(prefix="charoite-"))
     atexit.register(shutil.rmtree, d, True)
     return d
+
 
 def wav_is_int16(path: pathlib.Path) -> bool:
     """WAV читается модулем wave и хранит 16-битный PCM. 8-бит читался как int16
@@ -98,9 +115,9 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                model=str(SEG_MODEL)),
+                model=str(_seg_model())),
         ),
-        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)),
+        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(_emb_model())),
         clustering=clustering,
         min_duration_on=0.6,
         min_duration_off=0.6,
@@ -223,7 +240,7 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
     if len(by) <= 1:
         return segs
     ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(_emb_model())))
     embs: dict[int, np.ndarray] = {}
     for k, items in by.items():
         vecs = []
@@ -359,7 +376,7 @@ def main():
     src = pathlib.Path(args[0]).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
-    cfg = load_user_or_example(ROOT)
+    cfg = load_user_or_example(_root())
 
     audio, sr = load_audio(src, channel)
     print(f"{src.name}: {len(audio)/sr/60:.1f} мин @ {sr} Гц, канал {channel}"
@@ -397,7 +414,7 @@ def main():
         stamp = arg  # полный stamp от демона: mtime записи — конец встречи,
     else:            # у полуночной встречи дата разъехалась бы с артефактами
         stamp = f"{mt:%Y-%m-%d}_{arg or format(mt, '%H%M')}"
-    out = ROOT / cfg["log"]["transcripts_dir"] / f"{stamp}_спикеры.md"
+    out = _root() / cfg["log"]["transcripts_dir"] / f"{stamp}_спикеры.md"
     body = [f"# Диаризация {stamp} — запись {src.name}",
             f"Голосов: {len(spk_ids)} · Имена: " + ", ".join(f"{k}→{v}" for k, v in label.items()), ""]
     for spk, start, end, text in lines:

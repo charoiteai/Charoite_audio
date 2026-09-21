@@ -5,6 +5,7 @@
 знал девять вариантов фамилии в aliases.
 """
 import pathlib
+import charoite_paths
 import sys
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
@@ -270,7 +271,7 @@ def test_broken_candidates_report_self_heals(tmp_path, monkeypatch):
     НАВСЕГДА (except pass, ротация требует успешного чтения). Теперь
     хвост усекается до валидной границы блока — с логом, без падения."""
     import rebuild_transcript as rt
-    monkeypatch.setattr(rt, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     g = _graph(tmp_path)
     monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg: g)
     monkeypatch.setattr(rt, "_LEX_CACHE", [None])
@@ -289,7 +290,7 @@ def test_dropped_stem_reported_to_candidates_file(tmp_path, monkeypatch):
     """Advisory GLM r3 принят: снятое из-за общего алиаса правило видно
     человеку в отчёте кандидатов, а не только счётчиком в логе."""
     import rebuild_transcript as rt
-    monkeypatch.setattr(rt, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     g = tmp_path / "g"
     (g / "Люди").mkdir(parents=True)
     (g / "Люди" / "Вельский Ян.md").write_text(

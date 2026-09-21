@@ -15,6 +15,7 @@ import pathlib
 import sys
 
 import pytest
+import charoite_paths
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -94,6 +95,8 @@ class _FakeLLM:
     calls: list = []
     lang = "ru"
     recording_block = llm_mod.LLM.recording_block   # настоящий блок, взят до подмены llm.LLM
+    document_model = llm_mod.LLM.document_model     # выбор модели тоже боевой
+    engine, model, mlx_model = "ollama", "проба", ""
 
     def __init__(self, cfg):
         pass
@@ -242,13 +245,15 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
     text = ("# Встреча\n" + "реплика\n" * 100 + transcript.NOTES_HEAD + transcript.NOTES_SUFFIX
             + "\n> 12:30 📌 КТ: смета\n")
     f.write_text(text, encoding="utf-8")
-    monkeypatch.setattr(mcp_server, "TRANSCRIPTS", tdir)
+    charoite_paths.use_data_root(tdir.parent, replace=True)   # стенограммы — производная корня
     assert live_sidecar.remember(f, channel_trace.SIDECAR_KEY, json.dumps(EVENTS))
     seen: dict = {}
 
     class Fake:
         lang = "ru"
         recording_block = llm_mod.LLM.recording_block
+        document_model = llm_mod.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
 
         def fit(self, t):
             seen["fit"] = t
@@ -428,7 +433,7 @@ def test_minutes_block_for_prompts_drops_the_note_and_caps(tmp_path):
 def test_the_edited_transcript_path_matches_the_passport_with_the_note(tmp_path, monkeypatch):
     """Читатель паспорта в ветке правленой стенограммы (GLM Critical круга 1):
     паспорт с оговоркой, правка не тронула речь — «ничего не меняю», без _finish."""
-    monkeypatch.setattr(rebuild_transcript, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(rebuild_transcript, "wait_recording", lambda *a, **k: None)
     (tmp_path / "logs").mkdir()
     tdir = tmp_path / "transcripts"

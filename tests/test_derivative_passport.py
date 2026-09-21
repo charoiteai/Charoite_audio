@@ -15,6 +15,7 @@ import pathlib
 import sys
 
 import pytest
+import charoite_paths
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -372,7 +373,7 @@ def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(
     final = tdir / "2026-09-02_1021_Смета.md"
     final.write_text("# Встреча 2026-09-02_1021 — Смета\n" + SPEECH, encoding="utf-8")
     seen: list[pathlib.Path] = []
-    monkeypatch.setattr(retro_fill, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
@@ -534,7 +535,7 @@ def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_
     assert len(_FakeLLM.calls) == n and "саммари fresh" in capsys.readouterr().out
     # CLI: флаг доходит до process, без флага — None
     calls: list = []
-    monkeypatch.setattr(retro_fill, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)

@@ -35,7 +35,16 @@ import wave
 
 from charoite_paths import code_root, harden_umask, resolve_root
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 CODE = code_root(__file__)
 sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
@@ -173,7 +182,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
 
 def _daemon_alive() -> bool:
     """Держит ли кто-то лок демона. Пока держит — записи финализирует он."""
-    return live_gate.daemon_alive(ROOT)
+    return live_gate.daemon_alive(_root())
 
 
 def _yield_to_live(what: str, cap: float | None = None) -> None:
@@ -183,7 +192,7 @@ def _yield_to_live(what: str, cap: float | None = None) -> None:
     (rebuild.lock) бесконечная уступка парковала бы очередь на всю чужую
     встречу; после потолка вызов идёт в тесноте, с логом (GLM r2 по #483).
     """
-    live_gate.wait_while_live(ROOT, log, what=what, poll=10, cap=cap)
+    live_gate.wait_while_live(_root(), log, what=what, poll=10, cap=cap)
 
 
 def _take_rebuild_queue():
@@ -195,7 +204,7 @@ def _take_rebuild_queue():
     от которого строилась цепочка сирот (12.08; ревью 18.08). Ждём молча
     не дольше секунды, дальше — с записью в лог.
     """
-    path = ROOT / "logs" / "rebuild.lock"
+    path = _root() / "logs" / "rebuild.lock"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         f = path.open("a")
@@ -509,7 +518,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         _finish(live, edited, meta, cfg)
         return live
     sr_cfg = int(cfg["audio"]["samplerate"])
-    rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
+    rec_dir = _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     if os.environ.get("SUFLER_RECORDINGS_DIR"):
         rec_dir = pathlib.Path(os.environ["SUFLER_RECORDINGS_DIR"])
 
@@ -857,7 +866,7 @@ def canonize(text: str, cfg: dict) -> str:
                     "правило снято, уточните узлы")
     if cand:
         try:
-            out = ROOT / "logs" / "lexicon_candidates.md"
+            out = _root() / "logs" / "lexicon_candidates.md"
             # Повторные пересборки одной встречи не дописывают те же
             # строки (GLM-8 по #469): дубли отсекаются по содержимому,
             # разросшийся отчёт теряет старую половину, не новую.
@@ -1279,13 +1288,13 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
         # по полному имени файла, не по 15 знакам: две встречи одной минуты
         # (и две минутные встречи прежних версий) писали в один лог, и второй
         # спавн усекал лог первого (аудит 30.08, GLM; DS r1)
-        stdout=open(ROOT / "logs" / f"retry_{target.stem}.log", "w"),
+        stdout=open(_root() / "logs" / f"retry_{target.stem}.log", "w"),
         stderr=subprocess.STDOUT,
     )
 
 
 def _pid_file(stamp: str) -> pathlib.Path:
-    return ROOT / "logs" / f"rebuild-{stamp}.pid"
+    return _root() / "logs" / f"rebuild-{stamp}.pid"
 
 
 _RUNNING_LOCKS: list = []   # открытые pid-файлы под flock (иначе GC закроет и снимет замок)
@@ -1390,7 +1399,7 @@ def main():
     except RunningElsewhere as e:   # проскочили проверку одновременно: решает замок (DS по #455)
         log(f"пересборка этой встречи уже идёт ({e}) — выхожу")
         return
-    status = MeetingStatusStore(ROOT)
+    status = MeetingStatusStore(_root())
     pipeline_started = time.time()
     if mark is None:
         log("пересборка идёт без отметки — второй прогон этой встречи не будет отклонён")
@@ -1408,7 +1417,7 @@ def main():
     _yield_to_live("пересборка")
     queue = _take_rebuild_queue()   # держим до выхода процесса — это и есть очередь
     try:
-        cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
         publish(status.processing, live, "rebuilding_transcript")
         try:
             rebuild(live, cfg)

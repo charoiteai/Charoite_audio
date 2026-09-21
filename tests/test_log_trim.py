@@ -42,13 +42,18 @@ def test_missing_log_is_not_an_error(tmp_path):
 
 def test_swift_mirror_is_wired_before_daemon_log_opens():
     """Swift-зеркало стоит там, где открывается daemon.err.log: без него
-    потолок был бы только у mlx_server.log."""
+    потолок был бы только у mlx_server.log.
+
+"""
     svc = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
            / "SuflerService.swift").read_text(encoding="utf-8")
     assert svc.index("LogTrim.trim(errURL)") < svc.index("FileHandle(forWritingTo: errURL)")
+    # Python-половина пока сторожится по тексту: поведенческая проверка требует
+    # разбора порядка вызовов внутри `_restart_mlx` (там Popen, кильер порта и
+    # пауза) — долг записан в карточку №329 (круг 1 по коду, DS I3).
     health = (ROOT / "src" / "llm_health.py").read_text(encoding="utf-8")
-    assert health.index('trim_log(ROOT / "logs" / "mlx_server.log")') \
-        < health.index('(ROOT / "logs" / "mlx_server.log").open("a")')
+    assert health.index('trim_log(_root() / "logs" / "mlx_server.log")') \
+        < health.index('(_root() / "logs" / "mlx_server.log").open("a")')
 
 
 def test_trim_keeps_owner_only_permissions_and_leaves_no_temp(tmp_path):

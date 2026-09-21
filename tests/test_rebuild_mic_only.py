@@ -14,6 +14,7 @@ import sys
 
 import numpy as np
 import pytest
+import charoite_paths
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -27,8 +28,7 @@ def mic_only(tmp_path, monkeypatch):
     (tmp_path / "logs").mkdir()
     (tmp_path / "transcripts").mkdir()
     (tmp_path / "recordings").mkdir()
-    monkeypatch.setattr(rt, "ROOT", tmp_path)
-
+    charoite_paths.use_data_root(tmp_path, replace=True)
     live = tmp_path / "transcripts" / "2026-08-20_143000.md"
     live.write_text("живая стенограмма", encoding="utf-8")
 

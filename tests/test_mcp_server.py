@@ -11,6 +11,7 @@ pyproject разрешает `mcp>=1.0`, а в 2.0 класс переехал: 
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
@@ -18,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import llm  # noqa: E402
+import charoite_paths  # noqa: E402
 import mcp_server  # noqa: E402
 
 
@@ -39,10 +41,10 @@ import subprocess  # noqa: E402
 
 
 def _transcripts(tmp_path, monkeypatch, name="2026-09-13_1200.md", text="# Встреча\nтело\n"):
-    tdir = tmp_path / "transcripts"
+    tdir = tmp_path / "transcripts"          # производная корня, а не подменяемая константа
     tdir.mkdir()
     (tdir / name).write_text(text, encoding="utf-8")
-    monkeypatch.setattr(mcp_server, "TRANSCRIPTS", tdir)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     return tdir
 
 
@@ -95,6 +97,8 @@ def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypat
     class Fake:
         lang = "ru"
         recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model          # боевая, а не заглушка: подмена модели должна быть видна
+        engine, model, mlx_model = "ollama", "проба", ""
 
         def fit(self, transcript):
             return "[сжато: сводки частей]"
@@ -116,3 +120,65 @@ def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server.subprocess, "run", run)
     out = mcp_server.sufler_update_graph()
     assert "20 мин" in out and "прерван" in out
+
+
+def test_правка_конфига_видна_без_перезапуска_сервера(tmp_path, monkeypatch):
+    """Владелец сменил модель в приложении — следующий вызов инструмента знает.
+
+    Сервер живёт столько же, сколько сессия Claude Code: сутками. Кэш конфига с
+    ключом по одному корню сделал бы правку видимой только после перезапуска —
+    поэтому в ключе есть время правки файла. Проверяется именно это свойство:
+    кэш без канала отзыва — тот же снимок, от которого избавлена вся №329
+    (круг 6 по коду, регрессия моей же правки круга 5).
+    """
+    конфиг = tmp_path / "config" / "config.yaml"
+    конфиг.parent.mkdir(parents=True)
+    конфиг.write_text("llm:\n  model: первая\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    assert mcp_server._llm_cfg()["model"] == "первая"
+    старое = конфиг.stat().st_mtime
+    конфиг.write_text("llm:\n  model: вторая\n", encoding="utf-8")
+    os.utime(конфиг, (старое + 5, старое + 5))    # не полагаемся на разрешение часов ФС
+
+    assert mcp_server._llm_cfg()["model"] == "вторая", (
+        "конфиг перечитан не был — кэш стал снимком")
+
+
+def test_конфиг_читается_один_раз_на_вызов_инструмента(tmp_path, monkeypatch):
+    """Четыре чтения одного файла могли лечь по разные стороны правки."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n  model: проба\nsufler:\n  role: р\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    чтений = []
+    настоящий = mcp_server.load_user_or_example
+    monkeypatch.setattr(mcp_server, "load_user_or_example",
+                        lambda к, **kw: (чтений.append(к), настоящий(к, **kw))[1])
+
+    mcp_server._client()
+
+    assert len(чтений) == 1, f"конфиг прочитан {len(чтений)} раза за одну сборку клиента"
+
+
+def test_конфиг_без_модели_объясняет_отказ_а_не_падает(tmp_path, monkeypatch):
+    """Владелец видит, какой файл чинить, а не «MCP error: 'model'».
+
+    Сборка клиента стояла выше `try`, и три отказа конфига — битый YAML,
+    пустой файл, конфиг без `llm.model` — летели наружу сырым исключением
+    мимо всех веток «минутки НЕ тронуты» (круг 6 по коду №329, DS I2 = GLM I1).
+    """
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-09-13_1200.md").write_text("речь", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("llm:\n  engine: ollama\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "минутки НЕ тронуты" in out and "config.yaml" in out and "model" in out
+    assert not (tdir / "2026-09-13_1200_minutes.md").exists(), "пустышка легла на диск"
