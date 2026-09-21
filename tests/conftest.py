@@ -32,6 +32,13 @@ import charoite_paths  # noqa: E402
 #: живы, они обязаны замораживать временный каталог.
 КОРЕНЬ_СЕССИИ: pathlib.Path | None = None
 
+#: Решение владельца о корне, снятое на входе. Прогон обязан его вернуть:
+#: `CHAROITE_ROOT` в шелле — не мусор, а настройка человека (её ставят
+#: `scripts/nightly.sh`, приложение детям демона и runbook), и процесс,
+#: переживший сессию, не должен обнаружить, что её кто-то стёр
+#: (круг 22 по коду №327, DS I2).
+ВНЕШНИЙ_КОРЕНЬ: str | None = None
+
 
 def pytest_configure(config):
     """Санитария окружения и публикация корня — одним осознанным действием.
@@ -46,10 +53,15 @@ def pytest_configure(config):
     импорта не должно нести смысл, а парная уборка живёт в
     `pytest_unconfigure`.
     """
-    global КОРЕНЬ_СЕССИИ
-    os.environ.pop("CHAROITE_ROOT", None)      # окружением прогона распоряжаемся мы
+    global КОРЕНЬ_СЕССИИ, ВНЕШНИЙ_КОРЕНЬ
+    ВНЕШНИЙ_КОРЕНЬ = os.environ.pop("CHAROITE_ROOT", None)   # снимаем, но помним
     КОРЕНЬ_СЕССИИ = pathlib.Path(tempfile.mkdtemp(prefix="charoite-прогон-"))
-    charoite_paths.use_data_root(КОРЕНЬ_СЕССИИ)
+    # `replace=True` закрывает ВТОРОЙ канал того же отказа: переменную мы
+    # только что сняли, а `_given` — глобал канона, и его из conftest не
+    # вычистить ничем. Процесс, где корень уже назвали до прогона
+    # (`pytest.main()` из скрипта), иначе получил бы «второй корень» на
+    # конфигурации (круг 22 по коду №327, DS I2).
+    charoite_paths.use_data_root(КОРЕНЬ_СЕССИИ, replace=True)
 
 
 def pytest_unconfigure(config):
@@ -72,14 +84,20 @@ def pytest_unconfigure(config):
         return
     charoite_paths.forget_data_root()
     os.environ.pop("CHAROITE_ROOT", None)
+    if ВНЕШНИЙ_КОРЕНЬ is not None:
+        os.environ["CHAROITE_ROOT"] = ВНЕШНИЙ_КОРЕНЬ     # решение владельца — назад
     беда = не_временный_корень([корень])
     if беда:
         print(f"корень сессии не убран — {беда}")
         return
-    выжившее: list[str] = []
-    shutil.rmtree(корень, onexc=lambda f, путь, e: выжившее.append(f"{путь}: {e}"))
-    if выжившее:
-        print("корень сессии убран не весь: " + "; ".join(выжившее[:3]))
+    # Без `onexc`: параметр появился в 3.12, а проект обещает 3.11
+    # (`pyproject.toml`, README). Вызов с ним даёт `TypeError` прямо в
+    # `pytest_unconfigure` — INTERNALERROR после сводки на КАЖДОМ прогоне,
+    # включая зелёный (круг 22 по коду №327, GLM I1). Что не убралось, видно
+    # по самому каталогу — этого и достаточно.
+    shutil.rmtree(корень, ignore_errors=True)
+    if корень.exists():
+        print(f"корень сессии убран не весь: {корень}")
 
 
 def не_временный_корень(корни, *, обязан_назвать: bool = True) -> str:
