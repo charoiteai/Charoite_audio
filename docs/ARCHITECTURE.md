@@ -1195,6 +1195,14 @@ The shipped code and the working files are deliberately separated.
 - **Data** — recordings, transcripts, logs, models, `config/config.yaml`. These
   belong to the user and live in the working folder.
 
+The split has a sharp edge at the config: `config/config.yaml` is the owner's
+and comes from the DATA root, while `config/config.example.yaml` ships with the
+release and comes from the CODE root. `config_loader.load_user_or_example`
+reads them from those two different roots for exactly that reason; while the
+two roots were one tree the difference was invisible, and asking the data
+folder for the example crashed the module on import as soon as an installed
+entry point named its own root.
+
 The entry point names the working folder. The root is owned by the path canon
 (`src/charoite_paths.py`): `use_data_root(path)` sets it for the process,
 `resolve_root` answers with the named root before `CHAROITE_ROOT`, and the

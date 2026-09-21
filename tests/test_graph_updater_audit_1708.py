@@ -14,8 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
 import graph_updater as gu  # noqa: E402
+import pytest
 
 
+@pytest.mark.корень_называет_тест
 def test_latest_transcript_ignores_derived_files(tmp_path, monkeypatch):
     tdir = tmp_path / "transcripts"
     tdir.mkdir()

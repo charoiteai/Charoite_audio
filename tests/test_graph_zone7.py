@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
 import graph_updater as gu  # noqa: E402
+import pytest
 
 LINK = "Встречи/2026-09-13_1200"
 
@@ -40,6 +41,7 @@ def test_moc_line_is_checked_by_link_boundary_not_substring(tmp_path):
     assert text == moc.read_text(encoding="utf-8")
 
 
+@pytest.mark.корень_называет_тест
 def test_unreadable_node_is_skipped_with_a_journal_line_not_a_crash(tmp_path, monkeypatch):
     g = _graph(tmp_path)
     charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
@@ -93,6 +95,7 @@ def test_folder_index_counts_only_the_meetings_section(tmp_path):
     assert "| [[Люди/Борис\\|Борис]] | 0 | — |" in idx, idx
 
 
+@pytest.mark.корень_называет_тест
 def test_ambiguous_core_name_does_not_spawn_a_third_core(tmp_path, monkeypatch):
     g = _graph(tmp_path)
     charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
@@ -140,6 +143,7 @@ def test_link_boundary_accepts_space_and_block_ref_but_not_a_longer_stamp():
     assert not gu.has_link("- [[Встречи/2026-09-13_1130-2]]", link)
 
 
+@pytest.mark.корень_называет_тест
 def test_unreadable_moc_or_stub_target_does_not_crash_the_meeting(tmp_path, monkeypatch):
     """Чтение _MOC.md и цели заглушки остались без охраны (круг-1 по #563: DS I2/M6, GLM I2/I3)."""
     g = _graph(tmp_path)

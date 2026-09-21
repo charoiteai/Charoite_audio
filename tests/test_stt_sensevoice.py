@@ -102,6 +102,7 @@ def test_doctor_warns_when_the_chosen_backend_has_no_model(tmp_path, monkeypatch
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.корень_называет_тест
 def test_относительная_модель_считается_от_названного_корня(tmp_path):
     """Путь модели из конфига — от корня ДАННЫХ, который назвала точка входа.
 

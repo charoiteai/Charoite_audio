@@ -16,6 +16,7 @@ pipefail` без `-e`, а последняя команда — echo. Значи
 Питон подменяется заглушкой: тест проверяет проводку кодов возврата,
 а не работу tier3 и брифа.
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -90,8 +91,13 @@ def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
     py = tmp_path / ".venv" / "bin" / "python"
     py.write_text(stub)
     py.chmod(0o755)
+    # Корень данных для этой установки — сам tmp_path, и сказать об этом надо
+    # ЯВНО: обвязка прогона называет канону свой временный корень и уводит его
+    # детям через `CHAROITE_ROOT`, а у скопированной сюда установки корень
+    # другой. Молчание означало бы, что ночной статус ляжет в чужую папку.
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
     return subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=env)
 
 
 # CLI облака не запускается (обновление под ногами): ревизия досье — код 3.
@@ -289,7 +295,8 @@ def test_sudden_death_leaves_a_failure_not_a_forever_running(tmp_path):
     shutil.copy(NIGHTLY, tmp_path / "scripts" / "nightly.sh")
     # Питона нет вовсе — первая же строка с $PY валит скрипт по set -e.
     r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, CHAROITE_ROOT=str(tmp_path)))
     assert r.returncode != 0
     assert _status(tmp_path)["state"] == "failed", _status(tmp_path)
 
@@ -298,14 +305,14 @@ def test_night_slept_through_is_reported_as_sleep_not_failure(tmp_path):
     """30.08: прогон 04:20–09:59 на спящем Mac — четыре «(поздно)» и «failed»,
     хотя не упало ничего. Проспанное время = wall-clock минус monotonic;
     только «(поздно)» при сне — состояние «slept» (аудит 30.08, GLM I3)."""
-    import os
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
     shutil.copy(NIGHTLY, tmp_path / "scripts" / "nightly.sh")
     py = tmp_path / ".venv" / "bin" / "python"
     py.write_text(FROZEN_CLOCK)
     py.chmod(0o755)
-    env = dict(os.environ, NIGHTLY_MAX_H="0", CHAROITE_NIGHTLY_SLEEP_S="0")
+    env = dict(os.environ, NIGHTLY_MAX_H="0", CHAROITE_NIGHTLY_SLEEP_S="0",
+               CHAROITE_ROOT=str(tmp_path))
     r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
                        capture_output=True, text=True, timeout=60, env=env)
     st = _status(tmp_path)
@@ -316,5 +323,6 @@ def test_night_slept_through_is_reported_as_sleep_not_failure(tmp_path):
     py.write_text(SLOW_OK)
     r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
                        capture_output=True, text=True, timeout=60,
-                       env=dict(os.environ, NIGHTLY_MAX_H="0"))
+                       env=dict(os.environ, NIGHTLY_MAX_H="0",
+                                CHAROITE_ROOT=str(tmp_path)))
     assert _status(tmp_path)["state"] == "failed", (_status(tmp_path), r.stdout)

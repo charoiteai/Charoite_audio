@@ -416,6 +416,7 @@ def test_people_chronicle_keeps_last_ten_and_archives_the_rest(tmp_path):
     assert core.count("- [[Встречи/2026-03-") == 13 and "## Архив хроники" not in core
 
 
+@pytest.mark.корень_называет_тест
 def test_entity_node_policy_holds_junk_typos_and_ambiguity(tmp_path, monkeypatch):
     """№193 (DS F4, критика GLM r1b, аудит памяти 07.09): узел сущности не
     заводится для мусора, для имени в одной букве от существующего узла той же
@@ -1319,6 +1320,7 @@ def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
                for x in rep["examples"]["not_utf8_archive"]), rep["examples"]
 
 
+@pytest.mark.корень_называет_тест
 def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     """№236: та же отложенная пара во второй встрече. Опечатка с одним и тем же
     кандидатом и общим числом — псевдоним в узле-кандидате «по повтору», встреча
@@ -1574,6 +1576,7 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     assert "aliases" in (graph / "Модели" / "Qwen-32B.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.корень_называет_тест
 def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypatch):
     """№266: тема заведена узлом Системы/X (боевым писателем upsert_entity), потом
     названа ядром — Ядра/X и Системы/X получают по машинной строке «смотри также»
@@ -1656,6 +1659,7 @@ def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypat
     assert "смотри также" not in (graph / "Ядра" / "Одиночка.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.корень_называет_тест
 def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatch):
     """№286. Псевдоним, который человек поставил сам и снял, — не вето: следа
     машины в узле нет, повторы считаются и склейка идёт как обычно, а со склейкой
@@ -1744,6 +1748,7 @@ def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatc
     assert g.frontmatter.list_field("---\nauto_aliases: [\"Кэш 900\"]\n---\n", "aliases") == []
 
 
+@pytest.mark.корень_называет_тест
 def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsys):
     """№286 (DS I3 круга 4 по №236). Строка встречи в существующий узел идёт через
     rewrite_file: узел, сменившийся под рукой дважды, не перезаписывается
