@@ -44,12 +44,23 @@ import redirects
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 
-ROOT = resolve_root(__file__)
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Константа на уровне модуля считалась при импорте — то есть раньше, чем
+    точка входа успевала назвать корень. Процесс разъезжался сам с собой:
+    графовая половина читала названный корень, а этот модуль продолжал жить
+    в выведенном из положения файла, и расхождение было немым (круг 1 по
+    коду №327, DS C2 и GLM I2).
+    """
+    return resolve_root(__file__)
+
+
 CODE = code_root(__file__)
 
 
 def load_cfg() -> dict:
-    return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
 
 
 def latest_transcript() -> pathlib.Path | None:
@@ -61,7 +72,7 @@ def latest_transcript() -> pathlib.Path | None:
     перезаписывал заметку встречи (аудит 17.08). Что считать главным
     файлом, знает meeting_stamp.stamp_of.
     """
-    files = [p for p in (ROOT / "transcripts").glob("*.md") if stamp_of(p.stem)]
+    files = [p for p in (_root() / "transcripts").glob("*.md") if stamp_of(p.stem)]
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
@@ -189,7 +200,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 def _yield_to_live() -> None:
     """Пауза, пока идёт живая встреча (см. live_gate). Между частями длинного
     разбора — тоже: встреча может начаться посреди 18-часовой пересборки."""
-    live_gate.wait_while_live(ROOT, lambda m: print(f"граф: {m}"), what="разбор")
+    live_gate.wait_while_live(_root(), lambda m: print(f"граф: {m}"), what="разбор")
 
 
 def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
@@ -1326,7 +1337,7 @@ def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
     DS r3 I1, GLM r3 критика 2) и, с №194, вытеснение и пересказ описания
     узла. Сбой журнала запись в граф не останавливает."""
     try:
-        log = ROOT / "logs" / "graph_unlinked.log"
+        log = _root() / "logs" / "graph_unlinked.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         import datetime as _dt
         with log.open("a", encoding="utf-8") as fh:
@@ -2481,7 +2492,7 @@ def main():
         return
     try:
         from meeting_processing import MeetingStatusStore
-        _progress = (MeetingStatusStore(ROOT), tpath)
+        _progress = (MeetingStatusStore(_root()), tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
@@ -2765,7 +2776,7 @@ def main():
     # сессиях знал о встречах, а не только vault_search.
     if graph_ok:
         send_to_brain(stamp, title, people, topics, decisions,
-                      ROOT / "logs" / "brain_sent" / f"{stamp}.txt")
+                      _root() / "logs" / "brain_sent" / f"{stamp}.txt")
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что
@@ -2915,7 +2926,7 @@ def main():
             # только решение «запускать разбор» и имена файлов
             slug3 = theme_slug(title) if title else ""
             rev = tpath.with_name(f"{stamp}_{slug3}_ревизия_claude.md" if slug3 else f"{stamp}_ревизия_claude.md")
-            log = ROOT / "logs" / f"cloud_review_{stamp}.log"
+            log = _root() / "logs" / f"cloud_review_{stamp}.log"
             log.parent.mkdir(exist_ok=True)
             # Повтор обработки — не повод гонять облако второй раз: если
             # ревизия уже есть и она моложе стенограммы, оставляем её
@@ -2940,7 +2951,7 @@ def main():
                 [sys.executable, str(CODE / "scripts" / "cloud_review.py"),
                  "--stamp", stamp, "--transcript", str(tpath),
                  "--graph", str(graph), "--rev", str(rev), "--log", str(log)],
-                cwd=str(ROOT), stdin=_sp.DEVNULL,
+                cwd=str(_root()), stdin=_sp.DEVNULL,
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True,
             )
             print(f"cloud-enrich: разбор идёт под присмотром воркера (лог {log.name})")
@@ -3021,7 +3032,7 @@ def cloud_enrich_workdir(cfg: dict, graph: pathlib.Path,
     # проверка на истинность строки здесь пропустила бы ненастроенный граф.
     if cloud_graph_available(graph):
         return graph.expanduser().resolve()
-    return folder if folder is not None else ROOT
+    return folder if folder is not None else _root()
 
 
 def cloud_enrich_context(folder: pathlib.Path, stamp: str,
@@ -3280,7 +3291,7 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
     конвейера: файл без вектора участвует в памяти лексически."""
     if graph is None or not graph.is_dir():
         return
-    if live_gate.daemon_alive(ROOT):
+    if live_gate.daemon_alive(_root()):
         print("память подсказок: идёт запись — векторы доберёт ночь")
         return
     try:
@@ -3289,7 +3300,7 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
         mem.refresh(force=True)
         # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
         # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)
-        done = mem.embed_pending(budget_s=budget_s, should_stop=lambda: live_gate.daemon_alive(ROOT))
+        done = mem.embed_pending(budget_s=budget_s, should_stop=lambda: live_gate.daemon_alive(_root()))
         left = len(mem.pending_vectors())
         print(f"память подсказок: векторы для {done} файлов" + (f", ожидают ещё {left}" if left else "")
               + (f" ({mem.note})" if mem.note else ""))

@@ -61,12 +61,12 @@ def _graph(tmp: pathlib.Path) -> pathlib.Path:
 def _backups_out_of_the_repo(tmp_path, monkeypatch):
     """Снимки и песочницы — в tmp теста, а не в данных установки.
 
-    `backup_root` кладёт их под `cloud_review.ROOT`, и на машине разработчика
+    `backup_root` кладёт их под корень данных ревизии, и на машине разработчика
     это корень репозитория: каждый тест переноса оставлял там каталог. Тест
     приватности (`test_no_voice_biometrics`) сверяет, что в репозитории не
     появилось файлов, и падал, когда случайный порядок ставил его ПОСЛЕ
     этих тестов. Прогон не должен зависеть от порядка."""
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "данные")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "данные": _к)
 
 
 def _cloud_worked(graph: pathlib.Path, tmp: pathlib.Path, work) -> tuple:
@@ -255,8 +255,8 @@ def test_deleting_a_node_without_author_section_is_a_violation(tmp_path):
     person = graph / "Люди" / "Иванов.md"
     person.parent.mkdir()
     person.write_text("# Иванов\n- **Роль:** аналитик\n", encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    cloud_review.snapshot(graph)
+    cloud_review.backup_graph(graph, "2026-07-15_1400")
     def renamed(pen):                                       # «переименовал»
         (pen / "Люди" / "Иванов.md").rename(pen / "Люди" / "Иванов И.md")
 
@@ -322,7 +322,7 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     rev, log = transcripts / f"{stamp}_ревизия.md", tmp_path / "cloud.log"
     core = graph / "Ядра" / "Платёжный провайдер.md"
     original = core.read_text(encoding="utf-8")
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
 
     class Result:
         returncode = 1
@@ -366,7 +366,7 @@ def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monke
     import fcntl
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     with cloud_review.graph_lock(graph, wait=0) as first:
         assert first is True
         with cloud_review.graph_lock(graph, wait=0.2) as second:
@@ -939,9 +939,15 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
             def lost(*a, _kind=kind, _detail=detail, _what=what, **k):
                 raise review_bridge.LostRace(minutes, _what, kind=_kind, detail=_detail)
 
-            monkeypatch.setattr(cloud_review.review_bridge, who, lost)
-            assert cloud_review.run(stamp, transcript, graph, rev, log,
-                                    {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+            # свой контекст на одну подмену вместо общего `monkeypatch.undo()`:
+            # тот снимал ВСЕ подмены теста и фикстур, включая корень данных
+            # облачной ревизии — дальше `run()` шёл по настоящему корню и
+            # `_pay_brain_debts` снимал `.pending` живой очереди переотправки
+            # владельца (круг 15 по коду №327, GLM C1; круг 16, DS C1)
+            with pytest.MonkeyPatch.context() as мост:
+                мост.setattr(cloud_review.review_bridge, who, lost)
+                assert cloud_review.run(stamp, transcript, graph, rev, log,
+                                        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
             text = log.read_text(encoding="utf-8")
             assert "мост ревизии: " in text and expected in text, (who, kind, text)
             assert forbidden not in text, (who, kind, text)
@@ -950,9 +956,6 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
                 # подробность системы печатается один раз — она уже в тексте
                 # сигнала, и хелпер её не пересказывает (DS M1 r2)
                 assert text.count(detail) == 1, (who, kind, text)
-        monkeypatch.undo()
-        monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-        monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
 
 
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
@@ -978,7 +981,6 @@ def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     transcript, rev, log = _meeting(tmp_path)
-    doc = graph / "Документация" / "Стенограммы встреч" / f"{stamp}.md"
 
     class Result:
         returncode = 0
@@ -1056,7 +1058,7 @@ def test_a_failed_review_leaves_the_neighbouring_meeting_alone(tmp_path, monkeyp
     пересечься они могут только в одном файле, где побеждает конвейер.
     """
     graph = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     old_node = graph / "Ядра" / "Хранилище.md"
     old_node.parent.mkdir(parents=True, exist_ok=True)
     old_node.write_text("# ядро\nстарый текст\n", encoding="utf-8")
@@ -1394,7 +1396,6 @@ def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch)
         kwargs["stdout"].write(_REPORT)
         return Result()
 
-    real = cloud_review.safe_write.write_text
     def flaky(path, text, *a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
@@ -1411,7 +1412,7 @@ def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch)
     assert kept and kept[0].is_dir(), "черновик облака не спрятан в карантин"
     # и forget_meeting реально её удаляет (PRIVACY: «забыть встречу» — GLM И1)
     import forget_meeting
-    plan = forget_meeting.plan(stamp, cloud_review.ROOT, graph)
+    plan = forget_meeting.plan(stamp, cloud_review._root(), graph)
     kept_dir = kept[0].parent           # каталог запуска с песочницей внутри
     assert any(kept_dir == d or kept_dir in d.parents or d in kept_dir.parents
                for d in plan.delete), "forget_meeting не планирует удалить песочницу"
@@ -1427,7 +1428,7 @@ def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     transcript, rev, log = _meeting(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
 
     # сосед уже завёл свой снимок в том же корне
     root = cloud_review.backup_root(graph)
@@ -1988,7 +1989,7 @@ def test_cli_failure_is_retried_once_after_a_pause_and_outside_a_live_meeting(tm
     # статуса нет вовсе (старая встреча, ручной запуск): свежая ревизия отменяет
     # повтор, как и до 13.09 — этапов у таких встреч не бывает (DS r1 I2 по #556)
     from meeting_processing import MeetingStatusStore
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     calls.clear(); events.clear(); log.unlink()
     rev.write_text("# Ревизия\n", encoding="utf-8")
     outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
@@ -2025,7 +2026,7 @@ def test_retry_runs_the_real_worker_twice_and_cleans_the_partial(tmp_path, monke
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     transcript, rev, log = _meeting(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     calls: list[int] = []
 
@@ -2058,7 +2059,7 @@ def test_run_once_tells_cli_failure_from_timeout_and_writes_the_review_stage(tmp
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     transcript, rev, log = _meeting(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     store = meeting_processing.MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "updating_graph")
@@ -2214,7 +2215,7 @@ def test_review_stage_ok_is_terminal_for_failures_of_other_workers(tmp_path, mon
     review_delivered терял доказательство доставки и вторая попытка шла платным
     прогоном поверх доставленной ревизии (DS r1 Critical по #556)."""
     from meeting_processing import MeetingStatusStore
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     transcript = tmp_path / "2026-07-15_1400.md"
     transcript.write_text("текст\n", encoding="utf-8")
     store = MeetingStatusStore(tmp_path / "data")
@@ -2312,7 +2313,7 @@ def test_review_landed_since_needs_a_change_a_fresh_file_and_a_closed_stage(tmp_
     сменился с момента снимка, он не старше стенограммы, этап ревизии в
     статусе «ok» (DS I1 и критика DS по #550)."""
     from meeting_processing import MeetingStatusStore
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     transcript = tmp_path / "2026-07-15_1400.md"
     transcript.write_text("текст\n", encoding="utf-8")
     rev = tmp_path / "2026-07-15_1400_ревизия.md"
@@ -2348,7 +2349,7 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     from meeting_processing import MeetingStatusStore
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     transcripts = tmp_path / "transcripts"; transcripts.mkdir()
     transcript = transcripts / f"{stamp}.md"

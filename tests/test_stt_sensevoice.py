@@ -100,3 +100,22 @@ def test_doctor_warns_when_the_chosen_backend_has_no_model(tmp_path, monkeypatch
     # Другой бэкенд — проверка не вмешивается.
     doctor.check_stt({"stt": {"backend": "gigaam"}})
     assert capsys.readouterr().out == ""
+
+
+def test_относительная_модель_считается_от_названного_корня(tmp_path):
+    """Путь модели из конфига — от корня ДАННЫХ, который назвала точка входа.
+
+    Читался он от положения файла, то есть от корня КОДА: в репозитории оба
+    совпадают, а во вложенной установке `models/` лежит у человека, и
+    сообщение об отсутствии модели называло путь, по которому её никто не
+    клал. Переменную здесь перетирают ПОСЛЕ названия корня — канал общий, а
+    решение точки входа отменяться не должно (круг 2 по коду №327, DS I2).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    названный = charoite_paths.use_data_root(tmp_path / "данные")
+    import os
+    os.environ["CHAROITE_ROOT"] = str(tmp_path / "перетёртый")
+    with pytest.raises(FileNotFoundError) as e:
+        stt_mod.STT(_cfg("sensevoice", sensevoice_model="models/stt/sensevoice.onnx"))
+    assert str(названный / "models" / "stt" / "sensevoice.onnx") in str(e.value), str(e.value)

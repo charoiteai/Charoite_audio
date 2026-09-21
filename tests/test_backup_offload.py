@@ -13,7 +13,10 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
+import subprocess
+import tempfile
 import sys
 
 import pytest
@@ -24,6 +27,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import charoite_paths  # noqa: E402
 import cloud_review  # noqa: E402
+# Импорт НА СБОРКЕ, а не в теле теста: свидетель заморозки корня обязан
+# ловить именно тот момент, когда модуль считает `ROOT` — до первой
+# фикстуры. Импорт внутри теста дал бы уже опубликованный корень теста, и
+# свидетель зеленел бы даже со снятой публикацией корня сессии.
+import daemon  # noqa: E402
+import meeting_archive  # noqa: E402
 
 
 def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -55,7 +64,7 @@ def test_backup_graph_writes_next_to_data(tmp_path, monkeypatch):
     """Полный снимок: файлы на месте, но в корне данных, а не в графе."""
     g = _graph(tmp_path)
     data = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", data)
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=data: _к)
 
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
 
@@ -73,7 +82,7 @@ def test_snapshot_survives_rewrite_of_the_original(tmp_path, monkeypatch):
     Обсидиане, и запись на месте не запрещена никем.
     """
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
 
     node = g / "Встречи" / "2026-08-21_1103.md"
@@ -105,7 +114,7 @@ def test_clone_is_used_and_gives_an_independent_file(tmp_path):
 def test_copy_is_the_fallback_when_clone_fails(tmp_path, monkeypatch):
     """Не APFS, другой том, старая система — снимок всё равно полный."""
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     monkeypatch.setattr(cloud_review, "_clone", lambda src, dst: False)
 
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
@@ -129,7 +138,7 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
     backup_graph только создаёт, а rotate_snapshots зовётся в конце run()
     и не трогает ни свой срез, ни чужие файлы."""
     g = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
     root = cloud_review.backup_root(g)
 
     first = cloud_review.backup_graph(g, "2026-12-31_2359")   # «сосед» со штампом новее
@@ -145,3 +154,202 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
     assert (root / "заметка-пользователя.txt").exists(), "ротация трогает не-каталоги"
 
 
+
+
+@pytest.mark.настоящий_корень_ревизии
+def test_корень_ревизии_у_канона_а_не_своя_копия(tmp_path):
+    """Облачная ревизия спрашивает корень у канона — седьмой копии правила нет.
+
+    Своя копия читала `CHAROITE_ROOT` сама и теряла `strip()`/`resolve()`:
+    в одном прогоне снимки графа и карантин уезжали по одному корню, а
+    журнал несвязанных узлов — по другому (круг 2 по коду №327, DS I1).
+    Переменную перетираем после названия корня: канон обязан ответить
+    названным.
+    """
+    названный = charoite_paths.use_data_root(tmp_path / "данные")   # через дверь, не мимо
+    os.environ["CHAROITE_ROOT"] = str(tmp_path / "перетёртый")
+    assert cloud_review._root() == названный
+
+
+def граф_не_изолирован(tmp_path) -> str:
+    """Чем плох граф процесса; пустая строка — всё в порядке.
+
+    Судится значение, а не факт «переменная чем-то занята»: в шелле владельца
+    `CHAROITE_GRAPH_DIR` штатно экспортирован (им включают демо-граф для
+    скринов), и мягкая проверка «непусто» оставалась зелёной ровно в том
+    состоянии, от которого изоляция заведена — на живом графе владельца
+    (круг 10 по коду №327, DS C1).
+
+    Возвращает причину, а не ассертит сама: гейт утверждений проекта считает
+    тест без `assert` в теле неспособным упасть, и прятать проверку в хелпер
+    значит выключать этот гейт (`tests/test_check_test_assertions.py`).
+    """
+    for имя in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        значение = os.environ.get(имя)
+        if not значение:
+            return f"{имя} снят — изоляции графа нет"
+        if not pathlib.Path(значение).is_relative_to(tmp_path):
+            return f"{имя}={значение} вне каталога теста — тест пойдёт в граф владельца"
+    return ""
+
+
+def test_предусловие_требует_временный_корень(tmp_path):
+    """Свойство корня — само под тестом, иначе оно умрёт молча.
+
+    Свойство простое: все корни, на которых работает тест, обязаны быть
+    временными. Корень установки и живой корень данных владельца одинаково
+    опасны — ревизия писала бы туда снимки и ходила по настоящим встречам.
+    Судятся ВСЕ названные корни: сходивший на установку и вернувшийся в tmp
+    тест иначе прошёл бы незамеченным (DS I2 круга 9).
+    """
+    from conftest import не_временный_корень
+    assert "не назван" in не_временный_корень([])
+    assert "не временный" in не_временный_корень([pathlib.Path("/установка")])
+    assert "не временный" in не_временный_корень([pathlib.Path.home() / "Documents" / "Чароит"])
+    assert "не временный" in не_временный_корень([tmp_path, pathlib.Path("/установка")])
+    assert не_временный_корень([tmp_path]) == ""
+    assert не_временный_корень([pathlib.Path(tempfile.mkdtemp())]) == ""
+
+
+@pytest.mark.настоящий_корень_ревизии
+def test_помеченный_тест_не_теряет_изоляцию_графа(tmp_path):
+    """Маркер снимает подмену корня ревизии — и только её.
+
+    Пока изоляция графа была хвостом той же фикстуры, ветвление по маркеру
+    отрезало её целиком: помеченный тест без переменной уходил в iCloud
+    владельца через `graphs.roots()` (№197 — 14 651 файл, 120 с). Изоляция
+    живёт отдельной фикстурой и маркера не знает (круг 8 по коду №327, DS C1).
+    """
+    charoite_paths.use_data_root(tmp_path / "данные")
+    беда = граф_не_изолирован(tmp_path)
+    assert not беда, беда
+
+
+def test_изоляция_графа_переживает_undo_в_теле_теста(monkeypatch, tmp_path):
+    """Общий `monkeypatch` снимается тестом — изоляция графа не должна.
+
+    `monkeypatch.undo()` в теле теста (так делают два теста гигиены графа)
+    снимал и `CHAROITE_GRAPH_DIR`, после чего `graphs.roots()` при пустом
+    конфиге уходил в iCloud владельца — №197 в чистом виде
+    (круг 9 по коду №327, DS C1).
+    """
+    monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
+    monkeypatch.undo()
+    беда = граф_не_изолирован(tmp_path)
+    assert not беда, беда
+
+
+def test_запрет_сети_переживает_undo_в_теле_теста(monkeypatch):
+    """Сетевой гейт не снимается чужим `monkeypatch.undo()`.
+
+    Шесть тестов репозитория зовут `undo()` посреди работы; пока гейт стоял
+    на monkeypatch, после этого возвращался настоящий `requests.post` — и
+    запись в живую память владельца снова становилась возможной без единого
+    сигнала (круг 14 по коду №327, GLM I1). Тот же образец, что у корня и
+    графа: save/restore руками.
+    """
+    import requests
+    monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
+    monkeypatch.undo()
+    with pytest.raises(AssertionError, match="пошёл в сеть"):
+        requests.post("http://127.0.0.1:8100/remember", json={})
+
+
+def test_обвязка_называет_канону_временный_корень(tmp_path):
+    """Корень данных тестового процесса назван, и назван во временном месте.
+
+    Пока обвязка корень только отзывала, канон отвечал положением файла —
+    корнем кода, то есть в рабочем checkout живыми данными владельца. Боевой
+    путь `graph_updater._root() / "logs" / "brain_sent"` весь прогон указывал
+    на настоящую очередь переотправки (круг 18 по коду №327, DS C1 = GLM C1).
+    """
+    from conftest import не_временный_корень
+    корень = charoite_paths.resolve_root(charoite_paths.__file__)
+    assert корень == (tmp_path / "данные").resolve(), \
+        "канон отвечает не тем корнем, который назвала обвязка"
+    assert не_временный_корень([корень]) == ""
+
+
+def test_очередь_долгов_продукта_лежит_в_tmp():
+    """Тот же вопрос с той стороны, откуда он важен: глазами продуктового кода.
+
+    `send_to_brain` пишет `<штамп>.txt`, `.pending` и вечный `.lock` в
+    `_root()/logs/brain_sent`. Проверяем не «сторож не сработал», а что
+    адреса живой очереди у тестового процесса просто нет.
+    """
+    import graph_updater
+    журнал = graph_updater._root() / "logs" / "brain_sent"
+    живой = charoite_paths.CODE_ROOT / "logs" / "brain_sent"
+    assert журнал != живой, "продуктовый код адресует живую очередь владельца"
+    assert pathlib.Path(tempfile.gettempdir()).resolve() in журнал.resolve().parents
+
+
+def test_корень_переживает_undo_в_теле_теста(monkeypatch):
+    """`monkeypatch.undo()` посреди теста не возвращает корень кода.
+
+    Именно так утекла очередь долгов в круге 15: шестнадцать тестов подменяют
+    `_root` сами, один из них звал `undo()` и продолжал работать — подмена
+    обвязки снималась вместе с его собственной. Публикация корня стоит не на
+    `monkeypatch`, и снять её `undo()` не может.
+    """
+    monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
+    monkeypatch.undo()
+    assert charoite_paths.resolve_root(charoite_paths.__file__) != charoite_paths.CODE_ROOT
+
+
+def test_снапшот_на_импорте_заморозил_временный_корень():
+    """Модуль, считающий корень на импорте, не должен держать корень кода.
+
+    Тринадцать модулей `src/` пишут `ROOT = resolve_root(__file__)` на верхнем
+    уровне (карточка №329). Импорт идёт на СБОРКЕ, раньше любой фикстуры:
+    безымянный канон ответил бы положением файла, то есть корнем кода, а в
+    рабочем checkout корень кода — это живые данные владельца. Такой модуль
+    канону больше не подчиняется: предусловие теста судит канон и заморозку не
+    видит (круг 19 по коду №327, DS I2 = GLM I1).
+
+    Поэтому корень назван ДО сборки, и проверяется здесь именно заморозка, а не
+    ответ канона: `daemon.ROOT` — значение, посчитанное один раз на импорте.
+    """
+    тмп = pathlib.Path(tempfile.gettempdir()).resolve()
+    for модуль in (daemon, meeting_archive):
+        замороженный = pathlib.Path(модуль.ROOT).resolve()
+        assert замороженный != charoite_paths.CODE_ROOT, (
+            f"{модуль.__name__}.ROOT заморозил корень кода — прогон писал бы "
+            f"в данные владельца")
+        assert тмп in замороженный.parents, f"{модуль.__name__}.ROOT вне tmp: {замороженный}"
+
+
+def test_прогон_переживает_переменную_корня_в_окружении(tmp_path, request):
+    """`CHAROITE_ROOT` в шелле не должен ронять сборку всего прогона.
+
+    Переменную штатно экспортируют `scripts/nightly.sh`, приложение детям
+    демона и runbook `docs/DATA_AND_RECOVERY.md`, так что запуск тестов в
+    таком шелле — обычное дело. Пока публикация корня сессии стояла
+    оператором уровня модуля, канон сравнивал её с корнем из окружения и
+    отказывал вторым корнем: ошибка сборки на все тесты сразу, ни одного
+    зелёного (круг 20 по коду №327, DS I1 = GLM C1).
+
+    Проверяется подпроцессом и только СБОРКОЙ: предмет — то, что conftest
+    вообще импортируется, а не поведение отдельного теста.
+    """
+    # Потолок ребёнка — ПОЛОВИНА потолка теста, и он выводится из конфига, а
+    # не захардкожен: иначе первым сработал бы внешний, тест умер бы как
+    # «джоб убит по таймауту», и вывод ребёнка не напечатался бы никогда
+    # (круг 21, DS I1; круг 22, GLM M3 — отношение должно держаться
+    # механизмом, а не комментарием).
+    потолок = float(request.config.getini("timeout")) / 2
+    окружение = dict(os.environ, CHAROITE_ROOT=str(tmp_path / "чужой"))
+    аргументы = [sys.executable, "-m", "pytest", "--collect-only", "-q",
+                 "-p", "no:cacheprovider", str(ROOT / "tests" / "test_config_loader.py")]
+    try:
+        r = subprocess.run(аргументы, capture_output=True, text=True,
+                           timeout=потолок, cwd=ROOT, env=окружение)
+    except subprocess.TimeoutExpired as повис:
+        # Вывод ребёнка живёт атрибутами исключения, и стандартный traceback
+        # его не печатает — доносим сами (круг 22 по коду №327, GLM M2).
+        pytest.fail(f"сборка с корнем в окружении не кончилась за {потолок} с:\n"
+                    f"{повис.stdout}{повис.stderr}")
+    # Код возврата накрывает и ошибку сборки (2), и ошибку конфигурации (4),
+    # и пустую коллекцию (5) — отдельного утверждения про слово «error» в
+    # stdout не нужно, оно краснело бы от имени теста (круг 21, DS M3).
+    assert r.returncode == 0, f"сборка упала с корнем в окружении:\n{r.stdout}{r.stderr}"

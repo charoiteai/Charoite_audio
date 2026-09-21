@@ -12,15 +12,19 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess:
+def _run(args: list[str], корень: pathlib.Path | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    if корень is not None:
+        env["CHAROITE_ROOT"] = str(корень)
     return subprocess.run([sys.executable, str(ROOT / "scripts" / "memory_bench.py"), *args],
-                          capture_output=True, text=True, timeout=120, cwd=ROOT)
+                          capture_output=True, text=True, timeout=120, cwd=ROOT, env=env)
 
 
 def test_missing_bench_file_is_not_a_failure():
@@ -32,12 +36,20 @@ def test_missing_bench_file_is_not_a_failure():
     assert r.returncode == 0, f"ненастроенный бенч отдал код {r.returncode}: {r.stdout}{r.stderr}"
 
 
-def test_it_says_how_to_turn_the_bench_on():
-    # Сценарий именно про бенч: Чароит настроен, а бенч — нет. Без config.yaml
-    # скрипт выходит раньше и говорит про конфиг — это другой тест ниже.
-    if (ROOT / "config" / "memory_bench.yaml").exists() or not (ROOT / "config" / "config.yaml").exists():
-        return
-    out = _run([]).stdout
+def test_it_says_how_to_turn_the_bench_on(tmp_path):
+    """Сценарий именно про бенч: Чароит настроен, а бенч — нет.
+
+    Установка собирается во временном корне, а не берётся с машины
+    разработчика: прежняя версия молча возвращалась, если у автора не было
+    `config.yaml` или, наоборот, был `memory_bench.yaml`, — то есть тест
+    проверял разное у разных людей и мог не проверить ничего.
+    """
+    установка = tmp_path / "установка"
+    (установка / "config").mkdir(parents=True)
+    (установка / "config" / "config.yaml").write_text(
+        (ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    out = _run([], корень=установка).stdout
     assert "memory_bench.example.yaml" in out, \
         "молчаливый пропуск: человеку не сказано, как включить бенч"
 

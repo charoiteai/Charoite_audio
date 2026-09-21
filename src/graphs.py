@@ -16,28 +16,47 @@ import time
 from charoite_paths import resolve_root
 
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
-# Конфиг живёт в корне ДАННЫХ, а не рядом с кодом: в бандловой установке код
-# лежит в read-only .app, и чтение «рядом с собой» давало пустой словарь —
-# то есть дефолты вместо настроек человека. Ночная ревизия ядер так не видела
-# бы выключатель профиля (ревью 19.08, второй круг DeepSeek).
-# Корень данных — через канонический resolve_root: своя копия логики без
-# strip()/expanduser() делала CHAROITE_ROOT=" " относительным корнем, и
-# относительный graph_dir снова зависел бы от cwd (круг-1 по PR #385,
-# Sonnet).
-DATA_ROOT = resolve_root(__file__)
-CONFIG = DATA_ROOT / "config" / "config.yaml"
+
+
+def data_root() -> pathlib.Path:
+    """Где лежат данные человека — спрашиваем канон, своего ответа нет.
+
+    Хозяин корня — точка входа, которая его назвала (`charoite_paths.use_data_root`),
+    а хранит его канон путей: корень один на процесс и спрашивают его все
+    слои. Пока сеттер стоял здесь, в графовом модуле, процесс мог разъехаться
+    сам с собой — граф читал названный корень, а слой моделей выводил свой из
+    положения файла, и расхождение было немым (круг 1 по коду №327, DS C2).
+
+    Порядок ответа канона: названный корень → `CHAROITE_ROOT` → положение
+    файла. Последнее верно, только пока модуль лежит в дереве репозитория; из
+    установленного пакета оно дало бы `site-packages`, то есть дефолты вместо
+    настроек человека.
+    """
+    return resolve_root(__file__)
+
+
+def config_path() -> pathlib.Path:
+    """Конфиг живёт в корне ДАННЫХ, а не рядом с кодом.
+
+    В бандловой установке код лежит в read-only `.app`, и чтение «рядом с
+    собой» давало пустой словарь — то есть дефолты вместо настроек человека:
+    ночная ревизия ядер так не видела бы выключатель профиля (ревью 19.08,
+    второй круг DeepSeek). Функция, а не константа: корень теперь известен не
+    на импорте, а когда его задал вызывающий.
+    """
+    return data_root() / "config" / "config.yaml"
 
 
 def load_config() -> dict:
     """config.yaml целиком; {} — файла нет или он битый (пути fail-closed)."""
     try:
         import yaml
-        return yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(config_path().read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
 
 
-# Относительный graph_dir считается от DATA_ROOT — так же, как это делает
+# Относительный graph_dir считается от корня данных — так же, как это делает
 # приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
 # Два имени одной переменной: приложение исторически читало CHAROITE_GRAPH_DIR
 # (скрины и тесты на демо-графе), Python — SUFLER_GRAPH_DIR. Демон получает
@@ -63,7 +82,7 @@ def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
         return None
     p = pathlib.Path(s).expanduser()
     if not p.is_absolute():
-        p = (root or DATA_ROOT) / p
+        p = (root or data_root()) / p
     return p
 
 

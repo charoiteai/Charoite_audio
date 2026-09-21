@@ -39,7 +39,6 @@ import shutil
 
 import os
 
-import charoite_paths
 import live_gate
 from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged
@@ -333,10 +332,12 @@ def _data_root() -> pathlib.Path:
     поверх живой встречи. Тот же круг-2 (DS, M5) долечил «~» и пробел, а
     относительность осталась (обе головы входного круга №321).
 
-    Ленивость сохранена: `resolve_root` — функция и читает переменную в
-    момент вызова, а значение к моменту гейта может отличаться от значения
-    на импорте."""
-    return charoite_paths.resolve_root(__file__)
+    Спрашиваем на вызове, а не запоминаем: корень называет точка входа
+    (`charoite_paths.use_data_root`), и происходит это позже импорта модулей.
+    Импорт `graphs` тоже ленивый — ревизия ядер зовёт корень на гейте живой
+    встречи, а не при загрузке (№327)."""
+    import graphs
+    return graphs.data_root()
 
 
 def night_wait_cap(default: float = 3600.0, now=None) -> float | None:
