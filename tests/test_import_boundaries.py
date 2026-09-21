@@ -318,6 +318,7 @@ APPROVED_KINDS = (
     ("app/", "code", "git"),
     ("scripts/", "code", "git"),
     ("src/", "code", "git"),
+    ("packages/", "code", "git"),
     (".github/", "code", "git"),
     (".pre-commit-config.yaml", "code", "git"),
 )
@@ -872,14 +873,16 @@ def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_pa
     """Замер читает только код: битый артефакт его не хоронит (Critical GLM и
     Important DS круга 9 — в середине переделки артефакт правят руками). Спорный
     вид корпус не сокращает: такой файл в замере ЕСТЬ, у него свой раздел и код
-    выхода 0. Python, до которого правила не дотянулись (будущий `packages/…`),
-    не числится «вне области по политике» — о нём сказано отдельно."""
+    выхода 0. Python, до которого правила не дотянулись (`extras/…` — каталога
+    нет в KINDS), не числится «вне области по политике»: о нём сказано отдельно.
+    Пример сменился с `packages/` на `extras/` — у пакетов правило появилось
+    вместе с гейтом, который их видит (№328)."""
     (tmp_path / "scripts").mkdir()
-    (tmp_path / "packages").mkdir()
+    (tmp_path / "extras").mkdir()
     (tmp_path / "docs" / "design").mkdir(parents=True)
     (tmp_path / "scripts" / "tool.py").write_text(
         'import os\nROOT = os.environ.get("CHAROITE_ROOT")\nif __name__ == "__main__":\n    pass\n', encoding="utf-8")
-    (tmp_path / "packages" / "later.py").write_text(
+    (tmp_path / "extras" / "later.py").write_text(
         'import os\nROOT = os.environ.get("CHAROITE_ROOT")\n', encoding="utf-8")
     bad = tmp_path / "docs" / "design" / "layout.json"
     bad.write_text('{"order": ["a", "a"]}', encoding="utf-8")
@@ -889,7 +892,7 @@ def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_pa
     assert lm.main(["--report"]) == 0, "битый артефакт замеру не нужен и не должен его валить"
     out = capsys.readouterr().out
     assert "`scripts/tool.py`:2" in out
-    assert "без правила 1" in out and "`packages/later.py`" in out, "файл вне правил назван, а не зачтён политике"
+    assert "без правила 1" in out and "`extras/later.py`" in out, "файл вне правил назван, а не зачтён политике"
     # тот же прогон с --check платит за артефакт, как и раньше
     assert lm.main(["--check"]) == 1
     assert "layout.json" in capsys.readouterr().out
@@ -951,3 +954,542 @@ def test_the_level_of_a_node_is_measured_by_scope_not_by_statement_type():
     ev2 = lm.module_events(ast.parse("import os, sys\nR = os.environ.get('CHAROITE_ROOT')\nsys.path.insert(0, 'x')\n"),
                            "CHAROITE_ROOT")
     assert ev2.order == "read_before_insert" and ev2.top_reads == [2]
+
+
+#: Формы пути: роль, дистрибутив, пакет и имя модуля, которые им соответствуют.
+#: Корпус рядом с `form`: после упаковки форм становится две, и забыть одну из
+#: них — значит выключить охрану для половины продукта (входной круг №328).
+#: Корпус обязан покрывать КАЖДУЮ ветку `form` — это проверяется трассировкой
+#: ниже, потому что ветка без строки корпуса откатывается зелёной (круг 2 по
+#: коду №328, DS M5; круг 3, DS I6 — пиннинга по списку ролей мало).
+MODULE_SHAPES = (
+    # путь,                                              роль,            дист,  пакет,            модуль
+    ("src/graphs.py",                                    "module",        "",    "",               "graphs"),
+    ("src/charoite_paths.py",                            "module",        "",    "",               "charoite_paths"),
+    ("src/__init__.py",                                  "stray_init",    "",    "",               None),
+    ("packages/cg/src/charoite_graph/graphs.py",         "module",        "cg",  "charoite_graph", "charoite_graph.graphs"),
+    ("packages/cg/src/charoite_graph/__init__.py",       "package_init",  "cg",  "charoite_graph", "charoite_graph"),
+    ("packages/cg/src/charoite_graph/inner/deep.py",     "module",        "cg",  "charoite_graph.inner", "charoite_graph.inner.deep"),
+    ("packages/cg/src/charoite_graph/inner/__init__.py", "package_init",  "cg",  "charoite_graph.inner", "charoite_graph.inner"),
+    ("packages/cg/src/__init__.py",                      "stray_init",    "cg",  "",               None),
+    ("packages/cg/tests/test_x.py",                      "package_tests", "cg",  "",               None),
+    ("packages/cg/tests/fixtures/data.json",             "package_tests", "cg",  "",               None),
+    ("packages/cg/pyproject.toml",                       "outside",       "cg",  "",               None),
+    ("packages/README.md",                               "outside",       "",    "",               None),
+    # имя дистрибутива — имя пакета на PyPI: `form` режет путь по «/» и дефис
+    # принимает, значит его обязана принимать и грамматика упоминаний (круг 5,
+    # DS I3 = GLM I2) — одна строка пиннит обе
+    ("packages/charoite-graph/src/charoite_graph/cli.py", "module",       "charoite-graph", "charoite_graph", "charoite_graph.cli"),
+    ("packages/cg/src/charoite_graph/py.typed",          "outside",       "cg",  "",               None),
+    ("scripts/doctor.py",                                "outside",       "",    "",               None),
+    ("tests/test_x.py",                                  "outside",       "",    "",               None),
+    ("src/inner/deep.py",                                "outside",       "",    "",               None),
+    ("README.md",                                        "outside",       "",    "",               None),
+)
+
+
+def test_the_shape_of_the_layout_is_known_in_one_place():
+    """Форму пути выводит `form`, и только он; `module_of` и `package_of` —
+    его проекции.
+
+    Раньше форма была записана литералом дважды — в `modules()` и в
+    `import_graph()`, — то есть два независимых вывода об одном и том же.
+    Переезд в `packages/` делал их несогласованными молча: имени нет,
+    рёбер нет, гейт зелёный (входной круг №328, DS C3 = GLM 2).
+    """
+    for rel, role, dist, package, module in MODULE_SHAPES:
+        f = lm.form(rel)
+        assert (f.role, f.dist, f.package, f.module) == (role, dist, package, module), f"{rel}: получили {f}"
+        # проекции обязаны отвечать то же самое, иначе потребители разойдутся
+        assert lm.package_of(rel) == package, f"{rel}: package_of разошёлся с формой"
+        ждём = module if lm.decide(rel).kind == "code" else None
+        assert lm.module_of(rel) == ждём, f"{rel}: module_of разошёлся с формой"
+
+
+def test_every_line_of_the_shape_is_reached_by_the_corpus():
+    """Корпус достаёт КАЖДУЮ строку `form` — измерено трассировкой.
+
+    Имя честное: трассировка меряет строки, а не ветки. Новое условие на уже
+    покрытой строке она не увидит — его держат равенства корпуса
+    (`MODULE_SHAPES`), и это разделение названо здесь, а не подразумевается
+    (круг 5 по коду №328, DS I4).
+
+    Пиннинг по ролям («каждая роль названа в корпусе») пропускал новую ветку,
+    возвращающую уже существующую роль: её поведение не держал никто, и откат
+    оставлял прогон зелёным (круг 3 по коду №328, DS I6). Трассировка
+    отвечает на тот же вопрос структурно: строка кода без строки корпуса —
+    красное.
+    """
+    исходник = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
+    свой = next(n for n in ast.walk(ast.parse(исходник))
+                if isinstance(n, ast.FunctionDef) and n.name == lm.SHAPE_OWNER)
+    # Заголовок и докстринг попадают в co_lines, но `line`-событий не дают.
+    # Порог не вычисляется по позиции в AST: «body[1] — первый оператор» верно,
+    # только пока докстринг на месте, и его снятие молча сужало проверяемое
+    # множество (круг 4 по коду №328, DS I4 = GLM I2, обе головы независимо).
+    док = свой.body[0] if (isinstance(свой.body[0], ast.Expr)
+                           and isinstance(свой.body[0].value, ast.Constant)) else None
+    первая = (док.end_lineno or док.lineno) + 1 if док is not None else свой.body[0].lineno
+
+    def код_и_потомки(code):
+        yield code
+        for c in code.co_consts:                      # лямбды и вложенные функции живут
+            if hasattr(c, "co_lines"):                # в своих code object'ах, и их строк
+                yield from код_и_потомки(c)           # в co_lines родителя нет
+    объекты = list(код_и_потомки(lm.form.__code__))
+    строки_кода = {n for code in объекты for _s, _e, n in code.co_lines()
+                   if n is not None and n >= первая}
+    пройдены: set[int] = set()
+    наши = {id(c) for c in объекты}
+
+    def трасса(frame, event, arg):
+        if id(frame.f_code) in наши:
+            if event == "line":
+                пройдены.add(frame.f_lineno)
+            return трасса
+        return None
+
+    прежний = sys.gettrace()
+    sys.settrace(трасса)
+    try:
+        for rel, *_ in MODULE_SHAPES:
+            lm.form(rel)
+    finally:
+        sys.settrace(прежний)
+    assert пройдены, "предпосылка: трассировка работает (иначе тест ничего не проверяет)"
+    непокрытые = строки_кода - пройдены
+    assert not непокрытые, (f"строки `form` без пути в корпусе: {sorted(непокрытые)} "
+                            f"в {lm.__file__} — добавить путь такой формы в MODULE_SHAPES")
+    # и в обратную сторону: строка, которую трассировка ИСПОЛНЯЕТ, а порог
+    # выбросил, делала бы проверку тише, а не громче (круг 5, DS I4)
+    assert not (пройдены - строки_кода), f"порог съел исполняемый код: {sorted(пройдены - строки_кода)}"
+
+
+def test_a_flat_module_cannot_shadow_a_packaged_one(tmp_path):
+    """Плоский модуль и пакет с тем же корнем рядом не ставятся.
+
+    `src/a.py` и `packages/x/src/a/b.py` дают РАЗНЫЕ имена (`a` и `a.b`),
+    поэтому проверка точного совпадения молчит; общий корень `a` в рантайме
+    достаётся тому, кто раньше в `sys.path`. Проверка корня знала только
+    сторону дистрибутивов и плоскую половину выбрасывала — ровно то дерево,
+    которое бывает в середине переезда №323 (круг 3 по коду №328, DS C1).
+    """
+    беды = lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b"})
+    assert [b.kind for b in беды] == ["collision"], беды
+    assert "src/" in беды[0].text and "x" in беды[0].text
+    # точное совпадение имён не должно печататься дважды — одно событие, одна строка
+    пара = lm.packaging_conflicts({"packages/x/src/a/b.py": "a.b", "packages/y/src/a/b.py": "a.b"})
+    assert len(пара) == 1 and "имя модуля a.b" in пара[0].text
+    # но ТРЕТЬЯ сторона на том же корне — другое событие, и гашение по корню его
+    # прятало навсегда (круг 4 по коду №328, DS C1)
+    трое = lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b",
+                                   "packages/y/src/a/b.py": "a.b"})
+    корневые = [b for b in трое if "импортируемый корень a" in b.text]
+    assert len(корневые) == 1 and "src/" in корневые[0].text, трое
+
+
+def test_an_entry_point_survives_the_move_into_a_package(tmp_path):
+    """Точка входа, уехавшая в пакет, остаётся кандидатом и объявляемой вручную.
+
+    Кандидатность задавали только глобы (`src/*.py`), а модуль дистрибутива
+    лежит на любой глубине: после `git mv` файл с гвардом `__main__` выпадал
+    из точек входа молча, и объявить его ручным было НЕЛЬЗЯ — `load_layout`
+    отказывал «не путь к исполняемому файлу» (круг 3 по коду №328, GLM I2).
+    """
+    упакованный = "packages/cg/src/charoite_graph/cli.py"
+    assert lm._is_candidate(упакованный) and lm._is_candidate("src/daemon.py")
+    assert not lm._is_candidate("packages/cg/tests/test_x.py")
+    assert not lm._is_candidate("packages/cg/pyproject.toml")
+    (tmp_path / "packages" / "cg" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "packages" / "cg" / "src" / "charoite_graph" / "cli.py").write_text(
+        'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
+    assert упакованный in lm.executables(lm.inventory(tmp_path))
+
+
+def test_a_packaged_entry_point_can_be_named_in_text(tmp_path):
+    """Пакетный путь собирается токенизатором — иначе точку входа нечем назвать.
+
+    Кандидатом модуль дистрибутива стал, а грамматика упоминаний знала только
+    `src|scripts|app`: инвариант «точка входа названа кодом или объявлена
+    ручной» вырождался в «всегда ручная», и красное «никто не зовёт» нельзя
+    было погасить ни правкой кода, ни правкой документации (круг 4 по коду
+    №328, GLM I1).
+    """
+    путь = "packages/cg/src/charoite_graph/cli.py"
+    assert lm._tokens(f"запусти {путь} из корня") == {путь}
+    assert путь in lm._tokens(f"см. `{путь}`.")
+    # плоская и скриптовая формы не потерялись
+    assert lm._tokens("src/daemon.py и scripts/doctor.py") == {"src/daemon.py", "scripts/doctor.py"}
+    # имя дистрибутива — имя пакета на PyPI: точка и дефис там законны, и без
+    # них такой дистрибутив неименуем вовсе (круг 5 по коду №328, GLM I2)
+    for имя in ("my-dist", "cg.v2", "2to3", "charoite-graph"):
+        путь = f"packages/{имя}/src/pkg/cli.py"
+        assert lm._tokens(f"запусти {путь}") == {путь}, f"дистрибутив {имя} неименуем"
+
+
+def test_a_shape_already_decided_is_not_a_hole_in_the_table(tmp_path):
+    """Роль, решённая формой, гейту не дыра.
+
+    `packages/<д>/src/__init__.py` форма решает явно (`stray_init`), но гейт
+    собирал вопрос «наш ли это python» из `module_of` + `_is_candidate` и
+    краснел советом, который нечем выполнить: правилом-префиксом этот случай
+    невыразим — дистрибутив стоит в середине пути (круг 3 по коду №328, GLM I1).
+    """
+    (tmp_path / "packages" / "d" / "src").mkdir(parents=True)
+    (tmp_path / "packages" / "d" / "src" / "__init__.py").write_text("", encoding="utf-8")
+    беды = lm.scan(lm.inventory(tmp_path)).problems
+    assert not [b for b in беды if "__init__" in b], беды
+
+
+#: Импорт внутри пакета `p.sub.mod` и имена, которые из него следуют. Второй
+#: корпус: грамматику импорта тоже знает ровно одно место (`imports_of`).
+IMPORT_SHAPES = (
+    ("import llm", {"llm"}),
+    ("import charoite_graph.graphs", {"charoite_graph.graphs"}),
+    ("from charoite_graph import graphs", {"charoite_graph", "charoite_graph.graphs"}),
+    ("from . import graph_names", {"p.sub", "p.sub.graph_names"}),
+    ("from .graph_names import X", {"p.sub.graph_names", "p.sub.graph_names.X"}),
+    ("from .. import other", {"p", "p.other"}),
+    ("from ...too_high import X", set()),       # выше корня пакета — имя не наше
+)
+
+
+def test_the_grammar_of_imports_is_known_in_one_place(tmp_path):
+    """Относительные импорты и точечные имена — не экзотика, а основной стиль
+    внутри пакета; раньше терялись оба.
+
+    `node.level == 0` отбрасывал `from . import graph_names` целиком, а
+    `alias.name.split(".")[0]` обрезал `charoite_graph.graphs` до
+    `charoite_graph` — имени, которого нет среди модулей, поэтому ребро
+    `daemon → graphs` исчезало молча (входной круг №328).
+    """
+    rel = "packages/p/src/p/sub/mod.py"
+    assert lm.module_of(rel) == "p.sub.mod", "предпосылка корпуса: файл лежит в пакете"
+    for src, want in IMPORT_SHAPES:
+        got = lm.imports_of(rel, ast.parse(src))
+        assert got == want, f"{src!r}: ждали {want}, получили {got}"
+
+
+def test_the_gate_sees_a_module_that_moved_into_a_package(tmp_path):
+    """Переезд в `packages/` виден гейту целиком: модуль, рёбра, нарушение слоя.
+
+    До этой правки дерево ниже давало `modules() == []` и пустой граф: файл
+    классифицировался `out` по УМОЛЧАНИЮ (правила `packages/` в таблице не
+    было), читать его инвентарь не шёл, и ребро вверх никто не считал.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "src" / "core_mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "top_mod.py").write_text("from charoite_graph import graphs\n", encoding="utf-8")
+    пакет = tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph"
+    (пакет / "graphs.py").write_text("from . import names\nimport top_mod\n", encoding="utf-8")
+    (пакет / "names.py").write_text("x = 1\n", encoding="utf-8")
+
+    inv = lm.inventory(tmp_path)
+    graph = lm.import_graph(inv)
+    assert lm.modules(inv) == {"core_mod", "top_mod", "charoite_graph.graphs", "charoite_graph.names"}
+    assert graph["top_mod"] == {"charoite_graph.graphs"}, "ребро src → пакет точечным именем"
+    assert graph["charoite_graph.graphs"] == {"charoite_graph.names", "top_mod"}, \
+        "внутрипакетное ребро относительным импортом и ребро наружу"
+
+    layout = _layout(brief_layers={"low": ["core_mod", "charoite_graph.graphs", "charoite_graph.names"],
+                                   "high": ["top_mod"]})
+    assert lm.violations(graph, layout) == [("charoite_graph.graphs", "top_mod")], \
+        "нарушение слоя ВНУТРИ пакета обязано краснеть так же, как в src/"
+
+
+def test_a_missing_key_is_never_told_to_just_drop_its_guard(tmp_path):
+    """Имени из таблицы нет в дереве — это либо переезд, либо удаление, и
+    сторож не знает, что именно. Совет обязан называть ОБА пути.
+
+    Прежнее сообщение знало один ответ — «убрать из layout.json», — и этот
+    ответ гасил красное, снимая охрану с переехавшего кода (входной круг
+    №328, обе головы). Сопоставление по хвосту имени переездом называть
+    нельзя: оно врёт при переименовании, двусмысленности и при удалении
+    одного модуля с появлением другого с тем же хвостом (круг 1 по коду
+    №328, GLM I2). Поэтому кандидаты — подсказка, а не вердикт.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "src" / "core_mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph" / "graphs.py").write_text(
+        "x = 1\n", encoding="utf-8")
+    graph = lm.import_graph(lm.inventory(tmp_path))
+    layout = _layout(brief_layers={"low": ["core_mod", "graphs"], "high": []})
+    assert lm.move_candidates(graph, layout) == {"graphs": ["charoite_graph.graphs"]}
+    problems = lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path)
+    # факт, подсказка и действие — тремя строками: при переезде пакета имён десяток,
+    # и ворох придаточных в одной строке хоронит остальные красные (DS M7 круга 2)
+    стало = [p for p in problems if p.startswith("в таблице слоёв есть graphs")]
+    подсказки = [p for p in problems if p.startswith("  похоже на переезд")]
+    действия = [p for p in problems if p.startswith("  удалён — снять строку")]
+    assert len(стало) == 1 and len(подсказки) == 1 and len(действия) == 1
+    assert "charoite_graph.graphs" in подсказки[0] and "слой не наследуется" in подсказки[0]
+    assert "перенести ключ" in действия[0] and "записать решение о слое" in действия[0]
+    # а новый модуль по-прежнему требует слоя: кандидат — подсказка, и гейт не вправе
+    # быть увереннее своего источника (DS I4 круга 2)
+    assert any("модуль charoite_graph.graphs не отнесён ни к одному слою" in p for p in problems)
+
+    # переименование при переезде: кандидатов нет, но совет всё равно НЕ «убрать»
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph" / "graphs.py").rename(
+        tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph" / "bundle.py")
+    graph2 = lm.import_graph(lm.inventory(tmp_path))
+    problems2 = lm.check(layout, graph2, lm.Scan({}, {}, {}, []), {}, repo=tmp_path)
+    про_graphs = [p for p in problems2 if p.startswith("в таблице слоёв есть graphs")]
+    assert len(про_graphs) == 1 and not any(p.startswith("  похоже на переезд") for p in problems2)
+    assert any(p.startswith("  удалён — снять строку") and "перенести ключ" in p for p in problems2)
+
+    # двусмысленность: два кандидата названы оба, ни один не объявлен ответом
+    (tmp_path / "packages" / "other" / "src" / "other").mkdir(parents=True)
+    (tmp_path / "packages" / "other" / "src" / "other" / "bundle.py").write_text("x = 1\n", encoding="utf-8")
+    layout2 = _layout(brief_layers={"low": ["core_mod", "bundle"], "high": []})
+    graph3 = lm.import_graph(lm.inventory(tmp_path))
+    assert lm.move_candidates(graph3, layout2) == {
+        "bundle": ["charoite_graph.bundle", "other.bundle"]}
+
+
+def test_python_without_a_decision_is_a_hole_in_the_table(tmp_path):
+    """Файл, до которого правила не дотянулись, — дыра в таблице, а не политика.
+
+    Инструмент знал этот случай и печатал его в разделе фактов («Python вне
+    области, но и без правила»), но гейту о нём не говорил: ни один тест не
+    требовал, чтобы список был пуст. Первая редакция инварианта смотрела на
+    `kind == "code"` и не видела как раз его: до такого файла не дотянулось
+    ни одно правило, и `_by_suffix` тихо отдаёт `out` (круг 1 по коду №328,
+    DS C1).
+    """
+    (tmp_path / "extras").mkdir()
+    (tmp_path / "extras" / "later.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "packages" / "p").mkdir(parents=True)
+    (tmp_path / "packages" / "p" / "loose.py").write_text("x = 1\n", encoding="utf-8")
+    problems = lm.scan(lm.inventory(tmp_path)).problems
+    assert any("extras/later.py" in p and "не дотянулось ни одно правило" in p for p in problems), \
+        "каталог вне таблицы обязан краснеть, а не числиться политикой"
+    assert any("packages/p/loose.py" in p and "ни кандидат в точки входа" in p for p in problems), \
+        "правило есть, но файл не по форме — тоже решение человека"
+
+    # а модуль пакета, тесты пакета и скрипт-точка входа молчат
+    (tmp_path / "packages" / "p" / "src" / "p").mkdir(parents=True)
+    (tmp_path / "packages" / "p" / "src" / "p" / "graphs.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "packages" / "p" / "tests").mkdir()
+    (tmp_path / "packages" / "p" / "tests" / "test_x.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "doctor.py").write_text("x = 1\n", encoding="utf-8")
+    свежие = lm.scan(lm.inventory(tmp_path)).problems
+    новые = [p for p in свежие if "packages/p/src/p/graphs.py" in p
+             or "packages/p/tests/test_x.py" in p or "scripts/doctor.py" in p]
+    assert новые == [], f"модуль пакета, его тесты и точка входа не краснеют: {новые}"
+
+
+def test_two_distributions_cannot_share_an_import_name(tmp_path):
+    """Одно импортируемое имя у двух файлов — конфликт упаковки, и сторож
+    обязан сказать это до релиза.
+
+    Такие дистрибутивы не ставятся рядом, а у сторожа они схлопывались в один
+    узел: `modules()` — множество имён, `import_graph` вливал рёбра обоих
+    файлов в один ключ, слой у них был один на двоих, и рёбра файла из одного
+    слоя судились по слою другого. Ни одна строка об этом не говорила
+    (круг 1 по коду №328, GLM I1).
+    """
+    for d in ("A", "B"):
+        (tmp_path / "packages" / d / "src" / "g").mkdir(parents=True)
+        (tmp_path / "packages" / d / "src" / "g" / "m.py").write_text("x = 1\n", encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    assert any(p.kind == "collision" and "g.m" in p.text for p in inv.problems)
+    assert any("имя модуля g.m у 2 файлов" in p for p in lm.scan(inv).problems), \
+        "проблема инвентаря обязана доезжать до гейта тем же трактом, что parse и read"
+
+
+def test_a_package_init_resolves_relative_imports_against_itself(tmp_path):
+    """`__init__.py` — файл САМОГО пакета, и относительные имена в нём
+    считаются от него, а не от родителя.
+
+    `module_of` нормализует `p/__init__.py` в `p`, и по одному имени уже не
+    отличить пакет от модуля внутри чего-то. На этой потере `from . import
+    names` в `p/sub/__init__.py` давал `p.names` вместо `p.sub.names` —
+    ложное ребро на чужой модуль, а в `p/__init__.py` терялся целиком
+    (круг 1 по коду №328, GLM C1).
+    """
+    assert lm.package_of("packages/p/src/p/__init__.py") == "p"
+    assert lm.package_of("packages/p/src/p/sub/__init__.py") == "p.sub"
+    assert lm.package_of("packages/p/src/p/graphs.py") == "p"
+    assert lm.package_of("src/graphs.py") == ""
+    корень = lm.imports_of("packages/p/src/p/__init__.py", ast.parse("from . import names"))
+    assert корень == {"p", "p.names"}, "в __init__ пакета точка — это он сам"
+    вложенный = lm.imports_of("packages/p/src/p/sub/__init__.py", ast.parse("from . import names"))
+    assert вложенный == {"p.sub", "p.sub.names"}, "и у вложенного пакета — он сам, не родитель"
+
+
+def test_a_layout_directory_is_not_spelled_inside_a_function():
+    """Каталоги раскладки названы в объявлении модуля — и ни в одной функции.
+
+    Корпус форм пиннит ПОВЕДЕНИЕ `form`, но не мешает завтра появиться второму
+    предикату пути рядом: именно так и возник дефект №328 — дословная копия
+    `startswith("src/") and rel.count("/") == 1` жила в `modules()` и в
+    `import_graph()`, и переезд сделал их несогласованными молча (круг 1 по
+    коду №328, DS M4).
+
+    Написания берутся из `LAYOUT_DIRS`, а не из копии списка в тесте: прежняя
+    редакция держала свой набор из шести строк и молчала на глобе `"src/*.py"`
+    — идиоме, которой написан сам модуль (`ENTRY_CANDIDATES`), то есть на том
+    способе, который человек скопирует первым (круг 3 по коду №328, GLM C1).
+
+    Это дешёвый барьер против прямой копии, а не гарантия. Он смотрит ТЕЛА
+    функций и ловит только литерал: обход через модульную константу
+    (`_SRC = FLAT_DIR + "/"` и её использование в функции), склейку строк и
+    регулярку он не видит (круг 3, DS I7; круг 4, DS C2 — тот же класс третий
+    круг подряд). Латать его четвёртой эвристикой смысла нет: гарантию даёт
+    тест ниже — ломаем форму и требуем, чтобы сломались ВСЕ потребители.
+    Объявления уровня модуля (`LAYOUT_DIRS`, `ENTRY_CANDIDATES`, `_PATH`,
+    `TOKEN_PREFIXES`) каталоги называют намеренно: они и есть источник.
+    """
+    src = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
+    написания = {w for d in lm.LAYOUT_DIRS for w in (d, f"{d}/", f"{d}/*", f"{d}/*.py", f"{d}/**")}
+    assert f"{lm.FLAT_DIR}/*.py" in написания, "глоб точек входа обязан попадать в сторож"
+    чужие = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Constant) and inner.value in написания:
+                чужие.append(f"{node.name}:{inner.lineno} — {inner.value!r}")
+    assert not чужие, ("каталог раскладки назван внутри функции — имена живут в LAYOUT_DIRS, "
+                       f"и второй предикат пути рассинхронизируется молча: {', '.join(чужие)}")
+
+
+def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
+    """Сломай форму — обязаны сломаться ВСЕ потребители.
+
+    Проверка по значению, а не по исходнику: потребитель со своим предикатом
+    пути ответит по-старому и на подделанной форме — и покраснеет здесь.
+    Текстовый сторож выше три круга подряд обходился новым способом записи
+    (круг 2 DS M8, круг 3 GLM C1, круг 4 DS C2); пинить надо решение, а не
+    написание.
+
+    Чего и этот тест НЕ ловит (названо честно): совершенно нового потребителя,
+    который заведёт свой разбор пути и форму не спросит вовсе. Это видит
+    ревью и корпус форм, а не предикат в тесте.
+    """
+    # список потребителей не руками: кто зовёт `form`, тот обязан быть проверен
+    # здесь — иначе следующий потребитель добавляется молча (круг 5, GLM I1)
+    исходник = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
+    зовут = set()
+    for узел in ast.walk(ast.parse(исходник)):
+        if not isinstance(узел, (ast.FunctionDef, ast.AsyncFunctionDef)) or узел.name == lm.SHAPE_OWNER:
+            continue
+        if any(isinstance(в, ast.Call) and isinstance(в.func, ast.Name) and в.func.id == lm.SHAPE_OWNER
+               for в in ast.walk(узел)):
+            зовут.add(узел.name)
+    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory"}
+    assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
+
+    дерево = tmp_path / "packages" / "d" / "src" / "p"
+    дерево.mkdir(parents=True)
+    (дерево / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "p.py").write_text("x = 1\n", encoding="utf-8")   # корень `p` на двоих
+    честный = lm.inventory(tmp_path)
+    assert [b.kind for b in честный.problems] == ["collision"], "предпосылка: на честной форме конфликт есть"
+
+    # заглушка не только ломает ответ, но и ЗАПИСЫВАЕТ вопрос: половина
+    # утверждений ниже отрицательные, и копия формы, знающая только плоскую
+    # раскладку, прошла бы их своим «ничего не знаю» (круг 5, DS I2)
+    видел: list[str] = []
+    monkeypatch.setattr(lm, "form", lambda rel: (видел.append(rel), lm.Form("outside", "", "", None))[1])
+    assert lm.module_of("src/graphs.py") is None, "module_of держит свою копию формы"
+    assert lm.module_of("packages/cg/src/charoite_graph/graphs.py") is None
+    assert lm.package_of("packages/cg/src/charoite_graph/inner/__init__.py") == ""
+    assert not lm._is_candidate("packages/cg/src/charoite_graph/cli.py"), "кандидатность мимо формы"
+    assert lm.decide("packages/cg/tests/test_x.py").by != "shape", "decide решает без формы"
+    assert lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b"}) == [], \
+        "конфликт упаковки считает владельца мимо формы"
+    assert lm._owner("packages/x/src/a/b.py") == f"{lm.FLAT_DIR}/", "владелец мимо формы"
+    # инвентарь кормит конфликт именами от формы — с подделкой имён нет
+    assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
+    # гейт спрашивает роль: под подделкой пакетный модуль обязан стать «дырой»
+    беды = lm.scan(lm.inventory(tmp_path)).problems
+    assert any("packages/d/src/p/x.py" in b for b in беды), "scan решает роль мимо формы"
+    спрошено = set(видел)
+    for путь in ("src/graphs.py", "packages/cg/src/charoite_graph/inner/__init__.py",
+                 "packages/cg/src/charoite_graph/cli.py", "packages/cg/tests/test_x.py",
+                 "packages/x/src/a/b.py", "packages/d/src/p/x.py"):
+        assert путь in спрошено, f"о {путь} форму никто не спросил — потребитель решает сам"
+
+
+def test_every_kind_of_problem_has_a_section_and_a_verdict():
+    """Вид проблемы нельзя завести, забыв потребителя.
+
+    `collision` завели в круге 1, а `report()` и код выхода `--report`
+    перечисляли виды литералами — гейт коллизию видел, замер молчал и
+    возвращал 0 (круг 2 по коду №328, DS I3).
+    """
+    src = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
+    заведённые = set()
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Problem" and node.args
+                and isinstance(node.args[0], ast.Constant)):
+            заведённые.add(node.args[0].value)
+    assert заведённые, "предпосылка: проблемы создаются вызовом Problem(вид, текст)"
+    assert заведённые <= set(lm.PROBLEM_KINDS), f"вид без объявления: {заведённые - set(lm.PROBLEM_KINDS)}"
+    with pytest.raises(lm.LayoutError):
+        lm.Problem("новый_вид", "вид, которого нет в таблице")
+    # каждый объявленный вид виден в замере и учтён в решении о коде выхода
+    для_каждого = [lm.Problem(k, f"проба {k}") for k in lm.PROBLEM_KINDS]
+    разделы = lm.sections(для_каждого)
+    показаны = {p.text for _z, свои in разделы for p in свои}
+    assert показаны == {p.text for p in для_каждого}, "вид без раздела замера"
+    # виды, после которых замеру верить нельзя, идут ПЕРВЫМИ: человек обязан
+    # узнать это раньше, чем прочтёт цифры (круг 3 по коду №328, DS I3)
+    недостоверные = {lm.PROBLEM_KINDS[k].section for k in lm.PROBLEM_KINDS if lm.PROBLEM_KINDS[k].invalidates}
+    порядок = [з in недостоверные for з, _с in разделы]
+    assert порядок == sorted(порядок, reverse=True), f"разделы вперемешку: {[з for з, _с in разделы]}"
+    # и раздел о достоверности звучит даже когда всё хорошо
+    assert lm.sections([]) and all(not свои for _з, свои in lm.sections([]))
+
+
+def test_a_bare_init_never_becomes_a_module(tmp_path):
+    """`__init__.py` без пакета вокруг себя модулем не называется.
+
+    Обе формы давали призрак: `packages/<дист>/src/__init__.py` → имя
+    `__init__` (суффиксный срез не срабатывал на сегменте без точки), а
+    `src/__init__.py` — то же самое плюс «пакет» с тем же именем, от которого
+    считались бы относительные импорты (круг 1 и круг 2 по коду №328, обе
+    головы независимо, каждая про свою ветку).
+    """
+    assert lm.module_of("packages/d/src/__init__.py") is None
+    assert lm.module_of("src/__init__.py") is None
+    assert lm.package_of("src/__init__.py") == ""
+    # а настоящий пакет по-прежнему называется собой
+    assert lm.module_of("packages/d/src/p/__init__.py") == "p"
+
+
+def test_two_distributions_cannot_share_an_import_root(tmp_path):
+    """Конфликт упаковки шире точного совпадения имени модуля.
+
+    `a.py` в одном дистрибутиве и `a/b.py` в другом дают РАЗНЫЕ имена
+    (`a` и `a.b`), поэтому проверка на совпадение имён молчит — а
+    импортируемый корень `a` у них общий, и рядом такие дистрибутивы не
+    ставятся (круг 2 по коду №328, GLM Minor 3).
+    """
+    (tmp_path / "packages" / "x" / "src").mkdir(parents=True)
+    (tmp_path / "packages" / "x" / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "packages" / "y" / "src" / "a").mkdir(parents=True)
+    (tmp_path / "packages" / "y" / "src" / "a" / "b.py").write_text("x = 1\n", encoding="utf-8")
+    проблемы = lm.inventory(tmp_path).problems
+    assert any(p.kind == "collision" and "импортируемый корень a" in p.text for p in проблемы)
+    assert not any("имя модуля" in p.text for p in проблемы), "имена разные — первая проверка молчит"
+
+
+def test_package_tests_are_not_a_source_of_path_mentions(tmp_path):
+    """Вид пакетных тестов решает ФОРМА, а не правило `packages/`.
+
+    Правило объявляло весь каталог кодом, и пути, выдуманные в тестах пакета,
+    считались бы связями «кто зовёт» — ровно то, от чего корневой `tests/`
+    закрыт своим правилом (круг 2 по коду №328, GLM Minor 4).
+    """
+    assert lm.decide("packages/d/tests/test_x.py").kind == "out"
+    d = lm.decide("packages/d/tests/test_x.py")
+    assert d.by == "shape", "решила форма; выдать её ответ за правило нельзя — правило хочет code"
+    assert d.by in lm.DECIDED_BY and lm.KINDS[d.rule][1] == "code"
+    assert lm.decide("packages/d/src/p/m.py").kind == "code"
