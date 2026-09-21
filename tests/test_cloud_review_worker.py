@@ -939,9 +939,15 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
             def lost(*a, _kind=kind, _detail=detail, _what=what, **k):
                 raise review_bridge.LostRace(minutes, _what, kind=_kind, detail=_detail)
 
-            monkeypatch.setattr(cloud_review.review_bridge, who, lost)
-            assert cloud_review.run(stamp, transcript, graph, rev, log,
-                                    {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+            # свой контекст на одну подмену вместо общего `monkeypatch.undo()`:
+            # тот снимал ВСЕ подмены теста и фикстур, включая корень данных
+            # облачной ревизии — дальше `run()` шёл по настоящему корню и
+            # `_pay_brain_debts` снимал `.pending` живой очереди переотправки
+            # владельца (круг 15 по коду №327, GLM C1; круг 16, DS C1)
+            with pytest.MonkeyPatch.context() as мост:
+                мост.setattr(cloud_review.review_bridge, who, lost)
+                assert cloud_review.run(stamp, transcript, graph, rev, log,
+                                        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
             text = log.read_text(encoding="utf-8")
             assert "мост ревизии: " in text and expected in text, (who, kind, text)
             assert forbidden not in text, (who, kind, text)
@@ -950,9 +956,6 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
                 # подробность системы печатается один раз — она уже в тексте
                 # сигнала, и хелпер её не пересказывает (DS M1 r2)
                 assert text.count(detail) == 1, (who, kind, text)
-        monkeypatch.undo()
-        monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-        monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
 
 
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
