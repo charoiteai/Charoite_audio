@@ -39,6 +39,7 @@ def _root() -> pathlib.Path:
     return resolve_root(__file__)
 console = Console()
 
+
 def load_cfg() -> dict:
     return yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
 

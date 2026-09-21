@@ -42,12 +42,14 @@ def _root() -> pathlib.Path:
     """
     return resolve_root(__file__)
 
+
 def _seg_model() -> pathlib.Path:
     """Модели диаризации лежат в данных — путь на вызове (№329)."""
     return _root() / MODELS_DIR / "diar" / "segmentation.onnx"
 
 
 def _emb_model() -> pathlib.Path:
+    """Модель эмбеддингов говорящего — там же, в данных, и тоже на вызове."""
     return _root() / MODELS_DIR / "diar" / "embedding.onnx"
 
 
@@ -64,6 +66,7 @@ def _scratch_dir() -> pathlib.Path:
     d = pathlib.Path(tempfile.mkdtemp(prefix="charoite-"))
     atexit.register(shutil.rmtree, d, True)
     return d
+
 
 def wav_is_int16(path: pathlib.Path) -> bool:
     """WAV читается модулем wave и хранит 16-битный PCM. 8-бит читался как int16

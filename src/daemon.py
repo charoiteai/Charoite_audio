@@ -392,6 +392,7 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
     t.start()
     return t
 
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые
     пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.

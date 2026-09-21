@@ -1232,6 +1232,53 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
     return False
 
 
+def _это_точка_входа(node: ast.stmt) -> bool:
+    """`if __name__ == "__main__":` — единственная ветка модуля, которая при
+    импорте не исполняется вовсе. Корень, спрошенный там, — это спросила сама
+    точка входа, ради чего канон и заведён."""
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    левое = node.test.left
+    правое = node.test.comparators[0] if node.test.comparators else None
+    return (isinstance(левое, ast.Name) and левое.id == "__name__"
+            and isinstance(правое, ast.Constant) and правое.value == "__main__")
+
+
+def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
+    """Узлы, которые ВЫПОЛНЯЮТСЯ при импорте модуля.
+
+    Не «верхний уровень файла»: при импорте исполняется и тело класса, и всё,
+    что обёрнуто в `if` / `try` / `with` / `for` — а `try: ROOT = …` это типовой
+    bootstrap-приём, которым обложены скрипты следующего куска. Первая редакция
+    обходила только `tree.body`, и живой снимок полем класса в `src/llm.py`
+    (писатель аренд модели) был ей невидим (круг 1 по коду №329: GLM C1 про
+    класс, DS C1 про остальные обёртки).
+
+    Тела функций сюда не входят: там вычисление ленивое, в этом вся правка.
+    Граница названа честно: `ROOT = свой_хелпер()`, где канон зовётся ВНУТРИ
+    хелпера, статически отсюда не виден — такую запись ловит не гейт, а
+    свидетель поведения (`tests/test_backup_offload.py`, список
+    `СПРОСИТЬ_КОРЕНЬ`).
+    """
+    out: list[ast.stmt] = []
+    for node in тело:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue                            # тело функции — ленивое, в этом вся правка
+        if _это_точка_входа(node):
+            continue                            # `if __name__ == "__main__"` при импорте НЕ идёт,
+                                                # и корень там спрашивает сама точка входа — законно
+        out.append(node)
+        for имя in ("body", "orelse", "finalbody", "handlers"):
+            ветка = getattr(node, имя, None)
+            if isinstance(ветка, list) and ветка and isinstance(ветка[0], ast.stmt):
+                out += _на_импорте(ветка)
+            elif isinstance(ветка, list):       # except-обработчики держат тело внутри себя
+                for h in ветка:
+                    if isinstance(h, ast.ExceptHandler):
+                        out += _на_импорте(h.body)
+    return out
+
+
 def _root_snapshots(tree: ast.Module) -> list[int]:
     """Строки, где ответ канона о корне ДАННЫХ запоминается НА ИМПОРТЕ.
 
@@ -1248,7 +1295,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     снимок на импорте верен весь процесс. Ловится только корень данных.
     """
     out: list[int] = []
-    for node in tree.body:                      # только верхний уровень — это и есть импорт
+    for node in _на_импорте(tree.body):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
         for inner in ast.walk(node.value):

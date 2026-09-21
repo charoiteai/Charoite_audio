@@ -42,6 +42,8 @@ def _root() -> pathlib.Path:
     """
     return resolve_root(__file__)
 CODE = code_root(__file__)
+
+
 def _transcripts() -> pathlib.Path:
     """Каталог стенограмм — производная корня данных, считается на вызове (№329)."""
     return _root() / "transcripts"

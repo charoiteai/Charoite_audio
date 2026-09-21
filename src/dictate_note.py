@@ -48,7 +48,7 @@ import graphs  # noqa: E402
 _cfg_кэш: tuple[pathlib.Path, dict] | None = None
 
 
-def cfg() -> dict:
+def cfg(корень: pathlib.Path | None = None) -> dict:
     """Конфиг владельца — по корню НА ВЫЗОВЕ, с кэшем, у которого есть отзыв.
 
     Кэш отличается от снимка одним: у него есть канал отзыва. Ключ — корень
@@ -57,7 +57,7 @@ def cfg() -> dict:
     каждое обращение (№329).
     """
     global _cfg_кэш
-    корень = _root()
+    корень = корень or _root()
     if _cfg_кэш is None or _cfg_кэш[0] != корень:
         _cfg_кэш = (корень, load_user_or_example(корень))
     return _cfg_кэш[1]
@@ -83,9 +83,10 @@ _llm_кэш: tuple[pathlib.Path, LLM] | None = None
 def _llm() -> LLM:
     """Движок — на вызове и по тому же ключу, что конфиг (№329)."""
     global _llm_кэш
-    корень = _root()
+    корень = _root()                     # один снимок на ключ И на значение:
     if _llm_кэш is None or _llm_кэш[0] != корень:
-        _llm_кэш = (корень, LLM(cfg()))
+        _llm_кэш = (корень, LLM(cfg(корень)))   # иначе ключ от одного корня, конфиг от другого
+                                                # (круг 1 по коду №329, DS I2)
     return _llm_кэш[1]
 
 import os  # noqa: E402
