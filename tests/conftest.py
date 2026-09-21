@@ -83,6 +83,34 @@ def _корень_данных_не_протекает():
 
 
 @pytest.fixture(autouse=True)
+def _сеть_закрыта(request, monkeypatch):
+    """Никакой тест не ходит в сеть, пока не попросил маркером.
+
+    Граф изолируется переменной, а второй канал записи — HTTP в сервер памяти
+    (`dictate_note` шлёт `/remember`, №249/№251 ещё открыты) — оставался
+    боевым: прогон клал в живую память владельца запись, неотличимую от
+    настоящей заметки (круг 13 по коду №327, DS C2). Изоляция графа без
+    изоляции сети — половина защиты.
+
+    Тесты самого протокола просят маркер `сеть_разрешена` и подменяют
+    транспорт сами.
+    """
+    if request.node.get_closest_marker("сеть_разрешена") is not None:
+        return
+    import requests
+
+    def отказ(*a, **k):
+        адрес = (a[0] if a else k.get("url", "?"))
+        raise AssertionError(
+            f"тест пошёл в сеть ({адрес}) — подмените транспорт или "
+            f"пометьте тест маркером сеть_разрешена")
+
+    for имя in ("post", "get", "put", "delete", "patch", "head", "request"):
+        monkeypatch.setattr(requests, имя, отказ, raising=False)
+    monkeypatch.setattr(requests.Session, "request", отказ)
+
+
+@pytest.fixture(autouse=True)
 def _граф_в_tmp(tmp_path):
     """Граф по умолчанию — пустой каталог в tmp, у всех тестов без исключений.
 
