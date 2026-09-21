@@ -11,6 +11,7 @@ pyproject разрешает `mcp>=1.0`, а в 2.0 класс переехал: 
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
@@ -117,3 +118,44 @@ def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server.subprocess, "run", run)
     out = mcp_server.sufler_update_graph()
     assert "20 мин" in out and "прерван" in out
+
+
+def test_правка_конфига_видна_без_перезапуска_сервера(tmp_path, monkeypatch):
+    """Владелец сменил модель в приложении — следующий вызов инструмента знает.
+
+    Сервер живёт столько же, сколько сессия Claude Code: сутками. Кэш конфига с
+    ключом по одному корню сделал бы правку видимой только после перезапуска —
+    поэтому в ключе есть время правки файла. Проверяется именно это свойство:
+    кэш без канала отзыва — тот же снимок, от которого избавлена вся №329
+    (круг 6 по коду, регрессия моей же правки круга 5).
+    """
+    конфиг = tmp_path / "config" / "config.yaml"
+    конфиг.parent.mkdir(parents=True)
+    конфиг.write_text("llm:\n  model: первая\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    assert mcp_server._llm_cfg()["model"] == "первая"
+    старое = конфиг.stat().st_mtime
+    конфиг.write_text("llm:\n  model: вторая\n", encoding="utf-8")
+    os.utime(конфиг, (старое + 5, старое + 5))    # не полагаемся на разрешение часов ФС
+
+    assert mcp_server._llm_cfg()["model"] == "вторая", (
+        "конфиг перечитан не был — кэш стал снимком")
+
+
+def test_конфиг_читается_один_раз_на_вызов_инструмента(tmp_path, monkeypatch):
+    """Четыре чтения одного файла могли лечь по разные стороны правки."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n  model: проба\nsufler:\n  role: р\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+    чтений = []
+    настоящий = mcp_server.load_user_or_example
+    monkeypatch.setattr(mcp_server, "load_user_or_example",
+                        lambda к, **kw: (чтений.append(к), настоящий(к, **kw))[1])
+
+    mcp_server._client()
+
+    assert len(чтений) == 1, f"конфиг прочитан {len(чтений)} раза за одну сборку клиента"
