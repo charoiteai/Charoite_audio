@@ -468,10 +468,23 @@ def test_демон_называет_корень_и_отказ_виден_сн�
         [sys.executable, str(ROOT / "src" / "daemon.py")],
         cwd=ROOT, env=окружение, capture_output=True, text=True, timeout=120)
 
-    assert прогон.returncode == 2, (
-        f"демон без корня обязан выйти кодом 2, а вышел {прогон.returncode}: "
-        f"launchd с KeepAlive и `&&`-скрипт иначе видят успех")
-    событие = json.loads(прогон.stdout.splitlines()[0])
-    assert событие["type"] == "status" and событие.get("error") is True, (
-        f"отказ пришёл типом, которого приложение не рисует: {событие}")
-    assert "CHAROITE_ROOT" in событие["text"], "в отказе нет рецепта"
+    sys.path.insert(0, str(ROOT / "src"))
+    import exit_codes
+
+    assert прогон.returncode == exit_codes.EXIT_ROOT_UNNAMED, (
+        f"демон без корня обязан выйти кодом {exit_codes.EXIT_ROOT_UNNAMED}, "
+        f"а вышел {прогон.returncode}: launchd с KeepAlive и `&&`-скрипт иначе видят успех")
+    # ищем СВОЁ событие среди строк, а не берём первую: чужой баннер на stdout
+    # (апгрейд зависимости, отладочная печать в цепочке импортов) красил бы
+    # тест `JSONDecodeError` без единого дефекта демона (круг 2, GLM Minor 3)
+    события = []
+    for строка in прогон.stdout.splitlines():
+        try:
+            события.append(json.loads(строка))
+        except json.JSONDecodeError:
+            continue
+    отказы = [e for e in события if e.get("type") == "status" and e.get("error") is True]
+    assert отказы, (
+        f"отказ не пришёл типом, который приложение рисует красным; "
+        f"на stdout было: {прогон.stdout[:400]!r}")
+    assert "CHAROITE_ROOT" in отказы[0]["text"], "в отказе нет рецепта"

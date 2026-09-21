@@ -45,6 +45,7 @@ import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
+from exit_codes import EXIT_ROOT_UNNAMED  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import channel_trace  # noqa: E402
@@ -543,9 +544,9 @@ def main():
         # тип, которого не знает ни один приёмник: `default: break` в Swift
         # молча гасил его, да ещё и отмечал демона живым его же предсмертным
         # сообщением (круг 1 по коду №332, обе головы независимо).
-        emit({"type": "status", "text": str(e), "error": True})
+        emit_error(str(e))          # владелец формы статуса-ошибки, не третья ручная сборка
         print(e, file=sys.stderr, flush=True)
-        return 2
+        return EXIT_ROOT_UNNAMED
     # Разово чиним уже созданное — установки до правки лежат с правами 0644.
     # Здесь, а не выше: правит она файлы в корне ДАННЫХ, значит корень уже
     # должен быть назван (аудит 16.08).
