@@ -976,6 +976,10 @@ MODULE_SHAPES = (
     ("packages/cg/tests/fixtures/data.json",             "package_tests", "cg",  "",               None),
     ("packages/cg/pyproject.toml",                       "outside",       "cg",  "",               None),
     ("packages/README.md",                               "outside",       "",    "",               None),
+    # имя дистрибутива — имя пакета на PyPI: `form` режет путь по «/» и дефис
+    # принимает, значит его обязана принимать и грамматика упоминаний (круг 5,
+    # DS I3 = GLM I2) — одна строка пиннит обе
+    ("packages/charoite-graph/src/charoite_graph/cli.py", "module",       "charoite-graph", "charoite_graph", "charoite_graph.cli"),
     ("packages/cg/src/charoite_graph/py.typed",          "outside",       "cg",  "",               None),
     ("scripts/doctor.py",                                "outside",       "",    "",               None),
     ("tests/test_x.py",                                  "outside",       "",    "",               None),
@@ -1002,9 +1006,13 @@ def test_the_shape_of_the_layout_is_known_in_one_place():
         assert lm.module_of(rel) == ждём, f"{rel}: module_of разошёлся с формой"
 
 
-def test_every_branch_of_the_shape_is_pinned_by_the_corpus():
-    """Корпус покрывает КАЖДУЮ ветку `form` — измерено трассировкой, а не
-    списком ролей.
+def test_every_line_of_the_shape_is_reached_by_the_corpus():
+    """Корпус достаёт КАЖДУЮ строку `form` — измерено трассировкой.
+
+    Имя честное: трассировка меряет строки, а не ветки. Новое условие на уже
+    покрытой строке она не увидит — его держат равенства корпуса
+    (`MODULE_SHAPES`), и это разделение названо здесь, а не подразумевается
+    (круг 5 по коду №328, DS I4).
 
     Пиннинг по ролям («каждая роль названа в корпусе») пропускал новую ветку,
     возвращающую уже существующую роль: её поведение не держал никто, и откат
@@ -1050,8 +1058,11 @@ def test_every_branch_of_the_shape_is_pinned_by_the_corpus():
         sys.settrace(прежний)
     assert пройдены, "предпосылка: трассировка работает (иначе тест ничего не проверяет)"
     непокрытые = строки_кода - пройдены
-    assert not непокрытые, (f"ветки `form` без строки корпуса: строки {sorted(непокрытые)} "
+    assert not непокрытые, (f"строки `form` без пути в корпусе: {sorted(непокрытые)} "
                             f"в {lm.__file__} — добавить путь такой формы в MODULE_SHAPES")
+    # и в обратную сторону: строка, которую трассировка ИСПОЛНЯЕТ, а порог
+    # выбросил, делала бы проверку тише, а не громче (круг 5, DS I4)
+    assert not (пройдены - строки_кода), f"порог съел исполняемый код: {sorted(пройдены - строки_кода)}"
 
 
 def test_a_flat_module_cannot_shadow_a_packaged_one(tmp_path):
@@ -1109,6 +1120,11 @@ def test_a_packaged_entry_point_can_be_named_in_text(tmp_path):
     assert путь in lm._tokens(f"см. `{путь}`.")
     # плоская и скриптовая формы не потерялись
     assert lm._tokens("src/daemon.py и scripts/doctor.py") == {"src/daemon.py", "scripts/doctor.py"}
+    # имя дистрибутива — имя пакета на PyPI: точка и дефис там законны, и без
+    # них такой дистрибутив неименуем вовсе (круг 5 по коду №328, GLM I2)
+    for имя in ("my-dist", "cg.v2", "2to3", "charoite-graph"):
+        путь = f"packages/{имя}/src/pkg/cli.py"
+        assert lm._tokens(f"запусти {путь}") == {путь}, f"дистрибутив {имя} неименуем"
 
 
 def test_a_shape_already_decided_is_not_a_hole_in_the_table(tmp_path):
@@ -1341,7 +1357,7 @@ def test_a_layout_directory_is_not_spelled_inside_a_function():
                        f"и второй предикат пути рассинхронизируется молча: {', '.join(чужие)}")
 
 
-def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch):
+def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
     """Сломай форму — обязаны сломаться ВСЕ потребители.
 
     Проверка по значению, а не по исходнику: потребитель со своим предикатом
@@ -1354,7 +1370,32 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch):
     который заведёт свой разбор пути и форму не спросит вовсе. Это видит
     ревью и корпус форм, а не предикат в тесте.
     """
-    monkeypatch.setattr(lm, "form", lambda rel: lm.Form("outside", "", "", None))
+    # список потребителей не руками: кто зовёт `form`, тот обязан быть проверен
+    # здесь — иначе следующий потребитель добавляется молча (круг 5, GLM I1)
+    исходник = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
+    зовут = set()
+    for узел in ast.walk(ast.parse(исходник)):
+        if not isinstance(узел, (ast.FunctionDef, ast.AsyncFunctionDef)) or узел.name == lm.SHAPE_OWNER:
+            continue
+        if any(isinstance(в, ast.Call) and isinstance(в.func, ast.Name) and в.func.id == lm.SHAPE_OWNER
+               for в in ast.walk(узел)):
+            зовут.add(узел.name)
+    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory"}
+    assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
+
+    дерево = tmp_path / "packages" / "d" / "src" / "p"
+    дерево.mkdir(parents=True)
+    (дерево / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "p.py").write_text("x = 1\n", encoding="utf-8")   # корень `p` на двоих
+    честный = lm.inventory(tmp_path)
+    assert [b.kind for b in честный.problems] == ["collision"], "предпосылка: на честной форме конфликт есть"
+
+    # заглушка не только ломает ответ, но и ЗАПИСЫВАЕТ вопрос: половина
+    # утверждений ниже отрицательные, и копия формы, знающая только плоскую
+    # раскладку, прошла бы их своим «ничего не знаю» (круг 5, DS I2)
+    видел: list[str] = []
+    monkeypatch.setattr(lm, "form", lambda rel: (видел.append(rel), lm.Form("outside", "", "", None))[1])
     assert lm.module_of("src/graphs.py") is None, "module_of держит свою копию формы"
     assert lm.module_of("packages/cg/src/charoite_graph/graphs.py") is None
     assert lm.package_of("packages/cg/src/charoite_graph/inner/__init__.py") == ""
@@ -1362,6 +1403,17 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch):
     assert lm.decide("packages/cg/tests/test_x.py").by != "shape", "decide решает без формы"
     assert lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b"}) == [], \
         "конфликт упаковки считает владельца мимо формы"
+    assert lm._owner("packages/x/src/a/b.py") == f"{lm.FLAT_DIR}/", "владелец мимо формы"
+    # инвентарь кормит конфликт именами от формы — с подделкой имён нет
+    assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
+    # гейт спрашивает роль: под подделкой пакетный модуль обязан стать «дырой»
+    беды = lm.scan(lm.inventory(tmp_path)).problems
+    assert any("packages/d/src/p/x.py" in b for b in беды), "scan решает роль мимо формы"
+    спрошено = set(видел)
+    for путь in ("src/graphs.py", "packages/cg/src/charoite_graph/inner/__init__.py",
+                 "packages/cg/src/charoite_graph/cli.py", "packages/cg/tests/test_x.py",
+                 "packages/x/src/a/b.py", "packages/d/src/p/x.py"):
+        assert путь in спрошено, f"о {путь} форму никто не спросил — потребитель решает сам"
 
 
 def test_every_kind_of_problem_has_a_section_and_a_verdict():
