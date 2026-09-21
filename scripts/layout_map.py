@@ -1244,7 +1244,10 @@ def _заведомо_мертва(node: ast.stmt) -> bool:
     т = node.test
     if isinstance(т, ast.Constant) and not т.value:
         return True
-    return isinstance(т, ast.Name) and т.id == "TYPE_CHECKING"
+    if isinstance(т, ast.Name):
+        return т.id == "TYPE_CHECKING"
+    # `typing.TYPE_CHECKING` — та же идиома в форме атрибута (круг 4, GLM I3)
+    return isinstance(т, ast.Attribute) and т.attr == "TYPE_CHECKING"
 
 
 def _гвард_точки_входа(node: ast.stmt) -> str:
@@ -1290,8 +1293,10 @@ def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
             out.append(node)                    # ради ЗНАЧЕНИЙ ПО УМОЛЧАНИЮ: они считаются
             continue                            # на импорте, а тело — нет, в этом вся правка
         if _заведомо_мертва(node):
-            continue                            # `if False:` / `if TYPE_CHECKING:` при импорте
-                                                # не исполняются (круг 3 по коду №329, DS I5)
+            # мёртв только блок; `else` у него при импорте исполняется — тот же
+            # случай, что с гвардом точки входа (круг 4 по коду №329, DS I1)
+            out += _на_импорте(getattr(node, "orelse", []))
+            continue
         гвард = _гвард_точки_входа(node)
         if гвард:
             # при импорте идёт ровно одна половина гварда: у `==` — else,
@@ -1312,6 +1317,16 @@ def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
         if вложенные:
             out += _на_импорте(вложенные)
     return out
+
+
+def _без_ленивого(node: ast.AST):
+    """Обход узла, не заходящий в ленивые тела: лямбда и включения считаются
+    при ВЫЗОВЕ, а не при импорте (круг 4 по коду №329, GLM I2)."""
+    if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+        return
+    yield node
+    for c in ast.iter_child_nodes(node):
+        yield from _без_ленивого(c)
 
 
 def _root_snapshots(tree: ast.Module) -> list[int]:
@@ -1336,18 +1351,21 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
         # (круг 2 по коду №329, DS I3)
         части: list[ast.expr] = []
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # у функции на импорте считаются ТОЛЬКО значения по умолчанию; в тело
-            # заходить нельзя — ленивый морж `(r := resolve_root(...))` внутри
-            # функции это ровно та запись, которую правило и советует взамен
-            # снимка (круг 3 по коду №329, DS C1 = GLM I1)
+            # у функции на импорте считаются значения по умолчанию И декораторы;
+            # в тело заходить нельзя — ленивый морж `(r := resolve_root(...))`
+            # внутри функции это ровно та запись, которую правило советует
+            # взамен снимка (круг 3, DS C1 = GLM I1; декораторы — круг 4, DS I2)
             части += node.args.defaults + [k for k in node.args.kw_defaults if k]
+            части += node.decorator_list
         else:
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 части.append(node.value)
-            части += [n for n in ast.walk(node) if isinstance(n, ast.NamedExpr)]
+            части += [n for n in _без_ленивого(node) if isinstance(n, ast.NamedExpr)]
         if not части:
             continue
-        for inner in [i for часть in части for i in ast.walk(часть)]:
+        # обход без ленивых тел: `X = lambda: resolve_root(...)` считается при
+        # ВЫЗОВЕ лямбды, а не при импорте (круг 4 по коду №329, GLM I2)
+        for inner in [i for часть in части for i in _без_ленивого(часть)]:
             if not isinstance(inner, ast.Call):
                 continue
             имя = inner.func.attr if isinstance(inner.func, ast.Attribute) else getattr(inner.func, "id", "")
