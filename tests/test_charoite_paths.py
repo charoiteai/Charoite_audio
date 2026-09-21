@@ -443,3 +443,35 @@ def test_догадка_доступна_только_названной_всл�
     названный = charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
 
     assert названный == tmp_path.resolve()
+
+
+def test_демон_называет_корень_и_отказ_виден_снаружи(tmp_path):
+    """Точка входа проверяется КАК ПРОЦЕСС, а не чтением исходника.
+
+    Без этого теста возврат `daemon.py` к прежнему `use_data_root(_root())`
+    проходил бы молча: pytest зелёный, гейт раскладки зелёный (он смотрит
+    места `__file__`, а не вызов называния). Дефект, ради которого сделана
+    правка, возвращался одним Edit-ом без единого сигнала (круг 1 по коду
+    №332, DS I2).
+
+    Меряются оба канала отказа сразу: код выхода (его читают launchd и любой
+    скрипт) и строка статуса с `error: True` (её рисует приложение). Первая
+    редакция заявляла код 2, которого не было: `main()` стоял голым вызовом,
+    и процесс выходил нулём (обе головы круга 1).
+    """
+    import json
+    import subprocess
+
+    окружение = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    окружение["PATH"] = os.environ.get("PATH", "")
+    прогон = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "daemon.py")],
+        cwd=ROOT, env=окружение, capture_output=True, text=True, timeout=120)
+
+    assert прогон.returncode == 2, (
+        f"демон без корня обязан выйти кодом 2, а вышел {прогон.returncode}: "
+        f"launchd с KeepAlive и `&&`-скрипт иначе видят успех")
+    событие = json.loads(прогон.stdout.splitlines()[0])
+    assert событие["type"] == "status" and событие.get("error") is True, (
+        f"отказ пришёл типом, которого приложение не рисует: {событие}")
+    assert "CHAROITE_ROOT" in событие["text"], "в отказе нет рецепта"
