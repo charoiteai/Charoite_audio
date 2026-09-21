@@ -38,7 +38,17 @@ SR = 16000
 import graphs  # noqa: E402
 
 cfg = load_user_or_example(ROOT)
-GRAPH = graphs.graph_dir(cfg) or pathlib.Path("")
+
+
+def _graph() -> pathlib.Path:
+    """Где граф — спрашиваем на вызове, а не запоминаем на импорте.
+
+    Снимок на импорте считался раньше, чем тест (или приложение) успевал
+    назвать граф: процесс держал путь владельца до конца прогона, а изоляция
+    окружения его уже не догоняла — заметка и дневник уезжали в живой граф
+    (круг 11 по коду №327, DS C1). Пустой путь — граф не настроен, как и был.
+    """
+    return graphs.graph_dir(cfg) or pathlib.Path("")
 # Модель и адрес — из llm.py по конфигу, а не свои: прежний хардкод читал
 # несуществующий ключ sufler.model и после переезда конфига на mlx-сборку
 # продолжал звать старую модель (аудит 14.08).
@@ -58,7 +68,7 @@ def diary_dir() -> pathlib.Path:
     raw = os.environ.get("SUFLER_DIARY_DIR") or cfg["sufler"].get("diary_dir", "")
     if raw:
         return pathlib.Path(raw).expanduser()
-    return GRAPH.parent / "Дневник"
+    return _graph().parent / "Дневник"
 
 
 def _moment() -> dt.datetime:
@@ -93,7 +103,7 @@ def last_meeting_today(day: str | None = None) -> tuple[str, str] | None:
     # Ключ графа, не стем файла: заметка встречи называется минутным штампом
     # (`Встречи/<штамп>.md`), а стем после наката темы — «<штамп>_Тема»; ссылка
     # по стему висела в пустоте после любого наката (аудит 13.09, DS I3 / GLM I2)
-    # graph_dir(cfg) даёт None при незаданном графе; GRAPH тогда Path("") = ".", и
+    # graph_dir(cfg) даёт None при незаданном графе; _graph() тогда Path("") = ".", и
     # ключ решался бы по чужому ./Встречи относительно CWD (DS/GLM r1 по #559)
     stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, graphs.graph_dir(cfg))
     first = cands[-1].read_text(encoding="utf-8").splitlines()[:1]
@@ -199,7 +209,7 @@ def main():
         title = " ".join(words[:3]) or "заметка"
 
     now = _moment()
-    ndir = GRAPH / "Заметки"
+    ndir = _graph() / "Заметки"
     ndir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", title).strip("_")[:40]
     path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}.md"
@@ -289,7 +299,8 @@ def diary_entry(raw: str) -> None:
         stamp, topic = meeting
         # ссылка через имя рабочей сферы: backlink на встрече покажет мысль;
         # сфера не настроена — ссылка без префикса (тот же vault)
-        prefix = f"{GRAPH.name}/" if GRAPH.name else ""
+        граф = _graph()
+        prefix = f"{граф.name}/" if граф.name else ""
         parts.append(f"\nКонтекст: [[{prefix}Встречи/{stamp}|встреча «{topic}»]]\n")
     parts.append(f"\n> Как сказано: {raw}\n")
     with day.open("a", encoding="utf-8") as f:

@@ -834,7 +834,7 @@ class GraphSearch:
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
-        base = pathlib.Path(data_dir) if data_dir else graphs.DATA_ROOT / "data"
+        base = pathlib.Path(data_dir) if data_dir else graphs.data_root() / "data"
         # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
         # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
         tag = hashlib.sha256(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]   # имя файла по пути, не подпись; sha256 — чтобы CI не спорил

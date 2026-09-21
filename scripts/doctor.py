@@ -127,7 +127,7 @@ def check_config() -> dict:
         n = sum(1 for _ in gdir.rglob("*.md"))
         # Относительный путь и приложение, и Python считают от папки данных
         # (единая точка src/graphs.py, карточка №36) — показываем, от чего.
-        note = f" (относительно {graphs.DATA_ROOT})" if not pathlib.Path(raw).expanduser().is_absolute() else ""
+        note = f" (относительно {graphs.data_root()})" if not pathlib.Path(raw).expanduser().is_absolute() else ""
         line(OK, f"graph_dir: {gdir} ({n} заметок){note}")
     return cfg
 

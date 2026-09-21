@@ -15,9 +15,23 @@ from typing import Any
 
 import yaml
 
+from charoite_paths import CODE_ROOT
 
-def load_user_or_example(root: pathlib.Path) -> Any:
+
+def load_user_or_example(root: pathlib.Path, *, code: pathlib.Path | None = None) -> Any:
     """Разобрать config.yaml, а при его отсутствии — config.example.yaml.
+
+    Два файла — из двух РАЗНЫХ корней, и это не мелочь. Пользовательский
+    конфиг принадлежит корню ДАННЫХ: его правит владелец, он уезжает вместе
+    с графом и записями. Пример принадлежит корню КОДА: он приезжает с
+    поставкой и в папке данных его нет вовсе.
+
+    Пока корень данных совпадал с корнем кода (запуск из checkout), разницы
+    не было видно. Как только точка входа называет свой корень данных —
+    штатный режим установки и цель №327 — старый код искал пример в папке
+    владельца, не находил и падал `FileNotFoundError` прямо из импорта
+    модуля: ни сообщения, ни дефолтов (круг 18 по коду №327, найдено полным
+    прогоном после перевода тестов на названный корень).
 
     Функция сознательно не валидирует тип и не заменяет пустой YAML на
     пустой dict: часть вызывающих считает ``None`` ошибкой, а два ночных
@@ -25,5 +39,5 @@ def load_user_or_example(root: pathlib.Path) -> Any:
     """
     path = root / "config" / "config.yaml"
     if not path.exists():
-        path = root / "config" / "config.example.yaml"
+        path = (code or CODE_ROOT) / "config" / "config.example.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))

@@ -9,12 +9,14 @@ import os
 import pathlib
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import charoite_paths  # noqa: E402
 import graph_updater as g  # noqa: E402
 
 
@@ -414,6 +416,7 @@ def test_people_chronicle_keeps_last_ten_and_archives_the_rest(tmp_path):
     assert core.count("- [[Встречи/2026-03-") == 13 and "## Архив хроники" not in core
 
 
+@pytest.mark.корень_называет_тест
 def test_entity_node_policy_holds_junk_typos_and_ambiguity(tmp_path, monkeypatch):
     """№193 (DS F4, критика GLM r1b, аудит памяти 07.09): узел сущности не
     заводится для мусора, для имени в одной букве от существующего узла той же
@@ -452,7 +455,7 @@ def test_entity_node_policy_holds_junk_typos_and_ambiguity(tmp_path, monkeypatch
     (graph / "Системы" / "Qwen 32B.md").write_text("# Qwen 32B\n\n## Встречи\n", encoding="utf-8")
     (graph / "Модели" / "Qwen 32B.md").unlink()
     # шов main: apply_entities заводит новое и существующее, держит остальное, журналит один раз (DS I4, GLM M1)
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     ents = [{"имя": "Kwen 32B", "тип": "система", "суть": "модель"},
             {"имя": "Витрина ЕИС", "тип": "система", "суть": "витрина"},
             {"имя": "он", "тип": "система", "суть": ""},
@@ -520,14 +523,10 @@ def test_description_supersede_edges(tmp_path):
     assert bare.read_text(encoding="utf-8").startswith("# Голый\nаналитик\n\n_(последнее упоминание: 2026-09-01)_\n\n## Встречи\n")
     # журнал графа пишется после записи узла и различает вытеснение и пересказ (DS r3 Minor, критика GLM)
     monkeypatch_root = graph.parent / "data"
-    orig_root = g.ROOT
-    g.ROOT = monkeypatch_root
-    try:
+    with mock.patch.object(g, "_root", lambda: monkeypatch_root):
         g.upsert_entity(graph, "Люди", "Журнал", "person", "аналитик", "Встречи/2026-09-01_1000", "")
         g.upsert_entity(graph, "Люди", "Журнал", "person", "директор по данным", "Встречи/2026-09-02_1000", "")
         g.upsert_entity(graph, "Люди", "Журнал", "person", "по данным директор", "Встречи/2026-09-03_1000", "")
-    finally:
-        g.ROOT = orig_root
     journal = (monkeypatch_root / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
     assert "описание вытеснено: Журнал: «аналитик» → «директор по данным»" in journal, journal
     assert "описание — пересказ: Журнал: «по данным директор» ≈ «директор по данным»" in journal, journal
@@ -1321,6 +1320,7 @@ def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
                for x in rep["examples"]["not_utf8_archive"]), rep["examples"]
 
 
+@pytest.mark.корень_называет_тест
 def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     """№236: та же отложенная пара во второй встрече. Опечатка с одним и тем же
     кандидатом и общим числом — псевдоним в узле-кандидате «по повтору», встреча
@@ -1346,7 +1346,7 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     node.write_text("# Qwen 32B\n\n## Встречи\n", encoding="utf-8")
     for stem in ("ИИ-агент", "ИИ_агент"):
         (graph / "Системы" / f"{stem}.md").write_text(f"# {stem}\n\n## Встречи\n", encoding="utf-8")
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     ents = [{"имя": "Kwen 32B", "тип": "система", "суть": "модель"},
             {"имя": "ИИ агент", "тип": "система", "суть": "агент"}]
     note_path = graph / g.CANDIDATES_NOTE
@@ -1576,6 +1576,7 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     assert "aliases" in (graph / "Модели" / "Qwen-32B.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.корень_называет_тест
 def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypatch):
     """№266: тема заведена узлом Системы/X (боевым писателем upsert_entity), потом
     названа ядром — Ядра/X и Системы/X получают по машинной строке «смотри также»
@@ -1587,7 +1588,7 @@ def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypat
     graph = tmp_path / "g"
     (graph / "Системы").mkdir(parents=True)
     (graph / "Ядра").mkdir()
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     g.upsert_entity(graph, "Системы", "Внеплановый бэкап", "система", "резервная копия вне графика",
                     "Встречи/2026-09-10_0900", "")
     twin = graph / "Системы" / "Внеплановый бэкап.md"
@@ -1658,6 +1659,7 @@ def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypat
     assert "смотри также" not in (graph / "Ядра" / "Одиночка.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.корень_называет_тест
 def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatch):
     """№286. Псевдоним, который человек поставил сам и снял, — не вето: следа
     машины в узле нет, повторы считаются и склейка идёт как обычно, а со склейкой
@@ -1667,7 +1669,7 @@ def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatc
     import graph_doctor
     graph = tmp_path / "g"
     (graph / "Системы").mkdir(parents=True)
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     node = graph / "Системы" / "Кеш 900.md"
     node.write_text('---\naliases: ["Кэш 900"]\n---\n# Кеш 900\n\n## Встречи\n', encoding="utf-8")
     ent = [{"имя": "Кэш 900", "тип": "система", "суть": "кэш"}]
@@ -1710,7 +1712,7 @@ def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatc
     assert held9[("Системы", "Кэш 901")] == ("by_alias", ["Системы/Кеш 900"]), held9
     assert g.entity_line(graph, ent9[0], held9) == "- [[Системы/Кеш 900|Кэш 901]] (система) — кэш"
     monkeypatch.undo()
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     # журнал пишется через гейт: чужая правка между чтением и записью не затирается (GLM I2)
     note = graph / g.CANDIDATES_NOTE
     real_write = g.safe_write.write_text
@@ -1746,6 +1748,7 @@ def test_machine_trace_lives_in_the_node_not_in_the_journal(tmp_path, monkeypatc
     assert g.frontmatter.list_field("---\nauto_aliases: [\"Кэш 900\"]\n---\n", "aliases") == []
 
 
+@pytest.mark.корень_называет_тест
 def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsys):
     """№286 (DS I3 круга 4 по №236). Строка встречи в существующий узел идёт через
     rewrite_file: узел, сменившийся под рукой дважды, не перезаписывается
@@ -1754,7 +1757,7 @@ def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsy
     «файла не было» — появившийся в окне чужой файл дописывается, не затирается."""
     graph = tmp_path / "g"
     (graph / "Системы").mkdir(parents=True)
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     unlinked = tmp_path / "logs" / "graph_unlinked.log"
     node = graph / "Системы" / "Витрина.md"
     node.write_text("# Витрина\nстарое описание витрины\n\n## Встречи\n", encoding="utf-8")
@@ -1804,7 +1807,7 @@ def test_entity_writer_goes_through_the_update_gate(tmp_path, monkeypatch, capsy
     with pytest.raises(ValueError, match="сломанное преобразование"):
         g.upsert_entity(graph, "Системы", "Витрина", "система", "", "Встречи/2026-09-16_1500", "")
     monkeypatch.undo()
-    monkeypatch.setattr(g, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path)   # корень процесса, а не подмена в модуле
     # обычный путь без гонок — как и был
     g.upsert_entity(graph, "Системы", "Ещё одна", "система", "описание", "Встречи/2026-09-16_1300", "")
     assert (graph / "Системы" / "Ещё одна.md").read_text(encoding="utf-8").startswith("---\ntype: система\n")

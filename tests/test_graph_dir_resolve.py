@@ -1,4 +1,4 @@
-"""Единая точка «где граф» (карточка №36).
+"""Единая точка «где граф» (карточка №36) и чей это корень (карточка №327).
 
 Относительный `sufler.graph_dir` считался Python-кодом от текущего каталога
 процесса, а приложением — от папки данных: демон из приложения писал граф
@@ -6,20 +6,108 @@
 24 места читают путь через `graphs.graph_dir`, и правило одно: `~`
 раскрывается, относительный — от корня данных, SUFLER_GRAPH_DIR
 перекрывает конфиг, пусто — None (а не «.», который молча лил граф в cwd).
+
+Сам корень данных называет точка входа (`charoite_paths.use_data_root`), а
+выводом из положения модуля порядок заканчивается — это последняя догадка,
+верная только пока модуль лежит в дереве репозитория. Поэтому ожидание здесь
+строит фикстура.
+Пока обе стороны считались одной формулой (`graphs.DATA_ROOT` против
+`parent.parent` в проверяемом коде), перенос модуля двигал их вместе и тест
+оставался зелёным на сломанном корне (GLM C3 по №327) — ровно тот случай,
+который ловит `test_перенесённый_модуль_берёт_корень_у_вызывающего`.
 """
 import pathlib
+import subprocess
 import sys
+import textwrap
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
 
+SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 
-def test_resolve_relative_from_data_root_not_cwd(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)               # cwd больше не влияет
-    assert graphs.resolve("demo/graph") == graphs.DATA_ROOT / "demo" / "graph"
-    assert graphs.resolve("demo/graph", root=tmp_path) == tmp_path / "demo" / "graph"
+
+def test_resolve_relative_from_given_root_not_cwd(tmp_path, monkeypatch):
+    данные = (tmp_path / "данные").resolve()
+    откуда_запустили = tmp_path / "откуда-запустили"
+    откуда_запустили.mkdir(parents=True)
+    monkeypatch.chdir(откуда_запустили)       # cwd не влияет
+    charoite_paths.use_data_root(данные)
+    assert graphs.resolve("demo/graph") == данные / "demo" / "graph"
+    чужой = tmp_path / "чужой-корень"
+    assert graphs.resolve("demo/graph", root=чужой) == чужой / "demo" / "graph"
+
+
+def test_конфиг_считается_от_названного_корня(tmp_path, monkeypatch):
+    """Конфиг — производная корня, а не константа импорта."""
+    monkeypatch.chdir(tmp_path)
+    данные = charoite_paths.use_data_root(tmp_path / "данные")
+    assert graphs.config_path() == данные / "config" / "config.yaml"
+
+
+@pytest.mark.корень_называет_тест
+def test_data_root_названный_сильнее_переменной(tmp_path, monkeypatch):
+    """Граф видит тот же порядок, что и канон: названный корень сильнее env.
+
+    Переменную здесь перетирают ПОСЛЕ того, как корень назван: так это и
+    случается в жизни — общий канал, писать в него вправе кто угодно, а
+    решение точки входа отменяться не должно.
+    """
+    названный = charoite_paths.use_data_root(tmp_path / "названный")
+    assert graphs.data_root() == названный
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "перетёртый"))
+    assert graphs.data_root() == названный
+
+
+@pytest.mark.корень_называет_тест
+def test_пробельная_переменная_корня_не_относительный_корень(tmp_path, monkeypatch):
+    """`CHAROITE_ROOT=" "` — не задан, а не путь « » рядом с cwd.
+
+    Раньше эту границу приходилось проверять через `importlib.reload`: корень
+    считался на импорте. Теперь он считается на вызове — перезагрузка модуля
+    в тесте больше не нужна, и это само по себе часть контракта.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHAROITE_ROOT", "   ")
+    корень = graphs.data_root()
+    assert корень.is_absolute() and корень != pathlib.Path.cwd()
+    monkeypatch.setenv("CHAROITE_ROOT", "~/charoite-data")
+    assert graphs.data_root() == (pathlib.Path.home() / "charoite-data").resolve()
+
+
+def test_перенесённый_модуль_берёт_корень_у_вызывающего(tmp_path):
+    """Главное свойство №327: корень переживает переезд кода.
+
+    Отдельно поставленный пакет лежит в `site-packages`, а не рядом со
+    встречами человека: вывод корня из положения файла даёт там не ошибку в
+    вычислении, а ответ на другой вопрос. Копируем графовый модуль в чужое
+    дерево и спрашиваем дважды — до и после `use_data_root`. Ожидание обе
+    стороны берут у фикстуры, поэтому подменить проверяемое вычисление той
+    же формулой нельзя: пока корень выводился из `__file__`, вторая половина
+    теста падала бы на первой же строке.
+    """
+    пакет = tmp_path / "site-packages"
+    пакет.mkdir()
+    for name in ("graphs.py", "charoite_paths.py"):
+        (пакет / name).write_text((SRC / name).read_text(encoding="utf-8"), encoding="utf-8")
+    данные = tmp_path / "данные-человека"
+    код = textwrap.dedent(f"""
+        import sys; sys.path.insert(0, {str(пакет)!r})
+        import charoite_paths, graphs
+        print(graphs.config_path())
+        charoite_paths.use_data_root({str(данные)!r})
+        print(graphs.config_path())
+    """)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}   # без CHAROITE_ROOT
+    out = subprocess.run([sys.executable, "-c", код], capture_output=True,
+                         text=True, timeout=120, env=env)
+    assert out.returncode == 0, out.stderr[-400:]
+    из_положения, от_вызывающего = out.stdout.strip().splitlines()
+    assert pathlib.Path(из_положения) == tmp_path.resolve() / "config" / "config.yaml"
+    assert pathlib.Path(от_вызывающего) == данные.resolve() / "config" / "config.yaml"
 
 
 def test_resolve_tilde_and_absolute():
@@ -32,12 +120,14 @@ def test_resolve_empty_is_none_not_dot(raw):
     assert graphs.resolve(raw) is None
 
 
-def test_env_overrides_config(monkeypatch):
+def test_env_overrides_config(tmp_path, monkeypatch):
+    данные = (tmp_path / "данные").resolve()
+    charoite_paths.use_data_root(данные)
     for name in graphs.ENV_GRAPH_NAMES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(graphs.ENV_GRAPH, "rel/test-graph")
     got = graphs.graph_dir({"sufler": {"graph_dir": "/cfg/graph"}})
-    assert got == graphs.DATA_ROOT / "rel" / "test-graph"
+    assert got == данные / "rel" / "test-graph"
     monkeypatch.setenv(graphs.ENV_GRAPH, "   ")           # пробельная = не задана
     assert graphs.graph_dir({"sufler": {"graph_dir": "/cfg/graph"}}) == pathlib.Path("/cfg/graph")
 
@@ -78,15 +168,21 @@ def test_both_env_names_same_priority(monkeypatch):
     assert graphs.env_override() is None
 
 
-def test_data_root_ignores_blank_charoite_root(monkeypatch):
-    # CHAROITE_ROOT=" " — не задан (как в charoite_paths.resolve_root), а не
-    # относительный корень, от которого graph_dir снова зависел бы от cwd.
-    import importlib
-    monkeypatch.setenv("CHAROITE_ROOT", " ")
-    g = importlib.reload(graphs)
-    assert g.DATA_ROOT.is_absolute() and g.DATA_ROOT == pathlib.Path(g.__file__).resolve().parent.parent
-    monkeypatch.setenv("CHAROITE_ROOT", "~/charoite-data")
-    g = importlib.reload(graphs)
-    assert g.DATA_ROOT == (pathlib.Path.home() / "charoite-data").resolve()
-    monkeypatch.delenv("CHAROITE_ROOT")
-    importlib.reload(graphs)
+def test_конфиг_читается_из_корня_данных_а_битый_не_роняет(tmp_path):
+    """`load_config` отдаёт содержимое, а не «что-нибудь непустое».
+
+    Мутант `return yaml.safe_load(...) or {}` → `return None` пережил прогон:
+    ни один тест не смотрел, ЧТО прочитано, — только что не упало. Пути
+    fail-closed: битый или отсутствующий конфиг даёт пустой словарь, и
+    конвейер идёт на дефолтах, а не падает посреди встречи (штатный мутатор
+    на дельте №327, выживший 1 из 3).
+    """
+    данные = charoite_paths.use_data_root(tmp_path / "данные")
+    (данные / "config").mkdir(parents=True)
+    assert graphs.load_config() == {}                       # файла нет
+    graphs.config_path().write_text("sufler:\n  graph_dir: ~/g\n", encoding="utf-8")
+    assert graphs.load_config() == {"sufler": {"graph_dir": "~/g"}}
+    graphs.config_path().write_text("не: [ямл", encoding="utf-8")
+    assert graphs.load_config() == {}                       # битый — не авария
+    graphs.config_path().write_text("", encoding="utf-8")
+    assert graphs.load_config() == {}                       # пустой — тоже словарь
