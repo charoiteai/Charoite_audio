@@ -95,6 +95,8 @@ class _FakeLLM:
     calls: list = []
     lang = "ru"
     recording_block = llm_mod.LLM.recording_block   # настоящий блок, взят до подмены llm.LLM
+    document_model = llm_mod.LLM.document_model     # выбор модели тоже боевой
+    engine, model, mlx_model = "ollama", "проба", ""
 
     def __init__(self, cfg):
         pass
@@ -250,6 +252,8 @@ def test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport(tmp_path, mon
     class Fake:
         lang = "ru"
         recording_block = llm_mod.LLM.recording_block
+        document_model = llm_mod.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
 
         def fit(self, t):
             seen["fit"] = t

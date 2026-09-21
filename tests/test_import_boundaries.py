@@ -250,6 +250,8 @@ def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
         "from typing import TYPE_CHECKING",
         "import charoite_paths",
         "from charoite_paths import resolve_root",
+        "from charoite_paths import resolve_root as корень",
+        "from charoite_paths import code_root",
         "",
         "def _root():",
         "    return resolve_root(__file__)",
@@ -271,6 +273,8 @@ def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
         "_частично = functools.partial(resolve_root)",
         "",
         "FREEZE_DIRECT = resolve_root(__file__)",
+        "FREEZE_IMPORT_ALIAS = корень(__file__)",
+        "OK_CODE_ROOT = code_root(__file__)",
         "FREEZE_DOTTED = charoite_paths.resolve_root(__file__)",
         "FREEZE_HELPER = _root()",
         "FREEZE_CHAIN = _cfg()",
@@ -309,6 +313,8 @@ def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
     # перестают различаться, и пропуск однажды примут за решение
     свои = lm._имена_корня(ast.parse(probe))
     assert свои == {"_root", "_cfg", "_алиас"}, свои
+    # корень КОДА — не эта форма: код лежит там, где лежит, его снимок верен
+    assert lm._имена_канона_данных(ast.parse(probe)) == {"resolve_root", "корень"}
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):

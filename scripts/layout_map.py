@@ -1108,24 +1108,28 @@ ROOT_CANON_CALLS = ("resolve_root", "code_root")
 ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
 
 
-def _canon_names(tree: ast.Module) -> set[str]:
+def _canon_names(tree: ast.Module, только: tuple[str, ...] = ROOT_CANON_CALLS) -> set[str]:
     """Имена, под которыми в модуль пришли функции канона — включая псевдонимы.
 
     Совпадения по последнему сегменту имени мало: локальная `def code_root(m)`
     получала бы прощение, а `from charoite_paths import resolve_root as root_of`
     краснел бы на верном коде (обе головы круга 3, независимо).
+
+    `только` сужает набор до одной функции канона: форме `snapshot` интересен
+    ровно корень ДАННЫХ, а снимок корня КОДА (`CODE = code_root(__file__)`)
+    законен весь процесс — код лежит там, где лежит.
     """
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "charoite_paths":
             if any(a.name == "*" for a in node.names):
-                out |= set(ROOT_CANON_CALLS)          # `import *` приносит канон под своими именами
-            out |= {a.asname or a.name for a in node.names if a.name in ROOT_CANON_CALLS}
+                out |= set(только)                    # `import *` приносит канон под своими именами
+            out |= {a.asname or a.name for a in node.names if a.name in только}
         elif isinstance(node, ast.Import):
             for a in node.names:
                 if a.name == "charoite_paths":
                     # `charoite_paths.resolve_root(...)` — сегмент имени, а модуль назван
-                    out |= {f"{a.asname or a.name}.{n}" for n in ROOT_CANON_CALLS}
+                    out |= {f"{a.asname or a.name}.{n}" for n in только}
     return out
 
 
@@ -1248,7 +1252,7 @@ def _заведомо_мертва(node: ast.stmt) -> bool:
     т = node.test
     try:
         return not ast.literal_eval(т)
-    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+    except Exception:             # noqa: BLE001 — `if 1/0:` считается по-настоящему
         pass                      # условие не известно на импорте — судим по форме ниже
     if isinstance(т, ast.Name):
         return т.id == "TYPE_CHECKING"
@@ -1348,7 +1352,17 @@ def _имя(узел: ast.expr) -> str:
     return узел.attr if isinstance(узел, ast.Attribute) else getattr(узел, "id", "")
 
 
-def _спросит_корень(call: ast.Call, свои: set[str]) -> bool:
+def _имена_канона_данных(tree: ast.Module) -> set[str]:
+    """Имена корня ДАННЫХ в этом модуле: само имя канона и его псевдонимы.
+
+    Точечная запись приходит как `модуль.resolve_root` — на месте вызова
+    сравнивается последний сегмент, поэтому режем его здесь же.
+    """
+    имена = {n.rsplit(".", 1)[-1] for n in _canon_names(tree, (DATA_ROOT_CALL,))}
+    return имена | {DATA_ROOT_CALL}
+
+
+def _спросит_корень(call: ast.Call, свои: set[str], канон: set[str] | None = None) -> bool:
     """Этот вызов даст ответ канона о корне данных.
 
     Одно правило на все места, где вопрос задаётся (замыкание имён и проба
@@ -1360,10 +1374,11 @@ def _спросит_корень(call: ast.Call, свои: set[str]) -> bool:
     метод-тёзка живёт своей жизнью, и `json.load(...)` не становится снимком
     оттого, что в модуле есть свой `load`, читающий корень.
     """
+    канон = {DATA_ROOT_CALL} if канон is None else канон
     if isinstance(call.func, ast.Attribute):
-        return call.func.attr == DATA_ROOT_CALL
+        return call.func.attr in канон
     имя = getattr(call.func, "id", "")
-    return имя == DATA_ROOT_CALL or имя in свои
+    return имя in канон or имя in свои
 
 
 def _имена_корня(tree: ast.Module) -> set[str]:
@@ -1409,6 +1424,7 @@ def _имена_корня(tree: ast.Module) -> set[str]:
         if isinstance(значение, (ast.Name, ast.Attribute)) and len(цели) == 1 and isinstance(цели[0], ast.Name):
             псевдонимы[цели[0].id] = _имя(значение)
 
+    канон = _имена_канона_данных(tree)
     знают: set[str] = set()
     менялось = True
     while менялось:
@@ -1421,11 +1437,11 @@ def _имена_корня(tree: ast.Module) -> set[str]:
             # краснеет, а вызов такой функции свежего ответа уже не даёт.
             # Ленивое внутри тела (`return lambda: канон()`) тоже не считается
             # вопросом: спросит тот, кто вызовет лямбду (круг 5, DS «вопрос 1»)
-            if any(isinstance(v, ast.Call) and _спросит_корень(v, знают)
+            if any(isinstance(v, ast.Call) and _спросит_корень(v, знают, канон)
                    for st in узел.body for v in _без_ленивого(st)):
                 знают.add(имя); менялось = True
         for имя, источник in псевдонимы.items():
-            if имя not in знают and (источник == DATA_ROOT_CALL or источник in знают):
+            if имя not in знают and (источник in канон or источник in знают):
                 знают.add(имя); менялось = True
     return знают
 
@@ -1447,6 +1463,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     """
     out: list[int] = []
     знают_корень = _имена_корня(tree)
+    канон_модуля = _имена_канона_данных(tree)
     for node in _на_импорте(tree.body):
         # «связать имя с ответом» — не только присваивание: моржовый оператор и
         # значение по умолчанию у аргумента вычисляются при импорте ровно так же
@@ -1474,7 +1491,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
         for inner in [i for часть in части for i in _без_ленивого(часть)]:
             if not isinstance(inner, ast.Call):
                 continue
-            if _спросит_корень(inner, знают_корень):
+            if _спросит_корень(inner, знают_корень, канон_модуля):
                 out.append(node.lineno)
                 break
     return sorted(set(out))
@@ -1897,6 +1914,11 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     return "\n".join(out) + "\n"
 
 
+#: Что понимает командная строка. Больше ничего она не понимает — и говорит
+#: об этом вслух, вместо того чтобы выполнить не тот режим.
+РЕЖИМЫ = ("--report", "--regen", "--check")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Один выходной тракт для всех режимов: расхождения считаются одним
     `check()` и печатаются одним циклом; режим меняет только то, что пишется
@@ -1905,6 +1927,13 @@ def main(argv: list[str] | None = None) -> int:
     загрузка такой артефакт отвергнет (Critical DS круга 4), но отчёт о прочих
     расхождениях печатается тем же прогоном (Important DS круга 5)."""
     args = sys.argv[1:] if argv is None else argv
+    # режимы — списком: разбора аргументов тут нет, и незнакомое слово молча
+    # игнорировалось. «Только посмотреть» с опечаткой в флаге писало карту на
+    # диск (круг 6 по коду №329, DS M4)
+    чужие = [a for a in args if a not in РЕЖИМЫ]
+    if чужие:
+        print(f"✗ неизвестные аргументы: {' '.join(чужие)}; режимы: {' '.join(sorted(РЕЖИМЫ))}")
+        return 2
     inv = inventory(REPO)
     if "--report" in args and "--check" not in args:
         # замер читает только код: артефакт ему не нужен и не должен его хоронить

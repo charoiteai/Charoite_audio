@@ -97,6 +97,8 @@ def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypat
     class Fake:
         lang = "ru"
         recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model          # боевая, а не заглушка: подмена модели должна быть видна
+        engine, model, mlx_model = "ollama", "проба", ""
 
         def fit(self, transcript):
             return "[сжато: сводки частей]"
@@ -159,3 +161,24 @@ def test_конфиг_читается_один_раз_на_вызов_инст�
     mcp_server._client()
 
     assert len(чтений) == 1, f"конфиг прочитан {len(чтений)} раза за одну сборку клиента"
+
+
+def test_конфиг_без_модели_объясняет_отказ_а_не_падает(tmp_path, monkeypatch):
+    """Владелец видит, какой файл чинить, а не «MCP error: 'model'».
+
+    Сборка клиента стояла выше `try`, и три отказа конфига — битый YAML,
+    пустой файл, конфиг без `llm.model` — летели наружу сырым исключением
+    мимо всех веток «минутки НЕ тронуты» (круг 6 по коду №329, DS I2 = GLM I1).
+    """
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-09-13_1200.md").write_text("речь", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("llm:\n  engine: ollama\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_root", lambda: tmp_path)
+    monkeypatch.setattr(mcp_server, "_cfg_кэш", None)
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "минутки НЕ тронуты" in out and "config.yaml" in out and "model" in out
+    assert not (tdir / "2026-09-13_1200_minutes.md").exists(), "пустышка легла на диск"
