@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import subprocess
 import tempfile
 import sys
 
@@ -316,3 +317,24 @@ def test_снапшот_на_импорте_заморозил_временны�
             f"{модуль.__name__}.ROOT заморозил корень кода — прогон писал бы "
             f"в данные владельца")
         assert тмп in замороженный.parents, f"{модуль.__name__}.ROOT вне tmp: {замороженный}"
+
+
+def test_прогон_переживает_переменную_корня_в_окружении(tmp_path):
+    """`CHAROITE_ROOT` в шелле не должен ронять сборку всего прогона.
+
+    Переменную штатно экспортируют `scripts/nightly.sh` и приложение детям
+    демона, так что запуск тестов в таком шелле — обычное дело. Пока
+    публикация корня сессии стояла оператором уровня модуля, канон сравнивал
+    её с корнем из окружения и отказывал вторым корнем: ошибка сборки на все
+    тесты сразу, ни одного зелёного (круг 20 по коду №327, DS I1).
+
+    Проверяется подпроцессом и только СБОРКОЙ: предмет — то, что conftest
+    вообще импортируется, а не поведение отдельного теста.
+    """
+    окружение = dict(os.environ, CHAROITE_ROOT=str(tmp_path / "чужой"))
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+         str(ROOT / "tests" / "test_config_loader.py")],
+        capture_output=True, text=True, timeout=120, cwd=ROOT, env=окружение)
+    assert r.returncode == 0, f"сборка упала с корнем в окружении:\n{r.stdout}{r.stderr}"
+    assert "error" not in r.stdout.lower(), r.stdout
