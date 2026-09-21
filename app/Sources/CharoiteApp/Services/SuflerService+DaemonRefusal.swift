@@ -11,12 +11,12 @@ extension SuflerService {
     /// тысячестрочном теле сервиса (круг 3 по коду №332, DS C1 + гейт длины
     /// файла в SwiftLint).
     func giveUpOnNamedRefusal() {
-        daemonFatalReason = nil
+        _ = takeDaemonFatalReason()
         captureLossReason = nil      // причина потери захвата к этому отказу не относится
         endSleepGuard()
         statusIsError = true
         preservedFailure = status    // текст демона с рецептом, а не наш «нажмите ещё раз»
-        guard let token = lifecycleGate.beginStop() else { return }
+        guard let token = gateBeginStop() else { return }
         cleanupDisposition = .preserveFailure
         publishLifecycle()
         beginCaptureShutdown(token: token)
@@ -44,7 +44,7 @@ extension SuflerService {
         // .preserveFailure без текста: запоздавший статус демона затирал
         // причину (аудит 13.09, DS M1)
         preservedFailure = status
-        guard let token = lifecycleGate.beginStop() else { return }
+        guard let token = gateBeginStop() else { return }
         cleanupDisposition = .preserveFailure
         publishLifecycle()
         beginCaptureShutdown(token: token)

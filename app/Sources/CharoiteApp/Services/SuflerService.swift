@@ -183,7 +183,16 @@ final class SuflerService: ObservableObject {
     /// Детерминированный отказ — «корень данных не назван» — повтором не
     /// лечится: три попытки только затрут рецепт, который демон уже прислал
     /// (круг 2 по коду №332, DS C1).
-    var daemonFatalReason: String?
+    private var daemonFatalReason: String?
+
+    /// Снять причину и сказать, была ли она названной: ветка отказа живёт в
+    /// расширении, а поле остаётся закрытым — открывать его модулю значит
+    /// разрешить любому коду переустановить состояние мимо проверок (тот же
+    /// инвариант, что у `lifecycleGate`; круг 4 по коду №332, GLM I1).
+    func takeDaemonFatalReason() -> String? {
+        defer { daemonFatalReason = nil }
+        return daemonFatalReason
+    }
     /// Потери захвата за одну встречу — отдельный потолок: restartAttempts
     /// обнуляется первой же строкой стенограммы, и цикл «потеря → рестарт →
     /// резервный микрофон → снова потеря» был бы бесконечным (Codex, круг-2
@@ -200,7 +209,7 @@ final class SuflerService: ObservableObject {
     var preservedFailure: String?
     /// Подсказка об отказе в уведомлениях показана в этой встрече (SuflerService+Status).
     var notificationsDeniedShown = false
-    var lifecycleGate = RecordingLifecycleGate()
+    private var lifecycleGate = RecordingLifecycleGate()
 
     // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
     // нему через эти обёртки. Иначе поле пришлось бы открыть модулю целиком —
