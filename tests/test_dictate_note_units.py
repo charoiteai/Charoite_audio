@@ -50,6 +50,10 @@ def test_граф_спрашивается_на_вызове_а_не_на_имп
     import dictate_note
     monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(tmp_path / "поздний-граф"))
     monkeypatch.delenv("SUFLER_DIARY_DIR", raising=False)
+    # `cfg` снят на импорте — на машине с настоящим config.yaml ключ
+    # `diary_dir` перекрыл бы fallback, и тест зеленел бы только там, где
+    # конфига нет (круг 12 по коду №327, DS C2).
+    monkeypatch.setitem(dictate_note.cfg["sufler"], "diary_dir", "")
     assert dictate_note._graph() == tmp_path / "поздний-граф"
     assert dictate_note.diary_dir() == tmp_path / "Дневник"
 
