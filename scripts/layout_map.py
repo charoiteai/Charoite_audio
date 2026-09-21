@@ -1232,6 +1232,35 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
     return False
 
 
+def _root_snapshots(tree: ast.Module) -> list[int]:
+    """Строки, где ответ канона о корне ДАННЫХ запоминается НА ИМПОРТЕ.
+
+    Третья форма вывода корня — и самая тихая: `ROOT = resolve_root(__file__)`
+    на верхнем уровне выглядит как обращение к канону, поэтому две прежние
+    формы её не видят (`__file__` стоит аргументом канона — законно; чтения
+    переменной нет вовсе). А вред тот же, что у своей копии правила: значение
+    снимается РАНЬШЕ, чем точка входа успевает назвать корень, и процесс
+    разъезжается сам с собой — половина модулей живёт в названном корне, другая
+    в выведенном из положения файла, молча (замер 21.09: назвать корень после
+    импорта такого модуля — два разных ответа в одном процессе).
+
+    Корень КОДА (`code_root`) здесь не при чём: код лежит там, где лежит, его
+    снимок на импорте верен весь процесс. Ловится только корень данных.
+    """
+    out: list[int] = []
+    for node in tree.body:                      # только верхний уровень — это и есть импорт
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        for inner in ast.walk(node.value):
+            if not isinstance(inner, ast.Call):
+                continue
+            имя = inner.func.attr if isinstance(inner.func, ast.Attribute) else getattr(inner.func, "id", "")
+            if имя == DATA_ROOT_CALL:
+                out.append(node.lineno)
+                break
+    return sorted(set(out))
+
+
 def _file_roots(tree: ast.Module) -> list[int]:
     """Строки, где `__file__` стоит НЕ в одном из двух разрешённых мест.
 
@@ -1315,6 +1344,11 @@ ORDER_NOTES: dict[str, "Callable[[ModuleEvents, FileInfo], str]"] = {
 ENV_ROOT_VAR = "CHAROITE_ROOT"
 ENV_ROOT_OWNER = "src/charoite_paths.py"
 
+#: Функция канона, отвечающая про корень ДАННЫХ. Её ответ имеет право звучать
+#: на каждом обращении и не имеет права запоминаться на импорте (форма
+#: `snapshot` ниже).
+DATA_ROOT_CALL = "resolve_root"
+
 #: Где инвариант уже обязан выполняться. Скрипты переводятся следующим куском
 #: фазы 3: у 12 из них чтение стоит выше вставки в `sys.path`, то есть канон в
 #: этот момент ещё нельзя импортировать, и перевод требует правки bootstrap.
@@ -1332,6 +1366,8 @@ ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
      f"читает {ENV_ROOT_VAR} сам"),
     ("file", _file_roots,
      "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
+    ("snapshot", _root_snapshots,
+     f"запоминает ответ {DATA_ROOT_CALL} на импорте — раньше, чем точка входа назвала корень"),
 )
 
 

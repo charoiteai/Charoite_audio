@@ -2,6 +2,7 @@
 настроек приложения (обе), уборка — тем же скриптом, что зовёт приложение,
 в фоне, вывод ребёнка в файл, итог по машинному маркеру."""
 import os
+import charoite_paths
 import pathlib
 import subprocess
 import sys
@@ -53,7 +54,7 @@ def test_dead_config_path_does_not_silence_the_apps_folder(tmp_path, monkeypatch
 def test_prune_runs_the_import_script_with_output_in_a_file_and_reports_only_removals(tmp_path, monkeypatch):
     inbox = tmp_path / "Inbox"
     inbox.mkdir()
-    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
+    charoite_paths.use_data_root(tmp_path / "root", replace=True)
     calls, events = [], []
 
     def run(cmd, **kw):
@@ -89,7 +90,7 @@ def test_prune_runs_the_import_script_with_output_in_a_file_and_reports_only_rem
 def test_prune_failures_stay_in_stderr(tmp_path, monkeypatch, capsys):
     inbox = tmp_path / "Inbox"
     inbox.mkdir()
-    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
+    charoite_paths.use_data_root(tmp_path / "root", replace=True)
     monkeypatch.setattr(daemon, "emit", lambda obj: (_ for _ in ()).throw(AssertionError("emit при ошибке")))
 
     def run(cmd, **kw):
@@ -107,7 +108,7 @@ def test_prune_without_the_marker_is_reported_not_silenced(tmp_path, monkeypatch
     «ничего не удалено»; брошенные временные тоже попадают в статус."""
     inbox = tmp_path / "Inbox"
     inbox.mkdir()
-    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
+    charoite_paths.use_data_root(tmp_path / "root", replace=True)
     events = []
     monkeypatch.setattr(daemon, "emit", lambda obj: events.append(obj))
 

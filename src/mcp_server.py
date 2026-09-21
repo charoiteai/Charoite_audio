@@ -31,15 +31,26 @@ except ModuleNotFoundError:  # pragma: no cover — ветка зависит о
 
 from charoite_paths import code_root, harden_umask, resolve_root
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 CODE = code_root(__file__)
-TRANSCRIPTS = ROOT / "transcripts"
+def _transcripts() -> pathlib.Path:
+    """Каталог стенограмм — производная корня данных, считается на вызове (№329)."""
+    return _root() / "transcripts"
 
 
 def _cfg() -> dict:
     import yaml
     try:
-        return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        return yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -72,7 +83,7 @@ _DERIVED = tuple(f"{s}.md" for s in meeting_stamp.AUX_SUFFIXES)
 
 def _latest(pattern: str = "*.md") -> pathlib.Path | None:
     files = []
-    for p in TRANSCRIPTS.glob(pattern):
+    for p in _transcripts().glob(pattern):
         if p.name.endswith(_DERIVED):
             continue
         try:

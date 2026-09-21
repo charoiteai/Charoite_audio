@@ -77,7 +77,16 @@ from charoite_paths import (
     use_data_root,
 )
 
-ROOT = resolve_root(__file__)      # данные пользователя
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
 THINK_MAX_CHARS = 6_000  # тезисы: потолок свежего фрагмента в промпте (~четверть num_ctx)
@@ -257,7 +266,7 @@ def _prune_graph_logs(cfg: dict) -> None:
     За год это тысячи файлов с личными данными в каталоге, про который никто
     не помнит.
     """
-    logs = ROOT / "logs"
+    logs = _root() / "logs"
     if not logs.is_dir():
         return
     keep_days = float(cfg.get("audio", {}).get("record_keep_days", 2))
@@ -331,7 +340,7 @@ def _prune_one_import_folder(folder: pathlib.Path) -> None:
     # прошлого демона ещё пишет в свой файл, когда новый открывает «w»
     # (Minor GLM r2)
     safe_name = re.sub(r"[^-\w]", "_", folder.name)
-    log = ROOT / "logs" / f"import_prune-{safe_name}.log"
+    log = _root() / "logs" / f"import_prune-{safe_name}.log"
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "w", encoding="utf-8") as out:
@@ -413,8 +422,8 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     _prune_graph_logs(cfg)
     recovering: set[str] = set()
     pending: list[pathlib.Path] = []   # очередь цепочки, в порядке штампов
-    rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
-    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    rec_dir = _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
+    tdir = _root() / cfg["log"]["transcripts_dir"]
     if not rec_dir.is_dir():
         return recovering
     # Формат имени знает meeting_stamp: rsplit здесь был бы четвёртым местом
@@ -472,7 +481,7 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
     цепочки — не страшно: .pcm и стенограммы живы, protect-набор уже
     отработал на этот запуск, следующий старт найдёт хвост заново.
     """
-    statuses = MeetingStatusStore(ROOT)
+    statuses = MeetingStatusStore(_root())
     for live in lives:
         emit({"type": "status",
               "text": f"Догоняю прерванную встречу {live.stem} — пересборка фоном"})
@@ -511,17 +520,17 @@ def main():
     # остальное закрытым от других учёток машины (аудит 16.08). Разово
     # чиним уже созданное — установки до правки лежат с правами 0644.
     harden_umask()
-    harden_existing(ROOT)
+    harden_existing(_root())
     # Где лежат данные, знает точка входа, а не библиотека: `__file__`
     # модуля отвечает на другой вопрос — где лежит КОД. Пока всё живёт в
     # `src/` рядом с данными, разницы нет; из отдельно поставленного пакета
     # вывод из положения дал бы site-packages, то есть дефолты вместо
     # настроек человека. Имя уезжает и в окружение — дети (ночные скрипты,
     # индексатор, облачный воркер) считают корень сами (№327).
-    use_data_root(ROOT)
+    use_data_root(_root())
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
-    secure_dir(ROOT / "logs")
-    lockf = open(ROOT / "logs" / "daemon.lock", "w")
+    secure_dir(_root() / "logs")
+    lockf = open(_root() / "logs" / "daemon.lock", "w")
     # Ретраи против микросекундных проб фона — в хелпере. busy=(OSError,) —
     # демон не различает «занято» и «flock не поддержан»: вторым не стартует
     # в обоих случаях (семантика прежнего цикла сохранена, D-П6).
@@ -529,7 +538,7 @@ def main():
                                         busy=(OSError,)):
         emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
         return
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
     # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
     # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по
     # PR #385, Sonnet и DeepSeek).
@@ -547,7 +556,7 @@ def main():
     print(f"аренды модели: {llm.lease_stamp()}", file=sys.stderr, flush=True)
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
-    tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
+    tr = Transcript(pathlib.Path(tdir) if tdir else _root() / cfg["log"]["transcripts_dir"])
     # Нить встречи живёт весь разговор: её дописывают, а не пересобирают.
     thread = MeetingThread()
     # Штамп записи — тот же, что у стенограммы: rebuild_transcript ищет .wav
@@ -577,13 +586,13 @@ def main():
     try:
         keep_days = cfg["audio"].get("record_keep_days", 2)
         held = AudioHub.prune_recordings(
-            ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
+            _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
             keep_days,
             protect=hub.protect_stamps,
         )
         # Сырые потоки приложения (data/sck/*) жили вне
         # ретеншна: краш оставлял полное аудио встречи навсегда (аудит 16.08).
-        dropped = AudioHub.prune_stream_files(ROOT / "data", keep_days)
+        dropped = AudioHub.prune_stream_files(_root() / "data", keep_days)
         if dropped:
             emit({"type": "status",
                   "text": f"Убраны сырые потоки прошлых встреч: {dropped}"})
@@ -683,8 +692,8 @@ def main():
     spk_tracker = None
     voice_names: dict[int, str] = {}
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
-    emb_model = ROOT / MODELS_DIR / "diar" / "embedding.onnx"
-    seg_model = ROOT / MODELS_DIR / "diar" / "segmentation.onnx"
+    emb_model = _root() / MODELS_DIR / "diar" / "embedding.onnx"
+    seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
         from diarize_live import (SegmentTracker, SpeakerTracker,
                                   availability_note, jobs_for, tracker_kind)
@@ -3307,8 +3316,8 @@ def main():
             pass
         try:
             gstamp = pathlib.Path(tr.path).stem[:15]
-            glog = open(ROOT / "logs" / f"graph_{gstamp}.log", "w")  # не DEVNULL: молчаливые падения графа
-            statuses = MeetingStatusStore(ROOT)
+            glog = open(_root() / "logs" / f"graph_{gstamp}.log", "w")  # не DEVNULL: молчаливые падения графа
+            statuses = MeetingStatusStore(_root())
             try:
                 statuses.processing(tr.path, "waiting_for_audio")
             except Exception:  # статус вспомогателен; встречу всё равно обрабатываем
@@ -3334,7 +3343,7 @@ def main():
                   "text": f"Финальная стенограмма и граф: фоном ({how_long})"})
         except Exception as e:  # noqa: BLE001 — UI должен показать, что фон не стартовал
             try:
-                MeetingStatusStore(ROOT).failed(tr.path, f"не удалось запустить обработку: {e}")
+                MeetingStatusStore(_root()).failed(tr.path, f"не удалось запустить обработку: {e}")
             except Exception:
                 pass
         hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild

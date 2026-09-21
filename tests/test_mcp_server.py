@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import llm  # noqa: E402
+import charoite_paths  # noqa: E402
 import mcp_server  # noqa: E402
 
 
@@ -39,10 +40,10 @@ import subprocess  # noqa: E402
 
 
 def _transcripts(tmp_path, monkeypatch, name="2026-09-13_1200.md", text="# Встреча\nтело\n"):
-    tdir = tmp_path / "transcripts"
+    tdir = tmp_path / "transcripts"          # производная корня, а не подменяемая константа
     tdir.mkdir()
     (tdir / name).write_text(text, encoding="utf-8")
-    monkeypatch.setattr(mcp_server, "TRANSCRIPTS", tdir)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     return tdir
 
 

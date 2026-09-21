@@ -47,8 +47,8 @@ def test_swift_mirror_is_wired_before_daemon_log_opens():
            / "SuflerService.swift").read_text(encoding="utf-8")
     assert svc.index("LogTrim.trim(errURL)") < svc.index("FileHandle(forWritingTo: errURL)")
     health = (ROOT / "src" / "llm_health.py").read_text(encoding="utf-8")
-    assert health.index('trim_log(ROOT / "logs" / "mlx_server.log")') \
-        < health.index('(ROOT / "logs" / "mlx_server.log").open("a")')
+    assert health.index('trim_log(_root() / "logs" / "mlx_server.log")') \
+        < health.index('(_root() / "logs" / "mlx_server.log").open("a")')
 
 
 def test_trim_keeps_owner_only_permissions_and_leaves_no_temp(tmp_path):

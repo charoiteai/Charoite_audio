@@ -30,14 +30,37 @@ import requests
 from charoite_paths import code_root, harden_umask, resolve_root
 from config_loader import load_user_or_example
 
-ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 
 SR = 16000
 
 import graphs  # noqa: E402
 
-cfg = load_user_or_example(ROOT)
+_cfg_кэш: tuple[pathlib.Path, dict] | None = None
+
+
+def cfg() -> dict:
+    """Конфиг владельца — по корню НА ВЫЗОВЕ, с кэшем, у которого есть отзыв.
+
+    Кэш отличается от снимка одним: у него есть канал отзыва. Ключ — корень
+    данных, поэтому смена названного корня (`use_data_root`) сама делает
+    прежнее значение недействительным, а чтение с диска не повторяется на
+    каждое обращение (№329).
+    """
+    global _cfg_кэш
+    корень = _root()
+    if _cfg_кэш is None or _cfg_кэш[0] != корень:
+        _cfg_кэш = (корень, load_user_or_example(корень))
+    return _cfg_кэш[1]
 
 
 def _graph() -> pathlib.Path:
@@ -48,13 +71,22 @@ def _graph() -> pathlib.Path:
     окружения его уже не догоняла — заметка и дневник уезжали в живой граф
     (круг 11 по коду №327, DS C1). Пустой путь — граф не настроен, как и был.
     """
-    return graphs.graph_dir(cfg) or pathlib.Path("")
+    return graphs.graph_dir(cfg()) or pathlib.Path("")
 # Модель и адрес — из llm.py по конфигу, а не свои: прежний хардкод читал
 # несуществующий ключ sufler.model и после переезда конфига на mlx-сборку
 # продолжал звать старую модель (аудит 14.08).
 from llm import LLM, parse_json_block  # noqa: E402
 
-_llm = LLM(cfg)
+_llm_кэш: tuple[pathlib.Path, LLM] | None = None
+
+
+def _llm() -> LLM:
+    """Движок — на вызове и по тому же ключу, что конфиг (№329)."""
+    global _llm_кэш
+    корень = _root()
+    if _llm_кэш is None or _llm_кэш[0] != корень:
+        _llm_кэш = (корень, LLM(cfg()))
+    return _llm_кэш[1]
 
 import os  # noqa: E402
 
@@ -65,7 +97,7 @@ import safe_write  # noqa: E402
 # рабочем поиске), но в том же Obsidian-vault: ссылки и backlinks между
 # сферами работают нативно. env — для тестов.
 def diary_dir() -> pathlib.Path:
-    raw = os.environ.get("SUFLER_DIARY_DIR") or cfg["sufler"].get("diary_dir", "")
+    raw = os.environ.get("SUFLER_DIARY_DIR") or cfg()["sufler"].get("diary_dir", "")
     if raw:
         return pathlib.Path(raw).expanduser()
     return _graph().parent / "Дневник"
@@ -90,7 +122,7 @@ def last_meeting_today(day: str | None = None) -> tuple[str, str] | None:
     день записи (`--moment`), иначе сегодня: заметка вчерашнего вечера иначе
     искала встречу среди сегодняшних (DS/GLM r1 по #559)."""
     tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR")
-                        or ROOT / cfg["log"]["transcripts_dir"])
+                        or _root() / cfg()["log"]["transcripts_dir"])
     if not tdir.exists():
         return None
     today = day or f"{dt.datetime.now():%Y-%m-%d}"
@@ -103,9 +135,9 @@ def last_meeting_today(day: str | None = None) -> tuple[str, str] | None:
     # Ключ графа, не стем файла: заметка встречи называется минутным штампом
     # (`Встречи/<штамп>.md`), а стем после наката темы — «<штамп>_Тема»; ссылка
     # по стему висела в пустоте после любого наката (аудит 13.09, DS I3 / GLM I2)
-    # graph_dir(cfg) даёт None при незаданном графе; _graph() тогда Path("") = ".", и
+    # graph_dir(cfg()) даёт None при незаданном графе; _graph() тогда Path("") = ".", и
     # ключ решался бы по чужому ./Встречи относительно CWD (DS/GLM r1 по #559)
-    stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, graphs.graph_dir(cfg))
+    stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, graphs.graph_dir(cfg()))
     first = cands[-1].read_text(encoding="utf-8").splitlines()[:1]
     topic = first[0].lstrip("# ").strip() if first else stamp
     # «# Встреча <stamp> — Тема» → только тема
@@ -156,7 +188,7 @@ def main():
     def warm():
         sys.path.insert(0, str(CODE / "src"))
         from stt import STT
-        stt_holder["stt"] = STT(cfg)
+        stt_holder["stt"] = STT(cfg())
 
     if text_mode:
         # Текстовому режиму STT не нужен — и прогревать его нельзя: daemon-поток
@@ -189,7 +221,7 @@ def main():
     # qwen: заголовок + причёсанный текст + задачи. Фолбэк — сырой текст.
     title, body, tasks = "", raw, []
     try:
-        content = _llm.complete(
+        content = _llm().complete(
             "Это голосовая заметка (сырой текст с распознавания речи). Верни ТОЛЬКО JSON:\n"
             '{"заголовок":"2-3 слова","текст":"тот же текст, но с пунктуацией и абзацами, '
             'ничего не выдумывай и не сокращай","задачи":["..."]}\n'
@@ -261,7 +293,7 @@ def diary_entry(raw: str) -> None:
     body, ideas, tasks, about_meeting = raw, [], [], False
     meet_hint = (f"В этот день ({now:%Y-%m-%d}) была встреча «{meeting[1]}». " if meeting else "")
     try:
-        content = _llm.complete(
+        content = _llm().complete(
             "Это надиктованная дневниковая запись (сырой текст с распознавания). "
             + meet_hint +
             "Верни ТОЛЬКО JSON:\n"

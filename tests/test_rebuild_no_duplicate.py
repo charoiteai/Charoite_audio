@@ -15,6 +15,7 @@ import pathlib
 import sys
 
 import pytest
+import charoite_paths
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -26,7 +27,7 @@ import rebuild_transcript as rt  # noqa: E402
 def root(tmp_path, monkeypatch):
     (tmp_path / "logs").mkdir()
     (tmp_path / "transcripts").mkdir()
-    monkeypatch.setattr(rt, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     return tmp_path
 
 

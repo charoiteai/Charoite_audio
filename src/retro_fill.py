@@ -28,7 +28,16 @@ from meeting_processing import find_final_transcript  # noqa: E402
 from charoite_paths import harden_umask, resolve_root
 from config_loader import load_user_or_example
 
-ROOT = resolve_root(__file__)
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимок на уровне модуля считался при импорте, то есть раньше, чем точка
+    входа успевала назвать корень: половина процесса жила в названном корне,
+    половина — в выведенном из положения файла, и расхождение было немым
+    (замер 21.09, №329).
+    """
+    return resolve_root(__file__)
 import datetime as _dt
 import graphs
 NOTE = f"<!-- восстановлено ретроспективно по стенограмме, {_dt.date.today()} -->\n"
@@ -237,9 +246,9 @@ def main(argv: list[str] | None = None):
                     help="легаси-саммари без паспорта: adopt — присвоить исправные без модели; "
                          "rebuild — присвоить исправные и пересобрать остальные моделью")
     ns = ap.parse_args(sys.argv[1:] if argv is None else argv)
-    cfg = load_user_or_example(ROOT)
+    cfg = load_user_or_example(_root())
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
-    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    tdir = _root() / cfg["log"]["transcripts_dir"]
     args = ns.paths
     missing: list[str] = []
     if args:

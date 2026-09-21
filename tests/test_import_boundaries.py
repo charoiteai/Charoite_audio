@@ -81,7 +81,7 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
     derivations = lm.root_derivations(inv)
     exempt = layout["root_exemptions"]
 
-    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file"}, (
+    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file", "snapshot"}, (
         "формы вывода корня — утверждённый список; новая форма это правка политики, "
         "которую обязан прочитать ревьюер")
     assert lm.ENV_ROOT_OWNER in derivations, (
