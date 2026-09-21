@@ -598,32 +598,7 @@ final class SuflerService: ObservableObject {
             giveUpOnNamedRefusal()
             return
         case .giveUp:
-            if let reason = captureLossReason {
-                captureLossReason = nil
-                endSleepGuard()
-                fail(L.t("⛔️ Захват звука потерян (\(reason)) и не восстановился. Нажмите «Слушать встречу» ещё раз",
-                         "⛔️ Audio capture lost (\(reason)) and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
-                         "⛔️ 音频捕获已丢失（\(reason)）且未能恢复。请再次点击「旁听会议」"))
-                preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
-                guard let token = lifecycleGate.beginStop() else { return }
-                cleanupDisposition = .preserveFailure
-                publishLifecycle()
-                beginCaptureShutdown(token: token)
-                return
-            }
-            // Три попытки подряд не помогли — молчать нельзя: человек уверен,
-            // что встреча пишется, а запись давно встала. Страж сна тоже
-            // снимаем: иначе провалившаяся запись навсегда запрещала маку
-            // спать — до перезапуска приложения.
-            endSleepGuard()
-            fail(L.t("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз",
-                     "⛔️ Recording stopped and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
-                     "⛔️ 录音已停止且未能恢复。请再次点击「旁听会议」"))
-            preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
-            guard let token = lifecycleGate.beginStop() else { return }
-            cleanupDisposition = .preserveFailure
-            publishLifecycle()
-            beginCaptureShutdown(token: token)
+            giveUpAfterAttempts()
             return
         case .restart:
             break
