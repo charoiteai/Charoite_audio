@@ -1232,16 +1232,25 @@ def _walk_safe(node: ast.AST, steps: int, found: list[ast.Name]) -> bool:
     return False
 
 
-def _это_точка_входа(node: ast.stmt) -> bool:
-    """`if __name__ == "__main__":` — единственная ветка модуля, которая при
-    импорте не исполняется вовсе. Корень, спрошенный там, — это спросила сама
-    точка входа, ради чего канон и заведён."""
+def _гвард_точки_входа(node: ast.stmt) -> str:
+    """Сравнение с `__main__` в условии: `"=="`, `"!="` или `""` (не гвард).
+
+    `if __name__ == "__main__":` — единственная ветка модуля, которая при
+    импорте не исполняется вовсе: корень, спрошенный там, спросила сама точка
+    входа. Но отбрасывать весь узел нельзя — `else` у такого гварда идёт
+    именно при импорте, а `!=` переворачивает обе ветки (круг 2 по коду №329,
+    GLM C2).
+    """
     if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
-        return False
-    левое = node.test.left
-    правое = node.test.comparators[0] if node.test.comparators else None
-    return (isinstance(левое, ast.Name) and левое.id == "__name__"
-            and isinstance(правое, ast.Constant) and правое.value == "__main__")
+        return ""
+    if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], (ast.Eq, ast.NotEq)):
+        return ""
+    левое, правое = node.test.left, node.test.comparators[0]
+    if not (isinstance(левое, ast.Name) and левое.id == "__name__"):
+        return ""
+    if not (isinstance(правое, ast.Constant) and правое.value == "__main__"):
+        return ""
+    return "==" if isinstance(node.test.ops[0], ast.Eq) else "!="
 
 
 def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
@@ -1263,19 +1272,27 @@ def _на_импорте(тело: list[ast.stmt]) -> list[ast.stmt]:
     out: list[ast.stmt] = []
     for node in тело:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue                            # тело функции — ленивое, в этом вся правка
-        if _это_точка_входа(node):
-            continue                            # `if __name__ == "__main__"` при импорте НЕ идёт,
-                                                # и корень там спрашивает сама точка входа — законно
+            out.append(node)                    # ради ЗНАЧЕНИЙ ПО УМОЛЧАНИЮ: они считаются
+            continue                            # на импорте, а тело — нет, в этом вся правка
+        гвард = _гвард_точки_входа(node)
+        if гвард:
+            # при импорте идёт ровно одна половина гварда: у `==` — else,
+            # у `!=` — сам блок; вторая принадлежит запуску как скрипту
+            assert isinstance(node, ast.If)
+            out += _на_импорте(node.orelse if гвард == "==" else node.body)
+            continue
         out.append(node)
-        for имя in ("body", "orelse", "finalbody", "handlers"):
-            ветка = getattr(node, имя, None)
-            if isinstance(ветка, list) and ветка and isinstance(ветка[0], ast.stmt):
-                out += _на_импорте(ветка)
-            elif isinstance(ветка, list):       # except-обработчики держат тело внутри себя
-                for h in ветка:
-                    if isinstance(h, ast.ExceptHandler):
-                        out += _на_импорте(h.body)
+        # дети — ВСЕ, через обход самого ast: список имён полей («body», «orelse»,
+        # «handlers»…) пропустил `match`/`case`, потому что его ветки лежат в
+        # `cases[i].body` — перечислять поля значит отставать на одну конструкцию
+        # языка (круг 2 по коду №329, DS C1 = GLM C2)
+        дети = [c for c in ast.iter_child_nodes(node) if isinstance(c, (ast.stmt, ast.match_case,
+                                                                       ast.ExceptHandler))]
+        вложенные: list[ast.stmt] = []
+        for c in дети:
+            вложенные += c.body if isinstance(c, (ast.match_case, ast.ExceptHandler)) else [c]
+        if вложенные:
+            out += _на_импорте(вложенные)
     return out
 
 
@@ -1296,9 +1313,18 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     """
     out: list[int] = []
     for node in _на_импорте(tree.body):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+        # «связать имя с ответом» — не только присваивание: моржовый оператор и
+        # значение по умолчанию у аргумента вычисляются при импорте ровно так же
+        # (круг 2 по коду №329, DS I3)
+        части: list[ast.expr] = []
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            части.append(node.value)
+        части += [n for n in ast.walk(node) if isinstance(n, ast.NamedExpr)]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            части += [d for d in node.args.defaults + [k for k in node.args.kw_defaults if k]]
+        if not части:
             continue
-        for inner in ast.walk(node.value):
+        for inner in [i for часть in части for i in ast.walk(часть)]:
             if not isinstance(inner, ast.Call):
                 continue
             имя = inner.func.attr if isinstance(inner.func, ast.Attribute) else getattr(inner.func, "id", "")

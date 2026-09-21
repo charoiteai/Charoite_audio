@@ -561,8 +561,10 @@ class LLM:
         в разных процессах обязаны сходиться по обоим (круг 2 DS I2/M4)."""
         import hashlib
         fp = hashlib.sha256(self.base.encode("utf-8")).hexdigest()[:8]
-        bad = model_lease.selfcheck(self._root())
-        return f"{self.lease_dir()} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
+        корень = self._root()            # один ответ канона на всю операцию: иначе
+        bad = model_lease.selfcheck(корень)     # каталог в строке и проверенный каталог
+        каталог = model_lease.lease_dir(корень)  # могли бы оказаться разными (круг 2, DS I2)
+        return f"{каталог} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
 
     def _lease(self, kind: str, timeout) -> model_lease.Lease:
         """Аренда на один запрос; порог зависания — из read-таймаута этого же
