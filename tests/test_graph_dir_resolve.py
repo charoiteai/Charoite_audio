@@ -30,7 +30,6 @@ import graphs  # noqa: E402
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 
 
-@pytest.mark.корень_называет_тест
 def test_resolve_relative_from_given_root_not_cwd(tmp_path, monkeypatch):
     данные = (tmp_path / "данные").resolve()
     откуда_запустили = tmp_path / "откуда-запустили"
@@ -42,7 +41,6 @@ def test_resolve_relative_from_given_root_not_cwd(tmp_path, monkeypatch):
     assert graphs.resolve("demo/graph", root=чужой) == чужой / "demo" / "graph"
 
 
-@pytest.mark.корень_называет_тест
 def test_конфиг_считается_от_названного_корня(tmp_path, monkeypatch):
     """Конфиг — производная корня, а не константа импорта."""
     monkeypatch.chdir(tmp_path)
@@ -122,7 +120,6 @@ def test_resolve_empty_is_none_not_dot(raw):
     assert graphs.resolve(raw) is None
 
 
-@pytest.mark.корень_называет_тест
 def test_env_overrides_config(tmp_path, monkeypatch):
     данные = (tmp_path / "данные").resolve()
     charoite_paths.use_data_root(данные)
@@ -171,7 +168,6 @@ def test_both_env_names_same_priority(monkeypatch):
     assert graphs.env_override() is None
 
 
-@pytest.mark.корень_называет_тест
 def test_конфиг_читается_из_корня_данных_а_битый_не_роняет(tmp_path):
     """`load_config` отдаёт содержимое, а не «что-нибудь непустое».
 

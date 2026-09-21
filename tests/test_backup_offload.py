@@ -26,6 +26,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import charoite_paths  # noqa: E402
 import cloud_review  # noqa: E402
+# Импорт НА СБОРКЕ, а не в теле теста: свидетель заморозки корня обязан
+# ловить именно тот момент, когда модуль считает `ROOT` — до первой
+# фикстуры. Импорт внутри теста дал бы уже опубликованный корень теста, и
+# свидетель зеленел бы даже со снятой публикацией корня сессии.
+import daemon  # noqa: E402
+import meeting_archive  # noqa: E402
 
 
 def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -288,3 +294,25 @@ def test_корень_переживает_undo_в_теле_теста(monkeypat
     monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
     monkeypatch.undo()
     assert charoite_paths.resolve_root(charoite_paths.__file__) != charoite_paths.CODE_ROOT
+
+
+def test_снапшот_на_импорте_заморозил_временный_корень():
+    """Модуль, считающий корень на импорте, не должен держать корень кода.
+
+    Тринадцать модулей `src/` пишут `ROOT = resolve_root(__file__)` на верхнем
+    уровне (карточка №329). Импорт идёт на СБОРКЕ, раньше любой фикстуры:
+    безымянный канон ответил бы положением файла, то есть корнем кода, а в
+    рабочем checkout корень кода — это живые данные владельца. Такой модуль
+    канону больше не подчиняется: предусловие теста судит канон и заморозку не
+    видит (круг 19 по коду №327, DS I2 = GLM I1).
+
+    Поэтому корень назван ДО сборки, и проверяется здесь именно заморозка, а не
+    ответ канона: `daemon.ROOT` — значение, посчитанное один раз на импорте.
+    """
+    тмп = pathlib.Path(tempfile.gettempdir()).resolve()
+    for модуль in (daemon, meeting_archive):
+        замороженный = pathlib.Path(модуль.ROOT).resolve()
+        assert замороженный != charoite_paths.CODE_ROOT, (
+            f"{модуль.__name__}.ROOT заморозил корень кода — прогон писал бы "
+            f"в данные владельца")
+        assert тмп in замороженный.parents, f"{модуль.__name__}.ROOT вне tmp: {замороженный}"
