@@ -60,7 +60,7 @@ def test_граф_спрашивается_на_вызове_а_не_на_имп
     assert dictate_note.diary_dir() == tmp_path / "Дневник"
 
 
-def test_заметка_ложится_в_папку_заметок_названного_графа(tmp_path, monkeypatch, capsys):
+def test_заметка_ложится_в_папку_заметок_названного_графа(tmp_path, monkeypatch, capfd):
     """Путь заметки — `<граф>/Заметки`, и он тоже считается на вызове.
 
     Идём текстовым режимом (`--text` + stdin), а не подменой транскрипции:
@@ -87,52 +87,9 @@ def test_заметка_ложится_в_папку_заметок_назван
 
     dictate_note.main()
 
-    ответ = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    # capfd, а не capsys: `main()` зовёт `faulthandler.enable()`, а тот требует
+    # настоящий дескриптор — под capsys stderr подменён объектом без `fileno`
+    ответ = json.loads(capfd.readouterr().out.strip().splitlines()[-1])
     путь = pathlib.Path(ответ["path"])
     assert путь.parent == graph / "Заметки", f"заметка ушла мимо названного графа: {путь}"
     assert "проверить счётчики" in путь.read_text(encoding="utf-8")
-
-
-def test_граф_спрашивается_на_вызове_а_не_на_импорте(tmp_path, monkeypatch):
-    """Заметка и дневник идут в граф, названный СЕЙЧАС, а не на импорте.
-
-    Снимок на импорте считался раньше фикстур: в шелле владельца (переменная
-    графа экспортирована — этим включают демо-граф) процесс держал его путь
-    до конца прогона, и `--diary` писал в живой граф, а изоляция окружения
-    этого уже не догоняла (круг 11 по коду №327, DS C1).
-    """
-    import dictate_note
-    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(tmp_path / "поздний-граф"))
-    monkeypatch.delenv("SUFLER_DIARY_DIR", raising=False)
-    # `cfg` снят на импорте — на машине с настоящим config.yaml ключ
-    # `diary_dir` перекрыл бы fallback, и тест зеленел бы только там, где
-    # конфига нет (круг 12 по коду №327, DS C2).
-    monkeypatch.setitem(dictate_note.cfg["sufler"], "diary_dir", "")
-    assert dictate_note._graph() == tmp_path / "поздний-граф"
-    assert dictate_note.diary_dir() == tmp_path / "Дневник"
-
-
-def test_заметка_ложится_в_папку_заметок_названного_графа(tmp_path, monkeypatch):
-    """Путь заметки — `<граф>/Заметки`, и он тоже считается на вызове.
-
-    Мутация `_graph() / "Заметки"` → `_graph() * "Заметки"` пережила прогон
-    (штатный мутатор, дельта круга 12): место записи заметки не проверял
-    никто. Сама модель здесь не нужна — обработка вспомогательна, и при её
-    отказе заметка всё равно обязана лечь в граф.
-    """
-    import dictate_note
-    # `main()` ставит боевую маску (0o077) на весь процесс — вернём как было,
-    # иначе следующий тест прав судит чужой umask и падает по нашей причине.
-    прежняя = os.umask(0o022)
-    os.umask(прежняя)
-    monkeypatch.setattr(dictate_note, "harden_umask", lambda: прежняя)
-    graph = tmp_path / "граф"
-    monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(graph))
-    monkeypatch.setattr(dictate_note, "_llm", types.SimpleNamespace(
-        complete=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("модели нет"))))
-    monkeypatch.setattr(dictate_note, "_record_and_transcribe", lambda *a, **k: "проверить счётчики")
-    monkeypatch.setattr(dictate_note.sys, "argv", ["dictate_note.py"])
-    dictate_note.main()
-    заметки = list((graph / "Заметки").glob("*.md"))
-    assert заметки, "заметка не легла в Заметки названного графа"
-    assert "проверить счётчики" in заметки[0].read_text(encoding="utf-8")

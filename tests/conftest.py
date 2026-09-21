@@ -83,7 +83,24 @@ def _корень_данных_не_протекает():
 
 
 @pytest.fixture(autouse=True)
-def _сеть_закрыта(request, monkeypatch):
+def _маска_процесса_возвращается():
+    """`umask` — состояние процесса, и тест, позвавший чужой `main()`, его портит.
+
+    Точки входа ставят боевую маску 0o077 (`harden_umask`) на весь процесс:
+    после такого теста соседи, проверяющие права каталогов, падают по чужой
+    причине — и падают только в полном прогоне, поодиночке зелёные
+    (круг 13 по коду №327, DS M1; тот же случай был в круге 12).
+    """
+    прежняя = os.umask(0o022)
+    os.umask(прежняя)
+    try:
+        yield
+    finally:
+        os.umask(прежняя)
+
+
+@pytest.fixture(autouse=True)
+def _сеть_закрыта(request):
     """Никакой тест не ходит в сеть, пока не попросил маркером.
 
     Граф изолируется переменной, а второй канал записи — HTTP в сервер памяти
@@ -92,10 +109,13 @@ def _сеть_закрыта(request, monkeypatch):
     настоящей заметки (круг 13 по коду №327, DS C2). Изоляция графа без
     изоляции сети — половина защиты.
 
-    Тесты самого протокола просят маркер `сеть_разрешена` и подменяют
-    транспорт сами.
+    Руками, а не через `monkeypatch`: его `undo()` в теле теста снимает и
+    подмены autouse-фикстур — так в этом файле уже дважды обожглись корень и
+    граф, и шесть тестов зовут `undo()` посреди работы (круг 14 по коду
+    №327, GLM I1). Тесты самого протокола просят маркер `сеть_разрешена`.
     """
     if request.node.get_closest_marker("сеть_разрешена") is not None:
+        yield
         return
     import requests
 
@@ -105,9 +125,20 @@ def _сеть_закрыта(request, monkeypatch):
             f"тест пошёл в сеть ({адрес}) — подмените транспорт или "
             f"пометьте тест маркером сеть_разрешена")
 
-    for имя in ("post", "get", "put", "delete", "patch", "head", "request"):
-        monkeypatch.setattr(requests, имя, отказ, raising=False)
-    monkeypatch.setattr(requests.Session, "request", отказ)
+    имена = ("post", "get", "put", "delete", "patch", "head", "request")
+    было = {имя: getattr(requests, имя, None) for имя in имена}
+    был_request = requests.Session.request
+    for имя in имена:
+        if было[имя] is not None:
+            setattr(requests, имя, отказ)
+    requests.Session.request = отказ
+    try:
+        yield
+    finally:
+        for имя, значение in было.items():
+            if значение is not None:
+                setattr(requests, имя, значение)
+        requests.Session.request = был_request
 
 
 @pytest.fixture(autouse=True)

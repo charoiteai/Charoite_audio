@@ -230,3 +230,19 @@ def test_изоляция_графа_переживает_undo_в_теле_те�
     monkeypatch.undo()
     беда = граф_не_изолирован(tmp_path)
     assert not беда, беда
+
+
+def test_запрет_сети_переживает_undo_в_теле_теста(monkeypatch):
+    """Сетевой гейт не снимается чужим `monkeypatch.undo()`.
+
+    Шесть тестов репозитория зовут `undo()` посреди работы; пока гейт стоял
+    на monkeypatch, после этого возвращался настоящий `requests.post` — и
+    запись в живую память владельца снова становилась возможной без единого
+    сигнала (круг 14 по коду №327, GLM I1). Тот же образец, что у корня и
+    графа: save/restore руками.
+    """
+    import requests
+    monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
+    monkeypatch.undo()
+    with pytest.raises(AssertionError, match="пошёл в сеть"):
+        requests.post("http://127.0.0.1:8100/remember", json={})
