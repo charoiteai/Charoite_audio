@@ -49,6 +49,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -123,6 +124,10 @@ PROSE_SUFFIXES = (".md", ".toml", ".in", ".txt", ".yml", ".yaml", ".cfg", ".ini"
 # не путь), а точка конца предложения («см. src/nli.py.») путь не прячет (Important GLM круга 3).
 _PATH = re.compile(r"(?<![A-Za-z0-9_.-])(?:(?:src|scripts|app)/[A-Za-z_][A-Za-z0-9_]*\.(?:py|sh)"
                    r"|(?:\./)?[A-Za-z_][A-Za-z0-9_]*\.sh)(?![A-Za-z0-9_]|\.[A-Za-z0-9_])")
+#: Префиксы токенов-путей: те же каталоги, что в `_PATH`, но грамматика здесь
+#: другая — это разбор ТЕКСТА, а не формы раскладки. Объявлены рядом с
+#: регуляркой, чтобы у формы остался ровно один владелец (`SHAPE_OWNER`).
+TOKEN_PREFIXES = ("src/", "scripts/", "app/")
 
 
 class LayoutError(ValueError):
@@ -137,22 +142,72 @@ class FileInfo(NamedTuple):
     executable: str | None          # почему исполняемый, иначе None
 
 
-class Problem(NamedTuple):
+class ProblemKind(NamedTuple):
+    section: str            # заголовок раздела замера; одинаковый заголовок — один раздел
+    truncates: bool         # вид делает замер неполным: раздел печатается даже пустым,
+                            # и `--report` краснеет
+
+
+#: Виды проблемы инвентаря — ОДНО объявление, из которого читают и разделы
+#: замера, и код выхода. Раньше списки видов жили литералами в `report()` и в
+#: `main()`, и новый вид `collision` добавили, забыв обоих потребителей: гейт
+#: коллизию видел, а замер о ней молчал и возвращал 0 (круг 2 по коду №328,
+#: DS I3). Вид, не названный здесь, создать нельзя — проверка в `Problem`.
+PROBLEM_KINDS: dict[str, ProblemKind] = {
+    "read": ProblemKind("Не прочитано — этих файлов в замере нет", True),
+    "parse": ProblemKind("Не прочитано — этих файлов в замере нет", True),
+    "conflict": ProblemKind("Спорный вид — файлы в замере есть, но политика конфликтует", False),
+    "collision": ProblemKind("Конфликт упаковки — одно имя на двоих, граф схлопнул бы их в один узел", True),
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Problem:
     """Проблема инвентаря как значение, а не голая строка: потребители должны
     отличать «корпус неполон» от «политика конфликтует» (Critical GLM круга 9 —
     одна и та же строка печаталась как «не вошло в замер» у файла, который в
-    замер вошёл). `kind`: `parse` / `read` — файла в замере нет; `conflict` —
-    файл в замере, но его вид спорный."""
+    замер вошёл). Что значит каждый вид — в `PROBLEM_KINDS`, и вид, которого
+    там нет, создать нельзя: иначе новый вид снова заведут, забыв потребителя
+    (круг 2 по коду №328, DS I3). Не `NamedTuple` ровно поэтому — там проверку
+    на входе поставить некуда."""
     kind: str
     text: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in PROBLEM_KINDS:
+            raise LayoutError(f"неизвестный вид проблемы {self.kind!r} — объявить в PROBLEM_KINDS "
+                              f"вместе с разделом замера и влиянием на полноту корпуса")
 
     def __str__(self) -> str:
         return self.text
 
 
+def sections(problems: list[Problem]) -> list[tuple[str, list[Problem]]]:
+    """Разделы замера по `PROBLEM_KINDS`, в порядке объявления и БЕЗ пропусков.
+
+    Обход таблицы целиком — то самое место, где вид перестаёт теряться: новый
+    вид получает раздел от объявления, а не от того, вспомнил ли автор про
+    `report()` (круг 2 по коду №328, DS I3)."""
+    out: list[tuple[str, list[Problem]]] = []
+    для_раздела: dict[str, list[Problem]] = {}
+    for kind, вид in PROBLEM_KINDS.items():
+        свои = [p for p in problems if p.kind == kind]
+        if вид.section in для_раздела:
+            для_раздела[вид.section] += свои
+            continue
+        если_пусто = вид.truncates          # «замер полон» обязан звучать и когда полон
+        if свои or если_пусто:
+            для_раздела[вид.section] = свои
+            out.append((вид.section, для_раздела[вид.section]))
+    return out
+
+
 class Inventory(NamedTuple):
     files: dict[str, FileInfo]
-    problems: list[Problem]         # файл не читается / не разбирается / спорный вид — факт, не исключение
+    problems: list[Problem]         # файл не читается / не разбирается / спорный вид / одно имя
+                                    # у двух файлов — факт, не исключение. `collision` отличается
+                                    # от прочих: замер ПОЛОН, но граф соврал бы — два файла
+                                    # схлопнулись бы в один узел со своим слоем на двоих
 
 
 class Scan(NamedTuple):
@@ -281,6 +336,12 @@ def decide(rel: str) -> Decision:
     первое правило таблицы, иначе суффикс. Кто решил — часть ответа, чтобы
     сверка таблиц над корпусом читала решение, а не переписывала политику."""
     i = _rule(rel)
+    if form(rel).role == "package_tests":
+        # Форма раскладки отвечает ЗДЕСЬ, значением, которое читают все:
+        # пока про тесты пакета знал один потребитель (`scan`), `report`
+        # считал их модулями области и печатал их пути в замере, а гейт о них
+        # молчал — два ответа на один вопрос (круг 2 по коду №328, DS I2).
+        return Decision("out", "rule", i, None)
     if _is_candidate(rel):
         conflict = KINDS[i][0] if i is not None and KINDS[i][1] != "code" else None
         return Decision("code", "candidate", i, conflict)
@@ -294,68 +355,101 @@ def kind_of(rel: str) -> str:
     return decide(rel).kind
 
 
-def module_of(rel: str) -> str | None:
-    """Путь → ИМПОРТИРУЕМОЕ ИМЯ модуля продукта; не модуль — `None`.
+class Form(NamedTuple):
+    """Что файл представляет собой по МЕСТУ в дереве — до всякой политики.
 
-    Единственное место, которое знает ФОРМУ раскладки. Раньше это знание было
-    записано литералом `startswith("src/") and rel.count("/") == 1` дважды —
-    в `modules()` и в `import_graph()`, — то есть два независимых вывода об
-    одном и том же. Первое изменение формы (переезд в `packages/`) делает их
-    несогласованными молча: `modules()` перестаёт знать модуль, `import_graph`
-    перестаёт давать рёбра, а гейт остаётся зелёным (входной круг №328, обе
-    головы независимо).
+    Разбор пути на сегменты живёт здесь и больше нигде: до этого форму
+    выводили четыре места четырьмя способами (`module_of` — `части[0] ==
+    "src"`, `in_package_tests` — свой `split`, `package_of` — суффикс
+    `/__init__.py`, `inventory` — имя дистрибутива своим срезом), и каждый
+    потребитель сам выбирал, у кого спрашивать. Отсюда и узел-призрак
+    `__init__`, и тесты пакета, посчитанные в замере как продукт: это не
+    четыре дефекта, а одно состояние — у формы нет хозяина, есть соавторы
+    (круг 2 по коду №328, DS «Как чинить»).
+    """
+    role: str               # см. ROLES
+    dist: str               # дистрибутив под `packages/`, иначе ""
+    package: str            # пакет, В КОТОРОМ лежит файл ("" — плоская раскладка)
+    module: str | None      # импортируемое имя, если файл — модуль продукта
+
+
+#: Роли формы. `stray_init` — `__init__.py` там, где пакета вокруг него нет
+#: (`src/__init__.py`, `packages/<дист>/src/__init__.py`): в плоской раскладке
+#: `src/` — каталог, а не пакет, и имя `__init__` модулем не бывает. Решение
+#: принято здесь явно и один раз, а не догадкой ветки (круг 1 и 2 по коду
+#: №328, обе головы независимо, каждая про свою ветку).
+ROLES = ("module", "package_init", "package_tests", "stray_init", "outside")
+
+#: Единственная функция, которой позволено называть каталоги раскладки. Не
+#: список в тесте, а объявление здесь: тест-сторож читает его, и расширение
+#: круга владельцев становится видимой правкой продукта, а не строкой в тесте
+#: (круг 2 по коду №328, DS M8).
+SHAPE_OWNER = "form"
+
+
+def form(rel: str) -> Form:
+    """Путь → форма. ЕДИНСТВЕННОЕ место, которое знает раскладку каталогов.
+
+    Раньше знание было записано литералом `startswith("src/") and
+    rel.count("/") == 1` дважды — в `modules()` и в `import_graph()`, — то
+    есть два независимых вывода об одном и том же. Первое изменение формы
+    (переезд в `packages/`) делает их несогласованными молча: `modules()`
+    перестаёт знать модуль, `import_graph` перестаёт давать рёбра, а гейт
+    остаётся зелёным (входной круг №328, обе головы независимо).
 
     Плоская форма — `src/x.py` → `x`; пакетная — `packages/<дистрибутив>/src/
     <пакет>/y.py` → `<пакет>.y`. Имя пакета, а не стем файла: после упаковки
     тот же файл импортируется как `charoite_graph.graphs`, и таблица слоёв
     обязана ключеваться тем, что пишет автор в `import`.
     """
-    if not rel.endswith(".py") or decide(rel).kind != "code":
-        return None
-    части = rel[:-3].split("/")
-    if части[0] == "src" and len(части) == 2:
-        return части[1]
-    if части[0] == "packages" and len(части) >= 4 and части[2] == "src":
-        хвост = части[3:]
-        if хвост[-1] == "__init__":
-            # `src/<пакет>/__init__.py` → сам пакет; а `src/__init__.py` пакета
-            # не называет вовсе — имя `__init__` модулем не бывает, и молча
-            # принять его значит завести узел-призрак (круг 1 по коду №328,
-            # обе головы независимо).
-            хвост = хвост[:-1]
-            if not хвост:
-                return None
-        return ".".join(хвост)
-    return None
-
-
-def in_package_tests(rel: str) -> bool:
-    """Файл в `packages/<дистрибутив>/tests/…` — тесты пакета.
-
-    Часть ФОРМЫ раскладки, как и `src/<пакет>`, а не дыра в таблице: своим
-    правилом `KINDS` её не выразить (дистрибутив стоит в середине пути, а
-    правила сопоставляются префиксом). Охраняются они ровно так же, как
-    корневой `tests/` — никак: тест не продукт (круг 1 по коду №328, DS I1).
-    """
     части = rel.split("/")
-    return len(части) > 3 and части[0] == "packages" and части[2] == "tests"
+    if части[0] == "packages" and len(части) > 3 and части[2] == "tests":
+        # Тесты пакета — та же политика, что корневой `tests/`: пути в них
+        # выдуманные, упоминания оттуда связями не считаются. Правилом `KINDS`
+        # её не выразить — дистрибутив стоит в СЕРЕДИНЕ пути, а правила
+        # сопоставляются префиксом (круг 1 по коду №328, DS I1).
+        return Form("package_tests", части[1], "", None)
+    if not rel.endswith(".py"):
+        return Form("outside", "", "", None)
+    хвост = части[:-1] + [части[-1][:-3]]
+    if хвост[0] == "src" and len(хвост) == 2:
+        if хвост[1] == "__init__":
+            return Form("stray_init", "", "", None)
+        return Form("module", "", "", хвост[1])
+    if хвост[0] == "packages" and len(хвост) >= 4 and хвост[2] == "src":
+        имена = хвост[3:]
+        if имена[-1] == "__init__":
+            имена = имена[:-1]
+            if not имена:
+                return Form("stray_init", хвост[1], "", None)
+            # `src/<пакет>/__init__.py` — файл САМОГО пакета, и относительные
+            # имена в нём считаются от него, а не от родителя: `from . import
+            # names` в `p/sub/__init__.py` иначе даёт `p.names` — ложное ребро
+            # на чужой модуль (круг 1 по коду №328, GLM C1).
+            return Form("package_init", хвост[1], ".".join(имена), ".".join(имена))
+        return Form("module", хвост[1], ".".join(имена[:-1]), ".".join(имена))
+    return Form("outside", "", "", None)
+
+
+def module_of(rel: str) -> str | None:
+    """Путь → ИМПОРТИРУЕМОЕ ИМЯ модуля продукта; не модуль — `None`.
+
+    Проекция `form` плюс политика: файл, которому правило `KINDS` дало не
+    `code`, модулем продукта не считается, как бы ни лежал.
+    """
+    if decide(rel).kind != "code":
+        return None
+    return form(rel).module
 
 
 def package_of(rel: str) -> str:
     """Пакет, В КОТОРОМ лежит файл: для `__init__.py` — он сам, иначе родитель.
 
-    Считается от ПУТИ, а не от имени модуля: `module_of` нормализует
-    `p/__init__.py` в `p`, и по одному имени `p` уже не отличить «пакет `p`»
-    от «модуль `p` внутри чего-то». На этой потере относительные импорты в
-    `__init__.py` уезжали на уровень выше: `from . import names` в
-    `p/sub/__init__.py` давал `p.names` вместо `p.sub.names` — ЛОЖНОЕ ребро на
-    чужой модуль, а в `p/__init__.py` терялся целиком (круг 1 по коду №328,
-    GLM C1).
+    Проекция `form`: считается от ПУТИ, а не от имени модуля. `module_of`
+    нормализует `p/__init__.py` в `p`, и по одному имени `p` уже не отличить
+    «пакет `p`» от «модуль `p` внутри чего-то» (круг 1 по коду №328, GLM C1).
     """
-    имя = module_of(rel)
-    if имя is None:
-        return ""
-    return имя if rel.endswith("/__init__.py") else имя.rpartition(".")[0]
+    return form(rel).package
 
 
 def imports_of(rel: str, tree: ast.Module) -> set[str]:
@@ -596,6 +690,20 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
             problems.append(Problem("collision", f"имя модуля {имя} у {len(где)} файлов "
                                                  f"({', '.join(sorted(где))}) — рядом их не поставить, "
                                                  f"и слой у них был бы один на двоих"))
+    # Конфликт упаковки шире точного совпадения: `a.py` в одном дистрибутиве и
+    # `a/b.py` в другом дают разные имена модулей, но общий импортируемый
+    # корень `a` — рядом такие дистрибутивы тоже не ставятся, а имена не
+    # совпадают, и первая проверка молчит (круг 2 по коду №328, GLM Minor 3).
+    корни: dict[str, set[str]] = {}
+    for имя, где in по_имени.items():
+        for rel in где:
+            if дист := form(rel).dist:
+                корни.setdefault(имя.split(".")[0], set()).add(дист)
+    for корень, дистрибутивы in sorted(корни.items()):
+        if len(дистрибутивы) > 1:
+            problems.append(Problem("collision", f"импортируемый корень {корень} предоставляют "
+                                                 f"{len(дистрибутивы)} дистрибутива "
+                                                 f"({', '.join(sorted(дистрибутивы))}) — рядом не ставятся"))
     return Inventory(files, problems)
 
 
@@ -697,7 +805,7 @@ def _tokens(text: str) -> set[str]:
     out = set()
     for m in _PATH.finditer(text):
         tok = m.group(0)
-        out.add(tok if tok.startswith(("src/", "scripts/", "app/")) else tok.removeprefix("./"))
+        out.add(tok if tok.startswith(TOKEN_PREFIXES) else tok.removeprefix("./"))
     return out
 
 
@@ -744,8 +852,6 @@ def scan(inv: Inventory) -> Scan:
     for rel in sorted(inv.files):
         if not rel.endswith(".py") or module_of(rel) is not None or _is_candidate(rel):
             continue
-        if in_package_tests(rel):
-            continue                    # тесты пакета — форма раскладки, не продукт
         d = decide(rel)
         # Два разных случая, и оба — дыра. `by != "rule"` значит, что до файла
         # не дотянулось НИ ОДНО правило: `_by_suffix` тихо отдаёт таким `out`,
@@ -1236,22 +1342,21 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
             roots.append(f"- `{rel}`:{','.join(map(str, fr))}")
         for name, hits in _calls(info.tree, seams).items():
             seam_hits.setdefault(name, []).append(f"`{rel}`:{','.join(map(str, hits))}")
-    unread = [p for p in inv.problems if p.kind in ("parse", "read")]
-    disputed = [p for p in inv.problems if p.kind == "conflict"]
     out = [f"# Замер швов (`scripts/layout_map.py --report`): python-модулей в области {parsed}, "
            f"вне области по правилу {outside}, без правила {len(unruled)}, "
            f"всего файлов под git {len(inv.files)}", ""]
-    # непрочитанное — первым разделом: замер, построенный на неполном корпусе, врёт
-    # ровно тем, ради чего он заведён (Critical DS и GLM круга 8, независимо).
-    # Спорный вид — отдельный раздел: такой файл в замер ВОШЁЛ (Critical GLM круга 9).
-    out += [f"## Не прочитано — этих файлов в замере нет ({len(unread)})", ""]
-    out += [f"- {p.text}" for p in unread] or ["- нет"]
+    # Разделы — обходом `PROBLEM_KINDS` целиком, а не выборкой видов по месту:
+    # неполнота корпуса врёт ровно тем, ради чего замер заведён (Critical DS и
+    # GLM круга 8), и о ней сказано даже когда её нет. Спорный вид — свой
+    # раздел: такой файл в замер ВОШЁЛ (Critical GLM круга 9).
+    первый = True
+    for заголовок, свои in sections(inv.problems):
+        out += ([] if первый else [""]) + [f"## {заголовок} ({len(свои)})", ""]
+        out += [f"- {p.text}" for p in свои] or ["- нет"]
+        первый = False
     if unruled:
         out += ["", f"## Python вне области, но и без правила — таблица их не знает ({len(unruled)})", ""]
         out += [f"- `{rel}`" for rel in unruled]
-    if disputed:
-        out += ["", f"## Спорный вид — файлы в замере есть, но политика конфликтует ({len(disputed)})", ""]
-        out += [f"- {p.text}" for p in disputed]
     # Заголовки и счётчики берутся из той же таблицы форм, что судит гейт: пока они
     # были литералами, замер описывал две формы, а гейт мог считать третью, и долг
     # по ней был невидим человеку (Important GLM круга 2).
@@ -1300,14 +1405,24 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     # («убрать из layout.json») — и этот ответ снимал охрану с переехавшего
     # кода (входной круг №328, обе головы; круг 1 по коду, GLM I2).
     кандидаты = move_candidates(graph, layout)
-    названные = {n for сп in кандидаты.values() for n in сп}
-    for m in sorted(set(unassigned(graph, layout)) - названные):
+    # Две строки об одном имени — это две РАЗНЫЕ вещи: «в таблице есть имя без
+    # модуля» и «модуль без слоя», и каждая требует своего действия. Раньше
+    # вторая гасилась для всякого имени, названного кандидатом, — и в третьем
+    # исходе `move_candidates` (одно удалили, другое завели с тем же хвостом)
+    # гейт молчал о новом модуле, потому что «похоже на переезд». Докстринг
+    # там объявляет исход неуверенным — гейт не вправе быть увереннее своего
+    # источника (круг 2 по коду №328, DS I4; правило проекта №282).
+    for m in sorted(unassigned(graph, layout)):
         problems.append(f"модуль {m} не отнесён ни к одному слою в {LAYOUT.name}")
+    # Факт, подсказка и действие — отдельными строками: при переезде пакета имён
+    # десяток, и ворох придаточных в каждой строке хоронит остальные красные
+    # (круг 2 по коду №328, DS M7).
     for m, куда in sorted(кандидаты.items()):
-        подсказка = (f" Похоже на переезд: {', '.join(куда)}." if куда else "")
-        problems.append(f"в таблице слоёв есть {m}, а модуля с таким именем в дереве нет.{подсказка}"
-                        f" Переехал — перенести ключ в {LAYOUT.name} И заново решить слой (переезд в"
-                        f" другой пакет слой не наследует); удалён — снять строку")
+        problems.append(f"в таблице слоёв есть {m}, а модуля с таким именем в дереве нет")
+        if куда:
+            problems.append(f"  похоже на переезд: {', '.join(куда)} (слой не наследуется — решить заново)")
+        problems.append(f"  удалён — снять строку из {LAYOUT.name}; переехал — перенести ключ"
+                        f" и записать решение о слое")
     allow = allowlist_edges(layout)
     viol = set(violations(graph, layout))
     lay = layer_of(layout)
@@ -1442,8 +1557,9 @@ def main(argv: list[str] | None = None) -> int:
         # (Critical GLM и Important DS круга 9 — в середине переделки артефакт
         # правят руками, и битый артефакт убивал замер целиком)
         print(report(inv), end="")
-        # замер на неполном корпусе — не замер; спорный вид корпус не сокращает
-        return 1 if any(p.kind in ("parse", "read") for p in inv.problems) else 0
+        # замер на неполном корпусе — не замер; спорный вид корпус не сокращает.
+        # Что считать неполнотой, знает объявление вида, а не этот литерал.
+        return 1 if any(PROBLEM_KINDS[p.kind].truncates for p in inv.problems) else 0
     try:
         layout = load_layout(LAYOUT)
     except LayoutError as e:
