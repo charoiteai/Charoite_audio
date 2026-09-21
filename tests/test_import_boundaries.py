@@ -975,6 +975,7 @@ MODULE_SHAPES = (
     ("packages/cg/tests/test_x.py",                      "package_tests", "cg",  "",               None),
     ("packages/cg/tests/fixtures/data.json",             "package_tests", "cg",  "",               None),
     ("packages/cg/pyproject.toml",                       "outside",       "cg",  "",               None),
+    ("packages/README.md",                               "outside",       "",    "",               None),
     ("packages/cg/src/charoite_graph/py.typed",          "outside",       "cg",  "",               None),
     ("scripts/doctor.py",                                "outside",       "",    "",               None),
     ("tests/test_x.py",                                  "outside",       "",    "",               None),
@@ -1014,13 +1015,27 @@ def test_every_branch_of_the_shape_is_pinned_by_the_corpus():
     исходник = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
     свой = next(n for n in ast.walk(ast.parse(исходник))
                 if isinstance(n, ast.FunctionDef) and n.name == lm.SHAPE_OWNER)
-    # заголовок функции и докстринг попадают в co_lines, но `line`-событий не дают
-    первая = свой.body[1].lineno if len(свой.body) > 1 else свой.body[0].lineno
-    строки_кода = {n for _s, _e, n in lm.form.__code__.co_lines() if n is not None and n >= первая}
+    # Заголовок и докстринг попадают в co_lines, но `line`-событий не дают.
+    # Порог не вычисляется по позиции в AST: «body[1] — первый оператор» верно,
+    # только пока докстринг на месте, и его снятие молча сужало проверяемое
+    # множество (круг 4 по коду №328, DS I4 = GLM I2, обе головы независимо).
+    док = свой.body[0] if (isinstance(свой.body[0], ast.Expr)
+                           and isinstance(свой.body[0].value, ast.Constant)) else None
+    первая = (док.end_lineno or док.lineno) + 1 if док is not None else свой.body[0].lineno
+
+    def код_и_потомки(code):
+        yield code
+        for c in code.co_consts:                      # лямбды и вложенные функции живут
+            if hasattr(c, "co_lines"):                # в своих code object'ах, и их строк
+                yield from код_и_потомки(c)           # в co_lines родителя нет
+    объекты = list(код_и_потомки(lm.form.__code__))
+    строки_кода = {n for code in объекты for _s, _e, n in code.co_lines()
+                   if n is not None and n >= первая}
     пройдены: set[int] = set()
+    наши = {id(c) for c in объекты}
 
     def трасса(frame, event, arg):
-        if frame.f_code is lm.form.__code__:
+        if id(frame.f_code) in наши:
             if event == "line":
                 пройдены.add(frame.f_lineno)
             return трасса
@@ -1054,6 +1069,12 @@ def test_a_flat_module_cannot_shadow_a_packaged_one(tmp_path):
     # точное совпадение имён не должно печататься дважды — одно событие, одна строка
     пара = lm.packaging_conflicts({"packages/x/src/a/b.py": "a.b", "packages/y/src/a/b.py": "a.b"})
     assert len(пара) == 1 and "имя модуля a.b" in пара[0].text
+    # но ТРЕТЬЯ сторона на том же корне — другое событие, и гашение по корню его
+    # прятало навсегда (круг 4 по коду №328, DS C1)
+    трое = lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b",
+                                   "packages/y/src/a/b.py": "a.b"})
+    корневые = [b for b in трое if "импортируемый корень a" in b.text]
+    assert len(корневые) == 1 and "src/" in корневые[0].text, трое
 
 
 def test_an_entry_point_survives_the_move_into_a_package(tmp_path):
@@ -1072,6 +1093,22 @@ def test_an_entry_point_survives_the_move_into_a_package(tmp_path):
     (tmp_path / "packages" / "cg" / "src" / "charoite_graph" / "cli.py").write_text(
         'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
     assert упакованный in lm.executables(lm.inventory(tmp_path))
+
+
+def test_a_packaged_entry_point_can_be_named_in_text(tmp_path):
+    """Пакетный путь собирается токенизатором — иначе точку входа нечем назвать.
+
+    Кандидатом модуль дистрибутива стал, а грамматика упоминаний знала только
+    `src|scripts|app`: инвариант «точка входа названа кодом или объявлена
+    ручной» вырождался в «всегда ручная», и красное «никто не зовёт» нельзя
+    было погасить ни правкой кода, ни правкой документации (круг 4 по коду
+    №328, GLM I1).
+    """
+    путь = "packages/cg/src/charoite_graph/cli.py"
+    assert lm._tokens(f"запусти {путь} из корня") == {путь}
+    assert путь in lm._tokens(f"см. `{путь}`.")
+    # плоская и скриптовая формы не потерялись
+    assert lm._tokens("src/daemon.py и scripts/doctor.py") == {"src/daemon.py", "scripts/doctor.py"}
 
 
 def test_a_shape_already_decided_is_not_a_hole_in_the_table(tmp_path):
@@ -1267,7 +1304,7 @@ def test_a_package_init_resolves_relative_imports_against_itself(tmp_path):
     assert вложенный == {"p.sub", "p.sub.names"}, "и у вложенного пакета — он сам, не родитель"
 
 
-def test_the_shape_of_the_layout_has_no_second_opinion():
+def test_a_layout_directory_is_not_spelled_inside_a_function():
     """Каталоги раскладки названы в объявлении модуля — и ни в одной функции.
 
     Корпус форм пиннит ПОВЕДЕНИЕ `form`, но не мешает завтра появиться второму
@@ -1281,10 +1318,14 @@ def test_the_shape_of_the_layout_has_no_second_opinion():
     — идиоме, которой написан сам модуль (`ENTRY_CANDIDATES`), то есть на том
     способе, который человек скопирует первым (круг 3 по коду №328, GLM C1).
 
-    Граница честная: сторож смотрит ТЕЛА функций. Объявления уровня модуля
-    (`LAYOUT_DIRS`, `ENTRY_CANDIDATES`, `_PATH`, `TOKEN_PREFIXES`) называют
-    каталоги намеренно — они и есть источник, из которого читают остальные;
-    регулярку и склейку строк сторож не ловит (DS I7).
+    Это дешёвый барьер против прямой копии, а не гарантия. Он смотрит ТЕЛА
+    функций и ловит только литерал: обход через модульную константу
+    (`_SRC = FLAT_DIR + "/"` и её использование в функции), склейку строк и
+    регулярку он не видит (круг 3, DS I7; круг 4, DS C2 — тот же класс третий
+    круг подряд). Латать его четвёртой эвристикой смысла нет: гарантию даёт
+    тест ниже — ломаем форму и требуем, чтобы сломались ВСЕ потребители.
+    Объявления уровня модуля (`LAYOUT_DIRS`, `ENTRY_CANDIDATES`, `_PATH`,
+    `TOKEN_PREFIXES`) каталоги называют намеренно: они и есть источник.
     """
     src = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
     написания = {w for d in lm.LAYOUT_DIRS for w in (d, f"{d}/", f"{d}/*", f"{d}/*.py", f"{d}/**")}
@@ -1298,6 +1339,29 @@ def test_the_shape_of_the_layout_has_no_second_opinion():
                 чужие.append(f"{node.name}:{inner.lineno} — {inner.value!r}")
     assert not чужие, ("каталог раскладки назван внутри функции — имена живут в LAYOUT_DIRS, "
                        f"и второй предикат пути рассинхронизируется молча: {', '.join(чужие)}")
+
+
+def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch):
+    """Сломай форму — обязаны сломаться ВСЕ потребители.
+
+    Проверка по значению, а не по исходнику: потребитель со своим предикатом
+    пути ответит по-старому и на подделанной форме — и покраснеет здесь.
+    Текстовый сторож выше три круга подряд обходился новым способом записи
+    (круг 2 DS M8, круг 3 GLM C1, круг 4 DS C2); пинить надо решение, а не
+    написание.
+
+    Чего и этот тест НЕ ловит (названо честно): совершенно нового потребителя,
+    который заведёт свой разбор пути и форму не спросит вовсе. Это видит
+    ревью и корпус форм, а не предикат в тесте.
+    """
+    monkeypatch.setattr(lm, "form", lambda rel: lm.Form("outside", "", "", None))
+    assert lm.module_of("src/graphs.py") is None, "module_of держит свою копию формы"
+    assert lm.module_of("packages/cg/src/charoite_graph/graphs.py") is None
+    assert lm.package_of("packages/cg/src/charoite_graph/inner/__init__.py") == ""
+    assert not lm._is_candidate("packages/cg/src/charoite_graph/cli.py"), "кандидатность мимо формы"
+    assert lm.decide("packages/cg/tests/test_x.py").by != "shape", "decide решает без формы"
+    assert lm.packaging_conflicts({"src/a.py": "a", "packages/x/src/a/b.py": "a.b"}) == [], \
+        "конфликт упаковки считает владельца мимо формы"
 
 
 def test_every_kind_of_problem_has_a_section_and_a_verdict():
