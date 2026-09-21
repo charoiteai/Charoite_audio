@@ -316,9 +316,46 @@ def module_of(rel: str) -> str | None:
     if части[0] == "src" and len(части) == 2:
         return части[1]
     if части[0] == "packages" and len(части) >= 4 and части[2] == "src":
-        имя = ".".join(части[3:])
-        return имя[: -len(".__init__")] if имя.endswith(".__init__") else имя
+        хвост = части[3:]
+        if хвост[-1] == "__init__":
+            # `src/<пакет>/__init__.py` → сам пакет; а `src/__init__.py` пакета
+            # не называет вовсе — имя `__init__` модулем не бывает, и молча
+            # принять его значит завести узел-призрак (круг 1 по коду №328,
+            # обе головы независимо).
+            хвост = хвост[:-1]
+            if not хвост:
+                return None
+        return ".".join(хвост)
     return None
+
+
+def in_package_tests(rel: str) -> bool:
+    """Файл в `packages/<дистрибутив>/tests/…` — тесты пакета.
+
+    Часть ФОРМЫ раскладки, как и `src/<пакет>`, а не дыра в таблице: своим
+    правилом `KINDS` её не выразить (дистрибутив стоит в середине пути, а
+    правила сопоставляются префиксом). Охраняются они ровно так же, как
+    корневой `tests/` — никак: тест не продукт (круг 1 по коду №328, DS I1).
+    """
+    части = rel.split("/")
+    return len(части) > 3 and части[0] == "packages" and части[2] == "tests"
+
+
+def package_of(rel: str) -> str:
+    """Пакет, В КОТОРОМ лежит файл: для `__init__.py` — он сам, иначе родитель.
+
+    Считается от ПУТИ, а не от имени модуля: `module_of` нормализует
+    `p/__init__.py` в `p`, и по одному имени `p` уже не отличить «пакет `p`»
+    от «модуль `p` внутри чего-то». На этой потере относительные импорты в
+    `__init__.py` уезжали на уровень выше: `from . import names` в
+    `p/sub/__init__.py` давал `p.names` вместо `p.sub.names` — ЛОЖНОЕ ребро на
+    чужой модуль, а в `p/__init__.py` терялся целиком (круг 1 по коду №328,
+    GLM C1).
+    """
+    имя = module_of(rel)
+    if имя is None:
+        return ""
+    return имя if rel.endswith("/__init__.py") else имя.rpartition(".")[0]
 
 
 def imports_of(rel: str, tree: ast.Module) -> set[str]:
@@ -337,8 +374,7 @@ def imports_of(rel: str, tree: ast.Module) -> set[str]:
     Резолв «имя → модуль продукта» здесь НЕ делается: это знание графа, и
     живёт оно в `import_graph`. Здесь — только грамматика импорта.
     """
-    свой = module_of(rel) or ""
-    пакет = свой.rpartition(".")[0]
+    пакет = package_of(rel)
     имена: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -545,6 +581,21 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
             else:
                 executable = "shell-скрипт"
         files[rel] = FileInfo(kind, hays, tree, executable)
+    # Одно импортируемое имя у двух файлов — конфликт УПАКОВКИ, а не мелочь:
+    # два дистрибутива с одним пакетом не ставятся рядом, а у сторожа они
+    # схлопываются в один узел, и рёбра файла из одного слоя судятся по слою
+    # другого. Сторож обязан сторожить и собственный сборщик показаний
+    # (круг 1 по коду №328, GLM I1).
+    по_имени: dict[str, list[str]] = {}
+    for rel in files:
+        имя = module_of(rel)
+        if имя is not None:
+            по_имени.setdefault(имя, []).append(rel)
+    for имя, где in sorted(по_имени.items()):
+        if len(где) > 1:
+            problems.append(Problem("collision", f"имя модуля {имя} у {len(где)} файлов "
+                                                 f"({', '.join(sorted(где))}) — рядом их не поставить, "
+                                                 f"и слой у них был бы один на двоих"))
     return Inventory(files, problems)
 
 
@@ -617,31 +668,29 @@ def stale_layers(graph: dict[str, set[str]], layout: dict) -> list[str]:
     return sorted(m for m in layer_of(layout) if m not in graph)
 
 
-def moved_modules(graph: dict[str, set[str]], layout: dict) -> dict[str, str]:
-    """Имя из таблицы → новое имя того же модуля в дереве: ПЕРЕЕЗД, не пропажа.
+def move_candidates(graph: dict[str, set[str]], layout: dict) -> dict[str, list[str]]:
+    """Имя из таблицы → модули дерева, ПОХОЖИЕ на его новое место.
 
-    Различение нужно из-за того, чем кончалось его отсутствие. `git mv
-    src/graphs.py packages/…/charoite_graph/graphs.py` делал имя `graphs`
-    «устаревшим», и гейт печатал «убрать из layout.json» — единственное
-    действие, которое красное гасит. Выполнив его, человек снимал охрану с
-    переехавшего кода и получал зелёный прогон: красное учило открыть дыру
-    шире, и это хуже молчания (входной круг №328, DS C1 = GLM C1).
+    Именно кандидаты, а не вердикт: сопоставление по последнему сегменту имени
+    врёт в трёх случаях — переезд с переименованием (кандидатов ноль),
+    двусмысленность (их два), удаление одного модуля и появление другого с тем
+    же хвостом (кандидат есть, но это чужой код). Утверждать «переехал» на
+    такой опоре нельзя, поэтому функция отдаёт список, а решение остаётся
+    человеку — третий исход «не уверен» вместо ложной уверенности
+    (круг 1 по коду №328, GLM I2).
 
-    Кандидатом считается модуль с тем же последним сегментом имени, которого
-    ещё нет в таблице, и только если он ровно один: двусмысленный переезд
-    называть переездом нельзя, пусть остаётся пропажей плюс «не отнесён».
+    Вредным был не сам промах, а ЕДИНСТВЕННЫЙ императив прежнего сообщения:
+    «убрать из layout.json» гасил красное, снимая охрану с переехавшего кода
+    (входной круг №328, обе головы). Поэтому совет теперь всегда называет оба
+    пути, а кандидаты — подсказка к первому.
     """
     lay = layer_of(layout)
     по_хвосту: dict[str, list[str]] = {}
     for m in graph:
         if m not in lay:
             по_хвосту.setdefault(m.rpartition(".")[2], []).append(m)
-    переехали = {}
-    for m in stale_layers(graph, layout):
-        кандидаты = по_хвосту.get(m.rpartition(".")[2], [])
-        if len(кандидаты) == 1:
-            переехали[m] = кандидаты[0]
-    return переехали
+    return {m: sorted(по_хвосту.get(m.rpartition(".")[2], []))
+            for m in stale_layers(graph, layout)}
 
 
 def _tokens(text: str) -> set[str]:
@@ -693,9 +742,21 @@ def scan(inv: Inventory) -> Scan:
     # утилита) уезжает из-под охраны молча — инструмент это давно знал («дыра в
     # таблице» в разделе фактов), но гейту не говорил (входной круг №328).
     for rel in sorted(inv.files):
-        if (rel.endswith(".py") and inv.files[rel].kind == "code"
-                and module_of(rel) is None and not _is_candidate(rel)):
-            problems.append(f"{rel}: python в области кода, но ни модуль продукта, ни точка входа — "
+        if not rel.endswith(".py") or module_of(rel) is not None or _is_candidate(rel):
+            continue
+        if in_package_tests(rel):
+            continue                    # тесты пакета — форма раскладки, не продукт
+        d = decide(rel)
+        # Два разных случая, и оба — дыра. `by != "rule"` значит, что до файла
+        # не дотянулось НИ ОДНО правило: `_by_suffix` тихо отдаёт таким `out`,
+        # и первая редакция инварианта (условие `kind == "code"`) не видела
+        # ровно тот случай, ради которого писалась (круг 1 по коду №328, DS C1).
+        if d.by != "rule":
+            problems.append(f"{rel}: python, до которого не дотянулось ни одно правило KINDS — "
+                            f"решить явно: модуль продукта, кандидат в точки входа или вид `out` с обоснованием")
+        elif d.kind == "code":
+            problems.append(f"{rel}: python в области кода, но ни модуль продукта, ни кандидат в точки входа "
+                            f"по форме пути — "
                             f"решить в KINDS (вид `out` с обоснованием) или положить по форме раскладки")
     targets = set(executables(inv))
     bucket = {"code": mentions, "prose": prose}
@@ -1151,8 +1212,10 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
             continue
         if info.kind in ("out", "history"):
             # «по политике» — только если так решило ПРАВИЛО; файл, до которого
-            # правила не дотянулись (будущий `packages/…`), — не политика, а дыра
-            # в таблице, и о нём надо сказать (Important DS круга 9)
+            # правила не дотянулись, — не политика, а дыра в таблице, и о нём
+            # надо сказать (Important DS круга 9). С №328 тот же случай красит
+            # и гейт (`scan`), здесь он остаётся в замере — отчёт называет, гейт
+            # требует решения.
             if decide(rel).by == "rule":
                 outside += 1
             else:
@@ -1232,17 +1295,19 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
     problems: list[str] = list(scanned.problems)
-    # Переезд — не пропажа и не новый модуль: одно сообщение вместо двух, и оно
-    # говорит «перенеси ключ», а не «сними охрану» (входной круг №328).
-    переехали = moved_modules(graph, layout)
-    for m in sorted(set(unassigned(graph, layout)) - set(переехали.values())):
+    # Имя из таблицы без модуля в дереве — это ЛИБО переезд, ЛИБО удаление, и
+    # сторож не знает, что именно. Прежнее сообщение знало только один ответ
+    # («убрать из layout.json») — и этот ответ снимал охрану с переехавшего
+    # кода (входной круг №328, обе головы; круг 1 по коду, GLM I2).
+    кандидаты = move_candidates(graph, layout)
+    названные = {n for сп in кандидаты.values() for n in сп}
+    for m in sorted(set(unassigned(graph, layout)) - названные):
         problems.append(f"модуль {m} не отнесён ни к одному слою в {LAYOUT.name}")
-    for m in sorted(set(stale_layers(graph, layout)) - set(переехали)):
-        problems.append(f"в таблице слоёв есть {m}, а модуля с таким именем в дереве нет — "
-                        f"убрать из {LAYOUT.name}")
-    for было, стало in sorted(переехали.items()):
-        problems.append(f"модуль {было} переехал и импортируется как {стало} — переименовать ключ "
-                        f"в {LAYOUT.name}, а не снимать охрану")
+    for m, куда in sorted(кандидаты.items()):
+        подсказка = (f" Похоже на переезд: {', '.join(куда)}." if куда else "")
+        problems.append(f"в таблице слоёв есть {m}, а модуля с таким именем в дереве нет.{подсказка}"
+                        f" Переехал — перенести ключ в {LAYOUT.name} И заново решить слой (переезд в"
+                        f" другой пакет слой не наследует); удалён — снять строку")
     allow = allowlist_edges(layout)
     viol = set(violations(graph, layout))
     lay = layer_of(layout)
