@@ -110,6 +110,7 @@ KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("app/", "code", "git", "приложение зовёт python и shell"),
     ("scripts/", "code", "git", "скрипты зовут друг друга и модули; проза по суффиксу (README)"),
     ("src/", "code", "git", "модули зовут скрипты и подсказывают пути человеку"),
+    ("packages/", "code", "git", "дистрибутивы: модуль пакета — тот же продукт, что модуль src/"),
     (".github/", "code", "git", "workflow CI — источник запуска"),
     (".pre-commit-config.yaml", "code", "git", "хуки — источник запуска"),
 )
@@ -293,6 +294,87 @@ def kind_of(rel: str) -> str:
     return decide(rel).kind
 
 
+def module_of(rel: str) -> str | None:
+    """Путь → ИМПОРТИРУЕМОЕ ИМЯ модуля продукта; не модуль — `None`.
+
+    Единственное место, которое знает ФОРМУ раскладки. Раньше это знание было
+    записано литералом `startswith("src/") and rel.count("/") == 1` дважды —
+    в `modules()` и в `import_graph()`, — то есть два независимых вывода об
+    одном и том же. Первое изменение формы (переезд в `packages/`) делает их
+    несогласованными молча: `modules()` перестаёт знать модуль, `import_graph`
+    перестаёт давать рёбра, а гейт остаётся зелёным (входной круг №328, обе
+    головы независимо).
+
+    Плоская форма — `src/x.py` → `x`; пакетная — `packages/<дистрибутив>/src/
+    <пакет>/y.py` → `<пакет>.y`. Имя пакета, а не стем файла: после упаковки
+    тот же файл импортируется как `charoite_graph.graphs`, и таблица слоёв
+    обязана ключеваться тем, что пишет автор в `import`.
+    """
+    if not rel.endswith(".py") or decide(rel).kind != "code":
+        return None
+    части = rel[:-3].split("/")
+    if части[0] == "src" and len(части) == 2:
+        return части[1]
+    if части[0] == "packages" and len(части) >= 4 and части[2] == "src":
+        имя = ".".join(части[3:])
+        return имя[: -len(".__init__")] if имя.endswith(".__init__") else имя
+    return None
+
+
+def imports_of(rel: str, tree: ast.Module) -> set[str]:
+    """Дерево модуля → имена, которые он импортирует, КАК ИХ НАПИСАЛ АВТОР.
+
+    Единственное место, которое знает, как читать импорт. Две формы раньше
+    терялись молча, и обе — основные после упаковки:
+
+    * точечное имя обрезалось до первого сегмента (`alias.name.split(".")[0]`),
+      поэтому `from charoite_graph import graphs` в точке входа не давало
+      ребра вовсе: `charoite_graph` в списке модулей нет, а `graphs` не
+      искали;
+    * относительные импорты не рассматривались (`node.level == 0`), а внутри
+      пакета `from . import graph_names` — обычный стиль.
+
+    Резолв «имя → модуль продукта» здесь НЕ делается: это знание графа, и
+    живёт оно в `import_graph`. Здесь — только грамматика импорта.
+    """
+    свой = module_of(rel) or ""
+    пакет = свой.rpartition(".")[0]
+    имена: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            имена.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                корень = пакет.split(".") if пакет else []
+                подъём = node.level - 1
+                if подъём >= len(корень):
+                    continue                    # выше корня пакета — имя не наше
+                база = ".".join(корень[: len(корень) - подъём])
+                if node.module:
+                    база = f"{база}.{node.module}" if база else node.module
+            else:
+                база = node.module or ""
+            if база:
+                имена.add(база)
+            имена.update(f"{база}.{a.name}" if база else a.name for a in node.names)
+    return имена
+
+
+def _module_by_name(имя: str, mods: set[str]) -> str | None:
+    """Импортируемое имя → модуль продукта: самый длинный известный префикс.
+
+    `charoite_graph.graphs` — сам модуль; `charoite_graph.graphs.load` —
+    он же плюс имя внутри него; `yaml.safe_load` — чужое, `None`.
+    """
+    части = имя.split(".")
+    while части:
+        кандидат = ".".join(части)
+        if кандидат in mods:
+            return кандидат
+        части.pop()
+    return None
+
+
 def candidate_dirs() -> frozenset[str]:
     """Каталоги, в которых лежат кандидаты в точки входа — одна точка вывода из
     `ENTRY_CANDIDATES` (Minor DS и GLM круга 7: текстовая замена точки вырезала
@@ -469,30 +551,28 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
 # ---------------------------------------------------------------- замеры от инвентаря
 
 def modules(inv: Inventory) -> set[str]:
-    return {pathlib.PurePosixPath(rel).stem for rel in inv.files
-            if rel.startswith("src/") and rel.endswith(".py") and rel.count("/") == 1}
+    """Модули продукта — проекция `module_of`, а не свой предикат пути."""
+    return {m for rel in inv.files if (m := module_of(rel)) is not None}
 
 
 def import_graph(inv: Inventory) -> dict[str, set[str]]:
     """Модуль → модули репо, которые он импортирует. Обход всех узлов Import
     (и внутри функций: `llm.py` импортирует `llm_health` лениво). Модуль без
-    дерева (не разобрался) — уже проблема инвентаря, здесь просто без рёбер."""
+    дерева (не разобрался) — уже проблема инвентаря, здесь просто без рёбер.
+
+    Форму пути знает `module_of`, грамматику импорта — `imports_of`; здесь
+    остаётся только знание графа: какое из написанных имён — модуль продукта
+    (`_module_by_name`, самый длинный известный префикс)."""
     mods = modules(inv)
     graph: dict[str, set[str]] = {m: set() for m in mods}
     for rel, info in inv.files.items():
-        stem = pathlib.PurePosixPath(rel).stem
-        if stem not in mods or not rel.startswith("src/") or rel.count("/") != 1 or info.tree is None:
-            continue
-        for node in ast.walk(info.tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    top = alias.name.split(".")[0]
-                    if top in mods and top != stem:
-                        graph[stem].add(top)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                top = node.module.split(".")[0]
-                if top in mods and top != stem:
-                    graph[stem].add(top)
+        свой = module_of(rel)
+        if свой is None or info.tree is None:
+            continue                    # не модуль или не разобрался — он уже в inv.problems
+        for имя in imports_of(rel, info.tree):
+            цель = _module_by_name(имя, mods)
+            if цель is not None and цель != свой:
+                graph[свой].add(цель)
     return graph
 
 
@@ -533,8 +613,35 @@ def unassigned(graph: dict[str, set[str]], layout: dict) -> list[str]:
 
 
 def stale_layers(graph: dict[str, set[str]], layout: dict) -> list[str]:
-    """Имена в таблице слоёв, которых в `src/` больше нет."""
+    """Имена в таблице слоёв, которым в дереве не нашлось модуля."""
     return sorted(m for m in layer_of(layout) if m not in graph)
+
+
+def moved_modules(graph: dict[str, set[str]], layout: dict) -> dict[str, str]:
+    """Имя из таблицы → новое имя того же модуля в дереве: ПЕРЕЕЗД, не пропажа.
+
+    Различение нужно из-за того, чем кончалось его отсутствие. `git mv
+    src/graphs.py packages/…/charoite_graph/graphs.py` делал имя `graphs`
+    «устаревшим», и гейт печатал «убрать из layout.json» — единственное
+    действие, которое красное гасит. Выполнив его, человек снимал охрану с
+    переехавшего кода и получал зелёный прогон: красное учило открыть дыру
+    шире, и это хуже молчания (входной круг №328, DS C1 = GLM C1).
+
+    Кандидатом считается модуль с тем же последним сегментом имени, которого
+    ещё нет в таблице, и только если он ровно один: двусмысленный переезд
+    называть переездом нельзя, пусть остаётся пропажей плюс «не отнесён».
+    """
+    lay = layer_of(layout)
+    по_хвосту: dict[str, list[str]] = {}
+    for m in graph:
+        if m not in lay:
+            по_хвосту.setdefault(m.rpartition(".")[2], []).append(m)
+    переехали = {}
+    for m in stale_layers(graph, layout):
+        кандидаты = по_хвосту.get(m.rpartition(".")[2], [])
+        if len(кандидаты) == 1:
+            переехали[m] = кандидаты[0]
+    return переехали
 
 
 def _tokens(text: str) -> set[str]:
@@ -581,6 +688,15 @@ def scan(inv: Inventory) -> Scan:
     prose: dict[str, set[str]] = {}
     loose: dict[str, set[str]] = {}
     problems = [p.text for p in inv.problems]
+    # Python внутри области кода обязан быть ЧЕМ-ТО названным: модулем продукта
+    # или точкой входа. Иначе первый же новый верхний каталог (упаковка, разовая
+    # утилита) уезжает из-под охраны молча — инструмент это давно знал («дыра в
+    # таблице» в разделе фактов), но гейту не говорил (входной круг №328).
+    for rel in sorted(inv.files):
+        if (rel.endswith(".py") and inv.files[rel].kind == "code"
+                and module_of(rel) is None and not _is_candidate(rel)):
+            problems.append(f"{rel}: python в области кода, но ни модуль продукта, ни точка входа — "
+                            f"решить в KINDS (вид `out` с обоснованием) или положить по форме раскладки")
     targets = set(executables(inv))
     bucket = {"code": mentions, "prose": prose}
     for rel, info in inv.files.items():
@@ -1116,10 +1232,17 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
     problems: list[str] = list(scanned.problems)
-    for m in unassigned(graph, layout):
-        problems.append(f"модуль src/{m}.py не отнесён ни к одному слою в {LAYOUT.name}")
-    for m in stale_layers(graph, layout):
-        problems.append(f"в таблице слоёв есть {m}, а src/{m}.py нет — убрать из {LAYOUT.name}")
+    # Переезд — не пропажа и не новый модуль: одно сообщение вместо двух, и оно
+    # говорит «перенеси ключ», а не «сними охрану» (входной круг №328).
+    переехали = moved_modules(graph, layout)
+    for m in sorted(set(unassigned(graph, layout)) - set(переехали.values())):
+        problems.append(f"модуль {m} не отнесён ни к одному слою в {LAYOUT.name}")
+    for m in sorted(set(stale_layers(graph, layout)) - set(переехали)):
+        problems.append(f"в таблице слоёв есть {m}, а модуля с таким именем в дереве нет — "
+                        f"убрать из {LAYOUT.name}")
+    for было, стало in sorted(переехали.items()):
+        problems.append(f"модуль {было} переехал и импортируется как {стало} — переименовать ключ "
+                        f"в {LAYOUT.name}, а не снимать охрану")
     allow = allowlist_edges(layout)
     viol = set(violations(graph, layout))
     lay = layer_of(layout)

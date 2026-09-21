@@ -318,6 +318,7 @@ APPROVED_KINDS = (
     ("app/", "code", "git"),
     ("scripts/", "code", "git"),
     ("src/", "code", "git"),
+    ("packages/", "code", "git"),
     (".github/", "code", "git"),
     (".pre-commit-config.yaml", "code", "git"),
 )
@@ -872,14 +873,16 @@ def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_pa
     """Замер читает только код: битый артефакт его не хоронит (Critical GLM и
     Important DS круга 9 — в середине переделки артефакт правят руками). Спорный
     вид корпус не сокращает: такой файл в замере ЕСТЬ, у него свой раздел и код
-    выхода 0. Python, до которого правила не дотянулись (будущий `packages/…`),
-    не числится «вне области по политике» — о нём сказано отдельно."""
+    выхода 0. Python, до которого правила не дотянулись (`extras/…` — каталога
+    нет в KINDS), не числится «вне области по политике»: о нём сказано отдельно.
+    Пример сменился с `packages/` на `extras/` — у пакетов правило появилось
+    вместе с гейтом, который их видит (№328)."""
     (tmp_path / "scripts").mkdir()
-    (tmp_path / "packages").mkdir()
+    (tmp_path / "extras").mkdir()
     (tmp_path / "docs" / "design").mkdir(parents=True)
     (tmp_path / "scripts" / "tool.py").write_text(
         'import os\nROOT = os.environ.get("CHAROITE_ROOT")\nif __name__ == "__main__":\n    pass\n', encoding="utf-8")
-    (tmp_path / "packages" / "later.py").write_text(
+    (tmp_path / "extras" / "later.py").write_text(
         'import os\nROOT = os.environ.get("CHAROITE_ROOT")\n', encoding="utf-8")
     bad = tmp_path / "docs" / "design" / "layout.json"
     bad.write_text('{"order": ["a", "a"]}', encoding="utf-8")
@@ -889,7 +892,7 @@ def test_the_report_survives_a_broken_artifact_and_names_what_it_measures(tmp_pa
     assert lm.main(["--report"]) == 0, "битый артефакт замеру не нужен и не должен его валить"
     out = capsys.readouterr().out
     assert "`scripts/tool.py`:2" in out
-    assert "без правила 1" in out and "`packages/later.py`" in out, "файл вне правил назван, а не зачтён политике"
+    assert "без правила 1" in out and "`extras/later.py`" in out, "файл вне правил назван, а не зачтён политике"
     # тот же прогон с --check платит за артефакт, как и раньше
     assert lm.main(["--check"]) == 1
     assert "layout.json" in capsys.readouterr().out
@@ -951,3 +954,141 @@ def test_the_level_of_a_node_is_measured_by_scope_not_by_statement_type():
     ev2 = lm.module_events(ast.parse("import os, sys\nR = os.environ.get('CHAROITE_ROOT')\nsys.path.insert(0, 'x')\n"),
                            "CHAROITE_ROOT")
     assert ev2.order == "read_before_insert" and ev2.top_reads == [2]
+
+
+#: Формы пути и имя модуля, которое им соответствует. Корпус рядом с
+#: `module_of`: после упаковки форм становится две, и забыть одну из них —
+#: значит выключить охрану для половины продукта (входной круг №328).
+MODULE_SHAPES = (
+    ("src/graphs.py", "graphs"),
+    ("src/charoite_paths.py", "charoite_paths"),
+    ("packages/charoite_graph/src/charoite_graph/graphs.py", "charoite_graph.graphs"),
+    ("packages/charoite_graph/src/charoite_graph/__init__.py", "charoite_graph"),
+    ("packages/charoite_graph/src/charoite_graph/inner/deep.py", "charoite_graph.inner.deep"),
+    ("packages/charoite_graph/pyproject.toml", None),        # не python
+    ("packages/charoite_graph/tests/test_x.py", None),       # тесты пакета — не продукт
+    ("scripts/doctor.py", None),                             # точка входа, не модуль
+    ("tests/test_x.py", None),                               # правило KINDS: вид out
+    ("src/inner/deep.py", None),                             # плоская раскладка — один уровень
+)
+
+
+def test_the_shape_of_the_layout_is_known_in_one_place():
+    """Имя модуля выводит `module_of`, и только он.
+
+    Раньше форма пути была записана литералом дважды — в `modules()` и в
+    `import_graph()`, — то есть два независимых вывода об одном и том же.
+    Переезд в `packages/` делал их несогласованными молча: имени нет,
+    рёбер нет, гейт зелёный (входной круг №328, DS C3 = GLM 2).
+    """
+    for rel, want in MODULE_SHAPES:
+        assert lm.module_of(rel) == want, f"{rel}: ждали {want}, получили {lm.module_of(rel)}"
+
+
+#: Импорт внутри пакета `p.sub.mod` и имена, которые из него следуют. Второй
+#: корпус: грамматику импорта тоже знает ровно одно место (`imports_of`).
+IMPORT_SHAPES = (
+    ("import llm", {"llm"}),
+    ("import charoite_graph.graphs", {"charoite_graph.graphs"}),
+    ("from charoite_graph import graphs", {"charoite_graph", "charoite_graph.graphs"}),
+    ("from . import graph_names", {"p.sub", "p.sub.graph_names"}),
+    ("from .graph_names import X", {"p.sub.graph_names", "p.sub.graph_names.X"}),
+    ("from .. import other", {"p", "p.other"}),
+    ("from ...too_high import X", set()),       # выше корня пакета — имя не наше
+)
+
+
+def test_the_grammar_of_imports_is_known_in_one_place(tmp_path):
+    """Относительные импорты и точечные имена — не экзотика, а основной стиль
+    внутри пакета; раньше терялись оба.
+
+    `node.level == 0` отбрасывал `from . import graph_names` целиком, а
+    `alias.name.split(".")[0]` обрезал `charoite_graph.graphs` до
+    `charoite_graph` — имени, которого нет среди модулей, поэтому ребро
+    `daemon → graphs` исчезало молча (входной круг №328).
+    """
+    rel = "packages/p/src/p/sub/mod.py"
+    assert lm.module_of(rel) == "p.sub.mod", "предпосылка корпуса: файл лежит в пакете"
+    for src, want in IMPORT_SHAPES:
+        got = lm.imports_of(rel, ast.parse(src))
+        assert got == want, f"{src!r}: ждали {want}, получили {got}"
+
+
+def test_the_gate_sees_a_module_that_moved_into_a_package(tmp_path):
+    """Переезд в `packages/` виден гейту целиком: модуль, рёбра, нарушение слоя.
+
+    До этой правки дерево ниже давало `modules() == []` и пустой граф: файл
+    классифицировался `out` по УМОЛЧАНИЮ (правила `packages/` в таблице не
+    было), читать его инвентарь не шёл, и ребро вверх никто не считал.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "src" / "core_mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "top_mod.py").write_text("from charoite_graph import graphs\n", encoding="utf-8")
+    пакет = tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph"
+    (пакет / "graphs.py").write_text("from . import names\nimport top_mod\n", encoding="utf-8")
+    (пакет / "names.py").write_text("x = 1\n", encoding="utf-8")
+
+    inv = lm.inventory(tmp_path)
+    graph = lm.import_graph(inv)
+    assert lm.modules(inv) == {"core_mod", "top_mod", "charoite_graph.graphs", "charoite_graph.names"}
+    assert graph["top_mod"] == {"charoite_graph.graphs"}, "ребро src → пакет точечным именем"
+    assert graph["charoite_graph.graphs"] == {"charoite_graph.names", "top_mod"}, \
+        "внутрипакетное ребро относительным импортом и ребро наружу"
+
+    layout = _layout(brief_layers={"low": ["core_mod", "charoite_graph.graphs", "charoite_graph.names"],
+                                   "high": ["top_mod"]})
+    assert lm.violations(graph, layout) == [("charoite_graph.graphs", "top_mod")], \
+        "нарушение слоя ВНУТРИ пакета обязано краснеть так же, как в src/"
+
+
+def test_a_module_that_moved_is_not_told_to_drop_its_guard(tmp_path):
+    """Переезд — не пропажа: гейт просит переименовать ключ, а не снять охрану.
+
+    `stale_layers` сам по себе не различает «модуль исчез» и «модуль уехал», и
+    сообщение предлагало «убрать из layout.json» — единственное действие,
+    которое гасит красное, снимая охрану с переехавшего кода. Красное, которое
+    учит открыть дыру шире, хуже молчания (входной круг №328, DS C1 = GLM 1).
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "src" / "core_mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph" / "graphs.py").write_text(
+        "x = 1\n", encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    graph = lm.import_graph(inv)
+    # таблица ещё помнит плоское имя `graphs`, а в дереве оно уже пакетное
+    layout = _layout(brief_layers={"low": ["core_mod", "graphs"], "high": []})
+    assert lm.moved_modules(graph, layout) == {"graphs": "charoite_graph.graphs"}
+    problems = lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path)
+    assert any("graphs переехал и импортируется как charoite_graph.graphs" in p for p in problems)
+    assert not any("убрать из" in p for p in problems), "переезд не предлагает снять охрану"
+    assert not any("не отнесён ни к одному слою" in p for p in problems), "и не двоится вторым сообщением"
+    # двусмысленный переезд переездом не называется: два кандидата на один хвост
+    (tmp_path / "packages" / "other" / "src" / "other").mkdir(parents=True)
+    (tmp_path / "packages" / "other" / "src" / "other" / "graphs.py").write_text("x = 1\n", encoding="utf-8")
+    graph2 = lm.import_graph(lm.inventory(tmp_path))
+    assert lm.moved_modules(graph2, layout) == {}
+    assert any("убрать из" in p for p in lm.check(layout, graph2, lm.Scan({}, {}, {}, []), {}, repo=tmp_path))
+
+
+def test_python_in_the_code_area_is_either_a_module_or_an_entry_point(tmp_path):
+    """Файл, до которого правила не дотянулись, — дыра в таблице, а не политика.
+
+    Инструмент знал этот случай и печатал его в разделе фактов («Python вне
+    области, но и без правила»), но гейту о нём не говорил: ни один тест не
+    требовал, чтобы список был пуст. Поэтому новый верхний каталог уезжал
+    из-под охраны молча (входной круг №328).
+    """
+    (tmp_path / "packages" / "charoite_graph" / "tests").mkdir(parents=True)
+    (tmp_path / "packages" / "charoite_graph" / "tests" / "test_x.py").write_text("x = 1\n", encoding="utf-8")
+    problems = lm.scan(lm.inventory(tmp_path)).problems
+    assert any("ни модуль продукта, ни точка входа" in p and "tests/test_x.py" in p for p in problems)
+    # а модуль пакета и скрипт-точка входа таким сообщением не красятся
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph").mkdir(parents=True)
+    (tmp_path / "packages" / "charoite_graph" / "src" / "charoite_graph" / "graphs.py").write_text(
+        "x = 1\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "doctor.py").write_text("x = 1\n", encoding="utf-8")
+    свежие = lm.scan(lm.inventory(tmp_path)).problems
+    assert sum("ни модуль продукта" in p for p in свежие) == 1, "молчим о модуле пакета и о скрипте"

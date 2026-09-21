@@ -116,7 +116,7 @@
 - `scripts/get_models.py` ← PRIVACY.md, README.md, ROADMAP.md, SECURITY.md, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/ROADMAP.md, docs/ru/SECURITY.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/ROADMAP.md, docs/zh/SECURITY.md
 - `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md
-- `scripts/layout_map.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `scripts/layout_map.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md, packages/README.md
 - `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/ru/SECURITY.md, docs/zh/SECURITY.md, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/README.md, docs/zh/demo/README.md
@@ -185,5 +185,6 @@
 - `app/` — code (git): приложение зовёт python и shell
 - `scripts/` — code (git): скрипты зовут друг друга и модули; проза по суффиксу (README)
 - `src/` — code (git): модули зовут скрипты и подсказывают пути человеку
+- `packages/` — code (git): дистрибутивы: модуль пакета — тот же продукт, что модуль src/
 - `.github/` — code (git): workflow CI — источник запуска
 - `.pre-commit-config.yaml` — code (git): хуки — источник запуска
