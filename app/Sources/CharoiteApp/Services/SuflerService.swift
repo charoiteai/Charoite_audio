@@ -594,20 +594,21 @@ final class SuflerService: ObservableObject {
         // Статусы читает человек на встрече, а не разработчик в логах. «Демон
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
-        switch Self.restartDecision(wasRecording: wasRecording,
-                                    userStopped: userStopped,
-                                    attempts: restartAttempts,
-                                    daemonReason: daemonFatalReason) {
+        let решение = Self.restartDecision(wasRecording: wasRecording,
+                                           userStopped: userStopped,
+                                           attempts: restartAttempts,
+                                           daemonReason: daemonFatalReason)
+        switch решение {
         case .none:
             endSleepGuard()   // записи больше нет — маку можно спать
             status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
             return
-        case .giveUpFatal:
-            giveUpOnNamedRefusal()
-            return
-        case .giveUp:
-            giveUpAfterAttempts()
+        case .giveUpFatal, .giveUp:
+            // ОДИН вход на оба исхода: пока их разводили двумя вызовами,
+            // перестановка вызовов местами возвращала дефект круга 3 и не
+            // красила ни один тест (круг 4 по коду №332, DS C1)
+            giveUp(решение)
             return
         case .restart:
             break

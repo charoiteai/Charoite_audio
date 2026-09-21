@@ -49,6 +49,26 @@ final class AutostopTests: XCTestCase {
             .restart, "незнакомая причина — прежнее поведение, а не тихий отказ")
     }
 
+    /// Текст конца записи — функция ОТ РЕШЕНИЯ, и перепутать исходы нельзя.
+    ///
+    /// Пока исходы разводились двумя вызовами у switch, перестановка вызовов
+    /// местами возвращала дефект круга 3 и не красила ни одного теста
+    /// (круг 4 по коду №332, DS C1).
+    func testFinalTextFollowsTheDecisionItself() {
+        XCTAssertNil(
+            SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: nil),
+            "демон назвал причину и прислал рецепт — свой текст поверх писать нельзя")
+        XCTAssertNil(
+            SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: "устройство"),
+            "причина потери захвата к названному отказу не относится")
+        let поПопыткам = SuflerService.finalFailureText(for: .giveUp, captureLoss: nil)
+        XCTAssertNotNil(поПопыткам, "исчерпанные попытки человек обязан увидеть словами")
+        XCTAssertTrue(поПопыткам?.contains("не восстановилась") == true, поПопыткам ?? "")
+        let сПотерей = SuflerService.finalFailureText(for: .giveUp, captureLoss: "устройство")
+        XCTAssertTrue(сПотерей?.contains("устройство") == true,
+                      "причина потери захвата обязана попасть в текст: по ней понятно, что чинить")
+    }
+
     func testRecoveryGivesUpAfterThreeAttempts() {
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: true, userStopped: false, attempts: 3),
