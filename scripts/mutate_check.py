@@ -75,8 +75,29 @@ def head_of(rng: str) -> str:
 # по `scripts/` давал job без единого мутанта и зелёный (входной круг №339, DS I7)
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import layout_map  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
 
 MUTATION_AREAS = layout_map.PYTHON_AREAS
+
+
+def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int) -> int:
+    """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
+    — плана не было вовсе; `EXIT_PARTIAL` — план был, но судили не весь (прервано
+    встречей, срезано потолком, не применилось); 0 — проверен весь план, чисто.
+
+    Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
+    лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
+    первом же мутанте при плане из сорока, отвечал «проверять было нечего» —
+    CI печатал это дословно. Обе головы круга 4 независимо (DS C1 = GLM 1).
+    """
+    if survivors:
+        return 1
+    if planned == 0:
+        return EXIT_NOTHING_TO_CHECK
+    if tested < planned or dropped or skipped:
+        return EXIT_PARTIAL
+    return 0
 
 
 def busy_guard(args) -> bool:
@@ -364,7 +385,6 @@ def main(argv: list[str]) -> int:
     # (3) началась живая встреча — прерываемся между мутантами.
     sys.path.insert(0, str(root / "src"))
     import busy_signals  # noqa: E402
-    from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
     import charoite_paths  # noqa: E402
     # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки). Канон
     # целиком, а не его пересказ: прежняя копия брала strip и expanduser, но
@@ -530,17 +550,7 @@ def main(argv: list[str]) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(report + "\n", encoding="utf-8")
-    if survivors:
-        return 1
-    # Полнота — свойство ПЛАНА, а не финальной переменной: ноль означает
-    # «проверено всё, что было в плане, и чисто». Прерванный встречей прогон,
-    # срез потолком и неприменившиеся мутанты раньше возвращали тот же ноль, и
-    # приёмка печатала «ok» при нуле проверенных (круг 3 по коду №339, DS C1).
-    if tested == 0:
-        return EXIT_NOTHING_TO_CHECK
-    if tested < len(plan) or dropped or skipped:
-        return EXIT_PARTIAL
-    return 0
+    return verdict_code(survivors, tested, len(plan), dropped, len(skipped))
 
 
 if __name__ == "__main__":

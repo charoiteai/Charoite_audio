@@ -86,10 +86,14 @@ else
   # в swift-tests.yml под `set -euo pipefail`. Раньше код глотался `;`, и краш или
   # битый конфиг давали зелёный шаг (круг 2 по №339, DS I2).
   if command -v swiftlint >/dev/null; then
+    # Предикат ОДИН на вход в ветку и на вердикт: код линтера либо строки «error»
+    # — как в swift-tests.yml, на который ссылается комментарий выше. Пока вердикт
+    # считался отдельно («настоящий код линтера»), ветка печатала ошибки и ставила
+    # ✓ при lint=0 (круг 4 по коду №339, DS C2).
     swiftlint lint --quiet > "$WORK/swiftlint.log" 2>&1; lint=$?
-    if [ $lint -ne 0 ] || grep -q "error" "$WORK/swiftlint.log"; then
-      grep -E "error|Could not|Unknown" "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict "${lint:-1}" swiftlint
-    else verdict 0 swiftlint; fi
+    grep -q "error" "$WORK/swiftlint.log" && lint=$(( lint == 0 ? 1 : lint ))
+    [ $lint -eq 0 ] || grep -E "error|Could not|Unknown" "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'
+    verdict $lint swiftlint
   else
     echo "   – swiftlint не установлен (в CI он гейт)"; SKIPPED="$SKIPPED swiftlint(нет бинарника)"
   fi

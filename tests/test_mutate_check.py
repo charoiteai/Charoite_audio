@@ -352,3 +352,32 @@ def test_занятая_машина_останавливает_мутатор_�
     assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--force"]) == exit_codes.EXIT_NOTHING_TO_CHECK
     assert "машина занята" not in capsys.readouterr().out
     assert exit_codes.outcome(exit_codes.EXIT_NOTHING_TO_CHECK) == "nothing"
+
+
+def test_таблица_исхода_прогона():
+    """Состояние прогона → код возврата, все случаи в одной таблице.
+
+    Прежняя лестница `if` в конце `main` спрашивала `tested == 0` раньше
+    полноты, и прогон, прерванный на первом мутанте при плане из сорока,
+    отвечал «проверять было нечего»; ни один тест туда не доставал, потому что
+    покрыт был только пустой диапазон (круг 4 по №339, обе головы).
+    """
+    import exit_codes
+    N, P = exit_codes.EXIT_NOTHING_TO_CHECK, exit_codes.EXIT_PARTIAL
+    таблица = [
+        # выжившие, проверено, план, срезано, не применилось → код
+        ([],        0,  0, 0, 0, N),   # плана не было вовсе
+        ([],        0, 40, 0, 0, P),   # прервано на первом мутанте — не «нечего»
+        ([],        3, 40, 0, 0, P),   # прервано посередине
+        ([],       30, 40, 10, 0, P),  # срезано потолком
+        ([],       39, 40, 0, 1, P),   # один не применился
+        ([],       40, 40, 0, 0, 0),   # проверен весь план, чисто
+        (["м"],     1, 40, 0, 0, 1),   # выживший важнее неполноты
+        (["м"],    40, 40, 0, 0, 1),
+    ]
+    for survivors, tested, planned, dropped, skipped, ждём in таблица:
+        got = mc.verdict_code(survivors, tested, planned, dropped, skipped)
+        assert got == ждём, f"{(survivors, tested, planned, dropped, skipped)}: {got}, ждали {ждём}"
+    # и класс исхода согласован с каноном
+    assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
+    assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
