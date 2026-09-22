@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -480,12 +481,15 @@ def main() -> None:
     # Переименование переписывает стенограмму и узлы графа: права как у
     # конвейера, а не по umask вызывающего (аудит DeepSeek 16.08).
     charoite_paths.harden_umask()
-    args = [a for a in sys.argv[1:] if a != "--yes"]
-    do_apply = "--yes" in sys.argv
-    if len(args) != 2:
-        sys.exit(__doc__.strip().splitlines()[0]
-                 + "\nиспользование: rename_meeting.py <штамп> <новая тема> [--yes]")
-    pretty, slug = pretty_and_slug(args[1])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("stamp", help="штамп встречи: 2026-08-03_1130 "
+                                  "(секунды — чтобы выбрать вторую встречу той же минуты)")
+    ap.add_argument("title", help="новая тема")
+    ap.add_argument("--yes", action="store_true",
+                    help="применить; без него — печатается план и ничего не трогается")
+    a = ap.parse_args()
+    do_apply = a.yes
+    pretty, slug = pretty_and_slug(a.title)
 
     from config_loader import load_user_or_example
     # без config.yaml — пример, как у import_meeting и retro_fill: прямое чтение
@@ -494,7 +498,7 @@ def main() -> None:
     cfg = load_user_or_example(ROOT)
     graph = resolve_graph(cfg)
     tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR") or ROOT / cfg["log"]["transcripts_dir"])
-    stamp = resolve_key(tdir, short_stamp(args[0]), graph)
+    stamp = resolve_key(tdir, short_stamp(a.stamp), graph)
 
     p = plan(graph, tdir, stamp, pretty, slug)
     if p.get("blocked"):

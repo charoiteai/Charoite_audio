@@ -220,20 +220,20 @@
       "why": "shell-скрипт: пробника нет; №340"
     },
     "scripts/check_private_markers.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/check_test_assertions.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/cloud_review.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },
     "scripts/dedup_archive.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/dedup_graph.py": {
       "mode": "help",
@@ -244,8 +244,8 @@
       "why": "по коду: argparse"
     },
     "scripts/doctor.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/fix_action_items.py": {
       "mode": "help",
@@ -276,8 +276,8 @@
       "why": "режимы руками, --help нет — голый запуск пишет карту; №340"
     },
     "scripts/lock_runtime_deps.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/make_dmg.sh": {
       "mode": "none",
@@ -308,8 +308,8 @@
       "why": "shell-скрипт: пробника нет; №340"
     },
     "scripts/nightly_claude_cores.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/nightly_dossier.py": {
       "mode": "help",
@@ -332,8 +332,8 @@
       "why": "по коду: argparse"
     },
     "scripts/rename_meeting.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "help",
+      "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/sign_release_manifest.py": {
       "mode": "help",

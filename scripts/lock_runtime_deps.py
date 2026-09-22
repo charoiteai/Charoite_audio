@@ -20,6 +20,7 @@ CPython в `build_embedded_python.sh` уже выучен и записан та
 """
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 import shutil
@@ -53,6 +54,8 @@ def runtime_deps() -> list[str]:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.parse_args()   # аргументов нет: без них — работа, --help печатает справку
     uv = shutil.which("uv")
     if not uv:
         raise SystemExit("нужен uv: brew install uv (или pipx install uv)")
