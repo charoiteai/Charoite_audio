@@ -25,6 +25,50 @@ final class AutostopTests: XCTestCase {
             .restart)
     }
 
+    /// Отказ, названный самим демоном, повтором не лечится.
+    ///
+    /// «Корень данных не назван» — детерминированный отказ: окружение процесса
+    /// от трёх попыток не изменится, а человек вместо рецепта, который демон
+    /// уже прислал, увидит трижды «восстанавливаю» и потом «нажмите ещё раз»
+    /// (круг 2 по коду №332, DS C1).
+    func testDaemonNamedFatalReasonSkipsRestarts() {
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "root_unnamed"),
+            .giveUpFatal("root_unnamed"),
+            "детерминированный отказ не должен тратить попытки перезапуска")
+        // повод отказа — часть решения: ветка сервиса не может переспросить
+        // другое поле и показать чужой текст (круг 3, DS C1)
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 3, daemonReason: "нечто новое"),
+            .giveUp, "исчерпанные попытки — это НЕ названный демоном отказ")
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "нечто новое"),
+            .restart, "незнакомая причина — прежнее поведение, а не тихий отказ")
+    }
+
+    /// Текст конца записи — функция ОТ РЕШЕНИЯ, и перепутать исходы нельзя.
+    ///
+    /// Пока исходы разводились двумя вызовами у switch, перестановка вызовов
+    /// местами возвращала дефект круга 3 и не красила ни одного теста
+    /// (круг 4 по коду №332, DS C1).
+    func testFinalTextFollowsTheDecisionItself() {
+        XCTAssertNil(
+            SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: nil),
+            "демон назвал причину и прислал рецепт — свой текст поверх писать нельзя")
+        XCTAssertNil(
+            SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: "устройство"),
+            "причина потери захвата к названному отказу не относится")
+        let поПопыткам = SuflerService.finalFailureText(for: .giveUp, captureLoss: nil)
+        XCTAssertNotNil(поПопыткам, "исчерпанные попытки человек обязан увидеть словами")
+        XCTAssertTrue(поПопыткам?.contains("не восстановилась") == true, поПопыткам ?? "")
+        let сПотерей = SuflerService.finalFailureText(for: .giveUp, captureLoss: "устройство")
+        XCTAssertTrue(сПотерей?.contains("устройство") == true,
+                      "причина потери захвата обязана попасть в текст: по ней понятно, что чинить")
+    }
+
     func testRecoveryGivesUpAfterThreeAttempts() {
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: true, userStopped: false, attempts: 3),

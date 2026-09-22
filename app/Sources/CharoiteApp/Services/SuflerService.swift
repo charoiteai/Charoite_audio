@@ -179,6 +179,12 @@ final class SuflerService: ObservableObject {
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
+    /// Причина, которую демон назвал сам перед смертью (`reason` в статусе).
+    /// Детерминированный отказ — «корень данных не назван» — повтором не
+    /// лечится: три попытки только затрут рецепт, который демон уже прислал
+    /// (круг 2 по коду №332, DS C1).
+    private var daemonFatalReason: String?
+
     /// Потери захвата за одну встречу — отдельный потолок: restartAttempts
     /// обнуляется первой же строкой стенограммы, и цикл «потеря → рестарт →
     /// резервный микрофон → снова потеря» был бы бесконечным (Codex, круг-2
@@ -237,7 +243,12 @@ final class SuflerService: ObservableObject {
     private var sleepGuard: NSObjectProtocol?
 
 
-    private func beginSleepGuard() {
+    /// Виден ли страж сна — только чтение, для тестов исхода «сдаёмся»:
+    /// провалившаяся запись без снятия стража навсегда запрещала бы маку
+    /// спать, и эта правка проходила зелёной (круг 5 по коду №332, DS I2).
+    var sleepGuardActive: Bool { sleepGuard != nil }
+
+    func beginSleepGuard() {
         guard sleepGuard == nil else { return }
         sleepGuard = ProcessInfo.processInfo.beginActivity(
             options: [.idleSystemSleepDisabled, .userInitiated],
@@ -580,41 +591,22 @@ final class SuflerService: ObservableObject {
         // Статусы читает человек на встрече, а не разработчик в логах. «Демон
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
-        switch Self.restartDecision(wasRecording: wasRecording,
-                                    userStopped: userStopped,
-                                    attempts: restartAttempts) {
+        let решение = Self.restartDecision(wasRecording: wasRecording,
+                                           userStopped: userStopped,
+                                           attempts: restartAttempts,
+                                           daemonReason: daemonFatalReason)
+        switch решение {
         case .none:
             endSleepGuard()   // записи больше нет — маку можно спать
             status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
             return
-        case .giveUp:
-            if let reason = captureLossReason {
-                captureLossReason = nil
-                endSleepGuard()
-                fail(L.t("⛔️ Захват звука потерян (\(reason)) и не восстановился. Нажмите «Слушать встречу» ещё раз",
-                         "⛔️ Audio capture lost (\(reason)) and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
-                         "⛔️ 音频捕获已丢失（\(reason)）且未能恢复。请再次点击「旁听会议」"))
-                preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
-                guard let token = lifecycleGate.beginStop() else { return }
-                cleanupDisposition = .preserveFailure
-                publishLifecycle()
-                beginCaptureShutdown(token: token)
-                return
-            }
-            // Три попытки подряд не помогли — молчать нельзя: человек уверен,
-            // что встреча пишется, а запись давно встала. Страж сна тоже
-            // снимаем: иначе провалившаяся запись навсегда запрещала маку
-            // спать — до перезапуска приложения.
-            endSleepGuard()
-            fail(L.t("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз",
-                     "⛔️ Recording stopped and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
-                     "⛔️ 录音已停止且未能恢复。请再次点击「旁听会议」"))
-            preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
-            guard let token = lifecycleGate.beginStop() else { return }
-            cleanupDisposition = .preserveFailure
-            publishLifecycle()
-            beginCaptureShutdown(token: token)
+        case .giveUpFatal, .giveUp:
+            // ОДИН вход на оба исхода: пока их разводили двумя вызовами,
+            // перестановка вызовов местами возвращала дефект круга 3 и не
+            // красила ни один тест (круг 4 по коду №332, DS C1)
+            daemonFatalReason = nil   // причина уехала в решение; поле исход не переживает
+            giveUp(решение)
             return
         case .restart:
             break
@@ -835,6 +827,10 @@ final class SuflerService: ObservableObject {
                 // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
                 statusIsError = obj["error"] as? Bool ?? false
                 statusErrorFromDaemon = statusIsError
+                // Причина отказа — значением рядом с текстом: по ней решается,
+                // имеет ли смысл повтор. Снимается любым не-ошибочным статусом,
+                // иначе одна давняя причина запрещала бы перезапуск навсегда.
+                daemonFatalReason = statusIsError ? obj["reason"] as? String : nil
                 // Липкое — отдельный слой: ключ есть только у липких и у явного
                 // снятия; статус без ключа его не трогает (№228). `sticky: false`
                 // шлёт демон, когда умерший посреди встречи канал собеседников

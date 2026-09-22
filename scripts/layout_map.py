@@ -1103,7 +1103,7 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
 #: Функции канона, которым положение файла отдают на вход: подъём вверх делают
 #: они, а не вызывающий. Имя проверяется вместе с происхождением — локальная
 #: функция с тем же именем каноном не становится (Important обеих голов круга 3).
-ROOT_CANON_CALLS = ("resolve_root", "code_root")
+ROOT_CANON_CALLS = ("resolve_root", "code_root", "require_data_root")
 #: Вызовы, куда путь от `__file__` уходит целиком и корнем не становится.
 ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
 

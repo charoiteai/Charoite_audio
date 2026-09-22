@@ -108,7 +108,8 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 
 ```bash
 .venv/bin/python src/main.py     # CLI: live transcript + hints
-.venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
+# 守护进程不会猜测数据目录，请显式指定：
+CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
 ```
 
 首次运行会下载 STT 模型（约 1 分钟）。

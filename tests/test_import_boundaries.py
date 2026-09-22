@@ -221,7 +221,9 @@ def test_the_file_shape_catches_every_way_of_climbing_up(tmp_path):
     assert not (legit & hits), (
         f"законное назначение объявлено нарушением: {[lines[i-1] for i in sorted(legit & hits)]}")
     # канон и вставка пути — не просто «не ловятся», а названы списком
-    assert set(lm.ROOT_CANON_CALLS) == {"resolve_root", "code_root"}
+    # три законных получателя положения файла: спросить корень данных,
+    # спросить корень кода и НАЗВАТЬ корень данных на входе (№332)
+    assert set(lm.ROOT_CANON_CALLS) == {"resolve_root", "code_root", "require_data_root"}
     assert set(lm.ROOT_BOOTSTRAP_CALLS) == {"sys.path.insert", "sys.path.append"}
     # имя канона без импорта каноном не делает: `ROOT_CANON_CALLS` — источник имён
     # для разбора импортов, а не список прощённых слов. Без этой пробы локальная
