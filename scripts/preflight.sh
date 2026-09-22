@@ -31,8 +31,11 @@ if ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
   echo "preflight: базы $BASE нет (нефетченный клон?) — назовите базу явно"; exit 2
 fi
 RANGE="$BASE...HEAD"
-NOTHING_TO_CHECK=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import exit_codes; print(exit_codes.EXIT_NOTHING_TO_CHECK)") \
-  || { echo "preflight: коды канона не читаются (src/exit_codes.py) — прогон не стартует"; exit 2; }
+# Исход инструмента спрашивается у канона одним словом: «0» в конвейере приёмки
+# означал четыре разные вещи, и каждый круг добавлял своё сопоставление —
+# подстроку, цифру, grep (круг 3 по коду №339, DS «Как чинить»).
+outcome() { "$PY" -c "import sys; sys.path.insert(0, 'src'); import exit_codes; print(exit_codes.outcome(int(sys.argv[1])))" "$1"; }
+outcome 0 >/dev/null || { echo "preflight: коды канона не читаются (src/exit_codes.py) — прогон не стартует"; exit 2; }
 FAIL=""
 SKIPPED=""
 T0=$(date +%s)
@@ -85,7 +88,7 @@ else
   if command -v swiftlint >/dev/null; then
     swiftlint lint --quiet > "$WORK/swiftlint.log" 2>&1; lint=$?
     if [ $lint -ne 0 ] || grep -q "error" "$WORK/swiftlint.log"; then
-      grep -E "error|Could not|Unknown" "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict 1 swiftlint
+      grep -E "error|Could not|Unknown" "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict "${lint:-1}" swiftlint
     else verdict 0 swiftlint; fi
   else
     echo "   – swiftlint не установлен (в CI он гейт)"; SKIPPED="$SKIPPED swiftlint(нет бинарника)"
@@ -107,13 +110,12 @@ if ! skipped mutation; then
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
   CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
-  # «Проверять было нечего» — отдельный КОД канона, а не подстрока в выводе: исходов
-  # два (пустой диапазон и нет мутируемых строк), текст у них разный, и grep по
-  # одному из них пропускал второй в зелёное (круг 2 по №339, DS C1).
-  if [ "$rc" -eq "$NOTHING_TO_CHECK" ]; then SKIPPED="$SKIPPED mutation(проверять нечего)"; else verdict $rc mutation; fi
-  # проверено подмножество — тоже неполнота, и она обязана быть в сводке, а не в логе
-  cut_off=$(grep -o "СРЕЗАНО [0-9]*" "$WORK/mutation.log" | head -1 | tr -d "СРЕЗАНО ")
-  [ -z "$cut_off" ] || SKIPPED="$SKIPPED mutation(срез $cut_off)"
+  case "$(outcome $rc)" in
+    ok)      verdict 0 mutation ;;
+    nothing) SKIPPED="$SKIPPED mutation(проверять нечего)" ;;
+    partial) SKIPPED="$SKIPPED mutation(проверено не всё)" ;;
+    *)       verdict "$rc" mutation ;;
+  esac
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"

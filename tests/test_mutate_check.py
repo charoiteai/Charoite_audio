@@ -346,5 +346,9 @@ def test_занятая_машина_останавливает_мутатор_�
     monkeypatch.setattr(busy_signals, "machine_busy", lambda root: ["живая запись"])
     assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == 3
     assert "машина занята" in capsys.readouterr().out
-    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--force"]) != 3
+    # пустой диапазон — «проверять нечего» ИМЕННО этим кодом, а не любым не-3:
+    # прежний `!= 3` проходил и при 0, то есть весь смысл круга 2 не держался
+    import exit_codes
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--force"]) == exit_codes.EXIT_NOTHING_TO_CHECK
     assert "машина занята" not in capsys.readouterr().out
+    assert exit_codes.outcome(exit_codes.EXIT_NOTHING_TO_CHECK) == "nothing"

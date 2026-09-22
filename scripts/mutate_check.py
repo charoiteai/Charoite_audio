@@ -364,7 +364,7 @@ def main(argv: list[str]) -> int:
     # (3) началась живая встреча — прерываемся между мутантами.
     sys.path.insert(0, str(root / "src"))
     import busy_signals  # noqa: E402
-    from exit_codes import EXIT_NOTHING_TO_CHECK  # noqa: E402
+    from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
     import charoite_paths  # noqa: E402
     # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки). Канон
     # целиком, а не его пересказ: прежняя копия брала strip и expanduser, но
@@ -530,7 +530,17 @@ def main(argv: list[str]) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(report + "\n", encoding="utf-8")
-    return 1 if survivors else 0
+    if survivors:
+        return 1
+    # Полнота — свойство ПЛАНА, а не финальной переменной: ноль означает
+    # «проверено всё, что было в плане, и чисто». Прерванный встречей прогон,
+    # срез потолком и неприменившиеся мутанты раньше возвращали тот же ноль, и
+    # приёмка печатала «ok» при нуле проверенных (круг 3 по коду №339, DS C1).
+    if tested == 0:
+        return EXIT_NOTHING_TO_CHECK
+    if tested < len(plan) or dropped or skipped:
+        return EXIT_PARTIAL
+    return 0
 
 
 if __name__ == "__main__":
