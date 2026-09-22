@@ -570,7 +570,9 @@ def test_the_entry_door_refuses_with_the_code_and_a_recipe(tmp_path):
     прогон = _door(tmp_path, root=None)
     assert прогон.returncode == exit_codes.EXIT_ROOT_UNNAMED, (прогон.returncode, прогон.stderr[-300:])
     assert "CHAROITE_ROOT" in прогон.stderr, "рецепт обязан назвать переменную"
-    assert "entry.py" in прогон.stderr, "видно, какой вход отказал"
+    assert прогон.stderr.count("entry.py") == 1, (
+        "имя входа — ровно один раз: рецепт конструктора его уже называет, "
+        f"префикс поверх давал дубль (мутатор, №340): {прогон.stderr!r}")
     assert "Traceback" not in прогон.stderr, "отказ — строкой, а не трейсбеком"
     assert прогон.stdout == "", "без корня вход не должен успеть ничего сделать"
 
