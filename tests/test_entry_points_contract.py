@@ -60,6 +60,12 @@ def run_contract(repo: pathlib.Path, rel: str, mode: str, data_root: pathlib.Pat
             r = _run([python, str(repo / rel), "--help"], repo, {**env, "CHAROITE_ROOT": str(data_root)}, timeout)
             if r.returncode != 0:
                 problems.append(f"{rel} --help: код {r.returncode}, ожидали 0 — {_first_line(r)}")
+            elif "usage" not in (r.stdout + r.stderr).lower():
+                # Ноль без справки — это «argv проигнорирован и работа сделана», а не
+                # разбор аргументов: три входа прошли пробу, не зная про --help вовсе
+                # (замер 22.09). argparse печатает usage всегда — его и требуем.
+                problems.append(f"{rel} --help: вышел 0, но справки (usage) не напечатал — "
+                                f"аргумент проигнорирован, работа выполнена: {_first_line(r)}")
         elif part == "refuse":
             r = _run([python, str(repo / rel)], repo, env, timeout)
             if r.returncode != exit_codes.EXIT_ROOT_UNNAMED:

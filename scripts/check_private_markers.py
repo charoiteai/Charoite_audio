@@ -15,6 +15,7 @@ macOS; `[[:<:]]` — наоборот. Страж, который врёт, бы
 """
 from __future__ import annotations
 
+import argparse
 import os
 import pathlib
 import re
@@ -125,9 +126,15 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
 
 
 def main() -> int:
-    full_only = "--all" in sys.argv
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--all", action="store_true",
+                    help="всё дерево, а не только добавленные строки дифа коммита")
+    ap.add_argument("--public-only", action="store_true",
+                    help="режим CI: только публичные шаблоны, приватного списка там нет")
+    a = ap.parse_args()
+    full_only = a.all
     # Режим CI: только публичные шаблоны, приватного списка там нет.
-    if "--public-only" in sys.argv:
+    if a.public_only:
         hits = scan_public(tracked_files())
         if hits:
             print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)

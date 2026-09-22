@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
@@ -202,6 +203,8 @@ def prune_reports(graph: pathlib.Path, prefix: str, keep: int = KEEP_REPORTS) ->
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.parse_args()   # аргументов нет: без них — работа, --help печатает справку
     cfg = _cfg()
     # Решение об отправке принимает только src/privacy.py. Своя проверка,
     # стоявшая здесь раньше, знала одно имя рубильника из двух: после

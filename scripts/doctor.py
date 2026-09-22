@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -397,7 +398,12 @@ def restart_llm() -> None:
 
 
 def main() -> None:
-    if "--restart-llm" in sys.argv[1:]:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--restart-llm", action="store_true",
+                    help="аварийный перезапуск сервера моделей поверх живых аренд "
+                         "(единственный ручной выход при зависшем владельце порта)")
+    args = ap.parse_args()
+    if args.restart_llm:
         restart_llm()
         return
     print("Charoite doctor\n")

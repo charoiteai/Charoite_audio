@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import ast
 import pathlib
 import sys
@@ -164,7 +165,11 @@ def check(path: pathlib.Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    roots = [pathlib.Path(a) for a in argv[1:]] or [pathlib.Path("tests")]
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("roots", nargs="*", metavar="ПУТЬ",
+                    help="файлы или папки с тестами (по умолчанию tests/)")
+    args = ap.parse_args(argv[1:])
+    roots = [pathlib.Path(p) for p in args.roots] or [pathlib.Path("tests")]
     files: list[pathlib.Path] = []
     for root in roots:
         # И `test_*.py`, и `*_test.py`: pytest собирает оба, а гейт видел

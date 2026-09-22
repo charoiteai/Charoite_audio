@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import collections
 import os
 import pathlib
@@ -99,7 +100,11 @@ def merge(keep: pathlib.Path, extra: pathlib.Path, apply: bool) -> list[str]:
 
 
 def main() -> None:
-    apply = "--apply" in sys.argv
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--apply", action="store_true",
+                    help="сделать (без него — только показать план)")
+    args = ap.parse_args()
+    apply = args.apply
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     archive = graph / ARCHIVE_DIR
