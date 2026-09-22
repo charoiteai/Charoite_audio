@@ -161,3 +161,36 @@ another copy of what we are hiding.
 Markers of four characters or fewer are matched on word boundaries: a
 three-letter abbreviation otherwise matches inside ordinary words, and a guard
 that cries wolf is a guard people learn to bypass.
+
+## Run contracts and preflight: checked by running, not by reading
+
+Every executable file — `scripts/layout_map.py` knows which ones: python with a
+real `__main__` guard, shell scripts — carries a **run contract** in
+`docs/design/layout.json` (`run_contracts`). `help`: `--help` with an isolated
+data root exits 0. `refuse`: started without a named data root it refuses with
+`exit_codes.EXIT_ROOT_UNNAMED` and prints the recipe — the code is deliberately
+not 2, which argparse uses for a bad flag. `none`: there is no safe probe (a
+stdio server, a daemon without argparse, a shell script); the file is not run,
+and the reason must name a tracker card (`№…`) — debt with an owner, not a
+coverage figure. `tests/test_entry_points_contract.py` runs each entry point as a process
+and checks the contract — in CI and under the mutation check alike. A new
+executable gets its contract from `scripts/layout_map.py --regen` when the code
+proves one (`parse_args` → `help`, the root constructor → `refuse`); `none` is
+never written by the machine — a human writes it, with the card. Run `--regen`
+first when you add an entry point: the layout guard is red until the contract
+exists.
+
+`scripts/preflight.sh [base]` is the local summary before a review round and
+before accepting a contributor's (or a sandboxed executor's) work: the machine
+is busy (a live meeting stops it; `PREFLIGHT_FORCE=1` only with the owner's
+consent), ruff, the layout guard, privacy markers, the full pytest set,
+`swift build`/`swift test` when `app/` is touched, and the mutation check on
+the changed lines. It prints a machine verdict — `preflight: ok` or
+`FAIL: <steps>` — with the names of failed tests. `PREFLIGHT_SKIP=mutation,swift`
+skips steps on a re-run. It works inside a git worktree: the owner's data root
+comes from the main checkout, so the busy guard still sees a live meeting.
+
+Why this exists: five review findings in a row were claims about process
+behaviour ("exits with code 2", "the app shows the recipe") that nobody had
+run. What closes that class is a test that runs the process — not a comment
+that describes it, and not a shell step that nothing runs.

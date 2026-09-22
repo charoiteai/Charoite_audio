@@ -121,3 +121,52 @@ jobs:
         run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       - name: pytest
         run: python -m pytest tests/ -q
+
+  mutation:
+    name: mutation (changed lines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # диапазон base...HEAD — нужна история
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: PortAudio
+        timeout-minutes: 6
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: Deps
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+      # Единственная проверка, которая отвечает «а тест вообще держит что-нибудь»:
+      # в изменённые строки возвращается дефект, и прогон обязан покраснеть.
+      # Покрытие на это не отвечает — тест без единой проверки покрывает строку
+      # на сто процентов и зелёный всегда. Скрипт лежал в репо с августа и
+      # гонялся только руками (№67); отсюда он становится приёмкой PR.
+      # Обходных флагов нет: без данных владельца гвард занятости молчит сам
+      # (`machine_busy` на голом каталоге пуст — замер 22.09), а флаг «владельца
+      # здесь нет» на машине владельца работал как `--force` (круг 1 по №339).
+      # `--max 30`: прогон #605 при 20 — 9 минут на 20 мутантов (~27 с каждый);
+      # 40 ≈ 18 минут при потолке job 40 (DS I8); на 3fdbbc2 при 30 срезано 5.
+      - name: mutate changed lines
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120 || rc=$?
+          # Исход — одно слово от канона, а не цифра и не grep по выводу: «судили
+          # подмножество» раньше было видно только в логе (круг 3 по №339, DS I1).
+          case "$(python -c "import sys; sys.path.insert(0,'src'); import exit_codes; print(exit_codes.outcome($rc))")" in
+            ok)      echo "::notice::мутация: проверено всё, выживших нет" ;;
+            nothing) echo "::notice::мутировать было нечего — в диапазоне нет наших python-строк" ;;
+            partial) echo "::warning::мутация проверила НЕ ВСЁ (срез потолком или прерывание) — в логе видно, сколько" ;;
+            *)       exit $rc ;;
+          esac

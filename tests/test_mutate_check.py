@@ -328,3 +328,93 @@ def test_явный_return_none_не_мутируется(tmp_path):
     выживший мутант и тонуло среди настоящих (партия D, 22.08)."""
     muts = _mutate(tmp_path, "def f(x):\n    if x is None:\n        return None\n    return x\n", {3, 4})
     assert [m.line for m in muts if m.what.startswith("return")] == [4], [str(m) for m in muts]
+
+
+def test_гвард_занятости_снимает_только_force():
+    """Без флага гвард действует; `--force` снимает. Мутант `or → and` в прежнем
+    предикате на два флага пережил CI по #605; флага для CI больше нет — на
+    раннере без данных владельца гвард молчит сам (`machine_busy` пуст)."""
+    import argparse
+    assert mc.busy_guard(argparse.Namespace(force=False)) is True
+    assert mc.busy_guard(argparse.Namespace(force=True)) is False
+
+
+def test_занятая_машина_останавливает_мутатор_а_force_нет(monkeypatch, capsys):
+    """Поведение через `main`: при живой записи без флага — код 3 и ни одного
+    прогона; `--force` проходит гвард и упирается в пустой диапазон, не в занятость."""
+    import busy_signals
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: ["живая запись"])
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == 3
+    assert "машина занята" in capsys.readouterr().out
+    # пустой диапазон — «проверять нечего» ИМЕННО этим кодом, а не любым не-3:
+    # прежний `!= 3` проходил и при 0, то есть весь смысл круга 2 не держался
+    import exit_codes
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--force"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    assert "машина занята" not in capsys.readouterr().out
+    assert exit_codes.outcome(exit_codes.EXIT_NOTHING_TO_CHECK) == "nothing"
+
+
+def test_таблица_исхода_прогона():
+    """Состояние прогона → код возврата, все случаи в одной таблице.
+
+    Прежняя лестница `if` в конце `main` спрашивала `tested == 0` раньше
+    полноты, и прогон, прерванный на первом мутанте при плане из сорока,
+    отвечал «проверять было нечего»; ни один тест туда не доставал, потому что
+    покрыт был только пустой диапазон (круг 4 по №339, обе головы).
+    """
+    import exit_codes
+    N, P = exit_codes.EXIT_NOTHING_TO_CHECK, exit_codes.EXIT_PARTIAL
+    таблица = [
+        # выжившие, проверено, план, срезано, не применилось → код
+        ([],        0,  0, 0, 0, N),   # плана не было вовсе
+        ([],        0, 40, 0, 0, P),   # прервано на первом мутанте — не «нечего»
+        ([],        3, 40, 0, 0, P),   # прервано посередине
+        ([],       30, 40, 10, 0, P),  # срезано потолком
+        ([],       39, 40, 0, 1, P),   # один не применился
+        ([],       40, 40, 0, 0, 0),   # проверен весь план, чисто
+        (["м"],     1, 40, 0, 0, 1),   # выживший важнее неполноты
+        (["м"],    40, 40, 0, 0, 1),
+        # Срез потолком: плана не осталось, но проверять БЫЛО что. Без этих строк
+        # `dropped` не влияет на ответ ни в одном состоянии, и мутант «убрать
+        # dropped» выживает (круг 5: GLM I1, DS I1 — независимо).
+        ([],        0,  0, 10, 0, 7),   # --max 0 срезал весь план — неполно, не «нечего»
+        ([],       40, 40, 10, 0, 7),   # судили весь остаток, но часть срезана
+        (["м"],    40, 40, 10, 0, 1),   # выживший важнее и среза
+        ([],        0,  0,  0, 0, 6),   # плана не было вовсе — вот это «нечего»
+    ]
+    for survivors, tested, planned, dropped, skipped, ждём in таблица:
+        got = mc.verdict_code(survivors, tested, planned, dropped, skipped)
+        assert got == ждём, f"{(survivors, tested, planned, dropped, skipped)}: {got}, ждали {ждём}"
+    # и класс исхода согласован с каноном
+    assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
+    assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
+
+
+def test_есть_изменённые_строки_но_ломать_нечего(monkeypatch, capsys):
+    """Ветка «строки есть, мутировать нечего» (комментарий, докстринг, строковая
+    константа) отвечает «проверять нечего», а не успехом. Мутатор нашёл её
+    непокрытой в CI по №339: прежний тест гонял пустой диапазон и до неё не
+    доходил."""
+    import busy_signals
+    import exit_codes
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {REPO / "scripts" / "mutate_check.py": {1}})
+    monkeypatch.setattr(mc, "mutations_for", lambda *a, **k: [])
+    assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    assert "ничего мутируемого" in capsys.readouterr().out
+
+
+def test_исход_main_отдаёт_verdict_code():
+    """Последний возврат `main` — вызов `verdict_code`, а не константа и не
+    пустой `return`: исход прогона считается в одном месте. Мутант
+    «return X → return None» на этой строке пережил CI по №339 — теперь он
+    меняет узел AST и краснеет здесь."""
+    tree = ast.parse((REPO / "scripts" / "mutate_check.py").read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    # по номеру строки, а не по порядку обхода: ast.walk идёт в ширину и
+    # «последний» в нём — не последний в исходнике
+    last = max((n for n in ast.walk(main) if isinstance(n, ast.Return)), key=lambda n: n.lineno)
+    assert isinstance(last.value, ast.Call), "последний return main должен быть вызовом"
+    fn = last.value.func
+    assert getattr(fn, "id", getattr(fn, "attr", None)) == "verdict_code", (
+        "исход прогона считает verdict_code — одна точка, а не константа по месту")

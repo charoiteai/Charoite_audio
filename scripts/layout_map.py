@@ -74,6 +74,11 @@ FLAT_DIR = "src"            # плоская раскладка: `src/<моду�
 DIST_DIR = "packages"       # дистрибутивы: `packages/<дист>/src/<пакет>/…`
 TESTS_DIR = "tests"         # тесты пакета: `packages/<дист>/tests/…`
 LAYOUT_DIRS = (FLAT_DIR, DIST_DIR, TESTS_DIR)
+#: Где лежит наш python — области мутатора (`mutate_check.py`) читают отсюда, а
+#: не из своего литерала `src/`: PR только по `scripts/` давал job без единого
+#: мутанта и зелёный (входной круг №339, DS I7). Имена каталогов — из объявления
+#: выше, не литералами: четвёртая копия имён пережила бы переезд (круг 1, DS I2).
+PYTHON_AREAS = (f"{FLAT_DIR}/", "scripts/", f"{DIST_DIR}/")
 
 #: Кандидаты в точки входа по расположению; исполняемым кандидата делает гвард
 #: `__main__` (python) или сам факт shell-скрипта (Minor DS круга 5: «цель» читалась
@@ -262,7 +267,7 @@ MapState = Literal["present", "missing", "skipped"]      # тот же корт�
 
 _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
            "allowed_edges": list, "manual_entry_points": dict, "root_exemptions": dict,
-           "generated": str}
+           "generated": str, "run_contracts": dict}
 
 #: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
 #: импортов. Всё остальное в записи — решение человека (карточка, и что добавят
@@ -270,6 +275,27 @@ _SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_override
 #: список: пока её не было, запись собиралась из трёх полей заново, и любое
 #: четвёртое исчезало без следа (входной круг №325).
 MEASURED_EDGE_FIELDS = ("from", "to")
+
+#: Как точка входа ПРИНИМАЕТСЯ ПРОГОНОМ — `run_contracts` в артефакте, по записи
+#: на каждый исполняемый файл (входной круг №339, 22.09: обе головы независимо —
+#: список «что исполняемо» уже здесь, значит и «чем это проверить» живёт здесь
+#: же, иначе у приёмки заводится второй список по grep, как в №328). Режим
+#: значит РОВНО то, что проверяет проба (`run_contract` в
+#: `tests/test_entry_points_contract.py`), и ничего сверх: порядок «раньше
+#: тяжёлых импортов» проба не видит — это дело ревью (круг 1 по коду, GLM C1).
+#:   help   — `--help` с изолированным корнем данных выходит 0;
+#:   refuse — запуск БЕЗ названного корня выходит кодом `EXIT_ROOT_UNNAMED` и
+#:            печатает рецепт с `CHAROITE_ROOT` (вход зовёт конструктор, №332);
+#:   none   — пробника нет: вход не запускается; пишется только руками и с
+#:            карточкой в why (долг со сроком, а не покрытие — круг 1, DS).
+#: Составной режим — через «+»: `help+refuse`. `--regen` вписывает ДОГАДКУ по
+#: синтаксису (вызов parse_args / конструктора корня) — подтверждает или
+#: опровергает её проба на ближайшем прогоне, а не сам реген; `none` машина не
+#: пишет вовсе (круг 2 по коду №339, критика DS).
+RUN_MODES = ("help", "refuse", "none")
+#: Имя конструктора корня в каноне (`charoite_paths`); тест контрактов сверяет
+#: его с самим каноном, чтобы литерал не пережил переименование молча.
+ROOT_CONSTRUCTOR = "require_data_root"
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
@@ -335,6 +361,16 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
     for path_, why in layout["manual_entry_points"].items():
         if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
+    for path_, contract in layout["run_contracts"].items():
+        if not _is_candidate(path_) or not isinstance(contract, dict):
+            raise LayoutError(f"контракт запуска {path_}: не путь к исполняемому файлу или не объект")
+        modes = str(contract.get("mode", "")).split("+")
+        if any(m not in RUN_MODES for m in modes) or ("none" in modes and len(modes) > 1):
+            raise LayoutError(f"контракт запуска {path_}: mode из {'/'.join(RUN_MODES)} (через +), "
+                              f"получили {contract.get('mode')!r}")
+        if "none" in modes and not (isinstance(contract.get("why"), str) and "№" in contract["why"]):
+            raise LayoutError(f"контракт запуска {path_}: режим none требует why с карточкой (№…) — "
+                              f"долг без срока выглядит как покрытие")
     return layout
 
 
@@ -832,6 +868,35 @@ def executables(inv: Inventory) -> dict[str, str]:
     (библиотека в `src/` или хелпер в `scripts/`) исполняемым не является, что бы
     про него ни говорили подсказки; shell-скрипт исполняем по расположению."""
     return {rel: info.executable for rel, info in sorted(inv.files.items()) if info.executable}
+
+
+def derive_run_contract(rel: str, info: FileInfo) -> dict | None:
+    """Режим пробы ПО КОДУ — умолчание для новой записи, не решение: вызов
+    `parse_args` → `help` (импорта argparse мало — GLM I2 круга 1); вызов
+    конструктора корня → `refuse`. Ни того ни другого — `None`: `none` пишет
+    только человек, с карточкой. Область — весь файл, а не тело `__main__`:
+    наша идиома `if __name__ == "__main__": sys.exit(main())`, и вызовы живут в
+    `main()`; ложное умолчание проба всё равно не пропустит."""
+    if not rel.endswith(".py") or info.tree is None:
+        return None
+    calls = {n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", None)
+             for n in ast.walk(info.tree) if isinstance(n, ast.Call)}
+    modes, why = [], []
+    if "parse_args" in calls:
+        modes.append("help")
+        why.append("argparse")
+    if ROOT_CONSTRUCTOR in calls:
+        modes.append("refuse")
+        why.append("конструктор корня")
+    return {"mode": "+".join(modes), "why": "по коду: " + ", ".join(why)} if modes else None
+
+
+def run_plan(layout: dict, execs: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Что и как запускать приёмке: (путь, режим, обоснование) по каждому
+    исполняемому файлу с контрактом. Расхождения реестра и контрактов — дело
+    `check()`, здесь только план."""
+    return [(rel, c["mode"], c.get("why", "")) for rel, c in sorted(layout["run_contracts"].items())
+            if rel in execs]
 
 
 def layer_of(layout: dict) -> dict[str, str]:
@@ -1812,6 +1877,15 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
         problems.append(f"manual_entry_points объявляет {path}, но это не исполняемый файл — снять")
     for path in sorted(set(manual) & named):
         problems.append(f"{path} объявлен ручным, но его зовёт код ({', '.join(sorted(scanned.mentions[path]))}) — снять из manual")
+    contracts = layout["run_contracts"]
+    # у каждой точки входа есть контракт запуска — и наоборот; умолчание по коду впишет `--regen`
+    for path in sorted(set(execs) - set(contracts)):
+        problems.append(f"исполняемый файл {path} без контракта запуска — `--regen` впишет help/refuse, если код это докажет (вызов parse_args / конструктора корня); иначе впишите none с № карточки руками")
+    for path in sorted(set(contracts) - set(execs)):
+        problems.append(f"run_contracts объявляет {path}, но это не исполняемый файл — снять")
+    if execs and not any(c["mode"] != "none" for p, c in contracts.items() if p in execs):
+        problems.append("ни одной пробы: все контракты запуска — none; приёмке нечего запускать "
+                        "(пустой план у pytest — пропуск, а не красное)")
     # названные пути обязаны существовать — в коде и в прозе
     for path, who in sorted(scanned.mentions.items()):
         if not (repo / path).is_file():
@@ -1834,7 +1908,13 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     return problems
 
 
-def regen(layout: dict, graph: dict[str, set[str]]) -> tuple[dict, list[tuple[str, str]]]:
+def _say(notes: list[str] | None, line: str) -> None:
+    if notes is not None:
+        notes.append(line)
+
+
+def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None,
+          notes: list[str] | None = None) -> tuple[dict, list[tuple[str, str]]]:
     """Переписать allowlist по факту, сохранив карточки; новые рёбра без
     карточки — вернуть вызывающему, чтобы напечатать (Minor DS круга 2: regen
     писал артефакт, который следующая загрузка отвергала трейсбеком). Штамп
@@ -1857,6 +1937,25 @@ def regen(layout: dict, graph: dict[str, set[str]]) -> tuple[dict, list[tuple[st
     if edges != layout["allowed_edges"]:
         layout["allowed_edges"] = edges
         layout["generated"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    if inv is not None:
+        # контракты запуска: новой точке входа — умолчание по коду (только то, что
+        # проба докажет), исчезнувшей — снять; существующая запись — решение
+        # человека, дословно. Каждое действие — строкой в отчёт: молчаливый
+        # реген делал умолчание машины неотличимым от решения (круг 1, DS I6).
+        execs = executables(inv)
+        contracts = {rel: c for rel, c in layout["run_contracts"].items() if rel in execs}
+        for rel in sorted(set(layout["run_contracts"]) - set(execs)):
+            _say(notes, f"контракт запуска снят: {rel} больше не исполняемый файл")
+        for rel in sorted(execs):
+            if rel in contracts:
+                continue
+            derived = derive_run_contract(rel, inv.files[rel])
+            if derived is None:
+                _say(notes, f"{rel}: пробника по коду нет — объявить none с карточкой руками")
+                continue
+            contracts[rel] = derived
+            _say(notes, f"контракт запуска по коду: {rel} → {derived['mode']}")
+        layout["run_contracts"] = dict(sorted(contracts.items()))
     return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
 
 
@@ -1897,7 +1996,14 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     for path in sorted(execs):
         who = ", ".join(sorted(scanned.mentions.get(path, ())))
         manual = layout["manual_entry_points"].get(path)
-        out.append(f"- `{path}` ← {who or ('ручной запуск: ' + manual if manual else 'никто')}")
+        contract = layout["run_contracts"].get(path)
+        if contract is None:
+            probe = "контракта запуска нет"
+        elif contract["mode"] == "none":
+            probe = f"не запускается: {contract.get('why', '')}"
+        else:
+            probe = f"проба {contract['mode']}"
+        out.append(f"- `{path}` ← {who or ('ручной запуск: ' + manual if manual else 'никто')}; {probe}")
     out += ["", "## Пути, названные кодом, но не исполняемые (подсказки и сообщения)", ""]
     for path, who in sorted(scanned.mentions.items()):
         if path not in execs:
@@ -1956,7 +2062,10 @@ def main(argv: list[str] | None = None) -> int:
     if "--regen" in args:
         # черновик отдельно от загруженного: при блокировке отчёт идёт по тому, что лежит
         # на диске, а не по несохранённой правке (Important DS круга 6)
-        fresh, unticketed = regen(json.loads(json.dumps(layout)), graph)
+        notes: list[str] = []
+        fresh, unticketed = regen(json.loads(json.dumps(layout)), graph, inv, notes)
+        for line in notes:
+            print("  ", line)
         blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
                    for a, b in unticketed]
         if not blocked:

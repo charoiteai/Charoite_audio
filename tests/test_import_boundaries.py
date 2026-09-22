@@ -385,6 +385,8 @@ APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.
 #: видов (Important GLM круга 8: докстринг звучал как «все способы»).
 APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "environ.get", "os.environ[...]", "environ[...]")
 APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
+APPROVED_RUN_MODES = ("help", "refuse", "none")
+APPROVED_PYTHON_AREAS = ("src/", "scripts/", "packages/")
 
 APPROVED_KINDS = (
     ("docs/design/layout.md", "out", "git"),
@@ -453,6 +455,9 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.ENTRY_CANDIDATES == APPROVED_ENTRY_CANDIDATES, "шаблоны кандидатов — та же политика, снимок обязателен"
     assert lm.ENV_READ_FORMS == APPROVED_ENV_READ_FORMS, "грамматика замера — политика, снимок обязателен"
     assert lm.PROBE_SUFFIX == APPROVED_PROBE_SUFFIX, "суффиксы проб — политика, снимок обязателен"
+    assert lm.RUN_MODES == APPROVED_RUN_MODES, "режимы контрактов запуска — политика приёмки, снимок обязателен"
+    assert lm.PYTHON_AREAS == APPROVED_PYTHON_AREAS, "области мутатора — политика, снимок обязателен"
+    assert all(any(a.startswith(p) and k == "code" for p, k, _s, _w in lm.KINDS) for a in lm.PYTHON_AREAS), "область мутатора вне кода"
     # у каждого вида таблицы есть различимая проба, иначе правило нечем доказать
     for _p, kind, _s, _w in lm.KINDS:
         assert kind in lm.PROBE_SUFFIX, kind
@@ -596,7 +601,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", stale_map)
 
-    def fake_regen(layout, graph):
+    def fake_regen(layout, graph, inv=None, notes=None):
         layout["allowed_edges"] = [e for e in layout["allowed_edges"] if e["from"] != "x_mod"]   # черновик «чинит» запись
         return layout, [("low_mod", "top_mod")]
     monkeypatch.setattr(lm, "regen", fake_regen)
@@ -611,7 +616,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     # убери `not blocked` из main, и строка появится (обе головы круга 7)
     assert "отстал от кода" not in out, "карта не писалась — строка о её свежести недостижима"
     # без блокировки та же устаревшая карта краснеет, а пропавшая — тоже
-    monkeypatch.setattr(lm, "regen", lambda layout, graph: (layout, []))
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (layout, []))
     lm.main(["--check"])
     assert "отстал от кода" in capsys.readouterr().out, "вне блокировки устаревшая карта — расхождение"
     stale_map.unlink()
@@ -646,8 +651,14 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
     def dup_order(d): d["order"].append(d["order"][0])
     def edge_shape(d): d["allowed_edges"].append({"ticket": "№0"})
     def bad_stamp(d): d["generated"] = "x"
+    def bad_mode(d): d["run_contracts"]["src/daemon.py"] = {"mode": "smoke", "why": ""}
+    def none_no_why(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": ""}
+    def none_no_card(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "просто так"}
+    def none_plus(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none+help", "why": "x №0"}   # карточка есть: краснеть обязан именно «+none»
+    def contract_shape(d): d["run_contracts"]["src/daemon.py"] = "help"
+    def contract_path(d): d["run_contracts"]["docs/x.md"] = {"mode": "help", "why": ""}
     for bad in (dup, up, typo, no_why, no_ticket, bad_manual, empty_manual, no_key, wrong_type, dup_order, edge_shape,
-                bad_stamp):
+                bad_stamp, bad_mode, none_no_why, none_no_card, none_plus, contract_shape, contract_path):
         with pytest.raises(lm.LayoutError):
             lm.load_layout(write(bad))
     broken = tmp_path / "broken.json"
@@ -663,7 +674,7 @@ def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
-         "generated": "2026-09-19T00:00Z"}
+         "generated": "2026-09-19T00:00Z", "run_contracts": {}}
     d.update(over)
     return d
 
@@ -707,6 +718,17 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
     assert any("src/top_mod.py, но это не исполняемый файл" in p for p in problems)
     layout["manual_entry_points"] = {"src/cli.py": "руками"}
+    # контракт запуска — на каждую точку входа и только на неё (входной круг №339)
+    problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
+    assert any("src/cli.py без контракта запуска" in p for p in problems)
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест №0"},
+                               "src/top_mod.py": {"mode": "help", "why": ""}}
+    problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
+    assert any("run_contracts объявляет src/top_mod.py, но это не исполняемый файл" in p for p in problems)
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест №0"}}
+    problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
+    assert problems == [] or all("ни одной пробы" in p for p in problems), problems
+    layout["run_contracts"] = {"src/cli.py": {"mode": "help", "why": "тест"}}
     assert lm.check(layout, graph, empty, execs, repo=tmp_path) == []
     called = lm.Scan({"src/cli.py": {"app/X.swift"}, "src/gone.py": {"app/X.swift"}},
                      {"src/doc_gone.py": {"README.md"}}, {"deploy.sh": {"README.md"}}, [])
@@ -727,6 +749,21 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     layout["allowed_edges"] = []
     changed, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
     assert changed["generated"] != "2026-09-19T00:00Z" and unticketed == [("low_mod", "top_mod")]
+    # regen с инвентарём: новой точке входа — контракт по коду, решение человека — дословно,
+    # исчезнувшей — снять
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "решено руками №0"},
+                               "src/gone.py": {"mode": "help", "why": ""}}
+    (src / "tool.py").write_text("import argparse\nif __name__ == '__main__':\n    argparse.ArgumentParser().parse_args()\n",
+                                 encoding="utf-8")
+    (src / "quiet.py").write_text("if __name__ == '__main__':\n    print(1)\n", encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    report: list[str] = []
+    filled, _ = lm.regen(json.loads(json.dumps(layout)), lm.import_graph(inv), inv, report)
+    assert filled["run_contracts"] == {"src/cli.py": {"mode": "none", "why": "решено руками №0"},
+                                       "src/tool.py": {"mode": "help", "why": "по коду: argparse"}}
+    # реген говорит вслух, что сделал и чего делать не стал: none пишет только человек
+    assert any("снят: src/gone.py" in r for r in report) and any("src/tool.py → help" in r for r in report)
+    assert any("src/quiet.py: пробника по коду нет" in r for r in report), report
 
 
 def test_one_inventory_one_policy_for_every_file(tmp_path):
