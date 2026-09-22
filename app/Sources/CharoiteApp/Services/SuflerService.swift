@@ -251,7 +251,12 @@ final class SuflerService: ObservableObject {
     private var sleepGuard: NSObjectProtocol?
 
 
-    private func beginSleepGuard() {
+    /// Виден ли страж сна — только чтение, для тестов исхода «сдаёмся»:
+    /// провалившаяся запись без снятия стража навсегда запрещала бы маку
+    /// спать, и эта правка проходила зелёной (круг 5 по коду №332, DS I2).
+    var sleepGuardActive: Bool { sleepGuard != nil }
+
+    func beginSleepGuard() {
         guard sleepGuard == nil else { return }
         sleepGuard = ProcessInfo.processInfo.beginActivity(
             options: [.idleSystemSleepDisabled, .userInitiated],

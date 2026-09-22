@@ -419,6 +419,10 @@ def test_вход_берёт_корень_из_окружения_и_публи�
 
     assert названный == данные.resolve()
     assert charoite_paths.resolve_root(__file__) == данные.resolve(), "корень не назван процессу"
+    # повторный вызов входа в том же процессе отдаёт ТОТ ЖЕ корень, а не None:
+    # мутант `return _given → return None` пережил прогон — этой строки не было
+    # (мутатор на диапазоне ветки, 22.09)
+    assert charoite_paths.require_data_root(__file__) == данные.resolve()
 
 
 @pytest.mark.корень_называет_тест
@@ -490,9 +494,21 @@ def test_демон_называет_корень_и_отказ_виден_сн�
     assert "CHAROITE_ROOT" in отказы[0]["text"], "в отказе нет рецепта"
     # причина — ЗНАЧЕНИЕМ: по ней приложение решает, что повтор бесполезен.
     # Без этой строки удаление `reason` из `emit_error` оставляло бы зелёными
-    # и pytest, и swift test (круг 3 по коду №332, GLM I1)
-    assert отказы[0].get("reason") == "root_unnamed", (
-        f"причина отказа не доехала значением: {отказы[0]}")
+    # и pytest, и swift test (круг 3 по коду №332, GLM I1).
+    # Сверяем с НАБОРОМ ПРИЁМНИКА, а не с третьей копией литерала в тесте:
+    # иначе переименование причины на одной стороне с правкой «своего» теста
+    # оставляло оба набора зелёными, а в бою отказ уходил в неизвестные — три
+    # перезапуска вместо рецепта (круг 5, DS I1; приём тот же, что в
+    # test_toggle_status.py — тест провода читает оба конца)
+    import re
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
+    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)
+    assert m, "в SuflerEndOfRecording.swift нет набора fatalReasons — контракт провода потерян"
+    known = set(re.findall(r'"([^"]+)"', m.group(1)))
+    assert отказы[0].get("reason") in known, (
+        f"причина {отказы[0].get('reason')!r} неизвестна приложению ({sorted(known)}): "
+        f"отказ уйдёт в три перезапуска вместо рецепта")
 
 
 @pytest.mark.корень_называет_тест
@@ -519,4 +535,8 @@ def test_чужая_догадка_не_принимается_входом_за
     with pytest.raises(charoite_paths.RootNotNamed) as отказ:
         charoite_paths.require_data_root(str(мнимый))     # вход догадку не разрешал
     assert "догадкой" in str(отказ.value)
+    # а вход, который догадку РАЗРЕШИЛ, её и получает — без отказа. Без этой
+    # ветки мутант `and → or` в условии отказа выживал: оба теста были про
+    # «отказ», ни один — про «не отказ» (мутатор на диапазоне ветки, 22.09)
+    assert charoite_paths.require_data_root(str(мнимый), guess_from_code=True) == tmp_path.resolve()
     charoite_paths.forget_data_root()
