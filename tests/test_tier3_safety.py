@@ -488,3 +488,25 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
         assert "## Статус" in body and "## Хроника" in body, "шапка переписана, тело цело"
         assert texts[canon].count("[[Встречи/") >= 2, "хроника обеих встреч на месте"
 
+
+
+# --- потолок ночного ожидания живой встречи ---------------------------------
+# Контракт — значение, а не наличие: вызывающий передаёт его гейту как cap=, и
+# None у гейта означает «ждать без предела» (ночь 21.08: прогон с 04:16 до 11:36).
+
+@pytest.mark.parametrize("until, now, expected", [
+    (None, 1000.0, 3600.0),        # потолка ночи нет — час, как раньше
+    ("1100", 1000.0, 100.0),       # ночь кончится через 100 с — ждём не дольше
+    ("99999", 1000.0, 3600.0),     # до конца ночи дольше часа — всё равно час
+    ("900", 1000.0, 0.0),          # ночь уже вышла — не ждём вовсе
+    ("завтра", 1000.0, 3600.0),    # мусор в переменной — не падаем, ждём час
+])
+def test_night_wait_cap_is_always_a_finite_number(monkeypatch, until, now, expected):
+    import live_gate
+    if until is None:
+        monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, until)
+    cap = tier3.night_wait_cap(now=lambda: now)
+    assert isinstance(cap, float), f"потолок обязан быть числом, а не {cap!r}"
+    assert cap == expected

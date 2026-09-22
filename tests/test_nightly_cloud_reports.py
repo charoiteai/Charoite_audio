@@ -566,6 +566,9 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     wait_pushes = [False]   # флаг сценария: ожидание вытолкнуло за ночь
 
     # каждая зависимость main — заглушка; порядок вызовов пишется в events
+    # main() разбирает argv (--help, #606): без подмены ей достались бы аргументы
+    # самого pytest, и прогон падал бы SystemExit(2) до первой строки работы
+    monkeypatch.setattr(sys, "argv", ["nightly_claude_cores.py"])
     monkeypatch.setattr(ncc, "load_user_or_example", lambda root: cfg)
     monkeypatch.setattr(ncc.privacy, "cloud_enrich_enabled", lambda c: True)
     monkeypatch.setattr(ncc.graphs, "graph_dir", lambda c: graph)
@@ -612,8 +615,11 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     gate_event = next(e for e in events if e[0] == "гейт")
     assert gate_event[1] == tmp_path.resolve(), \
         "гейт ждёт на корне данных из канона, а не на выведенном или чужом пути"
-    assert "cap" in gate_event[2], \
-        "ожидание без потолка — ночной прогон ждёт встречу без предела"
+    # потолок пинится ЗНАЧЕНИЕМ: наличие ключа пропускало cap=None, а None у гейта
+    # значит «ждать сколько понадобится» — инцидент ночи 21.08, 04:16–11:36 (круг 4)
+    cap = gate_event[2].get("cap")
+    assert isinstance(cap, (int, float)) and not isinstance(cap, bool), \
+        f"ожидание без потолка — ночной прогон ждёт встречу без предела: cap={cap!r}"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
 

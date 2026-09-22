@@ -340,13 +340,14 @@ def _data_root() -> pathlib.Path:
     return graphs.data_root()
 
 
-def night_wait_cap(default: float = 3600.0, now=None) -> float | None:
+def night_wait_cap(default: float = 3600.0, now=None) -> float:
     """Сколько ждать живую встречу: не дольше, чем осталось ночи.
 
     Голый час ожидания игнорировал потолок и растягивал прогон за него
     (аудит ночи 26.08, GLM Important 2 + DS Minor 6). Потолка нет —
     ждём как раньше; ночь уже вышла — не ждём вовсе (0), вызывающий
-    увидит night_is_over и остановится.
+    увидит night_is_over и остановится. None не возвращается никогда: у гейта
+    None значит «без потолка», и это ровно то, от чего функция существует.
     """
     import time as _time
     raw = os.environ.get(live_gate.NIGHTLY_UNTIL_ENV)
