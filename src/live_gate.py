@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import pathlib
 import sys
@@ -56,6 +57,26 @@ def night_is_over(now: Callable[[], float] = time.time) -> bool:
         return False        # мусор в переменной — не повод рвать прогон
 
 
+
+def night_wait_cap(default: float = 3600.0, now: Callable[[], float] = time.time) -> float:
+    """Сколько ждать живую встречу: не дольше, чем осталось ночи.
+
+    Живёт здесь, у владельца `NIGHTLY_UNTIL_ENV`: переменную выставляет ночной
+    прогон, читают её `night_is_over` и этот потолок — одни часы, одно место.
+    Голый час ожидания игнорировал потолок и растягивал прогон за него (аудит
+    ночи 26.08). Потолка нет — ждём `default`; ночь уже вышла — не ждём вовсе
+    (0). None не возвращается никогда: у гейта None значит «без потолка», и это
+    ровно то, от чего функция существует (круги 4–6 по №338).
+    """
+    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
+    if not raw:
+        return float(default)
+    try:
+        left = float(raw) - now()
+    except ValueError:
+        return float(default)       # мусор в переменной — не повод ждать без меры
+    return max(0.0, min(float(default), left))
+
 def lock_path(root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(root) / "logs" / LOCK_NAME
 
@@ -87,6 +108,12 @@ def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,
     cap=None — ждать сколько понадобится; число — потолок в секундах, после
     которого идём работать в тесноте (об этом говорит лог, не код возврата).
     """
+    if cap is not None and not _finite_seconds(cap):
+        # потолок решает, кончится ли ожидание вообще: inf, nan, отрицательное
+        # и bool — это «ждать вечно» или «упасть в строке лога» под видом числа.
+        # Отказ здесь, у владельца, а не надежда на каждого вызывающего (круг 5
+        # по №338, DS: cap=1e9 и inf проходили все сторожа на местах вызова)
+        raise ValueError(f"{what}: потолок ожидания — конечное число секунд ≥ 0 или None, а не {cap!r}")
     is_alive = alive or daemon_alive
     if not is_alive(root):
         return False
@@ -100,3 +127,29 @@ def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,
         sleep(poll)
     log(f"{what}: встреча закончилась — продолжаю (ждал {int((now() - started) // 60)} мин)")
     return True
+
+
+def _finite_seconds(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def night_window_open(root: pathlib.Path, what: str, log: Callable[[str], None] = print, *,
+                      default: float = 3600.0, clock: Callable[[], float] = time.time,
+                      **gate) -> bool:
+    """Ночное окно для тяжёлого или облачного шага: дождаться конца живой
+    встречи, но не дольше, чем осталось ночи, и сказать, можно ли работать.
+
+    True — окно открыто; False — ночь вышла (в том числе пока ждали встречу),
+    шаг переносится на завтра. Одна дверь вместо пары «ждать с потолком +
+    проверить конец ночи» в каждом ночном скрипте: четыре копии пары давали
+    четыре места, где потолок можно не передать, передать константой или
+    `None`, а проверку конца ночи — поставить до ожидания (круги 3–6 по №338,
+    сторож на месте вызова пропускал это по очереди). Потолок вызывающий не
+    передаёт вовсе — только `default` для своей шкалы.
+
+    `clock` — стенные часы ночи (`NIGHTLY_UNTIL_ENV` — unix-время); `gate` уходит
+    в `wait_while_live` как есть (poll, sleep, now, alive) — его часы свои.
+    """
+    wait_while_live(root, log, what=what, cap=night_wait_cap(default, clock), **gate)
+    return not night_is_over(clock)
