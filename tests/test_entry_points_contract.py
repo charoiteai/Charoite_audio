@@ -147,6 +147,10 @@ def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -
         "src/a.py": "help", "src/b.py": "refuse", "src/ab.py": "help+refuse", "src/c.py": None,
         "src/imp.py": None, "scripts/d.sh": None}
     assert all(c["why"].startswith("по коду: ") for c in got.values() if c), "умолчание машины подписано"
+    # битый .py: дерева нет — умолчания нет, а не падение на обходе (мутант `or → and` пережил CI #605)
+    (tmp_path / "src" / "broken.py").write_text("def (\n", encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    assert lm.derive_run_contract("src/broken.py", inv.files["src/broken.py"]) is None
 
 
 def test_the_acceptance_has_something_to_run() -> None:

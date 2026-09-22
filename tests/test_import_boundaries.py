@@ -654,7 +654,7 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
     def bad_mode(d): d["run_contracts"]["src/daemon.py"] = {"mode": "smoke", "why": ""}
     def none_no_why(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": ""}
     def none_no_card(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "просто так"}
-    def none_plus(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none+help", "why": "x"}
+    def none_plus(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none+help", "why": "x №0"}   # карточка есть: краснеть обязан именно «+none»
     def contract_shape(d): d["run_contracts"]["src/daemon.py"] = "help"
     def contract_path(d): d["run_contracts"]["docs/x.md"] = {"mode": "help", "why": ""}
     for bad in (dup, up, typo, no_why, no_ticket, bad_manual, empty_manual, no_key, wrong_type, dup_order, edge_shape,

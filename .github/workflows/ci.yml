@@ -156,8 +156,8 @@ jobs:
       # (`machine_busy` на голом каталоге пуст — замер 22.09), а флаг «владельца
       # здесь нет» на машине владельца работал как `--force` (круг 1 по №339).
       # `--max 30`: прогон #605 при 20 — 9 минут на 20 мутантов (~27 с каждый);
-      # 30 ≈ 14 минут при потолке job 40 (DS I8).
+      # 40 ≈ 18 минут при потолке job 40 (DS I8); на 3fdbbc2 при 30 срезано 5.
       - name: mutate changed lines
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 30 --timeout 120
+        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120
