@@ -8,11 +8,13 @@
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import inspect
 import pathlib
 import sys
+import textwrap
 
 import pytest
 
@@ -535,15 +537,35 @@ def test_report_problem_wants_headings_on_their_own_lines():
     assert "Слияния" in ncc.report_problem(0, inline)
 
 
-def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically():
+def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
-    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Сторож по
-    исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
+    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Гейт пинится
+    ВЫЗОВОМ по образцу тестов ревизии досье выше: подстрока в исходнике main
+    подходила и чужому пути, и закомментированной строке — подмену аргумента
+    сторож не заметил бы (№338, круг 2). Запись отчёта — по исходнику: main()
+    гоняет claude CLI, юнит-теста у него нет."""
     ncc = _load("nightly_claude_cores")
+    # корень данных называет тест — публичной дверью канона, как соседние тесты
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    gate_args = []
+    monkeypatch.setattr(ncc.live_gate, "wait_while_live", lambda *a, **k: gate_args.append(a))
+    monkeypatch.setattr(ncc.live_gate, "night_is_over", lambda *a, **k: False)
+    ncc.wait_for_night_window()
+    assert gate_args and gate_args[0][0] == tmp_path.resolve(), \
+        "гейт ждёт на корне данных из канона, а не на выведенном или чужом пути"
+    # конец ночи — тоже поведение, а не текст: вышло время — выход с кодом 0
+    monkeypatch.setattr(ncc.live_gate, "night_is_over", lambda *a, **k: True)
+    with pytest.raises(SystemExit) as exit_code:
+        ncc.wait_for_night_window()
+    assert exit_code.value.code == 0
     src = inspect.getsource(ncc.main)
-    # Пин по ВЫЗОВУ, не по аргументу: прежний `wait_while_live(ROOT` пережил
-    # перевод файла на канон и молчал, когда имени ROOT в модуле уже не было —
-    # NameError на боевом пути поймали головы и линтер, а не этот сторож (№338).
-    assert "live_gate.wait_while_live(" in src and "live_gate.night_is_over()" in src
+    # шов main → гейт пиним разбором, а не подстрокой: закомментированный вызов
+    # и строка в докстроке подошли бы под `in src` (урок №328)
+    вызовы = {
+        узел.func.id
+        for узел in ast.walk(ast.parse(textwrap.dedent(src)))
+        if isinstance(узел, ast.Call) and isinstance(узел.func, ast.Name)
+    }
+    assert "wait_for_night_window" in вызовы, "main потерял живой гейт"
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
     assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"
