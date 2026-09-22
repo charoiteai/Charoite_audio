@@ -141,6 +141,7 @@ def test_имя_модуля_без_загрузки_не_тянет_файл(tm
     (tmp_path / "tests" / "test_mentions.py").write_text(
         "import json\n"
         "# _load lonely — упоминание в комментарии\n"
+        "# mod = _load(\"lonely\")  — закомментированная загрузка\n"
         "def test_ok():\n"
         "    assert 'lonely' != json.load\n", encoding="utf-8")
 
