@@ -18,6 +18,7 @@ final class DaemonRefusalTests: XCTestCase {
         XCTAssertTrue(s.status.contains("устройство"),
                       "причина потери захвата — единственная подсказка, что чинить: \(s.status)")
         XCTAssertTrue(s.statusIsError)
+        XCTAssertFalse(s.statusErrorFromDaemon, "текст наш, не демона — fail() звался")
         XCTAssertEqual(s.preservedFailure, s.status,
                        "без preservedFailure запоздавший статус демона затёр бы причину")
         XCTAssertNil(s.captureLossReason, "состояние не переживает встречу")
@@ -33,6 +34,7 @@ final class DaemonRefusalTests: XCTestCase {
 
         XCTAssertEqual(s.status, recipe, "текст демона несёт рецепт — наш «нажмите ещё раз» поверх вреден")
         XCTAssertTrue(s.statusIsError)
+        XCTAssertTrue(s.statusErrorFromDaemon, "fail() не звался: иначе рецепт стёрт и баннер вправе его скрыть")
         XCTAssertEqual(s.preservedFailure, recipe)
     }
 }

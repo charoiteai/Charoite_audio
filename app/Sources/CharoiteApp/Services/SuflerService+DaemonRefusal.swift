@@ -23,7 +23,8 @@ extension SuflerService {
                        "⛔️ Recording stopped and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
                        "⛔️ 录音已停止且未能恢复。请再次点击「旁听会议」")
         case .none, .restart:
-            return nil                      // сюда не приходим: обе ветки живут своей дорогой
+            assertionFailure("сдаёмся с решением \(decision) — эти ветки не сдаются")
+            return nil
         }
     }
 
@@ -37,7 +38,6 @@ extension SuflerService {
     func giveUp(_ decision: RestartDecision) {
         let потеря = captureLossReason
         captureLossReason = nil
-        _ = takeDaemonFatalReason()
         endSleepGuard()
         if let текст = Self.finalFailureText(for: decision, captureLoss: потеря) {
             fail(текст)
