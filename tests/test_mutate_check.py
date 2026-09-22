@@ -11,6 +11,8 @@ import ast
 import pathlib
 import sys
 
+import pytest
+
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -115,6 +117,46 @@ def test_модуль_запускаемый_подпроцессом_наход
 
     found = mc.tests_for(tmp_path, tmp_path / "src" / "dictate_note.py")
     assert found == ["tests/test_cli.py"], found
+
+
+@pytest.mark.parametrize("load", [
+    'importlib.util.spec_from_file_location(\n    "lonely", ROOT / "scripts" / "lonely.py")',
+    '_load("lonely")',
+], ids=["spec_from_file_location", "хелпер _load"])
+def test_модуль_загружаемый_по_пути_находится(tmp_path, load):
+    """Свежая копия модуля на каждый тест — загрузкой по пути, без import:
+    так тесты изолируют изменяемое состояние модуля. Мутатор этого не видел и
+    судил модуль всем набором — локально база не укладывалась в лимит (№356)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_loaded.py").write_text(
+        f"def test_ok():\n    mod = {load}\n    assert mod\n", encoding="utf-8")
+
+    assert mc.tests_for(tmp_path, tmp_path / "scripts" / "lonely.py") == ["tests/test_loaded.py"]
+
+
+def test_имя_модуля_без_загрузки_не_тянет_файл(tmp_path):
+    """Имя в строке, в комментарии и чужой load — не загрузка модуля: такой файл
+    в подмножество не идёт, иначе поиск опять стал бы подстрокой."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mentions.py").write_text(
+        "import json\n"
+        "# _load lonely — упоминание в комментарии\n"
+        "def test_ok():\n"
+        "    assert 'lonely' != json.load\n", encoding="utf-8")
+
+    assert mc.tests_for(tmp_path, tmp_path / "scripts" / "lonely.py") == ["tests"]
+
+
+@pytest.mark.parametrize("module,test", [
+    ("merge_graphs", "tests/test_merge_graphs.py"),
+    ("nightly_dossier", "tests/test_dossier.py"),
+    ("nightly_claude_cores", "tests/test_nightly_cloud_reports.py"),
+    ("nightly_dossier_review", "tests/test_nightly_cloud_reports.py"),
+])
+def test_скрипты_с_загрузкой_по_пути_судятся_своими_тестами(module, test):
+    """Боевые случаи №356: эти тесты грузят скрипт по пути. Без них в
+    подмножестве мутант судился бы всем набором или мимо изолирующего теста."""
+    assert test in mc.tests_for(REPO, REPO / "scripts" / f"{module}.py")
 
 
 def test_зависший_прогон_считается_убитым(tmp_path, monkeypatch):

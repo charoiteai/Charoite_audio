@@ -334,10 +334,19 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     spawned = re.compile(
         rf"(?:subprocess\.\w+|Popen|check_call|check_output|run)\s*\("
         rf"[^)]*['\"][^'\"]*{name}\.py['\"]", re.S)
+    # Загрузка по пути, без import: `spec_from_file_location("X", …)` и хелпер
+    # `_load("X")`. Так тесты берут свежую копию модуля, у которого изменяемое
+    # состояние на уровне модуля (ночная ревизия досье: FAILED_STEPS, CLI_DOWN),
+    # — переписывать их на import нельзя. Без этого модуль с тестами судился
+    # всем набором: в CI около 3 мин на мутанта, а локально база не укладывалась
+    # в лимит, и прогон отказывал целиком (№356). Лишнее совпадение только
+    # добавит тестов в подмножество — ошибка в безопасную сторону.
+    loaded = re.compile(
+        rf"(?:spec_from_file_location|\b_load)\s*\(\s*['\"]{name}['\"]")
     hits = [str(p.relative_to(root))
             for p in sorted((root / "tests").rglob("test_*.py"))
             if imported.search(t := p.read_text(encoding="utf-8"))
-            or spawned.search(t)]
+            or spawned.search(t) or loaded.search(t)]
     # Пусто — не значит «никто не проверяет»: модуль мог приехать через
     # чужой импорт. Берём весь набор: честно и медленно лучше, чем быстро
     # и мимо.
