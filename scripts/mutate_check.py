@@ -71,9 +71,53 @@ def head_of(rng: str) -> str:
     return rng.strip() or "HEAD"
 
 
+# Области «нашего python» — у сторожа раскладки, не свой литерал `src/`: PR только
+# по `scripts/` давал job без единого мутанта и зелёный (входной круг №339, DS I7)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import layout_map  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+# Путь от __file__, а не от корня данных: мутатор неотделим от репозитория —
+# он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
+# «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
+# сценария, где скрипт лежит отдельно от src/, попросту нет.
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
+MUTATION_AREAS = layout_map.PYTHON_AREAS
+
+
+def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int) -> int:
+    """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
+    — плана не было вовсе; `EXIT_PARTIAL` — план был, но судили не весь (прервано
+    встречей, срезано потолком, не применилось); 0 — проверен весь план, чисто.
+
+    Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
+    лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
+    первом же мутанте при плане из сорока, отвечал «проверять было нечего» —
+    CI печатал это дословно. Обе головы круга 4 независимо (DS C1 = GLM 1).
+    """
+    if survivors:
+        return 1
+    if planned == 0:
+        # Срез потолком оставляет пустой план, но проверять БЫЛО что: «нечего»
+        # тут врёт ровно так же, как врал `tested == 0` в круге 4 (GLM I2).
+        return EXIT_PARTIAL if dropped else EXIT_NOTHING_TO_CHECK
+    if tested < planned or dropped or skipped:
+        return EXIT_PARTIAL
+    return 0
+
+
+def busy_guard(args) -> bool:
+    """Действует ли гвард занятости машины. Снимает его только `--force` —
+    человек сознательно идёт поверх встречи. Отдельного флага для CI нет и не
+    нужно: без данных владельца `machine_busy` пуст сам (замер 22.09 на голом
+    каталоге), а флаг «владельца здесь нет» на машине владельца вёл себя как
+    `--force` без единого слова (круг 1 по коду №339, DS I4 = GLM I3). Один
+    предикат на обе точки гварда: две копии выражения пережили мутацию (#605)."""
+    return not args.force
+
+
 def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
-    """Строки, добавленные в диапазоне, по файлам src/."""
-    out = subprocess.run(["git", "diff", "--unified=0", rng, "--", "src/"],
+    """Строки, добавленные в диапазоне, по файлам областей нашего python."""
+    out = subprocess.run(["git", "diff", "--unified=0", rng, "--", *MUTATION_AREAS],
                          cwd=root, capture_output=True, text=True, check=True).stdout
     result: dict[pathlib.Path, set[int]] = {}
     cur: pathlib.Path | None = None
@@ -356,7 +400,7 @@ def main(argv: list[str]) -> int:
     # подставляется» было моей ошибкой, а не свойством кода (обе головы
     # выходного круга №321). «~/charoite» лечил ещё круг-1 (DS Minor).
     data_root = charoite_paths.resolve_root(__file__)
-    if not args.force:
+    if busy_guard(args):
         busy = busy_signals.machine_busy(data_root)
         if busy:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
@@ -364,8 +408,8 @@ def main(argv: list[str]) -> int:
             return 3
     targets = changed_lines(root, args.range)
     if not targets:
-        print(f"В {args.range} нет изменённых строк в src/ — ломать нечего.")
-        return 0
+        print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
+        return EXIT_NOTHING_TO_CHECK
 
     rev = head_of(args.range)
     plan: list[Mutation] = []
@@ -381,7 +425,7 @@ def main(argv: list[str]) -> int:
     if not plan:
         print(f"Изменённые строки не содержат ничего мутируемого "
               f"(файлов: {len(targets)}).")
-        return 0
+        return EXIT_NOTHING_TO_CHECK
 
     dropped = 0
     if len(plan) > args.max:
@@ -450,7 +494,7 @@ def main(argv: list[str]) -> int:
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
-            if not args.force:
+            if busy_guard(args):
                 if busy_signals.live_recording(data_root):
                     aborted = "живая встреча"
                 elif busy_signals.night_running(data_root):
@@ -511,7 +555,7 @@ def main(argv: list[str]) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(report + "\n", encoding="utf-8")
-    return 1 if survivors else 0
+    return verdict_code(survivors, tested, len(plan), dropped, len(skipped))
 
 
 if __name__ == "__main__":

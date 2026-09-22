@@ -177,15 +177,14 @@
     "scripts/dedup_archive.py": "разовая уборка дублей архива руками",
     "scripts/diar_bench.py": "бенчмарк диаризации, ручной прогон",
     "scripts/fix_action_items.py": "разовая починка поручений руками",
-    "scripts/layout_map.py": "сторож раскладки: ручной прогон и pytest — точкой входа продукта не является",
     "scripts/merge_graphs.py": "слияние графов руками",
     "scripts/migrate_placeholders.py": "разовая миграция заглушек руками",
-    "scripts/mutate_check.py": "мутационная проверка тестов, ручной прогон без места в CI (№67)",
     "scripts/stt_bench.py": "бенчмарк STT, ручной прогон",
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
+    "scripts/preflight.sh": "приёмка перед кругом голов и чужой работы — ручной запуск (№339)"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -198,5 +197,207 @@
     "allowed_edges": "Рёбра против стрелок на момент снимка: генерируются `scripts/layout_map.py --regen`, руками не считаются. Карточка — где ребро снимается.",
     "generated": "Момент последнего --regen (allowlist); версия файла — git.",
     "manual_entry_points": "Исполняемые файлы (скрипты и модули src/ с гвардом __main__), которые из кода репозитория никто не зовёт: запускает человек или внешний конфиг. Обоснование обязательно; ручную пометку гейт снимает, как только файл начинает звать код. Список исполняемых и кто их зовёт — замер, не решение: смотри docs/design/layout.md."
+  },
+  "run_contracts": {
+    "app/make_app.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/bench_extract.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/bench_models.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/build_app_icon.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/build_embedded_python.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/check_private_markers.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/check_test_assertions.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/cloud_review.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/dedup_archive.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/dedup_graph.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/diar_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/doctor.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/fix_action_items.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/forget_meeting.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/get_models.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/graph_doctor.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/graph_search_index.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/import_meeting.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/layout_map.py": {
+      "mode": "none",
+      "why": "режимы руками, --help нет — голый запуск пишет карту; №340"
+    },
+    "scripts/lock_runtime_deps.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/make_dmg.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/memory_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/merge_graphs.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/migrate_placeholders.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/morning_brief.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/mutate_check.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/nightly.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/nightly_claude_cores.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/nightly_dossier.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/nightly_dossier_review.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/notarize.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/preflight.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; №340"
+    },
+    "scripts/protocol.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/rename_meeting.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "scripts/sign_release_manifest.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/stt_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/tier3_cores.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/wait_for_idle.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "src/daemon.py": {
+      "mode": "refuse",
+      "why": "по коду: конструктор корня"
+    },
+    "src/diarize.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/dictate.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/dictate_note.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/graph_updater.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/main.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/mcp_server.py": {
+      "mode": "none",
+      "why": "stdio-сервер: голый запуск ждёт stdin; №340"
+    },
+    "src/meeting_archive.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/rebuild_transcript.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/retro_fill.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "src/transcribe_file.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    },
+    "src/voice_memos_bridge.py": {
+      "mode": "none",
+      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+    }
   }
 }
