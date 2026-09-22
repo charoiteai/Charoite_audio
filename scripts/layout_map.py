@@ -887,9 +887,10 @@ def derive_run_contract(rel: str, info: FileInfo) -> dict | None:
     if "parse_args" in calls:
         modes.append("help")
         why.append("argparse")
-    if calls & set(ROOT_CONSTRUCTORS):
+    названо = calls & set(ROOT_CONSTRUCTORS)
+    if названо:
         modes.append("refuse")
-        why.append("конструктор корня")
+        why.append("дверь корня" if названо == {"name_data_root_or_exit"} else "конструктор корня")
     return {"mode": "+".join(modes), "why": "по коду: " + ", ".join(why)} if modes else None
 
 

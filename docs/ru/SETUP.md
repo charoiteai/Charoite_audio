@@ -168,7 +168,7 @@ cp config/config.example.yaml config/config.yaml
 ## 6. Запуск
 
 ```bash
-.venv/bin/python src/main.py        # CLI: живая стенограмма + подсказки
+CHAROITE_ROOT="$PWD" .venv/bin/python src/main.py        # CLI: живая стенограмма + подсказки
 # или демон для интеграции с UI (NDJSON stdout/stdin). Где лежат данные,
 # демон не угадывает — корень называет тот, кто запускает:
 CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py
