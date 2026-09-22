@@ -121,3 +121,43 @@ jobs:
         run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       - name: pytest
         run: python -m pytest tests/ -q
+
+  mutation:
+    name: mutation (changed lines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # диапазон base...HEAD — нужна история
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: PortAudio
+        timeout-minutes: 6
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: Deps
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+      # Единственная проверка, которая отвечает «а тест вообще держит что-нибудь»:
+      # в изменённые строки возвращается дефект, и прогон обязан покраснеть.
+      # Покрытие на это не отвечает — тест без единой проверки покрывает строку
+      # на сто процентов и зелёный всегда. Скрипт лежал в репо с августа и
+      # гонялся только руками (№67); отсюда он становится приёмкой PR.
+      # `--no-owner`: на раннере нет владельца данных — гвард занятости не
+      # применим; это не `--force` («идти поверх встречи»): команда, скопированная
+      # отсюда в терминал, живую встречу не накроет (входной круг №339).
+      # `--max 20` при `--timeout 120`: худший случай 40 минут — потолок job тот же,
+      # красный от «не успели» с красным от «дыра» не путается (DS I8).
+      - name: mutate changed lines
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --no-owner --max 20 --timeout 120

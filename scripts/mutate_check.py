@@ -71,9 +71,17 @@ def head_of(rng: str) -> str:
     return rng.strip() or "HEAD"
 
 
+# Области «нашего python» — у сторожа раскладки, не свой литерал `src/`: PR только
+# по `scripts/` давал job без единого мутанта и зелёный (входной круг №339, DS I7)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import layout_map  # noqa: E402
+
+MUTATION_AREAS = layout_map.PYTHON_AREAS
+
+
 def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
-    """Строки, добавленные в диапазоне, по файлам src/."""
-    out = subprocess.run(["git", "diff", "--unified=0", rng, "--", "src/"],
+    """Строки, добавленные в диапазоне, по файлам областей нашего python."""
+    out = subprocess.run(["git", "diff", "--unified=0", rng, "--", *MUTATION_AREAS],
                          cwd=root, capture_output=True, text=True, check=True).stdout
     result: dict[pathlib.Path, set[int]] = {}
     cur: pathlib.Path | None = None
@@ -333,6 +341,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
+    ap.add_argument("--no-owner", action="store_true",
+                    help="на этой машине нет владельца данных (CI-раннер): гвард занятости "
+                         "не применим. Это не «идти поверх встречи» — для того есть --force, "
+                         "и команда из workflow, скопированная в терминал, встречу не накроет")
     args = ap.parse_args(argv[1:])
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
@@ -356,7 +368,7 @@ def main(argv: list[str]) -> int:
     # подставляется» было моей ошибкой, а не свойством кода (обе головы
     # выходного круга №321). «~/charoite» лечил ещё круг-1 (DS Minor).
     data_root = charoite_paths.resolve_root(__file__)
-    if not args.force:
+    if not (args.force or args.no_owner):
         busy = busy_signals.machine_busy(data_root)
         if busy:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
@@ -450,7 +462,7 @@ def main(argv: list[str]) -> int:
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
-            if not args.force:
+            if not (args.force or args.no_owner):
                 if busy_signals.live_recording(data_root):
                     aborted = "живая встреча"
                 elif busy_signals.night_running(data_root):
