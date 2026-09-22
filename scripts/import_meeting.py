@@ -917,6 +917,12 @@ def main() -> None:
     charoite_paths.harden_umask()
     ap = build_parser()
     args = ap.parse_args()
+    # дети импорта (распознавание, граф, заметка) получают корень только если
+    # его назвал этот процесс: приложение и демон передают CHAROITE_ROOT, ручной
+    # запуск без него — рецепт и код 5, а не догадка, которую дети примут за
+    # решение владельца (№340). После разбора аргументов: --help без корня.
+    from charoite_paths import name_data_root_or_exit
+    name_data_root_or_exit(__file__)
 
     if args.prune:
         folder = pathlib.Path(args.file).expanduser()

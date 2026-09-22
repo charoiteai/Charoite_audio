@@ -270,6 +270,28 @@ def require_data_root(module_file: str, *, guess_from_code: bool = False) -> pat
         f"(запуск: {pathlib.Path(module_file).name})")
 
 
+
+def name_data_root_or_exit(module_file: str, *, guess_from_code: bool = False) -> pathlib.Path:
+    """Дверь ТОЧКИ ВХОДА без своего канала к приложению: назвать корень данных
+    или выйти кодом `EXIT_ROOT_UNNAMED` с рецептом в stderr.
+
+    `require_data_root` отказывает исключением — его ловит демон, у которого к
+    приложению свой канал (`status` с `error: True`). Остальным входам нужен
+    один исход, который прочитают приложение, launchd и проба приёмки: строка
+    с рецептом и код отказа. Копия try/except в каждом хвосте — одиннадцать
+    мест, где текст и код разъедутся; дверь одна (№340).
+
+    Коды выхода берутся на вызове, а не на импорте: канон тянут все слои, и
+    платить за импорт `exit_codes` должен только тот, кто отказывает.
+    """
+    try:
+        return require_data_root(module_file, guess_from_code=guess_from_code)
+    except RootNotNamed as отказ:
+        import sys
+        from exit_codes import EXIT_ROOT_UNNAMED
+        print(f"{pathlib.Path(module_file).name}: {отказ}", file=sys.stderr)
+        raise SystemExit(EXIT_ROOT_UNNAMED) from None
+
 def resolve_root(module_file: str) -> pathlib.Path:
     """Корень ДАННЫХ для модуля.
 

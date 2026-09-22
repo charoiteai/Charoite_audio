@@ -127,7 +127,8 @@ def test_the_registry_names_the_canon_constructor() -> None:
     """Литерал имени конструктора в сторожe сверен с каноном: переименование в
     `charoite_paths` без правки реестра краснеет здесь, а не молчит (третья
     копия литерала — урок круга 5 по №332)."""
-    assert lm.ROOT_CONSTRUCTOR == charoite_paths.require_data_root.__name__
+    assert set(lm.ROOT_CONSTRUCTORS) == {charoite_paths.require_data_root.__name__,
+                                        charoite_paths.name_data_root_or_exit.__name__}
 
 
 def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -> None:
