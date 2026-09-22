@@ -76,8 +76,11 @@ def head_of(rng: str) -> str:
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import layout_map  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+# Путь от __file__, а не от корня данных: мутатор неотделим от репозитория —
+# он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
+# «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
+# сценария, где скрипт лежит отдельно от src/, попросту нет.
 from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
-
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
@@ -94,7 +97,9 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     if survivors:
         return 1
     if planned == 0:
-        return EXIT_NOTHING_TO_CHECK
+        # Срез потолком оставляет пустой план, но проверять БЫЛО что: «нечего»
+        # тут врёт ровно так же, как врал `tested == 0` в круге 4 (GLM I2).
+        return EXIT_PARTIAL if dropped else EXIT_NOTHING_TO_CHECK
     if tested < planned or dropped or skipped:
         return EXIT_PARTIAL
     return 0
