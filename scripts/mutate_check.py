@@ -79,6 +79,14 @@ import layout_map  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
+def busy_guard(args) -> bool:
+    """Действует ли гвард занятости машины. Снимают его двое: `--force` — человек
+    сознательно идёт поверх встречи; `--no-owner` — владельца данных на машине
+    нет (CI-раннер), сигналов не существует. Один предикат на обе точки
+    гварда: две копии выражения пережили мутацию `or → and` в CI (#605)."""
+    return not (args.force or args.no_owner)
+
+
 def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
     """Строки, добавленные в диапазоне, по файлам областей нашего python."""
     out = subprocess.run(["git", "diff", "--unified=0", rng, "--", *MUTATION_AREAS],
@@ -368,7 +376,7 @@ def main(argv: list[str]) -> int:
     # подставляется» было моей ошибкой, а не свойством кода (обе головы
     # выходного круга №321). «~/charoite» лечил ещё круг-1 (DS Minor).
     data_root = charoite_paths.resolve_root(__file__)
-    if not (args.force or args.no_owner):
+    if busy_guard(args):
         busy = busy_signals.machine_busy(data_root)
         if busy:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
@@ -462,7 +470,7 @@ def main(argv: list[str]) -> int:
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
-            if not (args.force or args.no_owner):
+            if busy_guard(args):
                 if busy_signals.live_recording(data_root):
                     aborted = "живая встреча"
                 elif busy_signals.night_running(data_root):

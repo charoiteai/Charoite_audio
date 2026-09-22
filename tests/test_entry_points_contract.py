@@ -143,3 +143,15 @@ def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -
     assert {rel: c["mode"] for rel, c in got.items()} == {
         "src/a.py": "help", "src/b.py": "refuse", "src/ab.py": "help+refuse", "src/c.py": "none", "scripts/d.sh": "none"}
     assert all(c["why"] for rel, c in got.items() if c["mode"] == "none"), "none без причины не бывает"
+
+
+def test_the_plan_lists_only_executables_with_a_contract() -> None:
+    """План — пересечение контрактов и реестра: контракт без файла в плане не
+    появляется (мутант `in → not in` пережил CI по #605), порядок — по пути."""
+    layout = {"run_contracts": {"src/b.py": {"mode": "help", "why": ""},
+                                "src/a.py": {"mode": "refuse", "why": "по коду"},
+                                "src/gone.py": {"mode": "help", "why": ""}}}
+    execs = {"src/a.py": "python с гвардом __main__", "src/b.py": "python с гвардом __main__",
+             "src/nocontract.py": "python с гвардом __main__"}
+    assert lm.run_plan(layout, execs) == [("src/a.py", "refuse", "по коду"), ("src/b.py", "help", "")]
+

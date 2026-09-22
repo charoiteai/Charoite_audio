@@ -155,9 +155,9 @@ jobs:
       # `--no-owner`: на раннере нет владельца данных — гвард занятости не
       # применим; это не `--force` («идти поверх встречи»): команда, скопированная
       # отсюда в терминал, живую встречу не накроет (входной круг №339).
-      # `--max 20` при `--timeout 120`: худший случай 40 минут — потолок job тот же,
-      # красный от «не успели» с красным от «дыра» не путается (DS I8).
+      # `--max 30`: первый прогон (#605) при 20 срезал 9 мутантов за 9 минут —
+      # ~27 с на мутанта, 30 укладываются в потолок job с запасом (DS I8).
       - name: mutate changed lines
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --no-owner --max 20 --timeout 120
+        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --no-owner --max 30 --timeout 120
