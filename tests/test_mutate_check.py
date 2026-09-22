@@ -330,24 +330,21 @@ def test_явный_return_none_не_мутируется(tmp_path):
     assert [m.line for m in muts if m.what.startswith("return")] == [4], [str(m) for m in muts]
 
 
-def test_гвард_занятости_снимают_только_force_и_no_owner():
-    """Таблица: без флагов гвард действует; любой из двух флагов снимает его.
-    Мутант `or → and` в предикате пережил CI по #605 — теперь его держит эта таблица."""
+def test_гвард_занятости_снимает_только_force():
+    """Без флага гвард действует; `--force` снимает. Мутант `or → and` в прежнем
+    предикате на два флага пережил CI по #605; флага для CI больше нет — на
+    раннере без данных владельца гвард молчит сам (`machine_busy` пуст)."""
     import argparse
-    for force, no_owner, ждём in ((False, False, True), (True, False, False),
-                                  (False, True, False), (True, True, False)):
-        args = argparse.Namespace(force=force, no_owner=no_owner)
-        assert mc.busy_guard(args) is ждём, (force, no_owner)
+    assert mc.busy_guard(argparse.Namespace(force=False)) is True
+    assert mc.busy_guard(argparse.Namespace(force=True)) is False
 
 
-def test_занятая_машина_останавливает_мутатор_а_no_owner_нет(monkeypatch, capsys):
-    """Поведение через `main`: при живой записи без флагов — код 3 и ни одного
-    прогона; `--no-owner` проходит гвард (владельца на раннере нет) и упирается в
-    пустой диапазон, не в занятость."""
+def test_занятая_машина_останавливает_мутатор_а_force_нет(monkeypatch, capsys):
+    """Поведение через `main`: при живой записи без флага — код 3 и ни одного
+    прогона; `--force` проходит гвард и упирается в пустой диапазон, не в занятость."""
     import busy_signals
     monkeypatch.setattr(busy_signals, "machine_busy", lambda root: ["живая запись"])
     assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == 3
     assert "машина занята" in capsys.readouterr().out
-    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--no-owner"]) != 3
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD", "--force"]) != 3
     assert "машина занята" not in capsys.readouterr().out
-

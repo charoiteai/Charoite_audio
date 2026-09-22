@@ -32,11 +32,12 @@ if ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
 fi
 RANGE="$BASE...HEAD"
 FAIL=""
+SKIPPED=""
 T0=$(date +%s)
 SKIP=",${PREFLIGHT_SKIP:-},"
 WORK=$(mktemp -d -t preflight)
 trap 'rm -rf "$WORK"' EXIT
-skipped() { case "$SKIP" in *",$1,"*) printf '   – %s пропущен (PREFLIGHT_SKIP)\n' "$1"; return 0;; esac; return 1; }
+skipped() { case "$SKIP" in *",$1,"*) SKIPPED="$SKIPPED $1"; printf '   – %s пропущен (PREFLIGHT_SKIP)\n' "$1"; return 0;; esac; return 1; }
 step() { printf '\n── %s\n' "$1"; }
 verdict() { if [ "$1" -ne 0 ]; then FAIL="$FAIL $2"; printf '   ✗ %s (код %s)\n' "$2" "$1"; else printf '   ✓ %s\n' "$2"; fi; }
 show() { sed 's/^/   /' "$1" | head -20; }
@@ -71,9 +72,11 @@ if ! skipped pytest; then
   verdict $rc pytest
 fi
 
-step "3. swift — если тронут app/ (зелёный значит то же, что в swift-tests.yml)"
+step "3. swift — если тронут app/ (сборка, тесты и SwiftLint как в swift-tests.yml; app-ios не собирается)"
 if skipped swift; then :
 elif [ -z "$(changed app/)" ]; then echo "   – app/ не тронут, пропуск"
+elif command -v swiftlint >/dev/null && ! (swiftlint lint --quiet > "$WORK/swiftlint.log" 2>&1; ! grep -q error "$WORK/swiftlint.log"); then
+  grep error "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict 1 swiftlint
 elif (cd app && swift build --build-tests > "$WORK/swift-build.log" 2>&1); then
   # фильтр без единого теста даёт exit 0 при нуле прогонов — сверяем строку Executed
   (cd app && swift test --skip-build --filter '^CharoiteAppTests\.' > "$WORK/swift-test.log" 2>&1 \
@@ -91,10 +94,15 @@ if ! skipped mutation; then
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
   CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
-  verdict $rc mutation
+  # ноль мутантов — не зелёный, а «проверять нечего»: в сводке это разные слова
+  if [ $rc -eq 0 ] && grep -q "ломать нечего" "$WORK/mutation.log"; then SKIPPED="$SKIPPED mutation(нет мутантов)"; else verdict $rc mutation; fi
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"
-if [ -z "$FAIL" ]; then echo "ok"; exit 0; else echo "FAIL:$FAIL"; exit 1; fi
+# сводка — одна строка, которую процитирует человек или исполнитель: «ok» только
+# когда шли все шаги; пропуск — вслух в той же строке (круг 1 по №339, DS I5)
+if [ -n "$FAIL" ]; then echo "FAIL:$FAIL"; exit 1
+elif [ -n "$SKIPPED" ]; then echo "неполный — пропущены:$SKIPPED"; exit 0
+else echo "ok"; exit 0; fi
 }
 main "$@"

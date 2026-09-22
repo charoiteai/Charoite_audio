@@ -125,8 +125,9 @@ def test_the_registry_names_the_canon_constructor() -> None:
 
 
 def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -> None:
-    """Умолчание по коду: argparse → help, конструктор корня → refuse, оба →
-    help+refuse, ничего → none с причиной, shell → none."""
+    """Умолчание по коду — только то, что проба докажет: вызов `parse_args` →
+    help (импорта argparse мало), конструктор корня → refuse, оба → help+refuse;
+    ничего — None: `none` пишет человек с карточкой, shell — тоже None."""
     (tmp_path / "src").mkdir()
     (tmp_path / "scripts").mkdir()
     guard = "if __name__ == '__main__':\n"
@@ -135,14 +136,23 @@ def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -
     (tmp_path / "src" / "b.py").write_text("import charoite_paths\n" + guard + "    charoite_paths.require_data_root(__file__)\n",
                                            encoding="utf-8")
     (tmp_path / "src" / "ab.py").write_text("import argparse\nfrom charoite_paths import require_data_root\n" + guard
-                                            + "    require_data_root(__file__)\n", encoding="utf-8")
+                                            + "    require_data_root(__file__)\n    argparse.ArgumentParser().parse_args()\n",
+                                            encoding="utf-8")
     (tmp_path / "src" / "c.py").write_text(guard + "    print(1)\n", encoding="utf-8")
+    (tmp_path / "src" / "imp.py").write_text("import argparse\n" + guard + "    print(argparse)\n", encoding="utf-8")
     (tmp_path / "scripts" / "d.sh").write_text("#!/bin/sh\necho\n", encoding="utf-8")
     inv = lm.inventory(tmp_path)
-    got = {rel: lm.derive_run_contract(inv.files[rel]) for rel in lm.executables(inv)}
-    assert {rel: c["mode"] for rel, c in got.items()} == {
-        "src/a.py": "help", "src/b.py": "refuse", "src/ab.py": "help+refuse", "src/c.py": "none", "scripts/d.sh": "none"}
-    assert all(c["why"] for rel, c in got.items() if c["mode"] == "none"), "none без причины не бывает"
+    got = {rel: lm.derive_run_contract(rel, inv.files[rel]) for rel in lm.executables(inv)}
+    assert {rel: (c and c["mode"]) for rel, c in got.items()} == {
+        "src/a.py": "help", "src/b.py": "refuse", "src/ab.py": "help+refuse", "src/c.py": None,
+        "src/imp.py": None, "scripts/d.sh": None}
+    assert all(c["why"].startswith("по коду: ") for c in got.values() if c), "умолчание машины подписано"
+
+
+def test_the_acceptance_has_something_to_run() -> None:
+    """Пустой план у parametrize — пропуск, не красное (DS I3 = GLM I1): реестр,
+    который дал ноль проб, обязан краснеть здесь, а не исчезать из отчёта."""
+    assert PLAN, "реестр контрактов не дал ни одного входа для прогона — приёмка пуста"
 
 
 def test_the_plan_lists_only_executables_with_a_contract() -> None:

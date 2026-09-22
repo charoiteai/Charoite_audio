@@ -168,13 +168,15 @@ Every executable file — `scripts/layout_map.py` knows which ones: python with 
 real `__main__` guard, shell scripts — carries a **run contract** in
 `docs/design/layout.json` (`run_contracts`). `help`: `--help` with an isolated
 data root exits 0. `refuse`: started without a named data root it refuses with
-`exit_codes.EXIT_ROOT_UNNAMED` and prints the recipe, before touching the disk.
-`none`: there is no safe probe (a stdio server, a daemon without argparse, a
-shell script); the file is not run and the reason stays in the map as visible
-debt. `tests/test_entry_points_contract.py` runs each entry point as a process
+`exit_codes.EXIT_ROOT_UNNAMED` and prints the recipe — the code is deliberately
+not 2, which argparse uses for a bad flag. `none`: there is no safe probe (a
+stdio server, a daemon without argparse, a shell script); the file is not run,
+and the reason must name a tracker card (`№…`) — debt with an owner, not a
+coverage figure. `tests/test_entry_points_contract.py` runs each entry point as a process
 and checks the contract — in CI and under the mutation check alike. A new
-executable gets its contract from `scripts/layout_map.py --regen` (derived from
-the code); turning it into `none`, or back, is a human decision. Run `--regen`
+executable gets its contract from `scripts/layout_map.py --regen` when the code
+proves one (`parse_args` → `help`, the root constructor → `refuse`); `none` is
+never written by the machine — a human writes it, with the card. Run `--regen`
 first when you add an entry point: the layout guard is red until the contract
 exists.
 

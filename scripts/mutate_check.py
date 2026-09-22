@@ -80,11 +80,13 @@ MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
 def busy_guard(args) -> bool:
-    """Действует ли гвард занятости машины. Снимают его двое: `--force` — человек
-    сознательно идёт поверх встречи; `--no-owner` — владельца данных на машине
-    нет (CI-раннер), сигналов не существует. Один предикат на обе точки
-    гварда: две копии выражения пережили мутацию `or → and` в CI (#605)."""
-    return not (args.force or args.no_owner)
+    """Действует ли гвард занятости машины. Снимает его только `--force` —
+    человек сознательно идёт поверх встречи. Отдельного флага для CI нет и не
+    нужно: без данных владельца `machine_busy` пуст сам (замер 22.09 на голом
+    каталоге), а флаг «владельца здесь нет» на машине владельца вёл себя как
+    `--force` без единого слова (круг 1 по коду №339, DS I4 = GLM I3). Один
+    предикат на обе точки гварда: две копии выражения пережили мутацию (#605)."""
+    return not args.force
 
 
 def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
@@ -349,10 +351,6 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
-    ap.add_argument("--no-owner", action="store_true",
-                    help="на этой машине нет владельца данных (CI-раннер): гвард занятости "
-                         "не применим. Это не «идти поверх встречи» — для того есть --force, "
-                         "и команда из workflow, скопированная в терминал, встречу не накроет")
     args = ap.parse_args(argv[1:])
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
@@ -384,7 +382,7 @@ def main(argv: list[str]) -> int:
             return 3
     targets = changed_lines(root, args.range)
     if not targets:
-        print(f"В {args.range} нет изменённых строк в src/ — ломать нечего.")
+        print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
         return 0
 
     rev = head_of(args.range)
