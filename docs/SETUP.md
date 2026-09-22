@@ -178,7 +178,8 @@ Put an ERes2Net embedding model at `models/diar/embedding.onnx` — see
 
 ```bash
 .venv/bin/python src/main.py     # CLI: live transcript + hints
-.venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
+# The daemon does not guess where your data lives — name the root:
+CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
 ```
 
 First run downloads the STT model (~1 min).

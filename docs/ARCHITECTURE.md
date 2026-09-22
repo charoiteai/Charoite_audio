@@ -1208,9 +1208,12 @@ The entry point names the working folder. The root is owned by the path canon
 `resolve_root` answers with the named root before `CHAROITE_ROOT`, and the
 variable stays the channel for children — nightly scripts, the indexer, the
 cloud worker — which derive the root themselves. The app still passes
-`CHAROITE_ROOT` to the daemon on launch; without it and without a named root
-the root is derived from the file location, so running from a repository
-behaves exactly as before.
+`CHAROITE_ROOT` to the daemon on launch. Without it the daemon refuses to
+start — exit code 2 and an error status carrying the recipe — because an
+entry point NAMES the root rather than asking for it; deriving it from the
+file location and publishing that guess to children is what the refusal
+exists to prevent. A module that merely asks (`resolve_root`) still gets the
+file-location answer, and that is the only place the derivation survives.
 
 The answer is asked for, never remembered. `ROOT = resolve_root(__file__)` at
 module level — or the same line as a class field — looks like a call to the

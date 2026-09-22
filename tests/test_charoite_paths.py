@@ -382,3 +382,161 @@ def test_отзыв_не_трогает_чужую_запись_в_переме�
     os.environ["CHAROITE_ROOT"] = str(tmp_path / "от-третьего")   # чужая запись
     charoite_paths.forget_data_root()
     assert os.environ.get("CHAROITE_ROOT") == str(tmp_path / "от-третьего")
+
+
+@pytest.mark.корень_называет_тест
+def test_вход_без_явного_источника_получает_отказ_а_не_догадку(monkeypatch):
+    """Точка входа обязана НАЗВАТЬ корень, а не переспросить канон.
+
+    `use_data_root(resolve_root(__file__))` выглядел как называние, но был
+    узакониванием догадки: ответ третьего пункта канона ложился в `_given` и
+    публиковался в окружение — дети читали догадку как решение владельца, а
+    `_given` сильнее переменной, поэтому никакой позднейший отказ до такого
+    процесса уже не добирался (входной круг по №332, DS C1).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+    with pytest.raises(charoite_paths.RootNotNamed) as отказ:
+        charoite_paths.require_data_root(__file__)
+    # в отказе — рецепт, а не только диагноз: читает его человек у терминала
+    assert "CHAROITE_ROOT" in str(отказ.value) and "не назван" in str(отказ.value)
+
+
+@pytest.mark.корень_называет_тест
+def test_вход_берёт_корень_из_окружения_и_публикует_его(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    charoite_paths.forget_data_root()
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+
+    названный = charoite_paths.require_data_root(__file__)
+
+    assert названный == данные.resolve()
+    assert charoite_paths.resolve_root(__file__) == данные.resolve(), "корень не назван процессу"
+    # повторный вызов входа в том же процессе отдаёт ТОТ ЖЕ корень, а не None:
+    # мутант `return _given → return None` пережил прогон — этой строки не было
+    # (мутатор на диапазоне ветки, 22.09)
+    assert charoite_paths.require_data_root(__file__) == данные.resolve()
+
+
+@pytest.mark.корень_называет_тест
+def test_догадка_доступна_только_названной_вслух(tmp_path, monkeypatch):
+    """`guess_from_code=True` — то же самое, но видно в строке вызова.
+
+    Ручной прогон из checkout остаётся возможным; отличие в том, что намерение
+    угадать написано у вызывающего и попадает в отчёт гейта, а не прячется
+    третьим ответом библиотеки.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    # мнимое дерево во временном каталоге: сторож изоляции прав, называть
+    # боевой корень репозитория тесту нельзя даже ради проверки догадки
+    мнимый = tmp_path / "src" / "точка_входа.py"
+    мнимый.parent.mkdir(parents=True)
+    мнимый.write_text("", encoding="utf-8")
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+
+    названный = charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
+
+    assert названный == tmp_path.resolve()
+
+
+def test_демон_называет_корень_и_отказ_виден_снаружи(tmp_path):
+    """Точка входа проверяется КАК ПРОЦЕСС, а не чтением исходника.
+
+    Без этого теста возврат `daemon.py` к прежнему `use_data_root(_root())`
+    проходил бы молча: pytest зелёный, гейт раскладки зелёный (он смотрит
+    места `__file__`, а не вызов называния). Дефект, ради которого сделана
+    правка, возвращался одним Edit-ом без единого сигнала (круг 1 по коду
+    №332, DS I2).
+
+    Меряются оба канала отказа сразу: код выхода (его читают launchd и любой
+    скрипт) и строка статуса с `error: True` (её рисует приложение). Первая
+    редакция заявляла код 2, которого не было: `main()` стоял голым вызовом,
+    и процесс выходил нулём (обе головы круга 1).
+    """
+    import json
+    import subprocess
+
+    окружение = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    окружение["PATH"] = os.environ.get("PATH", "")
+    прогон = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "daemon.py")],
+        cwd=ROOT, env=окружение, capture_output=True, text=True, timeout=120)
+
+    sys.path.insert(0, str(ROOT / "src"))
+    import exit_codes
+
+    assert прогон.returncode == exit_codes.EXIT_ROOT_UNNAMED, (
+        f"демон без корня обязан выйти кодом {exit_codes.EXIT_ROOT_UNNAMED}, "
+        f"а вышел {прогон.returncode}: launchd с KeepAlive и `&&`-скрипт иначе видят успех")
+    # ищем СВОЁ событие среди строк, а не берём первую: чужой баннер на stdout
+    # (апгрейд зависимости, отладочная печать в цепочке импортов) красил бы
+    # тест `JSONDecodeError` без единого дефекта демона (круг 2, GLM Minor 3)
+    события = []
+    for строка in прогон.stdout.splitlines():
+        try:
+            события.append(json.loads(строка))
+        except json.JSONDecodeError:
+            continue
+    отказы = [e for e in события if e.get("type") == "status" and e.get("error") is True]
+    assert отказы, (
+        f"отказ не пришёл типом, который приложение рисует красным; "
+        f"на stdout было: {прогон.stdout[:400]!r}")
+    assert "CHAROITE_ROOT" in отказы[0]["text"], "в отказе нет рецепта"
+    # причина — ЗНАЧЕНИЕМ: по ней приложение решает, что повтор бесполезен.
+    # Без этой строки удаление `reason` из `emit_error` оставляло бы зелёными
+    # и pytest, и swift test (круг 3 по коду №332, GLM I1).
+    # Сверяем с НАБОРОМ ПРИЁМНИКА, а не с третьей копией литерала в тесте:
+    # иначе переименование причины на одной стороне с правкой «своего» теста
+    # оставляло оба набора зелёными, а в бою отказ уходил в неизвестные — три
+    # перезапуска вместо рецепта (круг 5, DS I1; приём тот же, что в
+    # test_toggle_status.py — тест провода читает оба конца)
+    import re
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
+    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)
+    assert m, "в SuflerEndOfRecording.swift нет набора fatalReasons — контракт провода потерян"
+    known = set(re.findall(r'"([^"]+)"', m.group(1)))
+    assert отказы[0].get("reason") in known, (
+        f"причина {отказы[0].get('reason')!r} неизвестна приложению ({sorted(known)}): "
+        f"отказ уйдёт в три перезапуска вместо рецепта")
+
+
+@pytest.mark.корень_называет_тест
+def test_чужая_догадка_не_принимается_входом_за_решение_владельца(tmp_path, monkeypatch):
+    """«Корень уже есть в процессе» — не то же самое, что «корень назвали».
+
+    Ранний возврат `_given`, добавленный кругом 1, отдавал корень, названный
+    КЕМ УГОДНО: библиотекой, обвязкой, повторным вызовом. Провенанс нигде не
+    хранился, и «точка входа обязана назвать корень» тихо превращалось в
+    «в процессе уже есть корень» (круг 2 по коду №332, DS C2).
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+
+    мнимый = tmp_path / "src" / "точка_входа.py"
+    мнимый.parent.mkdir(parents=True)
+    мнимый.write_text("", encoding="utf-8")
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    charoite_paths.forget_data_root()
+
+    # кто-то до входа вывел корень догадкой — ровно прежний дефект
+    charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
+
+    with pytest.raises(charoite_paths.RootNotNamed) as отказ:
+        charoite_paths.require_data_root(str(мнимый))     # вход догадку не разрешал
+    assert "догадкой" in str(отказ.value)
+    # а вход, который догадку РАЗРЕШИЛ, её и получает — без отказа. Без этой
+    # ветки мутант `and → or` в условии отказа выживал: оба теста были про
+    # «отказ», ни один — про «не отказ» (мутатор на диапазоне ветки, 22.09)
+    assert charoite_paths.require_data_root(str(мнимый), guess_from_code=True) == tmp_path.resolve()
+    charoite_paths.forget_data_root()
