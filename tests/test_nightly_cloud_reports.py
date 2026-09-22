@@ -491,6 +491,26 @@ def test_readonly_reason_names_the_lock_when_the_lock_dir_is_unavailable(tmp_pat
     assert "cloud_edit_graph: false" not in report
 
 
+def test_closed_window_ends_the_review_before_the_cloud_and_the_files(tmp_path, monkeypatch):
+    """Окно закрыто (ночь вышла): ревизия не идёт в облако и не трогает досье
+    на диске — оставшиеся темы завтра (круг 7 по №338: соседние тесты подменяли
+    окно на «всегда открыто», и проверка закрытого окна не покрывал никто)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: False)
+    before = {p.name: p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.md"))}
+
+    def облако(*a, **k):
+        pytest.fail("облачная ревизия позвана при закрытом ночном окне")
+
+    monkeypatch.setattr(ndr, "review", облако)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
+    after = {p.name: p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.md"))}
+    assert after == before, "файлы досье изменились при закрытом окне"
+    assert not list(graph.glob("Служебное_ревизия_досье_*.md")), \
+        "прогон без тем оставил пустой отчёт"
+
+
 def test_review_loop_refuses_to_write_without_a_lock_dir():
     ndr = _load("nightly_dossier_review")
     with pytest.raises(ValueError):
@@ -577,7 +597,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     monkeypatch.setattr(ncc.cloud, "text_only_args", lambda: [])
 
     def fake_window(root, what, **kw):
-        events.append(("окно", root, what))
+        events.append(("окно", root, what, kw.get("default")))
         return window_open[0]
 
     monkeypatch.setattr(ncc.live_gate, "night_window_open", fake_window)
@@ -606,6 +626,8 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
         "окно ждёт на корне данных из канона, а не на выведенном или чужом пути"
     assert window_event[2] == "ревизия ядер", \
         f"what потерялся — в логе ночи шаг не узнать: {window_event[2]!r}"
+    assert window_event[3] is None, \
+        f"вызывающий передал свой потолок ({window_event[3]!r}) — потолок целиком у live_gate"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
 

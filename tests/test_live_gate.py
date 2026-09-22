@@ -175,6 +175,13 @@ def test_wait_while_live_refuses_a_cap_that_is_not_seconds(tmp_path, bad):
         live_gate.wait_while_live(tmp_path, lambda m: None, cap=bad, alive=lambda r: False)
 
 
+def test_wait_while_live_refuses_an_integer_bigger_than_float(tmp_path):
+    """Целое больше максимума float (10**400) роняло math.isfinite
+    OverflowError вместо обещанного ValueError у гейта (круг 7 по №338)."""
+    with pytest.raises(ValueError):
+        live_gate.wait_while_live(tmp_path, lambda m: None, cap=10**400, alive=lambda r: False)
+
+
 @pytest.mark.parametrize("ok", [None, 0, 0.0, 180, 3600.0])
 def test_wait_while_live_takes_none_and_finite_seconds(tmp_path, ok):
     assert live_gate.wait_while_live(tmp_path, lambda m: None, cap=ok, alive=lambda r: False) is False

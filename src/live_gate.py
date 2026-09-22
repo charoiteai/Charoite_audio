@@ -130,8 +130,13 @@ def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,
 
 
 def _finite_seconds(value) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and value >= 0)
+    if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return False
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        return False        # 10**400 — целое, но в float не влезает: «не секунды»
+    return finite and value >= 0
 
 
 def night_window_open(root: pathlib.Path, what: str, log: Callable[[str], None] = print, *,
