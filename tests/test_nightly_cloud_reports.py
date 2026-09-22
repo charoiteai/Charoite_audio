@@ -8,13 +8,11 @@
 """
 from __future__ import annotations
 
-import ast
 import contextlib
 import importlib.util
 import inspect
 import pathlib
 import sys
-import textwrap
 
 import pytest
 
@@ -540,32 +538,97 @@ def test_report_problem_wants_headings_on_their_own_lines():
 def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
     через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Гейт пинится
-    ВЫЗОВОМ по образцу тестов ревизии досье выше: подстрока в исходнике main
-    подходила и чужому пути, и закомментированной строке — подмену аргумента
-    сторож не заметил бы (№338, круг 2). Запись отчёта — по исходнику: main()
-    гоняет claude CLI, юнит-теста у него нет."""
+    ПОВЕДЕНИЕМ — прогоном main() с заглушками, по образцу тестов ревизии досье
+    выше. Разбор исходника (подстрока, потом AST) пережил три перерождения
+    (№338): зелёным оставался перенос вызова за облачный subprocess.run, обёртка
+    `if False:` и локальная тень лямбдой. Каждая заглушка дописывает событие в
+    общий список — утверждается порядок: живой гейт раньше облачного вызова;
+    ожидание раньше проверки конца ночи (ожидание может вытолкнуть за полночь —
+    после него в облако идти нельзя). Запись отчёта — по исходнику: main() гоняет
+    claude CLI, юнит-теста у него нет."""
+    import os
+    import time
+
     ncc = _load("nightly_claude_cores")
     # корень данных называет тест — публичной дверью канона, как соседние тесты
     charoite_paths.use_data_root(tmp_path, replace=True)
-    gate_args = []
-    monkeypatch.setattr(ncc.live_gate, "wait_while_live", lambda *a, **k: gate_args.append(a))
-    monkeypatch.setattr(ncc.live_gate, "night_is_over", lambda *a, **k: False)
-    ncc.wait_for_night_window()
-    assert gate_args and gate_args[0][0] == tmp_path.resolve(), \
+    graph = tmp_path / "graph"
+    cores = graph / "Ядра"
+    cores.mkdir(parents=True)
+    _core(cores, "Ядро", 300, time.time())
+    (cores / "_ЯДРА.md").write_text("индекс", encoding="utf-8")
+    good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
+            "## Потерянные хвосты\n- нет\n## Три риска недели\n- один\n")
+
+    cfg = {"sufler": {}}
+    events = []
+    night_over = [False]    # «утро» наступает только если гейт реально ждал
+    wait_pushes = [False]   # флаг сценария: ожидание вытолкнуло за ночь
+
+    # каждая зависимость main — заглушка; порядок вызовов пишется в events
+    monkeypatch.setattr(ncc, "load_user_or_example", lambda root: cfg)
+    monkeypatch.setattr(ncc.privacy, "cloud_enrich_enabled", lambda c: True)
+    monkeypatch.setattr(ncc.graphs, "graph_dir", lambda c: graph)
+    monkeypatch.setattr(ncc.cloud, "model", lambda c, key: "test-model")
+    monkeypatch.setattr(ncc.cloud, "claude_bin_checked", lambda **k: "claude")
+    monkeypatch.setattr(ncc.cloud, "claude_bin", lambda: "claude")
+    monkeypatch.setattr(ncc.cloud, "add_proxy", lambda env_: None)
+    monkeypatch.setattr(ncc.cloud, "effort", lambda c, key: "low")
+    monkeypatch.setattr(ncc.cloud, "effort_args", lambda level: [])
+    monkeypatch.setattr(ncc.cloud, "text_only_args", lambda: [])
+
+    def fake_gate(root, **kw):
+        events.append(("гейт", root, kw))
+        if wait_pushes[0]:
+            night_over[0] = True    # ждали встречу до самого утра
+        return False
+
+    def fake_night_is_over(now=None):
+        events.append(("конец ночи",))
+        return night_over[0]
+
+    monkeypatch.setattr(ncc.live_gate, "wait_while_live", fake_gate)
+    monkeypatch.setattr(ncc.live_gate, "night_is_over", fake_night_is_over)
+
+    def fake_run(cmd, **kw):
+        events.append(("облако",))
+
+        class R:
+            returncode = 0
+            stdout = good
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ncc.subprocess, "run", fake_run)
+
+    # --- ночь не кончилась: гейт отработал ДО облачного вызова
+    ncc.main()
+    kinds = [e[0] for e in events]
+    assert "гейт" in kinds, "main потерял живой гейт: " + ", ".join(kinds)
+    assert "облако" in kinds
+    assert kinds.index("гейт") < kinds.index("облако"), \
+        f"облако позвали раньше живого гейта: {kinds}"
+    gate_event = next(e for e in events if e[0] == "гейт")
+    assert gate_event[1] == tmp_path.resolve(), \
         "гейт ждёт на корне данных из канона, а не на выведенном или чужом пути"
-    # конец ночи — тоже поведение, а не текст: вышло время — выход с кодом 0
-    monkeypatch.setattr(ncc.live_gate, "night_is_over", lambda *a, **k: True)
+    assert "cap" in gate_event[2], \
+        "ожидание без потолка — ночной прогон ждёт встречу без предела"
+    report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
+    assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
+
+    # --- ожидание вытолкнуло за ночь: в облако идти нельзя, выход с кодом 0
+    events.clear()
+    wait_pushes[0] = True
+    os.utime(cores / "Ядро.md", (time.time() + 5, time.time() + 5))   # ядро изменилось — новая ночь
     with pytest.raises(SystemExit) as exit_code:
-        ncc.wait_for_night_window()
+        ncc.main()
     assert exit_code.value.code == 0
+    assert not any(e[0] == "облако" for e in events), \
+        f"после долгого ожидания скрипт ушёл в облако уже утром: {events}"
+
+    # пины записи отчёта остаются текстом исходника: внутри — системные вызовы,
+    # поведение подменять смысла нет, а обрыв между ними ловит только текст
     src = inspect.getsource(ncc.main)
-    # шов main → гейт пиним разбором, а не подстрокой: закомментированный вызов
-    # и строка в докстроке подошли бы под `in src` (урок №328)
-    вызовы = {
-        узел.func.id
-        for узел in ast.walk(ast.parse(textwrap.dedent(src)))
-        if isinstance(узел, ast.Call) and isinstance(узел.func, ast.Name)
-    }
-    assert "wait_for_night_window" in вызовы, "main потерял живой гейт"
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
     assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"
