@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -319,6 +320,7 @@ def check_pipeline() -> None:
         names = ", ".join(d["meeting_id"] for d in pending[:3])
         line(WARN, f"не доехали до графа: {len(pending)} ({names})",
              "следующая удачная встреча подберёт их сама; вручную — "
+             f"CHAROITE_ROOT={shlex.quote(str(_root()))} "
              ".venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md")
     else:
         line(OK, "незавершённых встреч нет")
@@ -361,6 +363,7 @@ def check_import_queue(cfg: dict) -> None:
     if waiting:
         line(WARN, f"в папке импорта ждёт файлов: {len(waiting)}",
              "их разберёт наблюдатель импорта; если он не запущен — "
+             f"CHAROITE_ROOT={shlex.quote(str(_root()))} "
              ".venv/bin/python scripts/import_meeting.py --scan <папка>")
     else:
         line(OK, "папка импорта пуста")
@@ -436,7 +439,8 @@ def main() -> None:
     if issues:
         print(f"Проблем: {issues}. Пункты с «✗» чинить обязательно, с «–» — по желанию.")
         sys.exit(1)
-    print("Всё на месте. Запускайте: ./app/make_app.sh или .venv/bin/python src/main.py")
+    print("Всё на месте. Запускайте: ./app/make_app.sh или "
+          f"CHAROITE_ROOT={shlex.quote(str(_root()))} .venv/bin/python src/main.py")
 
 
 if __name__ == "__main__":
