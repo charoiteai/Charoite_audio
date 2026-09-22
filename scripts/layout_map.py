@@ -293,9 +293,11 @@ MEASURED_EDGE_FIELDS = ("from", "to")
 #: опровергает её проба на ближайшем прогоне, а не сам реген; `none` машина не
 #: пишет вовсе (круг 2 по коду №339, критика DS).
 RUN_MODES = ("help", "refuse", "none")
-#: Имя конструктора корня в каноне (`charoite_paths`); тест контрактов сверяет
-#: его с самим каноном, чтобы литерал не пережил переименование молча.
-ROOT_CONSTRUCTOR = "require_data_root"
+#: Имена, которыми точка входа НАЗЫВАЕТ корень в каноне (`charoite_paths`):
+#: конструктор (отказ исключением — для входа со своим каналом к приложению) и
+#: дверь (отказ кодом с рецептом — для всех остальных, №340). Тест контрактов
+#: сверяет их с самим каноном, чтобы литерал не пережил переименование молча.
+ROOT_CONSTRUCTORS = ("require_data_root", "name_data_root_or_exit")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
 
@@ -885,9 +887,11 @@ def derive_run_contract(rel: str, info: FileInfo) -> dict | None:
     if "parse_args" in calls:
         modes.append("help")
         why.append("argparse")
-    if ROOT_CONSTRUCTOR in calls:
+    названо = calls & set(ROOT_CONSTRUCTORS)
+    if названо:
         modes.append("refuse")
-        why.append("конструктор корня")
+        подписи = {"name_data_root_or_exit": "дверь корня", "require_data_root": "конструктор корня"}
+        why.append(" и ".join(подписи.get(имя, имя) for имя in ROOT_CONSTRUCTORS if имя in названо))
     return {"mode": "+".join(modes), "why": "по коду: " + ", ".join(why)} if modes else None
 
 
@@ -1168,7 +1172,7 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
 #: Функции канона, которым положение файла отдают на вход: подъём вверх делают
 #: они, а не вызывающий. Имя проверяется вместе с происхождением — локальная
 #: функция с тем же именем каноном не становится (Important обеих голов круга 3).
-ROOT_CANON_CALLS = ("resolve_root", "code_root", "require_data_root")
+ROOT_CANON_CALLS = ("resolve_root", "code_root", "require_data_root", "name_data_root_or_exit")
 #: Вызовы, куда путь от `__file__` уходит целиком и корнем не становится.
 ROOT_BOOTSTRAP_CALLS = ("sys.path.insert", "sys.path.append")
 

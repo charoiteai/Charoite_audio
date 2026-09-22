@@ -13,10 +13,10 @@
 в имени с телефона, src/media_meta), иначе из mtime файла; точнее —
 --date/--time.
 
-    .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
-    .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
-    .venv/bin/python scripts/import_meeting.py --scan -- ~/Charoite_inbox
-    .venv/bin/python scripts/import_meeting.py --prune -- ~/Charoite_inbox
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py --scan -- ~/Charoite_inbox
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py --prune -- ~/Charoite_inbox
 
 Папка импорта (--scan): успешные файлы переезжают в done/ с сайдкаром
 `.<имя>.imported.json` (когда импортирован, во что превратился, когда
@@ -915,6 +915,14 @@ def main() -> None:
     # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
     # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
     charoite_paths.harden_umask()
+    # дети импорта (распознавание, граф, заметка) получают корень только если
+    # его назвал этот процесс: приложение и демон передают CHAROITE_ROOT, ручной
+    # запуск без него — рецепт и код 5, а не догадка, которую дети примут за
+    # решение владельца (№340). ДО разбора аргументов: `file` обязателен, и
+    # argparse выходил кодом 2 раньше двери — отказ без корня был недостижим
+    # (круг 1 по коду, DS и GLM). Цена: --help без корня тоже даёт рецепт.
+    from charoite_paths import name_data_root_or_exit
+    name_data_root_or_exit(__file__)
     ap = build_parser()
     args = ap.parse_args()
 

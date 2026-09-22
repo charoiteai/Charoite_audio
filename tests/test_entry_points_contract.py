@@ -127,7 +127,8 @@ def test_the_registry_names_the_canon_constructor() -> None:
     """Литерал имени конструктора в сторожe сверен с каноном: переименование в
     `charoite_paths` без правки реестра краснеет здесь, а не молчит (третья
     копия литерала — урок круга 5 по №332)."""
-    assert lm.ROOT_CONSTRUCTOR == charoite_paths.require_data_root.__name__
+    assert set(lm.ROOT_CONSTRUCTORS) == {charoite_paths.require_data_root.__name__,
+                                        charoite_paths.name_data_root_or_exit.__name__}
 
 
 def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -> None:
@@ -144,6 +145,10 @@ def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -
     (tmp_path / "src" / "ab.py").write_text("import argparse\nfrom charoite_paths import require_data_root\n" + guard
                                             + "    require_data_root(__file__)\n    argparse.ArgumentParser().parse_args()\n",
                                             encoding="utf-8")
+    (tmp_path / "src" / "door.py").write_text("from charoite_paths import name_data_root_or_exit\n" + guard
+                                              + "    name_data_root_or_exit(__file__)\n", encoding="utf-8")
+    (tmp_path / "src" / "both.py").write_text("import charoite_paths\n" + guard + "    charoite_paths.require_data_root(__file__)\n"
+                                              + "    charoite_paths.name_data_root_or_exit(__file__)\n", encoding="utf-8")
     (tmp_path / "src" / "c.py").write_text(guard + "    print(1)\n", encoding="utf-8")
     (tmp_path / "src" / "imp.py").write_text("import argparse\n" + guard + "    print(argparse)\n", encoding="utf-8")
     (tmp_path / "scripts" / "d.sh").write_text("#!/bin/sh\necho\n", encoding="utf-8")
@@ -151,7 +156,11 @@ def test_the_default_contract_is_derived_from_the_code(tmp_path: pathlib.Path) -
     got = {rel: lm.derive_run_contract(rel, inv.files[rel]) for rel in lm.executables(inv)}
     assert {rel: (c and c["mode"]) for rel, c in got.items()} == {
         "src/a.py": "help", "src/b.py": "refuse", "src/ab.py": "help+refuse", "src/c.py": None,
-        "src/imp.py": None, "scripts/d.sh": None}
+        "src/imp.py": None, "scripts/d.sh": None, "src/door.py": "refuse", "src/both.py": "refuse"}
+    # подпись называет то, чем вход называет корень, — дверь и конструктор различимы (№340, круг 2)
+    assert got["src/door.py"]["why"] == "по коду: дверь корня"
+    assert got["src/b.py"]["why"] == "по коду: конструктор корня"
+    assert got["src/both.py"]["why"] == "по коду: конструктор корня и дверь корня"
     assert all(c["why"].startswith("по коду: ") for c in got.values() if c), "умолчание машины подписано"
     # битый .py: дерева нет — умолчания нет, а не падение на обходе (мутант `or → and` пережил CI #605)
     (tmp_path / "src" / "broken.py").write_text("def (\n", encoding="utf-8")

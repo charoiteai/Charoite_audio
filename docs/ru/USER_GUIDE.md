@@ -165,7 +165,7 @@ python3 scripts/doctor.py
 5. Если статус потерян, но стенограмма существует, запустите явно:
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md
 ```
 
 Не удаляйте стенограмму и свежие файлы из `recordings/`, пока встреча не стала
@@ -178,8 +178,8 @@ python3 scripts/doctor.py
 конвейеру:
 
 ```bash
-.venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
-.venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
 ```
 
 Либо укажите наблюдаемую папку импорта в настройках приложения. Растущий WAV

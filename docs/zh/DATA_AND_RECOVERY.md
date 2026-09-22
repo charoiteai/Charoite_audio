@@ -116,13 +116,13 @@ python3 scripts/doctor.py
 从已有逐字稿手动重建：
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<文件>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<文件>.md
 ```
 
 导入保留下来的来源：
 
 ```bash
-.venv/bin/python scripts/import_meeting.py <音频|文本|字幕>
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <音频|文本|字幕>
 ```
 
 ## 安全的维护命令

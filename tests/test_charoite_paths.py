@@ -540,3 +540,55 @@ def test_чужая_догадка_не_принимается_входом_за
     # «отказ», ни один — про «не отказ» (мутатор на диапазоне ветки, 22.09)
     assert charoite_paths.require_data_root(str(мнимый), guess_from_code=True) == tmp_path.resolve()
     charoite_paths.forget_data_root()
+
+
+# --- дверь точки входа (№340) -----------------------------------------------
+# Входам без своего канала к приложению отказ нужен кодом, а не исключением:
+# приложение, launchd и проба приёмки читают код ПРОЦЕССА и строку с рецептом,
+# а трейсбек `RootNotNamed` выходил бы кодом 1 — «упало что-то», а не «корень не
+# назван». Поэтому дверь проверяется отдельным процессом: в тестовом процессе
+# корень уже назвала обвязка, и отказа там не бывает по построению.
+
+def _door(tmp_path, *, root: str | None, guess: bool = False) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    if root is not None:
+        env["CHAROITE_ROOT"] = root
+    вход = tmp_path / "entry.py"          # чужой вход: имя файла видно в рецепте
+    вход.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+        "import charoite_paths\n"
+        f"print(charoite_paths.name_data_root_or_exit(__file__, guess_from_code={guess!r}))\n",
+        encoding="utf-8")
+    return subprocess.run([sys.executable, str(вход)], capture_output=True, text=True,
+                          env=env, cwd=tmp_path, timeout=60)
+
+
+def test_the_entry_door_refuses_with_the_code_and_a_recipe(tmp_path):
+    sys.path.insert(0, str(ROOT / "src"))
+    import exit_codes
+    прогон = _door(tmp_path, root=None)
+    assert прогон.returncode == exit_codes.EXIT_ROOT_UNNAMED, (прогон.returncode, прогон.stderr[-300:])
+    assert "CHAROITE_ROOT" in прогон.stderr, "рецепт обязан назвать переменную"
+    assert прогон.stderr.count("entry.py") == 1, (
+        "имя входа — ровно один раз: рецепт конструктора его уже называет, "
+        f"префикс поверх давал дубль (мутатор, №340): {прогон.stderr!r}")
+    assert "Traceback" not in прогон.stderr, "отказ — строкой, а не трейсбеком"
+    assert прогон.stdout == "", "без корня вход не должен успеть ничего сделать"
+
+
+def test_the_entry_door_passes_a_named_root_through(tmp_path):
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    прогон = _door(tmp_path, root=str(данные))
+    assert прогон.returncode == 0, прогон.stderr[-300:]
+    assert прогон.stdout.strip() == str(данные.resolve())
+
+
+def test_the_entry_door_names_a_guess_only_when_asked(tmp_path):
+    """Догадка по положению файла — только выписанная в вызове, как у конструктора:
+    без переменной и с guess_from_code=True вход работает на корне кода (для входа
+    из tmp — каталог над ним), а не отказывает."""
+    прогон = _door(tmp_path, root=None, guess=True)
+    assert прогон.returncode == 0, прогон.stderr[-300:]
+    assert прогон.stdout.strip() == str(tmp_path.parent.resolve())

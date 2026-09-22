@@ -133,7 +133,7 @@ python3 scripts/doctor.py
 5. 若状态记录已消失、逐字稿仍在，手动运行：
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<文件>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<文件>.md
 ```
 
 会议就绪前不要删除逐字稿或 `recordings/` 中的新文件。重试从逐字稿开始，
@@ -144,8 +144,8 @@ python3 scripts/doctor.py
 音频、已有文本或 Zoom/Teams 字幕都能进入同一条流水线：
 
 ```bash
-.venv/bin/python scripts/import_meeting.py recording.m4a --date 2026-07-15
-.venv/bin/python scripts/import_meeting.py zoom.vtt --title "规划会议"
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py recording.m4a --date 2026-07-15
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py zoom.vtt --title "规划会议"
 ```
 
 也可以在应用设置中指定监视导入文件夹。正在增长的 WAV 会等复制完成后才处理。
