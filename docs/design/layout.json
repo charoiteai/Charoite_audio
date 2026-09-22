@@ -272,7 +272,7 @@
     },
     "scripts/import_meeting.py": {
       "mode": "help+refuse",
-      "why": "по коду: argparse, затем дверь корня — дети импорта получают названный корень; №340"
+      "why": "по коду: дверь корня первой строкой main(), затем argparse — дети импорта получают названный корень; №340"
     },
     "scripts/layout_map.py": {
       "mode": "none",

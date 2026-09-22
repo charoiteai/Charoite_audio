@@ -126,13 +126,13 @@ python3 scripts/doctor.py
 Manual rebuild from an existing transcript:
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<file>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<file>.md
 ```
 
 Import a surviving source:
 
 ```bash
-.venv/bin/python scripts/import_meeting.py <audio|text|subtitles>
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <audio|text|subtitles>
 ```
 
 ## Safe maintenance commands

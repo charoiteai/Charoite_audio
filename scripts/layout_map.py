@@ -890,7 +890,8 @@ def derive_run_contract(rel: str, info: FileInfo) -> dict | None:
     названо = calls & set(ROOT_CONSTRUCTORS)
     if названо:
         modes.append("refuse")
-        why.append("дверь корня" if названо == {"name_data_root_or_exit"} else "конструктор корня")
+        подписи = {"name_data_root_or_exit": "дверь корня", "require_data_root": "конструктор корня"}
+        why.append(" и ".join(подписи.get(имя, имя) for имя in ROOT_CONSTRUCTORS if имя in названо))
     return {"mode": "+".join(modes), "why": "по коду: " + ", ".join(why)} if modes else None
 
 

@@ -164,7 +164,7 @@ Move from the safest action to the more manual one:
 5. If the status is gone but the transcript exists, run:
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<file>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<file>.md
 ```
 
 Do not delete the transcript or recent `recordings/` files before the meeting
@@ -177,8 +177,8 @@ Audio, an existing transcript or Zoom/Teams subtitles can enter the same
 pipeline:
 
 ```bash
-.venv/bin/python scripts/import_meeting.py recording.m4a --date 2026-07-15
-.venv/bin/python scripts/import_meeting.py zoom.vtt --title "Planning"
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py recording.m4a --date 2026-07-15
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Planning"
 ```
 
 Alternatively configure the watched import folder in the app. A growing WAV

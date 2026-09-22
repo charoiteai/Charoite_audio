@@ -134,13 +134,13 @@ python3 scripts/doctor.py
 Ручная пересборка существующей стенограммы:
 
 ```bash
-.venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md
+CHAROITE_ROOT="$PWD" .venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md
 ```
 
 Импорт сохранившегося источника:
 
 ```bash
-.venv/bin/python scripts/import_meeting.py <аудио|текст|субтитры>
+CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <аудио|текст|субтитры>
 ```
 
 ## Безопасные обслуживающие команды

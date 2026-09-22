@@ -13,10 +13,10 @@
 в имени с телефона, src/media_meta), иначе из mtime файла; точнее —
 --date/--time.
 
-    .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
-    .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
-    .venv/bin/python scripts/import_meeting.py --scan -- ~/Charoite_inbox
-    .venv/bin/python scripts/import_meeting.py --prune -- ~/Charoite_inbox
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py --scan -- ~/Charoite_inbox
+    CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py --prune -- ~/Charoite_inbox
 
 Папка импорта (--scan): успешные файлы переезжают в done/ с сайдкаром
 `.<имя>.imported.json` (когда импортирован, во что превратился, когда
