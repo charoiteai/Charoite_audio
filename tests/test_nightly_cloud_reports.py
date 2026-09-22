@@ -579,6 +579,12 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     monkeypatch.setattr(ncc.cloud, "effort", lambda c, key: "low")
     monkeypatch.setattr(ncc.cloud, "effort_args", lambda level: [])
     monkeypatch.setattr(ncc.cloud, "text_only_args", lambda: [])
+    # потолок — метка из источника: гейт обязан получить ИМЕННО её. Форма значения
+    # (число, не None) пропускала константу cap=3600.0, которая не знает про конец
+    # ночи (круг 5); сама функция держится юнитом в тестах tier3
+    cap_calls = []
+    monkeypatch.setattr(ncc.tier3, "night_wait_cap",
+                        lambda *a, **k: cap_calls.append((a, k)) or 123.0)
 
     def fake_gate(root, **kw):
         events.append(("гейт", root, kw))
@@ -615,11 +621,13 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     gate_event = next(e for e in events if e[0] == "гейт")
     assert gate_event[1] == tmp_path.resolve(), \
         "гейт ждёт на корне данных из канона, а не на выведенном или чужом пути"
-    # потолок пинится ЗНАЧЕНИЕМ: наличие ключа пропускало cap=None, а None у гейта
-    # значит «ждать сколько понадобится» — инцидент ночи 21.08, 04:16–11:36 (круг 4)
-    cap = gate_event[2].get("cap")
-    assert isinstance(cap, (int, float)) and not isinstance(cap, bool), \
-        f"ожидание без потолка — ночной прогон ждёт встречу без предела: cap={cap!r}"
+    # потолок пинится ПРОВОДКОЙ «источник → гейт»: наличие ключа пропускало cap=None
+    # (None у гейта — ждать без предела, ночь 21.08, 04:16–11:36; круг 4), форма числа
+    # пропускала константу (круг 5). Гейт получил ровно то, что отдал источник, а
+    # источник спросили с умолчаниями — подмена default тоже видна
+    assert gate_event[2].get("cap") == 123.0, \
+        f"потолок гейта не из night_wait_cap: cap={gate_event[2].get('cap')!r}"
+    assert cap_calls == [((), {})], f"night_wait_cap вызвана не с умолчаниями: {cap_calls}"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
 
