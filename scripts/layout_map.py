@@ -1562,7 +1562,7 @@ def _root_snapshots(tree: ast.Module) -> list[int]:
     return sorted(set(out))
 
 
-def _file_roots(tree: ast.Module) -> list[int]:
+def _file_roots(tree: ast.Module, *, bootstrap_steps: int = 1) -> list[int]:
     """Строки, где `__file__` стоит НЕ в одном из двух разрешённых мест.
 
     Три круга подряд правило пыталось распознать подъём вверх — сначала по
@@ -1599,7 +1599,7 @@ def _file_roots(tree: ast.Module) -> list[int]:
         name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
         if not ((name in canon or full in canon) or full in ROOT_BOOTSTRAP_CALLS):
             continue
-        steps = 1 if full in ROOT_BOOTSTRAP_CALLS else 0
+        steps = bootstrap_steps if full in ROOT_BOOTSTRAP_CALLS else 0
         for arg in _call_args(node):
             for n in _plain_file_arg(arg, steps=steps):
                 legit.add((n.lineno, n.col_offset))
@@ -1654,7 +1654,7 @@ DATA_ROOT_CALL = "resolve_root"
 #: фазы 3: у 12 из них чтение стоит выше вставки в `sys.path`, то есть канон в
 #: этот момент ещё нельзя импортировать, и перевод требует правки bootstrap.
 #: Область — не потолок и не амнистия: она сокращается и расширению не подлежит.
-ENV_ROOT_ENFORCED = ("src/",)
+ENV_ROOT_ENFORCED = ("src/", "scripts/")
 
 #: Формы вывода корня — таблица, а не одно правило. Первая редакция счёта ловила
 #: только чтение переменной, и этого хватало ровно до первой проверки: дефект, из-за
@@ -1662,12 +1662,16 @@ ENV_ROOT_ENFORCED = ("src/",)
 #: не содержал вовсе — вернуть прежнюю строку, и гейт оставался зелёным при всех
 #: тестах (Critical DS выходного круга, воспроизведено). Новая форма — запись здесь,
 #: а не ещё один цикл в гейте.
-ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module], list[int]], str], ...] = (
-    ("env", lambda tree: _env_reads(tree, ENV_ROOT_VAR),
+ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module, str], list[int]], str], ...] = (
+    ("env", lambda tree, rel: _env_reads(tree, ENV_ROOT_VAR),
      f"читает {ENV_ROOT_VAR} сам"),
-    ("file", _file_roots,
+    # Бюджет подъёма у bootstrap — не константа, а глубина файла: из `src/`
+    # до каталога модуля один шаг, из `scripts/` до `src/` два. С константой 1
+    # правило ловило собственный рецепт — 26 строк формы «file» на скриптах,
+    # переведённых по нему же (№338, замер после перевода 25 входов).
+    ("file", lambda tree, rel: _file_roots(tree, bootstrap_steps=rel.count("/") + 1),
      "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
-    ("snapshot", _root_snapshots,
+    ("snapshot", lambda tree, rel: _root_snapshots(tree),
      f"запоминает ответ {DATA_ROOT_CALL} на импорте — раньше, чем точка входа назвала корень"),
 )
 
@@ -1684,7 +1688,7 @@ def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        found = {name: lines for name, finder, _ in ROOT_SHAPES if (lines := finder(info.tree))}
+        found = {name: lines for name, finder, _ in ROOT_SHAPES if (lines := finder(info.tree, rel))}
         if found:
             out[rel] = found
     return out

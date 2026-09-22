@@ -42,12 +42,16 @@ def _root() -> pathlib.Path:
 # В корне ДАННЫХ (в бандловой установке код лежит в read-only .app, и запись
 # отметок рядом с ним падала бы PermissionError — ревью 19.08, третий круг);
 # где он, отвечает канон — переменная уже поставлена тем, кто запустил.
-STAMPS = resolve_root(__file__) / "logs" / "tier3_last_run.json"
+def stamps_path() -> pathlib.Path:
+    """Файл отметок ночи. Корень спрашивается НА ВЫЗОВЕ, а не на импорте:
+    снапшот запоминал ответ канона раньше, чем точка входа назвала корень, и
+    подмена корня после импорта до файла уже не доходила (правило №338)."""
+    return resolve_root(__file__) / "logs" / "tier3_last_run.json"
 
 
 def _stamps() -> dict:
     try:
-        return json.loads(STAMPS.read_text(encoding="utf-8"))
+        return json.loads(stamps_path().read_text(encoding="utf-8"))
     except Exception:
         # нет файла или он покорёжен — ведём себя как при первом запуске:
         # полный прогон честнее, чем тихо ничего не разобрать
@@ -75,8 +79,9 @@ def _save_stamp(graph: pathlib.Path, ts: float,
               flush=True)
         keep = keep[:200]
     data[str(graph) + "#pending"] = keep
-    STAMPS.parent.mkdir(parents=True, exist_ok=True)
-    STAMPS.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+    файл = stamps_path()
+    файл.parent.mkdir(parents=True, exist_ok=True)
+    файл.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                       encoding="utf-8")
 
 
