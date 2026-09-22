@@ -39,7 +39,6 @@ import dossier  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
-import tier3  # noqa: E402
 import privacy  # noqa: E402
 import safe_write  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
@@ -437,10 +436,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # его — ревизия подождёт. Гейт стоял только в сборке досье, а висел
         # 21.08 именно этот шаг: прогон, начатый в 04:16, к 11:36 всё ещё
         # держал процессор, и живая запись рвалась (потолок — чтобы ночь не
-        # стала днём).
-        live_gate.wait_while_live(_root(), what="ревизия досье",
-                                  cap=tier3.night_wait_cap())
-        if live_gate.night_is_over():
+        # стала днём). Окно — одна дверь у владельца гейта, потолок внутри.
+        if not live_gate.night_window_open(_root(), what="ревизия досье"):
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break
         if CLI_DOWN[0] and not cli_back():
@@ -476,9 +473,10 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # замок на одну запись; за время облачного вызова файл мог смениться —
         # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).
         # Ожидание — не дольше остатка ночи: 10 мин на каждую из шести тем
-        # вылезали за потолок на час (DS I1 по #561)
-        cap = tier3.night_wait_cap(default=LOCK_WAIT)
-        lock_wait = min(LOCK_WAIT, cap if cap is not None else LOCK_WAIT)
+        # вылезали за потолок на час (DS I1 по #561). None потолок не отдаёт
+        # никогда (контракт night_wait_cap) — мёртвая ветка убрана.
+        cap = live_gate.night_wait_cap(default=LOCK_WAIT)
+        lock_wait = min(LOCK_WAIT, cap)
         with file_locks.graph_lock(lock_dir, lock_wait) as taken:
             if taken:
                 try:

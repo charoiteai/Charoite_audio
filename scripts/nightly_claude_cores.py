@@ -29,7 +29,6 @@ import charoite_paths  # noqa: E402 — путь к src задаётся стр�
 import cloud  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
-import tier3  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
 FRESH_DAYS = 7
@@ -219,21 +218,6 @@ def prune_reports(graph: pathlib.Path, prefix: str, keep: int = KEEP_REPORTS) ->
             pass
 
 
-def wait_for_night_window() -> None:
-    """Гейт живой встречи и конец ночи — до любого облачного вызова.
-
-    Отдельная функция, чтобы сторож в тесте пинал ВЫЗОВ, а не подстроку в
-    исходнике main: подстрока подходила бы и чужому пути, и закомментированной
-    строке (№338, круг 2).
-    """
-    # единственный ночной шаг без живого гейта внутри: встреча, начавшаяся после
-    # старта шага, отдавала до 10 минут облаку рядом с живой работой (аудит 13.09, DS M5)
-    live_gate.wait_while_live(_root(), what="ревизия ядер", cap=tier3.night_wait_cap())
-    if live_gate.night_is_over():
-        print("время ночного прогона вышло — ревизия ядер завтра")
-        sys.exit(0)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.parse_args()   # аргументов нет: без них — работа, --help печатает справку
@@ -295,7 +279,13 @@ def main() -> None:
         "## Потерянные хвосты\n## Три риска недели\n"
         "Внутри — маркированные пункты со ссылками [[Ядра/…]]. Не выдумывай."
     )
-    wait_for_night_window()
+    # единственный ночной шаг без живого гейта внутри: встреча, начавшаяся после
+    # старта шага, отдавала до 10 минут облаку рядом с живой работой (аудит 13.09, DS M5).
+    # Окно — одна дверь у владельца гейта: ожидание с потолком остатка ночи и
+    # проверка конца ночи после ожидания.
+    if not live_gate.night_window_open(_root(), what="ревизия ядер"):
+        print("время ночного прогона вышло — ревизия ядер завтра")
+        sys.exit(0)
     try:
         # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
         # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним

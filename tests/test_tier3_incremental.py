@@ -262,11 +262,12 @@ def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
     пересуживает всё с нуля (мутационный прогон 21.08)."""
     graph = _graph(tmp_path, "Одно", "Другое")
     # Одинаковые эмбеддинги: пара проходит префильтр, суд реально идёт по
-    # циклу и спрашивает потолок ночи; с ортогональными пара отсекалась до
+    # циклу и спрашивает ночное окно; с ортогональными пара отсекалась до
     # цикла и stopped=False держалось инициализацией, а не прогоном
     # (ревью 22.08: Sonnet 5 и DeepSeek независимо).
     asked = []
-    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: asked.append(1) or False)
+    monkeypatch.setattr(tier3.live_gate, "night_window_open",
+                        lambda *a, **k: asked.append(1) or True)
 
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
                      judge=fake_judge())
@@ -278,7 +279,7 @@ def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
     """Обрыв потолком ночи — stopped=True: недосуженные ядра остаются в
     инкременте на следующую ночь, отметка не двигается."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: True)
+    monkeypatch.setattr(tier3.live_gate, "night_window_open", lambda *a, **k: False)
 
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
                      judge=fake_judge())

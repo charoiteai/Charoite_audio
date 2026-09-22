@@ -37,8 +37,6 @@ import pathlib
 import re
 import shutil
 
-import os
-
 import live_gate
 from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged
@@ -340,26 +338,6 @@ def _data_root() -> pathlib.Path:
     return graphs.data_root()
 
 
-def night_wait_cap(default: float = 3600.0, now=None) -> float:
-    """Сколько ждать живую встречу: не дольше, чем осталось ночи.
-
-    Голый час ожидания игнорировал потолок и растягивал прогон за него
-    (аудит ночи 26.08, GLM Important 2 + DS Minor 6). Потолка нет —
-    ждём как раньше; ночь уже вышла — не ждём вовсе (0), вызывающий
-    увидит night_is_over и остановится. None не возвращается никогда: у гейта
-    None значит «без потолка», и это ровно то, от чего функция существует.
-    """
-    import time as _time
-    raw = os.environ.get(live_gate.NIGHTLY_UNTIL_ENV)
-    if not raw:
-        return default
-    try:
-        left = float(raw) - (now() if now else _time.time())
-    except ValueError:
-        return default
-    return max(0.0, min(default, left))
-
-
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
            apply: bool = False, mark: bool = False, *,
            embedder: Embedder, judge: Judge) -> dict:
@@ -450,25 +428,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
 
     dups, maybe_dups, nests = [], [], []
     for c, a, b in pairs:
-        # Потолок ночи — внутри суда, а не только между графами: у типовой
-        # установки граф ОДИН, и полный воскресный прогон (десятки тысяч
-        # пар, NLI в один поток) шёл бы часами мимо потолка (круг-2 по
-        # PR #363, GLM). Каждая пара — отдельный вызов NLI, естественная
-        # точка останова; частичный результат помечается stopped, и
-        # вызывающий не двигает отметку --since-last.
-        if live_gate.night_is_over():
+        # Ночное окно — на каждой паре: конец ночи проверяется ПОСЛЕ ожидания
+        # живой встречи, потолок внутри гейта. Каждая пара — отдельный вызов
+        # NLI, естественная точка останова; частичный результат помечается
+        # stopped, и вызывающий не двигает отметку --since-last (круг-2 по
+        # PR #363: у типовой установки граф ОДИН, и полный воскресный прогон
+        # шёл бы часами мимо потолка; встреча в середине прогона делила модель
+        # с суфлёром — аудит ночи 26.08, GLM Important 1).
+        if not live_gate.night_window_open(_data_root(), what="ревизия ядер"):
             out["stopped"] = True
             break
-        # Живая встреча важнее ночи — и на самом тяжёлом шаге тоже: суд пар
-        # держит bge-m3 в Ollama и NLI на CPU, а гейт стоял только у досье и
-        # облачных ревизий. Встреча, начавшаяся в середине воскресного
-        # прогона, делила модель с суфлёром до потолка (аудит ночи 26.08,
-        # GLM Important 1). Ждём с потолком: ночь и так ограничена.
-        if live_gate.wait_while_live(_data_root(), what="ревизия ядер",
-                                     cap=night_wait_cap()):
-            if live_gate.night_is_over():
-                out["stopped"] = True
-                break
         try:
             tried += 1
             ab = judge.entail(a["repr"], b["repr"])

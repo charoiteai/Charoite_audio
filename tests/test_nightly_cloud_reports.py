@@ -292,8 +292,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters",
                         lambda f, b: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт, срок 1.08 прошёл")
 
@@ -335,8 +334,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {"Одно": ["a"], "Два": ["b"]})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
                         (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
@@ -362,8 +360,7 @@ def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {n: ["a"] for n in names})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     return graph, folder
 
 
@@ -537,15 +534,15 @@ def test_report_problem_wants_headings_on_their_own_lines():
 
 def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
-    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Гейт пинится
+    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Окно пинится
     ПОВЕДЕНИЕМ — прогоном main() с заглушками, по образцу тестов ревизии досье
     выше. Разбор исходника (подстрока, потом AST) пережил три перерождения
     (№338): зелёным оставался перенос вызова за облачный subprocess.run, обёртка
-    `if False:` и локальная тень лямбдой. Каждая заглушка дописывает событие в
-    общий список — утверждается порядок: живой гейт раньше облачного вызова;
-    ожидание раньше проверки конца ночи (ожидание может вытолкнуть за полночь —
-    после него в облако идти нельзя). Запись отчёта — по исходнику: main() гоняет
-    claude CLI, юнит-теста у него нет."""
+    `if False:` и локальная тень лямбдой. Дверь одна — `live_gate.night_window_open`:
+    потолок держат юниты live_gate (tests/test_live_gate.py), здесь утверждается
+    проводка — окно вызвано ровно один раз, раньше облачного вызова, на корне
+    данных из канона, и закрытое окно кончает прогон с кодом 0 без облака.
+    Запись отчёта — по исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
     import os
     import time
 
@@ -562,8 +559,7 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
 
     cfg = {"sufler": {}}
     events = []
-    night_over = [False]    # «утро» наступает только если гейт реально ждал
-    wait_pushes = [False]   # флаг сценария: ожидание вытолкнуло за ночь
+    window_open = [True]    # сценарий: окно открыто / ночь кончилась
 
     # каждая зависимость main — заглушка; порядок вызовов пишется в events
     # main() разбирает argv (--help, #606): без подмены ей достались бы аргументы
@@ -579,25 +575,12 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
     monkeypatch.setattr(ncc.cloud, "effort", lambda c, key: "low")
     monkeypatch.setattr(ncc.cloud, "effort_args", lambda level: [])
     monkeypatch.setattr(ncc.cloud, "text_only_args", lambda: [])
-    # потолок — метка из источника: гейт обязан получить ИМЕННО её. Форма значения
-    # (число, не None) пропускала константу cap=3600.0, которая не знает про конец
-    # ночи (круг 5); сама функция держится юнитом в тестах tier3
-    cap_calls = []
-    monkeypatch.setattr(ncc.tier3, "night_wait_cap",
-                        lambda *a, **k: cap_calls.append((a, k)) or 123.0)
 
-    def fake_gate(root, **kw):
-        events.append(("гейт", root, kw))
-        if wait_pushes[0]:
-            night_over[0] = True    # ждали встречу до самого утра
-        return False
+    def fake_window(root, what, **kw):
+        events.append(("окно", root, what))
+        return window_open[0]
 
-    def fake_night_is_over(now=None):
-        events.append(("конец ночи",))
-        return night_over[0]
-
-    monkeypatch.setattr(ncc.live_gate, "wait_while_live", fake_gate)
-    monkeypatch.setattr(ncc.live_gate, "night_is_over", fake_night_is_over)
+    monkeypatch.setattr(ncc.live_gate, "night_window_open", fake_window)
 
     def fake_run(cmd, **kw):
         events.append(("облако",))
@@ -611,35 +594,30 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(t
 
     monkeypatch.setattr(ncc.subprocess, "run", fake_run)
 
-    # --- ночь не кончилась: гейт отработал ДО облачного вызова
+    # --- окно открыто: дверь отработала РОВНО ОДИН раз и ДО облачного вызова
     ncc.main()
     kinds = [e[0] for e in events]
-    assert "гейт" in kinds, "main потерял живой гейт: " + ", ".join(kinds)
+    assert kinds.count("окно") == 1, f"ночное окно позвано не один раз: {kinds}"
     assert "облако" in kinds
-    assert kinds.index("гейт") < kinds.index("облако"), \
-        f"облако позвали раньше живого гейта: {kinds}"
-    gate_event = next(e for e in events if e[0] == "гейт")
-    assert gate_event[1] == tmp_path.resolve(), \
-        "гейт ждёт на корне данных из канона, а не на выведенном или чужом пути"
-    # потолок пинится ПРОВОДКОЙ «источник → гейт»: наличие ключа пропускало cap=None
-    # (None у гейта — ждать без предела, ночь 21.08, 04:16–11:36; круг 4), форма числа
-    # пропускала константу (круг 5). Гейт получил ровно то, что отдал источник, а
-    # источник спросили с умолчаниями — подмена default тоже видна
-    assert gate_event[2].get("cap") == 123.0, \
-        f"потолок гейта не из night_wait_cap: cap={gate_event[2].get('cap')!r}"
-    assert cap_calls == [((), {})], f"night_wait_cap вызвана не с умолчаниями: {cap_calls}"
+    assert kinds.index("окно") < kinds.index("облако"), \
+        f"облако позвали раньше ночного окна: {kinds}"
+    window_event = next(e for e in events if e[0] == "окно")
+    assert window_event[1] == tmp_path.resolve(), \
+        "окно ждёт на корне данных из канона, а не на выведенном или чужом пути"
+    assert window_event[2] == "ревизия ядер", \
+        f"what потерялся — в логе ночи шаг не узнать: {window_event[2]!r}"
     report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
     assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
 
-    # --- ожидание вытолкнуло за ночь: в облако идти нельзя, выход с кодом 0
+    # --- окно закрыто (ночь вышла): в облако идти нельзя, выход с кодом 0
     events.clear()
-    wait_pushes[0] = True
+    window_open[0] = False
     os.utime(cores / "Ядро.md", (time.time() + 5, time.time() + 5))   # ядро изменилось — новая ночь
     with pytest.raises(SystemExit) as exit_code:
         ncc.main()
     assert exit_code.value.code == 0
     assert not any(e[0] == "облако" for e in events), \
-        f"после долгого ожидания скрипт ушёл в облако уже утром: {events}"
+        f"при закрытом окне скрипт ушёл в облако уже утром: {events}"
 
     # пины записи отчёта остаются текстом исходника: внутри — системные вызовы,
     # поведение подменять смысла нет, а обрыв между ними ловит только текст

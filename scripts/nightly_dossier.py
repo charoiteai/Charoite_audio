@@ -31,7 +31,6 @@ import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import safe_write  # noqa: E402
-import tier3  # noqa: E402
 from charoite_paths import code_root, resolve_root  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
@@ -177,10 +176,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             continue
 
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
-        # его — досье подождёт (с потолком, чтобы ночь не стала днём).
-        live_gate.wait_while_live(_root(), what="досье",
-                                  cap=tier3.night_wait_cap())
-        if live_gate.night_is_over():
+        # его — досье подождёт (с потолком, чтобы ночь не стала днём). Окно —
+        # одна дверь у владельца гейта, потолок внутри.
+        if not live_gate.night_window_open(_root(), what="досье"):
             print("  ⏹ время ночного прогона вышло — остальные темы завтра")
             # Индекс от потолка не худеет: оставшиеся темы остаются в нём
             # записями с диска — как темы сверх лимита. Голый break отдавал
