@@ -28,7 +28,6 @@ import argparse
 import contextlib
 import datetime as dt
 import json
-import os
 import pathlib
 import re
 import shutil
@@ -40,7 +39,7 @@ import file_locks  # noqa: E402
 import graph_updater  # noqa: E402
 import live_gate  # noqa: E402
 import safe_write  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import RootNotNamed, require_data_root  # noqa: E402
 
 LOCK_WAIT = 5 * 60      # общий замок пишущих в граф (cloud_review, ночь): дольше держит только зависший сосед
 
@@ -418,12 +417,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         # Лок демона и общий замок живут в корне ДАННЫХ (luna C1): корень берём
         # только явный — --root или CHAROITE_ROOT, как у демона; угадывать по
-        # checkout кода нельзя — logs/ есть в любой dev-копии (DS r2).
-        env_root = (os.environ.get("CHAROITE_ROOT") or "").strip()
-        if a.root is None and not env_root:
-            print("для --apply укажи корень данных: --root DIR или CHAROITE_ROOT", file=sys.stderr)
-            return 2
-        root = (a.root or resolve_root(__file__)).expanduser()
+        # checkout кода нельзя — logs/ есть в любой dev-копии (DS r2). Про
+        # переменную и про вырожденные значения отвечает канон
+        # (require_data_root), не этот скрипт.
+        if a.root is not None:
+            root = a.root.expanduser()
+        else:
+            try:
+                root = require_data_root(__file__)
+            except (RootNotNamed, ValueError):
+                print("для --apply укажи корень данных: --root DIR или CHAROITE_ROOT", file=sys.stderr)
+                return 2
         if not (root / "logs").is_dir():
             print(f"{root} — не корень данных (нет logs/); укажи --root", file=sys.stderr)
             return 2

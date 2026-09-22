@@ -34,17 +34,21 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 ARCHIVE_DIR = "Встречи-архив"
 # Файлы мельче этого дедуплицировать бессмысленно: выигрыш меньше, чем риск
 # запутать человека жёсткими ссылками на мелочь.
 MIN_SIZE = 4096
 
 
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
+
+
 def _cfg() -> dict:
-    cfg_path = ROOT / "config" / "config.yaml"
+    cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists():
         return {}
     return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
@@ -60,7 +64,7 @@ def graph_dir(explicit: str | None) -> pathlib.Path | None:
     единая точка src/graphs.py (SUFLER_GRAPH_DIR → config.yaml)."""
     if explicit:
         return graphs.resolve(explicit)
-    if not (ROOT / "config" / "config.yaml").exists():
+    if not (_root() / "config" / "config.yaml").exists():
         return None
     return graphs.graph_dir()
 

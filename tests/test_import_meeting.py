@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import import_meeting as im  # noqa: E402
+import charoite_paths  # noqa: E402
 from import_meeting import (  # noqa: E402
     WAV_SETTLE_SECONDS,
     clean_date,
@@ -768,7 +769,9 @@ def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys)
         stdout = stderr = ""
     calls = []
     monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
-    monkeypatch.setattr(im, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(im, "find_meeting_note", lambda cfg, t, **kw: note)
@@ -803,7 +806,9 @@ def test_direct_import_publishes_failed_when_graph_updater_crashes(tmp_path, mon
         returncode = 1
         stdout = stderr = ""
     monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Crash())
-    monkeypatch.setattr(im, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
@@ -831,7 +836,9 @@ def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch
     def run(cmd, **kw):
         return Result(-9 if any("retro_fill.py" in str(c) for c in cmd) else 0)
     monkeypatch.setattr(im.subprocess, "run", run)
-    monkeypatch.setattr(im, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
@@ -883,7 +890,9 @@ def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch
 
     monkeypatch.setattr(im, "run_child", lambda cmd, **kw: Failed())
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "data"))
-    monkeypatch.setattr(im, "ROOT", tmp_path / "data")
+    # и дверью канона тоже: в процессе корень уже назвала обвязка, и одну
+    # переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path / "data", replace=True)
 
     with pytest.raises(SystemExit):     # сбой ребёнка = код 1 у скана, как в тесте про метку ошибки
         _run_scan(monkeypatch, folder)

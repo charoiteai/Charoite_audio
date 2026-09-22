@@ -19,12 +19,14 @@ import argparse
 import json
 import pathlib
 import statistics
+import requests
 import sys
 import time
 
-import requests
+# Вставка нужна только чтобы импортировать сам канон путей.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from charoite_paths import resolve_root  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASE = "http://127.0.0.1:11434"
 
 # Короткая подсказка: так суфлёр отвечает во время встречи.
@@ -41,7 +43,7 @@ MEDIUM = (
 
 def long_prompt() -> str:
     """Реальная стенограмма — самый честный длинный контекст, какой у нас есть."""
-    tr = sorted((ROOT / "transcripts").glob("2026-*.md"))
+    tr = sorted((resolve_root(__file__) / "transcripts").glob("2026-*.md"))
     for p in reversed(tr):
         text = p.read_text(encoding="utf-8", errors="ignore")
         if len(text) > 20_000:

@@ -17,6 +17,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import bench_extract as be  # noqa: E402
+import charoite_paths  # noqa: E402
 
 TRANSCRIPT = """# Встреча 2026-08-12_1532
 
@@ -77,7 +78,9 @@ def test_service_files_are_not_taken_for_meetings(tmp_path, monkeypatch):
                  "2026-08-12_1532_minutes.md", "2026-08-12_1532_разбор.md",
                  "2026-08-12_1532_live.md", "2026-08-12_1532_ревизия_claude.md"):
         (folder / name).write_text("текст", encoding="utf-8")
-    monkeypatch.setattr(be, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
 
     # now в будущем: файлы «остыли», иначе их отсечёт защита от идущей встречи
     found = be.meetings(10, now=pathlib.Path(folder / "2026-08-12_1532.md")
@@ -94,6 +97,6 @@ def test_meeting_still_being_written_is_skipped(tmp_path, monkeypatch):
     folder.mkdir()
     live = folder / "2026-08-13_1031.md"
     live.write_text("идёт прямо сейчас", encoding="utf-8")
-    monkeypatch.setattr(be, "ROOT", tmp_path)
+    charoite_paths.use_data_root(tmp_path, replace=True)
 
     assert be.meetings(10, now=live.stat().st_mtime + 60) == []

@@ -20,18 +20,22 @@ exit code 1, если провалов больше трети — заметн�
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import re
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import deps  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -322,7 +326,7 @@ def main() -> None:
                     help="без синтеза: по каждому кейсу покрытие, лучший косинус и вердикт гейта — для калибровки порогов")
     args = ap.parse_args()
 
-    cfg_path = ROOT / "config" / "config.yaml"
+    cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
         # демо-режим работает и до настройки: дефолтная модель Ollama
         cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
@@ -340,18 +344,18 @@ def main() -> None:
     lang = resolve_lang(cfg, demo_zh=args.demo_zh, demo_en=args.demo_en, demo=args.demo)
     if args.demo_zh:
         args.demo = True
-        graph = ROOT / "demo" / "graph_zh"
-        bench_file = ROOT / "config" / "memory_bench_demo_zh.yaml"
+        graph = _root() / "demo" / "graph_zh"
+        bench_file = _root() / "config" / "memory_bench_demo_zh.yaml"
     elif args.demo_en:
         args.demo = True
-        graph = ROOT / "demo" / "graph_en"
-        bench_file = ROOT / "config" / "memory_bench_demo_en.yaml"
+        graph = _root() / "demo" / "graph_en"
+        bench_file = _root() / "config" / "memory_bench_demo_en.yaml"
     elif args.demo:
-        graph = ROOT / "demo" / "graph"
-        bench_file = ROOT / "config" / "memory_bench_demo.yaml"
+        graph = _root() / "demo" / "graph"
+        bench_file = _root() / "config" / "memory_bench_demo.yaml"
     else:
         graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
-        bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
+        bench_file = _root() / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
         # Не настроен — не то же самое, что провален. Раньше здесь был выход с
         # ошибкой, и ночная джоба каждую ночь печатала «БЕНЧ ПАМЯТИ ПРОСЕЛ» у

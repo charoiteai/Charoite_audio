@@ -83,7 +83,11 @@ def test_doctor_warns_when_the_chosen_backend_has_no_model(tmp_path, monkeypatch
 
     import doctor
     importlib.reload(doctor)
-    monkeypatch.setattr(doctor, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона — того самого объекта, на
+    # который смотрит и перезагруженный doctor: в процессе корень уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    import charoite_paths
+    charoite_paths.use_data_root(tmp_path, replace=True)
 
     doctor.check_stt({"stt": {"backend": "sensevoice"}})
     out = capsys.readouterr().out

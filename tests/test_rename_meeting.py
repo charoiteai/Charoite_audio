@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
 import rename_meeting as rm  # noqa: E402
+import charoite_paths  # noqa: E402
 
 STAMP = "2026-08-03_1130"
 
@@ -142,7 +143,9 @@ def world(tmp_path, monkeypatch):
         {"meeting_id": "2026-08-03_113012",
          "transcript_path": str(tdir / f"{STAMP}_Обновление_ОС.md")}), encoding="utf-8")
 
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     return graph, tdir
 
 
@@ -154,7 +157,7 @@ def test_plan_alone_touches_nothing(world):
     assert (tdir / f"{STAMP}_Обновление_ОС.md").exists(), "план — это только план"
 
 
-def test_apply_renames_all_five_places(world):
+def test_apply_renames_all_five_places(world, tmp_path):
     graph, tdir = world
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
     rm.apply(rm.plan(graph, tdir, STAMP, pretty, slug), graph, STAMP, pretty)
@@ -182,8 +185,9 @@ def test_apply_renames_all_five_places(world):
     assert "Планёрка 03.08" in note, "старые aliases не теряются"
     assert '"Инцидент загрузки"' in note, "новая тема добавлена в aliases"
 
-    # статус приложения смотрит на новый путь
-    data = json.loads((Path(rm.ROOT) / "logs" / "meeting-status"
+    # статус приложения смотрит на новый путь (корень мира — tmp_path, его
+    # назвала дверью канона фикстура world)
+    data = json.loads((tmp_path / "logs" / "meeting-status"
                        / "2026-08-03_113012.json").read_text(encoding="utf-8"))
     assert data["transcript_path"].endswith(f"{STAMP}_Инцидент_загрузки.md")
 
@@ -365,7 +369,9 @@ def test_bare_seconds_main_keeps_its_seconds_in_the_sidecar(tmp_path, monkeypatc
     (graph / "Встречи").mkdir(parents=True)
     (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
     (tdir / "2026-08-03_113012_hints.md").write_text("подсказки", encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
 
     p = rm.plan(graph, tdir, STAMP, pretty, slug)
@@ -384,7 +390,9 @@ def test_legacy_seconds_main_with_a_service_word_keeps_its_seconds(tmp_path, mon
     sec = f"{STAMP}12"
     main = tmp_path / f"{sec}_Итоги_разбор.md"
     main.write_text(f"# Встреча {sec} — Итоги разбор\n\nтекст\n", encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Итоги разбор")
     p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, pretty, slug)
     assert p["stamps"] == [(tmp_path / f"{STAMP}_Итоги-разбор.md", sec)]
@@ -403,7 +411,9 @@ def test_vault_copy_of_a_bare_main_gets_no_sidecar(tmp_path, monkeypatch):
     docs.mkdir(parents=True)
     (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
     (docs / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Тема")
     p = rm.plan(graph, tdir, STAMP, pretty, slug)
     assert [t.parent for t, _ in p["stamps"]] == [tdir]
@@ -423,7 +433,9 @@ def test_stamp_is_not_written_into_a_foreign_sidecar_on_the_target_name(tmp_path
     own.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
     foreign = tdir / f"{STAMP}_Тема.md.live.json"
     foreign.write_text(json.dumps({"names": {"Собеседник 1": "Чужой"}, "minutes_sha256": "x" * 64}), encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Тема")
 
     (tdir / "2026-08-03_113012_hints.md").write_text("подсказки", encoding="utf-8")
@@ -451,7 +463,9 @@ def test_own_sidecar_under_the_target_name_reunites_the_pair(tmp_path, monkeypat
     (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
     own_twin = tdir / f"{STAMP}_Тема.md.live.json"
     own_twin.write_text(json.dumps({"stamp": "2026-08-03_113012", "names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Тема")
     p = rm.plan(graph, tdir, STAMP, pretty, slug)
     assert [m[0].name for m in p["moves"]] == ["2026-08-03_113012.md"]
@@ -474,7 +488,9 @@ def test_already_titled_meeting_can_be_renamed_again(tmp_path, monkeypatch):
     main.with_name(main.name + ".live.json").write_text(json.dumps({"stamp": "2026-08-03_113012"}), encoding="utf-8")
     twin = tdir / f"{STAMP}_Инцидент_загрузки.md.live.json"
     twin.write_text(json.dumps({"stamp": "2026-08-03_113012"}), encoding="utf-8")
-    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
 
     p = rm.plan(graph, tdir, STAMP, pretty, slug)

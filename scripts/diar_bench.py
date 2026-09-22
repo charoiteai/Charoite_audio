@@ -29,17 +29,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import subprocess
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import deps  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -48,7 +47,16 @@ import soundfile as sf  # noqa: E402
 
 SR = 16000
 FRAME = 0.01            # шаг сетки при подсчёте DER, 10 мс — стандарт
-FIXTURE = ROOT / "data" / "diar_bench"
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
+
+
+def _fixture() -> pathlib.Path:
+    """Фикстура живёт в корне данных, рядом с записями, а не с кодом."""
+    return _root() / "data" / "diar_bench"
 
 # Реплики диалога: (голос macOS, текст). Голоса выбраны контрастными по
 # тембру — мужские и женские, разные семейства синтеза.
@@ -74,8 +82,9 @@ def _say(voice: str, text: str, dest: pathlib.Path) -> None:
     aiff.unlink(missing_ok=True)
 
 
-def make_fixture(folder: pathlib.Path = FIXTURE) -> pathlib.Path:
+def make_fixture(folder: pathlib.Path | None = None) -> pathlib.Path:
     """Собрать синтетический диалог и точную разметку к нему."""
+    folder = folder or _fixture()
     folder.mkdir(parents=True, exist_ok=True)
     pieces, truth, cursor = [], [], 0.0
     silence = np.zeros(int(PAUSE * SR), dtype=np.float32)
@@ -152,8 +161,8 @@ def _live_tracker(sr: int, legacy: bool, cfg_threshold: float):
     """Тот же трекер, что поднимает демон: по кускам речи или по чанкам."""
     from diarize_live import SegmentTracker, SpeakerTracker
 
-    emb = ROOT / "models" / "diar" / "embedding.onnx"
-    seg = ROOT / "models" / "diar" / "segmentation.onnx"
+    emb = _root() / "models" / "diar" / "embedding.onnx"
+    seg = _root() / "models" / "diar" / "segmentation.onnx"
     if not emb.exists():
         raise SystemExit("нет models/diar/embedding.onnx — "
                          ".venv/bin/python scripts/get_models.py --diar")
@@ -219,8 +228,8 @@ def run_sherpa(wav: pathlib.Path, num_speakers: int = -1) -> list[dict]:
     """Полная диаризация sherpa-onnx: сегментация pyannote + наш эмбеддер."""
     import sherpa_onnx
 
-    seg = ROOT / "models" / "diar" / "segmentation.onnx"
-    emb = ROOT / "models" / "diar" / "embedding.onnx"
+    seg = _root() / "models" / "diar" / "segmentation.onnx"
+    emb = _root() / "models" / "diar" / "embedding.onnx"
     for path, flag in ((seg, "--segmentation"), (emb, "--diar")):
         if not path.exists():
             raise SystemExit(f"нет {path} — "
@@ -252,7 +261,7 @@ def report(name: str, scores: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--make", action="store_true", help="собрать синтетику и выйти")
-    ap.add_argument("--fixture", type=pathlib.Path, default=FIXTURE)
+    ap.add_argument("--fixture", type=pathlib.Path, default=None)
     ap.add_argument("--engine",
                     choices=("live", "live-split", "live-legacy", "sherpa",
                              "both", "all"),
@@ -266,6 +275,7 @@ def main() -> int:
     ap.add_argument("--speakers", type=int, default=-1,
                     help="сколько голосов ждать (-1 — решает кластеризация)")
     args = ap.parse_args()
+    args.fixture = args.fixture or _fixture()
 
     if args.make:
         make_fixture(args.fixture)

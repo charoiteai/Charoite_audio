@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import os
 import pathlib
 import sys
 import time
@@ -32,20 +31,26 @@ import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import safe_write  # noqa: E402
-import tier3  # noqa: E402
+from charoite_paths import code_root, resolve_root  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+CODE = code_root(__file__)
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
+
+
 # Потолок на ночь: если тем изменилось много, лучше растянуть на две ночи,
 # чем занять машину до утра.
 MAX_PER_NIGHT = 12
 
 
 def cfg() -> dict:
-    return load_user_or_example(ROOT) or {}
+    return load_user_or_example(_root()) or {}
 
 
 def default_graph(c: dict) -> pathlib.Path:
@@ -109,7 +114,7 @@ def _graph_lock(graph: pathlib.Path):
     """
     try:
         lock_dir = charoite_paths.secure_dir(
-            charoite_paths.graph_backups(graph, "cloud_backup", root=ROOT).parent)
+            charoite_paths.graph_backups(graph, "cloud_backup", root=_root()).parent)
     except OSError as e:
         print(f"  замок графа не взять ({e}) — не пишу")
         yield False
@@ -171,10 +176,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             continue
 
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
-        # его — досье подождёт (с потолком, чтобы ночь не стала днём).
-        live_gate.wait_while_live(ROOT, what="досье",
-                                  cap=tier3.night_wait_cap())
-        if live_gate.night_is_over():
+        # его — досье подождёт (с потолком, чтобы ночь не стала днём). Окно —
+        # одна дверь у владельца гейта, потолок внутри.
+        if not live_gate.night_window_open(_root(), what="досье"):
             print("  ⏹ время ночного прогона вышло — остальные темы завтра")
             # Индекс от потолка не худеет: оставшиеся темы остаются в нём
             # записями с диска — как темы сверх лимита. Голый break отдавал

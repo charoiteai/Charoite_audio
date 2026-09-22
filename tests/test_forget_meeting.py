@@ -32,6 +32,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 import forget_meeting as forget  # noqa: E402
+import charoite_paths  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
@@ -648,7 +649,9 @@ def test_new_place_snapshot_copies_are_forgotten_too(tmp_path, monkeypatch):
     одного теста, способного упасть."""
     import charoite_paths
     root, graph = _world(tmp_path)
-    monkeypatch.setattr(forget, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     snap = charoite_paths.graph_backups(
         graph, "cloud_backup", root=root) / "2026-07-16_0300"
     (snap / "Встречи").mkdir(parents=True)
@@ -729,7 +732,9 @@ def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch)
     карантинах других встреч — файлы с её штампом."""
     import charoite_paths
     root, graph = _world(tmp_path)
-    monkeypatch.setattr(forget, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
     mine = q / f"{STAMP}-101500"
     (mine / "Ядра").mkdir(parents=True)
@@ -756,7 +761,9 @@ def test_displaced_bodies_of_the_meeting_are_forgotten_too(tmp_path, monkeypatch
     import cloud_review
     assert forget.DISPLACED_DIR == cloud_review.DISPLACED_DIR
     root, graph = _world(tmp_path)
-    monkeypatch.setattr(forget, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root) / forget.DISPLACED_DIR
     mine = q / f"{STAMP}-101500"
     (mine / "Ядра").mkdir(parents=True)
@@ -777,7 +784,9 @@ def test_quarantine_is_matched_by_exact_stem_not_minute_prefix(tmp_path, monkeyp
     минутный префикс сносил оба (круг-3 по PR #381, Codex + DS)."""
     import charoite_paths
     root, graph = _world(tmp_path)
-    monkeypatch.setattr(forget, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
     mine = q / f"{STAMP}30-101500123456"
     sibling = q / f"{STAMP}45-103000000000"
@@ -810,7 +819,9 @@ def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     «забыто» (круг-3 по PR #381, Codex)."""
     import os
     root, graph = _world(tmp_path)
-    monkeypatch.setattr(forget, "ROOT", root)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     locked = tmp_path / "закрыто"; locked.mkdir()
     victim = locked / "x.md"; victim.write_text("x", encoding="utf-8")
     os.chmod(locked, 0o500)

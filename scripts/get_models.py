@@ -32,15 +32,16 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import os
 import pathlib
 import shutil
 import sys
 import urllib.error
 import urllib.request
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
+# Вставка — только чтобы импортировать сам канон путей: модели качаем в
+# корень ДАННЫХ, а где он — знает канон (CHAROITE_ROOT), не этот файл.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from charoite_paths import resolve_root  # noqa: E402
 
 # Минимальный разумный размер: ERes2Net в ONNX — десятки мегабайт. Всё, что
 # меньше, — обрыв закачки, HTML-страница или подсунутый не тот файл.
@@ -140,19 +141,19 @@ STT_MODELS = {
 STT_DEFAULT = "sensevoice"
 
 
-def seg_target(root: pathlib.Path = ROOT) -> pathlib.Path:
-    """Куда кладём модель сегментации."""
-    return root / "models" / "diar" / "segmentation.onnx"
+def seg_target(root: pathlib.Path | None = None) -> pathlib.Path:
+    """Куда кладём модель сегментации (без аргумента — корень данных у канона)."""
+    return (root or resolve_root(__file__)) / "models" / "diar" / "segmentation.onnx"
 
 
-def stt_target(root: pathlib.Path = ROOT) -> pathlib.Path:
+def stt_target(root: pathlib.Path | None = None) -> pathlib.Path:
     """Куда кладём модель распознавания (рядом ляжет tokens.txt)."""
-    return root / "models" / "stt" / "sensevoice.onnx"
+    return (root or resolve_root(__file__)) / "models" / "stt" / "sensevoice.onnx"
 
 
-def diar_target(root: pathlib.Path = ROOT) -> pathlib.Path:
+def diar_target(root: pathlib.Path | None = None) -> pathlib.Path:
     """Путь, по которому модель ищет демон (src/daemon.py)."""
-    return root / "models" / "diar" / "embedding.onnx"
+    return (root or resolve_root(__file__)) / "models" / "diar" / "embedding.onnx"
 
 
 def check(path: pathlib.Path, min_bytes: int = MIN_BYTES) -> str | None:

@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
-import os
 import pathlib
 import re
 import subprocess
@@ -31,20 +30,24 @@ import sys
 import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import dossier  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
-import tier3  # noqa: E402
 import privacy  # noqa: E402
 import safe_write  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
 
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
 MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
@@ -165,7 +168,7 @@ def revision_stats(old_body: str, new_body: str) -> str:
 
 
 def _cfg() -> dict:
-    return load_user_or_example(ROOT) or {}
+    return load_user_or_example(_root()) or {}
 
 
 
@@ -362,7 +365,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     if may_edit:
         try:
             lock_dir = charoite_paths.secure_dir(
-                charoite_paths.graph_backups(graph, "cloud_backup", root=ROOT).parent)
+                charoite_paths.graph_backups(graph, "cloud_backup", root=_root()).parent)
         except OSError as e:
             print(f"  замок графа не взять ({e}) — правки не пишу, только отчёт")
             may_edit = False
@@ -433,10 +436,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # его — ревизия подождёт. Гейт стоял только в сборке досье, а висел
         # 21.08 именно этот шаг: прогон, начатый в 04:16, к 11:36 всё ещё
         # держал процессор, и живая запись рвалась (потолок — чтобы ночь не
-        # стала днём).
-        live_gate.wait_while_live(ROOT, what="ревизия досье",
-                                  cap=tier3.night_wait_cap())
-        if live_gate.night_is_over():
+        # стала днём). Окно — одна дверь у владельца гейта, потолок внутри.
+        if not live_gate.night_window_open(_root(), what="ревизия досье"):
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break
         if CLI_DOWN[0] and not cli_back():
@@ -472,9 +473,10 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # замок на одну запись; за время облачного вызова файл мог смениться —
         # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).
         # Ожидание — не дольше остатка ночи: 10 мин на каждую из шести тем
-        # вылезали за потолок на час (DS I1 по #561)
-        cap = tier3.night_wait_cap(default=LOCK_WAIT)
-        lock_wait = min(LOCK_WAIT, cap if cap is not None else LOCK_WAIT)
+        # вылезали за потолок на час (DS I1 по #561). None потолок не отдаёт
+        # никогда (контракт night_wait_cap) — мёртвая ветка убрана.
+        cap = live_gate.night_wait_cap(default=LOCK_WAIT)
+        lock_wait = min(LOCK_WAIT, cap)
         with file_locks.graph_lock(lock_dir, lock_wait) as taken:
             if taken:
                 try:

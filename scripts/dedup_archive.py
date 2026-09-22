@@ -21,19 +21,18 @@ from __future__ import annotations
 
 import argparse
 import collections
-import os
 import pathlib
 import re
 import shutil
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import deps  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -105,7 +104,7 @@ def main() -> None:
                     help="сделать (без него — только показать план)")
     args = ap.parse_args()
     apply = args.apply
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((resolve_root(__file__) / "config" / "config.yaml").read_text(encoding="utf-8"))
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     archive = graph / ARCHIVE_DIR
     if not archive.exists():

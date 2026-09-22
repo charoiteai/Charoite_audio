@@ -132,14 +132,14 @@ def test_ночные_скрипты_пишут_в_корень_данных(tmp
     читала бы дефолты и игнорировала выключатели профиля), а
     `tier3_cores.STAMPS` писал отметку прогона в read-only бандл — то есть
     падал бы PermissionError на первой же ночи. Проверяем в отдельном
-    процессе: отметка ночи по-прежнему считается на импорте, а конфиг графа
-    с №327 — на вызове, и оба обязаны лечь в корень ДАННЫХ.
+    процессе: отметка ночи и конфиг графа считаются НА ВЫЗОВЕ (снапшот на импорте
+    снят правилом №338), и оба обязаны лечь в корень ДАННЫХ.
     """
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
     code = (
         "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, 'scripts')\n"
         "import graphs, tier3_cores\n"
-        "print(graphs.config_path()); print(tier3_cores.STAMPS)\n"
+        "print(graphs.config_path()); print(tier3_cores.stamps_path())\n"
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                          capture_output=True, text=True, timeout=120)

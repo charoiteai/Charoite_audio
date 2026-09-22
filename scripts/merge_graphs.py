@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import os
 import pathlib
 import re
 import shutil
@@ -41,10 +40,9 @@ import sys
 import uuid
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import frontmatter  # noqa: E402
 import graph_links  # noqa: E402
 

@@ -10,6 +10,8 @@ import fcntl
 import pathlib
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -136,3 +138,80 @@ def test_deadline_second_itself_is_still_night(monkeypatch):
     monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "1000")
     assert live_gate.night_is_over(now=lambda: 1000.0) is False
     assert live_gate.night_is_over(now=lambda: 1000.001) is True
+
+
+# --- ночное окно: потолок и конец ночи у владельца гейта (№338, круги 3–6) -----
+
+@pytest.mark.parametrize("until, now, expected", [
+    (None, 1000.0, 3600.0),        # потолка ночи нет — час
+    ("1100", 1000.0, 100.0),       # ночь кончится через 100 с — ждём не дольше
+    ("99999", 1000.0, 3600.0),     # до конца ночи дольше часа — всё равно час
+    ("900", 1000.0, 0.0),          # ночь уже вышла — не ждём вовсе
+    ("завтра", 1000.0, 3600.0),    # мусор в переменной — не падаем, ждём час
+])
+def test_night_wait_cap_is_always_a_finite_number(monkeypatch, until, now, expected):
+    if until is None:
+        monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, until)
+    cap = live_gate.night_wait_cap(now=lambda: now)
+    assert isinstance(cap, float) and cap == expected
+
+
+def test_night_wait_cap_reads_the_real_clock_by_default(monkeypatch):
+    """Ветка часов по умолчанию — без подмены: ночь кончается через 100 с по
+    настоящим часам, потолок обязан быть около 100, а не часом (круг 6, GLM:
+    ни один тест не исполнял часы функции, и `now()` → 0 проходил всё)."""
+    import time
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, str(time.time() + 100))
+    assert 95 <= live_gate.night_wait_cap() <= 100
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), -1, True])
+def test_wait_while_live_refuses_a_cap_that_is_not_seconds(tmp_path, bad):
+    """inf, nan, отрицательное и bool — «ждать вечно» или «упасть в логе» под
+    видом числа; гейт отказывает сам, не надеясь на вызывающих (круг 5, DS)."""
+    with pytest.raises(ValueError):
+        live_gate.wait_while_live(tmp_path, lambda m: None, cap=bad, alive=lambda r: False)
+
+
+def test_wait_while_live_refuses_an_integer_bigger_than_float(tmp_path):
+    """Целое больше максимума float (10**400) роняло math.isfinite
+    OverflowError вместо обещанного ValueError у гейта (круг 7 по №338)."""
+    with pytest.raises(ValueError):
+        live_gate.wait_while_live(tmp_path, lambda m: None, cap=10**400, alive=lambda r: False)
+
+
+@pytest.mark.parametrize("ok", [None, 0, 0.0, 180, 3600.0])
+def test_wait_while_live_takes_none_and_finite_seconds(tmp_path, ok):
+    assert live_gate.wait_while_live(tmp_path, lambda m: None, cap=ok, alive=lambda r: False) is False
+
+
+def test_night_window_is_open_when_no_meeting_and_the_night_goes_on(tmp_path, monkeypatch):
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "1100")
+    caps = []
+    real = live_gate.wait_while_live
+    monkeypatch.setattr(live_gate, "wait_while_live",
+                        lambda *a, **k: caps.append(k.get("cap")) or real(*a, **k))
+    assert live_gate.night_window_open(tmp_path, "проба", lambda m: None,
+                                       clock=lambda: 1000.0, alive=lambda r: False) is True
+    assert caps == [100.0], "гейт ждёт с потолком из остатка ночи, а не константой"
+
+
+def test_night_window_is_closed_when_the_night_is_over(tmp_path, monkeypatch):
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "900")
+    assert live_gate.night_window_open(tmp_path, "проба", lambda m: None,
+                                       clock=lambda: 1000.0, alive=lambda r: False) is False
+
+
+def test_night_window_checks_the_night_after_waiting_for_the_meeting(tmp_path, monkeypatch):
+    """Встреча шла, ожидание вытолкнуло за конец ночи — окно закрыто. Проверка
+    конца ночи ДО ожидания пропустила бы шаг в облако уже утром."""
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "1100")
+    стенные = [1000.0]
+    встреча = iter([True, True, False])
+    def sleep(sec):
+        стенные[0] += 200.0          # ждали встречу — ночь тем временем кончилась
+    assert live_gate.night_window_open(
+        tmp_path, "проба", lambda m: None, clock=lambda: стенные[0],
+        alive=lambda r: next(встреча), sleep=sleep, now=lambda: 0.0) is False

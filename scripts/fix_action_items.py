@@ -16,19 +16,18 @@
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import re
 import sys
 
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 from action_items import normalize  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 
 CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ", re.M)
 
@@ -38,7 +37,7 @@ def graph_dir(explicit: str | None) -> pathlib.Path | None:
     единая точка src/graphs.py (SUFLER_GRAPH_DIR → config.yaml)."""
     if explicit:
         return graphs.resolve(explicit)
-    if not (ROOT / "config" / "config.yaml").exists():
+    if not (resolve_root(__file__) / "config" / "config.yaml").exists():
         return None
     return graphs.graph_dir()
 

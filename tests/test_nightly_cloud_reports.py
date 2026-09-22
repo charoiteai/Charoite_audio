@@ -17,6 +17,8 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import charoite_paths  # noqa: E402
+
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 
 
@@ -92,8 +94,12 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
     изменившееся после показа — снова первым (круг-1 по PR #380: замена
     карты партией ночи ломала ротацию — A и B чередовались, C не попадало)."""
     import json
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня); карта показанного
+    # при этом лежит по боевому имени в логах корня
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
     graph = tmp_path / "graph"; cores = graph / "Ядра"; cores.mkdir(parents=True)
     a = _core(cores, "A", 900, 300); b = _core(cores, "B", 900, 200); c = _core(cores, "C", 900, 100)
     stems = {"A", "B", "C"}
@@ -103,9 +109,9 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
         order.append(chosen[0].stem)
         ncc._save_seen(graph, sent, stems)
     assert order == ["A", "B", "C"], order         # каждое — по одному разу
-    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    saved = json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
     assert set(saved) == stems, "карта копится, а не заменяется партией"
-    assert (ncc.SEEN.stat().st_mode & 0o777) == 0o600
+    assert (seen.stat().st_mode & 0o777) == 0o600
     # четвёртая ночь: ничего не менялось — первым идёт самое давно показанное (A)
     chosen, _, _, _ = ncc.select_cores([a, b, c], ncc._seen(graph), budget=920)
     assert chosen[0].stem == "A"
@@ -116,25 +122,28 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
     assert chosen[0].stem == "B"
     # ядро исчезло из графа — выпадает из карты
     ncc._save_seen(graph, {}, {"A", "B"})
-    assert "C" not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    assert "C" not in json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
 
 
 def test_old_cursor_format_is_migrated_not_crashed(tmp_path, monkeypatch):
     """Запись прежнего вида {ядро: mtime} (число) читается как
     {mtime, shown: 0}, а не роняет select_cores на .get() (круг-2, DS)."""
     import json
+    # корень подменяется публичной дверью канона (см. соседний тест про ротацию)
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "seen.json")
     graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
     a = _core(graph / "Ядра", "A", 100, 300)
-    ncc.SEEN.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
-    seen = ncc._seen(graph)
-    assert seen == {"A": {"mtime": 300.0, "shown": 0}}
-    chosen, _, sent, _ = ncc.select_cores([a], seen, budget=500)
+    seen.parent.mkdir(parents=True)
+    seen.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
+    old_seen = ncc._seen(graph)
+    assert old_seen == {"A": {"mtime": 300.0, "shown": 0}}
+    chosen, _, sent, _ = ncc.select_cores([a], old_seen, budget=500)
     assert chosen == [a]
     # и на диск уходит уже новый формат (круг-3, DS)
     ncc._save_seen(graph, sent, {"A"})
-    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    saved = json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
     assert isinstance(saved["A"], dict) and saved["A"]["shown"] > 0
 
 
@@ -155,24 +164,26 @@ def test_save_seen_keeps_unmounted_graphs_and_drops_the_deleted_one(tmp_path, mo
     """Отмонтированный диск — не удалённый граф: его курсор остаётся; а
     граф, исчезнувший во время запроса, ключом не воскрешается (круг-3)."""
     import json
+    # корень подменяется публичной дверью канона (см. тест про ротацию ночей)
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
     graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
     unmounted = str(tmp_path / "Volumes" / "Диск" / "Граф")      # родителя нет
     deleted = tmp_path / "Другой"                                 # родитель есть, папки нет
-    ncc.SEEN.parent.mkdir()
-    ncc.SEEN.write_text(json.dumps({unmounted: {"X": {"mtime": 1, "shown": 1}},
-                                    str(deleted): {"Y": {"mtime": 1, "shown": 1}}}),
-                        encoding="utf-8")
+    seen.parent.mkdir()
+    seen.write_text(json.dumps({unmounted: {"X": {"mtime": 1, "shown": 1}},
+                                str(deleted): {"Y": {"mtime": 1, "shown": 1}}}),
+                    encoding="utf-8")
     ncc._save_seen(graph, {"A": {"mtime": 2, "shown": 2}}, {"A"})
-    data = json.loads(ncc.SEEN.read_text(encoding="utf-8"))
+    data = json.loads(seen.read_text(encoding="utf-8"))
     assert unmounted in data and str(deleted) not in data
-    assert (ncc.SEEN.parent.stat().st_mode & 0o777) == 0o700
+    assert (seen.parent.stat().st_mode & 0o777) == 0o700
     # сам граф исчез во время запроса — ключ не возвращается
     import shutil
     shutil.rmtree(graph)
     ncc._save_seen(graph, {"A": {"mtime": 3, "shown": 3}}, {"A"})
-    assert ncc._graph_key(graph) not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))
+    assert ncc._graph_key(graph) not in json.loads(seen.read_text(encoding="utf-8"))
 
 
 def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
@@ -281,8 +292,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters",
                         lambda f, b: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт, срок 1.08 прошёл")
 
@@ -324,8 +334,7 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {"Одно": ["a"], "Два": ["b"]})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
                         (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
@@ -351,8 +360,7 @@ def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
     monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
     monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {n: ["a"] for n in names})
-    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
-    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     return graph, folder
 
 
@@ -483,6 +491,26 @@ def test_readonly_reason_names_the_lock_when_the_lock_dir_is_unavailable(tmp_pat
     assert "cloud_edit_graph: false" not in report
 
 
+def test_closed_window_ends_the_review_before_the_cloud_and_the_files(tmp_path, monkeypatch):
+    """Окно закрыто (ночь вышла): ревизия не идёт в облако и не трогает досье
+    на диске — оставшиеся темы завтра (круг 7 по №338: соседние тесты подменяли
+    окно на «всегда открыто», и проверка закрытого окна не покрывал никто)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: False)
+    before = {p.name: p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.md"))}
+
+    def облако(*a, **k):
+        pytest.fail("облачная ревизия позвана при закрытом ночном окне")
+
+    monkeypatch.setattr(ndr, "review", облако)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
+    after = {p.name: p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.md"))}
+    assert after == before, "файлы досье изменились при закрытом окне"
+    assert not list(graph.glob("Служебное_ревизия_досье_*.md")), \
+        "прогон без тем оставил пустой отчёт"
+
+
 def test_review_loop_refuses_to_write_without_a_lock_dir():
     ndr = _load("nightly_dossier_review")
     with pytest.raises(ValueError):
@@ -524,12 +552,97 @@ def test_report_problem_wants_headings_on_their_own_lines():
     assert "Слияния" in ncc.report_problem(0, inline)
 
 
-def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically():
+def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically(tmp_path, monkeypatch):
     """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
-    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Сторож по
-    исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
+    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Окно пинится
+    ПОВЕДЕНИЕМ — прогоном main() с заглушками, по образцу тестов ревизии досье
+    выше. Разбор исходника (подстрока, потом AST) пережил три перерождения
+    (№338): зелёным оставался перенос вызова за облачный subprocess.run, обёртка
+    `if False:` и локальная тень лямбдой. Дверь одна — `live_gate.night_window_open`:
+    потолок держат юниты live_gate (tests/test_live_gate.py), здесь утверждается
+    проводка — окно вызвано ровно один раз, раньше облачного вызова, на корне
+    данных из канона, и закрытое окно кончает прогон с кодом 0 без облака.
+    Запись отчёта — по исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
+    import os
+    import time
+
     ncc = _load("nightly_claude_cores")
+    # корень данных называет тест — публичной дверью канона, как соседние тесты
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    graph = tmp_path / "graph"
+    cores = graph / "Ядра"
+    cores.mkdir(parents=True)
+    _core(cores, "Ядро", 300, time.time())
+    (cores / "_ЯДРА.md").write_text("индекс", encoding="utf-8")
+    good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
+            "## Потерянные хвосты\n- нет\n## Три риска недели\n- один\n")
+
+    cfg = {"sufler": {}}
+    events = []
+    window_open = [True]    # сценарий: окно открыто / ночь кончилась
+
+    # каждая зависимость main — заглушка; порядок вызовов пишется в events
+    # main() разбирает argv (--help, #606): без подмены ей достались бы аргументы
+    # самого pytest, и прогон падал бы SystemExit(2) до первой строки работы
+    monkeypatch.setattr(sys, "argv", ["nightly_claude_cores.py"])
+    monkeypatch.setattr(ncc, "load_user_or_example", lambda root: cfg)
+    monkeypatch.setattr(ncc.privacy, "cloud_enrich_enabled", lambda c: True)
+    monkeypatch.setattr(ncc.graphs, "graph_dir", lambda c: graph)
+    monkeypatch.setattr(ncc.cloud, "model", lambda c, key: "test-model")
+    monkeypatch.setattr(ncc.cloud, "claude_bin_checked", lambda **k: "claude")
+    monkeypatch.setattr(ncc.cloud, "claude_bin", lambda: "claude")
+    monkeypatch.setattr(ncc.cloud, "add_proxy", lambda env_: None)
+    monkeypatch.setattr(ncc.cloud, "effort", lambda c, key: "low")
+    monkeypatch.setattr(ncc.cloud, "effort_args", lambda level: [])
+    monkeypatch.setattr(ncc.cloud, "text_only_args", lambda: [])
+
+    def fake_window(root, what, **kw):
+        events.append(("окно", root, what, kw.get("default")))
+        return window_open[0]
+
+    monkeypatch.setattr(ncc.live_gate, "night_window_open", fake_window)
+
+    def fake_run(cmd, **kw):
+        events.append(("облако",))
+
+        class R:
+            returncode = 0
+            stdout = good
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ncc.subprocess, "run", fake_run)
+
+    # --- окно открыто: дверь отработала РОВНО ОДИН раз и ДО облачного вызова
+    ncc.main()
+    kinds = [e[0] for e in events]
+    assert kinds.count("окно") == 1, f"ночное окно позвано не один раз: {kinds}"
+    assert "облако" in kinds
+    assert kinds.index("окно") < kinds.index("облако"), \
+        f"облако позвали раньше ночного окна: {kinds}"
+    window_event = next(e for e in events if e[0] == "окно")
+    assert window_event[1] == tmp_path.resolve(), \
+        "окно ждёт на корне данных из канона, а не на выведенном или чужом пути"
+    assert window_event[2] == "ревизия ядер", \
+        f"what потерялся — в логе ночи шаг не узнать: {window_event[2]!r}"
+    assert window_event[3] is None, \
+        f"вызывающий передал свой потолок ({window_event[3]!r}) — потолок целиком у live_gate"
+    report = next(graph.glob("Служебное_ночная_ревизия_*.md")).read_text(encoding="utf-8")
+    assert "test-model" in report and "- нет" in report, "отчёт не написан или пуст"
+
+    # --- окно закрыто (ночь вышла): в облако идти нельзя, выход с кодом 0
+    events.clear()
+    window_open[0] = False
+    os.utime(cores / "Ядро.md", (time.time() + 5, time.time() + 5))   # ядро изменилось — новая ночь
+    with pytest.raises(SystemExit) as exit_code:
+        ncc.main()
+    assert exit_code.value.code == 0
+    assert not any(e[0] == "облако" for e in events), \
+        f"при закрытом окне скрипт ушёл в облако уже утром: {events}"
+
+    # пины записи отчёта остаются текстом исходника: внутри — системные вызовы,
+    # поведение подменять смысла нет, а обрыв между ними ловит только текст
     src = inspect.getsource(ncc.main)
-    assert "live_gate.wait_while_live(ROOT" in src and "live_gate.night_is_over()" in src
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
     assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"
