@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
-import os
 import pathlib
 import re
 import subprocess

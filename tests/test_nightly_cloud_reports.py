@@ -530,6 +530,9 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically()
     исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
     ncc = _load("nightly_claude_cores")
     src = inspect.getsource(ncc.main)
-    assert "live_gate.wait_while_live(ROOT" in src and "live_gate.night_is_over()" in src
+    # Пин по ВЫЗОВУ, не по аргументу: прежний `wait_while_live(ROOT` пережил
+    # перевод файла на канон и молчал, когда имени ROOT в модуле уже не было —
+    # NameError на боевом пути поймали головы и линтер, а не этот сторож (№338).
+    assert "live_gate.wait_while_live(" in src and "live_gate.night_is_over()" in src
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
     assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"

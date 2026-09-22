@@ -279,7 +279,7 @@ def main() -> None:
     )
     # единственный ночной шаг без живого гейта внутри: встреча, начавшаяся после
     # старта шага, отдавала до 10 минут облаку рядом с живой работой (аудит 13.09, DS M5)
-    live_gate.wait_while_live(ROOT or _root(), what="ревизия ядер", cap=tier3.night_wait_cap())
+    live_gate.wait_while_live(_root(), what="ревизия ядер", cap=tier3.night_wait_cap())
     if live_gate.night_is_over():
         print("время ночного прогона вышло — ревизия ядер завтра")
         sys.exit(0)
