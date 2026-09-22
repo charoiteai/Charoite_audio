@@ -381,3 +381,33 @@ def test_таблица_исхода_прогона():
     # и класс исхода согласован с каноном
     assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
     assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
+
+
+def test_есть_изменённые_строки_но_ломать_нечего(monkeypatch, capsys):
+    """Ветка «строки есть, мутировать нечего» (комментарий, докстринг, строковая
+    константа) отвечает «проверять нечего», а не успехом. Мутатор нашёл её
+    непокрытой в CI по №339: прежний тест гонял пустой диапазон и до неё не
+    доходил."""
+    import busy_signals
+    import exit_codes
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {REPO / "scripts" / "mutate_check.py": {1}})
+    monkeypatch.setattr(mc, "mutations_for", lambda *a, **k: [])
+    assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    assert "ничего мутируемого" in capsys.readouterr().out
+
+
+def test_исход_main_отдаёт_verdict_code():
+    """Последний возврат `main` — вызов `verdict_code`, а не константа и не
+    пустой `return`: исход прогона считается в одном месте. Мутант
+    «return X → return None» на этой строке пережил CI по №339 — теперь он
+    меняет узел AST и краснеет здесь."""
+    tree = ast.parse((REPO / "scripts" / "mutate_check.py").read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    # по номеру строки, а не по порядку обхода: ast.walk идёт в ширину и
+    # «последний» в нём — не последний в исходнике
+    last = max((n for n in ast.walk(main) if isinstance(n, ast.Return)), key=lambda n: n.lineno)
+    assert isinstance(last.value, ast.Call), "последний return main должен быть вызовом"
+    fn = last.value.func
+    assert getattr(fn, "id", getattr(fn, "attr", None)) == "verdict_code", (
+        "исход прогона считает verdict_code — одна точка, а не константа по месту")
