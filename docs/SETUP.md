@@ -177,7 +177,7 @@ Put an ERes2Net embedding model at `models/diar/embedding.onnx` — see
 ## 6. Run
 
 ```bash
-.venv/bin/python src/main.py     # CLI: live transcript + hints
+CHAROITE_ROOT="$PWD" .venv/bin/python src/main.py     # CLI: live transcript + hints
 # The daemon does not guess where your data lives — name the root:
 CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
 ```

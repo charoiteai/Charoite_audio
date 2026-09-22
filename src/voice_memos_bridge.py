@@ -381,12 +381,14 @@ def describe(summary: dict) -> str:
 
 
 if __name__ == "__main__":     # ручной прогон: python3 src/voice_memos_bridge.py <папка импорта> [--dry]
-    from charoite_paths import resolve_root
+    # корень данных называет тот, кто запускает, — ручной прогон без
+    # CHAROITE_ROOT получает рецепт и код 5, а не догадку по положению файла (№340)
+    from charoite_paths import name_data_root_or_exit
     from config_loader import load_user_or_example
+    root = name_data_root_or_exit(__file__)
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
         sys.exit("укажи папку импорта")
-    root = resolve_root(__file__)
     cfg = load_user_or_example(root)
     if not enabled(cfg):
         sys.exit("мост выключен: в config.yaml нужно `audio.voice_memos_bridge: true`")

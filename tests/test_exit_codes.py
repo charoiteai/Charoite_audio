@@ -17,6 +17,7 @@ READERS = {
     "src/rebuild_transcript.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "scripts/import_meeting.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "src/daemon.py": {"EXIT_ROOT_UNNAMED"},
+    "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
     "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL"},
 }
 #: Значения — снимок: их читают процессы вне этого репозитория (launchd, CI,

@@ -130,7 +130,7 @@ limitation, not as an indistinguishable "failure".
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml   # fill in user_name and graph_dir
-.venv/bin/python src/main.py     # live transcript + hints in the terminal
+CHAROITE_ROOT="$PWD" .venv/bin/python src/main.py     # live transcript + hints in the terminal
 ```
 
 To build the app with the embedded runtime yourself:
@@ -148,7 +148,7 @@ python3 scripts/doctor.py
 «что решили по платёжному провайдеру?» / "what did we decide about the
 payment provider?" — see the product working before recording anything.
 One command validates the whole retrieval loop: `.venv/bin/python scripts/memory_bench.py --demo`.
-Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `.venv/bin/python scripts/import_meeting.py file --date 2026-07-15`. Or point the app at an import folder (Settings → Import) — recordings dropped there become meetings on their own. A replacement dictionary (`sufler.vocabulary`) fixes terms the STT keeps mangling, everywhere at once.
+Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py file --date 2026-07-15`. Or point the app at an import folder (Settings → Import) — recordings dropped there become meetings on their own. A replacement dictionary (`sufler.vocabulary`) fixes terms the STT keeps mangling, everywhere at once.
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). Live diarization ("Speaker 1/2/…" per voice) takes one command:
 

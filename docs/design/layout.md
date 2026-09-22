@@ -14,7 +14,7 @@
 
 ## Поправки к таблице брифа (с обоснованием)
 
-- `charoite_paths` → core: корни данных и кода; машинный замер: из репозитория не импортирует ничего, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)
+- `charoite_paths` → core: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)
 - `deps` → core: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
@@ -59,7 +59,7 @@
 - `scripts/get_models.py` ← app/Sources/CharoiteApp/Services/ModelPullService.swift, scripts/diar_bench.py, scripts/doctor.py, src/diarize_live.py, src/stt.py; проба help
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
-- `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help
+- `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
 - `scripts/layout_map.py` ← scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; №340
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; №340
@@ -81,17 +81,17 @@
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh; проба help
 - `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; проба refuse
-- `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/main.py` ← scripts/doctor.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: голый запуск ждёт stdin; №340
-- `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; проба refuse
+- `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift; проба refuse
+- `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; проба refuse
+- `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py; проба refuse
+- `src/main.py` ← scripts/doctor.py; проба refuse
+- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: голый запуск ждёт stdin и не завершается; корень называет догадкой вслух, отказ с рецептом — №336
+- `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; проба refuse
+- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; проба refuse
 - `src/retro_fill.py` ← scripts/import_meeting.py; проба help
-- `src/transcribe_file.py` ← scripts/import_meeting.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `src/voice_memos_bridge.py` ← ручной запуск: мост Диктофона — отдельный процесс, поднимается руками до №210; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `src/transcribe_file.py` ← scripts/import_meeting.py; проба refuse
+- `src/voice_memos_bridge.py` ← ручной запуск: мост Диктофона — отдельный процесс, поднимается руками до №210; проба refuse
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 

@@ -66,4 +66,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # корень данных называет тот, кто запускает: приложение и демон передают
+    # CHAROITE_ROOT, ручной запуск без него получает рецепт и код 5 (№340)
+    from charoite_paths import name_data_root_or_exit
+    name_data_root_or_exit(__file__)
     main()

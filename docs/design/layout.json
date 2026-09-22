@@ -146,7 +146,7 @@
     },
     "charoite_paths": {
       "layer": "core",
-      "why": "корни данных и кода; машинный замер: из репозитория не импортирует ничего, а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)"
+      "why": "корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)"
     },
     "model_seam": {
       "layer": "core",
@@ -271,8 +271,8 @@
       "why": "по коду: argparse"
     },
     "scripts/import_meeting.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
+      "mode": "help+refuse",
+      "why": "по коду: дверь корня первой строкой main(), затем argparse — дети импорта получают названный корень; №340"
     },
     "scripts/layout_map.py": {
       "mode": "none",
@@ -359,48 +359,48 @@
       "why": "по коду: конструктор корня"
     },
     "src/diarize.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/dictate.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/dictate_note.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/graph_updater.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/main.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/mcp_server.py": {
       "mode": "none",
-      "why": "stdio-сервер: голый запуск ждёт stdin; №340"
+      "why": "stdio-сервер: голый запуск ждёт stdin и не завершается; корень называет догадкой вслух, отказ с рецептом — №336"
     },
     "src/meeting_archive.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/rebuild_transcript.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/retro_fill.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },
     "src/transcribe_file.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     },
     "src/voice_memos_bridge.py": {
-      "mode": "none",
-      "why": "без argparse и конструктора корня: голый запуск исполняет работу; №340"
+      "mode": "refuse",
+      "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     }
   }
 }

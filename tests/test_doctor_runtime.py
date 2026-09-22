@@ -11,6 +11,7 @@ Ollama отвечала на `/api/tags` мгновенно, модель чис
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -79,6 +80,9 @@ def test_stuck_meetings_are_named(capsys, monkeypatch, tmp_path):
     out = _lines(capsys)
     assert "2026-08-03_1030" in out, "имя встречи важнее числа: с него начинается разбор"
     assert "rebuild_transcript" in out, "должна быть команда, а не только диагноз"
+    # без корня скопированная команда получит отказ двери — подсказка повторяет
+    # тот корень, которым запущен сам doctor (№340)
+    assert f"CHAROITE_ROOT={shlex.quote(str(tmp_path.resolve()))} " in out
 
 
 def test_clean_pipeline_says_so(capsys, monkeypatch, tmp_path):
@@ -96,6 +100,27 @@ def test_clean_pipeline_says_so(capsys, monkeypatch, tmp_path):
     out = _lines(capsys)
     assert "незавершённых встреч нет" in out
     assert "~7 мин" in out, "честное время — часть картины, а не украшение"
+
+
+def test_all_clear_names_the_root_in_the_launch_command(capsys, monkeypatch, tmp_path):
+    """«Всё на месте» подсказывает запуск — с тем корнем, который проверялся.
+
+    Пробел в пути — чтобы кавычки были частью проверки: подсказку копируют в
+    shell как есть."""
+    root = tmp_path / "мой корень"
+    root.mkdir()
+    charoite_paths.use_data_root(root, replace=True)
+    for name in ("check_python", "check_deps", "check_ollama", "check_stt", "check_models",
+                 "check_llm_alive", "check_pipeline", "check_import_queue", "check_disk"):
+        monkeypatch.setattr(doctor, name, lambda *a, **kw: None)
+    monkeypatch.setattr(doctor, "check_config", lambda: {})
+    monkeypatch.setattr(sys, "argv", ["doctor.py"])
+
+    doctor.main()
+
+    out = _lines(capsys)
+    assert f"CHAROITE_ROOT={shlex.quote(str(root.resolve()))} .venv/bin/python src/main.py" in out
+    assert "'" in out, "путь с пробелом уходит в shell в кавычках"
 
 
 def test_import_folder_is_looked_up_where_the_app_keeps_it(monkeypatch):
@@ -117,10 +142,14 @@ def test_waiting_files_are_counted(capsys, tmp_path, monkeypatch):
     (tmp_path / "заметки.txt").write_text("текст", encoding="utf-8")
     (tmp_path / "done").mkdir()          # папки не считаем
     monkeypatch.setattr(doctor, "_import_dir", lambda cfg: str(tmp_path))
+    charoite_paths.use_data_root(tmp_path, replace=True)
 
     doctor.check_import_queue({})
 
-    assert "ждёт файлов: 2" in _lines(capsys)
+    out = _lines(capsys)
+    assert "ждёт файлов: 2" in out
+    assert f"CHAROITE_ROOT={shlex.quote(str(tmp_path.resolve()))} " in out, \
+        "ручной скан без корня кончится отказом двери — подсказка называет корень"
 
 
 def test_missing_import_folder_is_a_failure(capsys, tmp_path, monkeypatch):

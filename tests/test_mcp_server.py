@@ -182,3 +182,19 @@ def test_конфиг_без_модели_объясняет_отказ_а_не_
 
     assert "минутки НЕ тронуты" in out and "config.yaml" in out and "model" in out
     assert not (tdir / "2026-09-13_1200_minutes.md").exists(), "пустышка легла на диск"
+
+
+def test_mcp_without_a_root_names_a_guess_and_does_not_refuse(tmp_path):
+    """Клиент MCP владельца запускает сервер без CHAROITE_ROOT (замер 22.09,
+    ~/.claude.json). Сервер обязан назвать корень догадкой вслух и работать, а
+    не упасть отказом канона: отказ с рецептом перерегистрации — отдельная
+    карточка №336. Проверка процессом с закрытым вводом: stdio-сервер на EOF
+    выходит сам; догадка, снятая с вызова (guess_from_code=False), дала бы
+    RootNotNamed трейсбеком (мутатор, №340)."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    прогон = subprocess.run([sys.executable, str(ROOT / "src" / "mcp_server.py")],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            env=env, cwd=tmp_path, timeout=60)
+    assert прогон.returncode == 0, прогон.stderr[-400:]
+    assert "RootNotNamed" not in прогон.stderr and "не назван" not in прогон.stderr
