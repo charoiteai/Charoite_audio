@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import sys
 import time
@@ -26,6 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import busy_signals  # noqa: E402
 import live_gate  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
 LIVE = "живая запись"
@@ -64,16 +64,16 @@ def wait(store: MeetingStatusStore, *, timeout: float, poll: float,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    # корень ДАННЫХ: лок демона и статусы живут там, а не рядом с кодом
-    # (вложенная установка: CHAROITE_ROOT указывает на папку данных)
-    ap.add_argument("--root", default=os.environ.get("CHAROITE_ROOT") or ".",
-                    help="корень данных с logs/ (по умолчанию $CHAROITE_ROOT или .)")
+    # корень ДАННЫХ: лок демона и статусы живут там, а не рядом с кодом —
+    # отвечает канон (CHAROITE_ROOT), а не этот скрипт
+    ap.add_argument("--root", default=None,
+                    help="корень данных с logs/ (по умолчанию — у канона путей)")
     ap.add_argument("--timeout", type=float, default=3600,
                     help="сколько ждать, секунд (0 — не ждать)")
     ap.add_argument("--poll", type=float, default=60)
     a = ap.parse_args()
 
-    root = pathlib.Path(a.root).expanduser()
+    root = pathlib.Path(a.root).expanduser() if a.root else resolve_root(__file__)
     store = MeetingStatusStore(root)
     busy = busy_now(store, root)
     if not busy:

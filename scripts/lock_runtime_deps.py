@@ -27,7 +27,12 @@ import shutil
 import subprocess
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Вставка — только чтобы импортировать сам канон путей. LOCK и INPUT — файлы
+# РЕПОЗИТОРИЯ, то есть корень КОДА: канон считает его от положения файла.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from charoite_paths import code_root  # noqa: E402
+
+ROOT = code_root(__file__)
 LOCK = ROOT / "requirements-runtime.lock"
 INPUT = ROOT / "requirements-runtime.in"
 

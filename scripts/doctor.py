@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import shutil
 import subprocess
@@ -29,9 +28,21 @@ import time
 import urllib.request
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from charoite_paths import code_root, resolve_root  # noqa: E402
+
+CODE = code_root(__file__)
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return ROOT if ROOT is not None else resolve_root(__file__)
+
+
+#: Подмена в тестах; в бою всегда None — корень спрашивается у канона.
+ROOT = None
 
 OK, WARN, FAIL = "✓", "–", "✗"
 issues = 0
@@ -95,7 +106,7 @@ def check_python() -> None:
 
 
 def check_config() -> dict:
-    cfg_path = ROOT / "config" / "config.yaml"
+    cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists():
         line(FAIL, "config/config.yaml отсутствует",
              "cp config/config.example.yaml config/config.yaml и заполните user_name/graph_dir")
@@ -200,7 +211,7 @@ def check_stt(cfg: dict) -> None:
     model = pathlib.Path((cfg.get("stt") or {}).get(
         "sensevoice_model", "models/stt/sensevoice.onnx"))
     if not model.is_absolute():
-        model = ROOT / model
+        model = _root() / model
     if model.exists() and model.with_name("tokens.txt").exists():
         line(OK, f"распознавание: {model.name} (SenseVoice)")
     else:
@@ -210,7 +221,7 @@ def check_stt(cfg: dict) -> None:
 
 
 def check_models() -> None:
-    diar = ROOT / "models" / "diar" / "embedding.onnx"
+    diar = _root() / "models" / "diar" / "embedding.onnx"
     if diar.exists():
         line(OK, "диаризация: models/diar/embedding.onnx")
     else:
@@ -297,7 +308,7 @@ def check_pipeline() -> None:
     except Exception as e:  # noqa: BLE001
         line(WARN, f"статусы встреч недоступны ({type(e).__name__})")
         return
-    store = MeetingStatusStore(ROOT)
+    store = MeetingStatusStore(_root())
     if not store.directory.exists():
         line(WARN, "статусов встреч ещё нет — обработка ни разу не запускалась")
         return
@@ -355,7 +366,7 @@ def check_import_queue(cfg: dict) -> None:
 
 def check_disk() -> None:
     """Место под записи: час встречи в двух каналах — это сотни мегабайт."""
-    free = shutil.disk_usage(ROOT).free / 1e9
+    free = shutil.disk_usage(_root()).free / 1e9
     if free < 5:
         line(FAIL, f"на диске {free:.1f} ГБ",
              "записи и модели не поместятся — освободите место")

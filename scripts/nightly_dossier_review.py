@@ -31,10 +31,9 @@ import sys
 import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import dossier  # noqa: E402
@@ -44,7 +43,13 @@ import live_gate  # noqa: E402
 import tier3  # noqa: E402
 import privacy  # noqa: E402
 import safe_write  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
 
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
 MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
@@ -165,7 +170,7 @@ def revision_stats(old_body: str, new_body: str) -> str:
 
 
 def _cfg() -> dict:
-    return load_user_or_example(ROOT) or {}
+    return load_user_or_example(_root()) or {}
 
 
 
@@ -362,7 +367,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     if may_edit:
         try:
             lock_dir = charoite_paths.secure_dir(
-                charoite_paths.graph_backups(graph, "cloud_backup", root=ROOT).parent)
+                charoite_paths.graph_backups(graph, "cloud_backup", root=_root()).parent)
         except OSError as e:
             print(f"  замок графа не взять ({e}) — правки не пишу, только отчёт")
             may_edit = False
@@ -434,7 +439,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # 21.08 именно этот шаг: прогон, начатый в 04:16, к 11:36 всё ещё
         # держал процессор, и живая запись рвалась (потолок — чтобы ночь не
         # стала днём).
-        live_gate.wait_while_live(ROOT, what="ревизия досье",
+        live_gate.wait_while_live(_root(), what="ревизия досье",
                                   cap=tier3.night_wait_cap())
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")

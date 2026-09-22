@@ -21,19 +21,33 @@ import sys
 import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-FRESH_DAYS = 7
-MAX_CHARS = 60_000
-
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
 import cloud  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
 import tier3  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+FRESH_DAYS = 7
+MAX_CHARS = 60_000
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
+
+
+def _seen_path() -> pathlib.Path:
+    """Карта показанного живёт в логах — в корне данных, не кода."""
+    return SEEN if SEEN is not None else _root() / "logs" / "nightly_cores_seen.json"
+
+
+#: Подмена в тестах; в бою всегда None — путь спрашивается у канона.
+SEEN = None
 from config_loader import load_user_or_example  # noqa: E402
 
 
@@ -41,7 +55,7 @@ def _cfg() -> dict:
     # `or {}`: пустой/битый config.yaml даёт None, и первый же гейт
     # приватности падал с AttributeError, роняя ночной шаг вместо прохода
     # с дефолтами — у соседнего контура защита была (аудит облака, DS M5).
-    return load_user_or_example(ROOT) or {}
+    return load_user_or_example(_root()) or {}
 
 
 
@@ -55,7 +69,6 @@ INDEX_CHARS = 4000
 # алфавиту — всегда те же). Карта копится и сливается, а не заменяется
 # партией ночи (круг-1 по PR #380: замена ломала ротацию — показанное
 # позавчера считалось «новым» и вытесняло никогда не показанное).
-SEEN = ROOT / "logs" / "nightly_cores_seen.json"
 
 
 def _graph_key(graph: pathlib.Path) -> str:
@@ -64,7 +77,7 @@ def _graph_key(graph: pathlib.Path) -> str:
 
 def _seen_all() -> dict:
     try:
-        return json.loads(SEEN.read_text(encoding="utf-8"))
+        return json.loads(_seen_path().read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — нет файла/битый: как первый запуск
         return {}
 
@@ -108,13 +121,14 @@ def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None
         data[key] = {k: v for k, v in entry.items() if k in current_stems}
     else:
         data.pop(key, None)
-    charoite_paths.secure_dir(SEEN.parent)  # 0700 и для уже существующего каталога
-    tmp = SEEN.with_name(SEEN.name + ".tmp")
+    charoite_paths.secure_dir(_seen_path().parent)  # 0700 и для уже существующего каталога
+    seen = _seen_path()
+    tmp = seen.with_name(seen.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)   # режим в os.open действует только при создании файла
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(data, ensure_ascii=False, indent=1))
-    os.replace(tmp, SEEN)
+    os.replace(tmp, seen)
 
 
 def select_cores(fresh: list[pathlib.Path], seen: dict, budget: int,
@@ -265,7 +279,7 @@ def main() -> None:
     )
     # единственный ночной шаг без живого гейта внутри: встреча, начавшаяся после
     # старта шага, отдавала до 10 минут облаку рядом с живой работой (аудит 13.09, DS M5)
-    live_gate.wait_while_live(ROOT, what="ревизия ядер", cap=tier3.night_wait_cap())
+    live_gate.wait_while_live(ROOT or _root(), what="ревизия ядер", cap=tier3.night_wait_cap())
     if live_gate.night_is_over():
         print("время ночного прогона вышло — ревизия ядер завтра")
         sys.exit(0)

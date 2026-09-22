@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import sys
 import time
@@ -29,15 +28,21 @@ import llm  # noqa: E402
 import live_gate  # noqa: E402
 import install_profile  # noqa: E402
 import tier3  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return resolve_root(__file__)
+
 
 # Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
 # только этот скрипт, но человеку, который разбирается, почему ночь молчала,
 # они нужны там же, где остальные следы ночного цикла.
-# CHAROITE_ROOT: в бандловой установке код лежит в read-only .app, и запись
-# отметок рядом с ним падала бы PermissionError (ревью 19.08, третий круг).
-STAMPS = (pathlib.Path(os.environ.get("CHAROITE_ROOT")
-                       or pathlib.Path(__file__).resolve().parent.parent)
-          / "logs" / "tier3_last_run.json")
+# В корне ДАННЫХ (в бандловой установке код лежит в read-only .app, и запись
+# отметок рядом с ним падала бы PermissionError — ревью 19.08, третий круг);
+# где он, отвечает канон — переменная уже поставлена тем, кто запустил.
+STAMPS = resolve_root(__file__) / "logs" / "tier3_last_run.json"
 
 
 def _stamps() -> dict:

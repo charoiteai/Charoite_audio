@@ -24,11 +24,20 @@ import re
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return ROOT if ROOT is not None else resolve_root(__file__)
+
+
+#: Подмена в тестах; в бою всегда None — корень спрашивается у канона.
+ROOT = None
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
@@ -452,7 +461,7 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     # Через разбор JSON, не заменой подстроки: json.dumps по умолчанию
     # экранирует кириллицу (О…), и путь со старой темой в сыром тексте
     # файла просто не находится.
-    status_dir = ROOT / "logs" / "meeting-status"
+    status_dir = _root() / "logs" / "meeting-status"
     if status_dir.exists():
         import json
         mapping = {str(old): str(new) for old, new in p["moves"]}
@@ -495,9 +504,9 @@ def main() -> None:
     # без config.yaml — пример, как у import_meeting и retro_fill: прямое чтение
     # падало трейсбеком (аудит 13.09, DS M7); каталог стенограмм — с тем же
     # env-override, что у dictate_note и тестов
-    cfg = load_user_or_example(ROOT)
+    cfg = load_user_or_example(_root())
     graph = resolve_graph(cfg)
-    tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR") or ROOT / cfg["log"]["transcripts_dir"])
+    tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR") or _root() / cfg["log"]["transcripts_dir"])
     stamp = resolve_key(tdir, short_stamp(a.stamp), graph)
 
     p = plan(graph, tdir, stamp, pretty, slug)

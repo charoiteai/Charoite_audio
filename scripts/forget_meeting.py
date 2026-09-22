@@ -61,12 +61,21 @@ import stat
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import deps  # noqa: E402
 import live_sidecar  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
+    return ROOT if ROOT is not None else resolve_root(__file__)
+
+
+#: Подмена в тестах; в бою всегда None — корень спрашивается у канона.
+ROOT = None
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -98,7 +107,7 @@ def _in_cloud_snapshot(path: pathlib.Path) -> bool:
         return True
     try:
         return path.resolve().is_relative_to(
-            (ROOT / charoite_paths.BACKUPS_DIR).resolve())
+            (_root() / charoite_paths.BACKUPS_DIR).resolve())
     except (OSError, ValueError):
         return False
 
@@ -881,10 +890,10 @@ def main() -> int:
     args = ap.parse_args()
 
     graph = args.graph.expanduser() if args.graph else None
-    found = resolve(args.target, ROOT, graph)
+    found = resolve(args.target, _root(), graph)
     if not found:
         print(f"встреча «{args.target}» не найдена. Известные: "
-              + (", ".join(stamps(ROOT, graph)[-5:]) or "ни одной"))
+              + (", ".join(stamps(_root(), graph)[-5:]) or "ни одной"))
         return 1
     if len(found) > 1 and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.target):
         print(f"неоднозначно: {', '.join(found)}")
@@ -894,7 +903,7 @@ def main() -> int:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
     done = False
     for stamp in found:
-        done |= apply(plan(stamp, ROOT, graph, keep_graph=args.keep_graph,
+        done |= apply(plan(stamp, _root(), graph, keep_graph=args.keep_graph,
                            import_folder=args.import_folder), yes=args.yes)
         print()
     return 0 if (done or not args.yes) else 1

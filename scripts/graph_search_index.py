@@ -15,8 +15,7 @@ import pathlib
 import sys
 import time
 
-CODE = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(CODE / "src"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import deps  # noqa: E402
 
 deps.explain_missing()

@@ -41,16 +41,27 @@ import time
 
 # Код берём рядом со скриптом, данные — из корня установки: во вложенной
 # установке (код в одном месте, стенограммы и логи в другом) это разные папки,
-# и «src» от корня данных там просто нет.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(CODE / "src"))
+# и «src» от корня данных там просто нет. Вставка — только чтобы импортировать
+# сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import graph_updater as gu  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
-ROOT = resolve_root(__file__)
 
-OUT = ROOT / "logs" / "bench_extract"
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Снимка на импорте больше нет: боевой корень отвечает канон. `ROOT` —
+    точка подмены в тестах (tests/test_bench_extract.py ставит свой tmp_path);
+    в бою он пуст, и ответа канона ничто не перебивает.
+    """
+    return ROOT if ROOT is not None else resolve_root(__file__)
+
+
+#: Подмена в тестах; в бою всегда None — корень спрашивается у канона.
+ROOT = None
+
 # Служебные соседи стенограммы: подсказки, минутки, разбор, живой черновик,
 # облачная ревизия. Их разбирать бессмысленно — это уже продукты модели, а не
 # речь людей, и модель на них меряет саму себя.
@@ -63,7 +74,7 @@ FRESH_S = 10 * 60
 def meetings(limit: int, now: float | None = None) -> list[pathlib.Path]:
     """Свежие стенограммы встреч, без служебных файлов и незакрытых записей."""
     now = time.time() if now is None else now
-    files = [p for p in (ROOT / "transcripts").glob("*.md")
+    files = [p for p in (_root() / "transcripts").glob("*.md")
              if not any(p.stem.endswith(s) for s in SUFFIXES)
              and now - p.stat().st_mtime > FRESH_S]
     return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
@@ -158,7 +169,8 @@ def main() -> None:
         print(f"  {f.stem} ({f.stat().st_size // 1000} тыс. знаков)")
 
     rows = []
-    OUT.mkdir(parents=True, exist_ok=True)
+    out = _root() / "logs" / "bench_extract"
+    out.mkdir(parents=True, exist_ok=True)
     # Внешний цикл по МОДЕЛЯМ, внутренний по встречам: так каждая модель
     # грузится в память один раз.
     for model in args.models:
@@ -169,12 +181,12 @@ def main() -> None:
             if answer is not None:
                 # Сырые ответы рядом: полноту решений и попадание в поручения
                 # читает человек, и ему нужен текст, а не только числа.
-                (OUT / f"{f.stem}__{model.replace(':', '_').replace('/', '_')}.json"
+                (out / f"{f.stem}__{model.replace(':', '_').replace('/', '_')}.json"
                  ).write_text(json.dumps(answer, ensure_ascii=False, indent=1),
                               encoding="utf-8")
             rows.append(r)
     report(rows)
-    print(f"\nсырые разборы: {OUT}")
+    print(f"\nсырые разборы: {out}")
 
 
 if __name__ == "__main__":
