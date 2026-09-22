@@ -35,7 +35,12 @@ review gates, and who answers for what — is documented in
   holds nothing, or there is no test at all. Only lines from the diff are
   mutated — a whole-file pass means thousands of mutants and hours instead of
   minutes. The mutation lands in a separate git worktree, so test subprocesses
-  see the same broken code the imports do. An equivalent mutant (a threshold
+  see the same broken code the imports do. Each mutant is judged by the tests
+  that reach its module: `import X`, a subprocess running `X.py`, or a load
+  by path (`spec_from_file_location("X", …)`, the `_load("X")` helper). A
+  module no test reaches that way is judged by the whole suite — slow in CI,
+  and locally the baseline may not fit the time limit, so the run refuses.
+  An equivalent mutant (a threshold
   that both code and test read from one constant) need not be fixed — but is
   worth a look: on 20.08 one such survivor revealed that behaviour exactly at
   the threshold was tested by nobody.
