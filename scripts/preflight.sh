@@ -112,8 +112,8 @@ if ! skipped mutation; then
   # одному из них пропускал второй в зелёное (круг 2 по №339, DS C1).
   if [ "$rc" -eq "$NOTHING_TO_CHECK" ]; then SKIPPED="$SKIPPED mutation(проверять нечего)"; else verdict $rc mutation; fi
   # проверено подмножество — тоже неполнота, и она обязана быть в сводке, а не в логе
-  срез=$(grep -o "СРЕЗАНО [0-9]*" "$WORK/mutation.log" | head -1 | tr -d "СРЕЗАНО ")
-  [ -z "$срез" ] || SKIPPED="$SKIPPED mutation(срез $срез)"
+  cut_off=$(grep -o "СРЕЗАНО [0-9]*" "$WORK/mutation.log" | head -1 | tr -d "СРЕЗАНО ")
+  [ -z "$cut_off" ] || SKIPPED="$SKIPPED mutation(срез $cut_off)"
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"
