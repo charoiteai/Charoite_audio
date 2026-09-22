@@ -31,6 +31,8 @@ if ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
   echo "preflight: базы $BASE нет (нефетченный клон?) — назовите базу явно"; exit 2
 fi
 RANGE="$BASE...HEAD"
+NOTHING_TO_CHECK=$("$PY" -c "import sys; sys.path.insert(0, 'src'); import exit_codes; print(exit_codes.EXIT_NOTHING_TO_CHECK)") \
+  || { echo "preflight: коды канона не читаются (src/exit_codes.py) — прогон не стартует"; exit 2; }
 FAIL=""
 SKIPPED=""
 T0=$(date +%s)
@@ -74,18 +76,29 @@ fi
 
 step "3. swift — если тронут app/ (сборка, тесты и SwiftLint как в swift-tests.yml; app-ios не собирается)"
 if skipped swift; then :
-elif [ -z "$(changed app/)" ]; then echo "   – app/ не тронут, пропуск"
-elif command -v swiftlint >/dev/null && ! (swiftlint lint --quiet > "$WORK/swiftlint.log" 2>&1; ! grep -q error "$WORK/swiftlint.log"); then
-  grep error "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict 1 swiftlint
-elif (cd app && swift build --build-tests > "$WORK/swift-build.log" 2>&1); then
-  # фильтр без единого теста даёт exit 0 при нуле прогонов — сверяем строку Executed
-  (cd app && swift test --skip-build --filter '^CharoiteAppTests\.' > "$WORK/swift-test.log" 2>&1 \
-     && grep -Eq 'Executed [1-9][0-9]* test' "$WORK/swift-test.log"); rc=$?
-  grep -E "Executed [0-9]+ tests?" "$WORK/swift-test.log" | tail -1 | sed 's/^/   /'
-  [ $rc -eq 0 ] || grep -E "error:| failed " "$WORK/swift-test.log" | head -10 | sed 's/^/   /'
-  verdict $rc swift
+elif [ -z "$(changed app/)" ]; then
+  echo "   – app/ не тронут"; SKIPPED="$SKIPPED swift(app/ не тронут)"
 else
-  grep -E "error:" "$WORK/swift-build.log" | head -10 | sed 's/^/   /'; verdict 1 swift
+  # Линтер: его СОБСТВЕННЫЙ код возврата плюс отсутствие строк error — так же, как
+  # в swift-tests.yml под `set -euo pipefail`. Раньше код глотался `;`, и краш или
+  # битый конфиг давали зелёный шаг (круг 2 по №339, DS I2).
+  if command -v swiftlint >/dev/null; then
+    swiftlint lint --quiet > "$WORK/swiftlint.log" 2>&1; lint=$?
+    if [ $lint -ne 0 ] || grep -q "error" "$WORK/swiftlint.log"; then
+      grep -E "error|Could not|Unknown" "$WORK/swiftlint.log" | head -10 | sed 's/^/   /'; verdict 1 swiftlint
+    else verdict 0 swiftlint; fi
+  else
+    echo "   – swiftlint не установлен (в CI он гейт)"; SKIPPED="$SKIPPED swiftlint(нет бинарника)"
+  fi
+  if (cd app && swift build --build-tests > "$WORK/swift-build.log" 2>&1); then
+    (cd app && swift test --skip-build --filter '^CharoiteAppTests\.' > "$WORK/swift-test.log" 2>&1 \
+       && grep -Eq 'Executed [1-9][0-9]* test' "$WORK/swift-test.log"); rc=$?
+    grep -E "Executed [0-9]+ tests?" "$WORK/swift-test.log" | tail -1 | sed 's/^/   /'
+    [ $rc -eq 0 ] || grep -E "error:| failed " "$WORK/swift-test.log" | head -10 | sed 's/^/   /'
+    verdict $rc swift
+  else
+    grep -E "error:" "$WORK/swift-build.log" | head -10 | sed 's/^/   /'; verdict 1 swift
+  fi
 fi
 
 step "4. мутация изменённых строк ($RANGE)"
@@ -94,8 +107,13 @@ if ! skipped mutation; then
   # и в worktree не видит лока живой встречи (№339, DS I9 = GLM I1)
   CHAROITE_ROOT="$DATA_ROOT" "$PY" scripts/mutate_check.py --range "$RANGE" > "$WORK/mutation.log" 2>&1; rc=$?
   tail -4 "$WORK/mutation.log" | sed 's/^/   /'
-  # ноль мутантов — не зелёный, а «проверять нечего»: в сводке это разные слова
-  if [ $rc -eq 0 ] && grep -q "ломать нечего" "$WORK/mutation.log"; then SKIPPED="$SKIPPED mutation(нет мутантов)"; else verdict $rc mutation; fi
+  # «Проверять было нечего» — отдельный КОД канона, а не подстрока в выводе: исходов
+  # два (пустой диапазон и нет мутируемых строк), текст у них разный, и grep по
+  # одному из них пропускал второй в зелёное (круг 2 по №339, DS C1).
+  if [ "$rc" -eq "$NOTHING_TO_CHECK" ]; then SKIPPED="$SKIPPED mutation(проверять нечего)"; else verdict $rc mutation; fi
+  # проверено подмножество — тоже неполнота, и она обязана быть в сводке, а не в логе
+  срез=$(grep -o "СРЕЗАНО [0-9]*" "$WORK/mutation.log" | head -1 | tr -d "СРЕЗАНО ")
+  [ -z "$срез" ] || SKIPPED="$SKIPPED mutation(срез $срез)"
 fi
 
 printf '\n══ preflight за %s с: ' "$(( $(date +%s) - T0 ))"

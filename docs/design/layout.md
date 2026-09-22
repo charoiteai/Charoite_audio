@@ -95,6 +95,7 @@
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
 - `src/charoite_paths.py` ← scripts/layout_map.py
+- `src/exit_codes.py` ← scripts/preflight.sh
 - `src/graph_search.py` ← scripts/memory_bench.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py

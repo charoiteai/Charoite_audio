@@ -364,6 +364,7 @@ def main(argv: list[str]) -> int:
     # (3) началась живая встреча — прерываемся между мутантами.
     sys.path.insert(0, str(root / "src"))
     import busy_signals  # noqa: E402
+    from exit_codes import EXIT_NOTHING_TO_CHECK  # noqa: E402
     import charoite_paths  # noqa: E402
     # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки). Канон
     # целиком, а не его пересказ: прежняя копия брала strip и expanduser, но
@@ -383,7 +384,7 @@ def main(argv: list[str]) -> int:
     targets = changed_lines(root, args.range)
     if not targets:
         print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
-        return 0
+        return EXIT_NOTHING_TO_CHECK
 
     rev = head_of(args.range)
     plan: list[Mutation] = []
@@ -399,7 +400,7 @@ def main(argv: list[str]) -> int:
     if not plan:
         print(f"Изменённые строки не содержат ничего мутируемого "
               f"(файлов: {len(targets)}).")
-        return 0
+        return EXIT_NOTHING_TO_CHECK
 
     dropped = 0
     if len(plan) > args.max:

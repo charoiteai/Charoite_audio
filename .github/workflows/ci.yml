@@ -160,4 +160,10 @@ jobs:
       - name: mutate changed lines
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120
+        run: |
+          # Код «проверять было нечего» (PR без наших python-строк) — не красный:
+          # спрашиваем значение у канона, а не пишем цифру здесь (круг 2, DS C1).
+          nothing=$(python -c "import sys; sys.path.insert(0,'src'); import exit_codes; print(exit_codes.EXIT_NOTHING_TO_CHECK)")
+          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120 || rc=$?
+          if [ "$rc" = "$nothing" ]; then echo "::notice::мутировать было нечего — в диапазоне нет наших python-строк"; exit 0; fi
+          exit $rc

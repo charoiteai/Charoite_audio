@@ -288,8 +288,10 @@ MEASURED_EDGE_FIELDS = ("from", "to")
 #:            печатает рецепт с `CHAROITE_ROOT` (вход зовёт конструктор, №332);
 #:   none   — пробника нет: вход не запускается; пишется только руками и с
 #:            карточкой в why (долг со сроком, а не покрытие — круг 1, DS).
-#: Составной режим — через «+»: `help+refuse`. `--regen` вписывает лишь то, что
-#: проба тут же докажет (help/refuse); `none` машина не пишет.
+#: Составной режим — через «+»: `help+refuse`. `--regen` вписывает ДОГАДКУ по
+#: синтаксису (вызов parse_args / конструктора корня) — подтверждает или
+#: опровергает её проба на ближайшем прогоне, а не сам реген; `none` машина не
+#: пишет вовсе (круг 2 по коду №339, критика DS).
 RUN_MODES = ("help", "refuse", "none")
 #: Имя конструктора корня в каноне (`charoite_paths`); тест контрактов сверяет
 #: его с самим каноном, чтобы литерал не пережил переименование молча.
@@ -1878,8 +1880,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     contracts = layout["run_contracts"]
     # у каждой точки входа есть контракт запуска — и наоборот; умолчание по коду впишет `--regen`
     for path in sorted(set(execs) - set(contracts)):
-        problems.append(f"исполняемый файл {path} без контракта запуска — `--regen` впишет режим по коду в "
-                        f"run_contracts, решение (особенно none и его why) остаётся за человеком")
+        problems.append(f"исполняемый файл {path} без контракта запуска — `--regen` впишет help/refuse, если код это докажет (вызов parse_args / конструктора корня); иначе впишите none с № карточки руками")
     for path in sorted(set(contracts) - set(execs)):
         problems.append(f"run_contracts объявляет {path}, но это не исполняемый файл — снять")
     if execs and not any(c["mode"] != "none" for p, c in contracts.items() if p in execs):
