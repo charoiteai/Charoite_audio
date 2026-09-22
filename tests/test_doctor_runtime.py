@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
 import doctor  # noqa: E402
+import charoite_paths  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +67,9 @@ def test_stuck_meetings_are_named(capsys, monkeypatch, tmp_path):
 
     store = MeetingStatusStore(tmp_path)
     store.directory.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(doctor, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(MeetingStatusStore, "unfinished",
                         lambda self, **kw: [{"meeting_id": "2026-08-03_1030"}])
     monkeypatch.setattr(MeetingStatusStore, "typical_duration", lambda self, **kw: None)
@@ -82,7 +85,9 @@ def test_clean_pipeline_says_so(capsys, monkeypatch, tmp_path):
     from meeting_processing import MeetingStatusStore
 
     (tmp_path / "logs" / "meeting-status").mkdir(parents=True)
-    monkeypatch.setattr(doctor, "ROOT", tmp_path)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(MeetingStatusStore, "unfinished", lambda self, **kw: [])
     monkeypatch.setattr(MeetingStatusStore, "typical_duration", lambda self, **kw: 420.0)
 

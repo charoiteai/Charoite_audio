@@ -42,12 +42,15 @@ def _root() -> pathlib.Path:
 
 
 def _seen_path() -> pathlib.Path:
-    """Карта показанного живёт в логах — в корне данных, не кода."""
-    return SEEN if SEEN is not None else _root() / "logs" / "nightly_cores_seen.json"
+    """Карта показанного живёт в логах — в корне данных, не кода.
+
+    Подмена в тестах — через окружение (`CHAROITE_ROOT`) или публичную дверь
+    канона `use_data_root`, не через глобал модуля: второго ответа на вопрос
+    «где корень» здесь быть не должно (№338).
+    """
+    return _root() / "logs" / "nightly_cores_seen.json"
 
 
-#: Подмена в тестах; в бою всегда None — путь спрашивается у канона.
-SEEN = None
 from config_loader import load_user_or_example  # noqa: E402
 
 

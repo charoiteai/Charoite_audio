@@ -32,12 +32,14 @@ from charoite_paths import resolve_root  # noqa: E402
 
 
 def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
-    return ROOT if ROOT is not None else resolve_root(__file__)
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
 
+    Подмена в тестах — через окружение (`CHAROITE_ROOT`) или публичную дверь
+    канона `use_data_root`, не через глобал модуля: второго ответа на вопрос
+    «где корень» здесь быть не должно (№338).
+    """
+    return resolve_root(__file__)
 
-#: Подмена в тестах; в бою всегда None — корень спрашивается у канона.
-ROOT = None
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402

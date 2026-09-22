@@ -17,6 +17,8 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import charoite_paths  # noqa: E402
+
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 
 
@@ -92,8 +94,12 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
     изменившееся после показа — снова первым (круг-1 по PR #380: замена
     карты партией ночи ломала ротацию — A и B чередовались, C не попадало)."""
     import json
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня); карта показанного
+    # при этом лежит по боевому имени в логах корня
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
     graph = tmp_path / "graph"; cores = graph / "Ядра"; cores.mkdir(parents=True)
     a = _core(cores, "A", 900, 300); b = _core(cores, "B", 900, 200); c = _core(cores, "C", 900, 100)
     stems = {"A", "B", "C"}
@@ -103,9 +109,9 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
         order.append(chosen[0].stem)
         ncc._save_seen(graph, sent, stems)
     assert order == ["A", "B", "C"], order         # каждое — по одному разу
-    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    saved = json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
     assert set(saved) == stems, "карта копится, а не заменяется партией"
-    assert (ncc.SEEN.stat().st_mode & 0o777) == 0o600
+    assert (seen.stat().st_mode & 0o777) == 0o600
     # четвёртая ночь: ничего не менялось — первым идёт самое давно показанное (A)
     chosen, _, _, _ = ncc.select_cores([a, b, c], ncc._seen(graph), budget=920)
     assert chosen[0].stem == "A"
@@ -116,25 +122,28 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
     assert chosen[0].stem == "B"
     # ядро исчезло из графа — выпадает из карты
     ncc._save_seen(graph, {}, {"A", "B"})
-    assert "C" not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    assert "C" not in json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
 
 
 def test_old_cursor_format_is_migrated_not_crashed(tmp_path, monkeypatch):
     """Запись прежнего вида {ядро: mtime} (число) читается как
     {mtime, shown: 0}, а не роняет select_cores на .get() (круг-2, DS)."""
     import json
+    # корень подменяется публичной дверью канона (см. соседний тест про ротацию)
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "seen.json")
     graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
     a = _core(graph / "Ядра", "A", 100, 300)
-    ncc.SEEN.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
-    seen = ncc._seen(graph)
-    assert seen == {"A": {"mtime": 300.0, "shown": 0}}
-    chosen, _, sent, _ = ncc.select_cores([a], seen, budget=500)
+    seen.parent.mkdir(parents=True)
+    seen.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
+    old_seen = ncc._seen(graph)
+    assert old_seen == {"A": {"mtime": 300.0, "shown": 0}}
+    chosen, _, sent, _ = ncc.select_cores([a], old_seen, budget=500)
     assert chosen == [a]
     # и на диск уходит уже новый формат (круг-3, DS)
     ncc._save_seen(graph, sent, {"A"})
-    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    saved = json.loads(seen.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
     assert isinstance(saved["A"], dict) and saved["A"]["shown"] > 0
 
 
@@ -155,24 +164,26 @@ def test_save_seen_keeps_unmounted_graphs_and_drops_the_deleted_one(tmp_path, mo
     """Отмонтированный диск — не удалённый граф: его курсор остаётся; а
     граф, исчезнувший во время запроса, ключом не воскрешается (круг-3)."""
     import json
+    # корень подменяется публичной дверью канона (см. тест про ротацию ночей)
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = tmp_path / "logs" / "nightly_cores_seen.json"
     ncc = _load("nightly_claude_cores")
-    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
     graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
     unmounted = str(tmp_path / "Volumes" / "Диск" / "Граф")      # родителя нет
     deleted = tmp_path / "Другой"                                 # родитель есть, папки нет
-    ncc.SEEN.parent.mkdir()
-    ncc.SEEN.write_text(json.dumps({unmounted: {"X": {"mtime": 1, "shown": 1}},
-                                    str(deleted): {"Y": {"mtime": 1, "shown": 1}}}),
-                        encoding="utf-8")
+    seen.parent.mkdir()
+    seen.write_text(json.dumps({unmounted: {"X": {"mtime": 1, "shown": 1}},
+                                str(deleted): {"Y": {"mtime": 1, "shown": 1}}}),
+                    encoding="utf-8")
     ncc._save_seen(graph, {"A": {"mtime": 2, "shown": 2}}, {"A"})
-    data = json.loads(ncc.SEEN.read_text(encoding="utf-8"))
+    data = json.loads(seen.read_text(encoding="utf-8"))
     assert unmounted in data and str(deleted) not in data
-    assert (ncc.SEEN.parent.stat().st_mode & 0o777) == 0o700
+    assert (seen.parent.stat().st_mode & 0o777) == 0o700
     # сам граф исчез во время запроса — ключ не возвращается
     import shutil
     shutil.rmtree(graph)
     ncc._save_seen(graph, {"A": {"mtime": 3, "shown": 3}}, {"A"})
-    assert ncc._graph_key(graph) not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))
+    assert ncc._graph_key(graph) not in json.loads(seen.read_text(encoding="utf-8"))
 
 
 def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
