@@ -46,13 +46,13 @@
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
 - `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; №340
 - `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; не запускается: shell-скрипт: пробника нет; №340
-- `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
-- `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; проба help
+- `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; проба help
 - `scripts/cloud_review.py` ← src/graph_updater.py; проба help
-- `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
-- `scripts/doctor.py` ← src/deps.py; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/doctor.py` ← src/deps.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/get_models.py` ← app/Sources/CharoiteApp/Services/ModelPullService.swift, scripts/diar_bench.py, scripts/doctor.py, src/diarize_live.py, src/stt.py; проба help
@@ -60,7 +60,7 @@
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help
 - `scripts/layout_map.py` ← scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; №340
-- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; №340
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
@@ -68,13 +68,13 @@
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
 - `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh; проба help
 - `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; №340
-- `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier_review.py` ← scripts/nightly.sh; проба help
 - `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; №340
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; №340
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
-- `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; не запускается: без argparse и конструктора корня: голый запуск исполняет работу; №340
+- `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
