@@ -42,13 +42,26 @@ import sys
 import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
-# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-sys.path.insert(0, str(CODE / "src"))
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
+# только чтобы импортировать сам канон.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_stamp  # noqa: E402
 import deps  # noqa: E402
+from charoite_paths import code_root, resolve_root  # noqa: E402
+
+CODE = code_root(__file__)
+
+
+def _root() -> pathlib.Path:
+    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
+
+    Подмена в тестах — через окружение (`CHAROITE_ROOT`) или публичную дверь
+    канона `use_data_root`, не через глобал модуля: второго ответа на вопрос
+    «где корень» здесь быть не должно (№338).
+    """
+    return resolve_root(__file__)
+
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -624,7 +637,7 @@ def sweep_temporaries(folder: pathlib.Path, *, now: float | None = None) -> list
 
 
 def _cfg() -> dict:
-    return load_user_or_example(ROOT)
+    return load_user_or_example(_root())
 
 
 def clean_time(value: str) -> str:
@@ -955,7 +968,7 @@ def main() -> None:
         # Mac, копируются в папку импорта и идут тем же сканом. Сбой моста
         # не должен ронять импорт того, что уже лежит в папке.
         try:
-            bridged = voice_memos_bridge.describe(voice_memos_bridge.bridge(cfg, folder, ROOT))
+            bridged = voice_memos_bridge.describe(voice_memos_bridge.bridge(cfg, folder, _root()))
         except Exception as e:  # noqa: BLE001
             bridged = f"Диктофон → импорт: сбой моста — {e}"
         if bridged:
@@ -1011,7 +1024,7 @@ def main() -> None:
         return
 
     cfg = _cfg()
-    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    tdir = _root() / cfg["log"]["transcripts_dir"]
     tdir.mkdir(parents=True, exist_ok=True)
 
     mt, moment_note = meeting_moment(src)
@@ -1159,7 +1172,7 @@ def _status(method: str, transcript: pathlib.Path, *args) -> None:
     встреч её нет (поле 05.09: две записи с телефона разобраны, разложены в
     граф и архив — и невидимы). Прогресс не смеет ронять импорт."""
     try:
-        getattr(MeetingStatusStore(ROOT), method)(transcript, *args)
+        getattr(MeetingStatusStore(_root()), method)(transcript, *args)
     except Exception as e:  # noqa: BLE001
         print(f"статус встречи не записан ({type(e).__name__}: {e})")
 
@@ -1223,7 +1236,8 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
         # приложение читает наш stdout через трубу, и мегабайт логов
         # транскрибации подвесил бы импорт на полном буфере. Наружу —
         # хвост, в метку ошибки — тоже хвост.
-        r = run_child([sys.executable, __file__, str(f), "--result-json", str(result_path)])
+        r = run_child([sys.executable, str(CODE / "import_meeting.py"),
+                       str(f), "--result-json", str(result_path)])
         lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
         for ln in lines[-8:]:
             print(f"  {ln}")

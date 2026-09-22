@@ -487,4 +487,3 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
         body = frontmatter.split(texts[canon])[1]
         assert "## Статус" in body and "## Хроника" in body, "шапка переписана, тело цело"
         assert texts[canon].count("[[Встречи/") >= 2, "хроника обеих встреч на месте"
-

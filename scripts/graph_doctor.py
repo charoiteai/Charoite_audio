@@ -30,7 +30,6 @@ import argparse
 import collections
 import datetime as dt
 import json
-import os
 import pathlib
 import sys
 
@@ -41,9 +40,8 @@ import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
 import redirects  # noqa: E402
+from charoite_paths import resolve_root  # noqa: E402
 
-CODE = pathlib.Path(__file__).resolve().parent.parent
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 LINK = graph_links.LINK
 HUB_DIRS = ("Люди", "Системы", "Команды", "Ядра", "Блокеры", "Модели", "Досье")
 DESIGN_PAIRS = {frozenset(("Досье", "Ядра"))}   # досье на ядро — одноимённо по замыслу
@@ -251,7 +249,7 @@ def summary(rep: dict) -> str:
 
 
 def report_path() -> pathlib.Path:
-    return ROOT / "logs" / "graph_doctor.json"
+    return resolve_root(__file__) / "logs" / "graph_doctor.json"
 
 
 def main() -> int:

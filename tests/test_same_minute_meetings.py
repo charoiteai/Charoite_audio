@@ -20,6 +20,7 @@ import meeting_processing as mp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _folders_for  # noqa: E402
 import forget_meeting as forget  # noqa: E402
 import rename_meeting as rm  # noqa: E402
+import charoite_paths  # noqa: E402
 
 MIN = "2026-08-21_1258"
 FIRST, SECOND = "2026-08-21_125810", "2026-08-21_125812"
@@ -145,7 +146,9 @@ def test_forget_second_meeting_leaves_the_first_untouched(tmp_path, monkeypatch)
     (arch / "2026-08-21 12-58 — Первая" / "meeting.meta.json").write_text(
         json.dumps({"meeting_id": MIN}), encoding="utf-8")
     (arch / "2026-08-21 12-58-12 — Вторая").mkdir()
-    monkeypatch.setattr(forget, "ROOT", root, raising=False)
+    # корень подменяется публичной дверью канона: в процессе его уже назвала
+    # обвязка, и переменную канон не услышал бы (сегодня)
+    charoite_paths.use_data_root(root, replace=True)
     p = forget.plan(SECOND, root, graph)
     doomed = {d.name for d in p.delete}
     assert f"{SECOND}.md" in doomed and "2026-08-21 12-58-12 — Вторая" in doomed
