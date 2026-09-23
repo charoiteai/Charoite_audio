@@ -923,7 +923,19 @@ itself), and a table rule that disagrees with a candidate is a red line, not a
 silent priority; tests
 are outside the measurement (they build synthetic trees), and dated snapshots
 (reviews, release notes, posts) describe the code of their day and are not
-checked. `--regen` never writes an artifact the loader would reject. The gate is `tests/test_import_boundaries.py`,
+checked. `--regen` never writes an artifact the loader would reject. The
+fields of the artifact are declared once, in code (`_SCHEMA` in
+`scripts/layout_map.py`), each with its type and a class that says who writes
+it: `measured` — the measurement, on every `--regen` (edge pairs, the stamp,
+which executables carry a contract); `seed` — the machine, once, when a record
+is born (a run contract guessed from the code), after which the field is a
+human decision; `decision` — only a human. The declaration is closed: a field
+it does not name is a load error, so a second carrier of one fact cannot
+appear in the JSON without a code change a reviewer reads — the free-text
+`notes` block went stale exactly that way and was removed. Debt is printed,
+not stored: the map groups the upward edges and the entry points without a
+probe by the card that removes them (`ticket`, `№…` at the start), and
+`--regen` prints only what changed; no gate reads that number. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared

@@ -265,17 +265,6 @@ class Scan(NamedTuple):
 MAP_STATES = ("present", "missing", "skipped")
 MapState = Literal["present", "missing", "skipped"]      # тот же кортеж, гейт сверяет их равенство
 
-_SCHEMA = {"order": list, "brief_layers": dict, "allowed": dict, "layer_overrides": dict,
-           "allowed_edges": list, "manual_entry_points": dict, "root_exemptions": dict,
-           "generated": str, "run_contracts": dict}
-
-#: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
-#: импортов. Всё остальное в записи — решение человека (карточка, и что добавят
-#: дальше), и `regen` обязан перенести его дословно. Граница нужна именно как
-#: список: пока её не было, запись собиралась из трёх полей заново, и любое
-#: четвёртое исчезало без следа (входной круг №325).
-MEASURED_EDGE_FIELDS = ("from", "to")
-
 #: Как точка входа ПРИНИМАЕТСЯ ПРОГОНОМ — `run_contracts` в артефакте, по записи
 #: на каждый исполняемый файл (входной круг №339, 22.09: обе головы независимо —
 #: список «что исполняемо» уже здесь, значит и «чем это проверить» живёт здесь
@@ -287,7 +276,8 @@ MEASURED_EDGE_FIELDS = ("from", "to")
 #:   refuse — запуск БЕЗ названного корня выходит кодом `EXIT_ROOT_UNNAMED` и
 #:            печатает рецепт с `CHAROITE_ROOT` (вход зовёт конструктор, №332);
 #:   none   — пробника нет: вход не запускается; пишется только руками и с
-#:            карточкой в why (долг со сроком, а не покрытие — круг 1, DS).
+#:            карточкой в поле ticket (долг со сроком, а не покрытие — круг 1,
+#:            DS; карточка — поле, а не подстрока прозы в why, №325).
 #: Составной режим — через «+»: `help+refuse`. `--regen` вписывает ДОГАДКУ по
 #: синтаксису (вызов parse_args / конструктора корня) — подтверждает или
 #: опровергает её проба на ближайшем прогоне, а не сам реген; `none` машина не
@@ -300,28 +290,140 @@ RUN_MODES = ("help", "refuse", "none")
 ROOT_CONSTRUCTORS = ("require_data_root", "name_data_root_or_exit")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
 
+#: Карточка долга — «№число» в НАЧАЛЕ поля; текст после номера — пояснение.
+#: Формат жил в трёх местах тремя правилами (загрузчик — «непусто», тест —
+#: «начинается с №», контракт — «№ где угодно в строке»), и «№», «№abc» или
+#: «см. №322 и №340» проходили все три, а счёт долга по карточкам врал при
+#: зелёном гейте (входной круг №325, Opus I1). Разбор один — `card_of`.
+_CARD = re.compile(r"^№(\d+)\b")
 
-def load_layout(path: pathlib.Path | None = None) -> dict:
-    """Строгая загрузка: любой дефект артефакта — `LayoutError`, единственный
-    тип, который ловит `main`. Сначала паспорт схемы (файл читается, ключи на
-    месте и нужного типа — Critical DS круга 3: битый JSON и пропавший ключ
-    падали трейсбеком), потом инварианты: слои попарно не пересекаются,
-    `order`/`allowed` согласованы, стрелки вниз, у поправок слоя, ручных точек
-    входа и рёбер allowlist есть обоснование или карточка."""
-    path = path or LAYOUT
-    try:
-        layout = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        raise LayoutError(f"не читается: {e}") from e
+
+def card_of(ticket: str) -> str | None:
+    """Карточка из поля `ticket`: `"№322 (пояснение)"` → `"№322"`; не карточка — None."""
+    m = _CARD.match(ticket)
+    return f"№{m.group(1)}" if m else None
+
+
+def _stamp_problem(value: str) -> str | None:
+    return None if _STAMP.match(value) else "ожидался штамп вида 2026-09-19T18:53Z"
+
+
+def _card_problem(value: str) -> str | None:
+    return None if card_of(value) else f"карточка — «№число» в начале, пояснение после; получили {value!r}"
+
+
+def _mode_problem(value: str) -> str | None:
+    modes = value.split("+")
+    if any(m not in RUN_MODES for m in modes) or ("none" in modes and len(modes) > 1):
+        return f"режим из {'/'.join(RUN_MODES)} (через +; none — только один), получили {value!r}"
+    return None
+
+
+#: Класс поля артефакта — КТО его пишет. Одно объявление на артефакт (`_SCHEMA`
+#: ниже), и из него выводится всё остальное: что принимает загрузка (схема
+#: закрыта — поля, которого нет в объявлении, в артефакте быть не может), что
+#: `regen` переписывает, что досевает и что переносит, и снимок политики в тесте.
+#: Пока знание о полях жило в пяти местах — тип ключа в схеме, поля замера ребра
+#: отдельным списком, инварианты кодом по месту, формат карточки в тесте, «ticket
+#: особый» в regen, — поле без владельца дрейфовало молча: `notes` утверждал долг
+#: графа перед моделями, которого после фазы 3 уже не было (входной круг №325 по
+#: постановке, 23.09: обе головы, Opus I2–I4 и Sonnet C1).
+#:   measured — пишет замер на каждом `--regen` (пары рёбер, штамп; у коллекции —
+#:              её состав: рёбра против стрелок, контракты по реестру исполняемых);
+#:   seed     — машина пишет один раз, при рождении записи; дальше это решение
+#:              человека, и `regen` поле не трогает (контракт запуска по коду);
+#:   decision — пишет только человек, `regen` переносит дословно.
+FIELD_CLASSES = ("measured", "seed", "decision")
+
+
+class Field(NamedTuple):
+    """Поле артефакта. У коллекции записей класс самой коллекции — кто решает её
+    СОСТАВ, а `record` — объявление полей каждой записи. Строковое поле не бывает
+    пустым: пустое обоснование или карточка — это их отсутствие."""
+    typ: type
+    cls: str
+    record: dict[str, Field] | None = None
+    required: bool = True
+    check: Callable[[str], str | None] | None = None
+
+
+_SCHEMA: dict[str, Field] = {
+    "generated": Field(str, "measured", check=_stamp_problem),
+    "order": Field(list, "decision"),
+    "brief_layers": Field(dict, "decision"),
+    "allowed": Field(dict, "decision"),
+    "layer_overrides": Field(dict, "decision", {"layer": Field(str, "decision"),
+                                                "why": Field(str, "decision")}),
+    "allowed_edges": Field(list, "measured", {"from": Field(str, "measured"),
+                                              "to": Field(str, "measured"),
+                                              "ticket": Field(str, "decision", check=_card_problem)}),
+    "manual_entry_points": Field(dict, "decision"),
+    "root_exemptions": Field(dict, "decision"),
+    "run_contracts": Field(dict, "measured", {"mode": Field(str, "seed", check=_mode_problem),
+                                              "why": Field(str, "seed"),
+                                              "ticket": Field(str, "decision", required=False,
+                                                              check=_card_problem)}),
+}
+
+
+def record_fields(key: str, cls: str) -> tuple[str, ...]:
+    """Поля записи коллекции `key` данного класса — из объявления, не списком."""
+    return tuple(n for n, f in (_SCHEMA[key].record or {}).items() if f.cls == cls)
+
+
+#: Поля записи ребра, которыми владеет ЗАМЕР: их пишет `regen` по факту обхода
+#: импортов, всё остальное в записи он переносит дословно. Выводится из
+#: объявления: пока это был свой список, «ticket — решение» знал ещё и regen
+#: (входной круг №325, Opus M2).
+MEASURED_EDGE_FIELDS = record_fields("allowed_edges", "measured")
+
+
+def _fields_problem(where: str, obj: dict, fields: dict[str, Field]) -> str | None:
+    """Первое расхождение объекта с объявлением полей — или None."""
+    чужие = sorted(set(obj) - set(fields))
+    if чужие:
+        return (f"{where}: поле {', '.join(чужие)} не объявлено в _SCHEMA — поле артефакта "
+                f"заводится в коде с классом ({'/'.join(FIELD_CLASSES)}), а не дописывается в JSON")
+    for имя, f in fields.items():
+        if имя not in obj:
+            if f.required:
+                return f"{where}: нет поля {имя}"
+            continue
+        значение = obj[имя]
+        if not isinstance(значение, f.typ):
+            return f"{where}.{имя}: ожидался {f.typ.__name__}"
+        if isinstance(значение, str) and not значение.strip():
+            return f"{where}.{имя}: пустое значение"
+        беда = f.check(значение) if f.check else None
+        if беда:
+            return f"{where}.{имя}: {беда}"
+        if f.record is not None:
+            записи = значение.items() if isinstance(значение, dict) else enumerate(значение)
+            for ключ, запись in записи:
+                if not isinstance(запись, dict):
+                    return f"{имя}[{ключ}]: ожидался объект"
+                беда = _fields_problem(f"{имя}[{ключ}]", запись, f.record)
+                if беда:
+                    return беда
+    return None
+
+
+def validate_layout(layout: object) -> dict:
+    """Инварианты артефакта — `LayoutError` на первом нарушении. Сначала
+    объявление полей (`_SCHEMA`: ключи и поля записей на месте, нужного типа,
+    строки непусты, форматы карточки, режима и штампа; чужое поле — отказ),
+    потом связи между полями: слои попарно не пересекаются, `order`/`allowed`
+    согласованы, стрелки вниз, у ручных точек входа и исключений из правила
+    корня есть обоснование, карточка у контракта — ровно у `none`.
+
+    Отдельно от чтения файла: то же самое обязан пройти черновик `--regen`
+    перед записью — что записал реген, то читает загрузка (входной круг №325,
+    Opus C1: тест регена раньше не прогонял результат через загрузчик)."""
     if not isinstance(layout, dict):
         raise LayoutError("верхний уровень — не объект")
-    for key, typ in _SCHEMA.items():
-        if key not in layout:
-            raise LayoutError(f"нет ключа {key}")
-        if not isinstance(layout[key], typ):
-            raise LayoutError(f"{key}: ожидался {typ.__name__}")
-    if not _STAMP.match(layout["generated"]):
-        raise LayoutError("generated: ожидался штамп вида 2026-09-19T18:53Z")
+    беда = _fields_problem("артефакт", layout, _SCHEMA)
+    if беда:
+        raise LayoutError(беда)
     order = layout["order"]
     if len(set(order)) != len(order) or not all(isinstance(x, str) for x in order):
         raise LayoutError("order: повтор слоя или не строка")
@@ -336,8 +438,8 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
                 raise LayoutError(f"модуль {m} в двух слоях: {seen[m]} и {layer}")
             seen[m] = layer
     for m, ov in layout["layer_overrides"].items():
-        if not isinstance(ov, dict) or ov.get("layer") not in order or not ov.get("why"):
-            raise LayoutError(f"поправка слоя {m}: нужен layer из order и непустое why")
+        if ov["layer"] not in order:
+            raise LayoutError(f"поправка слоя {m}: слой {ov['layer']!r} не из order")
     for layer, deps in layout["allowed"].items():
         if not isinstance(deps, list):
             raise LayoutError(f"allowed[{layer}]: ожидался список слоёв")
@@ -346,11 +448,6 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
                 raise LayoutError(f"{layer}: в allowed неизвестный слой {d!r}")
             if order.index(d) >= order.index(layer):
                 raise LayoutError(f"{layer} зависит не вниз: {deps}")
-    for e in layout["allowed_edges"]:
-        if not isinstance(e, dict) or not isinstance(e.get("from"), str) or not isinstance(e.get("to"), str):
-            raise LayoutError(f"ребро allowlist без from/to: {e!r}")
-        if not e.get("ticket"):
-            raise LayoutError(f"ребро {e['from']} → {e['to']} без карточки")
     known = {name for name, _, _ in ROOT_SHAPES}
     for path_, shapes in layout["root_exemptions"].items():
         if not isinstance(shapes, dict) or not shapes:
@@ -364,16 +461,24 @@ def load_layout(path: pathlib.Path | None = None) -> dict:
         if not _is_candidate(path_) or not isinstance(why, str) or not why:
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
     for path_, contract in layout["run_contracts"].items():
-        if not _is_candidate(path_) or not isinstance(contract, dict):
-            raise LayoutError(f"контракт запуска {path_}: не путь к исполняемому файлу или не объект")
-        modes = str(contract.get("mode", "")).split("+")
-        if any(m not in RUN_MODES for m in modes) or ("none" in modes and len(modes) > 1):
-            raise LayoutError(f"контракт запуска {path_}: mode из {'/'.join(RUN_MODES)} (через +), "
-                              f"получили {contract.get('mode')!r}")
-        if "none" in modes and not (isinstance(contract.get("why"), str) and "№" in contract["why"]):
-            raise LayoutError(f"контракт запуска {path_}: режим none требует why с карточкой (№…) — "
-                              f"долг без срока выглядит как покрытие")
+        if not _is_candidate(path_):
+            raise LayoutError(f"контракт запуска {path_}: не путь к исполняемому файлу")
+        if (contract["mode"] == "none") != ("ticket" in contract):
+            raise LayoutError(f"контракт запуска {path_}: карточка (ticket) — у режима none и только у "
+                              f"него: none — долг со сроком, у пробы долга нет")
     return layout
+
+
+def load_layout(path: pathlib.Path | None = None) -> dict:
+    """Строгая загрузка: любой дефект артефакта — `LayoutError`, единственный
+    тип, который ловит `main`. Битый JSON и нечитаемый файл — тоже он, а не
+    трейсбек (Critical DS круга 3); инварианты — `validate_layout`."""
+    path = path or LAYOUT
+    try:
+        layout = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise LayoutError(f"не читается: {e}") from e
+    return validate_layout(layout)
 
 
 def _is_candidate(rel: str) -> bool:
@@ -1946,19 +2051,25 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
     `generated` меняется только вместе с allowlist (Minor DS круга 3).
     Слои, поправки и ручные точки входа — решения, их regen не трогает.
 
-    Внутри записи ребра то же правило: замер владеет только `from`/`to`
-    (`MEASURED_EDGE_FIELDS`), остальные поля — решение человека и переносятся
-    как есть. Раньше запись собиралась из трёх полей заново, и любое
-    добавленное поле молча исчезало при первом же `--regen`, пока гейт
-    оставался зелёным: обещание докстринга выше не выполнялось ровно для
-    рёбер (обе головы входного круга №325 независимо, 20.09)."""
+    Что с каким полем делать, решает класс поля в `_SCHEMA`, а не код по
+    месту: `measured` переписывается (пара ребра, штамп, состав контрактов),
+    `seed` пишется только при рождении записи (контракт по коду), `decision`
+    переносится дословно. Обязательное решение, которого у новой записи ещё
+    нет, получает пустое место — такую запись загрузка отвергнет, и `main`
+    блокирует запись артефакта с понятной строкой (ребро без карточки).
+    Раньше запись ребра собиралась из трёх полей заново, и любое добавленное
+    поле молча исчезало при первом же `--regen` (обе головы входного круга
+    №325, 20.09); теперь чужого поля в загруженном артефакте нет вовсе — схема
+    закрыта (входной круг №325 по постановке, 23.09)."""
     kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
     fresh = violations(graph, layout)
+    места = {n: "" for n, f in (_SCHEMA["allowed_edges"].record or {}).items()
+             if f.cls != "measured" and f.required}
     edges = []
     for a, b in fresh:
         prev = kept.get((a, b), {})
-        decided = {k: v for k, v in prev.items() if k not in MEASURED_EDGE_FIELDS and k != "ticket"}
-        edges.append({"from": a, "to": b, "ticket": prev.get("ticket", ""), **decided})
+        перенос = {k: v for k, v in prev.items() if k not in MEASURED_EDGE_FIELDS}
+        edges.append({"from": a, "to": b, **места, **перенос})
     if edges != layout["allowed_edges"]:
         layout["allowed_edges"] = edges
         layout["generated"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
@@ -1978,10 +2089,42 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
             if derived is None:
                 _say(notes, f"{rel}: пробника по коду нет — объявить none с карточкой руками")
                 continue
-            contracts[rel] = derived
+            # запись рождается из полей класса seed — дальше их держит человек
+            contracts[rel] = {n: derived[n] for n in record_fields("run_contracts", "seed")}
             _say(notes, f"контракт запуска по коду: {rel} → {derived['mode']}")
         layout["run_contracts"] = dict(sorted(contracts.items()))
     return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
+
+
+def _card_order(card: str) -> tuple[int, str]:
+    return (int(card[1:]), card) if card_of(card) else (1 << 30, card)
+
+
+def debt_by_card(layout: dict) -> dict[str, list[str]]:
+    """Долг по карточкам — производная, нигде не хранится: сколько чего снимет
+    каждая карточка. Носителей два — ребро против стрелок и точка входа без
+    пробы (`none`), у обоих карточка лежит полем `ticket` и разбирается одним
+    `card_of`. Срок в CI не живёт и ничего не останавливает (решение 20.09, обе
+    головы: календарь в гейте и красная строка чужому контрибьютору о чужом
+    долге недопустимы); печать закрывает «долг невидим», а не «долг не
+    снимается» — его снимает карточка (входной круг №325 по постановке, Opus C3)."""
+    долг: dict[str, list[str]] = {}
+    for e in layout["allowed_edges"]:
+        долг.setdefault(card_of(e.get("ticket", "")) or "без карточки", []).append(
+            f"ребро `{e['from']}` → `{e['to']}`")
+    for rel, c in sorted(layout["run_contracts"].items()):
+        if c.get("mode") == "none":
+            долг.setdefault(card_of(c.get("ticket", "")) or "без карточки", []).append(f"вход `{rel}` без пробы")
+    return dict(sorted(долг.items(), key=lambda kv: _card_order(kv[0])))
+
+
+def debt_delta(before: dict, after: dict) -> list[str]:
+    """Что `--regen` поменял в долге: «№322: было 3, стало 2». Только разница —
+    полный список живёт в карте."""
+    было = {k: len(v) for k, v in debt_by_card(before).items()}
+    стало = {k: len(v) for k, v in debt_by_card(after).items()}
+    return [f"долг {k}: было {было.get(k, 0)}, стало {стало.get(k, 0)}"
+            for k in sorted(set(было) | set(стало), key=_card_order) if было.get(k, 0) != стало.get(k, 0)]
 
 
 def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str]) -> str:
@@ -1990,9 +2133,12 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     они меняются от любой правки и шумели бы в каждом PR (критика DS круга 2)."""
     lay = layer_of(layout)
     out = ["# Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)", "",
-           f"Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. "
-           f"Снимок allowlist: {layout.get('generated', '?')}. Модулей {len(graph)}.",
-           "", "## Слои и направление стрелок", ""]
+           (f"Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. "
+            f"Снимок allowlist: {layout.get('generated', '?')} (момент последнего `--regen`; "
+            f"версия файла — git). Модулей {len(graph)}."),
+           "", "## Слои и направление стрелок", "",
+           ("Таблица брифа владельца 19.09 дословно; правка слоя — только поправкой с обоснованием "
+            "ниже: перенос слоя одной строкой без причины легализовал бы ребро молча."), ""]
     by_layer: dict[str, list[str]] = {layer: [] for layer in layout["order"]}
     for m, layer in lay.items():
         by_layer[layer].append(m)
@@ -2010,14 +2156,24 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     for rel, shapes in sorted(layout["root_exemptions"].items()):
         for name, why in sorted(shapes.items()):
             out.append(f"- `{rel}`, форма «{name}»: {why}")
-    out += ["", "## Рёбра против стрелок (allowlist с карточками на снятие)", ""]
+    out += ["", "## Рёбра против стрелок (allowlist с карточками на снятие)", "",
+            ("Рёбра на момент снимка пишет `--regen` по замеру, руками их не считают; карточка — "
+             "решение человека: где ребро снимается."), ""]
     viol = violations(graph, layout)
     tickets = {(e["from"], e["to"]): e.get("ticket", "") for e in layout["allowed_edges"]}
     out.append(f"Всего {len(viol)}.")
     out.append("")
     for a, b in viol:
         out.append(f"- `{a}` ({lay[a]}) → `{b}` ({lay[b]}) — {tickets.get((a, b)) or 'без карточки'}")
-    out += ["", "## Точки входа — исполняемые файлы (кто зовёт из кода)", ""]
+    out += ["", "## Долг по карточкам (производная: рёбра против стрелок и входы без пробы)", "",
+            ("Нигде не хранится и ничего не останавливает: долг снимает карточка, карта его только "
+             "показывает."), ""]
+    for card, items in debt_by_card(layout).items():
+        out.append(f"- {card} — {len(items)}: " + "; ".join(items))
+    out += ["", "## Точки входа — исполняемые файлы (кто зовёт из кода)", "",
+            ("Ручная точка входа — исполняемый файл, которого из кода репозитория никто не зовёт: "
+             "запускает человек или внешний конфиг; обоснование обязательно, и пометку гейт снимает, "
+             "как только файл начинает звать код."), ""]
     for path in sorted(execs):
         who = ", ".join(sorted(scanned.mentions.get(path, ())))
         manual = layout["manual_entry_points"].get(path)
@@ -2025,7 +2181,7 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
         if contract is None:
             probe = "контракта запуска нет"
         elif contract["mode"] == "none":
-            probe = f"не запускается: {contract.get('why', '')}"
+            probe = f"не запускается: {contract.get('why', '')}; снимет {contract.get('ticket') or 'без карточки'}"
         else:
             probe = f"проба {contract['mode']}"
         out.append(f"- `{path}` ← {who or ('ручной запуск: ' + manual if manual else 'никто')}; {probe}")
@@ -2089,10 +2245,17 @@ def main(argv: list[str] | None = None) -> int:
         # на диске, а не по несохранённой правке (Important DS круга 6)
         notes: list[str] = []
         fresh, unticketed = regen(json.loads(json.dumps(layout)), graph, inv, notes)
-        for line in notes:
+        for line in notes + debt_delta(layout, fresh):
             print("  ", line)
         blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
                    for a, b in unticketed]
+        if not blocked:
+            # что записал реген, то читает загрузка — проверка до записи, а не
+            # на следующем прогоне (входной круг №325 по постановке, Opus C1)
+            try:
+                validate_layout(json.loads(json.dumps(fresh)))
+            except LayoutError as e:
+                blocked = [f"реген дал артефакт, который загрузка отвергает ({e}); артефакт и карта не записаны"]
         if not blocked:
             layout = fresh
             LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

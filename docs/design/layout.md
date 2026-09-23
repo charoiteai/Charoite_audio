@@ -1,8 +1,10 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z. Модулей 65.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 65.
 
 ## Слои и направление стрелок
+
+Таблица брифа владельца 19.09 дословно; правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
 - **core** (зависит от: —; модулей 13): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `model_seam`, `privacy`, `redirects`, `safe_write`, `vocabulary`
 - **llm** (зависит от: core; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
@@ -14,7 +16,7 @@
 
 ## Поправки к таблице брифа (с обоснованием)
 
-- `charoite_paths` → core: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его 19 модулей всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него — 10 записей allowlist из 16. Перенос вниз снимает все 10 и не создаёт ни одного нового (№321, фаза 3)
+- `charoite_paths` → core: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)
 - `deps` → core: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
@@ -34,19 +36,31 @@
 
 ## Рёбра против стрелок (allowlist с карточками на снятие)
 
+Рёбра на момент снимка пишет `--regen` по замеру, руками их не считают; карточка — решение человека: где ребро снимается.
+
 Всего 3.
 
 - `audio` (audio) → `meeting_stamp` (meeting) — №322
 - `channel_labels` (audio) → `speaker_names` (meeting) — №322
 - `diarize` (audio) → `llm` (llm) — №322 (LLM.complete для имён спикеров — вызов точки входа)
 
+## Долг по карточкам (производная: рёбра против стрелок и входы без пробы)
+
+Нигде не хранится и ничего не останавливает: долг снимает карточка, карта его только показывает.
+
+- №322 — 3: ребро `audio` → `meeting_stamp`; ребро `channel_labels` → `speaker_names`; ребро `diarize` → `llm`
+- №336 — 1: вход `src/mcp_server.py` без пробы
+- №364 — 8: вход `app/make_app.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы
+
 ## Точки входа — исполняемые файлы (кто зовёт из кода)
 
-- `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh; не запускается: shell-скрипт: пробника нет; №340
+Ручная точка входа — исполняемый файл, которого из кода репозитория никто не зовёт: запускает человек или внешний конфиг; обоснование обязательно, и пометку гейт снимает, как только файл начинает звать код.
+
+- `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/bench_extract.py` ← ручной запуск: бенчмарк извлечения, ручной прогон; проба help
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
-- `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; №340
-- `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; не запускается: shell-скрипт: пробника нет; №340
+- `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `scripts/build_embedded_python.sh` ← .github/workflows/release-app.yml, app/make_app.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; проба help
 - `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; проба help
 - `scripts/cloud_review.py` ← src/graph_updater.py; проба help
@@ -60,20 +74,20 @@
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
-- `scripts/layout_map.py` ← scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; №340
+- `scripts/layout_map.py` ← scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; проба help
-- `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; №340
+- `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
 - `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; проба help
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
 - `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh; проба help
-- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; №340
+- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier_review.py` ← scripts/nightly.sh; проба help
-- `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; №340
-- `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; №340
+- `scripts/notarize.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
@@ -86,7 +100,7 @@
 - `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; проба refuse
 - `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py; проба refuse
 - `src/main.py` ← scripts/doctor.py; проба refuse
-- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: голый запуск ждёт stdin и не завершается; корень называет догадкой вслух, отказ с рецептом — №336
+- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: голый запуск ждёт stdin и не завершается; корень называет догадкой вслух, пока нет отказа с рецептом перерегистрации; снимет №336
 - `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; проба refuse
 - `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; проба refuse
 - `src/retro_fill.py` ← scripts/import_meeting.py; проба help
