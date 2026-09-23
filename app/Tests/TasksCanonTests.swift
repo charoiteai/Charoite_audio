@@ -71,6 +71,41 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertTrue(TasksService.meetingItems(items, for: "2026-09-01_1000").isEmpty)
     }
 
+    func testReviewWithdrawnMinutesItemHidesCopies() throws {
+        // Формат моста: снятое ревизией уезжает в «Снято ревизией» зачёркнутым, без
+        // чекбокса; в минутках может не остаться ни одной строки «- [» (DS C1 круга 2).
+        try write("Встречи-архив/2026-09-01 10-00 — Старая/Минутки.md",
+                  "## Снято ревизией\n- ~~**Коля** — давнее~~ _(снято ревизией: нет в записи)_\n")
+        try write("Встречи-архив/2026-09-01 10-00 — Старая/Ревизия.md", "- [ ] **Коля** — давнее\n")
+
+        XCTAssertTrue(TasksService.scanSync(graph: dir).isEmpty)
+    }
+
+    func testOutsiderLineInMinutesHidesReviewCheckbox() throws {
+        // №181: поручение не участнику — строка ⚠ без чекбокса; копия-чекбокс отчёта его не воскрешает.
+        try write("Встречи-архив/2026-09-09 11-32 — План/Минутки.md",
+                  "## Поручения\n- [ ] **Оля** — живое\n- ⚠ не участник (Саша): **Саша** — обзвонить хосты\n")
+        try write("Встречи-архив/2026-09-09 11-32 — План/Ревизия.md", "- [ ] **Саша** — обзвонить хосты\n")
+
+        XCTAssertEqual(TasksService.scanSync(graph: dir).map(\.text), ["**Оля** — живое"])
+    }
+
+    func testWordlessItemsAreNotGlued() throws {
+        try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Минутки.md", "- [ ] ✅\n")
+        try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Ревизия.md", "- [ ] 🔥\n- [ ] —\n")
+
+        XCTAssertEqual(TasksService.scanSync(graph: dir).count, 3, "пустой ключ ни с чем не склеивается")
+    }
+
+    func testMeetingCardIgnoresDiaryNoteWithMeetingDigits() throws {
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Минутки.md", "- [ ] **Коля** — отчёт\n")
+        try write("Дневник/2026-09-21 10-34 — разговор.md", "- [ ] **Лена** — личное\n")
+
+        let card = TasksService.meetingItems(TasksService.scanSync(graph: dir), for: "2026-09-21_1034")
+
+        XCTAssertEqual(card.map(\.text), ["**Коля** — отчёт"])
+    }
+
     func testMeetingWithoutMinutesKeepsOneCopyPreferringArchive() throws {
         try write("Документация/Стенограммы встреч/2026-08-04_1131_План_ревизия.md",
                   "- [ ] **Оля** — проверить сборку\n")
@@ -107,13 +142,15 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertEqual(TasksService.scanSync(graph: dir).count, 2)
     }
 
-    func testSameTaskKeyMatchesBridgeKey() {
-        // Те же случаи, что склеивает `_key` моста ревизии (src/review_bridge.py).
+    func testSameTaskKeyMatchesBridgeKeyAndMarks() {
+        // Случаи `_key` моста ревизии (src/review_bridge.py) и отметки снятия, которых мост не знает.
         let pairs = [
             ("**Коля** — отчёт — до 22.09 (из ревизии)", "**Коля** — отчёт — до 22.09"),
             ("⚠ не участник (Саша): **Саша** — написать", "**Саша** — написать"),
             ("Связаться с Марком, до пятницы", "связаться с Марком — до пятницы"),
             ("**Коля** — давнее _(снято по сроку 23.09)_", "**Коля** — давнее"),
+            ("~~**Коля** — давнее~~ _(снято ревизией: нет в записи)_", "**Коля** — давнее"),
+            ("~~**Kolya** — old~~ _(withdrawn by the review: absent)_", "**Kolya** — old"),
         ]
         for (a, b) in pairs {
             XCTAssertEqual(TasksService.sameTaskKey(a), TasksService.sameTaskKey(b), "\(a) ≠ \(b)")

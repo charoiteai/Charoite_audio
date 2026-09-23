@@ -55,10 +55,13 @@ final class TasksService: ObservableObject {
     // nonisolated-контекста — ошибка, а не предупреждение).
     // swiftlint:disable:next force_try
     private nonisolated static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
-    /// Снятый пункт (`- [-] … _(снято по сроку ДД.ММ)_`, №366): во вкладке его нет,
-    /// но он по-прежнему пункт минуток — его копии в отчёте ревизии не воскресают.
+    /// Строка минуток, которая знает поручение, но задачей его не держит: снятое
+    /// контролем (`- [-] … _(снято по сроку ДД.ММ)_`), снятое ревизией
+    /// (`- ~~…~~ _(снято ревизией: …)_`, `review_bridge.withdraw_from_minutes`) и
+    /// поручение не участнику (`- ⚠ не участник (Имя): …`, №181). Во вкладке их нет,
+    /// но их копии в отчёте ревизии не показываются: минутки уже решили.
     // swiftlint:disable:next force_try
-    private nonisolated static let withdrawnRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[-\] +(.+)$"#)
+    private nonisolated static let knownRx = try! NSRegularExpression(pattern: #"^\s*[-*] +((?:\[-\] |~~|⚠).*)$"#)
 
     /// Полный скан графа — в фоне, с публикацией результата на главном потоке.
     ///
@@ -85,7 +88,7 @@ final class TasksService: ObservableObject {
         guard var graph = root else { return [] }
         graph = graph.resolvingSymlinksInPath()   // /var vs /private/var — см. ArchiveSearch
         var found: [Item] = []
-        var withdrawn: [Item] = []
+        var known: [(rel: String, text: String)] = []
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
@@ -96,8 +99,9 @@ final class TasksService: ObservableObject {
             let rel = canon.hasPrefix(graph.path + "/")
                 ? String(canon.dropFirst(graph.path.count + 1))
                 : url.lastPathComponent
+            let isMinutes = url.lastPathComponent == Self.minutesName
             guard let text = try? String(contentsOf: url, encoding: .utf8),
-                  text.contains("- [") else { continue }
+                  isMinutes || text.contains("- [") else { continue }
             let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             for (i, line) in text.components(separatedBy: "\n").enumerated() {
@@ -105,13 +109,9 @@ final class TasksService: ObservableObject {
                 guard let m = Self.todoRx.firstMatch(in: line, range: range),
                       let markRange = Range(m.range(at: 1), in: line),
                       let textRange = Range(m.range(at: 2), in: line) else {
-                    if url.lastPathComponent == Self.minutesName,
-                       let w = Self.withdrawnRx.firstMatch(in: line, range: range),
-                       let textRange = Range(w.range(at: 1), in: line) {
-                        withdrawn.append(Item(
-                            id: "\(rel)#\(i)", file: url, rel: rel, lineIndex: i,
-                            text: String(line[textRange]), done: true, fileDate: mdate,
-                            sourceLine: line))
+                    if isMinutes, let k = Self.knownRx.firstMatch(in: line, range: range),
+                       let knownRange = Range(k.range(at: 1), in: line) {
+                        known.append((rel: rel, text: String(line[knownRange])))
                     }
                     continue
                 }
@@ -122,7 +122,7 @@ final class TasksService: ObservableObject {
                     sourceLine: line))
             }
         }
-        return canonicalItems(found, withdrawn: withdrawn)
+        return canonicalItems(found, known: known)
     }
 
     nonisolated static let minutesName = "Минутки.md"
@@ -137,19 +137,19 @@ final class TasksService: ObservableObject {
     /// «Документации»; мост дописывает в минутки « (из ревизии)», и прежняя
     /// склейка по точному тексту их не ловила — 23.09 каждое живое поручение
     /// стояло во вкладке трижды (465 строк при 169 поручениях). Правило:
-    /// пункты минуток — всегда; пункт другого файла встречи прячется, если это
-    /// тот же пункт, что в минутках (ключ `sameTaskKey`, как `_key` моста), в
-    /// том числе снятый `- [-]`; одинаковые копии вне минуток — одна, папка
+    /// пункты минуток — всегда; пункт другого файла встречи прячется, если
+    /// минутки его знают (тот же ключ `sameTaskKey`) — задачей, снятым или
+    /// поручением не участнику; одинаковые копии вне минуток — одна, папка
     /// архива важнее заметки. Поручение, которого в минутках нет (дописанное
     /// руками в заметку встречи), остаётся. Копии с разным состоянием — две
-    /// строки: отметка не теряется молча.
-    nonisolated static func canonicalItems(_ items: [Item], withdrawn: [Item] = []) -> [Item] {
-        func meetingOf(_ item: Item) -> String? {
-            meetingRoots.contains(where: item.rel.hasPrefix) ? meetingKey(item.rel) : nil
-        }
+    /// строки: отметка не теряется молча. Пустой ключ (строка без слов) ни с
+    /// чем не склеивается.
+    nonisolated static func canonicalItems(_ items: [Item], known: [(rel: String, text: String)] = []) -> [Item] {
         var minuteKeys = Set<String>()
-        for item in items + withdrawn where item.file.lastPathComponent == minutesName {
-            if let meeting = meetingOf(item) { minuteKeys.insert(meeting + "\u{0}" + sameTaskKey(item.text)) }
+        let minuteLines = items.filter { $0.file.lastPathComponent == minutesName }.map { (rel: $0.rel, text: $0.text) }
+        for line in minuteLines + known {
+            let key = sameTaskKey(line.text)
+            if !key.isEmpty, let meeting = meetingOf(line.rel) { minuteKeys.insert(meeting + "\u{0}" + key) }
         }
         var seen = Set<String>()
         var kept = Set<Int>()
@@ -158,15 +158,24 @@ final class TasksService: ObservableObject {
         }
         for index in ranked {
             let item = items[index]
-            guard let meeting = meetingOf(item), item.file.lastPathComponent != minutesName else {
+            let words = sameTaskKey(item.text)
+            guard let meeting = meetingOf(item.rel), item.file.lastPathComponent != minutesName,
+                  !words.isEmpty else {
                 kept.insert(index)
                 continue
             }
-            let key = meeting + "\u{0}" + sameTaskKey(item.text)
+            let key = meeting + "\u{0}" + words
             if minuteKeys.contains(key) { continue }
             if seen.insert(key + (item.done ? "\u{0}x" : "")).inserted { kept.insert(index) }
         }
         return items.indices.filter(kept.contains).map { items[$0] }
+    }
+
+    /// Встреча файла — только в каталогах встреч: у личной заметки со штампом в
+    /// имени те же 12 цифр, но встречей она не является. Одна проверка для
+    /// склейки, карточки и «Сегодня».
+    nonisolated static func meetingOf(_ rel: String) -> String? {
+        meetingRoots.contains(where: rel.hasPrefix) ? meetingKey(rel) : nil
     }
 
     /// Какая копия поручения остаётся: папка встречи в архиве, потом заметка
@@ -180,15 +189,18 @@ final class TasksService: ObservableObject {
     // swiftlint:disable:next force_try
     private nonisolated static let outsiderRx = try! NSRegularExpression(pattern: #"⚠[^:]*:"#)
     // swiftlint:disable:next force_try
-    private nonisolated static let withdrawnMarkRx = try! NSRegularExpression(pattern: #"_\(снято[^)]*\)_"#)
+    private nonisolated static let withdrawnMarkRx = try! NSRegularExpression(
+        pattern: #"_\((?:снято|withdrawn by the review|已由审阅撤回)[^)]*\)_"#)
     // swiftlint:disable:next force_try
     private nonisolated static let wordRx = try! NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
     /// Пометки моста ревизии (`review_bridge.MARKS`) на трёх языках.
     nonisolated static let bridgeMarks = ["(из ревизии)", "(from the review)", "（来自审阅）"]
 
-    /// «Тот же пункт» — ключ по образцу `_key` моста (`src/review_bridge.py`):
-    /// без «⚠ не участник (Имя):», без пометки моста и отметки «снято», без
-    /// жирного и пунктуации, в нижнем регистре; слова через пробел.
+    /// «Тот же пункт» — ключ по образцу `_key` моста (`src/review_bridge.py`) и
+    /// шире его на отметки снятия: без «⚠ не участник (Имя):», пометки моста,
+    /// `_(снято …)_`/`_(снято ревизией: …)_` (три языка), жирного, зачёркивания и
+    /// пунктуации, в нижнем регистре; слова через пробел. Нечёткое сравнение
+    /// моста (`_same_item`) не повторяется: оно — дело писателя (№369).
     nonisolated static func sameTaskKey(_ text: String) -> String {
         var s = text
         for rx in [outsiderRx, withdrawnMarkRx] {
@@ -241,7 +253,7 @@ final class TasksService: ObservableObject {
     }
 
     nonisolated static func belongs(_ item: Item, to meetingID: String) -> Bool {
-        guard let source = meetingKey(item.rel), let meeting = meetingKey(meetingID) else {
+        guard let source = meetingOf(item.rel), let meeting = meetingKey(meetingID) else {
             return false
         }
         return source == meeting
