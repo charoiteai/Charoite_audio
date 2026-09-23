@@ -1193,10 +1193,10 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
                      f"({e.reason}) — файл рядом со стенограммой\n")
         except OSError:
             pass                      # нет/недоступен — упадёт ниже в общий except
+        # название — из стема, одно правило с graph_updater (№361); у посекундного
+        # стема без темы хвоста нет — секунды темой не становятся (ревью 17.08)
         from meeting_archive import archive_meeting
-        slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
-        if slug[:1].isdigit():
-            slug = ""   # остаток «30» у посекундного стема — секунды, не тема (ревью 17.08)
+        from meeting_stamp import title_from_stem
         # ревизия переписала минутки — саммари по ним STALE, и политика по
         # умолчанию его пересоберёт; легаси без паспорта не трогается (№314)
         # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
@@ -1204,7 +1204,7 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         # ревизии называем архиватору явно, а не надеемся на глоб. Файл в папке
         # пишет только архиватор: своя копия поверх его копии давала два
         # переписывания одного пути за миллисекунды (Critical Opus по №361).
-        archived = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
+        archived = archive_meeting(graph, transcript.parent, stamp, title_from_stem(transcript.stem),
                                    files_key=transcript.stem,
                                    extra={"Ревизия Claude.md": rev} if rev_ok else None)
         folder = archived.folder if archived is not None else None

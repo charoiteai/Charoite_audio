@@ -108,11 +108,13 @@ def write_text_if_changed(path: pathlib.Path, text: str, *, encoding: str = "utf
 def copy_if_changed(src: pathlib.Path, dst: pathlib.Path) -> bool:
     """Скопировать документ в граф, только если байты отличаются. True — скопировали.
 
-    Отличие от `write_text_if_changed` одно, и оно намеренное: копия получает
-    ВРЕМЕНА ИСТОЧНИКА (`copy2`). По ним читатели архива считают свежесть:
-    `meeting_archive.summary_adoptable` сравнивает mtime материалов с саммари.
-    Запись идёт через tmp рядом с целью и `replace`, не на месте, а права и
-    метки Finder переносятся со старой копии, как в `write_text`.
+    Копия — производная источника, поэтому права и времена берутся у него, как
+    у `copy2`: по mtime читатели архива считают свежесть
+    (`meeting_archive.summary_adoptable` сравнивает материалы с саммари). Этим
+    она отличается от `write_text`, который бережёт права правленого руками узла
+    (критика Sonnet круга 2 по №361). Запись идёт через tmp рядом с целью и
+    `replace`, не на месте. Метки Finder не переносятся: на macOS у Python нет
+    `os.listxattr`, и `_carry_over_metadata` их тоже не переносит.
     """
     if dst.is_symlink():
         dst = dst.resolve()
@@ -123,7 +125,6 @@ def copy_if_changed(src: pathlib.Path, dst: pathlib.Path) -> bool:
     tmp = dst.with_name(f"{dst.name}.tmp{os.getpid()}")
     try:
         shutil.copy2(src, tmp)
-        _carry_over_metadata(dst, tmp)
         tmp.replace(dst)
     finally:
         tmp.unlink(missing_ok=True)

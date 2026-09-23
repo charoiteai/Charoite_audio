@@ -156,7 +156,12 @@ def park_copy(graph: pathlib.Path, copy: meeting_archive.ConflictCopy, dest: pat
     пустышка. Строка манифеста пишется раньше удаления: оборванный прогон
     оставляет след всего, что уже убрано.
     """
+    def identity(p: pathlib.Path) -> tuple[int, int, int]:
+        st = os.lstat(p)
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
+
     try:
+        before = identity(copy.copy)
         data = copy.copy.read_bytes()
         if data != copy.original.read_bytes():
             return "изменился во время прогона — пропуск"
@@ -164,13 +169,22 @@ def park_copy(graph: pathlib.Path, copy: meeting_archive.ConflictCopy, dest: pat
         target.parent.mkdir(parents=True, exist_ok=True)
         part = target.with_name(target.name + ".part")
         shutil.copy2(copy.copy, part)
-        if part.read_bytes() != data:
+        # iCloud может подменить файл, пока мы его копируем (докачка серверной
+        # версии): удалили бы версию, которой нет в резерве (Important Opus
+        # круга 2 по №361). Файл сверяем дважды — до записи резерва и прямо
+        # перед удалением; окно сжато до одного вызова, но не до нуля.
+        if part.read_bytes() != data or identity(copy.copy) != before:
             part.unlink(missing_ok=True)
-            return "резерв не совпал с копией — пропуск"
+            return "изменился во время прогона — пропуск"
         part.replace(target)
-        manifest.write(f"{copy.copy.relative_to(graph)}\t{copy.original.relative_to(graph)}\t"
+        rel = copy.copy.relative_to(graph)
+        manifest.write(f"{rel}\t{copy.original.relative_to(graph)}\t"
                        f"{len(data)}\t{hashlib.sha256(data).hexdigest()}\n")
         manifest.flush()
+        if identity(copy.copy) != before:
+            manifest.write(f"# оставлена: {rel} — изменилась во время переноса, резерв выше лишний\n")
+            manifest.flush()
+            return "изменился во время переноса — копия оставлена"
         copy.copy.unlink()
         return "ok"
     except OSError as e:
@@ -183,8 +197,9 @@ def park_copies(graph: pathlib.Path, apply: bool) -> None:
     if not found:
         print("конфликтных копий «Имя N» нет")
         return
-    same = [c for c in found if c.same]
-    other = [c for c in found if not c.same]
+    same = [c for c in found if c.same is True]
+    other = [c for c in found if c.same is False]
+    unread = [c for c in found if c.same is None]
     size = 0
     for c in same:
         try:
@@ -218,6 +233,10 @@ def park_copies(graph: pathlib.Path, apply: bool) -> None:
                 print(f"  {f}")
     for c in other[:5]:
         print(f"  отличается от оригинала: {c.copy.relative_to(graph)}")
+    if unread:
+        print(f"⚠️ не прочитаны ({len(unread)}) — не трогаем:")
+        for c in unread[:5]:
+            print(f"  {c.copy.relative_to(graph)}")
 
 
 def link_duplicates(graph: pathlib.Path, apply: bool) -> None:
@@ -284,6 +303,8 @@ def main() -> int:
                     help="связать побайтные копии ссылками (без ключа — sufler.dedup_files из конфига)")
     ap.add_argument("--apply-copies", action="store_true",
                     help="убрать конфликтные копии «Имя N» в резерв (без ключа — sufler.dedup_copies)")
+    ap.add_argument("--all-graphs", action="store_true",
+                    help="все графы vault с папкой «Ядра» — тот же перечень, что у graph_doctor")
     args = ap.parse_args()
 
     # Право на правку графа берётся из конфига, а не из строки запуска.
@@ -295,14 +316,20 @@ def main() -> int:
     apply_links = args.apply or _allowed_by_config("dedup_files")
     apply_copies = args.apply_copies or _allowed_by_config("dedup_copies")
 
-    graph = graph_dir(args.graph)
-    if not graph or not graph.is_dir():
+    # Перечень графов — тот же, что у доктора: сигнал о копиях горит по каждому
+    # графу, и уборке нельзя видеть только основной (Important Opus круга 2 по №361).
+    found = graphs.all_graphs("Ядра") if args.all_graphs else [graph_dir(args.graph)]
+    found = [g for g in found if g and g.is_dir()]
+    if not found:
         print("граф не найден — пропуск")
         return 0
 
-    # Копии — первыми: после их уборки отчёт о ссылках не считает их дважды.
-    park_copies(graph, apply_copies)
-    link_duplicates(graph, apply_links)
+    for graph in found:
+        if len(found) > 1:
+            print(f"— {graph.name}")
+        # Копии — первыми: после их уборки отчёт о ссылках не считает их дважды.
+        park_copies(graph, apply_copies)
+        link_duplicates(graph, apply_links)
     return 0
 
 

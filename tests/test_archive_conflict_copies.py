@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import dedup_graph as dg  # noqa: E402
 import meeting_archive as ma  # noqa: E402
+import meeting_stamp  # noqa: E402
 import safe_write  # noqa: E402
 
 
@@ -343,3 +344,161 @@ def test_doctor_warns_about_conflict_copies(tmp_path):
     rep = graph_doctor.inspect(graph)
     assert rep["conflict_copies"] == 1
     assert any("конфликтных копий" in w for w in rep["warnings"])
+
+
+# --- круг 2 по коду (№361) ------------------------------------------------------
+
+def test_copy_takes_source_permissions_like_copy2(tmp_path):
+    """Копия — производная источника: права от него, как у `copy2` (критика
+    Sonnet круга 2)."""
+    src, dst = tmp_path / "src.md", tmp_path / "dst.md"
+    src.write_text("новое\n", encoding="utf-8")
+    dst.write_text("старое\n", encoding="utf-8")
+    src.chmod(0o640)
+    dst.chmod(0o600)
+    safe_write.copy_if_changed(src, dst)
+    assert (dst.stat().st_mode & 0o777) == 0o640
+
+
+def test_topic_twin_does_not_rewrite_the_folder_on_every_pass(tmp_path):
+    """Двойник по теме («…_Бюджет_MVP») под тем же ключом «…_Бюджет»: два
+    источника на одно имя переписывали путь дважды на каждом проходе
+    (Important Opus круга 2). Побеждает точное имя, второй проход тих."""
+    graph, tdir = _meeting(tmp_path)
+    key = "2026-08-03_1130_Планёрка"
+    (tdir / f"{key}_Итоги.md").write_text("стенограмма двойника\n", encoding="utf-8")
+    # «_Alpha» сортируется раньше точного «_minutes»: без правила «точное главнее»
+    # победил бы двойник
+    (tdir / f"{key}_Alpha_minutes.md").write_text("минутки двойника\n", encoding="utf-8")
+    folder = ma.archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка", files_key=key).folder
+    assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "стенограмма\n"
+    assert (folder / "Минутки.md").read_text(encoding="utf-8") == "## Решения\n- да\n"
+    before = {p.name: _sig(p) for p in folder.iterdir() if p.is_file()}
+    ma.archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка", files_key=key)
+    after = {p.name: _sig(p) for p in folder.iterdir() if p.is_file()}
+    assert before == after
+
+
+def test_debrief_is_planned_once(tmp_path):
+    """Разбор, найденный и по ключу, и как `expected_debrief`, в плане один
+    (Minor Sonnet круга 2)."""
+    graph, tdir = _meeting(tmp_path)
+    key = "2026-08-03_1130_Планёрка"
+    debrief = tdir / f"{key}_разбор.md"
+    debrief.write_text("разбор\n", encoding="utf-8")
+    plan = ma.plan_materials(tdir, key, debrief)
+    assert plan["Разбор.md"] == debrief
+    assert list(plan).count("Разбор.md") == 1
+
+
+def test_title_comes_from_the_stem():
+    """Одно правило названия для всех вызывающих (Minor Opus круга 2)."""
+    assert meeting_stamp.title_from_stem("2026-08-03_1130_Бюджет_MVP") == "Бюджет MVP"
+    assert meeting_stamp.title_from_stem("2026-07-15_140030") == ""       # секунды темой не становятся
+    assert meeting_stamp.title_from_stem("2026-07-15_1400") == ""
+    assert meeting_stamp.title_from_stem("заметка") == ""
+
+
+def test_unreadable_copy_is_neither_parked_nor_called_different(copies_graph, monkeypatch, capsys):
+    """Нечитаемая копия — не «отличается» (Minor Opus круга 2)."""
+    graph, d, _ = copies_graph
+    blocked = d / "Минутки 2.md"
+    blocked.chmod(0o000)
+    try:
+        found = {c.copy.name: c.same for c in ma.conflict_copies(graph)}
+        assert found["Минутки 2.md"] is None
+        _run(monkeypatch, "--graph", str(graph), "--apply-copies")
+        assert blocked.exists()
+        assert "не прочитаны (1)" in capsys.readouterr().out
+    finally:
+        blocked.chmod(0o644)
+
+
+def test_copy_replaced_while_parking_is_left_and_not_logged(copies_graph, tmp_path, monkeypatch):
+    """iCloud подменил копию, пока её копировали в резерв: удалять нельзя, в
+    резерве не та версия (Important Opus круга 2)."""
+    graph, d, _ = copies_graph
+    found = [c for c in ma.conflict_copies(graph) if c.copy.name == "Минутки 2.md"][0]
+    real_copy2 = dg.shutil.copy2
+
+    def copy_then_icloud_replaces(src, dst, *a, **k):
+        real_copy2(src, dst, *a, **k)
+        tmp = Path(src).with_name("подмена.tmp")
+        tmp.write_text("серверная версия\n", encoding="utf-8")
+        os.replace(tmp, src)                     # новый inode — как докачка iCloud
+
+    monkeypatch.setattr(dg.shutil, "copy2", copy_then_icloud_replaces)
+    dest = tmp_path / "резерв"
+    dest.mkdir()
+    with (dest / "manifest.tsv").open("a", encoding="utf-8") as mf:
+        status = dg.park_copy(graph, found, dest, mf)
+    assert status.startswith("изменился")
+    assert (d / "Минутки 2.md").read_text(encoding="utf-8") == "серверная версия\n"
+    assert not list(dest.rglob("Минутки 2.md")), "в резерве осталась не та версия"
+    assert (dest / "manifest.tsv").read_text(encoding="utf-8") == ""
+
+
+def test_copy_replaced_right_before_unlink_is_kept(copies_graph, tmp_path):
+    graph, d, _ = copies_graph
+    found = [c for c in ma.conflict_copies(graph) if c.copy.name == "Минутки 2.md"][0]
+
+    class ManifestThatRaces:
+        """Файл подменяют сразу после записи строки — перед самым unlink."""
+        def __init__(self):
+            self.lines: list[str] = []
+        def write(self, s):
+            self.lines.append(s)
+            if len(self.lines) == 1:
+                tmp = d / "подмена.tmp"
+                tmp.write_text("серверная версия\n", encoding="utf-8")
+                os.replace(tmp, d / "Минутки 2.md")
+        def flush(self):
+            pass
+
+    dest = tmp_path / "резерв"
+    dest.mkdir()
+    mf = ManifestThatRaces()
+    status = dg.park_copy(graph, found, dest, mf)
+    assert "копия оставлена" in status
+    assert (d / "Минутки 2.md").read_text(encoding="utf-8") == "серверная версия\n"
+    assert any(line.startswith("# оставлена:") for line in mf.lines)
+
+
+def test_all_graphs_cleans_every_graph(tmp_path, monkeypatch):
+    """Перечень графов у уборки тот же, что у доктора (Important Opus круга 2)."""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(dg, "_root", lambda: data_root)
+    monkeypatch.setattr(dg, "_cfg", lambda: {})
+    graphs_ = []
+    for name in ("работа", "личное"):
+        g = tmp_path / name
+        d = g / ma.ARCHIVE_DIR / "2026-09-03 16-05 — Встреча"
+        d.mkdir(parents=True)
+        (d / "Минутки.md").write_text("м\n", encoding="utf-8")
+        (d / "Минутки 2.md").write_text("м\n", encoding="utf-8")
+        graphs_.append((g, d))
+    monkeypatch.setattr(dg.graphs, "all_graphs", lambda marker: [g for g, _ in graphs_])
+    _run(monkeypatch, "--all-graphs", "--apply-copies")
+    assert all(not (d / "Минутки 2.md").exists() for _, d in graphs_)
+
+
+def test_doctor_warns_only_when_copies_grow(tmp_path):
+    """Оставленные человеку копии не горят каждую ночь — сигнал на рост
+    (критика Opus круга 2)."""
+    import graph_doctor
+    graph = tmp_path / "граф"
+    for sub in ("Люди", "Системы", "Ядра", "Встречи"):
+        (graph / sub).mkdir(parents=True)
+    d = _archive_folder(graph)
+    (d / "Минутки.md").write_text("м\n", encoding="utf-8")
+    (d / "Минутки 2.md").write_text("м\n", encoding="utf-8")
+
+    def warned(prev):
+        rep = graph_doctor.inspect(graph, prev_copies=prev)
+        return [w for w in rep["warnings"] if "конфликтных копий" in w]
+
+    assert warned(None), "первый отчёт молчит о копиях"
+    assert not warned(1), "то же число копий горит каждую ночь"
+    grew = warned(0)
+    assert grew and "(было 0)" in grew[0]

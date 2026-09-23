@@ -2907,12 +2907,16 @@ def main():
     # встречи и ссылкой на граф (Встречи-архив/, ярлык на рабочем столе)
     try:
         from meeting_archive import archive_meeting
+        from meeting_stamp import title_from_stem
         # Ключ файлов — стем стенограммы: у посекундной встречи без темы это
         # «…113012», и минутный глоб взял бы файлы соседней встречи той же
         # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
         # саммари — по паспорту одной политикой с обходом: новая встреча MISSING,
         # ревизия старит через минутки; легаси без паспорта живой путь не трогает (№314)
-        archived = archive_meeting(graph, tpath.parent, stamp, title, files_key=tpath.stem)
+        # Название папки — из стема, как у облачной ревизии: иначе каждая смена
+        # вызывающего переименовывала папку и переписывала манифест (№361).
+        archived = archive_meeting(graph, tpath.parent, stamp, title_from_stem(tpath.stem),
+                                   files_key=tpath.stem)
         print(f"архив встречи: {archived.folder.name}" if archived else "архив встречи: исключена")
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")

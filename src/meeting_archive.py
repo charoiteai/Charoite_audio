@@ -74,11 +74,14 @@ class ConflictCopy(typing.NamedTuple):
     same: bool | None
 
 
-def _same_content(a: pathlib.Path, b: pathlib.Path) -> bool:
+def _same_content(a: pathlib.Path, b: pathlib.Path) -> bool | None:
+    """True/False — сравнили; None — прочитать не вышло. Нечитаемая копия — не
+    «отличающаяся»: её нельзя ни убрать, ни отдать человеку как другую версию
+    (Minor Opus круга 2 по №361)."""
     try:
         return a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes()
     except OSError:
-        return False
+        return None
 
 
 def conflict_copies(graph: pathlib.Path, *, compare: bool = True) -> list[ConflictCopy]:
@@ -247,6 +250,42 @@ class Archived(typing.NamedTuple):
     summary: "SummaryOutcome"
 
 
+def plan_materials(tdir: pathlib.Path, key: str, expected_debrief: pathlib.Path | None,
+                   extra: typing.Mapping[str, pathlib.Path] | None = None) -> dict[str, pathlib.Path]:
+    """План папки встречи: имя в папке → ровно один источник.
+
+    «Писать только при изменении» даёт тишину, только если у каждого имени один
+    источник. `files_with_stamp` отсекает соседку по секундам, но не двойника по
+    теме: при ключе «…_Бюджет» в выдачу попадают и «…_Бюджет_MVP.md», и его
+    минутки. Два источника на одно имя переписывали путь дважды на каждом
+    проходе (Important Opus круга 2 по №361). Здесь побеждает точное имя
+    «<ключ>.md» / «<ключ><суффикс>», а без него — первый по сортировке,
+    как и раньше. Разбор пишет только `expected_debrief`, если он есть: его
+    двойня под другим именем — не наш разбор, а сам он в цикле больше не
+    пишется вторым разом (Minor Sonnet круга 2). Источник из `extra` главнее
+    всего.
+    """
+    plan: dict[str, pathlib.Path] = {}
+    exact: set[str] = set()
+    for f in files_with_stamp(tdir, key, suffix=".md"):
+        dest, suffix = "Стенограмма.md", ".md"
+        for suf, nice in NICE:
+            if f.name.endswith(suf):
+                dest, suffix = nice, suf
+                break
+        if dest == "Разбор.md" and expected_debrief is not None:
+            continue
+        is_exact = f.name == f"{key}{suffix}"
+        if dest not in plan or (is_exact and dest not in exact):
+            plan[dest] = f
+            if is_exact:
+                exact.add(dest)
+    if expected_debrief is not None:
+        plan["Разбор.md"] = expected_debrief
+    plan.update(extra or {})
+    return plan
+
+
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
                     files_key: str | None = None, *,
                     mode: SummaryMode = SummaryMode.AUTO,
@@ -309,20 +348,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     expected_debrief = derivative_path(main, "debrief", graph) if main.is_file() else None
     if expected_debrief is not None and not expected_debrief.is_file():
         expected_debrief = None
-    for f in files_with_stamp(tdir, files_key or stamp, suffix=".md"):
-        dest = "Стенограмма.md"
-        for suf, nice in NICE:
-            if f.name.endswith(suf):
-                dest = nice
-                break
-        if dest == "Разбор.md" and expected_debrief is not None and f != expected_debrief:
-            continue                                   # двойня под другим именем — не наш разбор
-        if extra and dest in extra:
-            continue                                   # источник назвал вызывающий — он главнее
-        safe_write.copy_if_changed(f, folder / dest)
-    if expected_debrief is not None and not (extra and "Разбор.md" in extra):
-        safe_write.copy_if_changed(expected_debrief, folder / "Разбор.md")
-    for dest, src in (extra or {}).items():
+    for dest, src in plan_materials(tdir, files_key or stamp, expected_debrief, extra).items():
         safe_write.copy_if_changed(src, folder / dest)
     obs_url = _obsidian_url(graph, f"{graph.name}/Встречи/{stamp}")
     # Ссылку на заметку пишем, ТОЛЬКО если заметка есть в ЭТОМ графе. Папка
