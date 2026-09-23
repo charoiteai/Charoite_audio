@@ -340,7 +340,8 @@ def _data_root() -> pathlib.Path:
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
            apply: bool = False, mark: bool = False, *,
-           embedder: Embedder, judge: Judge) -> dict:
+           embedder: Embedder, judge: Judge,
+           skip_pairs: frozenset = frozenset()) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
     Два права, а не одно, потому что цена у правок разная:
@@ -383,6 +384,12 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                  "ran": False,
                  "failed": 0,
                  "failed_names": set(),
+                 # ядра фокуса, чьи пары не досмотрены из-за потолка ночи: их
+                 # вызывающий возвращает в фокус адресно, как failed_names
+                 "unjudged_names": set(),
+                 # пары (frozenset имён), досуженные в этом прогоне: при обрыве
+                 # вызывающий передаёт их следующей ночи как skip_pairs
+                 "judged_pairs": set(),
                  # пары, которые слил бы прогон с apply=True, а этот не слил.
                  # По этому полю (а не по факту находки) вызывающий решает,
                  # советовать ли человеку `tier3_cores.py --apply`: совет,
@@ -439,23 +446,33 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         for j in range(i + 1, len(cores)):
             if cores[i]["name"] not in focus and cores[j]["name"] not in focus:
                 continue
+            # Пары, досуженные прошлой ночью, которую оборвал потолок, — не
+            # судим снова. Иначе очередь длиннее ночи каждый раз начиналась с
+            # тех же верхних пар и не сходилась (круг 1 по коду №358: Opus I2
+            # и Sonnet I). Какие пары ещё годны, решает вызывающий: пара с
+            # изменившимся ядром в skip_pairs не попадает.
+            if frozenset((cores[i]["name"], cores[j]["name"])) in skip_pairs:
+                continue
             c = _cos(embs[i], embs[j])
             if c >= EMB_PREFILTER:
                 pairs.append((c, cores[i], cores[j]))
     pairs.sort(key=lambda x: -x[0])
 
     dups, maybe_dups, nests = [], [], []
-    for c, a, b in pairs:
+    for позиция, (c, a, b) in enumerate(pairs):
         # Ночное окно — на каждой паре: конец ночи проверяется ПОСЛЕ ожидания
         # живой встречи, потолок внутри гейта. Каждая пара — отдельный вызов
         # NLI, естественная точка останова; частичный результат помечается
-        # stopped, и вызывающий не двигает отметку --since-last (круг-2 по
+        # stopped, недосмотренные ядра — в unjudged_names, досуженные пары —
+        # в judged_pairs, и следующая ночь продолжает с места обрыва (круг-2 по
         # PR #363: у типовой установки граф ОДИН, и полный воскресный прогон
         # шёл бы часами мимо потолка; встреча в середине прогона делила модель
         # с суфлёром — аудит ночи 26.08, GLM Important 1).
         if not live_gate.night_window_open(_data_root(), what="ревизия ядер"):
             out["stopped"] = True
             out["status"], out["reason"] = "stopped", "ночное окно закрылось"
+            out["unjudged_names"] = {n for _c, x, y in pairs[позиция:]
+                                     for n in (x["name"], y["name"]) if n in focus}
             break
         try:
             tried += 1
@@ -476,6 +493,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                 print(f"tier3: пара «{a['name']}» ↔ «{b['name']}» не судилась "
                       f"({type(e).__name__}: {e})", flush=True)
             continue
+        out["judged_pairs"].add(frozenset((a["name"], b["name"])))
         if ab >= MERGE_T and ba >= MERGE_T:
             weak = a["essence_src"] == "статус" and b["essence_src"] == "статус"
             if not weak:
@@ -524,7 +542,10 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # (круг 1 по коду 2б, DS C1). Готовность спрашивается в начале, но
         # судится прогон по тому, что вышло.
         out["ran"] = False
-        return _not_run("unavailable", f"судья отказал на всех {tried} парах")
+        # Отказ судьи на всех парах важнее обрыва потолком: это поломка, а не
+        # нехватка времени; обрыв — в хвосте причины (круг 1, Sonnet Minor)
+        сверх = "; ревизию к тому же оборвал потолок ночи" if out.get("stopped") else ""
+        return _not_run("unavailable", f"судья отказал на всех {tried} парах{сверх}")
 
     def _pair(a: dict, b: dict) -> str:
         return f"«{a['name']}» ↔ «{b['name']}»"

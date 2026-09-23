@@ -217,7 +217,9 @@ the zone's promises and closed the gaps:
   embedder refusal with the response code and body, a judge refusal, an NLI
   model that did not come up — instead of the generic "no NLI model or Ollama
   is down". Exit code 4 means the night ceiling cut the revision short; the
-  status shows «ревизия-ядер(поздно)». Batches for the embedder are cut by the
+  status shows «ревизия-ядер(поздно)», and the unjudged cores and the pairs
+  already judged are stored next to the stamp, so the next night continues
+  where this one stopped instead of re-judging the same top pairs. Batches for the embedder are cut by the
   `llm.embed` door (at most 64 texts and 64,000 characters per request):
   Ollama dropped the connection on 808 cores in one request. The list of
   unjudged cores is kept whole.

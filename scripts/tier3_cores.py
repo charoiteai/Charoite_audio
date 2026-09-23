@@ -65,8 +65,16 @@ def _pending(graph: pathlib.Path) -> list[str]:
     return list(val) if isinstance(val, list) else []
 
 
+def _judged(graph: pathlib.Path) -> set[frozenset]:
+    """Пары, досуженные оборванным прогоном: следующая ночь их не судит снова."""
+    val = _stamps().get(str(graph) + "#judged")
+    return {frozenset(p) for p in val if isinstance(p, list) and len(p) == 2} \
+        if isinstance(val, list) else set()
+
+
 def _save_stamp(graph: pathlib.Path, ts: float,
-                pending: set[str] | None = None) -> None:
+                pending: set[str] | None = None,
+                judged: set[frozenset] | None = None) -> None:
     data = _stamps()
     data[str(graph)] = ts
     # Список целиком. Обрезка до 200 обещала, что остальные «вернутся как
@@ -74,6 +82,9 @@ def _save_stamp(graph: pathlib.Path, ts: float,
     # что ушла вперёд: 201-е имя не возвращалось никогда (входной круг №358,
     # Codex I3). Размер ограничен числом ядер графа, а не ростом ночей.
     data[str(graph) + "#pending"] = sorted(pending or set())
+    # Досуженные пары оборванного прогона — пока очередь не досмотрена целиком;
+    # полный прогон их снимает (пустой список)
+    data[str(graph) + "#judged"] = sorted(sorted(p) for p in (judged or set()))
     файл = stamps_path()
     файл.parent.mkdir(parents=True, exist_ok=True)
     файл.write_text(json.dumps(data, ensure_ascii=False, indent=1),
@@ -86,12 +97,16 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     «unavailable» (как `status` у tier3.revise)."""
     started = time.time()
     only = None
+    skip: set[frozenset] = set()
     if since_last:
         prev = _stamps().get(str(graph))
         if prev is None:
             print(f"=== {graph.name}: отметки нет — полный прогон", flush=True)
         else:
             only = tier3.changed_since(graph / "Ядра", prev)
+            # Досуженное прошлой ночью годно, пока оба ядра пары не менялись
+            свежие = set(only)
+            skip = {pair for pair in _judged(graph) if not (pair & свежие)}
             # Пары, не судившиеся в прошлый раз из-за сбоя NLI: они не
             # «свежие» по времени, но досмотреть их обязаны.
             stuck = [n for n in _pending(graph) if n not in only]
@@ -112,24 +127,27 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     cfg = graphs.load_config()
     r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
                      embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                     judge=nli.judge())
+                     judge=nli.judge(), skip_pairs=frozenset(skip))
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.
-    if r["ran"] and not r.get("stopped"):
-        # Отметка идёт вперёд даже при сбоях — иначе одна вечно падающая пара
-        # держала бы инкремент на месте, а фокус рос бы каждую ночь. Сами
-        # несудившиеся ядра запоминаются рядом с отметкой и вернутся адресно.
-        _save_stamp(graph, started, r.get("failed_names"))
+    if r["ran"]:
+        # Отметка идёт вперёд и при сбоях, и при обрыве потолком — иначе одна
+        # вечно падающая пара или очередь длиннее ночи держали бы инкремент на
+        # месте (круг 1 по коду №358: при обрыве отметка стояла, и каждую ночь
+        # судились те же верхние пары). Долг — несудившиеся и недосмотренные
+        # ядра — лежит рядом с отметкой и вернётся в фокус адресно.
+        долг = set(r.get("failed_names") or ()) | set(r.get("unjudged_names") or ())
+        досужено = (skip | set(r.get("judged_pairs") or ())) if r.get("stopped") else set()
+        _save_stamp(graph, started, долг, досужено)
         if r.get("failed"):
             print(f"{graph.name}: {r['failed']} пар не судились — "
                   f"{len(r.get('failed_names') or ())} ядер вернутся в фокус "
                   "следующим прогоном", flush=True)
-    elif r.get("stopped"):
-        # Ревизию оборвал потолок ночи: судимое досмотрено, отметка стоит
-        # на месте — завтра инкремент возьмёт те же свежие ядра заново.
-        print(f"{graph.name}: ревизия остановлена потолком ночи — "
-              "отметка не сдвинута", flush=True)
+        if r.get("stopped"):
+            print(f"{graph.name}: ревизия остановлена потолком ночи — "
+                  f"{len(r.get('unjudged_names') or ())} ядер досмотрим следующей ночью",
+                  flush=True)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     took = time.time() - started
     status = r.get("status") or ("complete" if r["ran"] else "unavailable")
@@ -147,8 +165,13 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
               f"отметка не сдвинута ({took:.0f} с)", flush=True)
         return "unavailable"
     if not n and not r["log"]:
+        # «Чисто» — только про досмотренный граф: после обрыва это была бы
+        # вторая строка, спорящая с первой (круг 1 по коду, Opus M1)
+        if r.get("stopped"):
+            print(f"{graph.name}: до потолка ночи находок нет ({took:.0f} с)", flush=True)
+            return "stopped"
         print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
-        return "stopped" if r.get("stopped") else "complete"
+        return "complete"
     print(f"=== {graph.name} ({took:.0f} с)")
     for k, title in (("dups", "ДУБЛИ"), ("nests", "ВЛОЖЕНИЯ"), ("border", "ГРАНИЦА")):
         for line in r[k]:

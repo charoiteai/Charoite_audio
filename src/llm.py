@@ -208,9 +208,12 @@ def _say_once(text: str, key: str | None = None) -> None:
 #: — HTTP 400 «tokenize: EOF» за 6,8 с, те же тексты пачками по 100 — 9 из 9
 #: за 14,3 с, по 400 — 1 из 3 (замер 23.09, №358). Пачка — забота двери, а не
 #: каждого потребителя: ревизия ядер не резала вовсе и молчала месяц. Поиск по
-#: графу шлёт по 16 кусков до 4000 знаков — это одна пачка и остаётся одной.
+#: графу шлёт по 16 кусков чуть больше 4000 знаков (склейка добирает хвост до
+#: +80 и крошку) — потолок знаков с запасом над 16 × 4 500, чтобы его пачка
+#: оставалась одной (круг 1 по коду, Opus M2): по 16 таких кусков поиск ходит
+#: давно и без отказов.
 EMBED_BATCH_TEXTS = 64
-EMBED_BATCH_CHARS = 64_000
+EMBED_BATCH_CHARS = 72_000
 
 
 def _embed_batches(texts: list[str]) -> list[list[str]]:
@@ -294,7 +297,9 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
 
     Длинный список дверь режет на пачки сама (EMBED_BATCH_TEXTS / _CHARS) и
     отдаёт всё или ничего: вектор на каждый текст, иначе `[]` и строка в
-    stderr с кодом и телом ответа. `timeout` — на каждый запрос пачки.
+    stderr с кодом и телом ответа. `timeout` — срок всего вызова, а не каждой
+    пачки: иначе 120 с ревизии на 13 пачках становились 26 минутами, а 20 с
+    дежавю — четырьмя (круг 1 по коду, Opus I1/I3).
 
     Прямой вызов — для разовых контуров, которым резидентность не нужна
     (дежавю на встрече спрашивает раз в сорок секунд и делит слот с чат-моделью).
@@ -325,11 +330,17 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
     пачки = _embed_batches(texts)
     векторы: list[list[float]] = []
     dim: int | None = None
+    срок = time.monotonic() + timeout
     for номер, пачка in enumerate(пачки, 1):
         payload["input"] = пачка
         где = f"пачка {номер}/{len(пачки)}, {len(пачка)} текстов"
+        осталось = срок - time.monotonic()
+        if осталось <= 0:
+            _say_once(f"эмбеддинги: не уложились в {timeout:.0f} с на {len(texts)} текстов ({где})",
+                      key=f"embed:budget:{len(пачки)}")
+            return []
         try:
-            r = requests.post(url + "/api/embed", json=payload, timeout=timeout)
+            r = requests.post(url + "/api/embed", json=payload, timeout=осталось)
         except OSError as exc:                     # отказ, таймаут, обрыв
             raise SeamTransportError(str(exc)) from exc
         if r.status_code != 200:
@@ -344,11 +355,17 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
         try:
             got = (r.json() or {}).get("embeddings", [])
         except ValueError:
-            _say_once(f"эмбеддинги: ответ не JSON ({где})", key="embed:not-json")
+            тело = (r.text or "").strip()[:120]
+            _say_once(f"эмбеддинги: ответ не JSON ({где}): {тело}", key=f"embed:not-json:{тело}")
             return []
         if not _vectors_ok(got, len(пачка), dim):
-            _say_once(f"эмбеддинги: сервер дал не по вектору на текст ({где})",
-                      key="embed:bad-vectors")
+            # Ключ — с формой ответа: в демоне, который живёт днями, другой
+            # сбой той же природы у другого потребителя не должен молчать
+            # (круг 1 по коду, Opus M3)
+            форма = (f"{type(got).__name__}:{len(got) if isinstance(got, list) else '-'}"
+                     f"/{len(пачка)}")
+            _say_once(f"эмбеддинги: сервер дал не по вектору на текст ({где}, ответ {форма})",
+                      key=f"embed:bad-vectors:{форма}")
             return []
         dim = len(got[0])
         векторы.extend(got)

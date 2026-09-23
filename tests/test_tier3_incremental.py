@@ -276,8 +276,8 @@ def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
 
 
 def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
-    """Обрыв потолком ночи — stopped=True: недосуженные ядра остаются в
-    инкременте на следующую ночь, отметка не двигается."""
+    """Обрыв потолком ночи — stopped=True: недосмотренные ядра уходят в
+    unjudged_names, и следующая ночь продолжает с места обрыва."""
     graph = _graph(tmp_path, "Одно", "Другое")
     monkeypatch.setattr(tier3.live_gate, "night_window_open", lambda *a, **k: False)
 
@@ -362,3 +362,106 @@ def test_pending_names_are_kept_whole(tmp_path, monkeypatch):
     names = {f"Ядро {i:03d}" for i in range(250)}
     tier3_cores._save_stamp(tmp_path / "Граф", time.time(), names)
     assert set(tier3_cores._pending(tmp_path / "Граф")) == names
+
+
+# ── Очередь, которая не помещается в ночь, обязана сходиться (круг 1 по коду) ─
+def _window_for(pairs_allowed: int, monkeypatch):
+    """Ночное окно, которое закрывается после `pairs_allowed` судимых пар."""
+    спрошено = []
+    monkeypatch.setattr(tier3.live_gate, "night_window_open",
+                        lambda *a, **k: (спрошено.append(1), len(спрошено) <= pairs_allowed)[1])
+
+
+def test_a_queue_longer_than_the_night_converges(tmp_path, monkeypatch):
+    """При обрыве каждая ночь начинала с тех же верхних пар — хвост не судился
+    никогда (Opus I2 = Sonnet I). Досуженные пары оборванной ночи не судятся
+    снова, пока их ядра не менялись: каждая ночь добавляет новые пары."""
+    names = ["А", "Б", "В", "Г", "Д"]
+    graph = _graph(tmp_path, *names)
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3_cores.graphs, "load_config", lambda: {})
+    monkeypatch.setattr(tier3_cores.llm, "embedder", lambda cfg, **kw: fake_embedder([[1.0, 0.0]] * 5))
+    судимые: list = []
+
+    def entail(a, b):
+        судимые.append(frozenset((a, b)))
+        return 0.0
+
+    monkeypatch.setattr(tier3_cores.nli, "judge", lambda: fake_judge(entail=entail))
+    исходы = []
+    for ночь in range(1, 10):
+        _window_for(3, monkeypatch)
+        исходы.append(tier3_cores.run(graph, apply=False, mark=False, since_last=True))
+        if исходы[-1] == "complete":
+            break
+    assert исходы[-1] == "complete", "очередь длиннее ночи не сошлась: %s" % исходы
+    reprs = {c["repr"] for c in tier3.load_cores(graph / "Ядра")}
+    все_пары = {frozenset((x, y)) for x in reprs for y in reprs if x != y}
+    assert все_пары <= set(судимые), "за ночи досмотрены не все пары"
+    assert len(исходы) <= 5, "каждая ночь обязана добавлять новые пары: %s" % исходы
+    assert tier3_cores._judged(graph) == set(), "после полного досмотра память пар не снята"
+
+
+def test_judged_pairs_of_a_changed_core_are_judged_again(tmp_path, monkeypatch):
+    """Досуженная прошлой ночью пара, ядро которой с тех пор изменилось, судится
+    снова: память пар годна только для неизменных ядер."""
+    graph = _graph(tmp_path, "А", "Б", "В")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    import os
+    old = time.time() - 3600
+    for n in ("А", "Б", "В"):
+        os.utime(graph / "Ядра" / f"{n}.md", (old, old))
+    tier3_cores._save_stamp(graph, old + 60, {"В"}, {frozenset(("А", "Б")), frozenset(("А", "В"))})
+    (graph / "Ядра" / "Б.md").write_text("## Статус\nизменилось\n", encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(tier3, "revise", lambda g, only_names=None, skip_pairs=frozenset(), **kw: (
+        seen.update(skip=set(skip_pairs)), dict(EMPTY))[1])
+    tier3_cores.run(graph, apply=False, mark=True, since_last=True)
+    assert seen["skip"] == {frozenset(("А", "В"))}, seen
+
+
+def test_a_stopped_run_moves_the_stamp_and_keeps_the_debt(tmp_path, monkeypatch, capsys):
+    """При обрыве отметка идёт вперёд, долг — в списке ожидания; раньше отметка
+    стояла, и следующая ночь начинала с тех же пар."""
+    graph = _graph(tmp_path, "А", "Б")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3, "revise", lambda g, only_names=None, **kw: dict(
+        EMPTY, ran=True, stopped=True, status="stopped", failed_names={"А"},
+        unjudged_names={"Б"}))
+    assert tier3_cores.run(graph, apply=False, mark=True) == "stopped"
+    assert set(tier3_cores._pending(graph)) == {"А", "Б"}
+    assert str(graph) in json.loads((tmp_path / "stamps.json").read_text())
+    out = capsys.readouterr().out
+    assert "чисто" not in out and "до потолка ночи находок нет" in out, out
+
+
+def test_a_judge_failing_every_pair_is_named_even_when_the_night_ends(tmp_path, monkeypatch):
+    """Отказ судьи на всех парах важнее обрыва — но и обрыв назван в причине."""
+    graph = _graph(tmp_path, "А", "Б", "В")
+    _window_for(1, monkeypatch)
+
+    def deaf(a, b):
+        raise RuntimeError("сессия NLI умерла")
+
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=deaf))
+    assert r["status"] == "unavailable" and "потолок ночи" in r["reason"], r["reason"]
+
+
+def test_a_pair_the_judge_refused_is_not_remembered_as_judged(tmp_path, monkeypatch):
+    """В память досуженных попадают только пары, по которым судья ответил:
+    отказавшая пара обязана судиться следующей ночью снова."""
+    graph = _graph(tmp_path, "А", "Б", "В")
+    reprs = sorted(c["repr"] for c in tier3.load_cores(graph / "Ядра"))
+    плохая = frozenset(reprs[:2])
+
+    def entail(a, b):
+        if frozenset((a, b)) == плохая:
+            raise RuntimeError("сессия NLI моргнула")
+        return 0.0
+
+    monkeypatch.setattr(tier3.live_gate, "night_window_open", lambda *a, **k: True)
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=entail))
+    имена = {c["repr"]: c["name"] for c in tier3.load_cores(graph / "Ядра")}
+    плохая_по_именам = frozenset(имена[x] for x in плохая)
+    assert r["failed"] == 1 and плохая_по_именам not in r["judged_pairs"], r["judged_pairs"]
+    assert len(r["judged_pairs"]) == 2

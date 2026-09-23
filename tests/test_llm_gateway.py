@@ -712,3 +712,40 @@ def test_embed_non_json_answer_is_empty_not_a_crash(monkeypatch):
 def test_embed_of_nothing_asks_nothing(monkeypatch):
     server = _embed_wire(monkeypatch, _EmbedServer())
     assert llm_mod.embed(CFG, []) == [] and server.inputs == []
+
+
+def test_embed_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
+    """120 с ревизии на 13 пачках были 26 минутами, 20 с дежавю — четырьмя:
+    срок — на весь вызов (круг 1 по коду №358, Opus I1/I3)."""
+    часы = [1000.0]
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: часы[0])
+    сроки = []
+
+    class _Slow(_EmbedServer):
+        def post(self, url, json=None, timeout=None, **kw):
+            сроки.append(timeout)
+            часы[0] += 8.0                  # каждая пачка — 8 с
+            return super().post(url, json=json, timeout=timeout, **kw)
+
+    _embed_wire(monkeypatch, _Slow())
+    assert llm_mod.embed(CFG, ["т"] * 200, timeout=20) == [], "срок вышел — не вектор на каждый текст"
+    assert сроки == [20.0, 12.0, 4.0], сроки
+    assert "не уложились в 20 с" in capsys.readouterr().err
+
+
+def test_sixteen_search_chunks_stay_one_batch(monkeypatch):
+    """Поиск шлёт по 16 кусков чуть больше 4000 знаков — одной пачкой, как раньше
+    (круг 1 по коду №358, Opus M2)."""
+    server = _embed_wire(monkeypatch, _EmbedServer())
+    llm_mod.embed(CFG, ["к" * 4_400] * 16)
+    assert [len(b) for b in server.inputs] == [16]
+
+
+def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys):
+    """Ключ отказа — с формой ответа: в демоне, который живёт днями, второй сбой
+    другой формы не молчит (круг 1 по коду №358, Opus M3)."""
+    _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: [[1.0]] * (len(inp) - 1)))
+    llm_mod.embed(CFG, ["т"] * 5)
+    _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
+    llm_mod.embed(CFG, ["т"] * 5)
+    assert capsys.readouterr().err.count("не по вектору на текст") == 2
