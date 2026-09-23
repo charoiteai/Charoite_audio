@@ -90,6 +90,35 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertEqual(TasksService.scanSync(graph: dir).map(\.text), ["**Оля** — живое"])
     }
 
+    func testOnlyWriterFormatsCountAsKnown() throws {
+        // «⚠ Риск срыва:» и зачёркивание без пометки ревизии — не форматы писателей;
+        // чекбокс с теми же словами в заметке встречи остаётся (DS I2, круг 3).
+        try write("Встречи-архив/2026-09-09 11-32 — План/Минутки.md",
+                  "## Риски\n- ⚠ Риск срыва: **Саша** — обзвонить хосты\n- ~~Обсудили бюджет~~\n")
+        try write("Встречи/2026-09-09_1132.md",
+                  "- [ ] **Саша** — обзвонить хосты\n- [ ] Обсудили бюджет\n")
+
+        XCTAssertEqual(TasksService.scanSync(graph: dir).count, 2)
+    }
+
+    func testPlusBulletOutsiderLineIsKnown() throws {
+        try write("Встречи-архив/2026-09-09 11-32 — План/Минутки.md",
+                  "+ ⚠ не участник (Саша): **Саша** — обзвонить хосты\n")
+        try write("Встречи-архив/2026-09-09 11-32 — План/Ревизия.md", "- [ ] **Саша** — обзвонить хосты\n")
+
+        XCTAssertTrue(TasksService.scanSync(graph: dir).isEmpty)
+    }
+
+    func testDiaryNoteWithMeetingDigitsIsNotDatedByMeeting() throws {
+        // Дата встречи — только у файлов встречи; у личной заметки возраст — время файла.
+        try write("Дневник/2020-01-01 10-00 — старьё.md", "- [ ] **Лена** — личное — до 15.03\n")
+
+        let item = try XCTUnwrap(TasksService.scanSync(graph: dir).first)
+
+        XCTAssertNil(item.dueAnchor)
+        XCTAssertEqual(item.happenedAt, item.fileDate)
+    }
+
     func testWordlessItemsAreNotGlued() throws {
         try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Минутки.md", "- [ ] ✅\n")
         try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Ревизия.md", "- [ ] 🔥\n- [ ] —\n")

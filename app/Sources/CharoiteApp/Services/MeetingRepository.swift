@@ -60,7 +60,7 @@ final class MeetingRepository: ObservableObject {
     }
 
     func record(matching task: TasksService.Item) -> MeetingRecord? {
-        guard let key = TasksService.meetingKey(task.rel) else { return nil }
+        guard let key = TasksService.meetingOf(task.rel) else { return nil }
         return records.first { TasksService.meetingKey($0.id) == key }
     }
 

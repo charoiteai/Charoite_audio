@@ -27,13 +27,13 @@ final class TasksService: ObservableObject {
         /// mtime файла. Ночная ревизия трогает старые архивы и переставляла
         /// их наверх списка — по времени файла «свежей» оказывалась встреча
         /// недельной давности.
-        var happenedAt: Date { TasksService.meetingDate(rel) ?? fileDate }
+        var happenedAt: Date { TasksService.meetingOf(rel).flatMap(TasksService.meetingDate) ?? fileDate }
 
         /// Якорь года для срока (`TaskDue.status(anchor:)`) — ТОЛЬКО дата
         /// встречи. mtime заметки без даты в имени якорем быть не может:
         /// «план до 15.03» в файле, который правили летом, уезжал бы в
         /// следующий март (DS r2 по #479). Нет встречи — прежняя догадка.
-        var dueAnchor: Date? { TasksService.meetingDate(rel) }
+        var dueAnchor: Date? { TasksService.meetingOf(rel).flatMap(TasksService.meetingDate) }
     }
 
     enum ToggleResult: Equatable, Sendable {
@@ -61,7 +61,8 @@ final class TasksService: ObservableObject {
     /// поручение не участнику (`- ⚠ не участник (Имя): …`, №181). Во вкладке их нет,
     /// но их копии в отчёте ревизии не показываются: минутки уже решили.
     // swiftlint:disable:next force_try
-    private nonisolated static let knownRx = try! NSRegularExpression(pattern: #"^\s*[-*] +((?:\[-\] |~~|⚠).*)$"#)
+    private nonisolated static let knownRx = try! NSRegularExpression(pattern:
+        #"^\s*[-*+] +((?:\[-\]\s+|~~.+?~~\s*_\((?:снято ревизией|withdrawn by the review|已由审阅撤回)|⚠ (?:не участник|not a participant|非与会者)).*)$"#)
 
     /// Полный скан графа — в фоне, с публикацией результата на главном потоке.
     ///
@@ -269,8 +270,9 @@ final class TasksService: ObservableObject {
         includeDone: Bool = true
     ) -> [Item] {
         // Канон — та же функция, что у вкладки: копии пунктов минуток не
-        // показываются, даже если вызывающий передал сырой список. Снятые
-        // `- [-]` пункты знает только скан — поэтому боевой вход идёт через него.
+        // показываются, даже если вызывающий передал сырой список. Строки минуток,
+        // которые знают пункт без чекбокса (снятое, ⚠ не участнику), собирает только
+        // скан (`known`) — поэтому боевой вход идёт через `items`, а не мимо него.
         let matches = canonicalItems(items.filter { belongs($0, to: meetingID) })
         return includeDone ? matches : matches.filter { !$0.done }
     }

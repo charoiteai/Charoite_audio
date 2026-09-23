@@ -600,7 +600,7 @@ it signals degradation, it does not break the loop.
   appended to the minutes as checkboxes marked "(from the review)" before
   the archive is refreshed, so the Tasks tab sees them (a copy of a minutes
   item in the review report or in «Документация» — the same words once the
-  bridge mark is dropped, the key of the bridge's `_key` — is hidden when the
+  bridge mark is dropped, keyed after the bridge's `_key` and wider by the withdrawal marks — is hidden when the
   minutes know the item: as a checkbox, withdrawn, or as a ⚠ non-participant
   line; an item that only lives elsewhere, e.g. written by hand into the meeting
   note, stays: on 23.09 the tab showed 465 rows, the rule leaves 171); action items that
