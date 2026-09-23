@@ -1247,8 +1247,16 @@ cloud worker — which derive the root themselves. The app still passes
 start — exit code `EXIT_ROOT_UNNAMED` (5) and an error status carrying the recipe — because an
 entry point NAMES the root rather than asking for it; deriving it from the
 file location and publishing that guess to children is what the refusal
-exists to prevent. A module that merely asks (`resolve_root`) still gets the
-file-location answer, and that is the only place the derivation survives.
+exists to prevent. A module that merely asks (`resolve_root`) still gets a
+guess when nothing is named — the code root — and that is the only place the
+derivation survives. The code root is derived once, from where the canon
+itself lies (`<root>/src/charoite_paths.py` next to `<root>/scripts/`,
+checked on import);
+`code_root(__file__)` only verifies that the caller belongs to that tree.
+Deriving it from each caller's position held while every caller sat one level
+below the root: a module moved into `packages/<dist>/src/<pkg>/` would have got
+`packages/<dist>/` as the code root and `packages/<dist>/src/` as the data
+root (№331).
 
 The answer is asked for, never remembered. `ROOT = resolve_root(__file__)` at
 module level — or the same line as a class field — looks like a call to the
