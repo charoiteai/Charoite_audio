@@ -927,9 +927,12 @@ checked. `--regen` never writes an artifact the loader would reject. The
 fields of the artifact are declared once, in code (`_SCHEMA` in
 `scripts/layout_map.py`), each with its type and a class that says who writes
 it: `measured` — the measurement, on every `--regen` (edge pairs, the stamp,
-which executables carry a contract); `seed` — the machine, once, when a record
-is born (a run contract guessed from the code), after which the field is a
-human decision; `decision` — only a human. The declaration is closed: a field
+which executables carry a contract); `seed` — the machine, at most once,
+when a record is born and the code proves it (a run contract guessed from the
+code), after which the field is a human decision — a record the machine cannot
+seed (a `none` contract) is written by a human in full; `decision` — only a
+human. For a top-level key the class is a contract a test holds: `--regen`
+rebuilds what is `measured` and never touches what is `decision`. The declaration is closed: a field
 it does not name is a load error, so a second carrier of one fact cannot
 appear in the JSON without a code change a reviewer reads — the free-text
 `notes` block went stale exactly that way and was removed. Debt is printed,

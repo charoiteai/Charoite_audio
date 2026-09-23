@@ -330,16 +330,21 @@ def _mode_problem(value: str) -> str | None:
 #: постановке, 23.09: обе головы, Opus I2–I4 и Sonnet C1).
 #:   measured — пишет замер на каждом `--regen` (пары рёбер, штамп; у коллекции —
 #:              её состав: рёбра против стрелок, контракты по реестру исполняемых);
-#:   seed     — машина пишет один раз, при рождении записи; дальше это решение
-#:              человека, и `regen` поле не трогает (контракт запуска по коду);
+#:   seed     — машина пишет не больше одного раза, при рождении записи, если
+#:              код это доказывает; дальше это решение человека, и `regen` поле
+#:              не трогает. Запись, которую машина засеять не может (контракт
+#:              `none`), человек пишет целиком (круг 1 по коду №325, Opus);
 #:   decision — пишет только человек, `regen` переносит дословно.
 FIELD_CLASSES = ("measured", "seed", "decision")
 
 
 class Field(NamedTuple):
-    """Поле артефакта. У коллекции записей класс самой коллекции — кто решает её
-    СОСТАВ, а `record` — объявление полей каждой записи. Строковое поле не бывает
-    пустым: пустое обоснование или карточка — это их отсутствие."""
+    """Поле артефакта. У ключа верхнего уровня класс говорит, кто решает его
+    содержимое, а у коллекции — её СОСТАВ: `measured` пересобирает `regen` по
+    замеру, `decision` он не трогает вовсе; этот договор держит тест регена по
+    объявлению, а не только снимок. `record` — объявление полей каждой записи.
+    Строковое поле не бывает пустым: пустое обоснование или карточка — это их
+    отсутствие."""
     typ: type
     cls: str
     record: dict[str, Field] | None = None
@@ -455,10 +460,10 @@ def validate_layout(layout: object) -> dict:
         for name, why in shapes.items():
             if name not in known:
                 raise LayoutError(f"исключение {path_}: форма {name!r} не из ROOT_SHAPES")
-            if not isinstance(why, str) or not why:
+            if not isinstance(why, str) or not why.strip():
                 raise LayoutError(f"исключение {path_} по форме {name}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
-        if not _is_candidate(path_) or not isinstance(why, str) or not why:
+        if not _is_candidate(path_) or not isinstance(why, str) or not why.strip():
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
     for path_, contract in layout["run_contracts"].items():
         if not _is_candidate(path_):
@@ -2010,7 +2015,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     contracts = layout["run_contracts"]
     # у каждой точки входа есть контракт запуска — и наоборот; умолчание по коду впишет `--regen`
     for path in sorted(set(execs) - set(contracts)):
-        problems.append(f"исполняемый файл {path} без контракта запуска — `--regen` впишет help/refuse, если код это докажет (вызов parse_args / конструктора корня); иначе впишите none с № карточки руками")
+        problems.append(f"исполняемый файл {path} без контракта запуска — `--regen` впишет help/refuse, если код это докажет (вызов parse_args / конструктора корня); иначе впишите руками mode none и поле ticket (№ карточки в начале)")
     for path in sorted(set(contracts) - set(execs)):
         problems.append(f"run_contracts объявляет {path}, но это не исполняемый файл — снять")
     if execs and not any(c["mode"] != "none" for p, c in contracts.items() if p in execs):
@@ -2090,7 +2095,11 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
                 _say(notes, f"{rel}: пробника по коду нет — объявить none с карточкой руками")
                 continue
             # запись рождается из полей класса seed — дальше их держит человек
-            contracts[rel] = {n: derived[n] for n in record_fields("run_contracts", "seed")}
+            seed = record_fields("run_contracts", "seed")
+            if set(derived) != set(seed):
+                raise LayoutError(f"derive_run_contract пишет {sorted(derived)}, а объявлены seed-поля "
+                                  f"{sorted(seed)}: засев и объявление разошлись")
+            contracts[rel] = {n: derived[n] for n in seed}
             _say(notes, f"контракт запуска по коду: {rel} → {derived['mode']}")
         layout["run_contracts"] = dict(sorted(contracts.items()))
     return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
@@ -2201,6 +2210,12 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     return "\n".join(out) + "\n"
 
 
+def _shown(path: pathlib.Path) -> str:
+    """Путь для печати: от корня репозитория, если он там; иначе как есть —
+    артефакт, подменённый копией вне дерева, не должен ронять отчёт."""
+    return str(path.relative_to(REPO)) if path.is_relative_to(REPO) else str(path)
+
+
 #: Что понимает командная строка. Больше ничего она не понимает — и говорит
 #: об этом вслух, вместо того чтобы выполнить не тот режим.
 РЕЖИМЫ = ("--report", "--regen", "--check")
@@ -2234,7 +2249,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         layout = load_layout(LAYOUT)
     except LayoutError as e:
-        print(f"✗ {LAYOUT.relative_to(REPO)}: {e}")
+        print(f"✗ {_shown(LAYOUT)}: {e}")
         return 1
     graph = import_graph(inv)
     scanned = scan(inv)
@@ -2245,7 +2260,7 @@ def main(argv: list[str] | None = None) -> int:
         # на диске, а не по несохранённой правке (Important DS круга 6)
         notes: list[str] = []
         fresh, unticketed = regen(json.loads(json.dumps(layout)), graph, inv, notes)
-        for line in notes + debt_delta(layout, fresh):
+        for line in notes:
             print("  ", line)
         blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
                    for a, b in unticketed]
@@ -2257,12 +2272,17 @@ def main(argv: list[str] | None = None) -> int:
             except LayoutError as e:
                 blocked = [f"реген дал артефакт, который загрузка отвергает ({e}); артефакт и карта не записаны"]
         if not blocked:
+            # дельта долга — отчёт о ЗАПИСАННОМ: при отказе на диске прежний
+            # долг, и «было 3, стало 2» было бы неправдой (круг 1 по коду №325,
+            # Opus M1 и критика Sonnet)
+            for line in debt_delta(layout, fresh):
+                print("  ", line)
             layout = fresh
             LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(f"{LAYOUT.relative_to(REPO)}: allowlist {len(layout['allowed_edges'])} рёбер")
+            print(f"{_shown(LAYOUT)}: allowlist {len(layout['allowed_edges'])} рёбер")
     if "--check" not in args and not blocked:
         MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
-        print(f"карта: {MAP.relative_to(REPO)}")
+        print(f"карта: {_shown(MAP)}")
     # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась,
     # и судить о ней нечем (состояние `skipped`, а не «свежая»)
     if blocked:
