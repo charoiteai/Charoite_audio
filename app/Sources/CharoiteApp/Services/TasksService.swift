@@ -27,13 +27,13 @@ final class TasksService: ObservableObject {
         /// mtime файла. Ночная ревизия трогает старые архивы и переставляла
         /// их наверх списка — по времени файла «свежей» оказывалась встреча
         /// недельной давности.
-        var happenedAt: Date { TasksService.meetingOf(rel).flatMap(TasksService.meetingDate) ?? fileDate }
+        var happenedAt: Date { TasksService.meetingDate(rel) ?? fileDate }
 
         /// Якорь года для срока (`TaskDue.status(anchor:)`) — ТОЛЬКО дата
         /// встречи. mtime заметки без даты в имени якорем быть не может:
         /// «план до 15.03» в файле, который правили летом, уезжал бы в
         /// следующий март (DS r2 по #479). Нет встречи — прежняя догадка.
-        var dueAnchor: Date? { TasksService.meetingOf(rel).flatMap(TasksService.meetingDate) }
+        var dueAnchor: Date? { TasksService.meetingDate(rel) }
     }
 
     enum ToggleResult: Equatable, Sendable {

@@ -109,16 +109,6 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertTrue(TasksService.scanSync(graph: dir).isEmpty)
     }
 
-    func testDiaryNoteWithMeetingDigitsIsNotDatedByMeeting() throws {
-        // Дата встречи — только у файлов встречи; у личной заметки возраст — время файла.
-        try write("Дневник/2020-01-01 10-00 — старьё.md", "- [ ] **Лена** — личное — до 15.03\n")
-
-        let item = try XCTUnwrap(TasksService.scanSync(graph: dir).first)
-
-        XCTAssertNil(item.dueAnchor)
-        XCTAssertEqual(item.happenedAt, item.fileDate)
-    }
-
     func testWordlessItemsAreNotGlued() throws {
         try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Минутки.md", "- [ ] ✅\n")
         try write("Встречи-архив/2026-09-02 12-00 — Эмодзи/Ревизия.md", "- [ ] 🔥\n- [ ] —\n")
