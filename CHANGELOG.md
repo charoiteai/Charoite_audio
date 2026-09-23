@@ -5,6 +5,28 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.84.0](https://github.com/charoiteai/Charoite_audio/compare/v0.83.0...v0.84.0) (2026-09-23)
+
+
+### Features
+
+* **entry:** девять входов называют корень дверью канона — без корня код 5 и рецепт ([#608](https://github.com/charoiteai/Charoite_audio/issues/608)) ([27913a1](https://github.com/charoiteai/Charoite_audio/commit/27913a1fc6d583847daf834d3aa9964d47cb568d))
+* **layout:** вход обязан назвать корень — правило включено на scripts/ ([#607](https://github.com/charoiteai/Charoite_audio/issues/607)) ([36bb471](https://github.com/charoiteai/Charoite_audio/commit/36bb4714f0b6c2ad1bc74b274b58658095f28b36))
+* **layout:** закрытая схема полей артефакта и долг по карточкам ([#613](https://github.com/charoiteai/Charoite_audio/issues/613)) ([c693d2d](https://github.com/charoiteai/Charoite_audio/commit/c693d2dde065c8e7d3ac615fecc219afd82df90d))
+* **layout:** форму раскладки и грамматику импорта знает по одной функции ([#599](https://github.com/charoiteai/Charoite_audio/issues/599)) ([20efe6c](https://github.com/charoiteai/Charoite_audio/commit/20efe6c23cbc7b4ac4e900fca25df4f0cdf67d8d))
+* **paths:** точка входа называет корень явно, а не узаконивает догадку ([#602](https://github.com/charoiteai/Charoite_audio/issues/602)) ([c68f003](https://github.com/charoiteai/Charoite_audio/commit/c68f0035f741d8e768db6cb30be4f9c69eef4504))
+* **preflight:** контракты запуска точек входа, preflight как локальная сводка, мутатор в CI ([#605](https://github.com/charoiteai/Charoite_audio/issues/605)) ([486164a](https://github.com/charoiteai/Charoite_audio/commit/486164af6aaf791f760fdb67a7d2da564f031bac))
+* **scripts:** семь входов отвечают на --help (пилот исполнителя) ([#606](https://github.com/charoiteai/Charoite_audio/issues/606)) ([7137df7](https://github.com/charoiteai/Charoite_audio/commit/7137df77b330887f15e798c1c65ad246182b2919))
+
+
+### Bug Fixes
+
+* **graph:** конфликтные копии документов встреч — писать только изменения и не на месте, уборка копий в ночном дедупе ([#611](https://github.com/charoiteai/Charoite_audio/issues/611)) ([dfca6f4](https://github.com/charoiteai/Charoite_audio/commit/dfca6f4b877a19aaa636aba1a13e99d0db9a6575))
+* **mutate:** тесты модуля находятся и по загрузке по пути, не только по import ([#609](https://github.com/charoiteai/Charoite_audio/issues/609)) ([d77de58](https://github.com/charoiteai/Charoite_audio/commit/d77de5821a219dbbbecb8955937b04347eb508db))
+* **night:** ревизия ядер снова идёт — пачки в двери эмбеддингов и итог по каждому графу ([#610](https://github.com/charoiteai/Charoite_audio/issues/610)) ([5273652](https://github.com/charoiteai/Charoite_audio/commit/5273652efd9210cdcdb4180d6d2d8502ed977574))
+* **paths:** корень данных спрашивается на вызове, а не запоминается на импорте ([#601](https://github.com/charoiteai/Charoite_audio/issues/601)) ([16c0013](https://github.com/charoiteai/Charoite_audio/commit/16c00134252afde8d64acc34a048de5155c55ded))
+* **paths:** корень кода один на процесс, от места канона ([#612](https://github.com/charoiteai/Charoite_audio/issues/612)) ([cb1060a](https://github.com/charoiteai/Charoite_audio/commit/cb1060a2d9df598a9480f2e8b249d8a8314a3979))
+
 ## [0.83.0](https://github.com/charoiteai/Charoite_audio/compare/v0.82.0...v0.83.0) (2026-09-20)
 
 
