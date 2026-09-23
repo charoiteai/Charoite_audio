@@ -209,6 +209,23 @@ the zone's promises and closed the gaps:
 - **"Ok" only when work happened.** A night with no graph at all, and a cores
   revision that ran empty (no NLI model, Ollama down), no longer report green:
   the revision has its own exit code 2, a broken cloud CLI exits 3 (the night is marked failed in the status, rc untouched: a CLI update under our feet, audit 05.09), missing graphs are marked in the status.
+- **The cores revision answers for every graph and names its reason.** The
+  step succeeds only when every graph was judged or had nothing to judge (a
+  single core is not a failure): one passing graph used to be enough, and the
+  main graph went unrevised for a month without anyone seeing it (23.09).
+  Exit code 2 means some graph could not be judged, and the log says why — an
+  embedder refusal with the response code and body, a judge refusal, an NLI
+  model that did not come up — instead of the generic "no NLI model or Ollama
+  is down". Exit code 4 means the night ceiling cut the revision short; the
+  status shows «ревизия-ядер(поздно)». Batches for the embedder are cut by the
+  `llm.embed` door (at most 64 texts and 64,000 characters per request):
+  Ollama dropped the connection on 808 cores in one request. The list of
+  unjudged cores is kept whole.
+- **The night is tested with the interpreter launchd uses.** The agent runs
+  `/bin/bash`, which is 3.2 on macOS, where expanding an empty array under
+  `set -u` kills the script: a clean night was recorded as failed. Tests ran
+  the Homebrew bash 5.x from PATH and never saw it; `test_nightly_exit` now
+  runs `/bin/bash`.
 - **A person's edit does not vanish.** A core changed during the long pair
   judging is not overwritten from the in-memory snapshot — the pair waits for
   the next night. A duplicate's handwritten "Суть" moves into the canonical

@@ -195,8 +195,12 @@ else
     case $? in
       # 2 — «прошло вхолостую»: нет NLI-модели или лежит Ollama. Ночь с таким
       # шагом не «ok», но и не авария (аудит ночи 26.08, DS Important 4).
-      2) echo "⚠️ ревизия ядер не состоялась — модель не отвечала"
+      2) echo "⚠️ ревизия ядер не состоялась хоть на одном графе — причина выше"
          FAILED="$FAILED ревизия-ядер(вхолостую)" ;;
+      # 4 — потолок ночи оборвал ревизию: досмотрено не всё, отметка графа
+      # стоит, завтра инкремент возьмёт те же ядра. Не авария, но и не «ok».
+      4) echo "⏹ ревизия ядер остановлена потолком ночи — остаток завтра"
+         FAILED="$FAILED ревизия-ядер(поздно)" ;;
       *) echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер" ;;
     esac
   }
@@ -307,10 +311,15 @@ FAILED="${FAILED# }"
 SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
 # отвалились ли ТОЛЬКО шаги «(поздно)» — без grep по выводу (shellcheck SC2143)
 ONLY_LATE=1
-read -r -a _failed_steps <<< "$FAILED"
-for _step in "${_failed_steps[@]}"; do
-  case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
-done
+# Только непустой список: launchd зовёт /bin/bash 3.2, а под ним раскрытие
+# пустого массива при set -u — «unbound variable». Массив пуст ровно в чистую
+# ночь, и она две ночи подряд писалась как failed (23.09, №359).
+if [ -n "$FAILED" ]; then
+  read -r -a _failed_steps <<< "$FAILED"
+  for _step in "${_failed_steps[@]}"; do
+    case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
+  done
+fi
 if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
   write_status ok
 elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ "$ONLY_LATE" = 1 ]; then

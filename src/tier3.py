@@ -363,9 +363,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     двойники, наоборот, приходят из разных.
 
     Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...],
-    "pending_merges": [...], "skipped": [...]}.
+    "pending_merges": [...], "skipped": [...], "status": ..., "reason": ...}.
     Любая инфраструктурная беда (нет модели, лежит Ollama) — пустой результат,
     НЕ исключение: ревизия — уборка, она не имеет права валить пайплайн встречи.
+
+    `status` — исход значением, `ran` остался ради старых потребителей:
+    «complete» — досмотрено; «stopped» — оборвал потолок ночи; «no_work» —
+    судить нечего (нет папки, меньше двух ядер) — это не сбой; «unavailable»
+    — судить было нечем, и `reason` называет почему. Раньше все три «нет»
+    были одним ran=False, и граф с одним ядром печатал «лежит Ollama», а
+    отказ сервера на пачке эмбеддингов — ту же фразу месяц подряд (№358).
     """
     out: dict = {"dups": [], "nests": [], "border": [], "log": [],
                  # отработала ли ревизия на самом деле. Пустой результат
@@ -380,40 +387,51 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                  # По этому полю (а не по факту находки) вызывающий решает,
                  # советовать ли человеку `tier3_cores.py --apply`: совет,
                  # который на его данных ничего не делает, хуже молчания
-                 "pending_merges": [], "skipped": []}
+                 "pending_merges": [], "skipped": [],
+                 "status": "unavailable", "reason": ""}
+
+    def _not_run(status: str, reason: str) -> dict:
+        out["status"], out["reason"] = status, reason
+        return out
+
     folder = graph / "Ядра"
     # Дешёвая фаза судьи — до чтения ядер и до эмбеддингов: на установке без
     # NLI-модели (слой опциональный) ревизия иначе прочитала бы весь корпус и
     # разбудила эмбеддер впустую после каждой встречи (круг 1 по 2б, обе головы).
-    if not folder.is_dir() or judge.refused:
-        return out
+    if not folder.is_dir():
+        return _not_run("no_work", "нет папки «Ядра»")
+    if judge.refused:
+        return _not_run("unavailable", f"судья отказал: {judge.refused}")
     cores = load_cores(folder)
     if len(cores) < 2:
-        return out
+        return _not_run("no_work", "ядер меньше двух")
     focus = ({c["name"] for c in cores} if not only_names
              else {n for n in only_names})
     try:
         embs = _embed_all(cores, embedder)
-    except SeamTransportError:
+    except SeamTransportError as exc:
         # Сервер занят, лежит или адрес запрещён политикой — ревизия уборочная,
         # она не мешает пайплайну. Ошибка проводки (`TypeError` от шва не той
         # формы) сюда не попадает намеренно: она обязана долететь до человека,
         # иначе ночник годами печатает «лежит Ollama» на сломанном коде
         # (круг 2 по 2б, GLM C2).
-        return out
+        return _not_run("unavailable", f"эмбеддинги недоступны: {exc}")
     # llm.embed при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
     # не найдена»): раньше это доезжало до IndexError в цикле пар и валило
     # CLI ночи (аудит DeepSeek 17.08). Неполный ответ = прогон не состоялся.
+    # Код и тело ответа дверь уже напечатала строкой «эмбеддинги: HTTP …».
     if len(embs) != len(cores):
-        return out
+        return _not_run("unavailable", f"эмбеддер не дал векторов на {len(cores)} ядер "
+                                       "(ответ сервера — строкой «эмбеддинги: …» выше)")
     # Сессию NLI поднимаем ДО того, как объявить прогон состоявшимся: при
     # битой ONNX-модели entail_prob тихо возвращает 0.0, суд «ничего не
     # находит», а ran=True двигал отметку --since-last — и свежие ядра
     # навсегда выпадали из инкремента (аудит DeepSeek 17.08).
     if not judge.ready():
-        return out
+        return _not_run("unavailable", "NLI-модель не поднялась")
     out["ran"] = True
     out["stopped"] = False
+    out["status"], out["reason"] = "complete", ""
     tried = 0          # сколько пар дошло до суда: ниже по ним судят сам прогон
 
     pairs = []
@@ -437,6 +455,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # с суфлёром — аудит ночи 26.08, GLM Important 1).
         if not live_gate.night_window_open(_data_root(), what="ревизия ядер"):
             out["stopped"] = True
+            out["status"], out["reason"] = "stopped", "ночное окно закрылось"
             break
         try:
             tried += 1
@@ -505,7 +524,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # (круг 1 по коду 2б, DS C1). Готовность спрашивается в начале, но
         # судится прогон по тому, что вышло.
         out["ran"] = False
-        return out
+        return _not_run("unavailable", f"судья отказал на всех {tried} парах")
 
     def _pair(a: dict, b: dict) -> str:
         return f"«{a['name']}» ↔ «{b['name']}»"

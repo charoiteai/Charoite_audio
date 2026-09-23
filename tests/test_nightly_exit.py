@@ -26,6 +26,12 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 NIGHTLY = REPO / "scripts" / "nightly.sh"
+# Интерпретатор — тот, которым ночь зовёт launchd (агент из настроек
+# приложения: ProgramArguments = /bin/bash), а не первый bash в PATH. На macOS
+# это bash 3.2, у разработчика в PATH — brew-овский 5.x: под 5.x пустой массив
+# при set -u раскрывается молча, под 3.2 — «unbound variable», и чистая ночь
+# две ночи подряд писалась как failed, пока тесты зеленели (23.09, №359).
+LAUNCHD_BASH = "/bin/bash"
 
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
@@ -96,7 +102,7 @@ def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
     # детям через `CHAROITE_ROOT`, а у скопированной сюда установки корень
     # другой. Молчание означало бы, что ночной статус ляжет в чужую папку.
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
-    return subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
+    return subprocess.run([LAUNCHD_BASH, str(tmp_path / "scripts" / "nightly.sh")],
                           capture_output=True, text=True, timeout=60, env=env)
 
 
@@ -210,6 +216,24 @@ def test_sagging_bench_is_a_warning_not_a_failure(tmp_path):
     r = _run(tmp_path, FAIL_ONLY_BENCH)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "БЕНЧ" in r.stdout
+
+
+TIER3_STOPPED = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *tier3_cores*) exit 4 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+
+
+def test_revision_cut_by_the_ceiling_is_not_an_ok_night(tmp_path):
+    """Код 4 ревизии ядер — «потолок оборвал»: ночь не «ok», но и не авария
+    (№358: раньше оборванный прогон считался успехом)."""
+    r = _run(tmp_path, TIER3_STOPPED)
+    assert r.returncode == 0, r.stdout + r.stderr
+    status = _status(tmp_path)
+    assert status["state"] == "failed" and "ревизия-ядер(поздно)" in status["failed"], status
 
 
 def test_clean_run_is_clean(tmp_path):

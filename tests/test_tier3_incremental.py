@@ -284,3 +284,81 @@ def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
                      judge=fake_judge())
     assert r["ran"] is True and r["stopped"] is True
+
+
+# ── Исход значением и итог по всем графам (№358) ─────────────────────────
+def test_a_graph_with_one_core_is_nothing_to_do_not_a_failure(tmp_path, monkeypatch, capsys):
+    """Одно ядро — судить нечего. Раньше это был тот же ran=False, что у
+    лежащей Ollama, и граф печатал «нет NLI-модели» (входной круг, Codex I4)."""
+    graph = _graph(tmp_path, "Одно")
+    r = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge())
+    assert r["status"] == "no_work" and r["ran"] is False
+
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3_cores.graphs, "load_config", lambda: {})
+    monkeypatch.setattr(tier3_cores.nli, "judge", lambda: fake_judge())
+    monkeypatch.setattr(tier3_cores.llm, "embedder", lambda cfg, **kw: fake_embedder())
+    assert tier3_cores.run(graph, apply=False, mark=True) == "no_work"
+    out = capsys.readouterr().out
+    assert "ревизовать нечего" in out and "не состоялась" not in out, out
+
+
+@pytest.mark.parametrize("embedder, judge, expect", [
+    (fake_embedder([]), fake_judge(), "эмбеддер не дал векторов"),
+    (fake_embedder(), fake_judge(refused="нет файлов модели"), "судья отказал: нет файлов модели"),
+    (fake_embedder(), fake_judge(ready=False), "NLI-модель не поднялась"),
+])
+def test_a_revision_that_did_not_happen_names_why(tmp_path, embedder, judge, expect):
+    """Общая фраза «нет NLI-модели, лежит Ollama или пустые эмбеддинги» месяц
+    стояла над HTTP 400 от эмбеддера: причину называет ревизия (№358)."""
+    graph = _graph(tmp_path, "Одно", "Другое")
+    r = tier3.revise(graph, embedder=embedder, judge=judge)
+    assert r["status"] == "unavailable" and expect in r["reason"], r["reason"]
+
+
+def test_the_night_prints_the_reason_not_a_guess(tmp_path, monkeypatch, capsys):
+    graph = _graph(tmp_path, "Одно", "Другое")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3, "revise", lambda g, only_names=None, **kw: dict(
+        EMPTY, ran=False, status="unavailable", reason="эмбеддер не дал векторов на 2 ядер"))
+    assert tier3_cores.run(graph, apply=False, mark=True) == "unavailable"
+    out = capsys.readouterr().out
+    assert "эмбеддер не дал векторов" in out and "лежит Ollama" not in out, out
+
+
+def _main_over(monkeypatch, tmp_path, outcomes: dict, night_over_after: int | None = None):
+    """main --all-graphs над подменёнными графами: каждый граф отдаёт свой исход."""
+    graphs_ = [tmp_path / name for name in outcomes]
+    calls = []
+    monkeypatch.setattr(tier3_cores.graphs, "all_graphs", lambda sub: graphs_)
+    monkeypatch.setattr(tier3_cores, "run",
+                        lambda g, *a, **k: calls.append(g.name) or outcomes[g.name])
+    monkeypatch.setattr(tier3_cores.live_gate, "night_is_over",
+                        lambda: night_over_after is not None and len(calls) >= night_over_after)
+    monkeypatch.setattr(sys, "argv", ["tier3_cores.py", "--all-graphs"])
+    return tier3_cores.main()
+
+
+def test_one_failing_graph_is_not_hidden_by_another_passing(tmp_path, monkeypatch):
+    """`any(ran)` давал 0, когда малый граф проходил, а основной — нет: ночь
+    месяц не видела, что ревизия основного графа не идёт (Codex C1)."""
+    assert _main_over(monkeypatch, tmp_path, {"Основной": "unavailable", "Малый": "complete"}) == 2
+
+
+@pytest.mark.parametrize("outcomes, over_after, code", [
+    ({"А": "complete", "Б": "no_work"}, None, 0),
+    ({"А": "complete", "Б": "stopped"}, None, 4),
+    ({"А": "complete", "Б": "complete"}, 1, 4),     # потолок ночи оборвал очередь графов
+    ({"А": "stopped", "Б": "unavailable"}, None, 2),
+])
+def test_exit_code_speaks_for_every_graph(tmp_path, monkeypatch, outcomes, over_after, code):
+    assert _main_over(monkeypatch, tmp_path, outcomes, over_after) == code
+
+
+def test_pending_names_are_kept_whole(tmp_path, monkeypatch):
+    """Обрезка до 200 обещала, что остальные вернутся «как свежие», но отметка
+    уже ушла вперёд — 201-е имя не возвращалось никогда (Codex I3)."""
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    names = {f"Ядро {i:03d}" for i in range(250)}
+    tier3_cores._save_stamp(tmp_path / "Граф", time.time(), names)
+    assert set(tier3_cores._pending(tmp_path / "Граф")) == names
