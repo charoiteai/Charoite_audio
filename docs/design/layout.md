@@ -111,7 +111,7 @@
 - `scripts/check_private_markers.py` ← CONTRIBUTING.md, MAINTENANCE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md
 - `scripts/check_test_assertions.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md
 - `scripts/dedup_archive.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
-- `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
 - `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
 - `scripts/fix_action_items.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md

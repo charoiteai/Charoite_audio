@@ -36,6 +36,11 @@ Meetings section also deletes nothing; only the status record expired.
 - `Встречи-архив` is the reading layer. With `sufler.dedup_files: true`, some
   files may be hard links to originals in `Документация/`; editing through
   either path then edits the same contents.
+- Conflict copies `Имя 2.md … Имя 12.md` that `scripts/dedup_graph.py
+  --apply-copies` (or `sufler.dedup_copies: true`) removed from the archive are
+  not deleted: they sit in `backups/<graph>/dedup_copies/<run>/` under the data
+  root, outside iCloud, with `manifest.tsv` (copy, original, bytes, sha256).
+  To restore one, copy it back to the path in the first column.
 
 The safe rule is simple: editing a final note is fine, but move or rename the
 meeting's layers through the provided UI and commands rather than separately.

@@ -39,6 +39,7 @@ import graph_links  # noqa: E402
 import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
+import meeting_archive  # noqa: E402
 import redirects  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
@@ -57,7 +58,7 @@ def _is_stub(text: str) -> bool:
     return "дубль-слит" in text[:400] or redirects.is_merged(text)
 
 
-def inspect(root: pathlib.Path, examples: int = 0) -> dict:
+def inspect(root: pathlib.Path, examples: int = 0, prev_copies: int | None = None) -> dict:
     """Метрики одного графа. `examples` > 0 — добавить примеры путей."""
     notes = graph_links.read_notes(root)
     rel = {p: p.relative_to(root).as_posix() for p in notes}
@@ -199,7 +200,18 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         "not_utf8": len(not_utf8), "not_utf8_archive": len(not_utf8_archive),
         "alias_vetoes": len(alias_vetoes),
     }
+    # Конфликтные копии «Имя N» документов встреч (№361): по имени, без чтения —
+    # доктор сигналит, убирает `dedup_graph.py` вторым правилом. Сигнал — на РОСТ
+    # против прошлого отчёта: копии, которые человек оставил разбирать сам,
+    # горели бы каждую ночь, и предупреждение перестали бы читать (критика
+    # Opus круга 2). Прошлого отчёта нет — предупреждаем о любом числе.
+    copies = meeting_archive.conflict_copies(root, compare=False)
+    rep["conflict_copies"] = len(copies)
     warnings: list[str] = []
+    if copies and (prev_copies is None or len(copies) > prev_copies):
+        was = f" (было {prev_copies})" if prev_copies is not None else ""
+        warnings.append(f"конфликтных копий «Имя N» в документах встреч: {len(copies)}{was} — "
+                        "побайтно равные убирает dedup_graph.py --apply-copies")
     if links_active and broken_active / links_active > THRESHOLDS["broken_share"]:
         warnings.append(f"битых ссылок в активных папках {broken_active} "
                         f"({100 * broken_active / links_active:.1f} % от {links_active}; в архиве ещё {len(broken_archive)})")
@@ -227,6 +239,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             "not_utf8": [f"{s} — {why}" for s, why in not_utf8[:examples]],
             "not_utf8_archive": [f"{s} — {why}" for s, why in not_utf8_archive[:examples]],
             "alias_vetoes": alias_vetoes[:examples],
+            "conflict_copies": [str(c.copy.relative_to(root)) for c in copies[:examples]],
         }
     return rep
 
@@ -266,10 +279,20 @@ def main() -> int:
     if not found:
         print("графов не найдено — нечего проверять")
         return 0
-    reps = {str(g): inspect(g, a.examples) for g in found}   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
+    out = a.json or report_path()
+    try:                               # прошлый отчёт — база для сигнала о росте копий
+        prev = json.loads(out.read_text(encoding="utf-8")).get("graphs") or {}
+    except (OSError, ValueError, AttributeError):
+        prev = {}
+
+    def prev_copies(g: pathlib.Path) -> int | None:
+        value = (prev.get(str(g)) or {}).get("conflict_copies") if isinstance(prev, dict) else None
+        return value if isinstance(value, int) else None
+
+    reps = {str(g): inspect(g, a.examples, prev_copies(g))   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
+            for g in found}
     for rep in reps.values():
         print(summary(rep))
-    out = a.json or report_path()
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"generated": dt.datetime.now().isoformat(timespec="seconds"),

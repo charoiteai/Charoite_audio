@@ -994,6 +994,22 @@ stored once. Search does not wait for the nightly job — it hashes content whil
 scanning and keeps the first copy, so the model never receives the same text
 twice in one context.
 
+**iCloud conflict copies** — `Минутки 2.md … Минутки 12.md` next to
+`Минутки.md`. Our code never makes such names; they appeared exactly where the
+archiver rewrote a meeting document *in place* (`copy2` over the existing path)
+on every pass, changed or not — 7 594 of them on 23.09, so the Tasks tab showed
+one action item up to ten times. Writers of meeting documents now go through
+`safe_write.copy_if_changed` / `write_text_if_changed`: identical bytes are not
+written at all, changed ones go through a temporary file and `replace`, and a
+material copy keeps its source's times (freshness of the archive is read by
+mtime). The archive folder has one writer: the cloud review hands its file to
+`archive_meeting(extra=…)` instead of copying it on top. The second rule of
+`scripts/dedup_graph.py` moves a copy that is byte-identical to its neighbour
+out of the graph into `backups/<graph>/dedup_copies/<run>/` with a manifest
+(`--apply-copies` or `sufler.dedup_copies`, off by default and independent of
+`dedup_files`); differing copies are only reported. `graph_doctor` counts them,
+so a regression shows up in the morning brief.
+
 ## How search actually works
 
 Two independent signals fused by RRF: lexical (stemming, IDF, query coverage,

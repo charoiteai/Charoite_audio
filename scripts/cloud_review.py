@@ -1193,31 +1193,32 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
                      f"({e.reason}) — файл рядом со стенограммой\n")
         except OSError:
             pass                      # нет/недоступен — упадёт ниже в общий except
+        # название — из стема, одно правило с graph_updater (№361); у посекундного
+        # стема без темы хвоста нет — секунды темой не становятся (ревью 17.08)
         from meeting_archive import archive_meeting
-        slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
-        if slug[:1].isdigit():
-            slug = ""   # остаток «30» у посекундного стема — секунды, не тема (ревью 17.08)
+        from meeting_stamp import title_from_stem
         # ревизия переписала минутки — саммари по ним STALE, и политика по
         # умолчанию его пересоберёт; легаси без паспорта не трогается (№314)
-        archived = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
-                                   files_key=transcript.stem)
-        folder = archived.folder if archived is not None else None
         # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
-        # стема стенограммы (у посекундной без темы они расходятся): кладём
-        # копию в папку явно, а не надеемся на глоб.
-        if folder is not None and rev_ok:
-            shutil.copy2(rev, folder / "Ревизия Claude.md")
+        # стема стенограммы (у посекундной без темы они расходятся): источник
+        # ревизии называем архиватору явно, а не надеемся на глоб. Файл в папке
+        # пишет только архиватор: своя копия поверх его копии давала два
+        # переписывания одного пути за миллисекунды (Critical Opus по №361).
+        archived = archive_meeting(graph, transcript.parent, stamp, title_from_stem(transcript.stem),
+                                   files_key=transcript.stem,
+                                   extra={"Ревизия Claude.md": rev} if rev_ok else None)
+        folder = archived.folder if archived is not None else None
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.is_dir():
             if rev_ok:
-                shutil.copy2(rev, vdocs / rev.name)
+                safe_write.copy_if_changed(rev, vdocs / rev.name)
             # Стенограмма и минутки после моста (имена меток, снятые и
             # восстановленные поручения) — заново, как в разборе: копия в
             # Документации иначе оставалась довозной версией (№239)
             from meeting_stamp import files_with_stamp
             for f in files_with_stamp(transcript.parent, transcript.stem, suffix=".md"):
                 if f != rev:
-                    shutil.copy2(f, vdocs / f.name)
+                    safe_write.copy_if_changed(f, vdocs / f.name)
         lf.write(f"[cloud-review] ревизия доставлена: архив {folder.name if folder else '—'}"
                  f"{', vault' if vdocs.is_dir() else ''}\n")
     except Exception as e:  # noqa: BLE001 — доставка не важнее самой ревизии

@@ -357,6 +357,21 @@ def recordings_under_minute(rec_dir: pathlib.Path, minute: str) -> bool:
     return False
 
 
+def title_from_stem(stem: str) -> str:
+    """Название папки архива — хвост стема стенограммы после штампа.
+
+    Один источник на всех вызывающих. Раньше `graph_updater` передавал первые
+    слова ответа модели, а облачная ревизия — хвост стема. Когда они
+    расходились, каждая смена вызывающего переименовывала папку и переписывала
+    манифест (Minor Opus круга 2 по №361). У посекундной встречи без темы хвоста
+    нет — название пустое, и архиватор подставит «встреча». Живёт здесь, рядом
+    со `stamp_of`: правила разбора стема — в одном модуле."""
+    bare = stamp_of(stem)
+    if bare is None or not stem.startswith(bare):
+        return ""
+    return stem[len(bare):].lstrip("_").replace("_", " ").strip()
+
+
 def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                      suffix: str = "") -> list[pathlib.Path]:
     """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.
