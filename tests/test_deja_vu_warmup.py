@@ -47,3 +47,12 @@ def test_warmup_is_capped_per_pass_and_continues_next_pass(tmp_path):
     second = daemon.warm_core_vectors(cores, vecs, embed, max_batches=2)
     assert first == second == 2 * llm.EMBED_BATCH_TEXTS
     assert len(vecs) == 4 * llm.EMBED_BATCH_TEXTS, "второй проход начал не с того места"
+
+
+def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path):
+    p = tmp_path / "Ядро.md"
+    p.write_text("## Статус\nидёт _(было: «стоит», 01.09)_ " + "я" * 600 + "\n", encoding="utf-8")
+    отправлено = []
+    daemon.warm_core_vectors([p], {}, lambda payload: (отправлено.extend(payload), [[1.0]] * len(payload))[1])
+    assert отправлено and отправлено[0].startswith("Ядро. идёт") and "_(" not in отправлено[0]
+    assert len(отправлено[0]) == 400

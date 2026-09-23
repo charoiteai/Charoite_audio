@@ -465,3 +465,52 @@ def test_a_pair_the_judge_refused_is_not_remembered_as_judged(tmp_path, monkeypa
     плохая_по_именам = frozenset(имена[x] for x in плохая)
     assert r["failed"] == 1 and плохая_по_именам not in r["judged_pairs"], r["judged_pairs"]
     assert len(r["judged_pairs"]) == 2
+
+
+# ── Добор по CI-мутатору #610: каждый исход и каждый путь main ───────────────
+def test_a_revision_with_findings_reports_its_outcome(tmp_path, monkeypatch, capsys):
+    graph = _graph(tmp_path, "А", "Б")
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    найдено = dict(EMPTY, dups=["«А» ↔? «Б» 0.90/0.90 (пометка)"])
+    monkeypatch.setattr(tier3, "revise", lambda g, **kw: dict(найдено))
+    assert tier3_cores.run(graph, apply=False, mark=True) == "complete"
+    monkeypatch.setattr(tier3, "revise", lambda g, **kw: dict(найдено, stopped=True, unjudged_names={"Б"}))
+    assert tier3_cores.run(graph, apply=False, mark=True) == "stopped"
+    assert "ДУБЛИ" in capsys.readouterr().out
+
+
+def test_run_without_since_last_judges_the_whole_graph(tmp_path, monkeypatch):
+    """По умолчанию прогон полный: отметка есть, свежих ядер нет, а суд идёт."""
+    graph = _graph(tmp_path, "А", "Б")
+    import os
+    old = time.time() - 3600
+    for n in ("А", "Б"):
+        os.utime(graph / "Ядра" / f"{n}.md", (old, old))
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    tier3_cores._save_stamp(graph, old + 60)
+    зовы = []
+    monkeypatch.setattr(tier3, "revise", lambda g, only_names=None, **kw: (зовы.append(only_names), dict(EMPTY))[1])
+    tier3_cores.run(graph, apply=False, mark=True)
+    assert зовы == [None], "без since_last прогон обязан быть полным: %s" % зовы
+
+
+def test_single_graph_main_speaks_through_the_same_exit_code(tmp_path, monkeypatch):
+    graph = _graph(tmp_path, "А", "Б")
+    monkeypatch.setattr(sys, "argv", ["tier3_cores.py", "--graph", str(graph)])
+    for исход, код in (("complete", 0), ("no_work", 0), ("unavailable", 2), ("stopped", 4)):
+        monkeypatch.setattr(tier3_cores, "run", lambda g, *a, _и=исход, **k: _и)
+        assert tier3_cores.main() == код, исход
+    assert tier3_cores.exit_code(["complete"]) == 0, "без обрыва очереди исход полного прогона — 0"
+
+
+def test_no_folder_and_a_refusing_transport_are_named(tmp_path):
+    from model_seam import Embedder, SeamTransportError
+    r = tier3.revise(tmp_path / "Нет графа", embedder=fake_embedder(), judge=fake_judge())
+    assert r["status"] == "no_work" and "Ядра" in r["reason"]
+
+    def refuse(texts, timeout):
+        raise SeamTransportError("соединение отклонено")
+
+    graph = _graph(tmp_path, "А", "Б")
+    r = tier3.revise(graph, embedder=Embedder(refuse, "test"), judge=fake_judge())
+    assert r["status"] == "unavailable" and "соединение отклонено" in r["reason"], r["reason"]
