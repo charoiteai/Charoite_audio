@@ -149,18 +149,43 @@ def test_a_known_participant_is_recognised_in_any_short_form():
     assert "Пётр" not in out and "Ира" not in out
 
 
-def test_a_pair_that_failed_nli_comes_back_by_name():
+def test_a_pair_that_failed_nli_comes_back_by_name(tmp_path, monkeypatch):
     """Отметка инкремента идёт вперёд, но упавшая пара не теряется.
 
     Держать отметку на месте — тупик: одна стабильно падающая пара
     заблокировала бы инкремент навсегда, и фокус рос бы каждую ночь.
+    Поведением, а не текстом исходника: прежний пин по строке вызова
+    `_save_stamp` падал на любой перестановке аргументов (№358).
     """
-    src = (SCRIPTS / "tier3_cores.py").read_text(encoding="utf-8")
-    assert "_save_stamp(graph, started, r.get(\"failed_names\"))" in src
-    assert "def _pending(" in src and "#pending" in src
-    assert "stuck = [n for n in _pending(graph) if n not in only]" in src
-    tier3_src = (SRC / "tier3.py").read_text(encoding="utf-8")
-    assert '"failed_names": set()' in tier3_src
+    import os
+    import time
+    import tier3_cores
+    graph = tmp_path / "Граф"
+    (graph / "Ядра").mkdir(parents=True)
+    for name in ("Старое", "Упавшее"):
+        (graph / "Ядра" / f"{name}.md").write_text("## Статус\nживо\n", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(graph / "Ядра" / "Старое.md", (old, old))
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
+    monkeypatch.setattr(tier3_cores.graphs, "load_config", lambda: {})
+    monkeypatch.setattr(tier3_cores.nli, "judge", lambda: None)
+    tier3_cores._save_stamp(graph, old + 60)
+    фокусы = []
+
+    def revise(g, only_names=None, **kw):
+        фокусы.append(sorted(only_names or []))
+        first = len(фокусы) == 1
+        return {"dups": [], "nests": [], "border": [], "log": [], "pending_merges": [],
+                "skipped": [], "ran": True, "failed": 1 if first else 0,
+                "failed_names": {"Упавшее"} if first else set()}
+
+    monkeypatch.setattr(tier3, "revise", revise)
+    tier3_cores.run(graph, apply=False, mark=True, since_last=True)
+    stamp_after_first = tier3_cores._stamps()[str(graph)]
+    assert stamp_after_first > old + 60, "отметка не пошла вперёд после прогона со сбоем пары"
+    tier3_cores.run(graph, apply=False, mark=True, since_last=True)
+    assert фокусы == [["Упавшее"], ["Упавшее"]], (
+        "упавшая пара не вернулась в фокус адресно: %s" % фокусы)
 
 
 def test_the_index_is_written_atomically_and_without_the_lock():
