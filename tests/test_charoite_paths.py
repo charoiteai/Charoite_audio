@@ -62,6 +62,7 @@ def _установка_с_каноном(корень: pathlib.Path) -> pathlib
     нельзя даже ради проверки (сторож изоляции прав).
     """
     (корень / "src").mkdir(parents=True, exist_ok=True)
+    (корень / "scripts").mkdir(exist_ok=True)       # корень кода — где лежат src/ и scripts/
     for имя in ("charoite_paths.py", "exit_codes.py"):
         shutil.copy2(ROOT / "src" / имя, корень / "src" / имя)
     return корень
@@ -139,24 +140,48 @@ def test_файл_чужого_дерева_корня_кода_не_получ�
         charoite_paths.resolve_root(str(чужой))
 
 
-def test_канон_не_на_своём_месте_отказывает_на_импорте(tmp_path):
+#: Куда фаза core могла бы сдвинуть канон: модулем пакета и плоским модулем
+#: дистрибутива. Во второй форме родитель канона тоже зовётся `src`, поэтому
+#: одной сверки имени мало (круг 1 по коду №331, Opus I1).
+КАНОН_НЕ_НА_МЕСТЕ = {
+    "модуль пакета": (layout_map.DIST_DIR, "charoite-core", layout_map.FLAT_DIR, "charoite_core"),
+    "плоский модуль дистрибутива": (layout_map.DIST_DIR, "charoite-core", layout_map.FLAT_DIR),
+}
+
+
+@pytest.mark.parametrize("форма", sorted(КАНОН_НЕ_НА_МЕСТЕ))
+def test_канон_не_на_своём_месте_отказывает_на_импорте(tmp_path, форма):
     """Переезд канона без правки его места — отказ на импорте, а не съехавший корень.
 
     Корень кода выводится из места канона. Фаза core перевода в пакеты сдвинет
-    сам канон в `packages/<дист>/src/<пакет>/`, и тот же вывод без правки
-    `_CANON_IN_CODE_ROOT` молча дал бы корнем кода `packages/<дист>/src/`
+    сам канон в `packages/<дист>/…`, и тот же вывод без правки
+    `_CANON_IN_CODE_ROOT` молча дал бы корнем кода каталог внутри дистрибутива
     (входной круг №331, Opus I1 и «Как чинить»).
     """
-    пакет = (tmp_path / layout_map.DIST_DIR / "charoite-core" / layout_map.FLAT_DIR
-             / "charoite_core")
-    пакет.mkdir(parents=True)
-    shutil.copy2(ROOT / "src" / "charoite_paths.py", пакет / "charoite_paths.py")
+    место = tmp_path.joinpath(*КАНОН_НЕ_НА_МЕСТЕ[форма])
+    место.mkdir(parents=True)
+    shutil.copy2(ROOT / "src" / "charoite_paths.py", место / "charoite_paths.py")
     out = subprocess.run(
         [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import charoite_paths",
-         str(пакет)],
+         str(место)],
         capture_output=True, text=True, timeout=60)
-    assert out.returncode != 0, "канон вне своего места импортировался и вывел корень"
+    assert out.returncode != 0, f"{форма}: канон вне своего места импортировался и вывел корень"
     assert "RuntimeError" in out.stderr and "_CANON_IN_CODE_ROOT" in out.stderr, out.stderr[-600:]
+
+
+def test_место_канона_одно_у_канона_и_у_модели_раскладки():
+    """Место канона описано дважды: `_CANON_IN_CODE_ROOT` в самом каноне (из него
+    выводится корень кода) и `ENV_ROOT_OWNER` у модели раскладки. Оба обязаны
+    называть один файл, и форма его — плоский модуль корня, без дистрибутива и
+    пакета: переезд в `packages/` сторож увидит в CI, а не пользователь на
+    импорте (круг 1 по коду №331, Opus I1, правильное место)."""
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    rel = "/".join(charoite_paths._CANON_IN_CODE_ROOT)
+    assert rel == layout_map.ENV_ROOT_OWNER, (rel, layout_map.ENV_ROOT_OWNER)
+    форма = layout_map.form(rel)
+    assert (форма.role, форма.dist, форма.package) == ("module", "", ""), форма
+    assert (ROOT / rel).resolve() == pathlib.Path(charoite_paths.__file__).resolve()
 
 
 @pytest.mark.корень_называет_тест
@@ -227,41 +252,76 @@ def test_за_кодом_никто_не_ходит_через_корень_да
         f"файла там нет: {offenders}. Берите CODE (code_root), не ROOT")
 
 
+#: Конструкторы пути, которые берут корень первым аргументом, а сегменты — следом.
+_СБОРЩИКИ_ПУТИ = ("Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "os.path.join")
+
+
 def _пути_от_корня_кода(tree: ast.Module) -> list[tuple[int, str]]:
     """Пути из одних констант, построенные от корня КОДА: `(строка, путь)`.
 
     Корень кода — вызов `code_root(...)`, константа `CODE_ROOT` (под любым
-    псевдонимом импорта — имена берёт тот же разбор, что у сторожа раскладки)
-    и имя, которому в файле присвоено одно из них. `(code or CODE_ROOT) / …` —
-    тоже от корня кода: без аргумента путь ведёт именно туда. Сегмент из
-    f-строки или переменной разбором не проверить — такой путь пропускается,
-    это честная граница сторожа.
+    псевдонимом импорта — имена берёт тот же разбор, что у сторожа раскладки),
+    имя, которому в файле присвоено одно из них (`=` и `: Path =`), и
+    производное имя (`SRC = CODE / "src"`, затем `SRC / "x.py"`).
+    `(code or CODE_ROOT) / …` — тоже от корня кода: без аргумента путь ведёт
+    именно туда. Формы записи: `/`, `.joinpath(...)`, `Path(CODE, ...)`,
+    `os.path.join(CODE, ...)`, `str(...)` вокруг любой из них (круг 1 по коду
+    №331: Sonnet I1, Opus M3). Сегмент из f-строки или переменной, морж,
+    распаковка кортежа и склейка строк разбором не проверяются — это честная
+    граница сторожа.
     """
     вызовы = layout_map._canon_names(tree, ("code_root",))
     константы = layout_map._canon_names(tree, ("CODE_ROOT",))
-    связанные: set[str] = set()
+    связанные: dict[str, str] = {}              # имя → путь от корня ("" — сам корень)
 
-    def корень(e: ast.expr) -> bool:
+    def склеить(база: str, части: list[str]) -> str:
+        return "/".join(p for p in (база, *части) if p)
+
+    def константы_строк(аргументы) -> list[str] | None:
+        if all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in аргументы):
+            return [a.value for a in аргументы]
+        return None
+
+    def от_корня(e: ast.expr) -> str | None:
         if isinstance(e, ast.Call):
-            return ast.unparse(e.func) in вызовы
+            имя = ast.unparse(e.func)
+            if имя in вызовы:
+                return ""
+            if имя == "str" and len(e.args) == 1:
+                return от_корня(e.args[0])
+            if isinstance(e.func, ast.Attribute) and e.func.attr == "joinpath":
+                база, части = от_корня(e.func.value), константы_строк(e.args)
+            elif имя in _СБОРЩИКИ_ПУТИ and e.args:
+                база, части = от_корня(e.args[0]), константы_строк(e.args[1:])
+            else:
+                return None
+            return None if база is None or части is None else склеить(база, части)
         if isinstance(e, (ast.Name, ast.Attribute)):
-            return ast.unparse(e) in константы | связанные
+            текст = ast.unparse(e)
+            return "" if текст in константы else связанные.get(текст)
         if isinstance(e, ast.BoolOp):
-            return any(корень(v) for v in e.values)
-        return False
+            return next((p for p in map(от_корня, e.values) if p is not None), None)
+        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
+            база, части = от_корня(e.left), константы_строк([e.right])
+            return None if база is None or части is None else склеить(база, части)
+        return None
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and корень(node.value):
-            связанные |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    присваивания = [(t, n.value) for n in ast.walk(tree)
+                    if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value is not None
+                    for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
+                    if isinstance(t, ast.Name)]
+    while True:                                 # производные имена — до неподвижной точки
+        новые = {t.id: p for t, v in присваивания
+                 if t.id not in связанные and (p := от_корня(v)) is not None}
+        if not новые:
+            break
+        связанные.update(новые)
     пути = []
     for node in ast.walk(tree):
-        части, база = [], node
-        while (isinstance(база, ast.BinOp) and isinstance(база.op, ast.Div)
-               and isinstance(база.right, ast.Constant) and isinstance(база.right.value, str)):
-            части.append(база.right.value)
-            база = база.left
-        if части and корень(база):
-            пути.append((node.lineno, "/".join(reversed(части))))
+        if isinstance(node, (ast.BinOp, ast.Call)):
+            путь = от_корня(node)
+            if путь:
+                пути.append((node.lineno, путь))
     return пути
 
 
@@ -272,6 +332,7 @@ def test_разбор_путей_от_корня_кода_видит_все_фо
         "import charoite_paths as cp",
         "from charoite_paths import code_root as где_код, CODE_ROOT, resolve_root",
         "CODE = где_код(__file__)",
+        "CODE_ANN: pathlib.Path = где_код(__file__)",
         "ROOT = resolve_root(__file__)",
         'A = CODE / "scripts" / "a.py"',
         'B = (code or CODE_ROOT) / "config" / "b.yaml"',
@@ -279,9 +340,16 @@ def test_разбор_путей_от_корня_кода_видит_все_фо
         'D = cp.code_root(__file__) / "d"',
         'E = CODE / "src" / f"{имя}.py"',
         'F = ROOT / "logs"',
+        'G = CODE_ANN.joinpath("scripts", "g.py")',
+        'H = pathlib.Path(CODE, "scripts", "h.py")',
+        'I = os.path.join(str(CODE), "scripts", "i.py")',
+        'SRC = CODE / "src"',
+        'J = SRC / "j.py"',
+        'K = CODE.joinpath(имя)',
     ])
     найдено = {путь for _, путь in _пути_от_корня_кода(ast.parse(проба))}
-    assert найдено == {"scripts", "scripts/a.py", "config", "config/b.yaml", "c", "d", "src"}
+    assert найдено == {"scripts", "scripts/a.py", "config", "config/b.yaml", "c", "d", "src",
+                       "scripts/g.py", "scripts/h.py", "scripts/i.py", "src/j.py"}, найдено
 
 
 def test_пути_от_корня_кода_ведут_в_существующие_файлы():

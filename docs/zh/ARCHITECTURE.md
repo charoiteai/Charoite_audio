@@ -521,7 +521,7 @@ Python 回退），因此它无法回答关于应用内检索的问题。
 工作文件夹由 `CHAROITE_ROOT` 指定：应用在启动守护进程时传入，每个 python
 模块从那里读取根路径（`src/charoite_paths.py`）。未设置该变量时，根路径取代码根
 ——从仓库运行的行为与此前完全一致。代码根只从路径规范模块自身的位置推导一次
-（`<根>/src/charoite_paths.py`，导入时校验），`code_root(__file__)` 只检查调用方是否
+（`<根>/src/charoite_paths.py`，与 `<根>/scripts/` 同级，导入时校验），`code_root(__file__)` 只检查调用方是否
 位于同一棵树中。按每个调用方的位置推导，只在所有调用方都位于根下一级时成立：迁入
 `packages/<发行包>/src/<包>/` 的模块会把 `packages/<发行包>/` 当作代码根，把
 `packages/<发行包>/src/` 当作数据根（№331）。

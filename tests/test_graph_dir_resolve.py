@@ -94,6 +94,7 @@ def test_перенесённый_модуль_берёт_корень_у_выз
     """
     установка = tmp_path / "установка"
     (установка / "src").mkdir(parents=True)
+    (установка / "scripts").mkdir()                 # корень кода — где лежат src/ и scripts/
     (установка / "src" / "charoite_paths.py").write_text(
         (SRC / "charoite_paths.py").read_text(encoding="utf-8"), encoding="utf-8")
     пакет = установка / ".venv" / "lib" / "python3" / "site-packages"
