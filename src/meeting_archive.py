@@ -21,7 +21,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import stat as _stat
 import sys
 import typing
@@ -54,6 +53,65 @@ NICE = [
     ("_спикеры.md", "Голоса и спикеры.md"),
     ("_live.md", "Черновик (live).md"),
 ]
+DOCS_DIR = pathlib.PurePosixPath("Документация") / "Стенограммы встреч"
+# Всё, что архиватор кладёт в папку встречи, — и только это. Уборка конфликтных
+# копий (`dedup_graph.py`) и счётчик доктора берут список отсюда, а не держат
+# свой: по имени вне списка копию не отличить от узла «Спринт 2» (Important
+# Opus входного круга №361).
+ARCHIVE_NAMES = frozenset({nice for _, nice in NICE} | {
+    "Стенограмма.md", "Граф.md", "meeting.meta.json", "Открыть в Obsidian.command",
+    "Саммари.md", "Тезисы.md", "Вопросы и ответы.md"})
+# «Имя 2.md» … «Имя 12.md»: так iCloud называет копию, которую не смог свести
+# с версией на сервере. «Имя 1» он не создаёт.
+_COPY_RE = re.compile(r"^(?P<stem>.+) (?P<n>[2-9]|[1-9]\d+)(?P<ext>\.[^. ]+)$")
+
+
+class ConflictCopy(typing.NamedTuple):
+    """Копия «Имя N.ext» рядом с «Имя.ext». `same` — побайтно ли она равна
+    оригиналу; None — не сравнивали (счётчику хватает имён)."""
+    copy: pathlib.Path
+    original: pathlib.Path
+    same: bool | None
+
+
+def _same_content(a: pathlib.Path, b: pathlib.Path) -> bool:
+    try:
+        return a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def conflict_copies(graph: pathlib.Path, *, compare: bool = True) -> list[ConflictCopy]:
+    """Конфликтные копии документов встреч: «Имя N.ext», у которой рядом лежит
+    «Имя.ext». Смотрим только туда, где эти документы пишет конвейер: папки
+    архива (имена из `ARCHIVE_NAMES`) и «Документация/Стенограммы встреч»
+    (имена от стема стенограммы, только `.md`). Узлы графа не трогаем: у них
+    число в имени бывает законным. Скрытые и служебные «_…» папки пропускаем,
+    симлинки тоже."""
+    places: list[tuple[pathlib.Path, frozenset[str] | None]] = []
+    adir = graph / ARCHIVE_DIR
+    if adir.is_dir():
+        places += [(d, ARCHIVE_NAMES) for d in sorted(adir.iterdir())
+                   if d.is_dir() and not d.is_symlink() and not d.name.startswith((".", "_"))]
+    ddir = graph / DOCS_DIR
+    if ddir.is_dir() and not ddir.is_symlink():
+        places.append((ddir, None))
+    found: list[ConflictCopy] = []
+    for folder, names in places:
+        for p in sorted(folder.iterdir()):
+            m = _COPY_RE.match(p.name)
+            if not m or p.is_symlink() or not p.is_file():
+                continue
+            base_name = m["stem"] + m["ext"]
+            if names is not None and base_name not in names:
+                continue
+            if names is None and m["ext"] != ".md":
+                continue
+            base = p.with_name(base_name)
+            if base.is_symlink() or not base.is_file():
+                continue
+            found.append(ConflictCopy(p, base, _same_content(p, base) if compare else None))
+    return found
 
 
 def _safe(name: str) -> str:
@@ -84,9 +142,11 @@ def _obsidian_url(graph: pathlib.Path, rel_note: str) -> str:
 
 def _write_opener(path: pathlib.Path, url: str):
     """Кликабельный запуск obsidian:// из Finder. .webloc для не-HTTP схем
-    macOS открывать отказывается (-10400) — .command работает всегда."""
-    path.write_text(f'#!/bin/bash\nopen "{url}"\n', encoding="utf-8")
-    path.chmod(0o755)
+    macOS открывать отказывается (-10400) — .command работает всегда.
+    Тот же ярлык повторно не пишется (№361), права ставятся, только если сбиты."""
+    safe_write.write_text_if_changed(path, f'#!/bin/bash\nopen "{url}"\n')
+    if _stat.S_IMODE(path.stat().st_mode) != 0o755:
+        path.chmod(0o755)
 
 
 def _excluded(graph: pathlib.Path) -> set[str]:
@@ -189,7 +249,8 @@ class Archived(typing.NamedTuple):
 
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
                     files_key: str | None = None, *,
-                    mode: SummaryMode = SummaryMode.AUTO) -> Archived | None:
+                    mode: SummaryMode = SummaryMode.AUTO,
+                    extra: typing.Mapping[str, pathlib.Path] | None = None) -> Archived | None:
     """Собирает/обновляет папку встречи; возвращает папку и исход саммари
     (None — встреча исключена). `mode` — режим прохода по саммари
     (`SummaryMode`); дефолт — в сигнатуре, архивация режим не интерпретирует и
@@ -200,6 +261,16 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     наката темы): её файлы — ровно `<стем>.md` и `<стем>_*.md`. Без ключа
     ищем по минутному штампу с границей — так зовут retro-прогоны, где стем
     и есть минутный штамп с темой.
+
+    `extra` — «имя в папке → источник», который вызывающий знает точнее
+    ключа файлов: облачная ревизия называет свой файл минутным штампом, а ключ
+    посекундной встречи его не находит. Такой источник главнее найденного по
+    ключу. Файлы папки пишет только архиватор: раньше ревизия дописывала копию
+    сама, поверх той, что архиватор положил миллисекундой раньше (Critical
+    Opus входного круга №361).
+
+    Всё пишется только при изменении и не на месте (`safe_write.copy_if_changed`
+    и `write_text_if_changed`): повторный проход без новостей папку не трогает.
     """
     if stamp in _excluded(graph):
         return None
@@ -246,9 +317,13 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
                 break
         if dest == "Разбор.md" and expected_debrief is not None and f != expected_debrief:
             continue                                   # двойня под другим именем — не наш разбор
-        shutil.copy2(f, folder / dest)
-    if expected_debrief is not None:
-        shutil.copy2(expected_debrief, folder / "Разбор.md")
+        if extra and dest in extra:
+            continue                                   # источник назвал вызывающий — он главнее
+        safe_write.copy_if_changed(f, folder / dest)
+    if expected_debrief is not None and not (extra and "Разбор.md" in extra):
+        safe_write.copy_if_changed(expected_debrief, folder / "Разбор.md")
+    for dest, src in (extra or {}).items():
+        safe_write.copy_if_changed(src, folder / dest)
     obs_url = _obsidian_url(graph, f"{graph.name}/Встречи/{stamp}")
     # Ссылку на заметку пишем, ТОЛЬКО если заметка есть в ЭТОМ графе. Папка
     # архива и узел встречи расходятся штатно: сфера встречи определяется по
@@ -269,7 +344,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
         where = ("Заметки этой встречи в графе «" + graph.name + "» нет: она могла уехать "
                  "в граф своей сферы (личный, проектный) или не сложиться вовсе. "
                  "Документы встречи — рядом, в этой папке.\n")
-    safe_write.write_text(folder / "Граф.md",
+    safe_write.write_text_if_changed(folder / "Граф.md",
         f"---\ntype: ссылка\nдата: {stamp}\n---\n"
         f"# Граф этой встречи\n\n" + where,
         encoding="utf-8",
@@ -482,14 +557,22 @@ def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
 
 
 def _write_manifest(folder: pathlib.Path, stamp: str, title: str) -> None:
-    """Атомарно обновить манифест после сборки человекочитаемых файлов."""
+    """Атомарно обновить манифест после сборки человекочитаемых файлов.
+
+    `updated_at` — время последнего настоящего изменения, а не последнего
+    прохода: манифест, у которого поменялась бы одна метка времени, не
+    переписывается (№361). Читатели манифеста (`MeetingCard`, `GraphStore`,
+    `_manifest_id`) это поле не используют — проверено входным кругом."""
     path = folder / "meeting.meta.json"
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(
-        json.dumps(build_manifest(folder, stamp, title), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    fresh = build_manifest(folder, stamp, title)
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = None
+    if isinstance(old, dict) and {k: v for k, v in old.items() if k != "updated_at"} \
+            == {k: v for k, v in fresh.items() if k != "updated_at"}:
+        return
+    safe_write.write_text(path, json.dumps(fresh, ensure_ascii=False, indent=2) + "\n")
 
 
 def _history_context(folder: pathlib.Path) -> str:
@@ -1039,7 +1122,7 @@ def _rebuild_index(graph: pathlib.Path):
             names.remove("Саммари")
             names.insert(0, "Саммари")
         lines.append(f"- [[{ARCHIVE_DIR}/{p.name}/{target}|{p.name}]] — {', '.join(names)}")
-    safe_write.write_text(adir / "_ОГЛАВЛЕНИЕ.md", "\n".join(lines) + "\n")
+    safe_write.write_text_if_changed(adir / "_ОГЛАВЛЕНИЕ.md", "\n".join(lines) + "\n")
 
 
 def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:

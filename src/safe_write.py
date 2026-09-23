@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import stat
 
 
@@ -70,6 +71,62 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)   # replace уже унёс файл — это не ошибка
+    return True
+
+
+# Граф живёт в iCloud Drive, и перезапись файла, которую никто не заметил бы на
+# обычном диске, там не бесплатна. В архиве встреч 23.09 нашлось 7594 копии
+# «Имя 2.md … Имя 12.md»; наш код таких имён не создаёт. Копии оказались ровно у
+# файлов, которые архиватор писал `shutil.copy2` поверх существующего пути и при
+# каждом проходе, даже без изменений: около 1400 на вид файла. У файлов,
+# записанных тем же проходом через tmp и replace, их одна-две (№361). Поэтому
+# писатели графа записывают только то, что изменилось, и никогда на месте.
+
+def _same_bytes(path: pathlib.Path, data: bytes) -> bool:
+    """Лежат ли на диске ровно эти байты. Размер проверяем первым: файл
+    стенограммы читать целиком ради «не совпало» незачем."""
+    try:
+        if path.stat().st_size != len(data):
+            return False
+        return path.read_bytes() == data
+    except OSError:
+        return False
+
+
+def write_text_if_changed(path: pathlib.Path, text: str, *, encoding: str = "utf-8") -> bool:
+    """`write_text`, но только если на диске другой текст. True — записали.
+
+    Без изменений файл остаётся нетронутым: тот же inode, тот же mtime, iCloud
+    нечего синхронизировать. С изменениями запись идёт через `write_text`, то есть
+    через tmp и replace, с переносом прав и меток Finder и без переноса времён
+    (правило `_carry_over_metadata`)."""
+    if _same_bytes(path.resolve() if path.is_symlink() else path, text.encode(encoding)):
+        return False
+    return write_text(path, text, encoding=encoding)
+
+
+def copy_if_changed(src: pathlib.Path, dst: pathlib.Path) -> bool:
+    """Скопировать документ в граф, только если байты отличаются. True — скопировали.
+
+    Отличие от `write_text_if_changed` одно, и оно намеренное: копия получает
+    ВРЕМЕНА ИСТОЧНИКА (`copy2`). По ним читатели архива считают свежесть:
+    `meeting_archive.summary_adoptable` сравнивает mtime материалов с саммари.
+    Запись идёт через tmp рядом с целью и `replace`, не на месте, а права и
+    метки Finder переносятся со старой копии, как в `write_text`.
+    """
+    if dst.is_symlink():
+        dst = dst.resolve()
+    data = src.read_bytes()
+    if _same_bytes(dst, data):
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.tmp{os.getpid()}")
+    try:
+        shutil.copy2(src, tmp)
+        _carry_over_metadata(dst, tmp)
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
 
 

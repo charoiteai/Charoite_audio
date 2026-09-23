@@ -2892,12 +2892,13 @@ def main():
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.parent.exists():
             vdocs.mkdir(exist_ok=True)
-            import shutil as _sh2
             # Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у
             # посекундной встречи без темы это «…113012*», а минутный глоб брал
-            # файлы соседки той же минуты (аудит GLM 17.08).
+            # файлы соседки той же минуты (аудит GLM 17.08). Пишем только
+            # изменившиеся и не на месте: граф в iCloud, и перезапись того же
+            # файла при каждом проходе давала конфликтные копии «Имя 2.md» (№361).
             for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
-                _sh2.copy2(f, vdocs / f.name)
+                safe_write.copy_if_changed(f, vdocs / f.name)
             print(f"артефакты скопированы в vault: {vdocs}")
     except Exception as e:  # noqa: BLE001
         print(f"копирование в vault не удалось: {e}")

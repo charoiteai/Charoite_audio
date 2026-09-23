@@ -39,6 +39,7 @@ import graph_links  # noqa: E402
 import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
+import meeting_archive  # noqa: E402
 import redirects  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
@@ -199,7 +200,16 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         "not_utf8": len(not_utf8), "not_utf8_archive": len(not_utf8_archive),
         "alias_vetoes": len(alias_vetoes),
     }
+    # Конфликтные копии «Имя N» документов встреч (№361): по имени, без чтения —
+    # доктор сигналит, убирает `dedup_graph.py` вторым правилом. Этот счётчик —
+    # единственный сигнал: копии не появлялись с 07.09, и без него их возврат
+    # после правки источника никто бы не заметил.
+    copies = meeting_archive.conflict_copies(root, compare=False)
+    rep["conflict_copies"] = len(copies)
     warnings: list[str] = []
+    if copies:
+        warnings.append(f"конфликтных копий «Имя N» в документах встреч: {len(copies)} — "
+                        "побайтно равные убирает dedup_graph.py --apply-copies")
     if links_active and broken_active / links_active > THRESHOLDS["broken_share"]:
         warnings.append(f"битых ссылок в активных папках {broken_active} "
                         f"({100 * broken_active / links_active:.1f} % от {links_active}; в архиве ещё {len(broken_archive)})")
@@ -227,6 +237,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             "not_utf8": [f"{s} — {why}" for s, why in not_utf8[:examples]],
             "not_utf8_archive": [f"{s} — {why}" for s, why in not_utf8_archive[:examples]],
             "alias_vetoes": alias_vetoes[:examples],
+            "conflict_copies": [str(c.copy.relative_to(root)) for c in copies[:examples]],
         }
     return rep
 
