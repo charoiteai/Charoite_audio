@@ -295,7 +295,11 @@ def test_archive_meeting_threads_the_mode_and_the_manifest_carries_no_copy_of_th
     переименованием (Important DS и GLM круга 1)."""
     src = (ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8")
     assert "policy or " not in src and "policy=policy" not in src, "политика не пересекает шов как множество"
-    assert "mode: SummaryMode = SummaryMode.AUTO) -> Archived | None" in src and " or SummaryMode" not in src
+    # дефолт режима живёт в сигнатуре, и на швах его не подставляют по истинности;
+    # сигнатура читается как сигнатура, а не как строка исходника (она растёт: №361)
+    import inspect
+    assert inspect.signature(ma.archive_meeting).parameters["mode"].default is ma.SummaryMode.AUTO
+    assert " or SummaryMode" not in src
     assert "summary_state=" not in src and '"summary_state"' not in src
     for name in ("graph_updater.py", "cloud_review.py"):
         text = (ROOT / ("src" if name == "graph_updater.py" else "scripts") / name).read_text(encoding="utf-8")

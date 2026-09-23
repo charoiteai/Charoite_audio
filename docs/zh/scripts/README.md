@@ -10,7 +10,7 @@
 - `rename_meeting.py` — 协同重命名逐字稿、归档、图谱笔记和应用状态；默认只显示计划，`--yes` 才应用。
 - `forget_meeting.py` — 从逐字稿、录音、归档和图谱引用中删除一场会议；默认只显示计划，`--yes` 才应用。
 - `dedup_archive.py` — 整理历史重复归档；默认只显示计划，`--apply` 把多余文件夹移到 `Встречи-архив/_дубли/`，而不是删除。
-- `dedup_graph.py` — 经明确允许后，把逐字节相同的归档副本换成硬链接；应用前先阅读报告。
+- `dedup_graph.py` — 两条规则，各自需要单独许可：`--apply-copies` / `sufler.dedup_copies` 把 iCloud 冲突副本（与 `Имя.md` 逐字节相同的 `Имя 2.md`）移出图谱，放入 `backups/<图谱>/dedup_copies/` 并写清单；`--apply` / `sufler.dedup_files` 把逐字节相同的归档副本换成硬链接。`--all-graphs` 遍历医生检查的所有图谱（夜间任务即如此调用）。不带参数时只输出报告。
 - `merge_graphs.py` — 重新缝合分裂的图谱；不加 `--apply` 只显示计划。应用前会验证全部冲突，只自动拼接 Markdown，创建恢复备份，并在部分失败时自动回滚。
 - `memory_bench.py` — 在演示图谱上对整个检索闭环做基准测试（`--demo`、`--demo-en`）。
 - `tier3_cores.py` — 核心修订（重复项合并），加 `--apply` 生效；不加则为空跑演练。

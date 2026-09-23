@@ -19,8 +19,21 @@ Finder. Для человека это удобно и остаётся как �
 
 Оригиналом считается файл ВНЕ «Встречи-архив»: архив производен по смыслу.
 
-Запуск: python3 scripts/dedup_graph.py [--apply] [--graph ПУТЬ]
-Без --apply только показывает, что будет сделано.
+Второе правило — конфликтные копии «Имя 2.md … Имя 12.md» рядом с «Имя.md» в
+папках архива и в «Документации» (№361). Их порождала перезапись документов
+встречи на месте при каждом проходе архиватора: в iCloud такая запись давала
+копию, и 23.09 их было 7594. Жёсткая ссылка их не лечит: путь остаётся, и
+вкладка «Задачи» читает каждое поручение столько раз, сколько у него копий.
+Поэтому побайтно равная копия уезжает из графа в резерв
+(`charoite_paths.graph_backups(граф, "dedup_copies")`, вне iCloud) со строкой
+в манифесте. Отличающаяся — только в отчёт, решает человек.
+
+Два правила — два разрешения: `--apply` и `sufler.dedup_files` связывают
+ссылками, `--apply-copies` и `sufler.dedup_copies` убирают копии. Одно не
+включает другое (Critical Opus входного круга №361).
+
+Запуск: python3 scripts/dedup_graph.py [--apply] [--apply-copies] [--graph ПУТЬ]
+Без ключей только показывает, что будет сделано.
 """
 from __future__ import annotations
 
@@ -28,12 +41,16 @@ import argparse
 import hashlib
 import os
 import pathlib
+import shutil
 import sys
+import time
 
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
+import meeting_archive  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
 ARCHIVE_DIR = "Встречи-архив"
@@ -54,9 +71,10 @@ def _cfg() -> dict:
     return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
 
 
-def _allowed_by_config() -> bool:
-    """Строго is True: «false», пустое значение и мусор разрешением не считаются."""
-    return (_cfg().get("sufler") or {}).get("dedup_files") is True
+def _allowed_by_config(key: str = "dedup_files") -> bool:
+    """Строго is True: «false», пустое значение и мусор разрешением не считаются.
+    У каждого правила свой ключ: `dedup_files` — ссылки, `dedup_copies` — копии."""
+    return (_cfg().get("sufler") or {}).get(key) is True
 
 
 def graph_dir(explicit: str | None) -> pathlib.Path | None:
@@ -123,25 +141,106 @@ def link_copy(original: pathlib.Path, copy: pathlib.Path,
         return f"подмена не удалась ({e.strerror})"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Дедупликация файлов графа жёсткими ссылками")
-    ap.add_argument("--graph", help="путь к графу (по умолчанию sufler.graph_dir)")
-    ap.add_argument("--apply", action="store_true",
-                    help="связать копии (без ключа берётся sufler.dedup_files из конфига)")
-    args = ap.parse_args()
+COPIES_KIND = "dedup_copies"
 
-    # Право на правку графа берётся из конфига, а не из строки запуска.
-    # Ночная джоба не решает за человека: то же правило, что у слияния ядер
-    # в tier3, и оно закреплено тестом. Ключ по умолчанию выключен —
-    # жёсткая ссылка безвредна для содержимого, но неожиданна для того, кто
-    # правит архивную копию, считая её независимой.
-    apply = args.apply or _allowed_by_config()
 
-    graph = graph_dir(args.graph)
-    if not graph or not graph.is_dir():
-        print("граф не найден — пропуск")
-        return 0
+def park_copy(graph: pathlib.Path, copy: meeting_archive.ConflictCopy, dest: pathlib.Path,
+              manifest) -> str:
+    """Убрать одну побайтно равную копию из графа в резерв. Статус — для отчёта.
 
+    В резерв всегда идёт НЕЗАВИСИМАЯ копия (`copy2`), а не `rename`: у
+    жёстко связанной копии перенос сохранил бы inode, и правка живого
+    оригинала меняла бы «резерв» (Important Opus входного круга №361, тот же
+    урок, что со снимками 16.08). Резерв сверяется с прочитанными байтами до
+    удаления: у файла, выгруженного iCloud с диска, в резерв могла уехать
+    пустышка. Строка манифеста пишется раньше удаления: оборванный прогон
+    оставляет след всего, что уже убрано.
+    """
+    def identity(p: pathlib.Path) -> tuple[int, int, int]:
+        st = os.lstat(p)
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+    try:
+        before = identity(copy.copy)
+        data = copy.copy.read_bytes()
+        if data != copy.original.read_bytes():
+            return "изменился во время прогона — пропуск"
+        target = dest / copy.copy.relative_to(graph)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        part = target.with_name(target.name + ".part")
+        shutil.copy2(copy.copy, part)
+        # iCloud может подменить файл, пока мы его копируем (докачка серверной
+        # версии): удалили бы версию, которой нет в резерве (Important Opus
+        # круга 2 по №361). Файл сверяем дважды — до записи резерва и прямо
+        # перед удалением; окно сжато до одного вызова, но не до нуля.
+        if part.read_bytes() != data or identity(copy.copy) != before:
+            part.unlink(missing_ok=True)
+            return "изменился во время прогона — пропуск"
+        part.replace(target)
+        rel = copy.copy.relative_to(graph)
+        manifest.write(f"{rel}\t{copy.original.relative_to(graph)}\t"
+                       f"{len(data)}\t{hashlib.sha256(data).hexdigest()}\n")
+        manifest.flush()
+        if identity(copy.copy) != before:
+            manifest.write(f"# оставлена: {rel} — изменилась во время переноса, резерв выше лишний\n")
+            manifest.flush()
+            return "изменился во время переноса — копия оставлена"
+        copy.copy.unlink()
+        return "ok"
+    except OSError as e:
+        return f"не удалось ({e.strerror})"
+
+
+def park_copies(graph: pathlib.Path, apply: bool) -> None:
+    """Второе правило: конфликтные копии «Имя N» документов встреч (№361)."""
+    found = meeting_archive.conflict_copies(graph)
+    if not found:
+        print("конфликтных копий «Имя N» нет")
+        return
+    same = [c for c in found if c.same is True]
+    other = [c for c in found if c.same is False]
+    unread = [c for c in found if c.same is None]
+    size = 0
+    for c in same:
+        try:
+            size += c.copy.stat().st_size
+        except OSError:
+            continue
+    if not apply or not same:
+        print(f"конфликтных копий «Имя N»: {len(found)}; побайтно равны оригиналу — {len(same)} "
+              f"({size / 1024 / 1024:.1f} МБ), будут убраны с --apply-copies "
+              f"(sufler.dedup_copies выключен); отличаются — {len(other)}, только отчёт")
+    else:
+        dest = charoite_paths.secure_dir(
+            charoite_paths.graph_backups(graph, COPIES_KIND, root=_root())
+            / time.strftime("%Y%m%d-%H%M%S"))
+        moved = 0
+        failures: list[str] = []
+        with (dest / "manifest.tsv").open("a", encoding="utf-8") as manifest:
+            manifest.write("копия\tоригинал\tбайт\tsha256\n")
+            for c in same:
+                status = park_copy(graph, c, dest, manifest)
+                if status == "ok":
+                    moved += 1
+                else:
+                    failures.append(f"{c.copy.relative_to(graph)}: {status}")
+        print(f"⚠️ убрано конфликтных копий «Имя N»: {moved} из {len(same)} "
+              f"({size / 1024 / 1024:.1f} МБ), резерв и манифест: {dest}; "
+              f"отличаются и оставлены: {len(other)}")
+        if failures:
+            print(f"не удалось ({len(failures)}):")
+            for f in failures[:5]:
+                print(f"  {f}")
+    for c in other[:5]:
+        print(f"  отличается от оригинала: {c.copy.relative_to(graph)}")
+    if unread:
+        print(f"⚠️ не прочитаны ({len(unread)}) — не трогаем:")
+        for c in unread[:5]:
+            print(f"  {c.copy.relative_to(graph)}")
+
+
+def link_duplicates(graph: pathlib.Path, apply: bool) -> None:
+    """Первое правило: побайтные копии от 4 КБ — жёсткой ссылкой на оригинал."""
     by_hash: dict[str, list[pathlib.Path]] = {}
     for p in graph.rglob("*.md"):
         # Скрытые каталоги — снимки (.cloud_backup, .tier3_backup,
@@ -161,7 +260,7 @@ def main() -> int:
     groups = {h: v for h, v in by_hash.items() if len(v) > 1}
     if not groups:
         print("дублей нет")
-        return 0
+        return
 
     freed = 0
     linked = 0
@@ -195,6 +294,42 @@ def main() -> int:
         print(f"не удалось ({len(failures)}) — копии оставлены как есть:")
         for f in failures[:5]:
             print(f"  {f}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Дедупликация файлов графа: копии «Имя N» и жёсткие ссылки")
+    ap.add_argument("--graph", help="путь к графу (по умолчанию sufler.graph_dir)")
+    ap.add_argument("--apply", action="store_true",
+                    help="связать побайтные копии ссылками (без ключа — sufler.dedup_files из конфига)")
+    ap.add_argument("--apply-copies", action="store_true",
+                    help="убрать конфликтные копии «Имя N» в резерв (без ключа — sufler.dedup_copies)")
+    ap.add_argument("--all-graphs", action="store_true",
+                    help="все графы vault с папкой «Ядра» — тот же перечень, что у graph_doctor")
+    args = ap.parse_args()
+
+    # Право на правку графа берётся из конфига, а не из строки запуска.
+    # Ночная джоба не решает за человека: то же правило, что у слияния ядер
+    # в tier3, и оно закреплено тестом. Оба ключа по умолчанию выключены.
+    # Жёсткая ссылка безвредна для содержимого, но неожиданна для того, кто
+    # правит архивную копию, считая её независимой; перенос копии убирает путь
+    # из графа, хоть и в резерв.
+    apply_links = args.apply or _allowed_by_config("dedup_files")
+    apply_copies = args.apply_copies or _allowed_by_config("dedup_copies")
+
+    # Перечень графов — тот же, что у доктора: сигнал о копиях горит по каждому
+    # графу, и уборке нельзя видеть только основной (Important Opus круга 2 по №361).
+    found = graphs.all_graphs("Ядра") if args.all_graphs else [graph_dir(args.graph)]
+    found = [g for g in found if g and g.is_dir()]
+    if not found:
+        print("граф не найден — пропуск")
+        return 0
+
+    for graph in found:
+        if len(found) > 1:
+            print(f"— {graph.name}")
+        # Копии — первыми: после их уборки отчёт о ссылках не считает их дважды.
+        park_copies(graph, apply_copies)
+        link_duplicates(graph, apply_links)
     return 0
 
 
