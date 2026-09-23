@@ -612,3 +612,140 @@ def test_parse_json_block_prefers_the_fenced_answer_over_a_prose_example():
     text = 'Пример формата: {"заголовок": "X"}.\n```json\n{"заголовок": "Итог"}\n```\nготово'
     assert parse_json_block(text) == {"заголовок": "Итог"}
     assert parse_json_block('```json\nне json\n```\n{"a": 1}') == {"a": 1}
+
+
+# ── Дверь эмбеддингов: пачки, громкий отказ, контракт векторов (№358) ─────
+class _EmbedServer:
+    """Подмена requests для /api/embed: отвечает по вектору на текст, помнит
+    каждую пачку. `fail_on` — номер запроса (с 1), на котором ответить отказом."""
+
+    RequestException = Exception
+
+    def __init__(self, fail_on: int | None = None, status: int = 400,
+                 body: str = 'Post "http://127.0.0.1:1/tokenize": EOF', vectors=None):
+        self.inputs: list[list[str]] = []
+        self.fail_on, self.status, self.body, self.vectors = fail_on, status, body, vectors
+
+    def post(self, url, json=None, timeout=None, **kw):
+        self.inputs.append(list(json["input"]))
+        if self.fail_on == len(self.inputs):
+            return _Resp({}, status=self.status, text=self.body)
+        if self.vectors is not None:
+            return _Resp({"embeddings": self.vectors(json["input"], len(self.inputs))})
+        return _Resp({"embeddings": [[float(len(t)), 1.0] for t in json["input"]]})
+
+
+def _embed_wire(monkeypatch, server: _EmbedServer, fresh: bool = True) -> _EmbedServer:
+    monkeypatch.setattr(llm_mod, "requests", server)
+    if fresh:
+        monkeypatch.setattr(llm_mod, "_said", set())
+    return server
+
+
+def test_embed_cuts_a_long_list_into_batches_and_keeps_order(monkeypatch):
+    """808 ядер одной пачкой Ollama 0.34 рвала на tokenize (HTTP 400), по 100 —
+    отвечала (замер 23.09). Резать — дело двери, порядок векторов — порядок
+    текстов."""
+    server = _embed_wire(monkeypatch, _EmbedServer())
+    texts = ["я" * (i % 7 + 1) for i in range(150)]
+
+    vecs = llm_mod.embed(CFG, texts)
+
+    assert [len(b) for b in server.inputs] == [64, 64, 22]
+    assert [v[0] for v in vecs] == [float(len(t)) for t in texts], "порядок векторов сбит"
+
+
+def test_embed_cuts_by_characters_and_never_drops_a_long_text(monkeypatch):
+    server = _embed_wire(monkeypatch, _EmbedServer())
+    texts = ["а" * 20_000] * 7 + ["б" * 70_000]
+
+    vecs = llm_mod.embed(CFG, texts)
+
+    assert [len(b) for b in server.inputs] == [3, 3, 1, 1], server.inputs and [len(b) for b in server.inputs]
+    assert len(vecs) == len(texts), "длинный текст выпал вместо отдельной пачки"
+
+
+def test_embed_refusal_names_code_and_body_once(monkeypatch, capsys):
+    """Отказ сервера — не молчаливый `[]`: код и тело в stderr, один раз на
+    одинаковый ответ (месяц ночь печатала «лежит Ollama» на HTTP 400)."""
+    _embed_wire(monkeypatch, _EmbedServer(fail_on=2))
+    texts = ["текст"] * 100
+
+    assert llm_mod.embed(CFG, texts) == [], "частичный ответ — не вектор на каждый текст"
+    first = capsys.readouterr().err
+    assert "HTTP 400" in first and "tokenize" in first and "2/2" in first, first
+
+    # Тот же отказ на другой пачке другого размера — в журнал второй раз не идёт
+    _embed_wire(monkeypatch, _EmbedServer(fail_on=1), fresh=False)
+    assert llm_mod.embed(CFG, ["текст"] * 10) == []
+    assert "HTTP 400" not in capsys.readouterr().err, "тот же отказ повторён в журнал"
+
+
+@pytest.mark.parametrize("vectors, what", [
+    (lambda inp, n: [[] for _ in inp], "пустой вектор"),
+    (lambda inp, n: [[1.0, 2.0]] * (len(inp) - 1), "векторов меньше текстов"),
+    (lambda inp, n: [[1.0] * (2 if n == 1 else 3) for _ in inp], "размерность скачет между пачками"),
+    (lambda inp, n: [["x", "y"] for _ in inp], "не числа"),
+])
+def test_embed_rejects_vectors_that_break_the_contract(monkeypatch, capsys, vectors, what):
+    """`[[], [1.0]]` проходил проверку длины у потребителя и давал косинус 0:
+    пара молча не судилась (входной круг №358, Codex I2)."""
+    _embed_wire(monkeypatch, _EmbedServer(vectors=vectors))
+
+    assert llm_mod.embed(CFG, ["т"] * 70) == [], what
+    assert "не по вектору на текст" in capsys.readouterr().err, what
+
+
+def test_embed_non_json_answer_is_empty_not_a_crash(monkeypatch):
+    class _NotJson(_Resp):
+        def json(self):
+            raise ValueError("not json")
+
+    class _Server(_EmbedServer):
+        def post(self, url, json=None, timeout=None, **kw):
+            return _NotJson({}, status=200, text="<html>")
+
+    _embed_wire(monkeypatch, _Server())
+    assert llm_mod.embed(CFG, ["текст"]) == []
+
+
+def test_embed_of_nothing_asks_nothing(monkeypatch):
+    server = _embed_wire(monkeypatch, _EmbedServer())
+    assert llm_mod.embed(CFG, []) == [] and server.inputs == []
+
+
+def test_embed_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
+    """120 с ревизии на 13 пачках были 26 минутами, 20 с дежавю — четырьмя:
+    срок — на весь вызов (круг 1 по коду №358, Opus I1/I3)."""
+    часы = [1000.0]
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: часы[0])
+    сроки = []
+
+    class _Slow(_EmbedServer):
+        def post(self, url, json=None, timeout=None, **kw):
+            сроки.append(timeout)
+            часы[0] += 8.0                  # каждая пачка — 8 с
+            return super().post(url, json=json, timeout=timeout, **kw)
+
+    _embed_wire(monkeypatch, _Slow())
+    assert llm_mod.embed(CFG, ["т"] * 200, timeout=20) == [], "срок вышел — не вектор на каждый текст"
+    assert сроки == [20.0, 12.0, 4.0], сроки
+    assert "не уложились в 20 с" in capsys.readouterr().err
+
+
+def test_sixteen_search_chunks_stay_one_batch(monkeypatch):
+    """Поиск шлёт по 16 кусков чуть больше 4000 знаков — одной пачкой, как раньше
+    (круг 1 по коду №358, Opus M2)."""
+    server = _embed_wire(monkeypatch, _EmbedServer())
+    llm_mod.embed(CFG, ["к" * 4_400] * 16)
+    assert [len(b) for b in server.inputs] == [16]
+
+
+def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys):
+    """Ключ отказа — с формой ответа: в демоне, который живёт днями, второй сбой
+    другой формы не молчит (круг 1 по коду №358, Opus M3)."""
+    _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: [[1.0]] * (len(inp) - 1)))
+    llm_mod.embed(CFG, ["т"] * 5)
+    _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
+    llm_mod.embed(CFG, ["т"] * 5)
+    assert capsys.readouterr().err.count("не по вектору на текст") == 2

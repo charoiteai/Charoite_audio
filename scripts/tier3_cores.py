@@ -65,20 +65,26 @@ def _pending(graph: pathlib.Path) -> list[str]:
     return list(val) if isinstance(val, list) else []
 
 
+def _judged(graph: pathlib.Path) -> set[frozenset]:
+    """Пары, досуженные оборванным прогоном: следующая ночь их не судит снова."""
+    val = _stamps().get(str(graph) + "#judged")
+    return {frozenset(p) for p in val if isinstance(p, list) and len(p) == 2} \
+        if isinstance(val, list) else set()
+
+
 def _save_stamp(graph: pathlib.Path, ts: float,
-                pending: set[str] | None = None) -> None:
+                pending: set[str] | None = None,
+                judged: set[frozenset] | None = None) -> None:
     data = _stamps()
     data[str(graph)] = ts
-    # Не больше двух сотен: список — страховка от потери пары, а не очередь.
-    # Обрезка вслух: молча выпавшие имена — это те же потерянные пары, только
-    # теперь по алфавиту (круг-3 по PR #438, GLM Minor 8).
-    keep = sorted(pending or set())
-    if len(keep) > 200:
-        print(f"tier3: несудившихся ядер {len(keep)} — в отметку идут первые "
-              f"200 по алфавиту, остальные вернутся как обычные свежие",
-              flush=True)
-        keep = keep[:200]
-    data[str(graph) + "#pending"] = keep
+    # Список целиком. Обрезка до 200 обещала, что остальные «вернутся как
+    # обычные свежие», но свежесть — это mtime новее отметки, а отметка только
+    # что ушла вперёд: 201-е имя не возвращалось никогда (входной круг №358,
+    # Codex I3). Размер ограничен числом ядер графа, а не ростом ночей.
+    data[str(graph) + "#pending"] = sorted(pending or set())
+    # Досуженные пары оборванного прогона — пока очередь не досмотрена целиком;
+    # полный прогон их снимает (пустой список)
+    data[str(graph) + "#judged"] = sorted(sorted(p) for p in (judged or set()))
     файл = stamps_path()
     файл.parent.mkdir(parents=True, exist_ok=True)
     файл.write_text(json.dumps(data, ensure_ascii=False, indent=1),
@@ -86,15 +92,21 @@ def _save_stamp(graph: pathlib.Path, ts: float,
 
 
 def run(graph: pathlib.Path, apply: bool, mark: bool = False,
-        since_last: bool = False) -> None:
+        since_last: bool = False) -> str:
+    """Ревизия одного графа -> исход: «complete», «stopped», «no_work» или
+    «unavailable» (как `status` у tier3.revise)."""
     started = time.time()
     only = None
+    skip: set[frozenset] = set()
     if since_last:
         prev = _stamps().get(str(graph))
         if prev is None:
             print(f"=== {graph.name}: отметки нет — полный прогон", flush=True)
         else:
             only = tier3.changed_since(graph / "Ядра", prev)
+            # Досуженное прошлой ночью годно, пока оба ядра пары не менялись
+            свежие = set(only)
+            skip = {pair for pair in _judged(graph) if not (pair & свежие)}
             # Пары, не судившиеся в прошлый раз из-за сбоя NLI: они не
             # «свежие» по времени, но досмотреть их обязаны.
             stuck = [n for n in _pending(graph) if n not in only]
@@ -105,7 +117,7 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
             if not only:
                 print(f"{graph.name}: свежих ядер нет — пропуск", flush=True)
                 _save_stamp(graph, started)
-                return True
+                return "no_work"
             print(f"=== {graph.name}: инкремент, свежих ядер {len(only)}",
                   flush=True)
     # Конфиг обязателен: без него ревизия берёт дефолтную модель эмбеддингов, а
@@ -115,37 +127,51 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     cfg = graphs.load_config()
     r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
                      embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                     judge=nli.judge())
+                     judge=nli.judge(), skip_pairs=frozenset(skip))
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.
-    if r["ran"] and not r.get("stopped"):
-        # Отметка идёт вперёд даже при сбоях — иначе одна вечно падающая пара
-        # держала бы инкремент на месте, а фокус рос бы каждую ночь. Сами
-        # несудившиеся ядра запоминаются рядом с отметкой и вернутся адресно.
-        _save_stamp(graph, started, r.get("failed_names"))
+    if r["ran"]:
+        # Отметка идёт вперёд и при сбоях, и при обрыве потолком — иначе одна
+        # вечно падающая пара или очередь длиннее ночи держали бы инкремент на
+        # месте (круг 1 по коду №358: при обрыве отметка стояла, и каждую ночь
+        # судились те же верхние пары). Долг — несудившиеся и недосмотренные
+        # ядра — лежит рядом с отметкой и вернётся в фокус адресно.
+        долг = set(r.get("failed_names") or ()) | set(r.get("unjudged_names") or ())
+        досужено = (skip | set(r.get("judged_pairs") or ())) if r.get("stopped") else set()
+        _save_stamp(graph, started, долг, досужено)
         if r.get("failed"):
             print(f"{graph.name}: {r['failed']} пар не судились — "
                   f"{len(r.get('failed_names') or ())} ядер вернутся в фокус "
                   "следующим прогоном", flush=True)
-    elif r.get("stopped"):
-        # Ревизию оборвал потолок ночи: судимое досмотрено, отметка стоит
-        # на месте — завтра инкремент возьмёт те же свежие ядра заново.
-        print(f"{graph.name}: ревизия остановлена потолком ночи — "
-              "отметка не сдвинута", flush=True)
+        if r.get("stopped"):
+            print(f"{graph.name}: ревизия остановлена потолком ночи — "
+                  f"{len(r.get('unjudged_names') or ())} ядер досмотрим следующей ночью",
+                  flush=True)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     took = time.time() - started
+    status = r.get("status") or ("complete" if r["ran"] else "unavailable")
+    if status == "no_work":
+        # Судить нечего (одно ядро, нет папки) — это не сбой и не «лежит
+        # Ollama» (входной круг №358, Codex I4).
+        print(f"{graph.name}: ревизовать нечего — {r.get('reason')} ({took:.0f} с)", flush=True)
+        return "no_work"
     if not r["ran"]:
-        # «Чисто» и «не состоялась» — разные ночи: без NLI-модели, с лежащей
-        # Ollama или пустыми эмбеддингами ревизия ничего не смотрела, и лог,
-        # печатавший «чисто», врал (аудит DeepSeek 17.08).
-        print(f"{graph.name}: ревизия не состоялась — нет NLI-модели, "
-              f"лежит Ollama или пустые эмбеддинги; отметка не сдвинута ({took:.0f} с)",
-              flush=True)
-        return False
+        # «Чисто» и «не состоялась» — разные ночи (аудит DeepSeek 17.08), и у
+        # «не состоялась» есть причина: её называет ревизия, а не общая фраза
+        # «нет NLI-модели, лежит Ollama или пустые эмбеддинги» — месяц она
+        # стояла над HTTP 400 от эмбеддера (№358).
+        print(f"{graph.name}: ревизия не состоялась — {r.get('reason') or 'причина не названа'}; "
+              f"отметка не сдвинута ({took:.0f} с)", flush=True)
+        return "unavailable"
     if not n and not r["log"]:
+        # «Чисто» — только про досмотренный граф: после обрыва это была бы
+        # вторая строка, спорящая с первой (круг 1 по коду, Opus M1)
+        if r.get("stopped"):
+            print(f"{graph.name}: до потолка ночи находок нет ({took:.0f} с)", flush=True)
+            return "stopped"
         print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
-        return True
+        return "complete"
     print(f"=== {graph.name} ({took:.0f} с)")
     for k, title in (("dups", "ДУБЛИ"), ("nests", "ВЛОЖЕНИЯ"), ("border", "ГРАНИЦА")):
         for line in r[k]:
@@ -153,7 +179,25 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     for line in r["log"]:
         print(f"  {line}")
     sys.stdout.flush()
-    return True
+    return "stopped" if r.get("stopped") else "complete"
+
+
+#: Коды возврата ночного шага — nightly.sh различает их по номеру.
+EXIT_UNAVAILABLE = 2    # хоть один граф не ревизован: судить было нечем
+EXIT_STOPPED = 4        # потолок ночи оборвал ревизию или очередь графов (3 — занят
+                        # в тестах ночи как «упал»; 1 — падение питона)
+
+
+def exit_code(outcomes: list[str], cut: bool = False) -> int:
+    """Итог по всем графам. Успех — только когда КАЖДЫЙ граф досмотрен или
+    ему нечего судить: `any(ran)` давал 0, если малый граф прошёл, а основной
+    нет, — и ночь месяц не видела, что ревизия основного графа не идёт
+    (входной круг №358, Codex C1). Оборванный потолком прогон — не успех."""
+    if "unavailable" in outcomes:
+        return EXIT_UNAVAILABLE
+    if cut or "stopped" in outcomes:
+        return EXIT_STOPPED
+    return 0
 
 
 def main() -> int:
@@ -200,23 +244,24 @@ def main() -> int:
             # каждую ночь у любого, кто держит граф в другом месте.
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
             return 0
-        ran = []
+        outcomes, cut = [], False
         for g in found:
             if live_gate.night_is_over():
                 print("⏹ время ночного прогона вышло — остальные графы завтра")
+                cut = True
                 break
-            ran.append(run(g, apply_mode, mark_mode, args.since_last))
+            outcomes.append(run(g, apply_mode, mark_mode, args.since_last))
         # Код 2 — «шаг прошёл вхолостую»: без NLI-модели или с лежащей Ollama
         # ревизия ничего не смотрит, а ночь показывала «ok». У досье такой
         # код есть с самого начала (аудит ночи 26.08, DS Important 4).
-        return 0 if any(ran) else 2
+        return exit_code(outcomes, cut)
     target = pathlib.Path(args.graph or graphs.configured_graph() or pathlib.Path.cwd())
     if not (target / "Ядра").is_dir():
         # Код 2 значит «модель не отвечала»; отсутствие графа — другая беда
         # и не авария, как и в ветке --all-graphs (круг-2 DS, M3).
         print(f"в {target} нет папки «Ядра» — ревизовать нечего")
         return 0
-    return 0 if run(target, apply_mode, mark_mode, args.since_last) else 2
+    return exit_code([run(target, apply_mode, mark_mode, args.since_last)])
 
 
 if __name__ == "__main__":

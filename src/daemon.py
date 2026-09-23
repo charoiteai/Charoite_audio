@@ -58,7 +58,7 @@ import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
-from llm import LLM, embed as llm_embed  # noqa: E402
+from llm import LLM, EMBED_BATCH_TEXTS, embed as llm_embed  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import MINUTES_DRAFT_MARK, Transcript, is_noise  # noqa: E402
 
@@ -78,6 +78,38 @@ from charoite_paths import (
     require_data_root,
     RootNotNamed,
 )
+
+
+#: Пачек прогрева кэша дежавю за один проход: ~4 с работы эмбеддера, не минута.
+WARM_BATCHES = 4
+
+
+def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES) -> int:
+    """Добрать векторы ядер в кэш дежавю пачками двери, не больше `max_batches`
+    за проход; удачная пачка ложится в кэш сразу, сбой — конец прохода.
+
+    Одним вызовом на весь граф дверь отвечает «всё или ничего», а 800 ядер не
+    укладывались в 20 с на машине, занятой встречей, — кэш не грелся никогда,
+    а каждый проход платил за полную перепосылку (круг 1 по коду №358, Opus
+    I1). Возвращает, сколько ядер добавлено.
+    """
+    fresh = [p for p in cores if p.stem not in vecs]
+    добавлено = 0
+    for старт in range(0, min(len(fresh), max_batches * EMBED_BATCH_TEXTS), EMBED_BATCH_TEXTS):
+        пачка = fresh[старт:старт + EMBED_BATCH_TEXTS]
+        payload = []
+        for p in пачка:
+            txt = p.read_text(encoding="utf-8")
+            m = re.search(r"## Статус\n(.+)", txt)
+            st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
+            payload.append(f"{p.stem}. {st}"[:400])
+        got = embed(payload)
+        if len(got) != len(пачка):
+            break
+        for p, v in zip(пачка, got):
+            vecs[p.stem] = v
+        добавлено += len(пачка)
+    return добавлено
 
 
 def _root() -> pathlib.Path:
@@ -2388,18 +2420,8 @@ def main():
                          if not p.name.startswith("_")]
                 if not cores:
                     continue
-                # прогреваем кэш векторов один раз (и добираем новые ядра)
-                fresh_cores = [p for p in cores if p.stem not in vecs]
-                if fresh_cores:
-                    payload = []
-                    for p in fresh_cores:
-                        txt = p.read_text(encoding="utf-8")
-                        m = re.search(r"## Статус\n(.+)", txt)
-                        st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
-                        payload.append(f"{p.stem}. {st}"[:400])
-                    got = embed(payload)
-                    for p, v in zip(fresh_cores, got):
-                        vecs[p.stem] = v
+                # прогреваем кэш векторов (и добираем новые ядра) пачками
+                warm_core_vectors(cores, vecs, embed)
                 qv = embed([" ".join(fresh[-1500:].split())])
                 if not qv:
                     continue
