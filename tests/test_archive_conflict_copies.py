@@ -502,3 +502,118 @@ def test_doctor_warns_only_when_copies_grow(tmp_path):
     assert not warned(1), "то же число копий горит каждую ночь"
     grew = warned(0)
     assert grew and "(было 0)" in grew[0]
+
+
+# --- выжившие мутанты CI-мутатора по PR #611 ------------------------------------
+
+def test_opener_is_executable(tmp_path):
+    """Ярлык из Finder открывает Obsidian, только если он исполняемый."""
+    graph, tdir = _meeting(tmp_path)
+    folder = ma.archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка",
+                                files_key="2026-08-03_1130_Планёрка").folder
+    assert ((folder / "Открыть в Obsidian.command").stat().st_mode & 0o777) == 0o755
+
+
+def test_same_bytes_is_a_strict_bool(tmp_path):
+    p = tmp_path / "f.md"
+    p.write_text("абв", encoding="utf-8")
+    assert safe_write._same_bytes(p, b"x") is False          # другой размер
+    assert safe_write._same_bytes(p, "абв".encode()) is True
+    assert safe_write._same_bytes(tmp_path / "нет.md", b"x") is False
+
+
+def test_park_copies_reports_what_it_moved(copies_graph, monkeypatch, capsys):
+    graph, d, _ = copies_graph
+    _run(monkeypatch, "--graph", str(graph), "--apply-copies")
+    out = capsys.readouterr().out
+    assert "убрано конфликтных копий «Имя N»: 1 из 1" in out
+    assert "не удалось" not in out
+
+
+def test_main_without_graph_is_a_quiet_zero(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(dg, "_root", lambda: tmp_path)          # нет config.yaml — графа нет
+    monkeypatch.setattr(sys, "argv", ["dedup_graph.py"])
+    assert dg.main() == 0
+    assert "граф не найден" in capsys.readouterr().out
+
+
+def _doctor_graph(tmp_path: Path) -> Path:
+    graph = tmp_path / "граф"
+    for sub in ("Люди", "Системы", "Ядра", "Встречи"):
+        (graph / sub).mkdir(parents=True)
+    d = _archive_folder(graph)
+    (d / "Минутки.md").write_text("м\n", encoding="utf-8")
+    (d / "Минутки 2.md").write_text("м\n", encoding="utf-8")
+    return graph
+
+
+def test_doctor_counts_copies_by_name_without_reading(tmp_path, monkeypatch):
+    """Доктор идёт дважды за ночь по всем графам: считает по именам, байты не
+    читает — иначе выкачивал бы из iCloud выгруженные файлы."""
+    import graph_doctor
+    graph = _doctor_graph(tmp_path)
+
+    def must_not_read(*a, **k):
+        raise AssertionError("доктор читает содержимое копий")
+
+    monkeypatch.setattr(ma, "_same_content", must_not_read)
+    assert graph_doctor.inspect(graph)["conflict_copies"] == 1
+
+
+def test_doctor_main_remembers_the_count_between_runs(tmp_path, monkeypatch, capsys):
+    """Через main, как зовёт ночь: первый отчёт предупреждает, второй с тем же
+    числом копий молчит — прошлое число берётся из отчёта по умолчанию."""
+    import graph_doctor
+    graph = _doctor_graph(tmp_path)
+    report = tmp_path / "logs" / "graph_doctor.json"
+    monkeypatch.setattr(graph_doctor, "report_path", lambda: report)
+    monkeypatch.setattr(sys, "argv", ["graph_doctor.py", "--graph", str(graph)])
+    graph_doctor.main()
+    first = capsys.readouterr().out
+    graph_doctor.main()
+    second = capsys.readouterr().out
+    assert "конфликтных копий" in first
+    assert "конфликтных копий" not in second
+    d = graph / ma.ARCHIVE_DIR / "2026-09-03 16-05 — Расчёт"
+    (d / "Минутки 3.md").write_text("м\n", encoding="utf-8")
+    graph_doctor.main()
+    third = capsys.readouterr().out
+    assert "конфликтных копий «Имя N» в документах встреч: 2 (было 1)" in third
+
+
+def test_revision_delivery_names_the_archive_folder(tmp_path):
+    """Лог доставки называет папку архива — по нему разбирают, куда легла ревизия."""
+    import cloud_review
+    import io
+    graph = tmp_path / "граф"
+    (graph / ma.ARCHIVE_DIR).mkdir(parents=True)
+    (graph / "Встречи").mkdir()
+    (graph / "Документация" / "Стенограммы встреч").mkdir(parents=True)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-07-15_1400_Платёжный_провайдер.md"
+    transcript.write_text("стенограмма\n", encoding="utf-8")
+    rev = tdir / "2026-07-15_1400_Платёжный_провайдер_ревизия_claude.md"
+    rev.write_text("# Ревизия\n", encoding="utf-8")
+    buf = io.StringIO()
+    cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)
+    assert "ревизия доставлена: архив 2026-07-15 14-00 — Платёжный провайдер" in buf.getvalue()
+
+
+def test_vault_docs_copy_writes_only_changes(tmp_path):
+    import graph_updater
+    graph = tmp_path / "граф"
+    (graph / "Документация").mkdir(parents=True)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    tpath = tdir / "2026-08-03_1130_Планёрка.md"
+    tpath.write_text("стенограмма\n", encoding="utf-8")
+    (tdir / "2026-08-03_1130_Планёрка_minutes.md").write_text("минутки\n", encoding="utf-8")
+    vdocs = graph_updater.copy_to_vault_docs(tpath, graph)
+    assert vdocs == graph / "Документация" / "Стенограммы встреч"
+    copied = vdocs / "2026-08-03_1130_Планёрка_minutes.md"
+    assert copied.read_text(encoding="utf-8") == "минутки\n"
+    before = _sig(copied)
+    graph_updater.copy_to_vault_docs(tpath, graph)
+    assert _sig(copied) == before
+    assert graph_updater.copy_to_vault_docs(tpath, tmp_path / "без-документации") is None

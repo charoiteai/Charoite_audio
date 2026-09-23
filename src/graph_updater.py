@@ -776,6 +776,24 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = 
     return out
 
 
+def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path) -> pathlib.Path | None:
+    """Файлы встречи → «Документация/Стенограммы встреч» графа; путь папки или
+    None, если «Документации» в графе нет.
+
+    Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у посекундной
+    встречи без темы это «…113012*», а минутный глоб брал файлы соседки той же
+    минуты (аудит GLM 17.08). Пишем только изменившиеся и не на месте: граф в
+    iCloud, и перезапись того же файла при каждом проходе давала конфликтные
+    копии «Имя 2.md» (№361)."""
+    vdocs = graph / "Документация" / "Стенограммы встреч"
+    if not vdocs.parent.exists():
+        return None
+    vdocs.mkdir(exist_ok=True)
+    for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
+        safe_write.copy_if_changed(f, vdocs / f.name)
+    return vdocs
+
+
 def theme_slug(title: str) -> str:
     """Тема → хвост имени файла («Отчёт по задачам» → «Отчет_по_задачам»);
     служебный хвост страхует meeting_stamp.guard_slug."""
@@ -2889,16 +2907,8 @@ def main():
 
     # 4б) артефакты встречи → vault (iCloud): симлинки iCloud не синкает, копируем
     try:
-        vdocs = graph / "Документация" / "Стенограммы встреч"
-        if vdocs.parent.exists():
-            vdocs.mkdir(exist_ok=True)
-            # Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у
-            # посекундной встречи без темы это «…113012*», а минутный глоб брал
-            # файлы соседки той же минуты (аудит GLM 17.08). Пишем только
-            # изменившиеся и не на месте: граф в iCloud, и перезапись того же
-            # файла при каждом проходе давала конфликтные копии «Имя 2.md» (№361).
-            for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
-                safe_write.copy_if_changed(f, vdocs / f.name)
+        vdocs = copy_to_vault_docs(tpath, graph)
+        if vdocs is not None:
             print(f"артефакты скопированы в vault: {vdocs}")
     except Exception as e:  # noqa: BLE001
         print(f"копирование в vault не удалось: {e}")
