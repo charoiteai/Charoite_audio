@@ -340,7 +340,8 @@ def _data_root() -> pathlib.Path:
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
            apply: bool = False, mark: bool = False, *,
-           embedder: Embedder, judge: Judge) -> dict:
+           embedder: Embedder, judge: Judge,
+           skip_pairs: frozenset = frozenset()) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
     Два права, а не одно, потому что цена у правок разная:
@@ -363,9 +364,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     двойники, наоборот, приходят из разных.
 
     Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...],
-    "pending_merges": [...], "skipped": [...]}.
+    "pending_merges": [...], "skipped": [...], "status": ..., "reason": ...}.
     Любая инфраструктурная беда (нет модели, лежит Ollama) — пустой результат,
     НЕ исключение: ревизия — уборка, она не имеет права валить пайплайн встречи.
+
+    `status` — исход значением, `ran` остался ради старых потребителей:
+    «complete» — досмотрено; «stopped» — оборвал потолок ночи; «no_work» —
+    судить нечего (нет папки, меньше двух ядер) — это не сбой; «unavailable»
+    — судить было нечем, и `reason` называет почему. Раньше все три «нет»
+    были одним ran=False, и граф с одним ядром печатал «лежит Ollama», а
+    отказ сервера на пачке эмбеддингов — ту же фразу месяц подряд (№358).
     """
     out: dict = {"dups": [], "nests": [], "border": [], "log": [],
                  # отработала ли ревизия на самом деле. Пустой результат
@@ -376,44 +384,61 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                  "ran": False,
                  "failed": 0,
                  "failed_names": set(),
+                 # ядра фокуса, чьи пары не досмотрены из-за потолка ночи: их
+                 # вызывающий возвращает в фокус адресно, как failed_names
+                 "unjudged_names": set(),
+                 # пары (frozenset имён), досуженные в этом прогоне: при обрыве
+                 # вызывающий передаёт их следующей ночи как skip_pairs
+                 "judged_pairs": set(),
                  # пары, которые слил бы прогон с apply=True, а этот не слил.
                  # По этому полю (а не по факту находки) вызывающий решает,
                  # советовать ли человеку `tier3_cores.py --apply`: совет,
                  # который на его данных ничего не делает, хуже молчания
-                 "pending_merges": [], "skipped": []}
+                 "pending_merges": [], "skipped": [],
+                 "status": "unavailable", "reason": ""}
+
+    def _not_run(status: str, reason: str) -> dict:
+        out["status"], out["reason"] = status, reason
+        return out
+
     folder = graph / "Ядра"
     # Дешёвая фаза судьи — до чтения ядер и до эмбеддингов: на установке без
     # NLI-модели (слой опциональный) ревизия иначе прочитала бы весь корпус и
     # разбудила эмбеддер впустую после каждой встречи (круг 1 по 2б, обе головы).
-    if not folder.is_dir() or judge.refused:
-        return out
+    if not folder.is_dir():
+        return _not_run("no_work", "нет папки «Ядра»")
+    if judge.refused:
+        return _not_run("unavailable", f"судья отказал: {judge.refused}")
     cores = load_cores(folder)
     if len(cores) < 2:
-        return out
+        return _not_run("no_work", "ядер меньше двух")
     focus = ({c["name"] for c in cores} if not only_names
              else {n for n in only_names})
     try:
         embs = _embed_all(cores, embedder)
-    except SeamTransportError:
+    except SeamTransportError as exc:
         # Сервер занят, лежит или адрес запрещён политикой — ревизия уборочная,
         # она не мешает пайплайну. Ошибка проводки (`TypeError` от шва не той
         # формы) сюда не попадает намеренно: она обязана долететь до человека,
         # иначе ночник годами печатает «лежит Ollama» на сломанном коде
         # (круг 2 по 2б, GLM C2).
-        return out
+        return _not_run("unavailable", f"эмбеддинги недоступны: {exc}")
     # llm.embed при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
     # не найдена»): раньше это доезжало до IndexError в цикле пар и валило
     # CLI ночи (аудит DeepSeek 17.08). Неполный ответ = прогон не состоялся.
+    # Код и тело ответа дверь уже напечатала строкой «эмбеддинги: HTTP …».
     if len(embs) != len(cores):
-        return out
+        return _not_run("unavailable", f"эмбеддер не дал векторов на {len(cores)} ядер "
+                                       "(ответ сервера — строкой «эмбеддинги: …» выше)")
     # Сессию NLI поднимаем ДО того, как объявить прогон состоявшимся: при
     # битой ONNX-модели entail_prob тихо возвращает 0.0, суд «ничего не
     # находит», а ran=True двигал отметку --since-last — и свежие ядра
     # навсегда выпадали из инкремента (аудит DeepSeek 17.08).
     if not judge.ready():
-        return out
+        return _not_run("unavailable", "NLI-модель не поднялась")
     out["ran"] = True
     out["stopped"] = False
+    out["status"], out["reason"] = "complete", ""
     tried = 0          # сколько пар дошло до суда: ниже по ним судят сам прогон
 
     pairs = []
@@ -421,22 +446,33 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         for j in range(i + 1, len(cores)):
             if cores[i]["name"] not in focus and cores[j]["name"] not in focus:
                 continue
+            # Пары, досуженные прошлой ночью, которую оборвал потолок, — не
+            # судим снова. Иначе очередь длиннее ночи каждый раз начиналась с
+            # тех же верхних пар и не сходилась (круг 1 по коду №358: Opus I2
+            # и Sonnet I). Какие пары ещё годны, решает вызывающий: пара с
+            # изменившимся ядром в skip_pairs не попадает.
+            if frozenset((cores[i]["name"], cores[j]["name"])) in skip_pairs:
+                continue
             c = _cos(embs[i], embs[j])
             if c >= EMB_PREFILTER:
                 pairs.append((c, cores[i], cores[j]))
     pairs.sort(key=lambda x: -x[0])
 
     dups, maybe_dups, nests = [], [], []
-    for c, a, b in pairs:
+    for позиция, (c, a, b) in enumerate(pairs):
         # Ночное окно — на каждой паре: конец ночи проверяется ПОСЛЕ ожидания
         # живой встречи, потолок внутри гейта. Каждая пара — отдельный вызов
         # NLI, естественная точка останова; частичный результат помечается
-        # stopped, и вызывающий не двигает отметку --since-last (круг-2 по
+        # stopped, недосмотренные ядра — в unjudged_names, досуженные пары —
+        # в judged_pairs, и следующая ночь продолжает с места обрыва (круг-2 по
         # PR #363: у типовой установки граф ОДИН, и полный воскресный прогон
         # шёл бы часами мимо потолка; встреча в середине прогона делила модель
         # с суфлёром — аудит ночи 26.08, GLM Important 1).
         if not live_gate.night_window_open(_data_root(), what="ревизия ядер"):
             out["stopped"] = True
+            out["status"], out["reason"] = "stopped", "ночное окно закрылось"
+            out["unjudged_names"] = {n for _c, x, y in pairs[позиция:]
+                                     for n in (x["name"], y["name"]) if n in focus}
             break
         try:
             tried += 1
@@ -457,6 +493,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                 print(f"tier3: пара «{a['name']}» ↔ «{b['name']}» не судилась "
                       f"({type(e).__name__}: {e})", flush=True)
             continue
+        out["judged_pairs"].add(frozenset((a["name"], b["name"])))
         if ab >= MERGE_T and ba >= MERGE_T:
             weak = a["essence_src"] == "статус" and b["essence_src"] == "статус"
             if not weak:
@@ -505,7 +542,10 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # (круг 1 по коду 2б, DS C1). Готовность спрашивается в начале, но
         # судится прогон по тому, что вышло.
         out["ran"] = False
-        return out
+        # Отказ судьи на всех парах важнее обрыва потолком: это поломка, а не
+        # нехватка времени; обрыв — в хвосте причины (круг 1, Sonnet Minor)
+        сверх = "; ревизию к тому же оборвал потолок ночи" if out.get("stopped") else ""
+        return _not_run("unavailable", f"судья отказал на всех {tried} парах{сверх}")
 
     def _pair(a: dict, b: dict) -> str:
         return f"«{a['name']}» ↔ «{b['name']}»"
