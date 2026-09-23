@@ -1244,7 +1244,7 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
         # приложение читает наш stdout через трубу, и мегабайт логов
         # транскрибации подвесил бы импорт на полном буфере. Наружу —
         # хвост, в метку ошибки — тоже хвост.
-        r = run_child([sys.executable, str(CODE / "import_meeting.py"),
+        r = run_child([sys.executable, str(CODE / "scripts" / "import_meeting.py"),
                        str(f), "--result-json", str(result_path)])
         lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
         for ln in lines[-8:]:

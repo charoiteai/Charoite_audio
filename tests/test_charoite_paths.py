@@ -20,30 +20,168 @@
 import ast
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import layout_map  # noqa: E402 — формы путей берутся у модели раскладки, не литералами
+
+#: Откуда код зовёт канон: плоский модуль, скрипт и модуль пакета после переезда
+#: (фаза 1). Пути строит модель раскладки: поменяется форма — поменяется и то,
+#: что здесь проверяется (входной круг №331, Opus I4).
+ФОРМЫ_ВЫЗЫВАЮЩЕГО = {
+    "плоский модуль": f"{layout_map.FLAT_DIR}/audio.py",
+    "скрипт": "scripts/doctor.py",
+    "модуль пакета": (f"{layout_map.DIST_DIR}/charoite-graph/{layout_map.FLAT_DIR}/"
+                      "charoite_graph/graphs.py"),
+}
+
+#: Спросить оба корня у канона копии, а не у того, что уже импортирован прогоном.
+_СПРОСИТЬ_КОРНИ = (
+    "import os, sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "import charoite_paths as c\n"
+    "print(c.code_root(sys.argv[2]))\n"
+    "print(c.resolve_root(sys.argv[2]))\n"
+    "os.environ.pop('CHAROITE_ROOT')\n"
+    "print(c.resolve_root(sys.argv[2]))\n"
+)
+
+
+def _установка_с_каноном(корень: pathlib.Path) -> pathlib.Path:
+    """Дерево кода, в котором канон лежит на своём месте: `<корень>/src/charoite_paths.py`.
+
+    Рядом — `exit_codes`, который канон берёт лениво на отказе двери входа.
+    Корень кода один на процесс и берётся у канона, поэтому догадку «корень
+    данных = корень кода» можно спросить только у копии в мнимом дереве:
+    канон прогона ответил бы настоящим checkout, а называть его корнем тесту
+    нельзя даже ради проверки (сторож изоляции прав).
+    """
+    (корень / "src").mkdir(parents=True, exist_ok=True)
+    (корень / "scripts").mkdir(exist_ok=True)       # корень кода — где лежат src/ и scripts/
+    for имя in ("charoite_paths.py", "exit_codes.py"):
+        shutil.copy2(ROOT / "src" / имя, корень / "src" / имя)
+    return корень
+
+
+def _вход_в_установке(tmp_path, тело: str, *, root: str | None = None,
+                      где: str = "scripts") -> tuple[subprocess.CompletedProcess, pathlib.Path]:
+    """Точка входа `entry.py` мнимой установки как ПРОЦЕСС: (прогон, корень установки)."""
+    установка = _установка_с_каноном(tmp_path / "установка")
+    вход = установка / где / "entry.py"          # имя файла видно в рецепте отказа
+    вход.parent.mkdir(parents=True, exist_ok=True)
+    вход.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(установка / 'src')!r})\n"
+        "import charoite_paths\n" + тело,
+        encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    if root is not None:
+        env["CHAROITE_ROOT"] = root
+    прогон = subprocess.run([sys.executable, str(вход)], capture_output=True, text=True,
+                            env=env, cwd=tmp_path, timeout=60)
+    return прогон, установка.resolve()
+
+
+@pytest.mark.parametrize("форма", sorted(ФОРМЫ_ВЫЗЫВАЮЩЕГО))
+def test_корень_кода_один_из_любой_формы_вызывающего(tmp_path, форма):
+    """Корень кода — там, где лежит канон, из какой бы формы его ни спросили.
+
+    Меряется на чужом дереве, и ожидание строит фикстура, а не формула
+    проверяемого кода: пока обе стороны считали `parent.parent`, перенос модуля
+    на ступень двигал их вместе и тест оставался зелёным на сломанном каноне
+    (GLM C3 по №327). Модуль пакета лежит на две ступени глубже плоского:
+    прежний подъём от файла вызывающего дал бы корнем кода `packages/<дист>/`,
+    а корнем данных — `packages/<дист>/src/` (входной круг №331, обе головы).
+
+    Три ответа одного процесса: корень кода при заданной переменной (код её не
+    слушает), корень данных при ней же (слушает) и третий ответ канона без
+    переменной — тот же корень кода, а не своя копия подъёма.
+    """
+    rel = ФОРМЫ_ВЫЗЫВАЮЩЕГО[форма]
+    if форма != "скрипт":
+        assert layout_map.form(rel).role == "module", f"{rel}: модель раскладки не видит здесь модуль"
+    установка = _установка_с_каноном(tmp_path / "установка")
+    файл = установка / rel
+    файл.parent.mkdir(parents=True, exist_ok=True)
+    файл.touch()
+    данные = tmp_path / "данные"
+    out = subprocess.run(
+        [sys.executable, "-c", _СПРОСИТЬ_КОРНИ, str(установка / "src"), str(файл)],
+        env=dict(os.environ, CHAROITE_ROOT=str(данные)),
+        capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-600:]
+    код, данных, без_переменной = (pathlib.Path(s) for s in out.stdout.splitlines())
+    assert код == установка.resolve(), f"{форма}: корень кода ушёл от места канона"
+    assert данных == данные.resolve(), f"{форма}: переменная обязана задавать корень данных"
+    assert без_переменной == установка.resolve(), f"{форма}: третий ответ — не корень кода"
 
 
 @pytest.mark.корень_называет_тест
-def test_без_переменной_корень_прежний(tmp_path):
-    """Корень без переменной — папка НАД модулем, и это меряется на чужом дереве.
+def test_файл_чужого_дерева_корня_кода_не_получает(tmp_path):
+    """Процесс, собранный из двух деревьев, — отказ, а не пути в чужую копию.
 
-    Ожидание строит фикстура, а не та же формула `parent.parent`, что и
-    проверяемый код: пока обе стороны считались одинаково, перенос модуля на
-    ступень двигал их вместе и тест оставался зелёным на сломанном каноне
-    (GLM C3 по №327).
+    Корень кода один на процесс и берётся у канона; файл вызывающего только
+    сверяется. Лежит он вне дерева канона — значит, `sys.path` собран из двух
+    копий, и соседние модули нашлись бы не рядом с вызывающим (входной круг
+    №331, Opus, критика решения 2). Третий ответ `resolve_root` идёт через ту
+    же сверку: своего подъёма у него больше нет.
     """
     sys.path.insert(0, str(ROOT / "src"))
-    from charoite_paths import resolve_root
-    корень = tmp_path / "установка"
-    (корень / "src").mkdir(parents=True)
-    fake = корень / "src" / "audio.py"
-    fake.touch()
-    assert resolve_root(str(fake)) == корень.resolve()
+    import charoite_paths
+    чужой = tmp_path / "другая-копия" / "src" / "audio.py"
+    with pytest.raises(RuntimeError, match="вне дерева кода"):
+        charoite_paths.code_root(str(чужой))
+    with pytest.raises(RuntimeError, match="вне дерева кода"):
+        charoite_paths.resolve_root(str(чужой))
+
+
+#: Куда фаза core могла бы сдвинуть канон: модулем пакета и плоским модулем
+#: дистрибутива. Во второй форме родитель канона тоже зовётся `src`, поэтому
+#: одной сверки имени мало (круг 1 по коду №331, Opus I1).
+КАНОН_НЕ_НА_МЕСТЕ = {
+    "модуль пакета": (layout_map.DIST_DIR, "charoite-core", layout_map.FLAT_DIR, "charoite_core"),
+    "плоский модуль дистрибутива": (layout_map.DIST_DIR, "charoite-core", layout_map.FLAT_DIR),
+}
+
+
+@pytest.mark.parametrize("форма", sorted(КАНОН_НЕ_НА_МЕСТЕ))
+def test_канон_не_на_своём_месте_отказывает_на_импорте(tmp_path, форма):
+    """Переезд канона без правки его места — отказ на импорте, а не съехавший корень.
+
+    Корень кода выводится из места канона. Фаза core перевода в пакеты сдвинет
+    сам канон в `packages/<дист>/…`, и тот же вывод без правки
+    `_CANON_IN_CODE_ROOT` молча дал бы корнем кода каталог внутри дистрибутива
+    (входной круг №331, Opus I1 и «Как чинить»).
+    """
+    место = tmp_path.joinpath(*КАНОН_НЕ_НА_МЕСТЕ[форма])
+    место.mkdir(parents=True)
+    shutil.copy2(ROOT / "src" / "charoite_paths.py", место / "charoite_paths.py")
+    out = subprocess.run(
+        [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import charoite_paths",
+         str(место)],
+        capture_output=True, text=True, timeout=60)
+    assert out.returncode != 0, f"{форма}: канон вне своего места импортировался и вывел корень"
+    assert "RuntimeError" in out.stderr and "_CANON_IN_CODE_ROOT" in out.stderr, out.stderr[-600:]
+
+
+def test_место_канона_одно_у_канона_и_у_модели_раскладки():
+    """Место канона описано дважды: `_CANON_IN_CODE_ROOT` в самом каноне (из него
+    выводится корень кода) и `ENV_ROOT_OWNER` у модели раскладки. Оба обязаны
+    называть один файл, и форма его — плоский модуль корня, без дистрибутива и
+    пакета: переезд в `packages/` сторож увидит в CI, а не пользователь на
+    импорте (круг 1 по коду №331, Opus I1, правильное место)."""
+    sys.path.insert(0, str(ROOT / "src"))
+    import charoite_paths
+    rel = "/".join(charoite_paths._CANON_IN_CODE_ROOT)
+    assert rel == layout_map.ENV_ROOT_OWNER, (rel, layout_map.ENV_ROOT_OWNER)
+    форма = layout_map.form(rel)
+    assert (форма.role, форма.dist, форма.package) == ("module", "", ""), форма
+    assert (ROOT / rel).resolve() == pathlib.Path(charoite_paths.__file__).resolve()
 
 
 @pytest.mark.корень_называет_тест
@@ -81,16 +219,6 @@ def test_модули_демона_уважают_переменную(tmp_path)
         assert pathlib.Path(line) == tmp_path.resolve(), f"{line} мимо CHAROITE_ROOT"
 
 
-def test_корень_кода_переменную_не_слушает(tmp_path, monkeypatch):
-    """Данные переносятся, код — нет. `src/` лежит там, где лежит."""
-    sys.path.insert(0, str(ROOT / "src"))
-    from charoite_paths import code_root
-    поставка = tmp_path / "поставка"
-    (поставка / "src").mkdir(parents=True)
-    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "данные"))
-    assert code_root(str(поставка / "src" / "audio.py")) == поставка.resolve()
-
-
 def _root_reaches_code(tree: ast.AST) -> list[str]:
     """Места, где путь к КОДУ строится от корня ДАННЫХ: `ROOT / "src"`."""
     bad = []
@@ -122,6 +250,130 @@ def test_за_кодом_никто_не_ходит_через_корень_да
     assert not offenders, (
         "путь к коду строится от корня данных — во вложенной установке этого "
         f"файла там нет: {offenders}. Берите CODE (code_root), не ROOT")
+
+
+#: Конструкторы пути, которые берут корень первым аргументом, а сегменты — следом.
+_СБОРЩИКИ_ПУТИ = ("Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "os.path.join")
+
+
+def _пути_от_корня_кода(tree: ast.Module) -> list[tuple[int, str]]:
+    """Пути из одних констант, построенные от корня КОДА: `(строка, путь)`.
+
+    Корень кода — вызов `code_root(...)`, константа `CODE_ROOT` (под любым
+    псевдонимом импорта — имена берёт тот же разбор, что у сторожа раскладки),
+    имя, которому в файле присвоено одно из них (`=` и `: Path =`), и
+    производное имя (`SRC = CODE / "src"`, затем `SRC / "x.py"`).
+    `(code or CODE_ROOT) / …` — тоже от корня кода: без аргумента путь ведёт
+    именно туда. Формы записи: `/`, `.joinpath(...)`, `Path(CODE, ...)`,
+    `os.path.join(CODE, ...)`, `str(...)` вокруг любой из них (круг 1 по коду
+    №331: Sonnet I1, Opus M3). Сегмент из f-строки или переменной, морж,
+    распаковка кортежа и склейка строк разбором не проверяются — это честная
+    граница сторожа.
+    """
+    вызовы = layout_map._canon_names(tree, ("code_root",))
+    константы = layout_map._canon_names(tree, ("CODE_ROOT",))
+    связанные: dict[str, str] = {}              # имя → путь от корня ("" — сам корень)
+
+    def склеить(база: str, части: list[str]) -> str:
+        return "/".join(p for p in (база, *части) if p)
+
+    def константы_строк(аргументы) -> list[str] | None:
+        if all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in аргументы):
+            return [a.value for a in аргументы]
+        return None
+
+    def от_корня(e: ast.expr) -> str | None:
+        if isinstance(e, ast.Call):
+            имя = ast.unparse(e.func)
+            if имя in вызовы:
+                return ""
+            if имя == "str" and len(e.args) == 1:
+                return от_корня(e.args[0])
+            if isinstance(e.func, ast.Attribute) and e.func.attr == "joinpath":
+                база, части = от_корня(e.func.value), константы_строк(e.args)
+            elif имя in _СБОРЩИКИ_ПУТИ and e.args:
+                база, части = от_корня(e.args[0]), константы_строк(e.args[1:])
+            else:
+                return None
+            return None if база is None or части is None else склеить(база, части)
+        if isinstance(e, (ast.Name, ast.Attribute)):
+            текст = ast.unparse(e)
+            return "" if текст in константы else связанные.get(текст)
+        if isinstance(e, ast.BoolOp):
+            return next((p for p in map(от_корня, e.values) if p is not None), None)
+        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
+            база, части = от_корня(e.left), константы_строк([e.right])
+            return None if база is None or части is None else склеить(база, части)
+        return None
+
+    присваивания = [(t, n.value) for n in ast.walk(tree)
+                    if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value is not None
+                    for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
+                    if isinstance(t, ast.Name)]
+    while True:                                 # производные имена — до неподвижной точки
+        новые = {t.id: p for t, v in присваивания
+                 if t.id not in связанные and (p := от_корня(v)) is not None}
+        if not новые:
+            break
+        связанные.update(новые)
+    пути = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.Call)):
+            путь = от_корня(node)
+            if путь:
+                пути.append((node.lineno, путь))
+    return пути
+
+
+def test_разбор_путей_от_корня_кода_видит_все_формы():
+    """Сторож ниже зелёный и тогда, когда просто ничего не нашёл, — поэтому формы
+    записи проверяются на пробе, а не только на отсутствии красного."""
+    проба = "\n".join([
+        "import charoite_paths as cp",
+        "from charoite_paths import code_root as где_код, CODE_ROOT, resolve_root",
+        "CODE = где_код(__file__)",
+        "CODE_ANN: pathlib.Path = где_код(__file__)",
+        "ROOT = resolve_root(__file__)",
+        'A = CODE / "scripts" / "a.py"',
+        'B = (code or CODE_ROOT) / "config" / "b.yaml"',
+        'C = cp.CODE_ROOT / "c"',
+        'D = cp.code_root(__file__) / "d"',
+        'E = CODE / "src" / f"{имя}.py"',
+        'F = ROOT / "logs"',
+        'G = CODE_ANN.joinpath("scripts", "g.py")',
+        'H = pathlib.Path(CODE, "scripts", "h.py")',
+        'I = os.path.join(str(CODE), "scripts", "i.py")',
+        'SRC = CODE / "src"',
+        'J = SRC / "j.py"',
+        'K = CODE.joinpath(имя)',
+    ])
+    найдено = {путь for _, путь in _пути_от_корня_кода(ast.parse(проба))}
+    assert найдено == {"scripts", "scripts/a.py", "config", "config/b.yaml", "c", "d", "src",
+                       "scripts/g.py", "scripts/h.py", "scripts/i.py", "src/j.py"}, найдено
+
+
+def test_пути_от_корня_кода_ведут_в_существующие_файлы():
+    """Путь к коду, собранный из констант, обязан вести в файл этого дерева.
+
+    Корень кода проверяли, а сегменты после него — никто. Так #607 потерял
+    сегмент `scripts`: импорт внешней записи звал `CODE / "import_meeting.py"`,
+    файла в корне нет, ребёнок падал с кодом 2, и каждый файл из папки импорта
+    уходил в метку ошибки, а тест с подменённым `run_child` оставался зелёным
+    (входной круг №331, Opus C2). После переезда модулей в пакеты (фаза 1) тот
+    же сторож покраснеет на каждом `CODE / "src" / "<переехавший>.py"`.
+
+    Области — из объявления сторожа раскладки: пакеты попадут под проверку, как
+    только появятся.
+    """
+    нет, всего = {}, 0
+    for область in layout_map.PYTHON_AREAS:
+        for path in sorted((ROOT / область).rglob("*.py")):
+            for строка, путь in _пути_от_корня_кода(ast.parse(path.read_text(encoding="utf-8"))):
+                всего += 1
+                if not (ROOT / путь).exists():
+                    нет.setdefault(str(path.relative_to(ROOT)), []).append(f"строка {строка}: {путь}")
+    assert всего, "сторож не нашёл ни одного пути от корня кода — разбор сломан"
+    assert not нет, f"пути от корня кода ведут в пустоту: {нет}"
 
 
 def test_ночные_скрипты_пишут_в_корень_данных(tmp_path):
@@ -426,27 +678,19 @@ def test_вход_берёт_корень_из_окружения_и_публи�
 
 
 @pytest.mark.корень_называет_тест
-def test_догадка_доступна_только_названной_вслух(tmp_path, monkeypatch):
+def test_догадка_доступна_только_названной_вслух(tmp_path):
     """`guess_from_code=True` — то же самое, но видно в строке вызова.
 
     Ручной прогон из checkout остаётся возможным; отличие в том, что намерение
     угадать написано у вызывающего и попадает в отчёт гейта, а не прячется
-    третьим ответом библиотеки.
+    третьим ответом библиотеки. Мнимое дерево и отдельный процесс — см.
+    `_установка_с_каноном`.
     """
-    sys.path.insert(0, str(ROOT / "src"))
-    import charoite_paths
-
-    # мнимое дерево во временном каталоге: сторож изоляции прав, называть
-    # боевой корень репозитория тесту нельзя даже ради проверки догадки
-    мнимый = tmp_path / "src" / "точка_входа.py"
-    мнимый.parent.mkdir(parents=True)
-    мнимый.write_text("", encoding="utf-8")
-    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
-    charoite_paths.forget_data_root()
-
-    названный = charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
-
-    assert названный == tmp_path.resolve()
+    прогон, установка = _вход_в_установке(
+        tmp_path, "print(charoite_paths.require_data_root(__file__, guess_from_code=True))\n",
+        где="src")
+    assert прогон.returncode == 0, прогон.stderr[-400:]
+    assert прогон.stdout.strip() == str(установка)
 
 
 def test_демон_называет_корень_и_отказ_виден_снаружи(tmp_path):
@@ -512,7 +756,7 @@ def test_демон_называет_корень_и_отказ_виден_сн�
 
 
 @pytest.mark.корень_называет_тест
-def test_чужая_догадка_не_принимается_входом_за_решение_владельца(tmp_path, monkeypatch):
+def test_чужая_догадка_не_принимается_входом_за_решение_владельца(tmp_path):
     """«Корень уже есть в процессе» — не то же самое, что «корень назвали».
 
     Ранний возврат `_given`, добавленный кругом 1, отдавал корень, названный
@@ -520,26 +764,22 @@ def test_чужая_догадка_не_принимается_входом_за
     хранился, и «точка входа обязана назвать корень» тихо превращалось в
     «в процессе уже есть корень» (круг 2 по коду №332, DS C2).
     """
-    sys.path.insert(0, str(ROOT / "src"))
-    import charoite_paths
-
-    мнимый = tmp_path / "src" / "точка_входа.py"
-    мнимый.parent.mkdir(parents=True)
-    мнимый.write_text("", encoding="utf-8")
-    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
-    charoite_paths.forget_data_root()
-
-    # кто-то до входа вывел корень догадкой — ровно прежний дефект
-    charoite_paths.require_data_root(str(мнимый), guess_from_code=True)
-
-    with pytest.raises(charoite_paths.RootNotNamed) as отказ:
-        charoite_paths.require_data_root(str(мнимый))     # вход догадку не разрешал
-    assert "догадкой" in str(отказ.value)
-    # а вход, который догадку РАЗРЕШИЛ, её и получает — без отказа. Без этой
-    # ветки мутант `and → or` в условии отказа выживал: оба теста были про
-    # «отказ», ни один — про «не отказ» (мутатор на диапазоне ветки, 22.09)
-    assert charoite_paths.require_data_root(str(мнимый), guess_from_code=True) == tmp_path.resolve()
-    charoite_paths.forget_data_root()
+    прогон, установка = _вход_в_установке(tmp_path, (
+        # кто-то до входа вывел корень догадкой — ровно прежний дефект
+        "charoite_paths.require_data_root(__file__, guess_from_code=True)\n"
+        "try:\n"
+        "    charoite_paths.require_data_root(__file__)\n"     # вход догадку не разрешал
+        "except charoite_paths.RootNotNamed as отказ:\n"
+        "    print('отказ', 'догадкой' in str(отказ))\n"
+        "else:\n"
+        "    print('без отказа')\n"
+        # а вход, который догадку РАЗРЕШИЛ, её и получает — без отказа. Без этой
+        # ветки мутант `and → or` в условии отказа выживал: оба теста были про
+        # «отказ», ни один — про «не отказ» (мутатор на диапазоне ветки, 22.09)
+        "print(charoite_paths.require_data_root(__file__, guess_from_code=True))\n"),
+        где="src")
+    assert прогон.returncode == 0, прогон.stderr[-400:]
+    assert прогон.stdout.splitlines() == ["отказ True", str(установка)]
 
 
 # --- дверь точки входа (№340) -----------------------------------------------
@@ -550,18 +790,10 @@ def test_чужая_догадка_не_принимается_входом_за
 # корень уже назвала обвязка, и отказа там не бывает по построению.
 
 def _door(tmp_path, *, root: str | None, guess: bool = False) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
-    if root is not None:
-        env["CHAROITE_ROOT"] = root
-    вход = tmp_path / "entry.py"          # чужой вход: имя файла видно в рецепте
-    вход.write_text(
-        "import sys\n"
-        f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
-        "import charoite_paths\n"
-        f"print(charoite_paths.name_data_root_or_exit(__file__, guess_from_code={guess!r}))\n",
-        encoding="utf-8")
-    return subprocess.run([sys.executable, str(вход)], capture_output=True, text=True,
-                          env=env, cwd=tmp_path, timeout=60)
+    прогон, _ = _вход_в_установке(
+        tmp_path, f"print(charoite_paths.name_data_root_or_exit(__file__, guess_from_code={guess!r}))\n",
+        root=root)
+    return прогон
 
 
 def test_the_entry_door_refuses_with_the_code_and_a_recipe(tmp_path):
@@ -587,8 +819,8 @@ def test_the_entry_door_passes_a_named_root_through(tmp_path):
 
 def test_the_entry_door_names_a_guess_only_when_asked(tmp_path):
     """Догадка по положению файла — только выписанная в вызове, как у конструктора:
-    без переменной и с guess_from_code=True вход работает на корне кода (для входа
-    из tmp — каталог над ним), а не отказывает."""
+    без переменной и с guess_from_code=True вход работает на корне кода (корень
+    мнимой установки, где лежит её канон), а не отказывает."""
     прогон = _door(tmp_path, root=None, guess=True)
     assert прогон.returncode == 0, прогон.stderr[-300:]
-    assert прогон.stdout.strip() == str(tmp_path.parent.resolve())
+    assert прогон.stdout.strip() == str((tmp_path / "установка").resolve())

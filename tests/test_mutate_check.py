@@ -8,7 +8,10 @@
 комментарии и пустые места.
 """
 import ast
+import os
 import pathlib
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -461,3 +464,27 @@ def test_исход_main_отдаёт_verdict_code():
     fn = last.value.func
     assert getattr(fn, "id", getattr(fn, "attr", None)) == "verdict_code", (
         "исход прогона считает verdict_code — одна точка, а не константа по месту")
+
+
+def test_мутатор_из_чужого_клона_берёт_канон_своего_дерева(tmp_path):
+    """Мутатор одного клона, запущенный из каталога другого, собирает процесс из
+    своего дерева: канон и сигналы занятости берутся рядом со скриптом. Вторая
+    вставка `src/` git-корня текущего каталога брала канон чужого клона, и
+    сверка корня кода роняла мутатор трассировкой (круг 1 по коду №331, Opus M2).
+    Без `CHAROITE_ROOT` — ровно тот путь, где канон спрашивают о корне кода."""
+    import exit_codes
+    чужой = tmp_path / "другой-клон"
+    # клон целиком, а не один канон: сигналы занятости сами кладут свой каталог
+    # первым в sys.path, и с одним каноном в чужом `src/` дефект не воспроизводился
+    shutil.copytree(REPO / "src", чужой / "src", ignore=shutil.ignore_patterns("__pycache__"))
+    (чужой / "scripts").mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q"], cwd=чужой, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=чужой, check=True)
+    subprocess.run([*git, "commit", "-qm", "проба"], cwd=чужой, check=True)
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    out = subprocess.run([sys.executable, str(REPO / "scripts" / "mutate_check.py"),
+                          "--range", "HEAD...HEAD", "--force"],
+                         cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert "Traceback" not in out.stderr, out.stderr[-800:]
+    assert out.returncode == exit_codes.EXIT_NOTHING_TO_CHECK, (out.returncode, out.stdout[-400:])
