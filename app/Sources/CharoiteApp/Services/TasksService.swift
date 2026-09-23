@@ -55,6 +55,10 @@ final class TasksService: ObservableObject {
     // nonisolated-контекста — ошибка, а не предупреждение).
     // swiftlint:disable:next force_try
     private nonisolated static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
+    /// Снятый пункт (`- [-] … _(снято по сроку ДД.ММ)_`, №366): во вкладке его нет,
+    /// но он по-прежнему пункт минуток — его копии в отчёте ревизии не воскресают.
+    // swiftlint:disable:next force_try
+    private nonisolated static let withdrawnRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[-\] +(.+)$"#)
 
     /// Полный скан графа — в фоне, с публикацией результата на главном потоке.
     ///
@@ -81,7 +85,7 @@ final class TasksService: ObservableObject {
         guard var graph = root else { return [] }
         graph = graph.resolvingSymlinksInPath()   // /var vs /private/var — см. ArchiveSearch
         var found: [Item] = []
-        var minutesMeetings = Set<String>()
+        var withdrawn: [Item] = []
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
@@ -92,11 +96,6 @@ final class TasksService: ObservableObject {
             let rel = canon.hasPrefix(graph.path + "/")
                 ? String(canon.dropFirst(graph.path.count + 1))
                 : url.lastPathComponent
-            // Минутки встречи — канон её поручений, даже когда чекбоксов в них не
-            // осталось: снятые `- [-]` строки не должны отдавать место копиям.
-            if url.lastPathComponent == Self.minutesName, let meeting = meetingKey(rel) {
-                minutesMeetings.insert(meeting)
-            }
             guard let text = try? String(contentsOf: url, encoding: .utf8),
                   text.contains("- [") else { continue }
             let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
@@ -105,7 +104,17 @@ final class TasksService: ObservableObject {
                 let range = NSRange(line.startIndex..., in: line)
                 guard let m = Self.todoRx.firstMatch(in: line, range: range),
                       let markRange = Range(m.range(at: 1), in: line),
-                      let textRange = Range(m.range(at: 2), in: line) else { continue }
+                      let textRange = Range(m.range(at: 2), in: line) else {
+                    if url.lastPathComponent == Self.minutesName,
+                       let w = Self.withdrawnRx.firstMatch(in: line, range: range),
+                       let textRange = Range(w.range(at: 1), in: line) {
+                        withdrawn.append(Item(
+                            id: "\(rel)#\(i)", file: url, rel: rel, lineIndex: i,
+                            text: String(line[textRange]), done: true, fileDate: mdate,
+                            sourceLine: line))
+                    }
+                    continue
+                }
                 let done = line[markRange].lowercased() == "x"
                 found.append(Item(
                     id: "\(rel)#\(i)", file: url, rel: rel, lineIndex: i,
@@ -113,22 +122,35 @@ final class TasksService: ObservableObject {
                     sourceLine: line))
             }
         }
-        return canonicalItems(found, minutesMeetings: minutesMeetings)
+        return canonicalItems(found, withdrawn: withdrawn)
     }
 
     nonisolated static let minutesName = "Минутки.md"
 
-    /// Канон списка задач встречи (№367). Конвейер кладёт поручения встречи в
+    /// Каталоги, где у файла есть встреча. Ключ встречи — 12 цифр пути, и у
+    /// личной заметки со штампом в имени он тоже найдётся; склеивать её с чужой
+    /// встречей нельзя.
+    nonisolated static let meetingRoots = ["Встречи-архив/", "Встречи/", "Документация/Стенограммы встреч/"]
+
+    /// Одно поручение — один пункт (№367). Конвейер кладёт поручения встречи в
     /// несколько файлов: минутки, отчёт облачной ревизии, его исходник в
-    /// «Документации», заметку. Тексты расходятся — мост дописывает в минутки
-    /// « (из ревизии)», — и склейка по точному тексту их не ловила: 23.09 каждое
-    /// живое поручение стояло во вкладке трижды (465 строк при 169 поручениях).
-    /// Правило: у встречи есть файл Минутки.md — её поручения показывает только
-    /// он; решает наличие ФАЙЛА, а не чекбоксов в нём, как у карточки глубины
-    /// (`MeetingCardMinutes`). Нет минуток — пункты всех файлов встречи, одинаковый
-    /// текст один раз, папка встречи в архиве важнее копии в «Документации».
-    /// Заметки без даты в пути — как есть.
-    nonisolated static func canonicalItems(_ items: [Item], minutesMeetings: Set<String>) -> [Item] {
+    /// «Документации»; мост дописывает в минутки « (из ревизии)», и прежняя
+    /// склейка по точному тексту их не ловила — 23.09 каждое живое поручение
+    /// стояло во вкладке трижды (465 строк при 169 поручениях). Правило:
+    /// пункты минуток — всегда; пункт другого файла встречи прячется, если это
+    /// тот же пункт, что в минутках (ключ `sameTaskKey`, как `_key` моста), в
+    /// том числе снятый `- [-]`; одинаковые копии вне минуток — одна, папка
+    /// архива важнее заметки. Поручение, которого в минутках нет (дописанное
+    /// руками в заметку встречи), остаётся. Копии с разным состоянием — две
+    /// строки: отметка не теряется молча.
+    nonisolated static func canonicalItems(_ items: [Item], withdrawn: [Item] = []) -> [Item] {
+        func meetingOf(_ item: Item) -> String? {
+            meetingRoots.contains(where: item.rel.hasPrefix) ? meetingKey(item.rel) : nil
+        }
+        var minuteKeys = Set<String>()
+        for item in items + withdrawn where item.file.lastPathComponent == minutesName {
+            if let meeting = meetingOf(item) { minuteKeys.insert(meeting + "\u{0}" + sameTaskKey(item.text)) }
+        }
         var seen = Set<String>()
         var kept = Set<Int>()
         let ranked = items.indices.sorted {
@@ -136,32 +158,46 @@ final class TasksService: ObservableObject {
         }
         for index in ranked {
             let item = items[index]
-            guard let meeting = meetingKey(item.rel) else {
+            guard let meeting = meetingOf(item), item.file.lastPathComponent != minutesName else {
                 kept.insert(index)
                 continue
             }
-            if minutesMeetings.contains(meeting), item.file.lastPathComponent != minutesName {
-                continue
-            }
-            if seen.insert(meeting + "\u{0}" + normalizedTaskText(item.text)).inserted {
-                kept.insert(index)
-            }
+            let key = meeting + "\u{0}" + sameTaskKey(item.text)
+            if minuteKeys.contains(key) { continue }
+            if seen.insert(key + (item.done ? "\u{0}x" : "")).inserted { kept.insert(index) }
         }
         return items.indices.filter(kept.contains).map { items[$0] }
     }
 
-    /// Какая копия поручения остаётся у встречи без минуток: папка встречи в
-    /// архиве, потом заметка графа, потом остальное.
+    /// Какая копия поручения остаётся: папка встречи в архиве, потом заметка
+    /// графа, потом остальное.
     nonisolated private static func sourceRank(_ rel: String) -> Int {
         if rel.hasPrefix("Встречи-архив/") { return 0 }
         if rel.hasPrefix("Встречи/") { return 1 }
         return 2
     }
 
-    nonisolated private static func normalizedTaskText(_ text: String) -> String {
-        text.replacingOccurrences(of: "**", with: "")
-            .lowercased()
-            .split(whereSeparator: \.isWhitespace)
+    // swiftlint:disable:next force_try
+    private nonisolated static let outsiderRx = try! NSRegularExpression(pattern: #"⚠[^:]*:"#)
+    // swiftlint:disable:next force_try
+    private nonisolated static let withdrawnMarkRx = try! NSRegularExpression(pattern: #"_\(снято[^)]*\)_"#)
+    // swiftlint:disable:next force_try
+    private nonisolated static let wordRx = try! NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
+    /// Пометки моста ревизии (`review_bridge.MARKS`) на трёх языках.
+    nonisolated static let bridgeMarks = ["(из ревизии)", "(from the review)", "（来自审阅）"]
+
+    /// «Тот же пункт» — ключ по образцу `_key` моста (`src/review_bridge.py`):
+    /// без «⚠ не участник (Имя):», без пометки моста и отметки «снято», без
+    /// жирного и пунктуации, в нижнем регистре; слова через пробел.
+    nonisolated static func sameTaskKey(_ text: String) -> String {
+        var s = text
+        for rx in [outsiderRx, withdrawnMarkRx] {
+            s = rx.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: " ")
+        }
+        for mark in bridgeMarks { s = s.replacingOccurrences(of: mark, with: " ") }
+        let lower = s.lowercased()
+        return wordRx.matches(in: lower, range: NSRange(lower.startIndex..., in: lower))
+            .compactMap { Range($0.range, in: lower).map { String(lower[$0]) } }
             .joined(separator: " ")
     }
 
@@ -220,10 +256,10 @@ final class TasksService: ObservableObject {
         for meetingID: String,
         includeDone: Bool = true
     ) -> [Item] {
-        // Канон встречи уже выбран сканом (`canonicalItems`): у встречи с
-        // минутками в списке только их пункты, и откатываться к копиям, когда
-        // пункты минуток сняты, карточке не к чему.
-        let matches = items.filter { belongs($0, to: meetingID) }
+        // Канон — та же функция, что у вкладки: копии пунктов минуток не
+        // показываются, даже если вызывающий передал сырой список. Снятые
+        // `- [-]` пункты знает только скан — поэтому боевой вход идёт через него.
+        let matches = canonicalItems(items.filter { belongs($0, to: meetingID) })
         return includeDone ? matches : matches.filter { !$0.done }
     }
 

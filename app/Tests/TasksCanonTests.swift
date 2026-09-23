@@ -1,10 +1,11 @@
 import XCTest
 @testable import CharoiteApp
 
-/// Канон списка задач встречи (№367): у встречи с минутками поручения показывают
-/// только они. 23.09 каждое живое поручение стояло во вкладке трижды — минутки,
-/// отчёт облачной ревизии и его исходник в «Документации» (мост дописывает в
-/// минутки « (из ревизии)», и точная склейка по тексту не срабатывала).
+/// Одно поручение — один пункт (№367). 23.09 каждое живое поручение стояло во
+/// вкладке трижды — минутки, отчёт облачной ревизии и его исходник в
+/// «Документации»: мост дописывает в минутки « (из ревизии)», и точная склейка
+/// по тексту не срабатывала. Прячутся только копии пунктов минуток; поручение,
+/// которого в минутках нет, остаётся на виду.
 final class TasksCanonTests: XCTestCase {
     private var dir: URL!
 
@@ -24,13 +25,13 @@ final class TasksCanonTests: XCTestCase {
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    func testMeetingWithMinutesShowsOnlyMinutes() throws {
+    func testReviewCopiesOfMinutesItemAreHidden() throws {
         try write("Встречи-архив/2026-09-21 10-34 — Тема/Минутки.md",
                   "## Поручения\n- [ ] **Коля** — переформировать отчёт — до 22.09 (из ревизии)\n")
         try write("Встречи-архив/2026-09-21 10-34 — Тема/Ревизия.md",
-                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n- [ ] **Саша** — не участник\n")
+                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n")
         try write("Документация/Стенограммы встреч/2026-09-21_1034_Тема_ревизия.md",
-                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n- [ ] **Саша** — не участник\n")
+                  "- [ ] **Коля** — переформировать отчёт — до 22.09\n")
 
         let items = TasksService.scanSync(graph: dir)
 
@@ -40,9 +41,25 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertEqual(items.first?.file.lastPathComponent, "Минутки.md")
     }
 
-    func testWithdrawnMinutesDoNotResurrectCopies() throws {
-        // Минутки, где все пункты сняты «снято по сроку», — всё ещё канон:
-        // вкладка и карточка не откатываются к чекбоксам отчёта ревизии.
+    func testItemAbsentFromMinutesStaysVisible() throws {
+        // Поручение, дописанное руками в заметку встречи, в минутках не значится —
+        // прятать его нечем (DS и Sonnet, круг 1 по №367).
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Минутки.md",
+                  "- [ ] **Коля** — переформировать отчёт\n")
+        try write("Встречи/2026-09-21_1034.md", "- [ ] **Аня** — позвонить в банк\n")
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Ревизия.md",
+                  "- [ ] **Саша** — не участник\n")
+        try write("Документация/Стенограммы встреч/2026-09-21_1034_Тема_ревизия.md",
+                  "- [ ] **Саша** — не участник\n")
+
+        let texts = Set(TasksService.scanSync(graph: dir).map(\.text))
+
+        XCTAssertEqual(texts, ["**Коля** — переформировать отчёт", "**Аня** — позвонить в банк",
+                               "**Саша** — не участник"])
+        XCTAssertEqual(TasksService.scanSync(graph: dir).count, 3, "копия «Саши» — одна строка")
+    }
+
+    func testWithdrawnMinutesItemDoesNotResurrectCopies() throws {
         try write("Встречи-архив/2026-09-01 10-00 — Старая/Минутки.md",
                   "- [-] **Коля** — давнее _(снято по сроку 23.09)_\n")
         try write("Встречи-архив/2026-09-01 10-00 — Старая/Ревизия.md",
@@ -52,15 +69,6 @@ final class TasksCanonTests: XCTestCase {
 
         XCTAssertTrue(items.isEmpty, "получили: \(items.map(\.rel))")
         XCTAssertTrue(TasksService.meetingItems(items, for: "2026-09-01_1000").isEmpty)
-    }
-
-    func testMinutesWithoutCheckboxesStillOwnTheMeeting() throws {
-        try write("Встречи-архив/2026-09-02 12-00 — Прозой/Минутки.md",
-                  "## Поручения\n- **Оля** — написать письмо\n")
-        try write("Встречи-архив/2026-09-02 12-00 — Прозой/Ревизия.md",
-                  "- [ ] **Оля** — написать письмо\n")
-
-        XCTAssertTrue(TasksService.scanSync(graph: dir).isEmpty)
     }
 
     func testMeetingWithoutMinutesKeepsOneCopyPreferringArchive() throws {
@@ -75,9 +83,42 @@ final class TasksCanonTests: XCTestCase {
         XCTAssertTrue(items[0].rel.hasPrefix("Встречи-архив/"), "осталась копия: \(items[0].rel)")
     }
 
+    func testCopiesWithDifferentStateAreBothShown() throws {
+        // Встреча без минуток: закрытая копия не прячется за открытой (DS I2).
+        try write("Встречи-архив/2026-08-04 11-31 — План/Ревизия.md", "- [ ] **Оля** — проверить сборку\n")
+        try write("Встречи/2026-08-04_1131.md", "- [x] **Оля** — проверить сборку\n")
+
+        let items = TasksService.scanSync(graph: dir)
+
+        XCTAssertEqual(items.map(\.done).sorted { !$0 && $1 }, [false, true])
+    }
+
+    func testNoteOutsideMeetingRootsIsNotGluedToMeeting() throws {
+        // Личная заметка со штампом в имени даёт те же 12 цифр, но встречей не является (DS I4).
+        try write("Встречи-архив/2026-09-21 10-34 — Тема/Минутки.md", "- [ ] **Лена** — личное\n")
+        try write("Дневник/2026-09-21 10-34 — разговор.md", "- [ ] **Лена** — личное\n")
+
+        XCTAssertEqual(TasksService.scanSync(graph: dir).count, 2)
+    }
+
     func testUndatedNotesAreKeptAsIs() throws {
         try write("Задачи.md", "- [ ] **Лена** — личное\n- [ ] **Лена** — личное\n")
 
         XCTAssertEqual(TasksService.scanSync(graph: dir).count, 2)
+    }
+
+    func testSameTaskKeyMatchesBridgeKey() {
+        // Те же случаи, что склеивает `_key` моста ревизии (src/review_bridge.py).
+        let pairs = [
+            ("**Коля** — отчёт — до 22.09 (из ревизии)", "**Коля** — отчёт — до 22.09"),
+            ("⚠ не участник (Саша): **Саша** — написать", "**Саша** — написать"),
+            ("Связаться с Марком, до пятницы", "связаться с Марком — до пятницы"),
+            ("**Коля** — давнее _(снято по сроку 23.09)_", "**Коля** — давнее"),
+        ]
+        for (a, b) in pairs {
+            XCTAssertEqual(TasksService.sameTaskKey(a), TasksService.sameTaskKey(b), "\(a) ≠ \(b)")
+        }
+        XCTAssertNotEqual(TasksService.sameTaskKey("**Коля** — отчёт"),
+                          TasksService.sameTaskKey("**Коля** — отчёт по КЗ"))
     }
 }

@@ -598,10 +598,12 @@ it signals degradation, it does not break the loop.
   readiness. Action items the review recovers from
   the transcript (its strict "Recovered action items" section) are
   appended to the minutes as checkboxes marked "(from the review)" before
-  the archive is refreshed, so the Tasks tab sees them (a meeting that has a
-  Минутки.md shows its action items only from it: the review report and its
-  copy in «Документация» no longer add a second and third checkbox for the same
-  item — on 23.09 that was 465 rows for 169 items); action items that
+  the archive is refreshed, so the Tasks tab sees them (a copy of a minutes
+  item in the review report or in «Документация» — the same words once the
+  bridge mark is dropped, the same key as the bridge's `_key` — is hidden, even
+  when the minutes item was withdrawn; an item that only lives elsewhere, e.g.
+  written by hand into the meeting note, stays: on 23.09 the tab showed 465
+  rows, the rule leaves 191); action items that
   were never said (the strict "Withdrawn action items" section: the assignee
   was not at the meeting, no deadline was named, a joke) move from the
   action items section into "Withdrawn by the review" with the reason —
