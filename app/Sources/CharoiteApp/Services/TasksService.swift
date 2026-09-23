@@ -81,18 +81,24 @@ final class TasksService: ObservableObject {
         guard var graph = root else { return [] }
         graph = graph.resolvingSymlinksInPath()   // /var vs /private/var — см. ArchiveSearch
         var found: [Item] = []
+        var minutesMeetings = Set<String>()
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]) else { return [] }
         for case let url as URL in walker {
-            guard url.pathExtension == "md",
-                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            guard text.contains("- [") else { continue }
+            guard url.pathExtension == "md" else { continue }
             let canon = url.resolvingSymlinksInPath().path
             let rel = canon.hasPrefix(graph.path + "/")
                 ? String(canon.dropFirst(graph.path.count + 1))
                 : url.lastPathComponent
+            // Минутки встречи — канон её поручений, даже когда чекбоксов в них не
+            // осталось: снятые `- [-]` строки не должны отдавать место копиям.
+            if url.lastPathComponent == Self.minutesName, let meeting = meetingKey(rel) {
+                minutesMeetings.insert(meeting)
+            }
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  text.contains("- [") else { continue }
             let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             for (i, line) in text.components(separatedBy: "\n").enumerated() {
@@ -107,24 +113,49 @@ final class TasksService: ObservableObject {
                     sourceLine: line))
             }
         }
-        return preferMeetingMinutes(found)
+        return canonicalItems(found, minutesMeetings: minutesMeetings)
     }
 
-    /// Конвейер может вынести одно поручение и в заметку встречи, и в её
-    /// Минутки.md. Оба файла нужны, но два одинаковых чекбокса в приложении —
-    /// ложные две задачи. При точном совпадении встречи и текста минутки
-    /// выигрывают; разные формулировки и обычные заметки не склеиваются.
-    nonisolated static func preferMeetingMinutes(_ items: [Item]) -> [Item] {
-        let minuteKeys = Set(items.compactMap { item -> String? in
-            guard item.file.lastPathComponent == "Минутки.md",
-                  let meeting = meetingKey(item.rel) else { return nil }
-            return meeting + "\u{0}" + normalizedTaskText(item.text)
-        })
-        return items.filter { item in
-            guard item.file.lastPathComponent != "Минутки.md",
-                  let meeting = meetingKey(item.rel) else { return true }
-            return !minuteKeys.contains(meeting + "\u{0}" + normalizedTaskText(item.text))
+    nonisolated static let minutesName = "Минутки.md"
+
+    /// Канон списка задач встречи (№367). Конвейер кладёт поручения встречи в
+    /// несколько файлов: минутки, отчёт облачной ревизии, его исходник в
+    /// «Документации», заметку. Тексты расходятся — мост дописывает в минутки
+    /// « (из ревизии)», — и склейка по точному тексту их не ловила: 23.09 каждое
+    /// живое поручение стояло во вкладке трижды (465 строк при 169 поручениях).
+    /// Правило: у встречи есть файл Минутки.md — её поручения показывает только
+    /// он; решает наличие ФАЙЛА, а не чекбоксов в нём, как у карточки глубины
+    /// (`MeetingCardMinutes`). Нет минуток — пункты всех файлов встречи, одинаковый
+    /// текст один раз, папка встречи в архиве важнее копии в «Документации».
+    /// Заметки без даты в пути — как есть.
+    nonisolated static func canonicalItems(_ items: [Item], minutesMeetings: Set<String>) -> [Item] {
+        var seen = Set<String>()
+        var kept = Set<Int>()
+        let ranked = items.indices.sorted {
+            (sourceRank(items[$0].rel), $0) < (sourceRank(items[$1].rel), $1)
         }
+        for index in ranked {
+            let item = items[index]
+            guard let meeting = meetingKey(item.rel) else {
+                kept.insert(index)
+                continue
+            }
+            if minutesMeetings.contains(meeting), item.file.lastPathComponent != minutesName {
+                continue
+            }
+            if seen.insert(meeting + "\u{0}" + normalizedTaskText(item.text)).inserted {
+                kept.insert(index)
+            }
+        }
+        return items.indices.filter(kept.contains).map { items[$0] }
+    }
+
+    /// Какая копия поручения остаётся у встречи без минуток: папка встречи в
+    /// архиве, потом заметка графа, потом остальное.
+    nonisolated private static func sourceRank(_ rel: String) -> Int {
+        if rel.hasPrefix("Встречи-архив/") { return 0 }
+        if rel.hasPrefix("Встречи/") { return 1 }
+        return 2
     }
 
     nonisolated private static func normalizedTaskText(_ text: String) -> String {
@@ -189,13 +220,11 @@ final class TasksService: ObservableObject {
         for meetingID: String,
         includeDone: Bool = true
     ) -> [Item] {
+        // Канон встречи уже выбран сканом (`canonicalItems`): у встречи с
+        // минутками в списке только их пункты, и откатываться к копиям, когда
+        // пункты минуток сняты, карточке не к чему.
         let matches = items.filter { belongs($0, to: meetingID) }
-        // Одна встреча может продублировать поручение в заметке графа и в
-        // архивных минутках. Для карточки канонический редактируемый список —
-        // Минутки.md; к заметке откатываемся только у старых встреч без них.
-        let minutes = matches.filter { $0.file.lastPathComponent == "Минутки.md" }
-        let canonical = minutes.isEmpty ? matches : minutes
-        return includeDone ? canonical : canonical.filter { !$0.done }
+        return includeDone ? matches : matches.filter { !$0.done }
     }
 
     func isUpdating(_ item: Item) -> Bool {
