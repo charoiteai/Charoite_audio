@@ -91,6 +91,7 @@ If a PR turns that check red, the message names the fix. The usual cases:
 |---|---|
 | new edge against the arrows | the import crosses a layer boundary — untangle it, or add it to `allowed_edges` **with a ticket** |
 | `allowed_edges` holds X → Y, but that edge is gone | the debt was paid, remove the entry |
+| field X is not declared in `_SCHEMA` | the artifact's fields are declared in code, each with a class — `measured`, `seed` or `decision`; add the declaration (and its snapshot `APPROVED_FIELDS` in `tests/test_import_boundaries.py`) instead of writing the key into the JSON |
 | file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
 | file remembers the canon's answer at import | ask on call (`def _root(): return resolve_root(__file__)`), don't freeze it in a module constant or a class field — the value would be taken before the entry point names the root |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
@@ -176,8 +177,10 @@ data root exits 0. `refuse`: started without a named data root it refuses with
 `exit_codes.EXIT_ROOT_UNNAMED` and prints the recipe — the code is deliberately
 not 2, which argparse uses for a bad flag. `none`: there is no safe probe (a
 stdio server, a daemon without argparse, a shell script); the file is not run,
-and the reason must name a tracker card (`№…`) — debt with an owner, not a
-coverage figure. `tests/test_entry_points_contract.py` runs each entry point as a process
+and the record carries the tracker card in its own `ticket` field (`№…` at the
+start, a note may follow the number) — debt with an owner, not a coverage
+figure. `docs/design/layout.md` lists that debt by card, together with the
+upward edges. `tests/test_entry_points_contract.py` runs each entry point as a process
 and checks the contract — in CI and under the mutation check alike. A new
 executable gets its contract from `scripts/layout_map.py --regen` when the code
 proves one (`parse_args` → `help`, the root constructor → `refuse`); `none` is

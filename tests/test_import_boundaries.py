@@ -391,7 +391,7 @@ def test_layer_table_is_complete_and_the_arrows_point_down(world):
     for a, b in lm.allowlist_edges(layout):
         card = next((e.get("ticket", "") for e in layout["allowed_edges"]
                      if (e["from"], e["to"]) == (a, b)), "")
-        assert card.startswith("№"), f"долг {a} → {b} без карточки: {card!r}"
+        assert lm.card_of(card), f"долг {a} → {b} без карточки: {card!r}"
 
 
 def test_entry_points_are_executables_not_mentions(world):
@@ -422,6 +422,23 @@ APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.
 APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "environ.get", "os.environ[...]", "environ[...]")
 APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
 APPROVED_RUN_MODES = ("help", "refuse", "none")
+
+#: Объявление полей артефакта: тип, класс (кто пишет) и поля записей. Новое поле
+#: в `layout.json` без строки здесь невозможно — загрузка его отвергает, а
+#: объявление без строки здесь краснит снимок (входной круг №325 по постановке).
+APPROVED_FIELDS = {
+    "generated": ("str", "measured", None),
+    "order": ("list", "decision", None),
+    "brief_layers": ("dict", "decision", None),
+    "allowed": ("dict", "decision", None),
+    "layer_overrides": ("dict", "decision", {"layer": ("str", "decision", True), "why": ("str", "decision", True)}),
+    "allowed_edges": ("list", "measured", {"from": ("str", "measured", True), "to": ("str", "measured", True),
+                                           "ticket": ("str", "decision", True)}),
+    "manual_entry_points": ("dict", "decision", None),
+    "root_exemptions": ("dict", "decision", None),
+    "run_contracts": ("dict", "measured", {"mode": ("str", "seed", True), "why": ("str", "seed", True),
+                                           "ticket": ("str", "decision", False)}),
+}
 APPROVED_PYTHON_AREAS = ("src/", "scripts/", "packages/")
 
 APPROVED_KINDS = (
@@ -492,6 +509,12 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.ENV_READ_FORMS == APPROVED_ENV_READ_FORMS, "грамматика замера — политика, снимок обязателен"
     assert lm.PROBE_SUFFIX == APPROVED_PROBE_SUFFIX, "суффиксы проб — политика, снимок обязателен"
     assert lm.RUN_MODES == APPROVED_RUN_MODES, "режимы контрактов запуска — политика приёмки, снимок обязателен"
+    объявление = {k: (f.typ.__name__, f.cls, None if f.record is None else
+                      {n: (r.typ.__name__, r.cls, r.required) for n, r in f.record.items()})
+                  for k, f in lm._SCHEMA.items()}
+    assert объявление == APPROVED_FIELDS, "поля артефакта — политика: новое поле объявляется осознанно, двумя файлами"
+    assert {f.cls for f in lm._SCHEMA.values()} | {r.cls for f in lm._SCHEMA.values() for r in (f.record or {}).values()} \
+        <= set(lm.FIELD_CLASSES), "класс поля вне объявленных"
     assert lm.PYTHON_AREAS == APPROVED_PYTHON_AREAS, "области мутатора — политика, снимок обязателен"
     assert all(any(a.startswith(p) and k == "code" for p, k, _s, _w in lm.KINDS) for a in lm.PYTHON_AREAS), "область мутатора вне кода"
     # у каждого вида таблицы есть различимая проба, иначе правило нечем доказать
@@ -590,34 +613,98 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert lm.load_layout(out)["allowed_edges"] == layout["allowed_edges"]
 
 
-def test_regen_owns_only_the_measured_fields_of_an_edge(monkeypatch, tmp_path):
-    """`--regen` переписывает то, что мерит (`from`/`to`), и переносит дословно
-    всё остальное в записи ребра: карточку и любое поле-решение, которое туда
-    добавят. Раньше запись собиралась из трёх полей заново, поэтому первый же
-    реген стирал добавленное поле молча — гейт оставался зелёным, и дефект
-    ловился только чтением диффа (обе головы входного круга №325 независимо).
-
-    Граница — список, а не случайность: `MEASURED_EDGE_FIELDS` называет поля
-    замера, и тест сверяет, что решения этим списком не задеты."""
+def test_regen_rewrites_measured_fields_and_carries_the_rest(tmp_path):
+    """Что `--regen` делает с полем, решает класс поля в объявлении: замер
+    переписывается, решение переносится дословно, чужого поля нет вовсе — схема
+    закрыта. Прежний тест требовал обратного: подкладывал в ребро `until` и
+    `owner` и ждал, что реген их сохранит, — то есть утверждал открытость,
+    которую загрузка теперь отвергает. Два противоположных правила были бы
+    зелёными одновременно, потому что результат регена через загрузчик не
+    проходил (входной круг №325 по постановке, Opus C1)."""
     layout = lm.load_layout(lm.LAYOUT)
     graph = lm.import_graph(lm.inventory())
     assert layout["allowed_edges"], "артефакт без рёбер — тесту нечего переносить"
+    assert lm.MEASURED_EDGE_FIELDS == ("from", "to"), "замер владеет только парой модулей"
     edge = layout["allowed_edges"][0]
-    decided = {"until": "2026-10-31", "owner": "фаза 3"}
-    layout["allowed_edges"][0] = {**edge, **decided}
+    решения = [n for n in lm._SCHEMA["allowed_edges"].record if n not in lm.MEASURED_EDGE_FIELDS]
+    assert решения == ["ticket"], решения
+    изменённый = {**edge, "ticket": edge["ticket"] + " — решение человека после ревью"}
+    layout["allowed_edges"][0] = изменённый
 
     fresh, unticketed = lm.regen(json.loads(json.dumps(layout)), graph)
     kept = {(e["from"], e["to"]): e for e in fresh["allowed_edges"]}[(edge["from"], edge["to"])]
+    assert unticketed == []
+    assert kept == изменённый, "решение переносится дословно, замер своего не добавляет"
+    # запись → чтение: что дал реген, то принимает загрузка
+    lm.validate_layout(json.loads(json.dumps(fresh)))
+    # чужое поле — отказ загрузки, а не молчаливый перенос
+    layout["allowed_edges"][0] = {**edge, "until": "2026-10-31"}
+    with pytest.raises(lm.LayoutError, match="не объявлено в _SCHEMA"):
+        lm.validate_layout(json.loads(json.dumps(layout)))
 
-    assert unticketed == [], "у всех рёбер артефакта есть карточка"
-    for key, value in decided.items():
-        assert kept.get(key) == value, f"поле-решение {key} потеряно регеном"
-    assert kept["ticket"] == edge["ticket"], "карточка переносится, как и раньше"
-    assert set(lm.MEASURED_EDGE_FIELDS) == {"from", "to"}, (
-        "замер владеет только парой модулей; расширение списка — правка политики, "
-        "а не деталь (снимок здесь, как APPROVED_KINDS выше)")
-    assert set(kept) - set(lm.MEASURED_EDGE_FIELDS) == {"ticket", *decided}, (
-        "regen не должен ни добавлять полей от себя, ни терять чужие")
+
+def test_regen_touches_only_what_the_declaration_lets_it():
+    """Класс ключа верхнего уровня — договор регена, а не бирка: `measured` реген
+    пересобирает по замеру, `decision` не трогает вовсе. Проверяется на
+    испорченном артефакте, где замеру есть что чинить: пока артефакт совпадал с
+    замером, проверка «measured вернулся к факту» проходила бы и у `decision`
+    (круг 1 по коду №325: Sonnet I1, критика Opus — класс коллекции никто не читал)."""
+    inv = lm.inventory()
+    graph = lm.import_graph(inv)
+    факт = lm.load_layout()
+    испорченный = json.loads(json.dumps(факт))
+    испорченный["allowed_edges"] = испорченный["allowed_edges"][1:]          # замер вернёт ребро
+    # и контракт — тот, что замер умеет засеять: `none` машина не пишет никогда
+    испорченный["run_contracts"].pop(next(k for k, c in испорченный["run_contracts"].items()
+                                          if c["mode"] != "none"))
+    испорченный["run_contracts"]["src/нет_такого.py"] = {"mode": "help", "why": "x"}  # и снимет лишний
+    испорченный["generated"] = "2000-01-01T00:00Z"
+    fresh, _ = lm.regen(json.loads(json.dumps(испорченный)), graph, inv, [])
+    for key, f in lm._SCHEMA.items():
+        if f.cls == "decision":
+            assert fresh[key] == испорченный[key], f"{key}: решение человека, реген его переписал"
+        else:
+            assert fresh[key] != испорченный[key], f"{key}: объявлен замером, а реген его не пересобрал"
+    assert {(e["from"], e["to"]) for e in fresh["allowed_edges"]} == set(lm.allowlist_edges(факт))
+    assert set(fresh["run_contracts"]) == set(факт["run_contracts"])
+
+
+def test_seed_fields_are_exactly_what_the_code_guess_writes(tmp_path, monkeypatch):
+    """Засев и объявление — один список: догадка по коду пишет ровно seed-поля
+    контракта. Объяви новое seed-поле без засева — реген откажет понятной строкой,
+    а не упадёт `KeyError` на первой новой точке входа (круг 1 по коду №325, Opus M4)."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "tool.py").write_text(
+        "import argparse\nif __name__ == '__main__':\n    argparse.ArgumentParser().parse_args()\n",
+        encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    derived = lm.derive_run_contract("src/tool.py", inv.files["src/tool.py"])
+    assert set(derived) == set(lm.record_fields("run_contracts", "seed"))
+    layout = _layout()
+    layout["brief_layers"]["low"] += ["tool"]
+    monkeypatch.setattr(lm, "derive_run_contract", lambda rel, info: {**derived, "probe_args": "--x"})
+    with pytest.raises(lm.LayoutError, match="засев и объявление разошлись"):
+        lm.regen(json.loads(json.dumps(layout)), lm.import_graph(inv), inv, [])
+
+
+def test_regen_writes_seed_fields_only_at_birth(tmp_path):
+    """Класс seed: контракт запуска машина пишет один раз, при рождении записи
+    (догадка по коду), а существующий не трогает — даже если догадка по коду
+    сегодня дала бы другое. Иначе реген переписывал бы решение человека
+    (Sonnet C1 входного круга №325 по постановке: «однократный замер,
+    застывающий в решение»)."""
+    (tmp_path / "src").mkdir()
+    for имя in ("tool.py", "old.py"):
+        (tmp_path / "src" / имя).write_text(
+            "import argparse\nif __name__ == '__main__':\n    argparse.ArgumentParser().parse_args()\n",
+            encoding="utf-8")
+    inv = lm.inventory(tmp_path)
+    layout = _layout(run_contracts={"src/old.py": {"mode": "none", "why": "решено руками", "ticket": "№0"}})
+    layout["brief_layers"]["low"] += ["tool", "old"]
+    filled, _ = lm.regen(json.loads(json.dumps(layout)), lm.import_graph(inv), inv, [])
+    assert filled["run_contracts"]["src/old.py"] == {"mode": "none", "why": "решено руками", "ticket": "№0"}
+    assert set(filled["run_contracts"]["src/tool.py"]) == set(lm.record_fields("run_contracts", "seed"))
+    lm.validate_layout(filled)
 
 
 def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_path, capsys):
@@ -660,6 +747,143 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     assert "нет — перегенерировать" in capsys.readouterr().out, "пропавшая карта — расхождение, а не зелёный гейт"
 
 
+def test_regen_does_not_write_what_the_loader_would_reject(monkeypatch, tmp_path, capsys):
+    """Реген, выдавший артефакт, который загрузка отвергнет, не пишет ни артефакт,
+    ни карту — не только в случае ребра без карточки, а в любом: проверка та же,
+    что у загрузки (входной круг №325 по постановке, Opus C1). Дельта долга по
+    карточкам печатается тем же прогоном."""
+    lay = tmp_path / "layout.json"
+    карта = tmp_path / "layout.md"
+    карта.write_text("карта до регена\n", encoding="utf-8")
+    lay.write_text(lm.LAYOUT.read_text(encoding="utf-8"), encoding="utf-8")
+    before = lay.read_text(encoding="utf-8")
+    monkeypatch.setattr(lm, "LAYOUT", lay)
+    monkeypatch.setattr(lm, "MAP", карта)
+
+    def regen_with_a_stray_field(layout, graph, inv=None, notes=None):
+        layout["allowed_edges"] = layout["allowed_edges"][1:]
+        layout["allowed_edges"][0]["until"] = "2026-10-31"
+        return layout, []
+    monkeypatch.setattr(lm, "regen", regen_with_a_stray_field)
+    assert lm.main(["--regen"]) == 1
+    assert lay.read_text(encoding="utf-8") == before, "артефакт, который загрузка отвергнет, записан"
+    assert карта.read_text(encoding="utf-8") == "карта до регена\n"
+    out = capsys.readouterr().out
+    assert "загрузка отвергает" in out and "until" in out
+    assert "долг №" not in out, "дельта долга — отчёт о записанном; при отказе на диске прежний долг"
+    # без отказа тот же сдвиг долга печатается, и артефакт записан
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (
+        {**layout, "allowed_edges": layout["allowed_edges"][1:]}, []))
+    lm.main(["--regen"])
+    assert "долг №322: было 3, стало 2" in capsys.readouterr().out
+    assert len(json.loads(lay.read_text(encoding="utf-8"))["allowed_edges"]) == 2
+
+
+def test_debt_is_derived_from_both_carriers_by_one_card_parser():
+    """Долг по карточкам — производная из обоих носителей: ребро против стрелок и
+    вход без пробы (`none`); карточка — поле `ticket`, разобранное одним
+    `card_of`. Хвост после номера — пояснение, а не другая карточка."""
+    layout = _layout(allowed_edges=[{"from": "low_mod", "to": "top_mod", "ticket": "№7 (пояснение, №9 — не в счёт)"},
+                                    {"from": "core_mod", "to": "top_mod", "ticket": "№12"}],
+                     run_contracts={"src/cli.py": {"mode": "none", "why": "нет пробы", "ticket": "№7"},
+                                    "src/tool.py": {"mode": "help", "why": "по коду: argparse"}})
+    долг = lm.debt_by_card(layout)
+    assert list(долг) == ["№7", "№12"], "порядок — по номеру карточки, а не по строке"
+    assert долг["№7"] == ["ребро `low_mod` → `top_mod`", "вход `src/cli.py` без пробы"]
+    assert lm.debt_delta(layout, _layout(allowed_edges=layout["allowed_edges"][:1],
+                                         run_contracts=layout["run_contracts"])) == ["долг №12: было 1, стало 0"]
+    assert lm.debt_delta(layout, layout) == []
+    # в реальном артефакте долг покрывает каждое ребро и каждый вход без пробы
+    real = lm.load_layout()
+    всего = sum(len(v) for v in lm.debt_by_card(real).values())
+    none = sum(1 for c in real["run_contracts"].values() if c["mode"] == "none")
+    assert всего == len(real["allowed_edges"]) + none
+    assert "без карточки" not in lm.debt_by_card(real)
+
+
+@pytest.mark.parametrize("ticket, card", [("№322", "№322"), ("№322 (LLM.complete — вызов)", "№322"),
+                                          ("№364; пояснение", "№364"), ("№", None), ("№abc", None),
+                                          ("№322abc", None), ("см. №322", None), ("", None), ("322", None)])
+def test_one_card_format_for_the_loader_the_map_and_the_tests(ticket, card):
+    assert lm.card_of(ticket) == card
+
+
+#: Образцовая запись каждой коллекции с объявленными полями — со ВСЕМИ полями,
+#: необязательными тоже. Порча по объявлению берёт носителя отсюда, а не из
+#: первой живой записи: иначе проверка необязательного `ticket` держалась на
+#: алфавите путей и молча выключилась бы, как только №364 снимет `none` с
+#: `app/make_app.sh` (круг 1 по коду №325: Sonnet I2 = Opus I1).
+ОБРАЗЦЫ = {
+    "layer_overrides": ("tier3", {"layer": "graph", "why": "проба"}),
+    "allowed_edges": (None, {"from": "a_mod", "to": "b_mod", "ticket": "№0"}),
+    "run_contracts": ("src/daemon.py", {"mode": "none", "why": "проба", "ticket": "№0"}),
+}
+
+
+def test_every_declared_field_is_enforced_by_the_loader():
+    """Порча по объявлению, а не списком мутаций руками: для каждого поля из
+    `_SCHEMA` — пропажа обязательного, чужой тип, пустая и пробельная строка,
+    чужое поле рядом — и загрузка обязана отказать. Новое поле попадает под
+    проверку, как только его объявили: без образца для него тест красный.
+    Граница честная: так ловится форма, а не правда — неверное обоснование или
+    число в `why` порчей не поймать (Opus, ответ на вопрос 3 входного круга)."""
+    base = lm.load_layout()
+    с_записями = {k for k, f in lm._SCHEMA.items() if f.record is not None}
+    assert set(ОБРАЗЦЫ) == с_записями, "у каждой коллекции с полями записи — свой образец"
+    for key, (_ключ, образец) in ОБРАЗЦЫ.items():
+        assert set(образец) == set(lm._SCHEMA[key].record), f"{key}: образец обязан нести все поля"
+    чужой_тип = {list: {}, dict: [], str: 0}
+
+    def с_образцом(key):
+        data = json.loads(json.dumps(base))
+        ключ, образец = ОБРАЗЦЫ[key]
+        if ключ is None:
+            data[key].append(json.loads(json.dumps(образец)))
+            return data, len(data[key]) - 1
+        data[key][ключ] = json.loads(json.dumps(образец))
+        return data, ключ
+
+    def отказ(data, что):
+        with pytest.raises(lm.LayoutError):
+            lm.validate_layout(data)
+        return что
+
+    проверено = []
+    for key, f in lm._SCHEMA.items():
+        for порча, значение in (("нет", None), ("тип", чужой_тип[f.typ]), ("пусто", " ")):
+            if порча == "пусто" and f.typ is not str:
+                continue
+            data = json.loads(json.dumps(base))
+            if значение is None:
+                data.pop(key)
+            else:
+                data[key] = значение
+            проверено.append(отказ(data, f"{порча} {key}"))
+        if f.record is None:
+            continue
+        data, i = с_образцом(key)
+        lm.validate_layout(json.loads(json.dumps(data)))       # образец сам по себе валиден
+        data[key][i]["лишнее"] = "x"
+        проверено.append(отказ(data, f"чужое поле в {key}"))
+        for имя, r in f.record.items():
+            for порча in ("нет", "тип", "пусто"):
+                data, i = с_образцом(key)
+                if порча == "нет":
+                    data[key][i].pop(имя)
+                else:
+                    data[key][i][имя] = чужой_тип[r.typ] if порча == "тип" else " "
+                if порча == "нет" and not r.required:
+                    # необязательное поле: пропажа законна сама по себе, отказ даёт
+                    # только связь (ticket у none) — и это тоже проверка
+                    проверено.append(отказ(data, f"нет {key}.{имя} при связи"))
+                    continue
+                проверено.append(отказ(data, f"{порча} {key}.{имя}"))
+    data = json.loads(json.dumps(base))
+    data["notes"] = {}
+    проверено.append(отказ(data, "чужой ключ верхнего уровня"))
+    assert len(проверено) == len(set(проверено)) > 40, проверено
+
+
 def test_the_artifact_is_loaded_strictly(tmp_path):
     """Инварианты артефакта — при загрузке, и только `LayoutError`: битый JSON,
     пропавший ключ, ключ не того типа, повтор слоя в order (Critical DS и Minor
@@ -687,14 +911,25 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
     def dup_order(d): d["order"].append(d["order"][0])
     def edge_shape(d): d["allowed_edges"].append({"ticket": "№0"})
     def bad_stamp(d): d["generated"] = "x"
-    def bad_mode(d): d["run_contracts"]["src/daemon.py"] = {"mode": "smoke", "why": ""}
-    def none_no_why(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": ""}
+    def bad_mode(d): d["run_contracts"]["src/daemon.py"] = {"mode": "smoke", "why": "x"}
+    def none_no_why(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "", "ticket": "№0"}
     def none_no_card(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "просто так"}
-    def none_plus(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none+help", "why": "x №0"}   # карточка есть: краснеть обязан именно «+none»
+    def none_card_in_prose(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "долг №0"}
+    def none_bad_card(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none", "why": "x", "ticket": "см. №0"}
+    def help_with_card(d): d["run_contracts"]["src/daemon.py"] = {"mode": "help", "why": "x", "ticket": "№0"}
+    # карточка есть: краснеть обязан именно «+none»
+    def none_plus(d): d["run_contracts"]["src/daemon.py"] = {"mode": "none+help", "why": "x", "ticket": "№0"}
     def contract_shape(d): d["run_contracts"]["src/daemon.py"] = "help"
-    def contract_path(d): d["run_contracts"]["docs/x.md"] = {"mode": "help", "why": ""}
+    def contract_path(d): d["run_contracts"]["docs/x.md"] = {"mode": "help", "why": "x"}
+    def edge_card(d): d["allowed_edges"][0]["ticket"] = "№"
+    # пробел — не обоснование и у коллекций без записей (круг 1 по коду №325, Opus M2)
+    def manual_blank(d): d["manual_entry_points"][next(iter(d["manual_entry_points"]))] = " "
+    def exemption_blank(d):
+        path_, shapes = next(iter(d["root_exemptions"].items()))
+        shapes[next(iter(shapes))] = " "
     for bad in (dup, up, typo, no_why, no_ticket, bad_manual, empty_manual, no_key, wrong_type, dup_order, edge_shape,
-                bad_stamp, bad_mode, none_no_why, none_no_card, none_plus, contract_shape, contract_path):
+                bad_stamp, bad_mode, none_no_why, none_no_card, none_card_in_prose, none_bad_card, help_with_card,
+                none_plus, contract_shape, contract_path, edge_card, manual_blank, exemption_blank):
         with pytest.raises(lm.LayoutError):
             lm.load_layout(write(bad))
     broken = tmp_path / "broken.json"
@@ -756,12 +991,13 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     layout["manual_entry_points"] = {"src/cli.py": "руками"}
     # контракт запуска — на каждую точку входа и только на неё (входной круг №339)
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
-    assert any("src/cli.py без контракта запуска" in p for p in problems)
-    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест №0"},
-                               "src/top_mod.py": {"mode": "help", "why": ""}}
+    assert any("src/cli.py без контракта запуска" in p and "поле ticket" in p for p in problems), \
+        "рецепт гейта обязан совпадать с законом загрузчика: карточка — поле ticket"
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест", "ticket": "№0"},
+                               "src/top_mod.py": {"mode": "help", "why": "тест"}}
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
     assert any("run_contracts объявляет src/top_mod.py, но это не исполняемый файл" in p for p in problems)
-    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест №0"}}
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "тест", "ticket": "№0"}}
     problems = lm.check(layout, graph, empty, execs, repo=tmp_path)
     assert problems == [] or all("ни одной пробы" in p for p in problems), problems
     layout["run_contracts"] = {"src/cli.py": {"mode": "help", "why": "тест"}}
@@ -787,15 +1023,15 @@ def test_the_gate_sees_lazy_imports_and_new_upward_edges(tmp_path):
     assert changed["generated"] != "2026-09-19T00:00Z" and unticketed == [("low_mod", "top_mod")]
     # regen с инвентарём: новой точке входа — контракт по коду, решение человека — дословно,
     # исчезнувшей — снять
-    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "решено руками №0"},
-                               "src/gone.py": {"mode": "help", "why": ""}}
+    layout["run_contracts"] = {"src/cli.py": {"mode": "none", "why": "решено руками", "ticket": "№0"},
+                               "src/gone.py": {"mode": "help", "why": "тест"}}
     (src / "tool.py").write_text("import argparse\nif __name__ == '__main__':\n    argparse.ArgumentParser().parse_args()\n",
                                  encoding="utf-8")
     (src / "quiet.py").write_text("if __name__ == '__main__':\n    print(1)\n", encoding="utf-8")
     inv = lm.inventory(tmp_path)
     report: list[str] = []
     filled, _ = lm.regen(json.loads(json.dumps(layout)), lm.import_graph(inv), inv, report)
-    assert filled["run_contracts"] == {"src/cli.py": {"mode": "none", "why": "решено руками №0"},
+    assert filled["run_contracts"] == {"src/cli.py": {"mode": "none", "why": "решено руками", "ticket": "№0"},
                                        "src/tool.py": {"mode": "help", "why": "по коду: argparse"}}
     # реген говорит вслух, что сделал и чего делать не стал: none пишет только человек
     assert any("снят: src/gone.py" in r for r in report) and any("src/tool.py → help" in r for r in report)
