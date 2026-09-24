@@ -25,7 +25,7 @@
 - `model_seam` → core: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
 - `task_line` → core: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items; ничего из репо не импортирует
-- `tier3` → graph: бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако
+- `tier3` → graph: ревизия ядер графа: bge-m3 и NLI приходят через шов model_seam, ночное окно — параметром may_continue, у приложения его собирает одна дверь graphs.revise_cores (№365); корня данных и замка демона модуль не знает — граф, не облако
 - `vocabulary` → core: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
 
 ## Корень выводит один модуль — объявленные исключения
@@ -113,6 +113,7 @@
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/exit_codes.py` ← scripts/preflight.sh
 - `src/graph_search.py` ← scripts/memory_bench.py
+- `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
 

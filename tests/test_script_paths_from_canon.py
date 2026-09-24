@@ -50,8 +50,10 @@ def test_nightly_dossier_review_asks_the_canon(root):
 
 
 def test_tier3_cores_asks_the_canon(root):
+    # боевой путь, а не хелпер: единственный потребитель прежнего _root() ушёл за дверь
+    # graphs.revise_cores, и тест сторожил функцию, которую никто не зовёт (Opus M1 круга 2)
     import tier3_cores
-    assert tier3_cores._root() == root
+    assert tier3_cores.stamps_path() == root / "logs" / "tier3_last_run.json"
 
 
 def test_bench_models_reads_transcripts_from_the_data_root(root):

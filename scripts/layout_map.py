@@ -1825,6 +1825,108 @@ def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
     return out
 
 
+#: Швы окружения приложения у слоя графа: вызов → (модуль шва, файлы, где вызов
+#: разрешён, дверь для остальных). Модули графа окружения не знают — каталог кэша
+#: векторов и ночное окно ревизии им передают, и собирает их один адаптер, а не каждое
+#: место вызова: пять копий пути и две копии окна жили без единого теста, а дневной
+#: путь ревизии ядер не проверял никто (Opus C1 и I1 круга 1 по коду №365). Считается
+#: любая ссылка на шов, привязанная к его модулю (`_seam_refs`).
+ENV_SEAMS: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "GraphSearch": ("graph_search", ("src/graphs.py",), "graphs.open_search"),
+    "revise": ("tier3", ("src/graphs.py",), "graphs.revise_cores"),
+}
+
+
+def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
+    """Ссылки на швы окружения в файле — шов → строки.
+
+    Ссылка, а не только вызов: переменная (`f = tier3.revise`), `functools.partial`,
+    `Thread(target=…)` и база подкласса обходят дверь так же, как вызов (Opus I2 круга 2
+    по №365). Получатель привязан к модулю шва: `tier3.revise` — при `import tier3` (или
+    псевдониме, или подмодуле пакета `charoite_graph.tier3`), голое `revise` — только при
+    `from tier3 import revise [as …]`; чужой `revise` — не шов (Opus M2 круга 2).
+    Аннотации типов — не обход: они не строят индекс и не зовут ревизию. Граница правила:
+    динамику (`getattr(модуль, "имя")`) и переэкспорт из корня пакета статически не видно —
+    их закрывает гейт по рёбрам импорта шага 2 №365."""
+    modules = {module: seam for seam, (module, _o, _d) in ENV_SEAMS.items()}
+
+    def seam_module(name: str) -> str | None:
+        last = name.rsplit(".", 1)[-1]
+        return last if last in modules else None
+
+    bound_mod: dict[str, str] = {}      # имя в файле → модуль шва
+    bound_name: dict[str, str] = {}     # имя в файле → шов
+    roots: set[str] = set()             # корни импортированных пакетов: `import charoite_graph`
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                roots.add(a.asname or a.name.split(".")[0])
+                if (m := seam_module(a.name)):
+                    bound_mod[a.asname or a.name] = m
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            base = seam_module(node.module)
+            for a in node.names:
+                if base and modules[base] == a.name:            # from tier3 import revise
+                    bound_name[a.asname or a.name] = a.name
+                elif (m := seam_module(a.name)):                 # from charoite_graph import tier3
+                    bound_mod[a.asname or a.name] = m
+    annotations: set[int] = set()
+    for node in ast.walk(tree):
+        anns = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            anns.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            anns.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            anns.append(node.annotation)
+        for ann in anns:
+            annotations.update(id(n) for n in ast.walk(ann))
+    out: dict[str, set[int]] = {}
+    for node in ast.walk(tree):
+        if id(node) in annotations:
+            continue
+        if isinstance(node, ast.Attribute) and node.attr in ENV_SEAMS:
+            recv = ast.unparse(node.value)
+            module = ENV_SEAMS[node.attr][0]
+            if bound_mod.get(recv) == module or (seam_module(recv) == module
+                                                 and recv.split(".")[0] in roots):
+                out.setdefault(node.attr, set()).add(node.lineno)
+        elif isinstance(node, ast.Name) and node.id in bound_name:
+            out.setdefault(bound_name[node.id], set()).add(node.lineno)
+    return {seam: sorted(lines) for seam, lines in out.items()}
+
+
+def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
+    """Кто ссылается на швы окружения графа — файл → шов → строки. Замер для гейта:
+    считает инвентарь, судит `seam_problems`, как у правила корня."""
+    out: dict[str, dict[str, list[int]]] = {}
+    for rel, info in sorted(inv.files.items()):
+        if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
+            continue
+        found = _seam_refs(info.tree)
+        if found:
+            out[rel] = found
+    return out
+
+
+def seam_problems(calls: dict[str, dict[str, list[int]]] | None) -> list[str]:
+    """Вызовы швов окружения мимо двери — строками. `None` — вызывающий о швах не
+    спрашивает (то же соглашение, что у `root_problems`). Тесты вне области: они
+    строят индекс и ревизию на своих каталогах намеренно."""
+    if calls is None:
+        return []
+    out = []
+    for rel, found in sorted(calls.items()):
+        if not rel.startswith(ENV_ROOT_ENFORCED):
+            continue
+        for seam, lines in sorted(found.items()):
+            module, owners, door = ENV_SEAMS[seam]
+            if rel not in owners:
+                out.append(f"{rel}:{','.join(map(str, lines))} зовёт {module}.{seam} мимо двери окружения "
+                           f"— через {door}: у неё один каталог кэша векторов и одно ночное окно")
+    return out
+
+
 def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
                   exemptions: dict[str, dict[str, str]] | None = None) -> list[str]:
     """Расхождения правила «корень выводит один модуль» — строками.
@@ -1956,7 +2058,8 @@ def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
 def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[str, str],
           repo: pathlib.Path | None = None, *, map_text: str | None = None,
           map_state: MapState = "present",
-          roots: dict[str, dict[str, list[int]]] | None = None) -> list[str]:
+          roots: dict[str, dict[str, list[int]]] | None = None,
+          seams: dict[str, dict[str, list[int]]] | None = None) -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
     сверяется с `map_text` (если он передан; `None` значит «вызывающий о карте не
@@ -1966,7 +2069,8 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     (Important GLM круга 9). `roots` — то же соглашение: `None` значит
     «вызывающий о выводе корня не спрашивает». Главный тракт спрашивает всегда,
     и это сторожит отдельный тест: правило, которое можно выключить забывчивостью
-    вызывающего, — не правило."""
+    вызывающего, — не правило. `seams` — замер швов окружения графа (`seam_calls`),
+    соглашение о `None` то же."""
     if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
     repo = repo or REPO
@@ -2034,6 +2138,8 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     # Форм вывода несколько (`ROOT_SHAPES`) — первая редакция правила считала только
     # чтение переменной и пропускала тот самый дефект, ради которого заводилась
     problems += root_problems(roots, layout["root_exemptions"])
+    # индекс поиска и ревизию ядер приложение строит через одну дверь окружения (№365)
+    problems += seam_problems(seams)
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -2292,7 +2398,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         map_text, map_state = None, "missing"
     problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
-                               roots=root_derivations(inv))
+                               roots=root_derivations(inv), seams=seam_calls(inv))
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")

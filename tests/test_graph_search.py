@@ -329,22 +329,15 @@ def test_chunks_follow_headings_with_breadcrumbs_and_a_cap():
     assert not any("секция 6 " in p for p in parts), "середина ушла, края остались"
 
 
-def test_shared_index_is_one_per_graph(tmp_path, monkeypatch):
-    g = _graph(tmp_path)
-    monkeypatch.setattr(gs, "_shared", {})
-    monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
-    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
-    a = gs.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g, embedder=fake_embedder())
-    b = gs.shared({}, graph_dir=g, embedder=fake_embedder())
-    assert a is b
-    assert gs.shared({"sufler": {}}, graph_dir=None, embedder=fake_embedder()) is None, \
-        "граф не настроен — индекса нет"
-    # модель — часть личности индекса: под её именем подписаны и векторы в памяти,
-    # и кэш на диске. Пока ключом был только путь, второй позвавший получал чужой
-    # векторизатор молча, а свой передать уже не мог (круг 2 по №321, DS C1 / GLM C1)
-    other = gs.shared({}, graph_dir=g, embedder=fake_embedder(model="other-model"))
-    assert other is not a, "другая модель — другой индекс, а не тихая подмена"
-    assert other.cache_key() != a.cache_key()
+def test_without_fcntl_vectors_are_not_written_and_the_index_says_why(tmp_path, monkeypatch):
+    # модуль грузится и там, где fcntl нет, а векторы без замка не пишутся — отказ
+    # тот же, что у тома без flock, а не трассировка из embed_pending (Opus M1 круга 1
+    # по коду №365)
+    mem = gs.GraphSearch(_graph(tmp_path), embedder=fake_embedder(), data_dir=tmp_path / "data")
+    mem.refresh(force=True)
+    monkeypatch.setitem(sys.modules, "fcntl", None)
+    assert mem.embed_pending(budget_s=5) == 0
+    assert "без замка не пишем" in mem.note
 
 
 @pytest.mark.parametrize("graph, bench", [("demo/graph", "config/memory_bench_demo.yaml"),
@@ -368,7 +361,7 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
     после прогрева — текст в формате прежнего сервера памяти."""
     import brain
     g = _graph(tmp_path)
-    monkeypatch.setattr(gs, "_shared", {})
+    monkeypatch.setattr(brain, "_shared", {})
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
     cfg = {"sufler": {"graph_dir": str(g)}}

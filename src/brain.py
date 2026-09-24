@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import graph_search  # noqa: E402
+import graphs  # noqa: E402
 import llm  # noqa: E402
 
 MemoryNotReady = graph_search.NotReady          # индекс прогревается — попробовать позже
@@ -126,11 +128,40 @@ def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget:
     return (nodes_part or frag_part)[:budget]
 
 
+_shared: dict[str, graph_search.GraphSearch] = {}
+_shared_lock = threading.Lock()
+
+
+def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
+           embedder: graph_search.Embedder) -> graph_search.GraphSearch | None:
+    """Один индекс на процесс, граф и модель; None — граф не настроен.
+
+    Модель — часть ключа, потому что она часть содержимого: под её именем
+    подписаны и векторы в памяти, и кэш на диске. Пока ключом был только путь,
+    второй позвавший молча получал индекс, собранный чужим векторизатором, и
+    передать свой уже не мог — параметр оказывался совещательным.
+
+    Способность приходит параметром: индекс не имеет права знать, откуда
+    берутся модели, — за этим и стоит гейт раскладки. Здесь, а не в модуле
+    поиска: конфиг, граф установки и каталог кэша — окружение приложения, а
+    модуль графа его не читает (№365).
+    """
+    gdir = graph_dir or graphs.graph_dir(cfg)
+    if gdir is None:
+        return None
+    key = f"{gdir}\n{embedder.model}"
+    with _shared_lock:
+        gs = _shared.get(key)
+        if gs is None:
+            gs = _shared[key] = graphs.open_search(gdir, embedder)
+        return gs
+
+
 def warm(cfg: dict) -> graph_search.GraphSearch | None:
     """Прогрев на старте демона: обход графа и векторы блоков из кэша. None —
     граф не настроен. Вызывать из фонового потока: холодный обход рабочего
     графа — секунды, первый вопрос владельца их ждать не должен."""
-    mem = graph_search.shared(cfg, embedder=llm.embedder(cfg))
+    mem = shared(cfg, embedder=llm.embedder(cfg))
     if mem is None:
         return None
     mem.refresh(force=True)
@@ -150,7 +181,7 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     деградирует по-своему и различает «подождать» и «не будет» (GLM M8 по #577).
     `timeout` — потолок на вектор запроса: половина бюджета вызывающего, чтобы
     лексика успела в любом случае."""
-    mem = graph_search.shared(cfg, embedder=llm.embedder(cfg))
+    mem = shared(cfg, embedder=llm.embedder(cfg))
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars,

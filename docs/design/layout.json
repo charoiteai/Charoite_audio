@@ -114,7 +114,7 @@
   "layer_overrides": {
     "tier3": {
       "layer": "graph",
-      "why": "бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако"
+      "why": "ревизия ядер графа: bge-m3 и NLI приходят через шов model_seam, ночное окно — параметром may_continue, у приложения его собирает одна дверь graphs.revise_cores (№365); корня данных и замка демона модуль не знает — граф, не облако"
     },
     "nli": {
       "layer": "llm",
