@@ -1181,6 +1181,9 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
     assert "`src/lib.py`:2" in roots_block and "early.py" not in roots_block
     assert "**LLM** (2)" in text, "шов считается и по голому имени, и по `llm.LLM`"
     assert "**GraphSearch** (0): нет" in text
+    # формы без своего раздела названы вслух — ровно те, что не env и не file
+    no_section = [s.name for s in lm.ROOT_SHAPES if s.name not in ("env", "file")]
+    assert f"## Формы без раздела в замере — {', '.join(no_section)}\n" in text
     # справка argparse и одна ступень `.parent` — не факты
     assert "HELP" not in text and "`src/lib.py`:3" not in text
 
