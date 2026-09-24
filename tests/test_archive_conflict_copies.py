@@ -84,9 +84,12 @@ def test_copy_if_changed_creates_missing_target(tmp_path):
 # --- архиватор: повторный проход без новостей папку не трогает ---------------
 
 @pytest.fixture(autouse=True)
-def _no_live_model(monkeypatch):
-    """Саммари без модели: архивация не должна ходить в живой сервер."""
-    monkeypatch.setattr(ma, "_gen_summary", lambda *a, **k: None)
+def _no_live_model(модель_не_отвечает):
+    """Саммари без модели: архивация не должна ходить в живой сервер.
+
+    Прежняя подмена `ma._gen_summary` с №314 не срабатывала — архиватор зовёт
+    `summary_pass`, и тесты ходили в `/api/chat` (№376)."""
+    return модель_не_отвечает
 
 
 def _meeting(tmp_path: Path) -> tuple[Path, Path]:

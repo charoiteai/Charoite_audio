@@ -36,6 +36,29 @@ import charoite_paths  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
+FORGET = f"{forget.BRAIN}/forget"
+
+
+@pytest.fixture(autouse=True)
+def память(monkeypatch):
+    """Внешняя память (brain :8100) в этих тестах не поднята — записывающим шпионом.
+
+    `apply` зовёт `/forget` по каждому ключу плана. Прежде этот запрос ловил
+    сторож сети, а его `AssertionError` глотал `except Exception` в
+    `brain_forget`: тесты стирания проходили по пути «сервер недоступен», и
+    никто не видел, дошло ли стирание до памяти (№376). Шпион отвечает
+    отказом соединения, как лежащий сервер, и помнит, что у него просили.
+    Тесты со своим транспортом (`sys.modules["requests"]`) его перекрывают.
+    """
+    import requests
+    просили: list[tuple[str, dict]] = []
+
+    def post(url, json=None, timeout=None, **kw):
+        просили.append((url, json))
+        raise requests.ConnectionError("память не поднята (шпион теста)")
+
+    monkeypatch.setattr(requests, "post", post)
+    return просили
 
 
 def _world(tmp: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -373,18 +396,20 @@ def test_plan_does_not_touch_the_neighbouring_meeting(tmp_path):
         assert OTHER not in path, f"задета соседняя встреча: {path}"
 
 
-def test_nothing_disappears_without_explicit_consent(tmp_path):
+def test_nothing_disappears_without_explicit_consent(tmp_path, память):
     """По умолчанию — только показать. Необратимое не делается «за компанию»."""
     root, graph = _world(tmp_path)
     plan = forget.plan(STAMP, root, graph)
     forget.apply(plan, yes=False)
     assert (root / "transcripts" / f"{STAMP}.md").exists()
     assert (graph / "Встречи" / f"{STAMP}.md").exists()
+    assert память == [], "без согласия и память не стирается"
 
 
-def test_forget_removes_the_meeting_and_its_traces(tmp_path):
+def test_forget_removes_the_meeting_and_its_traces(tmp_path, память):
     root, graph = _world(tmp_path)
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    assert память == [(FORGET, {"meeting": STAMP})], "стирание не дошло до внешней памяти"
 
     assert not (root / "transcripts" / f"{STAMP}.md").exists()
     assert not (root / "transcripts" / f"{STAMP}_minutes.md").exists()
@@ -471,12 +496,13 @@ def test_cloud_backup_copies_are_forgotten_too(tmp_path):
         "в .forget_backup попала копия из .cloud_backup вместо живого узла"
 
 
-def test_running_twice_is_not_a_failure(tmp_path):
+def test_running_twice_is_not_a_failure(tmp_path, память):
     root, graph = _world(tmp_path)
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
     second = forget.plan(STAMP, root, graph)
     assert not second.delete and not second.edit, "второй проход нашёл, что забывать"
     forget.apply(second, yes=True)   # и не падает
+    assert память == [(FORGET, {"meeting": STAMP})], "второй проход — без второго /forget"
 
 
 def test_a_date_resolves_to_the_meetings_of_that_day(tmp_path):

@@ -245,11 +245,16 @@ def test_запрет_сети_переживает_undo_в_теле_теста(
     запись в живую память владельца снова становилась возможной без единого
     сигнала (круг 14 по коду №327, GLM I1). Тот же образец, что у корня и
     графа: save/restore руками.
+
+    Ждём `pytest.fail.Exception`, а не `AssertionError`: отказ, который ловит
+    `except Exception` продукта, тест не роняет (№376). Этот тип `except
+    Exception` пропускает — самопроверка краснеет, стоит отказу снова стать
+    обычным исключением.
     """
     import requests
     monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
     monkeypatch.undo()
-    with pytest.raises(AssertionError, match="пошёл в сеть"):
+    with pytest.raises(pytest.fail.Exception, match="пошёл в сеть"):
         requests.post("http://127.0.0.1:8100/remember", json={})
 
 

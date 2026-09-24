@@ -749,3 +749,49 @@ def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys
     _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
     llm_mod.embed(CFG, ["т"] * 5)
     assert capsys.readouterr().err.count("не по вектору на текст") == 2
+
+
+# ------------------------------------------------ список моделей (/api/tags)
+#
+# В прогоне Ollama недоступна заглушкой из conftest (№376): прежде это
+# «доказывал» упавший запрос, отказ которого глотал `except Exception`.
+
+class _Tags:
+    """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса."""
+
+    def __init__(self, payload=None, error: Exception | None = None):
+        self.payload, self.error, self.urls = payload, error, []
+
+    def get(self, url, timeout=None, **kw):
+        self.urls.append((url, timeout))
+        if self.error is not None:
+            raise self.error
+        return _Resp(self.payload)
+
+
+def test_models_list_is_read_from_the_tags_reply(monkeypatch):
+    """Настоящий `_models_available` — с подменённым транспортом: разбор ответа
+    и отказ без сервера — пустое множество, а не исключение."""
+    настоящий = LLM._models_available.настоящий
+    engine = LLM(CFG)
+    tags = _Tags({"models": [{"name": "тест-модель"}, {"name": "тест-мелкая"}]})
+    monkeypatch.setattr(llm_mod, "requests", tags)
+    assert настоящий(engine) == {"тест-модель", "тест-мелкая"}
+    assert tags.urls == [(f"{engine.base}/api/tags", 3)]
+
+    monkeypatch.setattr(llm_mod, "requests", _Tags(error=ConnectionError("refused")))
+    assert настоящий(engine) == set()
+
+
+def test_unreachable_ollama_leaves_the_configured_model(ollama):
+    """Умолчание прогона: списка нет — модель из конфига, пусть ollama скажет сама."""
+    engine = LLM(CFG)
+    assert engine.resolve_model() == "тест-модель"
+    assert ollama == [engine.base], "список моделей спрашивали один раз и у своего сервера"
+
+
+@pytest.mark.ollama_отвечает("тест-мелкая")
+def test_resolve_model_falls_back_to_what_is_downloaded(ollama):
+    """Путь «сервер ответил»: основной модели нет — берётся скачанная запасная."""
+    assert LLM(CFG).resolve_model() == "тест-мелкая"
+    assert len(ollama) == 1

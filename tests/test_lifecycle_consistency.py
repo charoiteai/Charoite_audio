@@ -18,6 +18,8 @@ test_archive_dedup) держат каждую операцию отдельно.
 import pathlib
 import sys
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
@@ -26,6 +28,22 @@ import rename_meeting as rename  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
+
+
+@pytest.fixture
+def память(monkeypatch):
+    """Внешняя память не поднята — записывающим шпионом, а не сторожем сети:
+    отказ сторожа глотал `except Exception` в `brain_forget`, и не было видно,
+    с каким ключом стирание пошло в память (№376)."""
+    import requests
+    просили: list[tuple[str, dict]] = []
+
+    def post(url, json=None, timeout=None, **kw):
+        просили.append((url, json))
+        raise requests.ConnectionError("память не поднята (шпион теста)")
+
+    monkeypatch.setattr(requests, "post", post)
+    return просили
 
 
 def _world(tmp: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -73,10 +91,12 @@ def test_переименованная_встреча_остаётся_забы
     assert any("Встречи-архив" in d and "Новая тема" in d for d in doomed), doomed
 
 
-def test_забвение_идемпотентно_после_переименования(tmp_path):
+def test_забвение_идемпотентно_после_переименования(tmp_path, память):
     root, graph = _world(tmp_path)
     _rename(graph, root / "transcripts", "Тема")
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    # переименование меняет тему, а не ключ: память стирается прежним штампом
+    assert память == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
 
     second = forget.plan(STAMP, root, graph)
     assert not second.delete, "повторный forget нашёл что удалять: " + \
