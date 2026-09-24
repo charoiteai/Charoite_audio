@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 
+import task_line
+
 # Заголовок раздела поручений на всех трёх языках продукта.
 _SECTION = re.compile(
     r"^\s*(?:[*_#]*\s*)?(?:поручени|action item|行动项)\w*\s*[:：]?\s*[*_]*\s*$",
@@ -59,10 +61,8 @@ _KNOWN_BARE_SECTION = re.compile(
     re.IGNORECASE,
 )
 # Строка-пункт: маркер списка в начале (включая типографские тире, которыми
-# модель иногда открывает пункт).
-_BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
-# Уже правильный чекбокс — не трогаем.
-_CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ")
+# модель иногда открывает пункт). Набор маркеров — общий с грамматикой статуса.
+_BULLET = re.compile(r"^\s*" + task_line.MARKER + r"\s+")
 # Пометка «не участник» (flag_outsiders) — тоже не трогаем: иначе следующий
 # проход normalize (пересборка, повторный «Протокол») вернул бы строке
 # чекбокс, и задача снова ушла бы отсутствующему.
@@ -102,9 +102,18 @@ def normalize(text: str) -> str:
                 inside = False
                 out.append(line)
                 continue
-            if line.strip() and _BULLET.match(line) and not _CHECKBOX.match(line) \
-                    and not _OUTSIDER_LINE.match(line):
-                out.append(_to_checkbox(line))
+            # Пункт с чекбоксом — в любой форме и любом состоянии: статус и тело не трогаем,
+            # префикс приводим к виду вкладки (task_line.canonical). Узнаёт форму одна
+            # грамматика: свой регэксп «уже чекбокс» здесь расходился с ней, и «+ [x]»,
+            # «-  [x]», «[/]» становились «- [ ] [x] …» (№366; Opus C1 и I1 круга 1, M1
+            # круга 2). Каждая переписанная строка проверяется гейтом статусов: промах
+            # грамматики (например, «- - [x] …») оставляет строку как была, а не пишет
+            # порчу молча — ни демон, ни пересборка этого не заметили бы (Opus, критика 1
+            # круга 2).
+            if line.strip() and _BULLET.match(line) and not _OUTSIDER_LINE.match(line):
+                fixed = task_line.canonical(line) if task_line.status(line) is not None \
+                    else _to_checkbox(line)
+                out.append(line if task_line.status_changes(line, fixed) else fixed)
                 continue
         out.append(line)
     return "\n".join(out)
@@ -387,7 +396,9 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
                         or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
                        and not _BULLET.match(line)):
             inside = False
-        if inside:
+        # статус, поставленный человеком или контролем (выполнено, возвращено), пометка
+        # «не участник» не снимает: она убирает чекбокс (№366)
+        if inside and not task_line.settled(line):
             m = _ASSIGNEE_LINE.match(line)
             if m:
                 whole = m.group(2).strip()
