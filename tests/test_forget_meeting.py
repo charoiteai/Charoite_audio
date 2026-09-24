@@ -1139,3 +1139,38 @@ def test_one_meeting_gets_one_story_about_the_memory(tmp_path, monkeypatch, caps
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "память Чароита" in ln]
     assert len(lines) == 2 and all("curl" in ln for ln in lines), lines
 
+
+@pytest.mark.parametrize("kind", ["dedup_copies", "fix_action_items", "tasks_control"])
+def test_every_mirror_kind_of_graph_copies_is_forgotten_with_its_manifest_lines(tmp_path, kind):
+    """Копии графа всех видов реестра канона — не только снимки облачной ревизии. Копии
+    разовой правки поручений, уборки копий и контроля задач «забыть» не видело, а манифест
+    контроля хранит текст поручений (Opus I1 круга 2 по №366)."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    charoite_paths.use_data_root(root, replace=True)
+    inner = charoite_paths.GRAPH_BACKUP_KINDS[kind]
+    run = charoite_paths.graph_backups(graph, kind, root=root) / "20260924-030507"
+    mirror = run / inner if inner else run
+    mine = mirror / "Встречи-архив" / "2026-07-15 14-00 — Платёжный провайдер"
+    theirs = mirror / "Встречи-архив" / "2026-07-16 10-00 — Каталог"
+    for folder, task in ((mine, "договор с провайдером"), (theirs, "каталог")):
+        folder.mkdir(parents=True)
+        (folder / "Минутки.md").write_text(f"## Поручения\n- [ ] **Мария** — {task}\n", encoding="utf-8")
+    (run / "manifest.jsonl").write_text(
+        '{"file": "Встречи-архив/2026-07-15 14-00 — Платёжный провайдер/Минутки.md", "old": "договор"}\n'
+        '{"file": "Встречи-архив/2026-07-16 10-00 — Каталог/Минутки.md", "old": "каталог"}\n',
+        encoding="utf-8")
+
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not mine.exists(), f"копия встречи осталась в копиях вида {kind}"
+    assert (theirs / "Минутки.md").exists(), "забывание унесло копию чужой встречи"
+    manifest = (run / "manifest.jsonl").read_text(encoding="utf-8")
+    assert "Платёжный провайдер" not in manifest and "Каталог" in manifest
+
+
+def test_a_kind_of_graph_copies_outside_the_registry_is_refused(tmp_path):
+    """Новый вид копий без записи в реестре не рождается: иначе «забыть» его не обойдёт."""
+    import charoite_paths
+    with pytest.raises(ValueError, match="GRAPH_BACKUP_KINDS"):
+        charoite_paths.graph_backups(tmp_path / "граф", "новый_вид", root=tmp_path)
