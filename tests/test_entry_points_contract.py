@@ -298,8 +298,11 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     out = json.loads(r.stdout.strip().splitlines()[-1])
     problems = [f"пакет импортировал {m}: зависимость приложения протекла в пакет"
                 for m in sorted(set(out["modules"]) & set(forbidden))]
+    # код продукта из репозитория, а не всё под корнем: у сопровождающего `.venv/`
+    # лежит в репозитории, и yaml оттуда — законная зависимость пакета
+    product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, lm.DIST_DIR, "scripts")]
     problems += [f"пакет загрузил {f} мимо своей копии" for f in out["files"]
-                 if pathlib.Path(f).is_relative_to(ROOT.resolve())]
+                 if any(pathlib.Path(f).is_relative_to(d) for d in product)]
     return problems, out
 
 
@@ -336,7 +339,8 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
 
 def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> None:
     """Проба проверена «дырявыми» пакетами: чтение ловушки через HOME, запись вне
-    `data_dir`, протечка зависимости по `sys.modules` — каждый даёт расхождение,
+    `data_dir`, протечка зависимости по `sys.modules`, модуль продукта, взятый из
+    репозитория мимо копии, — каждый даёт расхождение,
     честный пакет — пусто. Без этого проба была бы утверждением, которое никто
     не исполняет."""
     graph = tmp_path / "граф"
@@ -356,6 +360,7 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         "домашний": "(pathlib.Path.home() / 'config.yaml').read_text()",
         "запись": "(self.data.parent / 'мимо').write_text('x')",
         "протечка": "import лишний_модуль",
+        "мимо копии": f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line",
     }
     got = {}
     for name, extra in cases.items():
@@ -370,3 +375,4 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     assert "чтение ловушки" in got["домашний"][0]
     assert "запись вне data_dir" in got["запись"][0]
     assert "протекла" in got["протечка"][0]
+    assert got["мимо копии"] == [f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии"]
