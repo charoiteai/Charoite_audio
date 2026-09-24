@@ -2727,7 +2727,8 @@ def main():
             focus = [resolve_core_path(graph / "Ядра", c["имя"], graph).stem for c in cores]
             rep = tier3.revise(graph, only_names=focus, mark=True, apply=auto,
                                embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                               judge=nli.judge())
+                               judge=nli.judge(),
+                               may_continue=lambda: live_gate.night_window_open(_root(), what="ревизия ядер"))
             # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
             # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
             # а здесь был бы двойным эхом каждой правки
@@ -3311,7 +3312,8 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
         return
     try:
         import graph_search
-        mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg))
+        mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg),
+                                       data_dir=graphs.search_cache_dir())
         mem.refresh(force=True)
         # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
         # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)

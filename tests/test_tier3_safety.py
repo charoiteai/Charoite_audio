@@ -35,6 +35,11 @@ import tier3  # noqa: E402
 
 # Ровно тот формат, который пишет graph_updater.upsert_core:
 # фронтматтер, «## Статус» с меткой обновления, «## Хроника» со ссылками.
+
+def _open() -> bool:
+    """Ночное окно открыто: гейт вызывающего, который модулю графа передают параметром."""
+    return True
+
 def fake_embedder(vectors=None):
     """Векторизатор-подделка: заданные векторы или по одному на ядро."""
     from model_seam import Embedder
@@ -214,7 +219,7 @@ def _snapshot(graph: pathlib.Path) -> dict[str, str]:
 def test_revise_is_read_only_by_default(graph):
     """Вызов без apply не имеет права трогать граф."""
     before = _snapshot(graph)
-    report = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     assert report["dups"], "дубль не найден — тест ничего не проверяет"
     assert _snapshot(graph) == before, "revise без apply=True переписал ядра"
     assert not (graph / "Ядра" / ".tier3_backup").exists(), \
@@ -223,7 +228,7 @@ def test_revise_is_read_only_by_default(graph):
 
 def test_revise_still_merges_when_asked(graph_with_essence):
     """Осторожный дефолт не должен ломать сам механизм слияния."""
-    report = tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     assert report["log"], "с apply=True слияние обязано произойти"
     texts = _snapshot(graph_with_essence).values()
     assert any("Дубль. Смерджен" in t for t in texts)
@@ -238,7 +243,7 @@ def test_mark_annotates_but_never_merges(graph_with_essence):
     выключенный автомат = полное молчание: дубль найден, а узнать о нём
     можно только из лога того прогона, которого никто не видел.
     """
-    report = tier3.revise(graph_with_essence, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph_with_essence, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     texts = _snapshot(graph_with_essence)
     assert not any("Дубль. Смерджен" in t for t in texts.values()), \
         "mark=True не имеет права сливать — слияние необратимо для пользователя"
@@ -258,7 +263,7 @@ def test_mark_marks_nesting_too(tmp_path, monkeypatch):
         "# Целое\n\n## Суть\nбольшая сквозная тема\n", encoding="utf-8")
     # часть ⊂ целое: одна сторона уверенно следует, обратно — нет
     nesting = fake_judge(entail=lambda a, b: 0.95 if a.startswith("Часть") else 0.1)
-    report = tier3.revise(tmp_path, mark=True, embedder=fake_embedder(), judge=nesting)
+    report = tier3.revise(tmp_path, mark=True, embedder=fake_embedder(), judge=nesting, may_continue=_open)
     assert report["nests"], "вложение не найдено — тест ничего не проверяет"
     texts = _snapshot(tmp_path)
     assert all("Tier3-NLI" in t for t in texts.values()), "ссылки-подсказки не вписаны"
@@ -274,7 +279,7 @@ def test_merge_works_on_cores_the_product_actually_writes(graph):
     не происходит никогда и совет «свести — scripts/tier3_cores.py --apply»
     ведёт в тупик.
     """
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     assert report["log"], "уверенная пара ядер продукта не слита"
     assert any("Дубль. Смерджен" in t for t in _snapshot(graph).values()), \
         "redirect-заглушки нет — слияние недостижимо на реальных данных"
@@ -288,7 +293,7 @@ def test_weak_evidence_needs_a_higher_bar(tmp_path, monkeypatch):
     тексту хватает на обратимую пометку, но не на перезапись файла.
     """
     graph = _pair(tmp_path, monkeypatch, CORE_A, CORE_B, 0.85)
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     texts = _snapshot(graph)
     assert not any("Дубль. Смерджен" in t for t in texts.values()), \
         "слияние по автостатусу на средней уверенности"
@@ -301,7 +306,7 @@ def test_weak_evidence_needs_a_higher_bar(tmp_path, monkeypatch):
 def test_written_essence_lowers_the_bar_back(tmp_path, monkeypatch):
     """Формулировку темы писал человек — по ней 0.85 уже основание слить."""
     graph = _pair(tmp_path, monkeypatch, CORE_C, CORE_D, 0.85)
-    assert tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))["log"], \
+    assert tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["log"], \
         "написанная руками суть не должна судиться строже автостатуса"
 
 
@@ -315,7 +320,7 @@ def test_two_threads_of_one_project_are_marked_not_merged(tmp_path, monkeypatch)
     которой автомату верить нельзя даже при 0.99.
     """
     graph = _pair(tmp_path, monkeypatch, CORE_E, CORE_F, 0.99)
-    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     texts = _snapshot(graph)
     assert not any("Дубль. Смерджен" in t for t in texts.values()), \
         "слиты два потока одного проекта: хроника общая, тема разная"
@@ -330,16 +335,16 @@ def test_apply_advice_appears_only_when_apply_would_do_something(graph):
     Совет, который на данных пользователя ничего не делает, хуже молчания:
     человек его выполняет, ничего не происходит, доверие к автомату уходит.
     """
-    assert tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))["pending_merges"], \
+    assert tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["pending_merges"], \
         "уверенная пара осталась несведённой, а поле пустое"
-    assert not tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))["pending_merges"], \
+    assert not tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["pending_merges"], \
         "пара слита — советовать --apply больше нечего"
 
 
 def test_merging_clears_the_stale_manual_merge_request(graph):
     """Пометка «свести вручную» отработала — она не должна пережить слияние."""
-    tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
-    tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    tier3.revise(graph, mark=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
+    tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     canon = [t for t in _snapshot(graph).values() if "Дубль. Смерджен" not in t]
     assert canon, "слияния не было — тест ничего не проверяет"
     assert "возможный дубль" not in canon[0], \
@@ -448,7 +453,7 @@ def test_stale_core_is_skipped_instead_of_overwritten(graph_with_essence, monkey
         return cores
 
     monkeypatch.setattr(tier3, "load_cores", load_and_touch)
-    report = tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    report = tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     texts = _snapshot(graph_with_essence)
     # правка «чужой руки» на месте, слияния не случилось
     assert all("свежая строка" in t for t in texts.values()), texts
@@ -458,7 +463,7 @@ def test_stale_core_is_skipped_instead_of_overwritten(graph_with_essence, monkey
 
 def test_handwritten_essence_of_a_duplicate_survives_the_merge(graph_with_essence):
     """Слияние не теряет рукописную «Суть» дубля: она переезжает в канон."""
-    tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))
+    tier3.revise(graph_with_essence, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)
     texts = _snapshot(graph_with_essence)
     canon = [t for t in texts.values() if "Дубль. Смерджен" not in t]
     assert any("Суть дубля" in t for t in canon), canon
@@ -472,7 +477,7 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
     for p in sorted(graph.glob("Ядра/*.md")):
         text = frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"])
         p.write_text(frontmatter.with_list_field(text, frontmatter.AUTO_ALIASES, [f"след {p.stem}"]), encoding="utf-8")
-    assert tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]))["log"]
+    assert tier3.revise(graph, apply=True, embedder=fake_embedder(), judge=fake_judge(p=_P["p"]), may_continue=_open)["log"]
     texts = {p: p.read_text(encoding="utf-8") for p in graph.glob("Ядра/*.md")}
     stubs = {p: t for p, t in texts.items() if "Дубль. Смерджен" in t}
     assert stubs, "слияния не было"

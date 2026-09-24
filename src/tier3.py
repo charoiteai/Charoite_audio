@@ -36,8 +36,8 @@ import frontmatter
 import pathlib
 import re
 import shutil
+from collections.abc import Callable
 
-import live_gate
 from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged
 
@@ -319,28 +319,9 @@ def auto_apply_allowed(cfg: dict) -> bool:
     return (cfg.get("sufler") or {}).get("tier3_auto_apply") is True
 
 
-def _data_root() -> pathlib.Path:
-    """Корень ДАННЫХ установки: там лежит лок демона, по нему судят о встрече.
-
-    Канон, а не копия его правил. Прежняя копия воспроизводила `strip` и
-    `expanduser`, но теряла `resolve`, хотя комментарий рядом ссылался на
-    канон: при относительном значении переменной лок искался от текущего
-    каталога, а launchd и ручной запуск дают разный текущий каталог — гейт
-    «уступаю живой встрече» молча не срабатывал, и ночная ревизия ядер шла
-    поверх живой встречи. Тот же круг-2 (DS, M5) долечил «~» и пробел, а
-    относительность осталась (обе головы входного круга №321).
-
-    Спрашиваем на вызове, а не запоминаем: корень называет точка входа
-    (`charoite_paths.use_data_root`), и происходит это позже импорта модулей.
-    Импорт `graphs` тоже ленивый — ревизия ядер зовёт корень на гейте живой
-    встречи, а не при загрузке (№327)."""
-    import graphs
-    return graphs.data_root()
-
-
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
            apply: bool = False, mark: bool = False, *,
-           embedder: Embedder, judge: Judge,
+           embedder: Embedder, judge: Judge, may_continue: Callable[[], bool],
            skip_pairs: frozenset = frozenset()) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
@@ -468,7 +449,10 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # PR #363: у типовой установки граф ОДИН, и полный воскресный прогон
         # шёл бы часами мимо потолка; встреча в середине прогона делила модель
         # с суфлёром — аудит ночи 26.08, GLM Important 1).
-        if not live_gate.night_window_open(_data_root(), what="ревизия ядер"):
+        # `may_continue` — ночное окно вызывающего (дождаться конца живой встречи, не
+        # дольше конца ночи): модуль графа корня данных не знает и замка демона не
+        # ищет, окно ему передают — как should_stop у embed_pending (№365)
+        if not may_continue():
             out["stopped"] = True
             out["status"], out["reason"] = "stopped", "ночное окно закрылось"
             out["unjudged_names"] = {n for _c, x, y in pairs[позиция:]

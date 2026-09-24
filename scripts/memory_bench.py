@@ -241,7 +241,7 @@ def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
     mem = _INDEX.get(str(graph))
     if mem is None:
         mem = _INDEX[str(graph)] = graph_search.GraphSearch(
-            graph, embedder=build_embedder(cfg or {}))
+            graph, embedder=build_embedder(cfg or {}), data_dir=graphs.search_cache_dir())
         mem.refresh(force=True)
         mem.load_vectors()
     result = mem.search(query, limit=LIMIT_FILES, snippet_chars=SNIPPET)
@@ -379,7 +379,7 @@ def main() -> None:
         # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
         # векторизатор: демо меряет лексику, не ходя в сеть
         mem = graph_search.GraphSearch(
-            graph, embedder=build_embedder(cfg if not args.demo else {}))
+            graph, embedder=build_embedder(cfg if not args.demo else {}), data_dir=graphs.search_cache_dir())
         mem.refresh(force=True)
         mem.load_vectors()
         print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")

@@ -127,7 +127,8 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     cfg = graphs.load_config()
     r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
                      embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                     judge=nli.judge(), skip_pairs=frozenset(skip))
+                     judge=nli.judge(), skip_pairs=frozenset(skip),
+                     may_continue=lambda: live_gate.night_window_open(_root(), what="ревизия ядер"))
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.

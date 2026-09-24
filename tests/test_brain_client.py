@@ -31,7 +31,7 @@ def test_vault_search_reads_the_configured_graph_only(tmp_path, monkeypatch):
     # должны решать исход теста (круг-1 по #405, DS)
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
-    monkeypatch.setattr(graph_search, "_shared", {})
+    monkeypatch.setattr(brain, "_shared", {})
     mine = _graph(tmp_path, "проект", "МОЙ_МАРКЕР")
     _graph(tmp_path, "соседний", "ЧУЖОЙ_МАРКЕР")
     cfg = {"sufler": {"graph_dir": str(mine)}}
@@ -53,7 +53,7 @@ def test_unconfigured_graph_raises(monkeypatch):
     # молчание, пустая память) — память её не выбирает за вызывающего.
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
-    monkeypatch.setattr(graph_search, "_shared", {})
+    monkeypatch.setattr(brain, "_shared", {})
     with pytest.raises(brain.MemoryUnavailable):
         brain.vault_search({"sufler": {}}, "вопрос", limit=1, snippet_chars=100, timeout=0.3)
     assert issubclass(brain.MemoryUnavailable, RuntimeError) and issubclass(brain.MemoryNotReady, RuntimeError)

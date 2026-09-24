@@ -41,7 +41,6 @@ import dataclasses
 import functools
 import datetime as dt
 import enum
-import fcntl
 import hashlib
 import json
 import math
@@ -49,19 +48,15 @@ import operator
 import os
 import pathlib
 import re
-import sys
 import threading
 import types
 import time
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-
 import dossier  # noqa: E402
 import frontmatter  # noqa: E402
 import graph_nodes  # noqa: E402
-import graphs  # noqa: E402
 from model_seam import Embedder  # noqa: E402
 import redirects  # noqa: E402
 import safe_write  # noqa: E402
@@ -783,8 +778,11 @@ def _unit(vec: Sequence[float]) -> array.array:
 
 class GraphSearch:
     """Индекс одного графа и поиск по нему. Один экземпляр на процесс, граф и
-    модель эмбеддингов (см. shared()); обновление индекса и поиск — из разных
-    потоков.
+    модель эмбеддингов (см. brain.shared()); обновление индекса и поиск — из разных
+    потоков. Окружения приложения индекс не читает: каталог кэша векторов
+    (`data_dir`) передаёт вызывающий, у Чароита — graphs.search_cache_dir()
+    (№365: модуль графа на импорте и в конструкторе не берёт ничего вне своих
+    параметров).
 
     Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
     связей, охват обхода). После инициализации его пишет ТОЛЬКО `_publish` —
@@ -816,7 +814,7 @@ class GraphSearch:
 
     def __init__(self, graph_dir: pathlib.Path, *,
                  embedder: Embedder,
-                 data_dir: pathlib.Path | None = None,
+                 data_dir: pathlib.Path,
                  exclude: Iterable[str] = EXCLUDE_DIRS,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
@@ -834,7 +832,7 @@ class GraphSearch:
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
-        base = pathlib.Path(data_dir) if data_dir else graphs.data_root() / "data"
+        base = pathlib.Path(data_dir)
         # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
         # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
         tag = hashlib.sha256(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]   # имя файла по пути, не подпись; sha256 — чтобы CI не спорил
@@ -1171,6 +1169,7 @@ class GraphSearch:
         пишем вовсе. Файл готов, когда есть векторы всех его блоков; сервер не
         ответил — останавливаемся, недобранное дособерём в следующий раз.
         -> сколько файлов получили векторы."""
+        import fcntl      # только POSIX: на импорте модуль грузится и там, где его нет (№365)
         self.note = ""
         lock = None
         try:
@@ -1548,28 +1547,3 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     return warn + "\n\n".join(parts)
 
 
-_shared: dict[str, GraphSearch] = {}
-_shared_lock = threading.Lock()
-
-
-def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
-           embedder: Embedder) -> GraphSearch | None:
-    """Один индекс на процесс, граф и модель; None — граф не настроен.
-
-    Модель — часть ключа, потому что она часть содержимого: под её именем
-    подписаны и векторы в памяти, и кэш на диске. Пока ключом был только путь,
-    второй позвавший молча получал индекс, собранный чужим векторизатором, и
-    передать свой уже не мог — параметр оказывался совещательным.
-
-    Способность приходит параметром: индекс не имеет права знать, откуда
-    берутся модели, — за этим и стоит гейт раскладки.
-    """
-    gdir = graph_dir or graphs.graph_dir(cfg)
-    if gdir is None:
-        return None
-    key = f"{gdir}\n{embedder.model}"
-    with _shared_lock:
-        gs = _shared.get(key)
-        if gs is None:
-            gs = _shared[key] = GraphSearch(gdir, embedder=embedder)
-        return gs

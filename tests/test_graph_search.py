@@ -330,19 +330,20 @@ def test_chunks_follow_headings_with_breadcrumbs_and_a_cap():
 
 
 def test_shared_index_is_one_per_graph(tmp_path, monkeypatch):
+    import brain
     g = _graph(tmp_path)
-    monkeypatch.setattr(gs, "_shared", {})
+    monkeypatch.setattr(brain, "_shared", {})
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
-    a = gs.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g, embedder=fake_embedder())
-    b = gs.shared({}, graph_dir=g, embedder=fake_embedder())
+    a = brain.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g, embedder=fake_embedder())
+    b = brain.shared({}, graph_dir=g, embedder=fake_embedder())
     assert a is b
-    assert gs.shared({"sufler": {}}, graph_dir=None, embedder=fake_embedder()) is None, \
+    assert brain.shared({"sufler": {}}, graph_dir=None, embedder=fake_embedder()) is None, \
         "граф не настроен — индекса нет"
     # модель — часть личности индекса: под её именем подписаны и векторы в памяти,
     # и кэш на диске. Пока ключом был только путь, второй позвавший получал чужой
     # векторизатор молча, а свой передать уже не мог (круг 2 по №321, DS C1 / GLM C1)
-    other = gs.shared({}, graph_dir=g, embedder=fake_embedder(model="other-model"))
+    other = brain.shared({}, graph_dir=g, embedder=fake_embedder(model="other-model"))
     assert other is not a, "другая модель — другой индекс, а не тихая подмена"
     assert other.cache_key() != a.cache_key()
 
@@ -368,7 +369,7 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
     после прогрева — текст в формате прежнего сервера памяти."""
     import brain
     g = _graph(tmp_path)
-    monkeypatch.setattr(gs, "_shared", {})
+    monkeypatch.setattr(brain, "_shared", {})
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
     cfg = {"sufler": {"graph_dir": str(g)}}

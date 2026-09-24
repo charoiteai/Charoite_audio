@@ -44,7 +44,7 @@ def main() -> int:
         # принадлежит подсказкам; ночь и пауза между встречами дособерут
         print("идёт запись — векторы памяти не собираем (--force, если это не встреча)")
         return 0
-    mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg))
+    mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg), data_dir=graphs.search_cache_dir())
     t = time.time()
     mem.refresh(force=True)
     cached = mem.load_vectors()
