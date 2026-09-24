@@ -1192,3 +1192,73 @@ def test_a_kind_of_graph_copies_outside_the_registry_is_refused(tmp_path):
     import charoite_paths
     with pytest.raises(ValueError, match="GRAPH_BACKUP_KINDS"):
         charoite_paths.graph_backups(tmp_path / "граф", "новый_вид", root=tmp_path)
+
+
+def _archive_only(tmp: pathlib.Path, folders: dict[str, object | None]) -> tuple[pathlib.Path, pathlib.Path]:
+    """Мир, где от встреч остались только папки архива: имя папки → meeting_id
+    её манифеста (None — манифеста нет)."""
+    import json
+    root, graph = tmp / "repo", tmp / "vault" / "Работа"
+    (root / "transcripts").mkdir(parents=True)
+    (root / "logs" / "brain_sent").mkdir(parents=True)
+    (graph / "Встречи").mkdir(parents=True)
+    for name, meeting_id in folders.items():
+        folder = graph / "Встречи-архив" / name
+        folder.mkdir(parents=True)
+        (folder / "Саммари.md").write_text("саммари\n", encoding="utf-8")
+        if meeting_id is not None:
+            (folder / "meeting.meta.json").write_text(
+                json.dumps({"schema_version": 1, "meeting_id": meeting_id}), encoding="utf-8")
+    return root, graph
+
+
+def test_meeting_left_only_as_an_archive_folder_is_found_by_its_manifest(tmp_path):
+    """№248: стенограммы и узла нет, есть папка архива с манифестом — штамп
+    встречи берётся из манифеста, «забыть» находит её и уносит папку. Папке
+    без манифеста штамп не выдумывается, мусор в манифесте — не штамп."""
+    root, graph = _archive_only(tmp_path, {
+        "2026-07-15 14-00 — Тема": STAMP,
+        "2026-07-20 — Без времени": None,
+        "2026-07-21 09-30 — Без манифеста": None,
+        "2026-07-22 10-00 — Число вместо штампа": 42,
+        "2026-07-23 10-00 — Не штамп": "черновик",
+    })
+    assert forget.stamps(root, graph) == [STAMP]
+    assert forget.resolve(STAMP, root, graph) == [STAMP]
+    assert forget.resolve("2026-07-15", root, graph) == [STAMP]
+    assert forget.resolve("2026-07-20", root, graph) == [], "штамп по имени папки не достраивается"
+    assert forget.resolve("2026-07-21", root, graph) == []
+    folder = graph / "Встречи-архив" / "2026-07-15 14-00 — Тема"
+    assert folder in forget.plan(STAMP, root, graph).delete
+
+
+def test_sent_mark_of_an_archive_only_meeting_leaves_with_it(tmp_path):
+    """Узла нет, ключ внешней памяти — meeting_id манифеста (минута): отметка
+    logs/brain_sent/<минута>.txt снимается, а ключ стирания — тот же."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
+    mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
+    mark.write_text("ok\n", encoding="utf-8")
+    [found] = forget.resolve("2026-07-15", root, graph)
+    plan = forget.plan(found, root, graph)
+    assert mark in plan.delete and plan.brain_sent == {STAMP}
+    assert plan.brain_keys == [STAMP]
+
+
+def test_forgetting_the_seconds_meeting_leaves_the_minute_neighbour_alone(tmp_path):
+    """Соседка по минуте: посекундная встреча осталась папкой архива, минутой
+    владеет другая встреча. «Забыть» посекундную не трогает ни папку соседки,
+    ни её отметку отправки — ключ не угадывается по минуте."""
+    seconds = "2026-07-15_140012"
+    root, graph = _archive_only(tmp_path, {
+        "2026-07-15 14-00 — Участник А": STAMP,
+        "2026-07-15 14-00-12 — Участник Б": seconds,
+    })
+    theirs_mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
+    theirs_mark.write_text("ok\n", encoding="utf-8")
+    assert forget.resolve("2026-07-15", root, graph) == [STAMP, seconds]
+    assert forget.resolve(seconds, root, graph) == [seconds]
+    plan = forget.plan(seconds, root, graph)
+    arch = graph / "Встречи-архив"
+    assert arch / "2026-07-15 14-00-12 — Участник Б" in plan.delete
+    assert arch / "2026-07-15 14-00 — Участник А" not in plan.delete
+    assert theirs_mark not in plan.delete and STAMP not in plan.brain_keys

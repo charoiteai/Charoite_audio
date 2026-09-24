@@ -279,7 +279,8 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
 
 
 def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
-    """Штампы всех известных встреч: по стенограммам и по узлам графа.
+    """Штампы всех известных встреч: по стенограммам, узлам графа и
+    манифестам папок архива.
 
     Смотреть только в transcripts/ мало: стенограмму могли удалить руками, а
     архив и узел остались — именно их человек и хочет убрать.
@@ -294,6 +295,16 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
         for p in (g / MEETINGS_DIR).glob("*.md"):
             if not p.name.startswith("_"):
                 found.add(p.stem)
+        # Папка архива бывает последним следом встречи (№248). Штамп — только
+        # из манифеста: время в имени папки не всегда есть, а достроенный по
+        # нему штамп мог бы назвать соседку по минуте. Папку без манифеста
+        # выдача по штампу не видит: её забирает план встречи того же дня
+        # (_archive_folders), если она там единственная.
+        arch = g / ARCHIVE_DIR
+        for d in (arch.iterdir() if arch.is_dir() else ()):
+            owner = meeting_archive_id(d)
+            if isinstance(owner, str):      # в битом манифесте бывает что угодно
+                found.add(owner)
     return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?", s))
 
 
