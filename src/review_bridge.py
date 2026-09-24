@@ -278,7 +278,7 @@ def _key(item: str) -> str:
     text = task_line.CONTROL_MARK.sub(" ", text)     # «_(снято по сроку 24.09)_» (№366)
     for mark in MARKS.values():
         text = text.replace(mark, " ")
-    text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?", "", text)
+    text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:" + task_line.BOX + r"\s*)?", "", text)
     return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
 
@@ -455,6 +455,9 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
     # дедуп — по ВСЕМ разделам поручений файла (текущий и легаси), запись — в
     # выбранный: минутки с «## Поручения и сроки» выше и «## Поручения» ниже
     # иначе получали дубль пункта из старого блока (GLM M1, круг 2 по #553)
+    # Строки с поставленным статусом (выполнено, снято, возвращено) в дедупе участвуют
+    # намеренно: пункт ревизии, совпавший со снятым, — тот же пункт, и дописать его
+    # открытым значило бы отменить снятие (№366; Sonnet, критика 2 круга 1 по коду).
     existing = [_dedup_view(line, owner)
                 for s_, e_ in (_section_spans(lines) or [(start, end)])
                 for line in lines[s_ + 1:e_] if _key(line)]
@@ -546,8 +549,8 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     — не гадаем, ничего не снимаем и говорим об этом в `dropped` (DS r1
     Critical по #545: съеденное поручение невидимо, лишнее — видно и снимается
     кликом). Пункт, чей статус поставил человек или контроль (выполнено,
-    снято, возвращено — task_line.settled), не снимается: это факт, а не
-    пересказ модели (№366). Ничего не нашлось — минутки те же (№238)."""
+    снято, возвращено — task_line.settled), узнаётся, но не снимается: это факт,
+    а не пересказ модели (№366). Ничего не нашлось — минутки те же (№238)."""
     lang = (lang or "ru").strip().lower()[:2]
     if not items:
         return minutes, 0
@@ -557,8 +560,10 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
         return minutes, 0
     start, end = bounds
     body = lines[start + 1:end]
-    cand = [i for i, ln in enumerate(body)
-            if _key(ln) and not task_line.settled(ln) and not _continuation(ln)]
+    # Сравниваем со всеми пунктами, включая поставленные, а отказываемся снимать уже
+    # после: отсеянный до сравнения поставленный пункт отдавал своё снятие соседнему
+    # открытому («подготовить отчёт» уезжало с «…по бюджету», Opus I2 круга 1 по коду).
+    cand = [i for i, ln in enumerate(body) if _key(ln) and not _continuation(ln)]
     views = {i: _dedup_view(body[i], owner) for i in cand}
     taken: dict[int, str] = {}                      # строка минуток → причина снятия
     for item, why in items:
@@ -567,7 +572,10 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
             # точное совпадение ключа перевешивает пересказ; два точных — гадание
             exact = [i for i in hits if _key(item) == _key(views[i])]
             hits = exact if len(exact) == 1 else hits
-        if len(hits) == 1:
+        if len(hits) == 1 and task_line.settled(body[hits[0]]):
+            if dropped is not None:
+                dropped.append(f"снятие «{item}» относится к пункту со статусом — оставлен")
+        elif len(hits) == 1:
             taken.setdefault(hits[0], why)          # две причины на одну строку — первая
         elif hits and dropped is not None:
             dropped.append(f"снятие «{item}» подходит к {len(hits)} пунктам минуток — не гадаем, оставлены")

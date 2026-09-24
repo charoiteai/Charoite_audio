@@ -8,9 +8,13 @@
 
 Правится только раздел поручений и только формат: текст, имена и сроки
 остаются как были. Статус, поставленный человеком или контролем задач
-(выполнено, снято «[-]», возвращено), не трогается (task_line, №366). По
-умолчанию — сухой прогон; запись — под общим замком графа и с корнем данных
-из CHAROITE_ROOT, как у остальных пишущих в граф.
+(выполнено, снято «[-]», возвращено, свой символ), не трогается (task_line,
+№366): файл, где преобразование изменило бы хоть один статус, не пишется и
+называется в отчёте с номером строки. По умолчанию — сухой прогон; запись — под
+общим замком графа и с корнем данных из CHAROITE_ROOT, как у остальных пишущих
+в граф. Оригинал каждого переписанного файла и манифест (путь, sha256 до и
+после) ложатся в копии графа вне синхронизируемой папки. Код выхода 1 — что-то
+осталось нетронутым: не прочитан, статус, чужая запись посреди правки.
 
     python3 scripts/fix_action_items.py                 # показать, что изменится
     python3 scripts/fix_action_items.py --apply         # применить
@@ -20,9 +24,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import pathlib
 import re
 import sys
+import time
 
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
@@ -33,10 +39,15 @@ import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import safe_write  # noqa: E402
+import task_line  # noqa: E402
 from action_items import normalize  # noqa: E402
 from charoite_paths import RootNotNamed, require_data_root, resolve_root  # noqa: E402
 
 LOCK_WAIT = 5 * 60      # общий замок пишущих в граф: дольше держит только зависший сосед
+# Оригиналы переписанных минуток — в копиях графа рядом с прочими уборками (dedup_graph):
+# разовая правка сотен файлов синхронизируемого графа обязана быть обратимой (Opus,
+# критика 1 круга 1 по коду №366).
+COPIES_KIND = "fix_action_items"
 
 # задачи, видимые во вкладке, — открытые и выполненные; снятое контролем «[-]» вкладка не
 # показывает, и normalize его не трогает (task_line, №366)
@@ -66,10 +77,60 @@ def _graph_lock(graph: pathlib.Path, root: pathlib.Path):
     return file_locks.graph_lock(lock_dir, LOCK_WAIT)
 
 
-def _fixed(text: str) -> tuple[str, int]:
-    """Преобразование для safe_write.rewrite_file: текст и признак правки."""
-    after = normalize(text)
-    return after, int(after != text)
+class StatusChanged(Exception):
+    """Преобразование изменило бы статус, поставленный человеком или контролем."""
+
+    def __init__(self, changes: list[tuple[int, str, str]]):
+        super().__init__(f"статус изменился бы в строках: {len(changes)}")
+        self.changes = changes
+
+
+class _Rewrite:
+    """Преобразование одного файла — и для сухого чтения, и для safe_write.rewrite_file.
+
+    Гейт статусов стоит на тексте, который реально переписывается: rewrite_file
+    перечитывает файл под снимком, и между сухим чтением и записью его мог поменять
+    сосед. Оригинал копируется ДО записи — rewrite_file зовёт преобразование перед
+    заменой файла, а при повторе после гонки копия перезаписывается тем текстом, который
+    и будет заменён. `text` и `after` — прочитанное и записанное последним вызовом:
+    отчёт считается по ним, а не по сухому чтению (Sonnet I1 круга 1 по коду)."""
+
+    def __init__(self, copy_to: pathlib.Path | None = None):
+        self.copy_to = copy_to
+        self.text: str | None = None
+        self.after: str | None = None
+
+    def __call__(self, text: str) -> tuple[str, int]:
+        after = normalize(text)
+        changes = task_line.status_changes(text, after)
+        if changes:
+            raise StatusChanged(changes)
+        self.text, self.after = text, after
+        if after != text and self.copy_to is not None:
+            charoite_paths.secure_dir(self.copy_to.parent)
+            self.copy_to.write_text(text, encoding="utf-8")
+        return after, int(after != text)
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _note_copy(dest: pathlib.Path, rel: pathlib.Path, before: str, after: str) -> None:
+    """Строка манифеста — сразу после записи: прогон, оборванный посреди графа,
+    оставляет манифест ровно по переписанным файлам."""
+    manifest = dest / "manifest.tsv"
+    fresh = not manifest.exists()
+    with manifest.open("a", encoding="utf-8") as f:
+        if fresh:
+            f.write("файл\tsha256 до\tsha256 после\n")
+        f.write(f"{rel}\t{_sha(before)}\t{_sha(after)}\n")
+
+
+def _status_note(rel: pathlib.Path, changes: list[tuple[int, str, str]]) -> str:
+    shown = "; ".join(f"{i}: «{a.strip()}» → «{b.strip()}»" for i, a, b in changes[:3])
+    more = f" и ещё {len(changes) - 3}" if len(changes) > 3 else ""
+    return f"{rel}: статус изменился бы — {shown}{more}"
 
 
 def main() -> int:
@@ -84,6 +145,7 @@ def main() -> int:
         return 0
 
     lock = contextlib.nullcontext(True)
+    dest: pathlib.Path | None = None
     if args.apply:
         try:
             root = require_data_root(__file__)
@@ -91,37 +153,65 @@ def main() -> int:
             print("для --apply нужен корень данных: CHAROITE_ROOT", file=sys.stderr)
             return 2
         lock = _graph_lock(graph, root)
+        dest = charoite_paths.graph_backups(graph, COPIES_KIND, root=root) / time.strftime("%Y%m%d-%H%M%S")
 
     files = [p for p in graph.rglob("*.md")
              if "инутк" in p.name or "_minutes" in p.name]
-    before = after = changed = 0
+    before = after = changed = written = 0
+    refused: list[str] = []
     with lock as taken:
         if not taken:
             print(f"замок графа занят дольше {LOCK_WAIT // 60} мин — не пишу", file=sys.stderr)
             return 1
         for p in files:
+            rel = p.relative_to(graph)
             try:
                 text = p.read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, UnicodeDecodeError) as e:
+                refused.append(f"{rel}: не прочитан ({e})")
                 continue
-            fixed = normalize(text)
-            b, a = len(CHECKBOX.findall(text)), len(CHECKBOX.findall(fixed))
-            before += b
-            after += a
-            if fixed == text:
-                continue
-            changed += 1
-            if args.apply:
-                # Файл читается заново под снимком и пишется с гейтом expect:
-                # отметка, сделанная после сухого чтения, не затирается.
-                safe_write.rewrite_file(p, _fixed, "поручения минуток")
+            final = text
+            try:
+                fixed, n = _Rewrite()(text)
+            except StatusChanged as e:
+                refused.append(_status_note(rel, e.changes))
+                fixed, n = text, 0
+            if n:
+                changed += 1
+                final = fixed
+            if n and dest is not None:
+                # Файл читается заново под снимком и пишется с гейтом expect: отметка,
+                # сделанная после сухого чтения, не затирается, а чужая запись посреди
+                # правки — отказ этого файла, а не обрыв прогона (Sonnet C1 = Opus M1).
+                rw = _Rewrite(dest / rel)
+                try:
+                    n = safe_write.rewrite_file(p, rw, "поручения минуток")
+                except StatusChanged as e:
+                    refused.append(_status_note(rel, e.changes))
+                    n, final = 0, text
+                except safe_write.LostRace as e:
+                    refused.append(f"{rel}: {e}")
+                    n, final = 0, text
+                else:
+                    final = rw.after if n else rw.text
+                if n:
+                    written += 1
+                    _note_copy(dest, rel, rw.text, rw.after)
+            before += len(CHECKBOX.findall(text))
+            after += len(CHECKBOX.findall(final))
 
     verb = "исправлено" if args.apply else "будет исправлено"
-    print(f"файлов минуток: {len(files)}, {verb}: {changed}")
+    print(f"файлов минуток: {len(files)}, {verb}: {written if args.apply else changed}")
     print(f"задач видно: {before} → {after} (+{after - before})")
+    if written:
+        print(f"оригиналы и манифест: {dest}")
+    for note in refused[:20]:
+        print(f"не тронуто: {note}", file=sys.stderr)
+    if len(refused) > 20:
+        print(f"не тронуто: и ещё {len(refused) - 20}", file=sys.stderr)
     if not args.apply and changed:
         print("это сухой прогон; чтобы применить — добавьте --apply")
-    return 0
+    return 1 if refused else 0
 
 
 if __name__ == "__main__":

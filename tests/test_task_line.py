@@ -30,8 +30,17 @@ FORMS = {
     task_line.DONE: f"- [x] {TASK}",
     task_line.CLOSED: f"- [-] {TASK} _(снято по сроку 24.09)_",
     task_line.RETURNED: f"- [ ] {TASK} _(снято по сроку 24.09)_",
+    task_line.OTHER: f"- [/] {TASK}",
 }
-SETTLED = [task_line.DONE, task_line.CLOSED, task_line.RETURNED]
+SETTLED = [task_line.DONE, task_line.CLOSED, task_line.RETURNED, task_line.OTHER]
+# Формы пункта, которые узнаёт хоть один переписчик: маркер × пробелы после него ×
+# символ в ящике (Opus C1 и I1, Sonnet M1 круга 1 по коду: у normalize был свой
+# регэксп «уже чекбокс», и «+ [x]» становилось «- [ ] [x]»)
+MARKERS = ["-", "*", "+", "•", "–", "—", "⁃", "‣", "▪", "1.", "1)"]
+SEPARATORS = [" ", "  ", "\t"]
+# «[i]», «[b]», «[p]» — буквенные отметки тем Obsidian: символ в ящике бывает и буквой
+BOXES = {" ": task_line.OPEN, "x": task_line.DONE, "X": task_line.DONE, "-": task_line.CLOSED,
+         "/": task_line.OTHER, ">": task_line.OTHER, "!": task_line.OTHER, "i": task_line.OTHER}
 
 
 def minutes(line: str) -> str:
@@ -49,6 +58,29 @@ def minutes(line: str) -> str:
 ])
 def test_status_names_every_form(form, line):
     assert task_line.status(line) == form
+
+
+@pytest.mark.parametrize("box", list(BOXES))
+@pytest.mark.parametrize("sep", SEPARATORS)
+@pytest.mark.parametrize("marker", MARKERS)
+def test_every_list_form_keeps_its_status_through_normalize(marker, sep, box):
+    line = f"{marker}{sep}[{box}] {TASK}"
+    assert task_line.status(line) == BOXES[box]
+    doc = minutes(line)
+    out = action_items.normalize(doc)
+    assert line in out.split("\n"), out
+    assert task_line.status_changes(doc, out) == []
+
+
+def test_status_changes_names_a_changed_status_and_the_mangled_signature():
+    before = "## Поручения\n- [x] **Коля** — отчёт\n- [-] **Петя** — звонок\n**Оля** — сверить\n"
+    after = "## Поручения\n- [ ] **Коля** — отчёт\n- [ ] [-] Петя — звонок\n- [ ] **Оля** — сверить\n"
+    assert [i for i, _, _ in task_line.status_changes(before, after)] == [2, 3]
+
+
+def test_status_changes_refuses_to_guess_when_lines_do_not_match_one_to_one():
+    with pytest.raises(ValueError):
+        task_line.status_changes("## Поручения\n- [x] **Коля** — отчёт", "## Поручения")
 
 
 @pytest.mark.parametrize("form", list(FORMS))
@@ -101,6 +133,20 @@ def test_bridge_does_not_withdraw_a_settled_item(form):
     assert moved == 0 and out == doc
 
 
+@pytest.mark.parametrize("line", [FORMS[f] for f in SETTLED] + [f"- [i] {TASK}"])
+def test_bridge_does_not_hand_a_settled_items_withdrawal_to_its_open_neighbour(line):
+    # поставленный пункт отсеивался до сравнения, и снятие «подготовить отчёт» уезжало
+    # с открытым соседом «…по бюджету»: он подходил вложением (Opus I2 круга 1 по коду).
+    # Буква в ящике — ещё и проверка ключа: он обязан снимать ящик любого состояния
+    mine = line.replace(TASK, "**Коля** — подготовить отчёт")
+    doc = minutes(f"{mine}\n- [ ] **Коля** — подготовить отчёт по бюджету")
+    dropped: list[str] = []
+    out, moved = review_bridge.withdraw_from_minutes(
+        doc, [("**Коля** — подготовить отчёт", "не звучало")], dropped=dropped)
+    assert moved == 0 and out == doc
+    assert any("со статусом" in d for d in dropped), dropped
+
+
 def test_bridge_still_withdraws_an_open_item():
     out, moved = review_bridge.withdraw_from_minutes(minutes(FORMS[task_line.OPEN]), [(TASK, "не звучало")])
     assert moved == 1 and FORMS[task_line.OPEN] not in out.split("\n")
@@ -123,12 +169,19 @@ def test_fix_action_items_keeps_statuses_and_fixes_prose(tmp_path):
                     + "\n*   **Оля** — сверить цифры\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
     env["CHAROITE_ROOT"] = str(data)
+    original = note.read_text(encoding="utf-8")
     r = _fix(graph, env, "--apply")
     assert r.returncode == 0, r.stderr
     lines = note.read_text(encoding="utf-8").split("\n")
     for line in kept:
         assert line in lines, lines
     assert "- [ ] **Оля** — сверить цифры" in lines, lines
+    # оригинал и манифест — в копиях графа, вне синхронизируемой папки
+    [manifest] = list(data.rglob("manifest.tsv"))
+    rows = manifest.read_text(encoding="utf-8").splitlines()
+    assert rows[1].split("\t")[0] == "Встречи/2026-09-01 Минутки.md", rows
+    assert (manifest.parent / "Встречи" / "2026-09-01 Минутки.md").read_text(encoding="utf-8") == original
+    assert not str(manifest).startswith(str(graph))
 
 
 def test_fix_action_items_refuses_to_write_without_a_named_data_root(tmp_path):
@@ -143,9 +196,10 @@ def test_fix_action_items_refuses_to_write_without_a_named_data_root(tmp_path):
 
 
 def test_fix_action_items_does_not_write_while_the_graph_lock_is_held(tmp_path, monkeypatch):
+    # замок берём точкой входа соседа, а не формулой скрипта: разойдутся — тест покраснеет
+    # (Opus M2 круга 1 по коду)
     sys.path.insert(0, str(ROOT / "scripts"))
-    import charoite_paths
-    import file_locks
+    import cloud_review
     import fix_action_items
     graph = tmp_path / "граф"
     graph.mkdir()
@@ -157,8 +211,7 @@ def test_fix_action_items_does_not_write_while_the_graph_lock_is_held(tmp_path, 
     monkeypatch.setenv("CHAROITE_ROOT", str(data))
     monkeypatch.setattr(fix_action_items, "LOCK_WAIT", 0.2)
     monkeypatch.setattr(sys, "argv", ["fix_action_items.py", "--graph", str(graph), "--apply"])
-    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data).parent)
-    with file_locks.graph_lock(lock_dir, 1) as taken:
+    with cloud_review.graph_lock(graph, 1) as taken:
         assert taken
         assert fix_action_items.main() == 1
     assert note.read_text(encoding="utf-8") == text
@@ -191,3 +244,96 @@ def test_fix_action_items_keeps_an_edit_made_between_its_read_and_its_write(tmp_
     lines = note.read_text(encoding="utf-8").split("\n")
     assert "- [x] **Петя** — позвонить" in lines, lines
     assert "- [ ] **Оля** — сверить цифры" in lines, lines
+
+
+def _script_run(tmp_path, monkeypatch, *files: tuple[str, str]):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fix_action_items
+    graph = tmp_path / "граф"
+    graph.mkdir()
+    data = tmp_path / "данные"
+    (data / "logs").mkdir(parents=True)
+    notes = []
+    for name, text in files:
+        note = graph / name
+        note.write_text(text, encoding="utf-8")
+        notes.append(note)
+    monkeypatch.setenv("CHAROITE_ROOT", str(data))
+    monkeypatch.setattr(sys, "argv", ["fix_action_items.py", "--graph", str(graph), "--apply"])
+    return fix_action_items, data, notes
+
+
+def test_fix_action_items_refuses_a_file_whose_status_the_transform_would_change(tmp_path, monkeypatch, capsys):
+    # гейт статусов не зависит от грамматики переписчика: преобразование, которое
+    # открыло бы выполненное, не пишет файл, а называет строку (Opus I3 круга 1 по коду)
+    text = "## Поручения\n- [x] **Коля** — отчёт\n*   **Оля** — сверить цифры\n"
+    fix, _, (bad, good) = _script_run(tmp_path, monkeypatch, ("1 Минутки.md", text),
+                                      ("2 Минутки.md", "## Поручения\n*   **Петя** — позвонить\n"))
+    real = fix.normalize
+    monkeypatch.setattr(fix, "normalize", lambda t: real(t).replace("- [x] **Коля**", "- [ ] **Коля**"))
+    assert fix.main() == 1
+    assert bad.read_text(encoding="utf-8") == text
+    assert "- [ ] **Петя** — позвонить" in good.read_text(encoding="utf-8").split("\n")
+    assert "1 Минутки.md: статус изменился бы — 2: «- [x] **Коля** — отчёт»" in capsys.readouterr().err
+
+
+def test_fix_action_items_checks_statuses_on_the_text_it_actually_rewrites(tmp_path, monkeypatch, capsys):
+    # сосед отмечает задачу между сухим чтением и записью: преобразование, которое её
+    # открыло бы, упирается в гейт на перечитанном тексте, а не только на сухом
+    fix, _, (note,) = _script_run(tmp_path, monkeypatch, (
+        "Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n- [ ] **Петя** — позвонить\n"))
+    real = fix.normalize
+    calls = []
+
+    def racing(text):
+        if not calls:
+            note.write_text(text.replace("- [ ] **Петя**", "- [x] **Петя**"), encoding="utf-8")
+        calls.append(1)
+        return real(text).replace("- [x] **Петя**", "- [ ] **Петя**")
+
+    monkeypatch.setattr(fix, "normalize", racing)
+    assert fix.main() == 1
+    assert "- [x] **Петя** — позвонить" in note.read_text(encoding="utf-8").split("\n")
+    assert "статус изменился бы" in capsys.readouterr().err
+
+
+def test_fix_action_items_goes_on_after_a_lost_race_and_says_so(tmp_path, monkeypatch, capsys):
+    # чужая запись посреди правки — отказ этого файла, а не трассировка посреди графа
+    # (Sonnet C1 = Opus M1 круга 1 по коду)
+    fix, _, (lost, good) = _script_run(tmp_path, monkeypatch,
+                                       ("1 Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n"),
+                                       ("2 Минутки.md", "## Поручения\n*   **Петя** — позвонить\n"))
+    real = fix.safe_write.rewrite_file
+
+    def flaky(path, transform, what):
+        if path.name == "1 Минутки.md":
+            raise fix.safe_write.LostRace(path, what, kind=fix.safe_write.LostRace.CHANGED)
+        return real(path, transform, what)
+
+    monkeypatch.setattr(fix.safe_write, "rewrite_file", flaky)
+    assert fix.main() == 1
+    assert "*   **Оля** — сверить цифры" in lost.read_text(encoding="utf-8").split("\n")
+    assert "- [ ] **Петя** — позвонить" in good.read_text(encoding="utf-8").split("\n")
+    out, err = capsys.readouterr()
+    assert "исправлено: 1" in out
+    assert "1 Минутки.md" in err
+
+
+def test_fix_action_items_reports_what_it_wrote_not_what_it_planned(tmp_path, monkeypatch, capsys):
+    # сосед привёл файл к формату сам между сухим чтением и записью: записывать нечего,
+    # и отчёт это говорит, а не повторяет план сухого чтения (Sonnet I1 круга 1 по коду)
+    fix, data, (note,) = _script_run(tmp_path, monkeypatch, (
+        "Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n"))
+    real = fix.normalize
+    calls = []
+
+    def racing(text):
+        if not calls:
+            note.write_text(real(text), encoding="utf-8")
+        calls.append(1)
+        return real(text)
+
+    monkeypatch.setattr(fix, "normalize", racing)
+    assert fix.main() == 0
+    assert "исправлено: 0" in capsys.readouterr().out
+    assert not list(data.rglob("manifest.tsv"))

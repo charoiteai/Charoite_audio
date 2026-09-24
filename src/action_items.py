@@ -61,11 +61,8 @@ _KNOWN_BARE_SECTION = re.compile(
     re.IGNORECASE,
 )
 # Строка-пункт: маркер списка в начале (включая типографские тире, которыми
-# модель иногда открывает пункт).
-_BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
-# Уже правильный чекбокс любого состояния — не трогаем: снятое контролем «[-]»
-# иначе становилось «- [ ] [-] …» и снова открытым (№366, task_line).
-_CHECKBOX = re.compile(r"^\s*[-*] " + task_line.BOX + " ")
+# модель иногда открывает пункт). Набор маркеров — общий с грамматикой статуса.
+_BULLET = re.compile(r"^\s*" + task_line.MARKER + r"\s+")
 # Пометка «не участник» (flag_outsiders) — тоже не трогаем: иначе следующий
 # проход normalize (пересборка, повторный «Протокол») вернул бы строке
 # чекбокс, и задача снова ушла бы отсутствующему.
@@ -105,7 +102,12 @@ def normalize(text: str) -> str:
                 inside = False
                 out.append(line)
                 continue
-            if line.strip() and _BULLET.match(line) and not _CHECKBOX.match(line) \
+            # Пункт с чекбоксом — в любой форме и любом состоянии — не трогаем: его
+            # статус поставил человек или контроль, а узнаёт форму одна грамматика
+            # (task_line). Свой регэксп «уже чекбокс» здесь расходился с ней: «- [-]»,
+            # «+ [x]», «-  [x]» и «[/]» уходили в _to_checkbox и становились
+            # «- [ ] [x] …» — снова открытыми (№366; Opus C1 и I1 круга 1 по коду).
+            if line.strip() and _BULLET.match(line) and task_line.status(line) is None \
                     and not _OUTSIDER_LINE.match(line):
                 out.append(_to_checkbox(line))
                 continue
