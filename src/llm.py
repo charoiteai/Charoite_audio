@@ -85,19 +85,25 @@ def _fit_cache_sweep() -> None:
     иначе текст встречи висел бы в простаивающем MCP-сервере до его выхода."""
     global _fit_sweeper
     with _fit_cache_lock:
-        _fit_cache_sweep_locked(_fit_clock())
+        # убирает только свой таймер: отменённый clear-ом, но уже сработавший
+        # и ждавший замка, иначе обнулил бы чужой и завёл вторую цепочку
+        if _fit_sweeper is not threading.current_thread():
+            return
+        now = _fit_clock()
+        _fit_cache_sweep_locked(now)
         _fit_sweeper = None
         if _fit_cache:
-            _fit_arm_sweeper_locked()
+            _fit_arm_sweeper_locked(now)
 
 
-def _fit_arm_sweeper_locked() -> None:
+def _fit_arm_sweeper_locked(now: float) -> None:
     global _fit_sweeper
     if _fit_sweeper is not None:
         return
-    # короткий шаг, а не «до конца срока»: таймер идёт по monotonic и после
-    # сна проснулся бы поздно; раз в минуту — отстаём от срока не больше минуты
-    _fit_sweeper = threading.Timer(FIT_CACHE_SWEEP, _fit_cache_sweep)
+    # До ближайшего срока, но не дольше шага: таймер идёт по monotonic и после
+    # сна проснулся бы поздно — с шагом отстаём от срока не больше минуты.
+    due = min(stamp for stamp, _ in _fit_cache.values()) + FIT_CACHE_TTL - now
+    _fit_sweeper = threading.Timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep)
     _fit_sweeper.daemon = True
     _fit_sweeper.start()
 
@@ -122,7 +128,7 @@ def _fit_cache_put(key: tuple, text: str) -> None:
         _fit_cache[key] = (now, text)
         while len(_fit_cache) > FIT_CACHE_SIZE:
             _fit_cache.popitem(last=False)
-        _fit_arm_sweeper_locked()
+        _fit_arm_sweeper_locked(now)
 
 
 def _fit_cache_clear() -> None:

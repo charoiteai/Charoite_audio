@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
 import time
 
 import pytest
@@ -921,22 +922,59 @@ def test_daemon_minutes_do_not_leave_digests_in_memory(monkeypatch):
     assert len(calls) == 10, "минутки демона не наполнили кэш для MCP"
 
 
+def _sweepers() -> list:
+    return [t for t in threading.enumerate()
+            if getattr(t, "function", None) is llm_mod._fit_cache_sweep and t.is_alive()]
+
+
+def _until(cond, deadline: float = 2.0) -> bool:
+    end = time.monotonic() + deadline
+    while not cond():
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.005)
+    return True
+
+
 def test_expired_digests_leave_memory_without_another_call(monkeypatch):
-    """«До 30 минут» — это про память, а не только про выдачу: истёкшая
-    запись уходит уборщиком, даже если за ней больше никто не придёт."""
+    """«До 30 минут» — это про память, а не только про выдачу: истёкшую
+    запись убирает настоящий таймер, даже если за ней никто не придёт."""
     now = [1000.0]
     monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     llm_mod._fit_cache_put(("а",), "сводка")
-    assert llm_mod._fit_sweeper is not None, "запись взвела уборщика"
-    assert llm_mod._fit_sweeper.interval <= 60
     assert llm_mod._fit_sweeper.daemon, "уборщик не держит процесс MCP-сервера на выходе"
-    now[0] += llm_mod.FIT_CACHE_TTL - 1
-    llm_mod._fit_cache_sweep()
-    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None, \
-        "живая запись осталась, уборщик взведён снова"
-    now[0] += 1
-    llm_mod._fit_cache_sweep()
-    assert not llm_mod._fit_cache and llm_mod._fit_sweeper is None
+    time.sleep(0.05)                       # несколько тиков: живая запись на месте
+    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None
+    now[0] += llm_mod.FIT_CACHE_TTL
+    assert _until(lambda: not llm_mod._fit_cache and llm_mod._fit_sweeper is None), \
+        "таймер убрал истёкшую сводку и не взвёлся на пустой кэш"
+    assert _until(lambda: not _sweepers())
+
+
+def test_sweeper_wakes_at_the_nearest_deadline_not_a_full_step_later(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    assert llm_mod._fit_sweeper.interval == llm_mod.FIT_CACHE_SWEEP == 60
+    llm_mod._fit_sweeper.cancel()
+    llm_mod._fit_sweeper = None
+    now[0] += llm_mod.FIT_CACHE_TTL - 5
+    llm_mod._fit_cache_put(("б",), "б")
+    assert llm_mod._fit_sweeper.interval == 5, "до срока «а» — 5 с, а не минута"
+
+
+def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
+    """Таймер, отменённый clear-ом, но уже сработавший, не трогает таймер
+    новой записи: уборщик всегда один, и clear его останавливает."""
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: 1000.0)
+    assert _until(lambda: not _sweepers()), "отменённые таймеры прошлых тестов вышли"
+    llm_mod._fit_cache_put(("а",), "а")
+    ours = llm_mod._fit_sweeper
+    llm_mod._fit_cache_sweep()             # чужой вызов — не из таймера-владельца
+    assert llm_mod._fit_sweeper is ours and len(_sweepers()) == 1
+    llm_mod._fit_cache_clear()
+    assert llm_mod._fit_sweeper is None and _until(lambda: not _sweepers())
 
 
 def test_any_access_drops_every_expired_entry(monkeypatch):
