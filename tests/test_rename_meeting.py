@@ -149,6 +149,36 @@ def world(tmp_path, monkeypatch):
     return graph, tdir
 
 
+@pytest.mark.parametrize("mark, said, not_said", [
+    (True, "curl", "выключена в конфиге"),
+    (False, "выключена в конфиге", "curl"),
+])
+def test_rename_main_says_what_the_mark_and_the_flag_tell(world, tmp_path, monkeypatch, capsys,
+                                                          mark, said, not_said):
+    # точка входа целиком: main читает конфиг и зовёт brain_note, а не подставляет своё
+    # (Opus I1 круга 2 №249: rm.main не звал ни один тест)
+    graph, _ = world
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        f"sufler:\n  graph_dir: {graph}\n  brain: false\nlog:\n  transcripts_dir: transcripts\n",
+        encoding="utf-8")
+    if mark:
+        (tmp_path / "logs" / "brain_sent").mkdir(parents=True)
+        (tmp_path / "logs" / "brain_sent" / f"{STAMP}.txt").write_text("тема\n", encoding="utf-8")
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    monkeypatch.delenv("SUFLER_TRANSCRIPTS_DIR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["rename_meeting.py", STAMP, "Новая тема", "--yes"])
+    rm.main()
+    out = capsys.readouterr().out
+    assert "готово" in out and said in out and not_said not in out
+
+
 def test_plan_alone_touches_nothing(world):
     graph, tdir = world
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")

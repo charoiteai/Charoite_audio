@@ -1093,3 +1093,49 @@ def test_forget_erases_with_an_empty_or_broken_config(tmp_path, monkeypatch, con
     assert not (root / "transcripts" / f"{STAMP}.md").exists()
     assert calls == [f"{forget.BRAIN}/forget"]
 
+
+@pytest.mark.parametrize("mark, said, not_said", [
+    (True, "curl", "выключена в конфиге"),
+    (False, "выключена в конфиге", "curl"),
+])
+def test_forget_says_what_the_mark_and_the_flag_tell(tmp_path, monkeypatch, capsys, mark, said, not_said):
+    # проводка целиком: план снимает улику, main читает флаги, apply выбирает строку. По
+    # отдельности каждая часть держалась, место соединения — нет (Opus I1 круга 2 №249)
+    root, graph = _world(tmp_path)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("sufler:\n  brain: false\n", encoding="utf-8")
+    if mark:
+        (root / "logs" / "brain_sent").mkdir(parents=True)
+        (root / "logs" / "brain_sent" / f"{STAMP}.txt").write_text("тема\n", encoding="utf-8")
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", STAMP, "--graph", str(graph), "--yes"])
+    assert forget.main() == 0
+    out = capsys.readouterr().out
+    assert said in out and not_said not in out
+
+
+def test_one_meeting_gets_one_story_about_the_memory(tmp_path, monkeypatch, capsys):
+    # у владельца минуты ключей два, отметка под одним: строки не спорят друг с другом
+    # (Opus M2 круга 2 №249)
+    gone = tmp_path / "стенограмма.md"
+    gone.write_text("x", encoding="utf-8")
+    p = forget.Plan(stamp="2026-07-15_140012", delete=[gone],
+                    brain_keys=["2026-07-15_140012", "2026-07-15_1400"], brain_sent={"2026-07-15_1400"})
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    assert forget.apply(p, yes=True, brain_enabled=False, brain_explicit=True)
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "память Чароита" in ln]
+    assert len(lines) == 2 and all("curl" in ln for ln in lines), lines
+

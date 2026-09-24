@@ -851,8 +851,10 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
         tmp.replace(path)
     print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
+    # улика отправки — свойство встречи, а не ключа: у владельца минуты ключей два, отметка под
+    # одним, и по ключу выходили две строки, противоречащие друг другу (Opus M2 круга 2 №249)
     for key in p.brain_keys:
-        said = brain_forget(key, sent=key in p.brain_sent, enabled=brain_enabled,
+        said = brain_forget(key, sent=bool(p.brain_sent), enabled=brain_enabled,
                             explicit=brain_explicit)
         if said:
             print(f"  память Чароита: {said}")
