@@ -73,9 +73,14 @@ def test_every_list_form_keeps_its_status_through_normalize(marker, sep, box):
 
 
 def test_status_changes_names_a_changed_status_and_the_mangled_signature():
-    before = "## Поручения\n- [x] **Коля** — отчёт\n- [-] **Петя** — звонок\n**Оля** — сверить\n"
-    after = "## Поручения\n- [ ] **Коля** — отчёт\n- [ ] [-] Петя — звонок\n- [ ] **Оля** — сверить\n"
-    assert [i for i, _, _ in task_line.status_changes(before, after)] == [2, 3]
+    # строка 5 — только подпись порчи: до правки грамматика ящика не видит («**[x]» внутри
+    # жирного), после — видит открытую задачу; изменения статуса нет, порча есть
+    before = ("## Поручения\n- [x] **Коля** — отчёт\n- [-] **Петя** — звонок\n**Оля** — сверить\n"
+              "- **[x] Вера** — счёт\n")
+    after = ("## Поручения\n- [ ] **Коля** — отчёт\n- [ ] [-] Петя — звонок\n- [ ] **Оля** — сверить\n"
+             "- [ ] [x] Вера — счёт\n")
+    assert task_line.status("- **[x] Вера** — счёт") is None
+    assert [i for i, _, _ in task_line.status_changes(before, after)] == [2, 3, 5]
 
 
 def test_status_changes_refuses_to_guess_when_lines_do_not_match_one_to_one():
