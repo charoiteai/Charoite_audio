@@ -54,13 +54,20 @@ runtime；meeting 和 app 可见其下所有层。
 **环境门禁。** 若某层的 `allowed` 不包含环境层（目前是 base 和 graph），该层的模块既不能有指向
 runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `ROOT_SHAPES` 中作用域为 `layer` 的任何
 环境形式：任何环境访问（`os.environ`、`getenv`、`expandvars`、不带 `dir=` 的 `tempfile`——它读取
-`TMPDIR`）、`Path.home()` / `expanduser`、`__file__`、导入时修改 `sys.path`、动态导入。修复方法由同一个
+`TMPDIR`）、`Path.home()` / `expanduser`、`__file__`（以及 `__spec__`、`inspect.getfile`）、导入时对 `sys.path` 的任何触碰（包括
+`site.addsitedir`）、动态导入。形式按完整名称判定，而不是按模块的写法（`import sys as s`、
+`from importlib import import_module as im`），并且任何提及都算，不仅是调用
+（`loader = importlib.import_module`）。`root_exemptions` 不能豁免这些形式——工件在加载时即被拒绝；
+经由邻居到达 runtime（graph → `allowed_edges` 债务 → runtime）与直接的边同样是红的。这是一套语法，
+而非「所有方式」：除 `tempfile` 外的隐式读取者（`getpass.getuser`、`shutil.which`）不被识别。修复方法由同一个
 `allowed` 推出：路径以参数传入，由能看见 runtime 的层中的调用方组装——就像 `graphs.open_search`
 那样——而不是「去找根规范」。图谱包是一个声明入口的导入闭包，即 `layout.json` 中的
 `package_entry`（`graph_search`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
 把该闭包复制到临时目录，在独立进程中对演示图谱执行搜索：`HOME`、`CHAROITE_ROOT`、
 `SUFLER_GRAPH_DIR`、`CHAROITE_GRAPH_DIR` 和 `TMPDIR` 都指向陷阱目录，审计钩子在读取陷阱或在
-`data_dir` 之外写入时让探针失败。
+`data_dir` 之外写入时让探针失败。确定性的伪向量器让包写入向量缓存并读回，因此写入路径也被执行，
+而不只是词法搜索。探针的自检按其自身表格的每个元素各构造一个「有漏洞」的包——每个被污染的变量、
+每个文件系统变更事件、每个被隔离移除的变量——新元素若没有对应用例，测试就会变红。
 
 如果 PR 让这项检查变红，消息会给出修法。常见情况：
 
@@ -71,7 +78,7 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 | 字段 X 未在 `_SCHEMA` 中声明 | 工件字段在代码中声明，每个都有类别——`measured`、`seed` 或 `decision`；添加声明（及其在 `tests/test_import_boundaries.py` 中的快照 `APPROVED_FIELDS`），而不是把键直接写进 JSON |
 | 文件自己推导根 | 从 `src/charoite_paths.py` 获取，不要重新解析 `CHAROITE_ROOT`，也不要从 `__file__` 向上走 |
 | 文件在导入时记住规范的答案 | 在调用时询问（`def _root(): return resolve_root(__file__)`），不要冻结在模块常量或类字段里——那个值会在入口点命名根之前就被取走 |
-| 指向环境层的边 / X 层模块触碰环境 | X 层没有环境：路径或设置以参数传入，由能看见 runtime 的层上的门组装（如 `graphs.open_search`）；`allowed_edges` 和 `root_exemptions` 都不是修法 |
+| 指向环境层的边 / X 层模块触碰环境 | X 层没有环境：路径或设置以参数传入，由能看见 runtime 的层上的门组装（如 `graphs.open_search`）；`allowed_edges` 不能豁免，`root_exemptions` 在加载时拒绝这些形式 |
 | 包 X 拉入模块 Y | `package_entry` 的闭包到达了带环境的层——切断该导入：包必须能脱离应用安装 |
 | 地图过期 | 运行 `.venv/bin/python scripts/layout_map.py` |
 
@@ -85,6 +92,9 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 每条授予例外的记录——逆箭头的边、手动入口点、允许自己推导根的模块——都需要卡片或书面理由，
 守卫**双向**比对工件与代码：不再符合现实的记录与未声明的违规同样是红的。列表只会自行缩短；
 只有人写、审阅者读过的 diff 才能让它增长。
+
+守卫中的 `KINDS` 表有意在测试内以副本固定——原因见那里的注释。改变策略意味着改两个文件，
+这正是目的所在。
 
 ## 从哪里开始
 

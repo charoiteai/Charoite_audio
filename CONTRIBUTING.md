@@ -103,7 +103,15 @@ runtime layer (today: base and graph) has no edge into runtime — `allowed_edge
 cannot excuse one — and none of the environment shapes of `ROOT_SHAPES` with
 scope `layer`: any environment access (`os.environ`, `getenv`, `expandvars`,
 `tempfile` without `dir=`, which reads `TMPDIR`), `Path.home()` / `expanduser`,
-`__file__`, a change to `sys.path` at import, a dynamic import. The fix is
+`__file__` (and `__spec__`, `inspect.getfile`), any touch of `sys.path` at
+import (`site.addsitedir` included), a dynamic import. A shape is judged by the
+full name, not by how the module spelled it (`import sys as s`, `from importlib
+import import_module as im`), and by any mention, not only a call
+(`loader = importlib.import_module`). `root_exemptions` cannot excuse these
+shapes — the artifact is rejected at load — and runtime reached through a
+neighbour (graph → an `allowed_edges` debt → runtime) is as red as a direct
+edge. It is a grammar, not every possible way: implicit readers other than
+`tempfile` (`getpass.getuser`, `shutil.which`) are not recognised. The fix is
 derived from the same `allowed`: the path comes in as a parameter, and the
 caller from a layer that sees runtime assembles it — the way
 `graphs.open_search` does — never "go to the roots canon". The graph package is
@@ -112,7 +120,12 @@ the import closure of one declared entry, `package_entry` in `layout.json`
 copies that closure into a temporary directory and runs a search over the demo
 graph in a separate process with `HOME`, `CHAROITE_ROOT`, `SUFLER_GRAPH_DIR`,
 `CHAROITE_GRAPH_DIR` and `TMPDIR` pointing into a trap and an audit hook that
-fails on reading the trap or writing outside `data_dir`.
+fails on reading the trap or writing outside `data_dir`. A deterministic fake
+embedder makes the package write its vector cache and read it back, so the
+write path is exercised, not only the lexical search. The probe's self-check
+builds one leaky package per element of the probe's own tables — each poisoned
+variable, each file-system mutation event, each variable the isolation drops —
+so a new element without its case turns the test red.
 
 If a PR turns that check red, the message names the fix. The usual cases:
 
@@ -123,7 +136,7 @@ If a PR turns that check red, the message names the fix. The usual cases:
 | field X is not declared in `_SCHEMA` | the artifact's fields are declared in code, each with a class — `measured`, `seed` or `decision`; add the declaration (and its snapshot `APPROVED_FIELDS` in `tests/test_import_boundaries.py`) instead of writing the key into the JSON |
 | file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
 | file remembers the canon's answer at import | ask on call (`def _root(): return resolve_root(__file__)`), don't freeze it in a module constant or a class field — the value would be taken before the entry point names the root |
-| edge into the environment layer / module of layer X touches the environment | layer X has no environment: pass the path or setting in as a parameter and assemble it in a door on a layer that sees runtime (like `graphs.open_search`); `allowed_edges` and `root_exemptions` are not the fix |
+| edge into the environment layer / module of layer X touches the environment | layer X has no environment: pass the path or setting in as a parameter and assemble it in a door on a layer that sees runtime (like `graphs.open_search`); `allowed_edges` cannot excuse it and `root_exemptions` refuses these shapes at load |
 | package X pulls module Y | the closure of `package_entry` reached a layer with the environment — cut the import, the package must install without the app |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
 

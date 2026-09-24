@@ -211,17 +211,30 @@ ISOLATION_DROP = ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")
 #: Код выхода, которым аудит-хук валит пробу. Хук не бросает исключение, а
 #: выходит сразу: `except Exception` в коде пакета проглотил бы исключение молча.
 AUDIT_EXIT = 97
+#: События аудита, которые меняют ФС мимо `open`, → номера аргументов, куда они
+#: пишут. Источник копии, цель ссылки и длина — не запись: копия графа в кэш законна,
+#: а проверка источника валила бы её (Minor головы круга 1 по PR №625). Своего
+#: события у `os.replace` нет — CPython поднимает `os.rename`, и прежняя запись
+#: `os.replace` не срабатывала никогда (найдено случаем самопроверки ниже).
+MUTATIONS = {"os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1),
+             "os.truncate": (0,), "os.link": (1,), "os.symlink": (1,), "os.chmod": (0,), "os.utime": (0,),
+             "shutil.rmtree": (0,), "shutil.copyfile": (1,)}
 
 #: Раннер пробы — отдельным процессом. Путь к копии пакета вставляет он сам, а не
 #: окружение: с SAFEPATH каталог скрипта в sys.path не попадает.
-PROBE_RUNNER = r'''
-import json, os, pathlib, sys
+#:
+#: Векторизатор — детерминированная подделка, а не отказ: с отказом индекс векторов
+#: не строился, кэш не писался, и правило «запись вне data_dir» на настоящем пакете
+#: не срабатывало ни разу — манифест, уведённый в /var/tmp, проходил пробу зелёным
+#: (Critical головы круга 1 по PR №625). Второй экземпляр читает кэш с диска: запись
+#: и чтение проходят оба.
+PROBE_RUNNER = r"""
+import os, sys   # уже загружены интерпретатором; всё прочее — после хука, импорт идёт мимо ловушки
 
 PKG, DATA, GRAPH, TRAP, QUERY = sys.argv[1:6]
 TRAP_REAL, DATA_REAL = os.path.realpath(TRAP), os.path.realpath(DATA)
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-MUTATIONS = ("os.mkdir", "os.remove", "os.rmdir", "os.rename", "os.replace", "os.truncate",
-             "os.link", "os.symlink", "os.chmod", "os.utime", "shutil.rmtree", "shutil.copyfile")
+MUTATIONS = """ + repr(MUTATIONS) + r"""
 
 
 def inside(path, root):
@@ -235,7 +248,7 @@ def inside(path, root):
 def fail(what):
     sys.stderr.write(f"АУДИТ: {what}\n")
     sys.stderr.flush()
-    os._exit(''' + str(AUDIT_EXIT) + r''')
+    os._exit(""" + str(AUDIT_EXIT) + r""")
 
 
 def hook(event, args):
@@ -252,44 +265,60 @@ def hook(event, args):
         if args and args[0] is not None and inside(args[0], TRAP_REAL):
             fail(f"обход ловушки {args[0]}")
     elif event in MUTATIONS:
-        for path in args[:2]:
+        for i in MUTATIONS[event]:
+            path = args[i] if i < len(args) else None
             if isinstance(path, (str, bytes, os.PathLike)) and not inside(path, DATA_REAL):
                 fail(f"{event} вне data_dir: {path}")
 
 
 sys.addaudithook(hook)
+import json, pathlib
 sys.path.insert(0, PKG)
 import graph_search
 import model_seam
 
 
-def refuse(texts, timeout):
-    raise model_seam.SeamTransportError("проба пакета: моделей нет", policy=True)
+def vectors(texts, timeout):
+    return [[1.0 + t.count(c) for c in "аеиоуртнс"] for t in texts]
 
 
-search = graph_search.GraphSearch(pathlib.Path(GRAPH), data_dir=pathlib.Path(DATA),
-                                  embedder=model_seam.Embedder(refuse, model_seam.NO_MODEL, refused="проба пакета"))
+def open_search():
+    return graph_search.GraphSearch(pathlib.Path(GRAPH), data_dir=pathlib.Path(DATA),
+                                    embedder=model_seam.Embedder(vectors, "проба-векторы"))
+
+
+search = open_search()
 search.refresh(force=True)
-result = search.search(QUERY)
+embedded = search.embed_pending()
+again = open_search()
+again.refresh(force=True)
+loaded = again.load_vectors()
+result = again.search(QUERY)
 print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
+                  "embedded": embedded, "loaded": loaded,
+                  "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
                   "modules": sorted(sys.modules),
                   "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
                                   if getattr(m, "__file__", None))}, ensure_ascii=False))
-'''
+"""
 
 
 def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: pathlib.Path, *,
-                      forbidden: tuple[str, ...], timeout: int = TIMEOUT) -> tuple[list[str], dict]:
+                      forbidden: tuple[str, ...], outer: dict[str, str] | None = None,
+                      drop: tuple[str, ...] = ISOLATION_DROP, timeout: int = TIMEOUT) -> tuple[list[str], dict]:
     """Прогнать пакет из каталога `pkg`: вход импортируется отдельным процессом с
     отравленным окружением, индекс строится по `graph`, кэш — только в `data_dir`.
-    Расхождения строками (пусто — принят) и выдача раннера."""
+    `outer` — что стояло в окружении родителя до изоляции (значение `{trap}` —
+    путь ловушки), `drop` — что изоляция снимает. Расхождения строками (пусто —
+    принят) и выдача раннера."""
     trap, data, cwd = work / "ловушка", work / "data", work / "cwd"
     for d in (trap, data, cwd):
         d.mkdir(parents=True)
     (trap / "config.yaml").write_text("ловушка: читать нельзя\n", encoding="utf-8")
     runner = work / "probe_runner.py"
     runner.write_text(PROBE_RUNNER, encoding="utf-8")
-    env = {k: v for k, v in os.environ.items() if k not in ISOLATION_DROP}
+    parent = {**os.environ, **{k: v.replace("{trap}", str(trap)) for k, v in (outer or {}).items()}}
+    env = {k: v for k, v in parent.items() if k not in drop}
     env.update(ISOLATION_ENV)
     env.update({k: str(trap) for k in POISONED_ENV})
     r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query], cwd, env, timeout)
@@ -319,9 +348,10 @@ def _copy_package(dest: pathlib.Path) -> list[str]:
 
 def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     """Пакет поиска — это замыкание `package_entry` и ничего больше: копия
-    отдельно от репозитория строит индекс по демо-графу и находит узел, не
-    прочитав ни одной переменной приложения (HOME, корень, каталог графа, TMPDIR —
-    ловушка) и не написав ничего вне своего `data_dir`."""
+    отдельно от репозитория строит индекс по демо-графу, пишет кэш векторов и
+    читает его обратно, находит узел — не прочитав ни одной переменной приложения
+    (HOME, корень, каталог графа, TMPDIR — ловушка) и не написав ничего вне своего
+    `data_dir`."""
     layout = lm.load_layout()
     rels = _copy_package(tmp_path / "pkg")
     graph = tmp_path / "work" / "Демо"
@@ -335,44 +365,99 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
     assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
     assert closure <= set(out["modules"]), "проба импортирует не весь пакет — план копирования шире нужного"
+    # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
+    assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
+    assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
+
+
+#: Как каждое событие из `MUTATIONS` выглядит в коде пакета: `V` — каталог-жертва
+#: вне `data_dir` (в нём файл `f` и каталог `d`), `self.data` — сам `data_dir`.
+MUTATION_CASES = {
+    "os.mkdir": "os.mkdir(V / 'новый')",
+    "os.remove": "os.remove(V / 'f')",
+    "os.rmdir": "os.rmdir(V / 'd')",
+    "os.rename": "os.rename(V / 'f', V / 'g')",
+    "os.truncate": "os.truncate(V / 'f', 0)",
+    "os.link": "os.link(self.data / 'кэш', V / 'l')",
+    "os.symlink": "os.symlink(self.data / 'кэш', V / 's')",
+    "os.chmod": "os.chmod(V / 'f', 0o600)",
+    "os.utime": "os.utime(V / 'f')",
+    "shutil.rmtree": "shutil.rmtree(V / 'd')",
+    "shutil.copyfile": "shutil.copyfile(self.data / 'кэш', V / 'c')",
+}
 
 
 def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> None:
-    """Проба проверена «дырявыми» пакетами: чтение ловушки через HOME, запись вне
-    `data_dir`, протечка зависимости по `sys.modules`, модуль продукта, взятый из
-    репозитория мимо копии, — каждый даёт расхождение,
-    честный пакет — пусто. Без этого проба была бы утверждением, которое никто
+    """Проба проверена «дырявыми» пакетами — и случаи строятся из её же таблиц:
+    каждая отравленная переменная, каждое событие мутации ФС, каждая снятая
+    переменная изоляции. Новый элемент таблицы без своего случая красит тест
+    (Critical головы круга 1 по PR №625: `POISONED_ENV = ("HOME",)`, выключенные
+    флаги `os.open`, `MUTATIONS` и обход ловушки проходили самопроверку зелёными).
+    Честный пакет — пусто. Без этого проба была бы утверждением, которое никто
     не исполняет."""
     graph = tmp_path / "граф"
     graph.mkdir()
-    template = ("import pathlib\n"
+    template = ("import os, pathlib, shutil, tempfile\n"
+                "try:\n"                # в копии его нет; найден — значит путь импорта протёк
+                "    import task_line\n"
+                "except ImportError:\n"
+                "    pass\n"
+                "V = pathlib.Path({victims!r})\n"
                 "class GraphSearch:\n"
                 "    def __init__(self, graph, *, data_dir, embedder):\n"
                 "        self.data = data_dir\n"
                 "    def refresh(self, force=False):\n"
                 "        (self.data / 'кэш').write_text('x')\n"
                 "        {extra}\n"
+                "    def embed_pending(self):\n"
+                "        return 1\n"
+                "    def load_vectors(self):\n"
+                "        return 1\n"
                 "    def search(self, q):\n"
                 "        import types\n"
                 "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
-    cases = {
-        "честный": "pass",
-        "домашний": "(pathlib.Path.home() / 'config.yaml').read_text()",
-        "запись": "(self.data.parent / 'мимо').write_text('x')",
-        "протечка": "import лишний_модуль",
-        "мимо копии": f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line",
-    }
-    got = {}
-    for name, extra in cases.items():
+
+    def probe(name: str, extra: str, **kw) -> list[str]:
+        victims = tmp_path / name / "жертва"
+        (victims / "d").mkdir(parents=True)
+        (victims / "f").write_text("x", encoding="utf-8")
         pkg = tmp_path / name / "pkg"
         pkg.mkdir(parents=True)
-        (pkg / "graph_search.py").write_text(template.replace("{extra}", extra), encoding="utf-8")
+        (pkg / "graph_search.py").write_text(template.format(victims=str(victims), extra=extra), encoding="utf-8")
         shutil.copyfile(ROOT / "src" / "model_seam.py", pkg / "model_seam.py")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
-        got[name], _ = run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
-                                         forbidden=("лишний_модуль",))
-    assert got["честный"] == []
-    assert "чтение ловушки" in got["домашний"][0]
-    assert "запись вне data_dir" in got["запись"][0]
-    assert "протекла" in got["протечка"][0]
-    assert got["мимо копии"] == [f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии"]
+        return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
+                                 forbidden=("лишний_модуль",), **kw)[0]
+
+    assert probe("честный", "pass") == []
+    # копия ИЗ-вне В data_dir законна: источник копии не запись
+    assert probe("копия внутрь", "shutil.copyfile(V / 'f', self.data / 'копия')") == []
+    assert "чтение ловушки" in probe("домашний", "(pathlib.Path.home() / 'config.yaml').read_text()")[0]
+    for var in POISONED_ENV:
+        got = probe(f"env {var}", f"(pathlib.Path(os.environ[{var!r}]) / 'config.yaml').read_text()")
+        assert got and "чтение ловушки" in got[0], f"{var} не ведёт в ловушку: {got}"
+    assert "чтение ловушки" in probe("tmp", "tempfile.mkstemp()")[0], "TMPDIR читается неявно, tempfile"
+    assert "обход ловушки" in probe("listdir", "os.listdir(os.environ['HOME'])")[0]
+    assert "обход ловушки" in probe("scandir", "list(os.scandir(os.environ['HOME']))")[0]
+    assert "запись вне data_dir" in probe("запись", "(self.data.parent / 'мимо').write_text('x')")[0]
+    assert "запись вне data_dir" in probe(
+        "os.open", "os.close(os.open(str(self.data.parent / 'мимо'), os.O_WRONLY | os.O_CREAT, 0o644))")[0]
+    assert set(MUTATION_CASES) == set(MUTATIONS), "у события мутации нет своего случая — или случай без события"
+    for event, code in MUTATION_CASES.items():
+        got = probe(f"мутация {event}", code)
+        assert got and f"{event} вне data_dir" in got[0], f"{event}: {got}"
+    assert "os.rename вне data_dir" in probe("os.replace", "os.replace(V / 'f', V / 'g')")[0], \
+        "os.replace приходит событием os.rename"
+    assert "протекла" in probe("протечка", "import лишний_модуль")[0]
+    assert probe("мимо копии", f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line") == [
+        f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии"]
+    # изоляция: каждая снимаемая переменная, стоявшая у родителя, опасна (без снятия
+    # проба красная) и снята (со снятием — пусто). Значение у каждой своё: каталоги
+    # пути импорта интерпретатор читает ещё до хука, поэтому PYTHONPATH ловится не
+    # ловушкой, а модулем продукта, взятым мимо копии.
+    leaks = {"PYTHONPATH": str(ROOT / "src"), "PYTHONHOME": "{trap}", "PYTHONPYCACHEPREFIX": "{trap}"}
+    assert set(leaks) == set(ISOLATION_DROP), "у снимаемой переменной нет своего случая"
+    for var, value in leaks.items():
+        leaked = probe(f"утечка {var}", "pass", outer={var: value}, drop=())
+        assert leaked, f"{var} у родителя ничего не ломает — случай изоляции ничего не проверяет"
+        assert probe(f"снято {var}", "pass", outer={var: value}) == [], f"{var} не снимается изоляцией"

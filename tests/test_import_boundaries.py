@@ -442,9 +442,16 @@ def test_layer_table_is_complete_and_the_arrows_point_down(world):
     # литерал сторожил бы слой, которого нет, и молчал
     bottom = {layer for layer, deps in layout["allowed"].items() if not deps}
     assert bottom == {layout["order"][0]}, f"нижний слой один и стоит первым: {sorted(bottom)}"
+    # и слой окружения: вместе с нижним это бывший core, которому долг в allowed_edges
+    # не давали никогда. Раскол не должен был снять сторож с половины core —
+    # `config_loader` с ребром в meeting проходил тест (Important головы круга 1 по PR №625)
+    rt = lm.runtime_layer(layout)
+    assert rt is not None and rt not in bottom
     for m, layer in lay.items():
-        if layer in bottom | {"cloud"}:
-            outside = {d for d in graph[m] if lay[d] != layer}
+        if layer in bottom | {rt, "cloud"}:
+            # нижнему слою и cloud — ничего снаружи; слою окружения — только его allowed
+            ok = set(layout["allowed"][layer]) if layer == rt else set()
+            outside = {d for d in graph[m] if lay[d] != layer and lay[d] not in ok}
             assert not outside, f"{m} ({layer}) импортирует {sorted(outside)}"
         if layer == "graph":
             assert not {d for d in graph[m] if lay[d] == "meeting"}, f"{m} тянет meeting: {sorted(graph[m])}"
@@ -1008,6 +1015,17 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
     with pytest.raises(lm.LayoutError):
         lm.load_layout(tmp_path / "missing.json")
     assert lm.load_layout(write(lambda d: None))
+
+    # гейт окружения по слою не прощается исключением: каждая форма области `layer`
+    # отвергнута ещё при загрузке, с обоснованием или без (Critical головы круга 1
+    # по PR №625 — `{"any_env": "так удобнее"}` глушило гейт и пробу разом)
+    for shape in lm.ROOT_SHAPES:
+        def forgive(d, name=shape.name): d["root_exemptions"]["src/graph_search.py"] = {name: "так удобнее"}
+        if shape.scope == "layer":
+            with pytest.raises(lm.LayoutError, match="гейт окружения по слою"):
+                lm.load_layout(write(forgive))
+        else:
+            assert lm.load_layout(write(forgive)), "исключение правила корня остаётся законным"
 
 
 def _layout(**over) -> dict:
@@ -1994,11 +2012,36 @@ def test_the_layer_shapes_see_every_way_to_reach_the_environment():
         "    return __file__, pathlib.Path('p').expanduser()",   # 23
         "q = config.env",                                         # 24 чужое имя — не окружение
         "r = environ.get('Z')",                                   # 25 голое имя после from os import
+        # псевдонимы и соседние записи: форма судит полное имя и любое упоминание,
+        # а не короткое имя вызова (Critical головы круга 1 по PR №625)
+        "import sys as s_",                                       # 26 сам импорт sys — ещё не путь
+        "s_.path.insert(0, 'x')",                                 # 27
+        "from sys import path as sp",                             # 28
+        "sp.append('y')",                                         # 29
+        "p_ = sys.path",                                          # 30
+        "del sys.path[0]",                                        # 31
+        "import site; site.addsitedir('z')",                      # 32
+        "from importlib import import_module as im",              # 33
+        "im('x')",                                                # 34
+        "loader = importlib.import_module",                       # 35 без вызова — тоже ребро мимо графа
+        "from os.path import expanduser as eu",                   # 36
+        "eu('~')",                                                # 37
+        "hm = pathlib.Path.home",                                 # 38
+        "t = s_.modules[__name__].__file__",                      # 39
+        "u = globals()['__file__']",                              # 40
+        "v = __spec__.origin",                                    # 41
+        "from tempfile import mkstemp as mk",                     # 42 импорт без вызова — каталог может прийти
+        "w = mk()",                                               # 43
+        "x_ = tempfile.mktemp()",                                 # 44
+        "y = mk(dir='данные')",                                   # 45 каталог назван
+        "z = getattr(os, 'environ')",                             # 46 динамический ридер — имя строкой
     ])
     tree = ast.parse(src)
     found = {s.name: s.find(tree, "src/x.py") for s in lm.ROOT_SHAPES if s.scope == "layer"}
-    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25], "home": [10, 11, 23], "any_file": [13, 23],
-                     "sys_path": [14, 15, 16, 17], "dynamic_import": [18, 19, 20]}
+    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25, 43, 44, 46], "home": [10, 11, 23, 36, 37, 38],
+                     "any_file": [13, 23, 39, 40, 41],
+                     "sys_path": [14, 15, 16, 17, 27, 28, 29, 30, 31, 32],
+                     "dynamic_import": [18, 19, 20, 33, 34, 35]}
 
 
 def _env_world(tmp_path, **allowed_over):
@@ -2047,10 +2090,19 @@ def test_the_env_gate_asks_the_artifact(tmp_path):
     assert edge == [f"lib_mod (lib) → charoite_paths (rt): ребро в слой окружения — {recipes['lib']}; "
                     f"allowed_edges такое ребро не прощает"]
     assert not any("новое ребро против стрелок: lib_mod" in p for p in problems)
-    assert f"src/lib_mod.py:4 {lm.ROOT_SHAPES[3].hint} — {recipes['lib']}" in problems
+    hint = {s.name: s.hint for s in lm.ROOT_SHAPES}
+    assert f"src/lib_mod.py:4 {hint['any_env']} — {recipes['lib']}" in problems
     assert "пакет lib_mod тянет charoite_paths (rt) — в замыкании входа только слои без окружения: base, lib" \
         in problems
     assert not any("пакет lib_mod тянет base_mod" in p for p in problems), "base — слой без окружения"
+
+    # окружение через соседа: lib → top (долг allowed_edges) → rt. Прямое ребро сказано
+    # своей строкой, цепочка — своей, и без неё гейт молчал (Minor головы круга 1 по PR №625)
+    chain = {"lib_mod": {"top_mod"}, "top_mod": {"charoite_paths"}, "base_mod": set(), "charoite_paths": set()}
+    assert [p for p in lm.env_problems(chain, layout) if "через импорты" in p] == [
+        f"lib_mod (lib) тянет charoite_paths (rt) через импорты — {recipes['lib']}"]
+    assert not any("через импорты" in p for p in lm.env_problems(graph, layout)), \
+        "прямое ребро не повторяется строкой цепочки"
 
     # слою разрешили окружение — гейт о нём молчит: ответ меняет артефакт, не код
     layout2, graph2, _ = _env_world(tmp_path / "2", lib=["base", "rt"])

@@ -458,12 +458,19 @@ def validate_layout(layout: object) -> dict:
             if order.index(d) >= order.index(layer):
                 raise LayoutError(f"{layer} зависит не вниз: {deps}")
     known = {s.name for s in ROOT_SHAPES}
+    # слой без окружения не прощается ничем: исключение по форме `layer` сделало бы
+    # окружение приложения частью пакета поиска молча, а проба пакета чтение
+    # переменной не видит — она ловит файлы (Critical головы круга 1 по PR №625)
+    unforgiven = {s.name for s in ROOT_SHAPES if s.scope == "layer"}
     for path_, shapes in layout["root_exemptions"].items():
         if not isinstance(shapes, dict) or not shapes:
             raise LayoutError(f"исключение из правила корня {path_}: нужна карта «форма → обоснование»")
         for name, why in shapes.items():
             if name not in known:
                 raise LayoutError(f"исключение {path_}: форма {name!r} не из ROOT_SHAPES")
+            if name in unforgiven:
+                raise LayoutError(f"исключение {path_}: форма {name!r} — гейт окружения по слою, "
+                                  f"его не прощают: путь приходит параметром")
             if not isinstance(why, str) or not why.strip():
                 raise LayoutError(f"исключение {path_} по форме {name}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
@@ -1271,16 +1278,14 @@ def _env_reads(tree: ast.AST, var: str | None, *, deep: bool = True) -> list[int
     (`getattr(os, "environ")`) в замер не попадёт. Строка в справке argparse
     вызовом не является.
 
-    `var=None` — любая переменная и любое касание окружения (`_env_touch`): так
+    `var=None` — любая переменная и любое касание окружения (`_any_env`): так
     судится слой, которому окружение не дано вовсе (№365). Там неважно, КАКУЮ
     переменную читают — `dict(os.environ)` и `tempfile.mkstemp()` без каталога
     (он читает TMPDIR) тянут в пакет окружение приложения так же, как чтение корня."""
+    if var is None:
+        return _any_env(tree)
     out = []
     for node in (ast.walk(tree) if deep else [tree]):
-        if var is None:
-            if _env_touch(node):
-                out.append(node.lineno)
-            continue
         if isinstance(node, ast.Call):
             fn = node.func
             reader = isinstance(fn, ast.Attribute) and ast.unparse(fn) in ENV_READ_CALLS
@@ -1299,52 +1304,99 @@ def _env_reads(tree: ast.AST, var: str | None, *, deep: bool = True) -> list[int
 ENV_TOUCH_NAMES = ("environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "expandvars")
 #: Функции `tempfile`, которые без явного каталога читают TMPDIR (`gettempdir` —
 #: всегда): неявное чтение окружения, и ловушка пробы пакета видит его как чтение.
-TEMPFILE_DEFAULT_DIR = ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "NamedTemporaryFile",
+TEMPFILE_DEFAULT_DIR = ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "mktemp", "NamedTemporaryFile",
                         "TemporaryFile", "SpooledTemporaryFile", "TemporaryDirectory")
 
 
-def _env_touch(node: ast.AST) -> bool:
-    """Узел касается окружения процесса — форма `any_env` слоя без окружения."""
-    if isinstance(node, ast.ImportFrom):
-        return any(a.name in ENV_TOUCH_NAMES for a in node.names)
-    if isinstance(node, ast.Name):
-        return node.id in ENV_TOUCH_NAMES
-    if isinstance(node, ast.Attribute):
-        return node.attr in ENV_TOUCH_NAMES
-    return (isinstance(node, ast.Call) and _имя(node.func) in TEMPFILE_DEFAULT_DIR
-            and (_имя(node.func).startswith("gettempdir") or not any(k.arg == "dir" for k in node.keywords)))
+def _aliases(tree: ast.Module) -> dict[str, str]:
+    """Локальное имя → полное имя, под которым оно пришло импортом: `import sys as s`
+    даёт `s → sys`, `from importlib import import_module as im` — `im → importlib.import_module`.
+    Формы слоя без окружения судят полное имя, а не то, как его назвал модуль: первая
+    редакция сравнивала короткое имя вызова и текст записи, и `import sys as s;
+    s.path.insert(…)` проходил гейт зелёным (Critical головы круга 1 по PR №625)."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update({a.asname: a.name for a in node.names if a.asname})
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            out.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
+    return out
+
+
+def _mentions(tree: ast.Module, *, at_import: bool = False):
+    """Каждое упоминание имени в модуле — `(узел, полное имя)`: имя и цепочка
+    атрибутов через `_aliases`, сам импорт (`from sys import path` — это уже
+    `sys.path`), строка-имя (`globals()["__file__"]`). Форма — любое упоминание, а
+    не только вызов: `h = pathlib.Path.home` и `map(os.path.expanduser, …)` читают
+    окружение так же. Получатель-выражение (`f().x`) даёт сегмент `?`.
+    `at_import` — только узлы, исполняемые на импорте (`_levels`)."""
+    names = _aliases(tree)
+    nodes = (n for n, top in _levels(tree) if top) if at_import else ast.walk(tree)
+    for node in nodes:
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            parts, cur = [], node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            parts.append(names.get(cur.id, cur.id) if isinstance(cur, ast.Name) else "?")
+            yield node, ".".join(reversed(parts))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                yield node, a.name
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                yield node, f"{node.module or ''}.{a.name}"
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier():
+            yield node, node.value
+
+
+def _lines(tree: ast.Module, match: Callable[[list[str]], bool], *, at_import: bool = False) -> list[int]:
+    """Строки упоминаний, чьё полное имя (сегментами) подходит под `match`."""
+    return sorted({n.lineno for n, q in _mentions(tree, at_import=at_import) if match(q.split("."))})
+
+
+def _any_env(tree: ast.Module) -> list[int]:
+    """Касание окружения процесса — форма `any_env` слоя без окружения: имя из
+    `ENV_TOUCH_NAMES` в любой записи и вызов `tempfile` без каталога (полное имя —
+    псевдоним `mk = mkstemp` не прячет чтение TMPDIR)."""
+    names = _aliases(tree)
+    out = set(_lines(tree, lambda seg: any(s in ENV_TOUCH_NAMES for s in seg)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = names.get(getattr(node.func, "id", ""), _имя(node.func)).rsplit(".", 1)[-1]
+            if fn in TEMPFILE_DEFAULT_DIR and (fn.startswith("gettempdir")
+                                               or not any(k.arg == "dir" for k in node.keywords)):
+                out.add(node.lineno)
+    return sorted(out)
 
 
 def _home_reads(tree: ast.Module) -> list[int]:
-    """Строки, где модуль спрашивает домашний каталог: `Path.home()` (атрибутом —
-    голая `home()` может быть своей функцией) и `expanduser` в любой записи. Оба
-    читают HOME — то же окружение приложения, только без слова `environ`."""
-    return sorted({n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
-                   and (_имя(n.func) == "expanduser"
-                        or (isinstance(n.func, ast.Attribute) and n.func.attr == "home"))})
+    """Строки, где модуль спрашивает домашний каталог: `expanduser` в любой записи и
+    `home` атрибутом или импортом (`Path.home`, `P.home` при `from pathlib import
+    Path as P`); голая `home()` без импорта — своя функция. Оба читают HOME — то же
+    окружение приложения, только без слова `environ`."""
+    return _lines(tree, lambda seg: "expanduser" in seg or "home" in seg[1:])
+
+
+#: Имена, которыми модуль узнаёт своё положение на диске: `__file__` в любой
+#: записи (`m.__file__`, `globals()["__file__"]`), спецификация модуля и ответ `inspect`.
+FILE_NAMES = ("__file__", "__spec__", "getfile", "getsourcefile", "getabsfile")
 
 
 def _any_file(tree: ast.Module) -> list[int]:
-    """Любое `__file__`. У слоя без окружения законных мест у него нет: оба места,
-    которые прощает форма `file` (канон корней и вставка пути), — это окружение
-    приложения, а положение файла пакета не говорит ничего о данных владельца."""
-    return sorted({n.lineno for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "__file__"})
+    """Любое положение файла (`FILE_NAMES`). У слоя без окружения законных мест у
+    него нет: оба места, которые прощает форма `file` (канон корней и вставка пути), —
+    это окружение приложения, а положение файла пакета не говорит ничего о данных
+    владельца."""
+    return _lines(tree, lambda seg: any(s in FILE_NAMES for s in seg))
 
 
 def _sys_path_on_import(tree: ast.Module) -> list[int]:
-    """Строки, где `sys.path` меняют НА ИМПОРТЕ: вызов метода или присваивание.
-    Уровень узла — тот же `_levels`, что у замера порядка чтения и вставки."""
-    out = set()
-    for node, at_import in _levels(tree):
-        if not at_import:
-            continue
-        if isinstance(node, ast.Call) and ast.unparse(node.func).startswith("sys.path."):
-            out.add(node.lineno)
-        elif isinstance(node, (ast.Assign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(ast.unparse(t).startswith("sys.path") for t in targets):
-                out.add(node.lineno)
-    return sorted(out)
+    """Строки, где `sys.path` касаются НА ИМПОРТЕ — любым упоминанием, не только
+    вызовом метода: `p = sys.path; p.append(…)`, `del sys.path[0]` и `from sys import
+    path` меняют путь импорта так же, а `site.addsitedir` — его вставка под другим
+    именем. Уровень узла — тот же `_levels`, что у замера порядка чтения и вставки."""
+    return _lines(tree, lambda seg: seg[:2] == ["sys", "path"] or "addsitedir" in seg, at_import=True)
 
 
 #: Вызовы, которыми модуль берёт код мимо оператора `import`: такое ребро
@@ -1353,9 +1405,9 @@ DYNAMIC_IMPORT_CALLS = ("import_module", "__import__", "spec_from_file_location"
 
 
 def _dynamic_imports(tree: ast.Module) -> list[int]:
-    """Строки динамического импорта — по короткому имени, в любой записи."""
-    return sorted({n.lineno for n in ast.walk(tree)
-                   if isinstance(n, ast.Call) and _имя(n.func) in DYNAMIC_IMPORT_CALLS})
+    """Строки динамического импорта — любое упоминание имени по полному имени:
+    `im = importlib.import_module` без вызова тоже ребро мимо графа."""
+    return _lines(tree, lambda seg: any(s in DYNAMIC_IMPORT_CALLS for s in seg))
 
 
 #: Функции канона, которым положение файла отдают на вход: подъём вверх делают
@@ -2240,6 +2292,14 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     out = [f"{a} ({lay[a]}) → {b} ({rt}): ребро в слой окружения — {recipes[lay[a]]}; "
            f"allowed_edges такое ребро не прощает"
            for a, b in env_edges(graph, layout)]
+    # и не тянет его через соседа: ребро graph → llm, прощённое `allowed_edges`, при
+    # llm → runtime приносило окружение модулю графа, а гейт смотрел только прямые
+    # рёбра (Minor головы круга 1 по PR №625). Прямые рёбра сказаны строкой выше.
+    direct = set(env_edges(graph, layout))
+    for a in sorted(m for m in graph if lay.get(m) in recipes):
+        for b in sorted(package_closure(graph, a)):
+            if lay.get(b) == rt and (a, b) not in direct:
+                out.append(f"{a} ({lay[a]}) тянет {b} ({rt}) через импорты — {recipes[lay[a]]}")
     entry = layout["package_entry"]
     if entry not in graph:
         out.append(f"package_entry {entry}: модуля с таким именем в дереве нет — пакету не из чего собраться")
