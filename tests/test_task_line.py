@@ -543,8 +543,11 @@ def test_the_table_covers_every_form_the_module_knows():
     assert {r["status"] for r in TABLE} == {*task_line.SETTLED, task_line.OPEN, None}
     assert {kind for r in TABLE if r["fields"] for kind in r["fields"]} == set(task_line.FIELDS)
     assert any(r["control"] and r["status"] == task_line.RETURNED for r in TABLE)
-    for marker in ["-", "*", "+", "•", "–", "1.", "1)"]:
-        assert any(ln.lstrip().startswith(f"{marker}") and task_line.status(ln) for ln in lines), marker
+    # знаки — из модуля: новый маркер в MARKER без строки в таблице краснеет здесь
+    # (Opus I3 круга 1 по PR #621: список в тесте был свой и «— ⁃ ‣ ▪» не требовал)
+    assert task_line.MARKER.startswith(f"(?:[{task_line.BULLETS}]")
+    for marker in [*task_line.BULLETS, "1.", "1)"]:
+        assert any(ln.lstrip().startswith(f"{marker} ") and task_line.status(ln) for ln in lines), marker
     assert any(re.search(r"[a-z]{3}", r["key"]) for r in TABLE), "английская строка"
     assert any(re.search(r"[一-鿿]", r["key"]) for r in TABLE), "китайская строка"
 
@@ -554,8 +557,21 @@ def test_render_of_a_parsed_line_is_canonical_and_stable(row):
     # render выдаёт каноничную строку, а для каноничной строки разбор и вывод — тождество
     out = row["render"]
     assert task_line.render(task_line.parse(out)) == out
-    # вывод теряет только форму маркера: всё остальное в записи доживает до строки
+    # запись после вывода — та же, кроме формы маркера
     assert task_line.parse(out) == dataclasses.replace(task_line.parse(row["line"]), marker="-")
+
+
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+@pytest.mark.parametrize("row", [r for r in TABLE if r["render"] is not None], ids=lambda r: r["line"][:40])
+def test_render_loses_no_date_and_keeps_the_key(row):
+    # сравнение записей не видит того, что потеряно уже при разборе: второе «📅» и дата
+    # посреди текста пропадали из вывода, а «📅 2026-10-01T10» склеивал «текстT10»
+    # (Opus C1 и I5 круга 1 по PR #621). Проверка — по строкам, а не по записям
+    out = task_line.render(task_line.parse(row["line"]))
+    assert sorted(DATE.findall(out)) == sorted(DATE.findall(row["line"]))
+    assert task_line.key(out) == task_line.key(row["line"])
 
 
 def test_render_keeps_a_canonical_line_as_is():

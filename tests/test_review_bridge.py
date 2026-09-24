@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import review_bridge as rb  # noqa: E402
@@ -831,3 +833,27 @@ def test_an_item_with_a_due_field_in_minutes_is_the_same_item_without_it():
     bare = minutes.replace(" 📅 2026-10-01", "")
     text, added = rb.merge_into_minutes(bare, ["**Участник А** — позвонить 📅 2026-10-01"])
     assert added == 0 and text == bare
+
+
+@pytest.mark.parametrize("mark", ["(из ревизии)", "(from the review)", "（来自审阅）"])
+def test_the_bridge_strips_its_own_review_mark_before_the_shared_key(mark):
+    # Пометку ревизии ставит сам мост, грамматика строки её не знает: срезать её — дело
+    # моста. Короткий пункт Жаккар не спасает, так что без среза пересказ дописывался бы
+    # второй раз (Opus C2 круга 1 по PR #621: срез держал только код, а не тест).
+    minutes = f"# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить {mark} 📅 2026-10-01\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник А** — позвонить"])
+    assert added == 0 and text == minutes
+
+
+def test_the_bridge_strips_the_outsider_mark_before_the_shared_key():
+    # «⚠ не участник (Имя):» — пометка контроля участников, не грамматика строки. Снятие
+    # подходит к двум пунктам, и выбирает точный ключ: без среза пометки он не совпал бы,
+    # и снятие осталось бы «подходит к двум» (Opus C2 круга 1 по PR #621)
+    minutes = ("# Минутки\n## Поручения\n"
+               "- ⚠ не участник (Участник А): **Участник А** — позвонить клиенту 📅 2026-10-01\n"
+               "- [ ] **Участник А** — позвонить клиенту завтра\n\n## Риски\n- нет\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить клиенту", "не звучало")],
+                                           dropped=dropped)
+    assert moved == 1 and dropped == [], dropped
+    assert "- [ ] **Участник А** — позвонить клиенту завтра" in text.split("## Снято")[0]

@@ -45,7 +45,9 @@ from dataclasses import dataclass, field
 # Фрагменты регэкспа — переписчики вставляют их в свои шаблоны строки, а не
 # перечисляют маркеры и состояния сами. Маркер пункта списка — объединение маркеров
 # всех переписчиков; пробелы после него у каждого свои.
-MARKER = r"(?:[-*+•–—⁃‣▪]|\d+[.)])"
+# Знаки — данными: по ним тест проверяет, что у каждого есть строка в общей таблице.
+BULLETS = "-*+•–—⁃‣▪"
+MARKER = r"(?:[" + BULLETS + r"]|\d+[.)])"
 # Чекбокс любого состояния: один любой символ в скобках, как у Obsidian.
 BOX = r"\[[^\]]\]"
 _STATE = re.compile(r"^\s*(?:" + MARKER + r"\s*)?\[([^\]])\]")
@@ -126,6 +128,9 @@ def status_changes(before: str, after: str) -> list[tuple[int, str, str]]:
 # добавляют клавиатуры телефонов) и дата. Порядок словаря — порядок плагина в хвосте.
 FIELDS = {"due": "📅", "cancelled": "❌", "done": "✅"}
 _FIELD = re.compile(r"\s*(" + "|".join(FIELDS.values()) + r")️? *(\d{4}-\d{2}-\d{2})(?!\d)")
+# Поле в самом конце тела: разбор снимает поля только с хвоста. Ключ срезает _FIELD где
+# угодно — личности поручения дата не принадлежит нигде.
+_TAIL = re.compile(_FIELD.pattern.removesuffix(r"(?!\d)") + r"\s*$")
 _KIND = {sign: kind for kind, sign in FIELDS.items()}
 # Разбор: отступ, маркер, ящик, тело. Тот же префикс, что у _STATE и _PREFIX.
 _LINE = re.compile(r"^(?P<indent>\s*)(?:(?P<marker>" + MARKER + r")\s*)?\[(?P<box>[^\]])\]\s*(?P<body>.*)$")
@@ -154,8 +159,11 @@ class TaskLine:
 def parse(line: str) -> TaskLine | None:
     """Строка → запись; строка без ящика — не поручение, None.
 
-    Поле с невозможной датой («📅 2026-02-30») полем не считается и остаётся в тексте:
-    плагин такую дату тоже не прочтёт. Два поля одного рода — последнее."""
+    Поля — только хвост строки, по одному каждого рода, как их читает плагин. Всё, что
+    полем не стало, остаётся в тексте дословно: дата посреди текста («перенести с
+    📅 2026-10-01 на …»), второе поле того же рода, поле с невозможной датой
+    («📅 2026-02-30») и всё левее них. Иначе render терял бы даты и склеивал слова
+    (Opus C1 круга 1 по PR #621)."""
     m = _LINE.match(line)
     if not m:
         return None
@@ -166,17 +174,13 @@ def parse(line: str) -> TaskLine | None:
         control = mark.group().strip()
         body = body[:mark.start()] + body[mark.end():]
     fields: dict[str, datetime.date] = {}
-    # Срезаем только поля с настоящей датой. Циклом, а не re.sub с функцией: у той
-    # «вернуть пустую строку» и «вернуть None» — одно и то же, и место ничего не держит.
-    kept, pos = [], 0
-    for f in _FIELD.finditer(body):
+    while (f := _TAIL.search(body)) and _KIND[f.group(1)] not in fields:
         try:
             fields[_KIND[f.group(1)]] = datetime.date.fromisoformat(f.group(2))
         except ValueError:
-            continue
-        kept.append(body[pos:f.start()])
-        pos = f.end()
-    body = ("".join(kept) + body[pos:]).strip()
+            break
+        body = body[:f.start()]
+    body = body.strip()
     who = _ASSIGNEE.match(body)
     return TaskLine(indent=m.group("indent"), marker=m.group("marker") or "", box=m.group("box"),
                     status=status(line), assignee=who.group("name") if who else None,
