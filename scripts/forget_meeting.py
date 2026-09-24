@@ -95,6 +95,28 @@ DISPLACED_DIR = "вытеснено"             # тела узлов, став
 REMOVED_NOTE = "(встреча удалена)"
 
 
+def _forget_in_manifests(p: "Plan", run: pathlib.Path, rels: list[str]) -> None:
+    """Строки манифестов прогона, называющие удаляемые файлы, — тоже след встречи: путь
+    несёт тему, строка контроля задач — текст поручения. Строка узнаётся по пути файла
+    (или папки архива, в которой он лежит); манифест правится, а не удаляется: остальные
+    строки нужны откату других встреч."""
+    if not rels:
+        return
+    for name in ("manifest.tsv", "manifest.jsonl"):
+        manifest = run / name
+        if not manifest.is_file():
+            continue
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            p.notes.append(f"манифест не прочитан — строки встречи в нём остались: {manifest}")
+            continue
+        lines = text.split("\n")
+        kept = [ln for ln in lines if not any(r in ln for r in rels)]
+        if len(kept) != len(lines):
+            p.edit[manifest] = "\n".join(kept)
+
+
 def _in_cloud_snapshot(path: pathlib.Path) -> bool:
     """Лежит ли файл внутри снимка облачной ревизии.
 
@@ -689,17 +711,26 @@ def plan(stamp: str, root: pathlib.Path,
         # гонял их в облако), но у установок, где перенос ещё не сделан, они
         # лежат по-старому внутри графа. Забывание обязано дойти до обоих —
         # молча пропустить старое место значит оставить встречу в копиях.
-        for cloud in (charoite_paths.graph_backups(
-                          g, CLOUD_BACKUP_DIR.lstrip("."), root=root),
-                      g / CLOUD_BACKUP_DIR):
-            if not cloud.is_dir():
+        # Все виды копий, что лежат зеркалом графа, — из реестра канона: снимки облачной
+        # ревизии, резерв уборки копий, оригиналы разовой правки поручений, копии контроля
+        # задач. Пока виды здесь перечислялись руками, три последних «забыть» не видело
+        # (Opus I1 круга 2 по коду №366).
+        mirrors = [(g / CLOUD_BACKUP_DIR, "")] + [
+            (charoite_paths.graph_backups(g, kind, root=root), inner)
+            for kind, inner in charoite_paths.GRAPH_BACKUP_KINDS.items() if inner is not None]
+        for base, inner in mirrors:
+            if not base.is_dir():
                 continue
-            for snap in sorted(d for d in cloud.iterdir() if d.is_dir()):
+            for run in sorted(d for d in base.iterdir() if d.is_dir()):
+                snap = run / inner if inner else run
+                found: list[pathlib.Path] = []
                 node_copy = snap / MEETINGS_DIR / f"{stamp}.md"
                 if node_copy.exists():
-                    p.delete.append(node_copy)
-                p.delete += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
-                p.delete += _archive_folders(snap, stamp)
+                    found.append(node_copy)
+                found += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
+                found += _archive_folders(snap, stamp)
+                p.delete += found
+                _forget_in_manifests(p, run, [str(f.relative_to(snap)) for f in found])
 
         # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
         # (в нём версии облака, сделанные по её стенограмме), в карантинах

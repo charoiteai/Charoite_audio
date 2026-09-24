@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 65.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 66.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09 дословно; правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **core** (зависит от: —; модулей 13): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `model_seam`, `privacy`, `redirects`, `safe_write`, `vocabulary`
+- **core** (зависит от: —; модулей 14): `charoite_paths`, `config_loader`, `deps`, `exit_codes`, `file_locks`, `frontmatter`, `live_gate`, `media_meta`, `model_seam`, `privacy`, `redirects`, `safe_write`, `task_line`, `vocabulary`
 - **llm** (зависит от: core; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: core; модулей 7): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `graphs`, `tier3`
 - **cloud** (зависит от: core; модулей 1): `cloud`
@@ -24,6 +24,7 @@
 - `media_meta` → core: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
 - `model_seam` → core: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
+- `task_line` → core: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items; ничего из репо не импортирует
 - `tier3` → graph: бриф просил проверить по коду: ревизия ядер графа (bge-m3 + NLI), импортирует llm, nli, frontmatter, redirects, live_gate — граф, не облако
 - `vocabulary` → core: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
 
