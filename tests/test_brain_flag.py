@@ -184,7 +184,7 @@ def test_the_review_worker_resends_only_when_turned_on(tmp_path, monkeypatch, cf
     assert (said is None) is not sends
 
 
-def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str):
+def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str, timeouts: list | None = None):
     import dictate_note
     monkeypatch.setenv("CHAROITE_GRAPH_DIR", str(tmp_path / "граф"))
     monkeypatch.setenv("SUFLER_DIARY_DIR", str(tmp_path / "Дневник"))
@@ -194,6 +194,12 @@ def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str):
     monkeypatch.setattr(dictate_note, "_llm", lambda: types.SimpleNamespace(
         complete=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("модели нет"))))
     calls, post = _spy()
+    if timeouts is not None:
+        spy = post
+
+        def post(url, json=None, timeout=None, **kw):
+            timeouts.append(timeout)
+            return spy(url, json=json, timeout=timeout, **kw)
     monkeypatch.setattr(dictate_note.requests, "post", post)
     monkeypatch.setattr(dictate_note.sys, "argv", ["dictate_note.py", *argv])
     monkeypatch.setattr(dictate_note.sys, "stdin", io.StringIO(text))
@@ -209,4 +215,20 @@ def test_voice_notes_and_the_diary_reach_the_memory_only_when_turned_on(tmp_path
     note = _dictate(monkeypatch, tmp_path, "--text", on=on, text="проверить счётчики")
     diary = _dictate(monkeypatch, tmp_path, "--diary", "--text", on=on, text="мысль про запуск")
     assert [c[1]["category"] for c in note + diary] == (["voice_note", "diary"] if on else [])
+    capfd.readouterr()
+
+
+def test_the_memory_gets_the_text_and_a_short_timeout(tmp_path, monkeypatch, capfd):
+    # включённая запись несёт сам текст (с потолком), и зависший сервер не держит диктовку
+    # (мутатор по всему диапазону №249: срез текста и таймаут не проверял ни один тест)
+    (tmp_path / "transcripts").mkdir()
+    seen: list = []
+    long = "мысль " * 80
+    for argv in (("--text",), ("--diary", "--text")):
+        calls = _dictate(monkeypatch, tmp_path, *argv, on=True, text=long,
+                         timeouts=seen)
+        [(url, payload)] = calls
+        # тело, а не только заголовок: в заголовке заметки — три первых слова
+        assert payload["text"].count("мысль") > 10 and len(payload["text"]) < len(long)
+    assert len(seen) == 2 and all(0 < t <= 10 for t in seen)
     capfd.readouterr()
