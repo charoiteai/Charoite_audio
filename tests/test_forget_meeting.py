@@ -1121,6 +1121,24 @@ def test_forget_says_what_the_mark_and_the_flag_tell(tmp_path, monkeypatch, caps
     assert said in out and not_said not in out
 
 
+def test_apply_defaults_say_nothing_and_touch_nothing(tmp_path, monkeypatch, capsys):
+    # умолчания apply: без yes — ничего не удалено, без флагов памяти — о ней ни слова (у
+    # установки без сервера говорить не о чем; мутанты умолчаний выживали, CI #619)
+    gone = tmp_path / "стенограмма.md"
+    gone.write_text("x", encoding="utf-8")
+    p = forget.Plan(stamp=STAMP, delete=[gone], brain_keys=[STAMP])
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    assert forget.apply(p) is False and gone.exists()
+    assert forget.apply(p, yes=True) is True and not gone.exists()
+    assert "память Чароита" not in capsys.readouterr().out
+
+
 def test_one_meeting_gets_one_story_about_the_memory(tmp_path, monkeypatch, capsys):
     # у владельца минуты ключей два, отметка под одним: строки не спорят друг с другом
     # (Opus M2 круга 2 №249)

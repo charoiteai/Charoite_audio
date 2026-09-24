@@ -1374,12 +1374,13 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
 
 
 def _resend_to_brain(stamp: str, note_path: pathlib.Path, note_before: str, cfg: dict) -> str | None:
-    """Переотправка фактов встречи во внешнюю память после ревизии — при включённой
-    (`sufler.brain`, №249); None — выключена. Флаг читается здесь, из конфига прогона: тест
-    держит именно это чтение (Opus I1 круга 1 по коду)."""
-    return graph_updater.resend_to_brain_after_review(
+    """Строка лога ревизии о переотправке фактов встречи во внешнюю память — при включённой
+    (`sufler.brain`, №249); None — выключена. Флаг читается здесь, из конфига прогона, и строка
+    собирается здесь же: тест держит и чтение флага, и то, что уходит в лог (Opus I1 круга 1)."""
+    said = graph_updater.resend_to_brain_after_review(
         stamp, note_path, note_before, _root() / "logs" / "brain_sent" / f"{stamp}.txt",
         enabled=install_profile.brain_enabled(cfg))
+    return f"[cloud-review] {said}\n" if said else None
 
 
 def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, cfg: dict) -> None:
@@ -1831,7 +1832,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             try:
                 said = _resend_to_brain(stamp, note_path, note_before, cfg)
                 if said:
-                    lines.append("[cloud-review] " + said + "\n")
+                    lines.append(said)
             except Exception as e:  # noqa: BLE001 — память не важнее ревизии
                 lines.append(f"[cloud-review] память Чароита не переотправлена: {e}\n")
         try:

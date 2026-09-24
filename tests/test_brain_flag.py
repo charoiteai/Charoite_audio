@@ -182,6 +182,8 @@ def test_the_review_worker_resends_only_when_turned_on(tmp_path, monkeypatch, cf
     said = cloud_review._resend_to_brain(STAMP, note, "", cfg)
     assert bool(calls) is sends
     assert (said is None) is not sends
+    # строка лога ревизии целиком: префикс воркера и перевод строки
+    assert said is None or (said.startswith("[cloud-review] память Чароита") and said.endswith("\n"))
 
 
 def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str, timeouts: list | None = None):
