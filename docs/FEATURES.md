@@ -1110,7 +1110,9 @@ drifts again on the next long answer. Only the assignments section is touched,
 and only its formatting: names, wording and deadlines stay as written.
 
 Same graph after normalization: **275 tasks**. Existing files are converted
-once by `scripts/fix_action_items.py` (dry run by default).
+once by `scripts/fix_action_items.py` (dry run by default). A status someone already set
+stays as it is: done `[x]`, cancelled `[-]` (the Obsidian Tasks form) and an item reopened by
+hand. `--apply` needs `CHAROITE_ROOT` and writes under the shared graph lock.
 
 The first live day added two missing wires. Normalization ran only on the
 manual Protocol button, while the auto-saved draft — the document people

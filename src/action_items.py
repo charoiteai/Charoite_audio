@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 
+import task_line
+
 # Заголовок раздела поручений на всех трёх языках продукта.
 _SECTION = re.compile(
     r"^\s*(?:[*_#]*\s*)?(?:поручени|action item|行动项)\w*\s*[:：]?\s*[*_]*\s*$",
@@ -61,8 +63,9 @@ _KNOWN_BARE_SECTION = re.compile(
 # Строка-пункт: маркер списка в начале (включая типографские тире, которыми
 # модель иногда открывает пункт).
 _BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
-# Уже правильный чекбокс — не трогаем.
-_CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ")
+# Уже правильный чекбокс любого состояния — не трогаем: снятое контролем «[-]»
+# иначе становилось «- [ ] [-] …» и снова открытым (№366, task_line).
+_CHECKBOX = re.compile(r"^\s*[-*] " + task_line.BOX + " ")
 # Пометка «не участник» (flag_outsiders) — тоже не трогаем: иначе следующий
 # проход normalize (пересборка, повторный «Протокол») вернул бы строке
 # чекбокс, и задача снова ушла бы отсутствующему.
@@ -387,7 +390,9 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
                         or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
                        and not _BULLET.match(line)):
             inside = False
-        if inside:
+        # статус, поставленный человеком или контролем (выполнено, возвращено), пометка
+        # «не участник» не снимает: она убирает чекбокс (№366)
+        if inside and not task_line.settled(line):
             m = _ASSIGNEE_LINE.match(line)
             if m:
                 whole = m.group(2).strip()

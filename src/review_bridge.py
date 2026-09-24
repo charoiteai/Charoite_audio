@@ -21,6 +21,7 @@ import re
 
 import action_items
 import safe_write
+import task_line
 
 # «## Восстановленные поручения», «**Восстановленные поручения:**»,
 # «Восстановленные поручения:» — модель просят строгую форму, но жирный и
@@ -46,14 +47,13 @@ WITHDRAWN_MARKS = {"ru": "снято ревизией", "en": "withdrawn by the 
 SECTION_TITLE = {"ru": "## Поручения", "en": "## Action items", "zh": "## 行动项"}
 WITHDRAWN_TITLE = {"ru": "## Снято ревизией", "en": "## Withdrawn by the review", "zh": "## 审阅撤回"}
 _WITHDRAWN_TITLE_RE = re.compile(r"^\s*#{1,6}\s*(?:снято ревизией|withdrawn by the review|审阅撤回)\s*$", re.IGNORECASE)
-_DONE_ITEM = re.compile(r"^\s*(?:[-*+•–—]\s*)?\[[xX]\]")
 _HEADING = re.compile(r"^\s*#{1,6}\s")
 _BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
 # «-**Иван**» без пробела — тоже пункт (GLM r2 M6), а вот «*» без пробела —
 # начало жирного текста, не маркер
 _BULLET = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?=\S)")
-_CHECKBOX = re.compile(r"^\s*\[[ xX]\]\s*")
-_ITEM = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
+_CHECKBOX = re.compile(r"^\s*" + task_line.BOX + r"\s*")
+_ITEM = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?:" + task_line.BOX + r"\s*)?(?P<text>\S.*)$")
 _EMPTY_ITEM = re.compile(r"^(?:нет|none|无|[—–\-•⁃‣▪*\s]+)\.?$", re.IGNORECASE)
 # «**Пётр** — позвонить» / «**Пётр**: позвонить» без маркера — узнаваемое
 # поручение: свой пункт, а не хвост чужого и не потеря (GLM r4 I1, r5 I1 и
@@ -272,15 +272,17 @@ def withdrawn_section_present(review: str) -> bool:
 
 
 def _key(item: str) -> str:
-    """Ключ дедупа: без пометок, жирного, чекбокса, пунктуации и регистра."""
+    """Ключ дедупа: без пометок (ревизии, «не участник», контроля задач), жирного,
+    чекбокса, пунктуации и регистра."""
     text = re.sub(r"⚠[^:]*:", " ", item)           # «⚠ не участник (Имя):» целиком
+    text = task_line.CONTROL_MARK.sub(" ", text)     # «_(снято по сроку 24.09)_» (№366)
     for mark in MARKS.values():
         text = text.replace(mark, " ")
-    text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?", "", text)
+    text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:" + task_line.BOX + r"\s*)?", "", text)
     return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
 
-_ASSIGNEE = re.compile(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?(?:⚠[^:]*:\s*)?\*\*(?P<name>[^*]+)\*\*\s*(?P<rest>.*)$")
+_ASSIGNEE = re.compile(r"^\s*(?:[-*+•–—]\s*)?(?:" + task_line.BOX + r"\s*)?(?:⚠[^:]*:\s*)?\*\*(?P<name>[^*]+)\*\*\s*(?P<rest>.*)$")
 # Порог высокий намеренно: лишний дубль в «Задачах» виден и снимается одним
 # кликом, а съеденное поручение невидимо (DS r1 по #518, критика 2)
 SIMILAR = 0.7
@@ -541,8 +543,9 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     к нескольким («подготовить отчёт» против «…по бюджету» и «…по срокам»)
     — не гадаем, ничего не снимаем и говорим об этом в `dropped` (DS r1
     Critical по #545: съеденное поручение невидимо, лишнее — видно и снимается
-    кликом). Выполненный человеком пункт («[x]») не снимается: сделанное —
-    факт, а не пересказ модели. Ничего не нашлось — минутки те же (№238)."""
+    кликом). Пункт, чей статус поставил человек или контроль (выполнено,
+    снято, возвращено — task_line.settled), не снимается: это факт, а не
+    пересказ модели (№366). Ничего не нашлось — минутки те же (№238)."""
     lang = (lang or "ru").strip().lower()[:2]
     if not items:
         return minutes, 0
@@ -553,7 +556,7 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     start, end = bounds
     body = lines[start + 1:end]
     cand = [i for i, ln in enumerate(body)
-            if _key(ln) and not _DONE_ITEM.match(ln) and not _continuation(ln)]
+            if _key(ln) and not task_line.settled(ln) and not _continuation(ln)]
     views = {i: _dedup_view(body[i], owner) for i in cand}
     taken: dict[int, str] = {}                      # строка минуток → причина снятия
     for item, why in items:
