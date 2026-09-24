@@ -312,6 +312,15 @@ def _сеть_закрыта(request):
         if было[имя] is not None:
             setattr(requests, имя, отказ)
     requests.Session.request = отказ
+    # второй транспорт — stdlib: им ходит `scripts/doctor.py` (и загрузчик
+    # моделей); запрос у него — строка или `Request` с `full_url`
+    import urllib.request
+    был_urlopen = urllib.request.urlopen
+
+    def отказ_urlopen(url, *a, **k):
+        отказ(getattr(url, "full_url", url))
+
+    urllib.request.urlopen = отказ_urlopen
     try:
         yield
     finally:
@@ -319,6 +328,7 @@ def _сеть_закрыта(request):
             if значение is not None:
                 setattr(requests, имя, значение)
         requests.Session.request = был_request
+        urllib.request.urlopen = был_urlopen
 
 
 #: Маркер теста, которому нужен ответивший Ollama: аргументы маркера — имена

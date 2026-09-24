@@ -258,6 +258,18 @@ def test_запрет_сети_переживает_undo_в_теле_теста(
         requests.post("http://127.0.0.1:8100/remember", json={})
 
 
+def test_запрет_сети_закрывает_и_urllib():
+    """Второй транспорт — stdlib: `scripts/doctor.py` спрашивает Ollama через
+    `urllib.request.urlopen`, и без сторожа тест доктора шёл бы в живой сервер
+    (№376). Адрес в отказе — и у строки, и у `Request`."""
+    import urllib.request
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://localhost:11434/api/tags\)"):
+        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=4)
+    запрос = urllib.request.Request("http://127.0.0.1:8100/remember", data=b"{}")
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://127\.0\.0\.1:8100/remember\)"):
+        urllib.request.urlopen(запрос)
+
+
 def test_обвязка_называет_канону_временный_корень(tmp_path):
     """Корень данных тестового процесса назван, и назван во временном месте.
 
