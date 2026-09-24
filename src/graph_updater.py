@@ -681,6 +681,20 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
     return title, people, topics
 
 
+def meeting_facts_to_brain(cfg: dict, stamp: str, title: str, people: list, topics: list,
+                           decisions: list) -> int:
+    """Шаг разбора «факты встречи → внешняя память»: флаг читается здесь, из конфига разбора
+    (`sufler.brain`, №249). Выключена — ни замка, ни долга, ни запроса, а при явно заданном ключе
+    одна строка в лог. Отдельной функцией, чтобы тест держал именно чтение флага точкой входа:
+    мутант «флаг на месте вызова всегда да» выживал (круг 1 по коду №249, Opus I1)."""
+    on = install_profile.brain_enabled(cfg)
+    n = send_to_brain(stamp, title, people, topics, decisions,
+                      _root() / "logs" / "brain_sent" / f"{stamp}.txt", enabled=on)
+    if not on and install_profile.brain_explicit(cfg):
+        print("внешняя память выключена (sufler.brain: false) — факты встречи туда не отправлены")
+    return n
+
+
 def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: str,
                                  mark: pathlib.Path, post=None, *, enabled: bool,
                                  lock_wait: float | None = None) -> str | None:
@@ -735,7 +749,7 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         except OSError:
             pass
         title, people, topics = _note_head(after)
-        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=True, locked=True)
+        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True)
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -780,7 +794,7 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
             out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
-            stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=True, lock_wait=0.0))
+            stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=enabled, lock_wait=0.0))
         if debt.exists():
             try:
                 debt.touch()          # не оплачен — в конец очереди, слот освобождается
@@ -2804,13 +2818,8 @@ def main():
                   + ", ".join(dict.fromkeys(_SKIPPED_NODES)))
 
     # 3б) факты встречи → внешняя память (brain :8100) — только если её включили
-    # (`sufler.brain`, №249): выключена — ни замка, ни долга, ни запроса
     if graph_ok:
-        brain_on = install_profile.brain_enabled(cfg)
-        send_to_brain(stamp, title, people, topics, decisions,
-                      _root() / "logs" / "brain_sent" / f"{stamp}.txt", enabled=brain_on)
-        if not brain_on and install_profile.brain_explicit(cfg):
-            print("внешняя память выключена (sufler.brain: false) — факты встречи туда не отправлены")
+        meeting_facts_to_brain(cfg, stamp, title, people, topics, decisions)
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что

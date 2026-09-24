@@ -515,10 +515,15 @@ def test_sidecar_follows_the_renamed_transcript(world):
     assert not sc.exists() and (tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").exists()
 
 
-@pytest.mark.parametrize("explicit, said", [(True, "выключена в конфиге"), (False, "")])
-def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, explicit, said):
-    """Переименование — правка уже записанного, флаг записи его не гасит; при выключенной
-    записи отказ без рецепта curl, а без ключа в конфиге — пустая строка."""
+@pytest.mark.parametrize("sent, explicit, said", [
+    (False, True, "выключена в конфиге"),
+    (False, False, ""),
+    (True, True, "curl"),          # отметка отправки — рецепт при любом флаге (Opus I2 круга 1)
+    (True, False, "curl"),
+])
+def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, sent, explicit, said):
+    """Переименование — правка уже записанного, флаг записи его не гасит; без улик отправки
+    при выключенной записи отказ без рецепта curl, а без ключа в конфиге — пустая строка."""
     calls = []
 
     class Down:
@@ -528,8 +533,34 @@ def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatc
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
-    msg = rm.brain_rename("2026-07-15_1400", "Новая тема", enabled=False, explicit=explicit)
+    msg = rm.brain_rename("2026-07-15_1400", "Новая тема", sent=sent, enabled=False, explicit=explicit)
     assert calls == [(f"{rm.BRAIN}/rename", {"meeting": "2026-07-15_1400", "title": "Новая тема"})]
-    assert "curl" not in msg
+    assert ("curl" in msg) == sent
+    assert (said in msg) if said else msg == ""
+
+
+@pytest.mark.parametrize("mark, cfg, said", [
+    ("txt", {"sufler": {"brain": False}}, "curl"),
+    ("pending", {}, "curl"),
+    (None, {"sufler": {"brain": False}}, "выключена в конфиге"),
+    (None, {}, ""),
+    (None, {"sufler": {"brain": True}}, "curl"),
+])
+def test_rename_reads_the_flag_and_the_mark_itself(tmp_path, monkeypatch, mark, cfg, said):
+    # флаг и улику отправки читает brain_note, которую зовёт точка входа: мутант «флаг на месте
+    # вызова» выживал (круг 1 по коду №249, Opus I1)
+    stamp = "2026-07-15_1400"
+    monkeypatch.setattr(rm, "_root", lambda: tmp_path)
+    if mark:
+        (tmp_path / "logs" / "brain_sent").mkdir(parents=True)
+        (tmp_path / "logs" / "brain_sent" / f"{stamp}.{mark}").write_text("", encoding="utf-8")
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = rm.brain_note(stamp, "Новая тема", cfg)
     assert (said in msg) if said else msg == ""
 

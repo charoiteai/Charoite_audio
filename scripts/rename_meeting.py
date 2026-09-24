@@ -359,20 +359,32 @@ def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
 BRAIN = "http://127.0.0.1:8100"
 
 
-def brain_rename(stamp: str, pretty: str, *, enabled: bool, explicit: bool) -> str:
+def brain_note(stamp: str, pretty: str, cfg: dict) -> str:
+    """Строка о внешней памяти после переименования: флаг — из конфига, улика отправки — отметка
+    или долг встречи в logs/brain_sent. Отдельной функцией, чтобы тест держал чтение флага точкой
+    входа (Opus I1 круга 1 по коду №249)."""
+    sent_dir = _root() / "logs" / "brain_sent"
+    sent = any((sent_dir / f"{stamp}{suffix}").exists() for suffix in (".txt", ".pending"))
+    return brain_rename(stamp, pretty, sent=sent, enabled=install_profile.brain_enabled(cfg),
+                        explicit=install_profile.brain_explicit(cfg))
+
+
+def brain_rename(stamp: str, pretty: str, *, sent: bool, enabled: bool, explicit: bool) -> str:
     """Новая тема — и в фактах памяти Чароита (brain /rename, карточка №41).
     brain выключен — сказать, как повторить, а не молчать. Правка уже записанного
-    флагом записи не гасится (`sufler.brain`, №249); при выключенной записи отказ —
-    без рецепта curl, а без ключа в конфиге — пустая строка."""
+    флагом записи не гасится (`sufler.brain`, №249). Рецепт при отказе — если
+    факты встречи туда отправляли (`sent`, отметка в logs/brain_sent) или запись
+    включена; иначе при явно выключенной записи — строка без рецепта, а без ключа
+    в конфиге — пустая строка (Opus I2 круга 1 по коду)."""
     try:
         import requests
         r = requests.post(f"{BRAIN}/rename", json={"meeting": stamp, "title": pretty}, timeout=60)
         text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
         return text if r.status_code == 200 else f"отказ ({r.status_code}): {text[:160]}"
     except Exception as e:  # noqa: BLE001
-        if not enabled:
-            return ("выключена в конфиге и не отвечает — тема в её данных осталась старой"
-                    if explicit else "")
+        if not (sent or enabled):
+            return ("выключена в конфиге и не отвечает — тема в её данных, если факты туда "
+                    "отправляли до отметок, осталась старой" if explicit else "")
         return (f"недоступна ({type(e).__name__}) — тема в памяти осталась старой; повторить: "
                 f"curl -X POST {BRAIN}/rename -H 'content-type: application/json' "
                 f"-d '{{\"meeting\":\"{stamp}\",\"title\":\"{pretty}\"}}'")
@@ -542,8 +554,7 @@ def main() -> None:
         print("\nЭто был план. Применить: --yes")
         return
     apply(p, graph, stamp, pretty)
-    said = brain_rename(stamp, pretty, enabled=install_profile.brain_enabled(cfg),
-                        explicit=install_profile.brain_explicit(cfg))
+    said = brain_note(stamp, pretty, cfg)
     if said:
         print(f"память Чароита: {said}")
     print(f"готово: {stamp} — «{pretty}»")

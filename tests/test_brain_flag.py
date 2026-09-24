@@ -64,10 +64,25 @@ def test_the_external_memory_is_written_only_when_turned_on(cfg, on):
     assert install_profile.brain_enabled(cfg) is on
 
 
-def test_the_off_line_is_said_only_when_the_key_is_set():
-    assert install_profile.brain_explicit({"sufler": {"brain": False}})
-    assert not install_profile.brain_explicit({"sufler": {}})
-    assert not install_profile.brain_explicit({})
+@pytest.mark.parametrize("cfg, explicit", [
+    ({"sufler": {"brain": False}}, True),
+    ({"sufler": {"brain": "нет"}}, True),
+    ({"sufler": {"brain": True}}, True),
+    ({"sufler": {}}, False),
+    ({}, False),
+    # ключ без значения и мусор — не «false»: строка «(sufler.brain: false)» соврала бы
+    # (круг 1 по коду, Opus M1)
+    ({"sufler": {"brain": None}}, False),
+    ({"sufler": {"brain": "мусор"}}, False),
+    # пустой YAML, не словарь и «sufler:» без значения — тоже конфиг, падать нельзя (Opus C1)
+    (None, False),
+    (["список"], False),
+    ({"sufler": None}, False),
+    ({"sufler": ["список"]}, False),
+])
+def test_the_off_line_is_said_only_when_the_key_is_set(cfg, explicit):
+    assert install_profile.brain_explicit(cfg) is explicit
+    assert install_profile.brain_enabled(cfg) is (explicit and install_profile.flag(cfg, "brain", False))
 
 
 def _meeting(tmp_path):
@@ -127,12 +142,46 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     # и мутант «долги платятся всегда» выживал)
     os.utime(debt, (0, 0))
     log = tmp_path / "ревизия.log"
-    cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, enabled=False)
+    # флаг — из конфига прогона, читает его сам воркер (Opus I1 круга 1 по коду)
+    cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, {"sufler": {"brain": False}})
     assert not log.exists(), "выключенная память не пишет в лог ревизии ни строки"
     assert debt.exists(), "долг остаётся списком неотправленного"
-    cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, enabled=True)
+    cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, {"sufler": {"brain": True}})
     assert "заметки встречи в графе нет" in log.read_text(encoding="utf-8"), \
         "та же сцена при включённой — оплата идёт: без этого тест выше ничего не доказывает"
+
+
+@pytest.mark.parametrize("cfg, sends, said", [
+    ({"sufler": {"brain": False}}, False, True),
+    ({}, False, False),
+    ({"sufler": {"brain": True}}, True, False),
+])
+def test_the_meeting_step_reads_the_flag_itself(tmp_path, monkeypatch, capsys, cfg, sends, said):
+    # шаг разбора «факты → внешняя память» сам читает флаг из конфига разбора: мутант «флаг на
+    # месте вызова всегда да» выживал (круг 1 по коду, Opus I1)
+    calls, post = _spy()
+    monkeypatch.setattr(graph_updater.requests, "post", post)
+    monkeypatch.setattr(graph_updater, "_root", lambda: tmp_path)
+    facts, _ = _meeting(tmp_path)
+    n = graph_updater.meeting_facts_to_brain(cfg, *facts)
+    assert bool(calls) is sends and (n > 0) is sends
+    sent_dir = tmp_path / "logs" / "brain_sent"
+    assert sends or not sent_dir.exists() or sorted(sent_dir.iterdir()) == []
+    assert ("внешняя память выключена" in capsys.readouterr().out) is said
+
+
+@pytest.mark.parametrize("cfg, sends", [({"sufler": {"brain": False}}, False), ({"sufler": {"brain": True}}, True)])
+def test_the_review_worker_resends_only_when_turned_on(tmp_path, monkeypatch, cfg, sends):
+    # переотправку после ревизии воркер решает по конфигу прогона сам (Opus I1 круга 1)
+    import cloud_review
+    calls, post = _spy()
+    monkeypatch.setattr(graph_updater.requests, "post", post)
+    note = tmp_path / "граф" / "Встречи" / f"{STAMP}.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# Встреча\n\n## Решения\n- 📌 выбрали ЮPay\n", encoding="utf-8")
+    said = cloud_review._resend_to_brain(STAMP, note, "", cfg)
+    assert bool(calls) is sends
+    assert (said is None) is not sends
 
 
 def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str):

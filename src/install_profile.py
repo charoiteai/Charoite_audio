@@ -29,9 +29,17 @@ _FALSE = {"false", "no", "off", "0", "нет", "выкл"}
 _TRUE = {"true", "yes", "on", "1", "да", "вкл"}
 
 
+def _section(cfg) -> dict:
+    """Секция `sufler` или пустая: пустой YAML (None), список вместо словаря и `sufler:` без
+    значения — тоже конфиг, с которым точка входа обязана работать (круг 1 по коду №249, Opus C1:
+    «Забыть» падало на пустом config.yaml до стирания)."""
+    section = cfg.get("sufler") if isinstance(cfg, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
 def flag(cfg: dict, key: str, default: bool = True) -> bool:
     """Булев ключ секции `sufler` с нормализацией строк и мусора."""
-    value = (cfg.get("sufler") or {}).get(key, default)
+    value = _section(cfg).get(key, default)
     if isinstance(value, bool):
         return value
     if value is None:
@@ -89,9 +97,11 @@ def brain_enabled(cfg: dict) -> bool:
 
 
 def brain_explicit(cfg: dict) -> bool:
-    """Ключ `sufler.brain` задан явно. Только тогда строка «внешняя память выключена» что-то
-    значит для человека: у того, у кого её не было, она читалась бы как поломка."""
-    return "brain" in ((cfg or {}).get("sufler") or {})
+    """Ключ `sufler.brain` задан явно и распознан как да или нет. Только тогда строка «внешняя
+    память выключена» что-то значит для человека: у того, у кого её не было, она читалась бы как
+    поломка, а `brain:` без значения или мусор — не «false» (круг 1 по коду №249, Opus M1)."""
+    value = _section(cfg).get("brain")
+    return isinstance(value, bool) or str(value).strip().lower() in _FALSE | _TRUE
 
 
 def tier3_enabled(cfg: dict) -> bool:

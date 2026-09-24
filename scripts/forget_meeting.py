@@ -133,6 +133,10 @@ class Plan:
     # ключ графа (минутный у владельца минуты, посекундный у соседки) и сам
     # штамп, если отличается. /forget у brain есть с 23.08 (карточка №41).
     brain_keys: list[str] = dataclasses.field(default_factory=list)
+    # Ключи, у которых на диске была улика отправки — отметка или долг в logs/brain_sent.
+    # Снимается до удаления: apply стирает отметки раньше, чем зовёт /forget, а решать, нужен ли
+    # человеку рецепт повтора, надо по факту отправки, а не по флагу записи (Opus I2 круга 1 №249)
+    brain_sent: set[str] = dataclasses.field(default_factory=set)
     # Как план решил, чьи посекундные файлы минуты: человек проверяет довод
     # ДО необратимого удаления (критика DS r4 по #499)
     notes: list[str] = dataclasses.field(default_factory=list)
@@ -764,11 +768,14 @@ def plan(stamp: str, root: pathlib.Path,
     # названа ключом графа; без отметки тоже пробуем — отметки появились
     # позже фактов.
     for key in p.brain_keys:
-        p.delete += _with_stamp(logs / "brain_sent", key, suffix=".txt")
         # долг переотправки после ревизии (№237) — той же встречи; `.lock`
         # отправителя НЕ трогать: unlink снимает имя, не flock, и следующий
         # отправитель взял бы новый инод поверх живого (DS r4 по #545)
-        p.delete += _with_stamp(logs / "brain_sent", key, suffix=".pending")
+        sent = (_with_stamp(logs / "brain_sent", key, suffix=".txt")
+                + _with_stamp(logs / "brain_sent", key, suffix=".pending"))
+        p.delete += sent
+        if sent:
+            p.brain_sent.add(key)
     return p
 
 
@@ -845,7 +852,8 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
     print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     for key in p.brain_keys:
-        said = brain_forget(key, enabled=brain_enabled, explicit=brain_explicit)
+        said = brain_forget(key, sent=key in p.brain_sent, enabled=brain_enabled,
+                            explicit=brain_explicit)
         if said:
             print(f"  память Чароита: {said}")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
@@ -858,7 +866,20 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
 BRAIN = "http://127.0.0.1:8100"
 
 
-def brain_forget(key: str, *, enabled: bool, explicit: bool) -> str:
+def _brain_flags(root: pathlib.Path) -> dict:
+    """Флаги внешней памяти для строки отказа — мягким чтением конфига: «забыть» обязано дойти
+    до стирания при любом конфиге — пустом, битом, без файла. Строгое чтение падало на пустом
+    config.yaml раньше первого удаления (круг 1 по коду №249, Opus C1)."""
+    try:
+        from config_loader import load_user_or_example
+        cfg = load_user_or_example(root)
+    except Exception:  # noqa: BLE001 — строка отказа не важнее стирания
+        cfg = {}
+    return {"brain_enabled": install_profile.brain_enabled(cfg),
+            "brain_explicit": install_profile.brain_explicit(cfg)}
+
+
+def brain_forget(key: str, *, sent: bool, enabled: bool, explicit: bool) -> str:
     """POST /forget в память Чароита; строка для человека, не исключение.
 
     brain может быть выключен — «забыть» файлы от этого не зависит, но
@@ -867,9 +888,11 @@ def brain_forget(key: str, *, enabled: bool, explicit: bool) -> str:
 
     Стирание не гасится флагом записи (`sufler.brain`, №249): факты уже
     отправленных встреч лежат на сервере, пока их не удалят, и «забыть» обязано
-    до них дойти. Флаг решает только, что сказать при отказе: запись выключена —
-    без рецепта curl; ключа в конфиге нет вовсе (сервера у установки не было) —
-    пустая строка, говорить не о чем.
+    до них дойти. Что сказать при отказе, решает сначала факт отправки (`sent` —
+    отметка или долг этой встречи в logs/brain_sent): отправляли или запись
+    включена — рецепт повтора, флаг здесь ни при чём, факты на сервере. Улик нет
+    и запись выключена явно — одна строка без рецепта; ключа в конфиге нет —
+    пустая строка, говорить не о чем (Opus I2 круга 1 по коду).
     """
     try:
         import requests
@@ -879,9 +902,9 @@ def brain_forget(key: str, *, enabled: bool, explicit: bool) -> str:
             return text or f"забыто: {key}"
         return f"отказ ({r.status_code}): {text[:160]}"
     except Exception as e:  # noqa: BLE001 — brain выключен или не отвечает
-        if not enabled:
-            return (f"выключена в конфиге и не отвечает — факты встречи {key}, отправленные раньше, "
-                    "остаются в её данных") if explicit else ""
+        if not (sent or enabled):
+            return (f"выключена в конфиге и не отвечает — факты встречи {key}, если их отправляли "
+                    "до отметок, остаются в её данных") if explicit else ""
         return (f"недоступна ({type(e).__name__}) — факты встречи {key} остались; "
                 f"повторить, когда brain поднимется: curl -X POST {BRAIN}/forget "
                 f"-H 'content-type: application/json' -d '{{\"meeting\":\"{key}\"}}'")
@@ -915,11 +938,7 @@ def main() -> int:
 
     if len(found) > 1:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
-    # что сказать об отказе внешней памяти, решает конфиг; стирание идёт в любом случае (№249)
-    from config_loader import load_user_or_example
-    cfg = load_user_or_example(_root())
-    brain = {"brain_enabled": install_profile.brain_enabled(cfg),
-             "brain_explicit": install_profile.brain_explicit(cfg)}
+    brain = _brain_flags(_root())
     done = False
     for stamp in found:
         done |= apply(plan(stamp, _root(), graph, keep_graph=args.keep_graph,

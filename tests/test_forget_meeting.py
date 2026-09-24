@@ -706,7 +706,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
             return Resp()
 
     monkeypatch.setitem(sys.modules, "requests", FakeRequests)
-    assert "Забыто" in forget.brain_forget(STAMP, enabled=True, explicit=True)
+    assert "Забыто" in forget.brain_forget(STAMP, sent=True, enabled=True, explicit=True)
     assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
 
     class Down:
@@ -715,7 +715,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
-    msg = forget.brain_forget(STAMP, enabled=True, explicit=True)
+    msg = forget.brain_forget(STAMP, sent=False, enabled=True, explicit=True)
     assert "недоступна" in msg and "/forget" in msg and STAMP in msg
 
     # у посекундной соседки ключей два: ключ графа из отметки и её штамп
@@ -1010,11 +1010,19 @@ def test_sweep_takes_an_ownerless_titled_per_second_sidecar_with_a_service_word(
     assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1
 
 
-@pytest.mark.parametrize("explicit, said", [(True, "выключена в конфиге"), (False, "")])
-def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, explicit, said):
+@pytest.mark.parametrize("sent, explicit, said", [
+    (False, True, "выключена в конфиге"),
+    (False, False, ""),
+    # улика отправки на диске — рецепт повтора при любом флаге: факты лежат на сервере
+    # (круг 1 по коду, Opus I2)
+    (True, True, "curl"),
+    (True, False, "curl"),
+])
+def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, sent, explicit, said):
     """Флаг записи не гасит стирание: факты отправленных встреч лежат на сервере, пока их не
-    удалят, и забытая встреча иначе уехала бы в дамп. Выключенная запись меняет только
-    строку отказа — без рецепта curl, а без ключа в конфиге — ничего (входной круг, Opus C2)."""
+    удалят, и забытая встреча иначе уехала бы в дамп. Без улик отправки выключенная запись
+    меняет только строку отказа — без рецепта curl, а без ключа в конфиге — ничего (входной
+    круг, Opus C2); с уликой — рецепт, как при включённой."""
     calls = []
 
     class Down:
@@ -1024,8 +1032,64 @@ def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatc
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
-    msg = forget.brain_forget(STAMP, enabled=False, explicit=explicit)
+    msg = forget.brain_forget(STAMP, sent=sent, enabled=False, explicit=explicit)
     assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})], "стирание идёт и при выключенной записи"
-    assert "curl" not in msg
+    assert ("curl" in msg) == sent
     assert (said in msg) if said else msg == ""
+
+
+def test_plan_remembers_which_keys_were_sent_before_it_deletes_the_marks(tmp_path):
+    # отметки удаляются раньше /forget, поэтому улику отправки план снимает до удаления
+    # (круг 1 по коду №249, Opus I2)
+    root, graph = _world(tmp_path)
+    sent_dir = root / "logs" / "brain_sent"
+    sent_dir.mkdir(parents=True)
+    (sent_dir / f"{STAMP}.txt").write_text("тема\n", encoding="utf-8")
+    p = forget.plan(STAMP, root, graph)
+    assert p.brain_sent == {STAMP} and sent_dir / f"{STAMP}.txt" in p.delete
+    assert forget.plan(OTHER, root, graph).brain_sent == set(), "без отметки улики нет"
+    (sent_dir / f"{OTHER}.pending").write_text("", encoding="utf-8")
+    assert forget.plan(OTHER, root, graph).brain_sent == {OTHER}, "долг — тоже улика"
+
+
+@pytest.mark.parametrize("config, flags", [
+    (None, (False, False)),                                  # файла нет — пример без ключа
+    ("", (False, False)),                                    # пустой YAML — None
+    ("sufler: [\n", (False, False)),                        # битый YAML
+    ("- список\n", (False, False)),                         # не словарь
+    ("sufler:\n  brain:\n", (False, False)),               # ключ без значения — не «false»
+    ("sufler:\n  brain: мусор\n", (False, False)),
+    ("sufler:\n  brain: false\n", (False, True)),
+    ("sufler:\n  brain: true\n", (True, True)),
+])
+def test_forget_reads_the_memory_flags_without_failing_on_any_config(tmp_path, config, flags):
+    # строгое чтение падало на пустом config.yaml раньше первого удаления (круг 1 по коду, Opus C1)
+    if config is not None:
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "config.yaml").write_text(config, encoding="utf-8")
+    got = forget._brain_flags(tmp_path)
+    assert (got["brain_enabled"], got["brain_explicit"]) == flags
+
+
+@pytest.mark.parametrize("config", ["", "sufler: [\n"])
+def test_forget_erases_with_an_empty_or_broken_config(tmp_path, monkeypatch, config):
+    # тот же сбой — через точку входа: пустой или битый config.yaml, «забыть --yes» удаляет
+    # встречу и зовёт /forget, а не падает трейсбеком до первого удаления (Opus C1 круга 1)
+    root, graph = _world(tmp_path)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text(config, encoding="utf-8")
+    calls = []
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            calls.append(url)
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", STAMP, "--graph", str(graph), "--yes"])
+    assert forget.main() == 0
+    assert not (root / "transcripts" / f"{STAMP}.md").exists()
+    assert calls == [f"{forget.BRAIN}/forget"]
 
