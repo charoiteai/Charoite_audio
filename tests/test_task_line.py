@@ -11,9 +11,13 @@ fix_action_items на боевом графе переоткрыла бы 574 с
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import datetime
 import hashlib
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -509,3 +513,68 @@ def test_fix_action_items_names_twenty_refusals_and_counts_the_rest(tmp_path, mo
     assert len([ln for ln in err if "статус изменился бы" in ln]) == 20
     assert [ln for ln in err if "и ещё" in ln and "статус" not in ln] == ([tail] if tail else [])
     assert all(q.read_text(encoding="utf-8") == text for q in notes)
+
+
+# Общая таблица форм строки поручения: её же читают тесты Swift (Mac, iOS) и Kotlin
+# (Android), поэтому ожидания лежат в JSON, а не в коде теста (№366, шаг 2).
+TABLE = json.loads((ROOT / "tests" / "fixtures" / "task_lines.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("row", TABLE, ids=range(len(TABLE)))
+def test_every_form_in_the_shared_table(row):
+    line = row["line"]
+    assert task_line.status(line) == row["status"]
+    assert task_line.canonical(line) == row["canonical"]
+    assert task_line.key(line) == row["key"]
+    rec = task_line.parse(line)
+    if row["status"] is None:
+        assert rec is None
+        return
+    assert rec.status == row["status"] and rec.box == row["box"]
+    assert rec.assignee == row["assignee"] and rec.text == row["text"] and rec.control == row["control"]
+    assert rec.fields == {k: datetime.date.fromisoformat(v) for k, v in row["fields"].items()}
+    assert task_line.render(rec) == row["render"]
+
+
+def test_the_table_covers_every_form_the_module_knows():
+    # новая форма в модуле без строки в таблице — красный тест здесь, а не тихий
+    # разнобой с клиентами на Swift и Kotlin
+    lines = [r["line"] for r in TABLE]
+    assert {r["status"] for r in TABLE} == {*task_line.SETTLED, task_line.OPEN, None}
+    assert {kind for r in TABLE if r["fields"] for kind in r["fields"]} == set(task_line.FIELDS)
+    assert any(r["control"] and r["status"] == task_line.RETURNED for r in TABLE)
+    for marker in ["-", "*", "+", "•", "–", "1.", "1)"]:
+        assert any(ln.lstrip().startswith(f"{marker}") and task_line.status(ln) for ln in lines), marker
+    assert any(re.search(r"[a-z]{3}", r["key"]) for r in TABLE), "английская строка"
+    assert any(re.search(r"[一-鿿]", r["key"]) for r in TABLE), "китайская строка"
+
+
+@pytest.mark.parametrize("row", [r for r in TABLE if r["render"] is not None], ids=lambda r: r["line"][:40])
+def test_render_of_a_parsed_line_is_canonical_and_stable(row):
+    # render выдаёт каноничную строку, а для каноничной строки разбор и вывод — тождество
+    out = row["render"]
+    assert task_line.render(task_line.parse(out)) == out
+    # вывод теряет только форму маркера: всё остальное в записи доживает до строки
+    assert task_line.parse(out) == dataclasses.replace(task_line.parse(row["line"]), marker="-")
+
+
+def test_render_keeps_a_canonical_line_as_is():
+    canonical = [r["line"] for r in TABLE if r["render"] == r["line"]]
+    assert len(canonical) >= 20
+    for line in canonical:
+        assert task_line.render(task_line.parse(line)) == line
+
+
+def test_fields_are_dates():
+    rec = task_line.parse("- [x] **Участник А** — отчёт 📅 2026-10-01 ✅ 2026-09-24")
+    assert rec.fields == {"due": datetime.date(2026, 10, 1), "done": datetime.date(2026, 9, 24)}
+
+
+@pytest.mark.parametrize("box", [" ", "x", "X", "-", "/"])
+def test_one_task_with_and_without_fields_in_any_status_has_one_key(box):
+    bare = "**Участник А** — подготовить отчёт"
+    base = task_line.key(bare)
+    assert base == "участник а подготовить отчёт"
+    for tail in ["", " 📅 2026-10-01", " ✅ 2026-09-24", " ❌ 2026-09-24",
+                 " _(снято по сроку 24.09)_ 📅 2026-10-01 ❌ 2026-09-24"]:
+        assert task_line.key(f"- [{box}] {bare}{tail}") == base

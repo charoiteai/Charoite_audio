@@ -817,3 +817,17 @@ def test_minutes_vanishing_between_the_check_and_the_write_are_told_apart(tmp_pa
     assert exc.value.gone, exc.value.kind
     assert not exc.value.unreachable and exc.value.detail == "", exc.value.reason
     assert not mpath.exists(), "файла нет — писать было некуда, и воскресать он не должен"
+
+
+def test_an_item_with_a_due_field_in_minutes_is_the_same_item_without_it():
+    # Поле срока плагина Tasks («📅 ГГГГ-ММ-ДД») — не часть поручения: свой ключ моста
+    # оставлял цифры даты, и короткий пункт с полем и тот же пересказ ревизии без поля
+    # расходились и по ключу, и по Жаккару (1 общее слово из 2) — пункт дописывался
+    # второй раз (№366, шаг 2). Ключ теперь общий — task_line.key.
+    minutes = "# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить 📅 2026-10-01\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник А** — позвонить"])
+    assert added == 0 and text == minutes
+    # и в обратную сторону: поле у пересказа, в минутках его нет
+    bare = minutes.replace(" 📅 2026-10-01", "")
+    text, added = rb.merge_into_minutes(bare, ["**Участник А** — позвонить 📅 2026-10-01"])
+    assert added == 0 and text == bare
