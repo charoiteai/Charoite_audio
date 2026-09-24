@@ -56,6 +56,11 @@ EMPTY = {"dups": [], "nests": [], "border": [], "log": [],
          "pending_merges": [], "skipped": [], "ran": True}
 
 
+def _open() -> bool:
+    """Ночное окно открыто: гейт вызывающего, который модулю графа передают параметром."""
+    return True
+
+
 def _graph(tmp_path: pathlib.Path, *names: str) -> pathlib.Path:
     graph = tmp_path / "Граф"
     (graph / "Ядра").mkdir(parents=True)
@@ -171,7 +176,7 @@ def test_revise_reports_that_it_ran(tmp_path, monkeypatch):
     """ran отличает «чисто» от «ревизия не состоялась»."""
     graph = _graph(tmp_path, "Одно", "Другое")
     assert tier3.revise(graph, embedder=fake_embedder(),
-                        judge=fake_judge(refused="нет модели"))["ran"] is False
+                        judge=fake_judge(refused="нет модели"), may_continue=_open)["ran"] is False
 
 
 def test_the_factory_builds_a_judge_that_refuses_loudly(monkeypatch):
@@ -212,7 +217,7 @@ def test_a_broken_seam_is_not_a_lying_ollama(tmp_path):
     graph = _graph(tmp_path, "Одно", "Другое")
     wrong = Embedder(lambda texts: [], "шов-без-таймаута")   # забыли параметр
     with pytest.raises(TypeError):
-        tier3.revise(graph, embedder=wrong, judge=fake_judge())
+        tier3.revise(graph, embedder=wrong, judge=fake_judge(), may_continue=_open)
 
 
 def test_a_judge_that_goes_deaf_mid_run_returns_the_pair_to_focus(tmp_path):
@@ -231,7 +236,7 @@ def test_a_judge_that_goes_deaf_mid_run_returns_the_pair_to_focus(tmp_path):
         raise SeamTransportError("судья исчез посреди прогона")
 
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
-                     judge=fake_judge(entail=deaf))
+                     judge=fake_judge(entail=deaf), may_continue=_open)
     assert r["failed"] == 1 and r["failed_names"] == {"Одно", "Другое"}
     assert r["dups"] == [], "ничего не слил вслепую"
     assert r["ran"] is False, \
@@ -245,14 +250,14 @@ def test_ran_is_false_when_the_judge_did_not_come(tmp_path, monkeypatch):
     (аудит DeepSeek 17.08)."""
     graph = _graph(tmp_path, "Одно", "Другое")
     assert tier3.revise(graph, embedder=fake_embedder(),
-                        judge=fake_judge(ready=False))["ran"] is False
+                        judge=fake_judge(ready=False), may_continue=_open)["ran"] is False
 
 
 def test_incomplete_embeddings_do_not_crash_and_do_not_count_as_a_run(tmp_path, monkeypatch):
     """llm.embed при ошибке сервера отдаёт `[]` — раньше IndexError валил CLI
     ночи (аудит DeepSeek 17.08); теперь — «прогон не состоялся»."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    r = tier3.revise(graph, embedder=fake_embedder([]), judge=fake_judge())
+    r = tier3.revise(graph, embedder=fake_embedder([]), judge=fake_judge(), may_continue=_open)
     assert r["ran"] is False and r["dups"] == []
 
 
@@ -266,11 +271,9 @@ def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
     # цикла и stopped=False держалось инициализацией, а не прогоном
     # (ревью 22.08: Sonnet 5 и DeepSeek независимо).
     asked = []
-    monkeypatch.setattr(tier3.live_gate, "night_window_open",
-                        lambda *a, **k: asked.append(1) or True)
 
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
-                     judge=fake_judge())
+                     judge=fake_judge(), may_continue=lambda: asked.append(1) or True)
     assert asked, "суд не дошёл до цикла пар — тест держал бы инициализацию"
     assert r["ran"] is True and r["stopped"] is False
 
@@ -279,10 +282,8 @@ def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
     """Обрыв потолком ночи — stopped=True: недосмотренные ядра уходят в
     unjudged_names, и следующая ночь продолжает с места обрыва."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    monkeypatch.setattr(tier3.live_gate, "night_window_open", lambda *a, **k: False)
-
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
-                     judge=fake_judge())
+                     judge=fake_judge(), may_continue=lambda: False)
     assert r["ran"] is True and r["stopped"] is True
 
 
@@ -291,7 +292,7 @@ def test_a_graph_with_one_core_is_nothing_to_do_not_a_failure(tmp_path, monkeypa
     """Одно ядро — судить нечего. Раньше это был тот же ran=False, что у
     лежащей Ollama, и граф печатал «нет NLI-модели» (входной круг, Codex I4)."""
     graph = _graph(tmp_path, "Одно")
-    r = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge())
+    r = tier3.revise(graph, embedder=fake_embedder(), judge=fake_judge(), may_continue=_open)
     assert r["status"] == "no_work" and r["ran"] is False
 
     monkeypatch.setattr(tier3_cores, "stamps_path", lambda p=tmp_path / "stamps.json": p)
@@ -312,7 +313,7 @@ def test_a_revision_that_did_not_happen_names_why(tmp_path, embedder, judge, exp
     """Общая фраза «нет NLI-модели, лежит Ollama или пустые эмбеддинги» месяц
     стояла над HTTP 400 от эмбеддера: причину называет ревизия (№358)."""
     graph = _graph(tmp_path, "Одно", "Другое")
-    r = tier3.revise(graph, embedder=embedder, judge=judge)
+    r = tier3.revise(graph, embedder=embedder, judge=judge, may_continue=_open)
     assert r["status"] == "unavailable" and expect in r["reason"], r["reason"]
 
 
@@ -366,10 +367,16 @@ def test_pending_names_are_kept_whole(tmp_path, monkeypatch):
 
 # ── Очередь, которая не помещается в ночь, обязана сходиться (круг 1 по коду) ─
 def _window_for(pairs_allowed: int, monkeypatch):
-    """Ночное окно, которое закрывается после `pairs_allowed` судимых пар."""
+    """Ночное окно, которое закрывается после `pairs_allowed` судимых пар: ставится
+    в ночь (tier3_cores спрашивает live_gate) и отдаётся гейтом прямому вызову revise."""
     спрошено = []
-    monkeypatch.setattr(tier3.live_gate, "night_window_open",
-                        lambda *a, **k: (спрошено.append(1), len(спрошено) <= pairs_allowed)[1])
+
+    def window(*a, **k):
+        спрошено.append(1)
+        return len(спрошено) <= pairs_allowed
+
+    monkeypatch.setattr(tier3_cores.live_gate, "night_window_open", window)
+    return window
 
 
 def test_a_queue_longer_than_the_night_converges(tmp_path, monkeypatch):
@@ -438,12 +445,13 @@ def test_a_stopped_run_moves_the_stamp_and_keeps_the_debt(tmp_path, monkeypatch,
 def test_a_judge_failing_every_pair_is_named_even_when_the_night_ends(tmp_path, monkeypatch):
     """Отказ судьи на всех парах важнее обрыва — но и обрыв назван в причине."""
     graph = _graph(tmp_path, "А", "Б", "В")
-    _window_for(1, monkeypatch)
+    window = _window_for(1, monkeypatch)
 
     def deaf(a, b):
         raise RuntimeError("сессия NLI умерла")
 
-    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=deaf))
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=deaf),
+                     may_continue=window)
     assert r["status"] == "unavailable" and "потолок ночи" in r["reason"], r["reason"]
 
 
@@ -459,8 +467,7 @@ def test_a_pair_the_judge_refused_is_not_remembered_as_judged(tmp_path, monkeypa
             raise RuntimeError("сессия NLI моргнула")
         return 0.0
 
-    monkeypatch.setattr(tier3.live_gate, "night_window_open", lambda *a, **k: True)
-    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=entail))
+    r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0]] * 3), judge=fake_judge(entail=entail), may_continue=_open)
     имена = {c["repr"]: c["name"] for c in tier3.load_cores(graph / "Ядра")}
     плохая_по_именам = frozenset(имена[x] for x in плохая)
     assert r["failed"] == 1 and плохая_по_именам not in r["judged_pairs"], r["judged_pairs"]
@@ -505,12 +512,12 @@ def test_single_graph_main_speaks_through_the_same_exit_code(tmp_path, monkeypat
 
 def test_no_folder_and_a_refusing_transport_are_named(tmp_path):
     from model_seam import Embedder, SeamTransportError
-    r = tier3.revise(tmp_path / "Нет графа", embedder=fake_embedder(), judge=fake_judge())
+    r = tier3.revise(tmp_path / "Нет графа", embedder=fake_embedder(), judge=fake_judge(), may_continue=_open)
     assert r["status"] == "no_work" and "Ядра" in r["reason"]
 
     def refuse(texts, timeout):
         raise SeamTransportError("соединение отклонено")
 
     graph = _graph(tmp_path, "А", "Б")
-    r = tier3.revise(graph, embedder=Embedder(refuse, "test"), judge=fake_judge())
+    r = tier3.revise(graph, embedder=Embedder(refuse, "test"), judge=fake_judge(), may_continue=_open)
     assert r["status"] == "unavailable" and "соединение отклонено" in r["reason"], r["reason"]

@@ -31,11 +31,6 @@ import tier3  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
 
-def _root() -> pathlib.Path:
-    """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте."""
-    return resolve_root(__file__)
-
-
 # Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
 # только этот скрипт, но человеку, который разбирается, почему ночь молчала,
 # они нужны там же, где остальные следы ночного цикла.
@@ -125,9 +120,10 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # графе значат, что найденный одним прогоном дубль невидим другому
     # (круг 5 по №321, DS I1).
     cfg = graphs.load_config()
-    r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
-                     embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                     judge=nli.judge(), skip_pairs=frozenset(skip))
+    # ночное окно вшито в дверь приложения — то же, что у дневного пути (№365)
+    r = graphs.revise_cores(graph, only_names=only, apply=apply, mark=mark,
+                            embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
+                            judge=nli.judge(), skip_pairs=frozenset(skip))
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.

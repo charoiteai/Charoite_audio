@@ -64,7 +64,7 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv))
+                        roots=lm.root_derivations(inv), seams=lm.seam_calls(inv))
     assert not problems, "\n".join(problems)
 
 
@@ -353,6 +353,59 @@ def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
     assert свои == {"_root", "_cfg", "_алиас"}, свои
     # корень КОДА — не эта форма: код лежит там, где лежит, его снимок верен
     assert lm._имена_канона_данных(ast.parse(probe)) == {"resolve_root", "корень"}
+
+
+def _code(src: str) -> "lm.FileInfo":
+    return lm.FileInfo(kind="code", haystacks=(), tree=ast.parse(src), executable=None)
+
+
+def test_env_seams_of_the_graph_are_called_only_through_the_door():
+    """Индекс поиска и ревизию ядер приложение строит через дверь окружения
+    (`graphs.open_search`, `graphs.revise_cores`): там один каталог кэша векторов и одно
+    ночное окно. Обход двери — красный в любой форме импорта, чужой `revise` — не шов,
+    тесты — вне области (Opus C1 и I1 круга 1 по коду №365)."""
+    # обход двери — любая ссылка на шов, не только вызов по имени (Opus I2 круга 2)
+    bypass = {
+        "scripts/обход.py": "import graph_search\nm = graph_search.GraphSearch(g, embedder=e, data_dir=d)\n",
+        "scripts/из_пакета.py": "from charoite_graph import graph_search\ngraph_search.GraphSearch(g)\n",
+        "scripts/корень_пакета.py": "import charoite_graph\ncharoite_graph.tier3.revise(g)\n",
+        "src/ночь.py": "from tier3 import revise\nrevise(g, may_continue=lambda: True)\n",
+        "scripts/псевдоним.py": "from graph_search import GraphSearch as Индекс\nИндекс(g)\n",
+        "scripts/переменная.py": "import tier3\nf = tier3.revise\nf(g)\n",
+        # модуль под псевдонимом: привязка идёт по псевдониму, а не по имени модуля (мутант
+        # «asname and name» выживал, мутатор по всему диапазону №365)
+        "scripts/модуль_псевдонимом.py": "import tier3 as t\nt.revise(g)\n",
+        "scripts/частично.py": "import functools, tier3\nfunctools.partial(tier3.revise, g)()\n",
+        "scripts/поток.py": "import threading, tier3\nthreading.Thread(target=tier3.revise)\n",
+        "scripts/подкласс.py": "import graph_search\nclass L(graph_search.GraphSearch):\n    pass\n",
+    }
+    # не обход: чужой revise рядом с импортом tier3, псевдоним из чужого модуля, аннотации типов
+    # (Opus M2 круга 2), владелец двери и тесты
+    clean = {
+        "src/чужой.py": "import cloud_review\ncloud_review.revise(x)\n",
+        "src/чужой_рядом.py": "import tier3, cloud_review\nk = tier3.TIER3_KEEP_ALIVE\ncloud_review.revise(x)\n",
+        "src/чужой_псевдоним.py": "import tier3\nfrom cloud_review import revise as cr\ncr(x)\n",
+        "src/аннотации.py": ("import graph_search\ndef f() -> graph_search.GraphSearch:\n"
+                             "    x: graph_search.GraphSearch = g\n    return x\n"),
+        "src/graphs.py": "import graph_search\nimport tier3\ngraph_search.GraphSearch(g)\ntier3.revise(g)\n",
+        "tests/test_x.py": "import graph_search\ngraph_search.GraphSearch(g)\n",
+    }
+    inv = lm.Inventory(files={rel: _code(src) for rel, src in {**bypass, **clean}.items()}, problems=[])
+    calls = lm.seam_calls(inv)
+    for rel in ("src/чужой.py", "src/чужой_рядом.py", "src/чужой_псевдоним.py", "src/аннотации.py"):
+        assert rel not in calls, f"{rel}: не шов, а правило его засчитало"
+    said = lm.seam_problems(calls)
+    assert sorted(line.split(" ")[0] for line in said) == sorted(f"{rel}:2" for rel in bypass)
+    assert all("мимо двери окружения" in line for line in said)
+    assert lm.seam_problems(None) == []
+
+
+def test_the_gate_is_actually_asked_about_the_seams(monkeypatch, capsys):
+    """Правило живо, только если главный тракт отдаёт замер швов в гейт: владельца
+    двери лишаем права звать шов — строка обязана появиться."""
+    monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    assert lm.main(["--check"]) == 1
+    assert "src/graphs.py" in capsys.readouterr().out
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
