@@ -36,7 +36,7 @@ def test_open_search_puts_the_vector_cache_into_the_data_root(tmp_path, monkeypa
                     "data_dir": tmp_path / "данные" / "data"}
 
 
-def _spy_revise(monkeypatch, report=None):
+def _spy_revise(monkeypatch, report=None, order=None):
     """Подмена revise, которая принимает только вызов, подходящий настоящей сигнатуре,
     и сама спрашивает окно — как спросил бы цикл пар."""
     real = inspect.signature(tier3.revise)
@@ -44,6 +44,8 @@ def _spy_revise(monkeypatch, report=None):
 
     def spy(*a, **kw):
         real.bind(*a, **kw)
+        if order is not None:
+            order.append("ревизия")
         calls.append({**kw, "окно": kw["may_continue"]()})
         return report or {"log": [], "skipped": [], "pending_merges": []}
 
@@ -76,19 +78,42 @@ def test_revise_cores_does_not_take_a_window_from_the_caller(tmp_path, monkeypat
         graphs.revise_cores(tmp_path, may_continue=lambda: True, embedder=object(), judge=object())
 
 
-def test_the_day_path_revises_the_meeting_cores_through_the_door(tmp_path, monkeypatch, capsys):
-    # дневной путь (разбор встречи) — тот, которого не проверял ни один тест; его
-    # except Exception превращал потерянный параметр в строку «tier3: пропущен»
+def _day_path(tmp_path, monkeypatch, enabled=True):
     import graph_updater
     graph = tmp_path / "граф"
     (graph / "Ядра").mkdir(parents=True)
-    asked = _window(monkeypatch, answer=False)
-    calls = _spy_revise(monkeypatch)
-    monkeypatch.setattr(graph_updater.install_profile, "tier3_enabled", lambda cfg: True)
-    monkeypatch.setattr(graph_updater, "_yield_to_live", lambda: None)
+    order: list[str] = []
+    monkeypatch.setattr(graph_updater.install_profile, "tier3_enabled", lambda cfg: enabled)
+    monkeypatch.setattr(graph_updater, "_yield_to_live", lambda: order.append("уступка"))
     monkeypatch.setattr(graph_updater.llm, "embedder", lambda cfg, **kw: object())
     monkeypatch.setattr(graph_updater.nli, "judge", lambda: object())
-    graph_updater._revise_meeting_cores({}, graph, [{"имя": "Релиз"}])
+    return graph_updater, graph, order
+
+
+# Слияние ядер необратимо: право даёт только строгое `tier3_auto_apply: true`, строка «false»
+# — не согласие. Прежде это держал тест по тексту исходника, и мутант `apply=True` проходил
+# весь набор (Opus I1 круга 2 по №365)
+@pytest.mark.parametrize("cfg, apply", [
+    ({}, False),
+    ({"sufler": {"tier3_auto_apply": "false"}}, False),
+    ({"sufler": {"tier3_auto_apply": True}}, True),
+])
+def test_the_day_path_revises_the_meeting_cores_through_the_door(tmp_path, monkeypatch, capsys, cfg, apply):
+    # дневной путь (разбор встречи) — тот, которого не проверял ни один тест; его
+    # except Exception превращал потерянный параметр в строку «tier3: пропущен»
+    graph_updater, graph, order = _day_path(tmp_path, monkeypatch)
+    asked = _window(monkeypatch, answer=False)
+    calls = _spy_revise(monkeypatch, order=order)
+    graph_updater._revise_meeting_cores(cfg, graph, [{"имя": "Релиз"}])
     assert "tier3: пропущен" not in capsys.readouterr().out
-    assert [(c["only_names"], c["mark"]) for c in calls] == [(["Релиз"], True)]
+    assert [(c["only_names"], c["mark"], c["apply"]) for c in calls] == [(["Релиз"], True, apply)]
     assert asked == [(tmp_path / "данные", "ревизия ядер")]
+    assert order == ["уступка", "ревизия"], "ревизия тянет эмбеддер — сначала уступить живой встрече"
+
+
+def test_the_day_path_is_silent_when_the_profile_turns_the_revision_off(tmp_path, monkeypatch, capsys):
+    graph_updater, graph, order = _day_path(tmp_path, monkeypatch, enabled=False)
+    calls = _spy_revise(monkeypatch, order=order)
+    graph_updater._revise_meeting_cores({}, graph, [{"имя": "Релиз"}])
+    assert calls == [] and order == []
+    assert "выключена профилем" in capsys.readouterr().out

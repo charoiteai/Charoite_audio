@@ -1829,32 +1829,81 @@ def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
 #: разрешён, дверь для остальных). Модули графа окружения не знают — каталог кэша
 #: векторов и ночное окно ревизии им передают, и собирает их один адаптер, а не каждое
 #: место вызова: пять копий пути и две копии окна жили без единого теста, а дневной
-#: путь ревизии ядер не проверял никто (Opus C1 и I1 круга 1 по коду №365). Вызов
-#: считается, только если файл импортирует модуль шва: чужой `revise` — не этот шов.
+#: путь ревизии ядер не проверял никто (Opus C1 и I1 круга 1 по коду №365). Считается
+#: любая ссылка на шов, привязанная к его модулю (`_seam_refs`).
 ENV_SEAMS: dict[str, tuple[str, tuple[str, ...], str]] = {
     "GraphSearch": ("graph_search", ("src/graphs.py",), "graphs.open_search"),
     "revise": ("tier3", ("src/graphs.py",), "graphs.revise_cores"),
 }
 
 
+def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
+    """Ссылки на швы окружения в файле — шов → строки.
+
+    Ссылка, а не только вызов: переменная (`f = tier3.revise`), `functools.partial`,
+    `Thread(target=…)` и база подкласса обходят дверь так же, как вызов (Opus I2 круга 2
+    по №365). Получатель привязан к модулю шва: `tier3.revise` — при `import tier3` (или
+    псевдониме, или подмодуле пакета `charoite_graph.tier3`), голое `revise` — только при
+    `from tier3 import revise [as …]`; чужой `revise` — не шов (Opus M2 круга 2).
+    Аннотации типов — не обход: они не строят индекс и не зовут ревизию. Граница правила:
+    динамику (`getattr(модуль, "имя")`) и переэкспорт из корня пакета статически не видно —
+    их закрывает гейт по рёбрам импорта шага 2 №365."""
+    modules = {module: seam for seam, (module, _o, _d) in ENV_SEAMS.items()}
+
+    def seam_module(name: str) -> str | None:
+        last = name.rsplit(".", 1)[-1]
+        return last if last in modules else None
+
+    bound_mod: dict[str, str] = {}      # имя в файле → модуль шва
+    bound_name: dict[str, str] = {}     # имя в файле → шов
+    roots: set[str] = set()             # корни импортированных пакетов: `import charoite_graph`
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                roots.add(a.asname or a.name.split(".")[0])
+                if (m := seam_module(a.name)):
+                    bound_mod[a.asname or a.name] = m
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            base = seam_module(node.module)
+            for a in node.names:
+                if base and modules[base] == a.name:            # from tier3 import revise
+                    bound_name[a.asname or a.name] = a.name
+                elif (m := seam_module(a.name)):                 # from charoite_graph import tier3
+                    bound_mod[a.asname or a.name] = m
+    annotations: set[int] = set()
+    for node in ast.walk(tree):
+        anns = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            anns.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            anns.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            anns.append(node.annotation)
+        for ann in anns:
+            annotations.update(id(n) for n in ast.walk(ann))
+    out: dict[str, set[int]] = {}
+    for node in ast.walk(tree):
+        if id(node) in annotations:
+            continue
+        if isinstance(node, ast.Attribute) and node.attr in ENV_SEAMS:
+            recv = ast.unparse(node.value)
+            module = ENV_SEAMS[node.attr][0]
+            if bound_mod.get(recv) == module or (seam_module(recv) == module
+                                                 and recv.split(".")[0] in roots):
+                out.setdefault(node.attr, set()).add(node.lineno)
+        elif isinstance(node, ast.Name) and node.id in bound_name:
+            out.setdefault(bound_name[node.id], set()).add(node.lineno)
+    return {seam: sorted(lines) for seam, lines in out.items()}
+
+
 def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
-    """Кто зовёт швы окружения графа — файл → шов → строки. Замер для гейта: считает
-    инвентарь, судит `seam_problems`, как у правила корня."""
+    """Кто ссылается на швы окружения графа — файл → шов → строки. Замер для гейта:
+    считает инвентарь, судит `seam_problems`, как у правила корня."""
     out: dict[str, dict[str, list[int]]] = {}
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        names = imports_of(rel, info.tree)
-        # `from graph_search import GraphSearch as Индекс` — шов под другим именем: вызов
-        # `Индекс(` ищется по псевдониму и считается как `GraphSearch`
-        alias = {a.asname: a.name for node in ast.walk(info.tree) if isinstance(node, ast.ImportFrom)
-                 for a in node.names if a.asname and a.name in ENV_SEAMS}
-        found: dict[str, list[int]] = {}
-        for called, lines in _calls(info.tree, (*ENV_SEAMS, *alias)).items():
-            seam = alias.get(called, called)
-            module = ENV_SEAMS[seam][0]
-            if any(n == module or n.endswith("." + module) or n.startswith(module + ".") for n in names):
-                found[seam] = sorted(set(found.get(seam, [])) | set(lines))
+        found = _seam_refs(info.tree)
         if found:
             out[rel] = found
     return out

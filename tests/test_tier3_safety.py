@@ -422,19 +422,6 @@ def test_junk_in_auto_apply_is_not_permission():
     assert tier3.auto_apply_allowed({}) is False
 
 
-def test_meeting_pipeline_reads_permission_strictly():
-    """bool() на тумблере превращает мусор в разрешение: bool("false") is True.
-
-    Этот же пакет ввёл строгий is True для облачных тумблеров — а
-    единственный другой разрушительный тумблер остался на bool().
-    """
-    src = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
-    assert 'bool(cfg["sufler"].get("tier3_auto_apply"' not in src, \
-        'graph_updater решает через bool() — строка "false" включит слияние'
-    assert "auto_apply_allowed" in src, \
-        "разрешение должно браться из единой точки tier3.auto_apply_allowed"
-
-
 def test_stale_core_is_skipped_instead_of_overwritten(graph_with_essence, monkeypatch):
     """Ядро, изменившееся во время прогона, не затирается снимком из памяти.
 
