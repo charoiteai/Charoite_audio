@@ -290,28 +290,52 @@ def _сеть_закрыта(request):
     и внешняя память не отвечают (замер №376: 49 таких тестов в 9 файлах).
     `Failed` наследует `BaseException`, его `except Exception` не поймает.
 
+    Сценарий «сервер лежит» задаётся маршрутом сторожа, а не подменой всего
+    транспорта: фикстура отдаёт словарь `(МЕТОД, конец адреса) → обработчик`,
+    и сторож отвечает обработчиком только на этот адрес. Всё прочее — тот же
+    `pytest.fail`: побочный запрос мимо сценария роняет тест, а не глотается
+    `except Exception` как «сервер недоступен» (круг 1 по PR №624, Opus I1/I3).
+    Словарь живёт в этом вызове фикстуры — `undo()` его не снимает, следующему
+    тесту он не достаётся.
+
     Маркер `сеть_разрешена` снимает запрет. Сегодня его не просит ни один
     тест: сетевые пути проверяются подменой транспорта. Маркер оставлен для
     теста, которому понадобится настоящий сокет.
     """
+    маршруты: dict[tuple[str, str], object] = {}
     if request.node.get_closest_marker("сеть_разрешена") is not None:
-        yield
+        yield маршруты
         return
     import requests
 
-    def отказ(*a, **k):
-        адрес = (a[0] if a else k.get("url", "?"))
+    def отказ(адрес):
         pytest.fail(
             f"тест пошёл в сеть ({адрес}) — подмените транспорт или "
             f"пометьте тест маркером сеть_разрешена", pytrace=False)
 
-    имена = ("post", "get", "put", "delete", "patch", "head", "request")
-    было = {имя: getattr(requests, имя, None) for имя in имена}
+    def запрос(метод, url, *a, **k):
+        for (м, конец), ответ in маршруты.items():
+            if м == метод.upper() and str(url).endswith(конец):
+                return ответ(str(url), **k)
+        отказ(url)
+
+    def глагол(метод):
+        def вызов(url=None, *a, **k):
+            return запрос(метод, url if url is not None else k.pop("url", "?"), *a, **k)
+        return вызов
+
+    def сессия(self, method, url, *a, **k):
+        return запрос(method, url, *a, **k)
+
+    глаголы = ("post", "get", "put", "delete", "patch", "head")
+    было = {имя: getattr(requests, имя, None) for имя in глаголы + ("request",)}
     был_request = requests.Session.request
-    for имя in имена:
+    for имя in глаголы:
         if было[имя] is not None:
-            setattr(requests, имя, отказ)
-    requests.Session.request = отказ
+            setattr(requests, имя, глагол(имя))
+    if было["request"] is not None:
+        requests.request = lambda method, url, *a, **k: запрос(method, url, *a, **k)
+    requests.Session.request = сессия
     # второй транспорт — stdlib: им ходит `scripts/doctor.py` (и загрузчик
     # моделей); запрос у него — строка или `Request` с `full_url`
     import urllib.request
@@ -322,7 +346,7 @@ def _сеть_закрыта(request):
 
     urllib.request.urlopen = отказ_urlopen
     try:
-        yield
+        yield маршруты
     finally:
         for имя, значение in было.items():
             if значение is not None:
@@ -337,7 +361,7 @@ def _сеть_закрыта(request):
 
 
 @pytest.fixture(autouse=True)
-def ollama(request):
+def ollama_список_моделей(request):
     """Ollama по умолчанию недоступна — заглушкой, а не упавшим запросом.
 
     Все пути продукта к списку моделей (`/api/tags`) идут через одно место —
@@ -376,8 +400,8 @@ def ollama(request):
 
 
 @pytest.fixture
-def модель_не_отвечает():
-    """Генерация (`LLM.complete`) отказывает соединением — как у сервера, который лежит.
+def модель_не_отвечает(_сеть_закрыта):
+    """Генерация Ollama (`POST …/api/chat`) отказывает соединением — как у сервера, который лежит.
 
     Не autouse: тихий отказ генерации на весь прогон вернул бы ту дыру, которую
     закрывает `pytest.fail` в `_сеть_закрыта`, — тест, случайно дошедший до
@@ -387,22 +411,20 @@ def модель_не_отвечает():
     `summary_pass` мимо неё: заглушка была мёртвой, и тесты ходили в `/api/chat`
     (№376). Отдаёт список промптов — видно, что модель спрашивали.
 
-    Руками, а не через `monkeypatch`, — по той же причине, что и сторож сети.
+    Маршрутом сторожа, а не подменой `LLM.complete`: весь `complete` —
+    `resolve_model`, аренда, `_post_with_revive` — остаётся в пути, и без
+    заглушки списка моделей эти тесты краснеют на `/api/tags`, как и прочие
+    (круг 1 по PR №624, Opus I3). Любой другой адрес — по-прежнему отказ сторожа.
     """
-    import llm
     import requests
     промпты: list[str] = []
 
-    def отказ(self, prompt, *a, **k):
-        промпты.append(prompt)
+    def отказ(url, json=None, **k):
+        промпты.append(((json or {}).get("messages") or [{}])[-1].get("content", ""))
         raise requests.ConnectionError("модель не отвечает (заглушка теста)")
 
-    было = llm.LLM.__dict__["complete"]
-    llm.LLM.complete = отказ
-    try:
-        yield промпты
-    finally:
-        llm.LLM.complete = было
+    _сеть_закрыта[("POST", "/api/chat")] = отказ
+    return промпты
 
 
 @pytest.fixture(autouse=True)

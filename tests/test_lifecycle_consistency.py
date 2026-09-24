@@ -31,18 +31,19 @@ OTHER = "2026-07-16_1000"
 
 
 @pytest.fixture
-def память(monkeypatch):
+def память(_сеть_закрыта):
     """Внешняя память не поднята — записывающим шпионом, а не сторожем сети:
     отказ сторожа глотал `except Exception` в `brain_forget`, и не было видно,
-    с каким ключом стирание пошло в память (№376)."""
+    с каким ключом стирание пошло в память (№376). Маршрут сторожа — только
+    `POST …/forget`, прочие адреса по-прежнему роняют тест."""
     import requests
     просили: list[tuple[str, dict]] = []
 
-    def post(url, json=None, timeout=None, **kw):
+    def forget_(url, json=None, **kw):
         просили.append((url, json))
         raise requests.ConnectionError("память не поднята (шпион теста)")
 
-    monkeypatch.setattr(requests, "post", post)
+    _сеть_закрыта[("POST", "/forget")] = forget_
     return просили
 
 

@@ -250,24 +250,53 @@ def test_запрет_сети_переживает_undo_в_теле_теста(
     `except Exception` продукта, тест не роняет (№376). Этот тип `except
     Exception` пропускает — самопроверка краснеет, стоит отказу снова стать
     обычным исключением.
+
+    Адрес — в зоне `.invalid` (RFC 6761), а не боевой `:8100`: сломанный
+    сторож не должен дотянуться до живой памяти самой самопроверкой (круг 1
+    по PR №624, Opus I2).
     """
     import requests
     monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
     monkeypatch.undo()
     with pytest.raises(pytest.fail.Exception, match="пошёл в сеть"):
-        requests.post("http://127.0.0.1:8100/remember", json={})
+        requests.post("http://сторож.invalid/remember", json={})
 
 
 def test_запрет_сети_закрывает_и_urllib():
     """Второй транспорт — stdlib: `scripts/doctor.py` спрашивает Ollama через
     `urllib.request.urlopen`, и без сторожа тест доктора шёл бы в живой сервер
-    (№376). Адрес в отказе — и у строки, и у `Request`."""
+    (№376). Адрес в отказе — и у строки, и у `Request`; адреса — в зоне
+    `.invalid`, чтобы сломанный сторож не дошёл до живых сервисов."""
     import urllib.request
-    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://localhost:11434/api/tags\)"):
-        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=4)
-    запрос = urllib.request.Request("http://127.0.0.1:8100/remember", data=b"{}")
-    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://127\.0\.0\.1:8100/remember\)"):
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/api/tags\)"):
+        urllib.request.urlopen("http://сторож.invalid/api/tags", timeout=4)
+    запрос = urllib.request.Request("http://сторож.invalid/remember", data=b"{}")
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/remember\)"):
         urllib.request.urlopen(запрос)
+
+
+def test_маршрут_сторожа_отвечает_только_на_свой_метод_и_адрес(_сеть_закрыта, monkeypatch):
+    """Сценарий «сервер лежит» — маршрутом сторожа, и только на свой адрес.
+
+    Шпион, подменявший весь `requests.post`, глотал бы и побочный запрос мимо
+    сценария (круг 1 по PR №624, Opus I1): маршрут отвечает на `(метод, конец
+    адреса)`, остальное — прежний `pytest.fail`. `undo()` маршрут не снимает.
+    """
+    import requests
+    просили = []
+    _сеть_закрыта[("POST", "/forget")] = lambda url, **k: просили.append((url, k.get("json"))) or "ок"
+    monkeypatch.setattr(os, "sep", os.sep)
+    monkeypatch.undo()
+    assert requests.post("http://сторож.invalid/forget", json={"meeting": "к"}) == "ок"
+    assert requests.request("post", "http://сторож.invalid/forget") == "ок"
+    assert просили == [("http://сторож.invalid/forget", {"meeting": "к"}),
+                       ("http://сторож.invalid/forget", None)]
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/remember\)"):
+        requests.post("http://сторож.invalid/remember", json={})
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/forget\)"):
+        requests.get("http://сторож.invalid/forget")
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/x\)"):
+        requests.Session().get("http://сторож.invalid/x")
 
 
 def test_обвязка_называет_канону_временный_корень(tmp_path):

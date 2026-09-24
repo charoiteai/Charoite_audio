@@ -40,7 +40,7 @@ FORGET = f"{forget.BRAIN}/forget"
 
 
 @pytest.fixture(autouse=True)
-def память(monkeypatch):
+def память(_сеть_закрыта):
     """Внешняя память (brain :8100) в этих тестах не поднята — записывающим шпионом.
 
     `apply` зовёт `/forget` по каждому ключу плана. Прежде этот запрос ловил
@@ -48,16 +48,20 @@ def память(monkeypatch):
     `brain_forget`: тесты стирания проходили по пути «сервер недоступен», и
     никто не видел, дошло ли стирание до памяти (№376). Шпион отвечает
     отказом соединения, как лежащий сервер, и помнит, что у него просили.
-    Тесты со своим транспортом (`sys.modules["requests"]`) его перекрывают.
+
+    Маршрутом сторожа — только `POST …/forget`: любой другой запрос из
+    `apply` (лишний `/remember`, генерация) роняет тест, а не глотается как
+    «память не поднята» (круг 1 по PR №624, Opus I1). Тесты со своим
+    транспортом (`sys.modules["requests"]`) его перекрывают.
     """
     import requests
     просили: list[tuple[str, dict]] = []
 
-    def post(url, json=None, timeout=None, **kw):
+    def forget_(url, json=None, **kw):
         просили.append((url, json))
         raise requests.ConnectionError("память не поднята (шпион теста)")
 
-    monkeypatch.setattr(requests, "post", post)
+    _сеть_закрыта[("POST", "/forget")] = forget_
     return просили
 
 

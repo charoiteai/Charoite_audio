@@ -783,15 +783,15 @@ def test_models_list_is_read_from_the_tags_reply(monkeypatch):
     assert настоящий(engine) == set()
 
 
-def test_unreachable_ollama_leaves_the_configured_model(ollama):
+def test_unreachable_ollama_leaves_the_configured_model(ollama_список_моделей):
     """Умолчание прогона: списка нет — модель из конфига, пусть ollama скажет сама."""
     engine = LLM(CFG)
     assert engine.resolve_model() == "тест-модель"
-    assert ollama == [engine.base], "список моделей спрашивали один раз и у своего сервера"
+    assert ollama_список_моделей == [engine.base], "список моделей спрашивали один раз и у своего сервера"
 
 
 @pytest.mark.ollama_отвечает("тест-мелкая")
-def test_resolve_model_falls_back_to_what_is_downloaded(ollama):
+def test_resolve_model_falls_back_to_what_is_downloaded(ollama_список_моделей):
     """Путь «сервер ответил»: основной модели нет — берётся скачанная запасная."""
     assert LLM(CFG).resolve_model() == "тест-мелкая"
-    assert len(ollama) == 1
+    assert len(ollama_список_моделей) == 1

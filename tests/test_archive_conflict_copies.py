@@ -105,10 +105,13 @@ def _meeting(tmp_path: Path) -> tuple[Path, Path]:
     return graph, tdir
 
 
-def test_second_archive_pass_without_changes_writes_nothing(tmp_path):
+def test_second_archive_pass_without_changes_writes_nothing(tmp_path, _no_live_model):
     graph, tdir = _meeting(tmp_path)
     folder = ma.archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка",
                                 files_key="2026-08-03_1130_Планёрка").folder
+    # сценарий «модели нет» проверен, только если модель спрашивали — и о
+    # материалах этой встречи (круг 1 по PR №624, Opus M2)
+    assert any("## Решения\n- да" in п for п in _no_live_model), _no_live_model
     files = sorted(p for p in folder.iterdir() if p.is_file())
     files.append(graph / ma.ARCHIVE_DIR / "_ОГЛАВЛЕНИЕ.md")
     before = {p.name: _sig(p) for p in files}
