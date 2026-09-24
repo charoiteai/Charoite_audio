@@ -1311,9 +1311,8 @@ def _env_touch(node: ast.AST) -> bool:
         return node.id in ENV_TOUCH_NAMES
     if isinstance(node, ast.Attribute):
         return node.attr in ENV_TOUCH_NAMES
-    if isinstance(node, ast.Call) and _имя(node.func) in TEMPFILE_DEFAULT_DIR:
-        return _имя(node.func).startswith("gettempdir") or not any(k.arg == "dir" for k in node.keywords)
-    return False
+    return (isinstance(node, ast.Call) and _имя(node.func) in TEMPFILE_DEFAULT_DIR
+            and (_имя(node.func).startswith("gettempdir") or not any(k.arg == "dir" for k in node.keywords)))
 
 
 def _home_reads(tree: ast.Module) -> list[int]:
