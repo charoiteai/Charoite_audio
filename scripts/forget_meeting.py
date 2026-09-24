@@ -300,11 +300,7 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
         # нему штамп мог бы назвать соседку по минуте. Папку без манифеста
         # выдача по штампу не видит: её забирает план встречи того же дня
         # (_archive_folders), если она там единственная.
-        arch = g / ARCHIVE_DIR
-        for d in (arch.iterdir() if arch.is_dir() else ()):
-            owner = meeting_archive_id(d)
-            if isinstance(owner, str):      # в битом манифесте бывает что угодно
-                found.add(owner)
+        found.update(owner for _, owner in _manifest_folders(g / ARCHIVE_DIR))
     return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?", s))
 
 
@@ -347,6 +343,23 @@ def _day_folders(arch: pathlib.Path, day: str) -> list[tuple[pathlib.Path, str |
     return out
 
 
+def _manifest_folders(arch: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
+    """Папки архива с манифестом и их meeting_id — при любом имени папки.
+
+    Одно правило на выдачу по штампу (stamps) и на план (_archive_folders):
+    штамп, найденный по манифесту папки, обязан и забирать эту папку, даже
+    если её переименовали руками или день в имени другой, — иначе «Забыть»
+    находит встречу и удаляет ноль файлов (круг-1 по PR #622)."""
+    out = []
+    for d in (sorted(arch.iterdir()) if arch.is_dir() else ()):
+        if d.name.startswith("."):
+            continue
+        owner = meeting_archive_id(d)       # у файла манифеста нет — None
+        if isinstance(owner, str):          # в битом манифесте бывает что угодно
+            out.append((d, owner))
+    return out
+
+
 def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     """Папки архива этой встречи.
 
@@ -371,6 +384,8 @@ def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
         if when != mine_time or owner is not None:
             continue                  # другое время или чужая встреча по манифесту
         out.append(d)
+    # Манифест, названный нами, в папке с именем не по формату дня
+    out += [d for d, owner in _manifest_folders(arch) if owner == stamp and d not in out]
     if out:
         return out
     if len(folders) == 1 and folders[0][1] is None:
@@ -709,15 +724,36 @@ def plan(stamp: str, root: pathlib.Path,
         # (meeting_stamp.find_note, карточка №39).
         node = meeting_stamp.find_note(g, stamp, root / "transcripts")
         link = _link_re(node.stem if node else stamp)
+        # Ключи встречи в графе — только доказанные: сам штамп и ключ узла,
+        # владение которым проверил find_note (note_is_ours). Узел, папка
+        # архива и отметка brain_sent названы одним ключом графа, и
+        # посекундная цель («Забыть» из приложения) с минутным узлом
+        # оставляла минутную папку архива (круг-1 по PR #622). Узла нет —
+        # минуту не пересчитываем через graph_key: он читает transcripts/,
+        # которые «забыть» как раз удаляет, и выдал бы минуту соседки (№248).
+        keys = [stamp]
         if node is not None:
             p.delete.append(node)
+            if node.stem != stamp:
+                keys.append(node.stem)
             if node.stem not in p.brain_keys:
                 p.brain_keys.append(node.stem)
         # graph_updater копирует в «Стенограммы встреч» все артефакты
         # `{штамп}_*.md` (минутки, подсказки, живая нить), а не один
         # `{штамп}.md` — иначе копии стенограммы переживали забывание.
         p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
-        p.delete += _archive_folders(g, stamp)
+        for key in keys:
+            p.delete += [d for d in _archive_folders(g, key) if d not in p.delete]
+        # Узла нет, а минутная папка есть — владение минутой не доказать ни
+        # в чью пользу: папку называем, забывают её отдельно по минуте.
+        minute = meeting_stamp.minute_of(stamp)
+        if node is None and minute != stamp:
+            for d, owner in _manifest_folders(g / ARCHIVE_DIR):
+                if owner == minute:
+                    p.beyond_reach.append(
+                        f"папка архива «{d.name}» названа минутой {minute}: узла "
+                        f"встречи нет, владение минутой не доказать; если это она — "
+                        f"забыть отдельно по штампу {minute}")
 
         # Снимки облачной ревизии копируют граф целиком; срез теперь один,
         # но у установок до переноса каталогов может быть несколько — обходим
@@ -740,11 +776,13 @@ def plan(stamp: str, root: pathlib.Path,
             for run in sorted(d for d in base.iterdir() if d.is_dir()):
                 snap = run / inner if inner else run
                 found: list[pathlib.Path] = []
-                node_copy = snap / MEETINGS_DIR / f"{stamp}.md"
-                if node_copy.exists():
-                    found.append(node_copy)
+                for key in keys:        # копия узла и папки — под теми же ключами
+                    node_copy = snap / MEETINGS_DIR / f"{key}.md"
+                    if node_copy.exists():
+                        found.append(node_copy)
                 found += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
-                found += _archive_folders(snap, stamp)
+                for key in keys:
+                    found += [d for d in _archive_folders(snap, key) if d not in found]
                 p.delete += found
                 _forget_in_manifests(p, run, [str(f.relative_to(snap)) for f in found])
 
@@ -763,11 +801,13 @@ def plan(stamp: str, root: pathlib.Path,
                 if _quarantine_of(run_dir.name, stamp):
                     p.delete.append(run_dir)
                     continue
-                node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"
-                if node_copy.exists():
-                    p.delete.append(node_copy)
+                for key in keys:
+                    node_copy = run_dir / MEETINGS_DIR / f"{key}.md"
+                    if node_copy.exists():
+                        p.delete.append(node_copy)
                 p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
-                p.delete += _archive_folders(run_dir, stamp)
+                for key in keys:
+                    p.delete += [d for d in _archive_folders(run_dir, key) if d not in p.delete]
             # Тела узлов, вытесненные заглушками по ревизии ЭТОЙ встречи, лежат
             # мимо ротации прогонов — `вытеснено/<прогон>/`; каталог её
             # прогона уходит целиком, чужие прогоны не трогаем (#550).
