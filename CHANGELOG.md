@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.85.0](https://github.com/charoiteai/Charoite_audio/compare/v0.84.1...v0.85.0) (2026-09-24)
+
+
+### Features
+
+* **memory:** флаг записи во внешнюю память sufler.brain, по умолчанию выключен ([#619](https://github.com/charoiteai/Charoite_audio/issues/619)) ([7fb7571](https://github.com/charoiteai/Charoite_audio/commit/7fb75718ba32dd422a0e36c3f70fc5ed7107f58c))
+
+
+### Bug Fixes
+
+* **tasks:** переписчики поручений не трогают поставленный статус ([#616](https://github.com/charoiteai/Charoite_audio/issues/616)) ([22b3fe5](https://github.com/charoiteai/Charoite_audio/commit/22b3fe528ce2bcb754bc1e9d12302b202ef7776f))
+
 ## [0.84.1](https://github.com/charoiteai/Charoite_audio/compare/v0.84.0...v0.84.1) (2026-09-23)
 
 
