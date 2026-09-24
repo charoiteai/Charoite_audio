@@ -78,11 +78,12 @@ def _graph_lock(graph: pathlib.Path, root: pathlib.Path):
 
 
 class StatusChanged(Exception):
-    """Преобразование изменило бы статус, поставленный человеком или контролем."""
+    """Преобразование изменило бы статус, поставленный человеком или контролем, или
+    перестало быть один к одному (`reason`) — тогда статусы не с чем сверить."""
 
-    def __init__(self, changes: list[tuple[int, str, str]]):
-        super().__init__(f"статус изменился бы в строках: {len(changes)}")
-        self.changes = changes
+    def __init__(self, changes: list[tuple[int, str, str]], reason: str = ""):
+        super().__init__(reason or f"статус изменился бы в строках: {len(changes)}")
+        self.changes, self.reason = changes, reason
 
 
 class _Rewrite:
@@ -105,7 +106,7 @@ class _Rewrite:
         try:
             changes = task_line.status_changes(text, after)
         except ValueError as e:      # преобразование перестало быть один к одному — не пишем
-            raise StatusChanged([(0, text[:80], str(e))]) from e
+            raise StatusChanged([], reason=str(e)) from e
         if changes:
             raise StatusChanged(changes)
         self.text, self.after = text, after
@@ -130,7 +131,12 @@ def _note_copy(dest: pathlib.Path, rel: pathlib.Path, before: str, after: str) -
         f.write(f"{rel}\t{_sha(before)}\t{_sha(after)}\n")
 
 
-def _status_note(rel: pathlib.Path, changes: list[tuple[int, str, str]]) -> str:
+def _status_note(rel: pathlib.Path, refusal: StatusChanged) -> str:
+    # «не один к одному» — своей строкой: раньше она шла как «статус изменился бы — 0: «<начало
+    # файла>» → …», то есть называла статусом то, чего не сверяли
+    if refusal.reason:
+        return f"{rel}: {refusal.reason} — статусы не сверить, файл не тронут"
+    changes = refusal.changes
     shown = "; ".join(f"{i}: «{a.strip()}» → «{b.strip()}»" for i, a, b in changes[:3])
     more = f" и ещё {len(changes) - 3}" if len(changes) > 3 else ""
     return f"{rel}: статус изменился бы — {shown}{more}"
@@ -177,7 +183,7 @@ def main() -> int:
             try:
                 fixed, n = _Rewrite()(text)
             except StatusChanged as e:
-                refused.append(_status_note(rel, e.changes))
+                refused.append(_status_note(rel, e))
                 fixed, n = text, 0
             if n:
                 changed += 1
@@ -191,7 +197,7 @@ def main() -> int:
                 try:
                     n = safe_write.rewrite_file(p, rw, "поручения минуток")
                 except StatusChanged as e:
-                    refused.append(_status_note(rel, e.changes))
+                    refused.append(_status_note(rel, e))
                     n, final = 0, text
                 except safe_write.LostRace as e:
                     refused.append(f"{rel}: {e}")

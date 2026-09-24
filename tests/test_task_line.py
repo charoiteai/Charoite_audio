@@ -10,6 +10,7 @@ fix_action_items на боевом графе переоткрыла бы 574 с
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -59,6 +60,13 @@ def minutes(line: str) -> str:
 ])
 def test_status_names_every_form(form, line):
     assert task_line.status(line) == form
+
+
+@pytest.mark.parametrize("line", ["просто текст", "", f"- {TASK}", f"1. {TASK}", FORMS[task_line.DONE]])
+def test_canonical_returns_a_line_without_a_box_or_already_canonical_as_is(line):
+    # вызывающие зовут canonical только для строк с ящиком, и договор «без ящика — как есть»
+    # держит только этот тест (мутант «return line → return None» выживал, CI #616)
+    assert task_line.canonical(line) == line
 
 
 @pytest.mark.parametrize("box", list(BOXES))
@@ -288,6 +296,15 @@ def test_fix_action_items_does_not_write_while_the_graph_lock_is_held(tmp_path, 
     assert note.read_text(encoding="utf-8") == text
 
 
+def test_fix_action_items_names_the_real_lock_wait(tmp_path, monkeypatch, capsys):
+    # минуты — из той же константы, что и ожидание (мутант «// → *» выживал, CI #616);
+    # замок подменён занятым, чтобы не ждать пять минут настоящего
+    fix, _, (note,) = _script_run(tmp_path, monkeypatch, ("Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n"))
+    monkeypatch.setattr(fix, "_graph_lock", lambda graph, root: contextlib.nullcontext(False))
+    assert fix.main() == 1
+    assert f"замок графа занят дольше {fix.LOCK_WAIT // 60} мин" in capsys.readouterr().err
+
+
 def test_fix_action_items_keeps_an_edit_made_between_its_read_and_its_write(tmp_path, monkeypatch):
     # сосед (контроль задач, отметка в приложении) правит файл после того, как скрипт его
     # прочёл: запись через rewrite_file перечитывает файл, а «tmp + replace» затирал правку
@@ -448,7 +465,10 @@ def test_fix_action_items_refuses_a_transform_that_is_not_one_to_one(tmp_path, m
     monkeypatch.setattr(fix, "normalize", lambda t: t.split("\n", 1)[1])
     assert fix.main() == 1
     assert note.read_text(encoding="utf-8") == text
-    assert "не один к одному" in capsys.readouterr().err
+    # своя строка, а не «статус изменился бы — 0: «<начало файла>»…»: статусы здесь не сверялись
+    assert capsys.readouterr().err.splitlines() == [
+        "не тронуто: Минутки.md: преобразование не один к одному: строк 3 → 2"
+        " — статусы не сверить, файл не тронут"]
 
 
 def test_fix_action_items_dry_run_reports_and_writes_nothing(tmp_path, monkeypatch, capsys):
@@ -471,9 +491,9 @@ def test_fix_action_items_names_three_changed_lines_and_counts_the_rest(tmp_path
     def changes(n):
         return [(i, f"- [x] п{i}", f"- [ ] п{i}") for i in range(1, n + 1)]
 
-    three = fix._status_note(rel, changes(3))
+    three = fix._status_note(rel, fix.StatusChanged(changes(3)))
     assert "3: «- [x] п3» → «- [ ] п3»" in three and "и ещё" not in three
-    four = fix._status_note(rel, changes(4))
+    four = fix._status_note(rel, fix.StatusChanged(changes(4)))
     assert four.endswith("; 3: «- [x] п3» → «- [ ] п3» и ещё 1") and "4: «" not in four
 
 
