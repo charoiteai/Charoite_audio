@@ -10,6 +10,7 @@ fix_action_items на боевом графе переоткрыла бы 574 с
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -202,6 +203,21 @@ def test_bridge_still_withdraws_an_open_item():
     assert moved == 1 and FORMS[task_line.OPEN] not in out.split("\n")
 
 
+def test_bridge_does_not_take_a_wrapped_line_for_an_item():
+    # перенос чужого пункта — не пункт, даже когда его слова совпали со снятием: иначе
+    # снятие «подходит к двум» и не снимает ничего (мутант «and → or» в отборе строк, CI #616)
+    wrap = "Коля подготовить отчёт"
+    doc = minutes(f"- [ ] **Вера** — передать Коле\n{wrap}\n- [ ] **Коля** — подготовить отчёт")
+    dropped: list[str] = []
+    out, moved = review_bridge.withdraw_from_minutes(
+        doc, [("**Коля** — подготовить отчёт", "не звучало")], dropped=dropped)
+    lines = out.split("\n")
+    assert moved == 1 and dropped == [], dropped
+    section = lines[:lines.index("**Оля** — сверить цифры")]
+    assert "- [ ] **Коля** — подготовить отчёт" not in section
+    assert section[-2:] == ["- [ ] **Вера** — передать Коле", wrap]
+
+
 def _fix(graph: pathlib.Path, env: dict, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(ROOT / "scripts" / "fix_action_items.py"),
                            "--graph", str(graph), *args],
@@ -232,6 +248,11 @@ def test_fix_action_items_keeps_statuses_and_fixes_prose(tmp_path):
     assert rows[1].split("\t")[0] == "Встречи/2026-09-01 Минутки.md", rows
     assert (manifest.parent / "Встречи" / "2026-09-01 Минутки.md").read_text(encoding="utf-8") == original
     assert not str(manifest).startswith(str(graph))
+    # суммы — от оригинала и от того, что лежит в графе: по ним откат узнаёт, что файл
+    # после правки никто не трогал (мутант «_sha → None» выживал, CI #616)
+    _, was, now = rows[1].split("\t")
+    assert was == hashlib.sha256(original.encode("utf-8")).hexdigest()
+    assert now == hashlib.sha256(note.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
 
 
 def test_fix_action_items_refuses_to_write_without_a_named_data_root(tmp_path):
@@ -428,3 +449,43 @@ def test_fix_action_items_refuses_a_transform_that_is_not_one_to_one(tmp_path, m
     assert fix.main() == 1
     assert note.read_text(encoding="utf-8") == text
     assert "не один к одному" in capsys.readouterr().err
+
+
+def test_fix_action_items_dry_run_reports_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    # сухой прогон не берёт замок и не пишет, но честно считает (мутант «замок сухого
+    # прогона не взят» выживал: сухой прогон шёл только подпроцессом без проверок, CI #616)
+    text = "## Поручения\n*   **Оля** — сверить цифры\n"
+    fix, data, (note,) = _script_run(tmp_path, monkeypatch, ("Минутки.md", text))
+    monkeypatch.setattr(sys, "argv", ["fix_action_items.py", "--graph", str(note.parent)])
+    assert fix.main() == 0
+    out = capsys.readouterr().out
+    assert "будет исправлено: 1" in out and "добавьте --apply" in out
+    assert note.read_text(encoding="utf-8") == text
+    assert not list(data.rglob("manifest.tsv"))
+
+
+def test_fix_action_items_names_three_changed_lines_and_counts_the_rest(tmp_path, monkeypatch):
+    fix, _, _ = _script_run(tmp_path, monkeypatch)
+    rel = pathlib.Path("Минутки.md")
+
+    def changes(n):
+        return [(i, f"- [x] п{i}", f"- [ ] п{i}") for i in range(1, n + 1)]
+
+    three = fix._status_note(rel, changes(3))
+    assert "3: «- [x] п3» → «- [ ] п3»" in three and "и ещё" not in three
+    four = fix._status_note(rel, changes(4))
+    assert four.endswith("; 3: «- [x] п3» → «- [ ] п3» и ещё 1") and "4: «" not in four
+
+
+@pytest.mark.parametrize("files, tail", [(20, None), (21, "не тронуто: и ещё 1")])
+def test_fix_action_items_names_twenty_refusals_and_counts_the_rest(tmp_path, monkeypatch, capsys, files, tail):
+    text = "## Поручения\n- [x] **Коля** — отчёт\n*   **Оля** — сверить цифры\n"
+    fix, _, notes = _script_run(tmp_path, monkeypatch,
+                                *[(f"{i:02d} Минутки.md", text) for i in range(files)])
+    real = fix.normalize
+    monkeypatch.setattr(fix, "normalize", lambda t: real(t).replace("- [x] **Коля**", "- [ ] **Коля**"))
+    assert fix.main() == 1
+    err = capsys.readouterr().err.splitlines()
+    assert len([ln for ln in err if "статус изменился бы" in ln]) == 20
+    assert [ln for ln in err if "и ещё" in ln and "статус" not in ln] == ([tail] if tail else [])
+    assert all(q.read_text(encoding="utf-8") == text for q in notes)

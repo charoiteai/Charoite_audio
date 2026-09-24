@@ -576,10 +576,12 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
             # одного случая: среди одинаковых строк ровно одна открыта. Поставленную снимать
             # нельзя, так что открытая — единственный допустимый ход, а не догадка (Sonnet I2
             # круга 2 по коду: такой дубль до правки снимался, после — нет)
+            # Без гейта «точных больше одного»: при одном точном открытый среди них — он
+            # же или никто, гейт ничего не менял и держал мутант-двойник (CI #616)
             exact = [i for i in hits if _key(item) == _key(views[i])]
-            if len(exact) > 1:
-                open_exact = [i for i in exact if not task_line.settled(body[i])]
-                exact = open_exact if len(open_exact) == 1 else exact
+            open_exact = [i for i in exact if not task_line.settled(body[i])]
+            if len(open_exact) == 1:
+                exact = open_exact
             hits = exact if len(exact) == 1 else hits
         if len(hits) == 1 and task_line.settled(body[hits[0]]):
             if dropped is not None:
