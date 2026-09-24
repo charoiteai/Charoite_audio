@@ -23,6 +23,7 @@ mlx_lm.server эмбеддингов не отдаёт.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -30,6 +31,7 @@ import re
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 
 import requests
@@ -50,6 +52,45 @@ BUSY_STATUSES = frozenset({429, 502, 503})
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
+
+# Сводки частей длинной встречи (№265). MCP-минутки строят новый LLM на каждый
+# вызов, и повтор после упавшей главной генерации заново платил за все части —
+# поэтому кэш на модуле, а не на экземпляре. Ключ — речь и всё, от чего зависит
+# сводка: сменилось что-то одно — пересчёт. Держим мало и недолго: это текст
+# встречи в памяти процесса, на диск он не пишется.
+FIT_CACHE_SIZE = 4
+FIT_CACHE_TTL = 30 * 60.0
+FIT_PROMPT_VERSION = 1     # поднять при правке промпта summary(): старые сводки уже не те
+_fit_cache: OrderedDict[tuple, tuple[float, str]] = OrderedDict()
+_fit_cache_lock = threading.Lock()
+_fit_clock = time.monotonic   # тесты подменяют часы только кэшу, не всему time
+
+
+def _fit_cache_get(key: tuple) -> str | None:
+    """Свёртка из кэша; None — нет или истёк срок (запись тогда уходит)."""
+    now = _fit_clock()
+    with _fit_cache_lock:
+        hit = _fit_cache.get(key)
+        if hit is None:
+            return None
+        if now - hit[0] >= FIT_CACHE_TTL:
+            del _fit_cache[key]
+            return None
+        _fit_cache.move_to_end(key)          # LRU: прочитанное вытесняется последним
+        return hit[1]
+
+
+def _fit_cache_put(key: tuple, text: str) -> None:
+    with _fit_cache_lock:
+        _fit_cache.pop(key, None)            # повторная запись — снова самая свежая
+        _fit_cache[key] = (_fit_clock(), text)
+        while len(_fit_cache) > FIT_CACHE_SIZE:
+            _fit_cache.popitem(last=False)
+
+
+def _fit_cache_clear() -> None:
+    with _fit_cache_lock:
+        _fit_cache.clear()
 
 
 class LLMHTTPError(RuntimeError):
@@ -1431,10 +1472,16 @@ class LLM:
         limit = max(4_000, self.num_ctx * 3 - 4_000)   # ~3 знака на токен, запас на ответ
         if len(transcript) <= limit:
             return transcript
+        key = (hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
+               self.small, self.lang, self.num_ctx, FIT_PROMPT_VERSION)
+        cached = _fit_cache_get(key)
+        if cached is not None:
+            return cached
         step = limit // 2
         parts = [transcript[i:i + step] for i in range(0, len(transcript), step)]
         digests = []
         failures = 0
+        skipped = 0    # не подряд, а всего: дыра в нумерации — результат неполный
         for n, part in enumerate(parts, 1):
             try:
                 # бюджет на «занято» — маленький: минутки идут под hint_lock,
@@ -1453,8 +1500,15 @@ class LLM:
                 text = ""
             if text:
                 digests.append(f"[Часть {n} из {len(parts)}]\n{text}")
+            else:
+                skipped += 1
         if digests:
-            return "\n\n".join(digests)
+            out = "\n\n".join(digests)
+            if not skipped:
+                # кэшируем только полную свёртку: повтор должен иметь шанс
+                # закрыть дыру, а «голова и хвост» ниже — не свёртка вовсе
+                _fit_cache_put(key, out)
+            return out
         # все сводки пустые: не резать молча голову — отдать голову и хвост,
         # где обычно и решения (конец встречи), и повестка (начало)
         half = limit // 2

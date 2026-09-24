@@ -749,3 +749,139 @@ def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys
     _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
     llm_mod.embed(CFG, ["т"] * 5)
     assert capsys.readouterr().err.count("не по вектору на текст") == 2
+
+
+# ── №265: кэш сводок частей длинной встречи ──────────────────────────────
+
+def _counting_summary(monkeypatch, l, calls: list, text: str = "сводка"):
+    def summary(part, busy_wait=None):
+        calls.append(part)
+        return iter([text])
+    monkeypatch.setattr(l, "summary", summary)
+
+
+def _short_llm(**over) -> LLM:
+    l = LLM(CFG)
+    l.num_ctx = 2000                       # limit = 4000: 10 000 знаков — пять частей по 2000
+    for k, v in over.items():
+        setattr(l, k, v)
+    return l
+
+
+LONG = "А" * 5000 + "Я" * 5000
+
+
+def test_second_fit_of_the_same_speech_does_not_summarise_again(monkeypatch):
+    """Повтор минуток через MCP строит НОВЫЙ LLM: сводки частей берутся из
+    кэша модуля, а не считаются заново."""
+    calls: list = []
+    first = _short_llm()
+    _counting_summary(monkeypatch, first, calls)
+    out = first.fit(LONG)
+    assert len(calls) == 5 and "[Часть 3 из 5]" in out
+    again = _short_llm()
+    _counting_summary(monkeypatch, again, calls)
+    assert again.fit(LONG) == out
+    assert len(calls) == 5, "повтор той же речи не зовёт summary"
+    assert again.fit("Б" * 100) == "Б" * 100, "короткая речь идёт как есть"
+
+
+@pytest.mark.parametrize("change", [{"lang": "en"}, {"small": "другая-модель"}, {"num_ctx": 2001}])
+def test_fit_is_recomputed_when_the_summary_settings_change(monkeypatch, change):
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    other = _short_llm(**change)
+    _counting_summary(monkeypatch, other, calls)
+    other.fit(LONG)
+    assert len(calls) == 10, f"{change}: сводки другой настройки — пересчёт"
+
+
+def test_fit_is_recomputed_when_the_summary_prompt_version_changes(monkeypatch):
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    monkeypatch.setattr(llm_mod, "FIT_PROMPT_VERSION", llm_mod.FIT_PROMPT_VERSION + 1)
+    l.fit(LONG)
+    assert len(calls) == 10
+
+
+def test_fit_with_a_hole_or_head_and_tail_is_not_cached(monkeypatch):
+    """Упавшая или пустая часть — результат с дырой: повтор обязан попробовать
+    снова. «Голова и хвост» — не свёртка, её не кэшируем никогда."""
+    l = _short_llm()
+    calls: list = []
+
+    def one_fails(part, busy_wait=None):
+        calls.append(part)
+        if len(calls) == 1:
+            raise RuntimeError("503 busy")
+        return iter(["сводка"])
+
+    monkeypatch.setattr(l, "summary", one_fails)
+    assert "[Часть 1" not in l.fit(LONG)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 1 из 5]" in l.fit(LONG), "дыру закрыл повтор, а не кэш"
+    assert len(calls) == 10
+
+    other = "Б" * 5000 + "Ю" * 5000
+    _counting_summary(monkeypatch, l, calls, text="")
+    assert "опущена" in l.fit(other)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 1 из 5]" in l.fit(other), "голова и хвост не легли в кэш"
+
+    third = "В" * 5000 + "Э" * 5000
+    empties = iter(["сводка", "", "сводка", "сводка", "сводка"])
+    monkeypatch.setattr(l, "summary", lambda part, busy_wait=None: iter([next(empties)]))
+    assert "[Часть 2" not in l.fit(third)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 2 из 5]" in l.fit(third), "пустая сводка части — тоже дыра"
+
+
+def test_fit_cache_entry_expires(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    now[0] += llm_mod.FIT_CACHE_TTL - 1
+    l.fit(LONG)
+    assert len(calls) == 5, "до срока — из кэша"
+    now[0] = 1000.0 + llm_mod.FIT_CACHE_TTL
+    l.fit(LONG)
+    assert len(calls) == 10, "срок вышел ровно — пересчёт"
+    assert llm_mod.FIT_CACHE_TTL == 30 * 60
+
+
+def test_fifth_entry_evicts_the_least_recently_used(monkeypatch):
+    assert llm_mod.FIT_CACHE_SIZE == 4
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    speeches = [ch * 10_000 for ch in "АБВГД"]
+    for s in speeches[:4]:
+        l.fit(s)
+    l.fit(speeches[0])                     # прочитанная — самая свежая
+    assert len(calls) == 20
+    l.fit(speeches[4])                     # пятая вытесняет самую давнюю — Б
+    assert len(calls) == 25
+    l.fit(speeches[0])
+    assert len(calls) == 25, "прочитанная недавно осталась"
+    l.fit(speeches[1])
+    assert len(calls) == 30, "самая давняя вытеснена"
+
+
+def test_rewriting_an_entry_makes_it_the_freshest(monkeypatch):
+    """Две одновременные свёртки одной речи пишут ключ дважды: вторая запись
+    — снова самая свежая, а не остаётся на месте первой."""
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: 0.0)
+    for k in ("а", "б", "в"):
+        llm_mod._fit_cache_put((k,), k)
+    llm_mod._fit_cache_put(("а",), "а2")
+    for k in ("г", "д"):
+        llm_mod._fit_cache_put((k,), k)
+    assert llm_mod._fit_cache_get(("а",)) == "а2"
+    assert llm_mod._fit_cache_get(("б",)) is None
