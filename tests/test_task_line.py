@@ -171,11 +171,19 @@ def test_bridge_knows_a_settled_item_under_any_list_marker(marker):
     # merge дописывал снятое открытым (Opus I2 круга 2)
     mine = f"{marker} [x] **Коля** — подготовить отчёт"
     doc = minutes(f"{mine}\n- [ ] **Коля** — подготовить отчёт по бюджету")
-    out, moved = review_bridge.withdraw_from_minutes(doc, [("**Коля** — подготовить отчёт", "не звучало")])
+    dropped: list[str] = []
+    out, moved = review_bridge.withdraw_from_minutes(
+        doc, [("**Коля** — подготовить отчёт", "не звучало")], dropped=dropped)
     assert moved == 0 and out == doc
+    # причина — узнанный поставленный пункт, а не «подходит к двум»: ключ обязан снять маркер
+    assert any("со статусом" in d for d in dropped), dropped
     closed = minutes(f"{marker} [-] **Коля** — подготовить отчёт _(снято по сроку 24.09)_")
     out, added = review_bridge.merge_into_minutes(closed, ["**Коля** — подготовить отчёт"])
     assert added == 0 and out == closed
+    # пересказ точным ключом не узнать — только исполнителем, и его тоже надо найти за маркером
+    told = minutes(f"{marker} [-] {TASK} _(снято по сроку 24.09)_")
+    out, added = review_bridge.merge_into_minutes(told, ["**Коля** — подготовить отчёт по продажам к 30.09"])
+    assert added == 0 and out == told
 
 
 def test_bridge_withdraws_the_open_twin_of_a_settled_item():
