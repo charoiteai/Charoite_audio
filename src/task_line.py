@@ -166,15 +166,17 @@ def parse(line: str) -> TaskLine | None:
         control = mark.group().strip()
         body = body[:mark.start()] + body[mark.end():]
     fields: dict[str, datetime.date] = {}
-
-    def take(f: re.Match) -> str:
+    # Срезаем только поля с настоящей датой. Циклом, а не re.sub с функцией: у той
+    # «вернуть пустую строку» и «вернуть None» — одно и то же, и место ничего не держит.
+    kept, pos = [], 0
+    for f in _FIELD.finditer(body):
         try:
             fields[_KIND[f.group(1)]] = datetime.date.fromisoformat(f.group(2))
         except ValueError:
-            return f.group()
-        return ""
-
-    body = _FIELD.sub(take, body).strip()
+            continue
+        kept.append(body[pos:f.start()])
+        pos = f.end()
+    body = ("".join(kept) + body[pos:]).strip()
     who = _ASSIGNEE.match(body)
     return TaskLine(indent=m.group("indent"), marker=m.group("marker") or "", box=m.group("box"),
                     status=status(line), assignee=who.group("name") if who else None,
