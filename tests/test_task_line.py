@@ -85,6 +85,15 @@ def test_bridge_does_not_readd_a_known_item(form, task):
     assert added == 0 and out == doc
 
 
+@pytest.mark.parametrize("form", list(FORMS))
+def test_bridge_does_not_readd_a_paraphrase_of_a_known_item(form):
+    # ревизия пересказывает поручение другими словами: узнаёт его только сравнение
+    # исполнителя и слов дела, и исполнителя строки надо найти в любом статусе
+    doc = minutes(FORMS[form])
+    out, added = review_bridge.merge_into_minutes(doc, ["**Коля** — подготовить отчёт по продажам к 30.09"])
+    assert added == 0 and out == doc
+
+
 @pytest.mark.parametrize("form", SETTLED)
 def test_bridge_does_not_withdraw_a_settled_item(form):
     doc = minutes(FORMS[form])
@@ -153,3 +162,32 @@ def test_fix_action_items_does_not_write_while_the_graph_lock_is_held(tmp_path, 
         assert taken
         assert fix_action_items.main() == 1
     assert note.read_text(encoding="utf-8") == text
+
+
+def test_fix_action_items_keeps_an_edit_made_between_its_read_and_its_write(tmp_path, monkeypatch):
+    # сосед (контроль задач, отметка в приложении) правит файл после того, как скрипт его
+    # прочёл: запись через rewrite_file перечитывает файл, а «tmp + replace» затирал правку
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fix_action_items
+    graph = tmp_path / "граф"
+    graph.mkdir()
+    data = tmp_path / "данные"
+    (data / "logs").mkdir(parents=True)
+    note = graph / "Минутки.md"
+    note.write_text("## Поручения\n*   **Оля** — сверить цифры\n- [ ] **Петя** — позвонить\n", encoding="utf-8")
+    real = fix_action_items.normalize
+    calls = []
+
+    def racing(text):
+        if not calls:      # первое чтение — сухое; сосед успевает отметить задачу
+            note.write_text(text.replace("- [ ] **Петя**", "- [x] **Петя**"), encoding="utf-8")
+        calls.append(1)
+        return real(text)
+
+    monkeypatch.setattr(fix_action_items, "normalize", racing)
+    monkeypatch.setenv("CHAROITE_ROOT", str(data))
+    monkeypatch.setattr(sys, "argv", ["fix_action_items.py", "--graph", str(graph), "--apply"])
+    assert fix_action_items.main() == 0
+    lines = note.read_text(encoding="utf-8").split("\n")
+    assert "- [x] **Петя** — позвонить" in lines, lines
+    assert "- [ ] **Оля** — сверить цифры" in lines, lines
