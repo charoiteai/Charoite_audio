@@ -1990,10 +1990,11 @@ def test_the_layer_shapes_see_every_way_to_reach_the_environment():
         "    sys.path.append('поздно')",                          # 22 при вызове — не на импорте
         "    return __file__, pathlib.Path('p').expanduser()",   # 23
         "q = config.env",                                         # 24 чужое имя — не окружение
+        "r = environ.get('Z')",                                   # 25 голое имя после from os import
     ])
     tree = ast.parse(src)
     found = {s.name: s.find(tree, "src/x.py") for s in lm.ROOT_SHAPES if s.scope == "layer"}
-    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8], "home": [10, 11, 23], "any_file": [13, 23],
+    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25], "home": [10, 11, 23], "any_file": [13, 23],
                      "sys_path": [14, 15, 16, 17], "dynamic_import": [18, 19, 20]}
 
 
