@@ -102,14 +102,18 @@ def normalize(text: str) -> str:
                 inside = False
                 out.append(line)
                 continue
-            # Пункт с чекбоксом — в любой форме и любом состоянии — не трогаем: его
-            # статус поставил человек или контроль, а узнаёт форму одна грамматика
-            # (task_line). Свой регэксп «уже чекбокс» здесь расходился с ней: «- [-]»,
-            # «+ [x]», «-  [x]» и «[/]» уходили в _to_checkbox и становились
-            # «- [ ] [x] …» — снова открытыми (№366; Opus C1 и I1 круга 1 по коду).
-            if line.strip() and _BULLET.match(line) and task_line.status(line) is None \
-                    and not _OUTSIDER_LINE.match(line):
-                out.append(_to_checkbox(line))
+            # Пункт с чекбоксом — в любой форме и любом состоянии: статус и тело не трогаем,
+            # префикс приводим к виду вкладки (task_line.canonical). Узнаёт форму одна
+            # грамматика: свой регэксп «уже чекбокс» здесь расходился с ней, и «+ [x]»,
+            # «-  [x]», «[/]» становились «- [ ] [x] …» (№366; Opus C1 и I1 круга 1, M1
+            # круга 2). Каждая переписанная строка проверяется гейтом статусов: промах
+            # грамматики (например, «- - [x] …») оставляет строку как была, а не пишет
+            # порчу молча — ни демон, ни пересборка этого не заметили бы (Opus, критика 1
+            # круга 2).
+            if line.strip() and _BULLET.match(line) and not _OUTSIDER_LINE.match(line):
+                fixed = task_line.canonical(line) if task_line.status(line) is not None \
+                    else _to_checkbox(line)
+                out.append(line if task_line.status_changes(line, fixed) else fixed)
                 continue
         out.append(line)
     return "\n".join(out)

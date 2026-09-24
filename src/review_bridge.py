@@ -278,13 +278,16 @@ def _key(item: str) -> str:
     text = task_line.CONTROL_MARK.sub(" ", text)     # «_(снято по сроку 24.09)_» (№366)
     for mark in MARKS.values():
         text = text.replace(mark, " ")
-    text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:" + task_line.BOX + r"\s*)?", "", text)
+    text = re.sub(r"^\s*(?:" + task_line.MARKER + r"\s*)?(?:" + task_line.BOX + r"\s*)?", "", text)
     return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
 
 # исполнитель строки минуток в любом статусе, снятое «[-]» — тоже (№366): иначе пересказ
 # снятого поручения ревизией не узнавался и дописывался заново открытым
-_ASSIGNEE = re.compile(r"^\s*(?:[-*+•–—]\s*)?(?:" + task_line.BOX + r"\s*)?(?:⚠[^:]*:\s*)?\*\*(?P<name>[^*]+)\*\*\s*(?P<rest>.*)$")
+# Маркер — общий с грамматикой статуса: свой узкий набор не узнавал «1. [x] **Коля** — …»,
+# и снятие уходило соседнему открытому пункту, а merge дописывал снятое открытым (Opus I2
+# круга 2 по коду)
+_ASSIGNEE = re.compile(r"^\s*(?:" + task_line.MARKER + r"\s*)?(?:" + task_line.BOX + r"\s*)?(?:⚠[^:]*:\s*)?\*\*(?P<name>[^*]+)\*\*\s*(?P<rest>.*)$")
 # Порог высокий намеренно: лишний дубль в «Задачах» виден и снимается одним
 # кликом, а съеденное поручение невидимо (DS r1 по #518, критика 2)
 SIMILAR = 0.7
@@ -569,8 +572,14 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     for item, why in items:
         hits = [i for i in cand if _matches_withdrawn(item, views[i])]
         if len(hits) > 1:
-            # точное совпадение ключа перевешивает пересказ; два точных — гадание
+            # точное совпадение ключа перевешивает пересказ; два точных — гадание, кроме
+            # одного случая: среди одинаковых строк ровно одна открыта. Поставленную снимать
+            # нельзя, так что открытая — единственный допустимый ход, а не догадка (Sonnet I2
+            # круга 2 по коду: такой дубль до правки снимался, после — нет)
             exact = [i for i in hits if _key(item) == _key(views[i])]
+            if len(exact) > 1:
+                open_exact = [i for i in exact if not task_line.settled(body[i])]
+                exact = open_exact if len(open_exact) == 1 else exact
             hits = exact if len(exact) == 1 else hits
         if len(hits) == 1 and task_line.settled(body[hits[0]]):
             if dropped is not None:

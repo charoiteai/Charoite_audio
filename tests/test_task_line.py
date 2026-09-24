@@ -64,12 +64,25 @@ def test_status_names_every_form(form, line):
 @pytest.mark.parametrize("sep", SEPARATORS)
 @pytest.mark.parametrize("marker", MARKERS)
 def test_every_list_form_keeps_its_status_through_normalize(marker, sep, box):
+    # префикс — к виду вкладки «- [c] », ящик и тело как были (Opus M1 круга 2: «1. [ ] …»
+    # оставался как есть, и вкладка задачу не видела)
     line = f"{marker}{sep}[{box}] {TASK}"
     assert task_line.status(line) == BOXES[box]
     doc = minutes(line)
     out = action_items.normalize(doc)
-    assert line in out.split("\n"), out
+    expected = line if marker in ("-", "*") and sep == " " else f"- [{box}] {TASK}"
+    assert expected in out.split("\n"), out
     assert task_line.status_changes(doc, out) == []
+
+
+def test_normalize_leaves_a_line_its_grammar_misses_instead_of_mangling_it():
+    # «- - [x] …» — вложенный пункт в одну строку: Obsidian видит отмеченную задачу, грамматика —
+    # нет. _to_checkbox сделал бы «- [ ] [x] …»; гейт статусов на каждой строке normalize
+    # оставляет её как была (Opus, критика 1 круга 2: демон писал бы порчу молча)
+    line = "- - [x] **Коля** — отчёт"
+    out = action_items.normalize(minutes(line))
+    assert line in out.split("\n"), out
+    assert "[ ] [x]" not in out
 
 
 def test_status_changes_names_a_changed_status_and_the_mangled_signature():
@@ -150,6 +163,30 @@ def test_bridge_does_not_hand_a_settled_items_withdrawal_to_its_open_neighbour(l
         doc, [("**Коля** — подготовить отчёт", "не звучало")], dropped=dropped)
     assert moved == 0 and out == doc
     assert any("со статусом" in d for d in dropped), dropped
+
+
+@pytest.mark.parametrize("marker", MARKERS)
+def test_bridge_knows_a_settled_item_under_any_list_marker(marker):
+    # свой узкий маркер моста не узнавал «1. [x] **Коля** — …»: снятие уходило соседу, а
+    # merge дописывал снятое открытым (Opus I2 круга 2)
+    mine = f"{marker} [x] **Коля** — подготовить отчёт"
+    doc = minutes(f"{mine}\n- [ ] **Коля** — подготовить отчёт по бюджету")
+    out, moved = review_bridge.withdraw_from_minutes(doc, [("**Коля** — подготовить отчёт", "не звучало")])
+    assert moved == 0 and out == doc
+    closed = minutes(f"{marker} [-] **Коля** — подготовить отчёт _(снято по сроку 24.09)_")
+    out, added = review_bridge.merge_into_minutes(closed, ["**Коля** — подготовить отчёт"])
+    assert added == 0 and out == closed
+
+
+def test_bridge_withdraws_the_open_twin_of_a_settled_item():
+    # одинаковые строки, одна снята, другая открыта: поставленную снимать нельзя, так что
+    # открытая — единственный ход, а не догадка (Sonnet I2 круга 2: до правки она снималась)
+    closed = f"- [-] {TASK} _(снято по сроку 24.09)_"
+    doc = minutes(f"{closed}\n- [ ] {TASK}")
+    out, moved = review_bridge.withdraw_from_minutes(doc, [(TASK, "не звучало")])
+    lines = out.split("\n")
+    assert moved == 1 and closed in lines
+    assert f"- [ ] {TASK}" not in lines
 
 
 def test_bridge_still_withdraws_an_open_item():
@@ -342,3 +379,44 @@ def test_fix_action_items_reports_what_it_wrote_not_what_it_planned(tmp_path, mo
     assert fix.main() == 0
     assert "исправлено: 0" in capsys.readouterr().out
     assert not list(data.rglob("manifest.tsv"))
+
+
+def test_fix_action_items_leaves_no_orphan_copy_when_the_write_is_lost(tmp_path, monkeypatch, capsys):
+    # настоящий rewrite_file: обе попытки кладут копию и проигрывают запись — копия без
+    # строки манифеста осталась бы сиротой (Sonnet I1 = Opus M2 круга 2)
+    fix, data, (note,) = _script_run(tmp_path, monkeypatch, (
+        "Минутки.md", "## Поручения\n*   **Оля** — сверить цифры\n"))
+    monkeypatch.setattr(fix.safe_write, "write_text", lambda *a, **k: False)
+    assert fix.main() == 1
+    assert note.read_text(encoding="utf-8") == "## Поручения\n*   **Оля** — сверить цифры\n"
+    assert [q for q in data.rglob("Минутки.md") if "fix_action_items" in q.parts] == []
+    assert not list(data.rglob("manifest.tsv"))
+
+
+def test_fix_action_items_lays_the_copy_before_it_writes(tmp_path, monkeypatch):
+    # порядок «копия, потом запись»: перенос копии после записи оставлял бы окно, где файл
+    # уже заменён, а оригинала нет (Opus M3 круга 2)
+    original = "## Поручения\n*   **Оля** — сверить цифры\n"
+    fix, data, (note,) = _script_run(tmp_path, monkeypatch, ("Минутки.md", original))
+    real = fix.safe_write.write_text
+    seen = []
+
+    def checking(path, text, **kw):
+        seen.append([q.read_text(encoding="utf-8") for q in data.rglob(path.name)
+                     if "fix_action_items" in q.parts])
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(fix.safe_write, "write_text", checking)
+    assert fix.main() == 0
+    assert seen == [[original]]
+
+
+def test_fix_action_items_refuses_a_transform_that_is_not_one_to_one(tmp_path, monkeypatch, capsys):
+    # ValueError гейта статусов — отказ этого файла, как у остальных проверок, а не трассировка
+    # посреди графа (Sonnet, критика 2 круга 2)
+    text = "## Поручения\n*   **Оля** — сверить цифры\n"
+    fix, _, (note,) = _script_run(tmp_path, monkeypatch, ("Минутки.md", text))
+    monkeypatch.setattr(fix, "normalize", lambda t: t.split("\n", 1)[1])
+    assert fix.main() == 1
+    assert note.read_text(encoding="utf-8") == text
+    assert "не один к одному" in capsys.readouterr().err

@@ -102,7 +102,10 @@ class _Rewrite:
 
     def __call__(self, text: str) -> tuple[str, int]:
         after = normalize(text)
-        changes = task_line.status_changes(text, after)
+        try:
+            changes = task_line.status_changes(text, after)
+        except ValueError as e:      # преобразование перестало быть один к одному — не пишем
+            raise StatusChanged([(0, text[:80], str(e))]) from e
         if changes:
             raise StatusChanged(changes)
         self.text, self.after = text, after
@@ -184,6 +187,7 @@ def main() -> int:
                 # сделанная после сухого чтения, не затирается, а чужая запись посреди
                 # правки — отказ этого файла, а не обрыв прогона (Sonnet C1 = Opus M1).
                 rw = _Rewrite(dest / rel)
+                start = text
                 try:
                     n = safe_write.rewrite_file(p, rw, "поручения минуток")
                 except StatusChanged as e:
@@ -193,10 +197,18 @@ def main() -> int:
                     refused.append(f"{rel}: {e}")
                     n, final = 0, text
                 else:
-                    final = rw.after if n else rw.text
+                    # отчёт — по тому, что прочитано и записано под снимком, а не по сухому
+                    # чтению: между ними файл мог поменять сосед (Opus M4 круга 2)
+                    start, final = rw.text, (rw.after if n else rw.text)
                 if n:
                     written += 1
                     _note_copy(dest, rel, rw.text, rw.after)
+                else:
+                    # копия ложится до записи; записи не было — копия осталась бы сиротой без
+                    # строки манифеста, а откат по каталогу вернул бы текст поверх правки
+                    # соседа (Sonnet I1 = Opus M2 круга 2)
+                    (dest / rel).unlink(missing_ok=True)
+                text = start
             before += len(CHECKBOX.findall(text))
             after += len(CHECKBOX.findall(final))
 

@@ -46,6 +46,11 @@ _MANGLED = re.compile(r"^\s*(?:" + MARKER + r"\s*)?\[ \]\s*" + BOX)
 # пометка её не ловит.
 CONTROL_MARK = re.compile(r"\s*_\(снято(?: по сроку|:) [^)]*\)_")
 
+# Префикс пункта с ящиком и тот же префикс в виде, который узнают вкладки «Задачи»
+# (`^\s*[-*] \[( |x|X)\] +` на Mac и iPhone).
+_PREFIX = re.compile(r"^(\s*)(?:" + MARKER + r"\s*)?\[([^\]])\]\s*")
+_CANON = re.compile(r"^\s*[-*] \[[^\]]\] ")
+
 OPEN, DONE, CLOSED, RETURNED, OTHER = "open", "done", "closed", "returned", "other"
 SETTLED = frozenset({DONE, CLOSED, RETURNED, OTHER})
 
@@ -63,6 +68,21 @@ def status(line: str) -> str | None:
     if box == " ":
         return RETURNED if CONTROL_MARK.search(line) else OPEN
     return OTHER
+
+
+def canonical(line: str) -> str:
+    """Префикс пункта с ящиком — к виду вкладки «- [c] »; отступ, ящик и тело как были.
+
+    «1. [ ] …», «+ [x] …», «-  [ ] …» вкладки не видят вовсе: пока normalize пропускал такие
+    строки целиком, открытая задача пропадала из «Задач» (Opus M1 круга 2 по коду). Строка
+    без ящика и уже каноническая возвращаются как есть."""
+    if _CANON.match(line):
+        return line
+    m = _PREFIX.match(line)
+    if not m:
+        return line
+    rest = line[m.end():]
+    return f"{m.group(1)}- [{m.group(2)}]" + (f" {rest}" if rest else "")
 
 
 def settled(line: str) -> bool:
