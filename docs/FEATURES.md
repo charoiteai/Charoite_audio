@@ -1085,6 +1085,8 @@ it signals degradation, it does not break the loop.
   synthesize from irrelevant fragments. Answer sources are clickable
   (open in Obsidian). With the optional brain companion (:8100) a
   bge-m3 semantic layer finds answers even without word overlap.
+  Meeting facts, voice notes and diary entries are written there only
+  with `sufler.brain: true` (off by default).
 
 ## Document format
 

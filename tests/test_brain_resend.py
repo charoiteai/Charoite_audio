@@ -74,7 +74,7 @@ def test_resend_forgets_meeting_and_sends_the_note_after_review(tmp_path):
         calls.append((url, json))
         return _Resp()
 
-    out = g.resend_to_brain_after_review("2026-09-11_1533", note, BEFORE, mark, post=post)
+    out = g.resend_to_brain_after_review("2026-09-11_1533", note, BEFORE, mark, enabled=True, post=post)
     assert out == "память Чароита переотправлена после ревизии: снято решений 2, ушло фактов 2", out
     assert calls[0] == (f"{g.BRAIN}/forget", {"meeting": "2026-09-11_1533"})
     sent = [j for u, j in calls[1:] if u.endswith("/remember")]
@@ -90,14 +90,14 @@ def test_resend_is_a_no_op_when_decisions_did_not_change_and_survives_a_dead_bra
     mark = tmp_path / "m.txt"
     mark.write_text("sent 4/4\nid:x\n", encoding="utf-8")
     calls = []
-    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=lambda *a, **k: calls.append(a) or _Resp())
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, enabled=True, post=lambda *a, **k: calls.append(a) or _Resp())
     assert "без переотправки" in out and not calls and mark.exists(), "облако правило заметку, но не решения — память не трогаем"
     note.write_text(AFTER, encoding="utf-8")
 
     def dead(url, json, timeout):
         raise ConnectionError("Connection refused")
 
-    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=dead)
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, enabled=True, post=dead)
     assert out.startswith("память Чароита не переотправлена (brain:") and mark.exists(), "brain лежит — отметка цела, ревизия не роняется"
 
 
@@ -118,22 +118,23 @@ def test_resend_keeps_a_debt_when_remember_fails_after_forget_and_pays_it_next_t
             return _Resp()
         raise ConnectionError("embedder busy")
 
-    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=half_dead)
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, enabled=True, post=half_dead)
     assert out.startswith("память Чароита НЕ переотправлена полностью (ушло 0 из 2)") and debt.exists(), out
     assert not mark.exists(), "отметки нет — повтор обработки тоже дошлёт всё"
     calls: list[str] = []
-    out = g.resend_to_brain_after_review("s", note, AFTER, mark, post=lambda url, json, timeout: calls.append(url) or _Resp())
+    out = g.resend_to_brain_after_review("s", note, AFTER, mark, enabled=True, post=lambda url, json, timeout: calls.append(url) or _Resp())
     assert out == "память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 2", out
     assert calls[0].endswith("/forget") and len(calls) == 3 and not debt.exists()
     calls.clear()
-    out = g.resend_to_brain_after_review("s", note, AFTER, mark, post=lambda *a, **k: calls.append(a) or _Resp())
+    out = g.resend_to_brain_after_review("s", note, AFTER, mark, enabled=True, post=lambda *a, **k: calls.append(a) or _Resp())
     assert "без переотправки" in out and not calls, "долг оплачен, решения те же — тишина"
     # brain лёг на /forget — долг остаётся, отметка цела
-    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, enabled=True, post=lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
     assert "долг записан" in out and debt.exists() and mark.exists()
     # долг гасит и обычный отправитель — повтор обработки (DS r2 M3): отметка полна → долг снят
     g.send_to_brain("s", "Планёрка команды", [{"имя": "Иван"}], ["тема"],
-                    ["Пересчёт бюджета произойдёт на следующей неделе"], mark, post=lambda *a, **k: _Resp())
+                    ["Пересчёт бюджета произойдёт на следующей неделе"], mark, enabled=True,
+                    post=lambda *a, **k: _Resp())
     assert not debt.exists()
 
 
@@ -147,7 +148,7 @@ def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_
     def dead(url, json, timeout):
         raise ConnectionError("down")
 
-    assert g.send_to_brain("2026-09-01_1000", "Тема", [], [], ["решение"], mark, post=dead) == 0
+    assert g.send_to_brain("2026-09-01_1000", "Тема", [], [], ["решение"], mark, enabled=True, post=dead) == 0
     assert (sent / "2026-09-01_1000.pending").exists() and not mark.exists(), "ничего не дошло — долг записан"
     graph = tmp_path / "graph"
     (graph / "Встречи").mkdir(parents=True)
@@ -156,10 +157,10 @@ def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_
     (sent / "2026-09-11_1533.pending").touch()          # своя встреча — не трогаем
     calls: list[str] = []
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
-    assert g.pay_brain_debts(graph, sent, skip="2026-09-11_1533", post=ok) == [] and not calls, \
+    assert g.pay_brain_debts(graph, sent, skip="2026-09-11_1533", enabled=True, post=ok) == [] and not calls, \
         "свежий долг — у живого отправителя, чужим не трогать (DS r3 I2)"
     later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
-    lines = g.pay_brain_debts(graph, sent, skip="2026-09-11_1533", post=ok, now=later)
+    lines = g.pay_brain_debts(graph, sent, skip="2026-09-11_1533", enabled=True, post=ok, now=later)
     assert lines == ["долг памяти 2026-09-01_1000: память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 4",
                      "долг памяти 2026-09-02_1000: заметки встречи в графе нет — снят"], lines
     assert calls[0].endswith("/forget") and len(calls) == 5
@@ -176,12 +177,12 @@ def test_debt_is_not_settled_by_a_lookalike_mark_a_legacy_mark_or_a_failed_mark_
     mark = sent / "s.txt"
     mark.write_text("sent 2/2\nid:head\nid:deadbeefdeadbeef\n# Т\n", encoding="utf-8")
     dead = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down"))  # noqa: E731
-    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, post=dead) == 0
+    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, enabled=True, post=dead) == 0
     assert (sent / "s.pending").exists(), "ничего не ушло — долг на месте"
     (sent / "s.pending").unlink()
     mark.write_text("тема\n", encoding="utf-8")            # отметка прежнего формата
     (sent / "s.pending").touch()
-    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, post=lambda *a, **k: _Resp()) == 0
+    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, enabled=True, post=lambda *a, **k: _Resp()) == 0
     assert (sent / "s.pending").exists(), "легаси-отметка долг не гасит"
     mark.unlink()
     (sent / "s.pending").unlink()
@@ -194,7 +195,7 @@ def test_debt_is_not_settled_by_a_lookalike_mark_a_legacy_mark_or_a_failed_mark_
         path.write_text(text, encoding="utf-8")
 
     monkeypatch.setattr(g.safe_write, "write_text", flaky_write)
-    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, post=lambda *a, **k: _Resp()) == 2, "оба POST прошли"
+    assert g.send_to_brain("s", "Т", [], [], ["решение B"], mark, enabled=True, post=lambda *a, **k: _Resp()) == 2, "оба POST прошли"
     assert (sent / "s.pending").exists() and mark.read_text(encoding="utf-8").startswith("sent 1/2\n"), \
         "второй факт в brain есть, в отметке нет — долг держит полную переотправку"
 
@@ -216,19 +217,19 @@ def test_sender_lock_keeps_a_foreign_payer_and_a_second_sender_out(tmp_path, mon
     ok = lambda url, json, timeout: calls.append(url) or _Resp()  # noqa: E731
     with open(mark.with_suffix(".lock"), "a+") as holder:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert g.send_to_brain("2026-09-01_1000", "Т", [], [], ["x"], mark, post=ok) == 0 and not calls
-        out = g.resend_to_brain_after_review("2026-09-01_1000", graph / "Встречи" / "2026-09-01_1000.md", "", mark, post=ok)
+        assert g.send_to_brain("2026-09-01_1000", "Т", [], [], ["x"], mark, enabled=True, post=ok) == 0 and not calls
+        out = g.resend_to_brain_after_review("2026-09-01_1000", graph / "Встречи" / "2026-09-01_1000.md", "", mark, enabled=True, post=ok)
         assert "другой процесс" in out and not calls and not mark.exists()
         before = debt.stat().st_mtime
-        lines = g.pay_brain_debts(graph, sent, post=ok, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
+        lines = g.pay_brain_debts(graph, sent, enabled=True, post=ok, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
         assert lines == ["долг памяти 2026-09-01_1000: память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"]
         assert not calls and debt.exists() and debt.stat().st_mtime >= before
-    lines = g.pay_brain_debts(graph, sent, post=ok, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
+    lines = g.pay_brain_debts(graph, sent, enabled=True, post=ok, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
     assert lines[0].endswith("ушло фактов 4") and not debt.exists() and len(calls) == 5
     # замка нет вовсе (ФС без flock) — это не «занято»: факты идут без замка (DS r4 I1)
     calls.clear()
     monkeypatch.setattr(g.fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError(77, "ENOLCK")))
-    assert g.send_to_brain("2026-09-05_1000", "Т", [], [], ["x"], sent / "2026-09-05_1000.txt", post=ok) == 2 and len(calls) == 2
+    assert g.send_to_brain("2026-09-05_1000", "Т", [], [], ["x"], sent / "2026-09-05_1000.txt", enabled=True, post=ok) == 2 and len(calls) == 2
     assert not (sent / "2026-09-05_1000.pending").exists()
 
 
@@ -255,9 +256,9 @@ def test_unpayable_debt_does_not_hold_the_queue(tmp_path):
         return Bad()
 
     later = lambda: time.time() + g.DEBT_MIN_AGE + 1  # noqa: E731
-    first = g.pay_brain_debts(graph, sent, limit=1, post=post, now=later)
+    first = g.pay_brain_debts(graph, sent, limit=1, enabled=True, post=post, now=later)
     assert first[0].startswith("долг памяти 2026-09-01_1000: память Чароита НЕ переотправлена полностью") and (sent / "2026-09-01_1000.pending").exists()
-    second = g.pay_brain_debts(graph, sent, limit=1, post=post, now=later)
+    second = g.pay_brain_debts(graph, sent, limit=1, enabled=True, post=post, now=later)
     assert second[0].startswith("долг памяти 2026-09-02_1000: память Чароита переотправлена"), second
-    third = g.pay_brain_debts(graph, sent, limit=1, post=post, now=later)
+    third = g.pay_brain_debts(graph, sent, limit=1, enabled=True, post=post, now=later)
     assert third[0].startswith("долг памяти 2026-09-03_1000: память Чароита переотправлена"), third

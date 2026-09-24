@@ -29,9 +29,17 @@ _FALSE = {"false", "no", "off", "0", "нет", "выкл"}
 _TRUE = {"true", "yes", "on", "1", "да", "вкл"}
 
 
+def _section(cfg) -> dict:
+    """Секция `sufler` или пустая: пустой YAML (None), список вместо словаря и `sufler:` без
+    значения — тоже конфиг, с которым точка входа обязана работать (круг 1 по коду №249, Opus C1:
+    «Забыть» падало на пустом config.yaml до стирания)."""
+    section = cfg.get("sufler") if isinstance(cfg, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
 def flag(cfg: dict, key: str, default: bool = True) -> bool:
     """Булев ключ секции `sufler` с нормализацией строк и мусора."""
-    value = (cfg.get("sufler") or {}).get(key, default)
+    value = _section(cfg).get(key, default)
     if isinstance(value, bool):
         return value
     if value is None:
@@ -75,6 +83,25 @@ def graph_enabled(cfg: dict) -> bool:
 def deja_vu_enabled(cfg: dict) -> bool:
     """Семантическое «⏮ уже обсуждалось» (`sufler.deja_vu`) — держит bge-m3."""
     return flag(cfg, "deja_vu", True)
+
+
+def brain_enabled(cfg: dict) -> bool:
+    """Запись во внешнюю память (`sufler.brain`) — сервер `127.0.0.1:8100`, который есть только
+    у того, кто поставил его сам. Умолчание — выключено: у любой другой установки запись копила
+    бы замок и долг на каждую встречу и печатала curl на несуществующий сервер (№249).
+
+    Не флаг пресета: в `ModelPresetPolicy.configFlags` его не добавлять, иначе смена пресета
+    перезапишет решение владельца. Стирание и переименование уже записанного флаг не гасит:
+    факты отправленных встреч лежат на сервере, пока их не удалят вместе с ним."""
+    return flag(cfg, "brain", False)
+
+
+def brain_explicit(cfg: dict) -> bool:
+    """Ключ `sufler.brain` задан явно и распознан как да или нет. Только тогда строка «внешняя
+    память выключена» что-то значит для человека: у того, у кого её не было, она читалась бы как
+    поломка, а `brain:` без значения или мусор — не «false» (круг 1 по коду №249, Opus M1)."""
+    value = _section(cfg).get("brain")
+    return isinstance(value, bool) or str(value).strip().lower() in _FALSE | _TRUE
 
 
 def tier3_enabled(cfg: dict) -> bool:

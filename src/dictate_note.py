@@ -44,6 +44,7 @@ def _root() -> pathlib.Path:
 SR = 16000
 
 import graphs  # noqa: E402
+import install_profile  # noqa: E402
 
 _cfg_кэш: tuple[pathlib.Path, dict] | None = None
 
@@ -272,14 +273,16 @@ def main():
         "\n".join(f"- [[Заметки/{p.stem}|{p.stem[16:].replace('_', ' ') or p.stem}]] — {p.stem[:15].replace('_', ' ')}"
                   for p in notes) + "\n")
 
-    # память Чароита: заметка находима через recall
-    try:
-        requests.post("http://127.0.0.1:8100/remember", json={
-            "text": f"Голосовая заметка {now:%d.%m} «{title}»: {body[:300]}",
-            "category": "voice_note",
-        }, timeout=5)
-    except Exception as e:  # noqa: BLE001
-        print(f"remember: {e}", file=sys.stderr)
+    # внешняя память: заметка находима через recall — только если её включили
+    # (`sufler.brain`, №249); файл заметки уже записан, запрос — лишь копия
+    if install_profile.brain_enabled(cfg()):
+        try:
+            requests.post("http://127.0.0.1:8100/remember", json={
+                "text": f"Голосовая заметка {now:%d.%m} «{title}»: {body[:300]}",
+                "category": "voice_note",
+            }, timeout=5)
+        except Exception as e:  # noqa: BLE001
+            print(f"remember: {e}", file=sys.stderr)
 
     print(json.dumps({"title": title, "path": str(path)}, ensure_ascii=False))
 
@@ -339,13 +342,15 @@ def diary_entry(raw: str) -> None:
     with day.open("a", encoding="utf-8") as f:
         f.write("".join(parts))
 
-    try:
-        requests.post("http://127.0.0.1:8100/remember", json={
-            "text": f"Дневник {now:%d.%m %H:%M}: {body[:300]}",
-            "category": "diary",
-        }, timeout=5)
-    except Exception as e:  # noqa: BLE001
-        print(f"remember: {e}", file=sys.stderr)
+    # личный текст — во внешнюю память только при включённой (`sufler.brain`, №249)
+    if install_profile.brain_enabled(cfg()):
+        try:
+            requests.post("http://127.0.0.1:8100/remember", json={
+                "text": f"Дневник {now:%d.%m %H:%M}: {body[:300]}",
+                "category": "diary",
+            }, timeout=5)
+        except Exception as e:  # noqa: BLE001
+            print(f"remember: {e}", file=sys.stderr)
 
     print(json.dumps({"title": f"дневник {now:%H:%M}", "path": str(day)},
                      ensure_ascii=False))
