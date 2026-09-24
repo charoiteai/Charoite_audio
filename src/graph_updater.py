@@ -488,8 +488,12 @@ def _meeting_facts(stamp: str, title: str, people: list, topics: list,
 
 
 def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
-                  mark: pathlib.Path, post=None, *, locked: bool = False) -> int:
+                  mark: pathlib.Path, post=None, *, enabled: bool, locked: bool = False) -> int:
     """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
+
+    `enabled` — решение вызывающего по `install_profile.brain_enabled`, без умолчания: кто не
+    решил, получает TypeError, а не запись. Выключено — выход раньше замка и долга: ни
+    `<штамп>.lock`, ни `.pending` (№249).
 
     Один раз на встречу: повтор обработки («Повторить обработку», ретрай)
     слал те же факты, и память дублировалась (аудит GLM 17.08). Отметка
@@ -505,6 +509,8 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     ключ графа: по нему «забыть» и переименование доходят до памяти (brain
     /forget, /rename с 23.08, карточка №41).
     """
+    if not enabled:
+        return 0
     post = post or requests.post
     keyed = _meeting_facts(stamp, title, people, topics, decisions)
     # Один отправитель фактов встречи за раз: без замка чужой /forget
@@ -675,9 +681,23 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
     return title, people, topics
 
 
+def meeting_facts_to_brain(cfg: dict, stamp: str, title: str, people: list, topics: list,
+                           decisions: list) -> int:
+    """Шаг разбора «факты встречи → внешняя память»: флаг читается здесь, из конфига разбора
+    (`sufler.brain`, №249). Выключена — ни замка, ни долга, ни запроса, а при явно заданном ключе
+    одна строка в лог. Отдельной функцией, чтобы тест держал именно чтение флага точкой входа:
+    мутант «флаг на месте вызова всегда да» выживал (круг 1 по коду №249, Opus I1)."""
+    on = install_profile.brain_enabled(cfg)
+    n = send_to_brain(stamp, title, people, topics, decisions,
+                      _root() / "logs" / "brain_sent" / f"{stamp}.txt", enabled=on)
+    if not on and install_profile.brain_explicit(cfg):
+        print("внешняя память выключена (sufler.brain: false) — факты встречи туда не отправлены")
+    return n
+
+
 def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: str,
-                                 mark: pathlib.Path, post=None, *,
-                                 lock_wait: float | None = None) -> str:
+                                 mark: pathlib.Path, post=None, *, enabled: bool,
+                                 lock_wait: float | None = None) -> str | None:
     """Память Чароита после облачной ревизии — по заметке встречи ПОСЛЕ неё.
 
     Факты уходили в brain в разборе, за двадцать минут до ревизии, и она их
@@ -698,7 +718,11 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     навсегда: на следующем проходе заметка уже правлена, «решения те же» —
     и переотправки нет (DS r1 I3 по #545). С долгом досылает следующая
     ревизия (полная переотправка) или повтор обработки (недостающее по
-    отметке); долги других встреч гасит любой прогон ревизии — pay_brain_debts."""
+    отметке); долги других встреч гасит любой прогон ревизии — pay_brain_debts.
+
+    Внешняя память выключена (`enabled`, №249) — None: ни /forget, ни долга, ни строки лога."""
+    if not enabled:
+        return None
     post = post or requests.post
     try:
         after = note.read_text(encoding="utf-8")
@@ -725,7 +749,7 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         except OSError:
             pass
         title, people, topics = _note_head(after)
-        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, locked=True)
+        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, enabled=enabled, locked=True)
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -735,7 +759,7 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
 
 
-def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = "",
+def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: bool, skip: str = "",
                     limit: int = 3, post=None, now=time.time) -> list[str]:
     """Долги переотправки других встреч — при любом прогоне ревизии: без
     этого долг встречи, которую больше не ревизируют и не пересобирают,
@@ -745,7 +769,10 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = 
     долг моложе DEBT_MIN_AGE — у живого отправителя, его не трогаем, а
     замок отправителя не ждём (DS r3 I2, GLM r3 I1). Свою встречу (`skip`)
     не трогаем: её долг гасит сам прогон. Заметки нет в графе — долг
-    снимается: платить не по чему. Возвращает строки для лога."""
+    снимается: платить не по чему. Возвращает строки для лога. Внешняя память выключена
+    (`enabled`, №249) — долги не трогаем: они остаются списком неотправленного."""
+    if not enabled:
+        return []
     ripe: list[tuple[float, pathlib.Path]] = []
     try:
         debts = [p for p in sent_dir.glob("*.pending") if p.stem != skip]
@@ -767,7 +794,7 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = 
             out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
-            stamp, note, "", debt.with_suffix(".txt"), post=post, lock_wait=0.0))
+            stamp, note, "", debt.with_suffix(".txt"), post=post, enabled=enabled, lock_wait=0.0))
         if debt.exists():
             try:
                 debt.touch()          # не оплачен — в конец очереди, слот освобождается
@@ -2790,11 +2817,9 @@ def main():
             print(f"граф: пропущено нечитаемых узлов: {len(_SKIPPED_NODES)} — "
                   + ", ".join(dict.fromkeys(_SKIPPED_NODES)))
 
-    # 3б) факты встречи → память Чароита (brain :8100), чтобы recall в чате и
-    # сессиях знал о встречах, а не только vault_search.
+    # 3б) факты встречи → внешняя память (brain :8100) — только если её включили
     if graph_ok:
-        send_to_brain(stamp, title, people, topics, decisions,
-                      _root() / "logs" / "brain_sent" / f"{stamp}.txt")
+        meeting_facts_to_brain(cfg, stamp, title, people, topics, decisions)
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что

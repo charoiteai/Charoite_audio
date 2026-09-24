@@ -149,6 +149,36 @@ def world(tmp_path, monkeypatch):
     return graph, tdir
 
 
+@pytest.mark.parametrize("mark, said, not_said", [
+    (True, "curl", "выключена в конфиге"),
+    (False, "выключена в конфиге", "curl"),
+])
+def test_rename_main_says_what_the_mark_and_the_flag_tell(world, tmp_path, monkeypatch, capsys,
+                                                          mark, said, not_said):
+    # точка входа целиком: main читает конфиг и зовёт brain_note, а не подставляет своё
+    # (Opus I1 круга 2 №249: rm.main не звал ни один тест)
+    graph, _ = world
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        f"sufler:\n  graph_dir: {graph}\n  brain: false\nlog:\n  transcripts_dir: transcripts\n",
+        encoding="utf-8")
+    if mark:
+        (tmp_path / "logs" / "brain_sent").mkdir(parents=True)
+        (tmp_path / "logs" / "brain_sent" / f"{STAMP}.txt").write_text("тема\n", encoding="utf-8")
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    monkeypatch.delenv("SUFLER_TRANSCRIPTS_DIR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["rename_meeting.py", STAMP, "Новая тема", "--yes"])
+    rm.main()
+    out = capsys.readouterr().out
+    assert "готово" in out and said in out and not_said not in out
+
+
 def test_plan_alone_touches_nothing(world):
     graph, tdir = world
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
@@ -513,4 +543,54 @@ def test_sidecar_follows_the_renamed_transcript(world):
     assert (sc, tdir / f"{STAMP}_Инцидент_загрузки.md.live.json") in p["moves"]
     rm.apply(p, graph, STAMP, pretty)
     assert not sc.exists() and (tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").exists()
+
+
+@pytest.mark.parametrize("sent, explicit, said", [
+    (False, True, "выключена в конфиге"),
+    (False, False, ""),
+    (True, True, "curl"),          # отметка отправки — рецепт при любом флаге (Opus I2 круга 1)
+    (True, False, "curl"),
+])
+def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, sent, explicit, said):
+    """Переименование — правка уже записанного, флаг записи его не гасит; без улик отправки
+    при выключенной записи отказ без рецепта curl, а без ключа в конфиге — пустая строка."""
+    calls = []
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            calls.append((url, json))
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = rm.brain_rename("2026-07-15_1400", "Новая тема", sent=sent, enabled=False, explicit=explicit)
+    assert calls == [(f"{rm.BRAIN}/rename", {"meeting": "2026-07-15_1400", "title": "Новая тема"})]
+    assert ("curl" in msg) == sent
+    assert (said in msg) if said else msg == ""
+
+
+@pytest.mark.parametrize("mark, cfg, said", [
+    ("txt", {"sufler": {"brain": False}}, "curl"),
+    ("pending", {}, "curl"),
+    (None, {"sufler": {"brain": False}}, "выключена в конфиге"),
+    (None, {}, ""),
+    (None, {"sufler": {"brain": True}}, "curl"),
+])
+def test_rename_reads_the_flag_and_the_mark_itself(tmp_path, monkeypatch, mark, cfg, said):
+    # флаг и улику отправки читает brain_note, которую зовёт точка входа: мутант «флаг на месте
+    # вызова» выживал (круг 1 по коду №249, Opus I1)
+    stamp = "2026-07-15_1400"
+    monkeypatch.setattr(rm, "_root", lambda: tmp_path)
+    if mark:
+        (tmp_path / "logs" / "brain_sent").mkdir(parents=True)
+        (tmp_path / "logs" / "brain_sent" / f"{stamp}.{mark}").write_text("", encoding="utf-8")
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = rm.brain_note(stamp, "Новая тема", cfg)
+    assert (said in msg) if said else msg == ""
 

@@ -70,6 +70,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import install_profile  # noqa: E402
 import graph_links  # noqa: E402
 import name_fixes  # noqa: E402
 import review_bridge  # noqa: E402
@@ -1368,17 +1369,29 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                          may_edit=may_edit, graph_available=graph_available,
                          deliver=deliver, unlock=stack.close)
     if graph_available:
-        _pay_brain_debts(stamp, graph, log)
+        _pay_brain_debts(stamp, graph, log, cfg)
     return rc
 
 
-def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path) -> None:
+def _resend_to_brain(stamp: str, note_path: pathlib.Path, note_before: str, cfg: dict) -> str | None:
+    """Строка лога ревизии о переотправке фактов встречи во внешнюю память — при включённой
+    (`sufler.brain`, №249); None — выключена. Флаг читается здесь, из конфига прогона, и строка
+    собирается здесь же: тест держит и чтение флага, и то, что уходит в лог (Opus I1 круга 1)."""
+    said = graph_updater.resend_to_brain_after_review(
+        stamp, note_path, note_before, _root() / "logs" / "brain_sent" / f"{stamp}.txt",
+        enabled=install_profile.brain_enabled(cfg))
+    return f"[cloud-review] {said}\n" if said else None
+
+
+def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, cfg: dict) -> None:
     """Долги переотправки памяти ДРУГИХ встреч — после своего прогона и вне
     замка графа: встречу, которую больше не ревизируют и не пересобирают,
     иначе никто не догонял (GLM r2 по #545). Только чтение заметок графа и
-    вызовы brain; сбой — строка в лог, не код выхода."""
+    вызовы brain; сбой — строка в лог, не код выхода. Флаг внешней памяти (`sufler.brain`,
+    №249) читается здесь, из конфига прогона: тест держит именно это чтение (Opus I1 круга 1)."""
     try:
-        lines = graph_updater.pay_brain_debts(graph, _root() / "logs" / "brain_sent", skip=stamp)
+        lines = graph_updater.pay_brain_debts(graph, _root() / "logs" / "brain_sent",
+                                              enabled=install_profile.brain_enabled(cfg), skip=stamp)
     except Exception as e:  # noqa: BLE001 — чужие долги не важнее своей ревизии
         lines = [f"долги памяти других встреч не проверены: {e}"]
     if not lines:
@@ -1817,9 +1830,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # с ошибочным решением: граф здесь источник, а не ревизия.
         if published and may_edit and note_path is not None:
             try:
-                mark = _root() / "logs" / "brain_sent" / f"{stamp}.txt"
-                lines.append("[cloud-review] " + graph_updater.resend_to_brain_after_review(
-                    stamp, note_path, note_before, mark) + "\n")
+                said = _resend_to_brain(stamp, note_path, note_before, cfg)
+                if said:
+                    lines.append(said)
             except Exception as e:  # noqa: BLE001 — память не важнее ревизии
                 lines.append(f"[cloud-review] память Чароита не переотправлена: {e}\n")
         try:
