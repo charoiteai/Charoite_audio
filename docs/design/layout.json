@@ -1,7 +1,8 @@
 {
   "generated": "2026-09-20T17:26Z",
   "order": [
-    "core",
+    "base",
+    "runtime",
     "llm",
     "graph",
     "cloud",
@@ -10,14 +11,16 @@
     "app"
   ],
   "brief_layers": {
-    "core": [
+    "base": [
       "safe_write",
       "file_locks",
-      "live_gate",
       "frontmatter",
       "redirects",
+      "exit_codes"
+    ],
+    "runtime": [
+      "live_gate",
       "config_loader",
-      "exit_codes",
       "privacy"
     ],
     "llm": [
@@ -82,28 +85,36 @@
     ]
   },
   "allowed": {
-    "core": [],
+    "base": [],
+    "runtime": [
+      "base"
+    ],
     "llm": [
-      "core"
+      "base",
+      "runtime"
     ],
     "graph": [
-      "core"
+      "base"
     ],
     "cloud": [
-      "core"
+      "base",
+      "runtime"
     ],
     "audio": [
-      "core"
+      "base",
+      "runtime"
     ],
     "meeting": [
-      "core",
+      "base",
+      "runtime",
       "llm",
       "graph",
       "cloud",
       "audio"
     ],
     "app": [
-      "core",
+      "base",
+      "runtime",
       "llm",
       "graph",
       "cloud",
@@ -111,6 +122,7 @@
       "meeting"
     ]
   },
+  "package_entry": "graph_search",
   "layer_overrides": {
     "tier3": {
       "layer": "graph",
@@ -121,15 +133,15 @@
       "why": "ONNX-инференс NLI-модели; читают tier3 и daemon"
     },
     "deps": {
-      "layer": "core",
+      "layer": "runtime",
       "why": "рецепт про интерпретатор и .venv; ничего из репо не импортирует"
     },
     "media_meta": {
-      "layer": "core",
+      "layer": "base",
       "why": "разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует"
     },
     "vocabulary": {
-      "layer": "core",
+      "layer": "base",
       "why": "декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting"
     },
     "fact_check": {
@@ -145,16 +157,20 @@
       "why": "до разреза (№322) целиком встречный: встречная и графовая половины в одном файле"
     },
     "charoite_paths": {
-      "layer": "core",
+      "layer": "runtime",
       "why": "корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)"
     },
     "model_seam": {
-      "layer": "core",
+      "layer": "base",
       "why": "шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)"
     },
     "task_line": {
-      "layer": "core",
+      "layer": "base",
       "why": "грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items; ничего из репо не импортирует"
+    },
+    "graphs": {
+      "layer": "meeting",
+      "why": "дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app"
     }
   },
   "allowed_edges": [

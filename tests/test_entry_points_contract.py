@@ -18,8 +18,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -184,3 +186,187 @@ def test_the_plan_lists_only_executables_with_a_contract() -> None:
              "src/nocontract.py": "python с гвардом __main__"}
     assert lm.run_plan(layout, execs) == [("src/a.py", "refuse", "по коду"), ("src/b.py", "help", "")]
 
+
+
+# ---------------------------------------------------------------- проба пакета графа
+#
+# Пакет поиска по графу ставится без приложения (№365): его модули — замыкание
+# одного объявленного входа (`package_entry` в артефакте), план копирования даёт
+# `layout_map.package_files`, а не список здесь. Статический гейт окружения по
+# слою видит формы в тексте; проба — поведение: копия замыкания во временном
+# каталоге, отдельный процесс, окружение приложения ведёт в ловушку.
+
+#: Тяжёлые зависимости приложения, которых пакету не нужно. Протечка меряется по
+#: `sys.modules` после импорта и поиска, а не по ошибке импорта: здесь они
+#: установлены, и ошибка отличила бы «нет пакета» от «лишний импорт» только случайно.
+APP_ONLY_DEPS = ("sounddevice", "onnxruntime", "sherpa_onnx", "onnx_asr", "numpy", "requests",
+                 "websockets", "mcp", "tokenizers", "soundfile", "rich")
+#: Переменные окружения приложения, которые проба отравляет каталогом-ловушкой.
+POISONED_ENV = ("HOME", "CHAROITE_ROOT", "SUFLER_GRAPH_DIR", "CHAROITE_GRAPH_DIR", "TMPDIR")
+#: Изоляция — тем же механизмом, что проба готовности приложения
+#: (`tests/test_setup_probe_isolated.py`): SAFEPATH и снятые пути импорта. Не `-I`:
+#: проект его запретил — он тянет `-E` и глушит PYTHONPYCACHEPREFIX.
+ISOLATION_ENV = {"PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+ISOLATION_DROP = ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")
+#: Код выхода, которым аудит-хук валит пробу. Хук не бросает исключение, а
+#: выходит сразу: `except Exception` в коде пакета проглотил бы исключение молча.
+AUDIT_EXIT = 97
+
+#: Раннер пробы — отдельным процессом. Путь к копии пакета вставляет он сам, а не
+#: окружение: с SAFEPATH каталог скрипта в sys.path не попадает.
+PROBE_RUNNER = r'''
+import json, os, pathlib, sys
+
+PKG, DATA, GRAPH, TRAP, QUERY = sys.argv[1:6]
+TRAP_REAL, DATA_REAL = os.path.realpath(TRAP), os.path.realpath(DATA)
+WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+MUTATIONS = ("os.mkdir", "os.remove", "os.rmdir", "os.rename", "os.replace", "os.truncate",
+             "os.link", "os.symlink", "os.chmod", "os.utime", "shutil.rmtree", "shutil.copyfile")
+
+
+def inside(path, root):
+    try:
+        real = os.path.realpath(os.fsdecode(path))
+    except (TypeError, ValueError):
+        return False
+    return real == root or real.startswith(root + os.sep)
+
+
+def fail(what):
+    sys.stderr.write(f"АУДИТ: {what}\n")
+    sys.stderr.flush()
+    os._exit(''' + str(AUDIT_EXIT) + r''')
+
+
+def hook(event, args):
+    if event == "open":
+        path, mode, flags = (tuple(args) + (None, None))[:3]
+        if path is None or isinstance(path, int):
+            return
+        if inside(path, TRAP_REAL):
+            fail(f"чтение ловушки {path}")
+        writes = bool(mode) and any(c in str(mode) for c in "wax+") or bool((flags or 0) & WRITE_FLAGS)
+        if writes and not inside(path, DATA_REAL):
+            fail(f"запись вне data_dir: {path}")
+    elif event in ("os.listdir", "os.scandir"):
+        if args and args[0] is not None and inside(args[0], TRAP_REAL):
+            fail(f"обход ловушки {args[0]}")
+    elif event in MUTATIONS:
+        for path in args[:2]:
+            if isinstance(path, (str, bytes, os.PathLike)) and not inside(path, DATA_REAL):
+                fail(f"{event} вне data_dir: {path}")
+
+
+sys.addaudithook(hook)
+sys.path.insert(0, PKG)
+import graph_search
+import model_seam
+
+
+def refuse(texts, timeout):
+    raise model_seam.SeamTransportError("проба пакета: моделей нет", policy=True)
+
+
+search = graph_search.GraphSearch(pathlib.Path(GRAPH), data_dir=pathlib.Path(DATA),
+                                  embedder=model_seam.Embedder(refuse, model_seam.NO_MODEL, refused="проба пакета"))
+search.refresh(force=True)
+result = search.search(QUERY)
+print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
+                  "modules": sorted(sys.modules),
+                  "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
+                                  if getattr(m, "__file__", None))}, ensure_ascii=False))
+'''
+
+
+def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: pathlib.Path, *,
+                      forbidden: tuple[str, ...], timeout: int = TIMEOUT) -> tuple[list[str], dict]:
+    """Прогнать пакет из каталога `pkg`: вход импортируется отдельным процессом с
+    отравленным окружением, индекс строится по `graph`, кэш — только в `data_dir`.
+    Расхождения строками (пусто — принят) и выдача раннера."""
+    trap, data, cwd = work / "ловушка", work / "data", work / "cwd"
+    for d in (trap, data, cwd):
+        d.mkdir(parents=True)
+    (trap / "config.yaml").write_text("ловушка: читать нельзя\n", encoding="utf-8")
+    runner = work / "probe_runner.py"
+    runner.write_text(PROBE_RUNNER, encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k not in ISOLATION_DROP}
+    env.update(ISOLATION_ENV)
+    env.update({k: str(trap) for k in POISONED_ENV})
+    r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query], cwd, env, timeout)
+    if r.returncode != 0:
+        return [f"проба пакета: код {r.returncode} — {_first_line(r)}"], {}
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    problems = [f"пакет импортировал {m}: зависимость приложения протекла в пакет"
+                for m in sorted(set(out["modules"]) & set(forbidden))]
+    problems += [f"пакет загрузил {f} мимо своей копии" for f in out["files"]
+                 if pathlib.Path(f).is_relative_to(ROOT.resolve())]
+    return problems, out
+
+
+def _copy_package(dest: pathlib.Path) -> list[str]:
+    """Копия замыкания входа по плану сторожа — плоско, имя модуля в имя файла."""
+    rels = lm.package_files(lm.inventory(), lm.load_layout())
+    dest.mkdir()
+    for rel in rels:
+        name = lm.module_of(rel)
+        assert name is not None and "." not in name, f"{rel}: пакетная форма — копия пробы её ещё не знает"
+        shutil.copyfile(ROOT / rel, dest / f"{name}.py")
+    return rels
+
+
+def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
+    """Пакет поиска — это замыкание `package_entry` и ничего больше: копия
+    отдельно от репозитория строит индекс по демо-графу и находит узел, не
+    прочитав ни одной переменной приложения (HOME, корень, каталог графа, TMPDIR —
+    ловушка) и не написав ничего вне своего `data_dir`."""
+    layout = lm.load_layout()
+    rels = _copy_package(tmp_path / "pkg")
+    graph = tmp_path / "work" / "Демо"
+    shutil.copytree(ROOT / "demo" / "graph", graph)
+    closure = {lm.module_of(rel) for rel in rels}
+    assert layout["package_entry"] in closure
+    others = tuple(sorted(lm.modules(lm.inventory()) - closure))
+    problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work",
+                                      forbidden=APP_ONLY_DEPS + others)
+    assert not problems, "\n".join(problems)
+    assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
+    assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
+    assert closure <= set(out["modules"]), "проба импортирует не весь пакет — план копирования шире нужного"
+
+
+def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> None:
+    """Проба проверена «дырявыми» пакетами: чтение ловушки через HOME, запись вне
+    `data_dir`, протечка зависимости по `sys.modules` — каждый даёт расхождение,
+    честный пакет — пусто. Без этого проба была бы утверждением, которое никто
+    не исполняет."""
+    graph = tmp_path / "граф"
+    graph.mkdir()
+    template = ("import pathlib\n"
+                "class GraphSearch:\n"
+                "    def __init__(self, graph, *, data_dir, embedder):\n"
+                "        self.data = data_dir\n"
+                "    def refresh(self, force=False):\n"
+                "        (self.data / 'кэш').write_text('x')\n"
+                "        {extra}\n"
+                "    def search(self, q):\n"
+                "        import types\n"
+                "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
+    cases = {
+        "честный": "pass",
+        "домашний": "(pathlib.Path.home() / 'config.yaml').read_text()",
+        "запись": "(self.data.parent / 'мимо').write_text('x')",
+        "протечка": "import лишний_модуль",
+    }
+    got = {}
+    for name, extra in cases.items():
+        pkg = tmp_path / name / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "graph_search.py").write_text(template.replace("{extra}", extra), encoding="utf-8")
+        shutil.copyfile(ROOT / "src" / "model_seam.py", pkg / "model_seam.py")
+        (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
+        got[name], _ = run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
+                                         forbidden=("лишний_модуль",))
+    assert got["честный"] == []
+    assert "чтение ловушки" in got["домашний"][0]
+    assert "запись вне data_dir" in got["запись"][0]
+    assert "протекла" in got["протечка"][0]

@@ -893,8 +893,9 @@ a new signal and a separate card (№319).
 
 ## Layer boundaries (docs/design/layout.json)
 
-`src/` is a flat folder of 64 modules, and the layers in it (core → llm →
-graph / cloud / audio → meeting → app) exist by the facts of the imports, but
+`src/` is a flat folder of 64 modules, and the layers in it (base → runtime →
+llm / cloud / audio → meeting → app, with graph standing on base alone, so the
+graph search installs without the app's environment — №365) exist by the facts of the imports, but
 until №320 nothing held them except the author's memory and a one-off
 measurement. Three things break when files move, not one: imports, who
 launches whom by path (four files of the Swift app name `src/daemon.py`,
