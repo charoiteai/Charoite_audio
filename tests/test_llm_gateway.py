@@ -965,14 +965,29 @@ def test_sweeper_wakes_at_the_nearest_deadline_not_a_full_step_later(monkeypatch
 
 
 def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
-    """Таймер, отменённый clear-ом, но уже сработавший, не трогает таймер
-    новой записи: уборщик всегда один, и clear его останавливает."""
+    """Настоящая гонка: таймер сработал и ждёт замка, а clear и новая запись
+    успели раньше. Проснувшись, он не трогает таймер новой записи — уборщик
+    всегда один, и clear его останавливает."""
     monkeypatch.setattr(llm_mod, "_fit_clock", lambda: 1000.0)
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     assert _until(lambda: not _sweepers()), "отменённые таймеры прошлых тестов вышли"
     llm_mod._fit_cache_put(("а",), "а")
-    ours = llm_mod._fit_sweeper
-    llm_mod._fit_cache_sweep()             # чужой вызов — не из таймера-владельца
-    assert llm_mod._fit_sweeper is ours and len(_sweepers()) == 1
+    old = llm_mod._fit_sweeper
+    with llm_mod._fit_cache_lock:
+        # Timer ставит finished только после функции, а она ждёт этот замок:
+        # ждём с запасом больше интервала, пока старый проснётся
+        time.sleep(0.1)
+        llm_mod._fit_cache.clear()         # тело _fit_cache_clear — под тем же замком
+        old.cancel()
+        llm_mod._fit_sweeper = None
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 60.0)   # новая цепочка стоит на месте
+    llm_mod._fit_cache_put(("б",), "б")
+    new = llm_mod._fit_sweeper
+    assert _until(lambda: not old.is_alive())
+    assert llm_mod._fit_sweeper is new and _sweepers() == [new], \
+        "проснувшийся старый таймер не завёл вторую цепочку"
+    llm_mod._fit_cache_sweep()             # и вызов не из таймера-владельца — не в счёт
+    assert llm_mod._fit_sweeper is new and _sweepers() == [new]
     llm_mod._fit_cache_clear()
     assert llm_mod._fit_sweeper is None and _until(lambda: not _sweepers())
 
