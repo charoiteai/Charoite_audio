@@ -117,3 +117,31 @@ def test_the_day_path_is_silent_when_the_profile_turns_the_revision_off(tmp_path
     graph_updater._revise_meeting_cores({}, graph, [{"имя": "Релиз"}])
     assert calls == [] and order == []
     assert "выключена профилем" in capsys.readouterr().out
+
+
+def test_bench_search_goes_through_the_door_with_its_own_config(tmp_path, monkeypatch):
+    # бенч меряет боевой контур: индекс — через дверь, векторизатор — из переданного конфига,
+    # без конфига — пустой (мутант «cfg and {}» выживал, мутатор по всему диапазону №365)
+    sys.path.insert(0, str(REPO / "scripts"))
+    import memory_bench as mb
+    seen, opened = [], []
+    monkeypatch.setattr(mb, "build_embedder", lambda cfg: seen.append(cfg) or "векторизатор")
+
+    class Found:
+        empty, fragments = True, ""
+
+    class Index:
+        def refresh(self, force=False):
+            pass
+
+        def load_vectors(self):
+            pass
+
+        def search(self, query, limit, snippet_chars):
+            return Found()
+
+    monkeypatch.setattr(mb.graphs, "open_search", lambda graph, emb: opened.append(emb) or Index())
+    cfg = {"llm": {"embed_model": "bge-m3"}}
+    assert mb.search(tmp_path / "первый", "запрос", cfg) == ""
+    assert mb.search(tmp_path / "второй", "запрос") == ""
+    assert seen == [cfg, {}] and opened == ["векторизатор", "векторизатор"]

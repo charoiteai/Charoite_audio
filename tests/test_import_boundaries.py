@@ -372,6 +372,9 @@ def test_env_seams_of_the_graph_are_called_only_through_the_door():
         "src/ночь.py": "from tier3 import revise\nrevise(g, may_continue=lambda: True)\n",
         "scripts/псевдоним.py": "from graph_search import GraphSearch as Индекс\nИндекс(g)\n",
         "scripts/переменная.py": "import tier3\nf = tier3.revise\nf(g)\n",
+        # модуль под псевдонимом: привязка идёт по псевдониму, а не по имени модуля (мутант
+        # «asname and name» выживал, мутатор по всему диапазону №365)
+        "scripts/модуль_псевдонимом.py": "import tier3 as t\nt.revise(g)\n",
         "scripts/частично.py": "import functools, tier3\nfunctools.partial(tier3.revise, g)()\n",
         "scripts/поток.py": "import threading, tier3\nthreading.Thread(target=tier3.revise)\n",
         "scripts/подкласс.py": "import graph_search\nclass L(graph_search.GraphSearch):\n    pass\n",
