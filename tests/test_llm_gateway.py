@@ -929,6 +929,7 @@ def test_expired_digests_leave_memory_without_another_call(monkeypatch):
     llm_mod._fit_cache_put(("а",), "сводка")
     assert llm_mod._fit_sweeper is not None, "запись взвела уборщика"
     assert llm_mod._fit_sweeper.interval <= 60
+    assert llm_mod._fit_sweeper.daemon, "уборщик не держит процесс MCP-сервера на выходе"
     now[0] += llm_mod.FIT_CACHE_TTL - 1
     llm_mod._fit_cache_sweep()
     assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None, \
