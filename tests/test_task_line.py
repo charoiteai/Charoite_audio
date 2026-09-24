@@ -545,7 +545,8 @@ def test_the_table_covers_every_form_the_module_knows():
     assert any(r["control"] and r["status"] == task_line.RETURNED for r in TABLE)
     # знаки — из модуля: новый маркер в MARKER без строки в таблице краснеет здесь
     # (Opus I3 круга 1 по PR #621: список в тесте был свой и «— ⁃ ‣ ▪» не требовал)
-    assert task_line.MARKER.startswith(f"(?:[{task_line.BULLETS}]")
+    # шаблон — целиком: лишняя ветка «|◦|» при проверке начала проходила (Opus M1 круга 2)
+    assert task_line.MARKER == r"(?:[" + task_line.BULLETS + r"]|\d+[.)])"
     for marker in [*task_line.BULLETS, "1.", "1)"]:
         assert any(ln.lstrip().startswith(f"{marker} ") and task_line.status(ln) for ln in lines), marker
     assert any(re.search(r"[a-z]{3}", r["key"]) for r in TABLE), "английская строка"
