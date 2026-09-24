@@ -12,6 +12,7 @@ AssertionError, пути внешней памяти ловят Exception, и «
 from __future__ import annotations
 
 import io
+import os
 import pathlib
 import sys
 import types
@@ -119,10 +120,19 @@ def test_the_review_worker_pays_no_debts_when_disabled(tmp_path):
     import cloud_review
     sent = cloud_review._root() / "logs" / "brain_sent"
     sent.mkdir(parents=True)
-    (sent / "2026-07-10_0900.pending").touch()
+    debt = sent / "2026-07-10_0900.pending"
+    debt.touch()
+    # долг созревший, а заметки встречи в графе нет: включённая оплата сняла бы его строкой
+    # в лог — выключенная не трогает ни долга, ни лога (свежий долг молчал бы при любом флаге,
+    # и мутант «долги платятся всегда» выживал)
+    os.utime(debt, (0, 0))
     log = tmp_path / "ревизия.log"
     cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, enabled=False)
     assert not log.exists(), "выключенная память не пишет в лог ревизии ни строки"
+    assert debt.exists(), "долг остаётся списком неотправленного"
+    cloud_review._pay_brain_debts(STAMP, tmp_path / "граф", log, enabled=True)
+    assert "заметки встречи в графе нет" in log.read_text(encoding="utf-8"), \
+        "та же сцена при включённой — оплата идёт: без этого тест выше ничего не доказывает"
 
 
 def _dictate(monkeypatch, tmp_path, *argv: str, on: bool, text: str):
