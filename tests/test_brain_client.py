@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 import brain  # noqa: E402
 import graph_search  # noqa: E402
+from model_seam import Embedder  # noqa: E402
 
 
 def _graph(root: pathlib.Path, name: str, marker: str) -> pathlib.Path:
@@ -166,3 +167,29 @@ def test_absence_only_is_a_table_not_an_if_in_the_contour(status):
 
     with_blocks = _res(status, blocks=["• a.md\n  факт"])
     assert brain.absence_only(with_blocks) is (status is not brain.Verdict.UNVERIFIED)
+
+
+def _embedder(model: str = "test-fake") -> Embedder:
+    """Способность целиком — функция и имя модели: имя подписывает индекс и кэш векторов."""
+    return Embedder(lambda texts: [[1.0, 0.0] for _ in texts], model)
+
+
+# Индекс на процесс — у приложения, а не у модуля графа: shared() переехала сюда вместе
+# со своим тестом (Opus M2 круга 1 по коду №365 — тест в тестах графа тянул brain за
+# пределы замыкания пакета).
+def test_shared_index_is_one_per_graph(tmp_path, monkeypatch):
+    g = _graph(tmp_path, "проект", "М")
+    monkeypatch.setattr(brain, "_shared", {})
+    monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
+    a = brain.shared({"sufler": {"graph_dir": str(g)}}, graph_dir=g, embedder=_embedder())
+    b = brain.shared({}, graph_dir=g, embedder=_embedder())
+    assert a is b
+    assert brain.shared({"sufler": {}}, graph_dir=None, embedder=_embedder()) is None, \
+        "граф не настроен — индекса нет"
+    # модель — часть личности индекса: под её именем подписаны и векторы в памяти,
+    # и кэш на диске. Пока ключом был только путь, второй позвавший получал чужой
+    # векторизатор молча, а свой передать уже не мог (круг 2 по №321, DS C1 / GLM C1)
+    other = brain.shared({}, graph_dir=g, embedder=_embedder("other-model"))
+    assert other is not a, "другая модель — другой индекс, а не тихая подмена"
+    assert other.cache_key() != a.cache_key()

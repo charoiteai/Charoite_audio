@@ -1169,10 +1169,13 @@ class GraphSearch:
         пишем вовсе. Файл готов, когда есть векторы всех его блоков; сервер не
         ответил — останавливаемся, недобранное дособерём в следующий раз.
         -> сколько файлов получили векторы."""
-        import fcntl      # только POSIX: на импорте модуль грузится и там, где его нет (№365)
         self.note = ""
         lock = None
         try:
+            # только POSIX: модуль грузится и там, где fcntl нет, а без замка векторов не
+            # пишем — отказ тот же, что у тома без flock, а не трассировка (Opus M1 круга
+            # 1 по коду №365)
+            import fcntl
             self._vec_manifest.parent.mkdir(parents=True, exist_ok=True)
             lock = open(self._vec_manifest.with_suffix(".lock"), "a+")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1180,9 +1183,9 @@ class GraphSearch:
             lock.close()
             self.note = "векторы уже собирает другой процесс"
             return 0
-        except OSError as exc:
-            # каталог недоступен, том без flock, EMFILE: без замка два писателя стёрли
-            # бы блоб друг друга уборкой — не пишем вовсе (DS I2 / GLM M4 r3)
+        except (OSError, ImportError) as exc:
+            # каталог недоступен, том без flock, EMFILE, платформа без fcntl: без замка два
+            # писателя стёрли бы блоб друг друга уборкой — не пишем вовсе (DS I2 / GLM M4 r3)
             if lock is not None:
                 lock.close()
             self.note = f"без замка не пишем: {exc}"

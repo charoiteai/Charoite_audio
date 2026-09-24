@@ -125,10 +125,10 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # графе значат, что найденный одним прогоном дубль невидим другому
     # (круг 5 по №321, DS I1).
     cfg = graphs.load_config()
-    r = tier3.revise(graph, only_names=only, apply=apply, mark=mark,
-                     embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                     judge=nli.judge(), skip_pairs=frozenset(skip),
-                     may_continue=lambda: live_gate.night_window_open(_root(), what="ревизия ядер"))
+    # ночное окно вшито в дверь приложения — то же, что у дневного пути (№365)
+    r = graphs.revise_cores(graph, only_names=only, apply=apply, mark=mark,
+                            embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
+                            judge=nli.judge(), skip_pairs=frozenset(skip))
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.

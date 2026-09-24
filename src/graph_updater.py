@@ -2500,6 +2500,55 @@ def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
     safe_write.write_text(d / name, "\n".join(lines) + "\n")
 
 
+def _revise_meeting_cores(cfg: dict, graph: pathlib.Path, cores: list[dict]) -> None:
+    """Ревизия ядер этой встречи сразу после upsert — дневной путь (ночной — scripts/tier3_cores.py)."""
+    # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
+    # всех — дубль-двойник виден в момент рождения, а не копится до
+    # ручной уборки. Инкрементально (O(k×n)); любая беда внутри revise
+    # (нет NLI-модели, лежит Ollama) — тихий пропуск, не падение
+    # пайплайна встречи.
+    #
+    # СЛИВАЕТ только при sufler.tier3_auto_apply: true — слияние
+    # перезаписывает файл, и это решение пользователя, а не побочный
+    # эффект того, что встреча закончилась. Обратимые правки (пометка
+    # «возможный дубль», взаимные ссылки вложений) идут всегда: их
+    # читает morning_brief, и без них выключенный автомат не осторожен,
+    # а нем — находка остаётся в логе прогона, которого никто не видит.
+    try:
+        # Профиль может выключить ревизию (`sufler.tier3: false`): она
+        # судит ядра эмбеддингами и поднимает рядом bge-m3 (+1.2 ГБ).
+        # Узлы при этом строятся как обычно — выключается только ревизия.
+        if not install_profile.tier3_enabled(cfg):
+            raise RuntimeError("выключена профилем (sufler.tier3: false)")
+        import tier3
+        _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
+        auto = tier3.auto_apply_allowed(cfg)
+        # имя из встречи может вести в заглушку слитого ядра — фокус ревизии
+        # берём по канону, иначе слитое ядро не пересматривается (хвост 20.08, GLM)
+        focus = [resolve_core_path(graph / "Ядра", c["имя"], graph).stem for c in cores]
+        # окно ночи и живой встречи вшито в дверь приложения: дневной путь не может ни
+        # забыть его, ни подменить (Opus C1 круга 1 по коду №365)
+        rep = graphs.revise_cores(graph, only_names=focus, mark=True, apply=auto,
+                                  embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
+                                  judge=nli.judge())
+        # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
+        # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
+        # а здесь был бы двойным эхом каждой правки
+        for line in rep["log"]:
+            print(f"tier3: {line}")
+        if rep["log"]:
+            rebuild_cores_moc(graph)  # слияния меняют список ядер
+        for line in rep["skipped"]:
+            print(f"tier3: пропущено — {line}")
+        if rep["pending_merges"]:
+            # советуем --apply, только когда ему есть что делать: совет,
+            # который на данных пользователя ничего не меняет, хуже молчания
+            print(f"tier3: свести ({len(rep['pending_merges'])}) — "
+                  ".venv/bin/python scripts/tier3_cores.py --apply")
+    except Exception as e:  # noqa: BLE001
+        print(f"tier3: пропущен ({e})")
+
+
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     global _progress
@@ -2701,50 +2750,7 @@ def main():
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:
         rebuild_cores_moc(graph)
-        # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
-        # всех — дубль-двойник виден в момент рождения, а не копится до
-        # ручной уборки. Инкрементально (O(k×n)); любая беда внутри revise
-        # (нет NLI-модели, лежит Ollama) — тихий пропуск, не падение
-        # пайплайна встречи.
-        #
-        # СЛИВАЕТ только при sufler.tier3_auto_apply: true — слияние
-        # перезаписывает файл, и это решение пользователя, а не побочный
-        # эффект того, что встреча закончилась. Обратимые правки (пометка
-        # «возможный дубль», взаимные ссылки вложений) идут всегда: их
-        # читает morning_brief, и без них выключенный автомат не осторожен,
-        # а нем — находка остаётся в логе прогона, которого никто не видит.
-        try:
-            # Профиль может выключить ревизию (`sufler.tier3: false`): она
-            # судит ядра эмбеддингами и поднимает рядом bge-m3 (+1.2 ГБ).
-            # Узлы при этом строятся как обычно — выключается только ревизия.
-            if not install_profile.tier3_enabled(cfg):
-                raise RuntimeError("выключена профилем (sufler.tier3: false)")
-            import tier3
-            _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
-            auto = tier3.auto_apply_allowed(cfg)
-            # имя из встречи может вести в заглушку слитого ядра — фокус ревизии
-            # берём по канону, иначе слитое ядро не пересматривается (хвост 20.08, GLM)
-            focus = [resolve_core_path(graph / "Ядра", c["имя"], graph).stem for c in cores]
-            rep = tier3.revise(graph, only_names=focus, mark=True, apply=auto,
-                               embedder=llm.embedder(cfg, keep_alive=tier3.TIER3_KEEP_ALIVE),
-                               judge=nli.judge(),
-                               may_continue=lambda: live_gate.night_window_open(_root(), what="ревизия ядер"))
-            # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
-            # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
-            # а здесь был бы двойным эхом каждой правки
-            for line in rep["log"]:
-                print(f"tier3: {line}")
-            if rep["log"]:
-                rebuild_cores_moc(graph)  # слияния меняют список ядер
-            for line in rep["skipped"]:
-                print(f"tier3: пропущено — {line}")
-            if rep["pending_merges"]:
-                # советуем --apply, только когда ему есть что делать: совет,
-                # который на данных пользователя ничего не меняет, хуже молчания
-                print(f"tier3: свести ({len(rep['pending_merges'])}) — "
-                      ".venv/bin/python scripts/tier3_cores.py --apply")
-        except Exception as e:  # noqa: BLE001
-            print(f"tier3: пропущен ({e})")
+        _revise_meeting_cores(cfg, graph, cores)
 
     # 2) заметка встречи — только когда есть чем её наполнить: без разбора
     # модели заметка была бы пустышкой, а её наличие переводит статус в
@@ -3311,9 +3317,7 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
         print("память подсказок: идёт запись — векторы доберёт ночь")
         return
     try:
-        import graph_search
-        mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg),
-                                       data_dir=graphs.search_cache_dir())
+        mem = graphs.open_search(graph, llm.embedder(cfg))
         mem.refresh(force=True)
         # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
         # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)

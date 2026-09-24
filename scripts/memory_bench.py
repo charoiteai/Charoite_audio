@@ -237,11 +237,9 @@ def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
     """Боевой контур подсказок демона — src/graph_search.py (№250): лексика,
     семантика по кэшу векторов (если cfg задан и Ollama доступна), досье,
     переход по ссылкам. Бенч меряет то, что видит владелец на встрече."""
-    import graph_search
     mem = _INDEX.get(str(graph))
     if mem is None:
-        mem = _INDEX[str(graph)] = graph_search.GraphSearch(
-            graph, embedder=build_embedder(cfg or {}), data_dir=graphs.search_cache_dir())
+        mem = _INDEX[str(graph)] = graphs.open_search(graph, build_embedder(cfg or {}))
         mem.refresh(force=True)
         mem.load_vectors()
     result = mem.search(query, limit=LIMIT_FILES, snippet_chars=SNIPPET)
@@ -378,8 +376,7 @@ def main() -> None:
         import graph_search
         # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
         # векторизатор: демо меряет лексику, не ходя в сеть
-        mem = graph_search.GraphSearch(
-            graph, embedder=build_embedder(cfg if not args.demo else {}), data_dir=graphs.search_cache_dir())
+        mem = graphs.open_search(graph, build_embedder(cfg if not args.demo else {}))
         mem.refresh(force=True)
         mem.load_vectors()
         print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")

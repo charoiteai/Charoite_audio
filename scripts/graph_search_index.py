@@ -20,7 +20,6 @@ import deps  # noqa: E402
 
 deps.explain_missing()
 
-import graph_search  # noqa: E402
 import graphs  # noqa: E402
 import llm  # noqa: E402
 import live_gate  # noqa: E402
@@ -44,7 +43,7 @@ def main() -> int:
         # принадлежит подсказкам; ночь и пауза между встречами дособерут
         print("идёт запись — векторы памяти не собираем (--force, если это не встреча)")
         return 0
-    mem = graph_search.GraphSearch(graph, embedder=llm.embedder(cfg), data_dir=graphs.search_cache_dir())
+    mem = graphs.open_search(graph, llm.embedder(cfg))
     t = time.time()
     mem.refresh(force=True)
     cached = mem.load_vectors()

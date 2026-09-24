@@ -64,7 +64,7 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv))
+                        roots=lm.root_derivations(inv), seams=lm.seam_calls(inv))
     assert not problems, "\n".join(problems)
 
 
@@ -353,6 +353,42 @@ def test_the_snapshot_shape_catches_every_way_of_freezing_the_root():
     assert свои == {"_root", "_cfg", "_алиас"}, свои
     # корень КОДА — не эта форма: код лежит там, где лежит, его снимок верен
     assert lm._имена_канона_данных(ast.parse(probe)) == {"resolve_root", "корень"}
+
+
+def _code(src: str) -> "lm.FileInfo":
+    return lm.FileInfo(kind="code", haystacks=(), tree=ast.parse(src), executable=None)
+
+
+def test_env_seams_of_the_graph_are_called_only_through_the_door():
+    """Индекс поиска и ревизию ядер приложение строит через дверь окружения
+    (`graphs.open_search`, `graphs.revise_cores`): там один каталог кэша векторов и одно
+    ночное окно. Обход двери — красный в любой форме импорта, чужой `revise` — не шов,
+    тесты — вне области (Opus C1 и I1 круга 1 по коду №365)."""
+    inv = lm.Inventory(files={
+        "scripts/обход.py": _code("import graph_search\nm = graph_search.GraphSearch(g, embedder=e, data_dir=d)\n"),
+        "scripts/из_пакета.py": _code("from charoite_graph import graph_search\ngraph_search.GraphSearch(g)\n"),
+        "src/ночь.py": _code("from tier3 import revise\nrevise(g, may_continue=lambda: True)\n"),
+        "scripts/псевдоним.py": _code("from graph_search import GraphSearch as Индекс\nИндекс(g)\n"),
+        "src/чужой.py": _code("import cloud_review\ncloud_review.revise(x)\n"),
+        "src/graphs.py": _code("import graph_search\nimport tier3\n"
+                               "graph_search.GraphSearch(g)\ntier3.revise(g)\n"),
+        "tests/test_x.py": _code("import graph_search\ngraph_search.GraphSearch(g)\n"),
+    }, problems=[])
+    calls = lm.seam_calls(inv)
+    assert "src/чужой.py" not in calls, "revise без импорта tier3 — не этот шов"
+    said = lm.seam_problems(calls)
+    assert [line.split(" ")[0] for line in said] == ["scripts/из_пакета.py:2", "scripts/обход.py:2",
+                                                     "scripts/псевдоним.py:2", "src/ночь.py:2"]
+    assert all("мимо двери окружения" in line for line in said)
+    assert lm.seam_problems(None) == []
+
+
+def test_the_gate_is_actually_asked_about_the_seams(monkeypatch, capsys):
+    """Правило живо, только если главный тракт отдаёт замер швов в гейт: владельца
+    двери лишаем права звать шов — строка обязана появиться."""
+    monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    assert lm.main(["--check"]) == 1
+    assert "src/graphs.py" in capsys.readouterr().out
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):

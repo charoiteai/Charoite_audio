@@ -45,6 +45,32 @@ def search_cache_dir() -> pathlib.Path:
     return data_root() / "data"
 
 
+def open_search(graph: pathlib.Path, embedder):
+    """Индекс поиска по графу для приложения — единственный конструктор с окружением.
+
+    Модуль графа окружения не знает: каталог кэша векторов ему передают, и писатели
+    векторов (разбор встречи, ночь, бенч) с читателем (демон) обязаны передать один и
+    тот же. Пять мест вызова держали пять копий выражения, и ни одну не закреплял тест
+    (Opus I1 круга 1 по коду №365). Копия теперь одна — здесь; `GraphSearch(` мимо этой
+    функции сторож раскладки не пропускает (`ENV_SEAMS` в scripts/layout_map.py)."""
+    import graph_search
+    return graph_search.GraphSearch(graph, embedder=embedder, data_dir=search_cache_dir())
+
+
+def revise_cores(graph: pathlib.Path, **kw) -> dict:
+    """Ревизия ядер с ночным окном приложения — одна дверь для дневного и ночного пути.
+
+    Окно — ожидание живой встречи с потолком и конец ночи (`live_gate.night_window_open`)
+    — вшито здесь, своё передать нельзя: `may_continue` в `kw` даёт TypeError. Пока окно
+    собирал каждый вызывающий, дневной путь не проверял ни один тест, а `except Exception`
+    вокруг него превращал недостающий параметр в строку лога (Opus C1 круга 1 по коду
+    №365). `tier3.revise(` мимо этой функции сторож раскладки не пропускает."""
+    import live_gate
+    import tier3
+    return tier3.revise(graph, may_continue=lambda: live_gate.night_window_open(data_root(), what="ревизия ядер"),
+                        **kw)
+
+
 def config_path() -> pathlib.Path:
     """Конфиг живёт в корне ДАННЫХ, а не рядом с кодом.
 

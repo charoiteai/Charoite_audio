@@ -153,8 +153,7 @@ def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
     with _shared_lock:
         gs = _shared.get(key)
         if gs is None:
-            gs = _shared[key] = graph_search.GraphSearch(gdir, embedder=embedder,
-                                                         data_dir=graphs.search_cache_dir())
+            gs = _shared[key] = graphs.open_search(gdir, embedder)
         return gs
 
 
