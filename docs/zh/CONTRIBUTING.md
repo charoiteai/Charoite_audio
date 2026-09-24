@@ -55,19 +55,23 @@ runtime；meeting 和 app 可见其下所有层。
 runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `ROOT_SHAPES` 中作用域为 `layer` 的任何
 环境形式：任何环境访问（`os.environ`、`getenv`、`expandvars`、不带 `dir=` 的 `tempfile`——它读取
 `TMPDIR`）、`Path.home()` / `expanduser`、`__file__`（以及 `__spec__`、`inspect.getfile`）、导入时对 `sys.path` 的任何触碰（包括
-`site.addsitedir`）、动态导入。形式按完整名称判定，而不是按模块的写法（`import sys as s`、
-`from importlib import import_module as im`），并且任何提及都算，不仅是调用
-（`loader = importlib.import_module`）。`root_exemptions` 不能豁免这些形式——工件在加载时即被拒绝；
-经由邻居到达 runtime（graph → `allowed_edges` 债务 → runtime）与直接的边同样是红的。这是一套语法，
-而非「所有方式」：除 `tempfile` 外的隐式读取者（`getpass.getuser`、`shutil.which`）不被识别。修复方法由同一个
+`site.addsitedir`）、动态导入。名称通过模块的导入解析（`import sys as s`、
+`from importlib import import_module as im`），任何提及都算，不仅是调用
+（`loader = importlib.import_module`）；`tempfile` 按调用判定。按名称片段匹配是有意保守的：
+`self.home` 这样的同名者就是改名的理由。`root_exemptions` 不能豁免这些形式——工件在加载时即被拒绝；
+经由邻居到达 runtime（graph → `allowed_edges` 债务 → runtime）与直接的边同样是红的。这套语法的表格
+由 `tests/test_import_boundaries.py` 中的认可副本固定。这是一套语法，而非「所有方式」，与根规则的
+`_env_reads` 相同：赋值绑定（`S = sys`）、`getattr`、`exec` 以及除 `tempfile` 外的隐式读取者
+（`getpass.getuser`、`shutil.which`）不被识别。语法看不到的，由下面的包探针按行为发现。修复方法由同一个
 `allowed` 推出：路径以参数传入，由能看见 runtime 的层中的调用方组装——就像 `graphs.open_search`
 那样——而不是「去找根规范」。图谱包是一个声明入口的导入闭包，即 `layout.json` 中的
 `package_entry`（`graph_search`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
 把该闭包复制到临时目录，在独立进程中对演示图谱执行搜索：`HOME`、`CHAROITE_ROOT`、
 `SUFLER_GRAPH_DIR`、`CHAROITE_GRAPH_DIR` 和 `TMPDIR` 都指向陷阱目录，审计钩子在读取陷阱或在
 `data_dir` 之外写入时让探针失败。确定性的伪向量器让包写入向量缓存并读回，因此写入路径也被执行，
-而不只是词法搜索。探针的自检按其自身表格的每个元素各构造一个「有漏洞」的包——每个被污染的变量、
-每个文件系统变更事件、每个被隔离移除的变量——新元素若没有对应用例，测试就会变红。
+而不只是词法搜索。运行后探针把 `sys.modules` 和 `sys.path` 与导入前的状态比较：依赖泄漏和导入路径的修改
+无论怎么写都会被发现。探针的自检按其自身表格的每个元素各构造一个「有漏洞」的包——每个被污染的变量、
+每个文件系统变更事件、每个被隔离移除的变量——新元素若没有对应用例，测试就会变红；表格本身由按任务给出的认可副本固定，缩小表格同样是红的。
 
 如果 PR 让这项检查变红，消息会给出修法。常见情况：
 

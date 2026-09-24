@@ -495,6 +495,16 @@ APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.
 #: читать переменную, новый шов) — осознанная правка двух файлов, как у таблицы
 #: видов (Important GLM круга 8: докстринг звучал как «все способы»).
 APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "environ.get", "os.environ[...]", "environ[...]")
+#: Грамматика гейта окружения по слою (№365) — та же политика: сужение таблицы
+#: молча ослабляло гейт, а мутатор литералов не трогает (Important головы круга 2
+#: по PR №625 — `FILE_NAMES` без `getfile` проходил все тесты).
+APPROVED_LAYER_GRAMMAR = {
+    "ENV_TOUCH_NAMES": ("environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "expandvars"),
+    "TEMPFILE_DEFAULT_DIR": ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "mktemp", "NamedTemporaryFile",
+                             "TemporaryFile", "SpooledTemporaryFile", "TemporaryDirectory"),
+    "FILE_NAMES": ("__file__", "__spec__", "getfile", "getsourcefile", "getabsfile"),
+    "DYNAMIC_IMPORT_CALLS": ("import_module", "__import__", "spec_from_file_location", "run_path", "run_module"),
+}
 APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
 APPROVED_RUN_MODES = ("help", "refuse", "none")
 
@@ -583,6 +593,8 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert tuple(r[:3] for r in lm.KINDS) == APPROVED_KINDS, "таблица KINDS изменилась — обнови утверждённую копию осознанно"
     assert lm.ENTRY_CANDIDATES == APPROVED_ENTRY_CANDIDATES, "шаблоны кандидатов — та же политика, снимок обязателен"
     assert lm.ENV_READ_FORMS == APPROVED_ENV_READ_FORMS, "грамматика замера — политика, снимок обязателен"
+    assert {k: getattr(lm, k) for k in APPROVED_LAYER_GRAMMAR} == APPROVED_LAYER_GRAMMAR, \
+        "грамматика гейта окружения — политика, снимок обязателен"
     assert lm.PROBE_SUFFIX == APPROVED_PROBE_SUFFIX, "суффиксы проб — политика, снимок обязателен"
     assert lm.RUN_MODES == APPROVED_RUN_MODES, "режимы контрактов запуска — политика приёмки, снимок обязателен"
     объявление = {k: (f.typ.__name__, f.cls, None if f.record is None else
@@ -2035,13 +2047,30 @@ def test_the_layer_shapes_see_every_way_to_reach_the_environment():
         "x_ = tempfile.mktemp()",                                 # 44
         "y = mk(dir='данные')",                                   # 45 каталог назван
         "z = getattr(os, 'environ')",                             # 46 динамический ридер — имя строкой
+        "import inspect",                                         # 47
+        "a2 = inspect.getfile(inspect)",                          # 48
+        "b2 = inspect.getsourcefile(inspect)",                    # 49
+        "c2 = inspect.getabsfile(inspect)",                       # 50
+        "d2 = tempfile.mkstemp(dir=None)",                        # 51 dir=None — каталог не назван
+        "e2 = tempfile.TemporaryDirectory()",                     # 52
+        "f2 = runpy.run_module('x')",                             # 53
+        "g2 = importlib.util.spec_from_file_location('x', 'y')",  # 54
+        "h2 = os.environb, os.getenvb, os.putenv, os.unsetenv",   # 55
+        "i2 = tempfile.gettempdirb(), tempfile.mkdtemp()",        # 56
+        "j2 = tempfile.NamedTemporaryFile(), tempfile.TemporaryFile(), tempfile.SpooledTemporaryFile()",  # 57
     ])
     tree = ast.parse(src)
     found = {s.name: s.find(tree, "src/x.py") for s in lm.ROOT_SHAPES if s.scope == "layer"}
-    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25, 43, 44, 46], "home": [10, 11, 23, 36, 37, 38],
-                     "any_file": [13, 23, 39, 40, 41],
+    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25, 43, 44, 46, 51, 52, 55, 56, 57],
+                     "home": [10, 11, 23, 36, 37, 38],
+                     "any_file": [13, 23, 39, 40, 41, 48, 49, 50],
                      "sys_path": [14, 15, 16, 17, 27, 28, 29, 30, 31, 32],
-                     "dynamic_import": [18, 19, 20, 33, 34, 35]}
+                     "dynamic_import": [18, 19, 20, 33, 34, 35, 53, 54]}
+    # каждое имя утверждённой грамматики представлено строкой пробы: имя, которое
+    # никто не пишет, сторожит пустоту
+    for table, names in APPROVED_LAYER_GRAMMAR.items():
+        missing = [n for n in names if n not in src]
+        assert not missing, f"{table}: имена без строки в пробе форм — {missing}"
 
 
 def _env_world(tmp_path, **allowed_over):

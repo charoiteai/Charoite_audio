@@ -1309,11 +1309,17 @@ TEMPFILE_DEFAULT_DIR = ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "mkte
 
 
 def _aliases(tree: ast.Module) -> dict[str, str]:
-    """Локальное имя → полное имя, под которым оно пришло импортом: `import sys as s`
+    """Локальное имя → полное имя, под которым оно пришло ИМПОРТОМ: `import sys as s`
     даёт `s → sys`, `from importlib import import_module as im` — `im → importlib.import_module`.
     Формы слоя без окружения судят полное имя, а не то, как его назвал модуль: первая
     редакция сравнивала короткое имя вызова и текст записи, и `import sys as s;
-    s.path.insert(…)` проходил гейт зелёным (Critical головы круга 1 по PR №625)."""
+    s.path.insert(…)` проходил гейт зелёным (Critical головы круга 1 по PR №625).
+
+    Только импорт, как у `_canon_names`: связывание присваиванием (`S = sys`) —
+    граница грамматики, а не повод для новой эвристики (Critical головы круга 2 —
+    второй подряд в этой правке, поэтому правило, а не ещё один случай). Что
+    грамматика не видит, видит проба пакета: `sys.path` и `sys.modules` после
+    импорта, ловушка окружения и запись вне `data_dir`."""
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -1357,15 +1363,22 @@ def _lines(tree: ast.Module, match: Callable[[list[str]], bool], *, at_import: b
 
 def _any_env(tree: ast.Module) -> list[int]:
     """Касание окружения процесса — форма `any_env` слоя без окружения: имя из
-    `ENV_TOUCH_NAMES` в любой записи и вызов `tempfile` без каталога (полное имя —
-    псевдоним `mk = mkstemp` не прячет чтение TMPDIR)."""
+    `ENV_TOUCH_NAMES` в любой записи и вызов `tempfile` без каталога (полное имя
+    через импорт — `from tempfile import mkstemp as mk` не прячет чтение TMPDIR).
+
+    Грамматика, а не «все способы» — то же правило, что у `_env_reads`: `tempfile`
+    судится по вызову, а связывание присваиванием (`mk = tempfile.mkstemp`) и
+    `getattr` замер не видит. Поведение за границей грамматики сторожит проба
+    пакета: TMPDIR там ведёт в ловушку."""
     names = _aliases(tree)
     out = set(_lines(tree, lambda seg: any(s in ENV_TOUCH_NAMES for s in seg)))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = names.get(getattr(node.func, "id", ""), _имя(node.func)).rsplit(".", 1)[-1]
-            if fn in TEMPFILE_DEFAULT_DIR and (fn.startswith("gettempdir")
-                                               or not any(k.arg == "dir" for k in node.keywords)):
+            # `dir=None` — не названный каталог: tempfile всё равно спросит TMPDIR
+            named = any(k.arg == "dir" and not (isinstance(k.value, ast.Constant) and k.value.value is None)
+                        for k in node.keywords)
+            if fn in TEMPFILE_DEFAULT_DIR and (fn.startswith("gettempdir") or not named):
                 out.add(node.lineno)
     return sorted(out)
 

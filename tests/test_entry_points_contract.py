@@ -219,6 +219,22 @@ AUDIT_EXIT = 97
 MUTATIONS = {"os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1),
              "os.truncate": (0,), "os.link": (1,), "os.symlink": (1,), "os.chmod": (0,), "os.utime": (0,),
              "shutil.rmtree": (0,), "shutil.copyfile": (1,)}
+#: Флаги `open`, которые делают открытие записью. Именами, а не маской: у каждого
+#: свой случай самопроверки (Critical головы круга 2 по PR №625 — любой флаг
+#: убирался из маски без красного). Режим встроенного `open` не проверяется
+#: отдельно: событие аудита несёт флаги и для него.
+WRITE_FLAG_NAMES = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC")
+
+#: Утверждённая копия таблиц пробы — по заданию №365, а не по самим таблицам:
+#: случаи самопроверки строятся из таблиц, и сужение таблицы сужало случаи молча
+#: (Critical головы круга 2 по PR №625). Тот же приём, что `APPROVED_KINDS` и
+#: `APPROVED_ENV_READ_FORMS` в `tests/test_import_boundaries.py`.
+APPROVED_PROBE = {
+    "POISONED_ENV": ("HOME", "CHAROITE_ROOT", "SUFLER_GRAPH_DIR", "CHAROITE_GRAPH_DIR", "TMPDIR"),
+    "ISOLATION_ENV": {"PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+    "ISOLATION_DROP": ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX"),
+    "WRITE_FLAG_NAMES": ("O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC"),
+}
 
 #: Раннер пробы — отдельным процессом. Путь к копии пакета вставляет он сам, а не
 #: окружение: с SAFEPATH каталог скрипта в sys.path не попадает.
@@ -233,7 +249,9 @@ import os, sys   # уже загружены интерпретатором; в�
 
 PKG, DATA, GRAPH, TRAP, QUERY = sys.argv[1:6]
 TRAP_REAL, DATA_REAL = os.path.realpath(TRAP), os.path.realpath(DATA)
-WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+WRITE_FLAGS = 0
+for _name in """ + repr(WRITE_FLAG_NAMES) + r""":
+    WRITE_FLAGS |= getattr(os, _name)
 MUTATIONS = """ + repr(MUTATIONS) + r"""
 
 
@@ -253,13 +271,12 @@ def fail(what):
 
 def hook(event, args):
     if event == "open":
-        path, mode, flags = (tuple(args) + (None, None))[:3]
+        path, _, flags = (tuple(args) + (None, None))[:3]
         if path is None or isinstance(path, int):
             return
         if inside(path, TRAP_REAL):
             fail(f"чтение ловушки {path}")
-        writes = bool(mode) and any(c in str(mode) for c in "wax+") or bool((flags or 0) & WRITE_FLAGS)
-        if writes and not inside(path, DATA_REAL):
+        if (flags or 0) & WRITE_FLAGS and not inside(path, DATA_REAL):
             fail(f"запись вне data_dir: {path}")
     elif event in ("os.listdir", "os.scandir"):
         if args and args[0] is not None and inside(args[0], TRAP_REAL):
@@ -274,6 +291,7 @@ def hook(event, args):
 sys.addaudithook(hook)
 import json, pathlib
 sys.path.insert(0, PKG)
+PATH_BEFORE = list(sys.path)
 import graph_search
 import model_seam
 
@@ -295,7 +313,7 @@ again.refresh(force=True)
 loaded = again.load_vectors()
 result = again.search(QUERY)
 print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
-                  "embedded": embedded, "loaded": loaded,
+                  "embedded": embedded, "loaded": loaded, "path_before": PATH_BEFORE, "path_after": sys.path,
                   "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
                   "modules": sorted(sys.modules),
                   "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
@@ -332,6 +350,11 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, lm.DIST_DIR, "scripts")]
     problems += [f"пакет загрузил {f} мимо своей копии" for f in out["files"]
                  if any(pathlib.Path(f).is_relative_to(d) for d in product)]
+    # путь импорта — поведением, при любом написании: грамматика гейта видит
+    # `sys.path` только по имени, `S = sys; S.path.append(…)` она пропускает
+    # (Critical головы круга 2 по PR №625 — граница грамматики, а не новая эвристика)
+    if out["path_after"] != out["path_before"]:
+        problems.append(f"пакет правит sys.path: было {out['path_before']}, стало {out['path_after']}")
     return problems, out
 
 
@@ -387,6 +410,18 @@ MUTATION_CASES = {
 }
 
 
+#: События с двумя путями → код, где вне `data_dir` ТОЛЬКО аргумент с этим номером.
+MUTATION_SIDES = {
+    "os.rename": ("os.rename(V / 'f', self.data / 'g')", "os.rename(self.data / 'кэш', V / 'g')"),
+    "os.link": ("os.link(V / 'f', self.data / 'l')", "os.link(self.data / 'кэш', V / 'l')"),
+    "os.symlink": ("os.symlink(V / 'f', self.data / 's')", "os.symlink(self.data / 'кэш', V / 's')"),
+    "shutil.copyfile": ("shutil.copyfile(V / 'f', self.data / 'c')", "shutil.copyfile(self.data / 'кэш', V / 'c')"),
+}
+#: Утверждённые номера записываемых аргументов у этих событий: переименование
+#: меняет оба места, ссылка и копия пишут только цель.
+APPROVED_MUTATION_SIDES = {"os.rename": (0, 1), "os.link": (1,), "os.symlink": (1,), "shutil.copyfile": (1,)}
+
+
 def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> None:
     """Проба проверена «дырявыми» пакетами — и случаи строятся из её же таблиц:
     каждая отравленная переменная, каждое событие мутации ФС, каждая снятая
@@ -404,11 +439,14 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                 "    pass\n"
                 "V = pathlib.Path({victims!r})\n"
                 "class GraphSearch:\n"
+                "    once = True\n"      # раннер открывает два экземпляра — дыра срабатывает раз
                 "    def __init__(self, graph, *, data_dir, embedder):\n"
                 "        self.data = data_dir\n"
                 "    def refresh(self, force=False):\n"
                 "        (self.data / 'кэш').write_text('x')\n"
-                "        {extra}\n"
+                "        if GraphSearch.once:\n"
+                "            GraphSearch.once = False\n"
+                "            {extra}\n"
                 "    def embed_pending(self):\n"
                 "        return 1\n"
                 "    def load_vectors(self):\n"
@@ -429,6 +467,8 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
                                  forbidden=("лишний_модуль",), **kw)[0]
 
+    assert {"POISONED_ENV": POISONED_ENV, "ISOLATION_ENV": ISOLATION_ENV, "ISOLATION_DROP": ISOLATION_DROP,
+            "WRITE_FLAG_NAMES": WRITE_FLAG_NAMES} == APPROVED_PROBE, "таблицы пробы — политика, снимок обязателен"
     assert probe("честный", "pass") == []
     # копия ИЗ-вне В data_dir законна: источник копии не запись
     assert probe("копия внутрь", "shutil.copyfile(V / 'f', self.data / 'копия')") == []
@@ -442,15 +482,36 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     assert "запись вне data_dir" in probe("запись", "(self.data.parent / 'мимо').write_text('x')")[0]
     assert "запись вне data_dir" in probe(
         "os.open", "os.close(os.open(str(self.data.parent / 'мимо'), os.O_WRONLY | os.O_CREAT, 0o644))")[0]
+    # каждый флаг записи — сам по себе, на существующем файле вне data_dir
+    for flag in APPROVED_PROBE["WRITE_FLAG_NAMES"]:
+        got = probe(f"флаг {flag}", f"os.close(os.open(str(V / 'f'), os.{flag}))")
+        assert got and "запись вне data_dir" in got[0], f"{flag}: {got}"
+    assert probe("чтение вне", "os.close(os.open(str(V / 'f'), os.O_RDONLY)); (V / 'f').read_text()") == [], \
+        "чтение вне data_dir и вне ловушки — не запись"
     assert set(MUTATION_CASES) == set(MUTATIONS), "у события мутации нет своего случая — или случай без события"
     for event, code in MUTATION_CASES.items():
         got = probe(f"мутация {event}", code)
         assert got and f"{event} вне data_dir" in got[0], f"{event}: {got}"
+    # у событий с двумя путями — каждый аргумент отдельно вне data_dir: записываемый
+    # красит, незаписываемый — нет (Important головы круга 2 по PR №625: `os.rename`
+    # с одним индексом выпускал данные из data_dir, `os.link` с двумя валил законную ссылку)
+    assert set(MUTATION_SIDES) == {e for e, idx in APPROVED_MUTATION_SIDES.items()}
+    for event, sides in MUTATION_SIDES.items():
+        for i, code in enumerate(sides):
+            got = probe(f"сторона {event} {i}", code)
+            if i in APPROVED_MUTATION_SIDES[event]:
+                assert got and f"{event} вне data_dir" in got[0], f"{event}[{i}] вне data_dir не пойман: {got}"
+            else:
+                assert got == [], f"{event}[{i}] — не запись, а проба красная: {got}"
+    assert {e: MUTATIONS[e] for e in APPROVED_MUTATION_SIDES} == APPROVED_MUTATION_SIDES
     assert "os.rename вне data_dir" in probe("os.replace", "os.replace(V / 'f', V / 'g')")[0], \
         "os.replace приходит событием os.rename"
     assert "протекла" in probe("протечка", "import лишний_модуль")[0]
-    assert probe("мимо копии", f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line") == [
-        f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии"]
+    got = probe("мимо копии", f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line")
+    assert f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии" in got
+    # правка пути импорта в написании, которого грамматика гейта не знает
+    got = probe("путь импорта", "import sys as s0; S = s0; S.path.append('/opt/чужое')")
+    assert len(got) == 1 and got[0].startswith("пакет правит sys.path") and "/opt/чужое" in got[0], got
     # изоляция: каждая снимаемая переменная, стоявшая у родителя, опасна (без снятия
     # проба красная) и снята (со снятием — пусто). Значение у каждой своё: каталоги
     # пути импорта интерпретатор читает ещё до хука, поэтому PYTHONPATH ловится не

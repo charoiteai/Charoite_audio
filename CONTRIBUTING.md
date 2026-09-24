@@ -104,14 +104,19 @@ cannot excuse one — and none of the environment shapes of `ROOT_SHAPES` with
 scope `layer`: any environment access (`os.environ`, `getenv`, `expandvars`,
 `tempfile` without `dir=`, which reads `TMPDIR`), `Path.home()` / `expanduser`,
 `__file__` (and `__spec__`, `inspect.getfile`), any touch of `sys.path` at
-import (`site.addsitedir` included), a dynamic import. A shape is judged by the
-full name, not by how the module spelled it (`import sys as s`, `from importlib
-import import_module as im`), and by any mention, not only a call
-(`loader = importlib.import_module`). `root_exemptions` cannot excuse these
-shapes — the artifact is rejected at load — and runtime reached through a
-neighbour (graph → an `allowed_edges` debt → runtime) is as red as a direct
-edge. It is a grammar, not every possible way: implicit readers other than
-`tempfile` (`getpass.getuser`, `shutil.which`) are not recognised. The fix is
+import (`site.addsitedir` included), a dynamic import. A name is resolved
+through the module's imports (`import sys as s`, `from importlib import
+import_module as im`), and any mention counts, not only a call
+(`loader = importlib.import_module`); `tempfile` is judged at the call. Matching
+by name segment is conservative on purpose: a namesake such as `self.home` is a
+reason to rename. `root_exemptions` cannot excuse these shapes — the artifact is
+rejected at load — and runtime reached through a neighbour (graph → an
+`allowed_edges` debt → runtime) is as red as a direct edge. The tables of this
+grammar are pinned by an approved copy in `tests/test_import_boundaries.py`.
+It is a grammar, not every possible way, like the root rule's `_env_reads`:
+binding by assignment (`S = sys`), `getattr`, `exec` and implicit readers other
+than `tempfile` (`getpass.getuser`, `shutil.which`) are not recognised. What the
+grammar cannot see, the package probe below sees by behaviour. The fix is
 derived from the same `allowed`: the path comes in as a parameter, and the
 caller from a layer that sees runtime assembles it — the way
 `graphs.open_search` does — never "go to the roots canon". The graph package is
@@ -122,10 +127,13 @@ graph in a separate process with `HOME`, `CHAROITE_ROOT`, `SUFLER_GRAPH_DIR`,
 `CHAROITE_GRAPH_DIR` and `TMPDIR` pointing into a trap and an audit hook that
 fails on reading the trap or writing outside `data_dir`. A deterministic fake
 embedder makes the package write its vector cache and read it back, so the
-write path is exercised, not only the lexical search. The probe's self-check
+write path is exercised, not only the lexical search. After the run the probe
+compares `sys.modules` and `sys.path` with the state before the import, so a
+dependency leak or a change to the import path is caught in any spelling. The probe's self-check
 builds one leaky package per element of the probe's own tables — each poisoned
 variable, each file-system mutation event, each variable the isolation drops —
-so a new element without its case turns the test red.
+so a new element without its case turns the test red; the tables themselves
+are pinned by an approved copy from the task, so shrinking one is red too.
 
 If a PR turns that check red, the message names the fix. The usual cases:
 
