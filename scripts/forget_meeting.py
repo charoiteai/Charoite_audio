@@ -723,9 +723,19 @@ def plan(stamp: str, root: pathlib.Path,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).
         node = meeting_stamp.find_note(g, stamp, root / "transcripts")
+        # Минутный узел посекундной цели — наш, только если точная секунда
+        # владельца минуты — мы (_Ownership: сайдкар, строка «Стенограмма:»).
+        # note_is_ours без своего файла в transcripts/ считает цель
+        # переименованным владельцем, а у встречи, от которой осталась папка
+        # архива, файла нет всегда (круг-2 по PR #622).
+        minute = meeting_stamp.minute_of(stamp)
+        minute_own = _Ownership(minute, root, g) if minute != stamp else None
+        if node is not None and node.stem != stamp and minute_own is not None \
+                and minute_own.exact != stamp:
+            node = None
         link = _link_re(node.stem if node else stamp)
         # Ключи встречи в графе — только доказанные: сам штамп и ключ узла,
-        # владение которым проверил find_note (note_is_ours). Узел, папка
+        # владение которым проверено выше. Узел, папка
         # архива и отметка brain_sent названы одним ключом графа, и
         # посекундная цель («Забыть» из приложения) с минутным узлом
         # оставляла минутную папку архива (круг-1 по PR #622). Узла нет —
@@ -744,12 +754,14 @@ def plan(stamp: str, root: pathlib.Path,
         p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
         for key in keys:
             p.delete += [d for d in _archive_folders(g, key) if d not in p.delete]
-        # Узла нет, а минутная папка есть — владение минутой не доказать ни
-        # в чью пользу: папку называем, забывают её отдельно по минуте.
-        minute = meeting_stamp.minute_of(stamp)
-        if node is None and minute != stamp:
-            for d, owner in _manifest_folders(g / ARCHIVE_DIR):
-                if owner == minute:
+        # Узла нет, а минутная папка есть — её называем, забывают её отдельно
+        # по минуте. Молчим, когда минута доказанно чужая: точная секунда
+        # владельца — другая (_Ownership), или своя папка встречи названа
+        # секундами — graph_key даёт секунды, только когда минута чужая.
+        if node is None and minute_own is not None and minute_own.exact in (None, stamp) \
+                and all(owner != stamp for _, owner in _manifest_folders(g / ARCHIVE_DIR)):
+            for d in _archive_folders(g, minute):
+                if d not in p.delete:
                     p.beyond_reach.append(
                         f"папка архива «{d.name}» названа минутой {minute}: узла "
                         f"встречи нет, владение минутой не доказать; если это она — "

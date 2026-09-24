@@ -1357,3 +1357,50 @@ def test_folder_shared_by_both_keys_is_planned_once(tmp_path):
     _minute_node(graph, f"{SECONDS}.md")
     plan = forget.plan(SECONDS, root, graph)
     assert plan.delete.count(graph / "Встречи-архив" / "2026-07-15 — Тема") == 1
+
+
+def test_archive_only_neighbour_does_not_take_the_minute_owner_node(tmp_path):
+    """Круг-2 по PR #622: от посекундной соседки осталась только папка
+    архива, минутой владеет живая встреча с темой в имени. note_is_ours
+    без своего файла в transcripts/ признавал соседку переименованным
+    владельцем, и «забыть» её уносило узел, папку, копию в снимке и отметку
+    владельца минуты. Минутный узел посекундной цели — наш только по точной
+    секунде владельца (_Ownership)."""
+    root, graph = _archive_only(tmp_path, {
+        "2026-07-15 14-00 — Тема А": STAMP,
+        "2026-07-15 14-00-12 — Б": SECONDS,
+    })
+    (root / "transcripts" / f"{STAMP}_Тема_А.md").write_text("# Встреча\n", encoding="utf-8")
+    node = _minute_node(graph, f"{STAMP}_Тема_А.md")
+    mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
+    mark.write_text("ok\n", encoding="utf-8")
+    snap = graph / forget.CLOUD_BACKUP_DIR / "2026-07-20_0300" / "Встречи"
+    snap.mkdir(parents=True)
+    (snap / f"{STAMP}.md").write_text("# копия узла\n", encoding="utf-8")
+    arch = graph / "Встречи-архив"
+
+    plan = forget.plan(SECONDS, root, graph)
+
+    assert plan.delete == [arch / "2026-07-15 14-00-12 — Б"]
+    assert node not in plan.delete and plan.brain_keys == [SECONDS]
+    assert not any("папка архива" in b for b in plan.beyond_reach), \
+        "своя папка названа секундами — минута чужая, советовать её забыть нельзя"
+    # точная секунда владельца (сайдкар) — цель: минутный узел наш
+    (root / "transcripts" / f"{STAMP}_Тема_А.md.live.json").write_text(
+        f'{{"stamp": "{SECONDS}"}}', encoding="utf-8")
+    assert node in forget.plan(SECONDS, root, graph).delete
+
+
+def test_minute_proven_foreign_is_not_offered_to_forget(tmp_path):
+    """Узел минуты называет другую секунду, её стенограмма лежит: минута
+    доказанно чужая — план не советует забыть её папку по минуте. Без узла
+    и без доказательства папка минуты без манифеста тоже называется."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": None})
+    (root / "transcripts" / f"{SECONDS}.md").write_text("# Встреча\n", encoding="utf-8")
+    named = f"папка архива «2026-07-15 14-00 — Тема» названа минутой {STAMP}"
+    assert any(b.startswith(named) for b in forget.plan(SECONDS, root, graph).beyond_reach)
+    (root / "transcripts" / "2026-07-15_140005.md").write_text("# Встреча\n", encoding="utf-8")
+    _minute_node(graph, "2026-07-15_140005.md")
+    plan = forget.plan(SECONDS, root, graph)
+    assert not any(b.startswith(named) for b in plan.beyond_reach)
+    assert graph / "Встречи" / f"{STAMP}.md" not in plan.delete
