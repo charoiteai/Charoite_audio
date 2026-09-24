@@ -1323,7 +1323,7 @@ def _aliases(tree: ast.Module) -> dict[str, str]:
     return out
 
 
-def _mentions(tree: ast.Module, *, at_import: bool = False):
+def _mentions(tree: ast.Module, *, at_import: bool):
     """Каждое упоминание имени в модуле — `(узел, полное имя)`: имя и цепочка
     атрибутов через `_aliases`, сам импорт (`from sys import path` — это уже
     `sys.path`), строка-имя (`globals()["__file__"]`). Форма — любое упоминание, а
