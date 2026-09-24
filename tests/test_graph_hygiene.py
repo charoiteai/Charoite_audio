@@ -1230,7 +1230,7 @@ def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_lefto
     скрипт честно отвечал «отложить» — исход теста решало состояние машины (№330)."""
     import file_locks
     import charoite_paths
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
     import migrate_placeholders as mp
     graph = tmp_path / "g"
     (graph / "Люди").mkdir(parents=True)
@@ -1260,8 +1260,9 @@ def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_lefto
 
 def test_placeholder_migration_defers_while_the_daemon_process_runs(tmp_path, monkeypatch, capsys):
     """Второй сторож: процесс демона запущен (лока в корне данных нет) — код 3,
-    граф и каталог копии не тронуты (№330)."""
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    граф и корень данных не тронуты байт в байт, каталог копии не начат (№330)."""
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import live_gate
     import migrate_placeholders as mp
     graph = tmp_path / "g"
     (graph / "Люди").mkdir(parents=True)
@@ -1272,11 +1273,20 @@ def test_placeholder_migration_defers_while_the_daemon_process_runs(tmp_path, mo
     meeting.write_text("- [[Люди/Собеседник 2]] сказал\n", encoding="utf-8")
     data_root = tmp_path / "data"
     (data_root / "logs").mkdir(parents=True)
+    assert not live_gate.daemon_alive(data_root), "первый сторож молчит — отказ даёт только второй"
+
+    def snapshot():
+        # выборочные exists() пропускали запись до отказа — сравниваем всё целиком
+        return {str(p.relative_to(tmp_path)): (p.read_bytes() if p.is_file() else None)
+                for base in (graph, data_root) for p in sorted(base.rglob("*"))}
+
+    before = snapshot()
     monkeypatch.setattr(mp, "_daemon_process_running", lambda: "4242 python src/daemon.py")
     code = mp.main(["--graph", str(graph), "--apply", "--backup", str(tmp_path / "b"), "--root", str(data_root)])
     err = capsys.readouterr().err
     assert code == 3 and "4242 python src/daemon.py" in err
-    assert node.exists() and meeting.read_text(encoding="utf-8") == "- [[Люди/Собеседник 2]] сказал\n"
+    assert snapshot() == before, "граф и корень данных не тронуты"
+    assert node.exists() and meeting.exists()
     assert not (tmp_path / "b").exists(), "копия не начата"
 
 
