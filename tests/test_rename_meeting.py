@@ -514,3 +514,22 @@ def test_sidecar_follows_the_renamed_transcript(world):
     rm.apply(p, graph, STAMP, pretty)
     assert not sc.exists() and (tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").exists()
 
+
+@pytest.mark.parametrize("explicit, said", [(True, "выключена в конфиге"), (False, "")])
+def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, explicit, said):
+    """Переименование — правка уже записанного, флаг записи его не гасит; при выключенной
+    записи отказ без рецепта curl, а без ключа в конфиге — пустая строка."""
+    calls = []
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            calls.append((url, json))
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = rm.brain_rename("2026-07-15_1400", "Новая тема", enabled=False, explicit=explicit)
+    assert calls == [(f"{rm.BRAIN}/rename", {"meeting": "2026-07-15_1400", "title": "Новая тема"})]
+    assert "curl" not in msg
+    assert (said in msg) if said else msg == ""
+

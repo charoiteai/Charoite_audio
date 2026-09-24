@@ -42,6 +42,7 @@ def _root() -> pathlib.Path:
 
 
 import charoite_paths  # noqa: E402
+import install_profile  # noqa: E402
 import safe_write  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -358,15 +359,20 @@ def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
 BRAIN = "http://127.0.0.1:8100"
 
 
-def brain_rename(stamp: str, pretty: str) -> str:
+def brain_rename(stamp: str, pretty: str, *, enabled: bool, explicit: bool) -> str:
     """Новая тема — и в фактах памяти Чароита (brain /rename, карточка №41).
-    brain выключен — сказать, как повторить, а не молчать."""
+    brain выключен — сказать, как повторить, а не молчать. Правка уже записанного
+    флагом записи не гасится (`sufler.brain`, №249); при выключенной записи отказ —
+    без рецепта curl, а без ключа в конфиге — пустая строка."""
     try:
         import requests
         r = requests.post(f"{BRAIN}/rename", json={"meeting": stamp, "title": pretty}, timeout=60)
         text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
         return text if r.status_code == 200 else f"отказ ({r.status_code}): {text[:160]}"
     except Exception as e:  # noqa: BLE001
+        if not enabled:
+            return ("выключена в конфиге и не отвечает — тема в её данных осталась старой"
+                    if explicit else "")
         return (f"недоступна ({type(e).__name__}) — тема в памяти осталась старой; повторить: "
                 f"curl -X POST {BRAIN}/rename -H 'content-type: application/json' "
                 f"-d '{{\"meeting\":\"{stamp}\",\"title\":\"{pretty}\"}}'")
@@ -536,7 +542,10 @@ def main() -> None:
         print("\nЭто был план. Применить: --yes")
         return
     apply(p, graph, stamp, pretty)
-    print(f"память Чароита: {brain_rename(stamp, pretty)}")
+    said = brain_rename(stamp, pretty, enabled=install_profile.brain_enabled(cfg),
+                        explicit=install_profile.brain_explicit(cfg))
+    if said:
+        print(f"память Чароита: {said}")
     print(f"готово: {stamp} — «{pretty}»")
 
 

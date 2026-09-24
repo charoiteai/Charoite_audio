@@ -70,6 +70,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import install_profile  # noqa: E402
 import graph_links  # noqa: E402
 import name_fixes  # noqa: E402
 import review_bridge  # noqa: E402
@@ -1368,17 +1369,18 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                          may_edit=may_edit, graph_available=graph_available,
                          deliver=deliver, unlock=stack.close)
     if graph_available:
-        _pay_brain_debts(stamp, graph, log)
+        _pay_brain_debts(stamp, graph, log, enabled=install_profile.brain_enabled(cfg))
     return rc
 
 
-def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path) -> None:
+def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path, *, enabled: bool) -> None:
     """Долги переотправки памяти ДРУГИХ встреч — после своего прогона и вне
     замка графа: встречу, которую больше не ревизируют и не пересобирают,
     иначе никто не догонял (GLM r2 по #545). Только чтение заметок графа и
     вызовы brain; сбой — строка в лог, не код выхода."""
     try:
-        lines = graph_updater.pay_brain_debts(graph, _root() / "logs" / "brain_sent", skip=stamp)
+        lines = graph_updater.pay_brain_debts(graph, _root() / "logs" / "brain_sent",
+                                              enabled=enabled, skip=stamp)
     except Exception as e:  # noqa: BLE001 — чужие долги не важнее своей ревизии
         lines = [f"долги памяти других встреч не проверены: {e}"]
     if not lines:
@@ -1818,8 +1820,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         if published and may_edit and note_path is not None:
             try:
                 mark = _root() / "logs" / "brain_sent" / f"{stamp}.txt"
-                lines.append("[cloud-review] " + graph_updater.resend_to_brain_after_review(
-                    stamp, note_path, note_before, mark) + "\n")
+                said = graph_updater.resend_to_brain_after_review(
+                    stamp, note_path, note_before, mark,
+                    enabled=install_profile.brain_enabled(cfg))
+                if said:
+                    lines.append("[cloud-review] " + said + "\n")
             except Exception as e:  # noqa: BLE001 — память не важнее ревизии
                 lines.append(f"[cloud-review] память Чароита не переотправлена: {e}\n")
         try:

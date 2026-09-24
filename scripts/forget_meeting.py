@@ -83,6 +83,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
+import install_profile  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 ARCHIVE_DIR = "Встречи-архив"
@@ -800,7 +801,7 @@ def _backup(path: pathlib.Path, stamp: str) -> None:
             return
 
 
-def apply(p: Plan, yes: bool = False) -> bool:
+def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_explicit: bool = False) -> bool:
     """Выполнить план. Без yes — только показать; вернёт False, что не делал."""
     print(p.describe())
     if not p.delete and not p.edit:
@@ -844,7 +845,9 @@ def apply(p: Plan, yes: bool = False) -> bool:
     print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     for key in p.brain_keys:
-        print(f"  память Чароита: {brain_forget(key)}")
+        said = brain_forget(key, enabled=brain_enabled, explicit=brain_explicit)
+        if said:
+            print(f"  память Чароита: {said}")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
     for line in p.beyond_reach:
@@ -855,12 +858,18 @@ def apply(p: Plan, yes: bool = False) -> bool:
 BRAIN = "http://127.0.0.1:8100"
 
 
-def brain_forget(key: str) -> str:
+def brain_forget(key: str, *, enabled: bool, explicit: bool) -> str:
     """POST /forget в память Чароита; строка для человека, не исключение.
 
     brain может быть выключен — «забыть» файлы от этого не зависит, но
     молчать нельзя: человек должен знать, что память не чищена и как
     повторить (раньше это место честно говорило «/forget у неё нет»).
+
+    Стирание не гасится флагом записи (`sufler.brain`, №249): факты уже
+    отправленных встреч лежат на сервере, пока их не удалят, и «забыть» обязано
+    до них дойти. Флаг решает только, что сказать при отказе: запись выключена —
+    без рецепта curl; ключа в конфиге нет вовсе (сервера у установки не было) —
+    пустая строка, говорить не о чем.
     """
     try:
         import requests
@@ -870,6 +879,9 @@ def brain_forget(key: str) -> str:
             return text or f"забыто: {key}"
         return f"отказ ({r.status_code}): {text[:160]}"
     except Exception as e:  # noqa: BLE001 — brain выключен или не отвечает
+        if not enabled:
+            return (f"выключена в конфиге и не отвечает — факты встречи {key}, отправленные раньше, "
+                    "остаются в её данных") if explicit else ""
         return (f"недоступна ({type(e).__name__}) — факты встречи {key} остались; "
                 f"повторить, когда brain поднимется: curl -X POST {BRAIN}/forget "
                 f"-H 'content-type: application/json' -d '{{\"meeting\":\"{key}\"}}'")
@@ -903,10 +915,15 @@ def main() -> int:
 
     if len(found) > 1:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
+    # что сказать об отказе внешней памяти, решает конфиг; стирание идёт в любом случае (№249)
+    from config_loader import load_user_or_example
+    cfg = load_user_or_example(_root())
+    brain = {"brain_enabled": install_profile.brain_enabled(cfg),
+             "brain_explicit": install_profile.brain_explicit(cfg)}
     done = False
     for stamp in found:
         done |= apply(plan(stamp, _root(), graph, keep_graph=args.keep_graph,
-                           import_folder=args.import_folder), yes=args.yes)
+                           import_folder=args.import_folder), yes=args.yes, **brain)
         print()
     return 0 if (done or not args.yes) else 1
 

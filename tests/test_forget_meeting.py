@@ -706,7 +706,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
             return Resp()
 
     monkeypatch.setitem(sys.modules, "requests", FakeRequests)
-    assert "Забыто" in forget.brain_forget(STAMP)
+    assert "Забыто" in forget.brain_forget(STAMP, enabled=True, explicit=True)
     assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
 
     class Down:
@@ -715,7 +715,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
-    msg = forget.brain_forget(STAMP)
+    msg = forget.brain_forget(STAMP, enabled=True, explicit=True)
     assert "недоступна" in msg and "/forget" in msg and STAMP in msg
 
     # у посекундной соседки ключей два: ключ графа из отметки и её штамп
@@ -1008,3 +1008,24 @@ def test_sweep_takes_an_ownerless_titled_per_second_sidecar_with_a_service_word(
     tdir = tmp_path / "transcripts"; tdir.mkdir()
     sc = tdir / "2026-09-03_120030_Разбор.md.live.json"; sc.write_text("{}", encoding="utf-8")
     assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1
+
+
+@pytest.mark.parametrize("explicit, said", [(True, "выключена в конфиге"), (False, "")])
+def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatch, explicit, said):
+    """Флаг записи не гасит стирание: факты отправленных встреч лежат на сервере, пока их не
+    удалят, и забытая встреча иначе уехала бы в дамп. Выключенная запись меняет только
+    строку отказа — без рецепта curl, а без ключа в конфиге — ничего (входной круг, Opus C2)."""
+    calls = []
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            calls.append((url, json))
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = forget.brain_forget(STAMP, enabled=False, explicit=explicit)
+    assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})], "стирание идёт и при выключенной записи"
+    assert "curl" not in msg
+    assert (said in msg) if said else msg == ""
+
