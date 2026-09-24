@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -885,3 +886,82 @@ def test_rewriting_an_entry_makes_it_the_freshest(monkeypatch):
         llm_mod._fit_cache_put((k,), k)
     assert llm_mod._fit_cache_get(("а",)) == "а2"
     assert llm_mod._fit_cache_get(("б",)) is None
+
+
+@pytest.mark.parametrize("before, after", [
+    ({}, {"engine": "mlx-server"}),
+    ({"engine": "mlx-server", "mlx_model": "mlx/одна"}, {"engine": "mlx-server", "mlx_model": "mlx/другая"}),
+    ({"cloud_ready": True, "cloud_model": "облако-1"}, {"cloud_ready": True, "cloud_model": "облако-2"}),
+    ({}, {"base": "http://127.0.0.1:11435"}),
+])
+def test_fit_is_recomputed_when_another_model_would_answer(monkeypatch, before, after):
+    """small — не вся правда о том, кто пишет сводку: mlx-server гонит
+    mlx_model, облако — cloud_model по своему адресу. Сменили движок, модель
+    сервера или адрес — сводки прежней модели не годятся."""
+    calls: list = []
+    l = _short_llm(**before)
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    other = _short_llm(**after)
+    _counting_summary(monkeypatch, other, calls)
+    other.fit(LONG)
+    assert len(calls) == 10, f"{before} → {after}: пересчёт"
+
+
+def test_daemon_minutes_do_not_leave_digests_in_memory(monkeypatch):
+    """Кэш — для повтора MCP-минуток. Демон живёт днями, и сводки его встреч
+    в памяти держать незачем: PRIVACY обещает только процесс MCP-сервера."""
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    monkeypatch.setattr(l, "_doc_stream", lambda *a, **kw: iter(["минутки"]))
+    assert "".join(l.minutes(LONG)) == "минутки"
+    assert len(calls) == 5 and not llm_mod._fit_cache
+    l.fit(LONG)
+    assert len(calls) == 10, "минутки демона не наполнили кэш для MCP"
+
+
+def test_expired_digests_leave_memory_without_another_call(monkeypatch):
+    """«До 30 минут» — это про память, а не только про выдачу: истёкшая
+    запись уходит уборщиком, даже если за ней больше никто не придёт."""
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "сводка")
+    assert llm_mod._fit_sweeper is not None, "запись взвела уборщика"
+    assert llm_mod._fit_sweeper.interval <= 60
+    now[0] += llm_mod.FIT_CACHE_TTL - 1
+    llm_mod._fit_cache_sweep()
+    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None, \
+        "живая запись осталась, уборщик взведён снова"
+    now[0] += 1
+    llm_mod._fit_cache_sweep()
+    assert not llm_mod._fit_cache and llm_mod._fit_sweeper is None
+
+
+def test_any_access_drops_every_expired_entry(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    now[0] += llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("б",)) is None
+    assert not llm_mod._fit_cache, "чужая истёкшая запись ушла при промахе"
+    llm_mod._fit_cache_put(("в",), "в")
+    now[0] += llm_mod.FIT_CACHE_TTL
+    llm_mod._fit_cache_put(("г",), "г")
+    assert list(llm_mod._fit_cache) == [("г",)], "и при записи"
+
+
+def test_clock_going_back_does_not_extend_an_entry(monkeypatch):
+    """Стенные часы могут уйти назад (перевод, синхронизация): запись из
+    «будущего» не живёт лишние полчаса, а считается истёкшей."""
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    now[0] -= 1
+    assert llm_mod._fit_cache_get(("а",)) is None
+
+
+def test_fit_cache_runs_on_wall_clock():
+    """monotonic на macOS и Linux стоит, пока ноутбук спит: «30 минут»
+    растянулись бы на ночь с закрытой крышкой."""
+    assert llm_mod._fit_clock is time.time
