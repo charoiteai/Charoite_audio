@@ -649,3 +649,12 @@ def test_one_task_with_and_without_fields_in_any_status_has_one_key(box):
     for tail in ["", " 📅 2026-10-01", " ✅ 2026-09-24", " ❌ 2026-09-24",
                  " _(снято по сроку 24.09)_ 📅 2026-10-01 ❌ 2026-09-24"]:
         assert task_line.key(f"- [{box}] {bare}{tail}") == base
+
+
+@pytest.mark.parametrize("line, marker", [("1. [x] **Участник А** — отчёт", "1."), ("+  [ ] отчёт", "+"),
+                                          ("[x] отчёт", ""), ("- [x] отчёт", "- "), ("* [x] отчёт", "* "),
+                                          ("- [x]", "-")])
+def test_parse_keeps_the_list_marker(line, marker):
+    # маркер списка — часть записи (№366, шаг 2): у каноничного префикса — с пробелом за
+    # ним, по нему render сохраняет «* » (мутант «or → and» стирал «1.» и «+», CI мутатора)
+    assert task_line.parse(line).marker == marker
