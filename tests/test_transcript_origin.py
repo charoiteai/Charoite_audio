@@ -49,6 +49,11 @@ def _origin(name: str, size: int, kind: str = "text") -> str:
     return json.dumps({"name": name, "size": size, "kind": kind})
 
 
+def _of(tpath: pathlib.Path):
+    """Ключ стенограммы так, как его читает дедуп: со снимком сайдкаров каталога."""
+    return transcript_origin.of(tpath, transcript_origin.sidecars_in(tpath.parent))
+
+
 @pytest.fixture
 def run_import(tmp_path, monkeypatch):
     """Прямой импорт через main() с подменой дочерних процессов: транскрибация
@@ -67,7 +72,8 @@ def run_import(tmp_path, monkeypatch):
         if str(cmd[1]).endswith("transcribe_file.py"):
             src, hhmm, day = pathlib.Path(cmd[2]), cmd[3], cmd[4]
             (tdir / f"{day}_{hhmm}.md").write_text(
-                f"# Встреча {day}_{hhmm} — запись {src.name}\n\n[12:00:01] Участник А: начнём\n",
+                f"# Встреча {day}_{hhmm} — запись {im.source_mark(src.name, src.stat().st_size)}\n\n"
+                "[12:00:01] Участник А: начнём\n",
                 encoding="utf-8")
         return Ok()
 
@@ -104,7 +110,11 @@ def test_новая_встреча_любой_ветки_получает_клю
     tdir = run_import(src)
     tpath = tdir / f"{STAMP}.md"
     assert tpath.exists()
-    assert transcript_origin.of(tpath) == (name, len(body), kind)
+    assert _of(tpath) == (name, len(body), kind)
+    # шапку пишут три разных писателя (у аудио — ребёнок `transcribe_file`), а
+    # ключ и шапка обязаны говорить одно на одной паре (имя, размер) (DS I3)
+    head = tpath.read_text(encoding="utf-8").splitlines()[0]
+    assert im.same_source(head, name, len(body)), head
     raw = json.loads(_sidecar(tpath).read_text(encoding="utf-8"))[transcript_origin.SIDECAR_KEY]
     assert json.loads(raw) == {"name": name, "size": len(body), "kind": kind}, \
         "одна запись {name, size, kind}, без штампа — он живёт ключом `stamp`"
@@ -135,7 +145,7 @@ def test_отказ_сайдкара_не_роняет_импорт_а_гово�
     tdir = run_import(src)
     out = capsys.readouterr().out
     assert "откуда запись не записано" in out
-    assert transcript_origin.of(tdir / f"{STAMP}.md") is None
+    assert _of(tdir / f"{STAMP}.md") is None
     assert any(c[1].endswith("graph_updater.py") for c in run_import.calls), "импорт дошёл до графа"
 
 
@@ -186,27 +196,56 @@ def test_стенограмма_без_сайдкара_узнаётся_по_ш
     json.dumps({"name": "zoom.vtt", "size": "100", "kind": "subs"}),
     json.dumps({"name": "zoom.vtt", "size": True, "kind": "subs"}),
     json.dumps({"name": "zoom.vtt", "size": -1, "kind": "subs"}),
-    json.dumps({"name": "zoom.vtt", "size": 100, "kind": "video"}),
+    json.dumps({"name": "zoom.vtt", "size": 100, "kind": ""}),
+    json.dumps({"name": "zoom.vtt", "size": 100, "kind": 5}),
     {"name": "zoom.vtt", "size": 100, "kind": "subs"},      # не строкой — чужой тип
 ])
 def test_мусор_в_ключе_это_ключа_нет_и_разбор_шапки(tmp_path, raw):
     tpath = tmp_path / f"{STAMP}.md"
     tpath.write_text(f"# Встреча {STAMP} — импорт zoom.vtt (100 Б)\n", encoding="utf-8")
     _put_origin(tpath, raw)
-    assert transcript_origin.of(tpath) is None
+    assert _of(tpath) is None
     # шапка говорит «другая запись» — мусорный ключ не склеивает её с «zoom2.vtt»
     assert im.find_repeat(tmp_path, STAMP, "zoom.vtt", 100) == (tpath, True)
     assert im.find_repeat(tmp_path, STAMP, "zoom2.vtt", 100) == (None, True)
     assert im.find_repeat_anywhere(tmp_path, "zoom.vtt", 100) == tpath
 
 
+def test_неизвестный_вид_не_стирает_ключ(tmp_path):
+    """Вид, которого этот читатель не знает (его добавит будущий писатель, №260), —
+    не мусор: дедупу нужны имя и размер (DS M1 круга 1 по PR №629)."""
+    tpath = tmp_path / f"{STAMP}.md"
+    tpath.write_text(f"# Встреча {STAMP} — Тема\n", encoding="utf-8")
+    _put_origin(tpath, _origin("a.m4a", 5, "series"))
+    assert _of(tpath) == ("a.m4a", 5, "series")
+    assert im.find_repeat(tmp_path, STAMP, "a.m4a", 5) == (tpath, True)
+
+
+def test_чужой_сайдкар_той_же_минуты_не_делает_встречу_повтором(tmp_path):
+    """Сирота соседки той же минуты (её стенограмма стёрта, сайдкар остался) — не
+    наш сайдкар. Поиск наследия отдал бы её исходник как наш, и новая встреча
+    не импортировалась бы как «повтор» (DS I1 круга 1 по PR №629)."""
+    main = tmp_path / f"{STAMP}.md"
+    main.write_text(f"# Встреча {STAMP} — Тема\n", encoding="utf-8")
+    orphan = tmp_path / f"{STAMP}05.md.live.json"
+    orphan.write_text(json.dumps({transcript_origin.SIDECAR_KEY: _origin("X.m4a", 100, "audio")}),
+                      encoding="utf-8")
+    # предусловие: поиск наследия действительно отдаёт сироту как сайдкар main
+    assert (live_sidecar.read(main) or {}).get(transcript_origin.SIDECAR_KEY), "сирота не усыновляется"
+    # свой файл есть в снимке каталога, но исчез до чтения — гонка снимка и чтения
+    assert transcript_origin.of(main, {main.name + ".live.json"}) is None
+    assert _of(main) is None
+    assert im.find_repeat(tmp_path, STAMP, "X.m4a", 100) == (None, True)
+    assert im.find_repeat_anywhere(tmp_path, "X.m4a", 100) is None
+
+
 def test_битый_сайдкар_и_нулевой_размер(tmp_path):
     tpath = tmp_path / f"{STAMP}.md"
     tpath.write_text("# Встреча\n", encoding="utf-8")
     _sidecar(tpath).write_text("{оборван", encoding="utf-8")
-    assert transcript_origin.of(tpath) is None
+    assert _of(tpath) is None
     _put_origin(tpath, _origin("пустой.txt", 0))
-    assert transcript_origin.of(tpath) == ("пустой.txt", 0, "text"), "ноль байт — размер, не мусор"
+    assert _of(tpath) == ("пустой.txt", 0, "text"), "ноль байт — размер, не мусор"
 
 
 PAIRS = [("zoom.vtt", 100), ("zoom.vtt", None), ("zoom.vtt", 101), ("zoom2.vtt", 100),
@@ -274,7 +313,7 @@ def test_два_писателя_одного_сайдкара_не_затира
     assert channel_trace.events_of(tpath) == events
     more = events + [{"label": "mic", "kind": "gap", "at": 2.0, "stopped_at": 1.5}]
     assert live_sidecar.remember(tpath, channel_trace.SIDECAR_KEY, json.dumps(more))
-    assert transcript_origin.of(tpath) == ("a.m4a", 5, "audio")
+    assert _of(tpath) == ("a.m4a", 5, "audio")
     assert channel_trace.events_of(tpath) == more
 
 

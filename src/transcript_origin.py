@@ -43,21 +43,24 @@ def remember(tpath: pathlib.Path, name: str, size: int, kind: str) -> bool:
     return live_sidecar.remember(tpath, SIDECAR_KEY, value)
 
 
-def of(tpath: pathlib.Path, sidecars: set[str] | None = None) -> tuple[str, int, str] | None:
-    """(имя, размер, вид) из сайдкара стенограммы; None — ключа нет.
+def of(tpath: pathlib.Path, sidecars: set[str]) -> tuple[str, int, str] | None:
+    """(имя, размер, вид) из СОБСТВЕННОГО сайдкара стенограммы; None — ключа нет.
 
-    Мусор, чужой тип, неизвестный вид — тоже «ключа нет»: дедуп уходит в
-    разбор шапки, а не склеивает встречи по полуразобранной записи.
+    Мусор и чужой тип — тоже «ключа нет»: дедуп уходит в разбор шапки, а не
+    склеивает встречи по полуразобранной записи. Вид проверяется только на
+    форму (непустая строка): дедупу он не нужен, а вид, который добавит
+    будущий писатель, не должен стирать у старого читателя весь ключ (DS M1
+    круга 1 по PR №629).
+
     `sidecars` — имена сайдкаров каталога, снятые вызывающим один раз на
-    обход: кандидат без СВОЕГО сайдкара `<имя>.md.live.json` не читается
-    вовсе — писатель пишет именно туда, а `live_sidecar.read` без своего
-    файла ушёл бы в поиск наследия глобом по каталогу на каждого кандидата."""
-    if sidecars is not None and tpath.name + ".live.json" not in sidecars:
+    обход; обязательный, без умолчания. Кандидат без СВОЕГО сайдкара
+    `<имя>.md.live.json` не читается вовсе, а читается только свой файл
+    (`live_sidecar.read_direct`): поиск наследия нашёл бы сироту соседки той
+    же минуты, и её исходник сделал бы новую встречу «повтором» — она не
+    импортировалась бы (DS I1 круга 1 по PR №629)."""
+    if tpath.name + ".live.json" not in sidecars:
         return None
-    try:
-        meta = live_sidecar.read(tpath) or {}
-    except Exception:  # noqa: BLE001 — дедуп не падает из-за сайдкара
-        return None
+    meta = live_sidecar.read_direct(tpath) or {}
     raw = meta.get(SIDECAR_KEY)
     if not isinstance(raw, str):
         return None
@@ -70,7 +73,7 @@ def of(tpath: pathlib.Path, sidecars: set[str] | None = None) -> tuple[str, int,
     name, size, kind = rec.get("name"), rec.get("size"), rec.get("kind")
     # bool — подкласс int: `true` в размере — мусор, а не «1 байт»
     if (not isinstance(name, str) or not name or not isinstance(size, int)
-            or isinstance(size, bool) or size < 0 or kind not in KINDS):
+            or isinstance(size, bool) or size < 0 or not isinstance(kind, str) or not kind):
         return None
     return name, size, kind
 
