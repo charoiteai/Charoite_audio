@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import review_bridge as rb  # noqa: E402
@@ -817,3 +819,79 @@ def test_minutes_vanishing_between_the_check_and_the_write_are_told_apart(tmp_pa
     assert exc.value.gone, exc.value.kind
     assert not exc.value.unreachable and exc.value.detail == "", exc.value.reason
     assert not mpath.exists(), "файла нет — писать было некуда, и воскресать он не должен"
+
+
+def test_an_item_with_a_due_field_in_minutes_is_the_same_item_without_it():
+    # Поле срока плагина Tasks («📅 ГГГГ-ММ-ДД») — не часть поручения: свой ключ моста
+    # оставлял цифры даты, и короткий пункт с полем и тот же пересказ ревизии без поля
+    # расходились и по ключу, и по Жаккару (1 общее слово из 2) — пункт дописывался
+    # второй раз (№366, шаг 2). Ключ теперь общий — task_line.key.
+    minutes = "# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить 📅 2026-10-01\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник А** — позвонить"])
+    assert added == 0 and text == minutes
+    # и в обратную сторону: поле у пересказа, в минутках его нет
+    bare = minutes.replace(" 📅 2026-10-01", "")
+    text, added = rb.merge_into_minutes(bare, ["**Участник А** — позвонить 📅 2026-10-01"])
+    assert added == 0 and text == bare
+
+
+@pytest.mark.parametrize("mark", ["(из ревизии)", "(from the review)", "（来自审阅）"])
+def test_the_bridge_strips_its_own_review_mark_before_the_shared_key(mark):
+    # Пометку ревизии ставит сам мост, грамматика строки её не знает: срезать её — дело
+    # моста. Короткий пункт Жаккар не спасает, так что без среза пересказ дописывался бы
+    # второй раз (Opus C2 круга 1 по PR #621: срез держал только код, а не тест).
+    minutes = f"# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить {mark} 📅 2026-10-01\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник А** — позвонить"])
+    assert added == 0 and text == minutes
+
+
+def test_the_bridge_strips_the_outsider_mark_before_the_shared_key():
+    # «⚠ не участник (Имя):» — пометка контроля участников, не грамматика строки. Снятие
+    # подходит к двум пунктам, и выбирает точный ключ: без среза пометки он не совпал бы,
+    # и снятие осталось бы «подходит к двум» (Opus C2 круга 1 по PR #621)
+    minutes = ("# Минутки\n## Поручения\n"
+               "- ⚠ не участник (Участник А): **Участник А** — позвонить клиенту 📅 2026-10-01\n"
+               "- [ ] **Участник А** — позвонить клиенту завтра\n\n## Риски\n- нет\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить клиенту", "не звучало")],
+                                           dropped=dropped)
+    assert moved == 1 and dropped == [], dropped
+    assert "- [ ] **Участник А** — позвонить клиенту завтра" in text.split("## Снято")[0]
+
+
+def test_a_date_inside_the_text_keeps_two_items_apart():
+    # поле — только хвост строки: общий ключ резал даты где угодно, и пункт «сдвинуть с
+    # 📅 2027-03-01 на …» считался уже записанным «сдвинуть с 📅 2026-10-01 на …» — мост
+    # молча не дописывал его (DeepSeek I3 круга 1 по PR #621)
+    minutes = "# Минутки\n## Поручения\n- [ ] **Участник Б** — сдвинуть 📅 2026-10-01 на 📅 2026-10-15\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник Б** — сдвинуть 📅 2027-03-01 на 📅 2026-10-15"])
+    assert added == 1 and "сдвинуть 📅 2027-03-01 на 📅 2026-10-15" in text
+
+
+def test_the_due_field_tells_two_otherwise_equal_items_apart_on_withdrawal():
+    # два открытых пункта отличаются только сроком: снятие со сроком — один из них, а не
+    # «подходит к двум» (DeepSeek I4 круга 1 по PR #621)
+    minutes = ("# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить 📅 2026-10-01\n"
+               "- [ ] **Участник А** — позвонить 📅 2026-10-15\n\n## Риски\n- нет\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить 📅 2026-10-15", "не звучало")],
+                                           dropped=dropped)
+    assert moved == 1 and dropped == [], dropped
+    kept = text.split("## Снято")[0].split("\n")
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-01" in kept
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-15" not in kept
+    # без срока снятие по-прежнему не гадает
+    dropped.clear()
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить", "не звучало")], dropped=dropped)
+    assert moved == 0 and text == minutes and "подходит к 2" in dropped[0], dropped
+    # пункт без срока и тот же пункт со сроком: снятие без срока — дословный пункт без поля,
+    # как на main. Совпадение пустых полей — не догадка: пересказ ровно такой строки
+    # (облачная голова, круг 2 по PR #621: отклонено как смена политики, закреплено тестом)
+    pair = ("# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить\n"
+            "- [ ] **Участник А** — позвонить 📅 2026-10-01\n\n## Риски\n- нет\n")
+    dropped.clear()
+    text, moved = rb.withdraw_from_minutes(pair, [("**Участник А** — позвонить", "не звучало")], dropped=dropped)
+    kept = text.split("## Снято")[0].split("\n")
+    assert moved == 1 and dropped == [], dropped
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-01" in kept
+    assert "- [ ] **Участник А** — позвонить" not in kept
