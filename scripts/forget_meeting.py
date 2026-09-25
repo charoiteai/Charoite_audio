@@ -162,11 +162,15 @@ class Plan:
     # Как план решил, чьи посекундные файлы минуты: человек проверяет довод
     # ДО необратимого удаления (критика DS r4 по #499)
     notes: list[str] = dataclasses.field(default_factory=list)
+    # Досягаемое, но не тронутое: следы под минутой встречи, чья минута не
+    # доказана. Это не «не дотянется» — удалить их можно, решает человек
+    # (Minor DS кругов 1 и 2 по PR #622).
+    check: list[str] = dataclasses.field(default_factory=list)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
         out += [f"  {line}" for line in self.notes]
-        if not self.delete and not self.edit and not self.beyond_reach:
+        if not self.delete and not self.edit and not self.beyond_reach and not self.check:
             return out[0] + ": следов не найдено — забывать нечего"
         if self.delete:
             out.append(f"  удалить ({len(self.delete)}):")
@@ -177,19 +181,33 @@ class Plan:
         if self.beyond_reach:
             out.append("  не дотянется:")
             out += [f"    {line}" for line in self.beyond_reach]
+        if self.check:
+            out.append("  проверь сам (не тронуто):")
+            out += [f"    {line}" for line in self.check]
         return "\n".join(out)
 
 
-def _link_re(stamp: str) -> re.Pattern[str]:
-    """`[[Встречи/<штамп>]]` и `[[Встречи/<штамп>|любой алиас]]`."""
-    return re.compile(rf"\[\[{MEETINGS_DIR}/{re.escape(stamp)}(?:\|[^\]]*)?\]\]")
+def _link_re(stamps: str | list[str]) -> re.Pattern[str]:
+    """`[[Встречи/<штамп>]]` и `[[Встречи/<штамп>|любой алиас]]` — под любым из
+    ключей встречи: граф ссылается на неё ключом графа (минутой у владельца
+    минуты), а узла, по которому ключ видно, может уже не быть (круг 2 DS
+    по PR #622). Граница после штампа — `]]` или `|`: посекундная соседка той
+    же минуты под минутный ключ не попадает."""
+    keys = [stamps] if isinstance(stamps, str) else list(stamps)
+    alt = "|".join(re.escape(k) for k in keys)
+    return re.compile(rf"\[\[{MEETINGS_DIR}/(?:{alt})(?:\|[^\]]*)?\]\]")
 
 
 def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
-    """Граф из аргумента или все графы vault — встреча живёт в одном из них."""
+    """Граф из аргумента или все графы vault — встреча живёт в одном из них.
+
+    Графы с «Встречами» И графы, где остался только архив: от встречи бывает
+    жива одна папка архива (№248), а `or` терял такой граф, стоило любому
+    другому иметь «Встречи» (Minor DS кругов 1 и 2 по PR #622)."""
     if graph is not None:
         return [graph]
-    return graphs.all_graphs(MEETINGS_DIR) or graphs.all_graphs(ARCHIVE_DIR)
+    out = graphs.all_graphs(MEETINGS_DIR)
+    return out + [g for g in graphs.all_graphs(ARCHIVE_DIR) if g not in out]
 
 
 # Суффикс коллизии «-N» — часть штампа: «2026-08-21_125812-1» — другая встреча,
@@ -755,6 +773,7 @@ def plan(stamp: str, root: pathlib.Path,
         p.brain_keys = []          # граф остаётся — остаётся и память о встрече
         return p
 
+    told_minute = False              # файлы transcripts/ под недоказанной минутой уже названы
     for g in _graph_roots(graph):
         # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
         # у первой минутный; минутную заметку берём только если она наша
@@ -762,7 +781,10 @@ def plan(stamp: str, root: pathlib.Path,
         node = meeting_stamp.find_note(g, stamp, root / "transcripts")
         if node is not None and node.stem not in keys:
             node = None                 # минутный узел, владение минутой не доказано
-        link = _link_re(node.stem if node else stamp)
+        # Ссылки — по всем ключам встречи, а не по узлу: узла в этом графе может
+        # не быть, а строки Ядер и досье ссылаются ключом графа (минутой),
+        # и с одним посекундным штампом они переживали «забыть» (круг 2 DS по #622).
+        link = _link_re(keys)
         if node is not None:
             p.delete.append(node)
         for key in keys:
@@ -776,18 +798,31 @@ def plan(stamp: str, root: pathlib.Path,
             p.delete += _with_stamp(g / DOCS_DIR, key, suffix=".md")
         for key in keys:
             p.delete += [d for d in _archive_folders(g, key, manifests) if d not in p.delete]
-        # Минутная папка, чья минута ни наша, ни доказанно чужая (свой узел
+        # Следы под минутой, чья минута ни наша, ни доказанно чужая (свой узел
         # или своя папка встречи под секундами — тоже улика: graph_key даёт
-        # секунды, только когда минута чужая), — называется. Команду не подсказываем: забыть
-        # по минуте чужую встречу необратимо, решает человек по её Саммари.
+        # секунды, только когда минута чужая), — называются все, а не одна
+        # папка: стенограмма под минутой — это и есть текст встречи, и план,
+        # молчащий о ней, читался как «осталось проверить только папку» (круг 2
+        # DS по #622). Команду не подсказываем: забыть по минуте чужую встречу
+        # необратимо, решает человек.
         if node is None and minute != stamp and not minute_ours and not minute_foreign \
                 and all(owner != stamp for _, owner in _manifests(g / ARCHIVE_DIR, manifests)):
+            unproven = (f"названа минутой {minute}: чья она, не доказано ни сайдкаром, "
+                        f"ни строкой «Стенограмма:» узла")
             for d in _archive_folders(g, minute, manifests):
                 if d not in p.delete:
-                    p.beyond_reach.append(
-                        f"папка архива «{d.name}» названа минутой {minute}: чья она, "
-                        f"не доказано ни сайдкаром, ни строкой «Стенограмма:» узла — "
-                        f"проверь её Саммари; её ключ — {minute}")
+                    p.check.append(f"папка архива «{d.name}» {unproven} — "
+                                   f"проверь её Саммари; её ключ — {minute}")
+            named = [("стенограмма и её файлы в transcripts/", f)
+                     for f in _with_stamp(root / "transcripts", minute)] if not told_minute else []
+            told_minute = True           # transcripts/ один на все графы — назвать один раз
+            named += [("копия в «Документации»", f) for f in _with_stamp(g / DOCS_DIR, minute, suffix=".md")]
+            minute_note = g / MEETINGS_DIR / f"{minute}.md"
+            if minute_note.is_file():
+                named.append(("узел", minute_note))
+            for what, f in named:
+                if f not in p.delete:
+                    p.check.append(f"{what}: «{f.name}» {unproven} — проверь; её ключ — {minute}")
 
         # Снимки облачной ревизии копируют граф целиком; срез теперь один,
         # но у установок до переноса каталогов может быть несколько — обходим
@@ -814,7 +849,9 @@ def plan(stamp: str, root: pathlib.Path,
                     node_copy = snap / MEETINGS_DIR / f"{key}.md"
                     if node_copy.exists():
                         found.append(node_copy)
-                found += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
+                for key in keys:        # копия стенограммы после наката темы — под минутой
+                    found += [f for f in _with_stamp(snap / DOCS_DIR, key, suffix=".md")
+                              if f not in found]
                 for key in keys:
                     found += [d for d in _archive_folders(snap, key, manifests) if d not in found]
                 p.delete += found
@@ -832,14 +869,18 @@ def plan(stamp: str, root: pathlib.Path,
         quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
         if quarantine.is_dir():
             for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
-                if _quarantine_of(run_dir.name, stamp):
+                # каталог запуска назван стемом стенограммы на момент разбора —
+                # после наката темы это минута, поэтому по каждому ключу
+                if any(_quarantine_of(run_dir.name, key) for key in keys):
                     p.delete.append(run_dir)
                     continue
                 for key in keys:
                     node_copy = run_dir / MEETINGS_DIR / f"{key}.md"
                     if node_copy.exists():
                         p.delete.append(node_copy)
-                p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
+                for key in keys:
+                    p.delete += [f for f in _with_stamp(run_dir / DOCS_DIR, key, suffix=".md")
+                                 if f not in p.delete]
                 for key in keys:
                     p.delete += [d for d in _archive_folders(run_dir, key, manifests)
                                  if d not in p.delete]
@@ -849,7 +890,7 @@ def plan(stamp: str, root: pathlib.Path,
             displaced = quarantine / DISPLACED_DIR
             if displaced.is_dir():
                 for run_dir in sorted(d for d in displaced.iterdir() if d.is_dir()):
-                    if _quarantine_of(run_dir.name, stamp):
+                    if any(_quarantine_of(run_dir.name, key) for key in keys):
                         p.delete.append(run_dir)
 
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
@@ -979,6 +1020,8 @@ def apply(p: Plan, yes: bool = False, *, brain_enabled: bool = False, brain_expl
           " файлы у других участников — см. PRIVACY.md")
     for line in p.beyond_reach:
         print(f"  и ещё: {line}")
+    for line in p.check:
+        print(f"  проверь сам (не тронуто): {line}")
     return True
 
 

@@ -1305,7 +1305,7 @@ def test_seconds_target_takes_the_archive_folder_of_its_proven_minute_key(tmp_pa
                  q_folder, q / "Встречи" / f"{STAMP}.md"):
         assert gone in plan.delete, gone
     assert plan.brain_keys == [SECONDS, STAMP]
-    assert not plan.beyond_reach or all("Встречи-архив" not in b for b in plan.beyond_reach)
+    assert not plan.check and all("Встречи-архив" not in b for b in plan.beyond_reach)
 
 
 def test_seconds_target_without_a_node_names_the_minute_folder_instead_of_guessing(tmp_path):
@@ -1321,14 +1321,15 @@ def test_seconds_target_without_a_node_names_the_minute_folder_instead_of_guessi
     folder = graph / "Встречи-архив" / "2026-07-15 14-00 — Тема"
     assert folder not in plan.delete and mark not in plan.delete
     assert plan.brain_keys == [SECONDS]
-    assert [b for b in plan.beyond_reach if "Встречи-архив" in b or "папка архива" in b] == [
+    assert [b for b in plan.check if "папка архива" in b] == [
         f"папка архива «{folder.name}» названа минутой {STAMP}: чья она, не доказано ни "
         f"сайдкаром, ни строкой «Стенограмма:» узла — проверь её Саммари; её ключ — {STAMP}"]
+    assert not any("папка архива" in b for b in plan.beyond_reach), "досягаемое — не «не дотянется»"
     # с узлом-секундой минута точно чужая — вслух о ней не говорим
     (graph / "Встречи" / f"{SECONDS}.md").write_text("# Встреча\n", encoding="utf-8")
-    assert not any(STAMP + ":" in b for b in forget.plan(SECONDS, root, graph).beyond_reach)
+    assert not forget.plan(SECONDS, root, graph).check
     # минутная цель о своей же минуте вслух не говорит
-    assert not any("папка архива" in b for b in forget.plan(STAMP, root, graph).beyond_reach)
+    assert not forget.plan(STAMP, root, graph).check
 
 
 def test_archive_folder_found_by_manifest_is_taken_whatever_its_name(tmp_path):
@@ -1383,7 +1384,7 @@ def test_archive_only_neighbour_does_not_take_the_minute_owner_node(tmp_path):
 
     assert plan.delete == [arch / "2026-07-15 14-00-12 — Б"]
     assert node not in plan.delete and plan.brain_keys == [SECONDS]
-    assert not any("папка архива" in b for b in plan.beyond_reach), \
+    assert not plan.check, \
         "своя папка названа секундами — минута чужая, советовать её забыть нельзя"
     # точная секунда владельца (сайдкар) — цель: минутный узел наш
     (root / "transcripts" / f"{STAMP}_Тема_А.md.live.json").write_text(
@@ -1398,11 +1399,11 @@ def test_minute_proven_foreign_is_not_offered_to_forget(tmp_path):
     root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": None})
     (root / "transcripts" / f"{SECONDS}.md").write_text("# Встреча\n", encoding="utf-8")
     named = f"папка архива «2026-07-15 14-00 — Тема» названа минутой {STAMP}"
-    assert any(b.startswith(named) for b in forget.plan(SECONDS, root, graph).beyond_reach)
+    assert any(b.startswith(named) for b in forget.plan(SECONDS, root, graph).check)
     (root / "transcripts" / "2026-07-15_140005.md").write_text("# Встреча\n", encoding="utf-8")
     _minute_node(graph, "2026-07-15_140005.md")
     plan = forget.plan(SECONDS, root, graph)
-    assert not any(b.startswith(named) for b in plan.beyond_reach)
+    assert not plan.check
     assert graph / "Встречи" / f"{STAMP}.md" not in plan.delete
 
 
@@ -1447,9 +1448,9 @@ def test_seconds_target_takes_the_minute_named_files_of_its_proven_minute(tmp_pa
 def test_proven_minute_without_a_node_takes_the_folder_and_the_mark(tmp_path):
     """Круг DeepSeek по PR #622, I2: одно и то же доказательство владения
     минутой (сайдкар) даёт один вывод и при узле, и без него — папка и
-    отметка минуты уходят, совета «проверь» нет. Без слова конвейера (только
-    порядок файлов) — папка называется, но текст не утверждает, что владение
-    «не доказать»: оно не доказано ни сайдкаром, ни строкой узла."""
+    отметка минуты уходят, совета «проверь» нет. Случай без слова конвейера
+    держат test_seconds_target_without_a_node_names_the_minute_folder_instead_of_guessing
+    и test_unproven_minute_names_every_trace_under_it_and_touches_none."""
     root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
     _retitled(root, SECONDS)
     mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
@@ -1457,7 +1458,7 @@ def test_proven_minute_without_a_node_takes_the_folder_and_the_mark(tmp_path):
     plan = forget.plan(SECONDS, root, graph)
     assert graph / "Встречи-архив" / "2026-07-15 14-00 — Тема" in plan.delete
     assert mark in plan.delete and plan.brain_keys == [SECONDS, STAMP]
-    assert not any("папка архива" in b for b in plan.beyond_reach)
+    assert not plan.check
 
 
 def test_archive_manifests_are_read_once_per_plan(tmp_path, monkeypatch):
@@ -1494,3 +1495,92 @@ def test_seconds_target_proven_by_the_node_line_when_the_retitled_file_has_no_si
     plan = forget.plan(SECONDS, root, graph)
     assert root / "transcripts" / f"{STAMP}_Тема.md" in plan.delete
     assert node in plan.delete and plan.brain_keys == [SECONDS, STAMP]
+
+
+def test_proven_minute_reaches_every_copy_named_by_it(tmp_path):
+    """Круг 2 DS по PR #622, C1 и C2: минута доказана сайдкаром, узла в графе
+    нет. Каждое место, где встреча лежит под минутой, обязано попасть в план:
+    копия стенограммы в «Документации» графа, старого и нового места снимков
+    всех видов, чужого прогона карантина; каталог её запуска в карантине и
+    вытесненные тела её разбора; строки Ядра со ссылкой по минуте и по
+    секунде. Раньше снимки и карантин искали копию по посекундному штампу,
+    ссылку без узла — тоже по нему, и всё это переживало «забыть»."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
+    charoite_paths.use_data_root(root, replace=True)
+    _retitled(root, SECONDS)
+    name = f"{STAMP}_Тема.md"
+    places: list[pathlib.Path] = []
+
+    def copy_in(where: pathlib.Path) -> None:
+        where.mkdir(parents=True, exist_ok=True)
+        (where / name).write_text("копия\n", encoding="utf-8")
+        places.append(where / name)
+
+    copy_in(graph / forget.DOCS_DIR)
+    copy_in(graph / forget.CLOUD_BACKUP_DIR / "2026-07-20_0300" / forget.DOCS_DIR)
+    kinds = [(k, inner) for k, inner in charoite_paths.GRAPH_BACKUP_KINDS.items() if inner is not None]
+    assert kinds, "реестр видов копий графа пуст — тест ничего бы не проверил"
+    for kind, inner in kinds:
+        run = charoite_paths.graph_backups(graph, kind, root=root) / "2026-07-20_0300"
+        copy_in((run / inner if inner else run) / forget.DOCS_DIR)
+    quarantine = charoite_paths.graph_backups(graph, forget.CLOUD_QUARANTINE, root=root)
+    copy_in(quarantine / "2026-07-16_1000-090000" / forget.DOCS_DIR)
+    for own in (quarantine / f"{STAMP}_Тема-090000",
+                quarantine / forget.DISPLACED_DIR / f"{STAMP}_Тема-090000"):
+        own.mkdir(parents=True)
+        places.append(own)
+    neighbour = f"{STAMP}45"             # посекундная соседка той же минуты
+    core = graph / "Ядра" / "Проект.md"
+    core.parent.mkdir()
+    core.write_text(f"# Проект\n\n- [[Встречи/{STAMP}]] — решили X\n"
+                    f"- [[Встречи/{SECONDS}|встреча]] — решили Y\n"
+                    f"- [[Встречи/{neighbour}]] — решила соседка\n", encoding="utf-8")
+
+    plan = forget.plan(SECONDS, root, graph)
+
+    missed = [q for q in places if q not in plan.delete]
+    assert not missed, missed
+    assert plan.edit[core] == f"# Проект\n\n- [[Встречи/{neighbour}]] — решила соседка\n"
+    assert not plan.check
+
+
+def test_unproven_minute_names_every_trace_under_it_and_touches_none(tmp_path):
+    """Круг 2 DS по PR #622, I1: минута не доказана ни сайдкаром, ни строкой
+    узла (накат темы прошёл, ключ stamp в сайдкар не лёг, узел называет
+    минутный файл). План не трогает ничего под минутой, но называет всё:
+    стенограмму с минутками, копию в «Документации», узел и папку — а не
+    одну папку. Это досягаемое, поэтому не в «не дотянется», а в «проверь сам»."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": None})
+    _retitled(root, None)
+    node = _minute_node(graph, f"{STAMP}_Тема.md")
+    docs = graph / forget.DOCS_DIR
+    docs.mkdir(parents=True)
+    (docs / f"{STAMP}_Тема.md").write_text("копия\n", encoding="utf-8")
+    t = root / "transcripts"
+    expected = [("стенограмма и её файлы в transcripts/", t / f"{STAMP}_Тема.md"),
+                ("стенограмма и её файлы в transcripts/", t / f"{STAMP}_Тема_minutes.md"),
+                ("копия в «Документации»", docs / f"{STAMP}_Тема.md"),
+                ("узел", node),
+                ("папка архива", graph / "Встречи-архив" / "2026-07-15 14-00 — Тема")]
+
+    plan = forget.plan(SECONDS, root, graph)
+
+    for what, kept in expected:
+        assert kept not in plan.delete, kept
+        assert any(c.startswith(what) and f"«{kept.name}»" in c for c in plan.check), (what, plan.check)
+    assert not any(STAMP in b for b in plan.beyond_reach)
+    assert "проверь сам (не тронуто):" in plan.describe()
+
+
+def test_graph_with_only_an_archive_is_walked_when_another_has_meetings(tmp_path, monkeypatch):
+    """Minor DS кругов 1 и 2 по PR #622: граф, где от встреч остался только
+    архив, обходится и тогда, когда у другого графа vault есть «Встречи» —
+    `all_graphs(«Встречи») or all_graphs(«Встречи-архив»)` его терял."""
+    import shutil
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
+    shutil.rmtree(graph / "Встречи")
+    other = tmp_path / "vault" / "Личное"
+    (other / "Встречи").mkdir(parents=True)
+    found = {forget.MEETINGS_DIR: [other], forget.ARCHIVE_DIR: [graph]}
+    monkeypatch.setattr(forget.graphs, "all_graphs", lambda marker: list(found[marker]))
+    assert forget.plan(STAMP, root, None).delete == [graph / "Встречи-архив" / "2026-07-15 14-00 — Тема"]
