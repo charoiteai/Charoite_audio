@@ -857,6 +857,37 @@ a line in the document (№317), not as a stray line inside a minutes excerpt.
 The manifest carries no copy of the passport state — readers ask
 `summary_state()`.
 
+**The meeting's action-item canon is a derivative with a passport too.** A
+meeting has one canon of action items — `Минутки.md` in its archive folder;
+the Tasks tab shows its lines. Until №366 every archive pass laid the machine
+source (`transcripts/<stem>_minutes.md`) over it byte for byte and erased the
+checkmarks people had set (№370). Now `meeting_archive.lay_canon` writes the
+canon under the `canon_minutes` passport, the same mechanism as the summary and
+theses: the canon is rewritten only while its bytes are the ones the archiver
+wrote itself (MISSING / STALE). Any other edit — a checkmark from the app or the
+notes plugin, the nightly check, a changed or deleted line — makes it HUMAN,
+and such a canon is left alone with a `kept` line in the log and the number of
+lines that differ from the machine version (merging machine edits into an
+edited canon is №391). The source and the canon are read in text mode, exactly
+as the oracle reads them — strict UTF-8 and universal newlines, never
+`bytes.decode` — so a CRLF source gets a passport the oracle reproduces; the
+source is read once, and the canon gets that text and the source's times
+(`safe_write.write_text(times=…)`). A canon whose text already equals the
+source is never rewritten; without a passport it is adopted on the compared
+text with a `canon_minutes_adopted` mark. Without a transcript no passport is
+written anywhere (the sidecar would be an orphan). A canon not in UTF-8 is
+`kept` as is — only a person can re-save it. The outcome is a value
+(`CanonOutcome`: created / updated / unchanged / adopted / kept / refused /
+failed) in `Archived.canon`; the pipeline and the review delivery print kept,
+refused and failed, the retro pass and `meeting_archive --all` print a tally.
+Summary materials stay strict: an unreadable material ends the summary pass as
+`failed` ("material unreadable: Минутки.md") without a rebuild or a passport,
+and the archive pass goes on. The copy in `Документация/Стенограммы встреч` is
+the canon's bytes, written by `copy_to_vault_docs` after the archive (the
+pipeline used to copy before archiving): app search removes duplicates by
+content hash, so the copy must equal the canon. Renaming a meeting rewrites the
+canon through `retouch`, keeping its passport.
+
 **System health has one rollup and two surfaces, not four private
 verdicts.** Before №139 every health signal had its own surface and its own
 lifetime: recording problems lived in `SuflerService` and only during a

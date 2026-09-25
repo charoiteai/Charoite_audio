@@ -38,7 +38,8 @@ def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
 
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
                expect: tuple[int, int] | None = None,
-               expect_absent: bool = False) -> bool:
+               expect_absent: bool = False,
+               times: tuple[int, int] | None = None) -> bool:
     """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое.
 
     `expect` — снимок `stat_snapshot`, взятый ДО чтения исходника: если к
@@ -51,6 +52,10 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     протокол — критика DS по #464); здесь он один на всех писателей.
     Проверка — перед самым replace: окно гонки сжато до минимума, но не до
     нуля — это защита от затирания, не замок.
+    `times` — `(atime_ns, mtime_ns)` для нового файла. Нужен производной, чья
+    свежесть читается по времени источника: канон минуток в архиве встречи
+    (`summary_adoptable` сравнивает mtime материалов с саммари, №366). Без
+    него времена — время записи, как всегда (правило `_carry_over_metadata`).
     """
     # Симлинк в графе ведёт к настоящему файлу, и писать надо в него: иначе
     # `replace` подменил бы саму ссылку обычным файлом, а цель осталась со
@@ -64,6 +69,8 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     try:
         tmp.write_text(text, encoding=encoding)
         _carry_over_metadata(path, tmp)
+        if times is not None:
+            os.utime(tmp, ns=times)
         if expect is not None and stat_snapshot(path) != expect:
             return False
         if expect_absent and path.exists():

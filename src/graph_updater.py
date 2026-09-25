@@ -15,6 +15,7 @@ import pathlib
 import re
 import sys
 import time
+import typing
 
 import requests
 import yaml
@@ -803,7 +804,9 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
     return out
 
 
-def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path) -> pathlib.Path | None:
+def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.Path | None = None,
+                       canon_source: pathlib.Path | None = None,
+                       exclude: typing.Collection[pathlib.Path] = ()) -> pathlib.Path | None:
     """Файлы встречи → «Документация/Стенограммы встреч» графа; путь папки или
     None, если «Документации» в графе нет.
 
@@ -811,14 +814,103 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path) -> pathlib.Path
     встречи без темы это «…113012*», а минутный глоб брал файлы соседки той же
     минуты (аудит GLM 17.08). Пишем только изменившиеся и не на месте: граф в
     iCloud, и перезапись того же файла при каждом проходе давала конфликтные
-    копии «Имя 2.md» (№361)."""
+    копии «Имя 2.md» (№361).
+
+    Минутки — копия КАНОНА `canon` из папки архива, а не источника (№366):
+    канон правят люди, и копия из источника расходилась бы с ним — поиск
+    приложения убирает дубли «Документации» и архива по хешу содержимого и
+    показал бы две строки на одно поручение. Из канона копируется ровно тот
+    файл, что раскладка взяла его источником (`canon_source`, по имени) —
+    двойник по теме копируется из себя, иначе его текст пропал бы из графа.
+    Канон копируется байтами, кодировка значения не имеет. Канона нет —
+    копия из источника, как до №366; канон не прочитался — прежняя копия
+    остаётся: копия из источника разошлась бы с ним. `exclude` — файлы, которые
+    вызывающий копирует сам (отчёт ревизии)."""
     vdocs = graph / "Документация" / "Стенограммы встреч"
     if not vdocs.parent.exists():
         return None
     vdocs.mkdir(exist_ok=True)
+    if canon is not None and not canon.is_file():
+        print(f"канона минуток {canon} нет — копия минуток из источника")
+        canon = None
+    matched = False
     for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
+        if f in exclude:
+            continue
+        if canon is not None and canon_source is not None and f.name == canon_source.name:
+            matched = True
+            try:
+                safe_write.copy_if_changed(canon, vdocs / f.name)
+            except OSError as e:
+                print(f"копия {f.name} не обновлена: канон минуток не прочитался ({e}) — прежняя остаётся")
+            continue
+        if canon is None and f.name.endswith("_minutes.md"):
+            print(f"{f.name} — копия из источника: канона минуток в проходе нет")
         safe_write.copy_if_changed(f, vdocs / f.name)
+    if canon is not None and canon_source is not None and not matched:
+        print(f"источник канона {canon_source.name} не среди файлов встречи — копия канона не сделана")
     return vdocs
+
+
+def archive_and_publish(tpath: pathlib.Path, graph: pathlib.Path, stamp: str) -> None:
+    """Архив встречи для Finder, затем копии в «Документацию» графа.
+
+    Порядок — архив первым (№366): копия минуток в «Документации» — байты
+    канона архива, и канон должен быть разложен до копии. Каждый шаг в своём
+    `try`: упавший архив не отменяет копий, они идут из источника, как до №366."""
+    archived = None
+    # 4в) архив для Finder: папка «дата — название» со всей документацией
+    # встречи и ссылкой на граф (Встречи-архив/, ярлык на рабочем столе)
+    try:
+        from meeting_archive import archive_meeting
+        from meeting_stamp import title_from_stem
+        # Ключ файлов — стем стенограммы: у посекундной встречи без темы это
+        # «…113012», и минутный глоб взял бы файлы соседней встречи той же
+        # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
+        # саммари — по паспорту одной политикой с обходом: новая встреча MISSING,
+        # ревизия старит через минутки; легаси без паспорта живой путь не трогает (№314)
+        # Название папки — из стема, как у облачной ревизии: иначе каждая смена
+        # вызывающего переименовывала папку и переписывала манифест (№361).
+        archived = archive_meeting(graph, tpath.parent, stamp, title_from_stem(tpath.stem),
+                                   files_key=tpath.stem)
+        print(f"архив встречи: {archived.folder.name}" if archived else "архив встречи: исключена")
+        if archived is not None:
+            for line in archive_alarms(archived):
+                print(f"архив встречи: {line}")
+    except Exception as e:  # noqa: BLE001
+        print(f"архив встречи не удался: {e}")
+
+    # 4б) артефакты встречи → vault (iCloud): симлинки iCloud не синкает, копируем
+    try:
+        vdocs = copy_to_vault_docs(tpath, graph, *canon_of(archived))
+        if vdocs is not None:
+            print(f"артефакты скопированы в vault: {vdocs}")
+    except Exception as e:  # noqa: BLE001
+        print(f"копирование в vault не удалось: {e}")
+
+
+def canon_of(archived) -> tuple[pathlib.Path | None, pathlib.Path | None]:
+    """Канон минуток прохода и его источник для `copy_to_vault_docs`; (None,
+    None) — архив упал, встреча исключена или минуток в плане не было: копия
+    минуток тогда из источника, как до №366."""
+    if archived is None or archived.canon is None:
+        return None, None
+    from meeting_archive import CANON_NAME
+    return archived.folder / CANON_NAME, archived.canon.source
+
+
+def archive_alarms(archived) -> list[str]:
+    """Строки исхода архивации, которые живой путь обязан показать: саммари не
+    собрано по отказу (FAILED/REFUSED — «материал не читается» иначе остался бы
+    невидимым) и канон минуток не тронут или не прочитан (№366). Одно правило на
+    конвейер и доставку ревизии."""
+    from meeting_archive import SummaryOutcome
+    lines = []
+    if archived.summary.action in (SummaryOutcome.FAILED, SummaryOutcome.REFUSED):
+        lines.append(archived.summary.line())
+    if archived.canon is not None and archived.canon.alarming:
+        lines.append(archived.canon.line())
+    return lines
 
 
 def theme_slug(title: str) -> str:
@@ -2937,31 +3029,9 @@ def main():
     except Exception as e:
         print(f"разбор не удался: {e}")
 
-    # 4б) артефакты встречи → vault (iCloud): симлинки iCloud не синкает, копируем
-    try:
-        vdocs = copy_to_vault_docs(tpath, graph)
-        if vdocs is not None:
-            print(f"артефакты скопированы в vault: {vdocs}")
-    except Exception as e:  # noqa: BLE001
-        print(f"копирование в vault не удалось: {e}")
-
-    # 4в) архив для Finder: папка «дата — название» со всей документацией
-    # встречи и ссылкой на граф (Встречи-архив/, ярлык на рабочем столе)
-    try:
-        from meeting_archive import archive_meeting
-        from meeting_stamp import title_from_stem
-        # Ключ файлов — стем стенограммы: у посекундной встречи без темы это
-        # «…113012», и минутный глоб взял бы файлы соседней встречи той же
-        # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
-        # саммари — по паспорту одной политикой с обходом: новая встреча MISSING,
-        # ревизия старит через минутки; легаси без паспорта живой путь не трогает (№314)
-        # Название папки — из стема, как у облачной ревизии: иначе каждая смена
-        # вызывающего переименовывала папку и переписывала манифест (№361).
-        archived = archive_meeting(graph, tpath.parent, stamp, title_from_stem(tpath.stem),
-                                   files_key=tpath.stem)
-        print(f"архив встречи: {archived.folder.name}" if archived else "архив встречи: исключена")
-    except Exception as e:  # noqa: BLE001
-        print(f"архив встречи не удался: {e}")
+    # 4б, 4в) архив встречи, затем копии в vault — канон минуток архива раньше
+    # своей копии в «Документации» (№366)
+    archive_and_publish(tpath, graph, stamp)
 
     # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
     # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich,

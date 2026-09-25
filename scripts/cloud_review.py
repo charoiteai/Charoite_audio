@@ -1209,19 +1209,20 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
                                    files_key=transcript.stem,
                                    extra={"Ревизия Claude.md": rev} if rev_ok else None)
         folder = archived.folder if archived is not None else None
-        vdocs = graph / "Документация" / "Стенограммы встреч"
-        if vdocs.is_dir():
-            if rev_ok:
-                safe_write.copy_if_changed(rev, vdocs / rev.name)
-            # Стенограмма и минутки после моста (имена меток, снятые и
-            # восстановленные поручения) — заново, как в разборе: копия в
-            # Документации иначе оставалась довозной версией (№239)
-            from meeting_stamp import files_with_stamp
-            for f in files_with_stamp(transcript.parent, transcript.stem, suffix=".md"):
-                if f != rev:
-                    safe_write.copy_if_changed(f, vdocs / f.name)
+        if archived is not None:
+            # саммари не собрано по отказу и канон минуток не тронут — вслух (№366)
+            for line in graph_updater.archive_alarms(archived):
+                lf.write(f"[cloud-review] архив встречи: {line}\n")
+        # Стенограмма и минутки после моста (имена меток, снятые и
+        # восстановленные поручения) — заново, как в разборе: копия в
+        # Документации иначе оставалась довозной версией (№239). Писатель копий
+        # один — `copy_to_vault_docs`: минутки там — байты канона архива (№366)
+        vdocs = graph_updater.copy_to_vault_docs(transcript, graph, *graph_updater.canon_of(archived),
+                                                 exclude={rev})
+        if vdocs is not None and rev_ok:
+            safe_write.copy_if_changed(rev, vdocs / rev.name)
         lf.write(f"[cloud-review] ревизия доставлена: архив {folder.name if folder else '—'}"
-                 f"{', vault' if vdocs.is_dir() else ''}\n")
+                 f"{', vault' if vdocs is not None else ''}\n")
     except Exception as e:  # noqa: BLE001 — доставка не важнее самой ревизии
         lf.write(f"[cloud-review] ревизия не доставлена в архив: {e}\n")
 

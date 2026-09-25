@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import datetime as dt
 import enum
@@ -44,9 +45,14 @@ def _root() -> pathlib.Path:
     """
     return resolve_root(__file__)
 ARCHIVE_DIR = "Встречи-архив"
+# Канон поручений встречи (решение 23.09: вкладка «Задачи» показывает его
+# пункты). Единственный файл папки, который правят люди: приложение, плагин,
+# ночной контроль. Раскладывается не копией байтов, а `lay_canon` с паспортом (№366)
+CANON_NAME = "Минутки.md"
+CANON_KIND = live_sidecar.ARCHIVE_KINDS[CANON_NAME]
 # суффикс исходника → человеческое имя в папке встречи
 NICE = [
-    ("_minutes.md", "Минутки.md"),
+    ("_minutes.md", CANON_NAME),
     ("_hints.md", "Подсказки и ответы.md"),
     ("_разбор.md", "Разбор.md"),
     ("_ревизия_claude.md", "Ревизия Claude.md"),
@@ -248,6 +254,9 @@ class Archived(typing.NamedTuple):
     что пересобранном)."""
     folder: pathlib.Path
     summary: "SummaryOutcome"
+    # последним и с умолчанием: `Archived` конструируют позиционно (№366);
+    # None — в плане не было минуток, раскладка канона не звалась
+    canon: "CanonOutcome | None" = None
 
 
 def plan_materials(tdir: pathlib.Path, key: str, expected_debrief: pathlib.Path | None,
@@ -310,6 +319,8 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
 
     Всё пишется только при изменении и не на месте (`safe_write.copy_if_changed`
     и `write_text_if_changed`): повторный проход без новостей папку не трогает.
+    Канон минуток — не копия, а `lay_canon` с паспортом: правленый человеком
+    канон раскладка не трогает (№366), исход — в `Archived.canon`.
     """
     if stamp in _excluded(graph):
         return None
@@ -348,8 +359,12 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     expected_debrief = derivative_path(main, "debrief", graph) if main.is_file() else None
     if expected_debrief is not None and not expected_debrief.is_file():
         expected_debrief = None
+    canon = None
     for dest, src in plan_materials(tdir, files_key or stamp, expected_debrief, extra).items():
-        safe_write.copy_if_changed(src, folder / dest)
+        if dest == CANON_NAME:
+            canon = lay_canon(src, folder / dest, main)
+        else:
+            safe_write.copy_if_changed(src, folder / dest)
     obs_url = _obsidian_url(graph, f"{graph.name}/Встречи/{stamp}")
     # Ссылку на заметку пишем, ТОЛЬКО если заметка есть в ЭТОМ графе. Папка
     # архива и узел встречи расходятся штатно: сфера встречи определяется по
@@ -400,7 +415,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # не смотрит, но и графу незачем оставаться помеченным: он же открывается
     # в Finder и Obsidian.
     _unhide(graph)
-    return Archived(folder, summary)
+    return Archived(folder, summary, canon)
 
 
 # Названия разделов саммари на трёх языках. Одно место на весь модуль:
@@ -640,11 +655,11 @@ def decisions_of(folder: pathlib.Path) -> list[str]:
     лишний риск: замер 03.08 на одной и той же встрече дал 1 попадание из 3.
     Дешевле подать готовое.
     """
-    for name in ("Минутки.md", "Разбор.md"):
+    for name in (CANON_NAME, "Разбор.md"):
         f = folder / name
         if not f.exists():
             continue
-        text = f.read_text(encoding="utf-8")
+        text = _read_material(f)
         m = re.search(r"(?m)^#{2,4}[^\n]*Решени\w*[^\n]*$\n(.*?)(?=\n#{2,4} |\Z)", text, re.S)
         if not m:
             continue
@@ -753,6 +768,27 @@ def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section:
 # Обрезки материалов — константы канона: они входят в хеш источника саммари.
 # Смена потолка — законный повод пересобрать (модель увидит другое).
 SUMMARY_CAPS = (("Минутки.md", 3500), ("Тезисы.md", 1500), ("Разбор.md", 2000), ("Стенограмма.md", 4000))
+class MaterialUnreadable(Exception):
+    """Материал саммари не прочитался — строго, как его читает хеш источника.
+    Пропустить его нельзя: `summary_source_sha` считается по составу списка,
+    и пропуск сделал бы исправное саммари STALE — модель пересобрала бы его без
+    минуток, а после восстановления файла ещё раз. Поэтому читатели остаются
+    строгими, а вызывающий получает имя файла значением (у `UnicodeDecodeError`
+    его нет) и решает сам: правленый канон минуток (№366) бывает в чужой
+    кодировке, и ронять им архивацию встречи нельзя."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.name = name
+
+
+def _read_material(path: pathlib.Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise MaterialUnreadable(path.name) from e
+
+
 def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
     """Что модель увидит как материалы: имя файла → обрезка по канону (у
     стенограммы важнее конец — итоги, у остальных — начало). Одна функция для
@@ -762,7 +798,7 @@ def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
     for name, cap in SUMMARY_CAPS:
         f = folder / name
         if f.exists():
-            text = f.read_text(encoding="utf-8")
+            text = _read_material(f)
             parts.append((name, text[-cap:] if name == "Стенограмма.md" else text[:cap]))
     return parts
 
@@ -849,6 +885,159 @@ class SummaryOutcome:
         return self.action in (self.ADOPTED, self.BUILT)
 
 
+@dataclasses.dataclass(frozen=True)
+class CanonOutcome:
+    """Что раскладка сделала с каноном минуток `Минутки.md` за проход (№366) —
+    значением, по образцу `SummaryOutcome`: слова действий те же там, где тот же
+    смысл. `state` — состояние паспорта канона (после записи — переспрошенное у
+    оракула), `differing` — сколько строк канона и источника различаются
+    (у правленого человеком), `source` — источник канона из плана: копию в
+    «Документации» пишут из канона ровно для этого файла."""
+    CREATED = "created"      # канона не было (или был пуст) — записан текст источника
+    UPDATED = "updated"      # канон наш, источник сменился — переписан
+    UNCHANGED = "unchanged"  # писать нечего или некуда — причина в `reason`
+    ADOPTED = "adopted"      # текст равен источнику — паспорт без записи файла
+    KEPT = "kept"            # канон не наш (или без паспорта и отличается) — не трогали
+    REFUSED = "refused"      # гейт отказал: файл менялся под рукой — повтор бессмыслен
+    FAILED = "failed"        # не прочиталось — повтор имеет смысл
+
+    action: str
+    state: str | None
+    reason: str | None = None
+    differing: int = 0
+    source: pathlib.Path | None = None
+
+    def line(self) -> str:
+        """Слова отчёта — одно место на все вызывающие."""
+        tail = f": {self.reason}" if self.reason else ""
+        if self.action == self.KEPT and self.reason != CANON_NOT_UTF8:
+            tail += f"; строк расходится с машинной версией: {self.differing}"
+        return f"канон минуток {self.action}{tail}"
+
+    @property
+    def alarming(self) -> bool:
+        """Печатать ли исход на живом пути: канон не тронут или не прочитался."""
+        return self.action in (self.KEPT, self.REFUSED, self.FAILED)
+
+
+CANON_NOT_UTF8 = "канон не в UTF-8"
+_CANON_RACE = "файл менялся под рукой"
+_CANON_UNREAD = "канон не прочитался"
+_CANON_NO_PASSPORT = "паспорт не записан"
+
+
+def _differing(a: str, b: str) -> int:
+    """Симметричная разность строк с кратностью: сколько строк есть в одном
+    тексте и нет в другом."""
+    ca, cb = collections.Counter(a.splitlines()), collections.Counter(b.splitlines())
+    return sum(((ca - cb) + (cb - ca)).values())
+
+
+def lay_canon(src: pathlib.Path, canon: pathlib.Path, main: pathlib.Path) -> CanonOutcome:
+    """Разложить минутки `src` в канон `canon` папки встречи — с паспортом
+    производной в сайдкаре стенограммы `main` (вид `canon_minutes`, №366).
+
+    До №366 канон клался байтами источника на каждом проходе и стирал отметки
+    человека (№370). Теперь раскладка переписывает канон, только пока он —
+    её собственный текст (FRESH/STALE); чужая правка любого писателя
+    (приложение, плагин, ночной контроль) делает его HUMAN, и такой канон не
+    трогается. Слияние машинных правок с правленым каноном — №391.
+
+    Источник и канон читаются текстом, как их читает оракул
+    `derivative_state` (строгий UTF-8, универсальные переводы строк), а не
+    `bytes.decode`: иначе источник с CRLF получал бы паспорт, которого оракул
+    не воспроизводит, и каждый проход кончался бы присвоением (инвариант №317:
+    писатель паспорта и читатель свежести берут текст одной функцией).
+    Источник читается один раз: времена канона и записанный текст — одной
+    версии. Канон с текстом, равным источнику, не переписывается никогда
+    (новый inode на каждом проходе — конфликтные копии iCloud, №361); без
+    паспорта он получает паспорт на сравнённый текст. Без стенограммы паспорт
+    не пишется ни в одной ветке: `merge` и `remember` создали бы сироту."""
+    def out(action: str, state: str | None, reason: str | None = None, differing: int = 0) -> CanonOutcome:
+        return CanonOutcome(action, state, reason, differing, src)
+
+    try:
+        with open(src, encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return out(CanonOutcome.FAILED, None, "источник не прочитался")
+    if not text:
+        # пустой канон оракул читает как MISSING — без этого правила канон
+        # переписывался бы на каждом проходе
+        return out(CanonOutcome.UNCHANGED, None, "источник пуст")
+    times = (st.st_atime_ns, st.st_mtime_ns)
+    source_sha = live_sidecar.sha(text)
+
+    before = safe_write.stat_snapshot(canon)          # ДО любого чтения канона
+    current = None
+    if before is not None:
+        try:
+            current = canon.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # оракул дал бы HUMAN при паспорте и UNKNOWN без него — причина из
+            # чтения раскладки. Строк не считаем: текст с заменой байтов дал бы
+            # «разошлось всё». Выход — у человека: пересохранить в UTF-8 (№275)
+            return out(CanonOutcome.KEPT, None, CANON_NOT_UTF8)
+        except OSError:
+            return out(CanonOutcome.FAILED, None, _CANON_UNREAD)
+    owner = main.is_file()
+    meta = live_sidecar.read(main) or {}
+    state = live_sidecar.derivative_state(canon, meta, CANON_KIND, source_sha)
+
+    def after() -> str:
+        return live_sidecar.derivative_state(canon, live_sidecar.read(main) or {}, CANON_KIND, source_sha)
+
+    if current == text:
+        # равный текст не пишется ни при каком состоянии; без паспорта — признать
+        # своим на СРАВНЁННЫЙ текст, не `adopt`: тот перечитал бы файл сам, и
+        # правка между сравнением и его чтением получила бы паспорт машины
+        if state == live_sidecar.FRESH:
+            return out(CanonOutcome.UNCHANGED, state)
+        if not owner:
+            return out(CanonOutcome.UNCHANGED, state, "стенограммы нет — паспорт некуда записать")
+        if safe_write.stat_snapshot(canon) != before:
+            return out(CanonOutcome.UNCHANGED, state, _CANON_RACE)
+        if not live_sidecar.merge(main, {f"{CANON_KIND}_sha256": live_sidecar.sha(current),
+                                         f"{CANON_KIND}_source_sha256": source_sha,
+                                         f"{CANON_KIND}_adopted": live_sidecar.adopted_stamp()}):
+            return out(CanonOutcome.UNCHANGED, state, _CANON_NO_PASSPORT)
+        return out(CanonOutcome.ADOPTED, after())
+    if before is None and state != live_sidecar.MISSING:
+        return out(CanonOutcome.FAILED, state, _CANON_UNREAD)     # stat упал на существующем файле
+    if state == live_sidecar.MISSING:
+        if before is None:
+            wrote = safe_write.write_text(canon, text, expect_absent=True, times=times)
+        else:
+            wrote = safe_write.write_text(canon, text, expect=before, times=times)
+        if not wrote:
+            return out(CanonOutcome.REFUSED, state, _CANON_RACE)
+        if not owner:
+            return out(CanonOutcome.CREATED, after(), "создан без паспорта: стенограммы нет")
+        attested = live_sidecar.attest(main, CANON_KIND, text, source_sha)
+        return out(CanonOutcome.CREATED, after(), None if attested else _CANON_NO_PASSPORT)
+    if state == live_sidecar.FRESH:
+        return out(CanonOutcome.UNCHANGED, state)
+    if state == live_sidecar.STALE:
+        if not owner:
+            # запись без нового паспорта оставила бы старый хеш, и следующий
+            # проход назвал бы машинный текст HUMAN
+            return out(CanonOutcome.UNCHANGED, state, "стенограммы нет — канон не обновлён")
+        if not safe_write.write_text(canon, text, expect=before, times=times):
+            return out(CanonOutcome.REFUSED, state, _CANON_RACE)
+        attested = live_sidecar.attest(main, CANON_KIND, text, source_sha)
+        return out(CanonOutcome.UPDATED, after(), None if attested else _CANON_NO_PASSPORT)
+    if state == live_sidecar.HUMAN:
+        # сюда же — отметки ночного контроля «снято по сроку»: иначе их стёр бы
+        # следующий проход. Машинные правки в такие каноны — №391
+        return out(CanonOutcome.KEPT, state, "канон правлен не раскладкой", _differing(current, text))
+    if live_sidecar.valid_sha(meta.get(f"{CANON_KIND}_sha256")):
+        return out(CanonOutcome.FAILED, state, _CANON_UNREAD)     # UNKNOWN при паспорте: оракул не прочитал
+    # UNKNOWN без паспорта: отличие могло прийти от человека — признавать нельзя
+    return out(CanonOutcome.KEPT, state, "паспорта нет, канон отличается от источника",
+               _differing(current, text))
+
+
 def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None, *,
                  mode: SummaryMode = SummaryMode.AUTO) -> SummaryOutcome:
     """Один проход по саммари встречи: один снимок канона → решить оракулом →
@@ -858,10 +1047,14 @@ def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str |
     копий материалов давало паспорт на старый канон, и модель всё равно
     работала). HUMAN не строится ни одним режимом."""
     mode = SummaryMode(mode)      # единственная нормализация на границе: голая строка — ValueError здесь
-    materials = summary_materials(folder)
+    try:
+        materials = summary_materials(folder)
+        decided = decisions_of(folder)
+    except MaterialUnreadable as e:
+        # без сборки и без паспорта: хеш без материала — чужой канон (№366)
+        return SummaryOutcome(SummaryOutcome.FAILED, None, f"материал не читается: {e.name}")
     if not materials:
         return SummaryOutcome(SummaryOutcome.NONE, None, "материалов нет")
-    decided = decisions_of(folder)
     source_sha = summary_source_sha(materials, decided, recording_note)
     out = folder / "Саммари.md"
     meta = live_sidecar.read(live) or {}
@@ -899,10 +1092,14 @@ def summary_state(folder: pathlib.Path, live: pathlib.Path, recording_note: str 
     НЕ пользуется — он печатает исход `summary_pass`, полученный возвратом
     (Critical DS круга 2). В манифест состояние не копируется (Important DS и
     GLM круга 1)."""
-    materials = summary_materials(folder)
+    try:
+        materials = summary_materials(folder)
+        decided = decisions_of(folder)
+    except MaterialUnreadable:
+        return live_sidecar.UNKNOWN       # материал не прочитался — знания нет (№366)
     if not materials:
         return None
-    source_sha = summary_source_sha(materials, decisions_of(folder), recording_note)
+    source_sha = summary_source_sha(materials, decided, recording_note)
     return live_sidecar.derivative_state(folder / "Саммари.md", live_sidecar.read(live) or {},
                                          "summary", source_sha)
 
@@ -1151,9 +1348,18 @@ def _rebuild_index(graph: pathlib.Path):
     safe_write.write_text_if_changed(adir / "_ОГЛАВЛЕНИЕ.md", "\n".join(lines) + "\n")
 
 
+def canon_tally_line(tally: typing.Mapping[str, int]) -> str:
+    """Сводка действий канона минуток за массовый проход — одна строка на
+    `migrate_all` и `retro_fill`: правленые каноны (`kept`) раскладка не
+    трогает, и без сводки об этом узнавали бы по одной встрече (№366)."""
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(tally.items()))
+    return f"канон минуток — {counts or 'раскладок не было'}"
+
+
 def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
     """Разовая миграция истории: все стенограммы transcripts/ → папки архива."""
     done = 0
+    canon_tally: collections.Counter = collections.Counter()
     for f in sorted(tdir.glob("*.md")):
         if any(f.name.endswith(suf) for suf, _ in NICE):
             continue  # это артефакт, не стенограмма
@@ -1166,8 +1372,11 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
         # минутный регэксп пропускал посекундные стенограммы целиком.
         stamp = graph_key(tdir, f.stem, graph)
         slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
-        archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
+        archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
+        if archived is not None and archived.canon is not None:
+            canon_tally[archived.canon.action] += 1
         done += 1
+    print(f"архив: {canon_tally_line(canon_tally)}")
     return done
 
 
