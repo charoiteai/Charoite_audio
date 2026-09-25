@@ -436,7 +436,10 @@ def test_таблица_исхода_прогона():
     # нечего», а не «строк нет»; непрочитанный файл — неполнота при любом плане.
     U, T = exit_codes.EXIT_UNMUTABLE, mc.ScanTotals
     со_счётчиками = [
-        ([],     0,  0,  0, 0, T(files_in=1, lines_in=5), U),
+        ([],     0,  0,  0, 0, T(files_in=1, lines_in=5, nodes=3), U),
+        # строки есть, кода в них нет (комментарий, константа модуля) — «нечего»,
+        # а не слепое пятно операторов (критика DS круга 1 по #630)
+        ([],     0,  0,  0, 0, T(files_in=1, lines_in=5, lines_constant=2), N),
         ([],     0,  0,  0, 0, T(), N),
         ([],     0,  0, 10, 0, T(files_in=1, lines_in=5), P),   # срез важнее «нечего»
         ([],     0,  0,  0, 0, T(files_in=2, lines_in=5, files_unreadable=2), P),
@@ -451,7 +454,7 @@ def test_таблица_исхода_прогона():
     # и класс исхода согласован с каноном
     assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
     assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
-    assert exit_codes.outcome(mc.verdict_code([], 0, 0, 0, 0, T(files_in=1, lines_in=1))) == "unmutable"
+    assert exit_codes.outcome(mc.verdict_code([], 0, 0, 0, 0, T(files_in=1, lines_in=1, nodes=1))) == "unmutable"
 
 
 def _quiet_machine(monkeypatch):
@@ -472,6 +475,21 @@ def test_есть_изменённые_строки_но_ломать_нечег
     out = capsys.readouterr().out
     assert "ничего мутируемого" in out
     for число in ("файлов 2", "строк 7", "констант модуля 3", "узлов AST 11", "не прочитано файлов 0"):
+        assert число in out, out
+
+
+def test_строки_без_кода_это_nothing_со_счётчиками(monkeypatch, capsys):
+    """Правка одного комментария: строки в диапазоне есть, узлов кода нет —
+    исход «нечего», и сообщение называет, из чего собран пустой план, а не
+    врёт «нет изменённых строк» (критика DS круга 1 по #630)."""
+    import exit_codes
+    _quiet_machine(monkeypatch)
+    totals = mc.ScanTotals(files_in=1, lines_in=2, lines_constant=1, nodes=0)
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([], totals))
+    assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    out = capsys.readouterr().out
+    assert "нет кода" in out and "нет изменённых строк" not in out, out
+    for число in ("файлов 1", "строк 2", "констант модуля 1", "узлов AST 0"):
         assert число in out, out
 
 
@@ -533,6 +551,24 @@ def test_план_считает_строки_константы_узлы_и_н�
     assert {m.path for m in plan} == {repo / "src" / "mod.py"}
 
 
+def test_файл_не_в_utf8_это_неполнота_а_не_трассировка(tmp_path, monkeypatch):
+    """`git show` прочитал байты, а декодировать их нельзя: файл идёт в
+    `files_unreadable`, план остального диапазона собирается (DS M1 круга 1
+    по #630: прежде `UnicodeDecodeError` ронял прогон трассировкой)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n"})
+    (repo / "src" / "latin.py").write_bytes(b"# \xe9t\xe9\ndef g(y):\n    return not y\n")
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "latin-1"], cwd=repo, check=True)
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
+        repo / "src" / "mod.py": {2}, repo / "src" / "latin.py": {3}})
+
+    plan, totals = mc.plan_for(repo, "HEAD")
+
+    assert totals.files_in == 2 and totals.files_unreadable == 1, totals
+    assert {m.path for m in plan} == {repo / "src" / "mod.py"}
+    assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
+
+
 def test_план_берёт_изменённые_строки_из_git(tmp_path):
     """Сквозь `changed_lines`: две ревизии, изменена одна строка."""
     repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return x\n"})
@@ -577,23 +613,25 @@ def _dump_after_apply(m, src: str) -> str:
     return ast.dump(tree)
 
 
-@pytest.mark.parametrize("code,оператор", [
-    ("if not x:\n        pass", "not X → X"),
-    ("if not a or not b:\n        pass", "Or → And"),
-    ("return a == (not b)", "Eq → NotEq"),
-    ("return a == (not b)", "return X → return None"),
-    ("return a + b", "Add → Sub"),
-    ("return 5", "5 → 0"),
-    ("return True", "True → False"),
+@pytest.mark.parametrize("code,оператор,строка", [
+    ("if not x:\n        pass", "not X → X", "    if x:"),
+    ("if not a or not b:\n        pass", "Or → And", "    if not a and (not b):"),
+    ("return a == (not b)", "Eq → NotEq", "    return a != (not b)"),
+    ("return a == (not b)", "return X → return None", "    return"),
+    ("return a + b", "Add → Sub", "    return a - b"),
+    ("return 5", "5 → 0", "    return 0"),
+    ("return True", "True → False", "    return False"),
 ])
-def test_каждый_оператор_применяется(tmp_path, code, оператор):
+def test_каждый_оператор_применяется(tmp_path, code, оператор, строка):
+    """Ожидание — текстом мутанта. Сверка дампа с `_dump_after_apply` была
+    верна по построению: `applied` проверяет ровно её же, и тест держал только
+    «не отказал» (DS M2 круга 1 по #630)."""
     src = _fragment(code)
     muts = [m for m in _mutate(tmp_path, src, {2}) if m.bare() == оператор]
-    assert muts, оператор
-    for m in muts:
-        text, why = mc.applied(m, src)
-        assert text is not None and text != src, why
-        assert ast.dump(ast.parse(text)) == _dump_after_apply(m, src)
+    assert len(muts) == 1, [m.what for m in muts]
+    text, why = mc.applied(muts[0], src)
+    assert text is not None, why
+    assert text.splitlines()[1] == строка, text
 
 
 def test_снятие_not_в_скобках_когда_приоритет_ниже(tmp_path):

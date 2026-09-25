@@ -1,6 +1,7 @@
 """Коды возврата конвейера — одно место, без копий и без импортов (№173)."""
 import ast
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -99,3 +100,27 @@ def test_the_readers_list_is_the_repository_itself():
         f"исчезли {sorted(set(READERS) - set(найдено))}")
     for rel, имена in найдено.items():
         assert имена == READERS[rel], f"{rel}: импортирует {sorted(имена)}, объявлено {sorted(READERS[rel])}"
+
+
+#: Читатели СЛОВА исхода — ветки shell-`case` по `outcome`. Разбор python-импортов
+#: выше их не видит: ветка, потерянная при ребейзе, тихо отправляла бы новый исход
+#: в `*)`, а опечатка в слове — туда же (DS M3 круга 1 по #630).
+CASE_READERS = ("scripts/preflight.sh", ".github/workflows/ci.yml")
+
+
+def _case_words(text: str) -> set[str]:
+    """Слова веток блока `case "$(… outcome …)" in … esac`."""
+    m = re.search(r'case "\$\([^\n]*outcome[^\n]*\)" in\n(.*?)\n\s*esac', text, re.S)
+    assert m, "блок case по исходу не найден"
+    return set(re.findall(r"^\s*([\w*]+)\)", m.group(1), re.M))
+
+
+def test_every_outcome_word_has_its_branch_in_shell_readers():
+    """Каждое слово `outcome`, кроме `fail`, — своя ветка у каждого shell-читателя;
+    `fail` и всё неизвестное уходит в `*)`, других веток нет."""
+    words = {exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} - {"fail"}
+    for rel in CASE_READERS:
+        ветки = _case_words((ROOT / rel).read_text(encoding="utf-8"))
+        assert words <= ветки, f"{rel}: нет веток для {sorted(words - ветки)}"
+        assert "*" in ветки, f"{rel}: без `*)` провал проверки ушёл бы в тишину"
+        assert ветки - {"*"} <= words, f"{rel}: ветки для несуществующих слов {sorted(ветки - words - {'*'})}"

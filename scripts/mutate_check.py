@@ -137,10 +137,10 @@ class ScanTotals:
 def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int,
                  totals: ScanTotals | None = None) -> int:
     """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
-    — в диапазоне нет изменённых строк; `EXIT_UNMUTABLE` — строки есть, а
-    мутировать в них нечего; `EXIT_PARTIAL` — судили не весь план (прервано
-    встречей, срезано потолком, не применилось, файл не прочитался); 0 —
-    проверен весь план, чисто.
+    — в изменённых строках нет кода (строк нет, или только комментарии и
+    константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
+    нечего; `EXIT_PARTIAL` — судили не весь план (прервано встречей, срезано
+    потолком, не применилось, файл не прочитался); 0 — проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
@@ -159,7 +159,11 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
         # тут врёт ровно так же, как врал `tested == 0` в круге 4 (GLM I2).
         if dropped:
             return EXIT_PARTIAL
-        return EXIT_UNMUTABLE if totals.lines_in else EXIT_NOTHING_TO_CHECK
+        # «Мутировать нечего» — только когда в строках есть код: правка одного
+        # комментария или константы модуля иначе давала то же слово, что и
+        # слепое пятно операторов, и слово переставало быть сигналом (критика
+        # DS круга 1 по #630). Узлы считает `scan` по тем же строкам.
+        return EXIT_UNMUTABLE if totals.nodes else EXIT_NOTHING_TO_CHECK
     if tested < planned or dropped or skipped:
         return EXIT_PARTIAL
     return 0
@@ -306,7 +310,14 @@ def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
             # Не молча: выпавший файл превращал «не прочитал» в «нечего» (№386)
             totals.files_unreadable += 1
             continue
-        report = scan(path, lines, blob.stdout.decode("utf-8"))
+        try:
+            source = blob.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            # `git show` прочитал, но это не наш текст: та же неполнота, что и
+            # выпавший файл, а не трассировка посреди плана (DS M1 круга 1 по #630)
+            totals.files_unreadable += 1
+            continue
+        report = scan(path, lines, source)
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         plan.extend(report.mutations)
@@ -582,8 +593,12 @@ def main(argv: list[str]) -> int:
     plan, totals = plan_for(root, args.range)
     if not plan:
         code = verdict_code([], 0, 0, 0, 0, totals)
-        if code == EXIT_NOTHING_TO_CHECK:
+        if code == EXIT_NOTHING_TO_CHECK and not totals.lines_in:
             print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
+        elif code == EXIT_NOTHING_TO_CHECK:
+            print(f"В изменённых строках нет кода — ломать нечего: файлов {totals.files_in}, "
+                  f"строк {totals.lines_in}, из них констант модуля {totals.lines_constant}, "
+                  f"узлов AST {totals.nodes}.")
         elif code == EXIT_UNMUTABLE:
             print(f"Изменённые строки не содержат ничего мутируемого: файлов {totals.files_in}, "
                   f"строк {totals.lines_in}, из них констант модуля {totals.lines_constant}, "
