@@ -20,7 +20,7 @@ import live_sidecar
 import meeting_source
 import meeting_stamp
 from config_loader import fingerprint, load_user_or_example
-from llm import LLM, LLMHTTPError
+from llm import LLM, LLMHTTPError, forget_fit
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
@@ -253,6 +253,9 @@ def sufler_make_minutes() -> str:
         tmp.replace(mpath)
     finally:
         tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
+    # Минутки на диске — повтор уже не нужен, и сводки частей этой встречи из
+    # памяти процесса уходят сразу, не дожидаясь 30 минут (№265, PRIVACY)
+    forget_fit(source.speech)
     # Паспорт производной (№309): машинные минутки без него читались пересборкой
     # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
     # изменились. Хеш источника — тем же объектом, что у пересборки.

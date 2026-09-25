@@ -56,7 +56,7 @@ def _minutes_prompt(lang: str, text: str, note: str | None, fold: bool = False) 
 
     client.stream = fake_stream
     if fold:
-        client._fit = lambda t: "[свёрнуто: сводки частей]"   # свёртка подменяет ВЕСЬ текст
+        client._fit = lambda t, **_kw: "[свёрнуто: сводки частей]"   # свёртка подменяет ВЕСЬ текст
     list(client.minutes(text, recording_note=note))
     return seen["prompt"]
 

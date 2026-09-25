@@ -23,6 +23,7 @@ mlx_lm.server эмбеддингов не отдаёт.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -30,6 +31,7 @@ import re
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 
 import requests
@@ -50,6 +52,107 @@ BUSY_STATUSES = frozenset({429, 502, 503})
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
+
+# Сводки частей длинной встречи (№265). MCP-минутки строят новый LLM на каждый
+# вызов, и повтор после упавшей главной генерации заново платил за все части —
+# поэтому кэш на модуле, а не на экземпляре. Ключ — речь и всё, от чего зависит
+# сводка: сменилось что-то одно — пересчёт. Держим мало и недолго: это текст
+# встречи в памяти процесса, на диск он не пишется.
+FIT_CACHE_SIZE = 4
+FIT_CACHE_TTL = 30 * 60.0
+FIT_CACHE_SWEEP = 60.0     # как часто уборщик заглядывает, пока кэш не пуст
+FIT_PROMPT_VERSION = 1     # поднять при правке промпта summary(): старые сводки уже не те
+_fit_cache: OrderedDict[tuple, tuple[float, str]] = OrderedDict()
+_fit_cache_lock = threading.Lock()
+_fit_sweeper: threading.Timer | None = None
+# Стенные часы, не monotonic: monotonic на macOS и Linux стоит, пока ноутбук
+# спит, и «30 минут» растягивались бы на ночь со спящей крышкой. Часы,
+# ушедшие назад, запись не продлевают — она считается истёкшей.
+def _fit_clock() -> float:     # тесты подменяют часы только кэшу, не всему time
+    return time.time()
+
+
+def _fit_expired(now: float, stamp: float) -> bool:
+    return not 0 <= now - stamp < FIT_CACHE_TTL
+
+
+def _fit_cache_sweep_locked(now: float) -> None:
+    for key in [k for k, (stamp, _) in _fit_cache.items() if _fit_expired(now, stamp)]:
+        del _fit_cache[key]
+
+
+def _fit_cache_sweep() -> None:
+    """Уборка по таймеру: истёкшая сводка уходит из памяти и без новых вызовов —
+    иначе текст встречи висел бы в простаивающем MCP-сервере до его выхода."""
+    global _fit_sweeper
+    with _fit_cache_lock:
+        # убирает только свой таймер: отменённый clear-ом, но уже сработавший
+        # и ждавший замка, иначе обнулил бы чужой и завёл вторую цепочку
+        if _fit_sweeper is not threading.current_thread():
+            return
+        now = _fit_clock()
+        _fit_cache_sweep_locked(now)
+        _fit_sweeper = None
+        if _fit_cache:
+            _fit_arm_sweeper_locked(now)
+
+
+def _fit_arm_sweeper_locked(now: float) -> None:
+    global _fit_sweeper
+    if _fit_sweeper is not None:
+        return
+    # До ближайшего срока, но не дольше шага: таймер идёт по monotonic и после
+    # сна проснулся бы поздно — с шагом отстаём от срока не больше минуты.
+    due = min(stamp for stamp, _ in _fit_cache.values()) + FIT_CACHE_TTL - now
+    _fit_sweeper = threading.Timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep)
+    _fit_sweeper.daemon = True
+    _fit_sweeper.start()
+
+
+def _fit_cache_get(key: tuple) -> str | None:
+    """Свёртка из кэша; None — нет или истёк срок (истёкшие тогда уходят все)."""
+    now = _fit_clock()
+    with _fit_cache_lock:
+        _fit_cache_sweep_locked(now)
+        hit = _fit_cache.get(key)
+        if hit is None:
+            return None
+        _fit_cache.move_to_end(key)          # LRU: прочитанное вытесняется последним
+        return hit[1]
+
+
+def _fit_cache_put(key: tuple, text: str) -> None:
+    now = _fit_clock()
+    with _fit_cache_lock:
+        _fit_cache_sweep_locked(now)
+        _fit_cache.pop(key, None)            # повторная запись — снова самая свежая
+        _fit_cache[key] = (now, text)
+        while len(_fit_cache) > FIT_CACHE_SIZE:
+            _fit_cache.popitem(last=False)
+        _fit_arm_sweeper_locked(now)
+
+
+def _fit_speech_id(transcript: str) -> str:
+    """Первое поле ключа кэша: по нему же forget_fit находит записи речи."""
+    return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+
+
+def forget_fit(transcript: str) -> None:
+    """Сбросить сводки этой речи при любой модели и настройке: минутки
+    выданы, повтор не нужен — держать текст встречи в памяти незачем."""
+    sid = _fit_speech_id(transcript)
+    with _fit_cache_lock:
+        for key in [k for k in _fit_cache if k[0] == sid]:
+            del _fit_cache[key]
+
+
+def _fit_cache_clear() -> None:
+    global _fit_sweeper
+    with _fit_cache_lock:
+        _fit_cache.clear()
+        if _fit_sweeper is not None:
+            _fit_sweeper.cancel()
+            _fit_sweeper = None
 
 
 class LLMHTTPError(RuntimeError):
@@ -437,6 +540,9 @@ class LLM:
                   "считаю true", file=sys.stderr, flush=True)
             fb = True
         self.fallback_local = fb
+        # Поднимает любой уход с облака на локальный запас (стрим и complete):
+        # _fit не кладёт такую сводку в кэш под облачным ключом.
+        self._fell_back_local = False
         # На что падаем, когда шлюза нет. Жёсткий «ollama» бил мимо у тех, чей
         # локальный движок — mlx_lm.server: в Ollama у них из чат-моделей никого,
         # она держит только bge-m3 (круг-1, обе головы).
@@ -913,6 +1019,9 @@ class LLM:
                                     "локальный запас выключен")
         print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
               file=sys.stderr, flush=True)
+        # _fit смотрит на флаг: сводку локального запаса нельзя класть в кэш
+        # под облачным ключом — повтор через минуту взял бы её вместо облака
+        self._fell_back_local = True
         local = LLM({**self._cfg,
                      "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
         yield from local.stream_messages(messages, num_predict=num_predict,
@@ -1079,6 +1188,7 @@ class LLM:
                                           "локальный запас выключен") from e
                 print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
                       "считаю локальной моделью", file=sys.stderr, flush=True)
+                self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
                 local = LLM({**self._cfg,
                              "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
                 # model НЕ передаём: у облака имя своё (cloud_model), и
@@ -1419,7 +1529,7 @@ class LLM:
         длинную встречу сворачивают так же, как демон (аудит 13.09, GLM I1)."""
         return self._fit(transcript)
 
-    def _fit(self, transcript: str) -> str:
+    def _fit(self, transcript: str, *, cache: bool = True) -> str:
         """Длинную встречу сворачиваем в сводки частей, а не отдаём на обрезку.
 
         num_ctx 8192 — это примерно 25 000 знаков русского, то есть полчаса
@@ -1431,10 +1541,24 @@ class LLM:
         limit = max(4_000, self.num_ctx * 3 - 4_000)   # ~3 знака на токен, запас на ответ
         if len(transcript) <= limit:
             return transcript
+        # В ключе — кто на деле отвечает, а не только self.small: mlx-server
+        # игнорирует model= и гонит mlx_model, облако — cloud_model по своему
+        # адресу. Сменили движок или сервер — прежние сводки уже чужие.
+        key: tuple = ()
+        if cache:      # демону (cache=False) ни ключ, ни sha256 речи не нужны
+            answering = (self.mlx_model if self.engine == "mlx-server"
+                         else self.cloud_model if self.cloud_ready else self.small)
+            key = (_fit_speech_id(transcript), self.engine, self.base, answering,
+                   self.small, self.lang, self.num_ctx, FIT_PROMPT_VERSION)
+            cached = _fit_cache_get(key)
+            if cached is not None:
+                return cached
         step = limit // 2
         parts = [transcript[i:i + step] for i in range(0, len(transcript), step)]
         digests = []
         failures = 0
+        skipped = 0    # не подряд, а всего: дыра в нумерации — результат неполный
+        self._fell_back_local = False    # поднимет _stream_cloud, если облако не ответило
         for n, part in enumerate(parts, 1):
             try:
                 # бюджет на «занято» — маленький: минутки идут под hint_lock,
@@ -1453,8 +1577,16 @@ class LLM:
                 text = ""
             if text:
                 digests.append(f"[Часть {n} из {len(parts)}]\n{text}")
+            else:
+                skipped += 1
         if digests:
-            return "\n\n".join(digests)
+            out = "\n\n".join(digests)
+            if cache and not skipped and not self._fell_back_local:
+                # кэшируем только полную свёртку той модели, что в ключе: повтор
+                # должен иметь шанс закрыть дыру, а «голова и хвост» ниже — не
+                # свёртка вовсе
+                _fit_cache_put(key, out)
+            return out
         # все сводки пустые: не резать молча голову — отдать голову и хвост,
         # где обычно и решения (конец встречи), и повестка (начало)
         half = limit // 2
@@ -1470,7 +1602,9 @@ class LLM:
 
     def minutes(self, transcript: str, recording_note: str | None = None) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
-        transcript = self._fit(transcript)
+        # без кэша: он для повтора MCP-минуток (fit), а демон живёт днями, и
+        # сводки его встреч держать в памяти незачем — PRIVACY обещает только MCP
+        transcript = self._fit(transcript, cache=False)
         block = self.recording_block(recording_note)   # после _fit — свёртка его не трогает
         if self.lang == "zh":
             return self._doc_stream(
