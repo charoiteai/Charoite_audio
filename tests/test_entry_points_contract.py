@@ -215,6 +215,23 @@ POISONED_ENV = ("HOME", "CHAROITE_ROOT", "SUFLER_GRAPH_DIR", "CHAROITE_GRAPH_DIR
 #: проект его запретил — он тянет `-E` и глушит PYTHONPYCACHEPREFIX.
 ISOLATION_ENV = {"PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 ISOLATION_DROP = ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")
+#: Утечка каждой снимаемой переменной — СВОИМ признаком: значение у родителя и то,
+#: чем проба обязана его показать, `(проблемы, признаки раннера, ловушка) → bool`.
+#: «Проба красная» признаком не считается: любая чужая причина падения прятала бы,
+#: что переменная не при чём (Minor DS круга 3 по PR №625). Признаки сняты опытом:
+#: - PYTHONPATH — каталоги пути импорта интерпретатор читает до хука, поэтому ловит
+#:   не ловушка, а модуль продукта, взятый мимо копии;
+#: - PYTHONHOME — стандартная библиотека в ловушке, интерпретатор не доходит до
+#:   раннера, и признаков изоляции нет вовсе;
+#: - PYTHONPYCACHEPREFIX — раннер печатает префикс до хука, а хук видит чтение
+#:   готового .pyc по нему как чтение ловушки.
+LEAK_SIGNS = {
+    "PYTHONPATH": (str(ROOT / "src"), lambda got, out, trap: got == [
+        f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии"]),
+    "PYTHONHOME": ("{trap}", lambda got, out, trap: bool(got) and out == {}),
+    "PYTHONPYCACHEPREFIX": ("{trap}", lambda got, out, trap: out.get("pycache_prefix") == trap
+                            and len(got) == 1 and "чтение ловушки" in got[0]),
+}
 #: Код выхода, которым аудит-хук валит пробу. Хук не бросает исключение, а
 #: выходит сразу: `except Exception` в коде пакета проглотил бы исключение молча.
 AUDIT_EXIT = 97
@@ -539,28 +556,18 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     # правка пути импорта в написании, которого грамматика гейта не знает
     got = probe("путь импорта", "import sys as s0; S = s0; S.path.append('/opt/чужое')")
     assert len(got) == 1 and got[0].startswith("пакет правит sys.path") and "/opt/чужое" in got[0], got
-    # изоляция: каждая снимаемая переменная, стоявшая у родителя, опасна (без снятия
-    # проба красная) и снята (со снятием — пусто). Значение у каждой своё: каталоги
-    # пути импорта интерпретатор читает ещё до хука, поэтому PYTHONPATH ловится не
-    # ловушкой, а модулем продукта, взятым мимо копии.
-    leaks = {"PYTHONPATH": str(ROOT / "src"), "PYTHONHOME": "{trap}", "PYTHONPYCACHEPREFIX": "{trap}"}
-    assert set(leaks) == set(ISOLATION_DROP), "у снимаемой переменной нет своего случая"
-    for var, value in leaks.items():
-        leaked = probe(f"утечка {var}", "pass", outer={var: value}, drop=())
-        assert leaked, f"{var} у родителя ничего не ломает — случай изоляции ничего не проверяет"
-        assert probe(f"снято {var}", "pass", outer={var: value}) == [], f"{var} не снимается изоляцией"
-    # префикс кэша — своим признаком, а не «какая-то беда случилась»: раннер печатает
-    # sys.pycache_prefix до хука. Байткод не пишется (DONTWRITEBYTECODE), а краснеет
-    # проба на ЧТЕНИИ готового .pyc по префиксу — хук видит его как чтение ловушки
-    # (DeepSeek считал признаком запись .pyc; опыт показал чтение)
-    got, out = run("честный префикс", "pass")
-    assert out["pycache_prefix"] is None and got == [], "у честной пробы префикса кэша нет"
-    got, out = run("утечка префикса", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"}, drop=())
-    trap = tmp_path / "утечка префикса" / "work" / "ловушка"
-    assert out["pycache_prefix"] == str(trap), f"протёкший префикс не виден признаком: {out}"
-    # путь ловушки уже сверен признаком выше; в строке — только вид нарушения: _first_line
-    # режет строку до 160 знаков, и на macOS длинный путь временного каталога
-    # (/private/var/folders/…) обрезался раньше «work/ловушка» — тест был красным только там
-    assert len(got) == 1 and "чтение ловушки" in got[0], got
-    got, out = run("снят префикс", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"})
-    assert out["pycache_prefix"] is None and got == [], f"изоляция не сняла префикс: {out}"
+    # изоляция: каждая снимаемая переменная, стоявшая у родителя, видна своим признаком
+    # (`LEAK_SIGNS`) и снята — со снятием признака нет, проба пуста. Путь ловушки в
+    # строке проблемы не сверяется: _first_line режет строку до 160 знаков, и на macOS
+    # длинный путь временного каталога (/private/var/folders/…) обрезался раньше
+    # «work/ловушка»; путь сверяет признак раннера
+    assert set(LEAK_SIGNS) == set(ISOLATION_DROP), "у снимаемой переменной нет своего случая"
+    got, out = run("честная изоляция", "pass")
+    assert got == [] and out["pycache_prefix"] is None, f"у честной пробы признаки утечки: {got}, {out}"
+    for var, (value, sign) in LEAK_SIGNS.items():
+        got, out = run(f"утечка {var}", "pass", outer={var: value}, drop=())
+        trap = str(tmp_path / f"утечка {var}" / "work" / "ловушка")
+        assert sign(got, out, trap), f"{var} у родителя не виден своим признаком: {got}, {out}"
+        got, out = run(f"снято {var}", "pass", outer={var: value})
+        trap = str(tmp_path / f"снято {var}" / "work" / "ловушка")
+        assert got == [] and not sign(got, out, trap), f"{var} не снимается изоляцией: {got}, {out}"
