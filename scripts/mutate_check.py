@@ -56,7 +56,7 @@ class Mutation:
     на этом месте тот же узел, а не соседа с теми же координатами (№386).
     """
 
-    def __init__(self, path: pathlib.Path, node: ast.AST, what: str, change):
+    def __init__(self, path: pathlib.Path, node, what: str, change):
         self.path, self.line, self._bare, self.change = path, node.lineno, what, change
         self.what = f"{what} @{node.col_offset}-{node.end_col_offset}"
         self.kind, self.span = type(node), _span(node)
@@ -365,13 +365,13 @@ def _drop_return(tree, n):
 class _Parens:
     """Узел, вставляемый в скобках: вторая попытка `applied`. Позиции — узла."""
 
-    def __init__(self, node: ast.AST):
+    def __init__(self, node):
         self.node = node
         self.lineno, self.col_offset = node.lineno, node.col_offset
         self.end_lineno, self.end_col_offset = node.end_lineno, node.end_col_offset
 
 
-def patch_source(text: str, node: ast.AST) -> str | None:
+def patch_source(text: str, node: ast.AST | _Parens) -> str | None:
     """Заменить в тексте ровно один узел, не трогая остальной файл.
 
     Раньше файл переписывался целиком через `ast.unparse`: тот выбрасывает
