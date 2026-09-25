@@ -1584,3 +1584,20 @@ def test_graph_with_only_an_archive_is_walked_when_another_has_meetings(tmp_path
     found = {forget.MEETINGS_DIR: [other], forget.ARCHIVE_DIR: [graph]}
     monkeypatch.setattr(forget.graphs, "all_graphs", lambda marker: list(found[marker]))
     assert forget.plan(STAMP, root, None).delete == [graph / "Встречи-архив" / "2026-07-15 14-00 — Тема"]
+
+
+def test_unproven_minute_names_transcripts_once_across_graphs(tmp_path, monkeypatch):
+    """transcripts/ один на все графы vault: файлы под недоказанной минутой план
+    называет один раз, а не по разу на каждый граф, где минута тоже не доказана
+    (мутатор по кругу 2 DS PR #622: флаг «уже названо» не держал ни один тест)."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": None})
+    _retitled(root, None)
+    other = tmp_path / "vault" / "Личное"
+    (other / "Встречи-архив" / "2026-07-15 14-00 — Своё").mkdir(parents=True)
+    found = {forget.MEETINGS_DIR: [graph], forget.ARCHIVE_DIR: [graph, other]}
+    monkeypatch.setattr(forget.graphs, "all_graphs", lambda marker: list(found[marker]))
+    plan = forget.plan(SECONDS, root, None)
+    told = [c for c in plan.check if c.startswith("стенограмма и её файлы в transcripts/")]
+    assert len(told) == 2, told              # стенограмма и минутки — по одному разу
+    assert sum("папка архива" in c for c in plan.check) == 2, "папки — по одной в каждом графе"
+
