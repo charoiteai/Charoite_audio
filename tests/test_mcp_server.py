@@ -243,27 +243,52 @@ def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
 
     monkeypatch.setattr(mcp_server, "_client", не_звать)
     monkeypatch.setattr(mcp_server.subprocess, "run", не_звать)
-    имена = [и.name for и in _инструменты()]
-    assert len(имена) >= 6, имена
-    for имя in имена:
+    имена = {и.name for и in _инструменты()}
+    # клиент владельца помнит инструменты по именам — счёт их не сторожит (DS M2 круга 1 по PR №628)
+    assert имена == {"sufler_status", "sufler_live_transcript", "sufler_notes",
+                     "sufler_make_minutes", "sufler_hints", "sufler_update_graph"}, имена
+    for имя in sorted(имена):
         ответ = _текст(asyncio.run(mcp_server.mcp.call_tool(имя, {})))
-        assert "CHAROITE_ROOT=" in ответ and "claude mcp add" in ответ, (имя, ответ[:300])
-        assert '"env"' in ответ and str(ROOT / "src" / "mcp_server.py") in ответ, (имя, ответ[:300])
+        assert _команда(ответ) == mcp_server._registration()[0], (имя, ответ[:300])
 
 
-def test_the_recipe_json_block_pastes_as_is():
-    """JSON-блок рецепта владелец вставляет в конфиг клиента руками: он обязан
-    разбираться как JSON, нести `env` с плейсхолдером, читаемым без
-    \\u-экранов, и лежать по ключу на строку — однострочник в конфиг не
-    вклеить глазами (мутатор: ensure_ascii и indent)."""
+def _команда(рецепт: str) -> list[str]:
+    """Команда регистрации из текста рецепта — так, как её разберёт оболочка."""
+    import shlex
+    строки = [s.strip() for s in рецепт.splitlines() if s.strip().startswith("claude ")]
+    assert len(строки) == 1, рецепт
+    return shlex.split(строки[0])
+
+
+def test_the_recipe_command_and_json_block_say_the_same():
+    """Обе половины рецепта — одна регистрация. Команду владелец вставляет в
+    терминал: она разбирается оболочкой ровно в argv, где после `-e` стоит
+    `CHAROITE_ROOT`, а после `--` — тот же интерпретатор и сервер, что в JSON.
+    Путь с пробелом команду не ломает (DS C1/I1 круга 1 по PR №628)."""
     import json
-    рецепт = mcp_server._recipe()
-    блок = рецепт[рецепт.index("{"):]
-    сервер = json.loads(блок)["mcpServers"]["sufler"]
-    assert сервер["env"] == {"CHAROITE_ROOT": "<путь к данным>"}
+    argv, блок = mcp_server._registration()
+    сервер = блок["mcpServers"]["sufler"]
+    assert argv[:4] == ["claude", "mcp", "add", "sufler"], argv
+    assert argv[argv.index("--") + 1:] == [сервер["command"], *сервер["args"]], argv
+    env = dict(argv[i + 1].split("=", 1) for i, часть in enumerate(argv) if часть == "-e")
+    assert env == сервер["env"] == {"CHAROITE_ROOT": mcp_server.DATA_PLACEHOLDER}
     assert сервер["args"] == [str(ROOT / "src" / "mcp_server.py")]
-    assert '"CHAROITE_ROOT": "<путь к данным>"' in блок, блок
-    assert '\n  "mcpServers": {\n    "sufler": {' in блок, блок
+    рецепт = mcp_server._recipe()
+    assert _команда(рецепт) == argv
+    # JSON владелец вклеивает руками: он разбирается, читается без \u-экранов и
+    # лежит по ключу на строку (мутатор: ensure_ascii и indent)
+    текст = json.dumps(блок, ensure_ascii=False, indent=2)
+    assert текст in рецепт and json.loads(текст) == блок
+    assert f'"CHAROITE_ROOT": "{mcp_server.DATA_PLACEHOLDER}"' in текст, текст
+    assert '\n  "mcpServers": {\n    "sufler": {' in текст, текст
+
+
+def test_the_recipe_command_survives_a_path_with_spaces(monkeypatch):
+    """Интерпретатор в каталоге с пробелом — обычное дело на macOS; склейка
+    строк отдавала бы оболочке лишние слова вместо одного пути."""
+    monkeypatch.setattr(mcp_server.sys, "executable", "/Users/u/My Projects/py env/bin/python")
+    argv = _команда(mcp_server._recipe())
+    assert argv[argv.index("--") + 1] == "/Users/u/My Projects/py env/bin/python", argv
 
 
 def test_the_tool_schema_keeps_its_parameters():

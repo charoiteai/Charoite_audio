@@ -13,6 +13,7 @@ import functools
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 
@@ -127,21 +128,37 @@ def _client() -> LLM:
 mcp = FastMCP("sufler")
 
 
-def _recipe() -> str:
-    """Как зарегистрировать сервер с корнем данных — одно место для шапки и отказа.
+#: Плейсхолдер корня данных в рецепте — тот же, что в шапке модуля и в отказе канона.
+DATA_PLACEHOLDER = "/путь/к/данным"
+
+
+def _registration() -> tuple[list[str], dict]:
+    """Регистрация сервера одной записью: команда клиента и блок его конфига.
+
+    Обе половины рецепта собираются из одних и тех же частей, а команда — через
+    `shlex.join`, а не склейкой строк: путь к интерпретатору или к серверу с
+    пробелом (`My Projects`) иначе ломал вставку в терминал, а команда, в которой
+    выпал `-e`, выглядела бы целой (DS C1/I1 круга 1 по PR №628).
 
     Путь к коду сервер знает сам (`CODE` — корень кода от `__file__` через
     канон, интерпретатор — этого процесса), а путь к данным — нет: его знает
     только владелец, поэтому в рецепте плейсхолдер, а не догадка.
     """
     сервер = str(CODE / "src" / "mcp_server.py")
-    данные = "<путь к данным>"
-    блок = {"mcpServers": {"sufler": {
-        "command": sys.executable, "args": [сервер],
-        "env": {"CHAROITE_ROOT": данные}}}}
+    env = {"CHAROITE_ROOT": DATA_PLACEHOLDER}
+    argv = ["claude", "mcp", "add", "sufler",
+            *(часть for ключ, значение in env.items() for часть in ("-e", f"{ключ}={значение}")),
+            "--", sys.executable, сервер]
+    блок = {"mcpServers": {"sufler": {"command": sys.executable, "args": [сервер], "env": env}}}
+    return argv, блок
+
+
+def _recipe() -> str:
+    """Как зарегистрировать сервер с корнем данных — одно место для шапки и отказа."""
+    argv, блок = _registration()
     return (
-        "Зарегистрируйте сервер заново, назвав корень данных:\n"
-        f"  claude mcp add sufler -e CHAROITE_ROOT={данные} -- {sys.executable} {сервер}\n"
+        f"Зарегистрируйте сервер заново, назвав корень данных (вместо {DATA_PLACEHOLDER}):\n"
+        f"  {shlex.join(argv)}\n"
         "Другим клиентам MCP — блок в их конфиг:\n"
         + json.dumps(блок, ensure_ascii=False, indent=2))
 
