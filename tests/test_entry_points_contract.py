@@ -558,6 +558,9 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     got, out = run("утечка префикса", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"}, drop=())
     trap = tmp_path / "утечка префикса" / "work" / "ловушка"
     assert out["pycache_prefix"] == str(trap), f"протёкший префикс не виден признаком: {out}"
-    assert len(got) == 1 and f"чтение ловушки {trap}" in got[0], got
+    # путь ловушки уже сверен признаком выше; в строке — только вид нарушения: _first_line
+    # режет строку до 160 знаков, и на macOS длинный путь временного каталога
+    # (/private/var/folders/…) обрезался раньше «work/ловушка» — тест был красным только там
+    assert len(got) == 1 and "чтение ловушки" in got[0], got
     got, out = run("снят префикс", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"})
     assert out["pycache_prefix"] is None and got == [], f"изоляция не сняла префикс: {out}"
