@@ -559,6 +559,23 @@ def test_migrate_all_prints_the_canon_summary(tmp_path, capsys):
     assert "архив: канон минуток — unchanged 1" in capsys.readouterr().out
 
 
+def test_migrate_all_skips_excluded_meetings_and_meetings_without_minutes(tmp_path, capsys):
+    graph, tdir, src, main = _world(tmp_path)
+    src.unlink()
+    main.write_text(SPEECH + "[10:01:00] Участник Б: продолжим\n" * 20, encoding="utf-8")
+    other = tdir / "2026-09-21_1100_Другая.md"
+    other.write_text(SPEECH + "[11:01:00] Участник Б: продолжим\n" * 20, encoding="utf-8")
+    (graph / ma.ARCHIVE_DIR / "_исключено.md").write_text("2026-09-21_1100 — тест звука\n", encoding="utf-8")
+    assert ma.migrate_all(graph, tdir) == 2
+    assert "архив: канон минуток — раскладок не было" in capsys.readouterr().out
+
+
+def test_canon_outcome_is_a_value():
+    o = CO(CO.KEPT, live_sidecar.HUMAN)
+    with pytest.raises(AttributeError):
+        o.action = CO.UPDATED  # type: ignore[misc]
+
+
 def test_canon_tally_line_without_minutes():
     assert ma.canon_tally_line(collections.Counter()) == "канон минуток — раскладок не было"
 
@@ -603,13 +620,15 @@ def _vdocs(graph):
     return graph / "Документация" / "Стенограммы встреч"
 
 
-def test_docs_copy_is_the_canon_through_the_pipeline(tmp_path):
+def test_docs_copy_is_the_canon_through_the_pipeline(tmp_path, capsys):
     import graph_updater
     graph, tdir, src, main = _world(tmp_path, docs=True)
     graph_updater.archive_and_publish(main, graph, STAMP)
     canon = graph / ma.ARCHIVE_DIR / FOLDER / "Минутки.md"
     copy = _vdocs(graph) / src.name
     assert copy.read_bytes() == canon.read_bytes()
+    out = capsys.readouterr().out
+    assert "не среди файлов встречи" not in out and "копия из источника" not in out
     canon.write_bytes(MINUTES.replace("[ ]", "[x]").encode("cp1251"))
     src.write_text(MINUTES + "- [ ] ревизия\n", encoding="utf-8")
     graph_updater.archive_and_publish(main, graph, STAMP)
@@ -626,6 +645,24 @@ def test_docs_copy_is_the_canon_through_the_review_delivery(tmp_path):
     _deliver(graph, tdir, main)
     assert (_vdocs(graph) / src.name).read_bytes() == canon.read_bytes()
     assert (_vdocs(graph) / f"{KEY}_ревизия_claude.md").read_text(encoding="utf-8") == "# Ревизия\n"
+
+
+def test_delivery_without_docs_still_delivers(tmp_path):
+    graph, tdir, src, main = _world(tmp_path)
+    log = _deliver(graph, tdir, main)
+    assert f"ревизия доставлена: архив {FOLDER}\n" in log and "vault" not in log
+
+
+def test_delivery_does_not_copy_a_review_not_in_utf8(tmp_path):
+    import cloud_review
+    graph, tdir, src, main = _world(tmp_path, docs=True)
+    rev = tdir / f"{KEY}_ревизия_claude.md"
+    rev.write_bytes("# Ревизия\n".encode("cp1251"))
+    buf = io.StringIO()
+    cloud_review.deliver_review(rev, main, graph, STAMP, buf)
+    assert "ревизия доставлена" in buf.getvalue()
+    assert not (_vdocs(graph) / rev.name).exists()
+    assert (_vdocs(graph) / src.name).exists()
 
 
 @pytest.mark.parametrize("run", ["pipeline", "delivery"])
@@ -679,7 +716,8 @@ def test_failed_archive_copies_the_source(tmp_path, monkeypatch, capsys):
     graph_updater.archive_and_publish(main, graph, STAMP)
     assert (_vdocs(graph) / src.name).read_bytes() == src.read_bytes()
     out = capsys.readouterr().out
-    assert "архив встречи не удался" in out and "канона минуток в проходе нет" in out
+    assert "архив встречи не удался" in out and f"{src.name} — копия из источника" in out
+    assert f"{main.name} — копия из источника" not in out, "причина — только у минуток"
 
 
 def test_topic_twin_is_copied_from_itself(tmp_path):
