@@ -75,6 +75,7 @@ import media_meta  # noqa: E402
 import voice_memos_bridge  # noqa: E402
 import channel_trace  # noqa: E402
 import live_sidecar  # noqa: E402
+import transcript_origin  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
@@ -227,6 +228,17 @@ def note_phone_stop(src: pathlib.Path, tpath: pathlib.Path) -> dict | None:
     channel_trace.sync_tail(tpath, log=print)
     print(f"запись с телефона: {channel_trace.render_phone(ev)}")
     return ev
+
+
+def note_origin(src: pathlib.Path, tpath: pathlib.Path, kind: str) -> None:
+    """«Откуда запись» (№262) — ключом `transcript_origin` в сайдкар стенограммы
+    НОВОЙ встречи. Зовётся один раз, в общем хвосте трёх веток, где стенограмма
+    уже названа: обещание — «импорт дошёл до хвоста». Повтор сюда не приходит
+    (там стенограмма старой встречи), родитель-сканер — тоже (своей
+    стенограммы у него нет). Отказ — не ошибка импорта: дедуп узнает повтор
+    по шапке."""
+    if not transcript_origin.remember(tpath, src.name, src.stat().st_size, kind):
+        print("⚠️ откуда запись не записано: сайдкар стенограммы неоднозначен — повтор узнаётся по шапке")
 
 
 PAIR_ORPHAN_AGE = 60     # манифест в done/ без аудио: аудио уже доехало и исчезло — ждать нечего,
@@ -715,22 +727,31 @@ def source_mark(name: str, size: int | None) -> str:
 _SOURCE_HEAD_RE = re.compile(r"— (?:импорт|запись) (?P<tail>.+?)\s*$")
 
 
+def same_origin(theirs: tuple[str, int | None], ours: tuple[str, int | None]) -> bool:
+    """Одна запись? Единственное правило совпадения пары (имя, размер) — и
+    для шапки, и для ключа `transcript_origin` (№262): два правила разошлись
+    бы молча, и один и тот же файл был бы повтором по шапке и новой встречей
+    по ключу. Имя равно; размер равен или неизвестен у одной из сторон."""
+    (their_name, their_size), (name, size) = theirs, ours
+    return their_name == name and (their_size is None or size is None or their_size == size)
+
+
 def same_source(head: str, name: str, size: int | None) -> bool:
     """Шапка стенограммы — про этот исходник? Хвост шапки сравнивается с
     именем БЕЗ разбора регэкспом: имя вроде «memo (7 Б).m4a» иначе теряло
     хвост за «размер» (круг-2 по PR #388, Codex и Sonnet). Хвост равен имени
-    (шапка без размера, до 23.08) — повтор; равен «имя (N Б)» — повтор, если
-    размер совпал или неизвестен."""
+    (шапка без размера, до 23.08) — размер неизвестен; «имя (N Б)» — размер
+    N. Дальше — общее правило `same_origin`."""
     m = _SOURCE_HEAD_RE.search(head)
     if not m:
         return False
     tail = m.group("tail")
     if tail == name:
-        return True
+        return same_origin((tail, None), (name, size))
     if not tail.startswith(name + " (") or not tail.endswith(" Б)"):
         return False
     theirs = tail[len(name) + 2:-3]
-    return theirs.isdigit() and (size is None or int(theirs) == size)
+    return theirs.isdigit() and same_origin((name, int(theirs)), (name, size))
 
 
 def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str) -> str:
@@ -810,11 +831,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def find_repeat(tdir: pathlib.Path, minute: str, src_name: str,
                 src_size: int | None) -> tuple[pathlib.Path | None, bool]:
-    """Стенограмма той же записи в минуте `minute` и занята ли минута вообще."""
+    """Стенограмма той же записи в минуте `minute` и занята ли минута вообще.
+
+    Сначала ключ `transcript_origin` сайдкара (№262), нет ключа — шапка:
+    встречи, импортированные до ключа, узнаются только по ней, поэтому обход
+    не сужается до стенограмм с сайдкаром."""
     taken = False
-    for p in sorted(tdir.glob(f"{minute}*.md")) if tdir.is_dir() else ():
+    if not tdir.is_dir():
+        return None, taken
+    sidecars = transcript_origin.sidecars_in(tdir, minute)
+    for p in sorted(tdir.glob(f"{minute}*.md")):
         s = meeting_stamp.stamp_of(p.stem)
         if s is None or meeting_stamp.minute_of(s) != minute:
+            continue
+        origin = transcript_origin.of(p, sidecars)
+        if origin is not None:
+            if same_origin(origin[:2], (src_name, src_size)):
+                return p, True
+            taken = True
             continue
         try:
             with p.open(encoding="utf-8", errors="replace") as fh:
@@ -839,12 +873,19 @@ def find_repeat_anywhere(tdir: pathlib.Path, src_name: str,
     повторно скопированного файла — момент копирования. Поэтому повтор
     ищется по шапке во всей папке, но только с РАЗМЕРОМ в шапке: телефон
     экспортирует всё как Recording.m4a, и без размера две разные записи
-    склеились бы по имени.
+    склеились бы по имени. Ключ `transcript_origin` (№262) размер несёт
+    всегда; нет ключа — шапка, как в `find_repeat`.
     """
     if src_size is None or not tdir.is_dir():
         return None
+    sidecars = transcript_origin.sidecars_in(tdir)
     for p in sorted(tdir.glob("*.md")):
         if meeting_stamp.stamp_of(p.stem) is None:
+            continue
+        origin = transcript_origin.of(p, sidecars)
+        if origin is not None:
+            if same_origin(origin[:2], (src_name, src_size)):
+                return p
             continue
         try:
             with p.open(encoding="utf-8", errors="replace") as fh:
@@ -1068,6 +1109,7 @@ def main() -> None:
 
     ext = src.suffix.lower()
     if ext in AUDIO:
+        kind = transcript_origin.AUDIO
         # транскрибация пишет transcripts/<stamp>.md сама; время отдаём
         # целиком — с секундами и суффиксом у соседки в занятой минуте,
         # иначе она ложилась в минутный файл поверх первой (круг-1 по
@@ -1086,6 +1128,7 @@ def main() -> None:
             tpath.rename(titled)
             tpath = titled
     elif ext in SUBS:
+        kind = transcript_origin.SUBS
         from vocabulary import apply as vapply, compile_rules
         entries = parse_subs(vapply(src.read_text(encoding="utf-8", errors="ignore"),
                                     compile_rules(cfg)))
@@ -1096,6 +1139,7 @@ def main() -> None:
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
     elif ext in TEXT:
+        kind = transcript_origin.TEXT
         from vocabulary import apply as vapply, compile_rules
         body = vapply(src.read_text(encoding="utf-8", errors="ignore").strip(),
                       compile_rules(cfg))
@@ -1111,6 +1155,7 @@ def main() -> None:
     # retro_fill означало бы вторую генерацию (Important DS входного круга); до
     # ветки «пустая запись» — огрызок с причиной обрыва и есть искомый факт
     note_phone_stop(src, tpath)
+    note_origin(src, tpath, kind)
     # единый хвост: граф → минутки/разбор/тезисы/архив (идемпотентно)
     print("— обновляю граф…")
     _status("processing", tpath, "updating_graph")

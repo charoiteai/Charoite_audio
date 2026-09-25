@@ -805,6 +805,8 @@ the event writes it (idempotent), an orphan waits an hour in the import
 folder before it is swept, because iCloud delivers a kilobyte of JSON long
 before an hour of audio. The manifest dies with the audio in retention.
 
+Where an imported transcript came from is a key of its own sidecar, `transcript_origin` (`{name, size, kind}`, kind `audio`/`subs`/`text`), written once at the common tail of the three import branches and owned by `src/transcript_origin.py`; repeat detection reads it first and falls back to the H1 tail «— импорт X (N Б)» only when the key is absent, with one (name, size) match rule for both (№262).
+
 **The archive summary is a derivative with a passport; its source is what the
 model was fed, not the speech.** `Саммари.md` — the one-minute digest, the first
 file people open — was built once (`_gen_summary` skipped any non-empty file)

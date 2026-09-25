@@ -59,6 +59,7 @@
       "transcript",
       "live_sidecar",
       "channel_trace",
+      "transcript_origin",
       "action_items",
       "speaker_names",
       "review_bridge",
