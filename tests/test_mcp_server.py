@@ -286,9 +286,9 @@ def test_the_recipe_command_and_json_block_say_the_same():
 def test_the_recipe_command_survives_a_path_with_spaces(monkeypatch):
     """Интерпретатор в каталоге с пробелом — обычное дело на macOS; склейка
     строк отдавала бы оболочке лишние слова вместо одного пути."""
-    monkeypatch.setattr(mcp_server.sys, "executable", "/Users/u/My Projects/py env/bin/python")
+    monkeypatch.setattr(mcp_server.sys, "executable", "/opt/My Apps/py env/bin/python")
     argv = _команда(mcp_server._recipe())
-    assert argv[argv.index("--") + 1] == "/Users/u/My Projects/py env/bin/python", argv
+    assert argv[argv.index("--") + 1] == "/opt/My Apps/py env/bin/python", argv
 
 
 def test_the_tool_schema_keeps_its_parameters():
