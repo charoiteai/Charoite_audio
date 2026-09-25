@@ -251,6 +251,21 @@ def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
         assert '"env"' in ответ and str(ROOT / "src" / "mcp_server.py") in ответ, (имя, ответ[:300])
 
 
+def test_the_recipe_json_block_pastes_as_is():
+    """JSON-блок рецепта владелец вставляет в конфиг клиента руками: он обязан
+    разбираться как JSON, нести `env` с плейсхолдером, читаемым без
+    \\u-экранов, и лежать по ключу на строку — однострочник в конфиг не
+    вклеить глазами (мутатор: ensure_ascii и indent)."""
+    import json
+    рецепт = mcp_server._recipe()
+    блок = рецепт[рецепт.index("{"):]
+    сервер = json.loads(блок)["mcpServers"]["sufler"]
+    assert сервер["env"] == {"CHAROITE_ROOT": "<путь к данным>"}
+    assert сервер["args"] == [str(ROOT / "src" / "mcp_server.py")]
+    assert '"CHAROITE_ROOT": "<путь к данным>"' in блок, блок
+    assert '\n  "mcpServers": {\n    "sufler": {' in блок, блок
+
+
 def test_the_tool_schema_keeps_its_parameters():
     """Регистратор не прячет сигнатуру: без `functools.wraps` у
     `sufler_live_transcript` вместо `max_chars` были бы `*args, **kwargs`."""
