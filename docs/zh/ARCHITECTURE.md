@@ -46,6 +46,10 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
   同一时刻只运行一个重建（`logs/rebuild.lock`）：被门放行的孤儿录音和
   「停止」后的新录音不会同时启动。「会议进行中」仅指 `flock` 因他人持锁而
   诚实地拒绝；文件缺失、无权限或卷不支持 `flock` 都不会让后台停滞。
+  第二个信号——本机上的守护进程，无论其数据根目录——是
+  `live_gate.daemon_process`：MCP 状态与占位节点迁移共用同一个模式
+  （`python` 且脚本是第一个参数），因此打开了 `src/daemon.py` 的编辑器
+  不算守护进程。
 - **忙碌 ≠ 挂掉。** `llm.stream`/`complete` 在调用方的预算内以递增的
   间隔重试 `503/429`（实时循环最多 30 秒，图谱抽取最多 10 分钟）；
   `llm_health.probe` 区分 `BUSY`，绝不在别人的生成过程中重启服务器。

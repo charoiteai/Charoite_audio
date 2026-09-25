@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import fcntl
 import pathlib
+import re
+import shutil
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -68,6 +72,61 @@ def test_checker_does_not_evict_another_checker(tmp_path):
     finally:
         fcntl.flock(other, fcntl.LOCK_UN)
         other.close()
+
+
+@pytest.mark.parametrize("cmdline, is_daemon", [
+    ("/opt/venv/bin/python3 /home/u/charoite/src/daemon.py", True),
+    ("python src/daemon.py --flag", True),
+    ("/x/.venv/bin/python3 -u /y/src/daemon.py", True),
+    ("/x/Python.app/Contents/MacOS/Python src/daemon.py", True),   # python фреймворка macOS
+    ("vim src/daemon.py", False),                                   # редактор с открытым файлом (GLM M4)
+    ("less /tmp/src/daemon.py.bak", False),
+    ("python -m pylint src/daemon.py", False),                      # скрипт не первый аргумент (GLM M6)
+    ("claude -p посмотри src/daemon.py", False),                    # сессия ассистента с путём в промпте
+])
+def test_daemon_process_pattern_tells_the_daemon_from_its_readers(cmdline, is_daemon):
+    """Один шаблон на статус MCP и сторож миграции: свой шаблон миграции
+    («src/daemon\\.py$») принимал редактор за демона и откладывал её навсегда."""
+    assert bool(re.search(live_gate.DAEMON_PROCESS, cmdline)) is is_daemon
+
+
+def test_daemon_process_asks_pgrep_with_the_shared_pattern():
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="4242 python\n", stderr="")
+    assert live_gate.daemon_process(run=run) == "4242 python"
+    assert seen == [["pgrep", "-fl", live_gate.DAEMON_PROCESS]]
+
+
+def test_daemon_process_without_pgrep_is_not_a_meeting(capsys):
+    """Нет pgrep — судить не по чему: пусто и предупреждение, не вечное «ждём»."""
+    def run(cmd, **kw):
+        raise FileNotFoundError(2, "нет такого файла", "pgrep")
+    assert live_gate.daemon_process(run=run) == ""
+    assert "pgrep недоступен" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which("pgrep") is None, reason="нет pgrep в системе")
+def test_daemon_process_finds_a_running_daemon_through_real_pgrep(tmp_path):
+    """Шаблон понимает настоящий pgrep (ERE), а не только re: поддельный демон
+    `<python> <tmp>/src/daemon.py` виден, пока жив."""
+    script = tmp_path / "src" / "daemon.py"
+    script.parent.mkdir()
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(script)])
+    try:
+        deadline = time.monotonic() + 5
+        found = ""
+        while str(proc.pid) not in found and time.monotonic() < deadline:
+            found = live_gate.daemon_process()
+            time.sleep(0.05)
+        assert str(proc.pid) in found
+    finally:
+        proc.kill()
+        proc.wait()
+    assert str(proc.pid) not in live_gate.daemon_process(), "процесс умер — не демон"
 
 
 class Clock:

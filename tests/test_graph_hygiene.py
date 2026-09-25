@@ -1221,12 +1221,16 @@ def test_placeholder_migration_cli_guards(tmp_path):
     assert r.returncode == 0 and json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))["nodes"] == ["Собеседник 2"]
 
 
-def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_leftovers(tmp_path):
+def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_leftovers(tmp_path, monkeypatch, capsys):
     """Замок cloud.lock занят соседом — миграция не пишет; leftovers видит
-    папочную ссылку, пережившую прогон; CLI с --root доходит до конца (GLM r2)."""
+    папочную ссылку, пережившую прогон; CLI с --root доходит до конца (GLM r2).
+
+    Успешный путь CLI идёт через `main` в процессе, а второй сторож подменён:
+    подпроцесс спрашивал настоящий pgrep, и на машине, где идёт запись встречи,
+    скрипт честно отвечал «отложить» — исход теста решало состояние машины (№330)."""
     import file_locks
     import charoite_paths
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
     import migrate_placeholders as mp
     graph = tmp_path / "g"
     (graph / "Люди").mkdir(parents=True)
@@ -1236,7 +1240,7 @@ def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_lefto
     data_root = tmp_path / "data"
     (data_root / "logs").mkdir(parents=True)
     lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data_root).parent)
-    mp.LOCK_WAIT = 0.2
+    monkeypatch.setattr(mp, "LOCK_WAIT", 0.2)   # не на всю сессию pytest
     with file_locks.graph_lock(lock_dir, 0.1) as taken:
         assert taken
         with pytest.raises(SystemExit):
@@ -1244,15 +1248,63 @@ def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_lefto
     assert (graph / "Люди" / "Собеседник 2.md").exists(), "под чужим замком ничего не тронуто"
     # leftovers: ссылка с папкой на снятый ключ
     assert mp.leftovers(graph, {"собеседник 2"}) == ["Встречи/2026-08-01_1000.md: [[Люди/Собеседник 2]]"]
-    # успешный CLI-путь с явным корнем данных
-    root = pathlib.Path(__file__).resolve().parent.parent
-    r = subprocess.run([sys.executable, str(root / "scripts" / "migrate_placeholders.py"), "--graph", str(graph),
-                        "--apply", "--backup", str(tmp_path / "b2"), "--root", str(data_root)],
-                       capture_output=True, text=True, cwd=root, check=False)
-    assert r.returncode == 0, r.stderr + r.stdout
-    assert not (graph / "Люди" / "Собеседник 2.md").exists() and "cloud.lock" in r.stdout
+    # успешный CLI-путь с явным корнем данных; демона на «машине» нет
+    monkeypatch.setattr(mp, "_daemon_process_running", lambda: "")
+    capsys.readouterr()
+    code = mp.main(["--graph", str(graph), "--apply", "--backup", str(tmp_path / "b2"), "--root", str(data_root)])
+    out = capsys.readouterr()
+    assert code == 0, out.err + out.out
+    assert not (graph / "Люди" / "Собеседник 2.md").exists() and "cloud.lock" in out.out
     assert "- Собеседник 2 сказал" in (graph / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8")
 
+
+@pytest.mark.parametrize("guard", ["daemon_lock", "daemon_process"])
+def test_placeholder_migration_defers_while_the_daemon_process_runs(tmp_path, monkeypatch, capsys, guard):
+    """Идёт встреча — код 3, граф и корень данных не тронуты байт в байт,
+    каталог копии не начат (№330). Каждый сторож — отдельно, при молчащем
+    втором: иначе регрессию одного прикрывал бы другой тем же кодом 3.
+    daemon_lock — лок демона в корне данных, как его берёт daemon.main();
+    daemon_process — процесс демона на машине, лока нет."""
+    import fcntl
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import migrate_placeholders as mp
+    live_gate = mp.live_gate
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Встречи").mkdir()
+    node = graph / "Люди" / "Собеседник 2.md"
+    node.write_text("# Собеседник 2\n", encoding="utf-8")
+    meeting = graph / "Встречи" / "2026-08-01_1000.md"
+    meeting.write_text("- [[Люди/Собеседник 2]] сказал\n", encoding="utf-8")
+    data_root = tmp_path / "data"
+    (data_root / "logs").mkdir(parents=True)
+    assert mp.plan(graph)["nodes"] == ["Собеседник 2"], "миграции есть что делать — отказ что-то защищает"
+
+    def snapshot():
+        # выборочные exists() пропускали запись до отказа — сравниваем всё целиком
+        return {str(p.relative_to(tmp_path)): (p.read_bytes() if p.is_file() else None)
+                for base in (graph, data_root) for p in sorted(base.rglob("*"))}
+
+    lock = live_gate.lock_path(data_root).open("w")
+    try:
+        if guard == "daemon_lock":
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)   # как daemon.main()
+            monkeypatch.setattr(mp.live_gate, "daemon_process", lambda: "")
+            said = "лок демона"
+        else:
+            # подмена у владельца признака: сторож миграции обязан спросить именно его
+            monkeypatch.setattr(mp.live_gate, "daemon_process", lambda: "4242 python src/daemon.py")
+            said = "4242 python src/daemon.py"
+        assert live_gate.daemon_alive(data_root) is (guard == "daemon_lock")
+        before = snapshot()
+        code = mp.main(["--graph", str(graph), "--apply", "--backup", str(tmp_path / "b"), "--root", str(data_root)])
+    finally:
+        lock.close()
+    err = capsys.readouterr().err
+    assert code == 3 and said in err
+    assert snapshot() == before, "граф и корень данных не тронуты"
+    assert node.exists() and meeting.exists()
+    assert not (tmp_path / "b").exists(), "копия не начата"
 
 
 def test_doctor_names_files_that_do_not_decode_strictly(tmp_path):

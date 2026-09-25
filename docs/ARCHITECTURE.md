@@ -62,6 +62,10 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   recording after "Stop" never start together. "A meeting is on" means only
   an honest `flock` refusal caused by someone else's lock; a missing file,
   missing permissions or a volume without `flock` never stall the background.
+  The second sign — a daemon process on this machine, whatever its data
+  root — is `live_gate.daemon_process`: one pattern (`python` with the
+  script as its first argument) for the MCP status and the placeholder
+  migration, so an editor with `src/daemon.py` open is not a daemon.
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
