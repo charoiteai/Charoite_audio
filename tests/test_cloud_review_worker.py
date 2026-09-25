@@ -43,6 +43,14 @@ def _no_retry_pause(monkeypatch):
     monkeypatch.setattr(cloud_review.live_gate, "wait_while_live", lambda *a, **k: False)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_model(модель_не_отвечает):
+    """Доставка ревизии пересобирает архив встречи, а он — саммари моделью. Сценарий
+    этого файла — «локальной модели нет»; прежняя подмена `_gen_summary` с №314
+    мимо архиватора, и отказ сети глотался его `except Exception` (№376)."""
+    return модель_не_отвечает
+
+
 def _graph(tmp: pathlib.Path) -> pathlib.Path:
     graph = tmp / "Работа"
     (graph / "Ядра").mkdir(parents=True)
@@ -469,8 +477,6 @@ def test_published_review_reaches_the_archive_and_the_vault(tmp_path, monkeypatc
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    import meeting_archive
-    monkeypatch.setattr(meeting_archive, "_gen_summary", lambda *a, **k: None)  # без локальной модели
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
     code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
 
@@ -506,8 +512,6 @@ def test_review_of_an_untitled_meeting_lands_in_its_own_folder(tmp_path, monkeyp
         return Result()
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    import meeting_archive
-    monkeypatch.setattr(meeting_archive, "_gen_summary", lambda *a, **k: None)
     code = cloud_review.run(stamp, transcript, graph, rev, log,
                             {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}})
 
