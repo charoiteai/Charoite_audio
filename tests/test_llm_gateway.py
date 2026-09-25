@@ -1076,3 +1076,68 @@ def test_privacy_names_the_cache_limits_the_code_has():
         assert line, f"{doc}: нет строки о сводках частей"
         assert sorted(int(n) for n in re.findall(r"\d+", line)) == sorted([minutes, size]), \
             f"{doc}: числа строки не совпадают с FIT_CACHE_TTL/FIT_CACHE_SIZE"
+
+
+# ------------------------------------------------ список моделей (/api/tags)
+#
+# В прогоне Ollama недоступна заглушкой из conftest (№376): прежде это
+# «доказывал» упавший запрос, отказ которого глотал `except Exception`.
+
+class _Tags:
+    """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса."""
+
+    def __init__(self, payload=None, error: Exception | None = None):
+        self.payload, self.error, self.urls = payload, error, []
+
+    def get(self, url, timeout=None, **kw):
+        self.urls.append((url, timeout))
+        if self.error is not None:
+            raise self.error
+        return _Resp(self.payload)
+
+
+def test_models_list_is_read_from_the_tags_reply(monkeypatch):
+    """Настоящий `_models_available` — с подменённым транспортом: разбор ответа
+    и отказ без сервера — пустое множество, а не исключение."""
+    настоящий = LLM._models_available.настоящий
+    engine = LLM(CFG)
+    tags = _Tags({"models": [{"name": "тест-модель"}, {"name": "тест-мелкая"}]})
+    monkeypatch.setattr(llm_mod, "requests", tags)
+    assert настоящий(engine) == {"тест-модель", "тест-мелкая"}
+    assert tags.urls == [(f"{engine.base}/api/tags", 3)]
+
+    monkeypatch.setattr(llm_mod, "requests", _Tags(error=ConnectionError("refused")))
+    assert настоящий(engine) == set()
+
+
+#: Адрес Ollama прогона литералом: `== [engine.base]` сравнивал бы запись заглушки
+#: с тем же свойством, из которого она записана (круг DeepSeek, I2).
+OLLAMA = "http://127.0.0.1:11434"
+
+
+def test_unreachable_ollama_leaves_the_configured_model(ollama_список_моделей):
+    """Умолчание прогона: списка нет — модель из конфига, пусть ollama скажет сама."""
+    assert LLM(CFG).resolve_model() == "тест-модель"
+    assert ollama_список_моделей == [OLLAMA], "список моделей спрашивали один раз и у своего сервера"
+
+
+@pytest.mark.ollama_отвечает("тест-мелкая")
+def test_resolve_model_falls_back_to_what_is_downloaded(ollama_список_моделей):
+    """Путь «сервер ответил»: основной модели нет — берётся скачанная запасная."""
+    assert LLM(CFG).resolve_model() == "тест-мелкая"
+    assert ollama_список_моделей == [OLLAMA]
+
+
+def test_a_downed_model_fails_the_stream_at_once(модель_не_отвечает, monkeypatch):
+    """«Сервер лежит» доезжает до стрима отказом, а не «занят, повторить».
+
+    `_open_stream` на `ConnectionError` спит по `BUSY_BACKOFF` до `busy_wait`
+    (30 с у живого контура): заглушка с этим классом ошибки стоила бы тесту
+    полминуты на вызов вместо падения (круг DeepSeek, I4)."""
+    import requests
+    monkeypatch.setattr(llm_mod.time, "sleep",
+                        lambda s: pytest.fail(f"стрим ждал {s} с на лежащем сервере", pytrace=False))
+    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}  # адрес сценария
+    with pytest.raises(requests.RequestException):
+        list(LLM(cfg).stream("вопрос"))
+    assert модель_не_отвечает == ["вопрос"]

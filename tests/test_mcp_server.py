@@ -36,7 +36,6 @@ def test_server_keeps_the_api_the_file_relies_on():
 
 # ── Аудит 13.09, зона 4 ──────────────────────────────────────────────────
 
-import re  # noqa: E402
 import subprocess  # noqa: E402
 
 import pytest  # noqa: E402
@@ -79,15 +78,14 @@ def test_live_transcript_keeps_dashes_inside_speech(tmp_path, monkeypatch):
     assert tail.startswith("[") and len(tail.split("\n", 1)[1]) == 1
 
 
-def test_status_pattern_matches_the_daemon_process_not_an_editor():
-    """pgrep -f «src/daemon.py» совпадал с редактором, где открыт файл (GLM M4)."""
-    pat = re.compile(mcp_server.DAEMON_PATTERN)
-    assert pat.search("/opt/venv/bin/python3 /Users/x/charoite/src/daemon.py")
-    assert pat.search("python src/daemon.py --flag")
-    assert not pat.search("vim src/daemon.py")
-    assert not pat.search("less /tmp/src/daemon.py.bak")
-    assert pat.search("/x/.venv/bin/python3 -u /y/src/daemon.py")
-    assert not pat.search("python -m pylint src/daemon.py"), "скрипт не первый аргумент — не демон (GLM M6)"
+def test_status_asks_the_shared_daemon_process_sign(tmp_path, monkeypatch):
+    """Статус спрашивает процесс демона у live_gate — тот же ответ, что у
+    сторожа миграции; таблица шаблона — в tests/test_live_gate.py."""
+    _transcripts(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_server.live_gate, "daemon_process", lambda: "4242 python src/daemon.py")
+    assert mcp_server.sufler_status().startswith("Демон: работает")
+    monkeypatch.setattr(mcp_server.live_gate, "daemon_process", lambda: "")
+    assert mcp_server.sufler_status().startswith("Демон: остановлен")
 
 
 def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypatch):
