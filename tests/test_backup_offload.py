@@ -245,12 +245,107 @@ def test_запрет_сети_переживает_undo_в_теле_теста(
     запись в живую память владельца снова становилась возможной без единого
     сигнала (круг 14 по коду №327, GLM I1). Тот же образец, что у корня и
     графа: save/restore руками.
+
+    Ждём `pytest.fail.Exception`, а не `AssertionError`: отказ, который ловит
+    `except Exception` продукта, тест не роняет (№376). Этот тип `except
+    Exception` пропускает — самопроверка краснеет, стоит отказу снова стать
+    обычным исключением.
+
+    Адрес — в зоне `.invalid` (RFC 6761), а не боевой `:8100`: сломанный
+    сторож не должен дотянуться до живой памяти самой самопроверкой (круг 1
+    по PR №624, Opus I2).
     """
     import requests
     monkeypatch.setattr(os, "sep", os.sep)      # что-нибудь в стек monkeypatch
     monkeypatch.undo()
-    with pytest.raises(AssertionError, match="пошёл в сеть"):
-        requests.post("http://127.0.0.1:8100/remember", json={})
+    with pytest.raises(pytest.fail.Exception, match="пошёл в сеть"):
+        requests.post("http://сторож.invalid/remember", json={})
+
+
+def test_запрет_сети_закрывает_и_urllib():
+    """Второй транспорт — stdlib: `scripts/doctor.py` спрашивает Ollama через
+    `urllib.request.urlopen`, и без сторожа тест доктора шёл бы в живой сервер
+    (№376). Адрес в отказе — и у строки, и у `Request`; адреса — в зоне
+    `.invalid`, чтобы сломанный сторож не дошёл до живых сервисов."""
+    import urllib.request
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/api/tags\)"):
+        urllib.request.urlopen("http://сторож.invalid/api/tags", timeout=4)
+    запрос = urllib.request.Request("http://сторож.invalid/remember", data=b"{}")
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/remember\)"):
+        urllib.request.urlopen(запрос)
+
+
+def test_маршрут_сторожа_отвечает_только_на_свой_метод_и_адрес(_сеть_закрыта, monkeypatch):
+    """Сценарий «сервер лежит» — маршрутом сторожа, и только на свой адрес.
+
+    Шпион, подменявший весь `requests.post`, глотал бы и побочный запрос мимо
+    сценария (круг 1 по PR №624, Opus I1): маршрут отвечает на `(метод, полный
+    адрес)`, остальное — прежний `pytest.fail`. Хост в адресе: тот же путь на
+    чужой машине — не сценарий, а отказ (круг DeepSeek, I1). `undo()` маршрут
+    не снимает.
+    """
+    import requests
+    просили = []
+    _сеть_закрыта[("POST", "http://сторож.invalid:8100/forget")] = \
+        lambda url, **k: просили.append((url, k.get("json"))) or "ок"
+    monkeypatch.setattr(os, "sep", os.sep)
+    monkeypatch.undo()
+    assert requests.post("http://сторож.invalid:8100/forget", json={"meeting": "к"}) == "ок"
+    assert requests.request("post", "http://сторож.invalid:8100/forget?x=1") == "ок"
+    assert просили == [("http://сторож.invalid:8100/forget", {"meeting": "к"}),
+                       ("http://сторож.invalid:8100/forget?x=1", None)]
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid:8100/remember\)"):
+        requests.post("http://сторож.invalid:8100/remember", json={})
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://чужой\.invalid:8100/forget\)"):
+        requests.post("http://чужой.invalid:8100/forget", json={})
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid:9/forget\)"):
+        requests.post("http://сторож.invalid:9/forget", json={})
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid:8100/forget\)"):
+        requests.get("http://сторож.invalid:8100/forget")
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(http://сторож\.invalid/x\)"):
+        requests.Session().get("http://сторож.invalid/x")
+
+
+def test_маршрут_сторожа_называет_полный_адрес(_сеть_закрыта):
+    """Маршрут по одному пути (`/forget`) совпал бы с любой машиной — его
+    регистрация падает сразу, а не молчит (круг DeepSeek, I1)."""
+    with pytest.raises(pytest.fail.Exception, match="полный адрес"):
+        _сеть_закрыта[("POST", "/forget")] = lambda url, **k: None
+    with pytest.raises(pytest.fail.Exception, match="полный адрес"):
+        _сеть_закрыта[("POST", "http://сторож.invalid/forget?x=1")] = lambda url, **k: None
+    assert not _сеть_закрыта
+
+
+@pytest.mark.сеть_разрешена
+def test_маршрут_под_открытой_сетью_падает_на_входе(_сеть_закрыта):
+    """Под `сеть_разрешена` транспорт настоящий, и маршрут не перехватил бы
+    ничего: сценарий «сервер лежит» молча ушёл бы в живой сервер. Регистрация
+    падает на входе (круг DeepSeek, M1). В сеть тест не ходит."""
+    with pytest.raises(pytest.fail.Exception, match="сеть_разрешена ничего не перехватит"):
+        _сеть_закрыта[("POST", "http://сторож.invalid/api/chat")] = lambda url, **k: None
+
+
+def test_вне_сценария_маршрутов_нет(_сеть_закрыта):
+    """Отрицательный контроль сценариев: тест, не просивший ни одного, не видит
+    ни одного маршрута. Стань `модель_не_отвечает` или шпион памяти autouse —
+    тихий отказ генерации и памяти на весь прогон вернул бы дыру №376, и этот
+    тест краснеет первым (круг DeepSeek, I3)."""
+    assert dict(_сеть_закрыта) == {}
+
+
+def test_настоящий_список_моделей_упирается_в_сторож():
+    """Отрицательный контроль заглушки списка моделей: под ней настоящий
+    `_models_available` — и он не отвечает сам, а падает на стороже. Появись
+    маршрут `/api/tags` или тихий транспорт под заглушкой, `except Exception`
+    метода вернул бы `set()`, и этот тест покраснел бы (круг DeepSeek, I3).
+    Адрес — в зоне `.invalid`, как у прочих самопроверок."""
+    from llm import LLM
+    cfg = {"llm": {"model": "тест-модель", "base_url": "https://сторож.invalid:11434",
+                   "allow_remote": True},
+           "sufler": {"role": "тестовая роль"}}
+    настоящий = LLM._models_available.настоящий
+    with pytest.raises(pytest.fail.Exception, match=r"пошёл в сеть \(https://сторож\.invalid:11434/api/tags\)"):
+        настоящий(LLM(cfg))
 
 
 def test_обвязка_называет_канону_временный_корень(tmp_path):
