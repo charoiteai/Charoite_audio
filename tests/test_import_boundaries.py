@@ -64,7 +64,7 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv), seams=lm.seam_calls(inv))
+                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv))
     assert not problems, "\n".join(problems)
 
 
@@ -78,10 +78,12 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
     проверяет каждую, а не «ту, о которой вспомнили» (Critical DS выходного
     круга, воспроизведено возвратом прежней строки)."""
     layout, graph, scanned, execs, inv = world
-    derivations = lm.root_derivations(inv)
+    derivations = lm.root_derivations(inv, layout)
     exempt = layout["root_exemptions"]
 
-    assert {name for name, _, _ in lm.ROOT_SHAPES} == {"env", "file", "snapshot"}, (
+    assert {s.name: s.scope for s in lm.ROOT_SHAPES} == {
+        "env": "root", "file": "root", "snapshot": "root", "any_env": "layer", "home": "layer",
+        "any_file": "layer", "sys_path": "layer", "dynamic_import": "layer"}, (
         "формы вывода корня — утверждённый список; новая форма это правка политики, "
         "которую обязан прочитать ревьюер")
     assert lm.ENV_ROOT_OWNER in derivations, (
@@ -107,11 +109,14 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
     # ниже матчёр пинен с обеих сторон (находит снимок, не ловит вызов), поэтому
     # пустотой она не считается; список — только дополнение, молчаливо расширить
     # его нельзя: лишнее имя в множестве покрасит равенство.
-    probe_covered = {"snapshot"}
+    # Формы области `layer` (№365) живых примеров не имеют по построению: слой без
+    # окружения чист, это и есть итог шага. Их матчёры пинены синтетической пробой
+    # с обеих сторон — `test_the_layer_shapes_see_every_way_to_reach_the_environment`.
+    probe_covered = {"snapshot"} | {s.name for s in lm.ROOT_SHAPES if s.scope == "layer"}
     found = {shape for shapes in derivations.values() for shape in shapes}
-    assert found | probe_covered == {name for name, _, _ in lm.ROOT_SHAPES}, (
+    assert found | probe_covered == {s.name for s in lm.ROOT_SHAPES}, (
         f"форма без живого примера и без синтетической пробы сторожит пустоту: "
-        f"{sorted({n for n, _, _ in lm.ROOT_SHAPES} - found - probe_covered)}")
+        f"{sorted({s.name for s in lm.ROOT_SHAPES} - found - probe_covered)}")
 
     # синтетическая проба формы snapshot — по образцу пробы формы file ниже
     # (`test_the_file_shape_catches_every_way_of_climbing_up`): живых примеров
@@ -145,13 +150,19 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
         f"{sorted(enforced - declared)}")
 
     # мутация по КАЖДОЙ форме: нарушитель в области краснит гейт, канон и исключение — нет
-    for shape, _, hint in lm.ROOT_SHAPES:
+    # Форма области `layer` меряется только у модуля слоя без окружения, и рецепт у
+    # неё свой: путь приходит параметром. Проба кладёт её на живой модуль такого слоя.
+    envless_rel = next(rel for rel in sorted(inv.files)
+                       if lm.layer_of(layout).get(lm.module_of(rel) or "") in lm.env_free_layers(layout))
+    for shape in lm.ROOT_SHAPES:
+        rel = "src/probe_derive.py" if shape.scope == "root" else envless_rel
         probe = dict(derivations)
-        probe["src/probe_derive.py"] = {shape: [7]}
+        probe[rel] = {shape.name: [7]}
         problems = lm.check(layout, graph, scanned, execs, roots=probe,
                             map_text=lm.MAP.read_text(encoding="utf-8"))
-        assert any(p.startswith("src/probe_derive.py:7") and hint in p for p in problems), \
-            f"форма {shape} в области обязана быть расхождением"
+        recipe = "взять корень у" if shape.scope == "root" else "путь приходит параметром"
+        assert any(p.startswith(f"{rel}:7") and shape.hint in p and recipe in p for p in problems), \
+            f"форма {shape.name} в области обязана быть расхождением с рецептом «{recipe}»"
         assert not any(p.startswith(lm.ENV_ROOT_OWNER) for p in problems), \
             "сам канон выводит корень по определению, это не расхождение"
         assert not any(p.startswith(tuple(exempt)) for p in problems), \
@@ -172,7 +183,7 @@ def test_the_root_is_derived_by_one_module_in_every_shape(world):
     # проходит зелёным, потому что у сегодняшнего исключения форма всего одна
     # (проверено мутацией; обе головы круга 2 независимо)
     rel = sorted(exempt)[0]
-    other = next(n for n, _, _ in lm.ROOT_SHAPES if n not in exempt[rel])
+    other = next(s.name for s in lm.ROOT_SHAPES if s.name not in exempt[rel])
     widened = {**derivations, rel: {**derivations.get(rel, {}), other: [1]}}
     problems = lm.check(layout, graph, scanned, execs, roots=widened,
                         map_text=lm.MAP.read_text(encoding="utf-8"))
@@ -400,12 +411,22 @@ def test_env_seams_of_the_graph_are_called_only_through_the_door():
     assert lm.seam_problems(None) == []
 
 
-def test_the_gate_is_actually_asked_about_the_seams(monkeypatch, capsys):
-    """Правило живо, только если главный тракт отдаёт замер швов в гейт: владельца
-    двери лишаем права звать шов — строка обязана появиться."""
+def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeypatch, capsys):
+    """Правило живо, только если главный тракт отдаёт замер в гейт. Швы: владельца
+    двери лишаем права звать шов — строка обязана появиться. Гейт окружения (№365):
+    форма слоя, находящая строку везде, обязана покрасить модуль графа рецептом
+    слоя, а модуль слоя с окружением — не тронуть. Один прогон `main` на оба
+    правила: полный `--check` — самая дорогая строка набора, который мутатор
+    гоняет на каждого мутанта, и job мутации упирался в свой потолок."""
     monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    shapes = tuple(s._replace(find=lambda tree, rel: [1]) if s.name == "dynamic_import" else s
+                   for s in lm.ROOT_SHAPES)
+    monkeypatch.setattr(lm, "ROOT_SHAPES", shapes)
     assert lm.main(["--check"]) == 1
-    assert "src/graphs.py" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "src/graphs.py" in out
+    assert "src/graph_search.py:1 импортирует динамически" in out and "путь приходит параметром" in out
+    assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
@@ -427,9 +448,20 @@ def test_layer_table_is_complete_and_the_arrows_point_down(world):
     assert set(layout["order"]) == set(layout["brief_layers"]) == set(layout["allowed"])
     assert not lm.unassigned(graph, layout) and not lm.stale_layers(graph, layout)
     lay = lm.layer_of(layout)
+    # нижний слой — вопрос к артефакту, а не литерал: после раскола core (№365)
+    # литерал сторожил бы слой, которого нет, и молчал
+    bottom = {layer for layer, deps in layout["allowed"].items() if not deps}
+    assert bottom == {layout["order"][0]}, f"нижний слой один и стоит первым: {sorted(bottom)}"
+    # и слой окружения: вместе с нижним это бывший core, которому долг в allowed_edges
+    # не давали никогда. Раскол не должен был снять сторож с половины core —
+    # `config_loader` с ребром в meeting проходил тест (Important головы круга 1 по PR №625)
+    rt = lm.runtime_layer(layout)
+    assert rt is not None and rt not in bottom
     for m, layer in lay.items():
-        if layer in ("core", "cloud"):
-            outside = {d for d in graph[m] if lay[d] != layer}
+        if layer in bottom | {rt, "cloud"}:
+            # нижнему слою и cloud — ничего снаружи; слою окружения — только его allowed
+            ok = set(layout["allowed"][layer]) if layer == rt else set()
+            outside = {d for d in graph[m] if lay[d] != layer and lay[d] not in ok}
             assert not outside, f"{m} ({layer}) импортирует {sorted(outside)}"
         if layer == "graph":
             assert not {d for d in graph[m] if lay[d] == "meeting"}, f"{m} тянет meeting: {sorted(graph[m])}"
@@ -473,6 +505,16 @@ APPROVED_ENTRY_CANDIDATES = ("src/*.py", "scripts/*.py", "scripts/*.sh", "app/*.
 #: читать переменную, новый шов) — осознанная правка двух файлов, как у таблицы
 #: видов (Important GLM круга 8: докстринг звучал как «все способы»).
 APPROVED_ENV_READ_FORMS = ("os.environ.get", "os.getenv", "environ.get", "os.environ[...]", "environ[...]")
+#: Грамматика гейта окружения по слою (№365) — та же политика: сужение таблицы
+#: молча ослабляло гейт, а мутатор литералов не трогает (Important головы круга 2
+#: по PR №625 — `FILE_NAMES` без `getfile` проходил все тесты).
+APPROVED_LAYER_GRAMMAR = {
+    "ENV_TOUCH_NAMES": ("environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "expandvars"),
+    "TEMPFILE_DEFAULT_DIR": ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "mktemp", "NamedTemporaryFile",
+                             "TemporaryFile", "SpooledTemporaryFile", "TemporaryDirectory"),
+    "FILE_NAMES": ("__file__", "__spec__", "getfile", "getsourcefile", "getabsfile"),
+    "DYNAMIC_IMPORT_CALLS": ("import_module", "__import__", "spec_from_file_location", "run_path", "run_module"),
+}
 APPROVED_PROBE_SUFFIX = {"code": "probe.swift", "out": "probe.md", "history": "probe.md", "prose": "probe.dat"}
 APPROVED_RUN_MODES = ("help", "refuse", "none")
 
@@ -484,6 +526,7 @@ APPROVED_FIELDS = {
     "order": ("list", "decision", None),
     "brief_layers": ("dict", "decision", None),
     "allowed": ("dict", "decision", None),
+    "package_entry": ("str", "decision", None),
     "layer_overrides": ("dict", "decision", {"layer": ("str", "decision", True), "why": ("str", "decision", True)}),
     "allowed_edges": ("list", "measured", {"from": ("str", "measured", True), "to": ("str", "measured", True),
                                            "ticket": ("str", "decision", True)}),
@@ -560,6 +603,8 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     assert tuple(r[:3] for r in lm.KINDS) == APPROVED_KINDS, "таблица KINDS изменилась — обнови утверждённую копию осознанно"
     assert lm.ENTRY_CANDIDATES == APPROVED_ENTRY_CANDIDATES, "шаблоны кандидатов — та же политика, снимок обязателен"
     assert lm.ENV_READ_FORMS == APPROVED_ENV_READ_FORMS, "грамматика замера — политика, снимок обязателен"
+    assert {k: getattr(lm, k) for k in APPROVED_LAYER_GRAMMAR} == APPROVED_LAYER_GRAMMAR, \
+        "грамматика гейта окружения — политика, снимок обязателен"
     assert lm.PROBE_SUFFIX == APPROVED_PROBE_SUFFIX, "суффиксы проб — политика, снимок обязателен"
     assert lm.RUN_MODES == APPROVED_RUN_MODES, "режимы контрактов запуска — политика приёмки, снимок обязателен"
     объявление = {k: (f.typ.__name__, f.cls, None if f.record is None else
@@ -952,9 +997,9 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
         p.write_text(json.dumps(data), encoding="utf-8")
         return p
 
-    def dup(d): d["brief_layers"]["app"].append(d["brief_layers"]["core"][0])
-    def up(d): d["allowed"]["core"] = ["app"]
-    def typo(d): d["allowed"]["core"] = ["ap"]
+    def dup(d): d["brief_layers"]["app"].append(d["brief_layers"]["base"][0])
+    def up(d): d["allowed"]["base"] = ["app"]
+    def typo(d): d["allowed"]["base"] = ["ap"]
     def no_why(d): d["layer_overrides"]["tier3"] = {"layer": "graph", "why": ""}
     def no_ticket(d): d["allowed_edges"][0]["ticket"] = ""
     def bad_manual(d): d["manual_entry_points"]["docs/x.md"] = "почему-то"
@@ -993,12 +1038,23 @@ def test_the_artifact_is_loaded_strictly(tmp_path):
         lm.load_layout(tmp_path / "missing.json")
     assert lm.load_layout(write(lambda d: None))
 
+    # гейт окружения по слою не прощается исключением: каждая форма области `layer`
+    # отвергнута ещё при загрузке, с обоснованием или без (Critical головы круга 1
+    # по PR №625 — `{"any_env": "так удобнее"}` глушило гейт и пробу разом)
+    for shape in lm.ROOT_SHAPES:
+        def forgive(d, name=shape.name): d["root_exemptions"]["src/graph_search.py"] = {name: "так удобнее"}
+        if shape.scope == "layer":
+            with pytest.raises(lm.LayoutError, match="гейт окружения по слою"):
+                lm.load_layout(write(forgive))
+        else:
+            assert lm.load_layout(write(forgive)), "исключение правила корня остаётся законным"
+
 
 def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
-         "generated": "2026-09-19T00:00Z", "run_contracts": {}}
+         "generated": "2026-09-19T00:00Z", "run_contracts": {}, "package_entry": "core_mod"}
     d.update(over)
     return d
 
@@ -1155,7 +1211,7 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
     text = lm.report(lm.inventory(tmp_path))
     # заголовки секций замера идут из таблицы форм: имя формы и её фраза — те же,
     # по которым судит гейт (Important GLM круга 2)
-    hint = {name: h for name, _, h in lm.ROOT_SHAPES}
+    hint = {s.name: s.hint for s in lm.ROOT_SHAPES}
     assert f"## Кто выводит корень сам, форма «env» — {hint['env']} (3)" in text
     assert "`scripts/early.py`:2; чтение в строке 2 ВЫШЕ вставки sys.path на импорте (3)" in text
     assert "`scripts/late.py`:3" in text and "ВЫШЕ вставки" not in text.split("late.py")[1].split("\n")[0]
@@ -1165,6 +1221,9 @@ def test_the_report_measures_seams_instead_of_the_author_remembering_them(tmp_pa
     assert "`src/lib.py`:2" in roots_block and "early.py" not in roots_block
     assert "**LLM** (2)" in text, "шов считается и по голому имени, и по `llm.LLM`"
     assert "**GraphSearch** (0): нет" in text
+    # формы без своего раздела названы вслух — ровно те, что не env и не file
+    no_section = [s.name for s in lm.ROOT_SHAPES if s.name not in ("env", "file")]
+    assert f"## Формы без раздела в замере — {', '.join(no_section)}\n" in text
     # справка argparse и одна ступень `.parent` — не факты
     assert "HELP" not in text and "`src/lib.py`:3" not in text
 
@@ -1942,3 +2001,210 @@ def test_package_tests_are_not_a_source_of_path_mentions(tmp_path):
     assert d.by == "shape", "решила форма; выдать её ответ за правило нельзя — правило хочет code"
     assert d.by in lm.DECIDED_BY and lm.KINDS[d.rule][1] == "code"
     assert lm.decide("packages/d/src/p/m.py").kind == "code"
+
+
+def test_the_layer_shapes_see_every_way_to_reach_the_environment():
+    """Формы области `layer` (№365) пинены пробой с обеих сторон: каждое
+    написание, которым модуль добирается до окружения, найдено, а соседнее
+    законное — нет. Живых примеров у форм нет по построению (слой без окружения
+    чист), поэтому матчёр, переставший находить, ловится только здесь."""
+    src = "\n".join([
+        "import os, sys, tempfile, importlib, runpy, pathlib",   # 1
+        "from os import environ",                                 # 2
+        "a = os.environ.get('X')",                                # 3
+        "b = os.getenv('Y')",                                     # 4
+        "c = dict(os.environ)",                                   # 5
+        "d = os.path.expandvars('$A')",                           # 6
+        "e = tempfile.mkstemp()",                                 # 7
+        "f = tempfile.gettempdir()",                              # 8
+        "g = tempfile.mkstemp(dir='данные')",                     # 9  каталог назван — окружение не читается
+        "h = pathlib.Path.home()",                                # 10
+        "i = os.path.expanduser('~')",                            # 11
+        "j = home()",                                             # 12 своя функция — не HOME
+        "k = __file__",                                           # 13
+        "sys.path.insert(0, 'x')",                                # 14
+        "sys.path = []",                                          # 15
+        "sys.path += ['y']",                                      # 16
+        "sys.path[:0] = ['z']",                                   # 17
+        "m = importlib.import_module('x')",                       # 18
+        "n = __import__('y')",                                    # 19
+        "o = runpy.run_path('z')",                                # 20
+        "def later():",                                           # 21
+        "    sys.path.append('поздно')",                          # 22 при вызове — не на импорте
+        "    return __file__, pathlib.Path('p').expanduser()",   # 23
+        "q = config.env",                                         # 24 чужое имя — не окружение
+        "r = environ.get('Z')",                                   # 25 голое имя после from os import
+        # псевдонимы и соседние записи: форма судит полное имя и любое упоминание,
+        # а не короткое имя вызова (Critical головы круга 1 по PR №625)
+        "import sys as s_",                                       # 26 сам импорт sys — ещё не путь
+        "s_.path.insert(0, 'x')",                                 # 27
+        "from sys import path as sp",                             # 28
+        "sp.append('y')",                                         # 29
+        "p_ = sys.path",                                          # 30
+        "del sys.path[0]",                                        # 31
+        "import site; site.addsitedir('z')",                      # 32
+        "from importlib import import_module as im",              # 33
+        "im('x')",                                                # 34
+        "loader = importlib.import_module",                       # 35 без вызова — тоже ребро мимо графа
+        "from os.path import expanduser as eu",                   # 36
+        "eu('~')",                                                # 37
+        "hm = pathlib.Path.home",                                 # 38
+        "t = s_.modules[__name__].__file__",                      # 39
+        "u = globals()['__file__']",                              # 40
+        "v = __spec__.origin",                                    # 41
+        "from tempfile import mkstemp as mk",                     # 42 импорт без вызова — каталог может прийти
+        "w = mk()",                                               # 43
+        "x_ = tempfile.mktemp()",                                 # 44
+        "y = mk(dir='данные')",                                   # 45 каталог назван
+        "z = getattr(os, 'environ')",                             # 46 динамический ридер — имя строкой
+        "import inspect",                                         # 47
+        "a2 = inspect.getfile(inspect)",                          # 48
+        "b2 = inspect.getsourcefile(inspect)",                    # 49
+        "c2 = inspect.getabsfile(inspect)",                       # 50
+        "d2 = tempfile.mkstemp(dir=None)",                        # 51 dir=None — каталог не назван
+        "e2 = tempfile.TemporaryDirectory()",                     # 52
+        "f2 = runpy.run_module('x')",                             # 53
+        "g2 = importlib.util.spec_from_file_location('x', 'y')",  # 54
+        "h2 = os.environb, os.getenvb, os.putenv, os.unsetenv",   # 55
+        "i2 = tempfile.gettempdirb(), tempfile.mkdtemp()",        # 56
+        "j2 = tempfile.NamedTemporaryFile(), tempfile.TemporaryFile(), tempfile.SpooledTemporaryFile()",  # 57
+    ])
+    tree = ast.parse(src)
+    found = {s.name: s.find(tree, "src/x.py") for s in lm.ROOT_SHAPES if s.scope == "layer"}
+    assert found == {"any_env": [2, 3, 4, 5, 6, 7, 8, 25, 43, 44, 46, 51, 52, 55, 56, 57],
+                     "home": [10, 11, 23, 36, 37, 38],
+                     "any_file": [13, 23, 39, 40, 41, 48, 49, 50],
+                     "sys_path": [14, 15, 16, 17, 27, 28, 29, 30, 31, 32],
+                     "dynamic_import": [18, 19, 20, 33, 34, 35, 53, 54]}
+    # каждое имя утверждённой грамматики представлено строкой пробы: имя, которое
+    # никто не пишет, сторожит пустоту
+    for table, names in APPROVED_LAYER_GRAMMAR.items():
+        missing = [n for n in names if n not in src]
+        assert not missing, f"{table}: имена без строки в пробе форм — {missing}"
+
+
+def _env_world(tmp_path, **allowed_over):
+    """Синтетическое дерево гейта окружения: слой окружения — тот, где канон корней."""
+    src = tmp_path / "src"
+    src.mkdir(parents=True)
+    (src / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    (src / "base_mod.py").write_text("x = 1\n", encoding="utf-8")
+    (src / "lib_mod.py").write_text("import os\nimport base_mod\nimport charoite_paths\n"
+                                    "CACHE = os.environ.get('SUFLER_GRAPH_DIR')\n", encoding="utf-8")
+    (src / "top_mod.py").write_text("import os\nimport lib_mod\nimport charoite_paths\n"
+                                    "HOME = os.environ.get('HOME')\n", encoding="utf-8")
+    layout = _layout(order=["base", "rt", "lib", "top"],
+                     allowed={"base": [], "rt": ["base"], "lib": ["base"], "top": ["base", "rt", "lib"],
+                              **allowed_over},
+                     brief_layers={"base": ["base_mod"], "rt": ["charoite_paths"], "lib": ["lib_mod"],
+                                   "top": ["top_mod"]},
+                     package_entry="lib_mod")
+    inv = lm.inventory(tmp_path)
+    return layout, lm.import_graph(inv), inv
+
+
+def test_the_layer_shapes_are_judged_wherever_the_module_lives(tmp_path, monkeypatch):
+    """Где форма судится — свойство её области (`SHAPE_SCOPES`), а не фильтр в
+    судье. Модуль слоя без окружения в `packages/…` краснеет так же, как в `src/`:
+    раньше замер его мерил, а судья отбрасывал всё вне `ENV_ROOT_ENFORCED` — ровно
+    туда пакет графа и переезжает (Important DeepSeek по PR №625). Правило корня
+    своей области не меняет: модуль с окружением в `packages/` им не судится."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n",
+                                                        encoding="utf-8")
+    pkg = tmp_path / "packages" / "d" / "src" / "p"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "lib_mod.py").write_text("import os\nCACHE = os.environ.get('X')\n", encoding="utf-8")
+    (pkg / "app_mod.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    layout = _layout(order=["base", "rt", "lib"], allowed={"base": [], "rt": ["base"], "lib": ["base"]},
+                     brief_layers={"base": ["p"], "rt": ["charoite_paths", "p.app_mod"], "lib": ["p.lib_mod"]},
+                     package_entry="p.lib_mod")
+    inv = lm.inventory(tmp_path)
+    derivations = lm.root_derivations(inv, layout)
+    assert derivations["packages/d/src/p/lib_mod.py"] == {"any_env": [2]}
+    assert derivations["packages/d/src/p/app_mod.py"] == {"env": [2]}, "замер меряет правило корня везде"
+    hint = {s.name: s.hint for s in lm.ROOT_SHAPES}
+    assert lm.root_problems(derivations, {}, layout) == [
+        f"packages/d/src/p/lib_mod.py:2 {hint['any_env']} — {lm.env_free_layers(layout)['lib']}"]
+
+    assert lm.SHAPE_SCOPES == {"root": lm.ENV_ROOT_ENFORCED, "layer": ("",)}
+    # область формы — ключ таблицы областей; опечатка отвергнута при загрузке, а не
+    # выводит форму из-под суда молча (Minor DeepSeek по PR №625)
+    typo = tuple(sh._replace(scope="layr") if sh.name == "home" else sh for sh in lm.ROOT_SHAPES)
+    monkeypatch.setattr(lm, "ROOT_SHAPES", typo)
+    with pytest.raises(lm.LayoutError, match=r"неизвестной областью .*'home'"):
+        lm.load_layout()
+
+
+def test_the_env_gate_asks_the_artifact(tmp_path):
+    """Слой окружения — тот, где лежит канон корней; слой без окружения — тот,
+    которому `allowed` его не даёт. Рецепт выводится из того же `allowed`: путь
+    приходит параметром от слоя, которому видны оба. Ребро в окружение
+    `allowed_edges` не прощает, и совета «внести в allowed_edges» у него нет."""
+    layout, graph, inv = _env_world(tmp_path)
+    assert lm.runtime_layer(layout) == "rt"
+    recipes = lm.env_free_layers(layout)
+    assert list(recipes) == ["base", "lib"]
+    assert recipes["lib"] == ("слою lib окружение не дано (allowed: base): путь приходит параметром — "
+                              "его собирает вызывающий из слоя, которому виден rt (top)")
+    assert recipes["base"].endswith("виден rt (rt, top)") and "(allowed: —)" in recipes["base"]
+
+    derivations = lm.root_derivations(inv, layout)
+    assert derivations["src/lib_mod.py"] == {"any_env": [4]}, "слой без окружения меряется формами layer"
+    assert "src/top_mod.py" not in derivations, "слою с окружением чужая переменная разрешена"
+    assert lm.root_derivations(inv)["src/charoite_paths.py"] == {"env": [2]}
+    assert "src/lib_mod.py" not in lm.root_derivations(inv), "без артефакта слоёв не знает никто"
+
+    layout["allowed_edges"] = [{"from": "lib_mod", "to": "charoite_paths", "ticket": "№0"}]
+    empty = lm.Scan({}, {}, {}, [])
+    problems = lm.check(layout, graph, empty, {}, repo=tmp_path, roots=derivations)
+    edge = [p for p in problems if p.startswith("lib_mod (lib) → charoite_paths (rt)")]
+    assert edge == [f"lib_mod (lib) → charoite_paths (rt): ребро в слой окружения — {recipes['lib']}; "
+                    f"allowed_edges такое ребро не прощает"]
+    assert not any("новое ребро против стрелок: lib_mod" in p for p in problems)
+    hint = {s.name: s.hint for s in lm.ROOT_SHAPES}
+    assert f"src/lib_mod.py:4 {hint['any_env']} — {recipes['lib']}" in problems
+    assert "пакет lib_mod тянет charoite_paths (rt) — в замыкании входа только слои без окружения: base, lib" \
+        in problems
+    assert not any("пакет lib_mod тянет base_mod" in p for p in problems), "base — слой без окружения"
+
+    # окружение через соседа: lib → top (долг allowed_edges) → rt. Прямое ребро сказано
+    # своей строкой, цепочка — своей, и без неё гейт молчал (Minor головы круга 1 по PR №625)
+    chain = {"lib_mod": {"top_mod"}, "top_mod": {"charoite_paths"}, "base_mod": set(), "charoite_paths": set()}
+    assert [p for p in lm.env_problems(chain, layout) if "через импорты" in p] == [
+        f"lib_mod (lib) тянет charoite_paths (rt) через импорты — {recipes['lib']}"]
+    assert not any("через импорты" in p for p in lm.env_problems(graph, layout)), \
+        "прямое ребро не повторяется строкой цепочки"
+
+    # слою разрешили окружение — гейт о нём молчит: ответ меняет артефакт, не код
+    layout2, graph2, _ = _env_world(tmp_path / "2", lib=["base", "rt"])
+    assert list(lm.env_free_layers(layout2)) == ["base"]
+    assert lm.env_edges(graph2, layout2) == []
+
+    # вход, которого нет в дереве, — расхождение, а не пустой пакет
+    layout["package_entry"] = "нет_такого"
+    assert "package_entry нет_такого: модуля с таким именем в дереве нет — пакету не из чего собраться" \
+        in lm.env_problems(graph, layout)
+    # канона нет в таблице слоёв — гейту окружения опереться не на что, и он молчит:
+    # о модуле без слоя уже говорит своя строка
+    layout["brief_layers"]["rt"] = []
+    assert lm.runtime_layer(layout) is None and lm.env_free_layers(layout) == {}
+    assert lm.env_problems(graph, layout) == []
+
+
+def test_the_package_is_the_closure_of_one_entry(world):
+    """Пакет — замыкание `package_entry` по графу импортов, а не «весь base плюс
+    graph»: модуль нижнего слоя, которого вход не зовёт, в план не попадает."""
+    layout, graph, _, _, inv = world
+    entry = layout["package_entry"]
+    closure = lm.package_closure(graph, entry)
+    lay = lm.layer_of(layout)
+    assert lay[entry] == "graph" and entry in closure
+    assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure
+    assert {lay[m] for m in closure} <= set(lm.env_free_layers(layout))
+    base = {m for m, layer in lay.items() if layer == "base"}
+    assert base - closure, "замыкание уже, чем весь нижний слой: лишнее не становится поверхностью пакета"
+    assert lm.package_closure(graph, "нет_такого") == set()
+    assert lm.package_closure({"a": {"b"}, "b": {"a", "c"}, "c": set()}, "a") == {"a", "b", "c"}
+
