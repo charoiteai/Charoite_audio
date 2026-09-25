@@ -36,8 +36,9 @@ def test_server_keeps_the_api_the_file_relies_on():
 
 # ── Аудит 13.09, зона 4 ──────────────────────────────────────────────────
 
-import re  # noqa: E402
 import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
 
 
 def _transcripts(tmp_path, monkeypatch, name="2026-09-13_1200.md", text="# Встреча\nтело\n"):
@@ -77,15 +78,14 @@ def test_live_transcript_keeps_dashes_inside_speech(tmp_path, monkeypatch):
     assert tail.startswith("[") and len(tail.split("\n", 1)[1]) == 1
 
 
-def test_status_pattern_matches_the_daemon_process_not_an_editor():
-    """pgrep -f «src/daemon.py» совпадал с редактором, где открыт файл (GLM M4)."""
-    pat = re.compile(mcp_server.DAEMON_PATTERN)
-    assert pat.search("/opt/venv/bin/python3 /Users/x/charoite/src/daemon.py")
-    assert pat.search("python src/daemon.py --flag")
-    assert not pat.search("vim src/daemon.py")
-    assert not pat.search("less /tmp/src/daemon.py.bak")
-    assert pat.search("/x/.venv/bin/python3 -u /y/src/daemon.py")
-    assert not pat.search("python -m pylint src/daemon.py"), "скрипт не первый аргумент — не демон (GLM M6)"
+def test_status_asks_the_shared_daemon_process_sign(tmp_path, monkeypatch):
+    """Статус спрашивает процесс демона у live_gate — тот же ответ, что у
+    сторожа миграции; таблица шаблона — в tests/test_live_gate.py."""
+    _transcripts(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_server.live_gate, "daemon_process", lambda: "4242 python src/daemon.py")
+    assert mcp_server.sufler_status().startswith("Демон: работает")
+    monkeypatch.setattr(mcp_server.live_gate, "daemon_process", lambda: "")
+    assert mcp_server.sufler_status().startswith("Демон: остановлен")
 
 
 def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypatch):
@@ -198,3 +198,48 @@ def test_mcp_without_a_root_names_a_guess_and_does_not_refuse(tmp_path):
                             env=env, cwd=tmp_path, timeout=60)
     assert прогон.returncode == 0, прогон.stderr[-400:]
     assert "RootNotNamed" not in прогон.stderr and "не назван" not in прогон.stderr
+
+
+def _minutes_with_cached_digests(tmp_path, monkeypatch, answer):
+    """Сводки речи этой встречи и чужой лежат в кэше; минутки идут с ответом
+    `answer` (строка или исключение)."""
+    import meeting_source
+
+    text = "# Встреча\n" + "реплика\n" * 100
+    tdir = _transcripts(tmp_path, monkeypatch, text=text)
+    speech = meeting_source.of(tdir / "2026-09-13_1200.md", text).speech
+    llm._fit_cache_put((llm._fit_speech_id(speech), "ollama"), "сводки этой встречи")
+    llm._fit_cache_put((llm._fit_speech_id("чужая встреча"), "ollama"), "сводки чужой")
+
+    class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
+
+        def fit(self, transcript):
+            return "[сжато]"
+
+        def complete(self, prompt, **kw):
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    monkeypatch.setattr(mcp_server, "_client", lambda: Fake())
+    return mcp_server.sufler_make_minutes(), speech
+
+
+def test_saved_minutes_drop_the_digests_of_that_meeting_at_once(tmp_path, monkeypatch):
+    """Повтор после успеха не нужен: сводки этой встречи уходят из памяти
+    сразу, не дожидаясь 30 минут; чужие остаются (PRIVACY, №265)."""
+    out, speech = _minutes_with_cached_digests(tmp_path, monkeypatch, "- **Кто** — что — срок")
+    assert "Минутки сохранены" in out
+    assert [k[0] for k in llm._fit_cache] == [llm._fit_speech_id("чужая встреча")]
+
+
+@pytest.mark.parametrize("answer", ["", llm.LLMHTTPError(503, "занято")])
+def test_failed_minutes_keep_the_digests_for_the_retry(tmp_path, monkeypatch, answer):
+    """Упала главная генерация — ради повтора кэш и заведён: сводки остаются."""
+    out, speech = _minutes_with_cached_digests(tmp_path, monkeypatch, answer)
+    assert "НЕ тронуты" in out
+    assert (llm._fit_speech_id(speech), "ollama") in llm._fit_cache

@@ -11,9 +11,13 @@ fix_action_items на боевом графе переоткрыла бы 574 с
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import datetime
 import hashlib
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -509,3 +513,156 @@ def test_fix_action_items_names_twenty_refusals_and_counts_the_rest(tmp_path, mo
     assert len([ln for ln in err if "статус изменился бы" in ln]) == 20
     assert [ln for ln in err if "и ещё" in ln and "статус" not in ln] == ([tail] if tail else [])
     assert all(q.read_text(encoding="utf-8") == text for q in notes)
+
+
+# Общая таблица форм строки поручения: её же читают тесты Swift (Mac, iOS) и Kotlin
+# (Android), поэтому ожидания лежат в JSON, а не в коде теста (№366, шаг 2).
+TABLE = json.loads((ROOT / "tests" / "fixtures" / "task_lines.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("row", TABLE, ids=range(len(TABLE)))
+def test_every_form_in_the_shared_table(row):
+    line = row["line"]
+    assert task_line.status(line) == row["status"]
+    assert task_line.canonical(line) == row["canonical"]
+    assert task_line.key(line) == row["key"]
+    rec = task_line.parse(line)
+    if row["status"] is None:
+        assert rec is None
+        return
+    # колонки записи — из полей самого класса: новое поле без колонки в таблице — KeyError
+    # здесь, а не порт на Swift или Kotlin, который его не проверяет. Маркер и отступ
+    # колонками не были, и мутант маркера таблица не видела (DeepSeek M2 круга 2 по PR #621)
+    expected = {f.name: row[f.name] for f in dataclasses.fields(task_line.TaskLine)}
+    expected["fields"] = {k: datetime.date.fromisoformat(v) for k, v in row["fields"].items()}
+    assert dataclasses.asdict(rec) == expected
+    assert task_line.render(rec) == row["render"]
+
+
+def test_the_table_covers_every_form_the_module_knows():
+    # новая форма в модуле без строки в таблице — красный тест здесь, а не тихий
+    # разнобой с клиентами на Swift и Kotlin
+    lines = [r["line"] for r in TABLE]
+    assert {r["status"] for r in TABLE} == {*task_line.SETTLED, task_line.OPEN, None}
+    assert {kind for r in TABLE if r["fields"] for kind in r["fields"]} == set(task_line.FIELDS)
+    assert any(r["control"] and r["status"] == task_line.RETURNED for r in TABLE)
+    # знаки — из модуля: новый маркер в MARKER без строки в таблице краснеет здесь
+    # (Opus I3 круга 1 по PR #621: список в тесте был свой и «— ⁃ ‣ ▪» не требовал)
+    # шаблон — целиком: лишняя ветка «|◦|» при проверке начала проходила (Opus M1 круга 2)
+    assert task_line.MARKER == r"(?:[" + task_line.BULLETS + r"]|\d+[.)])"
+    for marker in [*task_line.BULLETS, "1.", "1)"]:
+        assert any(ln.lstrip().startswith(f"{marker} ") and task_line.status(ln) for ln in lines), marker
+    assert any(re.search(r"[a-z]{3}", r["key"]) for r in TABLE), "английская строка"
+    assert any(re.search(r"[一-鿿]", r["key"]) for r in TABLE), "китайская строка"
+
+
+ITEMS = [r for r in TABLE if r["status"] is not None]
+
+
+@pytest.mark.parametrize("row", ITEMS, ids=lambda r: r["line"][:40])
+def test_canonical_and_render_agree_on_one_canonical_form(row):
+    # одна каноничная форма на canonical, render и таблицу — предикат модуля: canonical
+    # оставлял как есть «* [X] …», «✅ … 📅 …», «📅2026-…», а render их переписывал, и
+    # колонка canonical таблицы расходилась с выводом (DeepSeek C1 круга 1 по PR #621)
+    line = row["line"]
+    rec = task_line.parse(line)
+    # предусловие законов: у пункта таблицы есть префикс с ящиком, и ветка canonical
+    # «без ящика — как есть» для него недостижима. Прямое «каноничная ⇒ та же строка»
+    # повторяло ранний возврат canonical и покраснеть не могло (DeepSeek M3 круга 2)
+    assert task_line._PREFIX.match(line)
+    if not task_line.is_canonical(line):
+        assert task_line.canonical(line) != line, "неканоничная строка обязана переписаться"
+    assert task_line.canonical(line) == task_line.render(rec)
+    if task_line.is_canonical(line):
+        assert task_line.render(rec) == line
+
+
+@pytest.mark.parametrize("row", ITEMS, ids=lambda r: r["line"][:40])
+def test_render_of_a_parsed_line_is_canonical_and_stable(row):
+    out = task_line.render(task_line.parse(row["line"]))
+    assert task_line.is_canonical(out)
+    assert task_line.render(task_line.parse(out)) == out
+    # запись после вывода — та же, кроме формы маркера
+    assert task_line.parse(out) == dataclasses.replace(task_line.parse(row["line"]),
+                                                       marker=task_line.parse(out).marker)
+
+
+def test_the_table_has_canonical_lines_and_every_kind_of_non_canonical_one():
+    # отбор — предикатом модуля, а не колонкой render самой таблицы: тот отбор брал только
+    # строки, где render и так совпал, и покраснеть не мог (DeepSeek C1 круга 1)
+    canonical = [r["line"] for r in ITEMS if task_line.is_canonical(r["line"])]
+    assert len(canonical) >= 20
+    other = {r["line"] for r in ITEMS} - set(canonical)
+    for form in ["✅ 2026-09-24 📅", "📅2026", "✅\ufe0f", "📅 2026-10-01 _(снято", "2026-10-01  ",
+                 "2026-10-01\t", "1. [x]", "- [x]  📅"]:
+        assert any(form in ln for ln in other), form
+    assert any(ln.startswith("* [X] ") for ln in canonical), "«* » каноничен, как у вкладки"
+
+
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+@pytest.mark.parametrize("row", ITEMS, ids=lambda r: r["line"][:40])
+def test_render_loses_no_date_and_keeps_the_key(row):
+    # сравнение записей не видит того, что потеряно уже при разборе: второе «📅» и дата
+    # посреди текста пропадали из вывода, а «📅 2026-10-01T10» склеивал «текстT10»
+    # (Opus C1 и I5 круга 1 по PR #621). Проверка — по строкам, а не по записям
+    out = task_line.render(task_line.parse(row["line"]))
+    assert sorted(DATE.findall(out)) == sorted(DATE.findall(row["line"]))
+    assert task_line.key(out) == task_line.key(row["line"])
+
+
+@pytest.mark.parametrize("row", [r for r in ITEMS if not task_line._MANGLED.match(r["line"])],
+                         ids=lambda r: r["line"][:40])
+def test_key_is_the_assignee_and_text_of_the_record(row):
+    # ключ — производная разбора: свой набор срезов у key расходился с parse — резал поля
+    # посреди текста и оставлял «x» порчи (DeepSeek I2 и I3 круга 1 по PR #621)
+    rec = task_line.parse(row["line"])
+    words = task_line.CONTROL_MARK.sub(" ", f"{rec.assignee or ''} {rec.text}").lower()
+    assert task_line.key(row["line"]) == " ".join(re.findall(r"[^\W_]+", words))
+
+
+@pytest.mark.parametrize("mangled", ["- [ ] [x] ", "- [ ][x] ", "* [ ]  [-] ", "1. [ ] [/] "])
+def test_key_drops_the_mangled_second_box(mangled):
+    # «- [ ] [x] …» — подпись порчи (_MANGLED): «x» второго ящика — не слово дела, и пункт
+    # узнаётся тем же, что и до порчи (DeepSeek I2 круга 1 по PR #621)
+    assert task_line.key(f"{mangled}**Участник А** — отчёт") == task_line.key("- [x] **Участник А** — отчёт")
+
+
+def test_a_date_inside_the_text_stays_in_the_key():
+    # поле — только хвост: «с 📅 01.10 на 📅 15.10» и «с 📅 08.10 на 📅 15.10» — разные
+    # поручения, и ключ их не сливает (DeepSeek I3 круга 1 по PR #621)
+    one = task_line.key("- [ ] **Участник Б** — перенести с 📅 2026-10-01 на 📅 2026-10-15")
+    two = task_line.key("- [ ] **Участник Б** — перенести с 📅 2026-10-08 на 📅 2026-10-15")
+    assert one != two and one == task_line.key("**Участник Б** — перенести с 📅 2026-10-01 на")
+
+
+def test_fields_reads_the_tail_of_a_line_with_or_without_a_box():
+    tail = {"due": datetime.date(2026, 10, 15)}
+    assert task_line.fields("**Участник Б** — созвон 📅 2026-10-15") == tail
+    assert task_line.fields("- [ ] **Участник Б** — созвон 📅 2026-10-15  ") == tail
+    assert task_line.fields("- [ ] **Участник Б** — созвон 📅 2026-10-15 до обеда") == {}
+
+
+def test_fields_are_dates():
+    rec = task_line.parse("- [x] **Участник А** — отчёт 📅 2026-10-01 ✅ 2026-09-24")
+    assert rec.fields == {"due": datetime.date(2026, 10, 1), "done": datetime.date(2026, 9, 24)}
+
+
+@pytest.mark.parametrize("box", [" ", "x", "X", "-", "/"])
+def test_one_task_with_and_without_fields_in_any_status_has_one_key(box):
+    bare = "**Участник А** — подготовить отчёт"
+    base = task_line.key(bare)
+    assert base == "участник а подготовить отчёт"
+    for tail in ["", " 📅 2026-10-01", " ✅ 2026-09-24", " ❌ 2026-09-24",
+                 " _(снято по сроку 24.09)_ 📅 2026-10-01 ❌ 2026-09-24"]:
+        assert task_line.key(f"- [{box}] {bare}{tail}") == base
+
+
+@pytest.mark.parametrize("line, marker", [("1. [x] **Участник А** — отчёт", "1."), ("+  [ ] отчёт", "+"),
+                                          ("[x] отчёт", ""), ("- [x] отчёт", "- "), ("* [x] отчёт", "* "),
+                                          ("- [x]", "-")])
+def test_parse_keeps_the_list_marker(line, marker):
+    # маркер списка — часть записи (№366, шаг 2): у каноничного префикса — с пробелом за
+    # ним, по нему render сохраняет «* » (мутант «or → and» стирал «1.» и «+», CI мутатора)
+    assert task_line.parse(line).marker == marker

@@ -380,16 +380,10 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
 
 def _daemon_process_running() -> str:
     """Второй сторож: процесс демона на этой машине — независимо от корня.
-    Приложение стартует демона ровно как `[python, "src/daemon.py"]`: argv
-    кончается этим путём. Подстрока ловила мои же сессии ревью с «src/daemon.py»
-    в промпте (GLM r2). Возвращает строки совпадений (пусто — демона нет)."""
-    try:
-        import subprocess
-        r = subprocess.run(["pgrep", "-fl", r"src/daemon\.py$"], capture_output=True, text=True, check=False)
-        return r.stdout.strip()
-    except OSError as e:
-        print(f"pgrep недоступен ({e}) — второй сторож не работает", file=sys.stderr)
-        return ""
+    Шаблон — у владельца признака, `live_gate.DAEMON_PROCESS`: свой здесь
+    кончался на «src/daemon\\.py$» и принимал за демона редактор с открытым
+    файлом, миграция откладывалась навсегда. Строки совпадений; пусто — нет."""
+    return live_gate.daemon_process()
 
 
 def main(argv: list[str] | None = None) -> int:
