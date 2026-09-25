@@ -500,15 +500,25 @@ def exact_stamp(live: pathlib.Path) -> str | None:
     key = meeting_stamp.stamp_of(live.stem)
     if key is None or meeting_stamp.minute_of(key) != key:
         return None
-    direct = _direct(live)
-    if not direct.exists():
-        return None
+    value = (read_direct(live) or {}).get("stamp")
+    return value if _seconds_stamp_of_minute(value, key) else None
+
+
+def read_direct(live: pathlib.Path) -> dict | None:
+    """Содержимое СОБСТВЕННОГО сайдкара стенограммы `<имя>.md.live.json`; None —
+    файла нет, не JSON-объект или не читается.
+
+    Без поиска наследия: `read` через `sidecar_for` при отсутствии своего файла
+    находит сироту той же минуты и отдаёт её ключи как свои. Для хешей цена
+    ошибки — «распознаём заново»; для фактов о самой встрече — чужой штамп
+    (`exact_stamp`, GLM Critical r1 по #492) или чужой исходник импорта, и
+    встреча принимается за повтор и не импортируется (DS I1 круга 1 по PR №629).
+    """
     try:
-        meta = json.loads(direct.read_text(encoding="utf-8"))
+        meta = json.loads(_direct(live).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    value = meta.get("stamp") if isinstance(meta, dict) else None
-    return value if _seconds_stamp_of_minute(value, key) else None
+    return meta if isinstance(meta, dict) else None
 
 
 def _seconds_stamp_of_minute(value, key: str) -> bool:
