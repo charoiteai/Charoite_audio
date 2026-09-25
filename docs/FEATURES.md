@@ -265,7 +265,8 @@ side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
 «Встречи/» node, the transcript copy under «Документация», chronicle lines in
 Cores (together with the fact that came from that meeting) and links in
-Dossiers and people's nodes. A link inside a sentence becomes a
+Dossiers and people's nodes. A meeting of which only the archive folder is
+left is found by the `meeting_id` in its `meeting.meta.json`. A link inside a sentence becomes a
 «(встреча удалена)» note instead of a dangling wiki-link. By default it prints
 the plan: deletion is irreversible and needs `--yes`. Edits to nodes that stay
 alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
