@@ -520,6 +520,8 @@ def test_план_считает_строки_константы_узлы_и_н�
     repo = _git_repo(tmp_path, {"src/mod.py": code})
     призрак = repo / "src" / "ghost.py"          # в рабочем дереве, но не в HEAD
     призрак.write_text("def g(y):\n    return not y\n", encoding="utf-8")
+    # рабочее дерево разошлось с ревизией: разбирать надо ревизию, а не диск
+    (repo / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
     monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
         repo / "src" / "mod.py": {1, 2, 4}, призрак: {2}})
 
@@ -645,6 +647,35 @@ def test_битый_текст_мутанта_не_применяется(tmp_pa
     monkeypatch.setattr(mc, "patch_source", lambda s, n: s + "\n!")
     text, why = mc.applied(m, src)
     assert text is None and why == "текст мутанта не разбирается"
+
+
+@pytest.mark.parametrize("patched,причина", [
+    (lambda s, n: None, "замена не собралась"),
+    (lambda s, n: s, "замена не изменила текст"),
+], ids=["None", "тот же текст"])
+def test_замена_без_результата_не_применяется(tmp_path, monkeypatch, patched, причина):
+    src = _fragment("if not x:\n        pass")
+    m = _mutate(tmp_path, src, {2})[0]
+    monkeypatch.setattr(mc, "patch_source", patched)
+    assert mc.applied(m, src) == (None, причина)
+
+
+def test_тождественная_мутация_не_применяется(tmp_path):
+    """Мутация, не меняющая дерево, не «применяется» ни в каком виде: попытка в
+    скобках иначе выдавала `(True)` за годного мутанта."""
+    src = _fragment("return True")
+    m = next(x for x in _mutate(tmp_path, src, {2}) if x.bare() == "True → False")
+    assert "return False" in mc.applied(m, src)[0]
+    m.change = mc._swap_const(True)
+    assert mc.applied(m, src) == (None, "мутация не меняет дерево")
+
+
+def test_битый_исходник_и_пропавший_узел(tmp_path):
+    src = _fragment("return a == b")
+    m = next(x for x in _mutate(tmp_path, src, {2}) if x.bare() == "Eq → NotEq")
+    text, why = mc.applied(m, "def f(:\n")
+    assert text is None and why.startswith("исходник не разбирается"), why
+    assert mc.applied(m, _fragment("pass")) == (None, "узел не нашёлся на своём отрезке")
 
 
 def test_на_месте_цели_другой_узел(tmp_path):

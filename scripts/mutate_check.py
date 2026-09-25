@@ -298,13 +298,15 @@ def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
         rel = path.relative_to(root)
         # Разбираем ту версию файла, которую и будем ломать: рабочее дерево
         # может стоять на другой ветке, и номера строк не совпадут.
+        # Байты и явный utf-8, а не `text=True`: тот декодирует кодировкой
+        # локали, и под C-локалью кириллица в исходнике роняла бы разбор.
         blob = subprocess.run(["git", "show", f"{rev}:{rel}"], cwd=root,
-                              capture_output=True, text=True)
+                              capture_output=True)
         if blob.returncode:
             # Не молча: выпавший файл превращал «не прочитал» в «нечего» (№386)
             totals.files_unreadable += 1
             continue
-        report = scan(path, lines, blob.stdout)
+        report = scan(path, lines, blob.stdout.decode("utf-8"))
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         plan.extend(report.mutations)
@@ -441,12 +443,20 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
         return None, "узел не нашёлся на своём отрезке"
     if ast.dump(found) != mut.target:
         return None, "на месте узла другой"
+    before = ast.dump(tree)
     node = mut.change(tree, found)
     want = ast.dump(tree)
+    if want == before:
+        # Тождество: без этой проверки попытка в скобках превращала `True`
+        # в `(True)` — текст «изменился», дерево сошлось, мутант «годен»
+        return None, "мутация не меняет дерево"
     why = "текст мутанта не совпал с мутированным деревом"
     for piece in (node, _Parens(node)):
         text = patch_source(source, piece)
-        if text is None or text == source:
+        if text is None:
+            why = "замена не собралась"
+            continue
+        if text == source:
             why = "замена не изменила текст"
             continue
         try:
