@@ -1088,6 +1088,12 @@ it signals degradation, it does not break the loop.
   bge-m3 semantic layer finds answers even without word overlap.
   Meeting facts, voice notes and diary entries are written there only
   with `sufler.brain: true` (off by default).
+- **Claude Code tools need a named data root** — the MCP server no longer
+  guesses that the data lives next to the code. Registered without
+  `CHAROITE_ROOT`, it starts, and every tool answers with a refusal plus the
+  ready recipe: the `claude mcp add … -e CHAROITE_ROOT=<path to data>` command
+  and a JSON block with `env` for other MCP clients. Nothing is read, no model
+  is called and the graph update is not launched until the root is named.
 
 ## Document format
 

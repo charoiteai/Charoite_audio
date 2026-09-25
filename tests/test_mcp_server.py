@@ -184,20 +184,78 @@ def test_конфиг_без_модели_объясняет_отказ_а_не_
     assert not (tdir / "2026-09-13_1200_minutes.md").exists(), "пустышка легла на диск"
 
 
-def test_mcp_without_a_root_names_a_guess_and_does_not_refuse(tmp_path):
-    """Клиент MCP владельца запускает сервер без CHAROITE_ROOT (замер 22.09,
-    ~/.claude.json). Сервер обязан назвать корень догадкой вслух и работать, а
-    не упасть отказом канона: отказ с рецептом перерегистрации — отдельная
-    карточка №336. Проверка процессом с закрытым вводом: stdio-сервер на EOF
-    выходит сам; догадка, снятая с вызова (guess_from_code=False), дала бы
-    RootNotNamed трейсбеком (мутатор, №340)."""
+@pytest.mark.корень_называет_тест
+def test_mcp_without_a_root_starts_and_exits_clean_on_eof(tmp_path):
+    """Клиент MCP может запустить сервер без CHAROITE_ROOT. Старт от этого не
+    зависит: корень спрашивается на вызове инструмента, и отказ приходит его
+    ответом (реестр ниже), а не падением процесса — stderr упавшего сервера
+    клиент владельцу не показывает (№336). Процесс с закрытым вводом:
+    stdio-сервер на EOF выходит нулём и без трейсбека."""
     import subprocess
     env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
     прогон = subprocess.run([sys.executable, str(ROOT / "src" / "mcp_server.py")],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
                             env=env, cwd=tmp_path, timeout=60)
     assert прогон.returncode == 0, прогон.stderr[-400:]
-    assert "RootNotNamed" not in прогон.stderr and "не назван" not in прогон.stderr
+    assert "Traceback" not in прогон.stderr, прогон.stderr[-400:]
+
+
+# ── №336: без корня — отказ с рецептом в ответе инструмента ──────────────
+
+import asyncio  # noqa: E402
+
+
+def _схема(инструмент) -> dict:
+    """Схема параметров элемента `list_tools()`: 1.x — `inputSchema`, 2.x — `input_schema`."""
+    схема = getattr(инструмент, "input_schema", None)
+    return схема if схема is not None else инструмент.inputSchema
+
+
+def _текст(ответ) -> str:
+    """Текст ответа `call_tool`: 1.x — пара (список TextContent, словарь),
+    2.x — `CallToolResult` с полем `content`."""
+    содержимое = ответ.content if hasattr(ответ, "content") else ответ[0]
+    return "".join(часть.text for часть in содержимое)
+
+
+def _инструменты() -> list:
+    return asyncio.run(mcp_server.mcp.list_tools())
+
+
+def test_the_answer_helpers_read_the_installed_mcp():
+    """Помощники выше — единственное, что в реестре зависит от версии `mcp`;
+    на установленной они обязаны читать и схему, и текст ответа."""
+    схема = {и.name: _схема(и) for и in _инструменты()}["sufler_live_transcript"]
+    assert isinstance(схема, dict) and "properties" in схема
+    ответ = asyncio.run(mcp_server.mcp.call_tool("sufler_live_transcript", {}))
+    assert _текст(ответ) == "Стенограмм нет."   # корень назван обвязкой, стенограмм в нём нет
+
+
+@pytest.mark.корень_называет_тест
+def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
+    """Реестр по поведению, через объект сервера — то, что видит клиент. Без
+    корня ни один инструмент не работает по догадке (корню кода): каждый
+    отвечает рецептом, и отказ приходит раньше модели и ребёнка (№336)."""
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+
+    def не_звать(*a, **k):
+        raise AssertionError("инструмент без корня дошёл до работы")
+
+    monkeypatch.setattr(mcp_server, "_client", не_звать)
+    monkeypatch.setattr(mcp_server.subprocess, "run", не_звать)
+    имена = [и.name for и in _инструменты()]
+    assert len(имена) >= 6, имена
+    for имя in имена:
+        ответ = _текст(asyncio.run(mcp_server.mcp.call_tool(имя, {})))
+        assert "CHAROITE_ROOT=" in ответ and "claude mcp add" in ответ, (имя, ответ[:300])
+        assert '"env"' in ответ and str(ROOT / "src" / "mcp_server.py") in ответ, (имя, ответ[:300])
+
+
+def test_the_tool_schema_keeps_its_parameters():
+    """Регистратор не прячет сигнатуру: без `functools.wraps` у
+    `sufler_live_transcript` вместо `max_chars` были бы `*args, **kwargs`."""
+    схема = {и.name: _схема(и) for и in _инструменты()}["sufler_live_transcript"]
+    assert "max_chars" in схема["properties"], схема
 
 
 def _minutes_with_cached_digests(tmp_path, monkeypatch, answer):
