@@ -271,15 +271,21 @@ def withdrawn_section_present(review: str) -> bool:
     return bool(WITHDRAWN_WORD.search(review or ""))
 
 
-def _key(item: str) -> str:
-    """Ключ дедупа: без пометок (ревизии, «не участник», контроля задач), жирного,
-    чекбокса, пунктуации и регистра."""
+def _own_marks(item: str) -> str:
+    """Пункт без пометок самого моста: «⚠ не участник» и «(из ревизии)». Это его
+    пометки, а не грамматика строки: грамматика — в task_line."""
     text = re.sub(r"⚠[^:]*:", " ", item)           # «⚠ не участник (Имя):» целиком
-    text = task_line.CONTROL_MARK.sub(" ", text)     # «_(снято по сроку 24.09)_» (№366)
     for mark in MARKS.values():
         text = text.replace(mark, " ")
-    text = re.sub(r"^\s*(?:" + task_line.MARKER + r"\s*)?(?:" + task_line.BOX + r"\s*)?", "", text)
-    return " ".join(re.findall(r"[^\W_]+", text.lower()))
+    return text
+
+
+def _key(item: str) -> str:
+    """Ключ дедупа: личность поручения из task_line.key (без чекбокса, полей плагина
+    Tasks, пометки контроля, жирного, пунктуации и регистра) — после среза пометок
+    самого моста. Свой ключ оставлял цифры даты из «📅 2026-10-01», и поручение с
+    полем и без него дописывалось дважды (№366)."""
+    return task_line.key(_own_marks(item))
 
 
 # исполнитель строки минуток в любом статусе, снятое «[-]» — тоже (№366): иначе пересказ
@@ -579,6 +585,12 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
             # Без гейта «точных больше одного»: при одном точном открытый среди них — он
             # же или никто, гейт ничего не менял и держал мутант-двойник (CI #616)
             exact = [i for i in hits if _key(item) == _key(views[i])]
+            # одинаковые по ключу пункты различают поля: снятие «… 📅 2026-10-15» — пункт с
+            # этим сроком, а не «подходит к двум» (DeepSeek I4 круга 1 по PR #621)
+            due = task_line.fields(_own_marks(item))
+            dated = [i for i in exact if task_line.fields(_own_marks(views[i])) == due]
+            if len(dated) == 1:
+                exact = dated
             open_exact = [i for i in exact if not task_line.settled(body[i])]
             if len(open_exact) == 1:
                 exact = open_exact
