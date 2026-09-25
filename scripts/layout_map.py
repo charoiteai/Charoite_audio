@@ -357,6 +357,10 @@ _SCHEMA: dict[str, Field] = {
     "order": Field(list, "decision"),
     "brief_layers": Field(dict, "decision"),
     "allowed": Field(dict, "decision"),
+    # вход пакета поиска по графу: пакет — замыкание ОДНОГО имени по графу импортов
+    # (`package_closure`), а не «весь base плюс graph» — иначе публичной поверхностью
+    # молча стали бы модули, которых вход не зовёт (№365)
+    "package_entry": Field(str, "decision"),
     "layer_overrides": Field(dict, "decision", {"layer": Field(str, "decision"),
                                                 "why": Field(str, "decision")}),
     "allowed_edges": Field(list, "measured", {"from": Field(str, "measured"),
@@ -453,13 +457,25 @@ def validate_layout(layout: object) -> dict:
                 raise LayoutError(f"{layer}: в allowed неизвестный слой {d!r}")
             if order.index(d) >= order.index(layer):
                 raise LayoutError(f"{layer} зависит не вниз: {deps}")
-    known = {name for name, _, _ in ROOT_SHAPES}
+    # область формы — ключ SHAPE_SCOPES: опечатка в ней выводила форму из-под суда
+    # молча — замер сравнивает область по равенству (Minor DeepSeek по PR №625)
+    stray = sorted(s.name for s in ROOT_SHAPES if s.scope not in SHAPE_SCOPES)
+    if stray:
+        raise LayoutError(f"формы с неизвестной областью (не из SHAPE_SCOPES): {stray}")
+    known = {s.name for s in ROOT_SHAPES}
+    # слой без окружения не прощается ничем: исключение по форме `layer` сделало бы
+    # окружение приложения частью пакета поиска молча, а проба пакета чтение
+    # переменной не видит — она ловит файлы (Critical головы круга 1 по PR №625)
+    unforgiven = {s.name for s in ROOT_SHAPES if s.scope == "layer"}
     for path_, shapes in layout["root_exemptions"].items():
         if not isinstance(shapes, dict) or not shapes:
             raise LayoutError(f"исключение из правила корня {path_}: нужна карта «форма → обоснование»")
         for name, why in shapes.items():
             if name not in known:
                 raise LayoutError(f"исключение {path_}: форма {name!r} не из ROOT_SHAPES")
+            if name in unforgiven:
+                raise LayoutError(f"исключение {path_}: форма {name!r} — гейт окружения по слою, "
+                                  f"его не прощают: путь приходит параметром")
             if not isinstance(why, str) or not why.strip():
                 raise LayoutError(f"исключение {path_} по форме {name}: нужно непустое обоснование")
     for path_, why in layout["manual_entry_points"].items():
@@ -1260,12 +1276,19 @@ def module_events(tree: ast.Module, var: str) -> ModuleEvents:
     return ModuleEvents(sorted(set(top_reads)), sorted(set(inner_reads)), top_insert, inner_insert)
 
 
-def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
+def _env_reads(tree: ast.AST, var: str | None, *, deep: bool = True) -> list[int]:
     """Строки, где модуль читает переменную окружения `var` сам — формы из
     `ENV_READ_FORMS` (включая `environ.get` после `from os import environ`, Important
     GLM круга 8). Это грамматика, а не «все способы»: динамический ридер
     (`getattr(os, "environ")`) в замер не попадёт. Строка в справке argparse
-    вызовом не является."""
+    вызовом не является.
+
+    `var=None` — любая переменная и любое касание окружения (`_any_env`): так
+    судится слой, которому окружение не дано вовсе (№365). Там неважно, КАКУЮ
+    переменную читают — `dict(os.environ)` и `tempfile.mkstemp()` без каталога
+    (он читает TMPDIR) тянут в пакет окружение приложения так же, как чтение корня."""
+    if var is None:
+        return _any_env(tree)
     out = []
     for node in (ast.walk(tree) if deep else [tree]):
         if isinstance(node, ast.Call):
@@ -1277,6 +1300,132 @@ def _env_reads(tree: ast.AST, var: str, *, deep: bool = True) -> list[int]:
             if ast.unparse(node.value) in ENV_READ_SUBSCRIPTS:
                 out.append(node.lineno)
     return sorted(out)
+
+
+#: Имена, через которые модуль касается окружения процесса: атрибутом любого
+#: получателя (`os.environ`, `o.getenv` при `import os as o`), голым именем после
+#: `from os import …` и самим таким импортом. Строже, чем `ENV_READ_FORMS`, намеренно:
+#: у слоя без окружения тёзка `self.environ` — повод переименовать, а не прощать.
+ENV_TOUCH_NAMES = ("environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "expandvars")
+#: Функции `tempfile`, которые без явного каталога читают TMPDIR (`gettempdir` —
+#: всегда): неявное чтение окружения, и ловушка пробы пакета видит его как чтение.
+TEMPFILE_DEFAULT_DIR = ("gettempdir", "gettempdirb", "mkstemp", "mkdtemp", "mktemp", "NamedTemporaryFile",
+                        "TemporaryFile", "SpooledTemporaryFile", "TemporaryDirectory")
+
+
+def _aliases(tree: ast.Module) -> dict[str, str]:
+    """Локальное имя → полное имя, под которым оно пришло ИМПОРТОМ: `import sys as s`
+    даёт `s → sys`, `from importlib import import_module as im` — `im → importlib.import_module`.
+    Формы слоя без окружения судят полное имя, а не то, как его назвал модуль: первая
+    редакция сравнивала короткое имя вызова и текст записи, и `import sys as s;
+    s.path.insert(…)` проходил гейт зелёным (Critical головы круга 1 по PR №625).
+
+    Только импорт, как у `_canon_names`: связывание присваиванием (`S = sys`) —
+    граница грамматики, а не повод для новой эвристики (Critical головы круга 2 —
+    второй подряд в этой правке, поэтому правило, а не ещё один случай). Что
+    грамматика не видит, видит проба пакета: `sys.path` и `sys.modules` после
+    импорта, ловушка окружения и запись вне `data_dir`."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update({a.asname: a.name for a in node.names if a.asname})
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            out.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
+    return out
+
+
+def _mentions(tree: ast.Module, *, at_import: bool):
+    """Каждое упоминание имени в модуле — `(узел, полное имя)`: имя и цепочка
+    атрибутов через `_aliases`, сам импорт (`from sys import path` — это уже
+    `sys.path`), строка-имя (`globals()["__file__"]`). Форма — любое упоминание, а
+    не только вызов: `h = pathlib.Path.home` и `map(os.path.expanduser, …)` читают
+    окружение так же. Получатель-выражение (`f().x`) даёт сегмент `?`.
+    `at_import` — только узлы, исполняемые на импорте (`_levels`)."""
+    names = _aliases(tree)
+    nodes = (n for n, top in _levels(tree) if top) if at_import else ast.walk(tree)
+    for node in nodes:
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            parts, cur = [], node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            parts.append(names.get(cur.id, cur.id) if isinstance(cur, ast.Name) else "?")
+            yield node, ".".join(reversed(parts))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                yield node, a.name
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                yield node, f"{node.module or ''}.{a.name}"
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier():
+            yield node, node.value
+
+
+def _lines(tree: ast.Module, match: Callable[[list[str]], bool], *, at_import: bool = False) -> list[int]:
+    """Строки упоминаний, чьё полное имя (сегментами) подходит под `match`."""
+    return sorted({n.lineno for n, q in _mentions(tree, at_import=at_import) if match(q.split("."))})
+
+
+def _any_env(tree: ast.Module) -> list[int]:
+    """Касание окружения процесса — форма `any_env` слоя без окружения: имя из
+    `ENV_TOUCH_NAMES` в любой записи и вызов `tempfile` без каталога (полное имя
+    через импорт — `from tempfile import mkstemp as mk` не прячет чтение TMPDIR).
+
+    Грамматика, а не «все способы» — то же правило, что у `_env_reads`: `tempfile`
+    судится по вызову, а связывание присваиванием (`mk = tempfile.mkstemp`) и
+    `getattr` замер не видит. Поведение за границей грамматики сторожит проба
+    пакета: TMPDIR там ведёт в ловушку."""
+    names = _aliases(tree)
+    out = set(_lines(tree, lambda seg: any(s in ENV_TOUCH_NAMES for s in seg)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = names.get(getattr(node.func, "id", ""), _имя(node.func)).rsplit(".", 1)[-1]
+            # `dir=None` — не названный каталог: tempfile всё равно спросит TMPDIR
+            named = any(k.arg == "dir" and not (isinstance(k.value, ast.Constant) and k.value.value is None)
+                        for k in node.keywords)
+            if fn in TEMPFILE_DEFAULT_DIR and (fn.startswith("gettempdir") or not named):
+                out.add(node.lineno)
+    return sorted(out)
+
+
+def _home_reads(tree: ast.Module) -> list[int]:
+    """Строки, где модуль спрашивает домашний каталог: `expanduser` в любой записи и
+    `home` атрибутом или импортом (`Path.home`, `P.home` при `from pathlib import
+    Path as P`); голая `home()` без импорта — своя функция. Оба читают HOME — то же
+    окружение приложения, только без слова `environ`."""
+    return _lines(tree, lambda seg: "expanduser" in seg or "home" in seg[1:])
+
+
+#: Имена, которыми модуль узнаёт своё положение на диске: `__file__` в любой
+#: записи (`m.__file__`, `globals()["__file__"]`), спецификация модуля и ответ `inspect`.
+FILE_NAMES = ("__file__", "__spec__", "getfile", "getsourcefile", "getabsfile")
+
+
+def _any_file(tree: ast.Module) -> list[int]:
+    """Любое положение файла (`FILE_NAMES`). У слоя без окружения законных мест у
+    него нет: оба места, которые прощает форма `file` (канон корней и вставка пути), —
+    это окружение приложения, а положение файла пакета не говорит ничего о данных
+    владельца."""
+    return _lines(tree, lambda seg: any(s in FILE_NAMES for s in seg))
+
+
+def _sys_path_on_import(tree: ast.Module) -> list[int]:
+    """Строки, где `sys.path` касаются НА ИМПОРТЕ — любым упоминанием, не только
+    вызовом метода: `p = sys.path; p.append(…)`, `del sys.path[0]` и `from sys import
+    path` меняют путь импорта так же, а `site.addsitedir` — его вставка под другим
+    именем. Уровень узла — тот же `_levels`, что у замера порядка чтения и вставки."""
+    return _lines(tree, lambda seg: seg[:2] == ["sys", "path"] or "addsitedir" in seg, at_import=True)
+
+
+#: Вызовы, которыми модуль берёт код мимо оператора `import`: такое ребро
+#: `import_graph` не видит, и замыкание пакета молча оказалось бы неполным.
+DYNAMIC_IMPORT_CALLS = ("import_module", "__import__", "spec_from_file_location", "run_path", "run_module")
+
+
+def _dynamic_imports(tree: ast.Module) -> list[int]:
+    """Строки динамического импорта — любое упоминание имени по полному имени:
+    `im = importlib.import_module` без вызова тоже ребро мимо графа."""
+    return _lines(tree, lambda seg: any(s in DYNAMIC_IMPORT_CALLS for s in seg))
 
 
 #: Функции канона, которым положение файла отдают на вход: подъём вверх делают
@@ -1794,32 +1943,103 @@ ENV_ROOT_ENFORCED = ("src/", "scripts/")
 #: не содержал вовсе — вернуть прежнюю строку, и гейт оставался зелёным при всех
 #: тестах (Critical DS выходного круга, воспроизведено). Новая форма — запись здесь,
 #: а не ещё один цикл в гейте.
-ROOT_SHAPES: tuple[tuple[str, Callable[[ast.Module, str], list[int]], str], ...] = (
-    ("env", lambda tree, rel: _env_reads(tree, ENV_ROOT_VAR),
-     f"читает {ENV_ROOT_VAR} сам"),
+#:
+#: Область формы (`scope`) — где она судится. `root` — правило корня: весь код в
+#: `ENV_ROOT_ENFORCED`, рецепт «взять корень у канона». `layer` — гейт окружения по
+#: слою (№365): модуль слоя, которому слой окружения (`runtime_layer`) не разрешён,
+#: не касается окружения НИКАК, и рецепт у него обратный — путь приходит
+#: параметром, к канону он не ходит. Такой модуль меряется только формами `layer`:
+#: каждая строже своей тёзки из `root` (любая переменная вместо корня, любое
+#: `__file__` вместо «мимо канона»), а снимок корня без ребра в канон невозможен —
+#: ребро судит тот же гейт. Одна таблица, один замер (`root_derivations`), один
+#: судья (`root_problems`) — второго сканера нет.
+#:
+#: Область → где в дереве она судится (префиксы путей). Свойство таблицы, а не
+#: фильтр в судье: пока судья резал всё по `ENV_ROOT_ENFORCED`, формы `layer`
+#: мерялись у модуля слоя без окружения в `packages/…`, а судились только в `src/`
+#: — ровно там, откуда пакет графа переезжает (Important DeepSeek по PR №625).
+#: У `layer` область задаёт слой модуля, а не место файла: всё дерево.
+SHAPE_SCOPES: dict[str, tuple[str, ...]] = {"root": ENV_ROOT_ENFORCED, "layer": ("",)}
+
+
+class Shape(NamedTuple):
+    name: str
+    find: Callable[[ast.Module, str], list[int]]
+    hint: str
+    scope: str                  # ключ SHAPE_SCOPES — где форма судится
+
+
+ROOT_SHAPES: tuple[Shape, ...] = (
+    Shape("env", lambda tree, rel: _env_reads(tree, ENV_ROOT_VAR),
+          f"читает {ENV_ROOT_VAR} сам", "root"),
     # Бюджет подъёма у bootstrap — не константа, а рецепт вставки: модуль
     # `src/` вставляет свой каталог (один шаг), скрипт — `src/` у корня
     # репозитория (два). Разбор рецепта — `_bootstrap_budget`.
-    ("file", lambda tree, rel: _file_roots(tree, bootstrap_steps=_bootstrap_budget(rel)),
-     "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона"),
-    ("snapshot", lambda tree, rel: _root_snapshots(tree),
-     f"запоминает ответ {DATA_ROOT_CALL} на импорте — раньше, чем точка входа назвала корень"),
+    Shape("file", lambda tree, rel: _file_roots(tree, bootstrap_steps=_bootstrap_budget(rel)),
+          "ставит __file__ мимо канона и мимо вставки пути — подъём живёт внутри канона", "root"),
+    Shape("snapshot", lambda tree, rel: _root_snapshots(tree),
+          f"запоминает ответ {DATA_ROOT_CALL} на импорте — раньше, чем точка входа назвала корень", "root"),
+    Shape("any_env", lambda tree, rel: _env_reads(tree, None),
+          "касается окружения процесса (environ, getenv, expandvars, tempfile без dir)", "layer"),
+    Shape("home", lambda tree, rel: _home_reads(tree),
+          "спрашивает домашний каталог (Path.home, expanduser)", "layer"),
+    Shape("any_file", lambda tree, rel: _any_file(tree),
+          "выводит путь из __file__", "layer"),
+    Shape("sys_path", lambda tree, rel: _sys_path_on_import(tree),
+          "меняет sys.path на импорте", "layer"),
+    Shape("dynamic_import", lambda tree, rel: _dynamic_imports(tree),
+          "импортирует динамически — ребра не видит ни граф, ни замыкание пакета", "layer"),
 )
 
 
-def root_derivations(inv: Inventory) -> dict[str, dict[str, list[int]]]:
+def runtime_layer(layout: dict) -> str | None:
+    """Слой окружения — тот, где лежит канон корней (`ENV_ROOT_OWNER`). Вопрос к
+    артефакту, а не литерал: переименование слоя или переезд канона меняет ответ
+    здесь, и гейт окружения не сторожит слой, которого больше нет."""
+    return layer_of(layout).get(module_of(ENV_ROOT_OWNER) or "")
+
+
+def env_free_layers(layout: dict) -> dict[str, str]:
+    """Слои без окружения → рецепт отказа. Слой без окружения — тот, которому
+    `allowed` не даёт слоя окружения (и не он сам). Рецепт выводится из того же
+    `allowed`: путь и настройку модуль получает параметром, а собирает их
+    вызывающий из слоя, которому разрешены оба — и этот слой, и окружение. Совет
+    «взять корень у канона» здесь был бы неправдой: канон и есть окружение."""
+    rt = runtime_layer(layout)
+    if rt is None:
+        return {}
+    allowed = layout["allowed"]
+    out = {}
+    for layer in layout["order"]:
+        if layer == rt or rt in allowed[layer]:
+            continue
+        doors = [k for k in layout["order"] if (k == rt or rt in allowed[k]) and layer in allowed[k]]
+        out[layer] = (f"слою {layer} окружение не дано (allowed: {', '.join(allowed[layer]) or '—'}): "
+                      f"путь приходит параметром — его собирает вызывающий из слоя, которому "
+                      f"виден {rt} ({', '.join(doors) or '—'})")
+    return out
+
+
+def root_derivations(inv: Inventory, layout: dict | None = None) -> dict[str, dict[str, list[int]]]:
     """Кто выводит корень сам и какой формой — файл → форма → строки.
 
     Грамматика форм одна на всех (`ROOT_SHAPES` поверх `_env_reads`/`_file_roots`):
     замер печатает их человеку с порядком строк и заметками, гейт считает
     нарушителей. До этого гейт о находках не знал вовсе и правило нечем было
     выразить.
+
+    Модуль слоя без окружения (`env_free_layers`) меряется формами области
+    `layer`, остальной код — формами `root`. Без `layout` слоёв не знает никто, и
+    меряется только правило корня.
     """
+    envless = set(env_free_layers(layout)) if layout is not None else set()
+    lay = layer_of(layout) if layout is not None else {}
     out: dict[str, dict[str, list[int]]] = {}
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        found = {name: lines for name, finder, _ in ROOT_SHAPES if (lines := finder(info.tree, rel))}
+        scope = "layer" if lay.get(module_of(rel) or "") in envless else "root"
+        found = {s.name: lines for s in ROOT_SHAPES if s.scope == scope and (lines := s.find(info.tree, rel))}
         if found:
             out[rel] = found
     return out
@@ -1928,7 +2148,8 @@ def seam_problems(calls: dict[str, dict[str, list[int]]] | None) -> list[str]:
 
 
 def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
-                  exemptions: dict[str, dict[str, str]] | None = None) -> list[str]:
+                  exemptions: dict[str, dict[str, str]] | None = None,
+                  layout: dict | None = None) -> list[str]:
     """Расхождения правила «корень выводит один модуль» — строками.
 
     Отдельная функция, потому что её зовёт гейт, а считает инвентарь: так новую
@@ -1949,21 +2170,28 @@ def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
     молчат обе стороны. Раньше молчала только первая, и незаданный замер печатал
     «исключение больше не выводит корень» про живое исключение — тот же
     перегруженный `None`, за который платили гейтом свежести карты (круг 9).
+
+    `layout` даёт рецепт по слою: у модуля слоя без окружения совет обратный —
+    путь приходит параметром (`env_free_layers`), а не «иди к канону корней».
     """
     if derivations is None:
         return []
-    hint = {name: text for name, _, text in ROOT_SHAPES}
+    hint = {s.name: s.hint for s in ROOT_SHAPES}
+    recipes = env_free_layers(layout) if layout is not None else {}
+    lay = layer_of(layout) if layout is not None else {}
     exempt = exemptions or {}
     out = []
+    area = {s.name: SHAPE_SCOPES[s.scope] for s in ROOT_SHAPES}
     for rel, shapes in sorted(derivations.items()):
-        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
+        if rel == ENV_ROOT_OWNER:
             continue
+        recipe = recipes.get(lay.get(module_of(rel) or "", ""))
         for name, lines in sorted(shapes.items()):
-            if name in exempt.get(rel, {}):
+            if name in exempt.get(rel, {}) or not rel.startswith(area[name]):
                 continue
             out.append(f"{rel}:{','.join(map(str, lines))} {hint[name]} — "
-                       f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "
-                       f"иначе копия разойдётся с каноном")
+                       + (recipe or f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "
+                                    f"иначе копия разойдётся с каноном"))
     for rel, shapes in sorted(exempt.items()):
         gone = sorted(set(shapes) - set(derivations.get(rel, {})))
         for name in gone:
@@ -2033,12 +2261,12 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
     # Заголовки и счётчики берутся из той же таблицы форм, что судит гейт: пока они
     # были литералами, замер описывал две формы, а гейт мог считать третью, и долг
     # по ней был невидим человеку (Important GLM круга 2).
-    shape_hint = {name: text for name, _, text in ROOT_SHAPES}
+    shape_hint = {s.name: s.hint for s in ROOT_SHAPES}
     out += ["", f"## Кто выводит корень сам, форма «env» — {shape_hint['env']} ({len(env)})", ""]
     out += env or ["- нет"]
     out += ["", f"## Кто выводит корень сам, форма «file» — {shape_hint['file']} ({len(roots)})", ""]
     out += roots or ["- нет"]
-    missing = [n for n, _, _ in ROOT_SHAPES if n not in ("env", "file")]
+    missing = [s.name for s in ROOT_SHAPES if s.name not in ("env", "file")]
     if missing:
         # третья форма заведена в таблице, но секции ей никто не написал: замер обязан
         # сказать об этом вслух, а не молчать о долге, который гейт уже считает
@@ -2049,6 +2277,71 @@ def report(inv: Inventory, *, env_var: str = "CHAROITE_ROOT",
         who = seam_hits.get(name, [])
         out.append(f"- **{name}** ({len(who)}): " + (", ".join(who) if who else "нет"))
     return "\n".join(out) + "\n"
+
+
+def package_closure(graph: dict[str, set[str]], entry: str) -> set[str]:
+    """Модули пакета — замыкание входа по графу импортов. Вход, которого в
+    дереве нет, даёт пустое множество: о нём говорит `check`, а не исключение."""
+    seen: set[str] = set()
+    todo = [entry]
+    while todo:
+        m = todo.pop()
+        if m in graph and m not in seen:
+            seen.add(m)
+            todo += graph[m]
+    return seen
+
+
+def package_files(inv: Inventory, layout: dict) -> list[str]:
+    """План пробы пакета: файлы замыкания `package_entry`, по пути. Проба
+    копирует ровно их — список берётся здесь, а не собирается тестом заново."""
+    closure = package_closure(import_graph(inv), layout["package_entry"])
+    return sorted(rel for rel in inv.files if module_of(rel) in closure)
+
+
+def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
+    """Гейт окружения по слою — рёбра и пакет; формы окружения судит
+    `root_problems` по тому же `env_free_layers`.
+
+    Ребро модуля слоя без окружения в слой окружения — расхождение, которое
+    `allowed_edges` не прощает: долг с карточкой здесь означал бы пакет, который
+    тянет окружение приложения, пока долг жив. Пакет — замыкание `package_entry`:
+    вход обязан быть модулем дерева, и всё замыкание лежит в слоях без окружения."""
+    lay = layer_of(layout)
+    rt = runtime_layer(layout)
+    if rt is None:
+        # канона нет в таблице слоёв — об этом уже говорит «не отнесён ни к одному
+        # слою»; второй строкой гейт окружения о том же не повторяет
+        return []
+    recipes = env_free_layers(layout)
+    out = [f"{a} ({lay[a]}) → {b} ({rt}): ребро в слой окружения — {recipes[lay[a]]}; "
+           f"allowed_edges такое ребро не прощает"
+           for a, b in env_edges(graph, layout)]
+    # и не тянет его через соседа: ребро graph → llm, прощённое `allowed_edges`, при
+    # llm → runtime приносило окружение модулю графа, а гейт смотрел только прямые
+    # рёбра (Minor головы круга 1 по PR №625). Прямые рёбра сказаны строкой выше.
+    direct = set(env_edges(graph, layout))
+    for a in sorted(m for m in graph if lay.get(m) in recipes):
+        for b in sorted(package_closure(graph, a)):
+            if lay.get(b) == rt and (a, b) not in direct:
+                out.append(f"{a} ({lay[a]}) тянет {b} ({rt}) через импорты — {recipes[lay[a]]}")
+    entry = layout["package_entry"]
+    if entry not in graph:
+        out.append(f"package_entry {entry}: модуля с таким именем в дереве нет — пакету не из чего собраться")
+    for m in sorted(package_closure(graph, entry)):
+        if lay.get(m) not in recipes:
+            out.append(f"пакет {entry} тянет {m} ({lay.get(m, 'без слоя')}) — в замыкании входа только "
+                       f"слои без окружения: {', '.join(recipes) or '—'}")
+    return out
+
+
+def env_edges(graph: dict[str, set[str]], layout: dict) -> list[tuple[str, str]]:
+    """Рёбра из слоя без окружения в слой окружения — по одному ответу `allowed`."""
+    lay = layer_of(layout)
+    rt = runtime_layer(layout)
+    envless = env_free_layers(layout)
+    return sorted((a, b) for a, deps in graph.items() if lay.get(a) in envless
+                  for b in deps if lay.get(b) == rt)
 
 
 def allowlist_edges(layout: dict) -> set[tuple[str, str]]:
@@ -2101,7 +2394,9 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     allow = allowlist_edges(layout)
     viol = set(violations(graph, layout))
     lay = layer_of(layout)
-    for a, b in sorted(viol - allow):
+    # ребро в окружение говорит своим рецептом (`env_problems`): совет «внести в
+    # allowed_edges» для него неправда — такое ребро гейт не прощает
+    for a, b in sorted(viol - allow - set(env_edges(graph, layout))):
         problems.append(f"новое ребро против стрелок: {a} ({lay[a]}) → {b} ({lay[b]}) — "
                         f"развязать или внести в allowed_edges с карточкой")
     for a, b in sorted(allow - viol):
@@ -2137,7 +2432,9 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     # список прощённых имён: прощённых имён нет, есть область, где правило уже в силе.
     # Форм вывода несколько (`ROOT_SHAPES`) — первая редакция правила считала только
     # чтение переменной и пропускала тот самый дефект, ради которого заводилась
-    problems += root_problems(roots, layout["root_exemptions"])
+    problems += root_problems(roots, layout["root_exemptions"], layout)
+    # слой без окружения: ни ребра в слой окружения, ни пакета, который его тянет (№365)
+    problems += env_problems(graph, layout)
     # индекс поиска и ревизию ядер приложение строит через одну дверь окружения (№365)
     problems += seam_problems(seams)
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
@@ -2252,8 +2549,9 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
             f"Снимок allowlist: {layout.get('generated', '?')} (момент последнего `--regen`; "
             f"версия файла — git). Модулей {len(graph)}."),
            "", "## Слои и направление стрелок", "",
-           ("Таблица брифа владельца 19.09 дословно; правка слоя — только поправкой с обоснованием "
-            "ниже: перенос слоя одной строкой без причины легализовал бы ребро молча."), ""]
+           ("Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — "
+            "только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал "
+            "бы ребро молча."), ""]
     by_layer: dict[str, list[str]] = {layer: [] for layer in layout["order"]}
     for m, layer in lay.items():
         by_layer[layer].append(m)
@@ -2261,6 +2559,20 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
         deps = ", ".join(layout["allowed"].get(layer, [])) or "—"
         mods = sorted(by_layer[layer])
         out.append(f"- **{layer}** (зависит от: {deps}; модулей {len(mods)}): " + ", ".join(f"`{m}`" for m in mods))
+    envless = env_free_layers(layout)
+    entry = layout["package_entry"]
+    out += ["", "## Слой окружения и слои без него", "",
+            (f"Слой окружения — {runtime_layer(layout) or '—'} (там канон корней `{ENV_ROOT_OWNER}`). "
+             f"Модуль слоя без окружения не импортирует его и не касается окружения ни одной формой "
+             f"области `layer` таблицы ROOT_SHAPES: "
+             + ", ".join(s.name for s in ROOT_SHAPES if s.scope == "layer") + "."), ""]
+    for layer, recipe in envless.items():
+        out.append(f"- **{layer}**: {recipe}")
+    closure = sorted(package_closure(graph, entry))
+    out += ["", f"## Пакет поиска по графу — замыкание входа `{entry}`", "",
+            ("Ставится без приложения: модули ниже и только они; проба — "
+             "`tests/test_entry_points_contract.py`."), "",
+            f"Модулей {len(closure)}: " + ", ".join(f"`{m}`" for m in closure)]
     out += ["", "## Поправки к таблице брифа (с обоснованием)", ""]
     for m, ov in sorted(layout["layer_overrides"].items()):
         out.append(f"- `{m}` → {ov['layer']}: {ov['why']}")
@@ -2398,7 +2710,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         map_text, map_state = None, "missing"
     problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
-                               roots=root_derivations(inv), seams=seam_calls(inv))
+                               roots=root_derivations(inv, layout), seams=seam_calls(inv))
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")
