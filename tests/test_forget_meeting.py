@@ -163,6 +163,8 @@ def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
     aware = forget.plan(STAMP, root, graph, import_folder=inbox)
     assert str(done / "Restamped.m4a") not in {str(p) for p in aware.delete}
     assert sum(f"{STAMP}17" in line for line in aware.check) == 1, aware.check
+    # совет называет копию её собственным именем, без точки сайдкара
+    assert any(line.endswith(": Restamped.m4a") for line in aware.check), aware.check
     # одна запись под этой секундой — ещё не паспорт (у соседки она есть
     # раньше стенограммы, DS r4): копия и запись остаются, названы вслух
     wav = root / "recordings" / f"{STAMP}17_mic.wav"
@@ -859,6 +861,8 @@ def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "НЕ удалено" in out and "x.md" in out
     assert not (graph / "Встречи" / f"{STAMP}.md").exists(), "цикл оборвался на первом пути"
+    # счёт в итоге — удалённое, а не запланированное: неудавшийся путь в «удалено» не входит
+    assert f"удалено {len(p.delete) - 1}," in out, out
 
 
 def test_plan_forgets_the_copy_before_the_last_rebuild(tmp_path):
