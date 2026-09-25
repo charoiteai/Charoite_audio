@@ -80,9 +80,15 @@ def run_contract(repo: pathlib.Path, rel: str, mode: str, data_root: pathlib.Pat
     return problems
 
 
+#: Один инвентарь репозитория на модуль тестов: план контрактов и план копии
+#: пакета читают его, а не обходят дерево заново. Обход — секунда, а этот файл
+#: мутатор гоняет на каждого мутанта `scripts/layout_map.py`, и job мутации
+#: упирался в свой потолок (PR №625).
+INV = lm.inventory()
+
+
 def _plan() -> list[tuple[str, str]]:
-    inv = lm.inventory()
-    return [(rel, mode) for rel, mode, _why in lm.run_plan(lm.load_layout(), lm.executables(inv))
+    return [(rel, mode) for rel, mode, _why in lm.run_plan(lm.load_layout(), lm.executables(INV))
             if mode != "none"]
 
 
@@ -360,7 +366,7 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
 
 def _copy_package(dest: pathlib.Path) -> list[str]:
     """Копия замыкания входа по плану сторожа — плоско, имя модуля в имя файла."""
-    rels = lm.package_files(lm.inventory(), lm.load_layout())
+    rels = lm.package_files(INV, lm.load_layout())
     dest.mkdir()
     for rel in rels:
         name = lm.module_of(rel)
@@ -381,7 +387,7 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     shutil.copytree(ROOT / "demo" / "graph", graph)
     closure = {lm.module_of(rel) for rel in rels}
     assert layout["package_entry"] in closure
-    others = tuple(sorted(lm.modules(lm.inventory()) - closure))
+    others = tuple(sorted(lm.modules(INV) - closure))
     problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work",
                                       forbidden=APP_ONLY_DEPS + others)
     assert not problems, "\n".join(problems)

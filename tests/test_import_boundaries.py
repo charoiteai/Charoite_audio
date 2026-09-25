@@ -411,12 +411,22 @@ def test_env_seams_of_the_graph_are_called_only_through_the_door():
     assert lm.seam_problems(None) == []
 
 
-def test_the_gate_is_actually_asked_about_the_seams(monkeypatch, capsys):
-    """Правило живо, только если главный тракт отдаёт замер швов в гейт: владельца
-    двери лишаем права звать шов — строка обязана появиться."""
+def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeypatch, capsys):
+    """Правило живо, только если главный тракт отдаёт замер в гейт. Швы: владельца
+    двери лишаем права звать шов — строка обязана появиться. Гейт окружения (№365):
+    форма слоя, находящая строку везде, обязана покрасить модуль графа рецептом
+    слоя, а модуль слоя с окружением — не тронуть. Один прогон `main` на оба
+    правила: полный `--check` — самая дорогая строка набора, который мутатор
+    гоняет на каждого мутанта, и job мутации упирался в свой потолок."""
     monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    shapes = tuple(s._replace(find=lambda tree, rel: [1]) if s.name == "dynamic_import" else s
+                   for s in lm.ROOT_SHAPES)
+    monkeypatch.setattr(lm, "ROOT_SHAPES", shapes)
     assert lm.main(["--check"]) == 1
-    assert "src/graphs.py" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "src/graphs.py" in out
+    assert "src/graph_search.py:1 импортирует динамически" in out and "путь приходит параметром" in out
+    assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
@@ -2164,14 +2174,3 @@ def test_the_package_is_the_closure_of_one_entry(world):
     assert lm.package_closure(graph, "нет_такого") == set()
     assert lm.package_closure({"a": {"b"}, "b": {"a", "c"}, "c": set()}, "a") == {"a", "b", "c"}
 
-
-def test_the_gate_is_actually_asked_about_the_layer_shapes(monkeypatch, capsys):
-    """Гейт окружения жив, только если главный тракт меряет формы слоя: форма,
-    находящая строку везде, обязана покрасить модуль графа рецептом слоя."""
-    shapes = tuple(s._replace(find=lambda tree, rel: [1]) if s.name == "dynamic_import" else s
-                   for s in lm.ROOT_SHAPES)
-    monkeypatch.setattr(lm, "ROOT_SHAPES", shapes)
-    assert lm.main(["--check"]) == 1
-    out = capsys.readouterr().out
-    assert "src/graph_search.py:1 импортирует динамически" in out and "путь приходит параметром" in out
-    assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
