@@ -2103,6 +2103,40 @@ def _env_world(tmp_path, **allowed_over):
     return layout, lm.import_graph(inv), inv
 
 
+def test_the_layer_shapes_are_judged_wherever_the_module_lives(tmp_path, monkeypatch):
+    """Где форма судится — свойство её области (`SHAPE_SCOPES`), а не фильтр в
+    судье. Модуль слоя без окружения в `packages/…` краснеет так же, как в `src/`:
+    раньше замер его мерил, а судья отбрасывал всё вне `ENV_ROOT_ENFORCED` — ровно
+    туда пакет графа и переезжает (Important DeepSeek по PR №625). Правило корня
+    своей области не меняет: модуль с окружением в `packages/` им не судится."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n",
+                                                        encoding="utf-8")
+    pkg = tmp_path / "packages" / "d" / "src" / "p"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "lib_mod.py").write_text("import os\nCACHE = os.environ.get('X')\n", encoding="utf-8")
+    (pkg / "app_mod.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    layout = _layout(order=["base", "rt", "lib"], allowed={"base": [], "rt": ["base"], "lib": ["base"]},
+                     brief_layers={"base": ["p"], "rt": ["charoite_paths", "p.app_mod"], "lib": ["p.lib_mod"]},
+                     package_entry="p.lib_mod")
+    inv = lm.inventory(tmp_path)
+    derivations = lm.root_derivations(inv, layout)
+    assert derivations["packages/d/src/p/lib_mod.py"] == {"any_env": [2]}
+    assert derivations["packages/d/src/p/app_mod.py"] == {"env": [2]}, "замер меряет правило корня везде"
+    hint = {s.name: s.hint for s in lm.ROOT_SHAPES}
+    assert lm.root_problems(derivations, {}, layout) == [
+        f"packages/d/src/p/lib_mod.py:2 {hint['any_env']} — {lm.env_free_layers(layout)['lib']}"]
+
+    assert lm.SHAPE_SCOPES == {"root": lm.ENV_ROOT_ENFORCED, "layer": ("",)}
+    # область формы — ключ таблицы областей; опечатка отвергнута при загрузке, а не
+    # выводит форму из-под суда молча (Minor DeepSeek по PR №625)
+    typo = tuple(sh._replace(scope="layr") if sh.name == "home" else sh for sh in lm.ROOT_SHAPES)
+    monkeypatch.setattr(lm, "ROOT_SHAPES", typo)
+    with pytest.raises(lm.LayoutError, match=r"неизвестной областью .*'home'"):
+        lm.load_layout()
+
+
 def test_the_env_gate_asks_the_artifact(tmp_path):
     """Слой окружения — тот, где лежит канон корней; слой без окружения — тот,
     которому `allowed` его не даёт. Рецепт выводится из того же `allowed`: путь

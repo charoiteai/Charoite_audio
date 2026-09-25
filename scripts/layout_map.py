@@ -457,6 +457,11 @@ def validate_layout(layout: object) -> dict:
                 raise LayoutError(f"{layer}: в allowed неизвестный слой {d!r}")
             if order.index(d) >= order.index(layer):
                 raise LayoutError(f"{layer} зависит не вниз: {deps}")
+    # область формы — ключ SHAPE_SCOPES: опечатка в ней выводила форму из-под суда
+    # молча — замер сравнивает область по равенству (Minor DeepSeek по PR №625)
+    stray = sorted(s.name for s in ROOT_SHAPES if s.scope not in SHAPE_SCOPES)
+    if stray:
+        raise LayoutError(f"формы с неизвестной областью (не из SHAPE_SCOPES): {stray}")
     known = {s.name for s in ROOT_SHAPES}
     # слой без окружения не прощается ничем: исключение по форме `layer` сделало бы
     # окружение приложения частью пакета поиска молча, а проба пакета чтение
@@ -1948,14 +1953,20 @@ ENV_ROOT_ENFORCED = ("src/", "scripts/")
 #: `__file__` вместо «мимо канона»), а снимок корня без ребра в канон невозможен —
 #: ребро судит тот же гейт. Одна таблица, один замер (`root_derivations`), один
 #: судья (`root_problems`) — второго сканера нет.
-SHAPE_SCOPES = ("root", "layer")
+#:
+#: Область → где в дереве она судится (префиксы путей). Свойство таблицы, а не
+#: фильтр в судье: пока судья резал всё по `ENV_ROOT_ENFORCED`, формы `layer`
+#: мерялись у модуля слоя без окружения в `packages/…`, а судились только в `src/`
+#: — ровно там, откуда пакет графа переезжает (Important DeepSeek по PR №625).
+#: У `layer` область задаёт слой модуля, а не место файла: всё дерево.
+SHAPE_SCOPES: dict[str, tuple[str, ...]] = {"root": ENV_ROOT_ENFORCED, "layer": ("",)}
 
 
 class Shape(NamedTuple):
     name: str
     find: Callable[[ast.Module, str], list[int]]
     hint: str
-    scope: str                  # см. SHAPE_SCOPES
+    scope: str                  # ключ SHAPE_SCOPES — где форма судится
 
 
 ROOT_SHAPES: tuple[Shape, ...] = (
@@ -2170,12 +2181,13 @@ def root_problems(derivations: dict[str, dict[str, list[int]]] | None,
     lay = layer_of(layout) if layout is not None else {}
     exempt = exemptions or {}
     out = []
+    area = {s.name: SHAPE_SCOPES[s.scope] for s in ROOT_SHAPES}
     for rel, shapes in sorted(derivations.items()):
-        if rel == ENV_ROOT_OWNER or not rel.startswith(ENV_ROOT_ENFORCED):
+        if rel == ENV_ROOT_OWNER:
             continue
         recipe = recipes.get(lay.get(module_of(rel) or "", ""))
         for name, lines in sorted(shapes.items()):
-            if name in exempt.get(rel, {}):
+            if name in exempt.get(rel, {}) or not rel.startswith(area[name]):
                 continue
             out.append(f"{rel}:{','.join(map(str, lines))} {hint[name]} — "
                        + (recipe or f"взять корень у {ENV_ROOT_OWNER} (resolve_root / code_root), "

@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -253,6 +254,11 @@ APPROVED_PROBE = {
 PROBE_RUNNER = r"""
 import os, sys   # уже загружены интерпретатором; всё прочее — после хука, импорт идёт мимо ловушки
 
+# признаки изоляции — первой строкой, ДО хука: процесс, который хук уронит, их
+# всё равно отдаст. Префикс кэша байткода не пишет (DONTWRITEBYTECODE), но импорт
+# читает по нему готовый .pyc — это и видит хук как чтение ловушки
+print("isolation=" + repr({"pycache_prefix": sys.pycache_prefix}), flush=True)
+
 PKG, DATA, GRAPH, TRAP, QUERY = sys.argv[1:6]
 TRAP_REAL, DATA_REAL = os.path.realpath(TRAP), os.path.realpath(DATA)
 WRITE_FLAGS = 0
@@ -328,13 +334,16 @@ print(json.dumps({"ready": result.ready, "total": result.total, "text": result.t
 
 
 def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: pathlib.Path, *,
-                      forbidden: tuple[str, ...], outer: dict[str, str] | None = None,
-                      drop: tuple[str, ...] = ISOLATION_DROP, timeout: int = TIMEOUT) -> tuple[list[str], dict]:
+                      app_deps: tuple[str, ...] = APP_ONLY_DEPS, outside: tuple[str, ...] = (),
+                      outer: dict[str, str] | None = None, drop: tuple[str, ...] = ISOLATION_DROP,
+                      timeout: int = TIMEOUT) -> tuple[list[str], dict]:
     """Прогнать пакет из каталога `pkg`: вход импортируется отдельным процессом с
     отравленным окружением, индекс строится по `graph`, кэш — только в `data_dir`.
-    `outer` — что стояло в окружении родителя до изоляции (значение `{trap}` —
-    путь ловушки), `drop` — что изоляция снимает. Расхождения строками (пусто —
-    принят) и выдача раннера."""
+    `app_deps` — зависимости приложения, `outside` — модули продукта вне замыкания
+    входа: у двух протечек разный диагноз. `outer` — что стояло в окружении
+    родителя до изоляции (значение `{trap}` — путь ловушки), `drop` — что изоляция
+    снимает. Расхождения строками (пусто — принят) и выдача раннера; признаки
+    изоляции (`pycache_prefix`) — и когда процесс упал."""
     trap, data, cwd = work / "ловушка", work / "data", work / "cwd"
     for d in (trap, data, cwd):
         d.mkdir(parents=True)
@@ -346,11 +355,16 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     env.update(ISOLATION_ENV)
     env.update({k: str(trap) for k in POISONED_ENV})
     r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query], cwd, env, timeout)
+    lines = r.stdout.strip().splitlines()
+    head = ast.literal_eval(lines[0].removeprefix("isolation=")) if lines[:1] and lines[0].startswith("isolation=") else {}
     if r.returncode != 0:
-        return [f"проба пакета: код {r.returncode} — {_first_line(r)}"], {}
-    out = json.loads(r.stdout.strip().splitlines()[-1])
-    problems = [f"пакет импортировал {m}: зависимость приложения протекла в пакет"
-                for m in sorted(set(out["modules"]) & set(forbidden))]
+        return [f"проба пакета: код {r.returncode} — {_first_line(r)}"], head
+    out = {**head, **json.loads(lines[-1])}
+    loaded = set(out["modules"])
+    problems = [f"пакет импортировал {m}: зависимость приложения протекла в пакет" for m in sorted(loaded & set(app_deps))]
+    # сосед по продукту — другой диагноз: замыкание входа расширилось, и публичной
+    # поверхностью молча стал лишний модуль (Minor DeepSeek по PR №625)
+    problems += [f"модуль {m} вне замыкания package_entry загрузился в пакет" for m in sorted(loaded & set(outside))]
     # код продукта из репозитория, а не всё под корнем: у сопровождающего `.venv/`
     # лежит в репозитории, и yaml оттуда — законная зависимость пакета
     product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, lm.DIST_DIR, "scripts")]
@@ -389,7 +403,7 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     assert layout["package_entry"] in closure
     others = tuple(sorted(lm.modules(INV) - closure))
     problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work",
-                                      forbidden=APP_ONLY_DEPS + others)
+                                      outside=others)
     assert not problems, "\n".join(problems)
     assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
     assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
@@ -461,7 +475,7 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                 "        import types\n"
                 "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
 
-    def probe(name: str, extra: str, **kw) -> list[str]:
+    def run(name: str, extra: str, **kw) -> tuple[list[str], dict]:
         victims = tmp_path / name / "жертва"
         (victims / "d").mkdir(parents=True)
         (victims / "f").write_text("x", encoding="utf-8")
@@ -470,8 +484,12 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         (pkg / "graph_search.py").write_text(template.format(victims=str(victims), extra=extra), encoding="utf-8")
         shutil.copyfile(ROOT / "src" / "model_seam.py", pkg / "model_seam.py")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
+        (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
-                                 forbidden=("лишний_модуль",), **kw)[0]
+                                 app_deps=("лишний_модуль",), outside=("соседний_модуль",), **kw)
+
+    def probe(name: str, extra: str, **kw) -> list[str]:
+        return run(name, extra, **kw)[0]
 
     assert {"POISONED_ENV": POISONED_ENV, "ISOLATION_ENV": ISOLATION_ENV, "ISOLATION_DROP": ISOLATION_DROP,
             "WRITE_FLAG_NAMES": WRITE_FLAG_NAMES} == APPROVED_PROBE, "таблицы пробы — политика, снимок обязателен"
@@ -512,7 +530,10 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     assert {e: MUTATIONS[e] for e in APPROVED_MUTATION_SIDES} == APPROVED_MUTATION_SIDES
     assert "os.rename вне data_dir" in probe("os.replace", "os.replace(V / 'f', V / 'g')")[0], \
         "os.replace приходит событием os.rename"
-    assert "протекла" in probe("протечка", "import лишний_модуль")[0]
+    assert probe("протечка", "import лишний_модуль") == [
+        "пакет импортировал лишний_модуль: зависимость приложения протекла в пакет"]
+    assert probe("сосед", "import соседний_модуль") == [
+        "модуль соседний_модуль вне замыкания package_entry загрузился в пакет"]
     got = probe("мимо копии", f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line")
     assert f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии" in got
     # правка пути импорта в написании, которого грамматика гейта не знает
@@ -528,3 +549,15 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         leaked = probe(f"утечка {var}", "pass", outer={var: value}, drop=())
         assert leaked, f"{var} у родителя ничего не ломает — случай изоляции ничего не проверяет"
         assert probe(f"снято {var}", "pass", outer={var: value}) == [], f"{var} не снимается изоляцией"
+    # префикс кэша — своим признаком, а не «какая-то беда случилась»: раннер печатает
+    # sys.pycache_prefix до хука. Байткод не пишется (DONTWRITEBYTECODE), а краснеет
+    # проба на ЧТЕНИИ готового .pyc по префиксу — хук видит его как чтение ловушки
+    # (DeepSeek считал признаком запись .pyc; опыт показал чтение)
+    got, out = run("честный префикс", "pass")
+    assert out["pycache_prefix"] is None and got == [], "у честной пробы префикса кэша нет"
+    got, out = run("утечка префикса", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"}, drop=())
+    trap = tmp_path / "утечка префикса" / "work" / "ловушка"
+    assert out["pycache_prefix"] == str(trap), f"протёкший префикс не виден признаком: {out}"
+    assert len(got) == 1 and f"чтение ловушки {trap}" in got[0], got
+    got, out = run("снят префикс", "pass", outer={"PYTHONPYCACHEPREFIX": "{trap}"})
+    assert out["pycache_prefix"] is None and got == [], f"изоляция не сняла префикс: {out}"
