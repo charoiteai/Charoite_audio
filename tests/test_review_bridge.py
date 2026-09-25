@@ -857,3 +857,30 @@ def test_the_bridge_strips_the_outsider_mark_before_the_shared_key():
                                            dropped=dropped)
     assert moved == 1 and dropped == [], dropped
     assert "- [ ] **Участник А** — позвонить клиенту завтра" in text.split("## Снято")[0]
+
+
+def test_a_date_inside_the_text_keeps_two_items_apart():
+    # поле — только хвост строки: общий ключ резал даты где угодно, и пункт «сдвинуть с
+    # 📅 2027-03-01 на …» считался уже записанным «сдвинуть с 📅 2026-10-01 на …» — мост
+    # молча не дописывал его (DeepSeek I3 круга 1 по PR #621)
+    minutes = "# Минутки\n## Поручения\n- [ ] **Участник Б** — сдвинуть 📅 2026-10-01 на 📅 2026-10-15\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Участник Б** — сдвинуть 📅 2027-03-01 на 📅 2026-10-15"])
+    assert added == 1 and "сдвинуть 📅 2027-03-01 на 📅 2026-10-15" in text
+
+
+def test_the_due_field_tells_two_otherwise_equal_items_apart_on_withdrawal():
+    # два открытых пункта отличаются только сроком: снятие со сроком — один из них, а не
+    # «подходит к двум» (DeepSeek I4 круга 1 по PR #621)
+    minutes = ("# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить 📅 2026-10-01\n"
+               "- [ ] **Участник А** — позвонить 📅 2026-10-15\n\n## Риски\n- нет\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить 📅 2026-10-15", "не звучало")],
+                                           dropped=dropped)
+    assert moved == 1 and dropped == [], dropped
+    kept = text.split("## Снято")[0].split("\n")
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-01" in kept
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-15" not in kept
+    # без срока снятие по-прежнему не гадает
+    dropped.clear()
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить", "не звучало")], dropped=dropped)
+    assert moved == 0 and text == minutes and "подходит к 2" in dropped[0], dropped
