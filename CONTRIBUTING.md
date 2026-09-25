@@ -44,6 +44,11 @@ review gates, and who answers for what — is documented in
   that both code and test read from one constant) need not be fixed — but is
   worth a look: on 20.08 one such survivor revealed that behaviour exactly at
   the threshold was tested by nobody.
+  A mutant whose text does not parse back into the mutated tree is reported
+  as NOT APPLIED with its reason, never as killed. Changed lines with nothing
+  to mutate end with `unmutable` (code 8) and print the plan counters — files,
+  lines, module constants, AST nodes, unreadable files; an empty range stays
+  `nothing` (code 6).
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put

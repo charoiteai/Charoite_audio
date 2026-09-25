@@ -1,6 +1,7 @@
 """Коды возврата конвейера — одно место, без копий и без импортов (№173)."""
 import ast
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -18,12 +19,12 @@ READERS = {
     "scripts/import_meeting.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "src/daemon.py": {"EXIT_ROOT_UNNAMED"},
     "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
-    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL"},
+    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL", "EXIT_UNMUTABLE"},
 }
 #: Значения — снимок: их читают процессы вне этого репозитория (launchd, CI,
 #: приёмка), и молчаливая перенумерация ломает их без единого красного теста.
 VALUES = {"EXIT_NO_SPEECH": 3, "EXIT_NO_GRAPH": 4, "EXIT_ROOT_UNNAMED": 5, "EXIT_NOTHING_TO_CHECK": 6,
-          "EXIT_PARTIAL": 7}
+          "EXIT_PARTIAL": 7, "EXIT_UNMUTABLE": 8}
 #: Имена — не рукописный список, а всё, что объявил модуль: пятая константа
 #: без снимка значения иначе прошла бы мимо гейта (круг 3 по №339, DS I3).
 NAMES = {n for n in dir(exit_codes) if n.startswith("EXIT_")}
@@ -37,9 +38,12 @@ def test_exit_codes_module_has_no_imports():
     assert {n: getattr(exit_codes, n) for n in NAMES} == VALUES, (
         "новый код или изменённое значение: их читают процессы вне репозитория — внести в VALUES осознанно")
     assert len(set(VALUES.values())) == len(VALUES), "два кода с одним значением снаружи неразличимы"
-    # классификатор знает КАЖДЫЙ код и не путает их между собой
-    assert {exit_codes.outcome(v) for v in VALUES.values()} <= {"nothing", "partial", "fail"}
-    assert exit_codes.outcome(0) == "ok" and exit_codes.outcome(1) == "fail"
+    # классификатор знает КАЖДЫЙ код и не путает их между собой: равенство, а не
+    # подмножество слов — под подмножеством новый код молча читался бы как «fail»
+    # или как чужое слово (№386)
+    assert {v: exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} == {
+        0: "ok", 1: "fail", 3: "fail", 4: "fail", 5: "fail",
+        6: "nothing", 7: "partial", 8: "unmutable"}
 
 
 def _imports_from_exit_codes(tree: ast.AST) -> set[str]:
@@ -96,3 +100,27 @@ def test_the_readers_list_is_the_repository_itself():
         f"исчезли {sorted(set(READERS) - set(найдено))}")
     for rel, имена in найдено.items():
         assert имена == READERS[rel], f"{rel}: импортирует {sorted(имена)}, объявлено {sorted(READERS[rel])}"
+
+
+#: Читатели СЛОВА исхода — ветки shell-`case` по `outcome`. Разбор python-импортов
+#: выше их не видит: ветка, потерянная при ребейзе, тихо отправляла бы новый исход
+#: в `*)`, а опечатка в слове — туда же (DS M3 круга 1 по #630).
+CASE_READERS = ("scripts/preflight.sh", ".github/workflows/ci.yml")
+
+
+def _case_words(text: str) -> set[str]:
+    """Слова веток блока `case "$(… outcome …)" in … esac`."""
+    m = re.search(r'case "\$\([^\n]*outcome[^\n]*\)" in\n(.*?)\n\s*esac', text, re.S)
+    assert m, "блок case по исходу не найден"
+    return set(re.findall(r"^\s*([\w*]+)\)", m.group(1), re.M))
+
+
+def test_every_outcome_word_has_its_branch_in_shell_readers():
+    """Каждое слово `outcome`, кроме `fail`, — своя ветка у каждого shell-читателя;
+    `fail` и всё неизвестное уходит в `*)`, других веток нет."""
+    words = {exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} - {"fail"}
+    for rel in CASE_READERS:
+        ветки = _case_words((ROOT / rel).read_text(encoding="utf-8"))
+        assert words <= ветки, f"{rel}: нет веток для {sorted(words - ветки)}"
+        assert "*" in ветки, f"{rel}: без `*)` провал проверки ушёл бы в тишину"
+        assert ветки - {"*"} <= words, f"{rel}: ветки для несуществующих слов {sorted(ветки - words - {'*'})}"
