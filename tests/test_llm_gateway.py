@@ -783,15 +783,34 @@ def test_models_list_is_read_from_the_tags_reply(monkeypatch):
     assert настоящий(engine) == set()
 
 
+#: Адрес Ollama прогона литералом: `== [engine.base]` сравнивал бы запись заглушки
+#: с тем же свойством, из которого она записана (круг DeepSeek, I2).
+OLLAMA = "http://127.0.0.1:11434"
+
+
 def test_unreachable_ollama_leaves_the_configured_model(ollama_список_моделей):
     """Умолчание прогона: списка нет — модель из конфига, пусть ollama скажет сама."""
-    engine = LLM(CFG)
-    assert engine.resolve_model() == "тест-модель"
-    assert ollama_список_моделей == [engine.base], "список моделей спрашивали один раз и у своего сервера"
+    assert LLM(CFG).resolve_model() == "тест-модель"
+    assert ollama_список_моделей == [OLLAMA], "список моделей спрашивали один раз и у своего сервера"
 
 
 @pytest.mark.ollama_отвечает("тест-мелкая")
 def test_resolve_model_falls_back_to_what_is_downloaded(ollama_список_моделей):
     """Путь «сервер ответил»: основной модели нет — берётся скачанная запасная."""
     assert LLM(CFG).resolve_model() == "тест-мелкая"
-    assert len(ollama_список_моделей) == 1
+    assert ollama_список_моделей == [OLLAMA]
+
+
+def test_a_downed_model_fails_the_stream_at_once(модель_не_отвечает, monkeypatch):
+    """«Сервер лежит» доезжает до стрима отказом, а не «занят, повторить».
+
+    `_open_stream` на `ConnectionError` спит по `BUSY_BACKOFF` до `busy_wait`
+    (30 с у живого контура): заглушка с этим классом ошибки стоила бы тесту
+    полминуты на вызов вместо падения (круг DeepSeek, I4)."""
+    import requests
+    monkeypatch.setattr(llm_mod.time, "sleep",
+                        lambda s: pytest.fail(f"стрим ждал {s} с на лежащем сервере", pytrace=False))
+    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}  # адрес сценария
+    with pytest.raises(requests.RequestException):
+        list(LLM(cfg).stream("вопрос"))
+    assert модель_не_отвечает == ["вопрос"]

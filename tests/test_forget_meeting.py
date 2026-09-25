@@ -36,33 +36,28 @@ import charoite_paths  # noqa: E402
 
 STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
-FORGET = f"{forget.BRAIN}/forget"
+#: Литерал, а не `f"{forget.BRAIN}/forget"`: ожидание из той же константы, что
+#: читает продукт, поехало бы вместе с ней на чужую машину (круг DeepSeek, I1).
+FORGET = "http://127.0.0.1:8100/forget"
 
 
 @pytest.fixture(autouse=True)
-def память(_сеть_закрыта):
+def память(сервер_лежит):
     """Внешняя память (brain :8100) в этих тестах не поднята — записывающим шпионом.
 
     `apply` зовёт `/forget` по каждому ключу плана. Прежде этот запрос ловил
     сторож сети, а его `AssertionError` глотал `except Exception` в
     `brain_forget`: тесты стирания проходили по пути «сервер недоступен», и
     никто не видел, дошло ли стирание до памяти (№376). Шпион отвечает
-    отказом соединения, как лежащий сервер, и помнит, что у него просили.
+    отказом, как лежащий сервер, и помнит, что у него просили.
 
-    Маршрутом сторожа — только `POST …/forget`: любой другой запрос из
-    `apply` (лишний `/remember`, генерация) роняет тест, а не глотается как
-    «память не поднята» (круг 1 по PR №624, Opus I1). Тесты со своим
-    транспортом (`sys.modules["requests"]`) его перекрывают.
+    Маршрутом сторожа — только `POST` на этот адрес: любой другой запрос из
+    `apply` (лишний `/remember`, генерация, `/forget` чужой машины) роняет
+    тест, а не глотается как «память не поднята» (круг 1 по PR №624, Opus I1;
+    круг DeepSeek, I1). Тесты со своим транспортом (`sys.modules["requests"]`)
+    его перекрывают.
     """
-    import requests
-    просили: list[tuple[str, dict]] = []
-
-    def forget_(url, json=None, **kw):
-        просили.append((url, json))
-        raise requests.ConnectionError("память не поднята (шпион теста)")
-
-    _сеть_закрыта[("POST", "/forget")] = forget_
-    return просили
+    return сервер_лежит("POST", FORGET)
 
 
 def _world(tmp: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -737,7 +732,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
 
     monkeypatch.setitem(sys.modules, "requests", FakeRequests)
     assert "Забыто" in forget.brain_forget(STAMP, sent=True, enabled=True, explicit=True)
-    assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
+    assert calls == [(FORGET, {"meeting": STAMP})]
 
     class Down:
         @staticmethod
@@ -1063,7 +1058,7 @@ def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatc
 
     monkeypatch.setitem(sys.modules, "requests", Down)
     msg = forget.brain_forget(STAMP, sent=sent, enabled=False, explicit=explicit)
-    assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})], "стирание идёт и при выключенной записи"
+    assert calls == [(FORGET, {"meeting": STAMP})], "стирание идёт и при выключенной записи"
     assert ("curl" in msg) == sent
     assert (said in msg) if said else msg == ""
 

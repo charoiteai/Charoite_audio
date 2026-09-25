@@ -30,21 +30,16 @@ STAMP = "2026-07-15_1400"
 OTHER = "2026-07-16_1000"
 
 
+FORGET = "http://127.0.0.1:8100/forget"      # литерал, а не из forget.BRAIN (круг DeepSeek, I1)
+
+
 @pytest.fixture
-def память(_сеть_закрыта):
+def память(сервер_лежит):
     """Внешняя память не поднята — записывающим шпионом, а не сторожем сети:
     отказ сторожа глотал `except Exception` в `brain_forget`, и не было видно,
     с каким ключом стирание пошло в память (№376). Маршрут сторожа — только
-    `POST …/forget`, прочие адреса по-прежнему роняют тест."""
-    import requests
-    просили: list[tuple[str, dict]] = []
-
-    def forget_(url, json=None, **kw):
-        просили.append((url, json))
-        raise requests.ConnectionError("память не поднята (шпион теста)")
-
-    _сеть_закрыта[("POST", "/forget")] = forget_
-    return просили
+    `POST` на этот адрес, прочие по-прежнему роняют тест."""
+    return сервер_лежит("POST", FORGET)
 
 
 def _world(tmp: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -97,7 +92,7 @@ def test_забвение_идемпотентно_после_переимено
     _rename(graph, root / "transcripts", "Тема")
     forget.apply(forget.plan(STAMP, root, graph), yes=True)
     # переименование меняет тему, а не ключ: память стирается прежним штампом
-    assert память == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
+    assert память == [(FORGET, {"meeting": STAMP})]
 
     second = forget.plan(STAMP, root, graph)
     assert not second.delete, "повторный forget нашёл что удалять: " + \
