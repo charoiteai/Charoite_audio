@@ -220,7 +220,10 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
 - **MCP 服务器**（src/mcp_server.py）把档案与进行中的会议作为 Claude Code
   的工具暴露出去。它同时支持 `mcp` 包的两个分支：2.0 移动了类
   （`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`），而 pyproject
-  两者都允许——安装不应悄悄产出一个在导入时就崩溃的服务器。
+  两者都允许——安装不应悄悄产出一个在导入时就崩溃的服务器。数据根目录在每次
+  调用工具时询问，绝不根据代码所在位置猜测：未设置 `CHAROITE_ROOT` 注册的服务器
+  仍能启动，但每个工具都不执行工作，而是以拒绝加注册方法（`_recipe()`）作答——
+  MCP 客户端不会显示崩溃服务器的 stderr。
 
 ## 会议如何挺过崩溃
 

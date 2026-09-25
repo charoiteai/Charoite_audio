@@ -443,6 +443,10 @@ def test_no_other_place_starts_claude():
     # ночных шагов, которые зовут зонд после privacy.cloud_enrich_enabled.
     known.add("cloud.py:probe_claude")
     known.add("cloud.py:claude_bin_checked")
+    # Рецепт регистрации MCP-сервера (№336): `claude mcp add …` — текст,
+    # который владелец копирует в свой терминал; сервер его не запускает и
+    # процессов не порождает, в сеть ничего не уходит.
+    known.add("mcp_server.py:_registration")
     found = set()
     resolved = set()
     for root in (SRC, SRC.parent / "scripts"):
