@@ -884,3 +884,14 @@ def test_the_due_field_tells_two_otherwise_equal_items_apart_on_withdrawal():
     dropped.clear()
     text, moved = rb.withdraw_from_minutes(minutes, [("**Участник А** — позвонить", "не звучало")], dropped=dropped)
     assert moved == 0 and text == minutes and "подходит к 2" in dropped[0], dropped
+    # пункт без срока и тот же пункт со сроком: снятие без срока — дословный пункт без поля,
+    # как на main. Совпадение пустых полей — не догадка: пересказ ровно такой строки
+    # (облачная голова, круг 2 по PR #621: отклонено как смена политики, закреплено тестом)
+    pair = ("# Минутки\n## Поручения\n- [ ] **Участник А** — позвонить\n"
+            "- [ ] **Участник А** — позвонить 📅 2026-10-01\n\n## Риски\n- нет\n")
+    dropped.clear()
+    text, moved = rb.withdraw_from_minutes(pair, [("**Участник А** — позвонить", "не звучало")], dropped=dropped)
+    kept = text.split("## Снято")[0].split("\n")
+    assert moved == 1 and dropped == [], dropped
+    assert "- [ ] **Участник А** — позвонить 📅 2026-10-01" in kept
+    assert "- [ ] **Участник А** — позвонить" not in kept

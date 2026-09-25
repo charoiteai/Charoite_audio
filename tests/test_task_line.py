@@ -530,9 +530,12 @@ def test_every_form_in_the_shared_table(row):
     if row["status"] is None:
         assert rec is None
         return
-    assert rec.status == row["status"] and rec.box == row["box"]
-    assert rec.assignee == row["assignee"] and rec.text == row["text"] and rec.control == row["control"]
-    assert rec.fields == {k: datetime.date.fromisoformat(v) for k, v in row["fields"].items()}
+    # колонки записи — из полей самого класса: новое поле без колонки в таблице — KeyError
+    # здесь, а не порт на Swift или Kotlin, который его не проверяет. Маркер и отступ
+    # колонками не были, и мутант маркера таблица не видела (DeepSeek M2 круга 2 по PR #621)
+    expected = {f.name: row[f.name] for f in dataclasses.fields(task_line.TaskLine)}
+    expected["fields"] = {k: datetime.date.fromisoformat(v) for k, v in row["fields"].items()}
+    assert dataclasses.asdict(rec) == expected
     assert task_line.render(rec) == row["render"]
 
 
@@ -563,7 +566,12 @@ def test_canonical_and_render_agree_on_one_canonical_form(row):
     # колонка canonical таблицы расходилась с выводом (DeepSeek C1 круга 1 по PR #621)
     line = row["line"]
     rec = task_line.parse(line)
-    assert task_line.is_canonical(line) == (task_line.canonical(line) == line)
+    # предусловие законов: у пункта таблицы есть префикс с ящиком, и ветка canonical
+    # «без ящика — как есть» для него недостижима. Прямое «каноничная ⇒ та же строка»
+    # повторяло ранний возврат canonical и покраснеть не могло (DeepSeek M3 круга 2)
+    assert task_line._PREFIX.match(line)
+    if not task_line.is_canonical(line):
+        assert task_line.canonical(line) != line, "неканоничная строка обязана переписаться"
     assert task_line.canonical(line) == task_line.render(rec)
     if task_line.is_canonical(line):
         assert task_line.render(rec) == line

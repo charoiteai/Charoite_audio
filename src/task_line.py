@@ -164,10 +164,12 @@ _CANON_TAIL = re.compile("(?:" + _CONTROL_TAIL.pattern.removeprefix(r"(?<=\S)").
 _KIND = {sign: kind for kind, sign in FIELDS.items()}
 # Разбор: отступ, маркер, ящик, тело. Тот же префикс, что у _STATE и _PREFIX.
 _LINE = re.compile(r"^(?P<indent>\s*)(?:(?P<marker>" + MARKER + r")\s*)?\[(?P<box>[^\]])\]\s*(?P<body>.*)$")
-# Исполнитель — жирное в начале тела, за которым один пробел и что-то ещё, или конец.
+# Исполнитель — жирное в начале тела, за которым пробел или таб (разделитель), или конец.
 # «**Коля**: …» сюда не попадает и остаётся текстом целиком: иначе render вставил бы
-# пробел перед двоеточием. Пробелы сверх одного остаются в тексте — render их вернёт.
-_ASSIGNEE = re.compile(r"^\*\*(?P<name>[^*]+)\*\*(?: (?=.)|$)")
+# пробел перед двоеточием. Разделитель — в записи (sep): «**Б** » в конце строки и
+# «**Б**\tтекст» render возвращает дословно, а исполнитель у них есть (облачная
+# голова, круг 2 по PR #621). Пробелы сверх одного остаются в тексте.
+_ASSIGNEE = re.compile(r"^\*\*(?P<name>[^*]+)\*\*(?P<sep>[ \t]|$)")
 # Начало строки, которое ключ срезает: маркер и ящик, если они есть.
 _HEAD = re.compile(r"^\s*(?:" + MARKER + r"\s*)?(?:" + BOX + r"\s*)?")
 
@@ -213,8 +215,9 @@ class TaskLine:
     """Пункт поручения, разобранный на части. marker — знак списка; с пробелом за ним
     («- », «* »), если префикс строки уже каноничный «- [c] »: только тогда render
     сохраняет «* » и пробел за ящиком пустого пункта.
-    status — как у status(); text — дословно, со всеми пробелами, кроме одного после
-    исполнителя; fields — {"due" | "done" | "cancelled": дата}; control — пометка
+    status — как у status(); text — дословно, со всеми пробелами, кроме разделителя после
+    исполнителя; sep — сам разделитель: пробел, таб или "" (исполнитель в конце тела, или
+    исполнителя нет); fields — {"due" | "done" | "cancelled": дата}; control — пометка
     контроля «_(снято …)_» из хвоста, без окружающих пробелов, или None."""
     indent: str
     marker: str
@@ -224,13 +227,17 @@ class TaskLine:
     text: str
     fields: dict[str, datetime.date] = field(default_factory=dict)
     control: str | None = None
+    sep: str = ""
 
 
-def _parts(body: str) -> tuple[str | None, str, str | None, dict[str, datetime.date]]:
-    """(исполнитель, текст, пометка контроля, поля) тела — одна грамматика на parse и key."""
+def _parts(body: str) -> tuple[str | None, str, str, str | None, dict[str, datetime.date]]:
+    """(исполнитель, разделитель, текст, пометка контроля, поля) тела — одна грамматика на
+    parse и key."""
     head, control, fields = _tail(body)
     who = _ASSIGNEE.match(head)
-    return (who.group("name") if who else None), (head[who.end():] if who else head), control, fields
+    if not who:
+        return None, "", head, control, fields
+    return who.group("name"), who.group("sep"), head[who.end():], control, fields
 
 
 def parse(line: str) -> TaskLine | None:
@@ -241,9 +248,9 @@ def parse(line: str) -> TaskLine | None:
     # у каноничного префикса тело — дословно после «] »: render вернёт и лишние пробелы
     canon = _CANON_LINE.match(line)
     marker = canon.group().lstrip()[0] + " " * canon.group().endswith(" ") if canon else m.group("marker") or ""
-    who, text, control, fields = _parts(line[canon.end():] if canon else m.group("body"))
+    who, sep, text, control, fields = _parts(line[canon.end():] if canon else m.group("body"))
     return TaskLine(indent=m.group("indent"), marker=marker, box=m.group("box"), status=status(line),
-                    assignee=who, text=text, fields=fields, control=control)
+                    assignee=who, text=text, fields=fields, control=control, sep=sep)
 
 
 def render(rec: TaskLine) -> str:
@@ -251,8 +258,9 @@ def render(rec: TaskLine) -> str:
     он у строки уже был), жирный исполнитель, текст, пометка контроля, поля в порядке
     плагина. render(parse(x)) == x для строки в каноничной форме, для прочих строк с
     ящиком render(parse(x)) == canonical(x)."""
-    parts = [f"**{rec.assignee}**"] if rec.assignee else []
-    parts += [p for p in (rec.text, rec.control) if p]
+    # исполнитель, его разделитель и текст — одна часть: разделитель записи, а не пробел render
+    head = (f"**{rec.assignee}**{rec.sep}" if rec.assignee else "") + rec.text
+    parts = [p for p in (head, rec.control) if p]
     parts += [f"{sign} {rec.fields[kind].isoformat()}" for kind, sign in FIELDS.items() if kind in rec.fields]
     marker = rec.marker if rec.marker == "* " else "- "
     # пустой пункт «- [ ] » — пробел за ящиком, если он был у каноничного префикса
@@ -268,10 +276,14 @@ def key(line: str) -> str:
 
     Префикс порчи «- [ ] [x] …» снимается целиком, по её же подписи _MANGLED: иначе «x»
     второго ящика оставалось в ключе (DeepSeek I2 круга 1 по PR #621). Пометка контроля
-    не в хвосте остаётся текстом записи, а из ключа уходит, как и раньше."""
+    не в хвосте остаётся текстом записи, а из ключа уходит, как и раньше.
+
+    Пункт без слов («- [ ] 📅 2026-10-01») — пустой ключ: личности у него нет, и мост его
+    не сравнивает и не снимает. Считать его пунктом по разбору значило бы, что пустой ключ
+    совпадает с любым другим пустым (DeepSeek M1 круга 2 по PR #621 — отклонено)."""
     line = CONTROL_MARK.sub(" ", line)       # первой, как было: пометка где угодно — не слова дела
     head = _MANGLED.match(line) or _HEAD.match(line)
-    who, text, _, _ = _parts(line[head.end():])
+    who, _, text, _, _ = _parts(line[head.end():])
     return " ".join(re.findall(r"[^\W_]+", f"{who or ''} {text}".lower()))
 
 
