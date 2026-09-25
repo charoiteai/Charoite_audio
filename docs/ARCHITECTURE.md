@@ -629,7 +629,11 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   meeting as Claude Code tools. It supports both branches of the `mcp`
   package: 2.0 moved the class (`mcp.server.fastmcp.FastMCP` →
   `mcp.server.MCPServer`) and pyproject allows either — an install must
-  not silently produce a server that dies on import.
+  not silently produce a server that dies on import. The data root is
+  asked for on every tool call and is never guessed from where the code
+  lives: a server registered without `CHAROITE_ROOT` still starts, but each
+  tool answers with a refusal and the registration recipe (`_recipe()`)
+  instead of working — an MCP client does not show a dying server's stderr.
 
 ## Surviving a crash
 

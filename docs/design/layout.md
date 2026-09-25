@@ -65,8 +65,7 @@
 Нигде не хранится и ничего не останавливает: долг снимает карточка, карта его только показывает.
 
 - №322 — 3: ребро `audio` → `meeting_stamp`; ребро `channel_labels` → `speaker_names`; ребро `diarize` → `llm`
-- №336 — 1: вход `src/mcp_server.py` без пробы
-- №364 — 8: вход `app/make_app.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы
+- №364 — 9: вход `app/make_app.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы; вход `src/mcp_server.py` без пробы
 
 ## Точки входа — исполняемые файлы (кто зовёт из кода)
 
@@ -116,7 +115,7 @@
 - `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; проба refuse
 - `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py; проба refuse
 - `src/main.py` ← scripts/doctor.py; проба refuse
-- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: голый запуск ждёт stdin и не завершается; корень называет догадкой вслух, пока нет отказа с рецептом перерегистрации; снимет №336
+- `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: проба не умеет закрыть ему ввод; без CHAROITE_ROOT отказ приходит ответом инструмента с рецептом, stderr клиент MCP не показывает; снимет №364 (проба вместо none)
 - `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; проба refuse
 - `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; проба refuse
 - `src/retro_fill.py` ← scripts/import_meeting.py; проба help
