@@ -380,7 +380,7 @@ adopt / rebuild），在策略旁只有一个翻译器将其映射为策略—�
 
 ## 层边界（docs/design/layout.json）
 
-`src/` 是 64 个模块的平铺文件夹，其中的层（core → llm → graph / cloud / audio → meeting → app）按导入事实存在，
+`src/` 是 64 个模块的平铺文件夹，其中的层（base → runtime → llm / cloud / audio → meeting → app，graph 只依赖 base，使图谱搜索可以脱离应用环境安装——№365）按导入事实存在，
 但在 №320 之前除了作者的记忆和一次性测量，没有任何东西约束它们。移动文件时断裂的不是一处而是三处：导入、
 谁通过路径启动谁（应用的四个文件提到 `src/daemon.py`，其中包括启动本身和「代码是否内嵌」的检查；`code_root()` 从自身位置推导代码根）、以及文件所在位置。
 因此唯一的真相来源是机器可读的布局 `docs/design/layout.json`：模块 → 层的表、箭头方向、仍指向上层的边的

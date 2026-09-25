@@ -85,6 +85,56 @@ which files are entry points, and which modules may derive the data root
 themselves. `docs/design/layout.md` is a generated map of the same facts — it is
 never edited by hand.
 
+The bottom of the stack is split in two. **base** holds pure helpers that know
+nothing about the machine they run on (`frontmatter`, `redirects`, `safe_write`,
+`model_seam`, `exit_codes`, `media_meta`, `vocabulary`, `file_locks`,
+`task_line`); **runtime** holds the application's environment — data and code
+roots, config, the live gate, privacy, the interpreter recipe (`charoite_paths`,
+`config_loader`, `live_gate`, `privacy`, `deps`). The runtime layer is not
+named in the guard: it is whichever layer holds the roots canon
+(`src/charoite_paths.py`). The **graph** layer may import only base, so the
+graph search can be installed without the app; `graphs`, the door that
+assembles the cache directory and the night window from the environment, lives
+in **meeting**. llm, cloud and audio see base and runtime; meeting and app see
+everything below them.
+
+**The environment gate.** A module of a layer that `allowed` does not give the
+runtime layer (today: base and graph) has no edge into runtime — `allowed_edges`
+cannot excuse one — and none of the environment shapes of `ROOT_SHAPES` with
+scope `layer`: any environment access (`os.environ`, `getenv`, `expandvars`,
+`tempfile` without `dir=`, which reads `TMPDIR`), `Path.home()` / `expanduser`,
+`__file__` (and `__spec__`, `inspect.getfile`), any touch of `sys.path` at
+import (`site.addsitedir` included), a dynamic import. A name is resolved
+through the module's imports (`import sys as s`, `from importlib import
+import_module as im`), and any mention counts, not only a call
+(`loader = importlib.import_module`); `tempfile` is judged at the call. Matching
+by name segment is conservative on purpose: a namesake such as `self.home` is a
+reason to rename. `root_exemptions` cannot excuse these shapes — the artifact is
+rejected at load — and runtime reached through a neighbour (graph → an
+`allowed_edges` debt → runtime) is as red as a direct edge. The tables of this
+grammar are pinned by an approved copy in `tests/test_import_boundaries.py`.
+It is a grammar, not every possible way, like the root rule's `_env_reads`:
+binding by assignment (`S = sys`), `getattr`, `exec` and implicit readers other
+than `tempfile` (`getpass.getuser`, `shutil.which`) are not recognised. What the
+grammar cannot see, the package probe below sees by behaviour. The fix is
+derived from the same `allowed`: the path comes in as a parameter, and the
+caller from a layer that sees runtime assembles it — the way
+`graphs.open_search` does — never "go to the roots canon". The graph package is
+the import closure of one declared entry, `package_entry` in `layout.json`
+(`graph_search`), not "all of base plus graph"; `tests/test_entry_points_contract.py`
+copies that closure into a temporary directory and runs a search over the demo
+graph in a separate process with `HOME`, `CHAROITE_ROOT`, `SUFLER_GRAPH_DIR`,
+`CHAROITE_GRAPH_DIR` and `TMPDIR` pointing into a trap and an audit hook that
+fails on reading the trap or writing outside `data_dir`. A deterministic fake
+embedder makes the package write its vector cache and read it back, so the
+write path is exercised, not only the lexical search. After the run the probe
+compares `sys.modules` and `sys.path` with the state before the import, so a
+dependency leak or a change to the import path is caught in any spelling. The probe's self-check
+builds one leaky package per element of the probe's own tables — each poisoned
+variable, each file-system mutation event, each variable the isolation drops —
+so a new element without its case turns the test red; the tables themselves
+are pinned by an approved copy from the task, so shrinking one is red too.
+
 If a PR turns that check red, the message names the fix. The usual cases:
 
 | Message | What it means |
@@ -94,6 +144,8 @@ If a PR turns that check red, the message names the fix. The usual cases:
 | field X is not declared in `_SCHEMA` | the artifact's fields are declared in code, each with a class — `measured`, `seed` or `decision`; add the declaration (and its snapshot `APPROVED_FIELDS` in `tests/test_import_boundaries.py`) instead of writing the key into the JSON |
 | file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
 | file remembers the canon's answer at import | ask on call (`def _root(): return resolve_root(__file__)`), don't freeze it in a module constant or a class field — the value would be taken before the entry point names the root |
+| edge into the environment layer / module of layer X touches the environment | layer X has no environment: pass the path or setting in as a parameter and assemble it in a door on a layer that sees runtime (like `graphs.open_search`); `allowed_edges` cannot excuse it and `root_exemptions` refuses these shapes at load |
+| package X pulls module Y | the closure of `package_entry` reached a layer with the environment — cut the import, the package must install without the app |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
 
 ```bash
