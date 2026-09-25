@@ -2,14 +2,20 @@
 
 Инструменты читают файлы transcripts/ (пишутся атомарно) и Ollama —
 работают независимо от того, запущен ли демон из UI.
-Запуск (регистрируется через `claude mcp add`), пути — от корня репозитория:
-  .venv/bin/python src/mcp_server.py
+Запуск, пути — от корня репозитория:
+  CHAROITE_ROOT=/путь/к/данным .venv/bin/python src/mcp_server.py
+Команду регистрации в клиенте MCP и блок для его конфига даёт `_recipe()` —
+тот же текст приходит владельцу в отказе инструмента, когда корень не назван.
 """
 from __future__ import annotations
 
+import functools
+import json
 import os
 import pathlib
+import shlex
 import subprocess
+import sys
 
 import requests
 import action_items
@@ -31,7 +37,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
-from charoite_paths import code_root, harden_umask, resolve_root
+from charoite_paths import RootNotNamed, code_root, harden_umask, require_data_root
 
 
 def _root() -> pathlib.Path:
@@ -41,8 +47,16 @@ def _root() -> pathlib.Path:
     входа успевала назвать корень: половина процесса жила в названном корне,
     половина — в выведенном из положения файла, и расхождение было немым
     (замер 21.09, №329).
+
+    Спрашиваем `require_data_root`, а не `resolve_root`: третий ответ
+    `resolve_root` — корень КОДА, выведенный из положения файла, и клиент MCP,
+    зарегистрировавший сервер без `CHAROITE_ROOT`, молча работал бы по
+    догадке. Без названного корня — `RootNotNamed` этого вызова; в ответ
+    инструмента его превращает `_tool` (№336).
     """
-    return resolve_root(__file__)
+    return require_data_root(__file__)
+
+
 CODE = code_root(__file__)
 
 
@@ -114,6 +128,65 @@ def _client() -> LLM:
 mcp = FastMCP("sufler")
 
 
+#: Плейсхолдер корня данных в рецепте — тот же, что в шапке модуля и в отказе канона.
+DATA_PLACEHOLDER = "/путь/к/данным"
+
+
+def _registration() -> tuple[list[str], dict]:
+    """Регистрация сервера одной записью: команда клиента и блок его конфига.
+
+    Обе половины рецепта собираются из одних и тех же частей, а команда — через
+    `shlex.join`, а не склейкой строк: путь к интерпретатору или к серверу с
+    пробелом (`My Projects`) иначе ломал вставку в терминал, а команда, в которой
+    выпал `-e`, выглядела бы целой (DS C1/I1 круга 1 по PR №628).
+
+    Путь к коду сервер знает сам (`CODE` — корень кода от `__file__` через
+    канон, интерпретатор — этого процесса), а путь к данным — нет: его знает
+    только владелец, поэтому в рецепте плейсхолдер, а не догадка.
+    """
+    сервер = str(CODE / "src" / "mcp_server.py")
+    env = {"CHAROITE_ROOT": DATA_PLACEHOLDER}
+    argv = ["claude", "mcp", "add", "sufler",
+            *(часть for ключ, значение in env.items() for часть in ("-e", f"{ключ}={значение}")),
+            "--", sys.executable, сервер]
+    блок = {"mcpServers": {"sufler": {"command": sys.executable, "args": [сервер], "env": env}}}
+    return argv, блок
+
+
+def _recipe() -> str:
+    """Как зарегистрировать сервер с корнем данных — одно место для шапки и отказа."""
+    argv, блок = _registration()
+    return (
+        f"Зарегистрируйте сервер заново, назвав корень данных (вместо {DATA_PLACEHOLDER}):\n"
+        f"  {shlex.join(argv)}\n"
+        "Другим клиентам MCP — блок в их конфиг:\n"
+        + json.dumps(блок, ensure_ascii=False, indent=2))
+
+
+def _tool(fn):
+    """Регистратор инструментов: без корня данных — отказ с рецептом, а не работа.
+
+    Отказ приходит ОТВЕТОМ инструмента, а не падением процесса: клиент MCP
+    stderr упавшего сервера владельцу не показывает, и дверь
+    `name_data_root_or_exit` (stderr и код выхода) осталась бы невидимой.
+    Корень спрашивается на каждом вызове — снимка на импорте нет (№329), и
+    отказ случается раньше тела: `sufler_update_graph` без корня не запускает
+    ребёнка, которому иначе досталась бы догадка (№336).
+
+    `functools.wraps` обязателен: схему параметров MCP строит по сигнатуре, и
+    без него `max_chars` у `sufler_live_transcript` превратился бы в
+    `*args, **kwargs`.
+    """
+    @functools.wraps(fn)
+    def с_корнем(*args, **kwargs):
+        try:
+            _root()
+        except RootNotNamed as отказ:
+            return f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}"
+        return fn(*args, **kwargs)
+    return mcp.tool()(с_корнем)
+
+
 # Производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться
 # «последней». Список НЕ свой: формат хвостов живёт в meeting_stamp, и этот
 # кортеж уже отставал от него (не знал _live/_debrief/_спикеры — «последней
@@ -136,7 +209,7 @@ def _latest(pattern: str = "*.md") -> pathlib.Path | None:
 GRAPH_UPDATE_TIMEOUT = 20 * 60   # худший ensure_alive при SLOW ≈ 10 мин до первого куска разбора (GLM M5)
 
 
-@mcp.tool()
+@_tool
 def sufler_status() -> str:
     """Статус суфлёра: идёт ли встреча, какой файл стенограммы, размер."""
     # только процесс python с этим скриптом: голый «src/daemon.py» совпадал с редактором,
@@ -152,7 +225,7 @@ def sufler_status() -> str:
     )
 
 
-@mcp.tool()
+@_tool
 def sufler_live_transcript(max_chars: int = 6000) -> str:
     """Живая стенограмма текущей/последней встречи (хвост, реплики по спикерам)."""
     f = _latest()
@@ -166,7 +239,7 @@ def sufler_live_transcript(max_chars: int = 6000) -> str:
     return f"[{f.name}]\n" + (body[-max_chars:] if len(body) > max_chars else body)
 
 
-@mcp.tool()
+@_tool
 def sufler_notes() -> str:
     """Ко-мышление встречи: 📌 контрольные точки, 💎 ценные факты, 💭 мысли модели."""
     f = _latest()
@@ -178,7 +251,7 @@ def sufler_notes() -> str:
     return text.split(f"## {transcript.NOTES_TITLE}", 1)[1].strip()
 
 
-@mcp.tool()
+@_tool
 def sufler_make_minutes() -> str:
     """Сгенерировать минутки последней встречи локальной моделью и сохранить файлом."""
     f = _latest()
@@ -264,7 +337,7 @@ def sufler_make_minutes() -> str:
     return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
 
 
-@mcp.tool()
+@_tool
 def sufler_hints() -> str:
     """Сохранённые подсказки последней встречи (авто и ручные)."""
     f = _latest()
@@ -274,14 +347,12 @@ def sufler_hints() -> str:
     return h.read_text(encoding="utf-8")[-4000:] if h.exists() else "Подсказок пока нет."
 
 
-@mcp.tool()
+@_tool
 def sufler_update_graph() -> str:
     """Обновить Obsidian-граф по последней встрече (сущности, связи, решения)."""
-    import sys as _sys
-
     try:
         r = subprocess.run(
-            [_sys.executable, str(CODE / "src" / "graph_updater.py")],
+            [sys.executable, str(CODE / "src" / "graph_updater.py")],
             capture_output=True, text=True, timeout=GRAPH_UPDATE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -299,11 +370,4 @@ if __name__ == "__main__":
     # Здесь, а не на импорте: модуль импортируют тесты, umask — состояние
     # процесса, и сайд-эффект на import ронял чужие проверки прав.
     harden_umask()
-    # Корень называется до первого ребёнка: обновление графа идёт процессом,
-    # и без названного корня он после №340 откажет. Здесь догадка, названная
-    # вслух, а не отказ: клиент MCP настраивается вне репозитория, и отказ без
-    # готового рецепта перерегистрации оставил бы владельца без графа — это
-    # отдельная карточка №336. Канон публикует корень детям.
-    from charoite_paths import require_data_root
-    require_data_root(__file__, guess_from_code=True)
     mcp.run()
