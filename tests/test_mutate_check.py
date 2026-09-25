@@ -8,6 +8,7 @@
 комментарии и пустые места.
 """
 import ast
+import collections
 import os
 import pathlib
 import shutil
@@ -26,7 +27,7 @@ import mutate_check as mc  # noqa: E402
 def _mutate(tmp_path: pathlib.Path, code: str, lines: set[int]):
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
-    return mc.mutations_for(f, lines)
+    return mc.scan(f, lines).mutations
 
 
 def test_конец_диапазона_а_не_текущая_ветка():
@@ -74,7 +75,7 @@ def test_мутация_реально_меняет_код(tmp_path):
     code = "def f(x):\n    return x > 5\n"
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
-    mut = next(m for m in mc.mutations_for(f, {2}) if "Gt" in m.what)
+    mut = next(m for m in mc.scan(f, {2}).mutations if "Gt" in m.what)
 
     tree = ast.parse(code)
     assert mut.apply(tree), "мутация не нашла свой узел"
@@ -216,7 +217,7 @@ def test_меняется_только_мутированный_узел(tmp_pat
             '    return x > 5  # хвостовой комментарий\n')
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
-    mut = next(m for m in mc.mutations_for(f, {6}) if "Gt" in m.what)
+    mut = next(m for m in mc.scan(f, {6}).mutations if "Gt" in m.what)
 
     node = mut.apply(ast.parse(code))
     changed = mc.patch_source(code, node)
@@ -265,7 +266,7 @@ def test_кириллица_не_ломает_замену(tmp_path):
             '    return "есть"\n')
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
-    mut = next(m for m in mc.mutations_for(f, {2}) if "NotIn" in m.what)
+    mut = next(m for m in mc.scan(f, {2}).mutations if "NotIn" in m.what)
 
     changed = mc.patch_source(code, mut.apply(ast.parse(code)))
 
@@ -288,7 +289,7 @@ def test_кириллица_перед_узлом_тоже_учтена(tmp_path
             '    порог = 0.9; return res["x"] > порог  # хвост нужен длинный\n')
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
-    mut = next(m for m in mc.mutations_for(f, {2}) if "Gt" in m.what)
+    mut = next(m for m in mc.scan(f, {2}).mutations if "Gt" in m.what)
 
     changed = mc.patch_source(code, mut.apply(ast.parse(code)))
 
@@ -431,23 +432,327 @@ def test_таблица_исхода_прогона():
     for survivors, tested, planned, dropped, skipped, ждём in таблица:
         got = mc.verdict_code(survivors, tested, planned, dropped, skipped)
         assert got == ждём, f"{(survivors, tested, planned, dropped, skipped)}: {got}, ждали {ждём}"
+    # Счётчики плана (№386): пустой план при строках в диапазоне — «мутировать
+    # нечего», а не «строк нет»; непрочитанный файл — неполнота при любом плане.
+    U, T = exit_codes.EXIT_UNMUTABLE, mc.ScanTotals
+    со_счётчиками = [
+        ([],     0,  0,  0, 0, T(files_in=1, lines_in=5, nodes=3), U),
+        # строки есть, кода в них нет (комментарий, константа модуля) — «нечего»,
+        # а не слепое пятно операторов (критика DS круга 1 по #630)
+        ([],     0,  0,  0, 0, T(files_in=1, lines_in=5, lines_constant=2), N),
+        ([],     0,  0,  0, 0, T(), N),
+        ([],     0,  0, 10, 0, T(files_in=1, lines_in=5), P),   # срез важнее «нечего»
+        ([],     0,  0,  0, 0, T(files_in=2, lines_in=5, files_unreadable=2), P),
+        ([],     0,  0,  0, 0, T(files_in=2, lines_in=5, files_unreadable=1), P),
+        ([],    40, 40,  0, 0, T(files_in=2, lines_in=5, files_unreadable=1), P),
+        ([],    40, 40,  0, 0, T(files_in=2, lines_in=5), 0),
+        (["м"], 40, 40,  0, 0, T(files_in=2, lines_in=5, files_unreadable=1), 1),
+    ]
+    for survivors, tested, planned, dropped, skipped, totals, ждём in со_счётчиками:
+        got = mc.verdict_code(survivors, tested, planned, dropped, skipped, totals)
+        assert got == ждём, f"{(survivors, tested, planned, dropped, skipped, totals)}: {got}, ждали {ждём}"
     # и класс исхода согласован с каноном
     assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
     assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
+    assert exit_codes.outcome(mc.verdict_code([], 0, 0, 0, 0, T(files_in=1, lines_in=1, nodes=1))) == "unmutable"
+
+
+def _quiet_machine(monkeypatch):
+    import busy_signals
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
 
 
 def test_есть_изменённые_строки_но_ломать_нечего(monkeypatch, capsys):
-    """Ветка «строки есть, мутировать нечего» (комментарий, докстринг, строковая
-    константа) отвечает «проверять нечего», а не успехом. Мутатор нашёл её
-    непокрытой в CI по №339: прежний тест гонял пустой диапазон и до неё не
-    доходил."""
-    import busy_signals
+    """Ветка «строки есть, мутировать нечего» отвечает своим кодом и печатает
+    счётчики плана: под общим «нечего» 25.09 ноль мутантов от правки условия
+    читался как пустой диапазон (№386). Прежний тест подменял `mutations_for`,
+    а план пустел раньше — на `git show` несуществующей ревизии."""
     import exit_codes
-    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
-    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {REPO / "scripts" / "mutate_check.py": {1}})
-    monkeypatch.setattr(mc, "mutations_for", lambda *a, **k: [])
+    _quiet_machine(monkeypatch)
+    totals = mc.ScanTotals(files_in=2, lines_in=7, lines_constant=3, nodes=11)
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([], totals))
+    assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_UNMUTABLE
+    out = capsys.readouterr().out
+    assert "ничего мутируемого" in out
+    for число in ("файлов 2", "строк 7", "констант модуля 3", "узлов AST 11", "не прочитано файлов 0"):
+        assert число in out, out
+
+
+def test_строки_без_кода_это_nothing_со_счётчиками(monkeypatch, capsys):
+    """Правка одного комментария: строки в диапазоне есть, узлов кода нет —
+    исход «нечего», и сообщение называет, из чего собран пустой план, а не
+    врёт «нет изменённых строк» (критика DS круга 1 по #630)."""
+    import exit_codes
+    _quiet_machine(monkeypatch)
+    totals = mc.ScanTotals(files_in=1, lines_in=2, lines_constant=1, nodes=0)
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
-    assert "ничего мутируемого" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "нет кода" in out and "нет изменённых строк" not in out, out
+    for число in ("файлов 1", "строк 2", "констант модуля 1", "узлов AST 0"):
+        assert число in out, out
+
+
+def test_нет_изменённых_строк_это_nothing(monkeypatch, capsys):
+    import exit_codes
+    _quiet_machine(monkeypatch)
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {})
+    assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
+    assert "нет изменённых строк" in capsys.readouterr().out
+
+
+def test_ни_один_файл_не_прочитался_это_неполнота(monkeypatch, capsys):
+    """Файл, чей `git show` не прочитался, раньше молча выпадал из плана, и
+    пустой план отвечал «нечего» (№386)."""
+    import exit_codes
+    _quiet_machine(monkeypatch)
+    monkeypatch.setattr(mc, "changed_lines",
+                        lambda root, rng: {REPO / "scripts" / "mutate_check.py": {1, 2}})
+    assert mc.main(["mutate_check.py", "--range", "HEAD...нет-такой-ревизии"]) == exit_codes.EXIT_PARTIAL
+    assert "не прочитано файлов 1 из 1" in capsys.readouterr().out
+
+
+_GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+
+
+def _git_repo(tmp_path: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "проба"], cwd=repo, check=True)
+    return repo
+
+
+def test_план_считает_строки_константы_узлы_и_непрочитанное(tmp_path, monkeypatch):
+    """`plan_for` на настоящем git: числа `ScanTotals` и файл, которого нет в
+    ревизии, — в `files_unreadable`, а не молча вне плана."""
+    code = ("ПОРОГ = 5\n"                       # 1: константа модуля
+            "# комментарий\n"                   # 2: ни одного узла
+            "def f(x):\n"                       # 3
+            "    return not x\n"                # 4
+            "ГРАНИЦА = 7\n")                    # 5: константа вне диапазона не в счёт
+    repo = _git_repo(tmp_path, {"src/mod.py": code})
+    призрак = repo / "src" / "ghost.py"          # в рабочем дереве, но не в HEAD
+    призрак.write_text("def g(y):\n    return not y\n", encoding="utf-8")
+    # рабочее дерево разошлось с ревизией: разбирать надо ревизию, а не диск
+    (repo / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
+        repo / "src" / "mod.py": {1, 2, 4}, призрак: {2}})
+
+    plan, totals = mc.plan_for(repo, "HEAD")
+
+    assert totals == mc.ScanTotals(files_in=2, lines_in=4, lines_constant=1, nodes=3,
+                                   files_unreadable=1), totals
+    assert collections.Counter(m.bare() for m in plan) == {"not X → X": 1, "return X → return None": 1}
+    assert {m.path for m in plan} == {repo / "src" / "mod.py"}
+
+
+def test_файл_не_в_utf8_это_неполнота_а_не_трассировка(tmp_path, monkeypatch):
+    """`git show` прочитал байты, а декодировать их нельзя: файл идёт в
+    `files_unreadable`, план остального диапазона собирается (DS M1 круга 1
+    по #630: прежде `UnicodeDecodeError` ронял прогон трассировкой)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n"})
+    (repo / "src" / "latin.py").write_bytes(b"# \xe9t\xe9\ndef g(y):\n    return not y\n")
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "latin-1"], cwd=repo, check=True)
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
+        repo / "src" / "mod.py": {2}, repo / "src" / "latin.py": {3}})
+
+    plan, totals = mc.plan_for(repo, "HEAD")
+
+    assert totals.files_in == 2 and totals.files_unreadable == 1, totals
+    assert {m.path for m in plan} == {repo / "src" / "mod.py"}
+    assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
+
+
+def test_план_берёт_изменённые_строки_из_git(tmp_path):
+    """Сквозь `changed_lines`: две ревизии, изменена одна строка."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return x\n"})
+    (repo / "src" / "mod.py").write_text("def f(x):\n    return not x\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+
+    plan, totals = mc.plan_for(repo, "HEAD~1...HEAD")
+
+    assert totals == mc.ScanTotals(files_in=1, lines_in=1, nodes=3), totals
+    assert sorted(m.bare() for m in plan) == ["not X → X", "return X → return None"]
+
+
+# Таблица конструкций (№386): фрагмент внутри `def f(a, b, x, flag, ok):`, строка 2.
+# Ожидание — мультимножество: число скрыло бы подмену одного оператора другим,
+# множество — потерю второго `not` в строке.
+КОНСТРУКЦИИ = [
+    ("if not x:\n        pass", {"not X → X": 1}),
+    ("if not a or not b:\n        pass", {"not X → X": 2, "Or → And": 1}),
+    ("return not flag", {"not X → X": 1, "return X → return None": 1}),
+    ("g(not x, b)", {"not X → X": 1}),
+    ("return a == (not b)", {"not X → X": 1, "Eq → NotEq": 1, "return X → return None": 1}),
+    ('return f"{not ok}"', {"not X → X": 1, "return X → return None": 1}),
+    ("assert x", {}),
+    ("y = -x", {}),          # UnaryOp без проверки на Not сюда не пройдёт
+    ("yield x", {}),
+]
+
+
+def _fragment(code: str) -> str:
+    return f"def f(a, b, x, flag, ok):\n    {code}\n"
+
+
+@pytest.mark.parametrize("code,ждём", КОНСТРУКЦИИ, ids=[c for c, _ in КОНСТРУКЦИИ])
+def test_таблица_конструкций(tmp_path, code, ждём):
+    muts = _mutate(tmp_path, _fragment(code), {2})
+    assert collections.Counter(m.bare() for m in muts) == collections.Counter(ждём)
+
+
+def _dump_after_apply(m, src: str) -> str:
+    tree = ast.parse(src)
+    m.apply(tree)
+    return ast.dump(tree)
+
+
+@pytest.mark.parametrize("code,оператор,строка", [
+    ("if not x:\n        pass", "not X → X", "    if x:"),
+    ("if not a or not b:\n        pass", "Or → And", "    if not a and (not b):"),
+    ("return a == (not b)", "Eq → NotEq", "    return a != (not b)"),
+    ("return a == (not b)", "return X → return None", "    return"),
+    ("return a + b", "Add → Sub", "    return a - b"),
+    ("return 5", "5 → 0", "    return 0"),
+    ("return True", "True → False", "    return False"),
+])
+def test_каждый_оператор_применяется(tmp_path, code, оператор, строка):
+    """Ожидание — текстом мутанта. Сверка дампа с `_dump_after_apply` была
+    верна по построению: `applied` проверяет ровно её же, и тест держал только
+    «не отказал» (DS M2 круга 1 по #630)."""
+    src = _fragment(code)
+    muts = [m for m in _mutate(tmp_path, src, {2}) if m.bare() == оператор]
+    assert len(muts) == 1, [m.what for m in muts]
+    text, why = mc.applied(muts[0], src)
+    assert text is not None, why
+    assert text.splitlines()[1] == строка, text
+
+
+def test_снятие_not_в_скобках_когда_приоритет_ниже(tmp_path):
+    """`x and not (a or b)` → без скобок `x and a or b` — другое дерево."""
+    src = _fragment("return x and not (a or b)")
+    m = next(m for m in _mutate(tmp_path, src, {2}) if m.bare() == "not X → X")
+    text, why = mc.applied(m, src)
+    assert text is not None, why
+    assert "x and (a or b)" in text, text
+    assert ast.dump(ast.parse(text)) == _dump_after_apply(m, src)
+
+
+def test_близнецы_в_одной_позиции_различимы(tmp_path):
+    """`(a == b) == c`: два `Eq → NotEq`, внешний и внутренний. Локатор по паре
+    «строка, колонка» путал бы их, а описание без отрезка — в отчёте."""
+    src = _fragment("if (a == b) == x:\n        pass")
+    twins = [m for m in _mutate(tmp_path, src, {2}) if m.bare() == "Eq → NotEq"]
+    assert len(twins) == 2 and len({m.what for m in twins}) == 2, [m.what for m in twins]
+    texts = {mc.applied(m, src)[0] for m in twins}
+    assert texts == {src.replace("(a == b) == x", "(a == b) != x"),
+                     src.replace("(a == b) == x", "(a != b) == x")}, texts
+
+
+def test_близнецы_с_общим_началом(tmp_path):
+    """`a + b + x`: внешний и внутренний BinOp начинаются в одной точке —
+    локатор по началу отдавал внешний обоим мутантам."""
+    src = _fragment("return a + b + x")
+    adds = [m for m in _mutate(tmp_path, src, {2}) if m.bare() == "Add → Sub"]
+    texts = {mc.applied(m, src)[0] for m in adds}
+    assert texts == {src.replace("a + b + x", "a + b - x"),
+                     src.replace("a + b + x", "a - b + x")}, texts
+
+
+def test_f_строка_никогда_не_даёт_несошедшийся_текст(tmp_path):
+    """Позиции внутри f-строк точны только с 3.12: ниже `applied` вправе
+    отказать, но не вправе отдать текст, чьё дерево не то."""
+    src = _fragment('return f"{x} и {not ok} при {a + b}"')
+    muts = _mutate(tmp_path, src, {2})
+    assert muts
+    for m in muts:
+        text, why = mc.applied(m, src)
+        if text is None:
+            assert why, m
+            continue
+        assert ast.dump(ast.parse(text)) == _dump_after_apply(m, src), (m.what, text)
+
+
+def test_битый_текст_мутанта_не_применяется(tmp_path, monkeypatch):
+    src = _fragment("if not x:\n        pass")
+    m = _mutate(tmp_path, src, {2})[0]
+    monkeypatch.setattr(mc, "patch_source", lambda s, n: s + "\n!")
+    text, why = mc.applied(m, src)
+    assert text is None and why == "текст мутанта не разбирается"
+
+
+@pytest.mark.parametrize("patched,причина", [
+    (lambda s, n: None, "замена не собралась"),
+    (lambda s, n: s, "замена не изменила текст"),
+], ids=["None", "тот же текст"])
+def test_замена_без_результата_не_применяется(tmp_path, monkeypatch, patched, причина):
+    src = _fragment("if not x:\n        pass")
+    m = _mutate(tmp_path, src, {2})[0]
+    monkeypatch.setattr(mc, "patch_source", patched)
+    assert mc.applied(m, src) == (None, причина)
+
+
+def test_тождественная_мутация_не_применяется(tmp_path):
+    """Мутация, не меняющая дерево, не «применяется» ни в каком виде: попытка в
+    скобках иначе выдавала `(True)` за годного мутанта."""
+    src = _fragment("return True")
+    m = next(x for x in _mutate(tmp_path, src, {2}) if x.bare() == "True → False")
+    assert "return False" in mc.applied(m, src)[0]
+    m.change = mc._swap_const(True)
+    assert mc.applied(m, src) == (None, "мутация не меняет дерево")
+
+
+def test_битый_исходник_и_пропавший_узел(tmp_path):
+    src = _fragment("return a == b")
+    m = next(x for x in _mutate(tmp_path, src, {2}) if x.bare() == "Eq → NotEq")
+    text, why = mc.applied(m, "def f(:\n")
+    assert text is None and why.startswith("исходник не разбирается"), why
+    assert mc.applied(m, _fragment("pass")) == (None, "узел не нашёлся на своём отрезке")
+
+
+def test_на_месте_цели_другой_узел(tmp_path):
+    """Файл поменялся между планом и прогоном: на тех же координатах стоит
+    сравнение с другим операндом. Ломать его — судить не ту мутацию."""
+    muts = _mutate(tmp_path, _fragment("return a == b"), {2})
+    m = next(x for x in muts if x.bare() == "Eq → NotEq")
+    text, why = mc.applied(m, _fragment("return a == x"))
+    assert text is None and why == "на месте узла другой"
+
+
+def test_main_не_засчитывает_битого_мутанта_убитым(tmp_path, monkeypatch, capsys):
+    """Непарсящийся текст мутанта раньше уходил в дерево, прогон падал на
+    `SyntaxError`, и мутант считался «убит» (№386). Прогон тестов здесь честно
+    имитирует это: красный, если файл в дереве не разбирается."""
+    import exit_codes
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    rel = pathlib.Path("scripts") / "mutate_check.py"
+    head = subprocess.run(["git", "show", f"HEAD:{rel.as_posix()}"], cwd=REPO,
+                          capture_output=True, text=True, check=True).stdout
+    mut = next(m for m in mc.scan(REPO / rel, set(range(1, 400)), head).mutations
+               if m.bare() == "not X → X")
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([mut], mc.ScanTotals(files_in=1, lines_in=1)))
+    monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests"])
+
+    def run_tests(cwd, targets, timeout):
+        try:
+            ast.parse((cwd / rel).read_text(encoding="utf-8"))
+        except SyntaxError:
+            return False
+        return True
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    monkeypatch.setattr(mc, "patch_source", lambda s, n: s + "\n!")
+
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force"]) == exit_codes.EXIT_PARTIAL
+    out = capsys.readouterr().out
+    assert "убит" not in out, out
+    assert f"НЕ ПРИМЕНИЛОСЬ {mut} — текст мутанта не разбирается" in out, out
 
 
 def test_исход_main_отдаёт_verdict_code():
