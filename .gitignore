@@ -30,4 +30,7 @@ app-android/.kotlin/
 # сбор тестов в CI. Лежит на диске, в историю не попадает.
 tests/test_questions.py
 backups/
+# Временные миры tempfile.mkdtemp() («tmpXXXXXXXX/»), когда TMPDIR указывает в
+# корень работы: 25.09 44 таких файла уехали в публичный PR (№622).
+/tmp*/
 app-ios/build/

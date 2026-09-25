@@ -15,11 +15,12 @@ import requests
 import action_items
 import transcript
 
+import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
 from config_loader import fingerprint, load_user_or_example
-from llm import LLM, LLMHTTPError
+from llm import LLM, LLMHTTPError, forget_fit
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
@@ -132,8 +133,6 @@ def _latest(pattern: str = "*.md") -> pathlib.Path | None:
     return max(files)[1] if files else None
 
 
-# скрипт — первый не-флаговый аргумент python: «python -m pylint src/daemon.py» не демон (GLM M6)
-DAEMON_PATTERN = r"python[^ ]*( -[^ ]+)* [^ ]*src/daemon\.py($| )"
 GRAPH_UPDATE_TIMEOUT = 20 * 60   # худший ensure_alive при SLOW ≈ 10 мин до первого куска разбора (GLM M5)
 
 
@@ -141,8 +140,8 @@ GRAPH_UPDATE_TIMEOUT = 20 * 60   # худший ensure_alive при SLOW ≈ 10 
 def sufler_status() -> str:
     """Статус суфлёра: идёт ли встреча, какой файл стенограммы, размер."""
     # только процесс python с этим скриптом: голый «src/daemon.py» совпадал с редактором,
-    # в котором открыт файл, и статус врал «работает» (аудит 13.09, GLM M4)
-    running = subprocess.run(["pgrep", "-f", DAEMON_PATTERN], capture_output=True).returncode == 0
+    # в котором открыт файл, и статус врал «работает» (аудит 13.09, GLM M4); шаблон — в live_gate
+    running = bool(live_gate.daemon_process())
     f = _latest()
     if not f:
         return f"Демон: {'работает' if running else 'остановлен'}. Стенограмм нет."
@@ -254,6 +253,9 @@ def sufler_make_minutes() -> str:
         tmp.replace(mpath)
     finally:
         tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
+    # Минутки на диске — повтор уже не нужен, и сводки частей этой встречи из
+    # памяти процесса уходят сразу, не дожидаясь 30 минут (№265, PRIVACY)
+    forget_fit(source.speech)
     # Паспорт производной (№309): машинные минутки без него читались пересборкой
     # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
     # изменились. Хеш источника — тем же объектом, что у пересборки.

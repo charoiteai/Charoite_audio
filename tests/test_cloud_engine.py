@@ -289,3 +289,66 @@ def test_effective_cloud_needs_both_keys():
         {"llm": {"engine": "cloud"}, "sufler": {}}, {}) is False
     assert privacy.cloud_engine_active(
         {"llm": {}, "sufler": {"cloud_engine": True}}, {}) is False
+
+
+def test_digests_from_the_local_reserve_are_not_cached_under_the_cloud_key(tmp_path, monkeypatch):
+    """Шлюз на минуту лёг, сводки частей написала локальная модель. Под ключом
+    облака их класть нельзя: повтор, когда облако уже вернулось, полчаса брал
+    бы из кэша сводки слабой модели вместо облачных (№265)."""
+    client = llm.LLM(_with_key(tmp_path, _cfg()))
+    client.num_ctx = 2000                  # 10 000 знаков — пять частей
+    sse: list = []
+
+    def gateway_down(*_a, **_kw):
+        sse.append(1)
+        yield from ()
+        raise ValueError("Expecting value: line 1 column 1")
+
+    monkeypatch.setattr(client, "_sse", gateway_down)
+    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalStub())
+    speech = "А" * 10_000
+    assert "локальный ответ" in client.fit(speech)
+    assert len(sse) == 5 and not llm._fit_cache, "свёртка запаса не легла в кэш"
+
+    def gateway_up(*_a, **_kw):
+        sse.append(1)
+        yield "облачная сводка"
+
+    monkeypatch.setattr(client, "_sse", gateway_up)
+    assert "облачная сводка" in client.fit(speech), "повтор спросил облако"
+    assert len(sse) == 10
+    client.fit(speech)
+    assert len(sse) == 10, "облачная свёртка — в кэше"
+
+
+def test_digests_from_the_local_reserve_of_complete_are_not_cached_either(tmp_path, monkeypatch):
+    """Флаг запаса ставит и complete(), не только стрим: переведут summary на
+    complete() — локальная сводка всё равно не ляжет под облачный ключ."""
+    client = llm.LLM(_with_key(tmp_path, _cfg()))
+    assert client._fell_back_local is False, "поле объявлено в __init__"
+    client.num_ctx = 2000                  # 10 000 знаков — пять частей
+    monkeypatch.setattr(client, "summary",
+                        lambda part, busy_wait=None: iter([client.complete(part)]))
+    posts: list = []
+
+    def gateway_down(*_a, **_kw):
+        posts.append(1)
+        raise llm.requests.ConnectionError("шлюз недоступен")
+
+    class _LocalComplete:
+        def complete(self, prompt, **_kw):
+            return "локальная сводка"
+
+    monkeypatch.setattr(client, "_post_busy", gateway_down)
+    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalComplete())
+    speech = "А" * 10_000
+    assert "локальная сводка" in client.fit(speech)
+    assert len(posts) == 5 and not llm._fit_cache, "свёртка запаса complete() не легла в кэш"
+
+    monkeypatch.setattr(client, "_post_busy", lambda *_a, **_kw: posts.append(1))
+    monkeypatch.setattr(client, "_checked_body",
+                        lambda _r: {"choices": [{"message": {"content": "облачная сводка"}}]})
+    assert "облачная сводка" in client.fit(speech), "повтор спросил облако"
+    assert len(posts) == 10
+    client.fit(speech)
+    assert len(posts) == 10, "облачная свёртка — в кэше"

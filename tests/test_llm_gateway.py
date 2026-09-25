@@ -13,7 +13,10 @@ mlx-сборку, а Саммари и заметки продолжали зв�
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
+import threading
+import time
 
 import pytest
 
@@ -749,3 +752,392 @@ def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys
     _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
     llm_mod.embed(CFG, ["т"] * 5)
     assert capsys.readouterr().err.count("не по вектору на текст") == 2
+
+
+# ── №265: кэш сводок частей длинной встречи ──────────────────────────────
+
+def _counting_summary(monkeypatch, l, calls: list, text: str = "сводка"):
+    def summary(part, busy_wait=None):
+        calls.append(part)
+        return iter([text])
+    monkeypatch.setattr(l, "summary", summary)
+
+
+def _short_llm(**over) -> LLM:
+    l = LLM(CFG)
+    l.num_ctx = 2000                       # limit = 4000: 10 000 знаков — пять частей по 2000
+    for k, v in over.items():
+        setattr(l, k, v)
+    return l
+
+
+LONG = "А" * 5000 + "Я" * 5000
+
+
+def test_second_fit_of_the_same_speech_does_not_summarise_again(monkeypatch):
+    """Повтор минуток через MCP строит НОВЫЙ LLM: сводки частей берутся из
+    кэша модуля, а не считаются заново."""
+    calls: list = []
+    first = _short_llm()
+    _counting_summary(monkeypatch, first, calls)
+    out = first.fit(LONG)
+    assert len(calls) == 5 and "[Часть 3 из 5]" in out
+    again = _short_llm()
+    _counting_summary(monkeypatch, again, calls)
+    assert again.fit(LONG) == out
+    assert len(calls) == 5, "повтор той же речи не зовёт summary"
+    assert again.fit("Б" * 100) == "Б" * 100, "короткая речь идёт как есть"
+
+
+@pytest.mark.parametrize("change", [{"lang": "en"}, {"small": "другая-модель"}, {"num_ctx": 2001}])
+def test_fit_is_recomputed_when_the_summary_settings_change(monkeypatch, change):
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    other = _short_llm(**change)
+    _counting_summary(monkeypatch, other, calls)
+    other.fit(LONG)
+    assert len(calls) == 10, f"{change}: сводки другой настройки — пересчёт"
+
+
+def test_fit_is_recomputed_when_the_summary_prompt_version_changes(monkeypatch):
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    monkeypatch.setattr(llm_mod, "FIT_PROMPT_VERSION", llm_mod.FIT_PROMPT_VERSION + 1)
+    l.fit(LONG)
+    assert len(calls) == 10
+
+
+def test_fit_with_a_hole_or_head_and_tail_is_not_cached(monkeypatch):
+    """Упавшая или пустая часть — результат с дырой: повтор обязан попробовать
+    снова. «Голова и хвост» — не свёртка, её не кэшируем никогда."""
+    l = _short_llm()
+    calls: list = []
+
+    def one_fails(part, busy_wait=None):
+        calls.append(part)
+        if len(calls) == 1:
+            raise RuntimeError("503 busy")
+        return iter(["сводка"])
+
+    monkeypatch.setattr(l, "summary", one_fails)
+    assert "[Часть 1" not in l.fit(LONG)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 1 из 5]" in l.fit(LONG), "дыру закрыл повтор, а не кэш"
+    assert len(calls) == 10
+
+    other = "Б" * 5000 + "Ю" * 5000
+    _counting_summary(monkeypatch, l, calls, text="")
+    assert "опущена" in l.fit(other)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 1 из 5]" in l.fit(other), "голова и хвост не легли в кэш"
+
+    third = "В" * 5000 + "Э" * 5000
+    empties = iter(["сводка", "", "сводка", "сводка", "сводка"])
+    monkeypatch.setattr(l, "summary", lambda part, busy_wait=None: iter([next(empties)]))
+    assert "[Часть 2" not in l.fit(third)
+    _counting_summary(monkeypatch, l, calls)
+    assert "[Часть 2 из 5]" in l.fit(third), "пустая сводка части — тоже дыра"
+
+
+def test_fit_cache_entry_expires(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    now[0] += llm_mod.FIT_CACHE_TTL - 1
+    l.fit(LONG)
+    assert len(calls) == 5, "до срока — из кэша"
+    now[0] = 1000.0 + llm_mod.FIT_CACHE_TTL
+    l.fit(LONG)
+    assert len(calls) == 10, "срок вышел ровно — пересчёт"
+    assert llm_mod.FIT_CACHE_TTL == 30 * 60
+
+
+def test_fifth_entry_evicts_the_least_recently_used(monkeypatch):
+    assert llm_mod.FIT_CACHE_SIZE == 4
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    speeches = [ch * 10_000 for ch in "АБВГД"]
+    for s in speeches[:4]:
+        l.fit(s)
+    l.fit(speeches[0])                     # прочитанная — самая свежая
+    assert len(calls) == 20
+    l.fit(speeches[4])                     # пятая вытесняет самую давнюю — Б
+    assert len(calls) == 25
+    l.fit(speeches[0])
+    assert len(calls) == 25, "прочитанная недавно осталась"
+    l.fit(speeches[1])
+    assert len(calls) == 30, "самая давняя вытеснена"
+
+
+def test_rewriting_an_entry_makes_it_the_freshest(monkeypatch):
+    """Две одновременные свёртки одной речи пишут ключ дважды: вторая запись
+    — снова самая свежая, а не остаётся на месте первой."""
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: 0.0)
+    for k in ("а", "б", "в"):
+        llm_mod._fit_cache_put((k,), k)
+    llm_mod._fit_cache_put(("а",), "а2")
+    for k in ("г", "д"):
+        llm_mod._fit_cache_put((k,), k)
+    assert llm_mod._fit_cache_get(("а",)) == "а2"
+    assert llm_mod._fit_cache_get(("б",)) is None
+
+
+@pytest.mark.parametrize("before, after", [
+    ({}, {"engine": "mlx-server"}),
+    ({"engine": "mlx-server", "mlx_model": "mlx/одна"}, {"engine": "mlx-server", "mlx_model": "mlx/другая"}),
+    ({"cloud_ready": True, "cloud_model": "облако-1"}, {"cloud_ready": True, "cloud_model": "облако-2"}),
+    ({}, {"base": "http://127.0.0.1:11435"}),
+])
+def test_fit_is_recomputed_when_another_model_would_answer(monkeypatch, before, after):
+    """small — не вся правда о том, кто пишет сводку: mlx-server гонит
+    mlx_model, облако — cloud_model по своему адресу. Сменили движок, модель
+    сервера или адрес — сводки прежней модели не годятся."""
+    calls: list = []
+    l = _short_llm(**before)
+    _counting_summary(monkeypatch, l, calls)
+    l.fit(LONG)
+    other = _short_llm(**after)
+    _counting_summary(monkeypatch, other, calls)
+    other.fit(LONG)
+    assert len(calls) == 10, f"{before} → {after}: пересчёт"
+
+
+def test_daemon_minutes_do_not_leave_digests_in_memory(monkeypatch):
+    """Кэш — для повтора MCP-минуток. Демон живёт днями, и сводки его встреч
+    в памяти держать незачем: PRIVACY обещает только процесс MCP-сервера."""
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+    monkeypatch.setattr(l, "_doc_stream", lambda *a, **kw: iter(["минутки"]))
+    assert "".join(l.minutes(LONG)) == "минутки"
+    assert len(calls) == 5 and not llm_mod._fit_cache
+    l.fit(LONG)
+    assert len(calls) == 10, "минутки демона не наполнили кэш для MCP"
+
+
+def _sweepers() -> list:
+    return [t for t in threading.enumerate()
+            if getattr(t, "function", None) is llm_mod._fit_cache_sweep and t.is_alive()]
+
+
+def _until(cond, deadline: float = 2.0) -> bool:
+    end = time.monotonic() + deadline
+    while not cond():
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+def test_expired_digests_leave_memory_without_another_call(monkeypatch):
+    """«До 30 минут» — это про память, а не только про выдачу: истёкшую
+    запись убирает настоящий таймер, даже если за ней никто не придёт."""
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
+    llm_mod._fit_cache_put(("а",), "сводка")
+    assert llm_mod._fit_sweeper.daemon, "уборщик не держит процесс MCP-сервера на выходе"
+    time.sleep(0.05)                       # несколько тиков: живая запись на месте
+    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None
+    now[0] += llm_mod.FIT_CACHE_TTL
+    assert _until(lambda: not llm_mod._fit_cache and llm_mod._fit_sweeper is None), \
+        "таймер убрал истёкшую сводку и не взвёлся на пустой кэш"
+    assert _until(lambda: not _sweepers())
+
+
+def test_sweeper_wakes_at_the_nearest_deadline_not_a_full_step_later(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    assert llm_mod._fit_sweeper.interval == llm_mod.FIT_CACHE_SWEEP == 60
+    llm_mod._fit_sweeper.cancel()
+    llm_mod._fit_sweeper = None
+    now[0] += llm_mod.FIT_CACHE_TTL - 5
+    llm_mod._fit_cache_put(("б",), "б")
+    assert llm_mod._fit_sweeper.interval == 5, "до срока «а» — 5 с, а не минута"
+
+
+def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
+    """Настоящая гонка: таймер сработал и ждёт замка, а clear и новая запись
+    успели раньше. Проснувшись, он не трогает таймер новой записи — уборщик
+    всегда один, и clear его останавливает."""
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: 1000.0)
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
+    assert _until(lambda: not _sweepers()), "отменённые таймеры прошлых тестов вышли"
+    llm_mod._fit_cache_put(("а",), "а")
+    old = llm_mod._fit_sweeper
+    with llm_mod._fit_cache_lock:
+        # Timer ставит finished только после функции, а она ждёт этот замок:
+        # ждём с запасом больше интервала, пока старый проснётся
+        time.sleep(0.1)
+        llm_mod._fit_cache.clear()         # тело _fit_cache_clear — под тем же замком
+        old.cancel()
+        llm_mod._fit_sweeper = None
+    monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 60.0)   # новая цепочка стоит на месте
+    llm_mod._fit_cache_put(("б",), "б")
+    new = llm_mod._fit_sweeper
+    assert _until(lambda: not old.is_alive())
+    assert llm_mod._fit_sweeper is new and _sweepers() == [new], \
+        "проснувшийся старый таймер не завёл вторую цепочку"
+    llm_mod._fit_cache_sweep()             # и вызов не из таймера-владельца — не в счёт
+    assert llm_mod._fit_sweeper is new and _sweepers() == [new]
+    llm_mod._fit_cache_clear()
+    assert llm_mod._fit_sweeper is None and _until(lambda: not _sweepers())
+
+
+def test_any_access_drops_every_expired_entry(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    now[0] += llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("б",)) is None
+    assert not llm_mod._fit_cache, "чужая истёкшая запись ушла при промахе"
+    llm_mod._fit_cache_put(("в",), "в")
+    now[0] += llm_mod.FIT_CACHE_TTL
+    llm_mod._fit_cache_put(("г",), "г")
+    assert list(llm_mod._fit_cache) == [("г",)], "и при записи"
+
+
+def test_clock_going_back_does_not_extend_an_entry(monkeypatch):
+    """Стенные часы могут уйти назад (перевод, синхронизация): запись из
+    «будущего» не живёт лишние полчаса, а считается истёкшей."""
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
+    llm_mod._fit_cache_put(("а",), "а")
+    now[0] -= 1
+    assert llm_mod._fit_cache_get(("а",)) is None
+
+
+def test_fit_cache_runs_on_wall_clock(monkeypatch):
+    """monotonic на macOS и Linux стоит, пока ноутбук спит: «30 минут»
+    растянулись бы на ночь с закрытой крышкой. Поэтому срок — по стенным
+    часам: ушли вперёд монотонные — запись жива, стенные на TTL — её нет."""
+    wall, mono = [1_000_000.0], [5_000.0]
+    monkeypatch.setattr(time, "time", lambda: wall[0])
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    llm_mod._fit_cache_put(("а",), "сводка")
+    mono[0] += 10 * llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("а",)) == "сводка", "монотонные часы срок не считают"
+    wall[0] += llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("а",)) is None, "стенные часы ушли на срок — записи нет"
+
+
+def test_daemon_fold_does_not_even_hash_the_speech(monkeypatch):
+    """cache=False (минутки демона): ни ключа, ни sha256 речи — кэш демону
+    не нужен, и считать хэш часовой встречи ради ничего незачем."""
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+
+    def no_hash(_t):
+        raise AssertionError("ключ кэша посчитан без кэша")
+
+    monkeypatch.setattr(llm_mod, "_fit_speech_id", no_hash)
+    assert "[Часть 5 из 5]" in l._fit(LONG, cache=False)
+    with pytest.raises(AssertionError, match="ключ кэша"):
+        l._fit(LONG)                       # с кэшем — ключ считается: подмена настоящая
+
+
+def test_forget_fit_drops_every_entry_of_that_speech_only(monkeypatch):
+    """Минутки выданы — сводки этой речи уходят при любой модели и настройке,
+    сводки другой встречи остаются."""
+    calls: list = []
+    for over in ({}, {"lang": "en"}):
+        l = _short_llm(**over)
+        _counting_summary(monkeypatch, l, calls)
+        l.fit(LONG)
+    other = "Б" * 10_000
+    l.fit(other)
+    assert len(llm_mod._fit_cache) == 3
+    llm_mod.forget_fit(LONG)
+    assert [k[0] for k in llm_mod._fit_cache] == [llm_mod._fit_speech_id(other)]
+    llm_mod.forget_fit("речи нет в кэше")  # чужая речь — ничего не трогает
+    assert len(llm_mod._fit_cache) == 1
+
+
+def test_privacy_names_the_cache_limits_the_code_has():
+    """Строка PRIVACY о сводках частей — на трёх языках, с теми же числами,
+    что в коде: поменяли срок или размер кэша — обещание краснеет, а не врёт."""
+    minutes, size = int(llm_mod.FIT_CACHE_TTL // 60), llm_mod.FIT_CACHE_SIZE
+    marks = {"PRIVACY.md": "Part digests of a long meeting",
+             "docs/ru/PRIVACY.md": "Сводки частей длинной встречи",
+             "docs/zh/PRIVACY.md": "长会议的分段摘要"}
+    for doc, mark in marks.items():
+        text = (SRC.parent / doc).read_text(encoding="utf-8")
+        line = next((ln for ln in text.splitlines() if mark in ln), None)
+        assert line, f"{doc}: нет строки о сводках частей"
+        assert sorted(int(n) for n in re.findall(r"\d+", line)) == sorted([minutes, size]), \
+            f"{doc}: числа строки не совпадают с FIT_CACHE_TTL/FIT_CACHE_SIZE"
+
+
+# ------------------------------------------------ список моделей (/api/tags)
+#
+# В прогоне Ollama недоступна заглушкой из conftest (№376): прежде это
+# «доказывал» упавший запрос, отказ которого глотал `except Exception`.
+
+class _Tags:
+    """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса."""
+
+    def __init__(self, payload=None, error: Exception | None = None):
+        self.payload, self.error, self.urls = payload, error, []
+
+    def get(self, url, timeout=None, **kw):
+        self.urls.append((url, timeout))
+        if self.error is not None:
+            raise self.error
+        return _Resp(self.payload)
+
+
+def test_models_list_is_read_from_the_tags_reply(monkeypatch):
+    """Настоящий `_models_available` — с подменённым транспортом: разбор ответа
+    и отказ без сервера — пустое множество, а не исключение."""
+    настоящий = LLM._models_available.настоящий
+    engine = LLM(CFG)
+    tags = _Tags({"models": [{"name": "тест-модель"}, {"name": "тест-мелкая"}]})
+    monkeypatch.setattr(llm_mod, "requests", tags)
+    assert настоящий(engine) == {"тест-модель", "тест-мелкая"}
+    assert tags.urls == [(f"{engine.base}/api/tags", 3)]
+
+    monkeypatch.setattr(llm_mod, "requests", _Tags(error=ConnectionError("refused")))
+    assert настоящий(engine) == set()
+
+
+#: Адрес Ollama прогона литералом: `== [engine.base]` сравнивал бы запись заглушки
+#: с тем же свойством, из которого она записана (круг DeepSeek, I2).
+OLLAMA = "http://127.0.0.1:11434"
+
+
+def test_unreachable_ollama_leaves_the_configured_model(ollama_список_моделей):
+    """Умолчание прогона: списка нет — модель из конфига, пусть ollama скажет сама."""
+    assert LLM(CFG).resolve_model() == "тест-модель"
+    assert ollama_список_моделей == [OLLAMA], "список моделей спрашивали один раз и у своего сервера"
+
+
+@pytest.mark.ollama_отвечает("тест-мелкая")
+def test_resolve_model_falls_back_to_what_is_downloaded(ollama_список_моделей):
+    """Путь «сервер ответил»: основной модели нет — берётся скачанная запасная."""
+    assert LLM(CFG).resolve_model() == "тест-мелкая"
+    assert ollama_список_моделей == [OLLAMA]
+
+
+def test_a_downed_model_fails_the_stream_at_once(модель_не_отвечает, monkeypatch):
+    """«Сервер лежит» доезжает до стрима отказом, а не «занят, повторить».
+
+    `_open_stream` на `ConnectionError` спит по `BUSY_BACKOFF` до `busy_wait`
+    (30 с у живого контура): заглушка с этим классом ошибки стоила бы тесту
+    полминуты на вызов вместо падения (круг DeepSeek, I4)."""
+    import requests
+    monkeypatch.setattr(llm_mod.time, "sleep",
+                        lambda s: pytest.fail(f"стрим ждал {s} с на лежащем сервере", pytrace=False))
+    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}  # адрес сценария
+    with pytest.raises(requests.RequestException):
+        list(LLM(cfg).stream("вопрос"))
+    assert модель_не_отвечает == ["вопрос"]
