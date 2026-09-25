@@ -1322,8 +1322,8 @@ def test_seconds_target_without_a_node_names_the_minute_folder_instead_of_guessi
     assert folder not in plan.delete and mark not in plan.delete
     assert plan.brain_keys == [SECONDS]
     assert [b for b in plan.beyond_reach if "Встречи-архив" in b or "папка архива" in b] == [
-        f"папка архива «{folder.name}» названа минутой {STAMP}: узла встречи нет, владение "
-        f"минутой не доказать; если это она — забыть отдельно по штампу {STAMP}"]
+        f"папка архива «{folder.name}» названа минутой {STAMP}: чья она, не доказано ни "
+        f"сайдкаром, ни строкой «Стенограмма:» узла — проверь её Саммари; её ключ — {STAMP}"]
     # с узлом-секундой минута точно чужая — вслух о ней не говорим
     (graph / "Встречи" / f"{SECONDS}.md").write_text("# Встреча\n", encoding="utf-8")
     assert not any(STAMP + ":" in b for b in forget.plan(SECONDS, root, graph).beyond_reach)
@@ -1404,3 +1404,81 @@ def test_minute_proven_foreign_is_not_offered_to_forget(tmp_path):
     plan = forget.plan(SECONDS, root, graph)
     assert not any(b.startswith(named) for b in plan.beyond_reach)
     assert graph / "Встречи" / f"{STAMP}.md" not in plan.delete
+
+
+def _retitled(root: pathlib.Path, sidecar_stamp: str | None) -> None:
+    """Встреча после наката темы: файлы названы минутой, сайдкар хранит её
+    точную секунду (слово демона)."""
+    t = root / "transcripts"
+    (t / f"{STAMP}_Тема.md").write_text("# Встреча\n", encoding="utf-8")
+    (t / f"{STAMP}_Тема_minutes.md").write_text("минутки\n", encoding="utf-8")
+    if sidecar_stamp:
+        (t / f"{STAMP}_Тема.md.live.json").write_text(
+            f'{{"stamp": "{sidecar_stamp}"}}', encoding="utf-8")
+
+
+def test_seconds_target_takes_the_minute_named_files_of_its_proven_minute(tmp_path):
+    """Круг DeepSeek по PR #622, C2: приложение зовёт «забыть» посекундным
+    meeting_id статуса, а накат темы переименовал файлы встречи под минуту.
+    Минута доказана сайдкаром — уходят стенограмма, минутки, сайдкар, узел,
+    копия в «Документации», папка архива и отметка; раньше уходили только
+    узел и папка, а стенограмма оставалась на диске."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
+    _retitled(root, SECONDS)
+    node = _minute_node(graph, f"{STAMP}_Тема.md")
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True)
+    (docs / f"{STAMP}_Тема.md").write_text("копия\n", encoding="utf-8")
+    mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
+    mark.write_text("ok\n", encoding="utf-8")
+    t = root / "transcripts"
+    plan = forget.plan(SECONDS, root, graph)
+    for gone in (t / f"{STAMP}_Тема.md", t / f"{STAMP}_Тема_minutes.md",
+                 t / f"{STAMP}_Тема.md.live.json", node, docs / f"{STAMP}_Тема.md",
+                 graph / "Встречи-архив" / "2026-07-15 14-00 — Тема", mark):
+        assert gone in plan.delete, gone
+    # сайдкар называет другую секунду — минута чужая, её файлы не трогаем
+    (t / f"{STAMP}_Тема.md.live.json").write_text('{"stamp": "2026-07-15_140005"}', encoding="utf-8")
+    plan = forget.plan(SECONDS, root, graph)
+    assert not any(f.parent in (t, docs) or f == node for f in plan.delete)
+    assert plan.brain_keys == [SECONDS]
+
+
+def test_proven_minute_without_a_node_takes_the_folder_and_the_mark(tmp_path):
+    """Круг DeepSeek по PR #622, I2: одно и то же доказательство владения
+    минутой (сайдкар) даёт один вывод и при узле, и без него — папка и
+    отметка минуты уходят, совета «проверь» нет. Без слова конвейера (только
+    порядок файлов) — папка называется, но текст не утверждает, что владение
+    «не доказать»: оно не доказано ни сайдкаром, ни строкой узла."""
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP})
+    _retitled(root, SECONDS)
+    mark = root / "logs" / "brain_sent" / f"{STAMP}.txt"
+    mark.write_text("ok\n", encoding="utf-8")
+    plan = forget.plan(SECONDS, root, graph)
+    assert graph / "Встречи-архив" / "2026-07-15 14-00 — Тема" in plan.delete
+    assert mark in plan.delete and plan.brain_keys == [SECONDS, STAMP]
+    assert not any("папка архива" in b for b in plan.beyond_reach)
+
+
+def test_archive_manifests_are_read_once_per_plan(tmp_path, monkeypatch):
+    """Круг DeepSeek по PR #622, I1: план зовёт _archive_folders по каждому
+    ключу и в каждом прогоне снимков, а манифест в iCloud — это докачка.
+    Манифест папки чужого дня читается одним разом на каталог архива."""
+    folders = {f"2026-06-{d:02d} 10-00 — Другая": f"2026-06-{d:02d}_1000" for d in range(1, 6)}
+    root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": STAMP, **folders})
+    _retitled(root, SECONDS)
+    for run in ("2026-07-20_0300", "2026-07-21_0300"):
+        for name, mid in folders.items():
+            d = graph / forget.CLOUD_BACKUP_DIR / run / "Встречи-архив" / name
+            d.mkdir(parents=True)
+            (d / "meeting.meta.json").write_text(f'{{"meeting_id": "{mid}"}}', encoding="utf-8")
+    reads: dict[pathlib.Path, int] = {}
+    real = forget.meeting_archive_id
+
+    def counted(folder):
+        reads[folder] = reads.get(folder, 0) + 1
+        return real(folder)
+    monkeypatch.setattr(forget, "meeting_archive_id", counted)
+    forget.plan(SECONDS, root, graph)
+    other_days = {f: n for f, n in reads.items() if f.name in folders}
+    assert len(other_days) == 15 and set(other_days.values()) == {1}, other_days

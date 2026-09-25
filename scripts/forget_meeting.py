@@ -360,7 +360,23 @@ def _manifest_folders(arch: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
     return out
 
 
-def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
+def _manifests(arch: pathlib.Path,
+               cache: dict[pathlib.Path, list[tuple[pathlib.Path, str]]] | None
+               ) -> list[tuple[pathlib.Path, str]]:
+    """_manifest_folders с памятью на один план: план зовёт _archive_folders
+    по каждому ключу и в каждом прогоне снимков и карантина, а архив в
+    iCloud — это докачка файла на каждое чтение манифеста (круг DeepSeek по
+    PR #622)."""
+    if cache is None:
+        return _manifest_folders(arch)
+    if arch not in cache:
+        cache[arch] = _manifest_folders(arch)
+    return cache[arch]
+
+
+def _archive_folders(g: pathlib.Path, stamp: str,
+                     manifests: dict[pathlib.Path, list[tuple[pathlib.Path, str]]] | None = None
+                     ) -> list[pathlib.Path]:
     """Папки архива этой встречи.
 
     Время сравнивается целиком и в нормальном виде для всех трёх форматов
@@ -385,7 +401,7 @@ def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
             continue                  # другое время или чужая встреча по манифесту
         out.append(d)
     # Манифест, названный нами, в папке с именем не по формату дня
-    out += [d for d, owner in _manifest_folders(arch) if owner == stamp and d not in out]
+    out += [d for d, owner in _manifests(arch, manifests) if owner == stamp and d not in out]
     if out:
         return out
     if len(folders) == 1 and folders[0][1] is None:
@@ -441,6 +457,9 @@ class _Ownership:
         self.foreign: dict[str, str] = {}
         self.unsure: str | None = None       # заметку минуты не прочитать — владение не решить
         self.how: str = ""                   # чем доказано владение точной секундой
+        # точная секунда — слово конвейера (сайдкар, строка «Стенограмма:»),
+        # а не порядок файлов в transcripts/ (правило graph_key)
+        self.by_word = False
         self.passport: dict[str, str] = {}   # штамп → файл-копия, по которому он признан своим
         self.exact: str | None = self._exact() if self.minute else None
 
@@ -488,14 +507,17 @@ class _Ownership:
             exact = live_sidecar.exact_stamp(live)
             if exact:
                 self.how = f"по сайдкару {live.name}"
+                self.by_word = True
                 return exact
             its = self._note_stamp()
             if its:
                 self.how = "по строке «Стенограмма:» заметки минуты"
+                self.by_word = True
             return its
         its = self._note_stamp()
         if its:
             self.how = "по строке «Стенограмма:» заметки минуты"
+            self.by_word = True
             return its
         if self.unsure:
             return None
@@ -565,7 +587,21 @@ def plan(stamp: str, root: pathlib.Path,
             s = meeting_stamp.stamp_prefix(f.name)
             if s:
                 seen.add(s)
-    owned = [stamp] + [s for s in sorted(seen) if s != stamp and own.owns(s)]
+    # Минута посекундной цели — наш ключ графа, только если точная секунда
+    # её владельца — мы, и это слово конвейера (сайдкар, строка
+    # «Стенограмма:»), а не порядок файлов: note_is_ours без своего файла в
+    # transcripts/ признавал переименованным владельцем соседку, от которой
+    # осталась папка архива (круг-2 по PR #622), а правило graph_key читает
+    # transcripts/, которые «забыть» удаляет (№248). Решение одно на весь
+    # план: файлы в transcripts/ и «Документации», узел, папки архива,
+    # снимки, отметка brain_sent (круг DeepSeek по PR #622).
+    minute = meeting_stamp.minute_of(stamp)
+    minute_owners = ([_Ownership(minute, root, g) for g in (_graph_roots(graph) or [None])]
+                     if minute != stamp else [])
+    minute_ours = any(o.exact == stamp and o.by_word for o in minute_owners)
+    minute_foreign = any(o.exact not in (None, stamp) for o in minute_owners)
+    keys = [stamp] + ([minute] if minute_ours else [])
+    owned = keys + [s for s in sorted(seen) if s not in keys and own.owns(s)]
     if own.exact:
         p.notes.append(f"владелец минуты — секунда {own.exact}: {own.how}")
     elif own.unsure:
@@ -697,6 +733,7 @@ def plan(stamp: str, root: pathlib.Path,
     # станет известен ниже, по узлу встречи; минутная отметка соседки той
     # же минуты — не наша (карточка №39).
     p.brain_keys = [stamp]
+    manifests: dict[pathlib.Path, list[tuple[pathlib.Path, str]]] = {}   # одно чтение архива на план
     # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
@@ -723,49 +760,34 @@ def plan(stamp: str, root: pathlib.Path,
         # у первой минутный; минутную заметку берём только если она наша
         # (meeting_stamp.find_note, карточка №39).
         node = meeting_stamp.find_note(g, stamp, root / "transcripts")
-        # Минутный узел посекундной цели — наш, только если точная секунда
-        # владельца минуты — мы (_Ownership: сайдкар, строка «Стенограмма:»).
-        # note_is_ours без своего файла в transcripts/ считает цель
-        # переименованным владельцем, а у встречи, от которой осталась папка
-        # архива, файла нет всегда (круг-2 по PR #622).
-        minute = meeting_stamp.minute_of(stamp)
-        minute_own = _Ownership(minute, root, g) if minute != stamp else None
-        if node is not None and node.stem != stamp and minute_own is not None \
-                and minute_own.exact != stamp:
-            node = None
+        if node is not None and node.stem not in keys:
+            node = None                 # минутный узел, владение минутой не доказано
         link = _link_re(node.stem if node else stamp)
-        # Ключи встречи в графе — только доказанные: сам штамп и ключ узла,
-        # владение которым проверено выше. Узел, папка
-        # архива и отметка brain_sent названы одним ключом графа, и
-        # посекундная цель («Забыть» из приложения) с минутным узлом
-        # оставляла минутную папку архива (круг-1 по PR #622). Узла нет —
-        # минуту не пересчитываем через graph_key: он читает transcripts/,
-        # которые «забыть» как раз удаляет, и выдал бы минуту соседки (№248).
-        keys = [stamp]
         if node is not None:
             p.delete.append(node)
-            if node.stem != stamp:
-                keys.append(node.stem)
-            if node.stem not in p.brain_keys:
-                p.brain_keys.append(node.stem)
+        for key in keys:
+            if key not in p.brain_keys:
+                p.brain_keys.append(key)
         # graph_updater копирует в «Стенограммы встреч» все артефакты
         # `{штамп}_*.md` (минутки, подсказки, живая нить), а не один
         # `{штамп}.md` — иначе копии стенограммы переживали забывание.
-        p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
+        # После наката темы они названы минутным ключом.
         for key in keys:
-            p.delete += [d for d in _archive_folders(g, key) if d not in p.delete]
-        # Узла нет, а минутная папка есть — её называем, забывают её отдельно
-        # по минуте. Молчим, когда минута доказанно чужая: точная секунда
-        # владельца — другая (_Ownership), или своя папка встречи названа
-        # секундами — graph_key даёт секунды, только когда минута чужая.
-        if node is None and minute_own is not None and minute_own.exact in (None, stamp) \
-                and all(owner != stamp for _, owner in _manifest_folders(g / ARCHIVE_DIR)):
-            for d in _archive_folders(g, minute):
+            p.delete += _with_stamp(g / DOCS_DIR, key, suffix=".md")
+        for key in keys:
+            p.delete += [d for d in _archive_folders(g, key, manifests) if d not in p.delete]
+        # Минутная папка, чья минута ни наша, ни доказанно чужая (свой узел
+        # или своя папка встречи под секундами — тоже улика: graph_key даёт
+        # секунды, только когда минута чужая), — называется. Команду не подсказываем: забыть
+        # по минуте чужую встречу необратимо, решает человек по её Саммари.
+        if node is None and minute != stamp and not minute_ours and not minute_foreign \
+                and all(owner != stamp for _, owner in _manifests(g / ARCHIVE_DIR, manifests)):
+            for d in _archive_folders(g, minute, manifests):
                 if d not in p.delete:
                     p.beyond_reach.append(
-                        f"папка архива «{d.name}» названа минутой {minute}: узла "
-                        f"встречи нет, владение минутой не доказать; если это она — "
-                        f"забыть отдельно по штампу {minute}")
+                        f"папка архива «{d.name}» названа минутой {minute}: чья она, "
+                        f"не доказано ни сайдкаром, ни строкой «Стенограмма:» узла — "
+                        f"проверь её Саммари; её ключ — {minute}")
 
         # Снимки облачной ревизии копируют граф целиком; срез теперь один,
         # но у установок до переноса каталогов может быть несколько — обходим
@@ -794,7 +816,7 @@ def plan(stamp: str, root: pathlib.Path,
                         found.append(node_copy)
                 found += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
                 for key in keys:
-                    found += [d for d in _archive_folders(snap, key) if d not in found]
+                    found += [d for d in _archive_folders(snap, key, manifests) if d not in found]
                 p.delete += found
                 _forget_in_manifests(p, run, [str(f.relative_to(snap)) for f in found])
 
@@ -819,7 +841,8 @@ def plan(stamp: str, root: pathlib.Path,
                         p.delete.append(node_copy)
                 p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
                 for key in keys:
-                    p.delete += [d for d in _archive_folders(run_dir, key) if d not in p.delete]
+                    p.delete += [d for d in _archive_folders(run_dir, key, manifests)
+                                 if d not in p.delete]
             # Тела узлов, вытесненные заглушками по ревизии ЭТОЙ встречи, лежат
             # мимо ротации прогонов — `вытеснено/<прогон>/`; каталог её
             # прогона уходит целиком, чужие прогоны не трогаем (#550).
