@@ -5,6 +5,23 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.0](https://github.com/charoiteai/Charoite_audio/compare/v0.85.0...v0.86.0) (2026-09-25)
+
+
+### Features
+
+* **import:** ключ «откуда запись» в сайдкаре стенограммы и дедуп повторов по нему ([#629](https://github.com/charoiteai/Charoite_audio/issues/629)) ([4f9b56e](https://github.com/charoiteai/Charoite_audio/commit/4f9b56ebab3c71b1774ad3a1898eb1fb67c73e32))
+* **layout:** раскол core на base и runtime и гейт окружения по слою ([#625](https://github.com/charoiteai/Charoite_audio/issues/625)) ([6c67af9](https://github.com/charoiteai/Charoite_audio/commit/6c67af97d64d8dc40a5c19467de482662d54feae))
+* **llm:** повтор минуток не пересчитывает сводки частей длинной встречи ([#623](https://github.com/charoiteai/Charoite_audio/issues/623)) ([77bbb9a](https://github.com/charoiteai/Charoite_audio/commit/77bbb9a7486996ffcbe3a29a583138cf5693c4ed))
+* **tasks:** разбор строки поручения, ключ без полей и общая таблица форм ([#621](https://github.com/charoiteai/Charoite_audio/issues/621)) ([ad7f61a](https://github.com/charoiteai/Charoite_audio/commit/ad7f61a5577c488626377d3a52b4dd8ad891ca72))
+
+
+### Bug Fixes
+
+* **forget:** встреча, от которой осталась только папка архива, находится и забывается ([#622](https://github.com/charoiteai/Charoite_audio/issues/622)) ([ac482f7](https://github.com/charoiteai/Charoite_audio/commit/ac482f754aebdce5978530c71f5abd177e14e896))
+* **graph:** nightly copies log no longer says the key is off when nothing is identical ([#627](https://github.com/charoiteai/Charoite_audio/issues/627)) ([e107cb0](https://github.com/charoiteai/Charoite_audio/commit/e107cb0d42a887437ec913f2a83b0cd88e113946)), closes [#362](https://github.com/charoiteai/Charoite_audio/issues/362)
+* **mcp:** без корня данных — отказ с рецептом в ответе инструмента, догадки нет ([#628](https://github.com/charoiteai/Charoite_audio/issues/628)) ([b5a5671](https://github.com/charoiteai/Charoite_audio/commit/b5a56715995b24c26f777b000e3fcd398a4c00d9))
+
 ## [0.85.0](https://github.com/charoiteai/Charoite_audio/compare/v0.84.1...v0.85.0) (2026-09-24)
 
 
