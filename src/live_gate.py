@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import os
 import pathlib
+import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -97,6 +98,32 @@ def daemon_alive(root: pathlib.Path) -> bool:
         return False
     with f:
         return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
+
+
+#: Процесс демона в таблице процессов: интерпретатор python, его флаги, затем
+#: скрипт первым не-флаговым аргументом. Приложение стартует демона как
+#: `<python> src/daemon.py`. Голый «src/daemon.py» совпадал с редактором, где
+#: открыт файл (GLM M4), «python -m pylint src/daemon.py» — не демон (GLM M6).
+#: `[Pp]`: python фреймворка macOS виден в таблице как `…/Python.app/…/Python`.
+#: Шаблон один на всех: статус MCP и сторож миграции расходились — первый
+#: говорил «остановлен», второй навсегда откладывал миграцию из-за редактора.
+DAEMON_PROCESS = r"[Pp]ython[^ ]*( -[^ ]+)* [^ ]*src/daemon\.py($| )"
+
+
+def daemon_process(run=subprocess.run) -> str:
+    """Процесс демона на этой машине — независимо от корня данных.
+
+    Второй признак живой встречи рядом с `daemon_alive`: лок лежит в корне,
+    а демон мог стартовать из другого. Возвращает строки совпадений pgrep
+    (пусто — процесса нет). pgrep недоступен — пусто и предупреждение: судить
+    не по чему, как у лока без файла.
+    """
+    try:
+        r = run(["pgrep", "-fl", DAEMON_PROCESS], capture_output=True, text=True, check=False)
+    except OSError as e:
+        print(f"pgrep недоступен ({e}) — признак процесса демона не работает", file=sys.stderr)
+        return ""
+    return r.stdout.strip()
 
 
 def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,
