@@ -230,17 +230,15 @@ def note_phone_stop(src: pathlib.Path, tpath: pathlib.Path) -> dict | None:
     return ev
 
 
-def note_origin(src: pathlib.Path, tpath: pathlib.Path, kind: str) -> bool:
+def note_origin(src: pathlib.Path, tpath: pathlib.Path, kind: str) -> None:
     """«Откуда запись» (№262) — ключом `transcript_origin` в сайдкар стенограммы
     НОВОЙ встречи. Зовётся один раз, в общем хвосте трёх веток, где стенограмма
     уже названа: обещание — «импорт дошёл до хвоста». Повтор сюда не приходит
     (там стенограмма старой встречи), родитель-сканер — тоже (своей
     стенограммы у него нет). Отказ — не ошибка импорта: дедуп узнает повтор
     по шапке."""
-    if transcript_origin.remember(tpath, src.name, src.stat().st_size, kind):
-        return True
-    print("⚠️ откуда запись не записано: сайдкар стенограммы неоднозначен — повтор узнается по шапке")
-    return False
+    if not transcript_origin.remember(tpath, src.name, src.stat().st_size, kind):
+        print("⚠️ откуда запись не записано: сайдкар стенограммы неоднозначен — повтор узнаётся по шапке")
 
 
 PAIR_ORPHAN_AGE = 60     # манифест в done/ без аудио: аудио уже доехало и исчезло — ждать нечего,

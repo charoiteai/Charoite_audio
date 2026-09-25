@@ -108,6 +108,7 @@ def test_новая_встреча_любой_ветки_получает_клю
     raw = json.loads(_sidecar(tpath).read_text(encoding="utf-8"))[transcript_origin.SIDECAR_KEY]
     assert json.loads(raw) == {"name": name, "size": len(body), "kind": kind}, \
         "одна запись {name, size, kind}, без штампа — он живёт ключом `stamp`"
+    assert name in raw, "имя в сайдкаре читается глазами, без \\u-экранов — как у channel_events"
 
 
 def test_повтор_не_трогает_сайдкар_старой_встречи_и_не_пишет_новой(tmp_path, run_import, capsys):
@@ -161,6 +162,11 @@ def test_ключ_сильнее_шапки(tmp_path):
     assert im.find_repeat(tmp_path, STAMP, "zoom.vtt", 100) == (None, True)
     assert im.find_repeat_anywhere(tmp_path, "zoom.vtt", 100) is None
     assert im.find_repeat(tmp_path, STAMP, "другой.vtt", 7) == (tpath, True)
+
+
+def test_нет_каталога_стенограмм_нет_повтора_и_минута_свободна(tmp_path):
+    assert im.find_repeat(tmp_path / "нет", STAMP, "a.m4a", 5) == (None, False)
+    assert im.find_repeat_anywhere(tmp_path / "нет", "a.m4a", 5) is None
 
 
 def test_стенограмма_без_сайдкара_узнаётся_по_шапке_как_раньше(tmp_path):
