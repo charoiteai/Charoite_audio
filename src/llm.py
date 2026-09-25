@@ -68,7 +68,8 @@ _fit_sweeper: threading.Timer | None = None
 # Стенные часы, не monotonic: monotonic на macOS и Linux стоит, пока ноутбук
 # спит, и «30 минут» растягивались бы на ночь со спящей крышкой. Часы,
 # ушедшие назад, запись не продлевают — она считается истёкшей.
-_fit_clock = time.time        # тесты подменяют часы только кэшу, не всему time
+def _fit_clock() -> float:     # тесты подменяют часы только кэшу, не всему time
+    return time.time()
 
 
 def _fit_expired(now: float, stamp: float) -> bool:
@@ -129,6 +130,20 @@ def _fit_cache_put(key: tuple, text: str) -> None:
         while len(_fit_cache) > FIT_CACHE_SIZE:
             _fit_cache.popitem(last=False)
         _fit_arm_sweeper_locked(now)
+
+
+def _fit_speech_id(transcript: str) -> str:
+    """Первое поле ключа кэша: по нему же forget_fit находит записи речи."""
+    return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+
+
+def forget_fit(transcript: str) -> None:
+    """Сбросить сводки этой речи при любой модели и настройке: минутки
+    выданы, повтор не нужен — держать текст встречи в памяти незачем."""
+    sid = _fit_speech_id(transcript)
+    with _fit_cache_lock:
+        for key in [k for k in _fit_cache if k[0] == sid]:
+            del _fit_cache[key]
 
 
 def _fit_cache_clear() -> None:
@@ -525,6 +540,9 @@ class LLM:
                   "считаю true", file=sys.stderr, flush=True)
             fb = True
         self.fallback_local = fb
+        # Поднимает любой уход с облака на локальный запас (стрим и complete):
+        # _fit не кладёт такую сводку в кэш под облачным ключом.
+        self._fell_back_local = False
         # На что падаем, когда шлюза нет. Жёсткий «ollama» бил мимо у тех, чей
         # локальный движок — mlx_lm.server: в Ollama у них из чат-моделей никого,
         # она держит только bge-m3 (круг-1, обе головы).
@@ -1170,6 +1188,7 @@ class LLM:
                                           "локальный запас выключен") from e
                 print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
                       "считаю локальной моделью", file=sys.stderr, flush=True)
+                self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
                 local = LLM({**self._cfg,
                              "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
                 # model НЕ передаём: у облака имя своё (cloud_model), и
@@ -1525,12 +1544,12 @@ class LLM:
         # В ключе — кто на деле отвечает, а не только self.small: mlx-server
         # игнорирует model= и гонит mlx_model, облако — cloud_model по своему
         # адресу. Сменили движок или сервер — прежние сводки уже чужие.
-        answering = (self.mlx_model if self.engine == "mlx-server"
-                     else self.cloud_model if self.cloud_ready else self.small)
-        key = (hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
-               self.engine, self.base, answering, self.small, self.lang,
-               self.num_ctx, FIT_PROMPT_VERSION)
-        if cache:
+        key: tuple = ()
+        if cache:      # демону (cache=False) ни ключ, ни sha256 речи не нужны
+            answering = (self.mlx_model if self.engine == "mlx-server"
+                         else self.cloud_model if self.cloud_ready else self.small)
+            key = (_fit_speech_id(transcript), self.engine, self.base, answering,
+                   self.small, self.lang, self.num_ctx, FIT_PROMPT_VERSION)
             cached = _fit_cache_get(key)
             if cached is not None:
                 return cached

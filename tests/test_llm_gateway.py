@@ -13,6 +13,7 @@ mlx-сборку, а Саммари и заметки продолжали зв�
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -1015,7 +1016,63 @@ def test_clock_going_back_does_not_extend_an_entry(monkeypatch):
     assert llm_mod._fit_cache_get(("а",)) is None
 
 
-def test_fit_cache_runs_on_wall_clock():
+def test_fit_cache_runs_on_wall_clock(monkeypatch):
     """monotonic на macOS и Linux стоит, пока ноутбук спит: «30 минут»
-    растянулись бы на ночь с закрытой крышкой."""
-    assert llm_mod._fit_clock is time.time
+    растянулись бы на ночь с закрытой крышкой. Поэтому срок — по стенным
+    часам: ушли вперёд монотонные — запись жива, стенные на TTL — её нет."""
+    wall, mono = [1_000_000.0], [5_000.0]
+    monkeypatch.setattr(time, "time", lambda: wall[0])
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    llm_mod._fit_cache_put(("а",), "сводка")
+    mono[0] += 10 * llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("а",)) == "сводка", "монотонные часы срок не считают"
+    wall[0] += llm_mod.FIT_CACHE_TTL
+    assert llm_mod._fit_cache_get(("а",)) is None, "стенные часы ушли на срок — записи нет"
+
+
+def test_daemon_fold_does_not_even_hash_the_speech(monkeypatch):
+    """cache=False (минутки демона): ни ключа, ни sha256 речи — кэш демону
+    не нужен, и считать хэш часовой встречи ради ничего незачем."""
+    calls: list = []
+    l = _short_llm()
+    _counting_summary(monkeypatch, l, calls)
+
+    def no_hash(_t):
+        raise AssertionError("ключ кэша посчитан без кэша")
+
+    monkeypatch.setattr(llm_mod, "_fit_speech_id", no_hash)
+    assert "[Часть 5 из 5]" in l._fit(LONG, cache=False)
+    with pytest.raises(AssertionError, match="ключ кэша"):
+        l._fit(LONG)                       # с кэшем — ключ считается: подмена настоящая
+
+
+def test_forget_fit_drops_every_entry_of_that_speech_only(monkeypatch):
+    """Минутки выданы — сводки этой речи уходят при любой модели и настройке,
+    сводки другой встречи остаются."""
+    calls: list = []
+    for over in ({}, {"lang": "en"}):
+        l = _short_llm(**over)
+        _counting_summary(monkeypatch, l, calls)
+        l.fit(LONG)
+    other = "Б" * 10_000
+    l.fit(other)
+    assert len(llm_mod._fit_cache) == 3
+    llm_mod.forget_fit(LONG)
+    assert [k[0] for k in llm_mod._fit_cache] == [llm_mod._fit_speech_id(other)]
+    llm_mod.forget_fit("речи нет в кэше")  # чужая речь — ничего не трогает
+    assert len(llm_mod._fit_cache) == 1
+
+
+def test_privacy_names_the_cache_limits_the_code_has():
+    """Строка PRIVACY о сводках частей — на трёх языках, с теми же числами,
+    что в коде: поменяли срок или размер кэша — обещание краснеет, а не врёт."""
+    minutes, size = int(llm_mod.FIT_CACHE_TTL // 60), llm_mod.FIT_CACHE_SIZE
+    marks = {"PRIVACY.md": "Part digests of a long meeting",
+             "docs/ru/PRIVACY.md": "Сводки частей длинной встречи",
+             "docs/zh/PRIVACY.md": "长会议的分段摘要"}
+    for doc, mark in marks.items():
+        text = (SRC.parent / doc).read_text(encoding="utf-8")
+        line = next((ln for ln in text.splitlines() if mark in ln), None)
+        assert line, f"{doc}: нет строки о сводках частей"
+        assert sorted(int(n) for n in re.findall(r"\d+", line)) == sorted([minutes, size]), \
+            f"{doc}: числа строки не совпадают с FIT_CACHE_TTL/FIT_CACHE_SIZE"
