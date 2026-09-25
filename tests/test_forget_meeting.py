@@ -1482,3 +1482,15 @@ def test_archive_manifests_are_read_once_per_plan(tmp_path, monkeypatch):
     forget.plan(SECONDS, root, graph)
     other_days = {f: n for f, n in reads.items() if f.name in folders}
     assert len(other_days) == 15 and set(other_days.values()) == {1}, other_days
+
+
+def test_seconds_target_proven_by_the_node_line_when_the_retitled_file_has_no_sidecar(tmp_path):
+    """Файлы встречи названы минутой, сайдкара нет, а строка «Стенограмма:»
+    минутного узла называет её точную секунду — это то же слово конвейера:
+    посекундная цель забирает минутно названную стенограмму и узел."""
+    root, graph = _archive_only(tmp_path, {})
+    _retitled(root, None)
+    node = _minute_node(graph, f"{SECONDS}.md")
+    plan = forget.plan(SECONDS, root, graph)
+    assert root / "transcripts" / f"{STAMP}_Тема.md" in plan.delete
+    assert node in plan.delete and plan.brain_keys == [SECONDS, STAMP]
