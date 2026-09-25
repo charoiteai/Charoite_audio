@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 import os
 import pathlib
 import re
@@ -45,8 +46,36 @@ BIN_SWAP = {ast.Add: ast.Sub, ast.Sub: ast.Add,
 
 
 class Mutation:
-    def __init__(self, path: pathlib.Path, line: int, what: str, apply):
-        self.path, self.line, self.what, self.apply = path, line, what, apply
+    """Одна поломка одного узла.
+
+    Описание дописывает отрезок узла (`Eq → NotEq @4-10`) здесь и только здесь:
+    в строке может стоять два одинаковых оператора (`(a == b) == c`), и без
+    отрезка в отчёте они неразличимы. Вызывающий отдаёт описание без него,
+    чистое описание — `bare()`: тестам и сводкам не приходится резать строку.
+    Дамп узла-цели запоминается сейчас: `applied` сверяет им, что `apply` нашёл
+    на этом месте тот же узел, а не соседа с теми же координатами (№386).
+    """
+
+    def __init__(self, path: pathlib.Path, node: ast.AST, what: str, change):
+        self.path, self.line, self._bare, self.change = path, node.lineno, what, change
+        self.what = f"{what} @{node.col_offset}-{node.end_col_offset}"
+        self.kind, self.span = type(node), _span(node)
+        self.target = ast.dump(node)
+
+    def bare(self) -> str:
+        return self._bare
+
+    def locate(self, tree: ast.AST):
+        """Узел того же вида на том же отрезке — или None."""
+        for n in ast.walk(tree):
+            if _same(n, self):
+                return n
+        return None
+
+    def apply(self, tree: ast.AST):
+        """Сломать дерево на месте; вернуть узел, чей отрезок режет `patch_source`."""
+        n = self.locate(tree)
+        return None if n is None else self.change(tree, n)
 
     def __str__(self) -> str:
         try:
@@ -80,26 +109,57 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL  # noqa: E402
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNMUTABLE  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
-def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int) -> int:
+@dataclasses.dataclass
+class ScanReport:
+    """Что нашёл разбор одного файла: мутанты и то, из чего их не вышло."""
+    mutations: list
+    lines_constant: int = 0     # строки диапазона, снятые как константы модуля
+    nodes: int = 0              # узлы AST на оставшихся строках диапазона
+
+
+@dataclasses.dataclass
+class ScanTotals:
+    """Счётчики плана по всему диапазону. Без них пустой план не отличал
+    «строки — комментарии» от «код есть, операторов нет» и от «файл не
+    прочитался»: 25.09 правка условия дала ноль мутантов, и CI позеленел с
+    «мутировать было нечего» (№386)."""
+    files_in: int = 0
+    lines_in: int = 0
+    lines_constant: int = 0
+    nodes: int = 0
+    files_unreadable: int = 0
+
+
+def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int,
+                 totals: ScanTotals | None = None) -> int:
     """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
-    — плана не было вовсе; `EXIT_PARTIAL` — план был, но судили не весь (прервано
-    встречей, срезано потолком, не применилось); 0 — проверен весь план, чисто.
+    — в диапазоне нет изменённых строк; `EXIT_UNMUTABLE` — строки есть, а
+    мутировать в них нечего; `EXIT_PARTIAL` — судили не весь план (прервано
+    встречей, срезано потолком, не применилось, файл не прочитался); 0 —
+    проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
     первом же мутанте при плане из сорока, отвечал «проверять было нечего» —
     CI печатал это дословно. Обе головы круга 4 независимо (DS C1 = GLM 1).
     """
+    totals = totals or ScanTotals()
     if survivors:
         return 1
+    # Непрочитанный файл — неполнота при любом плане: его строки не судились,
+    # а пустой план из-за него — не «нечего» (№386).
+    if totals.files_unreadable:
+        return EXIT_PARTIAL
     if planned == 0:
         # Срез потолком оставляет пустой план, но проверять БЫЛО что: «нечего»
         # тут врёт ровно так же, как врал `tested == 0` в круге 4 (GLM I2).
-        return EXIT_PARTIAL if dropped else EXIT_NOTHING_TO_CHECK
+        if dropped:
+            return EXIT_PARTIAL
+        return EXIT_UNMUTABLE if totals.lines_in else EXIT_NOTHING_TO_CHECK
     if tested < planned or dropped or skipped:
         return EXIT_PARTIAL
     return 0
@@ -176,100 +236,139 @@ def _module_constants(tree: ast.Module) -> set[int]:
     return out
 
 
-def mutations_for(path: pathlib.Path, lines: set[int],
-                  source: str | None = None) -> list[Mutation]:
-    """Что можно сломать в этих строках."""
+def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> ScanReport:
+    """Что можно сломать в этих строках — и сколько там было из чего ломать."""
     try:
         tree = ast.parse(source if source is not None
                          else path.read_text(encoding="utf-8"))
     except SyntaxError:
-        return []
-    lines = lines - _module_constants(tree)
-    found: list[Mutation] = []
+        return ScanReport([])
+    consts = _module_constants(tree)
+    report = ScanReport([], lines_constant=len(lines & consts))
+    lines = lines - consts
+    found = report.mutations
     for node in ast.walk(tree):
         ln = getattr(node, "lineno", None)
         if ln is None or ln not in lines:
             continue
+        report.nodes += 1
         if isinstance(node, ast.Compare) and node.ops:
             op = type(node.ops[0])
             if op in CMP_SWAP:
-                found.append(Mutation(path, ln,
-                                      f"{op.__name__} → {CMP_SWAP[op].__name__}",
-                                      _swap_cmp(node)))
+                found.append(Mutation(path, node, f"{op.__name__} → {CMP_SWAP[op].__name__}",
+                                      _swap_cmp))
         elif isinstance(node, ast.BoolOp) and type(node.op) in BOOL_SWAP:
-            found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
-                                            f"{BOOL_SWAP[type(node.op)].__name__}",
-                                  _swap_bool(node)))
+            found.append(Mutation(path, node, f"{type(node.op).__name__} → "
+                                              f"{BOOL_SWAP[type(node.op)].__name__}",
+                                  _swap_bool))
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            # `if not apply or not same:` → `if not apply:` / `elif not same:`
+            # дала ноль мутантов: отрицание не ломалось вовсе (№386). Обратного
+            # оператора («добавить not») нет: он удваивает план, а класс ошибок
+            # тот же — перевёрнутое условие.
+            found.append(Mutation(path, node, "not X → X", _drop_not))
         elif isinstance(node, ast.Constant):
             if isinstance(node.value, bool):
-                found.append(Mutation(path, ln, f"{node.value} → {not node.value}",
-                                      _swap_const(node, not node.value)))
+                found.append(Mutation(path, node, f"{node.value} → {not node.value}",
+                                      _swap_const(not node.value)))
             elif isinstance(node.value, (int, float)) and node.value not in (0,):
-                found.append(Mutation(path, ln, f"{node.value} → 0",
-                                      _swap_const(node, 0)))
+                found.append(Mutation(path, node, f"{node.value} → 0", _swap_const(0)))
         elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP \
                 and not _neutral(node):
-            found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
-                                            f"{BIN_SWAP[type(node.op)].__name__}",
-                                  _swap_bin(node)))
+            found.append(Mutation(path, node, f"{type(node.op).__name__} → "
+                                              f"{BIN_SWAP[type(node.op)].__name__}",
+                                  _swap_bin))
         elif isinstance(node, ast.Return) and node.value is not None \
                 and not (isinstance(node.value, ast.Constant)
                          and node.value.value is None):
             # `return None` → `return None` — мутант-тождество, в отчёте он
             # неотличим от настоящей дыры (прогон партии D, 22.08)
-            found.append(Mutation(path, ln, "return X → return None",
-                                  _drop_return(node)))
-    return found
+            found.append(Mutation(path, node, "return X → return None", _drop_return))
+    return report
 
 
-def _swap_cmp(target):
-    def apply(tree):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Compare) and _same(n, target):
-                n.ops = [CMP_SWAP[type(n.ops[0])]()] + list(n.ops[1:])
-                return n
-        return None
-    return apply
+def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
+    """План мутантов по диапазону и счётчики того, из чего он собран."""
+    targets = changed_lines(root, rng)
+    totals = ScanTotals(files_in=len(targets),
+                        lines_in=sum(len(ls) for ls in targets.values()))
+    rev = head_of(rng)
+    plan: list[Mutation] = []
+    for path, lines in sorted(targets.items()):
+        rel = path.relative_to(root)
+        # Разбираем ту версию файла, которую и будем ломать: рабочее дерево
+        # может стоять на другой ветке, и номера строк не совпадут.
+        blob = subprocess.run(["git", "show", f"{rev}:{rel}"], cwd=root,
+                              capture_output=True, text=True)
+        if blob.returncode:
+            # Не молча: выпавший файл превращал «не прочитал» в «нечего» (№386)
+            totals.files_unreadable += 1
+            continue
+        report = scan(path, lines, blob.stdout)
+        totals.lines_constant += report.lines_constant
+        totals.nodes += report.nodes
+        plan.extend(report.mutations)
+    return plan, totals
 
 
-def _swap_bin(target):
-    def apply(tree):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.BinOp) and _same(n, target):
-                n.op = BIN_SWAP[type(n.op)]()
-                return n
-        return None
-    return apply
+def _replace_node(tree: ast.AST, old: ast.AST, new: ast.AST) -> None:
+    """Поставить `new` на место `old` у его родителя; позиции — от `old`.
+
+    Позиции нужны `patch_source`: он режет текст по отрезку возвращённого
+    узла, и у операнда `not` этот отрезок обязан быть отрезком всего `not X`.
+    """
+    ast.copy_location(new, old)
+    for parent in ast.walk(tree):
+        for field, value in ast.iter_fields(parent):
+            if value is old:
+                setattr(parent, field, new)
+                return
+            if isinstance(value, list):
+                for i, v in enumerate(value):
+                    if v is old:
+                        value[i] = new
+                        return
 
 
-def _swap_bool(target):
-    def apply(tree):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.BoolOp) and _same(n, target):
-                n.op = BOOL_SWAP[type(n.op)]()
-                return n
-        return None
-    return apply
+def _swap_cmp(tree, n):
+    n.ops = [CMP_SWAP[type(n.ops[0])]()] + list(n.ops[1:])
+    return n
 
 
-def _swap_const(target, value):
-    def apply(tree):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Constant) and _same(n, target):
-                n.value = value
-                return n
-        return None
-    return apply
+def _drop_not(tree, n):
+    _replace_node(tree, n, n.operand)
+    return n.operand
 
 
-def _drop_return(target):
-    def apply(tree):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Return) and _same(n, target):
-                n.value = None
-                return n
-        return None
-    return apply
+def _swap_bin(tree, n):
+    n.op = BIN_SWAP[type(n.op)]()
+    return n
+
+
+def _swap_bool(tree, n):
+    n.op = BOOL_SWAP[type(n.op)]()
+    return n
+
+
+def _swap_const(value):
+    def change(tree, n):
+        n.value = value
+        return n
+    return change
+
+
+def _drop_return(tree, n):
+    n.value = None
+    return n
+
+
+class _Parens:
+    """Узел, вставляемый в скобках: вторая попытка `applied`. Позиции — узла."""
+
+    def __init__(self, node: ast.AST):
+        self.node = node
+        self.lineno, self.col_offset = node.lineno, node.col_offset
+        self.end_lineno, self.end_col_offset = node.end_lineno, node.end_col_offset
 
 
 def patch_source(text: str, node: ast.AST) -> str | None:
@@ -303,15 +402,62 @@ def patch_source(text: str, node: ast.AST) -> str | None:
     tail = (lines[end - 1].encode("utf-8")[end_col:].decode("utf-8")
             + "".join(lines[end:]))
     try:
-        piece = ast.unparse(node)
+        piece = (f"({ast.unparse(node.node)})" if isinstance(node, _Parens)
+                 else ast.unparse(node))
     except Exception:                            # noqa: BLE001
         return None
     return head + piece + tail
 
 
-def _same(a, b) -> bool:
-    return (getattr(a, "lineno", -1) == getattr(b, "lineno", -2)
-            and getattr(a, "col_offset", -1) == getattr(b, "col_offset", -2))
+def _span(node) -> tuple:
+    return (getattr(node, "lineno", None), getattr(node, "col_offset", None),
+            getattr(node, "end_lineno", None), getattr(node, "end_col_offset", None))
+
+
+def _same(n: ast.AST, mut: Mutation) -> bool:
+    """Тот ли это узел: вид и ПОЛНЫЙ отрезок. Пары «строка, колонка» мало — у
+    `a == b == c` в скобках, `a + b + c`, `a and b or c` внешний и внутренний
+    узел начинаются в одной точке и различаются только концом."""
+    return type(n) is mut.kind and _span(n) == mut.span
+
+
+def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
+    """Текст мутанта — или None и причина словами.
+
+    Прежде годность значила «текст изменился», и непарсящийся мутант уходил в
+    worktree, прогон падал на `SyntaxError`, а мутант засчитывался «убит» —
+    ложь того же класса, что «нечего мутировать» при нуле мутантов (№386).
+    Теперь мутант годен, только если его текст разбирается в то же дерево,
+    что и сломанное `apply` (позиции в дамп не входят). Не сошлось — одна
+    попытка в скобках: операнд бывает ниже по приоритету, чем место вставки
+    (`x and not (a or b)` → `x and (a or b)`). Частных правил под операторы нет.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return None, f"исходник не разбирается ({e.msg})"
+    found = mut.locate(tree)
+    if found is None:
+        return None, "узел не нашёлся на своём отрезке"
+    if ast.dump(found) != mut.target:
+        return None, "на месте узла другой"
+    node = mut.change(tree, found)
+    want = ast.dump(tree)
+    why = "текст мутанта не совпал с мутированным деревом"
+    for piece in (node, _Parens(node)):
+        text = patch_source(source, piece)
+        if text is None or text == source:
+            why = "замена не изменила текст"
+            continue
+        try:
+            got = ast.dump(ast.parse(text))
+        except SyntaxError:
+            why = "текст мутанта не разбирается"
+            continue
+        if got == want:
+            return text, ""
+        why = "текст мутанта не совпал с мутированным деревом"
+    return None, why
 
 
 def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
@@ -423,26 +569,20 @@ def main(argv: list[str]) -> int:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
                   "(--force, чтобы настоять)")
             return 3
-    targets = changed_lines(root, args.range)
-    if not targets:
-        print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
-        return EXIT_NOTHING_TO_CHECK
-
-    rev = head_of(args.range)
-    plan: list[Mutation] = []
-    for path, lines in sorted(targets.items()):
-        rel = path.relative_to(root)
-        # Разбираем ту версию файла, которую и будем ломать: рабочее дерево
-        # может стоять на другой ветке, и номера строк не совпадут.
-        blob = subprocess.run(["git", "show", f"{rev}:{rel}"], cwd=root,
-                              capture_output=True, text=True)
-        if blob.returncode:
-            continue
-        plan.extend(mutations_for(path, lines, source=blob.stdout))
+    plan, totals = plan_for(root, args.range)
     if not plan:
-        print(f"Изменённые строки не содержат ничего мутируемого "
-              f"(файлов: {len(targets)}).")
-        return EXIT_NOTHING_TO_CHECK
+        code = verdict_code([], 0, 0, 0, 0, totals)
+        if code == EXIT_NOTHING_TO_CHECK:
+            print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
+        elif code == EXIT_UNMUTABLE:
+            print(f"Изменённые строки не содержат ничего мутируемого: файлов {totals.files_in}, "
+                  f"строк {totals.lines_in}, из них констант модуля {totals.lines_constant}, "
+                  f"узлов AST {totals.nodes}, не прочитано файлов {totals.files_unreadable}.")
+        else:
+            print(f"План пуст, но проверено не всё: не прочитано файлов "
+                  f"{totals.files_unreadable} из {totals.files_in} "
+                  f"(ревизия {head_of(args.range)}) — это НЕ «нечего мутировать».")
+        return code
 
     dropped = 0
     if len(plan) > args.max:
@@ -478,7 +618,7 @@ def main(argv: list[str]) -> int:
     subprocess.run(["git", "worktree", "add", "--detach", str(work), rev],
                    cwd=root, capture_output=True, check=True)
     survivors: list[Mutation] = []
-    skipped: list[Mutation] = []
+    skipped: list[tuple[Mutation, str]] = []
     tested = 0
     aborted = ""
     try:
@@ -523,15 +663,14 @@ def main(argv: list[str]) -> int:
             rel = mut.path.relative_to(root)
             target = work / rel
             original = target.read_text(encoding="utf-8")
-            tree = ast.parse(original)
-            node = mut.apply(tree)
-            mutated = patch_source(original, node) if node is not None else None
-            if mutated is None or mutated == original:
-                # Не применилась — узел не нашёлся или замена ничего не дала:
-                # расхождение версий файла. Молчать нельзя: «0 выживших»
-                # из-за того, что ничего не ломали, читается как «всё
-                # проверено».
-                skipped.append(mut)
+            mutated, why = applied(mut, original)
+            if mutated is None:
+                # Не применилась — узел не тот, текст не собрался, дерево
+                # не сошлось. Молчать нельзя: «0 выживших» из-за того, что
+                # ничего не ломали, читается как «всё проверено»; а битый
+                # текст в дереве дал бы «убит» без участия мутации.
+                skipped.append((mut, why))
+                print(f"  [{i}/{len(plan)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
                 continue
             target.write_text(mutated, encoding="utf-8")
             try:
@@ -555,11 +694,15 @@ def main(argv: list[str]) -> int:
         lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted or 'сбой'}) — "
                      "это НЕ значит «там всё хорошо».")
     if skipped:
-        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — версия файла разошлась "
-                     f"с диапазоном, результат неполон.")
+        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
+    if totals.files_unreadable:
+        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
+                     f"— их строки не судились.")
     if dropped:
         lines.append(f"Не проверено из-за потолка: {dropped}. "
                      f"Это НЕ значит «там всё хорошо».")
+    for m, why in skipped:
+        lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why}")
     for s in survivors:
         lines.append(f"  ВЫЖИЛ {s}")
     if survivors:
@@ -572,7 +715,7 @@ def main(argv: list[str]) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(report + "\n", encoding="utf-8")
-    return verdict_code(survivors, tested, len(plan), dropped, len(skipped))
+    return verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
 
 
 if __name__ == "__main__":

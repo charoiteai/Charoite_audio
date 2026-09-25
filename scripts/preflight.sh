@@ -117,6 +117,7 @@ if ! skipped mutation; then
   case "$(outcome $rc)" in
     ok)      verdict 0 mutation ;;
     nothing) SKIPPED="$SKIPPED mutation(проверять нечего)" ;;
+    unmutable) SKIPPED="$SKIPPED mutation(мутировать нечего)" ;;
     partial) SKIPPED="$SKIPPED mutation(проверено не всё)" ;;
     *)       verdict "$rc" mutation ;;
   esac

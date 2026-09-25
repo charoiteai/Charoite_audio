@@ -18,12 +18,12 @@ READERS = {
     "scripts/import_meeting.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "src/daemon.py": {"EXIT_ROOT_UNNAMED"},
     "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
-    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL"},
+    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL", "EXIT_UNMUTABLE"},
 }
 #: Значения — снимок: их читают процессы вне этого репозитория (launchd, CI,
 #: приёмка), и молчаливая перенумерация ломает их без единого красного теста.
 VALUES = {"EXIT_NO_SPEECH": 3, "EXIT_NO_GRAPH": 4, "EXIT_ROOT_UNNAMED": 5, "EXIT_NOTHING_TO_CHECK": 6,
-          "EXIT_PARTIAL": 7}
+          "EXIT_PARTIAL": 7, "EXIT_UNMUTABLE": 8}
 #: Имена — не рукописный список, а всё, что объявил модуль: пятая константа
 #: без снимка значения иначе прошла бы мимо гейта (круг 3 по №339, DS I3).
 NAMES = {n for n in dir(exit_codes) if n.startswith("EXIT_")}
@@ -37,9 +37,12 @@ def test_exit_codes_module_has_no_imports():
     assert {n: getattr(exit_codes, n) for n in NAMES} == VALUES, (
         "новый код или изменённое значение: их читают процессы вне репозитория — внести в VALUES осознанно")
     assert len(set(VALUES.values())) == len(VALUES), "два кода с одним значением снаружи неразличимы"
-    # классификатор знает КАЖДЫЙ код и не путает их между собой
-    assert {exit_codes.outcome(v) for v in VALUES.values()} <= {"nothing", "partial", "fail"}
-    assert exit_codes.outcome(0) == "ok" and exit_codes.outcome(1) == "fail"
+    # классификатор знает КАЖДЫЙ код и не путает их между собой: равенство, а не
+    # подмножество слов — под подмножеством новый код молча читался бы как «fail»
+    # или как чужое слово (№386)
+    assert {v: exit_codes.outcome(v) for v in (0, 1, *VALUES.values())} == {
+        0: "ok", 1: "fail", 3: "fail", 4: "fail", 5: "fail",
+        6: "nothing", 7: "partial", 8: "unmutable"}
 
 
 def _imports_from_exit_codes(tree: ast.AST) -> set[str]:
