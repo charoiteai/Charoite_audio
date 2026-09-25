@@ -806,7 +806,8 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, enabled: boo
 
 def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.Path | None = None,
                        canon_source: pathlib.Path | None = None,
-                       exclude: typing.Collection[pathlib.Path] = ()) -> pathlib.Path | None:
+                       exclude: typing.Collection[pathlib.Path] = (),
+                       log: typing.Callable[[str], object] = print) -> pathlib.Path | None:
     """Файлы встречи → «Документация/Стенограммы встреч» графа; путь папки или
     None, если «Документации» в графе нет.
 
@@ -825,13 +826,14 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.
     Канон копируется байтами, кодировка значения не имеет. Канона нет —
     копия из источника, как до №366; канон не прочитался — прежняя копия
     остаётся: копия из источника разошлась бы с ним. `exclude` — файлы, которые
-    вызывающий копирует сам (отчёт ревизии)."""
+    вызывающий копирует сам (отчёт ревизии); `log` — куда писать причины: у
+    доставки ревизии это её лог, а не stdout воркера (Minor DS выходного круга по №366)."""
     vdocs = graph / "Документация" / "Стенограммы встреч"
     if not vdocs.parent.exists():
         return None
     vdocs.mkdir(exist_ok=True)
     if canon is not None and not canon.is_file():
-        print(f"канона минуток {canon} нет — копия минуток из источника")
+        log(f"канона минуток {canon} нет — копия минуток из источника")
         canon = None
     matched = False
     for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
@@ -842,13 +844,13 @@ def copy_to_vault_docs(tpath: pathlib.Path, graph: pathlib.Path, canon: pathlib.
             try:
                 safe_write.copy_if_changed(canon, vdocs / f.name)
             except OSError as e:
-                print(f"копия {f.name} не обновлена: канон минуток не прочитался ({e}) — прежняя остаётся")
+                log(f"копия {f.name} не обновлена: канон минуток не прочитался ({e}) — прежняя остаётся")
             continue
         if canon is None and f.name.endswith("_minutes.md"):
-            print(f"{f.name} — копия из источника: канона минуток в проходе нет")
+            log(f"{f.name} — копия из источника: канона минуток в проходе нет")
         safe_write.copy_if_changed(f, vdocs / f.name)
     if canon is not None and canon_source is not None and not matched:
-        print(f"источник канона {canon_source.name} не среди файлов встречи — копия канона не сделана")
+        log(f"источник канона {canon_source.name} не среди файлов встречи — копия канона не сделана")
     return vdocs
 
 

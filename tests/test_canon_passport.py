@@ -347,6 +347,8 @@ def test_failed_attest_is_said_and_healed_by_the_next_pass(tmp_path, monkeypatch
     monkeypatch.setattr(live_sidecar, "attest", lambda *a, **k: False)
     o = ma.lay_canon(src, canon, main)
     assert (o.action, o.reason) == (CO.CREATED, "паспорт не записан")
+    # живой путь обязан это показать: иначе канон молча замер бы при смене источника
+    assert o.alarming
     monkeypatch.undo()
     before = _sig(canon)
     merges = []
@@ -365,6 +367,7 @@ def test_failed_attest_on_update_is_said(tmp_path, monkeypatch):
     monkeypatch.setattr(live_sidecar, "attest", lambda *a, **k: False)
     o = ma.lay_canon(src, canon, main)
     assert (o.action, o.reason) == (CO.UPDATED, "паспорт не записан")
+    assert o.alarming
 
 
 def test_failed_merge_on_adoption_is_said(tmp_path, monkeypatch):
@@ -373,6 +376,7 @@ def test_failed_merge_on_adoption_is_said(tmp_path, monkeypatch):
     monkeypatch.setattr(live_sidecar, "merge", lambda *a, **k: False)
     o = ma.lay_canon(src, canon, main)
     assert (o.action, o.reason) == (CO.UNCHANGED, "паспорт не записан")
+    assert o.alarming
 
 
 # --- гонки -------------------------------------------------------------------
@@ -635,6 +639,17 @@ def test_docs_copy_is_the_canon_through_the_pipeline(tmp_path, capsys):
     assert copy.read_bytes() == canon.read_bytes(), "копия расходится с каноном"
 
 
+def test_delivery_writes_copy_reasons_to_the_review_log(tmp_path, monkeypatch, capsys):
+    """Причины копии «Документации» на доставке ревизии — в её лог, а не в stdout
+    воркера, где их никто не читает (Minor DS выходного круга по №366)."""
+    import graph_updater
+    graph, tdir, src, main = _world(tmp_path, docs=True)
+    monkeypatch.setattr(graph_updater, "canon_of", lambda archived: (tmp_path / "нет.md", src))
+    log = _deliver(graph, tdir, main)
+    assert "[cloud-review] канона минуток" in log and "копия минуток из источника" in log
+    assert "копия минуток из источника" not in capsys.readouterr().out
+
+
 def test_docs_copy_is_the_canon_through_the_review_delivery(tmp_path):
     graph, tdir, src, main = _world(tmp_path, docs=True)
     log = _deliver(graph, tdir, main)
@@ -779,6 +794,23 @@ def test_rename_keeps_the_canon_passport_fresh(renamed):
     assert _state(canon, new_main, new_src.read_text(encoding="utf-8")) == live_sidecar.FRESH
 
 
+def test_rename_rewrites_the_folder_name_in_an_edited_canon_and_keeps_it_human(renamed):
+    """Правленый канон (HUMAN) переименование переписывает механически: имя папки в
+    ссылке меняется, отметка человека цела, паспорт не переставляется — канон
+    остаётся правленым. Правило одно для всех видов карты, как у саммари
+    (облачная голова выходного круга по №366)."""
+    graph, tdir, src, main, run = renamed
+    old = graph / ma.ARCHIVE_DIR / FOLDER / "Минутки.md"
+    old.write_text(old.read_text(encoding="utf-8").replace("[ ] Участник А", "[x] Участник А"), encoding="utf-8")
+    folder = run()
+    canon = folder / "Минутки.md"
+    text = canon.read_text(encoding="utf-8")
+    assert "[x] Участник А" in text and folder.name in text and FOLDER not in text
+    new_main = tdir / "2026-09-20_1000_Новая_тема.md"
+    new_src = tdir / "2026-09-20_1000_Новая_тема_minutes.md"
+    assert _state(canon, new_main, new_src.read_text(encoding="utf-8")) == live_sidecar.HUMAN
+
+
 @pytest.mark.parametrize("transcript", [True, False], ids=["со стенограммой", "без стенограммы"])
 def test_rename_survives_a_canon_not_in_utf8(renamed, capsys, transcript):
     graph, tdir, src, main, run = renamed
@@ -842,6 +874,9 @@ def test_rename_retouches_passport_files_only_with_a_transcript(renamed, monkeyp
 
 @pytest.mark.parametrize("explicit", [False, True], ids=["обход", "явный путь"])
 def test_retro_fill_prints_the_canon_line(tmp_path, monkeypatch, capsys, explicit):
+    """Только печать сводки в `main` — и в обходе, и с явным путём. Счётчик
+    `process` здесь подменён; его проводку с настоящим `process` держит
+    `tests/test_derivative_passport.py` (Minor DS выходного круга по №366)."""
     import retro_fill
     tdir = tmp_path / "transcripts"
     tdir.mkdir()

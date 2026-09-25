@@ -1218,7 +1218,8 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         # Документации иначе оставалась довозной версией (№239). Писатель копий
         # один — `copy_to_vault_docs`: минутки там — байты канона архива (№366)
         vdocs = graph_updater.copy_to_vault_docs(transcript, graph, *graph_updater.canon_of(archived),
-                                                 exclude={rev})
+                                                 exclude={rev},
+                                                 log=lambda m: lf.write(f"[cloud-review] {m}\n"))
         if vdocs is not None and rev_ok:
             safe_write.copy_if_changed(rev, vdocs / rev.name)
         lf.write(f"[cloud-review] ревизия доставлена: архив {folder.name if folder else '—'}"

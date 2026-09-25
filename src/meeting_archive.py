@@ -916,8 +916,11 @@ class CanonOutcome:
 
     @property
     def alarming(self) -> bool:
-        """Печатать ли исход на живом пути: канон не тронут или не прочитался."""
-        return self.action in (self.KEPT, self.REFUSED, self.FAILED)
+        """Печатать ли исход на живом пути: канон не тронут, не прочитался или
+        паспорт после записи не встал. Последнее молча замораживало бы канон:
+        сменится источник — следующий проход увидит UNKNOWN без паспорта и
+        `kept` навсегда (Important DS выходного круга по №366)."""
+        return self.action in (self.KEPT, self.REFUSED, self.FAILED) or self.reason == _CANON_NO_PASSPORT
 
 
 CANON_NOT_UTF8 = "канон не в UTF-8"

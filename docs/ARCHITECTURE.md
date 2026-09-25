@@ -886,7 +886,9 @@ and the archive pass goes on. The copy in `Документация/Стеног
 the canon's bytes, written by `copy_to_vault_docs` after the archive (the
 pipeline used to copy before archiving): app search removes duplicates by
 content hash, so the copy must equal the canon. Renaming a meeting rewrites the
-canon through `retouch`, keeping its passport.
+canon through `retouch`, keeping its passport; in a hand-edited canon the folder
+name is replaced too, but the passport is not re-stamped, so the canon stays
+human — the same rule as for the summary.
 
 **System health has one rollup and two surfaces, not four private
 verdicts.** Before №139 every health signal had its own surface and its own
