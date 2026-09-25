@@ -206,10 +206,15 @@ def park_copies(graph: pathlib.Path, apply: bool) -> None:
             size += c.copy.stat().st_size
         except OSError:
             continue
-    if not apply or not same:
+    if not apply:
         print(f"конфликтных копий «Имя N»: {len(found)}; побайтно равны оригиналу — {len(same)} "
               f"({size / 1024 / 1024:.1f} МБ), будут убраны с --apply-copies "
               f"(sufler.dedup_copies выключен); отличаются — {len(other)}, только отчёт")
+    elif not same:
+        # Ключ включён, а равных нет — штатная ночь после чистки №361. Строка
+        # «ключ выключен» здесь лгала бы владельцу каждую ночь.
+        print(f"конфликтных копий «Имя N»: {len(found)}; побайтно равных оригиналу нет — "
+              f"убирать нечего; отличаются — {len(other)}, только отчёт")
     else:
         dest = charoite_paths.secure_dir(
             charoite_paths.graph_backups(graph, COPIES_KIND, root=_root())

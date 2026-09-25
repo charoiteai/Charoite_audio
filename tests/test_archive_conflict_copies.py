@@ -536,6 +536,23 @@ def test_park_copies_reports_what_it_moved(copies_graph, monkeypatch, capsys):
     assert "не удалось" not in out
 
 
+def test_apply_copies_with_nothing_identical_does_not_say_key_is_off(copies_graph, monkeypatch,
+                                                                      capsys):
+    """Ключ включён, равных копий нет — штатная ночь после №361: лог не пишет
+    «ключ выключен» и ничего не переносит (№362)."""
+    graph, d, data_root = copies_graph
+    (d / "Минутки 2.md").unlink()
+    _run(monkeypatch, "--graph", str(graph), "--apply-copies")
+    out = capsys.readouterr().out
+    assert ("конфликтных копий «Имя N»: 1; побайтно равных оригиналу нет — убирать нечего; "
+            "отличаются — 1, только отчёт") in out
+    # «sufler.dedup_files выключен» в выводе законно: это строка первого правила.
+    assert "dedup_copies выключен" not in out
+    assert "будут убраны" not in out
+    assert (d / "Разбор 2.md").read_text(encoding="utf-8") == "разбор, другая версия\n"
+    assert not list(data_root.rglob("manifest.tsv")), "резерв создан, хотя убирать нечего"
+
+
 def test_main_without_graph_is_a_quiet_zero(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(dg, "_root", lambda: tmp_path)          # нет config.yaml — графа нет
     monkeypatch.setattr(sys, "argv", ["dedup_graph.py"])
