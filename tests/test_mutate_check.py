@@ -922,6 +922,30 @@ def test_отчёт_на_диске_после_каждого_мутанта(tmp
     assert "НЕ СУДИЛОСЬ: 3" in текст, текст
 
 
+def test_отчёт_на_диске_и_во_время_базы(tmp_path, monkeypatch):
+    """Раннер обрывает job на базе: отчёт уже на диске и говорит, что до мутантов не
+    дошли, — прежде база, самый длинный этап, не оставляла ничего (DeepSeek по PR #640)."""
+    plan = _мутанты("scripts/mutate_check.py", 3) + _мутанты("src/busy_signals.py", 1)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1, _BS: 1}, падать_на=2)
+    отчёт = tmp_path / "отчёт.txt"
+    with pytest.raises(RuntimeError, match="раннер"):
+        mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)])
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 4 (остановка: базовый прогон не закончен), выжило: 0"), (
+        отчёт.read_text(encoding="utf-8"))
+
+
+def test_красная_база_оставляет_отчёт(tmp_path, monkeypatch):
+    """База покраснела — исход 2 и отчёт с причиной, а не пустое место."""
+    plan = _мутанты("scripts/mutate_check.py", 2)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: False)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 2
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 2 (остановка: база красная), выжило: 0"), отчёт.read_text(encoding="utf-8")
+
+
 def test_без_бюджета_поведение_прежнее(tmp_path, monkeypatch, capsys):
     """Без `--budget-s` время не ограничивает ничего: часы уходят на годы вперёд,
     а судится весь план, и исход — «проверено всё, чисто»."""

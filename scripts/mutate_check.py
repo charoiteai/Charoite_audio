@@ -561,6 +561,12 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
 
 # Причина в отчёте, пока прогон идёт: оборвёт раннер — на диске останется она
 RUNNING = "прогон не дошёл до конца плана"
+#: Остановка до первого мутанта: база ещё идёт или покраснела. Отчёт пишется и
+#: тогда — база с худшим случаем 4 × --timeout на набор бывает самым длинным этапом
+#: прогона, и job, оборванный на ней, раньше не оставлял отчёта вовсе (DeepSeek по
+#: PR #640, та же дыра в #637).
+BASE_RUNNING = "базовый прогон не закончен"
+BASE_RED = "база красная"
 
 # Шов часов: бюджет прогона тесты судят подменённым временем, а не сном
 clock = time.monotonic
@@ -763,6 +769,7 @@ def main(argv: list[str]) -> int:
             ok, durations[ts] = timed_run(work, ts, args.timeout)
             if not ok:
                 broken.append(ts)
+            save(BASE_RUNNING)
         if broken:
             print("\nБАЗА КРАСНАЯ: без единой мутации падают наборы:")
             for ts in broken:
@@ -770,6 +777,7 @@ def main(argv: list[str]) -> int:
             print("В отдельном дереве нет того, что лежит в .gitignore "
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
+            save(BASE_RED)
             return 2
         for i, mut in enumerate([] if aborted else plan, 1):
             suite = suite_key(work, mut.path)
