@@ -341,7 +341,10 @@ GLM）收敛于一个机制，并抓住计划中的三个漏洞：摘要的来�
 的闸门分叉；`rename_meeting` 用裸 `replace` 重写摘要字节（文件夹名存在于其 H1 和链接中），带护照后每次
 重命名会议都会永远冻结在 HUMAN。现在 `summary` 类型的来源是输入的规范形式（`summary_source_sha`：纪要、
 要点、复盘和转录尾部的截取、抽取的决定、录音说明——绝不包含提示模板的措辞或配置语言：配置只决定「新」文档
-用什么语言，无权重写旧文档）；`live_sidecar` 拥有护照契约的两半——`derivative_state` 判定，`write_derivative`
+用什么语言，无权重写旧文档）。纪要与从中抽取的决定在裁剪之前先做规范化（`task_line.without_statuses`，№392）：
+所有者的 `[x]`/`[-]` 标记、任务控制备注与插件字段（含截止日期）都是会后的事务记录，而非会议内容——因此
+勾选任务既不会使摘要陈旧，也不会传给模型，而无状态机器文本的散列保持不变：遗留护照无需重建即为
+FRESH。`live_sidecar` 拥有护照契约的两半——`derivative_state` 判定，`write_derivative`
 （从 `retro_fill` 迁入，所有类型共用一条接缝：快照 → `.prev/` → expect 闸门 → attest，且不给不存在的转录
 发护照）写入，`retouch` 在机械重写后重置字节散列而保留来源。策略随 `archive_meeting` 的调用方而行：实时
 路径（会后流水线、修订投递）构建 MISSING/STALE 以及无护照的遗留项，回填遍历与 CLI 仅构建 MISSING/STALE；

@@ -32,6 +32,7 @@ import channel_trace
 import live_sidecar
 import meeting_source
 import safe_write
+import task_line
 import graphs
 
 
@@ -663,25 +664,14 @@ def _history_context(folder: pathlib.Path) -> str:
 def decisions_of(folder: pathlib.Path) -> list[str]:
     """Решения встречи так, как их записали минутки, — по пункту на строку.
 
-    Минутки и разбор пишут решения структурно: заголовок «Решения» (иногда
-    «### ✅ Решения:») и под ним список. Просить модель найти их заново —
-    лишний риск: замер 03.08 на одной и той же встрече дал 1 попадание из 3.
-    Дешевле подать готовое.
+    Тонкая обёртка над `summary_snapshot`: решения берутся из того же одного
+    чтения папки, что и материалы, причём из минуток — по нормализованному
+    снимку (№392). Минутки и разбор пишут решения структурно: заголовок
+    «Решения» (иногда «### ✅ Решения:») и под ним список. Просить модель найти
+    их заново — лишний риск: замер 03.08 на одной и той же встрече дал 1
+    попадание из 3. Дешевле подать готовое.
     """
-    for name in (CANON_NAME, "Разбор.md"):
-        f = folder / name
-        if not f.exists():
-            continue
-        text = _read_material(f)
-        m = re.search(r"(?m)^#{2,4}[^\n]*Решени\w*[^\n]*$\n(.*?)(?=\n#{2,4} |\Z)", text, re.S)
-        if not m:
-            continue
-        items = [re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", ln).strip()
-                 for ln in m.group(1).splitlines()
-                 if re.match(r"\s*(?:[-*]|\d+[.)])\s+\S", ln)]
-        if items:
-            return items
-    return []
+    return summary_snapshot(folder).decided()
 
 
 def _force_decisions(text: str, decisions: list[str], per_item: int = 165) -> str:
@@ -802,18 +792,65 @@ def _read_material(path: pathlib.Path) -> str:
         raise MaterialUnreadable(path.name) from e
 
 
-def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
-    """Что модель увидит как материалы: имя файла → обрезка по канону (у
-    стенограммы важнее конец — итоги, у остальных — начало). Одна функция для
-    промпта и для хеша источника: писатель паспорта и читатель свежести не
-    расходятся (урок №317)."""
-    parts: list[tuple[str, str]] = []
-    for name, cap in SUMMARY_CAPS:
+class CanonSnapshot(typing.NamedTuple):
+    """Снимок канона папки: материалы (обрезки по `SUMMARY_CAPS`; минутки
+    нормализованы — №392) и решения парами (имя файла, решения). Один шов чтения
+    папки: `summary_materials` и `decisions_of` — тонкие обёртки, а свежесть и
+    промпт берут снимок целиком, чтобы модель видела ровно то, что хешируется
+    (инвариант №317)."""
+    materials: list[tuple[str, str]]
+    decisions: list[tuple[str, list[str]]]
+
+    def decided(self) -> list[str]:
+        """Решения снимка одним списком — форма канона хеша и промпта."""
+        return [d for _, items in self.decisions for d in items]
+
+
+def _decisions_in(text: str) -> list[str]:
+    """Решения из раздела «Решения» одного документа, по пункту на строку."""
+    m = re.search(r"(?m)^#{2,4}[^\n]*Решени\w*[^\n]*$\n(?P<section>.*?)(?=\n#{2,4} |\Z)",
+                  text, re.S)
+    if not m:
+        return []
+    return [re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", ln).strip()
+            for ln in m.group("section").splitlines()
+            if re.match(r"\s*(?:[-*]|\d+[.)])\s+\S", ln)]
+
+
+def summary_snapshot(folder: pathlib.Path) -> CanonSnapshot:
+    """Один раз прочитать папку и вернуть канон входов саммари.
+
+    «Минутки.md» нормализуется `task_line.without_statuses` ДО обрезки по
+    `SUMMARY_CAPS`; из того же нормализованного текста берутся решения из
+    минуток. Тезисы, разбор и стенограмма — как есть (сноска `[1]` в тезисах не
+    ящик), решения из «Разбор.md» — тоже: `_STATE` принял бы `[1]` за ящик.
+    Какой текст нормализуется, решает только эта функция — обёртки её не
+    повторяют. Один ввод-вывод на файл: шов для тестов и единственный источник
+    и для хеша, и для промпта (№317, №392)."""
+    texts: dict[str, str] = {}
+    for name, _ in SUMMARY_CAPS:
         f = folder / name
         if f.exists():
-            text = _read_material(f)
-            parts.append((name, text[-cap:] if name == "Стенограмма.md" else text[:cap]))
-    return parts
+            texts[name] = _read_material(f)
+    if CANON_NAME in texts:
+        texts[CANON_NAME] = task_line.without_statuses(texts[CANON_NAME])
+    materials = [(name, texts[name][-cap:] if name == "Стенограмма.md" else texts[name][:cap])
+                 for name, cap in SUMMARY_CAPS if name in texts]
+    decisions: list[tuple[str, list[str]]] = []
+    for name in (CANON_NAME, "Разбор.md"):
+        if name in texts:
+            items = _decisions_in(texts[name])
+            if items:
+                decisions.append((name, items))
+                break
+    return CanonSnapshot(materials, decisions)
+
+
+def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
+    """Что модель увидит как материалы: имя файла → обрезка по канону (у
+    стенограммы важнее конец — итоги, у остальных — начало). Тонкая обёртка над
+    `summary_snapshot`: один снимок на промпт и на хеш источника (урок №317)."""
+    return summary_snapshot(folder).materials
 
 
 def summary_source_sha(materials: list[tuple[str, str]], decided: list[str],
@@ -1054,6 +1091,29 @@ def lay_canon(src: pathlib.Path, canon: pathlib.Path, main: pathlib.Path) -> Can
                _differing(current, text))
 
 
+class _SummaryCanon(typing.NamedTuple):
+    """Снимок канона, его хеш источника и состояние паспорта — общий блок
+    свежести `summary_pass` и `summary_state` (№392): одно правило на писателя и
+    читателя, без второй реализации оракула."""
+    snapshot: CanonSnapshot
+    source_sha: str
+    state: str
+
+
+def _summary_freshness(folder: pathlib.Path, live: pathlib.Path,
+                       recording_note: str | None) -> _SummaryCanon | None:
+    """Снимок канона → хеш источника → состояние паспорта. None — материалов нет.
+    `MaterialUnreadable` пробрасывается: решение о ней у вызывающего (у писателя
+    — FAILED, у читателя — UNKNOWN)."""
+    snapshot = summary_snapshot(folder)
+    if not snapshot.materials:
+        return None
+    source_sha = summary_source_sha(snapshot.materials, snapshot.decided(), recording_note)
+    state = live_sidecar.derivative_state(folder / "Саммари.md", live_sidecar.read(live) or {},
+                                          "summary", source_sha)
+    return _SummaryCanon(snapshot, source_sha, state)
+
+
 def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str | None, *,
                  mode: SummaryMode = SummaryMode.AUTO) -> SummaryOutcome:
     """Один проход по саммари встречи: один снимок канона → решить оракулом →
@@ -1061,20 +1121,22 @@ def summary_pass(folder: pathlib.Path, live: pathlib.Path, recording_note: str |
     режима → исход значением. Присвоение и сборка делят снимок канона и папку
     (Important DS круга 2: присвоение по папке другого резолвера и до обновления
     копий материалов давало паспорт на старый канон, и модель всё равно
-    работала). HUMAN не строится ни одним режимом."""
+    работала). HUMAN не строится ни одним режимом. Блок свежести — общий с
+    `summary_state` (`_summary_freshness`), нормализованный снимок идёт и в хеш,
+    и в промпт (№392)."""
     mode = SummaryMode(mode)      # единственная нормализация на границе: голая строка — ValueError здесь
     try:
-        materials = summary_materials(folder)
-        decided = decisions_of(folder)
+        canon = _summary_freshness(folder, live, recording_note)
     except MaterialUnreadable as e:
         # без сборки и без паспорта: хеш без материала — чужой канон (№366)
         return SummaryOutcome(SummaryOutcome.FAILED, None, f"материал не читается: {e.name}")
-    if not materials:
+    if canon is None:
         return SummaryOutcome(SummaryOutcome.NONE, None, "материалов нет")
-    source_sha = summary_source_sha(materials, decided, recording_note)
+    materials = canon.snapshot.materials
+    decided = canon.snapshot.decided()
+    source_sha = canon.source_sha
     out = folder / "Саммари.md"
-    meta = live_sidecar.read(live) or {}
-    state = live_sidecar.derivative_state(out, meta, "summary", source_sha)
+    state = canon.state
     reason = None
     if mode.adopts:
         # причина «почему не присвоено» — здесь, у единственного прохода, которому
@@ -1107,17 +1169,12 @@ def summary_state(folder: pathlib.Path, live: pathlib.Path, recording_note: str 
     же оракул, что у писателя; None — материалов нет. Отчёт ретро-обхода этим
     НЕ пользуется — он печатает исход `summary_pass`, полученный возвратом
     (Critical DS круга 2). В манифест состояние не копируется (Important DS и
-    GLM круга 1)."""
+    GLM круга 1). Блок свежести — общий с `summary_pass` (`_summary_freshness`)."""
     try:
-        materials = summary_materials(folder)
-        decided = decisions_of(folder)
+        canon = _summary_freshness(folder, live, recording_note)
     except MaterialUnreadable:
         return live_sidecar.UNKNOWN       # материал не прочитался — знания нет (№366)
-    if not materials:
-        return None
-    source_sha = summary_source_sha(materials, decided, recording_note)
-    return live_sidecar.derivative_state(folder / "Саммари.md", live_sidecar.read(live) or {},
-                                         "summary", source_sha)
+    return None if canon is None else canon.state
 
 
 def _gen_summary(folder: pathlib.Path, live: pathlib.Path, *,

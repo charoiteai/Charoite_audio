@@ -823,7 +823,13 @@ would freeze in HUMAN forever. Now the source of the `summary` kind is the
 canon of inputs (`summary_source_sha`: the capped materials from minutes,
 theses, debrief and the transcript tail, the extracted decisions, the
 recording note — never the prompt template words or the config language: the
-config says what language NEW documents get and may not rewrite old ones);
+config says what language NEW documents get and may not rewrite old ones). The
+minutes — and the decisions taken from them — are normalized
+(`task_line.without_statuses`, №392) before capping: the owner's marks
+`[x]`/`[-]`, the task-control note and the plugin fields, the due date among
+them, are accounting after the meeting, not its content, so marking a task
+neither ages the summary nor reaches the model, and the hash of status-free
+machine text is unchanged — legacy passports stay FRESH without a rebuild;
 `live_sidecar` owns both halves of the passport contract — `derivative_state`
 decides, `write_derivative` (moved from `retro_fill`, one seam for every kind:
 snapshot → `.prev/` → expect gate → attest, and no passport for a transcript

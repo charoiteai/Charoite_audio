@@ -666,3 +666,126 @@ def test_parse_keeps_the_list_marker(line, marker):
     # маркер списка — часть записи (№366, шаг 2): у каноничного префикса — с пробелом за
     # ним, по нему render сохраняет «* » (мутант «or → and» стирал «1.» и «+», CI мутатора)
     assert task_line.parse(line).marker == marker
+
+
+# --- №392: нормализация источника саммари ------------------------------------
+#
+# Свежесть саммари встречи не должна зависеть от учёта после встречи: отметка
+# владельца «[x]»/«[-]», пометка контроля и поля плагина (включая срок) — учёт,
+# а не содержание. without_statuses — только для источника саммари, не
+# переписчик: строгий режим _tail (render, parse, key, fields) не меняется.
+
+# Формы с пустым ящиком и без учёта: нормализация обязана быть тождеством. Строки
+# со знаком поля (в т.ч. «📅 …T10» и невозможная дата) сюда не берём: знак — учёт,
+# и отдельные тесты ниже проверяют его снятие (у «T10» хвост не разбирается и
+# остаётся текстом, у «2026-02-30» снимается).
+NO_ACCOUNT = [r["line"] for r in TABLE
+              if r["box"] == " " and r["control"] is None
+              and not any(sign in r["line"] for sign in task_line.FIELDS.values())]
+
+
+def test_without_statuses_is_identity_on_the_empty_box_forms_without_a_tail():
+    assert NO_ACCOUNT and len(NO_ACCOUNT) >= 15
+    for line in NO_ACCOUNT:
+        assert task_line.without_statuses(line) == line
+
+
+MACHINE_MINUTES = (
+    "# Встреча 2026-09-24_1000 — Тема\n\n[10:00:00] Иван: начнём\n\n"
+    "## Решения\n- Утвердить бюджет на квартал.\n\n"
+    "## Поручения\n- [ ] **Аня** — подготовить отчёт\n"
+    "**Борис** — сверить цифры без ящика\n\n## Риски\n- нет\n"
+)
+
+
+def test_without_statuses_is_identity_on_machine_minutes():
+    # машинный текст: ящики пустые, полей и пометок нет — нормализация не трогает
+    assert task_line.without_statuses(MACHINE_MINUTES) == MACHINE_MINUTES
+
+
+def test_without_statuses_leaves_a_footnote_definition_along():
+    # определение сноски «[1]: …» — не пункт: ящик без маркера списка не узнаётся
+    text = "## Решения\n- решение\n\n[1]: Источник, 12.09\n"
+    assert task_line.without_statuses(text) == text
+
+
+def test_without_statuses_leaves_a_footnote_reference_along():
+    # тезисы не нормализуются; закон самой функции: «[1]» без маркера — как есть
+    text = "## Тезисы\n- вывод [1] и [2]\n"
+    assert task_line.without_statuses(text) == text
+
+
+@pytest.mark.parametrize("line, expected", [
+    ("- [x] **А** — отчёт", "- [ ] **А** — отчёт"),
+    ("- [X] **А** — отчёт", "- [ ] **А** — отчёт"),
+    ("- [-] **А** — отчёт", "- [ ] **А** — отчёт"),
+    ("- [/] **А** — отчёт", "- [ ] **А** — отчёт"),
+    ("* [x] **А** — отчёт", "* [ ] **А** — отчёт"),
+    ("1. [x] **А** — отчёт", "1. [ ] **А** — отчёт"),
+    ("1) [x] **А** — отчёт", "1) [ ] **А** — отчёт"),
+    ("+  [x]  **А** — отчёт", "+  [ ]  **А** — отчёт"),      # пробелы вокруг дословно
+    ("  - [x] **А** — отчёт", "  - [ ] **А** — отчёт"),      # отступ дословно
+    ("- [ ] **А** — отчёт", "- [ ] **А** — отчёт"),          # пустой ящик — уже пробел
+])
+def test_without_statuses_replaces_the_box_symbol_with_a_space(line, expected):
+    assert task_line.without_statuses(line) == expected
+
+
+@pytest.mark.parametrize("line, expected", [
+    ("- [x] **А** — отчёт _(снято по сроку 24.09)_", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт _(снято: нет исполнителя 24.09)_", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт 📅 2026-10-01", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт ✅ 2026-09-24 ❌ 2026-09-24 📅 2026-10-01", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт 📅 2026-10-01 _(снято по сроку 24.09)_", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт _(снято по сроку 24.09)_ 📅 2026-10-01", "- [ ] **А** — отчёт"),
+    # дубль рода и невозможная дата — тоже учёт и снимаются целиком
+    ("- [x] **А** — отчёт 📅 2026-10-01 📅 2026-11-01", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт 📅 2026-02-30", "- [ ] **А** — отчёт"),
+    ("- [x] **А** — отчёт ❌ 2026-02-30 📅 2026-02-31", "- [ ] **А** — отчёт"),
+    # срок как содержание живёт в тексте пункта и не срезается
+    ("- [x] **А** — сдать к 1 октября 📅 2026-10-01", "- [ ] **А** — сдать к 1 октября"),
+    # отмеченный пункт БЕЗ исполнителя — тело тоже дословно
+    ("- [-] сверить цифры ❌ 2026-09-24", "- [ ] сверить цифры"),
+])
+def test_without_statuses_strips_the_whole_accounting_tail(line, expected):
+    assert task_line.without_statuses(line) == expected
+
+
+def test_without_statuses_terminates_on_two_impossible_dates():
+    # цикл обязан укорачивать строку на каждом шаге (срез ДО разбора даты), иначе
+    # первая же невозможная дата зациклила бы разбор
+    line = "- [x] **А** — отчёт 📅 2026-02-30 📅 2026-02-31 📅 2026-13-40"
+    assert task_line.without_statuses(line) == "- [ ] **А** — отчёт"
+
+
+@pytest.mark.parametrize("line, key, due", [
+    ("- [x] **А** — отчёт _(снято по сроку 24.09)_ 📅 2026-10-01 📅 2026-11-01",
+     "а отчёт 2026 10 01", {"due": datetime.date(2026, 11, 1)}),
+    ("- [x] **А** — отчёт _(снято по сроку 24.09)_ 📅 2026-02-30",
+     "а отчёт 2026 02 30", {}),
+])
+def test_without_statuses_does_not_change_the_strict_readers(line, key, due):
+    # строгий режим _tail прежний: дубль рода и невозможная дата остаются телом,
+    # их читают key и fields (значения — замер до правки). Нормализация — отдельный режим
+    assert task_line.key(line) == key
+    assert task_line.fields(line) == due
+    assert task_line.parse(line).fields == due
+
+
+def test_tail_accounting_records_a_valid_field_and_slices_before_parsing():
+    # учётный режим не только срезает, но и читает поля (дата — из своей группы):
+    # без этого «сначала срез, потом разбор даты» неотличимо от «просто срез»
+    body, control, fields = task_line._tail("**А** — отчёт 📅 2026-10-01", accounting=True)
+    assert body == "**А** — отчёт"
+    assert control is None
+    assert fields == {"due": datetime.date(2026, 10, 1)}
+
+
+def test_tail_accounting_keeps_the_first_control_mark_like_strict_mode():
+    # обе пометки снимаются, но в словаре остаётся первая (правая) — как в строгом:
+    # «or» и «and» в присвоении пометки иначе неразличимы
+    body, control, fields = task_line._tail(
+        "**А** — отчёт _(снято: давно)_ _(снято по сроку 24.09)_", accounting=True)
+    assert body == "**А** — отчёт"
+    assert control == "_(снято по сроку 24.09)_"
+    assert fields == {}
