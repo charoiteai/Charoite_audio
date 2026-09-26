@@ -207,6 +207,12 @@ def missing_reason(path: pathlib.Path) -> str:
 ADOPT_OK = None      # исход присвоения: None — присвоено, иначе причина строкой
 
 
+def adopted_stamp() -> str:
+    """Значение отметки `<вид>_adopted` — одно на всех, кто признаёт легаси
+    своим: `adopt` и раскладка канона минуток (№366) пишут её одинаково."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) -> str | None:
     """Присвоить производную без паспорта (UNKNOWN): паспорт на ТЕКУЩИЕ байты и
     текущий источник плюс отметка `<вид>_adopted` с датой — читатель паспорта
@@ -235,9 +241,8 @@ def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) ->
         return "файл не читается"
     if before is None or safe_write.stat_snapshot(path) != before:
         return "файл менялся под рукой"
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if not merge(live, {f"{kind}_sha256": sha(text), f"{kind}_source_sha256": source_sha,
-                        f"{kind}_adopted": stamp}):
+                        f"{kind}_adopted": adopted_stamp()}):
         return "сайдкар не записался"
     return ADOPT_OK
 
@@ -245,7 +250,9 @@ def adopt(live: pathlib.Path, kind: str, path: pathlib.Path, source_sha: str) ->
 # Файлы папки архива встречи, у которых есть паспорт в сайдкаре стенограммы:
 # имя → вид. Одна карта на проект — переименование встречи (`rename_meeting`)
 # берёт её отсюда, а не держит копию (критика GLM выходного круга по №314).
-ARCHIVE_KINDS = {"Саммари.md": "summary", "Тезисы.md": "theses"}
+# Канон поручений встречи `Минутки.md` — тоже производная с паспортом (№366):
+# раскладка переписывает его, только пока байты — её собственные.
+ARCHIVE_KINDS = {"Саммари.md": "summary", "Тезисы.md": "theses", "Минутки.md": "canon_minutes"}
 
 
 def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> bool:
@@ -253,13 +260,16 @@ def retouch(live: pathlib.Path, kind: str, path: pathlib.Path, transform) -> boo
     переименовании встречи): байты меняет машина, источник — нет, поэтому
     переставляется только `<вид>_sha256`. Файл без паспорта или правленный
     руками (HUMAN) переписывается как раньше, паспорт не трогается: чужое не
-    присваиваем. `transform(text) -> text`; False — запись не сделана."""
+    присваиваем. `transform(text) -> text`; False — запись не сделана.
+    Файл не в UTF-8 — тоже False, не исключение: правленый канон минуток бывает
+    в чужой кодировке (№366), и переименование встречи не должно обрываться
+    посреди применения. Правило одно для всех видов карты."""
     # снимок ДО чтения: правка редактора между чтением и записью не затирается —
     # тот же гейт, что у `write_derivative` (Minor DS и GLM выходного круга)
     before = safe_write.stat_snapshot(path)
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
     new_text = transform(text)
     if new_text == text:

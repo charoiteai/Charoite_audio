@@ -272,10 +272,11 @@ def test_retouch_keeps_the_passport_alive_on_mechanical_rewrite(tmp_path, monkey
     assert "рукой" in out.read_text(encoding="utf-8")
     assert live_sidecar.read(live)["summary_sha256"] == after["summary_sha256"]
     assert live_sidecar.derivative_state(out, live_sidecar.read(live), "summary", src_sha) == live_sidecar.HUMAN
-    # rename_meeting идёт через retouch для паспортных файлов; карта имя → вид —
-    # у владельца паспортов, не копия в скрипте (критика GLM выходного круга)
+    # карта имя → вид — у владельца паспортов, не копия в скрипте (критика GLM
+    # выходного круга). Что rename_meeting идёт через retouch для паспортных
+    # файлов, пиннит поведение, а не написание: подмена retouch считает вызовы
+    # (`test_canon_passport.test_rename_retouches_passport_files_only_with_a_transcript`, №366)
     rn = (ROOT / "scripts" / "rename_meeting.py").read_text(encoding="utf-8")
-    assert "live_sidecar.retouch(live, kind, f, swap)" in rn and "live_sidecar.ARCHIVE_KINDS.get(f.name)" in rn
     assert '"Саммари.md": "summary"' not in rn and live_sidecar.ARCHIVE_KINDS["Саммари.md"] == "summary"
     # гейт expect: файл изменился под рукой между чтением и записью — отказ, правка цела
     def racing(text):

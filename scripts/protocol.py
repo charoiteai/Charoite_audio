@@ -112,7 +112,12 @@ def build(folder: pathlib.Path, style: str = "md") -> str:
     for name in ("Саммари.md", "Минутки.md"):
         p = folder / name
         if p.exists():
-            source += p.read_text(encoding="utf-8") + "\n"
+            # Минутки — канон поручений, его правят люди и чужие писатели (№366):
+            # файл не в UTF-8 или недоступный — пропуск, протокол из остального
+            try:
+                source += p.read_text(encoding="utf-8") + "\n"
+            except (OSError, UnicodeDecodeError):
+                print(f"{name} не читается — пропущен", file=sys.stderr)
     if not source.strip():
         return ""
 

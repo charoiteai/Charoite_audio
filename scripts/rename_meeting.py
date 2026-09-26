@@ -412,8 +412,11 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
         # файл правленным руками (HUMAN) и саммари замрёт навсегда — та же вторая
         # причина HUMAN, что у минуток до №309 (Critical DS и GLM входного круга
         # по №314). Карта имя → вид — у владельца паспортов (`live_sidecar.ARCHIVE_KINDS`),
-        # не копия здесь (критика GLM выходного круга). Файлы без вида — прежняя
-        # текстовая замена.
+        # не копия здесь (критика GLM выходного круга). Файлы без вида — та же
+        # замена через `rewrite_file`: снимок до чтения, гейт при записи. Голые
+        # read_text/write_text роняли apply() на файле не в UTF-8 уже после
+        # переноса папки и затирали правку, попавшую между чтением и записью
+        # (канон минуток встречи без стенограммы, №366).
         live = p.get("main")
         for f in new_folder.glob("*.md"):
             swap = lambda text, old=old_folder.name, new=new_folder.name: text.replace(old, new)  # noqa: E731
@@ -424,11 +427,14 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
                     # старое имя папки в нём осталось (Minor DS выходного круга)
                     print(f"{f.name}: имя папки не заменено (файл менялся под рукой или не читается)")
                 continue
-            text = f.read_text(encoding="utf-8")
-            if old_folder.name in text:
+            def transform(text, old=old_folder.name, swap=swap):
+                return (swap(text), 1) if old in text else (text, 0)
+            try:
                 # tmp+replace: write_text усекает файл до нуля ДО записи, и обрыв
                 # (полный том iCloud, kill) оставлял пустую заметку (аудит 30.08, GLM)
-                safe_write.write_text(f, swap(text))
+                safe_write.rewrite_file(f, transform, "имя папки")
+            except (safe_write.LostRace, OSError, UnicodeDecodeError):
+                print(f"{f.name}: имя папки не заменено (файл менялся под рукой или не читается)")
 
     # Манифест meeting.meta.json — JSON с темой внутри; текстовая замена по
     # *.md его не видит, а телефоны берут карточку именно из него. Пересборка

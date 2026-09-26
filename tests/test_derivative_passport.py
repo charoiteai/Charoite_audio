@@ -11,6 +11,7 @@ mtime двигают ретитл, ко-мышление, ревизия, кри
 """
 from __future__ import annotations
 
+import collections
 import pathlib
 import sys
 
@@ -363,6 +364,34 @@ def test_the_report_line_names_what_was_skipped_instead_of_saying_full(tmp_path,
     assert retro_fill.process(tdir / "без_штампа.md", _cfg(tmp_path), tmp_path / "graph", tdir) == []
 
 
+def test_the_report_line_names_the_canon_left_alone_and_counts_it(tmp_path, monkeypatch, capsys):
+    """№366: канон минуток, который раскладка не тронула, — в отчёт встречи с
+    причиной; действия канона — в свой счётчик, не в `tally` саммари."""
+    live, tdir = _meeting(tmp_path, monkeypatch)
+    folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
+    folder.mkdir(parents=True)
+    none = meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None)
+    CO = meeting_archive.CanonOutcome
+    canon = CO(CO.KEPT, live_sidecar.HUMAN, "канон правлен не раскладкой", 2)
+    monkeypatch.setattr(retro_fill, "archive_meeting",
+                        lambda *a, **k: meeting_archive.Archived(folder, none, canon))
+    tally, canon_tally = collections.Counter(), collections.Counter()
+    retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, tally=tally, canon_tally=canon_tally)
+    out = capsys.readouterr().out
+    assert "канон минуток kept: канон правлен не раскладкой; строк расходится с машинной версией: 2" in out
+    assert canon_tally == {CO.KEPT: 1} and CO.KEPT not in tally
+    quiet = CO(CO.UNCHANGED, live_sidecar.FRESH)
+    monkeypatch.setattr(retro_fill, "archive_meeting",
+                        lambda *a, **k: meeting_archive.Archived(folder, none, quiet))
+    retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, canon_tally=canon_tally)
+    assert "канон минуток" not in capsys.readouterr().out
+    assert canon_tally == {CO.KEPT: 1, CO.UNCHANGED: 1}
+    monkeypatch.setattr(retro_fill, "archive_meeting",
+                        lambda *a, **k: meeting_archive.Archived(folder, none))
+    retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir, canon_tally=canon_tally)
+    assert canon_tally == {CO.KEPT: 1, CO.UNCHANGED: 1}, "без канона в проходе считать нечего"
+
+
 def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(tmp_path, monkeypatch):
     """Хвост импорта отдаёт путь ДО ретитла: graph_updater в своём процессе уже
     переименовал файл под тему — хвост падал на `stat()` со стеком, импорт
@@ -377,7 +406,7 @@ def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
-    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None: seen.append(f) or [])
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None, canon_tally=None: seen.append(f) or [])
     retro_fill.main([str(tdir / "2026-09-02_1021.md")])          # путь до ретитла
     assert seen == [final.resolve()]
     stray = tmp_path / "2026-09-05_1200.md"
@@ -539,7 +568,7 @@ def test_retro_fill_summary_flag_adopts_the_sound_legacy_first_and_rebuilds_the_
     monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
-    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None: calls.append(summary) or [])
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_, summary=None, tally=None, canon_tally=None: calls.append(summary) or [])
     retro_fill.main(["--summary=adopt", str(live)])
     retro_fill.main([str(live)])
     assert calls == ["adopt", None]
