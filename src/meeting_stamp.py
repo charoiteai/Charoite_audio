@@ -106,6 +106,16 @@ def started_at(stamp: str) -> dt.datetime | None:
     return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
 
 
+def is_stamp(key: object) -> bool:
+    """Ключ встречи целиком — «ГГГГ-ММ-ДД_ЧЧММ[СС][-N]», и ничего больше.
+
+    Ответ на «такая встреча может существовать» для выдачи по штампу и для
+    манифеста архива: строка, которая не штамп, встречу не называет, и папка с
+    таким манифестом — битая запись, а не чужая встреча (Critical DeepSeek по
+    PR #635). Остальные копии грамматики сводит №411."""
+    return isinstance(key, str) and _RE.fullmatch(key) is not None
+
+
 def stamp_of(name: str) -> str | None:
     """Штамп встречи из имени ГЛАВНОГО файла — живого или уже с темой.
 
