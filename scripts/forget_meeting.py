@@ -164,8 +164,9 @@ class Plan:
     # ДО необратимого удаления (критика DS r4 по #499)
     notes: list[str] = dataclasses.field(default_factory=list)
     # Досягаемое, но не тронутое: следы под минутой встречи, чья минута не
-    # доказана. Это не «не дотянется» — удалить их можно, решает человек
-    # (Minor DS кругов 1 и 2 по PR #622).
+    # доказана, и папки архива того же дня, чья принадлежность не доказана
+    # вовсе (остаток дня, №398). Это не «не дотянется» — удалить их можно,
+    # решает человек (Minor DS кругов 1 и 2 по PR #622).
     check: list[str] = dataclasses.field(default_factory=list)
 
     def describe(self) -> str:
@@ -321,7 +322,7 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
         # (_archive_folders), если она там единственная, а иначе её называет
         # отчёт остатка дня (day_remainder, №398).
         found.update(owner for _, owner in _manifest_folders(g / ARCHIVE_DIR))
-    return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?", s))
+    return sorted(s for s in found if meeting_stamp.is_stamp(s))
 
 
 def resolve(target: str, root: pathlib.Path,
@@ -481,7 +482,9 @@ def manifest_verdict(folder: pathlib.Path, stamp: str) -> str:
     говорит одно None. Для отчёта это разные вещи: папка без манифеста —
     рукотворная или старая, а битый манифест — сломанная запись конвейера,
     и человеку, решающему, удалять ли её руками, нужна именно причина (№398).
-    Чужой — только исправный: meeting_id строкой и не наш."""
+    Чужой — только исправный: meeting_id — штамп встречи и не наш. Строка, которая
+    не штамп, встречу не называет: такую папку не заберёт ни один вход инструмента,
+    и отчёт обязан её назвать (Critical DeepSeek по PR #635)."""
     try:
         text = (folder / "meeting.meta.json").read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -493,31 +496,36 @@ def manifest_verdict(folder: pathlib.Path, stamp: str) -> str:
     except ValueError:
         return MANIFEST_BROKEN
     owner = data.get("meeting_id") if isinstance(data, dict) else None
-    if not isinstance(owner, str):
+    if not meeting_stamp.is_stamp(owner):
         return MANIFEST_BROKEN
     return MANIFEST_OURS if owner == stamp else MANIFEST_FOREIGN
 
 
 _WHY_MANIFEST = {
     MANIFEST_NONE: "манифеста нет",
-    MANIFEST_BROKEN: "манифест битый (не читается, не JSON или meeting_id не строка)",
+    MANIFEST_BROKEN: "манифест битый (не читается, не JSON или meeting_id не штамп встречи)",
     MANIFEST_OURS: "манифест называет эту встречу",
 }
 
 
 def day_remainder(day: str, roots: list[pathlib.Path], stamp: str = "",
-                  gone: typing.Collection[pathlib.Path] = ()) -> list[str]:
+                  gone: typing.Collection[pathlib.Path] = (),
+                  named: set[pathlib.Path] | None = None) -> list[str]:
     """Папки дня, которые «забыть» не удалит и которые не принадлежат другой
     встрече по исправному манифесту, — строки «путь — почему не удаляется».
 
     Остаток = сетка дня минус `gone` (что удаляет план) минус папки с
     исправным манифестом другой встречи: та — другая встреча, а не остаток.
-    Остальное — принадлежность не доказана, решает человек (№398)."""
+    Остальное — принадлежность не доказана, решает человек (№398).
+    `named` — папки, уже названные в этом прогоне: при цели-дате план идёт по
+    каждой встрече дня, а папку называем один раз (Minor DeepSeek по PR #635);
+    названные сейчас в него дописываются."""
     gone = {q.resolve() for q in gone}
     out = []
     for g in roots:
         for f in _day_grid(g / ARCHIVE_DIR, day):
-            if f.path.resolve() in gone:
+            where = f.path.resolve()
+            if where in gone or (named is not None and where in named):
                 continue
             verdict = manifest_verdict(f.path, stamp)
             if verdict == MANIFEST_FOREIGN:
@@ -528,7 +536,12 @@ def day_remainder(day: str, roots: list[pathlib.Path], stamp: str = "",
             elif f.odd is None:
                 why.append("времени в имени нет")
             why.append(_WHY_MANIFEST[verdict])
-            out.append(f"{f.path} — {'; '.join(why)}: чья папка, не доказано")
+            # «наш» сюда доходит, только если план перестал забирать папку по
+            # манифесту, — это не «не доказано», а расхождение плана (Minor DS по PR #635)
+            tail = "план её не удаляет, проверь" if verdict == MANIFEST_OURS else "чья папка, не доказано"
+            out.append(f"{f.path} — {'; '.join(why)}: {tail}")
+            if named is not None:
+                named.add(where)
     return out
 
 
@@ -678,13 +691,16 @@ class _Ownership:
 
 def plan(stamp: str, root: pathlib.Path,
          graph: pathlib.Path | None = None, keep_graph: bool = False,
-         import_folder: pathlib.Path | None = None) -> Plan:
+         import_folder: pathlib.Path | None = None,
+         day_named: set[pathlib.Path] | None = None) -> Plan:
     """Собрать план: что удалить, что переписать. Ничего не меняет.
 
     `import_folder` — папка импорта приложения: копия аудио в её `done/` и
     сайдкар знают штамп встречи и обязаны уйти вместе с ней, иначе голоса
     участников переживают «забыть» до import_keep_days (аудит GLM 05.09).
     Путь знает только приложение — без него об этом говорим вслух.
+    `day_named` — папки остатка дня, уже названные планом другой встречи этого
+    прогона (day_remainder); план дописывает в него свои.
     """
     p = Plan(stamp=stamp)
 
@@ -1022,7 +1038,7 @@ def plan(stamp: str, root: pathlib.Path,
     # Остаток дня: папка встречи, которую план не удаляет и не может приписать
     # другой встрече, называется вслух — молча оставленная папка встречи есть
     # утечка (№398). Папки, уже названные выше под минутой, — второй раз нет.
-    p.check += day_remainder(stamp[:10], roots, stamp, gone=p.delete + rest)
+    p.check += day_remainder(stamp[:10], roots, stamp, gone=p.delete + rest, named=day_named)
     return p
 
 
@@ -1201,9 +1217,11 @@ def main() -> int:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
     brain = _brain_flags(_root())
     done = False
+    day_named: set[pathlib.Path] = set()      # папку дня называет план первой встречи дня
     for stamp in found:
         done |= apply(plan(stamp, _root(), graph, keep_graph=args.keep_graph,
-                           import_folder=args.import_folder), yes=args.yes, **brain)
+                           import_folder=args.import_folder, day_named=day_named),
+                      yes=args.yes, **brain)
         print()
     return 0 if (done or not args.yes) else 1
 

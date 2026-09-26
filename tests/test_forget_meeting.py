@@ -1436,10 +1436,11 @@ def test_minute_proven_foreign_is_not_offered_to_forget(tmp_path):
     (root / "transcripts" / "2026-07-15_140005.md").write_text("# Встреча\n", encoding="utf-8")
     _minute_node(graph, "2026-07-15_140005.md")
     plan = forget.plan(SECONDS, root, graph)
-    assert named not in plan.check and not any("под минутой" in ln for ln in plan.check)
     assert graph / "Встречи" / f"{STAMP}.md" not in plan.delete
-    # но и молча папку дня без манифеста не оставляет: она в остатке дня (№398)
-    assert [ln.split(" — время")[0] for ln in plan.check] == [named.strip()]
+    # под минутой больше ничего не названо, но и молча папку дня без манифеста план
+    # не оставляет: единственная строка «проверь сам» — она, в остатке дня (№398)
+    assert named not in plan.check
+    assert len(plan.check) == 1 and plan.check[0].startswith(f"{named.strip()} — "), plan.check
 
 
 def _retitled(root: pathlib.Path, sidecar_stamp: str | None) -> None:
@@ -1509,12 +1510,15 @@ def test_archive_manifests_are_read_once_per_plan(tmp_path, monkeypatch):
             d.mkdir(parents=True)
             (d / "meeting.meta.json").write_text(f'{{"meeting_id": "{mid}"}}', encoding="utf-8")
     reads: dict[pathlib.Path, int] = {}
-    real = forget.meeting_archive_id
+    real = pathlib.Path.read_text
 
-    def counted(folder):
-        reads[folder] = reads.get(folder, 0) + 1
-        return real(folder)
-    monkeypatch.setattr(forget, "meeting_archive_id", counted)
+    # мерим чтение файла, а не вызов одной функции: новый читатель манифеста
+    # мимо meeting_archive_id сторож иначе не видит (Important DeepSeek по PR #635)
+    def counted(self, *args, **kwargs):
+        if self.name == "meeting.meta.json":
+            reads[self.parent] = reads.get(self.parent, 0) + 1
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "read_text", counted)
     forget.plan(SECONDS, root, graph)
     other_days = {f: n for f, n in reads.items() if f.name in folders}
     assert len(other_days) == 15 and set(other_days.values()) == {1}, other_days
@@ -1721,6 +1725,8 @@ def test_broken_manifest_has_its_own_reason(tmp_path):
         f"{DAY} 09-30 — Тема": MORNING,
         f"{DAY} 11-00 — Без манифеста": None,
         f"{DAY} 12-00 — Число вместо штампа": 42,
+        f"{DAY} 14-00 — Слово вместо штампа": "заметки",
+        f"{DAY} 15-00 — Пустой штамп": "",
     })
     arch = graph / "Встречи-архив"
     broken = arch / f"{DAY} 13-00 — Не JSON"
@@ -1730,9 +1736,15 @@ def test_broken_manifest_has_its_own_reason(tmp_path):
     [missing] = _remainder_of(plan, arch / f"{DAY} 11-00 — Без манифеста")
     [number] = _remainder_of(plan, arch / f"{DAY} 12-00 — Число вместо штампа")
     [garbled] = _remainder_of(plan, broken)
+    [word] = _remainder_of(plan, arch / f"{DAY} 14-00 — Слово вместо штампа")
+    [empty] = _remainder_of(plan, arch / f"{DAY} 15-00 — Пустой штамп")
     assert "манифеста нет" in missing and "битый" not in missing
-    for line in (number, garbled):
+    # строка, которая не штамп, встречу не называет: такую папку не заберёт ни
+    # один вход инструмента, значит она битая, а не чужая (Critical DS по PR #635)
+    for line in (number, garbled, word, empty):
         assert "манифест битый" in line and "манифеста нет" not in line
+    assert forget.manifest_verdict(arch / f"{DAY} 14-00 — Слово вместо штампа", "") == forget.MANIFEST_BROKEN
+    assert forget.manifest_verdict(arch / f"{DAY} 15-00 — Пустой штамп", "") == forget.MANIFEST_BROKEN
 
 
 def test_folder_of_another_meeting_by_a_sound_manifest_is_not_a_remainder(tmp_path, capsys, monkeypatch):
@@ -1782,6 +1794,26 @@ def test_unknown_day_names_its_folders_next_to_not_found(tmp_path, monkeypatch, 
     assert "в архиве лежат папки" not in capsys.readouterr().out
 
 
+def test_date_target_names_a_day_folder_once(tmp_path, monkeypatch, capsys):
+    """Цель — дата с двумя встречами: план идёт по каждой, а папка остатка дня
+    названа один раз, а не по разу на встречу (Minor DeepSeek по PR #635)."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} 09-30 — Тема": MORNING,
+        f"{DAY} 11-00 — Другая": f"{DAY}_1100",
+        f"{DAY} 12-00 — Без манифеста": None,
+    })
+    left = graph / "Встречи-архив" / f"{DAY} 12-00 — Без манифеста"
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", DAY, "--graph", str(graph)])
+    assert forget.main() == 0
+    out = capsys.readouterr().out
+    assert f"за {DAY} встреч несколько: {MORNING}, {DAY}_1100" in out
+    assert out.count(f"{left} — ") == 1, out
+    # каждая встреча по отдельности — как из приложения — свою папку дня называет
+    for stamp in (MORNING, f"{DAY}_1100"):
+        assert len(_remainder_of(forget.plan(stamp, root, graph), left)) == 1
+
+
 def test_day_remainder_of_a_graph_without_an_archive_is_empty(tmp_path):
     assert forget.day_remainder(DAY, [tmp_path / "нет графа"]) == []
 
@@ -1800,11 +1832,14 @@ def test_plan_and_remainder_cover_every_day_folder_exactly_once(tmp_path):
         f"{DAY} заметки": None,
         f"{DAY}_1400_тема": None,
         f"{DAY} 13-00 — Переименована": "2026-07-22_0800",
+        f"{DAY} 15-00 — Заметки": "заметки",
+        f"{DAY} 16-00 — Пустой штамп": "",
         "2026-07-22 10-00 — Соседний день": None,
     })
     arch = graph / "Встречи-архив"
     grid = [f.path for f in forget._day_grid(arch, DAY)]
-    assert len(grid) == 9
+    assert len(grid) == 11
+    known = forget.stamps(root, graph)
     targets = forget.resolve(DAY, root, graph) + [f"{DAY}_1000"]
     assert targets == [MORNING, f"{DAY}_1100", f"{DAY}_1000"]
     for stamp in targets:
@@ -1812,7 +1847,10 @@ def test_plan_and_remainder_cover_every_day_folder_exactly_once(tmp_path):
         for folder in grid:
             gone = folder in plan.delete
             named = len(_remainder_of(plan, folder))
-            other = forget.manifest_verdict(folder, stamp) == forget.MANIFEST_FOREIGN
+            # «другая встреча» — по реестру встреч, до которых «забыть» дотянется
+            # своим штампом, а не по вердикту той же функции, что строит отчёт
+            owner = forget.meeting_archive_id(folder)
+            other = owner != stamp and owner in known
             assert gone + named + other == 1, (stamp, folder.name, gone, named, other)
         assert not any("Соседний день" in ln for ln in plan.check)
     # по имени «ДАТА_ЧЧММ_тема» время не читается: после даты нет « — »

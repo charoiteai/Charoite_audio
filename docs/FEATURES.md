@@ -268,9 +268,9 @@ Cores (together with the fact that came from that meeting) and links in
 Dossiers and people's nodes. A meeting of which only the archive folder is
 left is found by the `meeting_id` in its `meeting.meta.json`. Any other archive
 folder of that day the plan does not remove and no sound manifest gives to
-another meeting (no manifest, a broken one, a name without « — ») is named under
+another meeting (no manifest; a broken one — unreadable, not JSON, or a meeting_id that is not a meeting stamp; a name without « — ») is named under
 «проверь сам» with the reason — and next to «не найдена» when a date has no
-meeting at all. A link inside a sentence becomes a
+meeting at all; with `--keep-graph` the graph stays whole and the list is not printed. A link inside a sentence becomes a
 «(встреча удалена)» note instead of a dangling wiki-link. By default it prints
 the plan: deletion is irreversible and needs `--yes`. Edits to nodes that stay
 alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
