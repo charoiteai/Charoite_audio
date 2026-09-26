@@ -34,8 +34,24 @@ CFG = {
 }
 
 
-def _перехваты_requests() -> set[str]:
-    """Имена `requests.<X>` из `except` в `src/llm.py` — снятые разбором, не списком.
+def _путь_от_requests(expr) -> tuple[str, ...] | None:
+    """`requests.X` → `("X",)`, `requests.exceptions.X` → `("exceptions", "X")`; иное — None.
+
+    Путь целиком, а не каждое имя по дороге: внутренний квалификатор
+    (`exceptions`) — не класс исключения, и прежний обход всех атрибутов
+    требовал его у фейков как класс (Important DeepSeek по PR #636)."""
+    import ast
+    части = []
+    while isinstance(expr, ast.Attribute):
+        части.append(expr.attr)
+        expr = expr.value
+    if isinstance(expr, ast.Name) and expr.id == "requests" and части:
+        return tuple(reversed(части))
+    return None
+
+
+def _перехваты_requests(source: str) -> set[tuple[str, ...]]:
+    """Пути `requests.<…>` из `except` исходника — снятые разбором, не списком.
 
     Узкий `except requests.RequestException` ловит то, что лежит в атрибуте
     ПОДМЕНЁННОГО модуля: фейк с `RequestException = Exception` глотал бы всё
@@ -43,24 +59,27 @@ def _перехваты_requests() -> set[str]:
     которого у фейка нет, — `AttributeError` уже на входе в `except`.
     """
     import ast
-    tree = ast.parse((SRC / "llm.py").read_text(encoding="utf-8"))
-    имена: set[str] = set()
-    for node in ast.walk(tree):
+    пути: set[tuple[str, ...]] = set()
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ExceptHandler) and node.type is not None:
-            for часть in ast.walk(node.type):
-                if isinstance(часть, ast.Attribute) and isinstance(часть.value, ast.Name) \
-                        and часть.value.id == "requests":
-                    имена.add(часть.attr)
-    return имена
+            типы = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+            пути |= {путь for тип in типы if (путь := _путь_от_requests(тип))}
+    return пути
 
 
-ПЕРЕХВАТЫ_REQUESTS = _перехваты_requests()
+ПЕРЕХВАТЫ_REQUESTS = _перехваты_requests((SRC / "llm.py").read_text(encoding="utf-8"))
 
 
-def _нарушения_контракта(fake) -> list[str]:
+def _по_пути(объект, путь: tuple[str, ...]):
+    for имя in путь:
+        объект = getattr(объект, имя, None)
+    return объект
+
+
+def _нарушения_контракта(fake, перехваты=None) -> list[str]:
     """Чего фейку транспорта не хватает против `except` продукта: те же классы, что у `requests`."""
-    return [имя for имя in sorted(ПЕРЕХВАТЫ_REQUESTS)
-            if getattr(fake, имя, None) is not getattr(requests, имя)]
+    return [".".join(путь) for путь in sorted(ПЕРЕХВАТЫ_REQUESTS if перехваты is None else перехваты)
+            if _по_пути(fake, путь) is not _по_пути(requests, путь)]
 
 
 def _подменить_requests(monkeypatch, fake):
@@ -1129,8 +1148,10 @@ def test_privacy_names_the_cache_limits_the_code_has():
 class _Tags:
     """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса.
 
-    `bad_json` — тело не JSON: `r.json()` бросает `ValueError`, как у
-    `requests` (его `JSONDecodeError` — и `ValueError`, и `RequestException`)."""
+    `bad_json` — тело не JSON: `r.json()` бросает `requests.exceptions.JSONDecodeError`,
+    как настоящий транспорт (он и `ValueError`, и `RequestException`). Встроенный
+    `ValueError` держал бы в продукте перехват, до которого бой не доходит
+    (Important DeepSeek по PR #636)."""
 
     RequestException = requests.exceptions.RequestException
     ConnectionError = requests.exceptions.ConnectionError
@@ -1145,7 +1166,7 @@ class _Tags:
         if self.bad_json:
             class _Html(_Resp):
                 def json(self):
-                    raise ValueError("Expecting value: line 1 column 1 (char 0)")
+                    raise requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
             return _Html({}, text="<html>")
         return _Resp(self.payload)
 
@@ -1252,14 +1273,33 @@ def test_fake_transport_contract_is_read_from_the_product():
     """Имена берутся из `except` продукта, а не из списка в тесте: сегодня это
     сеть целиком и отказ соединения стрима. Разбор, потерявший их, сделал бы
     контракт пустым и зелёным."""
-    assert {"RequestException", "ConnectionError"} <= ПЕРЕХВАТЫ_REQUESTS
-    for имя in ПЕРЕХВАТЫ_REQUESTS:
-        assert issubclass(getattr(requests, имя), BaseException), имя
+    assert {("RequestException",), ("ConnectionError",)} <= ПЕРЕХВАТЫ_REQUESTS
+    for путь in ПЕРЕХВАТЫ_REQUESTS:
+        assert issubclass(_по_пути(requests, путь), BaseException), путь
+
+
+def test_contract_reads_a_qualified_except_as_one_path():
+    """`except requests.exceptions.X` — один путь до класса, а не два имени:
+    квалификатор `exceptions` классом не считается, и фейк без него получает
+    внятный отказ, а не `TypeError` из `issubclass` (Important DeepSeek по PR #636)."""
+    пути = _перехваты_requests(
+        "try:\n    pass\n"
+        "except (requests.exceptions.RequestException, ValueError):\n    pass\n"
+        "except requests.ConnectionError:\n    pass\n")
+    assert пути == {("exceptions", "RequestException"), ("ConnectionError",)}
+
+    class _Без:
+        ConnectionError = requests.ConnectionError
+
+    class _С(_Без):
+        exceptions = requests.exceptions
+    assert _нарушения_контракта(_Без, пути) == ["exceptions.RequestException"]
+    assert _нарушения_контракта(_С, пути) == []
 
 
 _ФЕЙКИ_ТРАНСПОРТА = sorted(
-    (объект for имя, объект in dict(globals()).items()
-     if isinstance(объект, type) and имя.startswith("_")
+    (объект for объект in dict(globals()).values()
+     if isinstance(объект, type) and объект.__module__ == __name__
      and (callable(getattr(объект, "post", None)) or callable(getattr(объект, "get", None)))
      and not issubclass(объект, dict)),
     key=lambda к: к.__name__)
@@ -1275,28 +1315,76 @@ def test_every_fake_transport_carries_the_real_exceptions(fake):
 
 
 def test_fake_transports_are_found():
-    """Сборщик фейков не пуст и видит все module-level подмены."""
-    assert {к.__name__ for к in _ФЕЙКИ_ТРАНСПОРТА} >= {"_Requests", "_BusyThenOk", "_EmbedServer", "_Tags"}
+    """Сборщик видит все классы-транспорты модуля, с подчёркиванием и без, — и
+    ровно их: новый фейк попадает в проверку контракта сам, а список здесь
+    краснеет, пока его не назовут (Minor DeepSeek по PR #636)."""
+    assert {к.__name__ for к in _ФЕЙКИ_ТРАНСПОРТА} == {"_Requests", "_BusyThenOk", "_EmbedServer", "_Tags"}
+
+
+#: Файлы, которые сегодня подменяют глагол `requests` напрямую. `llm.requests` —
+#: тот же объект модуля, который патчит сторож: такая подмена снимает его обёртку,
+#: и запрос мимо сценария получает ответ фейка, а не отказ. Долг №407 (адаптер над
+#: картой маршрутов); новому файлу сюда нельзя — сценарий задаётся маршрутом сторожа.
+ГЛАГОЛЫ_МИМО_СТОРОЖА = frozenset({
+    "test_archive_dedup.py", "test_audit_0_46_мелочи.py", "test_brain_flag.py",
+    "test_cloud_engine.py", "test_derivative_passport.py", "test_graph_search.py",
+    "test_llm_health.py",
+})
+
+
+def _подмены_мимо_двери(tree) -> tuple[list[int], list[int]]:
+    """Строки подмены `llm.requests` целиком и строки подмены глагола `requests`."""
+    import ast
+    from conftest import ГЛАГОЛЫ_СТОРОЖА
+    модуль, глагол = [], []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef) or fn.name == "_подменить_requests":
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "setattr" and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)):
+                continue
+            цель, имя = node.args[0], node.args[1].value
+            if имя == "requests" and isinstance(цель, ast.Name) and цель.id in ("llm", "llm_mod"):
+                модуль.append(node.lineno)
+            elif имя in ГЛАГОЛЫ_СТОРОЖА and (
+                    (isinstance(цель, ast.Name) and цель.id == "requests")
+                    or (isinstance(цель, ast.Attribute) and цель.attr == "requests")):
+                глагол.append(node.lineno)
+    return модуль, глагол
 
 
 def test_llm_requests_is_substituted_only_through_the_contract_door():
     """Подмена `llm.requests` мимо `_подменить_requests` обошла бы контракт —
-    и фейк, вложенный в тело теста, сборщик выше не видит."""
+    и фейк, вложенный в тело теста, сборщик выше не видит. Подмена глагола
+    (`setattr(llm.requests, "post", …)`) снимает обёртку сторожа — вне перечня
+    долга она запрещена, а перечень не держит файлов, где её уже нет."""
     import ast
     tests_dir = pathlib.Path(__file__).resolve().parent
-    мимо = []
+    мимо, глаголы = [], set()
     for файл in sorted(tests_dir.glob("test_*.py")):
-        tree = ast.parse(файл.read_text(encoding="utf-8"))
-        for fn in ast.walk(tree):
-            if not isinstance(fn, ast.FunctionDef) or fn.name == "_подменить_requests":
-                continue
-            for node in ast.walk(fn):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                        and node.func.attr == "setattr" and len(node.args) >= 2 \
-                        and isinstance(node.args[1], ast.Constant) and node.args[1].value == "requests" \
-                        and isinstance(node.args[0], ast.Name) and node.args[0].id in ("llm", "llm_mod"):
-                    мимо.append(f"{файл.name}:{node.lineno}")
+        модуль, глагол = _подмены_мимо_двери(ast.parse(файл.read_text(encoding="utf-8")))
+        мимо += [f"{файл.name}:{n}" for n in модуль]
+        if глагол:
+            глаголы.add(файл.name)
+            if файл.name not in ГЛАГОЛЫ_МИМО_СТОРОЖА:
+                мимо += [f"{файл.name}:{n} (глагол requests)" for n in глагол]
     assert not мимо, f"llm.requests подменяют мимо контракта: {мимо}"
+    assert ГЛАГОЛЫ_МИМО_СТОРОЖА == глаголы, (
+        f"перечень долга разошёлся с деревом: лишние {sorted(ГЛАГОЛЫ_МИМО_СТОРОЖА - глаголы)}")
+
+
+def test_the_door_sees_a_verb_patch_in_both_forms():
+    """Обе формы подмены глагола видны двери: по имени модуля и через атрибут."""
+    import ast
+    tree = ast.parse(
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(requests, 'post', fake)\n"
+        "    monkeypatch.setattr(llm.requests, 'get', fake)\n"
+        "    monkeypatch.setattr(llm_mod, 'requests', fake)\n"
+        "    monkeypatch.setattr(llm.requests, 'Session', fake)\n")
+    assert _подмены_мимо_двери(tree) == ([4], [2, 3])
 
 
 #: Адрес Ollama прогона литералом: `== [engine.base]` сравнивал бы запись заглушки
@@ -1326,7 +1414,9 @@ def test_a_downed_model_fails_the_stream_at_once(модель_не_отвеча�
     import requests
     monkeypatch.setattr(llm_mod.time, "sleep",
                         lambda s: pytest.fail(f"стрим ждал {s} с на лежащем сервере", pytrace=False))
-    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}  # не умолчание: маршрут — по base (№396)
+    # не умолчание: маршрут ставится по base экземпляра — литерал умолчания здесь
+    # запрос не поймал бы, и сторож уронил бы тест (№396)
+    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}
     with pytest.raises(requests.RequestException):
         list(LLM(cfg).stream("вопрос"))
     assert модель_не_отвечает == ["вопрос"]

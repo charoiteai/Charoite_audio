@@ -565,15 +565,16 @@ class LLM:
         """Имена скачанных моделей; «сервера нет» и «моделей нет» — оба `set()`.
 
         Различать их незачем: `resolve_model` в обоих случаях берёт модель из
-        конфига, и об ошибке скажет сама Ollama. Глотается только сеть и не-JSON
-        тело: прежний `except Exception` глотал и отказ сторожа тестов, и
-        ошибку в самом разборе — тесты шли по «сервер лежит», не зная об этом
-        (№397). Форма ответа проверяется явно, а не падением на `m["name"]`.
+        конфига, и об ошибке скажет сама Ollama. Глотается только сеть: не-JSON
+        тело `requests` отдаёт своим `JSONDecodeError`, а он тоже
+        `RequestException`. Прежний `except Exception` глотал и отказ сторожа
+        тестов, и ошибку в самом разборе — тесты шли по «сервер лежит», не зная
+        об этом (№397). Форма ответа проверяется явно, а не падением на `m["name"]`.
         """
         try:
             r = requests.get(f"{self.base}/api/tags", timeout=3)
             body = r.json()
-        except (requests.RequestException, ValueError):
+        except requests.RequestException:
             return set()
         models = body.get("models") if isinstance(body, dict) else None
         if not isinstance(models, list) or not all(
