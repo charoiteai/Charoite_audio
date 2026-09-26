@@ -93,7 +93,7 @@ def _config_note(text: str) -> None:
     """Одна строка в stderr на вид неполадки за процесс: конфиг читают часто."""
     if text not in _config_said:
         _config_said.add(text)
-        print(f"config: {text}", file=sys.stderr, flush=True)
+        print(f"config: {text}", file=sys.stderr)
 
 
 def load_config() -> dict:

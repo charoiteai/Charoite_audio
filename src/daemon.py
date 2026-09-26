@@ -1379,9 +1379,7 @@ def main():
         import difflib as _dl
 
         import nli
-        # ready(), а не is_available(): тот смотрит только файлы, и не собравшаяся
-        # сессия отдавала 0.0 — «не дубль» — на каждый тезис (№405, DS C2 круга 2)
-        if not nli.ready():
+        if not nli.is_available():
             return False
         text = thesis_rules.strip_mark(line)
         if len(text) < 12:
@@ -3400,7 +3398,7 @@ def main():
             try:
                 MeetingStatusStore(_root()).failed(tr.path, f"не удалось запустить обработку: {e}")
             except Exception as e2:  # noqa: BLE001 — статус отказа вспомогателен; запись финализируем всё равно
-                print(f"статус отказа фона не записан: {e2}", file=sys.stderr, flush=True)
+                print(f"статус отказа фона не записан: {e2}", file=sys.stderr)
         hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
         emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
 

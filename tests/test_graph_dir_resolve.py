@@ -217,3 +217,11 @@ def test_конфиг_не_словарь_и_следы_неполадок(tmp_p
     monkeypatch.setattr(graphs, "config_path", нет_корня)
     assert graphs.load_config() == {}
     assert "корень данных не назван" in capsys.readouterr().err
+
+
+def test_конфиг_без_пакета_yaml_пустой_словарь(monkeypatch):
+    """Без пакета yaml конфиг не читается, но контракт «всегда словарь» держится —
+    `None` вместо `{}` уронил бы каждого, кто зовёт `.get` (выживший мутант №405)."""
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "yaml", None)      # import yaml → ImportError
+    assert graphs.load_config() == {}
