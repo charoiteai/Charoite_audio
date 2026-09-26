@@ -111,3 +111,13 @@ def test_diarize_names_follow_the_same_limits(_ollama_маршруты, отве
     lines = [("speaker_0", 0.0, 1.0, реплика), ("speaker_1", 1.0, 2.0, "Ага")]
 
     assert diarize.name_speakers(CFG_DIARIZE, lines) == {}
+
+
+@pytest.mark.parametrize("имя", ["Лев", "Константиновича"], ids=["3-буквы", "15-букв"])
+def test_diarize_names_accept_the_edges_of_the_length_limit(_ollama_маршруты, имя):
+    """Пределы включительные, как у speaker_names: 3 и 15 букв — ещё имя."""
+    _ollama_маршруты.сценарий_чата(_чат(f'{{"speaker_0": "{имя}"}}'))
+
+    lines = [("speaker_0", 0.0, 1.0, f"Спросите {имя}, он знает")]
+
+    assert diarize.name_speakers(CFG_DIARIZE, lines) == {"speaker_0": имя}
