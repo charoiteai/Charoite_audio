@@ -143,6 +143,7 @@ def _status_note(rel: pathlib.Path, refusal: StatusChanged) -> str:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()   # минутки встреч — только владельцу (№385)
     ap = argparse.ArgumentParser(description="Поручения в минутках → формат задач")
     ap.add_argument("--graph", help="путь к графу (по умолчанию sufler.graph_dir)")
     ap.add_argument("--apply", action="store_true", help="записать изменения")

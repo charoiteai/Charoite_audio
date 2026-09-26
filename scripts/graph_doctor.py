@@ -41,7 +41,7 @@ import graph_updater  # noqa: E402
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 import redirects  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 LINK = graph_links.LINK
 HUB_DIRS = ("Люди", "Системы", "Команды", "Ядра", "Блокеры", "Модели", "Досье")
@@ -266,6 +266,7 @@ def report_path() -> pathlib.Path:
 
 
 def main() -> int:
+    harden_umask()   # отчёт здоровья графа с примерами узлов — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--graph", type=pathlib.Path, default=None, help="один граф")
     ap.add_argument("--all-graphs", action="store_true", help="все графы vault с папкой «Ядра»")
