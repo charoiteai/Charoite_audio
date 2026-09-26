@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 # Мутации, которые дают сигнал. Строк и сообщений не трогаем: их переделка
 # почти всегда «выживает» и тонет в отчёте шумом, а смысла в ней нет.
@@ -109,7 +110,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNMUTABLE  # noqa: E402
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
@@ -139,8 +140,9 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
     — в изменённых строках нет кода (строк нет, или только комментарии и
     константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
-    нечего; `EXIT_PARTIAL` — судили не весь план (прервано встречей, срезано
-    потолком, не применилось, файл не прочитался); 0 — проверен весь план, чисто.
+    нечего; `EXIT_UNJUDGED` — план был, не судился ни один мутант; `EXIT_PARTIAL`
+    — судили не весь план (прервано встречей, срезано потолком, не применилось,
+    файл не прочитался); 0 — проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
@@ -150,6 +152,11 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     totals = totals or ScanTotals()
     if survivors:
         return 1
+    # План был, а не судился ни один мутант (бюджет съела база, прервано на первом,
+    # ни один не применился) — не «проверено не всё», а «не проверено ничего»: под
+    # `partial` CI пропускал это жёлтым (Important DeepSeek по PR #637).
+    if planned and not tested:
+        return EXIT_UNJUDGED
     # Непрочитанный файл — неполнота при любом плане: его строки не судились,
     # а пустой план из-за него — не «нечего» (№386).
     if totals.files_unreadable:
@@ -524,6 +531,12 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     return hits or ["tests"]
 
 
+#: Худший прогон набора — во столько раз дольше `--timeout`: потолок теста в
+#: pytest один, а тестов в наборе много. Этот же множитель держит бюджет прогона
+#: и потолок шага мутатора в CI (`tests/test_workflows.py`, №395).
+WORST_RUN_FACTOR = 4
+
+
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
     # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
@@ -540,13 +553,85 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
-                           timeout=timeout * 4)
+                           timeout=timeout * WORST_RUN_FACTOR)
     except subprocess.TimeoutExpired:
         return False          # завис — считаем убитым: поведение изменилось
     return r.returncode == 0
 
 
+# Причина в отчёте, пока прогон идёт: оборвёт раннер — на диске останется она
+RUNNING = "прогон не дошёл до конца плана"
+#: Остановка до первого мутанта: база ещё идёт или покраснела. Отчёт пишется и
+#: тогда — база с худшим случаем 4 × --timeout на набор бывает самым длинным этапом
+#: прогона, и job, оборванный на ней, раньше не оставлял отчёта вовсе (DeepSeek по
+#: PR #640, та же дыра в #637).
+BASE_RUNNING = "базовый прогон не закончен"
+BASE_RED = "база красная"
+
+# Шов часов: бюджет прогона тесты судят подменённым временем, а не сном
+clock = time.monotonic
+
+
+def suite_key(work: pathlib.Path, module: pathlib.Path) -> tuple[str, ...]:
+    """Набор тестов модуля как ключ длительностей. Одна функция на обе точки:
+    базовый прогон пишет длительность под этим ключом, мутант читает её под
+    ним же — разойдись они, оценки у мутанта не нашлось бы (№395). Шов набора
+    по-прежнему один — `tests_for`."""
+    return tuple(tests_for(work, module))
+
+
+def timed_run(cwd: pathlib.Path, suite: tuple[str, ...], timeout: int) -> tuple[bool, float]:
+    """`run_tests` с замером: (исход, секунды). Обёртка, а не новая подпись
+    `run_tests`: её подменяют тесты."""
+    t0 = clock()
+    ok = run_tests(cwd, list(suite), timeout)
+    return ok, clock() - t0
+
+
+def fits(budget_s: float | None, started: float, need: float) -> bool:
+    """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда."""
+    return budget_s is None or budget_s - (clock() - started) >= need
+
+
+def render_report(tested: int, survivors: list, skipped: list, planned: int, dropped: int,
+                  aborted: str, totals: ScanTotals) -> str:
+    """Отчёт о проверенном к этому моменту. Пишется после каждого мутанта: job,
+    оборванный раннером на потолке, прежде уносил с собой и отчёт — тот писался
+    один раз в конце (№395)."""
+    untried = planned - len(skipped) - tested
+    aborted = aborted or "сбой"
+    # «K из M» — из всего плана до среза: строка сама называет, куда делась разница
+    why = [f"срезано --max: {dropped}"] if dropped else []
+    if untried:
+        why.append(f"остановка: {aborted}")
+    lines = [f"Проверено мутантов: {tested} из {planned + dropped}"
+             + (f" ({'; '.join(why)})" if why else "") + f", выжило: {len(survivors)}"]
+    if untried:
+        lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted}) — "
+                     "это НЕ значит «там всё хорошо».")
+    if skipped:
+        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
+    if totals.files_unreadable:
+        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
+                     f"— их строки не судились.")
+    if dropped:
+        lines.append(f"Не проверено из-за потолка: {dropped}. "
+                     f"Это НЕ значит «там всё хорошо».")
+    for m, why_not in skipped:
+        lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why_not}")
+    for s in survivors:
+        lines.append(f"  ВЫЖИЛ {s}")
+    if survivors:
+        lines.append("")
+        lines.append("Выживший мутант — это изменение поведения, которого не "
+                     "заметил ни один тест. Либо тест на это место есть, но "
+                     "он ничего не держит, либо места в тестах нет вовсе.")
+    return "\n".join(lines)
+
+
 def main(argv: list[str]) -> int:
+    # Бюджет считается от старта процесса: подготовка дерева и база входят в него
+    started = clock()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", default="origin/main...HEAD",
                     help="диапазон git, чьи строки мутируем")
@@ -557,6 +642,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
+    ap.add_argument("--budget-s", type=float, default=None,
+                    help="секунд на весь прогон от старта; не хватает на следующий "
+                         "набор — остановка с отчётом о проверенном (--force не снимает)")
     args = ap.parse_args(argv[1:])
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
@@ -646,6 +734,13 @@ def main(argv: list[str]) -> int:
     skipped: list[tuple[Mutation, str]] = []
     tested = 0
     aborted = ""
+    durations: dict[tuple[str, ...], float] = {}
+
+    def save(reason: str) -> None:
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(render_report(tested, survivors, skipped, len(plan), dropped,
+                                                 reason, totals) + "\n", encoding="utf-8")
     try:
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
@@ -656,14 +751,25 @@ def main(argv: list[str]) -> int:
         # не только их объединение: тест, зелёный в общей куче, в одиночку
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
-        subsets = {tuple(tests_for(work, m.path)) for m in plan}
+        subsets = {suite_key(work, m.path) for m in plan}
         # Свежий worktree байткода не содержит, но запрет записи не мешает
         # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
         print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
-        broken = [ts for ts in sorted(subsets)
-                  if not run_tests(work, list(ts), args.timeout)]
+        # Явный цикл, а не включение: из него выходят по бюджету. Набор ещё не
+        # мерили — берём худший случай, потолок `run_tests` (4 × --timeout).
+        broken: list[tuple[str, ...]] = []
+        for ts in sorted(subsets):
+            if not fits(args.budget_s, started, WORST_RUN_FACTOR * args.timeout):
+                aborted = "бюджет"
+                print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
+                      f"запускаются ({len(durations)}/{len(subsets)} наборов)")
+                break
+            ok, durations[ts] = timed_run(work, ts, args.timeout)
+            if not ok:
+                broken.append(ts)
+            save(BASE_RUNNING)
         if broken:
             print("\nБАЗА КРАСНАЯ: без единой мутации падают наборы:")
             for ts in broken:
@@ -671,20 +777,28 @@ def main(argv: list[str]) -> int:
             print("В отдельном дереве нет того, что лежит в .gitignore "
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
+            save(BASE_RED)
             return 2
-        for i, mut in enumerate(plan, 1):
+        for i, mut in enumerate([] if aborted else plan, 1):
+            suite = suite_key(work, mut.path)
+            # Бюджет — вне гварда занятости: `--force` идёт поверх встречи, но
+            # не поверх потолка job. Оценка — замер этого набора в базе; таймаут
+            # мутанта под остаток НЕ урезается: истёкший прогон считается
+            # «убит», и урезание дало бы ложные убийства (№395).
+            if not fits(args.budget_s, started, durations[suite]):
+                aborted = "бюджет"
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
             # была однонаправленной — ночь ждала нас, мы ночь не видели).
-            if busy_guard(args):
+            elif busy_guard(args):
                 if busy_signals.live_recording(data_root):
                     aborted = "живая встреча"
                 elif busy_signals.night_running(data_root):
                     aborted = "ночной цикл"
-                if aborted:
-                    print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
-                          "проверено, остальное не судилось)")
-                    break
+            if aborted:
+                print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
+                      "проверено, остальное не судилось)")
+                break
             rel = mut.path.relative_to(root)
             target = work / rel
             original = target.read_text(encoding="utf-8")
@@ -696,10 +810,11 @@ def main(argv: list[str]) -> int:
                 # текст в дереве дал бы «убит» без участия мутации.
                 skipped.append((mut, why))
                 print(f"  [{i}/{len(plan)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
+                save(RUNNING)
                 continue
             target.write_text(mutated, encoding="utf-8")
             try:
-                alive = run_tests(work, tests_for(work, mut.path), args.timeout)
+                alive, _ = timed_run(work, suite, args.timeout)
             finally:
                 target.write_text(original, encoding="utf-8")
             tested += 1
@@ -707,39 +822,18 @@ def main(argv: list[str]) -> int:
             print(f"  [{i}/{len(plan)}] {mark}: {mut}")
             if alive:
                 survivors.append(mut)
+            # На диске всегда проверенное к этому моменту: оборвёт раннер —
+            # отчёт скажет, сколько успели, а не пропадёт целиком
+            save(RUNNING)
     finally:
         lock.release()
         subprocess.run(["git", "worktree", "remove", "--force", str(work)],
                        cwd=root, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    lines = [f"Проверено мутантов: {tested}, выжило: {len(survivors)}"]
-    untried = len(plan) - len(skipped) - tested
-    if untried:
-        lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted or 'сбой'}) — "
-                     "это НЕ значит «там всё хорошо».")
-    if skipped:
-        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
-    if totals.files_unreadable:
-        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
-                     f"— их строки не судились.")
-    if dropped:
-        lines.append(f"Не проверено из-за потолка: {dropped}. "
-                     f"Это НЕ значит «там всё хорошо».")
-    for m, why in skipped:
-        lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why}")
-    for s in survivors:
-        lines.append(f"  ВЫЖИЛ {s}")
-    if survivors:
-        lines.append("")
-        lines.append("Выживший мутант — это изменение поведения, которого не "
-                     "заметил ни один тест. Либо тест на это место есть, но "
-                     "он ничего не держит, либо места в тестах нет вовсе.")
-    report = "\n".join(lines)
+    report = render_report(tested, survivors, skipped, len(plan), dropped, aborted, totals)
     print("\n" + report)
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(report + "\n", encoding="utf-8")
+    save(aborted)
     return verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
 
 
