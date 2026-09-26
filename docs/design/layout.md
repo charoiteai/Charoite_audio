@@ -182,7 +182,7 @@
 - `src/graph_search.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
-- `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/main.py` ← README.md, docs/SETUP.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/mcp_server.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/meeting_archive.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

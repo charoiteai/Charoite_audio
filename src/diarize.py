@@ -13,7 +13,6 @@ R=собеседники (--channel right диаризует только их).
 from __future__ import annotations
 
 import datetime as dt
-import json
 import atexit
 import shutil
 import pathlib
@@ -308,10 +307,10 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
 
 def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict[str, str]:
     """qwen сопоставляет Speaker N ↔ имена (обращения/представления в речи)."""
-    from llm import LLM
+    import llm
     sample = "\n".join(f"[{spk}] {text}" for spk, _s, _e, text in lines[:80] if text)[:7000]
     try:
-        raw = LLM(cfg).complete(
+        raw = llm.LLM(cfg).complete(
             sample,
             system=(
                 "По репликам определи имена говорящих: кто как представился, "
@@ -322,8 +321,39 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
             # num_ctx теперь явный (правило llm.py): раньше поле не задавалось
             # и модель грузилась с контекстом из Modelfile — раздутый KV-кэш
             num_ctx=8192, timeout=180)
-        data = json.loads(raw or "{}")
-        return {k: v for k, v in data.items() if isinstance(v, str)}
+        # Разбор — терпимый к прозе и ```-заборам: сборка без грамматики
+        # отвечает текстом, и имя в нём ещё надо найти (parse_json_block).
+        data = llm.parse_json_block(raw)
+        if data is None:
+            print("имена: не удалось ("
+                  + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
+                     else "пустой ответ") + ")")
+            return {}
+        # Имя, которого в разговоре не слышно, — выдумано: эхо образца «Имя» из
+        # промпта или догадка. Ключи — только метки из входа (круги 1–2 по №419,
+        # DS M5/I2). Полный гвард доверия (падежи, владелец, свои реплики) живёт
+        # в speaker_names на боевом пути пересборки; аудиослою импортировать его
+        # запрещают стрелки раскладки, а этот путь — CLI-диагностика
+        # `<stamp>_спикеры.md`, поэтому здесь проверка проще: имя целым словом в
+        # тексте и не метка.
+        heard = sample.casefold()
+        labels = {spk for spk, _s, _e, _t in lines}
+        folded_labels = {spk.casefold() for spk in labels}
+        names: dict[str, str] = {}
+        for k, v in data.items():
+            if k not in labels or not isinstance(v, str):
+                continue
+            name = v.strip().strip(".,!?:;«»\"'()")
+            low = name.casefold()
+            # те же пределы, что у speaker_names (MIN_LEN..MAX_LEN, одно слово
+            # из букв и дефиса): «Да», «Ок» и «Павел Иванович» — не имя метки
+            # (выходной круг 3 по №419, DS I2)
+            if not (3 <= len(name) <= 15 and name.replace("-", "").isalpha()):
+                continue
+            if low not in folded_labels \
+                    and re.search(rf"(?<!\w){re.escape(low)}(?!\w)", heard):
+                names[k] = name
+        return names
     except Exception as e:  # noqa: BLE001
         print(f"имена: не удалось ({e})")
         return {}
