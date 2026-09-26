@@ -793,3 +793,285 @@ def test_мутатор_из_чужого_клона_берёт_канон_св�
                          cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
     assert "Traceback" not in out.stderr, out.stderr[-800:]
     assert out.returncode == exit_codes.EXIT_NOTHING_TO_CHECK, (out.returncode, out.stdout[-400:])
+
+
+# --- №395: бюджет прогона --budget-s -----------------------------------------
+
+_REL = pathlib.Path("scripts") / "mutate_check.py"
+
+
+class _Clock:
+    """Часы бюджета без сна: тесты двигают их вручную."""
+
+    def __init__(self, t: float = 0.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def tick(self, dt: float) -> None:
+        self.t += dt
+
+
+class _Runner:
+    """Подмена run_tests: помнит вызовы, двигает часы, падает по счёту.
+
+    База и мутанты «длятся» разное время: базовый прогон судит допуск на
+    худший случай, а мутант — уже ИЗМЕРЕННУЮ длительность набора (№395)."""
+
+    def __init__(self, clock, *, base=True, mutant=False, base_dt=5.0,
+                 mutant_dt=5.0, crash_on=None):
+        self.clock, self.base, self.mutant = clock, base, mutant
+        self.base_dt, self.mutant_dt = base_dt, mutant_dt
+        self.crash_on, self.n = crash_on, 0
+        self.calls: list[tuple[tuple[str, ...], int]] = []
+
+    def __call__(self, cwd, targets, timeout):
+        self.n += 1
+        self.calls.append((tuple(targets), timeout))
+        if self.crash_on is not None and self.n == self.crash_on:
+            raise RuntimeError("прогон оборвался")
+        self.clock.tick(self.base_dt if self.n == 1 else self.mutant_dt)
+        return self.base if self.n == 1 else self.mutant
+
+
+def _head_mutations(n: int):
+    head = subprocess.run(["git", "show", f"HEAD:{_REL.as_posix()}"], cwd=REPO,
+                          capture_output=True, text=True, check=True).stdout
+    return mc.scan(REPO / _REL, set(range(1, 400)), head).mutations[:n]
+
+
+def _budget_main(monkeypatch, tmp_path, muts, *, clock, runner, budget=None,
+                 timeout=1, force=True, report=None):
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.setattr(mc, "plan_for",
+                        lambda root, rng: (list(muts),
+                                           mc.ScanTotals(files_in=1, lines_in=len(muts))))
+    monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests"])
+    monkeypatch.setattr(mc, "_monotonic", clock)
+    monkeypatch.setattr(mc, "run_tests", runner)
+    argv = ["mutate_check.py", "--range", "HEAD", "--timeout", str(timeout)]
+    if force:
+        argv.append("--force")
+    if budget is not None:
+        argv += ["--budget-s", str(budget)]
+    if report is not None:
+        argv += ["--report", str(report)]
+    return mc.main(argv)
+
+
+def test_ключ_набора_это_кортеж_tests_for(tmp_path, monkeypatch):
+    """Ключ длительностей строит одна функция, и это ровно `tests_for`:
+    своя копия его выбора разошла бы оценку базы и мутанта (№395)."""
+    monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests/a.py", "tests/b.py"])
+    assert mc.subset_key(tmp_path, tmp_path / "x.py") == ("tests/a.py", "tests/b.py")
+
+
+def test_остаток_бюджета_считается_от_старта_и_без_флага_не_ограничивает(monkeypatch):
+    """`None` — бюджета нет; иначе остаток = бюджет − (сейчас − старт).
+    Подстановки +/− и `is not None` в этом выражении — не шум: они гасят или
+    ломают гвард целиком (№395)."""
+    monkeypatch.setattr(mc, "_monotonic", lambda: 100.0)
+    assert mc.budget_left(40.0, None) is None
+    assert mc.budget_left(40.0, 30.0) == -30.0
+
+
+def test_timed_run_меряет_секунды_одной_обёрткой(tmp_path, monkeypatch):
+    """Время меряет обёртка вокруг `run_tests`, а не сам `run_tests`: его
+    подпись — шов тестов (№395)."""
+    ticks = iter([5.0, 8.0])
+    monkeypatch.setattr(mc, "_monotonic", lambda: next(ticks))
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: True)
+    assert mc.timed_run(tmp_path, ["tests"], 1) == (True, 3.0)
+
+
+def test_потолок_прогона_кратен_худшему_множителю(tmp_path, monkeypatch):
+    """Подпроцессу даётся `--timeout × WORST_RUN_FACTOR`: константу читают и
+    бюджет, и сторож потолков CI, поэтому она именованная (№395)."""
+    import subprocess
+
+    class Done:
+        returncode = 0
+
+    seen = {}
+
+    def fake(cmd, **kw):
+        seen.update(kw)
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert mc.run_tests(tmp_path, ["tests"], timeout=3) is True
+    assert mc.WORST_RUN_FACTOR == 4
+    assert seen["timeout"] == 3 * mc.WORST_RUN_FACTOR == 12
+
+
+def test_бюджета_не_хватает_на_первый_набор_базы(tmp_path, monkeypatch, capsys):
+    """Остатка меньше худшего базового прогона — база не стартует, мутанты не
+    судятся, отчёт и исход — существующим механизмом неполноты (№395)."""
+    import exit_codes
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=9.0)
+    # два недостающих уровня: mkdir(parents=False) тут падает, и сводка,
+    # пишущаяся в несуществующий каталог, не дошла бы до диска (№395)
+    report = tmp_path / "rep" / "deep" / "m.md"
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(2), clock=clock,
+                      runner=runner, budget=3.0, timeout=1, force=False, report=report)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert runner.calls == [], "мутанты без бюджета на базу не запускаются"
+    text = capsys.readouterr().out + report.read_text(encoding="utf-8")
+    assert "прервано: бюджет" in text, text
+    assert "остановка: бюджет" in text, text
+
+
+def test_force_бюджет_не_гасит(tmp_path, monkeypatch, capsys):
+    """`--force` снимает гвард занятости, но не бюджет: проверка остатка стоит
+    вне `busy_guard` (№395)."""
+    import exit_codes
+    clock = _Clock()
+    runner = _Runner(clock)
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(1), clock=clock,
+                      runner=runner, budget=1.0, timeout=1, force=True)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert runner.calls == []
+    assert "прервано: бюджет" in capsys.readouterr().out
+
+
+def test_худший_потолок_базы_это_произведение_таймаута(tmp_path, monkeypatch):
+    """Допуск базы — `WORST_RUN_FACTOR × --timeout`, а не деление и не сумма:
+    300 с при `--timeout 100` мало для набора, деление/сложение пустили бы его
+    в прогон (№395)."""
+    import exit_codes
+    clock = _Clock()
+    runner = _Runner(clock)
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(1), clock=clock,
+                      runner=runner, budget=300.0, timeout=100, force=True)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert runner.calls == [], "300 с меньше 4×100 — база стартовать не должна"
+
+
+def test_худший_потолок_базы_на_границе_включителен(tmp_path, monkeypatch):
+    """Ровно `WORST_RUN_FACTOR × --timeout` ещё хватает на набор: строгое `<`
+    пропускает границу, `<=` отверг бы её и не сделал ни одного прогона (№395)."""
+    import exit_codes
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=4.0)
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(1), clock=clock,
+                      runner=runner, budget=4.0, timeout=1, force=True)
+    assert len(runner.calls) == 1, "база на границе обязана стартовать"
+    assert rc == exit_codes.EXIT_PARTIAL
+
+
+def test_бюджет_хватает_на_k_мутантов_и_останавливается(tmp_path, monkeypatch):
+    """База + k мутантов уложились, следующий — нет: проверено k, остальное
+    «НЕ СУДИЛОСЬ», исход неполноты (№395)."""
+    import exit_codes
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=4.0, mutant_dt=4.0, mutant=False)
+    report = tmp_path / "r.md"
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(3), clock=clock,
+                      runner=runner, budget=12.0, timeout=1, force=True, report=report)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert len(runner.calls) == 3, "база и ровно два мутанта"
+    text = report.read_text(encoding="utf-8")
+    assert "Проверено мутантов: 2" in text, text
+    assert "проверено 2 из 3" in text, text
+    assert "остановка: бюджет" in text, text
+    assert "НЕ СУДИЛОСЬ: 1" in text, text
+
+
+def test_большого_бюджета_хватает_на_весь_план(tmp_path, monkeypatch, capsys):
+    """Бюджет с запасом ничего не срезает: все мутанты судятся, исход чист."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=4.0, mutant_dt=4.0, mutant=False)
+    report = tmp_path / "all.md"
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(3), clock=clock,
+                      runner=runner, budget=1000.0, timeout=1, force=True, report=report)
+    assert rc == 0
+    assert len(runner.calls) == 4
+    out = capsys.readouterr().out
+    # нумерация мутантов в логе — с единицы
+    assert "[1/3]" in out and "[3/3]" in out, out
+    text = report.read_text(encoding="utf-8")
+    assert "проверено 3 из 3" in text, text
+    assert "остановка" not in text, text
+    assert "НЕ СУДИЛОСЬ" not in text, text
+
+
+def test_без_бюджета_поведение_прежнее(tmp_path, monkeypatch):
+    """Нет `--budget-s` — нет и гварда: даже астрономические прогоны не
+    останавливают мутатор (№395)."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=100000.0, mutant_dt=100000.0, mutant=False)
+    rc = _budget_main(monkeypatch, tmp_path, _head_mutations(3), clock=clock,
+                      runner=runner, budget=None, timeout=1, force=True)
+    assert rc == 0
+    assert len(runner.calls) == 4
+
+
+def test_таймаут_мутанта_не_урезается_под_остаток(tmp_path, monkeypatch):
+    """Мутанту всегда даётся полный `--timeout`: урезание под остаток дало бы
+    оборванный прогон и ложное «убит» (№395)."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=5.0, mutant_dt=350.0, mutant=False)
+    # budget = худший базовый (4×100) + запас: первый мутант оставляет остаток
+    # меньше --timeout, но всё равно судится полным таймаутом
+    _budget_main(monkeypatch, tmp_path, _head_mutations(3), clock=clock,
+                 runner=runner, budget=406.0, timeout=100, force=True)
+    assert len(runner.calls) >= 2, "база и хотя бы один мутант"
+    assert all(t >= 100 for _, t in runner.calls), runner.calls
+
+
+def test_отчёт_на_диске_описывает_проверенное_после_каждого_мутанта(tmp_path, monkeypatch):
+    """Отчёт пишется не один раз в конце: раннер оборвал прогон на третьем
+    мутанте, а файл обязан описывать двух проверенных (№395)."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=1.0, mutant_dt=1.0, mutant=False, crash_on=4)
+    report = tmp_path / "r.md"
+    with pytest.raises(RuntimeError):
+        _budget_main(monkeypatch, tmp_path, _head_mutations(3), clock=clock,
+                     runner=runner, budget=None, timeout=1, force=True, report=report)
+    text = report.read_text(encoding="utf-8")
+    assert "Проверено мутантов: 2" in text, text
+    assert "проверено 2 из 3" in text, text
+    # остаток плана впереди, а не оборван сбоем: промежуточный сброс не смеет
+    # называть его «прервано: сбой»
+    assert "ещё не судилось" in text, text
+
+
+def test_сводка_вычитает_неприменившиеся_из_несудившихся(tmp_path, monkeypatch):
+    """untried = план − неприменившиеся − проверенные: сложение вместо вычитания
+    раздуло бы «НЕ СУДИЛОСЬ» там, где на деле судили всё применимое (№395)."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=1.0, mutant_dt=1.0, mutant=False)
+    muts = _head_mutations(3)
+    report = tmp_path / "r.md"
+    real = mc.applied
+
+    def flaky(mut, original):
+        if mut is muts[1]:
+            return None, "нарочно не применяется"
+        return real(mut, original)
+
+    monkeypatch.setattr(mc, "applied", flaky)
+    rc = _budget_main(monkeypatch, tmp_path, muts, clock=clock, runner=runner,
+                      budget=None, timeout=1, force=True, report=report)
+    import exit_codes
+    assert rc == exit_codes.EXIT_PARTIAL, "неприменившийся делает результат неполным"
+    text = report.read_text(encoding="utf-8")
+    assert "Проверено мутантов: 2" in text, text
+    assert "НЕ ПРИМЕНИЛОСЬ: 1" in text, text
+    assert "НЕ СУДИЛОСЬ" not in text, text
+
+
+def test_оценка_находится_для_каждого_мутанта_плана(tmp_path, monkeypatch):
+    """Ключ базы и ключ мутанта совпадают — иначе оценка длительности не нашлась
+    бы, и гвард бюджета судил бы чужой набор (№395)."""
+    clock = _Clock()
+    runner = _Runner(clock, base_dt=2.0, mutant_dt=2.0, mutant=False)
+    _budget_main(monkeypatch, tmp_path, _head_mutations(2), clock=clock,
+                 runner=runner, budget=1000.0, timeout=1, force=True)
+    assert len(runner.calls) == 3, runner.calls
+    base_key = runner.calls[0][0]
+    for targets, _ in runner.calls[1:]:
+        assert targets == base_key, (base_key, targets)

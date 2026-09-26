@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 # Мутации, которые дают сигнал. Строк и сообщений не трогаем: их переделка
 # почти всегда «выживает» и тонет в отчёте шумом, а смысла в ней нет.
@@ -524,6 +525,38 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     return hits or ["tests"]
 
 
+def subset_key(root: pathlib.Path, module: pathlib.Path) -> tuple[str, ...]:
+    """Ключ набора тестов модуля — один на базовый прогон и оценку мутанта.
+
+    Длительности копятся по этому ключу. Разойдись база и мутант в том, как
+    собран набор, — мутант получил бы оценку чужого набора или не получил бы
+    вовсе, и гвард бюджета молча пропустил бы прогон мимо остатка (№395).
+    `tests_for` остаётся единственным швом набора: ключ — просто его кортеж.
+    """
+    return tuple(tests_for(root, module))
+
+
+def _monotonic() -> float:
+    """Часы бюджета. Отдельная функция — тесты подменяют их, а не спят (№395)."""
+    return time.monotonic()
+
+
+def budget_left(start: float, budget: float | None) -> float | None:
+    """Остаток бюджета: `None` — бюджета нет, поведение прежнее. Отсчёт ведётся
+    от старта `main`, поэтому подготовка дерева и базовый прогон тоже в него
+    входят (№395)."""
+    if budget is None:
+        return None
+    return budget - (_monotonic() - start)
+
+
+# Худший прогон набора: pytest обрывает зависший тест на `--timeout`, но
+# интерпретатор и сборка коллекции дотягивают сверх него, поэтому внешний
+# потолок subprocess берём с запасом. Именованная константа, а не литерал:
+# её читают и оценка бюджета, и сторож потолков CI (№395).
+WORST_RUN_FACTOR = 4
+
+
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
     # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
@@ -540,10 +573,62 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
-                           timeout=timeout * 4)
+                           timeout=timeout * WORST_RUN_FACTOR)
     except subprocess.TimeoutExpired:
         return False          # завис — считаем убитым: поведение изменилось
     return r.returncode == 0
+
+
+def timed_run(cwd: pathlib.Path, targets: list[str], timeout: int) -> tuple[bool, float]:
+    """Прогон набора с замером: (зелёный, секунды). Время меряет только эта
+    обёртка — подпись `run_tests` не меняется, её подменяют тесты (№395)."""
+    began = _monotonic()
+    alive = run_tests(cwd, targets, timeout)
+    return alive, _monotonic() - began
+
+
+def report_text(plan_len: int, tested: int, survivors: list, skipped: list,
+                aborted: str, dropped: int, totals: ScanTotals) -> str:
+    """Сводка прогона. Вынесена из `main`, чтобы её писал и промежуточный
+    отчёт: `--report` на диске обязан описывать проверенное к этой минуте,
+    даже если раннер оборвёт job и конца не будет (№395).
+
+    Остаток без причины остановки — не «сбой»: при сбросе после КАЖДОГО
+    мутанта он впереди по ходу прогона, и называть его оборванным значило бы
+    врать в файле, который читают как раз в момент обрыва.
+    """
+    lines = [f"Проверено мутантов: {tested}, выжило: {len(survivors)}"]
+    # «проверено K из M» называет и срез --max, и причину остановки: по одному
+    # числу нельзя понять, чего именно не хватает (№395).
+    summary = f"проверено {tested} из {plan_len}"
+    if dropped:
+        summary += f", срезано --max: {dropped}"
+    if aborted:
+        summary += f", остановка: {aborted}"
+    lines.append(summary)
+    untried = plan_len - len(skipped) - tested
+    if untried:
+        why = f"прервано: {aborted}" if aborted else "ещё не судилось"
+        lines.append(f"НЕ СУДИЛОСЬ: {untried} ({why}) — "
+                     "это НЕ значит «там всё хорошо».")
+    if skipped:
+        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
+    if totals.files_unreadable:
+        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
+                     f"— их строки не судились.")
+    if dropped:
+        lines.append(f"Не проверено из-за потолка: {dropped}. "
+                     f"Это НЕ значит «там всё хорошо».")
+    for m, why in skipped:
+        lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why}")
+    for s in survivors:
+        lines.append(f"  ВЫЖИЛ {s}")
+    if survivors:
+        lines.append("")
+        lines.append("Выживший мутант — это изменение поведения, которого не "
+                     "заметил ни один тест. Либо тест на это место есть, но "
+                     "он ничего не держит, либо места в тестах нет вовсе.")
+    return "\n".join(lines)
 
 
 def main(argv: list[str]) -> int:
@@ -553,11 +638,18 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--max", type=int, default=60,
                     help="потолок мутантов (срезанное объявляется вслух)")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
+    ap.add_argument("--budget-s", type=float, default=None,
+                    help="секунд на весь прогон: подготовка дерева, базовый прогон "
+                         "и мутанты. Остаток кончился — мутатор останавливается "
+                         "между мутантами и объявляет неполноту; --force бюджет "
+                         "не гасит")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
     args = ap.parse_args(argv[1:])
+    started = _monotonic()   # бюджет считает и подготовку дерева, и базовый прогон
+    budget = args.budget_s
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
@@ -646,6 +738,17 @@ def main(argv: list[str]) -> int:
     skipped: list[tuple[Mutation, str]] = []
     tested = 0
     aborted = ""
+
+    def write_report() -> None:
+        """Сбросить на диск проверенное к этой минуте. Раннер может оборвать
+        job на потолке, и единственный отчёт, который к концу писался, терялся
+        вместе с job (№395)."""
+        text = report_text(len(plan), tested, survivors, skipped, aborted,
+                           dropped, totals)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(text + "\n", encoding="utf-8")
+
     try:
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
@@ -656,14 +759,32 @@ def main(argv: list[str]) -> int:
         # не только их объединение: тест, зелёный в общей куче, в одиночку
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
-        subsets = {tuple(tests_for(work, m.path)) for m in plan}
+        subsets = {subset_key(work, m.path) for m in plan}
         # Свежий worktree байткода не содержит, но запрет записи не мешает
         # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
         print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
-        broken = [ts for ts in sorted(subsets)
-                  if not run_tests(work, list(ts), args.timeout)]
+        # Длительности наборов — из замера базы; ключ тот же, что у мутанта
+        # (`subset_key`), иначе оценка досталась бы чужому набору (№395).
+        durations: dict[tuple[str, ...], float] = {}
+        broken: list[tuple[str, ...]] = []
+        # Явный цикл, а не списковое включение: из включения нельзя выйти, а
+        # бюджет требует остановиться между наборами (№395). Порядок прежний —
+        # `sorted`.
+        for ts in sorted(subsets):
+            # Набор ещё не мерили — берём худший случай. Проверка бюджета
+            # стоит вне busy_guard: `--force` гасит занятость, но не бюджет.
+            left = budget_left(started, budget)
+            if left is not None and left < WORST_RUN_FACTOR * args.timeout:
+                aborted = "бюджет"
+                print(f"⏹ бюджет — прерываюсь (базовый прогон не достроен: "
+                      f"{len(durations)}/{len(subsets)} наборов), мутанты не судятся")
+                break
+            alive, secs = timed_run(work, list(ts), args.timeout)
+            durations[ts] = secs
+            if not alive:
+                broken.append(ts)
         if broken:
             print("\nБАЗА КРАСНАЯ: без единой мутации падают наборы:")
             for ts in broken:
@@ -672,74 +793,66 @@ def main(argv: list[str]) -> int:
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
             return 2
-        for i, mut in enumerate(plan, 1):
-            # Живой контур и ночь важнее метрики: началась запись или ночной
-            # цикл — прерываемся между мутантами (круг-1, DS: координация
-            # была однонаправленной — ночь ждала нас, мы ночь не видели).
-            if busy_guard(args):
-                if busy_signals.live_recording(data_root):
-                    aborted = "живая встреча"
-                elif busy_signals.night_running(data_root):
-                    aborted = "ночной цикл"
-                if aborted:
-                    print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
-                          "проверено, остальное не судилось)")
+        if not aborted:
+            for i, mut in enumerate(plan, 1):
+                # Живой контур и ночь важнее метрики: началась запись или ночной
+                # цикл — прерываемся между мутантами (круг-1, DS: координация
+                # была однонаправленной — ночь ждала нас, мы ночь не видели).
+                if busy_guard(args):
+                    if busy_signals.live_recording(data_root):
+                        aborted = "живая встреча"
+                    elif busy_signals.night_running(data_root):
+                        aborted = "ночной цикл"
+                    if aborted:
+                        print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
+                              "проверено, остальное не судилось)")
+                        break
+                # Перед мутантом нужен остаток не меньше ИЗМЕРЕННОЙ длительности
+                # его набора. Оценки нет только если база не достроена, а тогда
+                # сюда не доходят.
+                key = subset_key(work, mut.path)
+                left = budget_left(started, budget)
+                if left is not None and left < durations[key]:
+                    aborted = "бюджет"
+                    print(f"⏹ бюджет — прерываюсь ({tested}/{len(plan)} проверено, "
+                          "остальное не судилось)")
                     break
-            rel = mut.path.relative_to(root)
-            target = work / rel
-            original = target.read_text(encoding="utf-8")
-            mutated, why = applied(mut, original)
-            if mutated is None:
-                # Не применилась — узел не тот, текст не собрался, дерево
-                # не сошлось. Молчать нельзя: «0 выживших» из-за того, что
-                # ничего не ломали, читается как «всё проверено»; а битый
-                # текст в дереве дал бы «убит» без участия мутации.
-                skipped.append((mut, why))
-                print(f"  [{i}/{len(plan)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
-                continue
-            target.write_text(mutated, encoding="utf-8")
-            try:
-                alive = run_tests(work, tests_for(work, mut.path), args.timeout)
-            finally:
-                target.write_text(original, encoding="utf-8")
-            tested += 1
-            mark = "ВЫЖИЛ" if alive else "убит"
-            print(f"  [{i}/{len(plan)}] {mark}: {mut}")
-            if alive:
-                survivors.append(mut)
+                rel = mut.path.relative_to(root)
+                target = work / rel
+                original = target.read_text(encoding="utf-8")
+                mutated, why = applied(mut, original)
+                if mutated is None:
+                    # Не применилась — узел не тот, текст не собрался, дерево
+                    # не сошлось. Молчать нельзя: «0 выживших» из-за того, что
+                    # ничего не ломали, читается как «всё проверено»; а битый
+                    # текст в дереве дал бы «убит» без участия мутации.
+                    skipped.append((mut, why))
+                    print(f"  [{i}/{len(plan)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
+                    write_report()
+                    continue
+                target.write_text(mutated, encoding="utf-8")
+                try:
+                    # Таймаут не урезается под остаток: оборванный по бюджету
+                    # прогон засчитался бы убитым, а это ложное убийство (№395).
+                    alive, _ = timed_run(work, list(key), args.timeout)
+                finally:
+                    target.write_text(original, encoding="utf-8")
+                tested += 1
+                mark = "ВЫЖИЛ" if alive else "убит"
+                print(f"  [{i}/{len(plan)}] {mark}: {mut}")
+                if alive:
+                    survivors.append(mut)
+                write_report()
     finally:
         lock.release()
         subprocess.run(["git", "worktree", "remove", "--force", str(work)],
                        cwd=root, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    lines = [f"Проверено мутантов: {tested}, выжило: {len(survivors)}"]
-    untried = len(plan) - len(skipped) - tested
-    if untried:
-        lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted or 'сбой'}) — "
-                     "это НЕ значит «там всё хорошо».")
-    if skipped:
-        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
-    if totals.files_unreadable:
-        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
-                     f"— их строки не судились.")
-    if dropped:
-        lines.append(f"Не проверено из-за потолка: {dropped}. "
-                     f"Это НЕ значит «там всё хорошо».")
-    for m, why in skipped:
-        lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why}")
-    for s in survivors:
-        lines.append(f"  ВЫЖИЛ {s}")
-    if survivors:
-        lines.append("")
-        lines.append("Выживший мутант — это изменение поведения, которого не "
-                     "заметил ни один тест. Либо тест на это место есть, но "
-                     "он ничего не держит, либо места в тестах нет вовсе.")
-    report = "\n".join(lines)
+    report = report_text(len(plan), tested, survivors, skipped, aborted,
+                         dropped, totals)
     print("\n" + report)
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(report + "\n", encoding="utf-8")
+    write_report()
     return verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
 
 
