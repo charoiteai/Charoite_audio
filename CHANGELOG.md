@@ -5,6 +5,23 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.2](https://github.com/charoiteai/Charoite_audio/compare/v0.86.1...v0.86.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **forget:** name the day folders that forget leaves behind ([#635](https://github.com/charoiteai/Charoite_audio/issues/635)) ([c24f251](https://github.com/charoiteai/Charoite_audio/commit/c24f251a1b3f02e9fba70291552b37a1850c317e))
+* **guards:** сторожа маски прав и раскладки меряют предмет, а не текст и литерал ([#634](https://github.com/charoiteai/Charoite_audio/issues/634)) ([6e1421f](https://github.com/charoiteai/Charoite_audio/commit/6e1421f8782f231dfa1a4dd591bf4ab5d9af02a9))
+* **mcp:** отказ без корня данных — ошибка инструмента, а не строка ответа ([#639](https://github.com/charoiteai/Charoite_audio/issues/639)) ([56bf878](https://github.com/charoiteai/Charoite_audio/commit/56bf8787d01ec347f93cb15422cd3eb5ac60fa52))
+* **mutation:** бюджет прогона --budget-s и отчёт после каждого мутанта ([#637](https://github.com/charoiteai/Charoite_audio/issues/637)) ([b98a6f3](https://github.com/charoiteai/Charoite_audio/commit/b98a6f39e8378731620130c9846e6afd43a4b7ab))
+* **summary:** отметки в каноне минуток не старят саммари ([#641](https://github.com/charoiteai/Charoite_audio/issues/641)) ([ffd4c1e](https://github.com/charoiteai/Charoite_audio/commit/ffd4c1e62726a9320cf8f24ab8800a8795db4ad0))
+* **tests:** «Ollama лежит» маршрутом сторожа, узкие перехваты llm.py ([#636](https://github.com/charoiteai/Charoite_audio/issues/636)) ([ba70741](https://github.com/charoiteai/Charoite_audio/commit/ba707418bada435c3f672ea03e004c7668c0e4cf))
+
+
+### Performance Improvements
+
+* **archive:** снимать UF_HIDDEN один раз на массовый обход ([#633](https://github.com/charoiteai/Charoite_audio/issues/633)) ([94ccecd](https://github.com/charoiteai/Charoite_audio/commit/94ccecdaccd40c56b1768285653a49c2ab85a6d5))
+
 ## [0.86.1](https://github.com/charoiteai/Charoite_audio/compare/v0.86.0...v0.86.1) (2026-09-26)
 
 
