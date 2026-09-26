@@ -562,11 +562,24 @@ class LLM:
         self.lang = str(cfg["sufler"].get("language", "ru")).strip().lower()
 
     def _models_available(self) -> set[str]:
+        """Имена скачанных моделей; «сервера нет» и «моделей нет» — оба `set()`.
+
+        Различать их незачем: `resolve_model` в обоих случаях берёт модель из
+        конфига, и об ошибке скажет сама Ollama. Глотается только сеть и не-JSON
+        тело: прежний `except Exception` глотал и отказ сторожа тестов, и
+        ошибку в самом разборе — тесты шли по «сервер лежит», не зная об этом
+        (№397). Форма ответа проверяется явно, а не падением на `m["name"]`.
+        """
         try:
             r = requests.get(f"{self.base}/api/tags", timeout=3)
-            return {m["name"] for m in r.json().get("models", [])}
-        except Exception:
+            body = r.json()
+        except (requests.RequestException, ValueError):
             return set()
+        models = body.get("models") if isinstance(body, dict) else None
+        if not isinstance(models, list) or not all(
+                isinstance(m, dict) and isinstance(m.get("name"), str) for m in models):
+            return set()
+        return {m["name"] for m in models}
 
     def document_model(self) -> str:
         """Модель для документов — назначенная конфигом, без тихой лестницы.
@@ -1118,8 +1131,8 @@ class LLM:
                 # встречи так же плохо, как молчать про ключ (круг-2 DS, M5).
                 print(f"llm: шлюз отказал (HTTP {e.status}) — проверьте "
                       f"llm.cloud_model и адрес", file=sys.stderr, flush=True)
-        except Exception:
-            pass  # ollama может быть не поднят — не валим старт
+        except requests.RequestException:
+            pass  # ollama может быть не поднят — не валим старт; прочее — дефект, не сеть
 
     def complete(self, prompt: str, *, system: str | None = None,
                  model: str | None = None, think: bool | None = False,
