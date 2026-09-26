@@ -316,7 +316,7 @@ CEILED_JOBS = ("tests", "mutation")
 
 def _retry_worst_s(run: str) -> int:
     """Худший случай цикла повторов шага: попытки × (все `timeout N` + `sleep N`)."""
-    tries = re.search(r"for \w+ in ((?:\d+ ?)+);", run)
+    tries = re.search(r"for \w+ in (\d+(?: \d+)*);", run)    # без вложенного квантификатора (CodeQL)
     assert tries, "у шага с повторами нет цикла `for … in 1 2 3;`"
     per_try = sum(int(n) for n in re.findall(r"\btimeout (\d+)", run)) + \
         sum(int(n) for n in re.findall(r"\bsleep (\d+)", run))
