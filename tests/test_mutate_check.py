@@ -410,11 +410,11 @@ def test_таблица_исхода_прогона():
     покрыт был только пустой диапазон (круг 4 по №339, обе головы).
     """
     import exit_codes
-    N, P = exit_codes.EXIT_NOTHING_TO_CHECK, exit_codes.EXIT_PARTIAL
+    N, P, U = exit_codes.EXIT_NOTHING_TO_CHECK, exit_codes.EXIT_PARTIAL, exit_codes.EXIT_UNJUDGED
     таблица = [
         # выжившие, проверено, план, срезано, не применилось → код
         ([],        0,  0, 0, 0, N),   # плана не было вовсе
-        ([],        0, 40, 0, 0, P),   # прервано на первом мутанте — не «нечего»
+        ([],        0, 40, 0, 0, U),   # прервано на первом мутанте — не «нечего» и не «часть»
         ([],        3, 40, 0, 0, P),   # прервано посередине
         ([],       30, 40, 10, 0, P),  # срезано потолком
         ([],       39, 40, 0, 1, P),   # один не применился
@@ -452,7 +452,8 @@ def test_таблица_исхода_прогона():
         got = mc.verdict_code(survivors, tested, planned, dropped, skipped, totals)
         assert got == ждём, f"{(survivors, tested, planned, dropped, skipped, totals)}: {got}, ждали {ждём}"
     # и класс исхода согласован с каноном
-    assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "partial"
+    assert exit_codes.outcome(mc.verdict_code([], 0, 40, 0, 0)) == "unjudged"
+    assert exit_codes.outcome(mc.verdict_code([], 3, 40, 0, 0)) == "partial"
     assert exit_codes.outcome(mc.verdict_code([], 40, 40, 0, 0)) == "ok"
     assert exit_codes.outcome(mc.verdict_code([], 0, 0, 0, 0, T(files_in=1, lines_in=1, nodes=1))) == "unmutable"
 
@@ -749,7 +750,9 @@ def test_main_не_засчитывает_битого_мутанта_убиты
     monkeypatch.setattr(mc, "run_tests", run_tests)
     monkeypatch.setattr(mc, "patch_source", lambda s, n: s + "\n!")
 
-    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force"]) == exit_codes.EXIT_PARTIAL
+    # единственный мутант плана не применился — не судился ни один: `unjudged`, а
+    # не «часть» (DeepSeek по PR #637)
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force"]) == exit_codes.EXIT_UNJUDGED
     out = capsys.readouterr().out
     assert "убит" not in out, out
     assert f"НЕ ПРИМЕНИЛОСЬ {mut} — текст мутанта не разбирается" in out, out
@@ -855,7 +858,8 @@ def test_бюджет_не_хватает_на_базу(tmp_path, monkeypatch, c
     отчёт = tmp_path / "отчёт.txt"
     argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100",
             "--budget-s", str(бюджет), "--report", str(отчёт)] + (["--force"] if force else [])
-    assert mc.main(argv) == exit_codes.EXIT_PARTIAL
+    # ни один мутант не судился — `unjudged`, в CI красный, а не жёлтый (DeepSeek по PR #637)
+    assert mc.main(argv) == exit_codes.EXIT_UNJUDGED
     assert len(журнал) == прогонов, журнал
     out = capsys.readouterr().out
     assert "НЕ СУДИЛОСЬ: 3 (прервано: бюджет)" in out, out

@@ -110,7 +110,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNMUTABLE  # noqa: E402
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
@@ -140,8 +140,9 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
     — в изменённых строках нет кода (строк нет, или только комментарии и
     константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
-    нечего; `EXIT_PARTIAL` — судили не весь план (прервано встречей, срезано
-    потолком, не применилось, файл не прочитался); 0 — проверен весь план, чисто.
+    нечего; `EXIT_UNJUDGED` — план был, не судился ни один мутант; `EXIT_PARTIAL`
+    — судили не весь план (прервано встречей, срезано потолком, не применилось,
+    файл не прочитался); 0 — проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
@@ -151,6 +152,11 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     totals = totals or ScanTotals()
     if survivors:
         return 1
+    # План был, а не судился ни один мутант (бюджет съела база, прервано на первом,
+    # ни один не применился) — не «проверено не всё», а «не проверено ничего»: под
+    # `partial` CI пропускал это жёлтым (Important DeepSeek по PR #637).
+    if planned and not tested:
+        return EXIT_UNJUDGED
     # Непрочитанный файл — неполнота при любом плане: его строки не судились,
     # а пустой план из-за него — не «нечего» (№386).
     if totals.files_unreadable:

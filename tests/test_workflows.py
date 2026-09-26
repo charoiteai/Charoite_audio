@@ -307,32 +307,71 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
         "старого релиза нечем перезалить, кроме как со своей машины")
 
 
-def test_mutation_job_budget_fits_its_ceilings():
-    """Потолки job мутаций сходятся (№395). У каждого шага свой потолок, и их
-    сумма не больше потолка job: иначе GitHub обрывает job раньше, чем шаг —
-    вместе с отчётом (#625: 34 из 40 минут). Бюджет мутатора плюс худший прогон
-    одного набора (`WORST_RUN_FACTOR` × `--timeout`, тот же множитель, что у
-    `run_tests`) — не больше потолка его шага: бюджет проверяется ДО прогона
-    набора, и последний допущенный набор ещё должен успеть. Числа читаются из
-    `ci.yml` и из кода мутатора, а не пишутся здесь второй раз."""
+#: Jobs, у которых потолок job — сумма потолков шагов, а повторы PortAudio — свой
+#: худший случай. Оба гоняют один и тот же цикл apt: правило, применённое к одной
+#: копии цикла, другую оставляло обрываться посреди второй попытки (DeepSeek по
+#: PR #637). Job без такого цикла сюда не входит: потолок шага там — не арифметика.
+CEILED_JOBS = ("tests", "mutation")
+
+
+def _retry_worst_s(run: str) -> int:
+    """Худший случай цикла повторов шага: попытки × (все `timeout N` + `sleep N`)."""
+    tries = re.search(r"for \w+ in ((?:\d+ ?)+);", run)
+    assert tries, "у шага с повторами нет цикла `for … in 1 2 3;`"
+    per_try = sum(int(n) for n in re.findall(r"\btimeout (\d+)", run)) + \
+        sum(int(n) for n in re.findall(r"\bsleep (\d+)", run))
+    return len(tries.group(1).split()) * per_try
+
+
+def test_ceiled_jobs_fit_their_step_ceilings():
+    """Потолки job сходятся (№395). У каждого шага свой потолок, их сумма не больше
+    потолка job: иначе GitHub обрывает job раньше шага — вместе с отчётом (#625:
+    34 из 40 минут). Потолок шага с повторами не меньше худшего случая его цикла:
+    число выводится из тела шага, а не пишется второй раз. Суммируются шаги по
+    списку, а не по именам: два `uses: actions/checkout` схлопнулись бы в один
+    ключ (Minor DeepSeek по PR #637)."""
+    jobs = _load("ci.yml")["jobs"]
+    for name in CEILED_JOBS:
+        job = jobs[name]
+        ceilings = [step.get("timeout-minutes") for step in job["steps"]]
+        without = [str(step.get("name") or step.get("uses")) for step, minutes
+                   in zip(job["steps"], ceilings) if not isinstance(minutes, int)]
+        assert not without, f"{name}: шаги без своего потолка: {without}"
+        assert sum(ceilings) <= job["timeout-minutes"], (
+            f"{name}: сумма потолков шагов {sum(ceilings)} больше потолка job {job['timeout-minutes']}")
+        for step in job["steps"]:
+            run = str(step.get("run", ""))
+            if re.search(r"for \w+ in ", run):
+                assert step["timeout-minutes"] * 60 >= _retry_worst_s(run), (
+                    f"{name}/{step.get('name')}: потолок {step['timeout-minutes']} мин меньше "
+                    f"худшего случая цикла повторов {_retry_worst_s(run)} с")
+
+
+def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summary():
+    """Бюджет мутатора плюс худший прогон одного набора (`WORST_RUN_FACTOR` ×
+    `--timeout`, тот же множитель, что у `run_tests`) — не больше потолка его шага:
+    бюджет проверяется ДО прогона набора, и последний допущенный набор ещё должен
+    успеть. Отчёт, который пишет мутатор (`--report`), читает шаг сводки — по тому
+    же имени: разошедшиеся литералы вернули бы «отчёт не доехал» зелёным (Important
+    DeepSeek по PR #637). Множитель закреплён значением: его снижение делает часть
+    наборов «убитыми» по потолку подпроцесса, а сторож читал бы его как вход."""
     import sys
     sys.path.insert(0, str(WF.parent.parent / "scripts"))
     import mutate_check
 
+    assert mutate_check.WORST_RUN_FACTOR == 4, (
+        "множитель худшего прогона меняется вместе с замером наборов и потолком шага")
     job = _load("ci.yml")["jobs"]["mutation"]
-    ceilings = {str(step.get("name") or step.get("uses")): step.get("timeout-minutes")
-                for step in job["steps"]}
-    without = [name for name, minutes in ceilings.items() if not isinstance(minutes, int)]
-    assert not without, f"шаги job mutation без своего потолка: {without}"
-    assert sum(ceilings.values()) <= job["timeout-minutes"], (
-        f"сумма потолков шагов {sum(ceilings.values())} больше потолка job {job['timeout-minutes']}")
-
     step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
     run = str(step["run"])
     budget = re.search(r"--budget-s\s+(\d+(?:\.\d+)?)", run)
     timeout = re.search(r"--timeout\s+(\d+)", run)
-    assert budget and timeout, "шаг мутатора обязан назвать --budget-s и --timeout"
+    report = re.search(r"--report\s+(\S+)", run)
+    assert budget and timeout and report, "шаг мутатора обязан назвать --budget-s, --timeout и --report"
     worst = mutate_check.WORST_RUN_FACTOR * int(timeout.group(1))
     assert float(budget.group(1)) + worst <= step["timeout-minutes"] * 60, (
         "бюджет плюс худший прогон набора не укладываются в потолок шага мутатора")
-    assert "--report" in run, "отчёт мутатора нужен шагу сводки"
+    summary = [s for s in job["steps"] if s.get("if") == "always()" and "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert len(summary) == 1, "у job mutation один шаг сводки с if: always()"
+    assert str(summary[0]["run"]).count(report.group(1)) >= 2, (
+        f"шаг сводки не читает {report.group(1)} — отчёт мутатора не доедет до сводки")

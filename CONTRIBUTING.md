@@ -51,10 +51,12 @@ review gates, and who answers for what — is documented in
   `nothing` (code 6).
   `--budget-s N` caps the whole run, counted from start: before each baseline
   suite the run needs 4 × `--timeout` left, before each mutant the measured
-  duration of its suite. Short of it, the run stops as `partial` with
-  "interrupted: budget" (`--force` does not lift it), and `--report` is
-  rewritten after every mutant, so a job killed at its ceiling still leaves
-  what was checked.
+  duration of its suite. Short of it, the run stops with the tool's own line
+  `прервано: бюджет` ("interrupted: budget"; `--force` does not lift it) and
+  ends as `partial`, or as `unjudged` (code 9) when not a single mutant of a
+  non-empty plan was judged — in CI that one is red. `--report` is rewritten
+  after every mutant, so a job killed at its ceiling still leaves what was
+  checked.
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put

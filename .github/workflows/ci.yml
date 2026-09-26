@@ -37,6 +37,8 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    # замер: job идёт около минуты (56–61 с на #633–#639, 26.09) — потолок с запасом
+    # на установку semgrep и mypy, а не на висящий раннер (№395)
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -92,12 +94,17 @@ jobs:
   tests:
     name: pytest (src/)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Потолок job — сумма потолков шагов, у повторов PortAudio — свой худший
+    # случай: сторож в tests/test_workflows.py тот же, что у job mutation (№395).
+    # Прежние 10 минут обрывали шаг посреди второй попытки из трёх обещанных.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7
+        timeout-minutes: 3
         with:
           python-version: "3.12"
           cache: pip
@@ -109,7 +116,8 @@ jobs:
       # случай — 15 секунд; висящая попытка теперь стоит полторы минуты,
       # а не весь бюджет джоба.
       - name: PortAudio
-        timeout-minutes: 6
+        # три попытки по 90 + 120 + 15 с — до 11¼ мин, как у job mutation
+        timeout-minutes: 12
         run: |
           for try in 1 2 3; do
             sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
@@ -119,8 +127,11 @@ jobs:
           done
           exit 1
       - name: Deps
+        timeout-minutes: 6
         run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+      # замер: около 4 минут (3:55–3:57 на #633, 26.09)
       - name: pytest
+        timeout-minutes: 12
         run: python -m pytest tests/ -q
 
   mutation:
@@ -165,8 +176,8 @@ jobs:
       # Обходных флагов нет: без данных владельца гвард занятости молчит сам
       # (`machine_busy` на голом каталоге пуст — замер 22.09), а флаг «владельца
       # здесь нет» на машине владельца работал как `--force` (круг 1 по №339).
-      # `--max 40`: прогон #605 при 20 — 9 минут на 20 мутантов (~27 с каждый);
-      # на 3fdbbc2 при 30 срезано 5. Бюджет `--budget-s` считается от старта
+      # `--max 40`: прогон #605 при --max 20 — 9 минут на 20 мутантов (~27 с
+      # каждый); на 3fdbbc2 при --max 30 срезано 5. Бюджет `--budget-s` считается от старта
       # мутатора и покрывает базовый прогон: при нехватке мутатор сам
       # останавливается с исходом partial и отчётом «проверено K из M» (№395).
       - name: mutate changed lines
@@ -184,6 +195,9 @@ jobs:
             # строки в диапазоне есть, а мутантов ноль: не «нечего проверять», а слепое
             # пятно мутатора — предупреждение, а не зелёная тишина (№386)
             unmutable) echo "::warning::строки в диапазоне есть, а мутировать в них нечего — в логе видно, из чего собран пустой план" ;;
+            # план был, а не судился ни один мутант: гейт не проверил ничего — красный,
+            # а не жёлтый, как «судили часть» (DeepSeek по PR #637)
+            unjudged) echo "::error::мутация не проверила ни одного мутанта при непустом плане — бюджет съела база или ни один не применился, см. сводку"; exit $rc ;;
             *)       exit $rc ;;
           esac
       # Отчёт пишется после каждого мутанта, поэтому доезжает и тогда, когда шаг
