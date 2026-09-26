@@ -162,8 +162,30 @@ _PATH = re.compile(rf"(?<![A-Za-z0-9_.-])(?:{DIST_DIR}/{DIST_SEGMENT}"
 TOKEN_PREFIXES = (f"{FLAT_DIR}/", f"{DIST_DIR}/", "scripts/", "app/")
 
 
+#: Этот файл — где правится ошибка в таблицах кода (`ROOT_SHAPES`, таблица областей
+#: `SHAPE_SCOPES`, `PROBLEM_KINDS`, …), в отличие от ошибки артефакта `LAYOUT`.
+LAYOUT_CODE = pathlib.Path(__file__).resolve()
+
+
 class LayoutError(ValueError):
-    """Артефакт раскладки невалиден: правится руками, инвариант — при загрузке."""
+    """Раскладка невалидна: артефакт (правится руками, инвариант — при загрузке)
+    или таблица кода, по которой артефакт судится.
+
+    `culprit` — чья ошибка, то есть какой файл править: `LAYOUT` (по умолчанию)
+    или `LAYOUT_CODE`. Тип один — его одного ловит `main`, — а путь в печати свой:
+    опечатка области формы в коде печаталась как «✗ layout.json: …», и чинить
+    шли артефакт, в котором ошибки нет (№384)."""
+
+    def __init__(self, message: str, *, culprit: pathlib.Path | None = None) -> None:
+        super().__init__(message)
+        # умолчание — на вызове, а не на определении: тесты подменяют `LAYOUT`
+        self.culprit = culprit or LAYOUT
+
+
+#: Почему python-файл исполняем: гвард `__main__` (`main_guard`). Именем, а не
+#: литералом по месту: по этой метке сторож маски прав выбирает точки входа из
+#: инвентаря (№385), и переименованная метка не должна молча опустошить его выборку.
+PY_ENTRY = "python с гвардом __main__"
 
 
 class FileInfo(NamedTuple):
@@ -210,7 +232,8 @@ class Problem:
     def __post_init__(self) -> None:
         if self.kind not in PROBLEM_KINDS:
             raise LayoutError(f"неизвестный вид проблемы {self.kind!r} — объявить в PROBLEM_KINDS "
-                              f"вместе с разделом замера и влиянием на полноту корпуса")
+                              f"вместе с разделом замера и влиянием на полноту корпуса",
+                              culprit=LAYOUT_CODE)
 
     def __str__(self) -> str:
         return self.text
@@ -461,7 +484,8 @@ def validate_layout(layout: object) -> dict:
     # молча — замер сравнивает область по равенству (Minor DeepSeek по PR №625)
     stray = sorted(s.name for s in ROOT_SHAPES if s.scope not in SHAPE_SCOPES)
     if stray:
-        raise LayoutError(f"формы с неизвестной областью (не из SHAPE_SCOPES): {stray}")
+        raise LayoutError(f"формы с неизвестной областью (не из SHAPE_SCOPES): {stray}",
+                          culprit=LAYOUT_CODE)
     known = {s.name for s in ROOT_SHAPES}
     # слой без окружения не прощается ничем: исключение по форме `layer` сделало бы
     # окружение приложения частью пакета поиска молча, а проба пакета чтение
@@ -751,7 +775,8 @@ def probe(prefix: str, kind: str) -> str:
     if not prefix.endswith("/"):
         return prefix
     if kind not in PROBE_SUFFIX:
-        raise LayoutError(f"вид {kind!r} нечем доказать: нет суффикса пробы в PROBE_SUFFIX")
+        raise LayoutError(f"вид {kind!r} нечем доказать: нет суффикса пробы в PROBE_SUFFIX",
+                          culprit=LAYOUT_CODE)
     return prefix + PROBE_SUFFIX[kind]
 
 
@@ -784,11 +809,14 @@ def _files(repo: pathlib.Path) -> list[str]:
     return sorted(f for f in files if (repo / f).is_file())
 
 
-def _has_main_guard(tree: ast.Module) -> bool:
+def main_guard(tree: ast.Module) -> ast.If | None:
     """Настоящий `if __name__ == "__main__"` — узел верхнего уровня модуля
     (Minor DS круга 3: гвард внутри функции точкой входа не делает), сравнение
     на равенство (Minor DS круга 4); кавычки и порядок операндов не важны,
-    подстрока в докстринге не считается."""
+    подстрока в докстринге не считается.
+
+    Отдаёт сам узел, а не «да/нет»: сторож маски прав идёт от него по пути
+    исполнения (№385), и второе определение гварда рядом разошлось бы с этим."""
     for node in tree.body:
         if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
             continue
@@ -798,8 +826,8 @@ def _has_main_guard(tree: ast.Module) -> bool:
         names = {p.id for p in parts if isinstance(p, ast.Name)}
         consts = {p.value for p in parts if isinstance(p, ast.Constant)}
         if "__name__" in names and "__main__" in consts:
-            return True
-    return False
+            return node
+    return None
 
 
 def _strip_comments(text: str, marker: str) -> str:
@@ -948,7 +976,8 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
         executable = None
         if kind == "code" and _is_candidate(rel):
             if rel.endswith(".py"):
-                executable = "python с гвардом __main__" if tree is not None and _has_main_guard(tree) else None
+                executable = (PY_ENTRY if tree is not None and main_guard(tree) is not None
+                              else None)
             else:
                 executable = "shell-скрипт"
         files[rel] = FileInfo(kind, hays, tree, executable)
@@ -1961,6 +1990,13 @@ ENV_ROOT_ENFORCED = ("src/", "scripts/")
 #: У `layer` область задаёт слой модуля, а не место файла: всё дерево.
 SHAPE_SCOPES: dict[str, tuple[str, ...]] = {"root": ENV_ROOT_ENFORCED, "layer": ("",)}
 
+#: Область судьи швов окружения графа (`seam_problems`): та же развилка «мерить всё,
+#: судить область» и тот же ответ — имя, а не литерал в судье (№384). Отдельное имя, а
+#: не ключ `SHAPE_SCOPES`: ключи той таблицы — законные области форм, и форма с
+#: областью швов прошла бы загрузку (критика DeepSeek по PR #634). Где судить швы в
+#: `packages/`, решает №324.
+SEAM_SCOPE: tuple[str, ...] = ENV_ROOT_ENFORCED
+
 
 class Shape(NamedTuple):
     name: str
@@ -2132,12 +2168,13 @@ def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
 def seam_problems(calls: dict[str, dict[str, list[int]]] | None) -> list[str]:
     """Вызовы швов окружения мимо двери — строками. `None` — вызывающий о швах не
     спрашивает (то же соглашение, что у `root_problems`). Тесты вне области: они
-    строят индекс и ревизию на своих каталогах намеренно."""
+    строят индекс и ревизию на своих каталогах намеренно. Область — `SEAM_SCOPE`:
+    замер (`seam_calls`) видит весь инвентарь, судья — её."""
     if calls is None:
         return []
     out = []
     for rel, found in sorted(calls.items()):
-        if not rel.startswith(ENV_ROOT_ENFORCED):
+        if not rel.startswith(SEAM_SCOPE):
             continue
         for seam, lines in sorted(found.items()):
             module, owners, door = ENV_SEAMS[seam]
@@ -2365,7 +2402,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     вызывающего, — не правило. `seams` — замер швов окружения графа (`seam_calls`),
     соглашение о `None` то же."""
     if map_state not in MAP_STATES:
-        raise LayoutError(f"неизвестное состояние карты: {map_state!r}")
+        raise LayoutError(f"неизвестное состояние карты: {map_state!r}", culprit=LAYOUT_CODE)
     repo = repo or REPO
     problems: list[str] = list(scanned.problems)
     # Имя из таблицы без модуля в дереве — это ЛИБО переезд, ЛИБО удаление, и
@@ -2501,7 +2538,7 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
             seed = record_fields("run_contracts", "seed")
             if set(derived) != set(seed):
                 raise LayoutError(f"derive_run_contract пишет {sorted(derived)}, а объявлены seed-поля "
-                                  f"{sorted(seed)}: засев и объявление разошлись")
+                                  f"{sorted(seed)}: засев и объявление разошлись", culprit=LAYOUT_CODE)
             contracts[rel] = {n: derived[n] for n in seed}
             _say(notes, f"контракт запуска по коду: {rel} → {derived['mode']}")
         layout["run_contracts"] = dict(sorted(contracts.items()))
@@ -2667,7 +2704,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         layout = load_layout(LAYOUT)
     except LayoutError as e:
-        print(f"✗ {_shown(LAYOUT)}: {e}")
+        print(f"✗ {_shown(e.culprit)}: {e}")
         return 1
     graph = import_graph(inv)
     scanned = scan(inv)

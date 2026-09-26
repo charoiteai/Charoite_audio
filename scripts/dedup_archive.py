@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import deps  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -99,6 +99,7 @@ def merge(keep: pathlib.Path, extra: pathlib.Path, apply: bool) -> list[str]:
 
 
 def main() -> None:
+    harden_umask()   # папки архива встреч и отложенные копии — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                     help="сделать (без него — только показать план)")

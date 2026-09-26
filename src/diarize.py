@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 
-from charoite_paths import MODELS_DIR, resolve_root
+from charoite_paths import MODELS_DIR, harden_umask, resolve_root
 from config_loader import load_user_or_example
 
 
@@ -372,6 +372,7 @@ def parse_args(argv: list[str]) -> tuple[list[str], str, int]:
 
 
 def main():
+    harden_umask()   # временная копия записи и стенограмма с именами — только владельцу (№385)
     args, channel, num_speakers = parse_args(sys.argv[1:])
     src = pathlib.Path(args[0]).expanduser()
     if not src.exists():

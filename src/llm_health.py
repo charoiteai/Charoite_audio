@@ -51,7 +51,7 @@ import requests
 import model_lease
 
 import privacy
-from charoite_paths import resolve_root, trim_log
+from charoite_paths import resolve_root, secure_dir, trim_log
 from llm import DEFAULT_MLX_MODEL
 
 
@@ -75,6 +75,9 @@ RESTART_WAIT = 180
 
 # Пауза между пробами в ожидании после перезапуска.
 RESTART_POLL = 5
+#: Режим лога сервера моделей: только владелец. Одно имя на создание и на починку
+#: существующего файла — литерал в двух местах давал эквивалентного мутанта.
+_LOG_MODE = 0o600
 
 MAC_APP = Path("/Applications/Ollama.app")
 
@@ -375,9 +378,14 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None], *, force: bool = False) 
             pass                     # умер сам — то, чего и добивались
     model = str((cfg.get("llm") or {}).get("mlx_model") or DEFAULT_MLX_MODEL)
     port = urllib.parse.urlsplit(url).port or 8080
-    (_root() / "logs").mkdir(exist_ok=True)
-    trim_log(_root() / "logs" / "mlx_server.log")   # потолок append-лога
-    logf = (_root() / "logs" / "mlx_server.log").open("a")
+    log_path = secure_dir(_root() / "logs") / "mlx_server.log"
+    trim_log(log_path)   # потолок append-лога
+    # Режим — при открытии, а не маской процесса: лог и каталог, созданные до
+    # маски (0644/0755), так бы и остались открытыми — доктор зовёт это место
+    # и при лежащем демоне, который один чинит права (Important DS, круг 2 по PR #634)
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _LOG_MODE)
+    os.fchmod(fd, _LOG_MODE)     # режим в os.open действует только при создании файла
+    logf = os.fdopen(fd, "a")
     try:
         subprocess.Popen(
             [sys.executable, "-m", "mlx_lm", "server",

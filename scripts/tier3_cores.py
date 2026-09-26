@@ -28,7 +28,7 @@ import llm  # noqa: E402
 import live_gate  # noqa: E402
 import install_profile  # noqa: E402
 import tier3  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 
 # Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
@@ -197,6 +197,7 @@ def exit_code(outcomes: list[str], cut: bool = False) -> int:
 
 
 def main() -> int:
+    harden_umask()   # отчёт ревизии ядер графа — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--graph", type=pathlib.Path, default=None)
     ap.add_argument("--all-graphs", action="store_true",

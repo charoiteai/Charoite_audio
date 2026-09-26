@@ -32,7 +32,7 @@ import urllib.request
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-from charoite_paths import code_root, resolve_root  # noqa: E402
+from charoite_paths import code_root, harden_umask, resolve_root  # noqa: E402
 
 CODE = code_root(__file__)
 
@@ -414,6 +414,7 @@ def restart_llm() -> None:
 
 
 def main() -> None:
+    harden_umask()   # --restart-llm создаёт logs/mlx_server.log сервера моделей — только владельцу
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--restart-llm", action="store_true",
                     help="аварийный перезапуск сервера моделей поверх живых аренд "
