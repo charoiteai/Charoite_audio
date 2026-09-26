@@ -488,3 +488,19 @@ def test_the_pipeline_clips_the_notes_before_verification(tmp_path):
     src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
     assert "context[:transcript_mod.notes_start(context)]" in src, \
         "конвейер снова сверяет цитаты по заметкам модели"
+
+
+def test_отметки_ночи_не_словарь_и_битые_дают_первый_запуск(tmp_path, monkeypatch):
+    """`_stamps()` — «полный прогон честнее»: нет файла, битый json и json не-словарь
+    одинаково дают пустые отметки; широкий перехват сужен до (OSError, ValueError)
+    (№405, DS I5 круга 3)."""
+    import tier3_cores
+    f = tmp_path / "tier3_last_run.json"
+    monkeypatch.setattr(tier3_cores, "stamps_path", lambda: f)
+    assert tier3_cores._stamps() == {}                    # нет файла
+    f.write_text("{битый", encoding="utf-8")
+    assert tier3_cores._stamps() == {}                    # битый json
+    f.write_text("[1, 2]", encoding="utf-8")
+    assert tier3_cores._stamps() == {}                    # не словарь
+    f.write_text('{"g": 1.5}', encoding="utf-8")
+    assert tier3_cores._stamps() == {"g": 1.5}

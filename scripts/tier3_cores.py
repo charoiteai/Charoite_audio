@@ -46,11 +46,12 @@ def stamps_path() -> pathlib.Path:
 
 def _stamps() -> dict:
     try:
-        return json.loads(stamps_path().read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(stamps_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):     # JSONDecodeError и UnicodeDecodeError — подклассы ValueError
         # нет файла или он покорёжен — ведём себя как при первом запуске:
         # полный прогон честнее, чем тихо ничего не разобрать
         return {}
+    return data if isinstance(data, dict) else {}   # покорёжен и так: не словарь
 
 
 def _pending(graph: pathlib.Path) -> list[str]:

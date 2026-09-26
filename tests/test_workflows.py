@@ -375,3 +375,66 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
     assert len(summary) == 1, "у job mutation один шаг сводки с if: always()"
     assert str(summary[0]["run"]).count(report.group(1)) >= 2, (
         f"шаг сводки не читает {report.group(1)} — отчёт мутатора не доедет до сводки")
+
+
+# ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
+#
+# CI, pre-commit и preflight зовут `ruff check <пути>`; правила — только в
+# `[tool.ruff.lint]` корневого pyproject.toml. Круг 2 по №405 нашёл третью копию
+# `--select` в preflight: локальный итог «ok» расходился бы с CI. Флаги, которыми
+# вызов перекрывает конфиг, — замкнутый список (DS I3 круга 3).
+RUFF_OVERRIDES = ("--select", "--extend-select", "--ignore", "--extend-ignore",
+                  "--per-file-ignores", "--extend-per-file-ignores", "--config", "--isolated")
+REPO = WF.parent.parent
+
+
+def _ruff_calls() -> dict[str, list[str]]:
+    """Строки вызова ruff у каждого из трёх потребителей."""
+    ci = [str(s.get("run", "")) for job in _load("ci.yml")["jobs"].values()
+          for s in job.get("steps", []) if "ruff" in str(s.get("run", ""))]
+    hooks = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    pre = [" ".join(map(str, h.get("args", []))) for r in hooks["repos"] for h in r["hooks"]
+           if h["id"].startswith("ruff")]
+    text = (REPO / "scripts" / "preflight.sh").read_text(encoding="utf-8").replace("\\\n", " ")
+    pf = [ln for ln in text.splitlines()
+          if re.search(r"\bruff(_run)?\b", ln) and not ln.lstrip().startswith("#")]
+    return {"ci": ci, "pre-commit": pre, "preflight": pf}
+
+
+def test_ruff_rules_live_in_one_place_and_no_caller_overrides_them():
+    import tomllib
+    lint = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
+    assert set(lint["select"]) == {"E9", "F", "BLE001", "E722"}, lint
+    loosen = {"ignore", "extend-ignore", "per-file-ignores", "extend-per-file-ignores"} & set(lint)
+    assert not loosen, f"правила ослаблены в конфиге: {loosen}"
+    calls = _ruff_calls()
+    assert all(calls.values()), f"потребитель без вызова ruff: {calls}"
+    for who, lines in calls.items():
+        for ln in lines:
+            # по префиксу: «--select=E9» и «--select E9» одинаково перекрывают конфиг
+            bad = [f for f in RUFF_OVERRIDES if re.search(re.escape(f) + r"(=|\s|$)", ln)]
+            assert not bad, f"{who} перекрывает правила флагом {bad}: {ln}"
+    # пути: локальный гейт судит то же, что CI; у pre-commit путей нет — он получает
+    # стейджнутые файлы (DS M3 выходного круга 1 по №405)
+    def paths(ln: str) -> set[str]:
+        tail = re.split(r"[;#|&\n]", re.split(r"\bcheck\b", ln, maxsplit=1)[1], maxsplit=1)[0]
+        return {t for t in tail.split() if not t.startswith("-")}
+    judged = {who: [paths(ln) for ln in calls[who] if re.search(r"\bcheck\b", ln)]
+              for who in ("ci", "preflight")}
+    assert all(judged.values()) and all(p == {"src/", "tests/", "scripts/"}
+                                        for ps in judged.values() for p in ps), judged
+    skip = (".git", ".venv", "node_modules")
+    other = [p for p in REPO.rglob("*") if not set(skip) & set(p.parts)
+             and (p.name in ("ruff.toml", ".ruff.toml")
+                  or (p.name == "pyproject.toml" and p.parent != REPO
+                      and "[tool.ruff" in p.read_text(encoding="utf-8", errors="replace")))]
+    assert not other, f"второй конфиг ruff: {other}"
+
+
+def test_ruff_engine_version_is_the_same_in_ci_and_pre_commit():
+    # В зеркале pre-commit версия — имя тега с «v» впереди, в CI — голый номер
+    # (DS C1 круга 3 по №405): сравниваются номера.
+    ci = _load("ci.yml")["env"]["RUFF_VERSION"]
+    hooks = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    rev = next(r["rev"] for r in hooks["repos"] if "ruff-pre-commit" in r["repo"])
+    assert rev.removeprefix("v") == str(ci), (rev, ci)
