@@ -200,7 +200,7 @@ def test_mcp_without_a_root_starts_and_exits_clean_on_eof(tmp_path):
     assert "Traceback" not in прогон.stderr, прогон.stderr[-400:]
 
 
-# ── №336: без корня — отказ с рецептом в ответе инструмента ──────────────
+# ── №336: без корня — ошибка инструмента с рецептом ─────────────────────
 
 import asyncio  # noqa: E402
 
@@ -218,6 +218,30 @@ def _текст(ответ) -> str:
     return "".join(часть.text for часть in содержимое)
 
 
+def _ошибка(ответ) -> bool:
+    """Отказ инструмента от рабочего ответа: 1.x — `isError`, 2.x — `is_error`."""
+    return bool(getattr(ответ, "isError", getattr(ответ, "is_error", None)))
+
+
+async def _вызвать(имя: str, аргументы: dict | None = None):
+    """Зов инструмента путём клиента MCP в том же процессе — как это видит владелец.
+
+    Прямой `mcp_server.mcp.call_tool` для этого не годится: `isError` ставит
+    обработчик сервера, а сам `call_tool` на 2.x исключение пробрасывает, и
+    отказа в ответе не видно ни на одной ветке. 2.x принимает объект сервера
+    прямо (`mcp.Client`), 1.x — сессию поверх низкоуровневого сервера, который
+    FastMCP прячет в `_mcp_server` (в 2.x такого поля нет — по нему и развилка).
+    """
+    if not hasattr(mcp_server.mcp, "_mcp_server"):
+        import mcp
+        async with mcp.Client(mcp_server.mcp) as клиент:
+            return await клиент.call_tool(имя, аргументы or {})
+    from mcp.shared.memory import create_connected_server_and_client_session
+    async with create_connected_server_and_client_session(
+            mcp_server.mcp._mcp_server) as сессия:
+        return await сессия.call_tool(имя, аргументы or {})
+
+
 def _инструменты() -> list:
     return asyncio.run(mcp_server.mcp.list_tools())
 
@@ -227,15 +251,18 @@ def test_the_answer_helpers_read_the_installed_mcp():
     на установленной они обязаны читать и схему, и текст ответа."""
     схема = {и.name: _схема(и) for и in _инструменты()}["sufler_live_transcript"]
     assert isinstance(схема, dict) and "properties" in схема
-    ответ = asyncio.run(mcp_server.mcp.call_tool("sufler_live_transcript", {}))
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+    assert not _ошибка(ответ), _текст(ответ)[:300]
     assert _текст(ответ) == "Стенограмм нет."   # корень назван обвязкой, стенограмм в нём нет
 
 
 @pytest.mark.корень_называет_тест
 def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
-    """Реестр по поведению, через объект сервера — то, что видит клиент. Без
+    """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
     корня ни один инструмент не работает по догадке (корню кода): каждый
-    отвечает рецептом, и отказ приходит раньше модели и ребёнка (№336)."""
+    отвечает ОШИБКОЙ инструмента (`isError`) с причиной и рецептом, и отказ
+    приходит раньше модели и ребёнка (№336). Текст не сравниваем целиком: у 1.x
+    впереди префикс `Error executing tool …` низкого уровня."""
     monkeypatch.delenv("CHAROITE_ROOT", raising=False)
 
     def не_звать(*a, **k):
@@ -248,8 +275,20 @@ def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     assert имена == {"sufler_status", "sufler_live_transcript", "sufler_notes",
                      "sufler_make_minutes", "sufler_hints", "sufler_update_graph"}, имена
     for имя in sorted(имена):
-        ответ = _текст(asyncio.run(mcp_server.mcp.call_tool(имя, {})))
-        assert _команда(ответ) == mcp_server._registration()[0], (имя, ответ[:300])
+        ответ = asyncio.run(_вызвать(имя))
+        текст = _текст(ответ)
+        assert _ошибка(ответ), (имя, текст[:300])
+        assert "корень данных не назван" in текст, (имя, текст[:300])
+        assert _команда(текст) == mcp_server._registration()[0], (имя, текст[:300])
+
+
+def test_with_a_root_a_tool_answers_without_error():
+    """С названным корнем (его даёт обвязка) тот же путь отвечает рабочим
+    ответом, а не ошибкой: отказ по `isError` нормальную работу не задевает —
+    `sufler_live_transcript` в пустом корне говорит «Стенограмм нет.»."""
+    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
+    assert not _ошибка(ответ), _текст(ответ)[:300]
+    assert _текст(ответ) == "Стенограмм нет."
 
 
 def _команда(рецепт: str) -> list[str]:
