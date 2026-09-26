@@ -820,6 +820,16 @@ it signals degradation, it does not break the loop.
   the same screen. If Obsidian moves lines between scan and click, Charoite
   relocates one unambiguous item or refuses the write instead of completing a
   neighbouring task. A newly finished pipeline refreshes the list itself.
+  Checkmarks and edits survive the review and later archive passes: the
+  meeting's `Минутки.md` in its archive folder is the one canon, and once a
+  person (or the app, the notes plugin, the nightly check) has changed it, the
+  archiver no longer rewrites it — the log says `kept` and how many lines the
+  machine version differs by. The price: machine corrections from a review do
+  not reach minutes someone already edited, and the summary of such a meeting
+  is rebuilt once, on its next archive pass, from the edited minutes. Check
+  and edit the archive folder's `Минутки.md`; the copy in
+  `Документация/Стенограммы встреч` is derived from it and overwritten on the
+  next pass.
 
 - **Rebuild always finds its recordings** — the meeting name is produced by
   a single module across the pipeline: the daemon names channel recordings,

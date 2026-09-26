@@ -22,7 +22,8 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
-from meeting_archive import SummaryMode, SummaryOutcome, archive_meeting, cothinking_notes  # noqa: E402
+from meeting_archive import (SummaryMode, SummaryOutcome, archive_meeting,  # noqa: E402
+                             canon_tally_line, cothinking_notes)
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -90,7 +91,8 @@ def _theses_path(folder: pathlib.Path) -> pathlib.Path:
 
 
 def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
-            summary: str | None = None, tally: collections.Counter | None = None) -> list[str]:
+            summary: str | None = None, tally: collections.Counter | None = None,
+            canon_tally: collections.Counter | None = None) -> list[str]:
     """Производные одной стенограммы по паспорту (№309), не «если файла нет».
 
     Минутки — тем же конвейером, что пересборка (`finalize_minutes` +
@@ -176,6 +178,14 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
                 tally[f"причина: {archived.summary.reason.split(':')[0]}"] += 1
         if line := archived.summary.line():
             (made if archived.summary.made else skipped).append(line)
+        # канон минуток (№366): не тронутый или не прочитанный — в отчёт встречи с
+        # причиной; действия — в свой счётчик, не в `tally` саммари: та сводка
+        # печатается только под --summary и под своим заголовком
+        if archived.canon is not None:
+            if canon_tally is not None:
+                canon_tally[archived.canon.action] += 1
+            if archived.canon.alarming:
+                skipped.append(archived.canon.line())
     if folder is not None:
         tpath = _theses_path(folder)
         # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
@@ -281,13 +291,14 @@ def main(argv: list[str] | None = None):
         files = sorted(tdir.glob("*.md"))
     done = 0
     tally: collections.Counter = collections.Counter()
+    canon_tally: collections.Counter = collections.Counter()
     for f in files:
         if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
             continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
         bare = meeting_stamp.stamp_of(f.stem)
         if bare is None or f.stat().st_size < 600:
             continue
-        process(f, cfg, graph, tdir, summary=ns.summary, tally=tally)
+        process(f, cfg, graph, tdir, summary=ns.summary, tally=tally, canon_tally=canon_tally)
         done += 1
     if not args:
         print(f"ретро: обход {tdir.name}: встреч обработано {done}")
@@ -296,6 +307,8 @@ def main(argv: list[str] | None = None):
             # круга 3: без сводки про 298 легаси забывают на месяцы)
             print("ретро: саммари — " + ", ".join(
                 f"{k} {v}" for k, v in sorted(tally.items())))
+    # вне `if not args`: хвост импорта с явными путями тоже раскладывает канон
+    print(f"ретро: {canon_tally_line(canon_tally)}")
     if missing:
         sys.exit("ретро: стенограммы нет: " + ", ".join(missing))
 
