@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.1](https://github.com/charoiteai/Charoite_audio/compare/v0.86.0...v0.86.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **mutation:** оператор «снять not» и исход «строки есть, мутировать нечего» ([#630](https://github.com/charoiteai/Charoite_audio/issues/630)) ([4e75e81](https://github.com/charoiteai/Charoite_audio/commit/4e75e8196bf6798960ac5688cede442e795466c1))
+* **tasks:** канон минуток получает паспорт производной, правленый канон раскладка не трогает ([#632](https://github.com/charoiteai/Charoite_audio/issues/632)) ([0b771f4](https://github.com/charoiteai/Charoite_audio/commit/0b771f46926e3db5e885ce42507caa2e51d51e32))
+
 ## [0.86.0](https://github.com/charoiteai/Charoite_audio/compare/v0.85.0...v0.86.0) (2026-09-25)
 
 
