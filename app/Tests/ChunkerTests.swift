@@ -80,7 +80,7 @@ final class ChunkerTests: XCTestCase {
     }
 
     func testChunksStayUnderEmbedderLimit() {
-        // Ollama режет вход bge-m3 около 12 300 знаков — блок обязан быть заметно короче.
+        // Ollama режет вход bge-m3 до 2048 токенов (5–6 тысяч знаков) — блок обязан быть заметно короче.
         let filler = String(repeating: "фраза без конца ", count: 5000)
         let chunks = Chunker.chunks(of: "# Раз\n\n" + filler, title: "Файл")
         for c in chunks {

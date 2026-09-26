@@ -1192,9 +1192,13 @@ This replaced one vector per file built from the first 12 000 characters. For a
 node that assumption held; for a meeting transcript it inverted the result —
 decisions are made at the end. On the same graph, 325 files were longer than
 that cutoff, and **63% of all content never reached the index**. Ollama also
-truncates bge-m3 input silently at roughly 12 300 characters despite the model's
-declared 8192 tokens — verified by binary search, a unique marker appended at
-the end leaves the vector unchanged.
+truncates bge-m3 input silently despite the model's declared 8192 tokens. The
+limit is the runner's physical batch, 2048 tokens (Ollama 0.32+, measured 26.09:
+a longer input returns HTTP 200 with `prompt_eval_count` 2048, and a unique tail
+past the limit leaves the vector unchanged; the earlier measurement was about
+12 300 characters). That is 5–6 thousand characters of graph text; the search
+chunks (~4 000 characters, 1 587 tokens at most on the working graph) stay under
+it.
 
 **The hidden flag.** iCloud marks items inside its container `UF_HIDDEN`, and
 `FileManager` with `.skipsHiddenFiles` skips them without a word. On a working
