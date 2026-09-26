@@ -316,7 +316,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
     на слово — и цена ошибки здесь та же: метка переписывается по всей
     стенограмме, минутки и граф наследуют её молча.
     """
-    from llm import LLM
+    import llm
     user_name = str((cfg.get("sufler") or {}).get("user_name") or "")
     # Формат хвоста живой стенограммы — «[…] метка: текст»: его читают
     # гварды доверия («] метка:» — реплика самой метки). Времени у строк
@@ -327,7 +327,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
     # (тот же потолок, что у минуток).
     _yield_to_live("имена", cap=600)
     try:
-        raw = LLM(cfg).complete(
+        raw = llm.LLM(cfg).complete(
             sample,
             system=(
                 "По репликам определи ЛИЧНЫЕ имена говорящих (Сергей, Юля). "
@@ -341,7 +341,14 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
                 "\"Собеседник 2\":\"?\"} — «?» если имя не звучало. Не выдумывай."),
             model=cfg["llm"]["model"], json_format=True, think=False,
             num_ctx=8192, timeout=240)
-        data = json.loads(raw or "{}")
+        # Ответ разбираем терпимо к прозе и ```-заборам: сборка сервера без
+        # грамматики отвечает текстом, и объект в нём ещё надо найти.
+        data = llm.parse_json_block(raw)
+        if data is None:
+            log("имена: не удалось ("
+                + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
+                   else "пустой ответ") + ")")
+            return {}, False
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
         return {}, False

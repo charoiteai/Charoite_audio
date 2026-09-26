@@ -13,7 +13,6 @@ R=собеседники (--channel right диаризует только их).
 from __future__ import annotations
 
 import datetime as dt
-import json
 import atexit
 import shutil
 import pathlib
@@ -308,10 +307,10 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
 
 def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict[str, str]:
     """qwen сопоставляет Speaker N ↔ имена (обращения/представления в речи)."""
-    from llm import LLM
+    import llm
     sample = "\n".join(f"[{spk}] {text}" for spk, _s, _e, text in lines[:80] if text)[:7000]
     try:
-        raw = LLM(cfg).complete(
+        raw = llm.LLM(cfg).complete(
             sample,
             system=(
                 "По репликам определи имена говорящих: кто как представился, "
@@ -322,7 +321,14 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
             # num_ctx теперь явный (правило llm.py): раньше поле не задавалось
             # и модель грузилась с контекстом из Modelfile — раздутый KV-кэш
             num_ctx=8192, timeout=180)
-        data = json.loads(raw or "{}")
+        # Разбор — терпимый к прозе и ```-заборам: сборка без грамматики
+        # отвечает текстом, и имя в нём ещё надо найти (parse_json_block).
+        data = llm.parse_json_block(raw)
+        if data is None:
+            print("имена: не удалось ("
+                  + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
+                     else "пустой ответ") + ")")
+            return {}
         return {k: v for k, v in data.items() if isinstance(v, str)}
     except Exception as e:  # noqa: BLE001
         print(f"имена: не удалось ({e})")

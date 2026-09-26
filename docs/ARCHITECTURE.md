@@ -616,7 +616,15 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   on the long meeting (no strict JSON mode there) and won no time for the
   live thread — its prompt is small by construction — so the production
   default stays `ollama`; the engine remains a config option for
-  long-document Q&A (details in MODELS.md).
+  long-document Q&A (details in MODELS.md). Strict JSON is not something
+  every server build can do: a server compiled without the grammar library
+  answers a `format:"json"` request with “structured output is unavailable”
+  (501, or 400 on another build). The client recognises that reason, remembers
+  the pair (server address, model actually sent) for the life of the process,
+  reports it once on stderr and retries the request once without `format`,
+  relying on the prompt and `parse_json_block` — so graph extraction and
+  speaker naming still get an answer instead of silently degrading. Busy
+  responses and other errors are never mistaken for a missing grammar.
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the

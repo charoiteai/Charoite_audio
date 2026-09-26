@@ -209,6 +209,13 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
 - **文件是事实来源。** 不以图数据库或向量存储作为主载体：只有归用户
   所有的纯 Markdown。每条 Chronicle 事实都带出处（谁、何时、逐字稿
   原文引用）。
+- **唯一的 LLM 网关——src/llm.py。** 全部聊天与嵌入调用都经过它，模块不
+  自行拼 HTTP 请求；模型永远取自配置。并非每个服务器构建都支持严格
+  JSON：未编译语法库的构建会以「structured output is unavailable」拒绝带
+  `format:"json"` 的请求（501，其他构建为 400）。客户端识别该原因，在本
+  进程内记住（服务器地址、实际发出的模型）这一对，只在 stderr 提示一次，
+  并把请求去掉 `format` 重试一次，改靠提示词与 `parse_json_block` 解析；
+  忙碌与其他错误都不会被误判为缺少语法。
 - **唯一嵌入模型——bge-m3**（Ollama）：负责语义搜索与核心修订预过滤。
   刻意不设第二个嵌入模型。
 - **精度——本地 NLI**（src/nli.py，ONNX）：要点去重与核心修订判定。

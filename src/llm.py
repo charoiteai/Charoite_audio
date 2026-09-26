@@ -155,6 +155,54 @@ def _fit_cache_clear() -> None:
             _fit_sweeper = None
 
 
+# Строгий JSON (format:"json") есть не у каждой сборки сервера: Ollama,
+# собранная без библиотеки грамматики, отвечает на запрос с format ошибкой
+# «structured output is unavailable» (501, а у другой сборки — 400 с тем же
+# текстом). Тогда модель отвечает как умеет, а вызывающий разбирает текст
+# (parse_json_block). Реестр помнит пару (адрес сервера, реально ушедшая
+# модель) → причину сервера дословно: он живёт на модуле, потому что LLM
+# строят на каждый вызов, и второй вызов иначе снова платил бы заведомо
+# провальный запрос. `_strict_json_said` — одна строка в stderr на процесс на
+# пару: журнал встречи не должен тонуть в повторах.
+_strict_json: dict[tuple[str, str], str] = {}
+_strict_json_said: set[tuple[str, str]] = set()
+_strict_json_lock = threading.Lock()
+
+
+def _strict_json_known(key: tuple[str, str]) -> str | None:
+    """Причина, если пара (адрес, модель) уже провалила строгий JSON; иначе None."""
+    with _strict_json_lock:
+        return _strict_json.get(key)
+
+
+def _strict_json_record(key: tuple[str, str], reason: str) -> None:
+    """Запомнить, что у этой пары строгого JSON нет (причина — дословно)."""
+    with _strict_json_lock:
+        _strict_json[key] = reason
+
+
+def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: str) -> None:
+    """Строка в stderr — один раз за процесс на пару (адрес, модель).
+
+    Рецепта в строке нет: она говорит, почему строгий JSON не поехал и что
+    делаем вместо него, а не советует пересобирать сервер.
+    """
+    with _strict_json_lock:
+        if key in _strict_json_said:
+            return
+        _strict_json_said.add(key)
+    print(f"llm: строгий JSON недоступен у {model} на {base} — "
+          f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте",
+          file=sys.stderr, flush=True)
+
+
+def _strict_json_clear() -> None:
+    """Сброс реестра строгого JSON — для тестов, рядом с _fit_cache_clear()."""
+    with _strict_json_lock:
+        _strict_json.clear()
+        _strict_json_said.clear()
+
+
 class LLMHTTPError(RuntimeError):
     """Сервер ответил, но не результатом: HTTP-статус ≠ 200 или поле error.
 
@@ -1231,18 +1279,38 @@ class LLM:
         }
         if num_predict:
             options["num_predict"] = num_predict
+        # Имя модели вычисляем один раз: то же `sent` уходит и в тело, и в ключ
+        # реестра. resolve_model() спрашивает /api/tags, и второй вызов мог бы
+        # вернуть другую модель — ключ разошёлся бы с тем, что ушло на провод.
+        sent = model or self.resolve_model()
         payload = {
-            "model": model or self.resolve_model(),
+            "model": sent,
             "messages": messages,
             "stream": False,
             "options": options,
         }
         if think is not None:
             payload["think"] = think
-        if json_format:
+        # format кладём, только если эта пара ещё не проваливала строгий JSON:
+        # у сборки без грамматики запрос с format — гарантированный отказ.
+        strict_key = (self.base, sent)
+        sends_format = json_format and _strict_json_known(strict_key) is None
+        if sends_format:
             payload["format"] = "json"
         r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
-        body = self._checked_body(r)
+        try:
+            body = self._checked_body(r)
+        except LLMHTTPError as e:
+            # Строгий JSON не поддержан: запоминаем причину и повторяем ОДИН раз
+            # без format. Любой другой отказ (занятость, таймаут, 404, 500 без
+            # этой причины) идёт наружу, как раньше, — реестр ему не место.
+            if not sends_format or not self._structured_output_unavailable(e):
+                raise
+            _strict_json_record(strict_key, e.detail)
+            _strict_json_announce(strict_key, sent, self.base, e.detail)
+            del payload["format"]
+            r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
+            body = self._checked_body(r)
         return ((body.get("message") or {}).get("content") or "").strip()
 
     def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float):
@@ -1277,6 +1345,20 @@ class LLM:
             if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
                 raise
             return self._post_busy(url, payload, timeout, busy_wait)
+
+    @staticmethod
+    def _structured_output_unavailable(err: LLMHTTPError) -> bool:
+        """Сервер сказал, что строгого JSON у него нет — сборка без грамматики.
+
+        501 — частый код у Ollama с MLX-раннером, но не единственный признак:
+        другая сборка вправе ответить 400 с тем же текстом, поэтому причина
+        распознаётся по телу, а не по статусу. Занятость (429/502/503) —
+        очередь, а не отсутствие грамматики: за неё повтор без format ничего
+        не чинит, и в реестр такой ответ не ложится.
+        """
+        if err.status in BUSY_STATUSES:
+            return False
+        return "structured output is unavailable" in (err.detail or "").lower()
 
     def _checked_body(self, r) -> dict:
         """Тело ответа или LLMHTTPError — общая часть всех движков.
