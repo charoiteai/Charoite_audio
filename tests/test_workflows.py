@@ -305,3 +305,34 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
     assert tag.get("required") is True, (
         "нет workflow_dispatch с обязательным inputs.tag — кривой ассет "
         "старого релиза нечем перезалить, кроме как со своей машины")
+
+
+def test_mutation_job_budget_fits_its_ceilings():
+    """Потолки job мутаций сходятся (№395). У каждого шага свой потолок, и их
+    сумма не больше потолка job: иначе GitHub обрывает job раньше, чем шаг —
+    вместе с отчётом (#625: 34 из 40 минут). Бюджет мутатора плюс худший прогон
+    одного набора (`WORST_RUN_FACTOR` × `--timeout`, тот же множитель, что у
+    `run_tests`) — не больше потолка его шага: бюджет проверяется ДО прогона
+    набора, и последний допущенный набор ещё должен успеть. Числа читаются из
+    `ci.yml` и из кода мутатора, а не пишутся здесь второй раз."""
+    import sys
+    sys.path.insert(0, str(WF.parent.parent / "scripts"))
+    import mutate_check
+
+    job = _load("ci.yml")["jobs"]["mutation"]
+    ceilings = {str(step.get("name") or step.get("uses")): step.get("timeout-minutes")
+                for step in job["steps"]}
+    without = [name for name, minutes in ceilings.items() if not isinstance(minutes, int)]
+    assert not without, f"шаги job mutation без своего потолка: {without}"
+    assert sum(ceilings.values()) <= job["timeout-minutes"], (
+        f"сумма потолков шагов {sum(ceilings.values())} больше потолка job {job['timeout-minutes']}")
+
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    run = str(step["run"])
+    budget = re.search(r"--budget-s\s+(\d+(?:\.\d+)?)", run)
+    timeout = re.search(r"--timeout\s+(\d+)", run)
+    assert budget and timeout, "шаг мутатора обязан назвать --budget-s и --timeout"
+    worst = mutate_check.WORST_RUN_FACTOR * int(timeout.group(1))
+    assert float(budget.group(1)) + worst <= step["timeout-minutes"] * 60, (
+        "бюджет плюс худший прогон набора не укладываются в потолок шага мутатора")
+    assert "--report" in run, "отчёт мутатора нужен шагу сводки"

@@ -525,6 +525,12 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     return hits or ["tests"]
 
 
+#: Худший прогон набора — во столько раз дольше `--timeout`: потолок теста в
+#: pytest один, а тестов в наборе много. Этот же множитель держит бюджет прогона
+#: и потолок шага мутатора в CI (`tests/test_workflows.py`, №395).
+WORST_RUN_FACTOR = 4
+
+
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
     # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
@@ -541,7 +547,7 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
-                           timeout=timeout * 4)
+                           timeout=timeout * WORST_RUN_FACTOR)
     except subprocess.TimeoutExpired:
         return False          # завис — считаем убитым: поведение изменилось
     return r.returncode == 0
@@ -743,7 +749,7 @@ def main(argv: list[str]) -> int:
         # мерили — берём худший случай, потолок `run_tests` (4 × --timeout).
         broken: list[tuple[str, ...]] = []
         for ts in sorted(subsets):
-            if not fits(args.budget_s, started, 4 * args.timeout):
+            if not fits(args.budget_s, started, WORST_RUN_FACTOR * args.timeout):
                 aborted = "бюджет"
                 print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
                       f"запускаются ({len(durations)}/{len(subsets)} наборов)")

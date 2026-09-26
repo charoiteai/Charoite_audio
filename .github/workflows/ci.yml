@@ -37,6 +37,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -125,19 +126,27 @@ jobs:
   mutation:
     name: mutation (changed lines)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Потолок job — сумма потолков шагов, а бюджет мутатора плюс худший прогон
+    # набора укладывается в потолок своего шага (сторож — tests/test_workflows.py,
+    # №395). Без этого GitHub обрывал job на 40-й минуте вместе с отчётом (#625: 34
+    # из 40), и «что проверено» не доезжало никуда.
+    timeout-minutes: 75
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
           fetch-depth: 0   # диапазон base...HEAD — нужна история
       - uses: actions/setup-python@v7
+        timeout-minutes: 3
         with:
           python-version: "3.12"
           cache: pip
       - name: PortAudio
-        timeout-minutes: 6
+        # три попытки по 90 + 120 + 15 с — до 11¼ мин: потолок не меньше своего
+        # цикла повторов (облако, I3 круга 5 по №395)
+        timeout-minutes: 12
         run: |
           for try in 1 2 3; do
             sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
@@ -146,6 +155,7 @@ jobs:
           done
           exit 1
       - name: Deps
+        timeout-minutes: 6
         run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       # Единственная проверка, которая отвечает «а тест вообще держит что-нибудь»:
       # в изменённые строки возвращается дефект, и прогон обязан покраснеть.
@@ -155,13 +165,16 @@ jobs:
       # Обходных флагов нет: без данных владельца гвард занятости молчит сам
       # (`machine_busy` на голом каталоге пуст — замер 22.09), а флаг «владельца
       # здесь нет» на машине владельца работал как `--force` (круг 1 по №339).
-      # `--max 30`: прогон #605 при 20 — 9 минут на 20 мутантов (~27 с каждый);
-      # 40 ≈ 18 минут при потолке job 40 (DS I8); на 3fdbbc2 при 30 срезано 5.
+      # `--max 40`: прогон #605 при 20 — 9 минут на 20 мутантов (~27 с каждый);
+      # на 3fdbbc2 при 30 срезано 5. Бюджет `--budget-s` считается от старта
+      # мутатора и покрывает базовый прогон: при нехватке мутатор сам
+      # останавливается с исходом partial и отчётом «проверено K из M» (№395).
       - name: mutate changed lines
+        timeout-minutes: 50
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120 || rc=$?
+          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120 --budget-s 2400 --report mutation-report.txt || rc=$?
           # Исход — одно слово от канона, а не цифра и не grep по выводу: «судили
           # подмножество» раньше было видно только в логе (круг 3 по №339, DS I1).
           case "$(python -c "import sys; sys.path.insert(0,'src'); import exit_codes; print(exit_codes.outcome($rc))")" in
@@ -173,3 +186,14 @@ jobs:
             unmutable) echo "::warning::строки в диапазоне есть, а мутировать в них нечего — в логе видно, из чего собран пустой план" ;;
             *)       exit $rc ;;
           esac
+      # Отчёт пишется после каждого мутанта, поэтому доезжает и тогда, когда шаг
+      # оборвал свой потолок: итог — в сводку прогона, а не только в лог.
+      - name: mutation report
+        if: always()
+        timeout-minutes: 1
+        run: |
+          if [ -f mutation-report.txt ]; then
+            { echo "### Мутация"; echo '```'; cat mutation-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Мутация: отчёта нет — мутатор не дошёл до первой записи" >> "$GITHUB_STEP_SUMMARY"
+          fi
