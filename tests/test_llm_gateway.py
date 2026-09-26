@@ -19,6 +19,7 @@ import threading
 import time
 
 import pytest
+import requests
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -31,6 +32,61 @@ CFG = {
             "num_ctx": 8192, "temperature": 0.4},
     "sufler": {"role": "тестовая роль", "embed_model": "тест-эмбеддер"},
 }
+
+
+def _путь_от_requests(expr) -> tuple[str, ...] | None:
+    """`requests.X` → `("X",)`, `requests.exceptions.X` → `("exceptions", "X")`; иное — None.
+
+    Путь целиком, а не каждое имя по дороге: внутренний квалификатор
+    (`exceptions`) — не класс исключения, и прежний обход всех атрибутов
+    требовал его у фейков как класс (Important DeepSeek по PR #636)."""
+    import ast
+    части = []
+    while isinstance(expr, ast.Attribute):
+        части.append(expr.attr)
+        expr = expr.value
+    if isinstance(expr, ast.Name) and expr.id == "requests" and части:
+        return tuple(reversed(части))
+    return None
+
+
+def _перехваты_requests(source: str) -> set[tuple[str, ...]]:
+    """Пути `requests.<…>` из `except` исходника — снятые разбором, не списком.
+
+    Узкий `except requests.RequestException` ловит то, что лежит в атрибуте
+    ПОДМЕНЁННОГО модуля: фейк с `RequestException = Exception` глотал бы всё
+    подряд, и тест проверял бы не тот перехват, что в продукте (№397). Имя,
+    которого у фейка нет, — `AttributeError` уже на входе в `except`.
+    """
+    import ast
+    пути: set[tuple[str, ...]] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ExceptHandler) and node.type is not None:
+            типы = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+            пути |= {путь for тип in типы if (путь := _путь_от_requests(тип))}
+    return пути
+
+
+ПЕРЕХВАТЫ_REQUESTS = _перехваты_requests((SRC / "llm.py").read_text(encoding="utf-8"))
+
+
+def _по_пути(объект, путь: tuple[str, ...]):
+    for имя in путь:
+        объект = getattr(объект, имя, None)
+    return объект
+
+
+def _нарушения_контракта(fake, перехваты=None) -> list[str]:
+    """Чего фейку транспорта не хватает против `except` продукта: те же классы, что у `requests`."""
+    return [".".join(путь) for путь in sorted(ПЕРЕХВАТЫ_REQUESTS if перехваты is None else перехваты)
+            if _по_пути(fake, путь) is not _по_пути(requests, путь)]
+
+
+def _подменить_requests(monkeypatch, fake):
+    """Единственная дверь подмены `llm.requests`: фейк проходит контракт перехватов."""
+    нет = _нарушения_контракта(fake)
+    assert not нет, f"{type(fake).__name__}: нет настоящих requests.{нет} — except в llm.py их ловит"
+    monkeypatch.setattr(llm_mod, "requests", fake)
 
 
 class _Resp:
@@ -49,7 +105,9 @@ class _Resp:
 class _Requests:
     """Подмена модуля requests: запоминает запрос, отвечает заготовкой."""
 
-    RequestException = Exception  # except в complete() ссылается на атрибут модуля
+    # `except` в llm.py ссылается на атрибуты модуля — классы настоящие, с иерархией
+    RequestException = requests.exceptions.RequestException
+    ConnectionError = requests.exceptions.ConnectionError
 
     def __init__(self, resp: _Resp):
         self.resp = resp
@@ -65,7 +123,7 @@ class _Requests:
 
 def _wire(monkeypatch, resp: _Resp) -> _Requests:
     fake = _Requests(resp)
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     return fake
 
 
@@ -143,7 +201,7 @@ def test_network_error_without_revive_raises(monkeypatch):
         raise fake.RequestException("нет сети")
 
     fake.post = boom
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
 
     with pytest.raises(Exception, match="нет сети"):
         LLM(CFG).complete("в", model="м")
@@ -264,7 +322,7 @@ def test_mlx_stream_parses_sse(monkeypatch):
         b"data: [DONE]",
         b'data: {"choices":[{"delta":{"content":"\xd1\x85\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82"}}]}',
     ]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
 
     chunks = list(LLM(CFG_MLX).stream("вопрос"))
 
@@ -337,9 +395,9 @@ class _StreamResp:
 class _BusyThenOk:
     """Первые N ответов — 503, потом настоящий стрим. Считает попытки."""
 
-    RequestException = Exception
-    ConnectionError = ConnectionError
-    HTTPError = RuntimeError
+    RequestException = requests.exceptions.RequestException
+    ConnectionError = requests.exceptions.ConnectionError
+    HTTPError = requests.exceptions.HTTPError
 
     def __init__(self, busy: int, then):
         self.busy, self.then, self.calls = busy, then, 0
@@ -363,7 +421,7 @@ def test_stream_waits_out_a_busy_model(monkeypatch):
     ok = _StreamResp([b'{"message":{"content":"a"},"done":false}',
                       b'{"message":{"content":"b"},"done":true}'])
     fake = _BusyThenOk(2, ok)
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     slept = _no_sleep(monkeypatch)
 
     assert "".join(LLM(CFG).stream("в", model="м")) == "ab"
@@ -373,7 +431,7 @@ def test_stream_waits_out_a_busy_model(monkeypatch):
 
 def test_stream_gives_up_when_busy_outlasts_budget(monkeypatch):
     fake = _BusyThenOk(100, _StreamResp([]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     _no_sleep(monkeypatch)
 
     with pytest.raises(LLMHTTPError) as e:   # контракт модуля, не голый requests.HTTPError
@@ -388,7 +446,7 @@ def test_error_line_inside_stream_is_an_exception(monkeypatch):
     заканчивался «нормально» пустым, и подсказка тихо не приходила."""
     fake = _BusyThenOk(0, _StreamResp([b'{"message":{"content":"a"},"done":false}',
                                        b'{"error":"model runner has unexpectedly stopped"}']))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
 
     with pytest.raises(LLMHTTPError, match="runner"):
         list(LLM(CFG).stream("в", model="м"))
@@ -398,7 +456,7 @@ def test_stream_without_terminator_is_not_a_full_answer(monkeypatch):
     """Соединение закрылось без done: усечённые минутки не должны выглядеть готовыми."""
     fake = _BusyThenOk(0, _StreamResp(['{"message":{"content":"половина"},"done":false}'
                                        .encode("utf-8")]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
 
     got: list[str] = []
     with pytest.raises(LLMHTTPError, match="оборван"):
@@ -409,19 +467,20 @@ def test_stream_without_terminator_is_not_a_full_answer(monkeypatch):
 
 def test_mlx_stream_error_and_missing_done(monkeypatch):
     fake = _Requests(_SSEResp([b'data: {"error":{"message":"oom"}}']))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     with pytest.raises(LLMHTTPError, match="oom"):
         list(LLM(CFG_MLX).stream("в"))
 
     fake = _Requests(_SSEResp([b'data: {"choices":[{"delta":{"content":"x"}}]}']))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     with pytest.raises(LLMHTTPError, match="оборван"):
         list(LLM(CFG_MLX).stream("в"))
 
 
 def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
     class _Busy503:
-        RequestException = Exception
+        RequestException = requests.exceptions.RequestException
+        ConnectionError = requests.exceptions.ConnectionError
 
         def __init__(self):
             self.calls = 0
@@ -436,7 +495,7 @@ def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
             return _Resp({"models": []})
 
     fake = _Busy503()
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     slept = _no_sleep(monkeypatch)
 
     assert LLM(CFG).complete("в", model="м", busy_wait=60) == "готово"
@@ -446,7 +505,7 @@ def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
 def test_complete_busy_beyond_budget_is_http_error_not_revive(monkeypatch):
     """503 — ответ сервера, не сеть: revive (перезапуск) на него не идёт."""
     fake = _Requests(_Resp({}, status=503, text="busy"))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     _no_sleep(monkeypatch)
     import llm_health
     monkeypatch.setattr(llm_health, "ensure_alive",
@@ -523,17 +582,17 @@ def test_garbage_line_in_ndjson_stream_is_an_http_error(monkeypatch):
     """Страница прокси внутри 200-стрима роняла итератор голым ValueError мимо
     контракта LLMHTTPError (DS M2)."""
     fake = _BusyThenOk(0, _StreamResp([b"<html>proxy portal</html>"]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     with pytest.raises(LLMHTTPError, match="не-JSON"):
         list(LLM(CFG).stream("в", model="м"))
-    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b"[1, 2]"])))
+    _подменить_requests(monkeypatch, _BusyThenOk(0, _StreamResp([b"[1, 2]"])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG).stream("в", model="м"))
     # message: null — пустой чанк, message списком — форма (GLM M1 по #562)
     ok = _StreamResp([b'{"message": null, "done": false}', b'{"message":{"content":"a"},"done":true}'])
-    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, ok))
+    _подменить_requests(monkeypatch, _BusyThenOk(0, ok))
     assert "".join(LLM(CFG).stream("в", model="м")) == "a"
-    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b'{"message": [1], "done": false}'])))
+    _подменить_requests(monkeypatch, _BusyThenOk(0, _StreamResp([b'{"message": [1], "done": false}'])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG).stream("в", model="м"))
 
@@ -543,22 +602,22 @@ def test_sse_accepts_data_without_space_and_rejects_garbage(monkeypatch):
     форма — LLMHTTPError, не ValueError/AttributeError (DS M1)."""
     fake = _Requests(_SSEResp([b'data:{"choices":[{"delta":{"content":"x"}}]}',
                                b"data: [DONE]"]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     assert "".join(LLM(CFG_MLX).stream("в")) == "x"
 
-    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp([b"data: <html>oops</html>"])))
+    _подменить_requests(monkeypatch, _Requests(_SSEResp([b"data: <html>oops</html>"])))
     with pytest.raises(LLMHTTPError, match="не-JSON"):
         list(LLM(CFG_MLX).stream("в"))
 
-    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp(['data: {"choices":["строка"]}'.encode("utf-8")])))
+    _подменить_requests(monkeypatch, _Requests(_SSEResp(['data: {"choices":["строка"]}'.encode("utf-8")])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG_MLX).stream("в"))
 
     # пустое поле data: — keepalive, не обрыв; choices словарём — форма, не KeyError (круг-1 по #562)
     fake = _Requests(_SSEResp([b"data:", b'data:{"choices":[{"delta":{"content":"y"}}]}', b"data: [DONE]"]))
-    monkeypatch.setattr(llm_mod, "requests", fake)
+    _подменить_requests(monkeypatch, fake)
     assert "".join(LLM(CFG_MLX).stream("в")) == "y"
-    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp([b'data: {"choices":{"0":{"delta":{"content":"x"}}}}'])))
+    _подменить_requests(monkeypatch, _Requests(_SSEResp([b'data: {"choices":{"0":{"delta":{"content":"x"}}}}'])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG_MLX).stream("в"))
 
@@ -622,7 +681,8 @@ class _EmbedServer:
     """Подмена requests для /api/embed: отвечает по вектору на текст, помнит
     каждую пачку. `fail_on` — номер запроса (с 1), на котором ответить отказом."""
 
-    RequestException = Exception
+    RequestException = requests.exceptions.RequestException
+    ConnectionError = requests.exceptions.ConnectionError
 
     def __init__(self, fail_on: int | None = None, status: int = 400,
                  body: str = 'Post "http://127.0.0.1:1/tokenize": EOF', vectors=None):
@@ -639,7 +699,7 @@ class _EmbedServer:
 
 
 def _embed_wire(monkeypatch, server: _EmbedServer, fresh: bool = True) -> _EmbedServer:
-    monkeypatch.setattr(llm_mod, "requests", server)
+    _подменить_requests(monkeypatch, server)
     if fresh:
         monkeypatch.setattr(llm_mod, "_said", set())
     return server
@@ -1080,34 +1140,251 @@ def test_privacy_names_the_cache_limits_the_code_has():
 
 # ------------------------------------------------ список моделей (/api/tags)
 #
-# В прогоне Ollama недоступна заглушкой из conftest (№376): прежде это
-# «доказывал» упавший запрос, отказ которого глотал `except Exception`.
+# В прогоне Ollama недоступна маршрутом сторожа из conftest (№396): прежде
+# заглушка подменяла сам метод, а метод глотал любой `Exception`, и «сервер
+# лежит» доказывал упавший запрос (№376). Здесь — настоящий метод класса
+# с подменённым транспортом.
 
 class _Tags:
-    """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса."""
+    """Транспорт `/api/tags`: отвечает заготовкой или падает, помнит адреса.
 
-    def __init__(self, payload=None, error: Exception | None = None):
-        self.payload, self.error, self.urls = payload, error, []
+    `bad_json` — тело не JSON: `r.json()` бросает `requests.exceptions.JSONDecodeError`,
+    как настоящий транспорт (он и `ValueError`, и `RequestException`). Встроенный
+    `ValueError` держал бы в продукте перехват, до которого бой не доходит
+    (Important DeepSeek по PR #636)."""
+
+    RequestException = requests.exceptions.RequestException
+    ConnectionError = requests.exceptions.ConnectionError
+
+    def __init__(self, payload=None, error: BaseException | None = None, bad_json: bool = False):
+        self.payload, self.error, self.bad_json, self.urls = payload, error, bad_json, []
 
     def get(self, url, timeout=None, **kw):
         self.urls.append((url, timeout))
         if self.error is not None:
             raise self.error
+        if self.bad_json:
+            class _Html(_Resp):
+                def json(self):
+                    raise requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
+            return _Html({}, text="<html>")
         return _Resp(self.payload)
 
 
 def test_models_list_is_read_from_the_tags_reply(monkeypatch):
-    """Настоящий `_models_available` — с подменённым транспортом: разбор ответа
-    и отказ без сервера — пустое множество, а не исключение."""
-    настоящий = LLM._models_available.настоящий
+    """Настоящий `_models_available` — сам метод класса, заглушки над ним нет."""
     engine = LLM(CFG)
     tags = _Tags({"models": [{"name": "тест-модель"}, {"name": "тест-мелкая"}]})
-    monkeypatch.setattr(llm_mod, "requests", tags)
-    assert настоящий(engine) == {"тест-модель", "тест-мелкая"}
+    _подменить_requests(monkeypatch, tags)
+    assert engine._models_available() == {"тест-модель", "тест-мелкая"}
     assert tags.urls == [(f"{engine.base}/api/tags", 3)]
 
-    monkeypatch.setattr(llm_mod, "requests", _Tags(error=ConnectionError("refused")))
-    assert настоящий(engine) == set()
+
+@pytest.mark.parametrize("error", [
+    requests.exceptions.ConnectionError("refused"),
+    requests.exceptions.ReadTimeout("slow"),
+    requests.exceptions.RequestException("прочая сеть"),
+], ids=["отказ-соединения", "таймаут", "прочая-сеть"])
+def test_network_failure_is_no_models(monkeypatch, error):
+    """«Сервера нет» и «моделей нет» продукт не различает: оба — `set()`,
+    `resolve_model` возьмёт модель из конфига."""
+    _подменить_requests(monkeypatch, _Tags(error=error))
+    assert LLM(CFG)._models_available() == set()
+
+
+def test_non_json_body_is_no_models(monkeypatch):
+    _подменить_requests(monkeypatch, _Tags(bad_json=True))
+    assert LLM(CFG)._models_available() == set()
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"models": None},
+    {"models": "тест-модель"},
+    {"models": ["тест-модель"]},
+    {"models": [{"model": "тест-модель"}]},
+    {"models": [{"name": 5}]},
+    {"models": [{"name": "тест-модель"}, {"size": 1}]},
+    [{"name": "тест-модель"}],
+], ids=["нет-models", "models-null", "models-строка", "не-словари", "без-name",
+        "name-не-строка", "один-битый", "тело-списком"])
+def test_unexpected_tags_shape_is_no_models(monkeypatch, payload):
+    """Форма ответа проверяется явно: чужой ответ на порту — «моделей нет»,
+    а не `KeyError`/`TypeError` из разбора и не мусор в множестве имён.
+    Один битый элемент — не полсписка: такой ответ целиком чужой."""
+    _подменить_requests(monkeypatch, _Tags(payload))
+    assert LLM(CFG)._models_available() == set()
+
+
+@pytest.mark.parametrize("error", [ConnectionError("встроенный"), RuntimeError("дефект")],
+                         ids=["встроенный-ConnectionError", "прочее"])
+def test_models_list_does_not_swallow_what_is_not_network(monkeypatch, error):
+    """Глотается только сеть `requests` и не-JSON тело. Встроенный
+    `ConnectionError` — не `requests.ConnectionError`: прежний `except
+    Exception` глотал и его, и отказ сторожа, и тесты шли по «сервер лежит»
+    неявно (№397)."""
+    _подменить_requests(monkeypatch, _Tags(error=error))
+    with pytest.raises(type(error)):
+        LLM(CFG)._models_available()
+
+
+# ------------------------------------------------ прогрев (warmup)
+#
+# Синхронно: исключение фонового потока тест не видит (№404).
+
+def _warmup_raising(monkeypatch, error: BaseException, *, cloud: bool = False) -> LLM:
+    engine = LLM(CFG)
+    engine.cloud_ready = cloud
+
+    def stream(*a, **k):
+        raise error
+        yield  # генератор, как настоящий stream
+
+    monkeypatch.setattr(engine, "stream", stream)
+    return engine
+
+
+def test_warmup_swallows_a_downed_server(monkeypatch, capsys):
+    """Ollama может быть не поднята — старт не валится и молчит."""
+    _warmup_raising(monkeypatch, requests.exceptions.ConnectionError("refused")).warmup()
+    _warmup_raising(monkeypatch, requests.exceptions.RequestException("сеть")).warmup()
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_warmup_names_a_rejected_key(monkeypatch, capsys, status):
+    _warmup_raising(monkeypatch, LLMHTTPError(status, "no"), cloud=True).warmup()
+    assert f"шлюз не принял ключ (HTTP {status})" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error", [ConnectionError("встроенный"), RuntimeError("дефект"),
+                                   KeyError("разбор")],
+                         ids=["встроенный-ConnectionError", "RuntimeError", "KeyError"])
+def test_warmup_does_not_swallow_what_is_not_network(monkeypatch, error):
+    """Прежний `except Exception` прятал дефект прогрева до первой подсказки
+    встречи: глотается только сеть `requests` (№397)."""
+    with pytest.raises(type(error)):
+        _warmup_raising(monkeypatch, error).warmup()
+
+
+# ------------------------------------------------ контракт фейков транспорта
+
+def test_fake_transport_contract_is_read_from_the_product():
+    """Имена берутся из `except` продукта, а не из списка в тесте: сегодня это
+    сеть целиком и отказ соединения стрима. Разбор, потерявший их, сделал бы
+    контракт пустым и зелёным."""
+    assert {("RequestException",), ("ConnectionError",)} <= ПЕРЕХВАТЫ_REQUESTS
+    for путь in ПЕРЕХВАТЫ_REQUESTS:
+        assert issubclass(_по_пути(requests, путь), BaseException), путь
+
+
+def test_contract_reads_a_qualified_except_as_one_path():
+    """`except requests.exceptions.X` — один путь до класса, а не два имени:
+    квалификатор `exceptions` классом не считается, и фейк без него получает
+    внятный отказ, а не `TypeError` из `issubclass` (Important DeepSeek по PR #636)."""
+    пути = _перехваты_requests(
+        "try:\n    pass\n"
+        "except (requests.exceptions.RequestException, ValueError):\n    pass\n"
+        "except requests.ConnectionError:\n    pass\n")
+    assert пути == {("exceptions", "RequestException"), ("ConnectionError",)}
+
+    class _Без:
+        ConnectionError = requests.ConnectionError
+
+    class _С(_Без):
+        exceptions = requests.exceptions
+    assert _нарушения_контракта(_Без, пути) == ["exceptions.RequestException"]
+    assert _нарушения_контракта(_С, пути) == []
+
+
+_ФЕЙКИ_ТРАНСПОРТА = sorted(
+    (объект for объект in dict(globals()).values()
+     if isinstance(объект, type) and объект.__module__ == __name__
+     and (callable(getattr(объект, "post", None)) or callable(getattr(объект, "get", None)))
+     and not issubclass(объект, dict)),
+    key=lambda к: к.__name__)
+
+
+@pytest.mark.parametrize("fake", _ФЕЙКИ_ТРАНСПОРТА, ids=lambda к: к.__name__)
+def test_every_fake_transport_carries_the_real_exceptions(fake):
+    """Каждый фейк `llm.requests` несёт те же классы, что `except` в llm.py.
+
+    `RequestException = Exception` у фейка делал узкий перехват продукта
+    широким в тесте: тест зеленел на том, что продукт не ловит (№397)."""
+    assert not _нарушения_контракта(fake), f"{fake.__name__}: {_нарушения_контракта(fake)}"
+
+
+def test_fake_transports_are_found():
+    """Сборщик видит все классы-транспорты модуля, с подчёркиванием и без, — и
+    ровно их: новый фейк попадает в проверку контракта сам, а список здесь
+    краснеет, пока его не назовут (Minor DeepSeek по PR #636)."""
+    assert {к.__name__ for к in _ФЕЙКИ_ТРАНСПОРТА} == {"_Requests", "_BusyThenOk", "_EmbedServer", "_Tags"}
+
+
+#: Файлы, которые сегодня подменяют глагол `requests` напрямую. `llm.requests` —
+#: тот же объект модуля, который патчит сторож: такая подмена снимает его обёртку,
+#: и запрос мимо сценария получает ответ фейка, а не отказ. Долг №407 (адаптер над
+#: картой маршрутов); новому файлу сюда нельзя — сценарий задаётся маршрутом сторожа.
+ГЛАГОЛЫ_МИМО_СТОРОЖА = frozenset({
+    "test_archive_dedup.py", "test_audit_0_46_мелочи.py", "test_brain_flag.py",
+    "test_cloud_engine.py", "test_derivative_passport.py", "test_graph_search.py",
+    "test_llm_health.py",
+})
+
+
+def _подмены_мимо_двери(tree) -> tuple[list[int], list[int]]:
+    """Строки подмены `llm.requests` целиком и строки подмены глагола `requests`."""
+    import ast
+    from conftest import ГЛАГОЛЫ_СТОРОЖА
+    модуль, глагол = [], []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef) or fn.name == "_подменить_requests":
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "setattr" and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)):
+                continue
+            цель, имя = node.args[0], node.args[1].value
+            if имя == "requests" and isinstance(цель, ast.Name) and цель.id in ("llm", "llm_mod"):
+                модуль.append(node.lineno)
+            elif имя in ГЛАГОЛЫ_СТОРОЖА and (
+                    (isinstance(цель, ast.Name) and цель.id == "requests")
+                    or (isinstance(цель, ast.Attribute) and цель.attr == "requests")):
+                глагол.append(node.lineno)
+    return модуль, глагол
+
+
+def test_llm_requests_is_substituted_only_through_the_contract_door():
+    """Подмена `llm.requests` мимо `_подменить_requests` обошла бы контракт —
+    и фейк, вложенный в тело теста, сборщик выше не видит. Подмена глагола
+    (`setattr(llm.requests, "post", …)`) снимает обёртку сторожа — вне перечня
+    долга она запрещена, а перечень не держит файлов, где её уже нет."""
+    import ast
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    мимо, глаголы = [], set()
+    for файл in sorted(tests_dir.glob("test_*.py")):
+        модуль, глагол = _подмены_мимо_двери(ast.parse(файл.read_text(encoding="utf-8")))
+        мимо += [f"{файл.name}:{n}" for n in модуль]
+        if глагол:
+            глаголы.add(файл.name)
+            if файл.name not in ГЛАГОЛЫ_МИМО_СТОРОЖА:
+                мимо += [f"{файл.name}:{n} (глагол requests)" for n in глагол]
+    assert not мимо, f"llm.requests подменяют мимо контракта: {мимо}"
+    assert ГЛАГОЛЫ_МИМО_СТОРОЖА == глаголы, (
+        f"перечень долга разошёлся с деревом: лишние {sorted(ГЛАГОЛЫ_МИМО_СТОРОЖА - глаголы)}")
+
+
+def test_the_door_sees_a_verb_patch_in_both_forms():
+    """Обе формы подмены глагола видны двери: по имени модуля и через атрибут."""
+    import ast
+    tree = ast.parse(
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(requests, 'post', fake)\n"
+        "    monkeypatch.setattr(llm.requests, 'get', fake)\n"
+        "    monkeypatch.setattr(llm_mod, 'requests', fake)\n"
+        "    monkeypatch.setattr(llm.requests, 'Session', fake)\n")
+    assert _подмены_мимо_двери(tree) == ([4], [2, 3])
 
 
 #: Адрес Ollama прогона литералом: `== [engine.base]` сравнивал бы запись заглушки
@@ -1137,7 +1414,9 @@ def test_a_downed_model_fails_the_stream_at_once(модель_не_отвеча�
     import requests
     monkeypatch.setattr(llm_mod.time, "sleep",
                         lambda s: pytest.fail(f"стрим ждал {s} с на лежащем сервере", pytrace=False))
-    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}  # адрес сценария
+    # не умолчание: маршрут ставится по base экземпляра — литерал умолчания здесь
+    # запрос не поймал бы, и сторож уронил бы тест (№396)
+    cfg = {**CFG, "llm": {**CFG["llm"], "base_url": "http://localhost:11434"}}
     with pytest.raises(requests.RequestException):
         list(LLM(cfg).stream("вопрос"))
     assert модель_не_отвечает == ["вопрос"]
