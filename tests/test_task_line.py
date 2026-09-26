@@ -755,6 +755,31 @@ def test_without_statuses_strips_the_whole_accounting_tail(line, expected):
     assert task_line.without_statuses(line) == expected
 
 
+BOXED = [r for r in TABLE if task_line._ACCOUNTING.match(r["line"])]
+
+
+@pytest.mark.parametrize("row", BOXED, ids=lambda r: r["line"])
+def test_without_statuses_changes_only_the_box_and_the_accounting_tail(row):
+    """Свойство по всей общей таблице форм, а не по отобранным: ящик становится
+    пробелом, со строки снимается только хвост, строгий читатель после нормализации
+    не видит ни полей, ни пометки, повтор — тождество, слова пункта (ключ) целы.
+    Новая форма в фикстуре расширяет проверку сама («Как чинить» DS по PR #641)."""
+    line = row["line"]
+    m = task_line._ACCOUNTING.match(line)
+    out = task_line.without_statuses(line)
+    assert (line[:m.start(2)] + "[ ]" + line[m.end(2):]).startswith(out), "меняются только ящик и хвост"
+    assert task_line.without_statuses(out) == out
+    rec = task_line.parse(out)
+    assert rec is not None and rec.box == " " and rec.fields == {} and rec.control is None, out
+    if not any(s in row["text"] for s in (*task_line.FIELDS.values(), "_(снято")):
+        assert task_line.key(out) == row["key"], "нормализация не ест слова пункта"
+
+
+def test_the_property_covers_most_of_the_table():
+    # фильтр выше не должен молча сузиться до пары строк
+    assert len(BOXED) >= 60
+
+
 def test_without_statuses_terminates_on_two_impossible_dates():
     # цикл обязан укорачивать строку на каждом шаге (срез ДО разбора даты), иначе
     # первая же невозможная дата зациклила бы разбор
