@@ -152,6 +152,7 @@ If a PR turns that check red, the message names the fix. The usual cases:
 | edge into the environment layer / module of layer X touches the environment | layer X has no environment: pass the path or setting in as a parameter and assemble it in a door on a layer that sees runtime (like `graphs.open_search`); `allowed_edges` cannot excuse it and `root_exemptions` refuses these shapes at load |
 | package X pulls module Y | the closure of `package_entry` reached a layer with the environment — cut the import, the package must install without the app |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
+| `✗ scripts/layout_map.py: …` instead of `✗ docs/design/layout.json: …` | the defect is in a table of the guard's own code (`ROOT_SHAPES`, the scope table `SHAPE_SCOPES`, `PROBLEM_KINDS`), not in the artifact — fix the code |
 
 ```bash
 .venv/bin/python scripts/layout_map.py           # regenerate the map

@@ -618,11 +618,14 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
     # у каждого вида таблицы есть различимая проба, иначе правило нечем доказать
     for _p, kind, _s, _w in lm.KINDS:
         assert kind in lm.PROBE_SUFFIX, kind
-    with pytest.raises(lm.LayoutError):
+    # таблицы кода: чинить их в коде, а не в артефакте (№384)
+    with pytest.raises(lm.LayoutError) as e:
         lm.probe("x/", "невиданный вид")
+    assert e.value.culprit == lm.LAYOUT_CODE
     # состояние карты — закрытый список, а не любая строка
-    with pytest.raises(lm.LayoutError):
+    with pytest.raises(lm.LayoutError) as e:
         lm.check(layout, graph, lm.Scan({}, {}, {}, []), {}, repo=tmp_path, map_state="что-то")
+    assert e.value.culprit == lm.LAYOUT_CODE
     # состояний три, и «не спрашиваем о карте» — это map_text=None, а не четвёртое
     # значение, которое вело бы себя как present и врало докстрингом (GLM круга 9)
     # состояний ровно три: четвёртое вело бы себя как present, а докстринг обещал
@@ -781,8 +784,9 @@ def test_seed_fields_are_exactly_what_the_code_guess_writes(tmp_path, monkeypatc
     layout = _layout()
     layout["brief_layers"]["low"] += ["tool"]
     monkeypatch.setattr(lm, "derive_run_contract", lambda rel, info: {**derived, "probe_args": "--x"})
-    with pytest.raises(lm.LayoutError, match="засев и объявление разошлись"):
+    with pytest.raises(lm.LayoutError, match="засев и объявление разошлись") as e:
         lm.regen(json.loads(json.dumps(layout)), lm.import_graph(inv), inv, [])
+    assert e.value.culprit == lm.LAYOUT_CODE
 
 
 def test_regen_writes_seed_fields_only_at_birth(tmp_path):
@@ -1940,8 +1944,9 @@ def test_every_kind_of_problem_has_a_section_and_a_verdict():
             заведённые.add(node.args[0].value)
     assert заведённые, "предпосылка: проблемы создаются вызовом Problem(вид, текст)"
     assert заведённые <= set(lm.PROBLEM_KINDS), f"вид без объявления: {заведённые - set(lm.PROBLEM_KINDS)}"
-    with pytest.raises(lm.LayoutError):
+    with pytest.raises(lm.LayoutError) as e:
         lm.Problem("новый_вид", "вид, которого нет в таблице")
+    assert e.value.culprit == lm.LAYOUT_CODE, "вид проблемы объявляет код, не артефакт"
     # каждый объявленный вид виден в замере и учтён в решении о коде выхода
     для_каждого = [lm.Problem(k, f"проба {k}") for k in lm.PROBLEM_KINDS]
     разделы = lm.sections(для_каждого)
@@ -2128,13 +2133,50 @@ def test_the_layer_shapes_are_judged_wherever_the_module_lives(tmp_path, monkeyp
     assert lm.root_problems(derivations, {}, layout) == [
         f"packages/d/src/p/lib_mod.py:2 {hint['any_env']} — {lm.env_free_layers(layout)['lib']}"]
 
-    assert lm.SHAPE_SCOPES == {"root": lm.ENV_ROOT_ENFORCED, "layer": ("",)}
+    # закреплено отображение форм в области, а не таблица целиком: у таблицы
+    # законно бывают области без форм — область швов (№384)
+    assert {s.name: lm.SHAPE_SCOPES[s.scope] for s in lm.ROOT_SHAPES} == {
+        s.name: (("",) if s.scope == "layer" else lm.ENV_ROOT_ENFORCED) for s in lm.ROOT_SHAPES}
+    assert {s.scope for s in lm.ROOT_SHAPES} == {"root", "layer"}
+    assert lm.SHAPE_SCOPES["seam"] == lm.ENV_ROOT_ENFORCED, "область швов — где судились всегда"
     # область формы — ключ таблицы областей; опечатка отвергнута при загрузке, а не
     # выводит форму из-под суда молча (Minor DeepSeek по PR №625)
     typo = tuple(sh._replace(scope="layr") if sh.name == "home" else sh for sh in lm.ROOT_SHAPES)
     monkeypatch.setattr(lm, "ROOT_SHAPES", typo)
-    with pytest.raises(lm.LayoutError, match=r"неизвестной областью .*'home'"):
+    with pytest.raises(lm.LayoutError, match=r"неизвестной областью .*'home'") as e:
         lm.load_layout()
+    assert e.value.culprit == lm.LAYOUT_CODE, "опечатка в коде, а не в артефакте"
+
+
+def test_the_culprit_of_a_layout_error_is_printed(monkeypatch, capsys):
+    """Чья ошибка — тот путь и в печати (№384): опечатка области формы в коде
+    печаталась как «✗ layout.json: …», и чинить шли артефакт, где ошибки нет."""
+    typo = tuple(sh._replace(scope="layr") if sh.name == "home" else sh for sh in lm.ROOT_SHAPES)
+    monkeypatch.setattr(lm, "ROOT_SHAPES", typo)
+    assert lm.main(["--check"]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("✗ scripts/layout_map.py: формы с неизвестной областью"), out
+    assert "layout.json" not in out
+    monkeypatch.undo()
+    # ошибка артефакта — по-прежнему с путём артефакта; умолчание берётся на вызове
+    assert lm.LayoutError("x").culprit == lm.LAYOUT
+    monkeypatch.setattr(lm, "validate_layout", lambda layout: (_ for _ in ()).throw(lm.LayoutError("битое")))
+    assert lm.main(["--check"]) == 1
+    assert capsys.readouterr().out == "✗ docs/design/layout.json: битое\n"
+    assert isinstance(lm.LayoutError("x", culprit=lm.LAYOUT_CODE), ValueError), "тип тот же"
+
+
+def test_the_seam_judge_reads_the_scope_table(monkeypatch):
+    """Область судьи швов — ключ `seam` таблицы областей, а не литерал в судье
+    (№384): замер видит весь инвентарь, судья — только область таблицы."""
+    call = "import tier3\ntier3.revise(g)\n"
+    inv = lm.Inventory(files={"src/внутри.py": _code(call), "packages/d/src/p/вне.py": _code(call)}, problems=[])
+    calls = lm.seam_calls(inv)
+    assert set(calls) == {"src/внутри.py", "packages/d/src/p/вне.py"}, "замер видит и вызов вне области"
+    assert [line.split(" ")[0] for line in lm.seam_problems(calls)] == ["src/внутри.py:2"], "судья — только область"
+    monkeypatch.setitem(lm.SHAPE_SCOPES, "seam", ("packages/",))
+    assert [line.split(" ")[0] for line in lm.seam_problems(calls)] == ["packages/d/src/p/вне.py:2"], (
+        "смена области в таблице меняет суд")
 
 
 def test_the_env_gate_asks_the_artifact(tmp_path):
