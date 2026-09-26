@@ -114,7 +114,7 @@ def load_config() -> dict:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+    except (OSError, UnicodeDecodeError, RecursionError, yaml.YAMLError) as e:   # глубокая вложенность — тоже битый файл
         _config_note(f"{path} не читается — беру умолчания ({type(e).__name__}: {e})")
         return {}
     return data if isinstance(data, dict) else {}

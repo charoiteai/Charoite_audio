@@ -414,6 +414,15 @@ def test_ruff_rules_live_in_one_place_and_no_caller_overrides_them():
             # по префиксу: «--select=E9» и «--select E9» одинаково перекрывают конфиг
             bad = [f for f in RUFF_OVERRIDES if re.search(re.escape(f) + r"(=|\s|$)", ln)]
             assert not bad, f"{who} перекрывает правила флагом {bad}: {ln}"
+    # пути: локальный гейт судит то же, что CI; у pre-commit путей нет — он получает
+    # стейджнутые файлы (DS M3 выходного круга 1 по №405)
+    def paths(ln: str) -> set[str]:
+        tail = re.split(r"[;#|&\n]", re.split(r"\bcheck\b", ln, maxsplit=1)[1], maxsplit=1)[0]
+        return {t for t in tail.split() if not t.startswith("-")}
+    judged = {who: [paths(ln) for ln in calls[who] if re.search(r"\bcheck\b", ln)]
+              for who in ("ci", "preflight")}
+    assert all(judged.values()) and all(p == {"src/", "tests/", "scripts/"}
+                                        for ps in judged.values() for p in ps), judged
     skip = (".git", ".venv", "node_modules")
     other = [p for p in REPO.rglob("*") if not set(skip) & set(p.parts)
              and (p.name in ("ruff.toml", ".ruff.toml")

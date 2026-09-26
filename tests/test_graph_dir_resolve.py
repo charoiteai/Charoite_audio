@@ -211,6 +211,9 @@ def test_конфиг_не_словарь_и_следы_неполадок(tmp_p
     graphs.load_config()
     err = capsys.readouterr().err
     assert err.count("не читается") == 1, err                # два чтения — одна строка
+    graphs.config_path().write_text("[" * 3000 + "]" * 3000, encoding="utf-8")
+    assert graphs.load_config() == {}, "разбор упал на глубине — это битый файл, а не падение читателя"
+    assert "RecursionError" in capsys.readouterr().err
 
     def нет_корня():
         raise RuntimeError("корень не назван")
