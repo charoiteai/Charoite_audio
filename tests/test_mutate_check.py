@@ -793,3 +793,137 @@ def test_мутатор_из_чужого_клона_берёт_канон_св�
                          cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
     assert "Traceback" not in out.stderr, out.stderr[-800:]
     assert out.returncode == exit_codes.EXIT_NOTHING_TO_CHECK, (out.returncode, out.stdout[-400:])
+
+
+# --- Бюджет прогона `--budget-s` (№395) --------------------------------------
+# Время — подменённые часы: каждый прогон набора двигает их на заданные секунды.
+# Отсчёт с 1000, а не с нуля: с нулём `now - start` и `now + start` неотличимы.
+
+
+class _Часы:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _мутанты(rel: str, n: int) -> list:
+    """Первые `n` мутантов HEAD-версии файла, которые применяются к ней же."""
+    head = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=REPO,
+                          capture_output=True, text=True, check=True).stdout
+    found = mc.scan(REPO / rel, set(range(1, head.count("\n") + 1)), head).mutations
+    return [m for m in found if mc.applied(m, head)[0] is not None][:n]
+
+
+def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_на=None):
+    """Подменить план, наборы, часы и `run_tests`. Набор модуля — свой файл
+    тестов, новым списком на каждый вызов: ключ длительностей обязан от этого
+    не зависеть. Возвращает журнал вызовов `run_tests`: (набор, таймаут)."""
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng: (list(plan), mc.ScanTotals(files_in=1, lines_in=1)))
+    monkeypatch.setattr(mc, "tests_for", lambda root, module: [f"tests/test_{module.stem}.py"])
+    часы = _Часы()
+    monkeypatch.setattr(mc, "clock", часы)
+    журнал = []
+
+    def run_tests(cwd, targets, timeout):
+        журнал.append((tuple(targets), timeout))
+        if падать_на is not None and len(журнал) == падать_на:
+            raise RuntimeError("раннер оборвал job")
+        часы.t += секунды[targets[0]]
+        # база зелёная (первый прогон каждого набора), мутанты убиты
+        return [t for t, _ in журнал].count(tuple(targets)) == 1
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    return журнал
+
+
+_MC = "tests/test_mutate_check.py"
+_BS = "tests/test_busy_signals.py"
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("бюджет, прогонов", [(399.9, 0), (400, 1)])
+def test_бюджет_не_хватает_на_базу(tmp_path, monkeypatch, capsys, force, бюджет, прогонов):
+    """Набор базы ещё не мерили — нужен худший случай, 4 × --timeout = 400 с.
+    Меньше — ни одного прогона, мутанты не запускаются; ровно 400 — база идёт,
+    а мутант (замер набора 350 с) при остатке 50 уже не влезает. `--force` снимает гвард занятости, но не бюджет."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 3)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 350})
+    отчёт = tmp_path / "отчёт.txt"
+    argv = ["mutate_check.py", "--range", "HEAD", "--timeout", "100",
+            "--budget-s", str(бюджет), "--report", str(отчёт)] + (["--force"] if force else [])
+    assert mc.main(argv) == exit_codes.EXIT_PARTIAL
+    assert len(журнал) == прогонов, журнал
+    out = capsys.readouterr().out
+    assert "НЕ СУДИЛОСЬ: 3 (прервано: бюджет)" in out, out
+    assert отчёт.read_text(encoding="utf-8").startswith(
+        "Проверено мутантов: 0 из 3 (остановка: бюджет), выжило: 0"), отчёт.read_text(encoding="utf-8")
+
+
+def test_бюджет_хватает_на_базу_и_k_мутантов(tmp_path, monkeypatch, capsys):
+    """600 с: база 100 (нужно 400), затем мутанты по 100 — пока остаток не
+    меньше замера набора. Третий идёт ровно на остатке 100, четвёртый — нет.
+    Таймаут мутанта не урезается под остаток: при остатке 300…100 (меньше
+    потолка набора 4 × 100) `run_tests` получает всё те же 100 — урезанный
+    прогон истёк бы и засчитал мутанта «убитым» ложно."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 6)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 100})
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "100",
+                    "--max", "5", "--budget-s", "400", "--report", str(отчёт)]) == exit_codes.EXIT_PARTIAL
+    assert len(журнал) == 1 + 3, журнал
+    assert {t for _, t in журнал} == {100}, журнал
+    текст = отчёт.read_text(encoding="utf-8")
+    assert текст.startswith("Проверено мутантов: 3 из 6 (срезано --max: 1; остановка: бюджет), "
+                            "выжило: 0"), текст
+    assert "НЕ СУДИЛОСЬ: 2 (прервано: бюджет)" in текст, текст
+    assert "⏹ бюджет — прерываюсь (3/5" in capsys.readouterr().out
+
+
+def test_оценка_мутанта_это_замер_его_набора(tmp_path, monkeypatch):
+    """Ключ базы и ключ мутанта совпадают, хоть `tests_for` и отдаёт новый список
+    на каждый вызов. Наборы разной длины: база 10 + 30 при бюджете 60 оставляет
+    20 — мутант набора в 10 с идёт, мутант набора в 30 с останавливает прогон.
+    Оценка по чужому набору дала бы другой ответ, пропавшая — KeyError."""
+    import exit_codes
+    а, б = _мутанты("scripts/mutate_check.py", 2), _мутанты("src/busy_signals.py", 1)
+    assert len(а) == 2 and len(б) == 1
+    журнал = _прогон(tmp_path, monkeypatch, [а[0], б[0], а[1]], секунды={_MC: 10, _BS: 30})
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "5",
+                    "--budget-s", "60"]) == exit_codes.EXIT_PARTIAL
+    assert [ts for ts, _ in журнал] == [(_BS,), (_MC,), (_MC,)], журнал
+    # с запасом — каждый мутант судится своим набором, оценка нашлась всем
+    журнал = _прогон(tmp_path, monkeypatch, [а[0], б[0], а[1]], секунды={_MC: 10, _BS: 30})
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--timeout", "5",
+                    "--budget-s", "1000"]) == 0
+    assert [ts for ts, _ in журнал] == [(_BS,), (_MC,), (_MC,), (_BS,), (_MC,)], журнал
+
+
+def test_отчёт_на_диске_после_каждого_мутанта(tmp_path, monkeypatch):
+    """Раннер обрывает job посреди плана: отчёт уже на диске и описывает двух
+    проверенных — прежде он писался один раз в конце и пропадал целиком."""
+    plan = _мутанты("scripts/mutate_check.py", 5)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1}, падать_на=1 + 3)
+    отчёт = tmp_path / "отчёт.txt"
+    with pytest.raises(RuntimeError, match="раннер"):
+        mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)])
+    текст = отчёт.read_text(encoding="utf-8")
+    assert текст.startswith("Проверено мутантов: 2 из 5 (остановка: прогон не дошёл до конца "
+                            "плана), выжило: 0"), текст
+    assert "НЕ СУДИЛОСЬ: 3" in текст, текст
+
+
+def test_без_бюджета_поведение_прежнее(tmp_path, monkeypatch, capsys):
+    """Без `--budget-s` время не ограничивает ничего: часы уходят на годы вперёд,
+    а судится весь план, и исход — «проверено всё, чисто»."""
+    plan = _мутанты("scripts/mutate_check.py", 4)
+    журнал = _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1e9})
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 0
+    assert len(журнал) == 1 + 4 and {t for _, t in журнал} == {120}, журнал
+    assert отчёт.read_text(encoding="utf-8") == "Проверено мутантов: 4 из 4, выжило: 0\n"
+    assert "бюджет" not in capsys.readouterr().out
