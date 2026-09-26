@@ -298,7 +298,8 @@ def plan_materials(tdir: pathlib.Path, key: str, expected_debrief: pathlib.Path 
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
                     files_key: str | None = None, *,
                     mode: SummaryMode = SummaryMode.AUTO,
-                    extra: typing.Mapping[str, pathlib.Path] | None = None) -> Archived | None:
+                    extra: typing.Mapping[str, pathlib.Path] | None = None,
+                    unhide: bool = True) -> Archived | None:
     """Собирает/обновляет папку встречи; возвращает папку и исход саммари
     (None — встреча исключена). `mode` — режим прохода по саммари
     (`SummaryMode`); дефолт — в сигнатуре, архивация режим не интерпретирует и
@@ -321,6 +322,13 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     и `write_text_if_changed`): повторный проход без новостей папку не трогает.
     Канон минуток — не копия, а `lay_canon` с паспортом: правленый человеком
     канон раскладка не трогает (№366), исход — в `Archived.canon`.
+
+    `unhide=False` — для массовых обходов (`migrate_all`, цикл `retro_fill`):
+    снятие UF_HIDDEN идёт по всему графу (замер 25.09 — медиана 477 мс на
+    9191 файл), и обход бэклога платил его на каждой встрече, ≈151 с из ≈200.
+    Такой обход зовёт `_unhide` сам, один раз, в `finally` вокруг цикла.
+    Оглавление пересобирается и тогда на каждой встрече: после `kill -9`
+    посреди обхода оно остаётся верным, а починить его потом нечем (№362).
     """
     if stamp in _excluded(graph):
         return None
@@ -414,7 +422,8 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # людей, с которыми встречи были на этой неделе. Поиск с тех пор на флаг
     # не смотрит, но и графу незачем оставаться помеченным: он же открывается
     # в Finder и Obsidian.
-    _unhide(graph)
+    if unhide:
+        _unhide(graph)
     return Archived(folder, summary, canon)
 
 
@@ -1363,22 +1372,27 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
     """Разовая миграция истории: все стенограммы transcripts/ → папки архива."""
     done = 0
     canon_tally: collections.Counter = collections.Counter()
-    for f in sorted(tdir.glob("*.md")):
-        if any(f.name.endswith(suf) for suf, _ in NICE):
-            continue  # это артефакт, не стенограмма
-        if f.stat().st_size < 600:
-            continue  # пустышка (тест старт/стоп) — не встреча
-        bare = stamp_of(f.stem)
-        if bare is None:
-            continue
-        # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
-        # минутный регэксп пропускал посекундные стенограммы целиком.
-        stamp = graph_key(tdir, f.stem, graph)
-        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
-        archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
-        if archived is not None and archived.canon is not None:
-            canon_tally[archived.canon.action] += 1
-        done += 1
+    # UF_HIDDEN снимаем один раз на обход, а не на встречу (№362); `finally` —
+    # чтобы и упавший на k-й встрече обход снял флаг с уже разложенного
+    try:
+        for f in sorted(tdir.glob("*.md")):
+            if any(f.name.endswith(suf) for suf, _ in NICE):
+                continue  # это артефакт, не стенограмма
+            if f.stat().st_size < 600:
+                continue  # пустышка (тест старт/стоп) — не встреча
+            bare = stamp_of(f.stem)
+            if bare is None:
+                continue
+            # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
+            # минутный регэксп пропускал посекундные стенограммы целиком.
+            stamp = graph_key(tdir, f.stem, graph)
+            slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
+            archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem, unhide=False)
+            if archived is not None and archived.canon is not None:
+                canon_tally[archived.canon.action] += 1
+            done += 1
+    finally:
+        _unhide(graph)
     print(f"архив: {canon_tally_line(canon_tally)}")
     return done
 

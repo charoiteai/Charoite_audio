@@ -22,8 +22,8 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
-from meeting_archive import (SummaryMode, SummaryOutcome, archive_meeting,  # noqa: E402
-                             canon_tally_line, cothinking_notes)
+from meeting_archive import (SummaryMode, SummaryOutcome, _unhide,  # noqa: E402
+                             archive_meeting, canon_tally_line, cothinking_notes)
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -92,7 +92,8 @@ def _theses_path(folder: pathlib.Path) -> pathlib.Path:
 
 def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
             summary: str | None = None, tally: collections.Counter | None = None,
-            canon_tally: collections.Counter | None = None) -> list[str]:
+            canon_tally: collections.Counter | None = None, *,
+            unhide: bool = True) -> list[str]:
     """Производные одной стенограммы по паспорту (№309), не «если файла нет».
 
     Минутки — тем же конвейером, что пересборка (`finalize_minutes` +
@@ -123,6 +124,9 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     саммари приходит возвратом (`Archived.summary`), отчёт его печатает, а не
     выводит из состояния диска (Critical DS и Important GLM круга 2); `tally`
     считает исходы по значению `action`, не по словам (Minor DS круга 3).
+
+    `unhide` уходит в `archive_meeting` как есть: цикл `main` передаёт False и
+    снимает UF_HIDDEN с графа сам, один раз на обход (№362).
 
     Возвращает список собранного; одна строка stdout на встречу: что собрано и
     что пропущено с состоянием — «полная» больше не прячет HUMAN/UNKNOWN
@@ -169,7 +173,8 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
         skipped.append(f"разбор {state}")
 
     archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem,
-                               mode=SummaryMode(summary) if summary else SummaryMode.AUTO)
+                               mode=SummaryMode(summary) if summary else SummaryMode.AUTO,
+                               unhide=unhide)
     folder = archived.folder if archived is not None else None
     if archived is not None:
         if tally is not None:
@@ -292,14 +297,21 @@ def main(argv: list[str] | None = None):
     done = 0
     tally: collections.Counter = collections.Counter()
     canon_tally: collections.Counter = collections.Counter()
-    for f in files:
-        if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
-            continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
-        bare = meeting_stamp.stamp_of(f.stem)
-        if bare is None or f.stat().st_size < 600:
-            continue
-        process(f, cfg, graph, tdir, summary=ns.summary, tally=tally, canon_tally=canon_tally)
-        done += 1
+    # UF_HIDDEN со всего графа — один раз на обход, не на встречу (№362): на
+    # полном бэклоге это ≈151 с из ≈200 доплаты архива. `finally` — чтобы флаг
+    # сняли и с того, что успели разложить до исключения
+    try:
+        for f in files:
+            if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
+                continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
+            bare = meeting_stamp.stamp_of(f.stem)
+            if bare is None or f.stat().st_size < 600:
+                continue
+            process(f, cfg, graph, tdir, summary=ns.summary, tally=tally, canon_tally=canon_tally,
+                    unhide=False)
+            done += 1
+    finally:
+        _unhide(graph)
     if not args:
         print(f"ретро: обход {tdir.name}: встреч обработано {done}")
         if ns.summary:
