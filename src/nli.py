@@ -80,7 +80,7 @@ def _load():
             opts.intra_op_num_threads = 2
             _session = ort.InferenceSession(
                 str(_dir() / "model.onnx"), opts, providers=["CPUExecutionProvider"])
-        except Exception:
+        except Exception:  # noqa: BLE001 — любая поломка сборки сессии = «судья не пришёл»: ready() и _entail говорят это честно
             _failed = True
 
 

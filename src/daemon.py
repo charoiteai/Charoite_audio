@@ -530,7 +530,7 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
               "text": f"Догоняю прерванную встречу {live.stem} — пересборка фоном"})
         try:
             statuses.processing(live, "recovering")
-        except Exception:  # статус вспомогателен; запись всё равно восстанавливаем
+        except Exception:  # noqa: BLE001 — статус вспомогателен; запись всё равно восстанавливаем
             pass
         try:
             # start_new_session: пересборка переживает смерть демона (как и
@@ -2272,7 +2272,7 @@ def main():
             import requests as _rq
             _rq.get("http://127.0.0.1:9876/health", timeout=2).raise_for_status()
             from websockets.sync.client import connect as ws_connect
-        except Exception:
+        except (ImportError, OSError):   # requests.RequestException — подкласс OSError
             return  # сервера/библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
@@ -3373,7 +3373,7 @@ def main():
             statuses = MeetingStatusStore(_root())
             try:
                 statuses.processing(tr.path, "waiting_for_audio")
-            except Exception:  # статус вспомогателен; встречу всё равно обрабатываем
+            except Exception:  # noqa: BLE001 — статус вспомогателен; встречу всё равно обрабатываем
                 pass
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
@@ -3397,8 +3397,8 @@ def main():
         except Exception as e:  # noqa: BLE001 — UI должен показать, что фон не стартовал
             try:
                 MeetingStatusStore(_root()).failed(tr.path, f"не удалось запустить обработку: {e}")
-            except Exception:
-                pass
+            except Exception as e2:  # noqa: BLE001 — статус отказа вспомогателен; запись финализируем всё равно
+                print(f"статус отказа фона не записан: {e2}", file=sys.stderr)
         hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
         emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
 

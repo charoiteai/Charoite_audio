@@ -63,8 +63,26 @@ if [ -n "$busy" ] && [ -z "${PREFLIGHT_FORCE:-}" ]; then
 fi
 [ -z "$(git status --porcelain)" ] || echo "   ! рабочее дерево не чистое: шаг 4 (мутатор) судит HEAD, незакоммиченного не видит"
 
-step "1. статика: ruff E9,F · раскладка · маркеры приватности"
-"$PY" -m ruff check --select E9,F src/ scripts/ tests/ -q;                        verdict $? ruff
+step "1. статика: ruff (правила — pyproject) · раскладка · маркеры приватности"
+# Движок — той же версии, что в CI: версия читается из ci.yml, набор правил — из
+# pyproject. Порядок: ruff из venv, если версия та же; иначе pipx или uvx этой
+# версии. Движок не встал (нет сети, нет инструментов) — шаг уходит в пропуски с
+# причиной, итог «неполный»: красный линт значит нарушения правил, а не офлайн
+# (№405: DS I1/I2 входного круга 2, I3 выходного круга 1).
+RUFF_V=$("$PY" -c "import yaml; print(yaml.safe_load(open('.github/workflows/ci.yml'))['env']['RUFF_VERSION'])" 2>/dev/null)
+[ -n "$RUFF_V" ] || { echo "preflight: версия ruff в ci.yml не читается — прогон не стартует"; exit 2; }
+have=$("$PY" -m ruff --version 2>/dev/null | awk '{print $2}')
+if [ "$have" = "$RUFF_V" ]; then ruff_run() { "$PY" -m ruff "$@"; }
+elif command -v pipx >/dev/null; then ruff_run() { pipx run "ruff==$RUFF_V" "$@"; }
+elif command -v uvx >/dev/null; then ruff_run() { uvx "ruff@$RUFF_V" "$@"; }
+else ruff_run() { return 127; }
+fi
+if [ "$(ruff_run --version 2>/dev/null | awk '{print $2}')" = "$RUFF_V" ]; then
+  ruff_run check src/ scripts/ tests/ -q;                                          verdict $? ruff
+else
+  echo "   – ruff $RUFF_V не встал (в venv ${have:-нет}; pipx/uvx без сети?) — шаг пропущен"
+  SKIPPED="$SKIPPED ruff(движок $RUFF_V не встал)"
+fi
 "$PY" scripts/layout_map.py --check > "$WORK/layout.log" 2>&1; rc=$?;  [ $rc -eq 0 ] || show "$WORK/layout.log";  verdict $rc layout
 "$PY" scripts/check_private_markers.py --all > "$WORK/markers.log" 2>&1; rc=$?; [ $rc -eq 0 ] || show "$WORK/markers.log"; verdict $rc markers
 

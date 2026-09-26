@@ -90,6 +90,15 @@ review gates, and who answers for what — is documented in
 | every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard |
 | nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
 
+Lint rules live in one place, `[tool.ruff.lint]` of the root `pyproject.toml`;
+CI, pre-commit and `scripts/preflight.sh` call `ruff check <paths>` without flags, and
+a test keeps it that way. Besides errors (`E9`, `F`), a broad `except Exception` or
+`except BaseException` that swallows the error (no `raise` in the handler) is gated:
+narrow the class, or mark it `# noqa: BLE001 — <reason>`; a bare `except:` is not
+allowed. Preflight runs the ruff version pinned in CI (from the venv when it matches,
+otherwise via pipx or uvx); if that engine cannot start, the step is reported as
+skipped, not as failed.
+
 ### The layout guard
 
 `docs/design/layout.json` is the single source of truth for how `src/` is laid

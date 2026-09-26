@@ -193,3 +193,38 @@ def test_конфиг_читается_из_корня_данных_а_биты�
     assert graphs.load_config() == {}                       # битый — не авария
     graphs.config_path().write_text("", encoding="utf-8")
     assert graphs.load_config() == {}                       # пустой — тоже словарь
+
+
+def test_конфиг_не_словарь_и_следы_неполадок(tmp_path, capsys, monkeypatch):
+    """Контракт «всегда словарь» держится и для ямла-списка; битый файл и
+    неназванный корень оставляют строку в stderr — одну за процесс на вид, —
+    а отсутствие файла (свежая установка) молчит (№405, DS I2/I3 круга 2)."""
+    monkeypatch.setattr(graphs, "_config_said", set())
+    данные = charoite_paths.use_data_root(tmp_path / "данные")
+    (данные / "config").mkdir(parents=True)
+    assert graphs.load_config() == {}
+    assert capsys.readouterr().err == "", "нет файла — не неполадка"
+    graphs.config_path().write_text("- один\n- два\n", encoding="utf-8")
+    assert graphs.load_config() == {}, "список — не конфиг"
+    graphs.config_path().write_text("не: [ямл", encoding="utf-8")
+    assert graphs.load_config() == {}
+    graphs.load_config()
+    err = capsys.readouterr().err
+    assert err.count("не читается") == 1, err                # два чтения — одна строка
+    graphs.config_path().write_text("[" * 3000 + "]" * 3000, encoding="utf-8")
+    assert graphs.load_config() == {}, "разбор упал на глубине — это битый файл, а не падение читателя"
+    assert "RecursionError" in capsys.readouterr().err
+
+    def нет_корня():
+        raise RuntimeError("корень не назван")
+    monkeypatch.setattr(graphs, "config_path", нет_корня)
+    assert graphs.load_config() == {}
+    assert "корень данных не назван" in capsys.readouterr().err
+
+
+def test_конфиг_без_пакета_yaml_пустой_словарь(monkeypatch):
+    """Без пакета yaml конфиг не читается, но контракт «всегда словарь» держится —
+    `None` вместо `{}` уронил бы каждого, кто зовёт `.get` (выживший мутант №405)."""
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "yaml", None)      # import yaml → ImportError
+    assert graphs.load_config() == {}

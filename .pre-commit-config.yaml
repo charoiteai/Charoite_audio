@@ -3,8 +3,7 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.3
     hooks:
-      - id: ruff-check
-        args: [--select, "E9,F"]
+      - id: ruff-check   # правила — [tool.ruff.lint] в pyproject.toml, флагов здесь нет (№405)
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
     hooks:
