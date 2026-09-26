@@ -187,9 +187,9 @@ def test_конфиг_без_модели_объясняет_отказ_а_не_
 @pytest.mark.корень_называет_тест
 def test_mcp_without_a_root_starts_and_exits_clean_on_eof(tmp_path):
     """Клиент MCP может запустить сервер без CHAROITE_ROOT. Старт от этого не
-    зависит: корень спрашивается на вызове инструмента, и отказ приходит его
-    ответом (реестр ниже), а не падением процесса — stderr упавшего сервера
-    клиент владельцу не показывает (№336). Процесс с закрытым вводом:
+    зависит: корень спрашивается на вызове инструмента, и отказ приходит ошибкой
+    инструмента (`isError`, реестр ниже), а не падением процесса — stderr
+    упавшего сервера клиент владельцу не показывает (№336). Процесс с закрытым вводом:
     stdio-сервер на EOF выходит нулём и без трейсбека."""
     import subprocess
     env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
@@ -223,7 +223,7 @@ def _ошибка(ответ) -> bool:
     return bool(getattr(ответ, "isError", getattr(ответ, "is_error", None)))
 
 
-async def _вызвать(имя: str, аргументы: dict | None = None):
+async def _вызвать(имя: str):
     """Зов инструмента путём клиента MCP в том же процессе — как это видит владелец.
 
     Прямой `mcp_server.mcp.call_tool` для этого не годится: `isError` ставит
@@ -235,11 +235,11 @@ async def _вызвать(имя: str, аргументы: dict | None = None):
     if not hasattr(mcp_server.mcp, "_mcp_server"):
         import mcp
         async with mcp.Client(mcp_server.mcp) as клиент:
-            return await клиент.call_tool(имя, аргументы or {})
+            return await клиент.call_tool(имя, {})
     from mcp.shared.memory import create_connected_server_and_client_session
     async with create_connected_server_and_client_session(
             mcp_server.mcp._mcp_server) as сессия:
-        return await сессия.call_tool(имя, аргументы or {})
+        return await сессия.call_tool(имя, {})
 
 
 def _инструменты() -> list:
@@ -248,12 +248,14 @@ def _инструменты() -> list:
 
 def test_the_answer_helpers_read_the_installed_mcp():
     """Помощники выше — единственное, что в реестре зависит от версии `mcp`;
-    на установленной они обязаны читать и схему, и текст ответа."""
+    на установленной они обязаны читать схему. Развилка `_вызвать` (есть ли
+    `_mcp_server`) и развилка импорта продукта обязаны называть одну версию:
+    два независимых детектора одной развилки иначе разошлись бы молча
+    (Important DeepSeek по PR #639). Ответ читают тесты ниже."""
     схема = {и.name: _схема(и) for и in _инструменты()}["sufler_live_transcript"]
     assert isinstance(схема, dict) and "properties" in схема
-    ответ = asyncio.run(_вызвать("sufler_live_transcript"))
-    assert not _ошибка(ответ), _текст(ответ)[:300]
-    assert _текст(ответ) == "Стенограмм нет."   # корень назван обвязкой, стенограмм в нём нет
+    ветка_1x = mcp_server.FastMCP.__module__.startswith("mcp.server.fastmcp")
+    assert hasattr(mcp_server.mcp, "_mcp_server") == ветка_1x, mcp_server.FastMCP.__module__
 
 
 @pytest.mark.корень_называет_тест
@@ -261,8 +263,8 @@ def test_without_a_root_every_tool_answers_with_the_recipe(monkeypatch):
     """Реестр по поведению, путём клиента MCP — то, что видит владелец. Без
     корня ни один инструмент не работает по догадке (корню кода): каждый
     отвечает ОШИБКОЙ инструмента (`isError`) с причиной и рецептом, и отказ
-    приходит раньше модели и ребёнка (№336). Текст не сравниваем целиком: у 1.x
-    впереди префикс `Error executing tool …` низкого уровня."""
+    приходит раньше модели и ребёнка (№336). Текст не сравниваем целиком:
+    обёртки версий mcp ставят перед ним свой префикс."""
     monkeypatch.delenv("CHAROITE_ROOT", raising=False)
 
     def не_звать(*a, **k):
