@@ -86,13 +86,38 @@ def config_path() -> pathlib.Path:
     return data_root() / "config" / "config.yaml"
 
 
+_config_said: set[str] = set()
+
+
+def _config_note(text: str) -> None:
+    """Одна строка в stderr на вид неполадки за процесс: конфиг читают часто."""
+    if text not in _config_said:
+        _config_said.add(text)
+        print(f"config: {text}", file=sys.stderr, flush=True)
+
+
 def load_config() -> dict:
-    """config.yaml целиком; {} — файла нет или он битый (пути fail-closed)."""
+    """config.yaml целиком; {} — файла нет, он битый или корень не назван (пути
+    fail-closed). Контракт «всегда словарь» прежний; битый файл и неназванный
+    корень оставляют строку в stderr, отсутствие файла — нормальное состояние
+    свежей установки — молчит (№405, DS I2/I3 круга 2)."""
     try:
         import yaml
-        return yaml.safe_load(config_path().read_text(encoding="utf-8")) or {}
-    except Exception:
+    except ImportError:
         return {}
+    try:
+        path = config_path()
+    except RuntimeError as e:          # корень данных не назван
+        _config_note(f"корень данных не назван — беру умолчания ({e})")
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        _config_note(f"{path} не читается — беру умолчания ({type(e).__name__}: {e})")
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 # Относительный graph_dir считается от корня данных — так же, как это делает

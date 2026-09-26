@@ -3028,7 +3028,7 @@ def main():
                 print(f"разбор: {dpath.name}")
     except _DebriefKept:
         pass
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — разбор необязателен: отказ в журнал, конвейер идёт дальше
         print(f"разбор не удался: {e}")
 
     # 4б, 4в) архив встречи, затем копии в vault — канон минуток архива раньше
@@ -3074,7 +3074,7 @@ def main():
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True,
             )
             print(f"cloud-enrich: разбор идёт под присмотром воркера (лог {log.name})")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — облачное обогащение необязательно: отказ в журнал
             print(f"cloud-enrich не запустился: {e}")
 
     run_post_hook(cfg, tpath, stamp)

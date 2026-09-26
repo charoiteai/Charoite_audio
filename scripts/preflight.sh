@@ -63,8 +63,20 @@ if [ -n "$busy" ] && [ -z "${PREFLIGHT_FORCE:-}" ]; then
 fi
 [ -z "$(git status --porcelain)" ] || echo "   ! рабочее дерево не чистое: шаг 4 (мутатор) судит HEAD, незакоммиченного не видит"
 
-step "1. статика: ruff E9,F · раскладка · маркеры приватности"
-"$PY" -m ruff check --select E9,F src/ scripts/ tests/ -q;                        verdict $? ruff
+step "1. статика: ruff (правила — pyproject) · раскладка · маркеры приватности"
+# Движок — той же версии, что в CI: версия читается из ci.yml, набор правил — из
+# pyproject. Без pipx и uv — ruff из venv; другая версия отмечается в итоге как
+# пропуск, а не проходит молча зелёной (№405, DS I1/I2 круга 2).
+RUFF_V=$("$PY" -c "import yaml; print(yaml.safe_load(open('.github/workflows/ci.yml'))['env']['RUFF_VERSION'])" 2>/dev/null)
+[ -n "$RUFF_V" ] || { echo "preflight: версия ruff в ci.yml не читается — прогон не стартует"; exit 2; }
+if command -v pipx >/dev/null; then ruff_run() { pipx run "ruff==$RUFF_V" "$@"; }
+elif command -v uvx >/dev/null; then ruff_run() { uvx "ruff@$RUFF_V" "$@"; }
+else
+  ruff_run() { "$PY" -m ruff "$@"; }
+  have=$("$PY" -m ruff --version 2>/dev/null | awk '{print $2}')
+  [ "$have" = "$RUFF_V" ] || SKIPPED="$SKIPPED ruff(${have:-нет} из venv вместо $RUFF_V)"
+fi
+ruff_run check src/ scripts/ tests/ -q;                                          verdict $? ruff
 "$PY" scripts/layout_map.py --check > "$WORK/layout.log" 2>&1; rc=$?;  [ $rc -eq 0 ] || show "$WORK/layout.log";  verdict $rc layout
 "$PY" scripts/check_private_markers.py --all > "$WORK/markers.log" 2>&1; rc=$?; [ $rc -eq 0 ] || show "$WORK/markers.log"; verdict $rc markers
 
