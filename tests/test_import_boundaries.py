@@ -2133,12 +2133,9 @@ def test_the_layer_shapes_are_judged_wherever_the_module_lives(tmp_path, monkeyp
     assert lm.root_problems(derivations, {}, layout) == [
         f"packages/d/src/p/lib_mod.py:2 {hint['any_env']} — {lm.env_free_layers(layout)['lib']}"]
 
-    # закреплено отображение форм в области, а не таблица целиком: у таблицы
-    # законно бывают области без форм — область швов (№384)
-    assert {s.name: lm.SHAPE_SCOPES[s.scope] for s in lm.ROOT_SHAPES} == {
-        s.name: (("",) if s.scope == "layer" else lm.ENV_ROOT_ENFORCED) for s in lm.ROOT_SHAPES}
-    assert {s.scope for s in lm.ROOT_SHAPES} == {"root", "layer"}
-    assert lm.SHAPE_SCOPES["seam"] == lm.ENV_ROOT_ENFORCED, "область швов — где судились всегда"
+    # таблица целиком: третий ключ — ещё одна законная область форм, и она видна здесь
+    assert lm.SHAPE_SCOPES == {"root": lm.ENV_ROOT_ENFORCED, "layer": ("",)}
+    assert lm.SEAM_SCOPE == lm.ENV_ROOT_ENFORCED, "область швов — где судились всегда"
     # область формы — ключ таблицы областей; опечатка отвергнута при загрузке, а не
     # выводит форму из-под суда молча (Minor DeepSeek по PR №625)
     typo = tuple(sh._replace(scope="layr") if sh.name == "home" else sh for sh in lm.ROOT_SHAPES)
@@ -2167,16 +2164,16 @@ def test_the_culprit_of_a_layout_error_is_printed(monkeypatch, capsys):
 
 
 def test_the_seam_judge_reads_the_scope_table(monkeypatch):
-    """Область судьи швов — ключ `seam` таблицы областей, а не литерал в судье
-    (№384): замер видит весь инвентарь, судья — только область таблицы."""
+    """Область судьи швов — `SEAM_SCOPE`, а не литерал в судье (№384): замер видит
+    весь инвентарь, судья — только эту область, и сдвиг области сдвигает суд."""
     call = "import tier3\ntier3.revise(g)\n"
     inv = lm.Inventory(files={"src/внутри.py": _code(call), "packages/d/src/p/вне.py": _code(call)}, problems=[])
     calls = lm.seam_calls(inv)
     assert set(calls) == {"src/внутри.py", "packages/d/src/p/вне.py"}, "замер видит и вызов вне области"
     assert [line.split(" ")[0] for line in lm.seam_problems(calls)] == ["src/внутри.py:2"], "судья — только область"
-    monkeypatch.setitem(lm.SHAPE_SCOPES, "seam", ("packages/",))
-    assert [line.split(" ")[0] for line in lm.seam_problems(calls)] == ["packages/d/src/p/вне.py:2"], (
-        "смена области в таблице меняет суд")
+    monkeypatch.setattr(lm, "SEAM_SCOPE", ("packages/",))
+    assert [line.split(" ")[0] for line in lm.seam_problems(calls)] == ["packages/d/src/p/вне.py:2"], \
+        "судья читает область по имени, а не свой литерал"
 
 
 def test_the_env_gate_asks_the_artifact(tmp_path):

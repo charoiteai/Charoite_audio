@@ -49,8 +49,6 @@ UMASK_FORGIVEN = {
     "scripts/bench_models.py": "не пишет данных встреч и владельца: замер скорости моделей, вывод в stdout",
     "scripts/check_private_markers.py": "не пишет данных встреч и владельца: читает дерево репозитория",
     "scripts/check_test_assertions.py": "не пишет данных встреч и владельца: читает тесты репозитория",
-    "scripts/diar_bench.py": "не пишет данных встреч и владельца: синтетический диалог голосом say",
-    "scripts/doctor.py": "не пишет данных встреч и владельца: диагностика, вывод в stdout",
     "scripts/get_models.py": "не пишет данных встреч и владельца: качает веса моделей",
     "scripts/layout_map.py": "не пишет данных встреч и владельца: артефакт и карта раскладки кода",
     "scripts/lock_runtime_deps.py": "не пишет данных встреч и владельца: замок зависимостей репозитория",
@@ -67,6 +65,10 @@ ROOT_DOOR = "name_data_root_or_exit"
 
 #: Обёртки над `main()`, после которых путь исполнения всё равно идёт в `main`.
 EXIT_WRAPPERS = ("exit", "SystemExit")
+
+#: Вызовы, которые на уровне модуля идут раньше блока `__main__` и файлов не создают:
+#: путь импорта канона и проверка зависимостей с рецептом вместо трейсбека.
+MODULE_CALLS = ("sys.path.insert", "sys.path.append", "deps.explain_missing")
 
 
 def _call_named(node: ast.AST | None, name: str) -> bool:
@@ -88,6 +90,26 @@ def _is_prologue(stmt: ast.stmt) -> bool:
     return isinstance(stmt, (ast.Expr, ast.Assign)) and _call_named(stmt.value, ROOT_DOOR)
 
 
+def _is_inert(stmt: ast.stmt) -> bool:
+    """Оператор уровня модуля, который файлов не создаёт: докстринг, импорт,
+    определение, присваивание, `try` из таких же и вызов из MODULE_CALLS.
+    Присваивание считается константой: файл, созданный вызовом в его правой
+    части, этот сторож не видит — такой случай закрывает только режим, заданный
+    в точке создания файла (№409)."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
+                         ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Pass)):
+        return True
+    if isinstance(stmt, ast.Try):
+        return all(_is_inert(s) for s in (*stmt.body, *stmt.orelse, *stmt.finalbody,
+                                          *(s for h in stmt.handlers for s in h.body)))
+    if isinstance(stmt, ast.Expr):
+        v = stmt.value
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+            return True
+        return isinstance(v, ast.Call) and ast.unparse(v.func) in MODULE_CALLS
+    return False
+
+
 def _calls_main(stmt: ast.stmt) -> bool:
     """`main(...)`, `sys.exit(main(...))`, `raise SystemExit(main(...))`."""
     expr = stmt.exc if isinstance(stmt, ast.Raise) else stmt.value if isinstance(stmt, ast.Expr) else None
@@ -99,7 +121,8 @@ def _calls_main(stmt: ast.stmt) -> bool:
 def umask_verdict(tree: ast.Module) -> str | None:
     """Почему точка входа не закрывает маску первым делом; `None` — закрывает.
 
-    Идём по пути исполнения, а не ищем текст: от блока `__main__` до
+    Идём по пути исполнения, а не ищем текст: модуль сверху вниз — выше гварда
+    только операторы, которые файлов не создают (`_is_inert`); от блока `__main__` до
     `harden_umask()` допустимы только импорты и называние корня; вызов `main()`
     — спуск в её тело, где маска обязана быть первым оператором (докстринг не
     в счёт). Прежний сторож искал вызов в первых 400 знаках после якоря:
@@ -108,6 +131,11 @@ def umask_verdict(tree: ast.Module) -> str | None:
     guard = layout_map.main_guard(tree)
     if guard is None:
         return "нет блока __main__"
+    # модуль исполняется сверху вниз: всё выше гварда идёт раньше маски
+    for stmt in tree.body[:tree.body.index(guard)]:
+        if not _is_inert(stmt):
+            return (f"строка {stmt.lineno}: «{ast.unparse(stmt)[:60]}» исполняется на уровне модуля "
+                    f"раньше harden_umask()")
     for stmt in guard.body:
         if _is_harden(stmt):
             return None
@@ -148,6 +176,27 @@ def entry_points() -> dict[str, ast.Module]:
     return {rel: info.tree for rel, info in inv.files.items()
             if info.executable == layout_map.PY_ENTRY and info.tree is not None
             and rel.startswith(ENTRY_AREAS)}
+
+
+def promised_entries(root: pathlib.Path) -> set[str]:
+    """Обещание PRIVACY дословно: каждый python-файл с гвардом `__main__` в `src/` и
+    `scripts/`, на любой глубине. Обходом дерева, мимо инвентаря: кандидатность в
+    инвентаре задана расположением файла, и её сужение без этой сверки ничем не
+    краснело бы (Important DeepSeek по PR #634)."""
+    out = set()
+    for area in ENTRY_AREAS:
+        for path in sorted((root / area).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if layout_map.main_guard(tree) is not None:
+                out.add(path.relative_to(root).as_posix())
+    return out
+
+
+def selection_gaps(entries: dict[str, ast.Module], promised: set[str]) -> list[str]:
+    """Расхождение выборки сторожа с обещанием строками."""
+    return ([f"{rel}: гвард __main__ есть, а сторож её не видит — инвентарь сузил выборку"
+             for rel in sorted(promised - set(entries))]
+            + [f"{rel}: сторож судит файл без гварда __main__" for rel in sorted(set(entries) - promised)])
 
 @pytest.fixture
 def keep_umask():
@@ -216,7 +265,24 @@ def test_каждая_точка_входа_закрывает_маску():
     entries = entry_points()
     # выборка не пуста и держит известных писателей: иначе сторож зелен ни о чём
     assert {"src/daemon.py", "src/mcp_server.py", "src/meeting_archive.py"} <= set(entries)
+    # и равна обещанию PRIVACY: сужение инвентаря красное, а не тихое
+    assert selection_gaps(entries, promised_entries(ROOT)) == []
     assert umask_problems(entries, UMASK_FORGIVEN) == []
+
+
+def test_сужение_инвентаря_краснит_сторож(monkeypatch):
+    """Инвентарь потерял точку входа — сверка с обещанием называет её."""
+    real = layout_map.inventory
+
+    def narrowed(root=None):
+        inv = real(root)
+        return inv._replace(files={rel: info for rel, info in inv.files.items()
+                                   if rel != "src/meeting_archive.py"})
+    monkeypatch.setattr(layout_map, "inventory", narrowed)
+    assert selection_gaps(entry_points(), promised_entries(ROOT)) == [
+        "src/meeting_archive.py: гвард __main__ есть, а сторож её не видит — инвентарь сузил выборку"]
+    assert selection_gaps({"src/x.py": _tree("X = 1")}, set()) == [
+        "src/x.py: сторож судит файл без гварда __main__"]
 
 
 def _tree(src: str) -> ast.Module:
@@ -258,6 +324,25 @@ def _tree(src: str) -> ast.Module:
 
     if __name__ == "__main__":
         main(sys.argv)
+    """,
+    # уровень модуля: путь импорта, проверка зависимостей, try вокруг импорта, константы
+    """
+    \"\"\"Докстринг модуля.\"\"\"
+    import sys
+    sys.path.insert(0, "src")
+    import deps
+    deps.explain_missing()
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ModuleNotFoundError:
+        FastMCP = None
+    PATTERN = re.compile("x")
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
     """,
 ])
 def test_сторож_маски_пропускает_маску_первым_делом(src):
@@ -327,6 +412,41 @@ def test_сторож_маски_пропускает_маску_первым_д
     def main():
         harden_umask()
     """, "нет блока __main__"),
+    # выше гварда: модуль исполняется сверху вниз, запись идёт раньше маски
+    ("""
+    import pathlib
+    pathlib.Path("черновик.md").write_text("темы встреч")
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "на уровне модуля раньше harden_umask()"),
+    # под условием на уровне модуля — тоже раньше
+    ("""
+    if flag:
+        write()
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "строка 2: «if flag:"),
+    # чужой вызов внутри try уровня модуля
+    ("""
+    try:
+        write()
+    except OSError:
+        pass
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "на уровне модуля"),
 ])
 def test_сторож_маски_краснеет_на_пути_мимо_маски(src, said):
     verdict = umask_verdict(_tree(src))

@@ -1988,13 +1988,14 @@ ENV_ROOT_ENFORCED = ("src/", "scripts/")
 #: мерялись у модуля слоя без окружения в `packages/…`, а судились только в `src/`
 #: — ровно там, откуда пакет графа переезжает (Important DeepSeek по PR №625).
 #: У `layer` область задаёт слой модуля, а не место файла: всё дерево.
-#:
-#: `seam` — область судьи швов окружения графа (`seam_problems`): та же развилка
-#: «мерить всё, судить область», и тот же ответ — ключ таблицы, а не литерал в
-#: судье (№384). Форм у неё нет: у таблицы законно бывают области без форм. Где
-#: судить швы в `packages/`, решает №324.
-SHAPE_SCOPES: dict[str, tuple[str, ...]] = {"root": ENV_ROOT_ENFORCED, "layer": ("",),
-                                            "seam": ENV_ROOT_ENFORCED}
+SHAPE_SCOPES: dict[str, tuple[str, ...]] = {"root": ENV_ROOT_ENFORCED, "layer": ("",)}
+
+#: Область судьи швов окружения графа (`seam_problems`): та же развилка «мерить всё,
+#: судить область» и тот же ответ — имя, а не литерал в судье (№384). Отдельное имя, а
+#: не ключ `SHAPE_SCOPES`: ключи той таблицы — законные области форм, и форма с
+#: областью швов прошла бы загрузку (критика DeepSeek по PR #634). Где судить швы в
+#: `packages/`, решает №324.
+SEAM_SCOPE: tuple[str, ...] = ENV_ROOT_ENFORCED
 
 
 class Shape(NamedTuple):
@@ -2167,13 +2168,13 @@ def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
 def seam_problems(calls: dict[str, dict[str, list[int]]] | None) -> list[str]:
     """Вызовы швов окружения мимо двери — строками. `None` — вызывающий о швах не
     спрашивает (то же соглашение, что у `root_problems`). Тесты вне области: они
-    строят индекс и ревизию на своих каталогах намеренно. Область — ключ `seam`
-    таблицы `SHAPE_SCOPES`: замер (`seam_calls`) видит весь инвентарь, судья — её."""
+    строят индекс и ревизию на своих каталогах намеренно. Область — `SEAM_SCOPE`:
+    замер (`seam_calls`) видит весь инвентарь, судья — её."""
     if calls is None:
         return []
     out = []
     for rel, found in sorted(calls.items()):
-        if not rel.startswith(SHAPE_SCOPES["seam"]):
+        if not rel.startswith(SEAM_SCOPE):
             continue
         for seam, lines in sorted(found.items()):
             module, owners, door = ENV_SEAMS[seam]
