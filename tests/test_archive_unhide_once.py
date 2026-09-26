@@ -153,3 +153,38 @@ def test_retro_fill_process_alone_keeps_unhiding(retro, calls):
     live = sorted(tdir.glob("*.md"))[0]
     retro_fill.process(live, {"log": {"transcripts_dir": "transcripts"}}, graph, tdir)
     assert (calls["unhide"], calls["index"]) == ([graph], [graph])
+
+
+# --- отбор встреч обхода -----------------------------------------------------
+# Строки отбора ушли под `try` вместе с циклом; держим их поведение: пустышка
+# короче 600 байт — не встреча, имя без штампа — не встреча, тема — из стема.
+
+def _sized(path: pathlib.Path, size: int) -> pathlib.Path:
+    body = "# Встреча\n\n[10:01:00] Участник А: обсуждаем\n".encode("utf-8")
+    path.write_bytes(body + b"x" * (size - len(body)))
+    assert path.stat().st_size == size
+    return path
+
+
+def test_migrate_all_skips_stubs_and_names_folders_by_the_topic(tmp_path, calls):
+    graph, tdir = _world(tmp_path)
+    for f in tdir.iterdir():
+        f.unlink()
+    _sized(tdir / "2026-09-20_1000_Тема.md", 600)
+    _sized(tdir / "2026-09-21_1100.md", 600)
+    _sized(tdir / "2026-09-22_1200_Пустышка.md", 599)
+    assert ma.migrate_all(graph, tdir) == 2
+    folders = sorted(p.name for p in (graph / ma.ARCHIVE_DIR).iterdir() if p.is_dir())
+    assert folders == ["2026-09-20 10-00 — Тема", "2026-09-21 11-00 — встреча"]
+
+
+def test_retro_fill_walk_skips_stubs_and_names_without_a_stamp(retro, calls, capsys):
+    graph, tdir = retro
+    for f in tdir.iterdir():
+        f.unlink()
+    _sized(tdir / "2026-09-20_1000_Тема.md", 600)
+    _sized(tdir / "2026-09-22_1200_Пустышка.md", 599)
+    _sized(tdir / "заметки.md", 5000)
+    retro_fill.main([])
+    assert "встреч обработано 1" in capsys.readouterr().out
+    assert calls["index"] == [graph]
