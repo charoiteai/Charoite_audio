@@ -1522,6 +1522,11 @@ def test_archive_manifests_are_read_once_per_plan(tmp_path, monkeypatch):
     forget.plan(SECONDS, root, graph)
     other_days = {f: n for f, n in reads.items() if f.name in folders}
     assert len(other_days) == 15 and set(other_days.values()) == {1}, other_days
+    # Папки своего дня читает не один читатель: цикл _archive_folders, память _manifests
+    # и отчёт остатка — до трёх раз на план. Потолок держит четвёртого; один читатель
+    # на весь архив — №411, там это число станет 1 (Important DS, круг 2 по PR #635).
+    own_day = {f: n for f, n in reads.items() if f.name not in folders}
+    assert own_day and max(own_day.values()) <= 3, own_day
 
 
 def test_seconds_target_proven_by_the_node_line_when_the_retitled_file_has_no_sidecar(tmp_path):
@@ -1831,6 +1836,28 @@ def test_remainder_line_says_why_it_is_left(tmp_path):
         f"{arch / f'{DAY} 11-00 — Без манифеста'} — время в имени 11-00; манифеста нет: "
         "чья папка, не доказано",
     ])
+
+
+def test_five_digit_time_is_not_a_meeting_key(tmp_path):
+    """Извлечение штампа из имени и фильтр реестра — одной грамматикой (4 или 6 цифр
+    времени): пятизначное имя не извлекается как штамп и не выдаётся реестром
+    (Minor DeepSeek, круг 2 по PR #635)."""
+    root, graph = _archive_only(tmp_path, {})
+    (root / "transcripts" / "2026-07-15_14003.md").write_text("# Встреча\n", encoding="utf-8")
+    (root / "transcripts" / f"{STAMP}.md").write_text("# Встреча\n", encoding="utf-8")
+    assert forget.stamps(root, graph) == [STAMP]
+    assert forget._STAMP_RE.match("2026-07-15_14003") is None
+
+
+def test_keep_graph_names_no_day_folders_even_when_nothing_is_found(tmp_path, monkeypatch, capsys):
+    """С --keep-graph граф остаётся как есть: остаток дня не печатается и в ветке
+    «не найдена» — как обещают документы (Minor DeepSeek, круг 2 по PR #635)."""
+    root, graph = _archive_only(tmp_path, {f"{DAY} — Без времени": None})
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", DAY, "--graph", str(graph), "--keep-graph"])
+    assert forget.main() == 1
+    out = capsys.readouterr().out
+    assert f"встреча «{DAY}» не найдена" in out and "в архиве лежат папки" not in out
 
 
 def test_day_remainder_of_a_graph_without_an_archive_is_empty(tmp_path):

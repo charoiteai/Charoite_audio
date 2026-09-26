@@ -214,7 +214,9 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
 
 # Суффикс коллизии «-N» — часть штампа: «2026-08-21_125812-1» — другая встреча,
 # не «…125812» (круг-1 по PR #388, Codex).
-_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?)(?![\d-])")
+# Время — четыре или шесть цифр, как у meeting_stamp: извлечение и фильтр `stamps()` одной
+# грамматикой, иначе пятизначное имя извлекалось бы и тут же отбрасывалось (Minor DS, круг 2 по PR #635).
+_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?(?:-\d+)?)(?![\d-])")
 STATUS_DIR = pathlib.Path("logs") / "meeting-status"
 
 
@@ -1202,7 +1204,9 @@ def main() -> int:
         # Папки дня, которые по правилам конвейера ничьи, — не «встречи нет»:
         # человек должен их увидеть, иначе «Забыть» молча оставляет встречу (№398)
         day = args.target.strip()[:10]
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        # с --keep-graph граф и его папки остаются как есть — остаток дня не называется ни
+        # здесь, ни в плане (Minor DS, круг 2 по PR #635)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and not args.keep_graph:
             left = day_remainder(day, _graph_roots(graph))
             if left:
                 print(f"но за {day} в архиве лежат папки, чья встреча не доказана "
