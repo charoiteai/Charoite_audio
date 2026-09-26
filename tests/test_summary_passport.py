@@ -180,6 +180,33 @@ def test_legacy_summary_is_adopted_only_by_the_explicit_command_and_by_the_whole
     assert "summary_adopted" not in (live_sidecar.read(live4) or {})
 
 
+def test_legacy_summary_adopted_over_a_marked_canon_survives_the_owner_unmarking(tmp_path, monkeypatch):
+    """Саммари без паспорта при каноне с отметками (№392): присвоение берёт хеш
+    нормализованного канона, и снятая владельцем отметка паспорт не старит. Без
+    нормализации хеш присвоения нёс бы «[x]», срок и пометку контроля — и первый же
+    возврат пункта во вкладке «Задачи» гнал бы модель пересобирать саммари
+    (Important DS круга 1 по PR #641: AUTO-тест от отката правки не краснел)."""
+    marked = ("## Решения\n1. Первое решение принято.\n\n## Поручения\n"
+              "- [x] **Аня** — подготовить отчёт 📅 2026-10-01 _(снято по сроку 24.09)_\n")
+    folder, live = _folder(tmp_path, minutes=marked)
+    out = folder / "Саммари.md"
+    out.write_text("---\ntype: саммари\nдата: 2026-09-19\n---\n\n# Саммари — старое\n\nСуть: было.\n",
+                   encoding="utf-8")
+    old = time.time() - 3600
+    for name in ("Минутки.md", "Стенограмма.md"):
+        os.utime(folder / name, (old, old))
+    calls: list = []
+    _fake_model(monkeypatch, calls)
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.FRESH
+    assert calls == [] and live_sidecar.read(live)["summary_adopted"], "присвоено без модели"
+    (folder / "Минутки.md").write_text(
+        marked.replace("- [x] **Аня** — подготовить отчёт 📅 2026-10-01 _(снято по сроку 24.09)_",
+                       "- [ ] **Аня** — подготовить отчёт"), encoding="utf-8")
+    assert ma.summary_state(folder, live, None) == live_sidecar.FRESH
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.AUTO) == live_sidecar.FRESH
+    assert calls == [] and "было" in out.read_text(encoding="utf-8")
+
+
 def test_empty_derivative_is_missing_not_attestable(tmp_path):
     """Critical DS выходного круга: пустой файл — след оборванной записи; до
     паспорта `_gen_summary` проверял `st_size > 0`, с паспортом пустое саммари

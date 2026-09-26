@@ -167,7 +167,7 @@
     },
     "task_line": {
       "layer": "base",
-      "why": "грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items; ничего из репо не импортирует"
+      "why": "грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует"
     },
     "graphs": {
       "layer": "meeting",
