@@ -177,6 +177,26 @@ def test_зависший_прогон_считается_убитым(tmp_path,
     assert mc.run_tests(tmp_path, ["tests"], timeout=1) is False
 
 
+def test_потолок_прогона_набора_выше_потолка_теста_в_худший_раз(tmp_path, monkeypatch):
+    """Жёсткий потолок прогона набора — `WORST_RUN_FACTOR` × `--timeout`: потолок
+    pytest действует на один тест, а тестов в наборе много. Ниже него живой, но
+    долгий набор обрывался бы и записывался в убитые — выживший мутант прятался бы
+    за таймаутом. На этом множителе стоит и бюджет шага мутатора в CI (№395).
+    Реальный прогон ниже (`timeout=60`) порядок не различает: набор идёт секунды,
+    а 60 // 4 — ещё 15 с (выживший мутатора по #637)."""
+    import subprocess
+
+    seen: dict = {}
+
+    def run(cmd, **kw):
+        seen["timeout"] = kw["timeout"]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert mc.run_tests(tmp_path, ["tests"], timeout=3) is True
+    assert seen["timeout"] == 3 * mc.WORST_RUN_FACTOR
+
+
 def test_арифметика_ломается(tmp_path):
     """Ошибки на единицу и на множитель живут в размерах чанков, окнах,
     индексах — без этих мутаций целый класс кода не проверяется."""
