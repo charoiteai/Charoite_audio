@@ -1429,12 +1429,17 @@ def test_minute_proven_foreign_is_not_offered_to_forget(tmp_path):
     root, graph = _archive_only(tmp_path, {"2026-07-15 14-00 — Тема": None})
     (root / "transcripts" / f"{SECONDS}.md").write_text("# Встреча\n", encoding="utf-8")
     named = f"  {graph / 'Встречи-архив' / '2026-07-15 14-00 — Тема'}"
-    assert named in forget.plan(SECONDS, root, graph).check
+    first = forget.plan(SECONDS, root, graph).check
+    assert named in first
+    # названа под минутой — в остатке дня второй раз не повторяется (№398)
+    assert sum(named.strip() in ln for ln in first) == 1, first
     (root / "transcripts" / "2026-07-15_140005.md").write_text("# Встреча\n", encoding="utf-8")
     _minute_node(graph, "2026-07-15_140005.md")
     plan = forget.plan(SECONDS, root, graph)
-    assert named not in plan.check and not plan.check
+    assert named not in plan.check and not any("под минутой" in ln for ln in plan.check)
     assert graph / "Встречи" / f"{STAMP}.md" not in plan.delete
+    # но и молча папку дня без манифеста не оставляет: она в остатке дня (№398)
+    assert [ln.split(" — время")[0] for ln in plan.check] == [named.strip()]
 
 
 def _retitled(root: pathlib.Path, sidecar_stamp: str | None) -> None:
@@ -1650,3 +1655,167 @@ def test_graph_with_only_an_archive_is_walked_when_another_has_meetings(tmp_path
     found = {forget.MEETINGS_DIR: [other], forget.ARCHIVE_DIR: [graph]}
     monkeypatch.setattr(forget.graphs, "all_graphs", lambda marker: list(found[marker]))
     assert forget.plan(STAMP, root, None).delete == [graph / "Встречи-архив" / "2026-07-15 14-00 — Тема"]
+
+
+# ── №398: остаток дня — папки, которые «забыть» не удаляет, называются ────────
+# Живого случая нет (конвейер пишет имена только с « — », а у владельца все папки
+# без манифеста находятся по узлам встречи) — графы синтетические: «Забыть» —
+# приватность, и молча оставленная папка встречи была бы утечкой.
+
+DAY = "2026-07-21"
+MORNING = f"{DAY}_0930"
+
+
+def _remainder_of(plan: "forget.Plan", folder: pathlib.Path) -> list[str]:
+    return [ln for ln in plan.check if ln.startswith(f"{folder} — ")]
+
+
+def test_topicless_day_folder_of_the_same_minute_is_named_not_left_silently(tmp_path, capsys, monkeypatch):
+    """Папка «ДАТА_ЧЧММ» без темы и без манифеста при встрече той же минуты:
+    план её не удаляет (время в имени без « — » — не правило конвейера), но
+    называет в «проверь сам» с причиной, и «забыть» честно говорит «частично»."""
+    root, graph = _archive_only(tmp_path, {f"{DAY} 09-30 — Тема": MORNING, MORNING: None})
+    arch = graph / "Встречи-архив"
+    plan = forget.plan(MORNING, root, graph)
+    assert arch / f"{DAY} 09-30 — Тема" in plan.delete
+    assert arch / MORNING not in plan.delete
+    [line] = _remainder_of(plan, arch / MORNING)
+    assert "имя без « — тема»" in line and "время в имени 09-30" in line
+    assert "манифеста нет" in line
+    monkeypatch.setattr(forget, "brain_forget", lambda *a, **k: "")
+    assert forget.apply(plan, yes=True)
+    out = capsys.readouterr().out
+    assert "забыто частично" in out and f"проверь сам (не тронуто): {arch / MORNING} — " in out
+    assert (arch / MORNING).is_dir() and not (arch / f"{DAY} 09-30 — Тема").exists()
+
+
+@pytest.mark.parametrize("manifest, verdict", [
+    (None, forget.MANIFEST_NONE),
+    ("{не json", forget.MANIFEST_BROKEN),
+    (b"\xff\xfe", forget.MANIFEST_BROKEN),                    # не UTF-8
+    ("[1, 2]", forget.MANIFEST_BROKEN),                         # JSON, но не словарь
+    ('{"schema_version": 1}', forget.MANIFEST_BROKEN),          # без meeting_id
+    ('{"meeting_id": 42}', forget.MANIFEST_BROKEN),
+    (pathlib.Path("каталог"), forget.MANIFEST_BROKEN),          # есть, но не читается
+    (f'{{"meeting_id": "{DAY}_1100"}}', forget.MANIFEST_FOREIGN),
+    (f'{{"meeting_id": "{MORNING}"}}', forget.MANIFEST_OURS),
+])
+def test_manifest_verdict_tells_missing_from_broken(tmp_path, manifest, verdict):
+    """«Нет» и «битый» для meeting_archive_id — одно None; диагноз их различает."""
+    folder = tmp_path / "папка"
+    folder.mkdir()
+    target = folder / "meeting.meta.json"
+    if isinstance(manifest, pathlib.Path):
+        target.mkdir()
+    elif isinstance(manifest, bytes):
+        target.write_bytes(manifest)
+    elif manifest is not None:
+        target.write_text(manifest, encoding="utf-8")
+    assert forget.manifest_verdict(folder, MORNING) == verdict
+
+
+def test_broken_manifest_has_its_own_reason(tmp_path):
+    """Папка с битым манифестом и папка без манифеста в остатке дня — с разными
+    причинами: сломанная запись конвейера и рукотворная папка — не одно и то же."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} 09-30 — Тема": MORNING,
+        f"{DAY} 11-00 — Без манифеста": None,
+        f"{DAY} 12-00 — Число вместо штампа": 42,
+    })
+    arch = graph / "Встречи-архив"
+    broken = arch / f"{DAY} 13-00 — Не JSON"
+    broken.mkdir()
+    (broken / "meeting.meta.json").write_text("{обрыв", encoding="utf-8")
+    plan = forget.plan(MORNING, root, graph)
+    [missing] = _remainder_of(plan, arch / f"{DAY} 11-00 — Без манифеста")
+    [number] = _remainder_of(plan, arch / f"{DAY} 12-00 — Число вместо штампа")
+    [garbled] = _remainder_of(plan, broken)
+    assert "манифеста нет" in missing and "битый" not in missing
+    for line in (number, garbled):
+        assert "манифест битый" in line and "манифеста нет" not in line
+
+
+def test_folder_of_another_meeting_by_a_sound_manifest_is_not_a_remainder(tmp_path, capsys, monkeypatch):
+    """Папка того же дня с исправным манифестом другой встречи — другая встреча,
+    а не остаток: ни в «проверь сам», ни повода говорить «забыто частично».
+    Манифест решает и при имени не по правилам, и при чужом дне в meeting_id."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} 09-30 — Тема": MORNING,
+        f"{DAY} 11-00 — Другая": f"{DAY}_1100",
+        f"{DAY}_1200": f"{DAY}_1200",
+        f"{DAY} 13-00 — Переименована": "2026-07-22_0800",
+    })
+    plan = forget.plan(MORNING, root, graph)
+    assert plan.check == []
+    monkeypatch.setattr(forget, "brain_forget", lambda *a, **k: "")
+    forget.apply(plan, yes=True)
+    out = capsys.readouterr().out
+    assert "\nзабыто: " in out and "частично" not in out
+
+
+def test_unknown_day_names_its_folders_next_to_not_found(tmp_path, monkeypatch, capsys):
+    """За день ни одного штампа (нет манифестов), а папки лежат: «не найдена»
+    печатается вместе с ними — «встречи нет» здесь неправда. Не трогается ничего."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} — Без времени": None,
+        f"{DAY}_0930": None,
+        f"{DAY} 11-00 — Другая, но день чужой": "2026-07-22_1100",
+        "2026-07-22 10-00 — Соседний день": None,
+    })
+    arch = graph / "Встречи-архив"
+    (arch / f"{DAY} файл.md").write_text("не папка\n", encoding="utf-8")
+    monkeypatch.setattr(forget, "_root", lambda: root)
+    for target in (DAY, MORNING):
+        monkeypatch.setattr(sys, "argv", ["forget_meeting.py", target, "--graph", str(graph), "--yes"])
+        assert forget.main() == 1
+        out = capsys.readouterr().out
+        assert f"встреча «{target}» не найдена" in out
+        assert f"но за {DAY} в архиве лежат папки" in out
+        assert f"  {arch / f'{DAY} — Без времени'} — времени в имени нет; манифеста нет" in out
+        assert f"  {arch / f'{DAY}_0930'} — имя без « — тема»" in out
+        for absent in ("Другая, но день чужой", "Соседний день", "файл.md"):
+            assert absent not in out
+    assert (arch / f"{DAY} — Без времени").is_dir() and (arch / f"{DAY}_0930").is_dir()
+    # день без папок — только «не найдена», без пустого заголовка
+    monkeypatch.setattr(sys, "argv", ["forget_meeting.py", "2026-07-30", "--graph", str(graph)])
+    assert forget.main() == 1
+    assert "в архиве лежат папки" not in capsys.readouterr().out
+
+
+def test_day_remainder_of_a_graph_without_an_archive_is_empty(tmp_path):
+    assert forget.day_remainder(DAY, [tmp_path / "нет графа"]) == []
+
+
+def test_plan_and_remainder_cover_every_day_folder_exactly_once(tmp_path):
+    """План и отчёт не расходятся: каждая папка дня либо удаляется, либо в
+    «проверь сам», либо принадлежит другой встрече по исправному манифесту —
+    ровно одно из трёх, для каждой встречи дня и для штампа без папки."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} 09-30 — Тема": MORNING,
+        MORNING: None,
+        f"{DAY} 10-00 — Без манифеста": None,
+        f"{DAY} 11-00 — Другая": f"{DAY}_1100",
+        f"{DAY} 12-00 — Битая": 42,
+        f"{DAY} — Без времени": None,
+        f"{DAY} заметки": None,
+        f"{DAY}_1400_тема": None,
+        f"{DAY} 13-00 — Переименована": "2026-07-22_0800",
+        "2026-07-22 10-00 — Соседний день": None,
+    })
+    arch = graph / "Встречи-архив"
+    grid = [f.path for f in forget._day_grid(arch, DAY)]
+    assert len(grid) == 9
+    targets = forget.resolve(DAY, root, graph) + [f"{DAY}_1000"]
+    assert targets == [MORNING, f"{DAY}_1100", f"{DAY}_1000"]
+    for stamp in targets:
+        plan = forget.plan(stamp, root, graph)
+        for folder in grid:
+            gone = folder in plan.delete
+            named = len(_remainder_of(plan, folder))
+            other = forget.manifest_verdict(folder, stamp) == forget.MANIFEST_FOREIGN
+            assert gone + named + other == 1, (stamp, folder.name, gone, named, other)
+        assert not any("Соседний день" in ln for ln in plan.check)
+    # по имени «ДАТА_ЧЧММ_тема» время не читается: после даты нет « — »
+    [odd] = _remainder_of(forget.plan(MORNING, root, graph), arch / f"{DAY}_1400_тема")
+    assert "после даты нет « — »" in odd and "время в имени" not in odd
+    assert "времени в имени нет" not in odd
