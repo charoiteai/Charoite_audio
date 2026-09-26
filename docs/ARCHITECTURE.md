@@ -632,8 +632,11 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   not silently produce a server that dies on import. The data root is
   asked for on every tool call and is never guessed from where the code
   lives: a server registered without `CHAROITE_ROOT` still starts, but each
-  tool answers with a refusal and the registration recipe (`_recipe()`)
-  instead of working — an MCP client does not show a dying server's stderr.
+  tool answers with a tool error (`isError`) carrying the registration recipe
+  (`_recipe()`) instead of working: the refusal cannot pass for a normal answer,
+  and an MCP client does not show a dying server's stderr. The error is a
+  subclass of the package's own `ToolError`: mcp 2.x would otherwise replace the
+  text with "Error executing tool …", dropping the reason and the recipe.
 
 ## Surviving a crash
 

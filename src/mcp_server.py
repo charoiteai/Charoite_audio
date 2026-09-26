@@ -5,7 +5,8 @@
 Запуск, пути — от корня репозитория:
   CHAROITE_ROOT=/путь/к/данным .venv/bin/python src/mcp_server.py
 Команду регистрации в клиенте MCP и блок для его конфига даёт `_recipe()` —
-тот же текст приходит владельцу в отказе инструмента, когда корень не назван.
+тот же текст приходит владельцу ошибкой инструмента (`isError`), когда корень
+не назван: отказ не путается с рабочим ответом и не роняет процесс.
 """
 from __future__ import annotations
 
@@ -32,10 +33,14 @@ from llm import LLM, LLMHTTPError, forget_fit
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
 # то есть весь файл ниже работает одинаково — расходится только имя импорта.
 # Без этого «pip install -r» проходил, а сервер падал на первой же строке.
+# `ToolError` переехал вместе с классом и живёт в парном `exceptions` — развилка
+# одна на оба импорта, чтобы версия не могла разойтись между ними.
 try:
     from mcp.server.fastmcp import FastMCP          # mcp 1.x
+    from mcp.server.fastmcp.exceptions import ToolError
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
+    from mcp.server.mcpserver.exceptions import ToolError
 
 from charoite_paths import RootNotNamed, code_root, harden_umask, require_data_root
 
@@ -51,7 +56,7 @@ def _root() -> pathlib.Path:
     Спрашиваем `require_data_root`, а не `resolve_root`: третий ответ
     `resolve_root` — корень КОДА, выведенный из положения файла, и клиент MCP,
     зарегистрировавший сервер без `CHAROITE_ROOT`, молча работал бы по
-    догадке. Без названного корня — `RootNotNamed` этого вызова; в ответ
+    догадке. Без названного корня — `RootNotNamed` этого вызова; в ошибку
     инструмента его превращает `_tool` (№336).
     """
     return require_data_root(__file__)
@@ -163,12 +168,26 @@ def _recipe() -> str:
         + json.dumps(блок, ensure_ascii=False, indent=2))
 
 
-def _tool(fn):
-    """Регистратор инструментов: без корня данных — отказ с рецептом, а не работа.
+class _ОтказБезКорня(ToolError):
+    """Отказ инструмента без названного корня данных — с причиной и рецептом.
 
-    Отказ приходит ОТВЕТОМ инструмента, а не падением процесса: клиент MCP
-    stderr упавшего сервера владельцу не показывает, и дверь
-    `name_data_root_or_exit` (stderr и код выхода) осталась бы невидимой.
+    Свой подкласс `ToolError`, а не голый `RuntimeError`: клиент отличает отказ
+    от ответа по `isError`, а mcp 2.x любое исключение, кроме `ToolError`,
+    подменяет на `UnexpectedToolError("Error executing tool <имя>")` — причина и
+    рецепт до клиента не доходят. На 1.x текст доходит и у голого исключения,
+    но подкласс там безвреден.
+    """
+
+
+def _tool(fn):
+    """Регистратор инструментов: без корня данных — ошибка инструмента с рецептом.
+
+    Отказ приходит ОШИБКОЙ инструмента (`isError` у ответа), а не падением
+    процесса: клиент MCP stderr упавшего сервера владельцу не показывает, и
+    дверь `name_data_root_or_exit` (stderr и код выхода) осталась бы невидимой.
+    Строкой в рабочем ответе отказ тоже быть не должен — по ней клиент отличал
+    бы отказ от ответа только текстом.
+
     Корень спрашивается на каждом вызове — снимка на импорте нет (№329), и
     отказ случается раньше тела: `sufler_update_graph` без корня не запускает
     ребёнка, которому иначе досталась бы догадка (№336).
@@ -182,7 +201,7 @@ def _tool(fn):
         try:
             _root()
         except RootNotNamed as отказ:
-            return f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}"
+            raise _ОтказБезКорня(f"{fn.__name__} не выполнен: {отказ}\n\n{_recipe()}") from отказ
         return fn(*args, **kwargs)
     return mcp.tool()(с_корнем)
 

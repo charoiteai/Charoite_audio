@@ -222,8 +222,10 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
   （`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`），而 pyproject
   两者都允许——安装不应悄悄产出一个在导入时就崩溃的服务器。数据根目录在每次
   调用工具时询问，绝不根据代码所在位置猜测：未设置 `CHAROITE_ROOT` 注册的服务器
-  仍能启动，但每个工具都不执行工作，而是以拒绝加注册方法（`_recipe()`）作答——
-  MCP 客户端不会显示崩溃服务器的 stderr。
+  仍能启动，但每个工具都不执行工作，而是返回带注册方法（`_recipe()`）的工具错误
+  （`isError`）：拒绝不会被当作正常回答，而 MCP 客户端不会显示崩溃服务器的 stderr。
+  该错误是包自身 `ToolError` 的子类：否则 mcp 2.x 会把文本换成 “Error executing tool …”，
+  原因和注册方法都会丢失。
 
 ## 会议如何挺过崩溃
 
