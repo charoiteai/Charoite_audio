@@ -908,7 +908,8 @@ def test_отчёт_на_диске_после_каждого_мутанта(tmp
     проверенных — прежде он писался один раз в конце и пропадал целиком."""
     plan = _мутанты("scripts/mutate_check.py", 5)
     _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1}, падать_на=1 + 3)
-    отчёт = tmp_path / "отчёт.txt"
+    # каталога отчёта ещё нет: первая запись посреди прогона создаёт его сама
+    отчёт = tmp_path / "артефакты" / "мутации" / "отчёт.txt"
     with pytest.raises(RuntimeError, match="раннер"):
         mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)])
     текст = отчёт.read_text(encoding="utf-8")
@@ -926,4 +927,18 @@ def test_без_бюджета_поведение_прежнее(tmp_path, monke
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 0
     assert len(журнал) == 1 + 4 and {t for _, t in журнал} == {120}, журнал
     assert отчёт.read_text(encoding="utf-8") == "Проверено мутантов: 4 из 4, выжило: 0\n"
-    assert "бюджет" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "бюджет" not in out
+    # счёт мутантов в строках прогона — с единицы и до конца плана
+    assert "  [1/4] убит: " in out and "  [4/4] убит: " in out, out
+
+
+def test_отчёт_не_судившихся_не_считает_неприменённых():
+    """Из пяти: два проверено, один не применился — не судились двое. Не
+    применившийся назван своей строкой и в «НЕ СУДИЛОСЬ» не входит."""
+    m = _мутанты("scripts/mutate_check.py", 1)[0]
+    текст = mc.render_report(2, [], [(m, "узел не нашёлся на своём отрезке")], 5, 0,
+                             "бюджет", mc.ScanTotals())
+    assert текст.startswith("Проверено мутантов: 2 из 5 (остановка: бюджет), выжило: 0"), текст
+    assert "НЕ СУДИЛОСЬ: 2 (прервано: бюджет)" in текст, текст
+    assert "НЕ ПРИМЕНИЛОСЬ: 1" in текст, текст
