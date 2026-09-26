@@ -92,7 +92,7 @@ def _is_prologue(stmt: ast.stmt) -> bool:
 
 def _is_inert(stmt: ast.stmt) -> bool:
     """Оператор уровня модуля, который файлов не создаёт: докстринг, импорт,
-    определение, присваивание, `try` из таких же и вызов из MODULE_CALLS.
+    определение, присваивание, `try` и `if` из таких же и вызов из MODULE_CALLS.
     Присваивание считается константой: файл, созданный вызовом в его правой
     части, этот сторож не видит — такой случай закрывает только режим, заданный
     в точке создания файла (№409)."""
@@ -102,6 +102,8 @@ def _is_inert(stmt: ast.stmt) -> bool:
     if isinstance(stmt, ast.Try):
         return all(_is_inert(s) for s in (*stmt.body, *stmt.orelse, *stmt.finalbody,
                                           *(s for h in stmt.handlers for s in h.body)))
+    if isinstance(stmt, ast.If):        # `if TYPE_CHECKING:` и прочие ветвления — по ветвям
+        return all(_is_inert(s) for s in (*stmt.body, *stmt.orelse))
     if isinstance(stmt, ast.Expr):
         v = stmt.value
         if isinstance(v, ast.Constant) and isinstance(v.value, str):
@@ -178,18 +180,26 @@ def entry_points() -> dict[str, ast.Module]:
             and rel.startswith(ENTRY_AREAS)}
 
 
-def promised_entries(root: pathlib.Path) -> set[str]:
+def promised_entries(root: pathlib.Path) -> tuple[set[str], list[str]]:
     """Обещание PRIVACY дословно: каждый python-файл с гвардом `__main__` в `src/` и
-    `scripts/`, на любой глубине. Обходом дерева, мимо инвентаря: кандидатность в
-    инвентаре задана расположением файла, и её сужение без этой сверки ничем не
-    краснело бы (Important DeepSeek по PR #634)."""
-    out = set()
-    for area in ENTRY_AREAS:
-        for path in sorted((root / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            if layout_map.main_guard(tree) is not None:
-                out.add(path.relative_to(root).as_posix())
-    return out
+    `scripts/`, на любой глубине, — и файлы, которые не разбираются.
+
+    Своим отбором, мимо кандидатности инвентаря (она задана расположением файла, и
+    её сужение без этой сверки ничем не краснело бы — Important DeepSeek по PR #634),
+    но по тем же файлам под git, что у инвентаря: файл на диске вне git — не продукт,
+    и «инвентарь сузил выборку» про него было бы неправдой (Minor DS, круг 2)."""
+    out, unparsed = set(), []
+    for rel in layout_map._files(root):
+        if not (rel.endswith(".py") and rel.startswith(ENTRY_AREAS)):
+            continue
+        try:
+            tree = ast.parse((root / rel).read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            unparsed.append(rel)
+            continue
+        if layout_map.main_guard(tree) is not None:
+            out.add(rel)
+    return out, unparsed
 
 
 def selection_gaps(entries: dict[str, ast.Module], promised: set[str]) -> list[str]:
@@ -263,11 +273,25 @@ def test_каждая_точка_входа_закрывает_маску():
     а файлы снова 0644.
     """
     entries = entry_points()
-    # выборка не пуста и держит известных писателей: иначе сторож зелен ни о чём
-    assert {"src/daemon.py", "src/mcp_server.py", "src/meeting_archive.py"} <= set(entries)
+    # выборка не пуста и держит известных писателей обеих областей: иначе сторож
+    # зелен ни о чём
+    assert {"src/daemon.py", "src/mcp_server.py", "src/meeting_archive.py",
+            "scripts/morning_brief.py", "scripts/nightly_dossier.py"} <= set(entries)
     # и равна обещанию PRIVACY: сужение инвентаря красное, а не тихое
-    assert selection_gaps(entries, promised_entries(ROOT)) == []
+    promised, unparsed = promised_entries(ROOT)
+    assert unparsed == [], f"не разбираются — сторож о них не судит: {unparsed}"
+    assert selection_gaps(entries, promised) == []
     assert umask_problems(entries, UMASK_FORGIVEN) == []
+
+
+def test_область_сторожа_не_сужается_молча():
+    """Обе стороны сверки фильтрует одна `ENTRY_AREAS`: её сужение и переезд точки
+    входа из области (в `packages/`) сторож не увидел бы (Important DeepSeek,
+    круг 2 по PR #634). Область закреплена, а точка входа инвентаря вне неё — красная."""
+    assert ENTRY_AREAS == ("src/", "scripts/"), "обещание PRIVACY — src/ и scripts/"
+    вне = sorted(rel for rel, info in layout_map.inventory(ROOT).files.items()
+                 if info.executable == layout_map.PY_ENTRY and not rel.startswith(ENTRY_AREAS))
+    assert вне == [], f"точки входа вне src/ и scripts/ — сторож маски их не видит: {вне}"
 
 
 def test_сужение_инвентаря_краснит_сторож(monkeypatch):
@@ -279,7 +303,7 @@ def test_сужение_инвентаря_краснит_сторож(monkeypat
         return inv._replace(files={rel: info for rel, info in inv.files.items()
                                    if rel != "src/meeting_archive.py"})
     monkeypatch.setattr(layout_map, "inventory", narrowed)
-    assert selection_gaps(entry_points(), promised_entries(ROOT)) == [
+    assert selection_gaps(entry_points(), promised_entries(ROOT)[0]) == [
         "src/meeting_archive.py: гвард __main__ есть, а сторож её не видит — инвентарь сузил выборку"]
     assert selection_gaps({"src/x.py": _tree("X = 1")}, set()) == [
         "src/x.py: сторож судит файл без гварда __main__"]
@@ -337,6 +361,10 @@ def _tree(src: str) -> ast.Module:
     except ModuleNotFoundError:
         FastMCP = None
     PATTERN = re.compile("x")
+    if TYPE_CHECKING:
+        from typing import Any
+    else:
+        Any = object
 
     def main():
         harden_umask()
