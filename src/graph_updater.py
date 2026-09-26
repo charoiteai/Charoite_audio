@@ -343,10 +343,13 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         else:
             print(f"граф: {who} вернул ошибку: {e.detail}")
         return None
-    raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
+    # Разбор — общий (llm.parse_json_whole): заборы и проза вокруг единственного
+    # объекта срезаются, обрыв и два объекта подряд остаются отказом. Сервер без
+    # грамматики держит модель на промпте, и прозы вокруг стало больше (№419).
     try:
-        return json.loads(raw)
+        return llm.parse_json_whole(raw)
     except json.JSONDecodeError as e:
+        raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
         # Раньше здесь был молчаливый None, и наверху печаталось «LLM не вернула
         # валидный JSON» — из этой фразы не понять ни что случилось, ни что
         # делать. А случай типовой: ответ обрывается, когда вход съел контекст.

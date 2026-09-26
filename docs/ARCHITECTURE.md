@@ -620,11 +620,14 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   every server build can do: a server compiled without the grammar library
   answers a `format:"json"` request with “structured output is unavailable”
   (501, or 400 on another build). The client recognises that reason, remembers
-  the pair (server address, model actually sent) for the life of the process,
-  reports it once on stderr and retries the request once without `format`,
-  relying on the prompt and `parse_json_block` — so graph extraction and
-  speaker naming still get an answer instead of silently degrading. Busy
-  responses and other errors are never mistaken for a missing grammar.
+  the pair (server address, model actually sent) for ten minutes — the server
+  may get fixed while a long-lived process runs — reports it once per process
+  on stderr and retries the request once without `format`, relying on the
+  prompt. Speaker names take the first object (`parse_json_block`, prompt
+  placeholders dropped); graph extraction takes the whole answer as one object
+  and only trims prose around it (`parse_json_whole`), so a truncated answer or
+  an echoed template stays a named failure instead of polluting the graph.
+  Busy responses and other errors are never mistaken for a missing grammar.
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the

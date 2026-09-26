@@ -329,7 +329,12 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
                   + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
                      else "пустой ответ") + ")")
             return {}
-        return {k: v for k, v in data.items() if isinstance(v, str)}
+        # Без грамматики модель охотно повторяет образец из промпта
+        # («speaker_0»: «Имя») — это заглушка, а не человек; ключи — только те
+        # метки, что есть во входе (выходной круг 1 по №419, DS M5).
+        known = {spk for spk, _s, _e, _t in lines}
+        return {k: v for k, v in data.items()
+                if k in known and isinstance(v, str) and v.strip() not in ("", "Имя")}
     except Exception as e:  # noqa: BLE001
         print(f"имена: не удалось ({e})")
         return {}

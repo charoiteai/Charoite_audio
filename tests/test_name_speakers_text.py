@@ -81,3 +81,14 @@ def test_diarize_names_name_the_reason_for_non_json(_ollama_маршруты, ca
     assert diarize.name_speakers(CFG_DIARIZE, lines) == {}
     out = capsys.readouterr().out
     assert "имена: не удалось" in out and "не-JSON" in out and "(17 знаков)" in out
+
+
+def test_diarize_names_drop_the_prompt_placeholder_and_unknown_labels(_ollama_маршруты):
+    """Без грамматики модель повторяет образец из промпта: «Имя» — заглушка, а
+    метка, которой нет во входе, — выдумка (выходной круг 1 по №419, DS M5)."""
+    _ollama_маршруты.сценарий_чата(_чат(
+        'Вот: {"speaker_0": "Имя", "speaker_1": "Павел", "speaker_9": "Кто-то"}'))
+
+    lines = [("speaker_0", 0.0, 1.0, "Привет"), ("speaker_1", 1.0, 2.0, "Я Павел")]
+
+    assert diarize.name_speakers(CFG_DIARIZE, lines) == {"speaker_1": "Павел"}

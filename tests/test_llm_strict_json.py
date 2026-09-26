@@ -87,26 +87,18 @@ def test_распознаватель_причины(статус, ожидан�
     assert LLM._structured_output_unavailable(без) is False
 
 
-def test_строка_в_stderr_сбрасывается_сразу(monkeypatch):
-    """Строка обязана доехать до журнала, не осесть в буфере: она — вся
-    диагностика владельцу, как у остальных строк llm.py (`flush=True`)."""
-    class _Поток:
-        def __init__(self):
-            self.text = ""
-            self.flushed = 0
+def test_строка_одна_на_пару_даже_при_новом_отказе(capsys):
+    """Дедуп — свойство самой строки, а не следствие реестра: после истечения
+    записи тот же отказ снова ложится в реестр, но в журнал строка не
+    повторяется. Другая пара — своя строка (выходной круг 1 по №419, DS M4)."""
+    ключ = ("http://x", "м")
+    llm_mod._strict_json_announce(ключ, "м", "http://x", "причина")
+    llm_mod._strict_json_announce(ключ, "м", "http://x", "причина")
+    llm_mod._strict_json_announce(("http://x", "другая"), "другая", "http://x", "причина")
 
-        def write(self, s):
-            self.text += s
-
-        def flush(self):
-            self.flushed += 1
-
-    поток = _Поток()
-    monkeypatch.setattr(llm_mod.sys, "stderr", поток)
-    llm_mod._strict_json_announce(("http://x", "м"), "м", "http://x", "причина")
-
-    assert "строгий JSON недоступен" in поток.text
-    assert поток.flushed == 1, "строка осталась в буфере"
+    err = capsys.readouterr().err
+    assert err.count("строгий JSON недоступен у м на") == 1, err
+    assert err.count("строгий JSON недоступен у другая на") == 1, err
 
 
 @pytest.mark.parametrize("статус", [501, 400], ids=["501", "400"])
@@ -227,3 +219,93 @@ def test_probe_живости_ходит_в_generate_без_format(_сеть_з�
     assert llm_health.probe(CFG) is True
     assert len(генерация) == 1 and "format" not in генерация[0]
     assert генерация[0]["prompt"] == "ok"
+
+
+def test_запись_реестра_стареет_и_format_пробуется_снова(_ollama_маршруты, capsys):
+    """Отсутствие грамматики — факт о сборке сервера, а не о процессе: сервер
+    могут починить, пока живёт демон. Через срок format уходит снова; пока
+    запись свежая — нет (выходной круг 1 по №419, DS I2)."""
+    журнал, чат = _сценарий_отказа(501, ПРИЧИНА)
+    _ollama_маршруты.сценарий_чата(чат)
+    llm = LLM(CFG)
+    llm.complete("в", model="тест-модель", json_format=True)
+    ключ = (llm.base, "тест-модель")
+
+    журнал.clear()
+    LLM(CFG).complete("в", model="тест-модель", json_format=True)
+    assert [("format" in т) for т in журнал] == [False], "свежая запись — format не нужен"
+
+    llm_mod._strict_json_at[ключ] -= llm_mod.STRICT_JSON_RECHECK_S + 1
+    журнал.clear()
+    LLM(CFG).complete("в", model="тест-модель", json_format=True)
+    assert [("format" in т) for т in журнал] == [True, False], "старая запись — format пробуется снова"
+    assert capsys.readouterr().err.count("строгий JSON недоступен") == 1, "строка — одна на процесс"
+
+
+def test_починенный_сервер_после_срока_принимает_format(_ollama_маршруты):
+    """Запись истекла, сервер уже умеет грамматику: format принят, реестр пуст.
+    Маршрут один на тест (сторож ставит первый), поэтому «починка» — флагом."""
+    сервер = {"без_грамматики": True}
+    журнал: list = []
+
+    def чат(url, **k):
+        тело = dict(k.get("json") or {})
+        журнал.append(тело)
+        if "format" in тело and сервер["без_грамматики"]:
+            return _ответ(501, {"error": ПРИЧИНА})
+        return _ответ(200, {"message": {"content": "{}"}})
+
+    _ollama_маршруты.сценарий_чата(чат)
+    llm = LLM(CFG)
+    llm.complete("в", model="тест-модель", json_format=True)
+    ключ = (llm.base, "тест-модель")
+    assert ключ in llm_mod._strict_json
+
+    сервер["без_грамматики"] = False                  # положили библиотеку, перезапустили
+    llm_mod._strict_json_at[ключ] -= llm_mod.STRICT_JSON_RECHECK_S + 1
+    журнал.clear()
+    assert LLM(CFG).complete("в", model="тест-модель", json_format=True) == "{}"
+    assert [т.get("format") for т in журнал] == ["json"], "после срока format уходит и принимается"
+    assert ключ not in llm_mod._strict_json
+
+
+@pytest.mark.parametrize("ответ", [
+    '{"а": 1}',
+    '```json\n{"а": 1}\n```',
+    'Вот граф:\n{"а": 1}\nГотово.',
+], ids=["чистый", "в-заборе", "в-прозе"])
+def test_целый_объект_разбирается_и_в_прозе(ответ):
+    assert llm_mod.parse_json_whole(ответ) == {"а": 1}
+
+
+@pytest.mark.parametrize("ответ", [
+    '{"люди": [{"имя": "А"}, {"имя": "Б"',                 # обрыв
+    'Вот: {"люди": [{"имя": "А"}',                         # проза и обрыв: осколок не берём
+    'Образец: {"название": "..."}\n{"название": "Встреча"}',   # эхо образца перед ответом
+    '',
+], ids=["обрыв", "проза-и-обрыв", "эхо-образца", "пусто"])
+def test_целый_объект_не_подменяется_осколком_или_образцом(ответ):
+    """Граф не должен получить вложенный осколок оборванного ответа или образец
+    из промпта: лучше названный отказ, чем мусор в графе (DS C1 по №419)."""
+    with pytest.raises(json.JSONDecodeError):
+        llm_mod.parse_json_whole(ответ)
+
+
+def test_граф_разбирает_ответ_в_прозе_после_отказа_грамматики(_ollama_маршруты):
+    """Сервер без грамматики: 501 → повтор без format → ответ в прозе. Разбор
+    графа берёт объект, а не роняет часть встречи с «не разобрался»."""
+    import graph_updater as gu
+    _, чат = _сценарий_отказа(501, ПРИЧИНА,
+                               ответ='Вот граф:\n{"название": "Тест", "люди": []}\nГотово.')
+    _ollama_маршруты.сценарий_чата(чат)
+
+    assert gu._extract(CFG, "стенограмма") == {"название": "Тест", "люди": []}
+
+
+def test_граф_на_обрыве_называет_обрыв(_ollama_маршруты, capsys):
+    import graph_updater as gu
+    _, чат = _сценарий_отказа(501, ПРИЧИНА, ответ='{"название": "Тест", "люди": [{"имя": "А"')
+    _ollama_маршруты.сценарий_чата(чат)
+
+    assert gu._extract(CFG, "стенограмма") is None
+    assert "граф: ответ модели" in capsys.readouterr().out

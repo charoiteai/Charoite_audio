@@ -165,13 +165,24 @@ def _fit_cache_clear() -> None:
 # провальный запрос. `_strict_json_said` — одна строка в stderr на процесс на
 # пару: журнал встречи не должен тонуть в повторах.
 _strict_json: dict[tuple[str, str], str] = {}
+_strict_json_at: dict[tuple[str, str], float] = {}
 _strict_json_said: set[tuple[str, str]] = set()
 _strict_json_lock = threading.Lock()
+#: Сколько секунд верим записи «строгого JSON нет». Это факт о сборке сервера,
+#: а не о процессе: библиотеку грамматики могут положить, сборку — сменить, и
+#: долгоживущий процесс (демон, MCP) не должен до перезапуска слепо обходиться
+#: без format. Цена перепроверки — один отказ 501 за 5 мс раз в десять минут
+#: (выходной круг 1 по №419, DS I2).
+STRICT_JSON_RECHECK_S = 600.0
 
 
 def _strict_json_known(key: tuple[str, str]) -> str | None:
-    """Причина, если пара (адрес, модель) уже провалила строгий JSON; иначе None."""
+    """Причина, если пара (адрес, модель) недавно провалила строгий JSON; иначе None."""
     with _strict_json_lock:
+        at = _strict_json_at.get(key)
+        if at is not None and time.monotonic() - at > STRICT_JSON_RECHECK_S:
+            _strict_json.pop(key, None)
+            _strict_json_at.pop(key, None)
         return _strict_json.get(key)
 
 
@@ -179,6 +190,7 @@ def _strict_json_record(key: tuple[str, str], reason: str) -> None:
     """Запомнить, что у этой пары строгого JSON нет (причина — дословно)."""
     with _strict_json_lock:
         _strict_json[key] = reason
+        _strict_json_at[key] = time.monotonic()
 
 
 def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: str) -> None:
@@ -193,13 +205,14 @@ def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: s
         _strict_json_said.add(key)
     print(f"llm: строгий JSON недоступен у {model} на {base} — "
           f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте",
-          file=sys.stderr, flush=True)
+          file=sys.stderr)
 
 
 def _strict_json_clear() -> None:
     """Сброс реестра строгого JSON — для тестов, рядом с _fit_cache_clear()."""
     with _strict_json_lock:
         _strict_json.clear()
+        _strict_json_at.clear()
         _strict_json_said.clear()
 
 
@@ -246,6 +259,34 @@ def parse_json_block(text: str) -> dict | None:
         if found is not None:
             return found
     return first_object(text)
+
+
+def parse_json_whole(text: str):
+    """Весь ответ модели — ОДИН JSON-объект; проза вокруг него срезается.
+
+    Строгая пара к `parse_json_block`: тот берёт первый объект из болтливого
+    ответа, а этот не берёт ни вложенный, ни чужой. Сервер без грамматики
+    (строгий JSON недоступен, №419) заставляет модель держаться на промпте, и
+    она обрамляет ответ прозой: «Вот граф: {…} Готово.». Срез идёт до внешних
+    скобок, разбор — такой же строгий: обрыв, эхо образца из промпта перед
+    ответом и два объекта подряд по-прежнему не разбираются. Лучше потерять
+    часть встречи с названной причиной, чем занести в граф образец из промпта
+    или осколок оборванного ответа.
+
+    JSONDecodeError наружу — ПЕРВАЯ ошибка, по всему ответу: вызывающему нужна
+    причина (обрыв на полуслове или мусор), а не ошибка среза.
+    """
+    raw = re.sub(r"^```(json)?|```$", "", (text or "").strip(), flags=re.M).strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as whole:
+        start, end = raw.find("{"), raw.rfind("}")
+        if 0 <= start < end and (start, end) != (0, len(raw) - 1):
+            try:
+                return json.loads(raw[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        raise whole
 
 
 # Дефолтные веса для mlx-server: тот же MoE, что боевой ollama-тег, только
