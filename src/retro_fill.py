@@ -22,8 +22,9 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
-from meeting_archive import (SummaryMode, SummaryOutcome, _unhide,  # noqa: E402
-                             archive_meeting, canon_tally_line, cothinking_notes)
+import meeting_archive  # noqa: E402
+from meeting_archive import (SummaryMode, SummaryOutcome, archive_meeting,  # noqa: E402
+                             canon_tally_line, cothinking_notes)
 from meeting_processing import find_final_transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -125,8 +126,9 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
     выводит из состояния диска (Critical DS и Important GLM круга 2); `tally`
     считает исходы по значению `action`, не по словам (Minor DS круга 3).
 
-    `unhide` уходит в `archive_meeting` как есть: цикл `main` передаёт False и
-    снимает UF_HIDDEN с графа сам, один раз на обход (№362).
+    `unhide` уходит в `archive_meeting` как есть: цикл `main` передаёт False —
+    встреча снимает UF_HIDDEN только со своей папки, граф целиком чистит обход
+    на своих границах (№362).
 
     Возвращает список собранного; одна строка stdout на встречу: что собрано и
     что пропущено с состоянием — «полная» больше не прячет HUMAN/UNKNOWN
@@ -252,6 +254,14 @@ def _minute(stem: str) -> str | None:
     return meeting_stamp.minute_of(bare) if bare else None
 
 
+def _walk_candidate(f: pathlib.Path) -> bool:
+    """Встреча ли это для обхода: не производная и не копия (один список хвостов
+    на проект, GLM I3 по №309), имя со штампом, не пустышка короче 600 байт."""
+    if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
+        return False
+    return meeting_stamp.stamp_of(f.stem) is not None and f.stat().st_size >= 600
+
+
 def main(argv: list[str] | None = None):
     harden_umask()   # минутки, разбор, архив — данные встреч, только владельцу
     ap = argparse.ArgumentParser(
@@ -297,21 +307,23 @@ def main(argv: list[str] | None = None):
     done = 0
     tally: collections.Counter = collections.Counter()
     canon_tally: collections.Counter = collections.Counter()
-    # UF_HIDDEN со всего графа — один раз на обход, не на встречу (№362): на
-    # полном бэклоге это ≈151 с из ≈200 доплаты архива. `finally` — чтобы флаг
-    # сняли и с того, что успели разложить до исключения
+    # UF_HIDDEN со всего графа — на границах обхода, не на каждой встрече (№362):
+    # на полном бэклоге это ≈151 с из ≈200 доплаты архива. Перед первой встречей —
+    # чтобы убитый посреди обхода процесс оставил граф не грязнее, чем до старта;
+    # в `finally` — за всё разложенное; встреча внутри снимает флаг со своей
+    # папки (DS I1 выходного круга по #633). Хвост импорта (одна встреча) платит
+    # один полный проход, как до правки; пустой обход граф не трогает (DS M5).
+    walk = [f for f in files if _walk_candidate(f)]
+    if walk:
+        meeting_archive.unhide_graph(graph)
     try:
-        for f in files:
-            if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
-                continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
-            bare = meeting_stamp.stamp_of(f.stem)
-            if bare is None or f.stat().st_size < 600:
-                continue
+        for f in walk:
             process(f, cfg, graph, tdir, summary=ns.summary, tally=tally, canon_tally=canon_tally,
                     unhide=False)
             done += 1
     finally:
-        _unhide(graph)
+        if len(walk) > 1:
+            meeting_archive.unhide_graph(graph)
     if not args:
         print(f"ретро: обход {tdir.name}: встреч обработано {done}")
         if ns.summary:

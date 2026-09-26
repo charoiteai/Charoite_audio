@@ -1,11 +1,13 @@
-"""№362 (часть А): снятие UF_HIDDEN со всего графа — один раз на массовый обход.
+"""№362 (часть А): снятие UF_HIDDEN со всего графа — на границах массового обхода.
 
-`_unhide` обходит весь граф (`rglob("*")` со `stat` на каждый файл): замер
-25.09 на копии рабочего графа — медиана 477 мс, и обход бэклога платил её на
-каждой встрече. Массовые обходы (`migrate_all`, цикл `retro_fill.main`) зовут
-архив с `unhide=False` и снимают флаг сами, один раз, в `finally`. Оглавление
-при этом пересобирается на каждой встрече: после `kill -9` посреди обхода оно
-должно оставаться верным. Тесты считают вызовы, а не секунды.
+`unhide_graph` по графу обходит его целиком (`rglob("*")` со `stat` на каждый
+файл): замер 25.09 на копии рабочего графа — медиана 477 мс, и обход бэклога
+платил её на каждой встрече. Массовые обходы (`migrate_all`, цикл
+`retro_fill.main`) зовут архив с `unhide=False`: встреча снимает флаг только со
+своей папки (её сразу видит приложение с `.skipsHiddenFiles`), а граф целиком
+обход чистит перед первой встречей и в `finally` (DS I1 выходного круга по
+#633). Оглавление пересобирается на каждой встрече. Тесты считают вызовы, а не
+секунды.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ def _no_live_model(модель_не_отвечает):
 
 @pytest.fixture
 def calls(monkeypatch):
-    """Журнал вызовов `_unhide` и `_rebuild_index` с их аргументом-графом.
+    """Журнал вызовов `unhide_graph` и `_rebuild_index` с их аргументом.
 
     `_rebuild_index` падает на встрече номер `fail_at` (если задан) — так
     исключение рождается внутри `archive_meeting` k-й встречи, после того как
@@ -52,10 +54,19 @@ def calls(monkeypatch):
             raise RuntimeError("сбой на k-й встрече")
         real_index(graph)
 
-    monkeypatch.setattr(ma, "_unhide", unhide)
-    monkeypatch.setattr(retro_fill, "_unhide", unhide)   # имя привязано при импорте
+    # одна привязка на все обходы: `retro_fill` зовёт `meeting_archive.unhide_graph`
+    # через модуль, а не своим импортом имени (DS M3 выходного круга по #633)
+    monkeypatch.setattr(ma, "unhide_graph", unhide)
     monkeypatch.setattr(ma, "_rebuild_index", index)
     return log
+
+
+def _split(log, graph):
+    """(вызовы по графу целиком, вызовы по папкам встреч архива)."""
+    whole = [p for p in log["unhide"] if p == graph]
+    folders = [p for p in log["unhide"] if p != graph]
+    assert all(p.parent == graph / ma.ARCHIVE_DIR for p in folders), folders
+    return whole, folders
 
 
 def _world(tmp_path):
@@ -74,7 +85,10 @@ def _world(tmp_path):
 def test_migrate_all_unhides_the_graph_once_and_rebuilds_the_index_per_meeting(tmp_path, calls):
     graph, tdir = _world(tmp_path)
     assert ma.migrate_all(graph, tdir) == N
-    assert calls["unhide"] == [graph]
+    whole, folders = _split(calls, graph)
+    assert whole == [graph, graph], "граф целиком — перед первой встречей и в finally"
+    assert len(folders) == N == len(set(folders)), "каждая встреча снимает флаг со своей папки"
+    assert calls["unhide"][0] == graph and calls["unhide"][-1] == graph
     assert calls["index"] == [graph] * N
     assert (graph / ma.ARCHIVE_DIR / "_ОГЛАВЛЕНИЕ.md").is_file()
 
@@ -84,16 +98,19 @@ def test_migrate_all_unhides_once_even_when_a_meeting_fails(tmp_path, calls):
     calls["fail_at"] = K
     with pytest.raises(RuntimeError, match="k-й встрече"):
         ma.migrate_all(graph, tdir)
-    assert calls["unhide"] == [graph]
+    whole, folders = _split(calls, graph)
+    assert whole == [graph, graph], "граф чистится и до первой встречи, и в finally"
+    assert len(folders) == K - 1, "упавшая встреча до своей папки не дошла"
     assert len(calls["index"]) == K, "обход остановился на упавшей встрече"
 
 
-def test_migrate_all_without_meetings_still_unhides_once(tmp_path, calls):
+def test_migrate_all_without_meetings_leaves_the_graph_alone(tmp_path, calls):
+    """Пустой обход полный проход по графу не платит (DS M5 выходного круга по #633)."""
     graph, tdir = _world(tmp_path)
     for f in tdir.iterdir():
         f.unlink()
     assert ma.migrate_all(graph, tdir) == 0
-    assert (calls["unhide"], calls["index"]) == ([graph], [])
+    assert (calls["unhide"], calls["index"]) == ([], [])
 
 
 # --- одиночный вызов -----------------------------------------------------------
@@ -105,11 +122,21 @@ def test_single_archive_still_unhides_the_whole_graph(tmp_path, calls):
     assert (calls["unhide"], calls["index"]) == ([graph], [graph])
 
 
-def test_archive_with_unhide_off_rebuilds_the_index_but_leaves_the_flag(tmp_path, calls):
+def test_archive_with_unhide_off_unhides_its_own_folder_only(tmp_path, calls):
+    """Внутри обхода встреча снимает флаг со своей папки: приложение с
+    `.skipsHiddenFiles` видит её сразу, а не в конце обхода (DS I1 по #633)."""
     graph, tdir = _world(tmp_path)
-    ma.archive_meeting(graph, tdir, "2026-09-20_1000", "Тема",
-                       files_key="2026-09-20_1000_Тема", unhide=False)
-    assert (calls["unhide"], calls["index"]) == ([], [graph])
+    a = ma.archive_meeting(graph, tdir, "2026-09-20_1000", "Тема",
+                           files_key="2026-09-20_1000_Тема", unhide=False)
+    assert (calls["unhide"], calls["index"]) == ([a.folder], [graph])
+
+
+def test_unhide_is_keyword_only():
+    """Шестой позиционный у `archive_meeting` — `mode`: `unhide` позиционно
+    молча означал бы режим саммари (DS M4 выходного круга по #633)."""
+    import inspect
+    for fn in (ma.archive_meeting, retro_fill.process):
+        assert inspect.signature(fn).parameters["unhide"].kind is inspect.Parameter.KEYWORD_ONLY, fn
 
 
 # --- retro_fill.main ------------------------------------------------------------
@@ -134,7 +161,9 @@ def test_retro_fill_walk_unhides_the_graph_once(retro, calls, capsys):
     graph, _tdir = retro
     retro_fill.main([])
     assert f"встреч обработано {N}" in capsys.readouterr().out
-    assert calls["unhide"] == [graph]
+    whole, folders = _split(calls, graph)
+    assert whole == [graph, graph] and len(folders) == N
+    assert calls["unhide"][0] == graph and calls["unhide"][-1] == graph
     assert calls["index"] == [graph] * N
 
 
@@ -143,8 +172,28 @@ def test_retro_fill_walk_unhides_once_even_when_a_meeting_fails(retro, calls):
     calls["fail_at"] = K
     with pytest.raises(RuntimeError, match="k-й встрече"):
         retro_fill.main([])
-    assert calls["unhide"] == [graph]
+    whole, folders = _split(calls, graph)
+    assert whole == [graph, graph] and len(folders) == K - 1
     assert len(calls["index"]) == K
+
+
+def test_retro_fill_import_tail_pays_one_whole_graph_pass(retro, calls):
+    """Хвост импорта — `retro_fill.main([путь])`, одна встреча: один полный проход
+    по графу (как до правки) и снятие флага со своей папки (Sonnet M2 по #633)."""
+    graph, tdir = retro
+    live = sorted(tdir.glob("*.md"))[0]
+    retro_fill.main([str(live)])
+    whole, folders = _split(calls, graph)
+    assert (whole, len(folders)) == ([graph], 1)
+    assert calls["unhide"][0] == graph, "полный проход — до встречи, а не после"
+
+
+def test_retro_fill_with_nothing_to_walk_leaves_the_graph_alone(retro, calls):
+    """Отвергнутые пути хвоста импорта полный проход не платят (DS M5 по #633)."""
+    graph, tdir = retro
+    with pytest.raises(SystemExit):
+        retro_fill.main([str(tdir / "2099-01-01_0000_нет.md")])
+    assert calls["unhide"] == []
 
 
 def test_retro_fill_process_alone_keeps_unhiding(retro, calls):
