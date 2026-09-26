@@ -219,6 +219,7 @@ def prune_reports(graph: pathlib.Path, prefix: str, keep: int = KEEP_REPORTS) ->
 
 
 def main() -> None:
+    charoite_paths.harden_umask()   # ядра графа и отметки прохода — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.parse_args()   # аргументов нет: без них — работа, --help печатает справку
     cfg = _cfg()

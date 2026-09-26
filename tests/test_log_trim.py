@@ -12,7 +12,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from charoite_paths import trim_log  # noqa: E402
+from charoite_paths import LOG_KEEP_BYTES, LOG_MAX_BYTES, trim_log  # noqa: E402
 
 
 def test_small_log_is_left_alone(tmp_path):
@@ -48,12 +48,41 @@ def test_swift_mirror_is_wired_before_daemon_log_opens():
     svc = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
            / "SuflerService.swift").read_text(encoding="utf-8")
     assert svc.index("LogTrim.trim(errURL)") < svc.index("FileHandle(forWritingTo: errURL)")
-    # Python-половина пока сторожится по тексту: поведенческая проверка требует
-    # разбора порядка вызовов внутри `_restart_mlx` (там Popen, кильер порта и
-    # пауза) — долг записан в карточку №329 (круг 1 по коду, DS I3).
-    health = (ROOT / "src" / "llm_health.py").read_text(encoding="utf-8")
-    assert health.index('trim_log(_root() / "logs" / "mlx_server.log")') \
-        < health.index('(_root() / "logs" / "mlx_server.log").open("a")')
+
+
+def test_mlx_log_is_trimmed_before_open_and_left_owner_only(tmp_path, monkeypatch):
+    """Лог сервера моделей: потолок — до открытия, права — только владельцу, в том
+    числе у файла и каталога, созданных до маски (0644/0755): режим ставится при
+    открытии, а не маской процесса (Important DeepSeek, круг 2 по PR #634).
+    Поведением, а не по тексту исходника — прежняя проверка искала строки
+    вызовов (долг №329 круга 1 по коду)."""
+    import os
+    import stat
+
+    import llm_health
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    log = logs / "mlx_server.log"
+    log.write_bytes(b"x" * (LOG_MAX_BYTES + 10))
+    log.chmod(0o644)
+    logs.chmod(0o755)
+    seen = {}
+
+    class _Popen:
+        def __init__(self, argv, stdout=None, **kw):
+            seen["size"] = log.stat().st_size
+            seen["mode"] = stat.S_IMODE(os.fstat(stdout.fileno()).st_mode)
+
+    monkeypatch.setattr(llm_health, "_root", lambda: tmp_path)
+    monkeypatch.setattr(llm_health, "_spare", lambda cfg, log, *, force: False)
+    monkeypatch.setattr(llm_health, "_mlx_listener_pid", lambda url: None)
+    monkeypatch.setattr(llm_health.privacy, "mlx_base_url", lambda cfg: "http://127.0.0.1:8080")
+    monkeypatch.setattr(llm_health.subprocess, "Popen", _Popen)
+    assert llm_health._restart_mlx({}, lambda message: None) is True
+    assert seen["size"] <= LOG_KEEP_BYTES + 200, "потолок — до открытия лога"
+    assert seen["mode"] == 0o600, "сервер пишет в лог, открытый только владельцу"
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert stat.S_IMODE(logs.stat().st_mode) == 0o700
 
 
 def test_trim_keeps_owner_only_permissions_and_leaves_no_temp(tmp_path):

@@ -45,6 +45,7 @@ import uuid
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import frontmatter  # noqa: E402
 import graph_links  # noqa: E402
+from charoite_paths import harden_umask  # noqa: E402
 
 MOC = "_MOC.md"
 
@@ -292,6 +293,7 @@ def apply(src: pathlib.Path, dst: pathlib.Path,
 
 
 def main() -> None:
+    harden_umask()   # граф владельца и резервная копия слияния — только ему (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("src", help="граф-донор (имя папки в vault или путь)")
     ap.add_argument("dst", help="граф-приёмник")

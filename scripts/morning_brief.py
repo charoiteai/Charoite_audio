@@ -28,7 +28,7 @@ import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 import redirects  # noqa: E402
 import safe_write  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -185,6 +185,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
 
 
 def main() -> None:
+    harden_umask()   # бриф дня собран из встреч — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--graph", type=pathlib.Path, default=None,
                     help="один граф (default: все графы vault с Встречи-архив)")

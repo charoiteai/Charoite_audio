@@ -46,7 +46,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import graph_updater as gu  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 
 def _root() -> pathlib.Path:
@@ -148,6 +148,7 @@ def report(rows: list[dict]) -> None:
 
 
 def main() -> None:
+    harden_umask()   # ответы моделей на разбор встреч — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("models", nargs="+", help="теги моделей Ollama")
     ap.add_argument("--meetings", type=int, default=3,

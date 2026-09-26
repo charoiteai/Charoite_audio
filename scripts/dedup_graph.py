@@ -302,6 +302,7 @@ def link_duplicates(graph: pathlib.Path, apply: bool) -> None:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()   # файлы графа и их резервные копии — только владельцу (№385)
     ap = argparse.ArgumentParser(description="Дедупликация файлов графа: копии «Имя N» и жёсткие ссылки")
     ap.add_argument("--graph", help="путь к графу (по умолчанию sufler.graph_dir)")
     ap.add_argument("--apply", action="store_true",

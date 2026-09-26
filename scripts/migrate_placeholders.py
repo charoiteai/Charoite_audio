@@ -387,6 +387,7 @@ def _daemon_process_running() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    charoite_paths.harden_umask()   # узлы людей графа и копии для отката — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--graph", required=True, type=pathlib.Path, help="корень графа (папка с Люди/, Встречи/)")
     ap.add_argument("--apply", action="store_true", help="менять граф (по умолчанию — только план)")

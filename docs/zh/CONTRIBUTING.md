@@ -85,6 +85,7 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 | 指向环境层的边 / X 层模块触碰环境 | X 层没有环境：路径或设置以参数传入，由能看见 runtime 的层上的门组装（如 `graphs.open_search`）；`allowed_edges` 不能豁免，`root_exemptions` 在加载时拒绝这些形式 |
 | 包 X 拉入模块 Y | `package_entry` 的闭包到达了带环境的层——切断该导入：包必须能脱离应用安装 |
 | 地图过期 | 运行 `.venv/bin/python scripts/layout_map.py` |
+| `✗ scripts/layout_map.py: …` 而不是 `✗ docs/design/layout.json: …` | 缺陷在守卫自身代码的表里（`ROOT_SHAPES`、范围表 `SHAPE_SCOPES`、`PROBLEM_KINDS`），不在工件里——修代码 |
 
 ```bash
 .venv/bin/python scripts/layout_map.py           # 重新生成地图

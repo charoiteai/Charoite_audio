@@ -1914,6 +1914,7 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()      # лог, .partial, карантин — 0600/0700; первым делом (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--stamp", required=True)
     ap.add_argument("--transcript", type=pathlib.Path, required=True)
@@ -1923,7 +1924,6 @@ def main() -> int:
     ap.add_argument("--force", action="store_true",
                     help="запустить разбор, даже если ревизия уже свежее стенограммы")
     args = ap.parse_args()
-    charoite_paths.harden_umask()      # лог, .partial, карантин — 0600/0700
     cfg = graph_updater.load_cfg()
     args.log.parent.mkdir(parents=True, exist_ok=True)
     return run(args.stamp, args.transcript, args.graph, args.rev, args.log, cfg, force=args.force)

@@ -539,6 +539,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
 
 
 def main() -> int:
+    charoite_paths.harden_umask()   # досье и отчёт ревизии — только владельцу (№385)
     ap = argparse.ArgumentParser(description="Облачная ревизия досье")
     ap.add_argument("--graph")
     ap.add_argument("--all-graphs", action="store_true")

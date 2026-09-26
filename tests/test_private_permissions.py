@@ -14,14 +14,16 @@
 """
 from __future__ import annotations
 
+import ast
 import os
 import pathlib
-import re
 import sys
+import textwrap
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 
 from charoite_paths import (  # noqa: E402
     DATA_UMASK,
@@ -30,22 +32,181 @@ from charoite_paths import (  # noqa: E402
     harden_umask,
     secure_dir,
 )
+import layout_map  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-#: Точки входа, которые пишут данные человека и обязаны закрывать маску.
-WRITERS = (
-    "src/daemon.py",
-    "src/main.py",
-    "src/rebuild_transcript.py",
-    "src/graph_updater.py",
-    "src/dictate_note.py",
-    "src/transcribe_file.py",
-    # минутки несут содержимое встречи; маска ставится в точке запуска,
-    # а не на импорте — модуль импортируют тесты (GLM I7/I2 по #464)
-    "src/mcp_server.py",
-)
+#: Где точки входа сторожатся: код продукта и скрипты. Сами точки — из
+#: инвентаря `layout_map` (python с гвардом `__main__`), а не рукописным
+#: списком: список отставал — шесть писателей с маской и `meeting_archive`
+#: без неё в него так и не попали (№385).
+ENTRY_AREAS = ("src/", "scripts/")
 
+#: Точки входа, которым маска не нужна: не пишут данных встреч и владельца.
+#: Каждая — с причиной одной строкой. Точка вне этого списка обязана закрыть
+#: маску первым делом; новая точка без классификации краснит сторож.
+UMASK_FORGIVEN = {
+    "scripts/bench_models.py": "не пишет данных встреч и владельца: замер скорости моделей, вывод в stdout",
+    "scripts/check_private_markers.py": "не пишет данных встреч и владельца: читает дерево репозитория",
+    "scripts/check_test_assertions.py": "не пишет данных встреч и владельца: читает тесты репозитория",
+    "scripts/get_models.py": "не пишет данных встреч и владельца: качает веса моделей",
+    "scripts/layout_map.py": "не пишет данных встреч и владельца: артефакт и карта раскладки кода",
+    "scripts/lock_runtime_deps.py": "не пишет данных встреч и владельца: замок зависимостей репозитория",
+    "scripts/mutate_check.py": "не пишет данных встреч и владельца: мутанты кода во временной копии",
+    "scripts/sign_release_manifest.py": "не пишет данных встреч и владельца: подпись манифеста релиза",
+    "scripts/stt_bench.py": "не пишет данных встреч и владельца: синтетические фразы голосом say",
+    "scripts/wait_for_idle.py": "не пишет данных встреч и владельца: только ждёт освобождения машины",
+    "src/dictate.py": "не пишет данных встреч и владельца: текст диктовки уходит родителю в stdout",
+}
+
+#: Что может идти в блоке `__main__` раньше маски: называние корня данных. Оно
+#: только читает окружение и при беде выходит с рецептом — файлов не создаёт.
+ROOT_DOOR = "name_data_root_or_exit"
+
+#: Обёртки над `main()`, после которых путь исполнения всё равно идёт в `main`.
+EXIT_WRAPPERS = ("exit", "SystemExit")
+
+#: Вызовы, которые на уровне модуля идут раньше блока `__main__` и файлов не создают:
+#: путь импорта канона и проверка зависимостей с рецептом вместо трейсбека.
+MODULE_CALLS = ("sys.path.insert", "sys.path.append", "deps.explain_missing")
+
+
+def _call_named(node: ast.AST | None, name: str) -> bool:
+    """`name(...)` или `x.name(...)` — вызов по имени или атрибутом."""
+    if not isinstance(node, ast.Call):
+        return False
+    f = node.func
+    return (isinstance(f, ast.Name) and f.id == name) or (isinstance(f, ast.Attribute) and f.attr == name)
+
+
+def _is_harden(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.Expr) and _call_named(stmt.value, "harden_umask")
+
+
+def _is_prologue(stmt: ast.stmt) -> bool:
+    """Импорт или `[root =] name_data_root_or_exit(...)` — ничего не пишут."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return True
+    return isinstance(stmt, (ast.Expr, ast.Assign)) and _call_named(stmt.value, ROOT_DOOR)
+
+
+def _is_inert(stmt: ast.stmt) -> bool:
+    """Оператор уровня модуля, который файлов не создаёт: докстринг, импорт,
+    определение, присваивание, `try` и `if` из таких же и вызов из MODULE_CALLS.
+    Присваивание считается константой: файл, созданный вызовом в его правой
+    части, этот сторож не видит — такой случай закрывает только режим, заданный
+    в точке создания файла (№409)."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
+                         ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Pass)):
+        return True
+    if isinstance(stmt, ast.Try):
+        return all(_is_inert(s) for s in (*stmt.body, *stmt.orelse, *stmt.finalbody,
+                                          *(s for h in stmt.handlers for s in h.body)))
+    if isinstance(stmt, ast.If):        # `if TYPE_CHECKING:` и прочие ветвления — по ветвям
+        return all(_is_inert(s) for s in (*stmt.body, *stmt.orelse))
+    if isinstance(stmt, ast.Expr):
+        v = stmt.value
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+            return True
+        return isinstance(v, ast.Call) and ast.unparse(v.func) in MODULE_CALLS
+    return False
+
+
+def _calls_main(stmt: ast.stmt) -> bool:
+    """`main(...)`, `sys.exit(main(...))`, `raise SystemExit(main(...))`."""
+    expr = stmt.exc if isinstance(stmt, ast.Raise) else stmt.value if isinstance(stmt, ast.Expr) else None
+    if isinstance(expr, ast.Call) and any(_call_named(expr, w) for w in EXIT_WRAPPERS) and len(expr.args) == 1:
+        expr = expr.args[0]
+    return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "main"
+
+
+def umask_verdict(tree: ast.Module) -> str | None:
+    """Почему точка входа не закрывает маску первым делом; `None` — закрывает.
+
+    Идём по пути исполнения, а не ищем текст: модуль сверху вниз — выше гварда
+    только операторы, которые файлов не создают (`_is_inert`); от блока `__main__` до
+    `harden_umask()` допустимы только импорты и называние корня; вызов `main()`
+    — спуск в её тело, где маска обязана быть первым оператором (докстринг не
+    в счёт). Прежний сторож искал вызов в первых 400 знаках после якоря:
+    длинный комментарий над вызовом краснил его зря, а вызов во вложенной
+    функции или запись до `main()` в эти знаки помещались (№385)."""
+    guard = layout_map.main_guard(tree)
+    if guard is None:
+        return "нет блока __main__"
+    # модуль исполняется сверху вниз: всё выше гварда идёт раньше маски
+    for stmt in tree.body[:tree.body.index(guard)]:
+        if not _is_inert(stmt):
+            return (f"строка {stmt.lineno}: «{ast.unparse(stmt)[:60]}» исполняется на уровне модуля "
+                    f"раньше harden_umask()")
+    for stmt in guard.body:
+        if _is_harden(stmt):
+            return None
+        if _is_prologue(stmt):
+            continue
+        if not _calls_main(stmt):
+            return f"строка {stmt.lineno}: «{ast.unparse(stmt)[:60]}» исполняется раньше harden_umask()"
+        main = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+        if main is None:
+            return f"строка {stmt.lineno}: main() зовётся, но на верхнем уровне модуля не определена"
+        body = main.body
+        if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            body = body[1:]
+        if body and _is_harden(body[0]):
+            return None
+        where = body[0].lineno if body else main.lineno
+        return f"строка {where}: первый оператор main() — не harden_umask()"
+    return "блок __main__ не зовёт ни harden_umask(), ни main()"
+
+
+def umask_problems(entries: dict[str, ast.Module], forgiven: dict[str, str]) -> list[str]:
+    """Расхождения сторожа маски строками: точка без маски и без прощения,
+    прощение без причины и прощение точки, которой больше нет."""
+    out = [f"{rel}: {why} — закрыть маску первым делом или простить с причиной в UMASK_FORGIVEN"
+           for rel, tree in sorted(entries.items())
+           if rel not in forgiven and (why := umask_verdict(tree)) is not None]
+    out += [f"UMASK_FORGIVEN прощает {rel} без причины" for rel, why in sorted(forgiven.items())
+            if not why.strip()]
+    out += [f"UMASK_FORGIVEN прощает {rel}, а такой точки входа нет — снять"
+            for rel in sorted(set(forgiven) - set(entries))]
+    return out
+
+
+def entry_points() -> dict[str, ast.Module]:
+    """Python-точки входа продукта и скриптов — по инвентарю `layout_map`."""
+    inv = layout_map.inventory(ROOT)
+    return {rel: info.tree for rel, info in inv.files.items()
+            if info.executable == layout_map.PY_ENTRY and info.tree is not None
+            and rel.startswith(ENTRY_AREAS)}
+
+
+def promised_entries(root: pathlib.Path) -> tuple[set[str], list[str]]:
+    """Обещание PRIVACY дословно: каждый python-файл с гвардом `__main__` в `src/` и
+    `scripts/`, на любой глубине, — и файлы, которые не разбираются.
+
+    Своим отбором, мимо кандидатности инвентаря (она задана расположением файла, и
+    её сужение без этой сверки ничем не краснело бы — Important DeepSeek по PR #634),
+    но по тем же файлам под git, что у инвентаря: файл на диске вне git — не продукт,
+    и «инвентарь сузил выборку» про него было бы неправдой (Minor DS, круг 2)."""
+    out, unparsed = set(), []
+    for rel in layout_map._files(root):
+        if not (rel.endswith(".py") and rel.startswith(ENTRY_AREAS)):
+            continue
+        try:
+            tree = ast.parse((root / rel).read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            unparsed.append(rel)
+            continue
+        if layout_map.main_guard(tree) is not None:
+            out.add(rel)
+    return out, unparsed
+
+
+def selection_gaps(entries: dict[str, ast.Module], promised: set[str]) -> list[str]:
+    """Расхождение выборки сторожа с обещанием строками."""
+    return ([f"{rel}: гвард __main__ есть, а сторож её не видит — инвентарь сузил выборку"
+             for rel in sorted(promised - set(entries))]
+            + [f"{rel}: сторож судит файл без гварда __main__" for rel in sorted(set(entries) - promised)])
 
 @pytest.fixture
 def keep_umask():
@@ -105,28 +266,258 @@ def test_миграция_не_падает_на_чужом_файле(tmp_path)
     assert (d / "ок.md").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("path", WRITERS)
-def test_каждая_точка_входа_закрывает_маску(path):
-    """Новый скрипт, пишущий стенограммы, обязан позвать harden_umask.
+def test_каждая_точка_входа_закрывает_маску():
+    """Новый скрипт, пишущий данные встреч, обязан закрыть маску первым делом.
 
     Без этого сторожа дыра возвращается тихо: код работает, тесты зелёные,
     а файлы снова 0644.
     """
-    text = (ROOT / path).read_text(encoding="utf-8")
-    assert "harden_umask" in text, f"{path} не закрывает маску прав"
-    # Точка запуска бывает двух форм: def main() и голый __main__-блок
-    # (mcp_server: на импорте маску ставить нельзя — модуль импортируют
-    # тесты, umask — состояние процесса).
-    for anchor in ("def main(", 'if __name__ == "__main__":'):
-        body = text.split(anchor, 1)
-        if len(body) == 2:
-            break
-    assert len(body) == 2, f"{path}: нет main()/__main__ — сторож нуждается в правке"
-    head = body[1][:400]
-    assert re.search(r"harden_umask\(\)", head), (
-        f"{path}: harden_umask должен вызываться в начале точки запуска, "
-        "иначе часть файлов успевает создаться со старой маской")
+    entries = entry_points()
+    # выборка не пуста и держит известных писателей обеих областей: иначе сторож
+    # зелен ни о чём
+    assert {"src/daemon.py", "src/mcp_server.py", "src/meeting_archive.py",
+            "scripts/morning_brief.py", "scripts/nightly_dossier.py"} <= set(entries)
+    # и равна обещанию PRIVACY: сужение инвентаря красное, а не тихое
+    promised, unparsed = promised_entries(ROOT)
+    assert unparsed == [], f"не разбираются — сторож о них не судит: {unparsed}"
+    assert selection_gaps(entries, promised) == []
+    assert umask_problems(entries, UMASK_FORGIVEN) == []
 
+
+def test_область_сторожа_не_сужается_молча():
+    """Обе стороны сверки фильтрует одна `ENTRY_AREAS`: её сужение и переезд точки
+    входа из области (в `packages/`) сторож не увидел бы (Important DeepSeek,
+    круг 2 по PR #634). Область закреплена, а точка входа инвентаря вне неё — красная."""
+    assert ENTRY_AREAS == ("src/", "scripts/"), "обещание PRIVACY — src/ и scripts/"
+    вне = sorted(rel for rel, info in layout_map.inventory(ROOT).files.items()
+                 if info.executable == layout_map.PY_ENTRY and not rel.startswith(ENTRY_AREAS))
+    assert вне == [], f"точки входа вне src/ и scripts/ — сторож маски их не видит: {вне}"
+
+
+def test_сужение_инвентаря_краснит_сторож(monkeypatch):
+    """Инвентарь потерял точку входа — сверка с обещанием называет её."""
+    real = layout_map.inventory
+
+    def narrowed(root=None):
+        inv = real(root)
+        return inv._replace(files={rel: info for rel, info in inv.files.items()
+                                   if rel != "src/meeting_archive.py"})
+    monkeypatch.setattr(layout_map, "inventory", narrowed)
+    assert selection_gaps(entry_points(), promised_entries(ROOT)[0]) == [
+        "src/meeting_archive.py: гвард __main__ есть, а сторож её не видит — инвентарь сузил выборку"]
+    assert selection_gaps({"src/x.py": _tree("X = 1")}, set()) == [
+        "src/x.py: сторож судит файл без гварда __main__"]
+
+
+def _tree(src: str) -> ast.Module:
+    return ast.parse(textwrap.dedent(src))
+
+
+@pytest.mark.parametrize("src", [
+    # первым после длинного комментария — прежний сторож тут краснел зря
+    """
+    def main():
+        \"\"\"Докстринг не в счёт.\"\"\"
+        """ + "# " + "очень длинное объяснение, почему маска первой; " * 12 + """
+        harden_umask()
+        write()
+
+    if __name__ == "__main__":
+        from charoite_paths import name_data_root_or_exit
+        name_data_root_or_exit(__file__)
+        sys.exit(main())
+    """,
+    # атрибутом, в голом блоке после называния корня присваиванием
+    """
+    if __name__ == "__main__":
+        import charoite_paths
+        root = charoite_paths.name_data_root_or_exit(__file__)
+        charoite_paths.harden_umask()
+        write(root)
+    """,
+    """
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+    """,
+    """
+    def main(argv):
+        harden_umask()
+
+    if __name__ == "__main__":
+        main(sys.argv)
+    """,
+    # уровень модуля: путь импорта, проверка зависимостей, try вокруг импорта, константы
+    """
+    \"\"\"Докстринг модуля.\"\"\"
+    import sys
+    sys.path.insert(0, "src")
+    import deps
+    deps.explain_missing()
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ModuleNotFoundError:
+        FastMCP = None
+    PATTERN = re.compile("x")
+    if TYPE_CHECKING:
+        from typing import Any
+    else:
+        Any = object
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """,
+])
+def test_сторож_маски_пропускает_маску_первым_делом(src):
+    assert umask_verdict(_tree(src)) is None
+
+
+@pytest.mark.parametrize("src, said", [
+    # вторым оператором: разбор аргументов успевает раньше маски
+    ("""
+    def main():
+        ap = argparse.ArgumentParser()
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "первый оператор main()"),
+    # во вложенной функции: маска поставится, только если её позовут
+    ("""
+    def main():
+        def inner():
+            harden_umask()
+        inner()
+
+    if __name__ == "__main__":
+        main()
+    """, "первый оператор main()"),
+    # под условием — тоже не первым делом
+    ("""
+    def main():
+        if flag:
+            harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "первый оператор main()"),
+    # запись в прологе __main__ до main(): файл создан со старой маской
+    ("""
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        from charoite_paths import name_data_root_or_exit
+        name_data_root_or_exit(__file__)
+        pathlib.Path("x.md").write_text("кто что решил")
+        main()
+    """, "исполняется раньше harden_umask()"),
+    # чужой вызов, завёрнутый в exit, — не main
+    ("""
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        sys.exit(other())
+    """, "исполняется раньше harden_umask()"),
+    ("""
+    if __name__ == "__main__":
+        main()
+    """, "не определена"),
+    ("""
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        import sys
+    """, "ни harden_umask(), ни main()"),
+    ("""
+    def main():
+        harden_umask()
+    """, "нет блока __main__"),
+    # выше гварда: модуль исполняется сверху вниз, запись идёт раньше маски
+    ("""
+    import pathlib
+    pathlib.Path("черновик.md").write_text("темы встреч")
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "на уровне модуля раньше harden_umask()"),
+    # под условием на уровне модуля — тоже раньше
+    ("""
+    if flag:
+        write()
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "строка 2: «if flag:"),
+    # чужой вызов внутри try уровня модуля
+    ("""
+    try:
+        write()
+    except OSError:
+        pass
+
+    def main():
+        harden_umask()
+
+    if __name__ == "__main__":
+        main()
+    """, "на уровне модуля"),
+])
+def test_сторож_маски_краснеет_на_пути_мимо_маски(src, said):
+    verdict = umask_verdict(_tree(src))
+    assert verdict is not None and said in verdict, verdict
+
+
+def test_неклассифицированная_точка_краснит_сторож():
+    bare = _tree("""
+    def main():
+        write()
+
+    if __name__ == "__main__":
+        main()
+    """)
+    said = umask_problems({"scripts/новая_точка.py": bare}, {})
+    assert len(said) == 1 and said[0].startswith("scripts/новая_точка.py: строка 3"), said
+    # прощение с причиной снимает её; пустая причина — нет
+    assert umask_problems({"scripts/новая_точка.py": bare}, {"scripts/новая_точка.py": "не пишет: x"}) == []
+    assert umask_problems({"scripts/новая_точка.py": bare}, {"scripts/новая_точка.py": " "}) == [
+        "UMASK_FORGIVEN прощает scripts/новая_точка.py без причины"]
+    # прощение ушедшей точки — расхождение, а точка с маской прощения не требует
+    good = _tree("""
+    if __name__ == "__main__":
+        harden_umask()
+    """)
+    assert umask_problems({"src/a.py": good}, {"src/ушла.py": "не пишет: y"}) == [
+        "UMASK_FORGIVEN прощает src/ушла.py, а такой точки входа нет — снять"]
+
+
+def test_точки_входа_берутся_из_инвентаря_по_области(tmp_path, monkeypatch):
+    """Выборка — метка инвентаря и область, а не рукописный список: новая точка
+    в `scripts/` попадает под сторож сама, тест и библиотека — нет."""
+    for rel, src in {"scripts/новая.py": "if __name__ == '__main__':\n    pass\n",
+                     "src/библиотека.py": "X = 1\n",
+                     "tests/test_x.py": "if __name__ == '__main__':\n    pass\n"}.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(src, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    got = entry_points()
+    assert set(got) == {"scripts/новая.py"}
+    assert umask_problems(got, {}) == [
+        "scripts/новая.py: строка 2: «pass» исполняется раньше harden_umask() — закрыть маску "
+        "первым делом или простить с причиной в UMASK_FORGIVEN"]
 
 def test_рубильник_запрещает_докачку_весов(monkeypatch):
     """CHAROITE_NO_CLOUD обязан перекрывать и ленивую загрузку моделей.

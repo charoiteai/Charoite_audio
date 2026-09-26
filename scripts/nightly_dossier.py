@@ -294,6 +294,7 @@ def _собрано(path: pathlib.Path) -> str:
 
 
 def main() -> int:
+    charoite_paths.harden_umask()   # досье по темам встреч — только владельцу (№385)
     ap = argparse.ArgumentParser(description="Ночная сборка досье по темам графа")
     ap.add_argument("--graph", help="путь к графу")
     ap.add_argument("--all-graphs", action="store_true", help="все графы vault")

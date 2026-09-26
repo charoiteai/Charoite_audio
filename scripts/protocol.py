@@ -37,6 +37,7 @@ import deps  # noqa: E402
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import graphs  # noqa: E402
+from charoite_paths import harden_umask  # noqa: E402
 
 ARCHIVE_DIR = "Встречи-архив"
 
@@ -172,6 +173,7 @@ def _graphs(graph: pathlib.Path | None) -> list[pathlib.Path]:
 
 
 def main() -> int:
+    harden_umask()   # протокол встречи в --out — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("target", nargs="?", default=None,
                     help="дата ГГГГ-ММ-ДД или часть имени папки (по умолчанию — последняя)")

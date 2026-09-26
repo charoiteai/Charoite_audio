@@ -38,7 +38,7 @@ import sys
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import deps  # noqa: E402
-from charoite_paths import resolve_root  # noqa: E402
+from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -259,6 +259,7 @@ def report(name: str, scores: dict) -> None:
 
 
 def main() -> int:
+    harden_umask()   # фикстура бенча ложится в data/ корня данных — только владельцу
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--make", action="store_true", help="собрать синтетику и выйти")
     ap.add_argument("--fixture", type=pathlib.Path, default=None)

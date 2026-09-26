@@ -23,9 +23,11 @@ deps.explain_missing()
 import graphs  # noqa: E402
 import llm  # noqa: E402
 import live_gate  # noqa: E402
+from charoite_paths import harden_umask  # noqa: E402
 
 
 def main() -> int:
+    harden_umask()   # кэш векторов хранит блоки текста графа — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--graph", help="папка графа (по умолчанию — sufler.graph_dir из конфига)")
     ap.add_argument("--budget-s", type=float, default=None, help="потолок времени на индексацию")
