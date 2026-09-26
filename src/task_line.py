@@ -163,6 +163,9 @@ _TAIL = re.compile(r"\s*(" + "|".join(FIELDS.values()) + r")️? *(\d{4}-\d{2}-\
 # Пометка контроля в хвосте — ровно один пробел перед ней, непустой текст левее и ничего
 # после: иначе render не вернул бы строку без потерь, и она остаётся текстом.
 _CONTROL_TAIL = re.compile(r"(?<=\S) " + CONTROL_MARK.pattern.removeprefix(r"\s*") + "$")
+# Та же пометка для учётного режима: без требования текста левее — у пункта с
+# пустым телом она иначе оставалась бы в источнике саммари (Minor DS по PR #641).
+_CONTROL_TAIL_ANY = re.compile(CONTROL_MARK.pattern + "$")
 # Хвост в каноничном виде — тот, что пишет render.
 _CANON_TAIL = re.compile("(?:" + _CONTROL_TAIL.pattern.removeprefix(r"(?<=\S)").removesuffix("$") + ")?"
                          + "".join(rf"(?: {sign} \d{{4}}-\d{{2}}-\d{{2}})?" for sign in FIELDS.values()))
@@ -215,7 +218,7 @@ def _tail(body: str, *, accounting: bool = False) -> tuple[str, str | None, dict
         elif control is None and (c := _CONTROL_TAIL.search(body)):
             control = c.group().strip()
             body = body[:c.start()]
-        elif accounting and (c := _CONTROL_TAIL.search(body)):
+        elif accounting and (c := _CONTROL_TAIL_ANY.search(body)):
             control = control or c.group().strip()
             body = body[:c.start()]
         else:

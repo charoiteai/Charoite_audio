@@ -746,6 +746,10 @@ def test_without_statuses_replaces_the_box_symbol_with_a_space(line, expected):
     ("- [x] **А** — сдать к 1 октября 📅 2026-10-01", "- [ ] **А** — сдать к 1 октября"),
     # отмеченный пункт БЕЗ исполнителя — тело тоже дословно
     ("- [-] сверить цифры ❌ 2026-09-24", "- [ ] сверить цифры"),
+    # пометка при пустом теле и через два пробела — тоже учёт: строгий режим оставляет
+    # её текстом (render не вернул бы строку), учётный снимает (Minor DS по PR #641)
+    ("- [x] _(снято по сроку 24.09)_", "- [ ]"),
+    ("- [x] **А** — отчёт  _(снято: давно)_", "- [ ] **А** — отчёт"),
 ])
 def test_without_statuses_strips_the_whole_accounting_tail(line, expected):
     assert task_line.without_statuses(line) == expected

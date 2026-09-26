@@ -112,7 +112,21 @@ def test_decisions_taken_from_the_minutes_are_normalized(tmp_path):
     f.mkdir()
     (f / "Минутки.md").write_text(
         "## Решения\n- [x] Утвердить бюджет 📅 2026-10-01\n- Вернуть срок.\n", encoding="utf-8")
-    assert ma.decisions_of(f) == ["[ ] Утвердить бюджет", "Вернуть срок."]
+    # ящик — форма поручения, не решения: без него, иначе «[x]» владельца доезжал бы
+    # до «Саммари.md» открытым «[ ]» (DeepSeek по PR #641)
+    assert ma.decisions_of(f) == ["Утвердить бюджет", "Вернуть срок."]
+
+
+def test_forced_decisions_carry_no_open_box(tmp_path, monkeypatch):
+    """Запасной путь «решений не было» кладёт решения из минуток в документ — без
+    ящика: отметка владельца не превращается в открытую задачу в «Саммари.md»."""
+    folder, live = _folder(tmp_path, minutes="## Решения\n- [x] Утвердить бюджет\n")
+    calls: list = []
+    _fake_model(monkeypatch, calls, answer="**Суть** встреча.\n\n## Решили\n- решений не было\n")
+    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.REBUILD) == live_sidecar.FRESH
+    text = (folder / "Саммари.md").read_text(encoding="utf-8")
+    assert "- Утвердить бюджет\n" in text, text
+    assert "[ ]" not in text and "[x]" not in text, text
 
 
 def test_decisions_from_the_debrief_are_taken_as_is(tmp_path):
@@ -155,7 +169,9 @@ def test_auto_does_not_build_a_passportless_summary_with_a_marked_canon(tmp_path
     calls: list = []
     _fake_model(monkeypatch, calls)
     assert ma.summary_state(folder, live, None) == live_sidecar.UNKNOWN
-    assert ma._gen_summary(folder, live, mode=ma.SummaryMode.AUTO) == live_sidecar.UNKNOWN
+    outcome = ma.summary_pass(folder, live, None, mode=ma.SummaryMode.AUTO)
+    assert outcome.state == live_sidecar.UNKNOWN
+    assert "unknown" in (outcome.line() or ""), "строка отчёта называет состояние (Important DS по PR #641)"
     assert calls == [], "без паспорта модель не зовётся"
 
 

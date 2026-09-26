@@ -344,7 +344,8 @@ GLM）收敛于一个机制，并抓住计划中的三个漏洞：摘要的来�
 用什么语言，无权重写旧文档）。纪要与从中抽取的决定在裁剪之前先做规范化（`task_line.without_statuses`，№392）：
 所有者的 `[x]`/`[-]` 标记、任务控制备注与插件字段（含截止日期）都是会后的事务记录，而非会议内容——因此
 勾选任务既不会使摘要陈旧，也不会传给模型，而无状态机器文本的散列保持不变：遗留护照无需重建即为
-FRESH。`live_sidecar` 拥有护照契约的两半——`derivative_state` 判定，`write_derivative`
+FRESH。从纪要中抽取的决定完全不带复选框：否则所有者的 `[x]` 会经由“没有做出决定”的兜底路径，以未完成的
+`- [ ]` 出现在 `Саммари.md` 中。`live_sidecar` 拥有护照契约的两半——`derivative_state` 判定，`write_derivative`
 （从 `retro_fill` 迁入，所有类型共用一条接缝：快照 → `.prev/` → expect 闸门 → attest，且不给不存在的转录
 发护照）写入，`retouch` 在机械重写后重置字节散列而保留来源。策略随 `archive_meeting` 的调用方而行：实时
 路径（会后流水线、修订投递）构建 MISSING/STALE 以及无护照的遗留项，回填遍历与 CLI 仅构建 MISSING/STALE；

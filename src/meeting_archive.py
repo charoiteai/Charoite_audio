@@ -664,9 +664,10 @@ def _history_context(folder: pathlib.Path) -> str:
 def decisions_of(folder: pathlib.Path) -> list[str]:
     """Решения встречи так, как их записали минутки, — по пункту на строку.
 
-    Тонкая обёртка над `summary_snapshot`: решения берутся из того же одного
-    чтения папки, что и материалы, причём из минуток — по нормализованному
-    снимку (№392). Минутки и разбор пишут решения структурно: заголовок
+    Тонкая обёртка над `summary_snapshot` для тестов и диагностики — боевых
+    вызывающих нет: хеш и промпт берут `snapshot.decided()` сами. Решения
+    берутся из того же чтения папки, из минуток — по нормализованному снимку и
+    без ящика (№392). Минутки и разбор пишут решения структурно: заголовок
     «Решения» (иногда «### ✅ Решения:») и под ним список. Просить модель найти
     их заново — лишний риск: замер 03.08 на одной и той же встрече дал 1
     попадание из 3. Дешевле подать готовое.
@@ -806,6 +807,10 @@ class CanonSnapshot(typing.NamedTuple):
         return [d for _, items in self.decisions for d in items]
 
 
+#: Ящик, который нормализация минуток оставляет в начале решения («[ ] Решение»).
+_BOX_LEFT = re.compile(r"^\[ \]\s*")
+
+
 def _decisions_in(text: str) -> list[str]:
     """Решения из раздела «Решения» одного документа, по пункту на строку."""
     m = re.search(r"(?m)^#{2,4}[^\n]*Решени\w*[^\n]*$\n(?P<section>.*?)(?=\n#{2,4} |\Z)",
@@ -840,6 +845,12 @@ def summary_snapshot(folder: pathlib.Path) -> CanonSnapshot:
     for name in (CANON_NAME, "Разбор.md"):
         if name in texts:
             items = _decisions_in(texts[name])
+            if name == CANON_NAME:
+                # Ящик — форма строки поручения, а не содержание решения: без него
+                # решение идёт и в хеш, и в промпт, и в документ. С ящиком-пробелом
+                # отметка владельца «[x]» доезжала бы до «Саммари.md» открытым «[ ]»
+                # через запасной путь _force_decisions (Important DeepSeek по PR #641).
+                items = [_BOX_LEFT.sub("", d) for d in items]
             if items:
                 decisions.append((name, items))
                 break
@@ -849,7 +860,8 @@ def summary_snapshot(folder: pathlib.Path) -> CanonSnapshot:
 def summary_materials(folder: pathlib.Path) -> list[tuple[str, str]]:
     """Что модель увидит как материалы: имя файла → обрезка по канону (у
     стенограммы важнее конец — итоги, у остальных — начало). Тонкая обёртка над
-    `summary_snapshot`: один снимок на промпт и на хеш источника (урок №317)."""
+    `summary_snapshot` для тестов и диагностики: боевой путь (`_summary_freshness`,
+    `summary_pass`) берёт снимок сам, и правка здесь его не меняет (Minor DS по PR #641)."""
     return summary_snapshot(folder).materials
 
 

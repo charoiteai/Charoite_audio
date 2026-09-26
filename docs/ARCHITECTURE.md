@@ -829,7 +829,9 @@ minutes — and the decisions taken from them — are normalized
 `[x]`/`[-]`, the task-control note and the plugin fields, the due date among
 them, are accounting after the meeting, not its content, so marking a task
 neither ages the summary nor reaches the model, and the hash of status-free
-machine text is unchanged — legacy passports stay FRESH without a rebuild;
+machine text is unchanged — legacy passports stay FRESH without a rebuild. A
+decision taken from the minutes keeps no box at all: otherwise the owner's `[x]`
+would reach `Саммари.md` as an open `- [ ]` through the "no decisions" fallback;
 `live_sidecar` owns both halves of the passport contract — `derivative_state`
 decides, `write_derivative` (moved from `retro_fill`, one seam for every kind:
 snapshot → `.prev/` → expect gate → attest, and no passport for a transcript
