@@ -104,6 +104,17 @@ def test_migrate_all_unhides_once_even_when_a_meeting_fails(tmp_path, calls):
     assert len(calls["index"]) == K, "обход остановился на упавшей встрече"
 
 
+def test_migrate_all_of_one_meeting_pays_one_whole_graph_pass(tmp_path, calls):
+    """Миграция одной встречи: полный проход по графу один (до встречи), как у
+    одиночной архивации, — второй в `finally` лишний (граница `> 1`)."""
+    graph, tdir = _world(tmp_path)
+    for f in sorted(tdir.iterdir())[1:]:
+        f.unlink()
+    assert ma.migrate_all(graph, tdir) == 1
+    whole, folders = _split(calls, graph)
+    assert (whole, len(folders)) == ([graph], 1)
+
+
 def test_migrate_all_without_meetings_leaves_the_graph_alone(tmp_path, calls):
     """Пустой обход полный проход по графу не платит (DS M5 выходного круга по #633)."""
     graph, tdir = _world(tmp_path)
@@ -234,6 +245,8 @@ def test_retro_fill_walk_skips_stubs_and_names_without_a_stamp(retro, calls, cap
     _sized(tdir / "2026-09-20_1000_Тема.md", 600)
     _sized(tdir / "2026-09-22_1200_Пустышка.md", 599)
     _sized(tdir / "заметки.md", 5000)
+    import meeting_stamp
+    _sized(tdir / f"2026-09-20_1000_Тема{meeting_stamp.AUX_SUFFIXES[0]}.md", 5000)   # производная — не встреча
     retro_fill.main([])
     assert "встреч обработано 1" in capsys.readouterr().out
     assert calls["index"] == [graph]

@@ -257,9 +257,8 @@ def _minute(stem: str) -> str | None:
 def _walk_candidate(f: pathlib.Path) -> bool:
     """Встреча ли это для обхода: не производная и не копия (один список хвостов
     на проект, GLM I3 по №309), имя со штампом, не пустышка короче 600 байт."""
-    if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
-        return False
-    return meeting_stamp.stamp_of(f.stem) is not None and f.stat().st_size >= 600
+    return (not any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES)
+            and meeting_stamp.stamp_of(f.stem) is not None and f.stat().st_size >= 600)
 
 
 def main(argv: list[str] | None = None):
