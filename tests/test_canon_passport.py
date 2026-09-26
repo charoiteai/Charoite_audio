@@ -887,7 +887,7 @@ def test_retro_fill_prints_the_canon_line(tmp_path, monkeypatch, capsys, explici
     monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
     monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
 
-    def fake(f, cfg, graph, tdir_, summary=None, tally=None, canon_tally=None):
+    def fake(f, cfg, graph, tdir_, summary=None, tally=None, canon_tally=None, *, unhide=True):
         canon_tally[CO.KEPT] += 1
         return []
     monkeypatch.setattr(retro_fill, "process", fake)

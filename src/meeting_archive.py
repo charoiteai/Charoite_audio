@@ -298,7 +298,8 @@ def plan_materials(tdir: pathlib.Path, key: str, expected_debrief: pathlib.Path 
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
                     files_key: str | None = None, *,
                     mode: SummaryMode = SummaryMode.AUTO,
-                    extra: typing.Mapping[str, pathlib.Path] | None = None) -> Archived | None:
+                    extra: typing.Mapping[str, pathlib.Path] | None = None,
+                    unhide: bool = True) -> Archived | None:
     """Собирает/обновляет папку встречи; возвращает папку и исход саммари
     (None — встреча исключена). `mode` — режим прохода по саммари
     (`SummaryMode`); дефолт — в сигнатуре, архивация режим не интерпретирует и
@@ -321,6 +322,18 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     и `write_text_if_changed`): повторный проход без новостей папку не трогает.
     Канон минуток — не копия, а `lay_canon` с паспортом: правленый человеком
     канон раскладка не трогает (№366), исход — в `Archived.canon`.
+
+    `unhide=False` — для массовых обходов (`migrate_all`, цикл `retro_fill`):
+    снятие UF_HIDDEN со всего графа стоит медиану 477 мс (замер 25.09, 9191
+    файл), и обход бэклога платил его на каждой встрече, ≈151 с из ≈200. Тогда
+    флаг снимается только со своей папки встречи — её сразу видит приложение,
+    которое обходит граф с `.skipsHiddenFiles` (вкладка «Задачи», статистика
+    настроек), — а граф целиком обход чистит сам: перед первой встречей и в
+    `finally` (`unhide_graph`). Забытый `finally` у будущего обхода оставит
+    лишь старые флаги чужих папок, а не спрячет его собственные (DS I1
+    выходного круга по #633). Оглавление пересобирается на каждой встрече:
+    после `kill -9` посреди обхода оно остаётся верным, а починить его потом
+    нечем (№362).
     """
     if stamp in _excluded(graph):
         return None
@@ -414,7 +427,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # людей, с которыми встречи были на этой неделе. Поиск с тех пор на флаг
     # не смотрит, но и графу незачем оставаться помеченным: он же открывается
     # в Finder и Obsidian.
-    _unhide(graph)
+    unhide_graph(graph if unhide else folder)
     return Archived(folder, summary, canon)
 
 
@@ -1240,9 +1253,13 @@ def _build_summary(folder: pathlib.Path, live: pathlib.Path, materials: list[tup
         return failed(SummaryOutcome.FAILED, f"сбой сборки: {type(e).__name__}")
 
 
-def _unhide(path: pathlib.Path):
+def unhide_graph(path: pathlib.Path):
     """iCloud-контейнер помечает элементы UF_HIDDEN — Finder показывал архив
-    «пустым» (20.07). Снимаем флаг с архива и всего содержимого."""
+    «пустым» (20.07). Снимаем флаг с каталога и всего содержимого: с графа
+    целиком — одиночная архивация и границы массового обхода, с папки одной
+    встречи — внутри обхода (№362). Публичное имя: обходы живут и вне модуля
+    (`retro_fill`), а импорт приватного имени давал им свою привязку, мимо
+    которой проходила любая подмена в тестах (DS M3 выходного круга по #633)."""
     try:
         for p in (path, *path.rglob("*")):
             fl = p.stat().st_flags
@@ -1359,26 +1376,48 @@ def canon_tally_line(tally: typing.Mapping[str, int]) -> str:
     return f"канон минуток — {counts or 'раскладок не было'}"
 
 
-def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
-    """Разовая миграция истории: все стенограммы transcripts/ → папки архива."""
-    done = 0
-    canon_tally: collections.Counter = collections.Counter()
+def _migration_meetings(tdir: pathlib.Path) -> list[pathlib.Path]:
+    """Стенограммы, которые миграция раскладывает в архив: не артефакт, не
+    пустышка короче 600 байт (тест старт/стоп), имя со штампом."""
+    out = []
     for f in sorted(tdir.glob("*.md")):
         if any(f.name.endswith(suf) for suf, _ in NICE):
             continue  # это артефакт, не стенограмма
         if f.stat().st_size < 600:
             continue  # пустышка (тест старт/стоп) — не встреча
-        bare = stamp_of(f.stem)
-        if bare is None:
+        if stamp_of(f.stem) is None:
             continue
-        # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
-        # минутный регэксп пропускал посекундные стенограммы целиком.
-        stamp = graph_key(tdir, f.stem, graph)
-        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
-        archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
-        if archived is not None and archived.canon is not None:
-            canon_tally[archived.canon.action] += 1
-        done += 1
+        out.append(f)
+    return out
+
+
+def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
+    """Разовая миграция истории: все стенограммы transcripts/ → папки архива.
+
+    UF_HIDDEN со всего графа — на границах обхода, а не на каждой встрече
+    (№362): перед первой встречей (убитый посреди обхода процесс оставляет граф
+    не грязнее, чем до старта — DS I1 выходного круга по #633) и в `finally`;
+    сами встречи снимают флаг только со своей папки. Пустой обход граф не
+    трогает (DS M5)."""
+    done = 0
+    canon_tally: collections.Counter = collections.Counter()
+    meetings = _migration_meetings(tdir)
+    if meetings:
+        unhide_graph(graph)
+    try:
+        for f in meetings:
+            bare = stamp_of(f.stem)
+            # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
+            # минутный регэксп пропускал посекундные стенограммы целиком.
+            stamp = graph_key(tdir, f.stem, graph)
+            slug = f.stem[len(bare):].lstrip("_")
+            archived = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem, unhide=False)
+            if archived is not None and archived.canon is not None:
+                canon_tally[archived.canon.action] += 1
+            done += 1
+    finally:
+        if len(meetings) > 1:
+            unhide_graph(graph)
     print(f"архив: {canon_tally_line(canon_tally)}")
     return done
 
