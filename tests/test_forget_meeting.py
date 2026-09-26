@@ -1814,6 +1814,25 @@ def test_date_target_names_a_day_folder_once(tmp_path, monkeypatch, capsys):
         assert len(_remainder_of(forget.plan(stamp, root, graph), left)) == 1
 
 
+def test_remainder_line_says_why_it_is_left(tmp_path):
+    """Строка остатка говорит, почему папка не тронута: «чья — не доказано» для
+    папки без доказанного владельца и «план её не удаляет» для папки, которую
+    манифест отдаёт этой встрече, — такая доходит сюда, только если план
+    перестал её забирать, и это расхождение, а не сомнение (Minor DS по PR #635)."""
+    root, graph = _archive_only(tmp_path, {
+        f"{DAY} 09-30 — Тема": MORNING,
+        f"{DAY} 11-00 — Без манифеста": None,
+    })
+    arch = graph / "Встречи-архив"
+    lines = forget.day_remainder(DAY, [graph], MORNING)
+    assert sorted(lines) == sorted([
+        f"{arch / f'{DAY} 09-30 — Тема'} — время в имени 09-30; манифест называет эту встречу: "
+        "план её не удаляет, проверь",
+        f"{arch / f'{DAY} 11-00 — Без манифеста'} — время в имени 11-00; манифеста нет: "
+        "чья папка, не доказано",
+    ])
+
+
 def test_day_remainder_of_a_graph_without_an_archive_is_empty(tmp_path):
     assert forget.day_remainder(DAY, [tmp_path / "нет графа"]) == []
 
