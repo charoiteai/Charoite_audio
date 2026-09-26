@@ -623,10 +623,11 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   the pair (server address, model actually sent) for ten minutes — the server
   may get fixed while a long-lived process runs — reports it once per process
   on stderr and retries the request once without `format`, relying on the
-  prompt. Speaker names take the first object (`parse_json_block`, prompt
-  placeholders dropped); graph extraction takes the whole answer as one object
-  and only trims prose around it (`parse_json_whole`), so a truncated answer or
-  an echoed template stays a named failure instead of polluting the graph.
+  prompt. Speaker names take the first object (`parse_json_block`) and pass
+  the same trust guard as the rebuild path: a name nobody said is dropped.
+  Graph extraction stays strict — the whole answer must be one JSON object, so
+  prose around it, a truncated answer or an echoed template is a named failure
+  of that part, never a guess that pollutes the graph.
   Busy responses and other errors are never mistaken for a missing grammar.
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.

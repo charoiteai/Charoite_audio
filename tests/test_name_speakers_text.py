@@ -12,6 +12,7 @@ import json
 import pathlib
 import sys
 
+import pytest
 import requests
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -83,12 +84,14 @@ def test_diarize_names_name_the_reason_for_non_json(_ollama_маршруты, ca
     assert "имена: не удалось" in out and "не-JSON" in out and "(17 знаков)" in out
 
 
-def test_diarize_names_drop_the_prompt_placeholder_and_unknown_labels(_ollama_маршруты):
-    """Без грамматики модель повторяет образец из промпта: «Имя» — заглушка, а
-    метка, которой нет во входе, — выдумка (выходной круг 1 по №419, DS M5)."""
+@pytest.mark.parametrize("заглушка", ["Имя", "«Имя»", "имя.", "Кто-то"])
+def test_diarize_names_keep_only_names_heard_in_the_talk(_ollama_маршруты, заглушка):
+    """Без грамматики модель повторяет образец из промпта и выдумывает: имя,
+    которого в разговоре не слышно, — не имя, как бы оно ни было написано;
+    чужие метки — тоже нет. Гвард тот же, что у пересборки (круги 1–2, DS M5/I2)."""
     _ollama_маршруты.сценарий_чата(_чат(
-        'Вот: {"speaker_0": "Имя", "speaker_1": "Павел", "speaker_9": "Кто-то"}'))
+        f'Вот: {{"speaker_0": "{заглушка}", "speaker_1": "Павел", "speaker_9": "Павел"}}'))
 
-    lines = [("speaker_0", 0.0, 1.0, "Привет"), ("speaker_1", 1.0, 2.0, "Я Павел")]
+    lines = [("speaker_0", 0.0, 1.0, "Привет"), ("speaker_1", 1.0, 2.0, "Меня зовут Павел")]
 
     assert diarize.name_speakers(CFG_DIARIZE, lines) == {"speaker_1": "Павел"}

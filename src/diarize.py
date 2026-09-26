@@ -329,12 +329,26 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
                   + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
                      else "пустой ответ") + ")")
             return {}
-        # Без грамматики модель охотно повторяет образец из промпта
-        # («speaker_0»: «Имя») — это заглушка, а не человек; ключи — только те
-        # метки, что есть во входе (выходной круг 1 по №419, DS M5).
-        known = {spk for spk, _s, _e, _t in lines}
-        return {k: v for k, v in data.items()
-                if k in known and isinstance(v, str) and v.strip() not in ("", "Имя")}
+        # Имя, которого в разговоре не слышно, — выдумано: эхо образца «Имя» из
+        # промпта или догадка. Ключи — только метки из входа (круги 1–2 по №419,
+        # DS M5/I2). Полный гвард доверия (падежи, владелец, свои реплики) живёт
+        # в speaker_names на боевом пути пересборки; аудиослою импортировать его
+        # запрещают стрелки раскладки, а этот путь — CLI-диагностика
+        # `<stamp>_спикеры.md`, поэтому здесь проверка проще: имя целым словом в
+        # тексте и не метка.
+        heard = sample.casefold()
+        labels = {spk for spk, _s, _e, _t in lines}
+        folded_labels = {spk.casefold() for spk in labels}
+        names: dict[str, str] = {}
+        for k, v in data.items():
+            if k not in labels or not isinstance(v, str):
+                continue
+            name = v.strip().strip(".,!?:;«»\"'()")
+            low = name.casefold()
+            if low and low not in folded_labels \
+                    and re.search(rf"(?<!\w){re.escape(low)}(?!\w)", heard):
+                names[k] = name
+        return names
     except Exception as e:  # noqa: BLE001
         print(f"имена: не удалось ({e})")
         return {}
