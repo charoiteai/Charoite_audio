@@ -195,7 +195,9 @@ def test_empty_summary_is_regenerated(tmp_path, monkeypatch):
     (folder / "Минутки.md").write_text("минутки " * 50, encoding="utf-8")
     calls = []
     monkeypatch.setattr(ma, "_history_context", lambda f: calls.append(f) or "")
-    monkeypatch.setattr(ma, "decisions_of", lambda f: [])
+    _real_snapshot = ma.summary_snapshot
+    monkeypatch.setattr(ma, "summary_snapshot",
+                        lambda f: _real_snapshot(f)._replace(decisions=[]))
     live = tmp_path / "2026-08-03_1130.md"
     live.write_text("# Встреча\n", encoding="utf-8")
     (folder / "Саммари.md").write_text("готовое саммари", encoding="utf-8")

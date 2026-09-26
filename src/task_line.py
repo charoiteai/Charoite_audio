@@ -65,6 +65,11 @@ CONTROL_MARK = re.compile(r"\s*_\(снято(?: по сроку|:) [^)]*\)_")
 # Префикс пункта с ящиком и тот же префикс в виде, который узнают вкладки «Задачи»
 # (`^\s*[-*] \[( |x|X)\] +` на Mac и iPhone).
 _PREFIX = re.compile(r"^(\s*)(?:" + MARKER + r"\s*)?\[([^\]])\]\s*")
+# Пункт-поручение для нормализации источника саммари (№392): маркер списка
+# ОБЯЗАТЕЛЕН, в отличие от _STATE, — определение сноски «[1]: …» без маркера
+# ящиком не считается. Первая группа — отступ, маркер и пробелы до ящика,
+# вторая — сам ящик (его символ меняется на пробел).
+_ACCOUNTING = re.compile(r"^(\s*(?:" + MARKER + r")\s*)(" + BOX + r")")
 _CANON = re.compile(r"^\s*[-*] \[[^\]]\] ")
 # Каноничный префикс для is_canonical и parse: тот же, плюс пункт без тела «- [c]» —
 # его так и пишет render. «* [c]» без тела canonical переписывает в «- [c]».
@@ -158,6 +163,9 @@ _TAIL = re.compile(r"\s*(" + "|".join(FIELDS.values()) + r")️? *(\d{4}-\d{2}-\
 # Пометка контроля в хвосте — ровно один пробел перед ней, непустой текст левее и ничего
 # после: иначе render не вернул бы строку без потерь, и она остаётся текстом.
 _CONTROL_TAIL = re.compile(r"(?<=\S) " + CONTROL_MARK.pattern.removeprefix(r"\s*") + "$")
+# Та же пометка для учётного режима: без требования текста левее — у пункта с
+# пустым телом она иначе оставалась бы в источнике саммари (Minor DS по PR #641).
+_CONTROL_TAIL_ANY = re.compile(CONTROL_MARK.pattern + "$")
 # Хвост в каноничном виде — тот, что пишет render.
 _CANON_TAIL = re.compile("(?:" + _CONTROL_TAIL.pattern.removeprefix(r"(?<=\S)").removesuffix("$") + ")?"
                          + "".join(rf"(?: {sign} \d{{4}}-\d{{2}}-\d{{2}})?" for sign in FIELDS.values()))
@@ -174,7 +182,7 @@ _ASSIGNEE = re.compile(r"^\*\*(?P<name>[^*]+)\*\*(?P<sep>[ \t]|$)")
 _HEAD = re.compile(r"^\s*(?:" + MARKER + r"\s*)?(?:" + BOX + r"\s*)?")
 
 
-def _tail(body: str) -> tuple[str, str | None, dict[str, datetime.date]]:
+def _tail(body: str, *, accounting: bool = False) -> tuple[str, str | None, dict[str, datetime.date]]:
     """(тело без хвоста, пометка контроля, поля): хвост снимается с конца по одному
     элементу, поле каждого рода и пометка — не больше одного раза.
 
@@ -183,11 +191,25 @@ def _tail(body: str) -> tuple[str, str | None, dict[str, datetime.date]]:
     (Opus C1 круга 1 по PR #621). Здесь расходимся с плагином намеренно: при дубле рода
     он срезает оба и берёт левое, а невозможную дату пропускает и читает поля левее.
     Разбор на них останавливается: render обязан вернуть строку без потерь (Opus I1 и
-    M2 круга 2 по PR #621)."""
+    M2 круга 2 по PR #621).
+
+    `accounting=True` — режим «весь учёт» для `without_statuses` (№392): пометка
+    контроля и поля снимаются целиком, дубль рода и невозможная дата — тоже: это
+    учёт, а не содержание. Каждый шаг цикла укорачивает строку (срез ДО разбора
+    даты, ошибку даты игнорируем), иначе невозможная дата зациклила бы разбор;
+    в словарь полей дубль и невозможная дата не пишутся. Строгий режим не
+    меняется — второго регэкспа нет."""
     fields: dict[str, datetime.date] = {}
     control = None
     while True:
-        if (f := _TAIL.search(body)) and _KIND[f.group(1)] not in fields:
+        if (f := _TAIL.search(body)) and (accounting or _KIND[f.group(1)] not in fields):
+            if accounting:
+                body = body[:f.start()]
+                try:
+                    fields.setdefault(_KIND[f.group(1)], datetime.date.fromisoformat(f.group(2)))
+                except ValueError:
+                    pass
+                continue
             try:
                 fields[_KIND[f.group(1)]] = datetime.date.fromisoformat(f.group(2))
             except ValueError:
@@ -196,9 +218,36 @@ def _tail(body: str) -> tuple[str, str | None, dict[str, datetime.date]]:
         elif control is None and (c := _CONTROL_TAIL.search(body)):
             control = c.group().strip()
             body = body[:c.start()]
+        elif accounting and (c := _CONTROL_TAIL_ANY.search(body)):
+            control = control or c.group().strip()
+            body = body[:c.start()]
         else:
             break
     return body, control, fields
+
+
+def without_statuses(text: str) -> str:
+    """Текст без учёта в пунктах-поручениях: символ ящика → пробел, хвост (пометка
+    контроля и все поля, включая срок) снят целиком.
+
+    Функция — только для источника саммари встречи (№392), не переписчик: `render`,
+    `parse`, `key` и `fields` читают строку строгим режимом `_tail`, где дубль рода и
+    невозможная дата остаются телом. Здесь наоборот: срок, закрытие и пометка контроля —
+    учёт ПОСЛЕ встречи, а не её содержание. Срок как содержание живёт в тексте пункта
+    («к 1 октября»). Минутки и решения, взятые из них, нормализуются так; тезисы, разбор
+    и стенограмма — как есть: там сноска `[1]` не ящик.
+
+    Трогает только пункты с ящиком за маркером списка: определение сноски «[1]: …» без
+    маркера остаётся дословно. Остальной текст строки — тоже дословно, без `render`."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        m = _ACCOUNTING.match(line)
+        if not m:
+            out.append(line)
+            continue
+        body, _, _ = _tail(line[m.end():], accounting=True)
+        out.append(m.group(1) + "[ ]" + body)
+    return "\n".join(out)
 
 
 def _canonical_tail(body: str) -> bool:
