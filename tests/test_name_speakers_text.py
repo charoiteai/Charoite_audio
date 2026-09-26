@@ -95,3 +95,19 @@ def test_diarize_names_keep_only_names_heard_in_the_talk(_ollama_маршрут�
     lines = [("speaker_0", 0.0, 1.0, "Привет"), ("speaker_1", 1.0, 2.0, "Меня зовут Павел")]
 
     assert diarize.name_speakers(CFG_DIARIZE, lines) == {"speaker_1": "Павел"}
+
+
+@pytest.mark.parametrize("ответ, реплика", [
+    ('{"speaker_0": "Павел"}', "Звонил Павелко"),                 # только внутри слова
+    ('{"speaker_0": "speaker_1"}', "Привет"),                      # метка вместо имени
+    ('{"speaker_0": "Да"}', "Да, конечно"),                        # короче трёх букв
+    ('{"speaker_0": "Павел Иванович"}', "Меня зовут Павел Иванович"),  # не одно слово
+], ids=["подстрока", "метка", "короткое", "два-слова"])
+def test_diarize_names_follow_the_same_limits(_ollama_маршруты, ответ, реплика):
+    """Правила проверки имён в CLI — все, а не только эхо образца: целым
+    словом, не метка, 3–15 букв, одно слово (выходной круг 3, DS I2/M1)."""
+    _ollama_маршруты.сценарий_чата(_чат(ответ))
+
+    lines = [("speaker_0", 0.0, 1.0, реплика), ("speaker_1", 1.0, 2.0, "Ага")]
+
+    assert diarize.name_speakers(CFG_DIARIZE, lines) == {}

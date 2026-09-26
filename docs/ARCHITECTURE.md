@@ -623,8 +623,10 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   the pair (server address, model actually sent) for ten minutes — the server
   may get fixed while a long-lived process runs — reports it once per process
   on stderr and retries the request once without `format`, relying on the
-  prompt. Speaker names take the first object (`parse_json_block`) and pass
-  the same trust guard as the rebuild path: a name nobody said is dropped.
+  prompt. Speaker names take the first object (`parse_json_block`). On the
+  rebuild path they pass the full trust guard (`speaker_names`); the
+  diarization CLI keeps only a single word of 3–15 letters that is heard in
+  the talk and is not a speaker label.
   Graph extraction stays strict — the whole answer must be one JSON object, so
   prose around it, a truncated answer or an echoed template is a named failure
   of that part, never a guess that pollutes the graph.

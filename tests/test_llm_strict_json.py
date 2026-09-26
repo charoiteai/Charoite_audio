@@ -237,6 +237,10 @@ def test_запись_реестра_стареет_и_format_пробуется
     _ollama_маршруты.сценарий_чата(чат)
     LLM(CFG).complete("в", model="тест-модель", json_format=True)
 
+    журнал.clear()
+    LLM(CFG).complete("в", model="тест-модель", json_format=True)
+    assert [("format" in т) for т in журнал] == [False], "тот же миг — запись свежая"
+
     now[0] += llm_mod.STRICT_JSON_RECHECK_S - 1
     журнал.clear()
     LLM(CFG).complete("в", model="тест-модель", json_format=True)
@@ -318,3 +322,14 @@ def test_граф_без_грамматики_не_угадывает(_ollama_м
 
     assert gu._extract(CFG, "стенограмма") is None
     assert "граф: ответ модели" in capsys.readouterr().out
+
+
+def test_граф_ответ_не_объектом_это_названный_отказ(_ollama_маршруты, capsys):
+    """Без грамматики ответ может прийти списком: наверху ждут словарь, и
+    `.items()` уронил бы весь пост-процессинг (выходной круг 3, DS I3)."""
+    import graph_updater as gu
+    _, чат = _сценарий_отказа(501, ПРИЧИНА, ответ='[{"название": "Тест"}]')
+    _ollama_маршруты.сценарий_чата(чат)
+
+    assert gu._extract(CFG, "стенограмма") is None
+    assert "не объект, а list" in capsys.readouterr().out

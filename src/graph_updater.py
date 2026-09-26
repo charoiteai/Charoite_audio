@@ -350,7 +350,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     # отдаёт в граф образец или осколок оборванного ответа.
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError as e:
         # Раньше здесь был молчаливый None, и наверху печаталось «LLM не вернула
         # валидный JSON» — из этой фразы не понять ни что случилось, ни что
@@ -360,6 +360,14 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         if raw:
             print(f"граф: хвост ответа → …{raw[-120:]}")
         return None
+    if isinstance(data, dict):
+        return data
+    # Верхний уровень — не объект (список, строка, число). Без грамматики ответ
+    # ничем не держится, а наверху ждут словарь: `.items()` в сборке частей и
+    # `.get` в main уронили бы весь пост-процессинг встречи (выходной круг 3
+    # по №419, DS I3). Это такой же названный отказ части.
+    print(f"граф: ответ модели не объект, а {type(data).__name__}; длина ответа {len(raw)} знаков")
+    return None
 
 
 # Имена узлов, ключи сравнения и метки диаризации живут в graph_names —

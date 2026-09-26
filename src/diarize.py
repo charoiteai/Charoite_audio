@@ -345,7 +345,12 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
                 continue
             name = v.strip().strip(".,!?:;«»\"'()")
             low = name.casefold()
-            if low and low not in folded_labels \
+            # те же пределы, что у speaker_names (MIN_LEN..MAX_LEN, одно слово
+            # из букв и дефиса): «Да», «Ок» и «Павел Иванович» — не имя метки
+            # (выходной круг 3 по №419, DS I2)
+            if not (3 <= len(name) <= 15 and name.replace("-", "").isalpha()):
+                continue
+            if low not in folded_labels \
                     and re.search(rf"(?<!\w){re.escape(low)}(?!\w)", heard):
                 names[k] = name
         return names
