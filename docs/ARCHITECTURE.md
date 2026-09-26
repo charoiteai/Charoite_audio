@@ -1190,7 +1190,12 @@ the end leaves the vector unchanged.
 graph that hid `Люди`, `Системы`, `Встречи` and nearly all of `Документация` —
 546 files visible out of 1172. Search no longer looks at the flag at all;
 intentionally hidden folders (`.obsidian`, `.trash`, `.git`) are filtered by
-name, which is a property the user controls and sync does not.
+name, which is a property the user controls and sync does not. The archive
+clears the flag after every meeting it writes; a bulk walk (history migration,
+retro pass) clears the whole graph only at its edges — before the first meeting
+and once at the end — and each meeting inside clears just its own folder: a pass
+over the whole graph costs about half a second, and paying it per meeting added
+about 150 s to a full backlog.
 
 **Document role.** The pipeline emits several documents per meeting, and they
 differ sharply as an answer to "what did we decide": raw material (transcript,
