@@ -29,12 +29,13 @@ def R(gold, label, p, ms=0.0):
 
 def test_summary_counts_kept_questions_and_caught_junk():
     rows = [R("ask", "ask", 0.9), R("ask", "ask", 0.8), R("ask", "skip", 0.6),
-            R("skip", "skip", 0.8), R("skip", "ask", 0.7)]
+            R("skip", "skip", 0.8), R("skip", "skip", 0.9), R("skip", "ask", 0.7),
+            R("skip", "skip", 0.6), R("skip", "skip", 0.7)]
     s = gb.summary(rows)
-    assert s["n"] == 5
-    assert s["accuracy"] == pytest.approx(0.6)
+    assert s["n"] == 8
+    assert s["accuracy"] == pytest.approx(0.75)
     assert s["ask_kept"] == pytest.approx(2 / 3)
-    assert s["skip_caught"] == pytest.approx(0.5)
+    assert s["skip_caught"] == pytest.approx(0.8)
 
 
 def test_summary_p95_is_nearest_rank():
@@ -76,6 +77,18 @@ def test_ece_is_zero_when_confidence_tells_the_truth():
 def test_ece_measures_overconfidence():
     rows = [R("skip", "ask", 0.9), R("ask", "ask", 0.9)]    # 90% уверен, прав в половине
     assert gb.ece(rows) == pytest.approx(0.4)
+
+
+def test_ece_judges_each_confidence_bucket_separately():
+    # общая корзина дала бы |0.5 - 0.75| = 0.25; по корзинам — 0.05/2 + 0.55/2
+    rows = [R("ask", "ask", 0.95), R("skip", "ask", 0.55)]
+    assert gb.ece(rows) == pytest.approx(0.3)
+
+
+def test_ece_puts_full_confidence_into_the_top_bucket():
+    # 1.0 делит корзину с 0.9: отдельная корзина дала бы 0.5 + 0.05
+    rows = [R("skip", "ask", 1.0), R("ask", "ask", 0.9)]
+    assert gb.ece(rows) == pytest.approx(0.45)
 
 
 def test_ece_measures_underconfidence_per_bucket():
