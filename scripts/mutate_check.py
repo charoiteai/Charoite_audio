@@ -716,7 +716,7 @@ def _shard_arg(value: str) -> tuple[int, int]:
     if m is None:
         raise argparse.ArgumentTypeError(f"{value!r}: ожидается K/N")
     k, n = int(m.group(1)), int(m.group(2))
-    if n < 1 or not 1 <= k <= n:
+    if not 1 <= k <= n:
         raise argparse.ArgumentTypeError(f"{value!r}: нужно 1 ≤ K ≤ N")
     return (k, n)
 
@@ -749,7 +749,7 @@ def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_
     report.write_text(text + "\n", encoding="utf-8")
     machine = shard_line_path(report)
     machine.write_text(json.dumps({"K": shard_k, "N": shard_n, "M": m, "P": p,
-                                   "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n",
+                                   "word": exit_codes.outcome(rc)}) + "\n",
                        encoding="utf-8")
 
 

@@ -675,6 +675,7 @@ def test_разбор_ловит_отказы_всех_версий(monkeypatch,
     monkeypatch.setattr(mc.ast, "parse", отказ)
     tree, why = mc.parse_source("x = 1\n")
     assert tree is None and why.startswith(type(error).__name__ + ":"), why
+    assert str(error) in why, "причина называет текст отказа, а не только его тип"
 
 
 def test_план_берёт_изменённые_строки_из_git(tmp_path):
@@ -1067,6 +1068,9 @@ def test_без_бюджета_поведение_прежнее(tmp_path, monke
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 0
     assert len(журнал) == 1 + 4 and {t for _, t in журнал} == {120}, журнал
     assert отчёт.read_text(encoding="utf-8") == "Проверено мутантов: 4 из 4, выжило: 0\n"
+    # машинная строка прогона без --shard — доля 1 из 1, весь план
+    строка = json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+    assert строка == {"K": 1, "N": 1, "M": 4, "P": 4, "word": "ok"}, строка
     out = capsys.readouterr().out
     assert "бюджет" not in out
     # счёт мутантов в строках прогона — с единицы и до конца плана
@@ -1290,6 +1294,24 @@ def test_вердикт_при_пустом_диапазоне_не_красне
     assert mc.merge_shards(шарды(tmp_path / "a", "nothing")) == 0
     assert mc.merge_shards(шарды(tmp_path / "b", "unmutable")) == 0
     assert mc.merge_shards(шарды(tmp_path / "c", "partial")) == 1
+    # оба «нечего» сразу — тоже слепое пятно, а не неполный исход
+    смесь = шарды(tmp_path / "d", "nothing")
+    for k in (3, 4):
+        (смесь / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+            {"K": k, "N": 4, "M": 0, "P": 0, "word": "unmutable"}), encoding="utf-8")
+    assert mc.merge_shards(смесь) == 0
+
+
+def test_вердикт_пишет_отчёт_и_в_новый_каталог(tmp_path):
+    """Каталог отчёта слияния создаётся вместе с родителями: артефакт CI
+    раскладывается по вложенным путям, которых до шага нет."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    (d / f"r1.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+        {"K": 1, "N": 1, "M": 2, "P": 2, "word": "ok"}), encoding="utf-8")
+    отчёт = tmp_path / "новый" / "вложенный" / "вердикт.txt"
+    assert mc.merge_shards(d, отчёт) == 0
+    assert "шарды чисты" in отчёт.read_text(encoding="utf-8")
 
 
 def test_вердикт_без_файлов_называет_причину(tmp_path, capsys):
