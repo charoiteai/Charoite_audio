@@ -18,6 +18,14 @@ python -m pip wheel --no-build-isolation --no-deps --no-index -w dist packages/c
 Готовое колесо ложится в `dist/` и содержит модули `src/charoite_graph/` и один каталог
 метаданных `charoite_graph-<версия>.dist-info`.
 
+## Параметры поиска
+
+`GraphSearch(graph_dir, embedder=…, data_dir=…, exclude=…, schema=…)`: исключения обхода — из схемы хранилища
+(`schema`, значение `charoite_graph.graph_schema.GraphSchema`) или списком (`exclude`), не оба сразу. `exclude`
+принимает имя строкой или кортеж либо список имён; множество, генератор и прочие итерируемые — отказ
+`ValueError` (порядок исключений определён), пустое имя — тоже отказ. Без обоих — умолчание пакета: архив встреч
+и копии стенограмм Чароита (умолчание уходит из пакета во второй части №422).
+
 ## Что здесь ещё не судится
 
 Метаданные (`Requires-Dist`, `Requires-Python`), проверяемый пример из README и

@@ -65,7 +65,8 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv), inv=inv)
+                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv),
+                        literals=lm.literals_measure(inv, layout), inv=inv)
     assert not problems, "\n".join(problems)
 
 
@@ -572,6 +573,12 @@ APPROVED_FIELDS = {
     "root_exemptions": ("dict", "decision", None),
     "run_contracts": ("dict", "measured", {"mode": ("str", "seed", True), "why": ("str", "seed", True),
                                            "ticket": ("str", "decision", False)}),
+    "schema_module": ("str", "decision", None),
+    "schema_values": ("str", "decision", None),
+    "folder_literals": ("list", "measured", {"rel": ("str", "measured", True), "field": ("str", "measured", True),
+                                             "literal": ("str", "measured", True),
+                                             "ticket": ("str", "decision", True)}),
+    "folder_literal_exemptions": ("dict", "decision", None),
 }
 APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
@@ -798,8 +805,12 @@ def test_regen_touches_only_what_the_declaration_lets_it():
     испорченный["run_contracts"].pop(next(k for k, c in испорченный["run_contracts"].items()
                                           if c["mode"] != "none"))
     испорченный["run_contracts"]["src/нет_такого.py"] = {"mode": "help", "why": "x"}  # и снимет лишний
+    # лишняя запись долга: замер её не находит — реген снимет, карточки живых не тронет
+    испорченный["folder_literals"] = испорченный["folder_literals"] + [
+        {"rel": "src/x.py", "field": "node_folders", "literal": "Фантом", "ticket": "№0"}]
     испорченный["generated"] = "2000-01-01T00:00Z"
-    fresh, _ = lm.regen(json.loads(json.dumps(испорченный)), graph, inv, [])
+    measured = lm.literals_measure(inv, факт)
+    fresh, _ = lm.regen(json.loads(json.dumps(испорченный)), graph, inv, [], literals=measured)
     for key, f in lm._SCHEMA.items():
         if f.cls == "decision":
             assert fresh[key] == испорченный[key], f"{key}: решение человека, реген его переписал"
@@ -807,6 +818,7 @@ def test_regen_touches_only_what_the_declaration_lets_it():
             assert fresh[key] != испорченный[key], f"{key}: объявлен замером, а реген его не пересобрал"
     assert {(e["from"], e["to"]) for e in fresh["allowed_edges"]} == set(lm.allowlist_edges(факт))
     assert set(fresh["run_contracts"]) == set(факт["run_contracts"])
+    assert {tuple(e.items()) for e in fresh["folder_literals"]} == {tuple(e.items()) for e in факт["folder_literals"]}
 
 
 def test_seed_fields_are_exactly_what_the_code_guess_writes(tmp_path, monkeypatch):
@@ -865,7 +877,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", stale_map)
 
-    def fake_regen(layout, graph, inv=None, notes=None):
+    def fake_regen(layout, graph, inv=None, notes=None, literals=None):
         layout["allowed_edges"] = [e for e in layout["allowed_edges"] if e["from"] != "x_mod"]   # черновик «чинит» запись
         return layout, [("low_mod", "top_mod")]
     monkeypatch.setattr(lm, "regen", fake_regen)
@@ -880,7 +892,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     # убери `not blocked` из main, и строка появится (обе головы круга 7)
     assert "отстал от кода" not in out, "карта не писалась — строка о её свежести недостижима"
     # без блокировки та же устаревшая карта краснеет, а пропавшая — тоже
-    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (layout, []))
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None, literals=None: (layout, []))
     lm.main(["--check"])
     assert "отстал от кода" in capsys.readouterr().out, "вне блокировки устаревшая карта — расхождение"
     stale_map.unlink()
@@ -901,7 +913,7 @@ def test_regen_does_not_write_what_the_loader_would_reject(monkeypatch, tmp_path
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", карта)
 
-    def regen_with_a_stray_field(layout, graph, inv=None, notes=None):
+    def regen_with_a_stray_field(layout, graph, inv=None, notes=None, literals=None):
         layout["allowed_edges"] = layout["allowed_edges"][1:]
         layout["allowed_edges"][0]["until"] = "2026-10-31"
         return layout, []
@@ -913,32 +925,37 @@ def test_regen_does_not_write_what_the_loader_would_reject(monkeypatch, tmp_path
     assert "загрузка отвергает" in out and "until" in out
     assert "долг №" not in out, "дельта долга — отчёт о записанном; при отказе на диске прежний долг"
     # без отказа тот же сдвиг долга печатается, и артефакт записан
-    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None, literals=None: (
         {**layout, "allowed_edges": layout["allowed_edges"][1:]}, []))
     lm.main(["--regen"])
     assert "долг №322: было 3, стало 2" in capsys.readouterr().out
     assert len(json.loads(lay.read_text(encoding="utf-8"))["allowed_edges"]) == 2
 
 
-def test_debt_is_derived_from_both_carriers_by_one_card_parser():
-    """Долг по карточкам — производная из обоих носителей: ребро против стрелок и
-    вход без пробы (`none`); карточка — поле `ticket`, разобранное одним
-    `card_of`. Хвост после номера — пояснение, а не другая карточка."""
+def test_debt_is_derived_from_every_carrier_by_one_card_parser():
+    """Долг по карточкам — производная из носителей, объявленных в `_SCHEMA`
+    полем `ticket`: ребро против стрелок, вход без пробы (`none`) и литерал имени
+    (№422). Карточка — поле `ticket`, разобранное одним `card_of`. Хвост после
+    номера — пояснение, а не другая карточка."""
     layout = _layout(allowed_edges=[{"from": "low_mod", "to": "top_mod", "ticket": "№7 (пояснение, №9 — не в счёт)"},
                                     {"from": "core_mod", "to": "top_mod", "ticket": "№12"}],
                      run_contracts={"src/cli.py": {"mode": "none", "why": "нет пробы", "ticket": "№7"},
-                                    "src/tool.py": {"mode": "help", "why": "по коду: argparse"}})
+                                    "src/tool.py": {"mode": "help", "why": "по коду: argparse"}},
+                     folder_literals=[{"rel": "src/x.py", "field": "node_folders", "literal": "Люди", "ticket": "№7"}])
+    assert set(lm.DEBT_CARRIERS) == {"allowed_edges", "run_contracts", "folder_literals"}
     долг = lm.debt_by_card(layout)
     assert list(долг) == ["№7", "№12"], "порядок — по номеру карточки, а не по строке"
-    assert долг["№7"] == ["ребро `low_mod` → `top_mod`", "вход `src/cli.py` без пробы"]
+    assert долг["№7"] == ["ребро `low_mod` → `top_mod`", "вход `src/cli.py` без пробы",
+                          "литерал `Люди` в `src/x.py` (поле `node_folders`)"]
     assert lm.debt_delta(layout, _layout(allowed_edges=layout["allowed_edges"][:1],
-                                         run_contracts=layout["run_contracts"])) == ["долг №12: было 1, стало 0"]
+                                         run_contracts=layout["run_contracts"],
+                                         folder_literals=layout["folder_literals"])) == ["долг №12: было 1, стало 0"]
     assert lm.debt_delta(layout, layout) == []
-    # в реальном артефакте долг покрывает каждое ребро и каждый вход без пробы
+    # в реальном артефакте долг покрывает каждое ребро, каждый вход без пробы и каждый литерал
     real = lm.load_layout()
     всего = sum(len(v) for v in lm.debt_by_card(real).values())
     none = sum(1 for c in real["run_contracts"].values() if c["mode"] == "none")
-    assert всего == len(real["allowed_edges"]) + none
+    assert всего == len(real["allowed_edges"]) + none + len(real["folder_literals"])
     assert "без карточки" not in lm.debt_by_card(real)
 
 
@@ -958,6 +975,7 @@ def test_one_card_format_for_the_loader_the_map_and_the_tests(ticket, card):
     "layer_overrides": ("tier3", {"layer": "graph", "why": "проба"}),
     "allowed_edges": (None, {"from": "a_mod", "to": "b_mod", "ticket": "№0"}),
     "run_contracts": ("src/daemon.py", {"mode": "none", "why": "проба", "ticket": "№0"}),
+    "folder_literals": (None, {"rel": "src/x.py", "field": "node_folders", "literal": "Люди", "ticket": "№0"}),
 }
 
 
@@ -1098,6 +1116,8 @@ def _layout(**over) -> dict:
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
          "generated": "2026-09-19T00:00Z", "run_contracts": {},
+         "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
+         "folder_literals": [], "folder_literal_exemptions": {},
          "package": "charoite_graph", "package_entry": "core_mod"}
     d.update(over)
     return d

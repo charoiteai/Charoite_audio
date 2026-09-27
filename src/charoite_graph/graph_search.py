@@ -59,6 +59,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from charoite_graph import dossier  # noqa: E402
 from charoite_graph import frontmatter  # noqa: E402
 from charoite_graph import graph_nodes  # noqa: E402
+from charoite_graph.graph_schema import GraphSchema, as_names  # noqa: E402
 from charoite_graph.model_seam import Embedder  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
@@ -784,7 +785,10 @@ class GraphSearch:
     потоков. Окружения приложения индекс не читает: каталог кэша векторов
     (`data_dir`) передаёт вызывающий, у Чароита — graphs.search_cache_dir()
     (№365: модуль графа на импорте и в конструкторе не берёт ничего вне своих
-    параметров).
+    параметров). Исключения обхода — из схемы хранилища (`schema`) или списком
+    (`exclude`); без обоих — `EXCLUDE_DIRS` (архив встреч и копии стенограмм).
+    Форму списка толкует одна дверь `graph_schema.as_names`: строка — одно имя,
+    как и в полях схемы.
 
     Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
     связей, охват обхода). После инициализации его пишет ТОЛЬКО `_publish` —
@@ -817,10 +821,17 @@ class GraphSearch:
     def __init__(self, graph_dir: pathlib.Path, *,
                  embedder: Embedder,
                  data_dir: pathlib.Path,
-                 exclude: Iterable[str] = EXCLUDE_DIRS,
+                 exclude: str | tuple[str, ...] | list[str] | None = None,
+                 schema: GraphSchema | None = None,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
-        self.exclude = tuple(exclude)
+        # Пакет берёт схему хранилища параметром (№422): исключения обхода — её;
+        # без схемы и без списка — прежнее умолчание. Два источника сразу — отказ:
+        # молча выбранный один из них был бы догадкой о намерении вызывающего.
+        if schema is not None and exclude is not None:
+            raise ValueError("исключения обхода — из схемы или списком, не оба")
+        self.exclude = as_names(schema.exclude_dirs if schema is not None
+                                else EXCLUDE_DIRS if exclude is None else exclude, "exclude")
         self._now = now
         self._embedder = embedder
         # Причина отказа — СЛОВА источника, а не бит. Политика говорит «нельзя»
