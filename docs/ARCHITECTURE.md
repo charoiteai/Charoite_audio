@@ -1062,7 +1062,11 @@ that is also another role, and `src/charoite_schema.py` holds the one
 `CHAROITE = GraphSchema(…)` value as literals. The package takes the
 schema as a parameter: `GraphSearch(schema=…)` excludes the schema's
 `exclude_dirs`, and the application door `graphs.open_search` passes
-`CHAROITE`. A separate guard in
+`CHAROITE`. One door, `graph_schema.as_names`, reads the form of a name
+list for the schema's tuple fields and for `GraphSearch(exclude=…)` alike:
+a string is one name, a tuple or a list is kept, anything else is refused;
+a schema field whose annotation is neither `str` nor `tuple[str, ...]` is a
+class error. A separate guard in
 `scripts/layout_map.py` reads the field list from the class annotations and
 the values from that call, looks for copies of those names among the string
 literals of the graph package (`package_entry`'s closure, the same set the

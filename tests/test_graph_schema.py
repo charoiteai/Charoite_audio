@@ -156,4 +156,45 @@ def test_поле_кортеж_хранится_кортежем_и_строка
     круг 2 по #654, DS C1)."""
     своя = dataclasses.replace(charoite_schema.CHAROITE, exclude_dirs=значение)
     assert своя.exclude_dirs == ждём
-    assert isinstance(своя.node_folders, tuple)
+
+
+def test_каждое_поле_кортеж_проходит_дверь_формы():
+    """Список в ЛЮБОМ поле-кортеже хранится кортежем: нормализацию проходят все
+    поля формы `tuple[str, ...]`, а не одно проверенное; у двух оставшихся полей
+    форма — строка (выходной круг 3 по #654, DS M3)."""
+    поля = [f.name for f in dataclasses.fields(GraphSchema) if f.type == "tuple[str, ...]"]
+    строки = {f.name for f in dataclasses.fields(GraphSchema)} - set(поля)
+    assert строки == {"dossier_dir", "meeting_dir"}
+    своя = dataclasses.replace(CHAROITE, **{имя: list(getattr(CHAROITE, имя)) for имя in поля})
+    assert [имя for имя in поля if type(getattr(своя, имя)) is not tuple] == []
+    assert своя == CHAROITE
+
+
+@pytest.mark.parametrize("значение", [
+    {"Черновики"}, b"Drafts", 7, None, ["Черновики", 7],
+], ids=["множество", "байты", "число", "None", "не-строка-в-списке"])
+def test_дверь_формы_отказывает_не_имени(значение):
+    """Дверь формы принимает строку, кортеж и список строк; прочее — `ValueError`
+    с именем поля: у множества нет порядка, байты рассыпались бы на числа, а
+    не-строка дошла бы до сравнения имён чужим исключением (круг 3, M2)."""
+    with pytest.raises(ValueError, match="exclude_dirs"):
+        dataclasses.replace(CHAROITE, exclude_dirs=значение)
+
+
+def test_поле_строка_принимает_только_строку():
+    """`dossier_dir` и `meeting_dir` — одно имя: кортеж там отвергается
+    обещанным `ValueError`, а не `TypeError` из `unicodedata` (круг 3, M2)."""
+    for имя in ("dossier_dir", "meeting_dir"):
+        with pytest.raises(ValueError, match=имя):
+            dataclasses.replace(CHAROITE, **{имя: (getattr(CHAROITE, имя),)})
+
+
+def test_поле_без_объявленной_формы_отказ_класса():
+    """Поле, чья аннотация не `str` и не `tuple[str, ...]`, — ошибка класса
+    (`TypeError`), а не молчаливый пропуск нормализации (круг 3, M1)."""
+    @dataclasses.dataclass(frozen=True)
+    class Шире(GraphSchema):
+        лишнее: int = 0
+
+    with pytest.raises(TypeError, match="лишнее"):
+        Шире(**_kwargs())

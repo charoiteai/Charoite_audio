@@ -124,13 +124,16 @@ def test_the_literal_guard_scans_exactly_the_package(tmp_path):
     assert sum("pkg.extra" in p for p in gate) == 1, gate
 
 
-def test_only_the_schema_module_is_taken_out_of_the_closure_rule():
-    """Из правила «модуль пакета вне замыкания» выведен только модуль схемы: файл
-    значения лежит вне пакета, и его путь ничего не выводит (выходной круг 1 по
-    #654, DS I2)."""
-    layout = _layout(schema_module="src/pkg/schema.py", schema_values="src/pkg/values.py")
-    assert lm.decision_modules(layout) == {"pkg.schema"}
-    assert lm.decision_modules(_layout(schema_module="")) == set()
+def test_the_schema_module_outside_the_entry_closure_is_a_gate_line(tmp_path):
+    """Изъятий из правила «член пакета вне замыкания входа» нет, и модуль схемы —
+    не исключение: путь-решение сторожа литералов гейт пакета не читает (выходной
+    круг 2 по #654, DS M1; мёртвый вывод изъятия снят в круге 3, DS I1)."""
+    _inv, layout = _literal_area(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "pkg" / "schema.py").write_text(_schema_source(), encoding="utf-8")
+    layout = dict(layout, schema_module="src/pkg/schema.py")
+    inv = lm.inventory(tmp_path)
+    gate = lm.package_problems(lm.import_graph(inv), layout, inv)
+    assert sum("pkg.schema" in p for p in gate) == 1, gate
 
 
 def test_debt_and_exemption_of_one_hit_are_refused_at_load():

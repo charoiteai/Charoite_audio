@@ -13,7 +13,9 @@
 `charoite_schema.CHAROITE`, а инварианты ниже отвергают схему, которой нельзя
 верить, — имя-регулярку, папку досье внутри исключения, роль в двух ролях.
 Проверки — в `__post_init__`, отказ `ValueError`: у полей НЕТ значений по
-умолчанию, и «значение Чароита» ровно одно — в `CHAROITE`.
+умолчанию, и «значение Чароита» ровно одно — в `CHAROITE`. Поле без объявленной
+формы (не `str` и не `tuple[str, ...]`) — `TypeError`: это ошибка класса, а не
+значения.
 
 Модуль — член пакета `charoite_graph`: импортирует только stdlib и членов
 пакета, окружения не знает.
@@ -73,9 +75,22 @@ def _literal_problem(value: str) -> str | None:
     return None
 
 
-def _as_names(value: object) -> tuple[str, ...]:
-    """Значение поля как кортеж имён: строка — одно имя."""
-    return (value,) if isinstance(value, str) else tuple(value)  # type: ignore[arg-type]
+def as_names(value: object, what: str) -> tuple[str, ...]:
+    """Дверь формы «имя или список имён» пакета: строка — одно имя (или путь),
+    кортеж или список строк — как есть. Её проходят и поля-кортежи схемы, и
+    параметры-списки имён у конструкторов пакета (`GraphSearch(exclude=…)`), чтобы
+    строка нигде не рассыпалась на буквы (выходные круги 2 и 3 по #654, DS C1).
+
+    Прочее — отказ `ValueError` с именем значения (`what`): у множества нет
+    порядка, и схема сравнивалась бы по-разному между процессами; байты
+    рассыпались бы на числа; не-строка внутри списка дошла бы до сравнения имён
+    чужим исключением."""
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (tuple, list)) and all(isinstance(v, str) for v in value):
+        return tuple(value)
+    raise ValueError(f"{what}: имя строкой или список имён (кортеж, список), "
+                     f"получено {type(value).__name__}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -99,14 +114,23 @@ class GraphSchema:
     meeting_link_prefixes: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        # Одна форма значения на всех читателей: поле-кортеж приходит строкой (одно
-        # имя или путь) или любой последовательностью, а хранится кортежем. Иначе
-        # форму толковал бы потребитель, и строка в `tuple()` стала бы кортежем
-        # букв, которые инварианты ниже пропускают поштучно (выходной круг 2 по
-        # #654, DS C1).
+        # Одна форма значения на всех читателей, и у каждого поля она объявлена.
+        # Поле-кортеж приходит строкой (одно имя или путь), кортежем или списком, а
+        # хранится кортежем — иначе форму толковал бы потребитель, и строка в
+        # `tuple()` стала бы кортежем букв (выходной круг 2 по #654, DS C1). Поле-
+        # строка — только строкой: кортеж там дошёл бы до `unicodedata.normalize`
+        # чужим `TypeError` (круг 3, M2). Аннотация другой формы — отказ, а не
+        # молчаливый пропуск нормализации (круг 3, M1).
         for поле in dataclasses.fields(self):
+            value = getattr(self, поле.name)
             if поле.type == "tuple[str, ...]":
-                object.__setattr__(self, поле.name, _as_names(getattr(self, поле.name)))
+                object.__setattr__(self, поле.name, as_names(value, поле.name))
+            elif поле.type == "str":
+                if not isinstance(value, str):
+                    raise ValueError(f"{поле.name}: одно имя строкой, получено {type(value).__name__}")
+            else:
+                raise TypeError(f"{поле.name}: форма {поле.type!r} не объявлена — "
+                                f"поле схемы либо str, либо tuple[str, ...]")
         self._check_names()
         self._check_literals()
         self._check_roles()
@@ -114,7 +138,7 @@ class GraphSchema:
     def _check_names(self) -> None:
         """Инвариант 1: форма имени — у полей-имён и у каждого сегмента путей."""
         for имя in _NAME_FIELDS:
-            for value in _as_names(getattr(self, имя)):
+            for value in as_names(getattr(self, имя), имя):
                 беда = _name_problem(value)
                 if беда:
                     raise ValueError(f"{имя}: {value!r} — {беда}")
@@ -127,14 +151,14 @@ class GraphSchema:
     def _check_literals(self) -> None:
         """Инвариант 2: сырьё и головы — литералы без меток регулярки."""
         for имя in _LITERAL_FIELDS:
-            for value in _as_names(getattr(self, имя)):
+            for value in as_names(getattr(self, имя), имя):
                 беда = _literal_problem(value)
                 if беда:
                     raise ValueError(f"{имя}: {value!r} — {беда}")
 
     def _names(self, имя: str) -> frozenset[str]:
         """Нормализованные имена роли — и для строки-папки, и для кортежа."""
-        return frozenset(_norm(v) for v in _as_names(getattr(self, имя)))
+        return frozenset(_norm(v) for v in as_names(getattr(self, имя), имя))
 
     def _check_roles(self) -> None:
         """Инварианты 3–7: подмножества, членство, досье против исключений,
