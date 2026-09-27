@@ -2332,8 +2332,9 @@ def main():
             msg = drops.dropped()
             if msg and (reporter[0] is None or not reporter[0].is_alive()):
                 reporter[0] = threads.spawn(emit_error, args=(msg,), name="frame-drop-report",
-                                            role="meeting",
+                                            role="meeting", start=False,
                                             detached="глашатай переполнения очереди живёт, пока живо подключение")
+                reporter[0].start()
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})

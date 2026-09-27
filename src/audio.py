@@ -253,7 +253,8 @@ class TapStreamCapture:
         self._stop_flag.clear()
         self._thread = threads.spawn(
             self._pump_file, args=(stream, down), name=f"appstream-{self.label}",
-            role="audio")
+            role="audio", start=False)
+        self._thread.start()
 
     def _pump_file(self, stream, down):
         # 0.1 с исходного потока за чтение: тот же темп, что блоки PortAudio.
@@ -1073,7 +1074,9 @@ class AudioHub:
                 self._warn_no_system_channel(**self._system_origin, start_error=short)
             else:
                 self._announce_loss(lbl, f"канал не открылся при старте: {short}", died=False)
-        self._pump_thread = threads.spawn(self._pump, name="audio-pump", role="audio")
+        # ручка — до старта: здоровье помпы читает её, пока поток уже бежит
+        self._pump_thread = threads.spawn(self._pump, name="audio-pump", role="audio", start=False)
+        self._pump_thread.start()
 
     def stop(self):
         self._running = False

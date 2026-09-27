@@ -762,13 +762,19 @@ def _корень_остаётся_временным(request, _корень_д�
         assert not беда, беда
 
 
+#: Общий бюджет ожидания свежих потоков продукта после теста.
+THREAD_WAIT_S = 2.0
+
+
 @pytest.fixture(autouse=True)
 def _потоки_продукта_не_брошены():
     """Поток продукта, брошенный тестом, обязан быть виден и назван.
 
     Снимок реестра (`threads.ours()`) на входе, разница на выходе: свежие
-    НЕ-`detached` потоки ждутся `join` с общим бюджетом в 1 с, живые после
-    бюджета красят тест именами и ролями. `detached` — поток, который
+    НЕ-`detached` потоки ждутся `join` с общим бюджетом `THREAD_WAIT_S`, живые
+    после бюджета красят тест именами и ролями. Приговор говорит о бюджете, а не
+    о свойстве потока: под `-n 4` и нагрузкой честный поток бывает медленнее
+    (выходной круг 1 по #658, DS M2). `detached` — поток, который
     сознательно живёт до конца процесса (демон своих слоёв не ждёт, консоль —
     прогрева): причина уже названа в коде, и тест за него не отвечает.
 
@@ -783,12 +789,13 @@ def _потоки_продукта_не_брошены():
     yield
     fresh = [t for t in threads.ours() if t not in before]
     waited = [t for t in fresh if (threads.describe(t) or ("", None))[1] is None]
-    deadline = time.monotonic() + 1.0
+    deadline = time.monotonic() + THREAD_WAIT_S
     for thread in waited:
         thread.join(max(0.0, deadline - time.monotonic()))
     alive = [t for t in waited if t.is_alive()]
     if alive:
-        перечень = "; ".join(f"{t.name} ({threads.describe(t)[0]})" for t in alive)
-        твои = sorted({threads.describe(t)[0] for t in alive})
-        pytest.fail(f"потоки продукта пережили тест и не объявлены detached: {перечень} "
-                    f"— роли {', '.join(твои)}; дождись их в тесте или назови причину detached")
+        роль = {t: (threads.describe(t) or ("?", None))[0] for t in alive}
+        перечень = "; ".join(f"{t.name} ({роль[t]})" for t in alive)
+        pytest.fail(f"потоки продукта не завершились за {THREAD_WAIT_S:g} с ожидания после теста "
+                    f"и не объявлены detached: {перечень} — роли {', '.join(sorted(set(роль.values())))}; "
+                    f"дождись их в тесте или назови причину detached")

@@ -45,12 +45,75 @@ def test_args_и_kwargs_доходят_до_цели():
         thread.join(2.0)
 
 
-def test_пустое_имя_и_чужая_роль_это_отказ():
-    """Имя и роль обязательны — отказ ДО старта, а не молчаливый поток."""
+@pytest.mark.parametrize("door", ["spawn", "timer"])
+@pytest.mark.parametrize("name, role", [("", "console"), ("probe", "чужой")], ids=["без-имени", "чужая-роль"])
+def test_отказ_двери_до_старта_и_без_регистрации(monkeypatch, door, name, role):
+    """Имя и роль обязательны — отказ ДО старта: поток не построен, не запущен
+    и в реестр не попал. Одного факта исключения мало: отказ после `start()`
+    оставил бы бегущий незарегистрированный поток (выходной круг 1 по #658, DS M3)."""
+    построено: list = []
+
+    class Шпион:
+        def __init__(self, *a, **kw):
+            построено.append(self)
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr(threads.threading, "Thread", Шпион)
+    monkeypatch.setattr(threads.threading, "Timer", Шпион)
+    before = list(threads._registry)
     with pytest.raises(ValueError):
-        threads.spawn(lambda: None, name="", role="console")
-    with pytest.raises(ValueError):
-        threads.spawn(lambda: None, name="probe", role="чужой")
+        if door == "spawn":
+            threads.spawn(lambda: None, name=name, role=role)
+        else:
+            threads.timer(1.0, lambda: None, name=name, role=role)
+    assert построено == [], "поток построен до проверки имени и роли"
+    assert list(threads._registry) == before, "отказанный поток попал в реестр"
+
+
+def test_реестр_не_держит_поток_живым():
+    """Ключ реестра слабый: отработавший поток уходит вместе с последней
+    ссылкой, а не копится с замыканиями встречи (выходной круг 1 по #658, DS I3)."""
+    import gc
+    import weakref
+    thread = threads.spawn(lambda: None, name="слабый", role="console")
+    thread.join(2.0)
+    ref = weakref.ref(thread)
+    assert thread not in threads.ours()
+    del thread
+    gc.collect()
+    assert ref() is None, "реестр держит отработавший поток"
+
+
+def test_start_false_регистрирует_без_старта():
+    """`start=False`: поток уже в реестре и с ролью, но ещё не бежит — ручку на
+    него владелец кладёт до старта (выходной круг 1 по #658, DS M1)."""
+    ran = threading.Event()
+    thread = threads.spawn(ran.set, name="отложенный", role="audio", start=False)
+    try:
+        assert threads.describe(thread) == ("audio", None)
+        assert not thread.is_alive() and not ran.is_set(), "поток стартовал без старта"
+        thread.start()
+        assert ran.wait(2.0)
+    finally:
+        if thread.is_alive() or thread.ident is not None:
+            thread.join(2.0)
+
+
+def test_у_пакета_поиска_один_свой_поток_и_он_назван():
+    """Пакет поиска — отдельный дистрибутив, реестра приложения у него нет, и
+    судья швов освобождает файл целиком. Поэтому поток в нём — один и
+    перечислен: второй `threading.Thread` в файле краснит здесь, а не живёт
+    амнистией файлу (выходной круг 1 по #658, DS I2)."""
+    import ast
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent / "src" / "charoite_graph" / "graph_search.py"
+    calls = [n for n in ast.walk(ast.parse(src.read_text(encoding="utf-8")))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in ("Thread", "Timer")]
+    names = [next((k.value.value for k in c.keywords if k.arg == "name"), None) for c in calls]
+    assert names == ["graph-search-refresh"], names
 
 
 def test_роли_перечислены_кортежем():

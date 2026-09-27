@@ -62,15 +62,22 @@ def _remember(thread: threading.Thread, role: str, detached: str | None) -> None
 
 def spawn(target: Callable[..., Any], *, name: str, role: str,
           args: tuple = (), kwargs: Mapping[str, Any] | None = None,
-          daemon: bool = True, detached: str | None = None) -> threading.Thread:
+          daemon: bool = True, detached: str | None = None,
+          start: bool = True) -> threading.Thread:
     """Завести поток продукта: `threading.Thread` через атрибут модуля (тесты
     `tests/test_audio_capture.py` подменяют `threading.Thread`), запомнить роль
-    и стартовать. `RuntimeError` старта летит наружу — его ловит вызывающий."""
+    и стартовать. `RuntimeError` старта летит наружу — его ловит вызывающий.
+
+    `start=False` — поток зарегистрирован, стартует вызывающий: когда ручку на
+    поток читают другие (здоровье помпы, «один глашатай за раз»), она ложится в
+    состояние владельца ДО того, как поток побежал (выходной круг 1 по #658,
+    DS M1)."""
     _check(name, role)
     thread = threading.Thread(target=target, name=name, args=args,
                               kwargs=dict(kwargs) if kwargs else {}, daemon=daemon)
     _remember(thread, role, detached)
-    thread.start()
+    if start:
+        thread.start()
     return thread
 
 
