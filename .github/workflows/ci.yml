@@ -158,9 +158,19 @@ jobs:
     # Потолок job — сумма потолков шагов, а бюджет мутатора плюс худший прогон
     # набора укладывается в потолок своего шага (сторож — tests/test_workflows.py,
     # №395). Без этого GitHub обрывал job на 40-й минуте вместе с отчётом (#625: 34
-    # из 40), и «что проверено» не доезжало никуда.
-    timeout-minutes: 75
+    # из 40), и «что проверено» не доезжало никуда. 2 + 3 + 12 + 6 + 50 + 1 + 2
+    # (артефакт шарда) = 76, плюс минута запаса (CEILING_MARGIN).
+    timeout-minutes: 77
     if: github.event_name == 'pull_request'
+    # Весь план — четырьмя шардами, без среза (№441): один прогон с `--max 40`
+    # проверял 28 из 54 (#647) и оставлял «проверено не всё» жёлтым, а полный прогон
+    # уезжал на машину владельца на час. Шард — `i % N`, каждый со своим бюджетом;
+    # судит не шаг шарда, а job `mutation verdict` по машинным строкам всех четырёх.
+    # Число шардов — здесь и в `--shard …/4`; сторож держит их равными.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -194,38 +204,83 @@ jobs:
       # Обходных флагов нет: без данных владельца гвард занятости молчит сам
       # (`machine_busy` на голом каталоге пуст — замер 22.09), а флаг «владельца
       # здесь нет» на машине владельца работал как `--force` (круг 1 по №339).
-      # `--max 40`: прогон #605 при --max 20 — 9 минут на 20 мутантов (~27 с
-      # каждый); на 3fdbbc2 при --max 30 срезано 5. Бюджет `--budget-s` считается от старта
-      # мутатора и покрывает базовый прогон: при нехватке мутатор сам
-      # останавливается с исходом partial и отчётом «проверено K из M» (№395).
+      # `--max all`: срез в шарде вернул бы «проверено не всё». Бюджет `--budget-s`
+      # считается от старта мутатора и покрывает базовый прогон шарда: при нехватке
+      # мутатор сам останавливается с исходом partial и отчётом «проверено K из M»
+      # (№395), а вердикт читает это как красный. Шаг сам не краснеет: слово исхода
+      # и счёт шарда уходят в `<report>.json`, их судит job вердикта.
       - name: mutate changed lines
         timeout-minutes: 50
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SHARD: ${{ matrix.shard }}
+          # мутатор — точка входа: корень данных называется явно, а не угадывается
+          # по месту скрипта (№440); у раннера данных владельца нет, корень — сам checkout
+          CHAROITE_ROOT: ${{ github.workspace }}
         run: |
-          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --max 40 --timeout 120 --budget-s 2400 --report mutation-report.txt || rc=$?
-          # Исход — одно слово от канона, а не цифра и не grep по выводу: «судили
-          # подмножество» раньше было видно только в логе (круг 3 по №339, DS I1).
-          case "$(python -c "import sys; sys.path.insert(0,'src'); import exit_codes; print(exit_codes.outcome($rc))")" in
-            ok)      echo "::notice::мутация: проверено всё, выживших нет" ;;
-            nothing) echo "::notice::мутировать было нечего — в диапазоне нет наших python-строк" ;;
-            partial) echo "::warning::мутация проверила НЕ ВСЁ (срез потолком или прерывание) — в логе видно, сколько" ;;
-            # строки в диапазоне есть, а мутантов ноль: не «нечего проверять», а слепое
-            # пятно мутатора — предупреждение, а не зелёная тишина (№386)
-            unmutable) echo "::warning::строки в диапазоне есть, а мутировать в них нечего — в логе видно, из чего собран пустой план" ;;
-            # план был, а не судился ни один мутант: гейт не проверил ничего — красный,
-            # а не жёлтый, как «судили часть» (DeepSeek по PR #637)
-            unjudged) echo "::error::мутация не проверила ни одного мутанта при непустом плане — бюджет съела база или ни один не применился, см. сводку"; exit $rc ;;
-            *)       exit $rc ;;
-          esac
+          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "mutation-report-$SHARD.txt" || rc=$?
+          echo "шард $SHARD: код мутатора $rc — судит job mutation verdict"
       # Отчёт пишется после каждого мутанта, поэтому доезжает и тогда, когда шаг
       # оборвал свой потолок: итог — в сводку прогона, а не только в лог.
       - name: mutation report
         if: always()
         timeout-minutes: 1
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
-          if [ -f mutation-report.txt ]; then
-            { echo "### Мутация"; echo '```'; cat mutation-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "mutation-report-$SHARD.txt" ]; then
+            { echo "### Мутация, шард $SHARD"; echo '```'; cat "mutation-report-$SHARD.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### Мутация: отчёта нет — мутатор не дошёл до первой записи" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Мутация, шард $SHARD: отчёта нет — мутатор не дошёл до первой записи" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Отчёт и машинная строка шарда — вердикту. `if: always()`: шаг, оборванный
+      # потолком, отчёт на диске оставил, и вердикт обязан его увидеть, а не «нет
+      # отчёта» (круг 1 по №441, DS I6). Имя артефакта — с номером шарда: одинаковые
+      # имена в матрице затирали бы друг друга.
+      - name: shard artifact
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutation-report-${{ matrix.shard }}.txt*
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Вердикт мутаций — один на PR, по машинным строкам всех шардов (№441). Правило —
+  # функция мутатора `merge_shards`, а не разбор отчётов здесь: отчётов ровно N,
+  # у всех один N, сумма M равна P; зелёный — все непустые шарды `ok`; P = 0 —
+  # «мутировать нечего». Нет отчёта шарда — красный.
+  mutation-verdict:
+    name: mutation verdict
+    needs: mutation
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        timeout-minutes: 3
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        timeout-minutes: 2
+        with:
+          pattern: mutation-shard-*
+          merge-multiple: true
+          path: shards
+      - name: verdict
+        timeout-minutes: 1
+        run: python scripts/mutate_check.py --merge-shards shards --report mutation-verdict.txt
+      - name: verdict summary
+        if: always()
+        timeout-minutes: 1
+        run: |
+          if [ -f mutation-verdict.txt ]; then
+            { echo "### Мутация: вердикт по шардам"; echo '```'; cat mutation-verdict.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Мутация: вердикта нет — см. лог шага verdict" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -105,8 +105,10 @@ def test_the_readers_list_is_the_repository_itself():
 
 #: Читатели СЛОВА исхода — ветки shell-`case` по `outcome`. Разбор python-импортов
 #: выше их не видит: ветка, потерянная при ребейзе, тихо отправляла бы новый исход
-#: в `*)`, а опечатка в слове — туда же (DS M3 круга 1 по #630).
-CASE_READERS = ("scripts/preflight.sh", ".github/workflows/ci.yml")
+#: в `*)`, а опечатка в слове — туда же (DS M3 круга 1 по #630). CI слово больше не
+#: разбирает: шаг шарда пишет его в машинную строку, судит `mutate_check.merge_shards`
+#: (№441) — python-читатель, его ветки держат тесты мутатора.
+CASE_READERS = ("scripts/preflight.sh",)
 
 
 def _case_words(text: str) -> set[str]:

@@ -308,10 +308,11 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
 
 
 #: Jobs, у которых потолок job — сумма потолков шагов, а повторы PortAudio — свой
-#: худший случай. Оба гоняют один и тот же цикл apt: правило, применённое к одной
-#: копии цикла, другую оставляло обрываться посреди второй попытки (DeepSeek по
-#: PR #637). Job без такого цикла сюда не входит: потолок шага там — не арифметика.
-CEILED_JOBS = ("tests", "mutation")
+#: худший случай. `tests` и `mutation` гоняют один и тот же цикл apt: правило,
+#: применённое к одной копии цикла, другую оставляло обрываться посреди второй
+#: попытки (DeepSeek по PR #637). `mutation-verdict` цикла не имеет, но его потолок —
+#: тоже сумма шагов: без неё обрыв job прятал бы вердикт шардов (№441).
+CEILED_JOBS = ("tests", "mutation", "mutation-verdict")
 
 
 def _retry_worst_s(run: str) -> int:
@@ -384,6 +385,36 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
     assert str(summary[0]["run"]).count(report.group(1)) >= 2, (
         f"шаг сводки не читает {report.group(1)} — отчёт мутатора не доедет до сводки")
 
+
+
+def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
+    """Весь план шардами (№441): число шардов матрицы равно N в `--shard …/N`, срез
+    `--max` снят (`all`), артефакт шарда уезжает и при оборванном шаге (`if:
+    always()`), а вердикт — один job после всех шардов, тоже при их провале, и
+    судит его `mutate_check --merge-shards`, а не разбор текста в yaml. Разошедшееся
+    N дало бы «все отчёты зелёные» при непокрытой части плана."""
+    jobs = _load("ci.yml")["jobs"]
+    job = jobs["mutation"]
+    shards = job["strategy"]["matrix"]["shard"]
+    assert job["strategy"].get("fail-fast") is False, "упавший шард не должен отменять соседей"
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    run = str(step["run"])
+    n = re.search(r'--shard\s+"?\$SHARD/(\d+)"?', run)
+    assert n, "шаг мутатора обязан называть --shard $SHARD/N"
+    assert int(n.group(1)) == len(shards) and sorted(shards) == list(range(1, len(shards) + 1)), (
+        f"шардов в матрице {shards}, а мутатор делит на {n.group(1)}")
+    assert step.get("env", {}).get("SHARD") == "${{ matrix.shard }}", "номер шарда — из матрицы, через env"
+    assert re.search(r"--max\s+all\b", run), "срез --max в шарде снова прятал бы часть плана"
+    uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(uploads) == 1 and uploads[0].get("if") == "always()", (
+        "артефакт шарда обязан уехать и после оборванного шага: иначе вердикт видит «нет отчёта»")
+    assert "${{ matrix.shard }}" in str(uploads[0]["with"]["name"]), "одинаковые имена в матрице затирают друг друга"
+    verdict = jobs["mutation-verdict"]
+    assert verdict["needs"] == "mutation"
+    assert "always()" in verdict["if"] and "pull_request" in verdict["if"], (
+        "вердикт обязан идти и при провале шардов, и только на PR, как сами шарды")
+    judge = [s for s in verdict["steps"] if "--merge-shards" in str(s.get("run", ""))]
+    assert len(judge) == 1, "судья шардов — один шаг `mutate_check.py --merge-shards`"
 
 # ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
 #
