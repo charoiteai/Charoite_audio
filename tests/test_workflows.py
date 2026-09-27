@@ -446,3 +446,14 @@ def test_ruff_engine_version_is_the_same_in_ci_and_pre_commit():
     hooks = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
     rev = next(r["rev"] for r in hooks["repos"] if "ruff-pre-commit" in r["repo"])
     assert rev.removeprefix("v") == str(ci), (rev, ci)
+
+
+def test_nightly_installs_by_the_ci_pins():
+    # Ночь ставит pytest, pytest-timeout и setuptools по своим копиям пинов, а тест
+    # колеса пакета графа сверяет setuptools с ci.yml (№427): разъехавшиеся копии
+    # дали бы красную ночь со ссылкой не на тот файл (DS I2 выхода по части 0 №427).
+    ci, night = _load("ci.yml")["env"], _load("nightly.yml")["env"]
+    used = set(re.findall(r"\$\{(\w+_VERSION)\}", (WF / "nightly.yml").read_text(encoding="utf-8")))
+    assert used, "ночь ставит пакеты без пинов"
+    assert used <= night.keys(), f"пин без объявления в env nightly.yml: {sorted(used - night.keys())}"
+    assert {k: night[k] for k in used} == {k: ci.get(k) for k in used}

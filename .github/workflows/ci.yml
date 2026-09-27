@@ -33,6 +33,13 @@ env:
   # Тесты поднимают настоящие потоки и ждут их join: один зависший
   # съедал бы весь потолок джоба, а в логе не было бы видно, какой.
   PYTEST_TIMEOUT_VERSION: "2.4.0"
+  # Известный setuptools в тестовом venv: колесо пакета графа тест собирает
+  # офлайн, без изоляции (`pip wheel --no-build-isolation`), то есть
+  # setuptools окружения, и сверяет его версию с этим пином (№427, часть 1). Сборку
+  # самой дистрибуции (`pip install .`) пин не трогает — у неё изоляция и
+  # свой [build-system]. Пара с nightly.yml: pytest, pytest-timeout,
+  # setuptools; остальные пины живут только здесь. Dependabot их не видит.
+  SETUPTOOLS_VERSION: "83.0.0"
 
 jobs:
   lint:
@@ -130,7 +137,7 @@ jobs:
           exit 1
       - name: Deps
         timeout-minutes: 6
-        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
       # замер: около 4 минут (3:55–3:57 на #633, 26.09)
       - name: pytest
         timeout-minutes: 12
@@ -178,7 +185,7 @@ jobs:
           exit 1
       - name: Deps
         timeout-minutes: 6
-        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
       # Единственная проверка, которая отвечает «а тест вообще держит что-нибудь»:
       # в изменённые строки возвращается дефект, и прогон обязан покраснеть.
       # Покрытие на это не отвечает — тест без единой проверки покрывает строку
