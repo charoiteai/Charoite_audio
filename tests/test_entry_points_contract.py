@@ -1191,8 +1191,11 @@ def _wheel_group_problems(sources: dict[str, str]) -> list[str]:
             if not node.name.startswith("test"):
                 out.append(f"{rel}:{node.lineno}: {node.name} берёт wheel_path, но не тест — фикстура-посредник")
                 continue
+            # имя группы — позиционно или `name=`: pytest принимает обе формы
             marked = any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "xdist_group"
-                         and [getattr(a, "value", None) for a in d.args] == ["wheel"] for d in node.decorator_list)
+                         and [getattr(a, "value", None) for a in d.args]
+                         + [getattr(k.value, "value", None) for k in d.keywords if k.arg == "name"] == ["wheel"]
+                         for d in node.decorator_list)
             if not marked:
                 out.append(f"{rel}:{node.lineno}: {node.name} без метки xdist_group(\"wheel\")")
     return out
@@ -1210,6 +1213,8 @@ def test_the_wheel_group_guard_reds_on_each_form() -> None:
     `usefixtures` и `getfixturevalue`; с меткой — чисто."""
     good = '@pytest.mark.xdist_group("wheel")\ndef test_a(wheel_path):\n    pass\n'
     assert _wheel_group_problems({"t.py": good}) == []
+    named = '@pytest.mark.xdist_group(name="wheel")\ndef test_a(wheel_path):\n    pass\n'
+    assert _wheel_group_problems({"t.py": named}) == []
     cases = {
         "def test_a(wheel_path):\n    pass\n": "без метки",
         '@pytest.mark.xdist_group("other")\ndef test_a(wheel_path):\n    pass\n': "без метки",
