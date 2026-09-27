@@ -607,7 +607,23 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   python pipeline goes through it, and every embedding call through the vector
   door `embed_door` (batches, whole-call deadline and response parsing live
   there; the model layer only supplies the address, the name and the
-  transport); no module speaks the wire format itself.
+  transport); no module speaks the wire format itself. Every request carries
+  `truncate: false`, so Ollama answers 400 on an input it cannot fit instead
+  of silently cutting it (measured 27.09: without the field bge-m3 answered 200
+  at 2102 tokens while `prompt_eval_count` showed 2048 — the tail never reached
+  the vector). A server that ignores the field and cuts on its own stays
+  invisible: its 200 looks like an honest one. On 400 the door retries the same
+  batch with `truncate: true`; when the retry returns vectors, the door says
+  once per address and model which text of the batch was longest and how many
+  characters it had (a refusal body that does not name the length gets a
+  neutral line: the retry returned vectors, and if the refusal was about
+  length, the tail never reached the vector), and a call in which no batch
+  got vectors from a truncating retry clears that episode, whichever way the
+  call ends. The limit is
+  the runner's physical batch of 2048 tokens, measured 26.09 (see *Chunks, not
+  files* under "How search actually works"); `options.num_ctx` does not move
+  it: `/api/show` claims `bert.context_length = 8192` while the server cuts at
+  2048.
   The model always comes from the config: the 14.08 audit found four modules
   still calling a hardcoded model long after the config had moved on. The
   gateway speaks two engines, picked by `llm.engine`: `ollama` (the default)
