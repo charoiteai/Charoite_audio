@@ -27,7 +27,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import dossier  # noqa: E402
-import embed_door  # noqa: E402
+import once  # noqa: E402
 import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
 import model_seam  # noqa: E402
@@ -814,7 +814,7 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     """
     import llm
 
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     # рубильник офлайна проверяется раньше allow_remote: на машине, где он
     # взведён, причина была бы другой, и тест краснел бы от окружения (GLM I2)
     for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
