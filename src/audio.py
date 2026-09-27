@@ -17,6 +17,7 @@ import sounddevice as sd
 import meeting_stamp
 import channel_labels
 import stt_runtime
+import threads
 
 from charoite_paths import resolve_root
 
@@ -250,9 +251,9 @@ class TapStreamCapture:
         down = (_Downsampler(src_sr, self.samplerate)
                 if src_sr != self.samplerate else None)
         self._stop_flag.clear()
-        self._thread = threading.Thread(
-            target=self._pump_file, args=(stream, down),
-            daemon=True, name=f"appstream-{self.label}")
+        self._thread = threads.spawn(
+            self._pump_file, args=(stream, down), name=f"appstream-{self.label}",
+            role="audio", start=False)
         self._thread.start()
 
     def _pump_file(self, stream, down):
@@ -1073,7 +1074,8 @@ class AudioHub:
                 self._warn_no_system_channel(**self._system_origin, start_error=short)
             else:
                 self._announce_loss(lbl, f"канал не открылся при старте: {short}", died=False)
-        self._pump_thread = threading.Thread(target=self._pump, daemon=True, name="audio-pump")
+        # ручка — до старта: здоровье помпы читает её, пока поток уже бежит
+        self._pump_thread = threads.spawn(self._pump, name="audio-pump", role="audio", start=False)
         self._pump_thread.start()
 
     def stop(self):
@@ -1091,11 +1093,9 @@ class AudioHub:
         # выхода процесса (критика DS r1 по #557). Все каналы разом, один потолок
         # на всех: грейс приложения до terminate — секунды.
         skip = {c.label for c in self.captures if self._busy(c.label)}
-        workers = [(c, threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
-                                        name=f"stop-{c.label}"))
+        workers = [(c, threads.spawn(self._quiet_stop, args=(c,), name=f"stop-{c.label}",
+                                     role="audio"))
                    for c in self.captures if c.label not in skip]
-        for _c, w in workers:
-            w.start()
         deadline = time.monotonic() + self.STOP_TIMEOUT
         for c, w in workers:
             w.join(max(0.0, deadline - time.monotonic()))
@@ -1548,11 +1548,10 @@ class AudioHub:
                 if restarting is not None:
                     restarting.discard(c.label)
 
-        worker = threading.Thread(target=run, daemon=True, name=f"restart-{c.label}")
         if restarting is not None:
             restarting.add(c.label)
         try:
-            worker.start()
+            worker = threads.spawn(run, name=f"restart-{c.label}", role="audio")
         except RuntimeError as exc:           # потоки исчерпаны — тот же класс, что CPU-голодание 20.07
             if restarting is not None:
                 restarting.discard(c.label)
