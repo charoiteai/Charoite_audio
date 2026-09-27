@@ -132,6 +132,11 @@ sufler:
   cloud_live_model: claude-haiku-4-5
 
   fast_trigger: true      # 通过流式 STT 提前检测问题（如已启用）
+  # 影子模式的决策门：每次 ⚡ 旁由本地决策模型判断是否真的是问题，并把判断和
+  # 回答结果写入 logs/daemon.err.log（不含发言文本）。不做任何决定，只为
+  # scripts/gate_bench.py shadow 积累数据。需要 models/nli/ 中的 NLI 模型或
+  # models/decision/question_gate/ 中训练好的头部。目前假设句为俄语。
+  decision_gate_shadow: false
   live_diarize: true      # 实时「说话人 1/2/…」标签
   live_diarize_threshold: 0.45
   live_dialog_markup: true  # 轻量模型在段落内区分发言

@@ -81,6 +81,15 @@
   model explicitly (the fast trigger hears it in the stream before it
   reaches the transcript), and a model refusal no longer mutes a repeat of
   the same question for the rest of the meeting.
+- **Decision gate in shadow (research, opt-in)** — `sufler.decision_gate_shadow`.
+  Next to every ⚡ a local decision model (a trained ONNX head in
+  `models/decision/question_gate/`, otherwise zero-shot over the NLI model
+  already in `models/nli/`) judges whether it was a real question and logs
+  the verdict with the answer outcome to `logs/daemon.err.log` — label,
+  confidence and latency, never the utterance text or a hash of it. It
+  decides nothing: `scripts/gate_bench.py shadow` turns those lines into
+  "model refusals it would have saved" vs "answers it would have lost" per
+  confidence threshold. Research note: docs/research/decision-gate.md.
 - **Cloud answer (☁️, opt-in)** — the same question goes to Claude in
   parallel (your subscription, `claude` CLI): local is instant, cloud is
   deeper 10-20 s later. Off by default — and off on every path: the switch
