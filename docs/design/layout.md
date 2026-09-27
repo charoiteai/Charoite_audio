@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 75.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 76.
 
 ## Слои и направление стрелок
 
@@ -11,7 +11,7 @@
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 10): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
-- **audio** (зависит от: base, runtime; модулей 9): `audio`, `channel_labels`, `diarize`, `diarize_live`, `frame_drops`, `owner_voice`, `stt`, `stt_runtime`, `voice_pitch`
+- **audio** (зависит от: base, runtime; модулей 10): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `owner_voice`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 25): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
@@ -189,6 +189,7 @@
 - `src/daemon.py` ← SECURITY.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md
 - `src/decision_gate.py` ← docs/research/decision-gate.md
 - `src/deps.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
+- `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md
 - `src/graph_links.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
