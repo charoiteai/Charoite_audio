@@ -1017,7 +1017,9 @@ area that names an entry point. Lazy imports inside functions count. The map
 by the same gate, and never edited by hand. Not import-linter: it needs an importable package, and a flat folder of
 modules importing each other by short names is not one. Later phases move the
 data root out of `charoite_paths` (№321), cut `graph_updater` (№322) and only
-then move files into `packages/` (№323).
+then move the graph modules into `src/charoite_graph/` — one batch form,
+`src/<package>/…`, decided 26.09 (№323, №424); `packages/` holds distribution
+metadata only (№427).
 
 ## Stopping a recording
 
@@ -1347,9 +1349,9 @@ itself lies (`<root>/src/charoite_paths.py` next to `<root>/scripts/`,
 checked on import);
 `code_root(__file__)` only verifies that the caller belongs to that tree.
 Deriving it from each caller's position held while every caller sat one level
-below the root: a module moved into `packages/<dist>/src/<pkg>/` would have got
-`packages/<dist>/` as the code root and `packages/<dist>/src/` as the data
-root (№331).
+below the root: a module moved into a package, `src/<pkg>/x.py`, would have got
+the package directory as the code root and the same directory as the data root
+(№331; one batch form — №424).
 
 The answer is asked for, never remembered. `ROOT = resolve_root(__file__)` at
 module level — or the same line as a class field — looks like a call to the
