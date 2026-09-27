@@ -383,3 +383,41 @@ def test_shadow_refuses_unknown_outcome_at_once():
 ])
 def test_no_shadow_when_nothing_or_nobody_to_judge(question, dec):
     assert dg.start_shadow(question, dec, _Log()) is None
+
+
+def test_default_head_dir_follows_the_data_root():
+    import charoite_paths
+
+    d = dg.default_head_dir()
+    assert d == charoite_paths.resolve_root(dg.__file__) / "models" / "decision" / "question_gate"
+
+
+def test_load_head_wires_meta_truncation_and_session(tmp_path, monkeypatch):
+    import onnxruntime
+    import tokenizers
+
+    (tmp_path / "labels.json").write_text(
+        '{"labels": ["skip", "ask"], "temperature": 2.0, "max_len": 64}', encoding="utf-8")
+    seen = {}
+
+    class Tok(_Tokenizer):
+        @classmethod
+        def from_file(cls, path):
+            seen["tokenizer"] = path
+            return cls()
+
+        def enable_truncation(self, max_length):
+            seen["max_length"] = max_length
+
+    def session(path, opts, providers):
+        seen["model"], seen["threads"], seen["providers"] = path, opts.intra_op_num_threads, providers
+        return _Session([2.0, 0.0])
+
+    monkeypatch.setattr(tokenizers, "Tokenizer", Tok)
+    monkeypatch.setattr(onnxruntime, "InferenceSession", session)
+    head = dg.load_head(tmp_path)
+    assert seen == {"tokenizer": str(tmp_path / "tokenizer.json"), "max_length": 64,
+                    "model": str(tmp_path / "model.onnx"), "threads": 2,
+                    "providers": ["CPUExecutionProvider"]}
+    probs = head("Когда релиз?")
+    assert probs["skip"] == pytest.approx(math.exp(1) / (math.exp(1) + 1))

@@ -137,3 +137,114 @@ def test_eval_refuses_unknown_backend_and_bad_threshold(tmp_path):
     assert gb.main(["eval", str(data), "--backend", "gpt"]) == 2
     with pytest.raises(ValueError):
         gb.main(["eval", str(data), "--backend", "structural", "--thresholds", "0.5"])
+
+
+def test_report_prints_shares_latency_and_the_threshold_table(capsys):
+    rows = [R("ask", "ask", 0.9, 100.0), R("skip", "skip", 0.95, 300.0)]
+    gb.print_report("nli-zero-shot", rows, (0.9,))
+    out = capsys.readouterr().out
+    assert "## nli-zero-shot: 2 реплик" in out
+    assert "точность 100.0%" in out and "ECE" in out
+    assert "p50 200 мс" in out and "p95 300 мс" in out
+    assert "  0.90 |     100.0% |             100.0% |        100.0% |              0.0%" in out
+
+
+def test_structural_report_has_no_threshold_table(capsys):
+    gb.print_report("structural (question_filter)", [R("ask", "ask", 1.0)], (0.9,))
+    out = capsys.readouterr().out
+    assert "τ" not in out and "p50 — мс" in out
+
+
+def test_thresholds_parse_and_share_the_gate_check():
+    assert gb._thresholds("0.7, 0.9,") == (0.7, 0.9)
+
+
+class _Judge:
+    refused = ""
+
+    @staticmethod
+    def entail(premise, hypothesis):
+        # «вопрос» в гипотезе ask; реплика с «?» — вопрос
+        return 0.9 if ("?" in premise) == ("вопрос" in hypothesis) else 0.1
+
+
+def _labeled(tmp_path):
+    data = tmp_path / "gate.jsonl"
+    data.write_text(json.dumps({"text": "Что с деплоем?", "label": "ask"}, ensure_ascii=False) + "\n"
+                    + json.dumps({"text": "ну вот так", "label": "skip"}, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    return data
+
+
+def test_eval_nli_backend_judges_every_row(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(gb.nli, "judge", lambda: _Judge())
+    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "nli"]) == 0
+    out = capsys.readouterr().out
+    assert "## nli-zero-shot: 2 реплик" in out and "точность 100.0%" in out
+
+
+def test_eval_skips_nli_backend_that_refused(tmp_path, capsys, monkeypatch):
+    class Refused(_Judge):
+        refused = "нет модели"
+
+    monkeypatch.setattr(gb.nli, "judge", lambda: Refused())
+    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "nli"]) == 0
+    captured = capsys.readouterr()
+    assert "nli: нет модели" in captured.err and "##" not in captured.out
+
+
+def test_eval_head_backend_loads_the_named_directory(tmp_path, capsys, monkeypatch):
+    head = tmp_path / "question_gate"
+    head.mkdir()
+    for f in dg.HEAD_FILES:
+        (head / f).write_text("{}", encoding="utf-8")
+    loaded = []
+    monkeypatch.setattr(gb.dg, "load_head", lambda d: loaded.append(d) or (
+        lambda t: {"ask": 0.8, "skip": 0.2} if "?" in t else {"ask": 0.1, "skip": 0.9}))
+    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "head", "--head-dir", str(head)]) == 0
+    assert loaded == [head]
+    assert "## head:question_gate: 2 реплик" in capsys.readouterr().out
+
+
+def test_eval_skips_head_backend_without_files(tmp_path, capsys):
+    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "head",
+                    "--head-dir", str(tmp_path / "нет")]) == 0
+    captured = capsys.readouterr()
+    assert "head: в" in captured.err and "##" not in captured.out
+
+
+def test_eval_without_labeled_rows_says_so(tmp_path, capsys):
+    data = tmp_path / "gate.jsonl"
+    data.write_text(json.dumps({"text": "Что?", "label": ""}, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert gb.main(["eval", str(data)]) == 2
+    assert "без метки ask/skip: 1" in capsys.readouterr().err
+
+
+def test_shadow_command_reports_each_backend_and_missing_verdicts(tmp_path, capsys):
+    log = tmp_path / "daemon.err.log"
+    log.write_text("\n".join([
+        "hint-pulse: on=True",
+        dg.shadow_line(dg.Verdict("skip", 0.95, {}, "nli-zero-shot", 400.0), "refusal", "a"),
+        dg.shadow_line(dg.Verdict("ask", 0.7, {}, "nli-zero-shot", 380.0), "answered", "b"),
+        dg.shadow_line(None, "answered", "c", "late"),
+    ]) + "\n", encoding="utf-8")
+    assert gb.main(["shadow", str(log), "--thresholds", "0.9"]) == 0
+    out = capsys.readouterr().out
+    assert "вердиктов нет (решатель опоздал или упал): 1" in out
+    assert "## nli-zero-shot (тень: отказ модели = skip): 2 реплик" in out
+
+
+def test_shadow_command_without_records_asks_to_enable_the_shadow(tmp_path, capsys):
+    log = tmp_path / "daemon.err.log"
+    log.write_text("hint-pulse: on=True\n", encoding="utf-8")
+    assert gb.main(["shadow", str(log)]) == 2
+    assert "decision_gate_shadow" in capsys.readouterr().err
+
+
+def test_harvest_command_writes_jsonl_ready_for_labeling(tmp_path, capsys):
+    (tmp_path / "2026-09-27_101500.md").write_text(TRANSCRIPT, encoding="utf-8")
+    out = tmp_path / "gate.jsonl"
+    assert gb.main(["harvest", str(tmp_path), "--out", str(out), "--limit", "2"]) == 0
+    rows = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["text"] for r in rows] == ["Когда переносим витрину продаж?", "Что?"]
+    assert "2 кандидатов" in capsys.readouterr().out
