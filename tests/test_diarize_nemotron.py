@@ -64,6 +64,11 @@ def fake_mlx(monkeypatch):
 
 # --- каталог весов ---------------------------------------------------------
 
+def test_weights_live_next_to_the_other_diarization_models(tmp_path):
+    """Путь из документации и рецепта загрузки: models/diar/nemotron корня данных."""
+    assert nem.model_dir(tmp_path) == tmp_path / "models" / "diar" / "nemotron"
+
+
 def test_good_model_dir_passes(tmp_path):
     assert nem.check_model_dir(_model_dir(tmp_path)) is None
 
@@ -182,6 +187,19 @@ def test_chunk_split_pieces_of_one_voice_are_glued():
     assert nem.merge_same_speaker(pieces) == [{"start": 0.0, "end": 2.5, "speaker": "nem0"}]
 
 
+def test_glue_extends_the_latest_turn_not_the_first():
+    """Три куска одного голоса: пауза, затем разрез чанком — склеивается хвост."""
+    pieces = [{"start": 0.0, "end": 1.0, "speaker": "nem0"},
+              {"start": 2.0, "end": 3.0, "speaker": "nem0"},
+              {"start": 3.0, "end": 4.0, "speaker": "nem0"}]
+    assert nem.merge_same_speaker(pieces) == [
+        {"start": 0.0, "end": 1.0, "speaker": "nem0"},
+        {"start": 2.0, "end": 4.0, "speaker": "nem0"}]
+    # кусок внутри уже склеенного не укорачивает его
+    inside = pieces[:2] + [{"start": 2.2, "end": 2.5, "speaker": "nem0"}]
+    assert nem.merge_same_speaker(inside)[-1] == {"start": 2.0, "end": 3.0, "speaker": "nem0"}
+
+
 def test_pause_longer_than_gap_keeps_turns_apart():
     turns = [{"start": 0.0, "end": 1.0, "speaker": "nem0"},
              {"start": 1.3, "end": 2.0, "speaker": "nem0"}]
@@ -243,11 +261,25 @@ def test_each_stream_starts_with_no_known_voices():
     nem.NemotronStream(model).feed(np.zeros(10, dtype=np.float32))
     assert model.inits == 2
     assert [c["state"][1] for c in model.calls] == [1, 2]
+    assert {c["threshold"] for c in model.calls} == {0.5}, "порог по умолчанию — 0.5, как у NVIDIA"
 
 
 def test_stream_refuses_multichannel_input():
     with pytest.raises(ValueError, match="моно"):
         nem.NemotronStream(_FakeStreamModel()).feed(np.zeros((10, 2), dtype=np.float32))
+
+
+def test_diarize_file_passes_mono_through_untouched():
+    seen = {}
+
+    class Model:
+        def generate(self, audio, sample_rate):
+            seen["audio"] = audio
+            return types.SimpleNamespace(segments=[])
+
+    mono = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    assert nem.diarize_file(Model(), mono, 16000) == []
+    assert np.array_equal(seen["audio"], mono)
 
 
 def test_diarize_file_downmixes_and_glues():

@@ -16,8 +16,10 @@ DER (diarization error rate) — доля времени речи, подпис�
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -162,6 +164,25 @@ def test_crosstalk_given_to_wrong_pair_is_confusion():
     assert scores["confusion"] == pytest.approx(0.5 / 6.5, abs=0.01)
 
 
+def test_labels_are_matched_by_shared_time_not_by_order():
+    """x звучит секунду с A и три — с B: x — это B, а секунда A — путаница."""
+    truth = [{"start": 0.0, "end": 1.0, "speaker": "A"},
+             {"start": 1.0, "end": 4.0, "speaker": "B"}]
+    hyp = [{"start": 0.0, "end": 4.0, "speaker": "x"}]
+    scores = diar_bench.der_overlap(truth, hyp, 4.0)
+    assert scores["confusion"] == pytest.approx(0.25, abs=0.01)
+
+
+@pytest.mark.parametrize("total", [0.29, 1.0, 5.0, 7.37])
+def test_both_grids_cut_time_the_same_way(total):
+    """Сетка множеств и прежняя сетка обязаны резать время одинаково:
+    der_overlap(hyp_single=True) сшивает их кадр в кадр."""
+    segs = [{"start": 0.0, "end": 0.29, "speaker": "A"},
+            {"start": 0.57, "end": total, "speaker": "B"}]
+    old = [frozenset([c]) if c else frozenset() for c in diar_bench._grid(segs, total)]
+    assert diar_bench._grid_sets(segs, total) == old
+
+
 def test_chunk_windows_of_a_single_label_engine_are_not_false_alarm():
     """Окна живого трекера перекрываются из-за нарезки, а не из-за двух голосов."""
     truth = [{"start": 0.0, "end": 3.0, "speaker": "A"},
@@ -196,6 +217,8 @@ def test_crosstalk_turn_starts_before_previous_ends():
 def test_crosstalk_never_starts_before_previous_turn():
     starts = diar_bench.layout_turns([50, 100], 10, {1: 500})
     assert starts == [0, 0]
+    # и держится именно за предыдущую реплику, а не за первую в диалоге
+    assert diar_bench.layout_turns([100, 50, 100], 10, {2: 500}) == [0, 110, 110]
 
 
 def test_long_turn_holds_the_floor_over_a_short_interjection():
@@ -210,6 +233,9 @@ def test_voices_add_up_in_crosstalk_and_never_clip():
     assert len(mixed) == 15
     assert np.max(np.abs(mixed)) <= 0.99 + 1e-6
     assert mixed[7] > mixed[2], "в перекрытии голоса не сложились"
+    # ровно полная шкала — ещё не перегруз: такой сигнал остаётся бит в бит
+    full = [np.array([1.0, -1.0, 0.5], dtype=np.float32)]
+    assert np.array_equal(diar_bench.mix_turns(full, [0], tail=0), full[0])
 
 
 def test_crosstalk_script_overlaps_different_voices():
@@ -220,22 +246,27 @@ def test_crosstalk_script_overlaps_different_voices():
 
 
 def test_has_overlap_sees_crosstalk_only_between_different_voices():
-    assert diar_bench.has_overlap(CROSS)
-    assert not diar_bench.has_overlap(TRUTH)
-    assert not diar_bench.has_overlap([{"start": 0, "end": 2, "speaker": "A"},
-                                       {"start": 1, "end": 3, "speaker": "A"}])
+    assert diar_bench.has_overlap(CROSS) is True
+    assert diar_bench.has_overlap(TRUTH) is False
+    assert diar_bench.has_overlap([{"start": 0, "end": 2, "speaker": "A"},
+                                   {"start": 1, "end": 3, "speaker": "A"}]) is False
+    # стык в один кадр — округление разметки, а не перебивание
+    assert diar_bench.has_overlap([{"start": 0.0, "end": 1.0, "speaker": "A"},
+                                   {"start": 0.99, "end": 2.0, "speaker": "B"}]) is False
 
 
 # --- своя запись: эталон и метки Audacity ------------------------------------
 
 def test_audacity_labels_are_read_as_truth(tmp_path):
     f = tmp_path / "labels.txt"
-    f.write_text("0.000000\t2.500000\tМилена Петровна\n"
+    f.write_text("7.0 8.0 Анна Мария\n"                 # пробелы вместо табуляций
+                 "0.000000\t2.500000\tМилена Петровна\n"
                  "\\\t0.000000\t0.000000\n"            # частотное выделение Audacity
                  "2,5\t4,0\tФёдор\n"                   # десятичная запятая
                  "5.0\t5.0\tточка\n"                   # метка-точка: не речь
                  "\n", encoding="utf-8")
     assert diar_bench.read_truth(f) == [
+        {"start": 7.0, "end": 8.0, "speaker": "Анна Мария"},
         {"start": 0.0, "end": 2.5, "speaker": "Милена Петровна"},
         {"start": 2.5, "end": 4.0, "speaker": "Фёдор"},
     ]
@@ -325,9 +356,233 @@ def test_truth_without_recording_is_a_usage_error(tmp_path):
     assert out.returncode == 2 and "--wav" in out.stderr
 
 
-def test_recording_in_wrong_format_gets_a_conversion_recipe(tmp_path):
+@pytest.mark.parametrize("shape, sr", [((4800, 2), 16000), (4800, 48000)],
+                         ids=["stereo", "48kHz"])
+def test_recording_in_wrong_format_gets_a_conversion_recipe(tmp_path, shape, sr):
     wav = tmp_path / "meeting.wav"
-    diar_bench.sf.write(wav, np.zeros((4800, 2), dtype=np.float32), 48000)
+    diar_bench.sf.write(wav, np.zeros(shape, dtype=np.float32), sr)
     out = _bench("--wav", str(wav), "--engine", "live")
     assert out.returncode == 1
     assert "afconvert" in out.stderr and "meeting_16k.wav" in out.stderr
+
+
+# --- сборка фикстуры (синтезатор macOS подменён тоном известной длины) --------
+
+@pytest.fixture
+def fake_say(monkeypatch):
+    """`say` есть только на macOS; длина реплики i — 0.5 + 0.1·i секунды."""
+    def say(voice, text, dest):
+        i = [t for _v, t in diar_bench.DIALOG].index(text)
+        n = int((0.5 + 0.1 * i) * diar_bench.SR)
+        diar_bench.sf.write(dest, np.full(n, 0.1, dtype=np.float32), diar_bench.SR)
+    monkeypatch.setattr(diar_bench, "_say", say)
+
+
+def _fixture_truth(folder):
+    return json.loads((folder / "truth.json").read_text(encoding="utf-8"))["segments"]
+
+
+def test_plain_fixture_goes_where_asked_and_never_overlaps(tmp_path, fake_say, capsys):
+    wav = diar_bench.make_fixture(tmp_path / "здесь")
+    assert wav == tmp_path / "здесь" / "dialog.wav"
+    assert "· 10.0с ·" in capsys.readouterr().out     # 6.8 с речи + 8 пауз по 0.4
+    truth = _fixture_truth(tmp_path / "здесь")
+    assert truth[1] == {"start": 0.9, "end": 1.5, "speaker": diar_bench.DIALOG[1][0]}
+    assert diar_bench.has_overlap(truth) is False
+    assert [s["speaker"] for s in truth] == [v for v, _t in diar_bench.DIALOG]
+    total = sum(0.5 + 0.1 * i for i in range(len(diar_bench.DIALOG))) \
+        + diar_bench.PAUSE * len(diar_bench.DIALOG)
+    assert diar_bench.sf.info(str(wav)).duration == pytest.approx(total, abs=0.01)
+
+
+def test_default_fixture_is_the_plain_one(fake_say):
+    """Без флага — прежняя фикстура на прежнем месте: старые замеры сравнимы."""
+    wav = diar_bench.make_fixture()
+    assert wav.parent == diar_bench._fixture() and wav.parent.name == "diar_bench"
+    assert diar_bench.has_overlap(_fixture_truth(wav.parent)) is False
+
+
+def test_crosstalk_fixture_has_one_overlap_per_scripted_interruption(fake_say):
+    wav = diar_bench.make_fixture(crosstalk=True)
+    assert wav.parent.name == "diar_bench_crosstalk"
+    truth = _fixture_truth(wav.parent)
+    overlapping = [i for i in range(1, len(truth))
+                   if truth[i]["start"] < truth[i - 1]["end"]]
+    assert overlapping == sorted(diar_bench.CROSSTALK)
+
+
+# --- движки Nemotron в бенче (модель подменена) ------------------------------
+
+class _FakeNemotron:
+    """Поток: каждый блок звука — сегмент голоса 0 ровно на его время."""
+
+    def __init__(self):
+        self.blocks = []
+
+    def init_streaming_state(self):
+        return 0
+
+    def feed(self, pcm, state, sample_rate, *, final=False, threshold=0.5):
+        self.blocks.append(len(pcm))
+        segs = []
+        if len(pcm):
+            segs = [types.SimpleNamespace(start=state / sample_rate,
+                                          end=(state + len(pcm)) / sample_rate, speaker=0)]
+        return types.SimpleNamespace(segments=segs), state + len(pcm)
+
+    def generate(self, audio, sample_rate):
+        half = len(audio) / sample_rate / 2
+        return types.SimpleNamespace(segments=[
+            types.SimpleNamespace(start=half, end=2 * half, speaker=1),
+            types.SimpleNamespace(start=0.0, end=half, speaker=1)])
+
+
+@pytest.fixture
+def fake_nemotron(monkeypatch):
+    model, loads = _FakeNemotron(), []
+
+    def load_model(path, preset="offline"):
+        loads.append((path, preset))
+        return model
+    monkeypatch.setattr(diar_bench.nemotron, "load_model", load_model)
+    return model, loads
+
+
+def _wav(path, seconds, sr=16000):
+    diar_bench.sf.write(path, np.zeros(int(seconds * sr), dtype=np.float32), sr)
+    return path
+
+
+def test_live_engine_streams_half_second_blocks_and_glues(tmp_path, fake_nemotron):
+    model, loads = fake_nemotron
+    hyp = diar_bench.run_nemotron_live(_wav(tmp_path / "a.wav", 1.2))
+    assert hyp == [{"start": 0.0, "end": 1.2, "speaker": "nem0"}]
+    assert model.blocks == [8000, 8000, 3200, 0], "поток кормится не блоками по 0.5 с"
+    (path, preset), = loads
+    assert preset == "low"
+    assert path == diar_bench.nemotron.model_dir(diar_bench._root())
+
+
+def test_explicit_model_dir_wins_over_the_default(tmp_path, fake_nemotron):
+    _model, loads = fake_nemotron
+    diar_bench.run_nemotron(_wav(tmp_path / "a.wav", 1.0), tmp_path / "веса")
+    assert loads == [(tmp_path / "веса", "offline")]
+
+
+def test_whole_file_engine_returns_glued_segments(tmp_path, fake_nemotron):
+    assert diar_bench.run_nemotron(_wav(tmp_path / "a.wav", 2.0)) == \
+        [{"start": 0.0, "end": 2.0, "speaker": "nem1"}]
+
+
+def test_live_engine_refuses_wrong_sample_rate(tmp_path, fake_nemotron):
+    with pytest.raises(SystemExit, match="16000"):
+        diar_bench.run_nemotron_live(_wav(tmp_path / "a.wav", 0.5, sr=48000))
+
+
+def test_missing_model_becomes_a_message_not_a_traceback(monkeypatch):
+    def refuse(path, preset="offline"):
+        raise diar_bench.nemotron.ModelUnavailable("нет каталога модели")
+    monkeypatch.setattr(diar_bench.nemotron, "load_model", refuse)
+    with pytest.raises(SystemExit, match="^nemotron: нет каталога модели$"):
+        diar_bench._nemotron(None, "low")
+
+
+# --- печать и сквозной прогон main() ------------------------------------------
+
+def test_report_prints_timing_and_crosstalk(capsys):
+    scores = diar_bench.der_overlap(CROSS, [CROSS[0]], CROSS_TOTAL)
+    diar_bench.report("x", scores, [CROSS[0]], elapsed=2.0, total=4.0)
+    out = capsys.readouterr().out
+    assert "RTF 0.50" in out and "смен говорящего 0" in out
+    assert "в разметке 2.0 с, у движка 0.0 с" in out
+    diar_bench.report("x", diar_bench.der(TRUTH, TRUTH, TOTAL))
+    assert "RTF" not in capsys.readouterr().out
+
+
+def _main(monkeypatch, capsys, *argv):
+    """main() в процессе, движок live подменён: ответ — ровно эталон CROSS."""
+    runs = []
+
+    def engines(args):
+        return {"live": (lambda wav: runs.append(wav) or CROSS, False)}
+    monkeypatch.setattr(diar_bench, "_engines", engines)
+    monkeypatch.setattr(sys, "argv", ["diar_bench.py", *argv])
+    code = diar_bench.main()
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err, runs
+
+
+FOOTER = "DER — доля времени речи"
+
+
+def test_own_recording_without_truth_prints_a_summary(tmp_path, monkeypatch, capsys):
+    wav = _wav(tmp_path / "m.wav", CROSS_TOTAL)
+    code, out, _err, runs = _main(monkeypatch, capsys, "--wav", str(wav), "--engine", "live")
+    assert code == 0 and runs == [wav]
+    assert "разметки нет" in out and "голосов 2" in out and "перекрытие 2.0 с" in out
+    assert not re.search(r"DER \d", out), "без эталона DER посчитан из воздуха"
+    assert FOOTER not in out
+    assert re.search(r"время 0\.\d с", out), "время прогона посчитано неверно"
+
+
+def test_own_recording_with_truth_scores_and_writes_labels(tmp_path, monkeypatch, capsys):
+    wav = _wav(tmp_path / "m.wav", CROSS_TOTAL)
+    truth = tmp_path / "ref.txt"
+    diar_bench.write_labels(CROSS, truth)
+    labels = tmp_path / "метки" / "прогон"          # вложенный и ещё не созданный
+    for _ in range(2):                               # второй раз — каталог уже есть
+        code, out, _err, _ = _main(monkeypatch, capsys, "--wav", str(wav),
+                                   "--truth", str(truth), "--engine", "live",
+                                   "--labels", str(labels))
+        assert code == 0
+    assert "DER 0.000" in out and "одновременной речи 2.0с" in out and FOOTER in out
+    assert diar_bench.read_truth(labels / "live.txt") == CROSS
+
+
+def test_missing_recording_is_refused(tmp_path, monkeypatch, capsys):
+    code, _out, err, runs = _main(monkeypatch, capsys, "--wav", str(tmp_path / "нет.wav"),
+                                  "--engine", "live")
+    assert code == 1 and "нет файла" in err and runs == []
+
+
+def test_fixture_run_reads_the_fixture_it_was_given(tmp_path, monkeypatch, capsys, fake_say):
+    diar_bench.make_fixture(tmp_path / "фикс")
+    code, out, _err, runs = _main(monkeypatch, capsys, "--fixture", str(tmp_path / "фикс"),
+                                  "--engine", "live")
+    assert code == 0 and runs == [tmp_path / "фикс" / "dialog.wav"]
+    assert "голосов в разметке: 4" in out and FOOTER in out
+
+
+def test_missing_crosstalk_fixture_names_the_right_recipe(monkeypatch, capsys):
+    code, _out, err, runs = _main(monkeypatch, capsys, "--crosstalk", "--engine", "live")
+    assert code == 1 and runs == []
+    assert "diar_bench_crosstalk" in err and "--make --crosstalk" in err
+
+
+def test_make_writes_where_told_and_crosstalk_where_expected(tmp_path, monkeypatch,
+                                                              capsys, fake_say):
+    code, *_ = _main(monkeypatch, capsys, "--make", "--fixture", str(tmp_path / "сюда"))
+    assert code == 0 and (tmp_path / "сюда" / "truth.json").exists()
+    code, *_ = _main(monkeypatch, capsys, "--make", "--crosstalk")
+    truth = _fixture_truth(diar_bench._fixture(crosstalk=True))
+    assert code == 0 and diar_bench.has_overlap(truth) is True
+
+
+def test_engine_names_call_the_right_runner_with_the_right_switches(monkeypatch):
+    calls = []
+    for fn in ("run_live", "run_sherpa", "run_nemotron", "run_nemotron_live"):
+        monkeypatch.setattr(diar_bench, fn,
+                            lambda *a, _fn=fn, **kw: calls.append((_fn, a[1:], kw)) or [])
+    import argparse
+    args = argparse.Namespace(overlap=True, speakers=3, nemotron_model="M",
+                              nemotron_preset="ultra_low")
+    for name, (run, _single) in diar_bench._engines(args).items():
+        run("x.wav")
+    assert calls == [
+        ("run_live", (), {"overlap": True}),
+        ("run_live", (), {"split": True, "overlap": True}),
+        ("run_live", (), {"legacy": True, "overlap": True}),
+        ("run_sherpa", (3,), {}),
+        ("run_nemotron", ("M",), {}),
+        ("run_nemotron_live", ("M", "ultra_low"), {}),
+    ]
