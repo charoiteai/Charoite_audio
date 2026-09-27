@@ -5,6 +5,20 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.0](https://github.com/charoiteai/Charoite_audio/compare/v0.86.2...v0.87.0) (2026-09-27)
+
+
+### Features
+
+* **gate:** decision gate in shadow mode for instant answers ([#651](https://github.com/charoiteai/Charoite_audio/issues/651)) ([0a10398](https://github.com/charoiteai/Charoite_audio/commit/0a103980db9f2fb9536cc6806f433ad9b10a86b3))
+
+
+### Bug Fixes
+
+* **embed:** the vector door says when the server truncates the input ([#653](https://github.com/charoiteai/Charoite_audio/issues/653)) ([ef085bf](https://github.com/charoiteai/Charoite_audio/commit/ef085bf4b9d52ec195f5c4b1a0d55f094581e9ff))
+* **lint:** broad except is gated by ruff BLE001 and E722, rules in one place ([#643](https://github.com/charoiteai/Charoite_audio/issues/643)) ([32e34ef](https://github.com/charoiteai/Charoite_audio/commit/32e34ef5be26ab088ae5d26f07f08edb34d69fa8))
+* **llm:** strict JSON falls back to the prompt when the server lacks a grammar ([#645](https://github.com/charoiteai/Charoite_audio/issues/645)) ([1410cd9](https://github.com/charoiteai/Charoite_audio/commit/1410cd9585be8553b1980ff39b56c1e02c98aa1c))
+
 ## [0.86.2](https://github.com/charoiteai/Charoite_audio/compare/v0.86.1...v0.86.2) (2026-09-26)
 
 
