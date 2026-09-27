@@ -12,4 +12,6 @@ plugin, and `pip install .` does not bring it: without
 and a hung `join` will hang the whole run — exactly where you least want
 it.
 
+The graph-package wheel test builds the wheel offline, without build isolation, so it needs `setuptools` in the venv at the version pinned in `env` of `ci.yml`; a Python 3.12 venv has none. If it is missing or different, the test fails and names the exact command (`<that python> -m pip install setuptools==<pin>`).
+
 No network, no models needed — everything heavy is stubbed. Two guard suites worth knowing: `test_privacy_defaults.py` (silence in the config means *no cloud*) and `test_cloud_call_sites.py` (every point where a request can leave the machine is registered and checked). Swift app tests live next to the apps and run via `swift test` / `xcodebuild test`.

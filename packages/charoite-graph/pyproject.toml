@@ -1,0 +1,17 @@
+[build-system]
+# license строкой SPDX (PEP 639) понимает setuptools с 77-й версии
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charoite-graph"
+version = "0.1.0"
+description = "Поиск по графу ссылок с русской морфологией для любой папки markdown"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["pyyaml>=6.0"]
+
+[tool.setuptools]
+package-dir = {"charoite_graph" = "../../src/charoite_graph"}
+packages = ["charoite_graph"]

@@ -2398,6 +2398,27 @@ def package_files(inv: Inventory, layout: dict) -> list[str]:
     return sorted(rel for rel in inv.files if (m := module_of(rel)) in closure or m in inits)
 
 
+def artifact_name(rel: str) -> str:
+    """Путь репозитория файла пакета → имя того же файла ВНУТРИ колеса.
+
+    Проекция формы, а не `module_of`: `module_of` сворачивает `p/__init__.py` в
+    `p`, и `__init__` пакета стал бы в колесе `p.py` — модулем, которого никто не
+    импортирует (№427). Роль решает форму имени: `package_init` →
+    `<пакет через слэш>/__init__.py`, модуль → `<модуль через слэш>.py`.
+    Обратный перевод — `FLAT_DIR + "/" + artifact_name(rel)`: путь репозитория
+    отличается от имени в колесе ровно корнем раскладки.
+
+    Не файл пакета (роль `outside`/`stray_init`) — пустая строка: как и у
+    проекций формы, «не наш файл» — ответ, а не исключение.
+    """
+    f = form(rel)
+    if f.role == "package_init":
+        return "/".join(f.package.split(".")) + "/__init__.py"
+    if f.role == "module":
+        return "/".join(f.module.split(".")) + ".py"
+    return ""
+
+
 def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     """Гейт окружения по слою — рёбра и пакет; формы окружения судит
     `root_problems` по тому же `env_free_layers`.
