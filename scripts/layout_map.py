@@ -57,6 +57,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import unicodedata
 from typing import Callable, Literal, NamedTuple
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -394,6 +395,23 @@ _SCHEMA: dict[str, Field] = {
                                               "why": Field(str, "seed"),
                                               "ticket": Field(str, "decision", required=False,
                                                               check=_card_problem)}),
+    # Пути-решения сторожа литералов (№422): модуль-владелец схемы хранилища и
+    # файл её значения. Оба — решения человека: сторож читает по ним аннотации
+    # полей и литералы значений, но сами пути не выводит. Слой и значение схемы
+    # решаются этими двумя полями, а не литералами в коде сторожа.
+    "schema_module": Field(str, "decision"),
+    "schema_values": Field(str, "decision"),
+    # Литералы имён папок, разделов и сырья в коде пакета (№422): замер сторожа
+    # литералов против значения схемы. Класс measured — состав пересобирает
+    # `--regen`; `ticket` — решение человека, карточка на снятие.
+    "folder_literals": Field(list, "measured", {"rel": Field(str, "measured"),
+                                                "field": Field(str, "measured"),
+                                                "literal": Field(str, "measured"),
+                                                "ticket": Field(str, "decision", check=_card_problem)}),
+    # Прощение попадания — решение человека: `{rel: {поле: {литерал: причина}}}`.
+    # Сверяется в обе стороны, как `root_exemptions`: прощённого попадания нет —
+    # строкой «снять».
+    "folder_literal_exemptions": Field(dict, "decision"),
 }
 
 
@@ -407,6 +425,22 @@ def record_fields(key: str, cls: str) -> tuple[str, ...]:
 #: объявления: пока это был свой список, «ticket — решение» знал ещё и regen
 #: (входной круг №325, Opus M2).
 MEASURED_EDGE_FIELDS = record_fields("allowed_edges", "measured")
+
+
+#: Как поле схемы хранилища ищется в литералах — объявлением групп, а не россыпью
+#: `if` по имени поля в замерщике. Форма имени и путь: часть равна пробе или её
+#: «/»-сегмент равен пробе; префикс раздела: часть равна пробе или начинается с
+#: неё; сырьё: часть содержит пробу (`raw_markers`) или оканчивается пробой
+#: (`raw_suffixes`). Путь раскладывается на сегменты-имена — «Документация/
+#: Стенограммы встреч» ловится и целым литералом, и парой по сегментам.
+LITERAL_NAME_FIELDS = ("node_folders", "people_folders", "core_folders", "meeting_folders",
+                       "dossier_dir", "meeting_dir", "exclude_dirs")
+LITERAL_PREFIX_FIELDS = ("service_prefixes", "history_heads", "meeting_link_prefixes")
+LITERAL_CONTAINS_FIELDS = ("raw_markers",)
+LITERAL_SUFFIX_FIELDS = ("raw_suffixes",)
+#: Проба короче этого числа знаков не участвует: «_» совпал бы с чем угодно
+#: коротким и дал бы шум вместо сигнала. Отсеянные пробы — в отчёте `--regen`.
+LITERAL_PROBE_MIN = 3
 
 
 def _fields_problem(where: str, obj: dict, fields: dict[str, Field]) -> str | None:
@@ -510,6 +544,28 @@ def validate_layout(layout: object) -> dict:
         if (contract["mode"] == "none") != ("ticket" in contract):
             raise LayoutError(f"контракт запуска {path_}: карточка (ticket) — у режима none и только у "
                               f"него: none — долг со сроком, у пробы долга нет")
+    # прощение литерала — решение с причиной на КАЖДОЕ попадание, как у правила
+    # корня: пустая причина — это её отсутствие, а не прощение
+    for rel, fields in layout["folder_literal_exemptions"].items():
+        if not isinstance(fields, dict) or not fields:
+            raise LayoutError(f"прощение литералов {rel}: нужна карта «поле → литерал → причина»")
+        for field, literals in fields.items():
+            if not isinstance(literals, dict) or not literals:
+                raise LayoutError(f"прощение литералов {rel}, поле {field}: нужна карта «литерал → причина»")
+            for literal, why in literals.items():
+                if not isinstance(why, str) or not why.strip():
+                    raise LayoutError(f"прощение литерала {literal!r} в {rel} (поле {field}): "
+                                      f"нужна непустая причина")
+    # долг и прощение — два реестра одного факта: попадание в обоих и числится
+    # долгом, и прощено, а сверка с замером вычитает реестры друг из друга и
+    # молчит на обе стороны (выходной круг 1 по #654, DS I1)
+    both = {(e["rel"], e["field"], e["literal"]) for e in layout["folder_literals"]} & {
+        (rel, field, literal) for rel, fields in layout["folder_literal_exemptions"].items()
+        for field, literals in fields.items() for literal in literals}
+    if both:
+        rel, field, literal = sorted(both)[0]
+        raise LayoutError(f"литерал {literal!r} в {rel} (поле {field}) — и долг в folder_literals, и "
+                          f"прощение в folder_literal_exemptions: оставить одно")
     return layout
 
 
@@ -2484,6 +2540,20 @@ def artifact_name(rel: str) -> str:
     return ""
 
 
+def package_area(inv: Inventory, layout: dict) -> list[str]:
+    """Область сторожа литералов — файлы пакета поиска по графу.
+
+    Сегодня её тело — ровно `package_files` (замыкание входа плюс `__init__`), и
+    это не совпадение, а один ответ на два вопроса: проба копирует то, из чего
+    собирается пакет, а сторож читает литералы в том же множестве — пакет,
+    который и должен перестать повторять имена папок. Развести их значило бы
+    сторожить не тот код, который переезжает. Модуль в каталоге пакета, но вне
+    замыкания, область не расширяет: такой член — строка гейта пакета
+    (`package_problems`), изъятий из этого правила нет, модуль схемы — тоже не
+    исключение."""
+    return package_files(inv, layout)
+
+
 def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     """Гейт окружения по слою — рёбра и пакет; формы окружения судит
     `root_problems` по тому же `env_free_layers`.
@@ -2589,6 +2659,9 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     members = package_members(inv, layout)
     inits = package_inits(inv, layout)
     closure = package_closure(graph, entry) - inits
+    # Член пакета вне замыкания входа — всегда отказ, без изъятий: модуль схемы
+    # хранилища вход зовёт (поиск берёт схему параметром, №422), и колесо везёт
+    # ровно то, что проба импортирует (сверка плана с артефактом, №427).
     for m in sorted(members - closure):
         out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
                    f"убрать из {layout['package']}/ или позвать из входа")
@@ -2612,6 +2685,257 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     return out
 
 
+# --------------------------------------------------- сторож литералов имён (№422)
+
+def dump_layout(layout: dict) -> str:
+    """Текст артефакта: отступ 2 и кириллица как есть — артефакт читают глазами в
+    диффе PR, и `\\uXXXX` вместо имён папок сделал бы долг нечитаемым (мутатор по
+    #654: запись при `--regen` не была покрыта)."""
+    return json.dumps(layout, ensure_ascii=False, indent=2) + "\n"
+
+
+def decision_paths(layout: dict) -> tuple[str, str]:
+    """Пути-решения сторожа литералов: модуль-владелец схемы хранилища и файл её
+    значения. Оба — поля класса `decision`: сторож не выводит их сам. Синтетическое
+    дерево, не моделирующее схему, полей не несёт — путь тогда пуст."""
+    return layout.get("schema_module", ""), layout.get("schema_values", "")
+
+
+class Literals(NamedTuple):
+    """Измеренное сторожем литералов: попадания `(rel, поле, литерал)` — одно
+    множество для `check` и `regen`; пробы по полям; отсеянные короткие пробы;
+    проблемы области."""
+    hits: frozenset[tuple[str, str, str]]
+    probes: dict[str, tuple[str, ...]]
+    discarded: dict[str, tuple[str, ...]]
+    problems: list[str]
+
+
+def _norm_literal(value: str) -> str:
+    """Литерал к сравнению: снять экранирование и якоря, собрать Unicode,
+    привести регистр. Значение — литерал, не шаблон: `_live\\.md$` — это имя
+    файла `_live.md`."""
+    return unicodedata.normalize("NFC", value.replace("\\", "").strip("^$")).casefold()
+
+
+def _literal_parts(raw: str) -> list[str]:
+    """Части литерала: делится по «|» (в `_RAW_RX` куски регулярки лежат рядом),
+    каждая нормализуется; пустые куски пропускаются."""
+    return [p for p in (_norm_literal(piece) for piece in raw.split("|")) if p]
+
+
+def _probe_parts(field: str, raw: str) -> list[str]:
+    """Пробы поля из одного значения. У пробы-пути каждый «/»-сегмент — ещё и
+    проба-имя: «Документация/Стенограммы встреч» ловится и целым литералом, и
+    парой литералов по сегментам."""
+    out: list[str] = []
+    for part in _literal_parts(raw):
+        out.append(part)
+        if field in LITERAL_NAME_FIELDS and "/" in part:
+            out.extend(seg for seg in part.split("/") if seg)
+    return out
+
+
+def _literal_hit(field: str, part: str, probes: frozenset[str]) -> bool:
+    """Правило поля: имя — часть или её сегмент; префикс — часть начинается с
+    пробы; сырьё — часть содержит пробу или оканчивается пробой."""
+    if field in LITERAL_CONTAINS_FIELDS:
+        return any(p in part for p in probes)
+    if field in LITERAL_SUFFIX_FIELDS:
+        return any(part.endswith(p) for p in probes)
+    if field in LITERAL_PREFIX_FIELDS:
+        return any(part.startswith(p) for p in probes)
+    # имя: часть равна пробе или её «/»-сегмент равен пробе; у имени без «/»
+    # сегмент — сама часть, поэтому ветка одна
+    return any(seg in probes for seg in part.split("/"))
+
+
+def _class_annotations(tree: ast.Module, name: str) -> list[str] | None:
+    """Аннотированные поля класса `name` по порядку объявления — или None, если
+    класса нет."""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return [s.target.id for s in node.body
+                    if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)]
+    return None
+
+
+def _value_strings(node: ast.AST, where: str, culprit: pathlib.Path) -> list[str]:
+    """Строки значения поля — литерал или кортеж литералов; иначе отказ."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.Tuple):
+        out = []
+        for elt in node.elts:
+            if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+                raise LayoutError(f"{where}: значение поля — строковый литерал, а не выражение",
+                                  culprit=culprit)
+            out.append(elt.value)
+        return out
+    raise LayoutError(f"{where}: значение поля — строковый литерал или кортеж строк", culprit=culprit)
+
+
+def _schema_values(tree: ast.Module, var: str, cls: str,
+                   culprit: pathlib.Path) -> dict[str, list[str]] | None:
+    """Значения полей из вызова `cls(...)` у переменной `var` — или None, если
+    вызова нет. `**kwargs` и повтор ключа — отказ: ключи обязаны быть видны.
+    Присваивание одно: Python исполняет последнее, а сторож мерил бы первое, и
+    второе значение жило бы мимо замера (выходной круг 1 по #654, DS M5)."""
+    assigns = [node for node in tree.body
+               if isinstance(node, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == var for t in node.targets)]
+    if not assigns:
+        return None
+    if len(assigns) > 1:
+        raise LayoutError(f"{var} присвоено {len(assigns)} раза — значение схемы одно", culprit=culprit)
+    call = assigns[0].value
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == cls):
+        return None
+    out: dict[str, list[str]] = {}
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise LayoutError(f"{var} = {cls}(**...): ключи вызова обязаны быть названы", culprit=culprit)
+        if keyword.arg in out:
+            raise LayoutError(f"{var} = {cls}(...): ключ {keyword.arg!r} повторён", culprit=culprit)
+        out[keyword.arg] = _value_strings(keyword.value, f"{var}.{keyword.arg}", culprit)
+    return out
+
+
+def _schema_field_names(tree: ast.Module, rel: str) -> list[str]:
+    """Список полей схемы — из аннотаций её класса, а не из литерала рядом."""
+    fields = _class_annotations(tree, "GraphSchema")
+    if not fields:
+        raise LayoutError(f"{rel}: класса GraphSchema с аннотированными полями нет — "
+                          f"список полей читается оттуда", culprit=REPO / rel)
+    if len(set(fields)) != len(fields):
+        raise LayoutError(f"{rel}: поле класса GraphSchema объявлено дважды", culprit=REPO / rel)
+    return fields
+
+
+#: Группы правил поиска литерала — по одной на поле схемы. Правило выбирается
+#: первым совпадением ветки, поэтому поле в двух группах молча меняло бы правило,
+#: а имя, которого в схеме нет, жило бы в таблице мёртвым (выходной круг 1 по
+#: #654, DS M4). Судья — `_rule_groups_problem`, адрес — код сторожа.
+def _rule_groups_problem(fields: list[str]) -> str | None:
+    groups = (LITERAL_NAME_FIELDS, LITERAL_PREFIX_FIELDS, LITERAL_CONTAINS_FIELDS, LITERAL_SUFFIX_FIELDS)
+    counted: dict[str, int] = {}
+    for group in groups:
+        for name in group:
+            counted[name] = counted.get(name, 0) + 1
+    без = sorted(set(fields) - set(counted))
+    дважды = sorted(n for n, k in counted.items() if k > 1)
+    лишние = sorted(set(counted) - set(fields))
+    if без or дважды or лишние:
+        return (f"группы правил LITERAL_* разошлись с полями схемы: без группы {без}, "
+                f"в двух группах {дважды}, нет в схеме {лишние}")
+    return None
+
+
+def literals_measure(inv: Inventory, layout: dict) -> Literals:
+    """Замер сторожа литералов имён: где в области пакета повторены имена из
+    значения схемы.
+
+    Пробы — из самого значения (`charoite_schema`): аннотации дают список полей,
+    вызов `GraphSchema(...)` — их значения; ни имена полей, ни их значения
+    сторож не переписывает рядом. Литералы читает тот же `_python_literals`, что
+    и сторож путей: строковые константы и части f-строк без докстрингов, байты
+    не участвуют. Возвращает одно измеренное на `check` и `regen`."""
+    area = package_area(inv, layout)
+    if not area:
+        raise LayoutError("область сторожа литералов пуста — замыканию входа не из чего собраться")
+    schema_rel, values_rel = decision_paths(layout)
+    # адрес отказа — файл, который править (№384): нет файла в инвентаре — путь в
+    # артефакте; файл не разбирается или устроен не так — сам исходник; таблица
+    # правил — код сторожа (выходной круг 1 по #654, DS I3)
+    trees = {}
+    for what, rel in (("модуль схемы", schema_rel), ("файл значений", values_rel)):
+        info = inv.files.get(rel)
+        if info is None:
+            raise LayoutError(f"{what} {rel!r} не читается — путь-решение в артефакте не ведёт к файлу")
+        if info.tree is None:
+            raise LayoutError(f"{what} {rel} не разбирается", culprit=REPO / rel)
+        trees[rel] = info.tree
+    fields = _schema_field_names(trees[schema_rel], schema_rel)
+    values = _schema_values(trees[values_rel], "CHAROITE", "GraphSchema", REPO / values_rel)
+    if values is None:
+        raise LayoutError(f"{values_rel}: вызова CHAROITE = GraphSchema(...) нет — значения неоткуда взять",
+                          culprit=REPO / values_rel)
+    чужое = sorted(set(values) - set(fields))
+    забыто = sorted(set(fields) - set(values))
+    if чужое or забыто:
+        raise LayoutError(f"{values_rel}: ключи вызова GraphSchema не совпадают с аннотациями "
+                          f"{schema_rel} — лишние {чужое}, пропущены {забыто}", culprit=REPO / values_rel)
+    беда = _rule_groups_problem(fields)
+    if беда:
+        raise LayoutError(беда, culprit=LAYOUT_CODE)
+    probes: dict[str, tuple[str, ...]] = {}
+    discarded: dict[str, tuple[str, ...]] = {}
+    for field in fields:
+        long: list[str] = []
+        short: list[str] = []
+        for raw in values[field]:
+            for part in _probe_parts(field, raw):
+                (long if len(part) >= LITERAL_PROBE_MIN else short).append(part)
+        probes[field] = tuple(sorted(set(long)))
+        discarded[field] = tuple(sorted(set(short)))
+        if not probes[field]:
+            raise LayoutError(f"{values_rel}: поле {field} без проб после отсева коротких "
+                              f"(короче {LITERAL_PROBE_MIN}) — сторожу нечем ловить копии",
+                              culprit=REPO / values_rel)
+    hits: set[tuple[str, str, str]] = set()
+    problems: list[str] = []
+    for rel in area:
+        info = inv.files.get(rel)
+        if info is None or info.tree is None:
+            problems.append(f"{rel}: файл области без дерева — литералы из него не измерены")
+            continue
+        for raw in set(_python_literals(info.tree)):
+            parts = _literal_parts(raw)
+            if not parts:
+                continue
+            for field in fields:
+                if any(_literal_hit(field, part, frozenset(probes[field])) for part in parts):
+                    hits.add((rel, field, raw))
+    # модуль пакета вне замыкания входа называет гейт пакета (`package_problems`)
+    # одной строкой; вторая, от замера, повторяла бы тот же факт (выходной круг 1
+    # по #654, DS M3)
+    return Literals(frozenset(hits), probes, discarded, problems)
+
+
+def folder_literal(measured: Literals | None, layout: dict) -> list[str]:
+    """Расхождения сторожа литералов — строками; пусто = зелёный.
+
+    `None` значит «вызывающий замер не передал» (то же соглашение, что у
+    `root_problems` и `seam_problems`): без замера сторож молчит, а не краснит
+    всё подряд. Попадание, объявленное в `folder_literals` с карточкой или
+    прощённое в `folder_literal_exemptions`, — не расхождение; сверка идёт В ОБЕ
+    СТОРОНЫ, как всё в этом гейте."""
+    if measured is None:
+        return []
+    declared = {(e["rel"], e["field"], e["literal"]) for e in layout["folder_literals"]}
+    exempt = {(rel, field, literal)
+              for rel, fields in layout["folder_literal_exemptions"].items()
+              for field, literals in fields.items() for literal in literals}
+    out = []
+    for rel, field, literal in sorted(measured.hits - declared - exempt):
+        out.append(f"литерал {literal!r} в {rel} (поле {field}) — новое попадание без карточки: "
+                   f"внести в folder_literals с ticket или простить в folder_literal_exemptions")
+    for rel, field, literal in sorted(declared - measured.hits - exempt):
+        out.append(f"folder_literals содержит литерал {literal!r} в {rel} (поле {field}), "
+                   f"но замер его больше не находит — снять")
+    for rel, field, literal in sorted(exempt - measured.hits):
+        out.append(f"folder_literal_exemptions прощает литерал {literal!r} в {rel} (поле {field}), "
+                   f"но замер его больше не находит — снять")
+    return out
+
+
+def measure_all(inv: Inventory, layout: dict) -> tuple[dict, dict, Literals]:
+    """Входы гейта — ОДИН раз: вывод корня, швы окружения, литералы имён. Пока
+    `main` звал замеры по месту, «спросить о правиле» и «спросить в гейте» могли
+    разойтись; один хелпер держит оба ответа одним замером."""
+    return root_derivations(inv, layout), seam_calls(inv), literals_measure(inv, layout)
+
+
 def env_edges(graph: dict[str, set[str]], layout: dict) -> list[tuple[str, str]]:
     """Рёбра из слоя без окружения в слой окружения — по одному ответу `allowed`."""
     lay = layer_of(layout)
@@ -2630,6 +2954,7 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
           map_state: MapState = "present",
           roots: dict[str, dict[str, list[int]]] | None = None,
           seams: dict[str, dict[str, list[int]]] | None = None,
+          literals: Literals | None = None,
           inv: Inventory | None = None) -> list[str]:
     """Все расхождения раскладки с реальностью — строками; пусто = зелёный.
     Каждое множество сверяется в обе стороны. `map_state`: `present` — карта
@@ -2641,8 +2966,10 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     «вызывающий о выводе корня не спрашивает». Главный тракт спрашивает всегда,
     и это сторожит отдельный тест: правило, которое можно выключить забывчивостью
     вызывающего, — не правило. `seams` — замер швов окружения графа (`seam_calls`),
-    соглашение о `None` то же. `inv` — инвентарь: из него берутся AST модулей
-    шва, чтобы проверить объявление члена шва (`seam_address_problems`)."""
+    соглашение о `None` то же. `literals` — замер сторожа литералов
+    (`literals_measure`), соглашение о `None` то же. `inv` — инвентарь: из него
+    берутся AST модулей шва, чтобы проверить объявление члена шва
+    (`seam_address_problems`)."""
     if map_state not in MAP_STATES:
         raise LayoutError(f"неизвестное состояние карты: {map_state!r}", culprit=LAYOUT_CODE)
     repo = repo or REPO
@@ -2721,6 +3048,12 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     # и адрес шва обязан разрешаться целиком: узел графа, объявление члена,
     # файлы двери и хотя бы одна живая ссылка (№424)
     problems += seam_address_problems(graph, inv, seams, repo)
+    # литералы имён папок и разделов в пакете повторяют значение схемы, пока
+    # потребители не переведены (№422): объявленное с карточкой — долг, не
+    # расхождение; проблемы области замер называет сам
+    if literals is not None:
+        problems += literals.problems
+        problems += folder_literal(literals, layout)
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
@@ -2736,7 +3069,8 @@ def _say(notes: list[str] | None, line: str) -> None:
 
 
 def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None,
-          notes: list[str] | None = None) -> tuple[dict, list[tuple[str, str]]]:
+          notes: list[str] | None = None,
+          literals: Literals | None = None) -> tuple[dict, list[tuple]]:
     """Переписать allowlist по факту, сохранив карточки; новые рёбра без
     карточки — вернуть вызывающему, чтобы напечатать (Minor DS круга 2: regen
     писал артефакт, который следующая загрузка отвергала трейсбеком). Штамп
@@ -2752,7 +3086,13 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
     Раньше запись ребра собиралась из трёх полей заново, и любое добавленное
     поле молча исчезало при первом же `--regen` (обе головы входного круга
     №325, 20.09); теперь чужого поля в загруженном артефакте нет вовсе — схема
-    закрыта (входной круг №325 по постановке, 23.09)."""
+    закрыта (входной круг №325 по постановке, 23.09).
+
+    `literals` — замер сторожа литералов (`literals_measure`). Без него долг
+    `folder_literals` не трогается: пересобирать его вслепую значило бы стирать
+    карточки. С замером состав пересобирается, прощённые попадания в долг не
+    входят, а новое попадание без карточки возвращается вызывающему наравне с
+    ребром (третий элемент кортежа — `(rel, поле, литерал)`)."""
     kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
     fresh = violations(graph, layout)
     места = {n: "" for n, f in (_SCHEMA["allowed_edges"].record or {}).items()
@@ -2789,28 +3129,81 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
             contracts[rel] = {n: derived[n] for n in seed}
             _say(notes, f"контракт запуска по коду: {rel} → {derived['mode']}")
         layout["run_contracts"] = dict(sorted(contracts.items()))
-    return layout, [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
+    unticketed: list[tuple] = [(a, b) for a, b in fresh if not kept.get((a, b), {}).get("ticket")]
+    if literals is not None:
+        # состав долга литералов — по замеру, карточки переносятся дословно, как у
+        # рёбер: прощённое не входит вовсе, новое без карточки — на печать и в блок
+        kept_lit = {(e["rel"], e["field"], e["literal"]): e for e in layout["folder_literals"]}
+        exempt = {(rel, field, literal)
+                  for rel, fields in layout["folder_literal_exemptions"].items()
+                  for field, literals_ in fields.items() for literal in literals_}
+        records = []
+        for rel, field, literal in sorted(literals.hits - exempt):
+            prev = kept_lit.get((rel, field, literal), {})
+            records.append({"rel": rel, "field": field, "literal": literal,
+                            "ticket": prev.get("ticket", "")})
+        if records != layout["folder_literals"]:
+            layout["folder_literals"] = records
+        for field, short in literals.discarded.items():
+            if short:
+                _say(notes, f"{field}: пробы короче {LITERAL_PROBE_MIN} знаков не участвуют — "
+                            + ", ".join(repr(s) for s in short))
+        unticketed += [(rel, field, literal) for rel, field, literal in sorted(literals.hits - exempt)
+                       if not kept_lit.get((rel, field, literal), {}).get("ticket")]
+    return layout, unticketed
 
 
 def _card_order(card: str) -> tuple[int, str]:
     return (int(card[1:]), card) if card_of(card) else (1 << 30, card)
 
 
+#: Носители долга — коллекции, у записи которых есть поле `ticket`: это ребро
+#: против стрелок, точка входа без пробы (`none`) и литерал имени (№422).
+#: Выводятся из `_SCHEMA`, а не перечисляются в `debt_by_card`: третий носитель
+#: добавится объявлением поля, а не третьим `for` в производной.
+DEBT_CARRIERS: tuple[str, ...] = tuple(k for k, f in _SCHEMA.items()
+                                       if f.record is not None and "ticket" in f.record)
+
+
+def _debt_note(carrier: str, key: str | None, record: dict) -> str | None:
+    """Строка долга одной записи носителя — или None, если запись не долг.
+
+    Строка называет ровно то, что снимет карточка, и ничего сверх: ребро — парой
+    модулей, вход без пробы — путём, литерал — именем, файлом и полем."""
+    if carrier == "allowed_edges":
+        return f"ребро `{record['from']}` → `{record['to']}`"
+    if carrier == "run_contracts":
+        return f"вход `{key}` без пробы" if record.get("mode") == "none" else None
+    if carrier == "folder_literals":
+        return f"литерал `{record['literal']}` в `{record['rel']}` (поле `{record['field']}`)"
+    raise LayoutError(f"носитель долга {carrier!r} без формы строки — объявить в _debt_note",
+                      culprit=LAYOUT_CODE)
+
+
+def _debt_items(layout: dict) -> list[tuple[str, str]]:
+    """(карточка, строка долга) по всем носителям из `DEBT_CARRIERS`."""
+    out: list[tuple[str, str]] = []
+    for carrier in DEBT_CARRIERS:
+        value = layout[carrier]
+        records = value.items() if isinstance(value, dict) else ((None, r) for r in value)
+        for key, record in records:
+            note = _debt_note(carrier, key, record)
+            if note is not None:
+                out.append((card_of(record.get("ticket", "")) or "без карточки", note))
+    return out
+
+
 def debt_by_card(layout: dict) -> dict[str, list[str]]:
     """Долг по карточкам — производная, нигде не хранится: сколько чего снимет
-    каждая карточка. Носителей два — ребро против стрелок и точка входа без
-    пробы (`none`), у обоих карточка лежит полем `ticket` и разбирается одним
-    `card_of`. Срок в CI не живёт и ничего не останавливает (решение 20.09, обе
-    головы: календарь в гейте и красная строка чужому контрибьютору о чужом
-    долге недопустимы); печать закрывает «долг невидим», а не «долг не
-    снимается» — его снимает карточка (входной круг №325 по постановке, Opus C3)."""
+    каждая карточка. Носители — коллекции с полем `ticket` (`DEBT_CARRIERS` из
+    `_SCHEMA`), карточка разбирается одним `card_of`. Срок в CI не живёт и
+    ничего не останавливает (решение 20.09, обе головы: календарь в гейте и
+    красная строка чужому контрибьютору о чужом долге недопустимы); печать
+    закрывает «долг невидим», а не «долг не снимается» — его снимает карточка
+    (входной круг №325 по постановке, Opus C3)."""
     долг: dict[str, list[str]] = {}
-    for e in layout["allowed_edges"]:
-        долг.setdefault(card_of(e.get("ticket", "")) or "без карточки", []).append(
-            f"ребро `{e['from']}` → `{e['to']}`")
-    for rel, c in sorted(layout["run_contracts"].items()):
-        if c.get("mode") == "none":
-            долг.setdefault(card_of(c.get("ticket", "")) or "без карточки", []).append(f"вход `{rel}` без пробы")
+    for card, note in _debt_items(layout):
+        долг.setdefault(card, []).append(note)
     return dict(sorted(долг.items(), key=lambda kv: _card_order(kv[0])))
 
 
@@ -2876,7 +3269,8 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
     out.append("")
     for a, b in viol:
         out.append(f"- `{a}` ({lay[a]}) → `{b}` ({lay[b]}) — {tickets.get((a, b)) or 'без карточки'}")
-    out += ["", "## Долг по карточкам (производная: рёбра против стрелок и входы без пробы)", "",
+    out += ["", "## Долг по карточкам (производная: рёбра против стрелок, входы без пробы, "
+                "литералы имён)", "",
             ("Нигде не хранится и ничего не останавливает: долг снимает карточка, карта его только "
              "показывает."), ""]
     for card, items in debt_by_card(layout).items():
@@ -2956,49 +3350,70 @@ def main(argv: list[str] | None = None) -> int:
     graph = import_graph(inv)
     scanned = scan(inv)
     execs = executables(inv)
-    blocked: list[str] = []
-    if "--regen" in args:
-        # черновик отдельно от загруженного: при блокировке отчёт идёт по тому, что лежит
-        # на диске, а не по несохранённой правке (Important DS круга 6)
-        notes: list[str] = []
-        fresh, unticketed = regen(json.loads(json.dumps(layout)), graph, inv, notes)
-        for line in notes:
-            print("  ", line)
-        blocked = [f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; артефакт и карта не записаны"
-                   for a, b in unticketed]
-        if not blocked:
-            # что записал реген, то читает загрузка — проверка до записи, а не
-            # на следующем прогоне (входной круг №325 по постановке, Opus C1)
-            try:
-                validate_layout(json.loads(json.dumps(fresh)))
-            except LayoutError as e:
-                blocked = [f"реген дал артефакт, который загрузка отвергает ({e}); артефакт и карта не записаны"]
-        if not blocked:
-            # дельта долга — отчёт о ЗАПИСАННОМ: при отказе на диске прежний
-            # долг, и «было 3, стало 2» было бы неправдой (круг 1 по коду №325,
-            # Opus M1 и критика Sonnet)
-            for line in debt_delta(layout, fresh):
+    # замер входов гейта — ОДИН раз и до регена: реген пересобирает измеренные
+    # коллекции по тому же замеру, а `check` судит им же. Ошибка таблицы кода,
+    # найденная замером или регеном, выходит тем же путём, что ошибка артефакта.
+    try:
+        roots, seams, literals = measure_all(inv, layout)
+        blocked: list[str] = []
+        if "--regen" in args:
+            # черновик отдельно от загруженного: при блокировке отчёт идёт по тому, что лежит
+            # на диске, а не по несохранённой правке (Important DS круга 6)
+            notes: list[str] = []
+            fresh, unticketed = regen(json.loads(json.dumps(layout)), graph, inv, notes, literals)
+            for line in notes:
                 print("  ", line)
-            layout = fresh
-            LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(f"{_shown(LAYOUT)}: allowlist {len(layout['allowed_edges'])} рёбер")
-    if "--check" not in args and not blocked:
-        MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
-        print(f"карта: {_shown(MAP)}")
-    # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась,
-    # и судить о ней нечем (состояние `skipped`, а не «свежая»)
-    if blocked:
-        map_text, map_state = None, "skipped"
-    elif MAP.exists():
-        map_text, map_state = MAP.read_text(encoding="utf-8"), "present"
-    else:
-        map_text, map_state = None, "missing"
-    problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
-                               roots=root_derivations(inv, layout), seams=seam_calls(inv), inv=inv)
+            blocked = [_blocked_note(item) for item in unticketed]
+            if not blocked:
+                # что записал реген, то читает загрузка — проверка до записи, а не
+                # на следующем прогоне (входной круг №325 по постановке, Opus C1)
+                try:
+                    validate_layout(json.loads(json.dumps(fresh)))
+                except LayoutError as e:
+                    blocked = [f"реген дал артефакт, который загрузка отвергает ({e}); "
+                               f"артефакт и карта не записаны"]
+            if not blocked:
+                # дельта долга — отчёт о ЗАПИСАННОМ: при отказе на диске прежний
+                # долг, и «было 3, стало 2» было бы неправдой (круг 1 по коду №325,
+                # Opus M1 и критика Sonnet)
+                for line in debt_delta(layout, fresh):
+                    print("  ", line)
+                layout = fresh
+                LAYOUT.write_text(dump_layout(layout), encoding="utf-8")
+                print(f"{_shown(LAYOUT)}: allowlist {len(layout['allowed_edges'])} рёбер, "
+                      f"литералов {len(layout['folder_literals'])}")
+        if "--check" not in args and not blocked:
+            MAP.write_text(render_map(layout, graph, scanned, execs), encoding="utf-8")
+            print(f"карта: {_shown(MAP)}")
+        # свежесть карты — отчёт о записанном артефакте; при блокировке карта не писалась,
+        # и судить о ней нечем (состояние `skipped`, а не «свежая»)
+        if blocked:
+            map_text, map_state = None, "skipped"
+        elif MAP.exists():
+            map_text, map_state = MAP.read_text(encoding="utf-8"), "present"
+        else:
+            map_text, map_state = None, "missing"
+        problems = blocked + check(layout, graph, scanned, execs, map_text=map_text, map_state=map_state,
+                                   roots=roots, seams=seams, literals=literals, inv=inv)
+    except LayoutError as e:
+        print(f"✗ {_shown(e.culprit)}: {e}")
+        return 1
     for p in problems:
         print("✗", p)
     print("раскладка совпадает с кодом" if not problems else f"расхождений: {len(problems)}")
     return 1 if problems else 0
+
+
+def _blocked_note(item: tuple) -> str:
+    """Строка блокировки записи по неоткарточенному носителю долга: ребро — парой,
+    литерал — тройкой `(rel, поле, литерал)`."""
+    if len(item) == 2:
+        a, b = item
+        return (f"ребро {a} → {b} без карточки — вписать ticket в allowed_edges; "
+                f"артефакт и карта не записаны")
+    rel, field, literal = item
+    return (f"литерал {literal!r} в {rel} (поле {field}) без карточки — вписать ticket в folder_literals; "
+            f"артефакт и карта не записаны")
 
 
 if __name__ == "__main__":

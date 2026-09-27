@@ -1639,3 +1639,53 @@ def test_only_primary_documents_get_vectors(tmp_path):
     assert not any(p.endswith("Тема.md") for p in s._vecs)
     d = next(d for d in s._gen.docs.values() if d.rel.endswith("Тема.md"))
     assert d.role == gs.DOSSIER and d in s._gen.dossiers.values() and d not in s._gen.primary
+
+
+def test_схема_хранилища_задаёт_исключения_обхода(tmp_path):
+    """Пакет берёт схему параметром (№422): исключения обхода — её, а не
+    умолчание модуля; два источника сразу — отказ."""
+    import dataclasses
+    import charoite_schema
+    своя = dataclasses.replace(charoite_schema.CHAROITE, exclude_dirs=("Черновики",))
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=своя)
+    assert s.exclude == ("Черновики",)
+    assert gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d2", embedder=fake_embedder()).exclude \
+        == gs.EXCLUDE_DIRS, "без схемы — прежнее умолчание"
+    with pytest.raises(ValueError, match="не оба"):
+        gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d3", embedder=fake_embedder(),
+                       schema=своя, exclude=("x",))
+
+
+@pytest.mark.parametrize("exclude, ждём", [
+    ("Встречи-архив", ("Встречи-архив",)),
+    (["Черновики", "Документация/Черновики"], ("Черновики", "Документация/Черновики")),
+], ids=["строка", "список"])
+def test_список_исключений_толкует_та_же_дверь_что_у_схемы(tmp_path, exclude, ждём):
+    """`exclude` строкой — одно имя, как в полях схемы, а не кортеж букв, который
+    не исключил бы ни одной папки (выходной круг 3 по #654, DS C1)."""
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(),
+                       exclude=exclude)
+    assert s.exclude == ждём
+
+
+@pytest.mark.parametrize("exclude", [{"Черновики"}, ""], ids=["множество", "пустое-имя"])
+def test_список_исключений_без_порядка_или_пустой_отказ(tmp_path, exclude):
+    """Множество — не список имён: у него нет порядка; пустое имя молча не
+    исключало бы ничего (выходной круг 4 по #654, DS M3) — отказ той же двери."""
+    with pytest.raises(ValueError, match="exclude"):
+        gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(),
+                       exclude=exclude)
+
+
+def test_приложение_отдаёт_поиску_свою_схему(tmp_path, monkeypatch):
+    """Дверь приложения строит поиск со значением владельца, а не с умолчанием пакета:
+    подменённое значение владельца доезжает до поиска (у Чароита исключения совпадают
+    с умолчанием, и сравнение с ним не отличило бы «передали» от «забыли»)."""
+    import dataclasses
+    import charoite_schema
+    import graphs
+    своя = dataclasses.replace(charoite_schema.CHAROITE, exclude_dirs=("Черновики",))
+    monkeypatch.setattr(charoite_schema, "CHAROITE", своя)
+    monkeypatch.setattr(graphs, "search_cache_dir", lambda: tmp_path / "data")
+    s = graphs.open_search(_graph(tmp_path), fake_embedder())
+    assert s.exclude == ("Черновики",)
