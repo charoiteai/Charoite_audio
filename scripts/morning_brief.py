@@ -26,8 +26,8 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
-import redirects  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import redirects  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 

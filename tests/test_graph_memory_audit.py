@@ -15,9 +15,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import graph_doctor  # noqa: E402
 import graph_links  # noqa: E402
-import graph_names  # noqa: E402
+from charoite_graph import graph_names  # noqa: E402
 import graph_updater as g  # noqa: E402
-from graph_nodes import NodeIndex  # noqa: E402
+from charoite_graph.graph_nodes import NodeIndex  # noqa: E402
 from speaker_names import nominative_candidates, resolve_vocative  # noqa: E402
 
 

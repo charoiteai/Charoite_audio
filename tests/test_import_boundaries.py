@@ -436,7 +436,8 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
     assert "src/graphs.py" in out
-    assert "src/graph_search.py:1 импортирует динамически" in out and "путь приходит параметром" in out
+    assert "src/charoite_graph/graph_search.py:1 импортирует динамически" in out \
+        and "путь приходит параметром" in out
     assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
 
 
@@ -498,7 +499,7 @@ def test_entry_points_are_executables_not_mentions(world):
     layout, _, scanned, execs, _ = world
     assert "app/make_app.sh" in execs and "scripts/nightly.sh" in execs and "src/daemon.py" in execs
     assert ".github/workflows/release-app.yml" in scanned.mentions["app/make_app.sh"]
-    for lib in ("src/privacy.py", "src/graph_search.py", "src/llm_health.py"):
+    for lib in ("src/privacy.py", "src/charoite_graph/graph_search.py", "src/llm_health.py"):
         assert lib not in execs and lib not in layout["manual_entry_points"]
         assert lib in scanned.mentions, f"{lib} назван подсказкой — путь обязан существовать, но точкой входа не быть"
     assert set(layout["manual_entry_points"]) <= set(execs)
@@ -537,6 +538,7 @@ APPROVED_FIELDS = {
     "order": ("list", "decision", None),
     "brief_layers": ("dict", "decision", None),
     "allowed": ("dict", "decision", None),
+    "package": ("str", "decision", None),
     "package_entry": ("str", "decision", None),
     "layer_overrides": ("dict", "decision", {"layer": ("str", "decision", True), "why": ("str", "decision", True)}),
     "allowed_edges": ("list", "measured", {"from": ("str", "measured", True), "to": ("str", "measured", True),
@@ -1070,7 +1072,8 @@ def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
-         "generated": "2026-09-19T00:00Z", "run_contracts": {}, "package_entry": "core_mod"}
+         "generated": "2026-09-19T00:00Z", "run_contracts": {},
+         "package": "charoite_graph", "package_entry": "core_mod"}
     d.update(over)
     return d
 
@@ -1923,7 +1926,8 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
         if any(isinstance(в, ast.Call) and isinstance(в.func, ast.Name) and в.func.id == lm.SHAPE_OWNER
                for в in ast.walk(узел)):
             зовут.add(узел.name)
-    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory"}
+    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory",
+                 "package_members"}
     assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
 
     дерево = tmp_path / "src" / "p"
@@ -1946,6 +1950,7 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
     assert lm.packaging_conflicts({"src/a.py": "a", "src/a/b.py": "a.b"}) == [], \
         "конфликт упаковки считает владельца мимо формы"
     assert lm._owner("src/a/b.py") == "", "владелец мимо формы"
+    assert lm.package_members(честный, {"package": "p"}) == set(), "члены пакета считает мимо формы"
     # инвентарь кормит конфликт именами от формы — с подделкой имён нет
     assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
     # гейт спрашивает роль: под подделкой модуль пакета обязан стать «дырой»
@@ -2281,7 +2286,8 @@ def test_the_gate_is_asked_about_the_seam_address(monkeypatch, capsys):
     monkeypatch.setitem(lm.ENV_SEAMS, "OpenSearch", ("graph_search", ("src/graphs.py",), "graphs.open_search"))
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
-    assert "шов graph_search.OpenSearch: в модуле graph_search нет объявления OpenSearch" in out, out
+    assert ("шов graph_search.OpenSearch: в модуле charoite_graph.graph_search "
+            "нет объявления OpenSearch") in out, out
 
 
 def test_the_env_gate_asks_the_artifact(tmp_path):
@@ -2354,4 +2360,82 @@ def test_the_package_is_the_closure_of_one_entry(world):
     assert base - closure, "замыкание уже, чем весь нижний слой: лишнее не становится поверхностью пакета"
     assert lm.package_closure(graph, "нет_такого") == set()
     assert lm.package_closure({"a": {"b"}, "b": {"a", "c"}, "c": set()}, "a") == {"a", "b", "c"}
+
+
+def test_members_are_imported_only_through_the_package(world):
+    """Ни один файл `src/`, `scripts/`, `tests/` не импортирует члена пакета мимо
+    пакета: `import graph_search` и `from safe_write import …` — обход, который
+    подорвал бы замыкание входа и спрятал модуль от гейта (№424). Список членов
+    берётся из артефакта (`form(...).package`), а не из литералов здесь: новый
+    член попадает под правило сам, без правки теста. Файлы `tests/` таблица
+    относит к `out` (инвентарь их не разбирает), поэтому корпус обходится с диска,
+    а не из инвентаря: тестовый импорт — тот же обход."""
+    layout, _, _, _, inv = world
+    # имя самого пакета — не обход: `import charoite_graph` и `from charoite_graph import x`
+    # законны; обход — короткое имя ЧЛЕНА (`graph_search`, `safe_write`) без префикса
+    short = {m.rsplit(".", 1)[-1] for m in lm.package_members(inv, layout)} - {layout["package"]}
+    assert short, "артефакт не назвал членов пакета — правило сторожило бы пустоту"
+    offenders: list[str] = []
+    for root in ("src", "scripts", "tests"):
+        for f in sorted((ROOT / root).rglob("*.py")):
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    offenders += [f"{f.relative_to(ROOT)}:{node.lineno}: import {a.name}"
+                                  for a in node.names if a.name.split(".")[0] in short]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    if (node.module or "").split(".")[0] in short:
+                        offenders.append(f"{f.relative_to(ROOT)}:{node.lineno}: "
+                                         f"from {node.module} import …")
+    assert not offenders, ("импорт члена пакета мимо charoite_graph — замыкание входа\n"
+                           "такого модуля не увидит:\n" + "\n".join(offenders))
+
+
+def _package_tree(tmp_path, *, member_file: bool, outside_import: bool):
+    """Синтетическое дерево пакета `pkg` для гейта самодостаточности: вход `pkg.a`
+    зовёт `pkg.b`; лишний член `pkg.c` и импорт `outside` включаются по флагу."""
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    (src / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    head = "from pkg import b\n" + ("import outside\n" if outside_import else "")
+    (src / "pkg" / "a.py").write_text(head, encoding="utf-8")
+    (src / "pkg" / "b.py").write_text("", encoding="utf-8")
+    if member_file:
+        (src / "pkg" / "c.py").write_text("", encoding="utf-8")
+    (src / "outside.py").write_text("", encoding="utf-8")
+    modules = ["charoite_paths", "pkg", "pkg.a", "pkg.b", "outside"] + (["pkg.c"] if member_file else [])
+    layout = _layout(order=["base", "rt"], allowed={"base": [], "rt": ["base"]},
+                     brief_layers={"base": modules, "rt": ["charoite_paths"]},
+                     package="pkg", package_entry="pkg.a")
+    inv = lm.inventory(tmp_path)
+    return layout, lm.import_graph(inv), inv
+
+
+def test_the_package_gate_judges_the_directory_closure_and_outside_imports(tmp_path):
+    """Гейт самодостаточности (№424): лишний член в каталоге, модуль замыкания вне
+    каталога и импорт члена наружу — строки; честный пакет молчит. Список членов
+    гейт берёт из дерева (`form(...).package`), а не из артефакта: каталог и
+    замыкание сверяются в обе стороны, как всё в этом стороже."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=True)
+    assert lm.package_members(inv, layout) == {"pkg", "pkg.a", "pkg.b", "pkg.c"}
+    problems = lm.package_problems(graph, layout, inv)
+    assert any("член пакета pkg.c вне замыкания входа pkg.a" in p for p in problems), problems
+    assert any("outside — лежит вне пакета pkg/" in p for p in problems), problems
+    assert any("член пакета pkg.a импортирует outside вне пакета" in p for p in problems), problems
+
+    honest, honest_graph, honest_inv = _package_tree(tmp_path / "честный", member_file=False,
+                                                     outside_import=False)
+    assert lm.package_problems(honest_graph, honest, honest_inv) == []
+
+    # поле `package` — решение: без него (синтетические деревья других правил) гейт молчит
+    assert lm.package_problems(graph, {**layout, "package": ""}, inv) == []
+    # пустое имя пакета — это пустое МНОЖЕСТВО членов, а не None: возврат сравним
+    assert lm.package_members(inv, {"package": ""}) == set()
+    # вход, которого нет в графе, — не забота этого гейта (о нём скажет env_problems),
+    # но и он даёт пустой СПИСОК, а не None
+    assert lm.package_problems({}, layout, inv) == []
+    # `None` в любом из двух входов — «о пакете не спрашивают», и это не «пустой пакет»
+    assert lm.package_problems(graph, layout, None) == []
+    assert lm.package_problems(graph, None, inv) == []
 

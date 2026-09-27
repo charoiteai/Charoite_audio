@@ -21,9 +21,9 @@ import re
 import unicodedata
 import threading
 
-import frontmatter
-import graph_names
-import redirects
+from charoite_graph import frontmatter
+from charoite_graph import graph_names
+from charoite_graph import redirects
 
 # Папки узлов: русские — боевой конвейер, английские — демо-граф продукта.
 NODE_FOLDERS = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра",

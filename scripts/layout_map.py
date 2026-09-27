@@ -82,7 +82,7 @@ PYTHON_AREAS = (f"{FLAT_DIR}/", "scripts/")
 
 #: Кандидаты в точки входа по расположению; исполняемым кандидата делает гвард
 #: `__main__` (python) или сам факт shell-скрипта (Minor DS круга 5: «цель» читалась
-#: как «исполняемый», а `src/graph_search.py` — кандидат, но не исполняемый).
+#: как «исполняемый», а `src/charoite_graph/graph_search.py` — кандидат, но не исполняемый).
 #: Пакетную форму сюда глобом не записать — модуль лежит на любой глубине, — и её
 #: кандидатность решает форма (`_is_candidate`, круг 3 по коду №328, GLM I2).
 ENTRY_CANDIDATES = (f"{FLAT_DIR}/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
@@ -375,6 +375,10 @@ _SCHEMA: dict[str, Field] = {
     "order": Field(list, "decision"),
     "brief_layers": Field(dict, "decision"),
     "allowed": Field(dict, "decision"),
+    # имя пакета поиска по графу — решение о раскладке: под `src/<package>/` лежат
+    # ровно его члены (№424). Гейт самодостаточности (`package_problems`) сверяет
+    # этот каталог с замыканием входа, а не доверяет списку имён
+    "package": Field(str, "decision"),
     # вход пакета поиска по графу: пакет — замыкание ОДНОГО имени по графу импортов
     # (`package_closure`), а не «весь base плюс graph» — иначе публичной поверхностью
     # молча стали бы модули, которых вход не зовёт (№365)
@@ -2426,6 +2430,55 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     return out
 
 
+def package_members(inv: Inventory, layout: dict) -> set[str]:
+    """Модули-члены пакета `layout["package"]` — файлы, чья `form` называет этот
+    пакет родителем. Каталог, а не список имён: список разошёлся бы с деревом
+    молча, и «член» держался бы памятью (№424)."""
+    package = layout.get("package")
+    if not package:
+        return set()
+    return {m for rel in inv.files if form(rel).package == package
+            and (m := module_of(rel)) is not None}
+
+
+def package_problems(graph: dict[str, set[str]], layout: dict | None,
+                     inv: Inventory | None) -> list[str]:
+    """Пакет самодостаточен — каталог, замыкание и внешние импорты сходятся.
+
+    Три равенства, каждое в свою сторону (№424): множество членов каталога
+    (`form(...).package`) равно замыканию `package_entry` по графу импортов; и
+    ни один член не импортирует модуль продукта вне пакета — сторонние пакеты и
+    stdlib можно, свой код только внутрь. Так «пакет» перестаёт быть списком имён
+    в артефакте: лишний модуль в каталоге, забытый входом, и переехавший, но
+    оставшийся снаружи, — обе строки.
+
+    `layout`/`inv` равны `None` — вызывающий о пакете не спрашивает (то же
+    соглашение, что у `env_problems`): синтетические деревья тестов, не
+    моделирующие пакет, поле `package` не несут и не судятся."""
+    if layout is None or inv is None:
+        return []
+    members = package_members(inv, layout)
+    if not members:
+        return []
+    entry = layout["package_entry"]
+    if entry not in graph:
+        # об отсутствующем входе уже говорит `env_problems` — второй строкой не повторяем
+        return []
+    closure = package_closure(graph, entry)
+    out: list[str] = []
+    for m in sorted(members - closure):
+        out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
+                   f"убрать из {layout['package']}/ или позвать из входа")
+    for m in sorted(closure - members):
+        out.append(f"модуль замыкания {entry} — {m} — лежит вне пакета {layout['package']}/: "
+                   f"перенести в пакет или разорвать импорт")
+    for m in sorted(members):
+        for d in sorted(d for d in graph.get(m, ()) if d not in members):
+            out.append(f"член пакета {m} импортирует {d} вне пакета — членам можно только друг "
+                       f"друга (сторонние пакеты и stdlib — можно)")
+    return out
+
+
 def env_edges(graph: dict[str, set[str]], layout: dict) -> list[tuple[str, str]]:
     """Рёбра из слоя без окружения в слой окружения — по одному ответу `allowed`."""
     lay = layer_of(layout)
@@ -2528,6 +2581,8 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     problems += root_problems(roots, layout["root_exemptions"], layout)
     # слой без окружения: ни ребра в слой окружения, ни пакета, который его тянет (№365)
     problems += env_problems(graph, layout)
+    # пакет самодостаточен: каталог = замыкание входа, и члены не ходят наружу (№424)
+    problems += package_problems(graph, layout, inv)
     # индекс поиска и ревизию ядер приложение строит через одну дверь окружения (№365)
     problems += seam_problems(seams)
     # и адрес шва обязан разрешаться целиком: узел графа, объявление члена,

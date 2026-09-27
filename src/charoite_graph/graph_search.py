@@ -56,12 +56,12 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
-import dossier  # noqa: E402
-import frontmatter  # noqa: E402
-import graph_nodes  # noqa: E402
-from model_seam import Embedder  # noqa: E402
-import redirects  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import dossier  # noqa: E402
+from charoite_graph import frontmatter  # noqa: E402
+from charoite_graph import graph_nodes  # noqa: E402
+from charoite_graph.model_seam import Embedder  # noqa: E402
+from charoite_graph import redirects  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import uuid  # noqa: E402
 
 # Копии стенограмм и архив встреч: дублируют заметки встреч и узлы, но весят

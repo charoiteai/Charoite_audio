@@ -8,7 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-import dossier  # noqa: E402
+from charoite_graph import dossier  # noqa: E402
 
 
 def _граф(tmp: pathlib.Path) -> pathlib.Path:
@@ -280,7 +280,7 @@ def test_закрытое_окно_не_зовёт_модель_и_не_теря
 
 def test_keys_see_cjk_words():
     """Китайская встреча давала пустые ключи — досье не искалось (хвост 20.08, GLM)."""
-    import dossier
+    from charoite_graph import dossier
     keys = dossier.keywords("会议讨论了数据平台的迁移计划 和 бюджет проекта")
     joined = " ".join(keys) if not isinstance(keys, str) else keys
     assert any("\u4e00" <= ch <= "\u9fff" for ch in joined), keys
@@ -293,7 +293,7 @@ def test_keys_see_cjk_words():
 def test_long_cjk_run_is_split_into_bigrams(tmp_path):
     """Китайское предложение без пробелов — один токен длиннее 24 знаков —
     выпадал целиком, ключей у встречи не оставалось (luna по #455)."""
-    import dossier
+    from charoite_graph import dossier
     keys = dossier.keywords("这是一个超过二十四个汉字且中间没有空格的中文句子用于检索测试")
     assert keys and all(len(k) == 2 for k in keys), keys
     folder = tmp_path / "Досье"
@@ -309,7 +309,7 @@ def test_long_cjk_run_is_split_into_bigrams(tmp_path):
 def test_bigram_query_matches_a_whole_cjk_key_of_an_old_index(tmp_path):
     """Индекс прежней версии хранит цельную CJK-последовательность; биграммы
     запроса обязаны находить её без пересборки досье (luna r2 по #455)."""
-    import dossier
+    from charoite_graph import dossier
     folder = tmp_path / "Досье"
     folder.mkdir()
     (folder / dossier.INDEX_JSON).write_text(json.dumps({"досье": [

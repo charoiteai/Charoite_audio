@@ -15,7 +15,7 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-import graph_search  # noqa: E402
+from charoite_graph import graph_search  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import tier3  # noqa: E402

@@ -7,7 +7,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 
 
 def test_a_failed_write_leaves_the_previous_version_intact(tmp_path, monkeypatch):

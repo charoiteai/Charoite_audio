@@ -93,7 +93,7 @@ def _llm() -> LLM:
 import os  # noqa: E402
 
 import meeting_stamp  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 
 # Дневник — отдельная граф-сфера РЯДОМ с рабочей (личное не всплывает в
 # рабочем поиске), но в том же Obsidian-vault: ссылки и backlinks между

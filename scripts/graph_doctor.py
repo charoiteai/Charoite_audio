@@ -34,13 +34,13 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-import frontmatter  # noqa: E402
+from charoite_graph import frontmatter  # noqa: E402
 import graph_links  # noqa: E402
-import graph_names  # noqa: E402
+from charoite_graph import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
-import redirects  # noqa: E402
+from charoite_graph import redirects  # noqa: E402
 from charoite_paths import harden_umask, resolve_root  # noqa: E402
 
 LINK = graph_links.LINK

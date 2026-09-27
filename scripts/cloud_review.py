@@ -66,7 +66,7 @@ def _root() -> pathlib.Path:
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
 import charoite_paths  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
@@ -121,9 +121,9 @@ DENY_MAX = 200
 # Единственная допустимая форма «удаления» — заглушка-перенаправление,
 # как у tier3 при слиянии дублей: `# Имя → [[Папка/Канон]]` в первой строке
 # заголовка. Сам файл остаётся, ссылки на него не ломаются.
-# Заглушка-редирект — общий детектор src/redirects.py (тот же, что у tier3,
+# Заглушка-редирект — общий детектор src/charoite_graph/redirects.py (тот же, что у tier3,
 # досье и конвейера); имена оставлены для тестов и читателей этого файла.
-from redirects import stub_target as _stub_target, is_redirect_stub  # noqa: E402
+from charoite_graph.redirects import stub_target as _stub_target, is_redirect_stub  # noqa: E402
 
 # Что облако не трогает никогда, даже находясь внутри графа. Архив встречи —
 # та же категория, что копии стенограмм: Саммари, Минутки, Стенограмма суфлёра

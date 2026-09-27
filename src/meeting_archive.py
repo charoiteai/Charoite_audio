@@ -31,7 +31,7 @@ from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph
 import channel_trace
 import live_sidecar
 import meeting_source
-import safe_write
+from charoite_graph import safe_write
 import task_line
 import graphs
 

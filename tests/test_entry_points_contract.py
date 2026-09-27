@@ -321,8 +321,8 @@ sys.addaudithook(hook)
 import json, pathlib
 sys.path.insert(0, PKG)
 PATH_BEFORE = list(sys.path)
-import graph_search
-import model_seam
+import charoite_graph
+from charoite_graph import graph_search, model_seam
 
 
 def vectors(texts, timeout):
@@ -396,13 +396,18 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
 
 
 def _copy_package(dest: pathlib.Path) -> list[str]:
-    """Копия замыкания входа по плану сторожа — плоско, имя модуля в имя файла."""
+    """Копия замыкания входа по плану сторожа — по ФОРМЕ раскладки: под
+    `dest/<пакет>/` теми же путями, что и в репозитории (`src/<пакет>/x.py`).
+    Плоская копия прошлого круга держалась на том, что модули лежали плоско;
+    после переезда в пакет она собирала бы `import graph_search` в никуда."""
     rels = lm.package_files(INV, lm.load_layout())
+    prefix = lm.FLAT_DIR + "/"
     dest.mkdir()
     for rel in rels:
-        name = lm.module_of(rel)
-        assert name is not None and "." not in name, f"{rel}: пакетная форма — копия пробы её ещё не знает"
-        shutil.copyfile(ROOT / rel, dest / f"{name}.py")
+        assert rel.startswith(prefix), f"{rel}: модуль пакета вне {prefix}"
+        target = dest / rel[len(prefix):]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / rel, target)
     return rels
 
 
@@ -498,8 +503,13 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         (victims / "f").write_text("x", encoding="utf-8")
         pkg = tmp_path / name / "pkg"
         pkg.mkdir(parents=True)
-        (pkg / "graph_search.py").write_text(template.format(victims=str(victims), extra=extra), encoding="utf-8")
-        shutil.copyfile(ROOT / "src" / "model_seam.py", pkg / "model_seam.py")
+        # копия повторяет форму раскладки: раннер зовёт `from charoite_graph import …`
+        (pkg / "charoite_graph").mkdir()
+        (pkg / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "charoite_graph" / "graph_search.py").write_text(
+            template.format(victims=str(victims), extra=extra), encoding="utf-8")
+        shutil.copyfile(ROOT / "src" / "charoite_graph" / "model_seam.py",
+                        pkg / "charoite_graph" / "model_seam.py")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
         (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",

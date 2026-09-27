@@ -195,7 +195,7 @@ def test_redirect_stubs_are_recognised_by_structure_not_by_tier3_wording():
     """Облако помечает слияние своими словами («Дубль слит») — три слоя
     (досье, tier3, ядра) узнавали только буквальную пометку tier3 и принимали
     такую заглушку за живой узел (Sonnet 28.08 I5)."""
-    import redirects
+    from charoite_graph import redirects
     cloud = "---\ntype: entity\n---\n# Инцидент → [[Ядра/Инциденты]]\n\n⚠️ **Дубль слит.**\n"
     tier3 = "# Тема\n## Статус\n…\n⚠️ **Дубль. Смерджен Tier3-NLI.** Хроника перенесена в [[Ядра/Канон]]\n"
     alive = "# Живая тема\n## Статус\nидёт → [[Ядра/Соседняя]] связана\n" + "- факт\n" * 5
@@ -577,7 +577,7 @@ def test_description_supersede_edges(tmp_path):
     g.upsert_entity(graph, "Люди", "Ё", "person", "ведет отчетность отдела", "Встречи/2026-09-01_1000", "")
     assert "## Хроника" not in yo.read_text(encoding="utf-8")
     # дайджест узла читает и хронику, и встречи — «## Встречи» после «## Хроника» сбор не обрывает
-    import graph_nodes
+    from charoite_graph import graph_nodes
     digest = graph_nodes._digest((graph / "Люди" / "Отпуск.md").read_text(encoding="utf-8"), "2026")
     assert any("2026-09-20" in d for d in digest) and any("обсудили отпуск" in d for d in digest), digest
 
@@ -706,7 +706,7 @@ def test_luna_round_one_fixes(tmp_path):
 def test_dossier_takes_stub_target_from_the_heading_not_frontmatter(tmp_path):
     """dossier.scan: редирект заглушки — из первой строки заголовка; ссылка во
     frontmatter уводила входящие к чужому узлу (luna I5)."""
-    import dossier
+    from charoite_graph import dossier
     graph = tmp_path / "g"
     (graph / "Ядра").mkdir(parents=True)
     (graph / "Встречи").mkdir()
@@ -875,7 +875,7 @@ def test_aliases_parse_as_yaml_and_skip_stubs_and_broken_files(tmp_path):
 
 
 def test_frontmatter_with_aliases_edits_the_header_in_place():
-    import frontmatter
+    from charoite_graph import frontmatter
     assert frontmatter.with_aliases("# Узел\n", ["А, Б"]) == '---\naliases: ["А, Б"]\n---\n# Узел\n'
     txt = "---\ntype: ядро\naliases: [МБ]\ntags: [ядро]\n---\n# Миграция\n"
     out = frontmatter.with_aliases(txt, ["Миграция БД", "МБ"])

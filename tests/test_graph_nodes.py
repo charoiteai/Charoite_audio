@@ -15,7 +15,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-from graph_nodes import NodeIndex, stem  # noqa: E402
+from charoite_graph.graph_nodes import NodeIndex, stem  # noqa: E402
 
 GOLDEN = json.loads(
     (REPO / "tests" / "stem_golden.json").read_text(encoding="utf-8"))

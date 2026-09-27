@@ -57,7 +57,7 @@ def open_search(graph: pathlib.Path, embedder):
     тот же. Пять мест вызова держали пять копий выражения, и ни одну не закреплял тест
     (Opus I1 круга 1 по коду №365). Копия теперь одна — здесь; `GraphSearch(` мимо этой
     функции сторож раскладки не пропускает (`ENV_SEAMS` в scripts/layout_map.py)."""
-    import graph_search
+    from charoite_graph import graph_search
     return graph_search.GraphSearch(graph, embedder=embedder, data_dir=search_cache_dir())
 
 

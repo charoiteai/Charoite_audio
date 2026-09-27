@@ -43,7 +43,7 @@ import uuid
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-import frontmatter  # noqa: E402
+from charoite_graph import frontmatter  # noqa: E402
 import graph_links  # noqa: E402
 from charoite_paths import harden_umask  # noqa: E402
 

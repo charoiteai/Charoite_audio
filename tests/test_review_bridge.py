@@ -549,7 +549,7 @@ def test_dropped_lines_are_collected_for_the_log():
 # Аудит зон 12.09, зона 4: падеж исполнителя в дедупе, легаси-заголовок и
 # пометка «не участник», гейт expect на записи минуток.
 # ---------------------------------------------------------------------------
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 
 
 def test_non_owner_assignee_in_another_case_is_the_same_item():
