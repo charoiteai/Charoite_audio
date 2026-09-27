@@ -633,3 +633,37 @@ def test_overlapping_hypothesis_is_scored_the_nist_way():
     plain = [{"start": 0.0, "end": 2.0, "speaker": "x"}, {"start": 2.0, "end": 4.0, "speaker": "y"}]
     assert diar_bench.der_overlap(truth, plain, 4.0) | {"overlap_ref_s": 0, "overlap_hyp_s": 0} \
         == diar_bench.der(truth, plain, 4.0) | {"overlap_ref_s": 0, "overlap_hyp_s": 0}
+
+
+@pytest.mark.parametrize("labels", ["600.0\t610.0\tА\n", "-5.0\t-1.0\tА\n"], ids=["после конца", "до нуля"])
+def test_reference_outside_the_recording_refuses_before_engines(tmp_path, labels):
+    """Эталон, чьи отрезки лежат вне записи, — тот же отказ до движков: охрана и
+    метрика считают речь одним предикатом, кадрами на сетке записи (выходной круг 2
+    по #648, DS C1)."""
+    wav = tmp_path / "meeting.wav"
+    diar_bench.sf.write(wav, np.zeros(16000, dtype=np.float32), 16000)
+    truth = tmp_path / "labels.txt"
+    truth.write_text(labels, encoding="utf-8")
+    out = _bench("--wav", str(wav), "--truth", str(truth), "--engine", "live")
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "нет ни одного кадра речи" in out.stderr and "Traceback" not in out.stderr
+
+
+@pytest.mark.parametrize("body", ['{"segments": [{"start": 0.0, "end": 1.0}]}',
+                                  '{"segments": [{"start": "ноль", "end": 1.0, "speaker": "А"}]}'],
+                         ids=["без speaker", "не число"])
+def test_json_reference_records_are_checked_like_lines(tmp_path, body):
+    """Записи JSON-эталона проверяются как строки текстовых форматов: битая —
+    отказ с номером отрезка, а не KeyError в метрике после движка (круг 2, DS I3)."""
+    truth = tmp_path / "t.json"
+    truth.write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError, match="отрезок №1"):
+        diar_bench.read_truth(truth)
+
+
+def test_missing_reference_file_is_a_refusal_not_a_trace(tmp_path):
+    """Опечатка в пути разметки — строка отказа, как у --wav (круг 2 по #648, DS M5)."""
+    wav = tmp_path / "meeting.wav"
+    diar_bench.sf.write(wav, np.zeros(16000, dtype=np.float32), 16000)
+    out = _bench("--wav", str(wav), "--truth", str(tmp_path / "нет.txt"), "--engine", "live")
+    assert out.returncode == 1 and "нет файла разметки" in out.stderr, out.stderr

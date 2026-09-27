@@ -38,6 +38,7 @@ Nemotron 3 Diarization — end-to-end Sortformer на ~100M параметров
 """
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import pathlib
@@ -57,7 +58,9 @@ PRESETS = ("offline", "low", "very_low", "ultra_low")
 HF_REPO = "mlx-community/Nemotron-3-Diarization"
 #: Версия — та, по коду которой проверен стык (`load`, `set_streaming_config`, `feed`):
 #: дрейф API иначе выяснился бы только на ручном прогоне (круг 1 по #648, DS M2).
-INSTALL_RECIPE = '.venv/bin/pip install "mlx-audio==0.5.6"   # только macOS на Apple Silicon'
+#: `availability` сверяет её с установленной (круг 2, DS I2).
+MLX_AUDIO_VERSION = "0.5.6"
+INSTALL_RECIPE = f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"   # только macOS на Apple Silicon'
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -108,7 +111,11 @@ def check_model_dir(path: pathlib.Path) -> str | None:
     weights = sorted(path.glob("*.safetensors"))
     if not weights:
         return f"в {path} нет весов (*.safetensors) — скачать: {recipe}"
-    small = [w.name for w in weights if w.stat().st_size < MIN_WEIGHTS_BYTES]
+    try:
+        small = [w.name for w in weights if w.stat().st_size < MIN_WEIGHTS_BYTES]
+    except OSError as e:
+        # тот же битый том или права, что у config.json выше, — рецепт, а не трассировка (DS M4)
+        return f"веса в {path} не читаются ({type(e).__name__}: {e}) — скачать заново: {recipe}"
     if small:
         return (f"веса в {path} подозрительно малы ({', '.join(small)}): обрыв "
                 f"закачки или указатель git-lfs — скачать заново: {recipe}")
@@ -124,6 +131,16 @@ def availability(path: pathlib.Path) -> str | None:
     problems = []
     if importlib.util.find_spec("mlx_audio") is None:
         problems.append(f"нет пакета mlx-audio — {INSTALL_RECIPE}")
+    else:
+        try:
+            installed = importlib.metadata.version("mlx-audio")
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
+        if installed != MLX_AUDIO_VERSION:
+            # стык проверен на одной версии: чужая — отказ до прогона с рецептом, а не
+            # «скачайте веса заново» после (круг 2 по #648, DS I2)
+            problems.append(f"mlx-audio {installed or '?'}, стык проверен на {MLX_AUDIO_VERSION} — "
+                            f"{INSTALL_RECIPE}")
     problem = check_model_dir(path)
     if problem:
         problems.append(problem)
@@ -148,6 +165,13 @@ def load_model(path: pathlib.Path, preset: str = "offline") -> Any:
     try:
         model = load(pathlib.Path(path), strict=True)
         model.set_streaming_config(preset)
+    except MemoryError as e:
+        raise ModelUnavailable(f"модели в {path} не хватило памяти ({e}) — закрыть тяжёлые "
+                               f"приложения или взять 8-битные веса") from e
+    except (TypeError, AttributeError) as e:
+        # дрейф API пакета — не битые веса: рецепт версии, а не загрузки (круг 2, DS I2)
+        raise ModelUnavailable(f"mlx-audio ответил не так, как {MLX_AUDIO_VERSION} "
+                               f"({type(e).__name__}: {e}) — {INSTALL_RECIPE}") from e
     except Exception as e:  # noqa: BLE001 — дверь «каталог → модель»: любой отказ библиотеки уходит одним типом с рецептом
         # каталог прошёл проверку формы (model_type, размер весов), а тензоры не той
         # архитектуры или закачка оборвана выше порога — рецепт, а не трассировка mlx (DS I4)

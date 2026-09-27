@@ -40,7 +40,8 @@ Apple Silicon, пакет и веса ставятся руками, рецеп�
 Перебивания (`--crosstalk`) — отдельная фикстура: часть реплик начинается до
 конца предыдущей, и в разметке два голоса звучат одновременно. DER тогда
 считается по NIST: в кадре может быть несколько голосов, недобор — пропуск,
-перебор — лишнее. На фикстуре без перекрытий это ровно прежняя метрика.
+перебор — лишнее. Когда перекрытий нет ни в разметке, ни в гипотезе, это ровно
+прежняя метрика (подробно — докстринг `der_overlap`).
 """
 from __future__ import annotations
 
@@ -143,6 +144,13 @@ def mix_turns(parts: list[np.ndarray], starts: list[int], tail: int) -> np.ndarr
 NO_SPEECH = "в эталоне нет ни одного кадра речи — DER не определён"
 
 
+def speech_frames(truth: list[dict], total: float) -> int:
+    """Кадры речи эталона на сетке записи — тот же счёт, что у метрик. Отрезок вне
+    0…total в кадры не попадает: охрана и метрика смотрят на один предикат, а не на
+    два (выходной круг 2 по #648, DS C1)."""
+    return sum(1 for c in _grid_sets(truth, total) if c)
+
+
 def has_overlap(segments: list[dict]) -> bool:
     """Звучат ли где-нибудь два голоса одновременно (дольше кадра сетки)."""
     ordered = sorted(segments, key=lambda s: s["start"])
@@ -237,10 +245,10 @@ def der(truth: list[dict], hyp: list[dict], total: float) -> dict:
     confusion = sum(1 for r, s in zip(ref, sys_)
                     if r and s and mapping.get(s) != r)
     return {
-        "der": (missed + false + confusion) / speech if speech else 0.0,
-        "missed": missed / speech if speech else 0.0,
-        "false_alarm": false / speech if speech else 0.0,
-        "confusion": confusion / speech if speech else 0.0,
+        "der": (missed + false + confusion) / speech,
+        "missed": missed / speech,
+        "false_alarm": false / speech,
+        "confusion": confusion / speech,
         "speakers_ref": len({r for r in ref if r}),
         "speakers_hyp": len({s for s in sys_ if s}),
     }
@@ -302,10 +310,10 @@ def der_overlap(truth: list[dict], hyp: list[dict], total: float, *,
     if not speech:
         raise ValueError(NO_SPEECH)
     return {
-        "der": (missed + false + confusion) / speech if speech else 0.0,
-        "missed": missed / speech if speech else 0.0,
-        "false_alarm": false / speech if speech else 0.0,
-        "confusion": confusion / speech if speech else 0.0,
+        "der": (missed + false + confusion) / speech,
+        "missed": missed / speech,
+        "false_alarm": false / speech,
+        "confusion": confusion / speech,
         "speakers_ref": len(set().union(*ref)) if ref else 0,
         "speakers_hyp": len(set().union(*sys_)) if sys_ else 0,
         "overlap_ref_s": sum(1 for rs in ref if len(rs) > 1) * FRAME,
@@ -458,7 +466,23 @@ def read_truth(path: pathlib.Path) -> list[dict]:
             # дверь чтения эталона отказывает одним типом с файлом в тексте, как у
             # текстовых форматов ниже, а не трассировкой KeyError (круг 1 по #648, DS M3)
             raise ValueError(f"{path}: в JSON бенча нет ключа segments")
-        return list(data["segments"] if isinstance(data, dict) else data)
+        records = data["segments"] if isinstance(data, dict) else data
+        if not isinstance(records, list):
+            raise ValueError(f"{path}: segments — не список отрезков")
+        out: list[dict] = []
+        for n, rec in enumerate(records, 1):
+            # каждая запись — как строка текстового формата: число, число, имя; битая —
+            # отказ с номером до прогона движков, а не KeyError в метрике после (круг 2, DS I3)
+            try:
+                start, end = (float(rec[k]) for k in ("start", "end"))
+                who = str(rec["speaker"]).strip()
+            except (TypeError, KeyError, ValueError) as e:
+                raise ValueError(f"{path}: отрезок №{n} — ждали start, end и speaker ({e!r})") from None
+            if not who:
+                raise ValueError(f"{path}: у отрезка №{n} нет имени говорящего")
+            if end > start:
+                out.append({"start": start, "end": end, "speaker": who})
+        return out
     out: list[dict] = []
     for n, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.startswith("\\"):
@@ -621,7 +645,14 @@ def main() -> int:
                   f"{SR} Гц — перегнать: afconvert -f WAVE -d LEI16@{SR} -c 1 "
                   f"{wav} {wav.with_name(wav.stem + '_16k.wav')}", file=sys.stderr)
             return 1
-        truth = read_truth(args.truth) if args.truth else None
+        if args.truth and not args.truth.is_file():
+            print(f"нет файла разметки {args.truth}", file=sys.stderr)       # DS M5 круга 2
+            return 1
+        try:
+            truth = read_truth(args.truth) if args.truth else None
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 1
         total = info.frames / info.samplerate
     else:
         fixture = args.fixture or _fixture(args.crosstalk)
@@ -633,13 +664,14 @@ def main() -> int:
             return 1
         data = json.loads(truth_file.read_text(encoding="utf-8"))
         wav = fixture / data["audio"]
-        truth = data["segments"]
+        truth = read_truth(truth_file)      # фикстура — через ту же дверь, что и своя разметка
         total = sf.info(str(wav)).duration
 
-    if truth is not None and not any(s["end"] > s["start"] for s in truth):
-        # пустой эталон — отказ до прогона, а не «DER 0.000» на всех движках (DS C1)
-        print(f"{args.truth or wav.name}: {NO_SPEECH} (метки-точки и строки частотного "
-              f"выделения Audacity речью не считаются)", file=sys.stderr)
+    if truth is not None and not speech_frames(truth, total):
+        # пустой эталон — отказ до прогона, а не «DER 0.000» и не трассировка метрики
+        # после движков: предикат тот же, что у метрики (DS C1 кругов 1 и 2)
+        print(f"{args.truth or wav.name}: {NO_SPEECH} (отрезки вне 0–{total:.1f} с, метки-точки "
+              f"и строки частотного выделения Audacity речью не считаются)", file=sys.stderr)
         return 1
     if truth is None:
         print(f"{wav.name}: {total:.1f}с, разметки нет — DER не считается\n")

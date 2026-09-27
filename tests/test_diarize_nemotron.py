@@ -165,6 +165,7 @@ def test_availability_lists_every_problem_at_once(tmp_path, monkeypatch):
 
 def test_availability_is_quiet_when_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: nem.MLX_AUDIO_VERSION)
     assert nem.availability(_model_dir(tmp_path)) is None
 
 
@@ -398,12 +399,23 @@ def test_the_product_does_not_import_the_experiment():
     assert "diarize_nemotron" in graph, "модуль пропал из графа — сторож сторожил бы пустоту"
     importers = sorted(m for m, deps in graph.items() if "diarize_nemotron" in deps)
     assert importers == [], f"продукт зовёт эксперимент: {importers}"
+    # граф раскладки видит только src/: точки входа из scripts/ — отдельным обходом, и
+    # единственный законный импортёр назван явно (круг 2 по #648, DS I1)
+    import ast
+    callers = set()
+    for f in sorted((REPO / "scripts").glob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                     else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            if any(n.split(".")[0] == "diarize_nemotron" for n in names):
+                callers.add(f"scripts/{f.name}")
+    assert callers == {"scripts/diar_bench.py"}, f"эксперимент зовут не только из бенча: {callers}"
 
 
 def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):
-    """Прогон обёртки с подменённой моделью по потоку и по файлу: на диске ничего
-    не появляется — ни в рабочем каталоге, ни в репозитории. Что пишет сама
-    mlx-audio, этот тест не видит: это прогон с весами на Mac (№443, DS I3)."""
+    """Прогон обёртки потоком с подменённой моделью: на диске ничего не появляется —
+    ни в рабочем каталоге, ни в репозитории. Что пишет сама mlx-audio, этот тест не
+    видит: это прогон с весами на Mac (№443, DS I3)."""
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)
@@ -418,3 +430,34 @@ def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):
     assert list(work.iterdir()) == [], f"обёртка создала файлы: {list(work.iterdir())}"
     new = {p for p in REPO.rglob("*") if ".git" not in p.parts} - before
     assert not {p for p in new if "__pycache__" not in p.parts}, sorted(new)
+
+
+@pytest.mark.parametrize("error, says", [(TypeError("load() got an unexpected keyword 'strict'"), "mlx-audio ответил не так"),
+                                         (MemoryError("нет памяти"), "не хватило памяти")])
+def test_library_drift_and_memory_get_their_own_recipe(tmp_path, monkeypatch, error, says):
+    """Дрейф API пакета и нехватка памяти — не битые веса: у них свой рецепт, а не
+    «скачать заново» (выходной круг 2 по #648, DS I2)."""
+    import types
+
+    def load(path, strict):
+        raise error
+
+    vad = types.ModuleType("mlx_audio.vad")
+    vad.load = load
+    monkeypatch.setitem(sys.modules, "mlx_audio", types.ModuleType("mlx_audio"))
+    monkeypatch.setitem(sys.modules, "mlx_audio.vad", vad)
+    with pytest.raises(nem.ModelUnavailable, match=says) as err:
+        nem.load_model(_model_dir(tmp_path))
+    assert "hf download" not in str(err.value)
+
+
+def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monkeypatch):
+    """Стык проверен на одной версии mlx-audio: другая установленная — строка с
+    рецептом до прогона (круг 2 по #648, DS I2)."""
+    monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.5")
+    d = _model_dir(tmp_path)
+    problem = nem.availability(d)
+    assert problem and "mlx-audio 0.5.5" in problem and nem.MLX_AUDIO_VERSION in problem
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: nem.MLX_AUDIO_VERSION)
+    assert nem.availability(d) is None
