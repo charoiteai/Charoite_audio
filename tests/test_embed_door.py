@@ -476,15 +476,33 @@ def test_every_exit_of_a_call_without_truncation_ends_the_episode(monkeypatch, c
     assert "вход длиннее предела сервера" in capsys.readouterr().err, f"{выход}: эпизод не снят"
 
 
-def test_a_call_that_truncated_and_then_failed_keeps_the_episode(capsys):
-    """Обратная сторона: вызов, который сам усекал, эпизод не снимает — даже если
-    потом отказал; строка не повторяется на каждом таком вызове."""
+@pytest.mark.parametrize("выход, тексты", [
+    ("бюджет", ["д" * 40_000, "с" * 40_000, "к" * 40_000]),   # усекли, срок вышел до третьей пачки
+    ("отказ", ["д" * 40_000, "р" * 40_000]),                  # усекли, следующая — 400 на обоих ходах
+    ("исключение", ["д" * 40_000, "о" * 40_000]),             # усекли, следующая — обрыв транспорта
+    ("успех", ["д" * 40_000, "к" * 40_000]),                  # усекли, дальше всё приняли
+])
+def test_a_call_that_truncated_keeps_the_episode_on_every_exit(monkeypatch, capsys, выход, тексты):
+    """Обратная сторона той же таблицы: вызов, получивший векторы повтора с
+    усечением, эпизод не снимает ни на каком выходе. Проверка — СЛЕДУЮЩИМ длинным
+    вызовом: вывод того же вызова молчит и при снятом эпизоде, потому что ключ ещё
+    жив от первого (выходной круг 3 по №433, DS I1)."""
     once.reset("embed")
-    e = _дверь(post=_эпизод_сервер([0.0]))
+    часы = [1000.0]
+    monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
+    e = _дверь(post=_эпизод_сервер(часы))
     e.run(["д" * 40_000], 30)
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+    if выход == "исключение":
+        with pytest.raises(SeamTransportError):
+            e.run(тексты, 30)
+    else:
+        e.run(тексты, 30)
     capsys.readouterr()
-    assert e.run(["д" * 40_000, "р" * 40_000], 30) == []
-    assert "вход длиннее предела сервера" not in capsys.readouterr().err
+
+    e.run(["д" * 40_000], 30)
+    assert capsys.readouterr().err == "", f"{выход}: вызов, который усекал, эпизод снял"
 
 
 def test_alternating_long_and_short_batches_speak_once_per_call(capsys):
