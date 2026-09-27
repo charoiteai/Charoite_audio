@@ -186,6 +186,10 @@
     "once": {
       "layer": "base",
       "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
+    },
+    "threads": {
+      "layer": "base",
+      "why": "шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток"
     }
   },
   "allowed_edges": [

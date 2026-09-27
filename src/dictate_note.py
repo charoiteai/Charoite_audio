@@ -45,6 +45,7 @@ SR = 16000
 
 import graphs  # noqa: E402
 import install_profile  # noqa: E402
+import threads  # noqa: E402
 
 _cfg_кэш: tuple[pathlib.Path, dict] | None = None
 
@@ -203,8 +204,7 @@ def main():
         if not raw:
             return
     else:
-        warm_t = threading.Thread(target=warm, daemon=True)
-        warm_t.start()
+        warm_t = threads.spawn(warm, name="stt-warm", role="dictate")
         try:
             raw = _record_and_transcribe(warm_t, stt_holder)
         finally:

@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import sys
@@ -280,10 +281,15 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     `debrief_excerpt`, `[:24000]`, обрезки материалов саммари); блок оговорки у
     каждого — после своей обрезки и снаружи речи, строка в документ — механически."""
     src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
-    loop = src[src.index("def minutes_loop"):src.index("def gen_answer")]
+    строки = src.splitlines()
+    функции = {n.name: n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef)}
+    # границы функций — по AST (`lineno`/`end_lineno`), а не по следующей
+    # строке с `threading.Thread`: после №415 потоки заводит `threads.spawn`,
+    # и прежняя метка конца окна исчезла бы вместе с ней
+    loop = "\n".join(строки[функции["minutes_loop"].lineno - 1:функции["minutes_loop"].end_lineno])
     assert loop.index("full[-14_000:]") < loop.index("note = trace.summary()") < loop.index("llm.recording_block(note)") < loop.index("Обнови ЧЕРНОВИК")
     assert "meeting_source.with_note(out, note)" in loop
-    summ = src[src.index("def _do_summary"):src.index("threading.Thread(target=_do_summary")]
+    summ = "\n".join(строки[функции["_do_summary"].lineno - 1:функции["_do_summary"].end_lineno])
     assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary())' in summ
     assert "llm.minutes(source.speech, recording_note=source.recording_note)" in summ
     assert 'fact_check.annotate("".join(chunks), source.canon())' in summ, "сверка — по тому же множеству, что видела модель"

@@ -20,6 +20,7 @@ from rich.console import Console  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 
 import fact_check  # noqa: E402
+import threads  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
@@ -82,7 +83,8 @@ def main():
 
     console.print(f"Аудио: [green]{' + '.join(hub.sources)}[/green] · STT: [green]{cfg['stt']['backend']}[/green] · LLM: [green]{model}[/green]")
     console.print("[dim]Прогреваю LLM (первая подсказка будет быстрой)…[/dim]")
-    threading.Thread(target=llm.warmup, daemon=True).start()
+    threads.spawn(llm.warmup, name="console-warmup", role="console",
+                  detached="прогрев модели в консоли живёт до выхода процесса")
     console.print(f"[dim]{cfg['sufler']['hotkey_hint']} · стенограмма: {tr.path}[/dim]\n")
 
     stop = threading.Event()
@@ -91,7 +93,8 @@ def main():
     # (демон вешает on_status на emit, здесь до 11.09 не вешал никто).
     hub.on_status = lambda text: console.print(f"[yellow]{text}[/yellow]")
     hub.start()
-    threading.Thread(target=stt_loop, args=(hub, stt, tr, stop), daemon=True).start()
+    threads.spawn(stt_loop, args=(hub, stt, tr, stop), name="console-stt", role="console",
+                  detached="цикл расшифровки консоли живёт до выхода процесса")
 
     max_ctx = int(cfg["llm"]["max_context_chars"])
     try:

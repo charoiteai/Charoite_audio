@@ -435,6 +435,28 @@ def test_one_shadow_in_flight_the_next_question_is_counted_as_busy():
     assert len(calls) == 2 and [dg.parse_shadow_line(x).get("label") for x in log[1:]] == ["skip", "skip"]
 
 
+def test_join_asks_the_thread_only_when_it_started():
+    """`join` зовёт поток решателя, только если он есть и уже стартовал
+    (`ident` не None); без потока это молчание, а не `AttributeError` (№415:
+    поток заводит `threads.spawn` в `start`, а не конструктор)."""
+    log = _Log()
+    run = dg.ShadowRun("Когда релиз?", dg.Decider("d", lambda _t: {"ask": 1.0, "skip": 0.0}), log)
+    called = []
+
+    class _Поток:
+        ident = 42
+
+        def join(self, timeout=None):
+            called.append(timeout)
+
+    run._thread = _Поток()
+    run.join(3)
+    assert called == [3], "у стартовавшего потока join обязан дождаться его"
+    run._thread = None
+    run.join(3)                            # потока нет — ждать нечего, и это не ошибка
+    assert called == [3], "join без потока не смеет звать чужой объект"
+
+
 @pytest.mark.parametrize("question, dec", [
     ("Когда релиз?", None),
     ("Когда релиз?", dg.Decider("none", lambda t: {}, refused="нет модели")),

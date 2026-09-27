@@ -12,6 +12,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 
 import pytest
@@ -22,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
 import once  # noqa: E402
+import threads  # noqa: E402
 
 #: Корень данных прогона. Называется в `pytest_configure` — ДО СБОРКИ, но уже
 #: после импорта conftest: импорты тестовых модулей идут на сборке, и модуль,
@@ -758,3 +760,42 @@ def _корень_остаётся_временным(request, _корень_д�
             корни = [charoite_paths.resolve_root(charoite_paths.__file__)]
         беда = не_временный_корень(корни, обязан_назвать=обязан)
         assert not беда, беда
+
+
+#: Общий бюджет ожидания свежих потоков продукта после теста.
+THREAD_WAIT_S = 2.0
+
+
+@pytest.fixture(autouse=True)
+def _потоки_продукта_не_брошены():
+    """Поток продукта, брошенный тестом, обязан быть виден и назван.
+
+    Снимок реестра (`threads.ours()`) на входе, разница на выходе: свежие
+    НЕ-`detached` потоки ждутся `join` с общим бюджетом `THREAD_WAIT_S`, живые
+    после бюджета красят тест именами и ролями. Приговор говорит о бюджете, а не
+    о свойстве потока: под `-n 4` и нагрузкой честный поток бывает медленнее
+    (выходной круг 1 по #658, DS M2). `detached` — поток, который
+    сознательно живёт до конца процесса (демон своих слоёв не ждёт, консоль —
+    прогрева): причина уже названа в коде, и тест за него не отвечает.
+
+    Потоки самих тестов (голый `threading.Thread` мимо реестра) в `ours()` не
+    попадают: за них отвечает дисциплина `join` в теле теста, а не этот сторож
+    (граница гейта исключений в pyproject.toml — та же).
+
+    Снимок берётся до тела теста, разница судится после: teardown фикстуры
+    выполняется и упавшему тесту, поэтому брошенный поток виден и там.
+    """
+    before = set(threads.ours())
+    yield
+    fresh = [t for t in threads.ours() if t not in before]
+    waited = [t for t in fresh if (threads.describe(t) or ("", None))[1] is None]
+    deadline = time.monotonic() + THREAD_WAIT_S
+    for thread in waited:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    alive = [t for t in waited if t.is_alive()]
+    if alive:
+        роль = {t: (threads.describe(t) or ("?", None))[0] for t in alive}
+        перечень = "; ".join(f"{t.name} ({роль[t]})" for t in alive)
+        pytest.fail(f"потоки продукта не завершились за {THREAD_WAIT_S:g} с ожидания после теста "
+                    f"и не объявлены detached: {перечень} — роли {', '.join(sorted(set(роль.values())))}; "
+                    f"дождись их в тесте или назови причину detached")

@@ -45,6 +45,7 @@ import time
 from typing import Callable, Mapping
 
 import nli
+import threads
 from charoite_paths import MODELS_DIR, resolve_root
 
 #: Метки гейта. «ask» — будить модель, «skip» — реплика вопроса не несёт.
@@ -378,12 +379,14 @@ class ShadowRun:
         self._done = False
         self._outcome: str | None = None
         self._written = False
-        self._thread = threading.Thread(target=self._run, name="gate-shadow", daemon=True)
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Поток решателя. Может бросить (`RuntimeError` при исчерпании потоков
         процесса) — `Shadow.start` превращает это в пропуск с причиной."""
-        self._thread.start()
+        self._thread = threads.spawn(
+            self._run, name="gate-shadow", role="meeting",
+            detached="тень ⚡ не держит ответ: строку пишет тот, кто пришёл вторым")
 
     def skip(self, reason: str) -> None:
         """Вердикта не будет: решатель не звался, причина уйдёт в строку."""
@@ -439,7 +442,7 @@ class ShadowRun:
 
     def join(self, timeout: float | None = None) -> None:
         """Дождаться решателя (тестам и скриптам; демон не ждёт)."""
-        if self._thread.ident is not None:
+        if self._thread is not None and self._thread.ident is not None:
             self._thread.join(timeout)
 
 
