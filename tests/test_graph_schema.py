@@ -14,6 +14,7 @@ import dataclasses
 import inspect
 import pathlib
 import sys
+import typing
 
 import pytest
 
@@ -213,6 +214,25 @@ def test_форма_поля_читается_вычисленной_а_не_т�
     assert Своя(**_kwargs(), ещё=["a", "b"]).ещё == ("a", "b")
     with pytest.raises(ValueError, match="одно"):
         Своя(**_kwargs(), одно=("x",))
+
+
+@pytest.mark.parametrize("форма, принята", [
+    (typing.Tuple[str, ...], True),
+    (tuple[int, ...], False),
+    (tuple[str], False),
+    (tuple[str, str], False),
+], ids=["typing.Tuple", "кортеж-чисел", "кортеж-из-одного", "пара"])
+def test_форма_имён_это_только_кортеж_строк_любой_длины(форма, принята):
+    """«Кортеж имён» — ровно `tuple[str, ...]` в любой записи: кортеж чисел или
+    кортеж фиксированной длины — другая форма, её не нормализуют как имена, а
+    отвергают как необъявленную (мутатор по #654)."""
+    Своя = dataclasses.make_dataclass(
+        "Своя", [("ещё", форма, dataclasses.field(default=()))], bases=(GraphSchema,), frozen=True)
+    if принята:
+        assert Своя(**_kwargs(), ещё=["a"]).ещё == ("a",)
+    else:
+        with pytest.raises(TypeError, match="ещё"):
+            Своя(**_kwargs())
 
 
 def test_каждое_поле_схемы_под_своим_инвариантом():
