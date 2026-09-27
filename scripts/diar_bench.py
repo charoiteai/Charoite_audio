@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -145,9 +146,11 @@ NO_SPEECH = "в эталоне нет ни одного кадра речи — 
 
 
 def speech_frames(truth: list[dict], total: float) -> int:
-    """Кадры речи эталона на сетке записи — тот же счёт, что у метрик. Отрезок вне
-    0…total в кадры не попадает: охрана и метрика смотрят на один предикат, а не на
-    два (выходной круг 2 по #648, DS C1)."""
+    """Кадры сетки записи, где звучит хоть один голос эталона. Предикат «есть ли
+    речь» тот же, что у метрик: ноль здесь — ноль и у них (выходной круг 2 по #648,
+    DS C1). Счёт — не их знаменатель: у `der_overlap` это кадро-голоса, и на
+    разметке с перекрытиями он больше. Отрезок целиком вне 0…total кадров не даёт,
+    заходящий за край — только своей частью внутри (выходной круг 3, DS M1)."""
     return sum(1 for c in _grid_sets(truth, total) if c)
 
 
@@ -452,16 +455,43 @@ def run_nemotron_live(wav: pathlib.Path, model_dir: pathlib.Path | None = None,
     return nemotron.merge_same_speaker(out)
 
 
+def _mark(start: float, end: float, who: str, where: str) -> dict | None:
+    """Одна запись эталона → отрезок, `None` для метки-точки или ValueError с местом.
+
+    Проверка одна для JSON и текстовых форматов — трактовка записи у двух входов не
+    разъезжается. NaN прежде молча выбрасывал запись, бесконечность роняла охрану
+    трассировкой `OverflowError`, а вывернутый отрезок (конец раньше начала) молча
+    укорачивал эталон (выходной круг 3 по #648, DS M2/M3). Метка-точка — Ctrl+B в
+    Audacity без выделения — по-прежнему не речь и пропускается.
+    """
+    if not (math.isfinite(start) and math.isfinite(end)):
+        raise ValueError(f"{where}: время — не конечное число ({start}, {end})")
+    if not who:
+        raise ValueError(f"{where}: нет имени говорящего")
+    if end < start:
+        raise ValueError(f"{where}: конец раньше начала ({start} → {end})")
+    if end == start:
+        return None
+    return {"start": start, "end": end, "speaker": who}
+
+
 def read_truth(path: pathlib.Path) -> list[dict]:
     """Эталон своей записи: JSON бенча, RTTM или метки Audacity.
 
     Метки Audacity — самый короткий путь к эталону на живой встрече: выделить
     реплику, Ctrl+B, имя; File → Export → Labels. Строки, начинающиеся с «\\»,
-    Audacity пишет для частотного выделения — они пропускаются.
+    Audacity пишет для частотного выделения — они пропускаются. Любая беда файла —
+    ValueError с файлом в тексте: чтение, JSON, запись с номером.
     """
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"{path}: разметка не читается ({type(e).__name__}: {e})") from None
     if path.suffix.lower() == ".json":
-        data = json.loads(text)
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise ValueError(f"{path}: не JSON ({e})") from None
         if isinstance(data, dict) and "segments" not in data:
             # дверь чтения эталона отказывает одним типом с файлом в тексте, как у
             # текстовых форматов ниже, а не трассировкой KeyError (круг 1 по #648, DS M3)
@@ -478,10 +508,9 @@ def read_truth(path: pathlib.Path) -> list[dict]:
                 who = str(rec["speaker"]).strip()
             except (TypeError, KeyError, ValueError) as e:
                 raise ValueError(f"{path}: отрезок №{n} — ждали start, end и speaker ({e!r})") from None
-            if not who:
-                raise ValueError(f"{path}: у отрезка №{n} нет имени говорящего")
-            if end > start:
-                out.append({"start": start, "end": end, "speaker": who})
+            mark = _mark(start, end, who, f"{path}: отрезок №{n}")
+            if mark:
+                out.append(mark)
         return out
     out: list[dict] = []
     for n, line in enumerate(text.splitlines(), 1):
@@ -498,11 +527,62 @@ def read_truth(path: pathlib.Path) -> list[dict]:
         except (IndexError, ValueError) as e:
             raise ValueError(f"{path}:{n}: ждали «начало, конец, кто говорит» "
                              f"(метки Audacity) или строку RTTM — {e}") from None
-        if not who:
-            raise ValueError(f"{path}:{n}: у метки нет имени говорящего")
-        if end > start:
-            out.append({"start": start, "end": end, "speaker": who})
+        mark = _mark(start, end, who, f"{path}:{n}")
+        if mark:
+            out.append(mark)
     return out
+
+
+def _sound(wav: pathlib.Path):
+    """`sf.info` записи или ValueError с файлом: битая запись — строка, а не трассировка."""
+    try:
+        return sf.info(str(wav))
+    except (sf.LibsndfileError, OSError) as e:
+        raise ValueError(f"{wav}: запись не читается ({type(e).__name__}: {e})") from None
+
+
+def reference(*, wav: pathlib.Path | None, truth: pathlib.Path | None,
+              fixture: pathlib.Path, crosstalk: bool = False
+              ) -> tuple[pathlib.Path, float, list[dict] | None]:
+    """Запись, её длительность и эталон — готовой тройкой, или ValueError с причиной.
+
+    Одна дверь на оба входа — своя запись (`--wav`, `--truth`) и фикстура. Прежде
+    отказ превращался в строку у вызывающего, и ветка фикстуры его не ловила:
+    битая `truth.json` давала трассировку, та же разметка через `--truth` — строку
+    (выходной круг 3 по #648, DS I1). Здесь же — приговор «в эталоне нет речи»:
+    эталон нельзя получить, не пройдя охрану.
+    """
+    if wav is None:
+        truth = fixture / "truth.json"
+        if not truth.exists():
+            flag = " --crosstalk" if crosstalk else ""
+            raise ValueError(f"нет фикстуры ({truth}) — соберите: "
+                             f".venv/bin/python scripts/diar_bench.py --make{flag}")
+        try:
+            data = json.loads(truth.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise ValueError(f"{truth}: фикстура не читается ({type(e).__name__}: {e})") from None
+        if not isinstance(data, dict) or not isinstance(data.get("audio"), str):
+            raise ValueError(f"{truth}: в фикстуре нет имени записи (ключ audio) — "
+                             f"пересоберите: .venv/bin/python scripts/diar_bench.py --make")
+        wav = fixture / data["audio"]
+    elif not wav.is_file():
+        raise ValueError(f"нет файла {wav}")
+    info = _sound(wav)
+    if info.channels != 1 or info.samplerate != SR:
+        raise ValueError(f"{wav.name}: {info.channels} кан. × {info.samplerate} Гц, а нужен моно "
+                         f"{SR} Гц — перегнать: afconvert -f WAVE -d LEI16@{SR} -c 1 "
+                         f"{wav} {wav.with_name(wav.stem + '_16k.wav')}")
+    if truth is not None and not truth.is_file():
+        raise ValueError(f"нет файла разметки {truth}")       # DS M5 круга 2
+    marks = read_truth(truth) if truth is not None else None
+    total = info.frames / info.samplerate
+    if marks is not None and not speech_frames(marks, total):
+        # пустой эталон — отказ до прогона, а не «DER 0.000» и не трассировка метрики
+        # после движков: предикат тот же, что у метрики (DS C1 кругов 1 и 2)
+        raise ValueError(f"{truth.name}: {NO_SPEECH} (отрезки вне 0–{total:.1f} с, метки-точки "
+                         f"и строки частотного выделения Audacity речью не считаются)")
+    return wav, total, marks
 
 
 def write_labels(segments: list[dict], path: pathlib.Path) -> None:
@@ -634,44 +714,12 @@ def main() -> int:
             print(f"nemotron: {problem}", file=sys.stderr)
             return 1
 
-    if args.wav:
-        wav = args.wav
-        if not wav.is_file():
-            print(f"нет файла {wav}", file=sys.stderr)
-            return 1
-        info = sf.info(str(wav))
-        if info.channels != 1 or info.samplerate != SR:
-            print(f"{wav.name}: {info.channels} кан. × {info.samplerate} Гц, а нужен моно "
-                  f"{SR} Гц — перегнать: afconvert -f WAVE -d LEI16@{SR} -c 1 "
-                  f"{wav} {wav.with_name(wav.stem + '_16k.wav')}", file=sys.stderr)
-            return 1
-        if args.truth and not args.truth.is_file():
-            print(f"нет файла разметки {args.truth}", file=sys.stderr)       # DS M5 круга 2
-            return 1
-        try:
-            truth = read_truth(args.truth) if args.truth else None
-        except ValueError as e:
-            print(e, file=sys.stderr)
-            return 1
-        total = info.frames / info.samplerate
-    else:
-        fixture = args.fixture or _fixture(args.crosstalk)
-        truth_file = fixture / "truth.json"
-        if not truth_file.exists():
-            flag = " --crosstalk" if args.crosstalk else ""
-            print(f"нет фикстуры ({truth_file}) — соберите: "
-                  f".venv/bin/python scripts/diar_bench.py --make{flag}", file=sys.stderr)
-            return 1
-        data = json.loads(truth_file.read_text(encoding="utf-8"))
-        wav = fixture / data["audio"]
-        truth = read_truth(truth_file)      # фикстура — через ту же дверь, что и своя разметка
-        total = sf.info(str(wav)).duration
-
-    if truth is not None and not speech_frames(truth, total):
-        # пустой эталон — отказ до прогона, а не «DER 0.000» и не трассировка метрики
-        # после движков: предикат тот же, что у метрики (DS C1 кругов 1 и 2)
-        print(f"{args.truth or wav.name}: {NO_SPEECH} (отрезки вне 0–{total:.1f} с, метки-точки "
-              f"и строки частотного выделения Audacity речью не считаются)", file=sys.stderr)
+    try:
+        wav, total, truth = reference(wav=args.wav, truth=args.truth,
+                                      fixture=args.fixture or _fixture(args.crosstalk),
+                                      crosstalk=args.crosstalk)
+    except ValueError as e:
+        print(e, file=sys.stderr)
         return 1
     if truth is None:
         print(f"{wav.name}: {total:.1f}с, разметки нет — DER не считается\n")

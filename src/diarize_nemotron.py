@@ -42,7 +42,9 @@ import importlib.metadata
 import importlib.util
 import json
 import pathlib
-from typing import Any, Iterable, Protocol
+import re
+import sys
+from typing import Any, Callable, Iterable, Protocol
 
 import numpy as np
 
@@ -122,11 +124,45 @@ def check_model_dir(path: pathlib.Path) -> str | None:
     return None
 
 
-def availability(path: pathlib.Path) -> str | None:
+def _branch(version: str) -> tuple[int, int] | None:
+    """`0.5.7.dev0+g1a2b` → `(0, 5)`; не читается — None."""
+    m = re.match(r"(\d+)\.(\d+)", version)
+    return (int(m[1]), int(m[2])) if m else None
+
+
+def version_verdict(installed: str | None) -> tuple[str | None, str | None]:
+    """Установленный mlx-audio против проверенного: `(отказ, предупреждение)`.
+
+    Отказ — метаданных дистрибутива нет (версию не сверить) или другая ветка
+    `major.minor`: в 0.x это ломающий шаг. Предупреждение — та же ветка, другой
+    патч, dev- или локальная сборка: стык, скорее всего, тот же, прогон идёт, а
+    рецепт на случай отказа `load` назван заранее. Строгое равенство отказывало
+    любой сборке из git и `pip install -e` без выхода (выходной круг 3 по #648,
+    DS I2). Политика одна — её читает `availability`, а `load_model` при отказе
+    загрузки называет тот же рецепт.
+    """
+    if installed is None:
+        return (f"mlx-audio стоит без метаданных дистрибутива — версию не сверить, стык "
+                f"проверен на {MLX_AUDIO_VERSION}: {INSTALL_RECIPE}", None)
+    if installed == MLX_AUDIO_VERSION:
+        return None, None
+    if _branch(installed) is None or _branch(installed) != _branch(MLX_AUDIO_VERSION):
+        return f"mlx-audio {installed}, стык проверен на {MLX_AUDIO_VERSION} — {INSTALL_RECIPE}", None
+    return None, (f"mlx-audio {installed}: стык проверен на {MLX_AUDIO_VERSION}, ветка та же — "
+                  f"прогон идёт; откажет загрузка — {INSTALL_RECIPE}")
+
+
+def _stderr(line: str) -> None:
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+def availability(path: pathlib.Path, warn: Callable[[str], None] = _stderr) -> str | None:
     """Всё, чего не хватает для прогона, одним ответом — до долгой работы.
 
     None — пакет найден и каталог весов годен. Иначе — каждая проблема своей
     строкой с рецептом: человек ставит всё за один заход, а не по одной ошибке.
+    Версия той же ветки, но не та, — не проблема, а строка в `warn`.
     """
     problems = []
     if importlib.util.find_spec("mlx_audio") is None:
@@ -136,11 +172,11 @@ def availability(path: pathlib.Path) -> str | None:
             installed = importlib.metadata.version("mlx-audio")
         except importlib.metadata.PackageNotFoundError:
             installed = None
-        if installed != MLX_AUDIO_VERSION:
-            # стык проверен на одной версии: чужая — отказ до прогона с рецептом, а не
-            # «скачайте веса заново» после (круг 2 по #648, DS I2)
-            problems.append(f"mlx-audio {installed or '?'}, стык проверен на {MLX_AUDIO_VERSION} — "
-                            f"{INSTALL_RECIPE}")
+        refusal, warning = version_verdict(installed)
+        if refusal:
+            problems.append(refusal)
+        if warning:
+            warn(warning)
     problem = check_model_dir(path)
     if problem:
         problems.append(problem)
@@ -169,9 +205,12 @@ def load_model(path: pathlib.Path, preset: str = "offline") -> Any:
         raise ModelUnavailable(f"модели в {path} не хватило памяти ({e}) — закрыть тяжёлые "
                                f"приложения или взять 8-битные веса") from e
     except (TypeError, AttributeError) as e:
-        # дрейф API пакета — не битые веса: рецепт версии, а не загрузки (круг 2, DS I2)
+        # класс исключения не различает дрейф API пакета и веса не той формы: оба
+        # рецепта, человек выбирает по факту (выходной круг 3 по #648, критика DS 1)
         raise ModelUnavailable(f"mlx-audio ответил не так, как {MLX_AUDIO_VERSION} "
-                               f"({type(e).__name__}: {e}) — {INSTALL_RECIPE}") from e
+                               f"({type(e).__name__}: {e}) — если стоит другая версия: "
+                               f"{INSTALL_RECIPE}; если версия та, веса не той формы — "
+                               f"скачать заново: {fetch_recipe(pathlib.Path(path))}") from e
     except Exception as e:  # noqa: BLE001 — дверь «каталог → модель»: любой отказ библиотеки уходит одним типом с рецептом
         # каталог прошёл проверку формы (model_type, размер весов), а тензоры не той
         # архитектуры или закачка оборвана выше порога — рецепт, а не трассировка mlx (DS I4)

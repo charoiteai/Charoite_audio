@@ -185,6 +185,11 @@ root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
   30.4 s buffer — the model's ceiling) and `nemotron-live` (a stream in 0.5 s
   blocks, as the daemon would feed it). `--nemotron-preset` picks the stream
   latency: `low` 1.04 s (default), `very_low` 0.64 s, `ultra_low` 0.32 s.
+- **Version.** The version the seam was checked on lives in
+  `MLX_AUDIO_VERSION`, and a test keeps the recipe above equal to it. Another
+  `major.minor` branch or a package without distribution metadata is refused
+  before the run with the recipe; the same branch with another patch, a dev or
+  a local build gets a warning and the run goes on.
 - **Network.** The loader accepts only a local folder with `config.json` and
   weights and hands mlx-audio a `pathlib.Path`, for which the library does not
   go to the hub. A repository id is refused with the download recipe, not

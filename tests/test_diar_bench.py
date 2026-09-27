@@ -667,3 +667,71 @@ def test_missing_reference_file_is_a_refusal_not_a_trace(tmp_path):
     diar_bench.sf.write(wav, np.zeros(16000, dtype=np.float32), 16000)
     out = _bench("--wav", str(wav), "--truth", str(tmp_path / "нет.txt"), "--engine", "live")
     assert out.returncode == 1 and "нет файла разметки" in out.stderr, out.stderr
+
+
+# --- дверь эталона: один отказ на оба входа (выходной круг 3 по #648) ----------
+
+def _fixture_dir(tmp_path, truth_body: str, audio: str = "dialog.wav") -> pathlib.Path:
+    folder = tmp_path / "fx"
+    folder.mkdir()
+    diar_bench.sf.write(folder / audio, np.zeros(16000, dtype=np.float32), 16000)
+    (folder / "truth.json").write_text(truth_body, encoding="utf-8")
+    return folder
+
+
+@pytest.mark.parametrize("body, says", [
+    ('{"audio": "dialog.wav", "segments": [{"start": 0.0, "end": 1.0}]}', "отрезок №1"),
+    ('{"segments": [{"start": 0.0, "end": 1.0, "speaker": "А"}]}', "ключ audio"),
+    ('{"audio": "dialog.wav", "segments": ', "фикстура не читается"),
+    ('{"audio": "нет.wav", "segments": [{"start": 0.0, "end": 1.0, "speaker": "А"}]}', "запись не читается"),
+], ids=["битая запись", "нет audio", "не JSON", "нет записи"])
+def test_a_broken_fixture_is_a_line_not_a_trace(tmp_path, body, says):
+    """Фикстура идёт через ту же дверь и тот же отказ, что своя разметка: строка и
+    код 1, а не трассировка (выходной круг 3 по #648, DS I1)."""
+    out = _bench("--fixture", str(_fixture_dir(tmp_path, body)), "--engine", "live")
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert says in out.stderr and "Traceback" not in out.stderr, out.stderr
+
+
+def test_the_reference_door_returns_the_triple(tmp_path):
+    """Годная фикстура — запись, длительность и эталон одной тройкой."""
+    body = '{"audio": "dialog.wav", "segments": [{"start": 0.0, "end": 0.5, "speaker": "А"}]}'
+    folder = _fixture_dir(tmp_path, body)
+    wav, total, marks = diar_bench.reference(wav=None, truth=None, fixture=folder)
+    assert wav == folder / "dialog.wav" and total == pytest.approx(1.0)
+    assert marks == [{"start": 0.0, "end": 0.5, "speaker": "А"}]
+
+
+@pytest.mark.parametrize("record, says", [
+    ('{"start": 0, "end": NaN, "speaker": "А"}', "не конечное число"),
+    ('{"start": 0, "end": 1e400, "speaker": "А"}', "не конечное число"),
+    ('{"start": 5.0, "end": 2.0, "speaker": "А"}', "конец раньше начала"),
+], ids=["NaN", "бесконечность", "вывернутый"])
+def test_json_records_must_be_finite_and_in_order(tmp_path, record, says):
+    """NaN молча выбрасывал запись, бесконечность роняла охрану OverflowError,
+    вывернутый отрезок молча укорачивал эталон (DS M2/M3 круга 3)."""
+    truth = tmp_path / "t.json"
+    truth.write_text('{"segments": [' + record + ']}', encoding="utf-8")
+    with pytest.raises(ValueError, match=rf"отрезок №1: .*{says}"):
+        diar_bench.read_truth(truth)
+
+
+@pytest.mark.parametrize("line, says", [
+    ("5.0\t2.0\tА\n", "конец раньше начала"),
+    ("0\tinf\tА\n", "не конечное число"),
+], ids=["вывернутая метка", "бесконечность"])
+def test_label_lines_are_checked_like_json_records(tmp_path, line, says):
+    """Текстовая дорожка проверяется той же функцией, что и JSON: трактовка не
+    разъезжается; метка-точка по-прежнему пропускается молча."""
+    f = tmp_path / "labels.txt"
+    f.write_text("1.0\t2.0\tА\n3.0\t3.0\tточка\n" + line, encoding="utf-8")
+    with pytest.raises(ValueError, match=rf"labels\.txt:3: .*{says}"):
+        diar_bench.read_truth(f)
+
+
+def test_an_unreadable_reference_names_the_file(tmp_path):
+    """Разметка не в UTF-8 — строка с файлом, а не трассировка декодера."""
+    f = tmp_path / "labels.txt"
+    f.write_bytes("0.0\t1.0\tАнна\n".encode("cp1251"))
+    with pytest.raises(ValueError, match="разметка не читается"):
+        diar_bench.read_truth(f)

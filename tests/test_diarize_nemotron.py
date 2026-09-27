@@ -432,11 +432,13 @@ def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):
     assert not {p for p in new if "__pycache__" not in p.parts}, sorted(new)
 
 
-@pytest.mark.parametrize("error, says", [(TypeError("load() got an unexpected keyword 'strict'"), "mlx-audio ответил не так"),
-                                         (MemoryError("нет памяти"), "не хватило памяти")])
-def test_library_drift_and_memory_get_their_own_recipe(tmp_path, monkeypatch, error, says):
-    """Дрейф API пакета и нехватка памяти — не битые веса: у них свой рецепт, а не
-    «скачать заново» (выходной круг 2 по #648, DS I2)."""
+@pytest.mark.parametrize("error, says, weights", [
+    (TypeError("load() got an unexpected keyword 'strict'"), "mlx-audio ответил не так", True),
+    (MemoryError("нет памяти"), "не хватило памяти", False)])
+def test_library_drift_and_memory_get_their_own_recipe(tmp_path, monkeypatch, error, says, weights):
+    """Нехватка памяти — не битые веса: свой рецепт без «скачать заново» (выходной
+    круг 2 по #648, DS I2). TypeError/AttributeError класс не различает: дрейф API
+    пакета или веса не той формы — названы оба рецепта (круг 3, критика DS 1)."""
     import types
 
     def load(path, strict):
@@ -448,16 +450,62 @@ def test_library_drift_and_memory_get_their_own_recipe(tmp_path, monkeypatch, er
     monkeypatch.setitem(sys.modules, "mlx_audio.vad", vad)
     with pytest.raises(nem.ModelUnavailable, match=says) as err:
         nem.load_model(_model_dir(tmp_path))
-    assert "hf download" not in str(err.value)
+    assert ("hf download" in str(err.value)) is weights
+    assert (nem.INSTALL_RECIPE in str(err.value)) is weights
 
 
 def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monkeypatch):
-    """Стык проверен на одной версии mlx-audio: другая установленная — строка с
-    рецептом до прогона (круг 2 по #648, DS I2)."""
+    """Стык проверен на одной ветке mlx-audio: другая ветка — строка с рецептом до
+    прогона (круг 2 по #648, DS I2; ветка вместо строгого равенства — круг 3)."""
     monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.5")
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.4.9")
     d = _model_dir(tmp_path)
-    problem = nem.availability(d)
-    assert problem and "mlx-audio 0.5.5" in problem and nem.MLX_AUDIO_VERSION in problem
+    problem = nem.availability(d, warn=lambda line: pytest.fail(f"другая ветка — не предупреждение: {line}"))
+    assert problem and "mlx-audio 0.4.9" in problem and nem.MLX_AUDIO_VERSION in problem
     monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: nem.MLX_AUDIO_VERSION)
     assert nem.availability(d) is None
+
+
+@pytest.mark.parametrize("installed, refused, warned", [
+    ("0.5.6", False, False),
+    ("0.5.7", False, True),
+    ("0.5.7.dev0+g1a2b3c", False, True),
+    ("0.5.6+local", False, True),
+    ("0.6.0", True, False),
+    ("0.4.9", True, False),
+    ("мусор", True, False),
+    (None, True, False),
+])
+def test_version_policy_refuses_another_branch_and_warns_on_a_patch(installed, refused, warned):
+    """Строгое равенство отказывало любой сборке из git без выхода. Отказ — другая
+    ветка major.minor или нет метаданных; та же ветка — предупреждение и прогон
+    (выходной круг 3 по #648, DS I2)."""
+    refusal, warning = nem.version_verdict(installed)
+    assert bool(refusal) is refused and bool(warning) is warned
+    for text in filter(None, (refusal, warning)):
+        assert nem.MLX_AUDIO_VERSION in text and nem.INSTALL_RECIPE in text
+    if installed is None:
+        assert "метаданных" in refusal
+
+
+def test_availability_warns_on_a_patch_and_still_passes(tmp_path, monkeypatch):
+    """Та же ветка, другой патч: не проблема, а строка в сток предупреждений."""
+    monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.7")
+    warned = []
+    assert nem.availability(_model_dir(tmp_path), warn=warned.append) is None
+    assert len(warned) == 1 and "0.5.7" in warned[0]
+
+
+def test_the_docs_install_the_pinned_version():
+    """Пин живёт в двух местах — константа и доки: доки обязаны ставить ровно
+    проверенную версию, иначе человек поставит ту, которой availability откажет
+    (выходной круг 3 по #648, DS M4)."""
+    import re as _re
+    docs = sorted((REPO / "docs").rglob("*.md"))
+    pins = {str(d.relative_to(REPO)): _re.findall(r"mlx-audio==([0-9][^\"'\s]*)", d.read_text(encoding="utf-8"))
+            for d in docs}
+    pins = {k: v for k, v in pins.items() if v}
+    assert pins, "доки перестали называть версию mlx-audio — сторож смотрит мимо"
+    for doc, versions in pins.items():
+        assert set(versions) == {nem.MLX_AUDIO_VERSION}, (doc, versions)
