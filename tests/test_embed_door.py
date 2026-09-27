@@ -265,6 +265,8 @@ def test_say_once_flushes_stderr(monkeypatch):
     ConnectionRefusedError("нет соединения"),
     http.client.RemoteDisconnected("сервер закрыл"),
     urllib.error.URLError("упало"),
+    http.client.IncompleteRead(b"{\"embeddings\": [["),   # не OSError: держит тип в TRANSPORT_ERRORS
+    http.client.BadStatusLine("мусор"),
 ])
 def test_transport_failures_become_a_seam_transport_error(exc):
     def post(url, payload, timeout):

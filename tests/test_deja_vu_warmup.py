@@ -97,7 +97,11 @@ def test_the_deja_vu_loop_asks_through_deja_vu_embed():
                 if isinstance(n, ast.FunctionDef) and n.name == "deja_vu_loop")
     calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
              for c in ast.walk(loop) if isinstance(c, ast.Call)}
-    # фабрику двери цикл не упоминает вовсе — ни вызовом, ни ссылкой (круг 3, DS M3)
+    # фабрику двери цикл не упоминает: ни вызовом, ни атрибутом, ни именем, ни строкой
+    # (`getattr(llm_mod, "embedder")`) — выходные круги 3–4, DS M3; импорт внутри
+    # функции с псевдонимом (`from llm import embedder as e`) это не ловит
     atoms = {n.attr for n in ast.walk(loop) if isinstance(n, ast.Attribute)} \
-        | {n.id for n in ast.walk(loop) if isinstance(n, ast.Name)}
-    assert "deja_vu_embed" in calls and "embedder" not in atoms, sorted(calls)
+        | {n.id for n in ast.walk(loop) if isinstance(n, ast.Name)} \
+        | {n.value for n in ast.walk(loop) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "deja_vu_embed" in calls, sorted(calls)
+    assert "embedder" not in atoms, sorted(a for a in atoms if "embed" in a)
