@@ -2490,7 +2490,9 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
         return []
     out: list[str] = []
     init = f"{FLAT_DIR}/{layout['package']}/__init__.py"
-    if init not in inv.files:
+    # вопрос «есть ли `__init__` пакета» — к проекции формы, а не к склейке пути: мимо
+    # формы файл, выведенный правилом KINDS из кода, считался бы «есть» (круг 3, DS M3)
+    if layout["package"] not in package_inits(inv, layout):
         out.append(f"package {layout['package']}: нет {init} — объявленный пакет обязан быть пакетом: "
                    f"без __init__ копия пробы и колесо собирают пространство имён, а правило "
                    f"пустоты __init__ судит пустоту")
