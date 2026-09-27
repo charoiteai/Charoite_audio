@@ -2388,10 +2388,14 @@ def package_closure(graph: dict[str, set[str]], entry: str) -> set[str]:
 
 
 def package_files(inv: Inventory, layout: dict) -> list[str]:
-    """План пробы пакета: файлы замыкания `package_entry`, по пути. Проба
-    копирует ровно их — список берётся здесь, а не собирается тестом заново."""
+    """План пробы пакета: файлы замыкания `package_entry` и `__init__` пакета, по
+    пути. Проба копирует ровно их — список берётся здесь, а не собирается тестом
+    заново. `__init__` — явно, а не через замыкание: ребро на сам пакет даёт только
+    `from charoite_graph import x`, и при `import charoite_graph.x` копия вышла бы
+    пакетом-пространством имён без своего `__init__` (выходной круг 1 по #650, DS I1)."""
     closure = package_closure(import_graph(inv), layout["package_entry"])
-    return sorted(rel for rel in inv.files if module_of(rel) in closure)
+    inits = package_inits(inv, layout)
+    return sorted(rel for rel in inv.files if (m := module_of(rel)) in closure or m in inits)
 
 
 def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
@@ -2430,27 +2434,47 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     return out
 
 
-def package_members(inv: Inventory, layout: dict) -> set[str]:
-    """Модули-члены пакета `layout["package"]` — файлы, чья `form` называет этот
-    пакет родителем. Каталог, а не список имён: список разошёлся бы с деревом
-    молча, и «член» держался бы памятью (№424)."""
+def _package_forms(inv: Inventory, layout: dict) -> list[tuple[str, Form]]:
+    """Файлы поддерева пакета `layout["package"]` на ЛЮБОЙ глубине с их формой —
+    одна проекция для членов и `__init__`. Родитель (`form(...).package`) видел
+    только первый уровень: `src/charoite_graph/sub/x.py` не был членом ни для
+    кого, и каталог пакета переставал быть равен замыканию молча (выходной круг 1
+    по #650, DS C1). Поддерево называет `provider` — корень пакета."""
     package = layout.get("package")
     if not package:
-        return set()
-    return {m for rel in inv.files if form(rel).package == package
-            and (m := module_of(rel)) is not None}
+        return []
+    return [(rel, f) for rel in sorted(inv.files)
+            if (f := form(rel)).provider == f"package:{package}" and module_of(rel) is not None]
+
+
+def package_members(inv: Inventory, layout: dict) -> set[str]:
+    """Модули-члены пакета `layout["package"]` — модули его поддерева, кроме
+    `__init__`. Каталог, а не список имён: список разошёлся бы с деревом молча, и
+    «член» держался бы памятью (№424). `__init__` — не член: его нельзя ни позвать
+    из входа, ни выбросить, он исполняется при импорте любого члена (DS I1)."""
+    return {f.module for _, f in _package_forms(inv, layout) if f.role == "module"}
+
+
+def package_inits(inv: Inventory, layout: dict) -> set[str]:
+    """`__init__` пакета и его подпакетов — имена самих пакетов (`charoite_graph`)."""
+    return {f.module for _, f in _package_forms(inv, layout) if f.role == "package_init"}
 
 
 def package_problems(graph: dict[str, set[str]], layout: dict | None,
                      inv: Inventory | None) -> list[str]:
     """Пакет самодостаточен — каталог, замыкание и внешние импорты сходятся.
 
-    Три равенства, каждое в свою сторону (№424): множество членов каталога
-    (`form(...).package`) равно замыканию `package_entry` по графу импортов; и
-    ни один член не импортирует модуль продукта вне пакета — сторонние пакеты и
-    stdlib можно, свой код только внутрь. Так «пакет» перестаёт быть списком имён
-    в артефакте: лишний модуль в каталоге, забытый входом, и переехавший, но
-    оставшийся снаружи, — обе строки.
+    Три равенства, каждое в свою сторону (№424): множество членов поддерева
+    (`package_members`, любая глубина) равно замыканию `package_entry` по графу
+    импортов; и ни один член не импортирует модуль продукта вне пакета —
+    сторонние пакеты и stdlib можно, свой код только внутрь. Так «пакет»
+    перестаёт быть списком имён в артефакте: лишний модуль в каталоге, забытый
+    входом, и переехавший, но оставшийся снаружи, — обе строки.
+
+    `__init__` пакета в сравнении не участвует (ребро на него зависит от того,
+    как написан импорт) и судится своим правилом: он пуст от импортов, потому что
+    исполняется при импорте ЛЮБОГО члена — `import charoite_graph` не тянет ни
+    сторонних пакетов, ни членов (выходной круг 1 по #650, DS I1–I2).
 
     `layout`/`inv` равны `None` — вызывающий о пакете не спрашивает (то же
     соглашение, что у `env_problems`): синтетические деревья тестов, не
@@ -2464,7 +2488,8 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     if entry not in graph:
         # об отсутствующем входе уже говорит `env_problems` — второй строкой не повторяем
         return []
-    closure = package_closure(graph, entry)
+    inits = package_inits(inv, layout)
+    closure = package_closure(graph, entry) - inits
     out: list[str] = []
     for m in sorted(members - closure):
         out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
@@ -2473,9 +2498,14 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
         out.append(f"модуль замыкания {entry} — {m} — лежит вне пакета {layout['package']}/: "
                    f"перенести в пакет или разорвать импорт")
     for m in sorted(members):
-        for d in sorted(d for d in graph.get(m, ()) if d not in members):
+        for d in sorted(d for d in graph.get(m, ()) if d not in members | inits):
             out.append(f"член пакета {m} импортирует {d} вне пакета — членам можно только друг "
                        f"друга (сторонние пакеты и stdlib — можно)")
+    for rel, f in _package_forms(inv, layout):
+        tree = inv.files[rel].tree
+        if f.role == "package_init" and tree is not None and (names := imports_of(rel, tree)):
+            out.append(f"{rel} импортирует {', '.join(sorted(names))} — __init__ пакета исполняется "
+                       f"при импорте любого члена и держится пустым от импортов")
     return out
 
 

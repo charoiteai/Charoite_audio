@@ -321,7 +321,9 @@ sys.addaudithook(hook)
 import json, pathlib
 sys.path.insert(0, PKG)
 PATH_BEFORE = list(sys.path)
+BEFORE_INIT = set(sys.modules)
 import charoite_graph
+PULLED_BY_INIT = sorted(set(sys.modules) - BEFORE_INIT - {"charoite_graph"})
 from charoite_graph import graph_search, model_seam
 
 
@@ -343,6 +345,7 @@ loaded = again.load_vectors()
 result = again.search(QUERY)
 print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
                   "embedded": embedded, "loaded": loaded, "path_before": PATH_BEFORE, "path_after": sys.path,
+                  "pulled_by_init": PULLED_BY_INIT,
                   "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
                   "modules": sorted(sys.modules),
                   "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
@@ -392,6 +395,13 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     # (Critical головы круга 2 по PR №625 — граница грамматики, а не новая эвристика)
     if out["path_after"] != out["path_before"]:
         problems.append(f"пакет правит sys.path: было {out['path_before']}, стало {out['path_after']}")
+    # `import charoite_graph` — только сам пакет: его `__init__` исполняется при импорте
+    # любого члена, и всё, что он тянет, едет в каждый импорт. Статическое правило
+    # («__init__ пуст от импортов») стоит в гейте раскладки, здесь — поведение
+    # (выходной круг 1 по #650, DS I2)
+    if out.get("pulled_by_init"):
+        problems.append(f"import charoite_graph тянет {', '.join(out['pulled_by_init'])} — "
+                        f"__init__ пакета обязан быть пустым")
     return problems, out
 
 
@@ -433,6 +443,22 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
     assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
+
+
+def test_the_probe_sees_what_the_package_init_pulls(tmp_path: pathlib.Path) -> None:
+    """Отрицательный опыт признака `pulled_by_init`: копия пакета с импортом члена
+    в `__init__` — строка пробы. Без признака «`import charoite_graph` не тянет ни
+    yaml, ни членов» держалось бы одним статическим правилом гейта раскладки
+    (выходной круг 1 по #650, DS I2)."""
+    _copy_package(tmp_path / "pkg")
+    init = tmp_path / "pkg" / "charoite_graph" / "__init__.py"
+    init.write_text(init.read_text(encoding="utf-8") + "from charoite_graph import frontmatter\n",
+                    encoding="utf-8")
+    graph = tmp_path / "work" / "Демо"
+    shutil.copytree(ROOT / "demo" / "graph", graph)
+    problems, _ = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work")
+    assert any(p.startswith("import charoite_graph тянет") and "charoite_graph.frontmatter" in p
+               for p in problems), problems
 
 
 #: Как каждое событие из `MUTATIONS` выглядит в коде пакета: `V` — каталог-жертва
