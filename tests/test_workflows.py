@@ -523,3 +523,15 @@ def test_nightly_installs_by_the_ci_pins():
     assert used, "ночь ставит пакеты без пинов"
     assert used <= night.keys(), f"пин без объявления в env nightly.yml: {sorted(used - night.keys())}"
     assert {k: night[k] for k in used} == {k: ci.get(k) for k in used}
+
+
+def test_mutation_range_starts_at_the_current_base_branch():
+    """База диапазона мутаций — голова ветки назначения (`origin/<base_ref>`), а не
+    `pull_request.base.sha`: тот — голова на момент открытия PR, и против
+    merge-коммита он тянул в план правки, влитые в main позже (#649: 357 мутантов
+    вместо 96). Сторож держит источник базы в шаге мутаций."""
+    job = _load("ci.yml")["jobs"]["mutation"]
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")) and "--shard" in str(s.get("run", "")))
+    assert step.get("env", {}).get("BASE_REF") == "${{ github.base_ref }}", step.get("env")
+    assert '--range "origin/$BASE_REF...HEAD"' in step["run"], step["run"]
+    assert "base.sha" not in str(job)

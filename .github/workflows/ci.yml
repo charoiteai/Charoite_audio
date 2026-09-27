@@ -218,13 +218,19 @@ jobs:
       - name: mutate changed lines
         timeout-minutes: 50
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # База диапазона — текущая голова ветки назначения, а не
+          # `pull_request.base.sha`: тот остаётся головой на момент открытия PR, а
+          # HEAD здесь — merge-коммит с сегодняшней веткой назначения, и
+          # «старая база...merge» тянула в план чужие правки, влитые в main после
+          # открытия PR (замер на #649: 357 мутантов вместо 96, doctor.py и
+          # layout_map.py из других PR — доли не уложились в бюджет).
+          BASE_REF: ${{ github.base_ref }}
           SHARD: ${{ matrix.shard }}
           # мутатор — точка входа: корень данных называется явно, а не угадывается
           # по месту скрипта (№440); у раннера данных владельца нет, корень — сам checkout
           CHAROITE_ROOT: ${{ github.workspace }}
         run: |
-          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "$REPORT" || rc=$?
+          rc=0; python scripts/mutate_check.py --range "origin/$BASE_REF...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "$REPORT" || rc=$?
           echo "шард $SHARD: код мутатора $rc — судит job mutation verdict"
       # Отчёт пишется после каждого мутанта, поэтому доезжает и тогда, когда шаг
       # оборвал свой потолок: итог — в сводку прогона, а не только в лог.
