@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import zipfile
 
 import pytest
@@ -247,10 +248,11 @@ WHEEL_ENV_DROP = (
 )
 #: Потолок сборки колеса: pip готовит метаданные и пакует — дольше пробника
 #: входа, но всё ещё секунды; общий TIMEOUT (30 с) на холодном кэше тесен.
-#: Ниже потолка теста (`timeout = 120` в pyproject): pytest-timeout считает и
-#: сессионную фикстуру, и потолок выше 120 не сработал бы никогда (выходной
-#: круг 1 по #657, DS M4).
-WHEEL_TIMEOUT = 90
+#: Сборка и проба живут в бюджете ОДНОГО теста (`timeout` в pyproject):
+#: pytest-timeout считает и сессионную фикстуру (выходной круг 1 по #657, DS M4).
+#: Сумма с потолком пробы оставляет запас на распаковку и копии — отношение
+#: держит тест, а не проза (круг 2, DS I2).
+WHEEL_TIMEOUT = 70
 #: Файл CI — тот же путь, откуда `scripts/preflight.sh` читает `RUFF_VERSION`:
 #: пин setuptools для сборки берётся из его секции `env`.
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -588,16 +590,19 @@ def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
     называло лишние и недостающие модули, а не только факт неравенства (№427).
 
     Всё, что не модуль, судится тоже: кроме модулей плана в колесе может лежать
-    только ОДИН каталог `*.dist-info`. Сверка по одним `*.py` была слепа к данным
-    пакета и к любому лишнему файлу (выходной круг 1 по #657, DS I2); что
-    объявлять данными — №446."""
+    только каталог метаданных СВОЕГО дистрибутива `<имя>-<версия>.dist-info`
+    (имя и версия — из того же `pyproject.toml`, по которому колесо собрано;
+    круг 2 по #657, DS I1) и стандартный `*.data/`. Сверка по одним `*.py` была
+    слепа к данным пакета и к любому лишнему файлу (круг 1, DS I2); что объявлять
+    данными — №446."""
     want = {lm.artifact_name(rel) for rel in lm.package_files(INV, lm.load_layout())}
     with zipfile.ZipFile(built) as archive:
         names = [name for name in archive.namelist() if not name.endswith("/")]
     got = {name for name in names if name.endswith(".py")}
-    meta = {name.split("/", 1)[0] for name in names if name.split("/", 1)[0].endswith(".dist-info")}
-    чужое = sorted(name for name in names
-                   if not name.endswith(".py") and name.split("/", 1)[0] not in meta)
+    tops = {name.split("/", 1)[0] for name in names}
+    meta = {top for top in tops if top.endswith(".dist-info")}
+    чужое = sorted(name for name in names if not name.endswith(".py")
+                   and not name.split("/", 1)[0].endswith((".dist-info", ".data")))
     избыток = sorted(got - want)
     недостача = sorted(want - got)
     out = []
@@ -606,10 +611,19 @@ def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
     if недостача:
         out.append("в артефакте нет модулей плана: " + ", ".join(недостача))
     if чужое:
-        out.append("в артефакте лишние файлы: " + ", ".join(чужое))
-    if len(meta) != 1:
-        out.append(f"в артефакте каталогов dist-info не один, а {len(meta)}: {sorted(meta)}")
+        out.append("в артефакте лишние файлы (объявить данными или убрать): " + ", ".join(чужое))
+    own = _dist_info_dir()
+    if meta != {own}:
+        out.append(f"в артефакте метаданные не своего дистрибутива: ждали {own}, нашли {sorted(meta)}")
     return out
+
+
+def _dist_info_dir(pyproject: pathlib.Path = ROOT / "packages" / "charoite-graph" / "pyproject.toml") -> str:
+    """Имя каталога метаданных колеса по объявлению дистрибутива: `-` в имени —
+    `_`, как пишет его инструмент сборки (PEP 427). Один читатель объявления
+    переедет в гейт «артефакт против объявления» №446."""
+    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    return f"{project['name'].replace('-', '_')}-{project['version']}.dist-info"
 
 
 def _copy_package(dest: pathlib.Path) -> None:
@@ -680,9 +694,16 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     got = _wheel_plan_problems(rebuild(tmp_path / "extra.whl", extra="charoite_graph/лишний.py"))
     assert got and "лишние модули" in got[0] and "charoite_graph/лишний.py" in got[0], got
     got = _wheel_plan_problems(rebuild(tmp_path / "data.whl", extra="charoite_graph/стоп-слова.txt"))
-    assert got == ["в артефакте лишние файлы: charoite_graph/стоп-слова.txt"], got
+    assert got == ["в артефакте лишние файлы (объявить данными или убрать): charoite_graph/стоп-слова.txt"], got
     got = _wheel_plan_problems(rebuild(tmp_path / "meta.whl", extra="чужой-0.1.dist-info/METADATA"))
-    assert len(got) == 1 and "dist-info не один, а 2" in got[0], got
+    assert len(got) == 1 and "не своего дистрибутива" in got[0] and "чужой-0.1.dist-info" in got[0], got
+    own = _dist_info_dir()
+    with zipfile.ZipFile(wheel_path) as src, zipfile.ZipFile(tmp_path / "swap.whl", "w") as dst:
+        for item in src.infolist():
+            dst.writestr(item.filename.replace(own, "другой-0.1.dist-info", 1), src.read(item.filename))
+    got = _wheel_plan_problems(tmp_path / "swap.whl")
+    assert len(got) == 1 and "ждали " + own in got[0], got
+    assert _wheel_plan_problems(rebuild(tmp_path / "std.whl", extra="charoite_graph-0.1.0.data/scripts/x")) == []
 
 
 def test_the_sandbox_copy_is_writable_from_a_read_only_tree(tmp_path: pathlib.Path) -> None:
@@ -708,6 +729,14 @@ def test_the_sandbox_copy_is_writable_from_a_read_only_tree(tmp_path: pathlib.Pa
     for directory in (dst, dst / "sub"):
         (directory / "новый.py").write_text("", encoding="utf-8")
     (dst / "sub" / "m.py").write_text("x = 2\n", encoding="utf-8")
+
+
+def test_the_wheel_build_and_the_probe_fit_one_test_budget() -> None:
+    """Сборка (в фикстуре) и проба идут в бюджете одного теста: их сумма строго
+    меньше потолка теста из pyproject — иначе наружу выходит «потолок 120 с», а
+    не имя виновника (круг 2 по #657, DS I2)."""
+    ceiling = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"]["timeout"]
+    assert WHEEL_TIMEOUT + TIMEOUT < ceiling, (WHEEL_TIMEOUT, TIMEOUT, ceiling)
 
 
 def test_the_ci_pin_must_be_a_quoted_string(tmp_path: pathlib.Path) -> None:

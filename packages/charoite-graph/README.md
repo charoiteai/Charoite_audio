@@ -8,14 +8,15 @@
 ## Как собрать
 
 ```bash
-rm -rf packages/charoite-graph/build packages/charoite-graph/*.egg-info
+rm -rf dist packages/charoite-graph/build packages/charoite-graph/*.egg-info
 python -m pip wheel --no-build-isolation --no-deps --no-index -w dist packages/charoite-graph
 ```
 
 Сборка офлайн и без изоляции сборки: интерпретатору нужен `setuptools` (>= 77 —
 лицензия записана строкой SPDX) в своём окружении. Первая строка убирает следы
 прошлой сборки: без изоляции `build/` старого прогона уехал бы в новое колесо.
-Готовое колесо ложится в `dist/` и содержит ровно модули `src/charoite_graph/`.
+Готовое колесо ложится в `dist/` и содержит модули `src/charoite_graph/` и один каталог
+метаданных `charoite_graph-<версия>.dist-info`.
 
 ## Что здесь ещё не судится
 
