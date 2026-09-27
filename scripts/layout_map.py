@@ -561,13 +561,9 @@ def _rule(rel: str) -> int | None:
 
 def _by_suffix(base: str, rel: str) -> str:
     """Вид файла внутри правила, когда правило просит разбирать по суффиксу:
-    `code` — только настоящий код, `prose` — проза независимо от суффикса
-    (каталог метаданных дистрибутива `packages/` — именно проза, №424/№427),
-    без правила — проза по прозовому суффиксу, иначе `out`."""
+    `code` — только настоящий код, иначе проза по прозовому суффиксу или `out`."""
     if base == "code" and rel.endswith(CODE_SUFFIXES):
         return "code"
-    if base == "prose":
-        return "prose"
     return "prose" if rel.endswith(PROSE_SUFFIXES) else "out"
 
 

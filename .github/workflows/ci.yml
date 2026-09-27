@@ -97,7 +97,8 @@ jobs:
     # Потолок job — сумма потолков шагов, у повторов PortAudio — свой худший
     # случай: сторож в tests/test_workflows.py тот же, что у job mutation (№395).
     # Прежние 10 минут обрывали шаг посреди второй попытки из трёх обещанных.
-    timeout-minutes: 35
+    # 2 + 3 + 12 + 6 + 12 + 3 (гейт раскладки) = 38.
+    timeout-minutes: 38
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
