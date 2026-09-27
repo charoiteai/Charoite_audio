@@ -73,18 +73,50 @@ def _всегда(статус: int, причина: str):
     return журнал, обработчик
 
 
-@pytest.mark.parametrize("статус, ожидание", [
-    (501, True), (400, True),
-    (429, False), (502, False), (503, False),
-], ids=["501-грамматики-нет", "400-другой-сборки", "429-занято", "502-занято", "503-занято"])
-def test_распознаватель_причины(статус, ожидание):
-    """Причина — по телу без учёта регистра; занятость причиной не считается,
-    даже если сервер по недоразумению вложил текст в 503."""
-    err = LLMHTTPError(статус, '{"error":"Structured Output Is Unavailable"}')
-    assert LLM._structured_output_unavailable(err) is ожидание
+@pytest.mark.parametrize("статус, тело, ожидание", [
+    (200, '{"кто": "Сергей"}', llm_mod.STRICT_YES),
+    (200, '{"error": "structured output is unavailable"}', llm_mod.STRICT_NO),
+    (200, '{"error": "Structured Output Is Unavailable"}', llm_mod.STRICT_NO),
+    (200, '{"error": "model not found"}', llm_mod.STRICT_UNKNOWN),
+    (200, "", llm_mod.STRICT_UNKNOWN),
+    (200, "не json", llm_mod.STRICT_UNKNOWN),
+    (200, "<html>страница квоты</html>", llm_mod.STRICT_UNKNOWN),
+    (200, '[{"кто": "Сергей"}]', llm_mod.STRICT_UNKNOWN),
+    (501, '{"error": "structured output is unavailable"}', llm_mod.STRICT_NO),
+    (400, "structured output is unavailable", llm_mod.STRICT_NO),
+    (500, "внутренняя ошибка", llm_mod.STRICT_UNKNOWN),
+    (404, "model not found", llm_mod.STRICT_UNKNOWN),
+    (429, '{"error": "structured output is unavailable"}', llm_mod.STRICT_UNKNOWN),
+    (502, "structured output is unavailable", llm_mod.STRICT_UNKNOWN),
+    (503, "busy", llm_mod.STRICT_UNKNOWN),
+], ids=["200-объект", "200-фраза", "200-фраза-регистр", "200-иная-ошибка",
+        "200-пусто", "200-не-json", "200-html", "200-не-объект",
+        "501", "400-сырой-текст", "500", "404", "429", "502", "503"])
+def test_вердикт_по_статусу_и_телу(статус, тело, ожидание):
+    """Одна таблица двери: 200 с объектом без error — yes; error с фразой —
+    no, без фразы — unknown; пусто/HTML/не объект — unknown. Вне 200 фразу
+    решает причина, а занятость (429/502/503) — всегда unknown: это очередь,
+    не отсутствие грамматики."""
+    исход, _ = llm_mod.strict_json_verdict(статус, тело)
+    assert исход == ожидание
 
-    без = LLMHTTPError(статус, "model not found")
-    assert LLM._structured_output_unavailable(без) is False
+
+def test_причина_вердикта_это_поле_error():
+    """Причина — поле error объекта JSON, иначе сырой текст."""
+    _, причина = llm_mod.strict_json_verdict(501, '{"error": "нет грамматики"}')
+    assert причина == "нет грамматики"
+    _, сырой = llm_mod.strict_json_verdict(500, "сервер упал")
+    assert сырой == "сервер упал"
+
+
+def test_фраза_за_окном_печати_всё_равно_признаётся():
+    """Вердикт читает ПОЛНЫЙ текст: причина, стоящая за REASON_WINDOW-м знаком,
+    всё равно даёт no, а напечатанная причина обрезана окном."""
+    длинный = "х" * (llm_mod.REASON_WINDOW + 10) + ПРИЧИНА
+    исход, причина = llm_mod.strict_json_verdict(501, длинный)
+    assert исход == llm_mod.STRICT_NO
+    assert len(причина) == llm_mod.REASON_WINDOW
+    assert причина == длинный[:llm_mod.REASON_WINDOW]
 
 
 def test_строка_одна_на_пару_даже_при_новом_отказе(capsys):
@@ -143,7 +175,9 @@ def test_строка_в_stderr_одна_на_два_вызова(_ollama_мар
 
     err = capsys.readouterr().err
     assert err.count("строгий JSON недоступен") == 1, err
-    assert "тест-модель" in err and "сборка без грамматики" in err
+    assert "тест-модель" in err
+    assert "сборка без грамматики" not in err, "догадка о сборке не замерена (№438)"
+    assert ПРИЧИНА in err, "причина сервера в строке дословно"
     assert "ollama pull" not in err, "рецепта в строке быть не должно"
 
 
@@ -201,6 +235,36 @@ def test_причина_без_json_format_идёт_наружу_без_повт
     assert not llm_mod._strict_json
 
 
+def test_unknown_идёт_наружу_и_не_трогает_реестр(_ollama_маршруты, capsys):
+    """200 с полем error без фразы двери — вердикт unknown: это не «нет
+    грамматики», повтор без format его не чинит. Наружу, реестр и строка
+    «уже сказали» не тронуты."""
+    журнал, чат = _всегда(200, "model not found")
+    _ollama_маршруты.сценарий_чата(чат)
+
+    with pytest.raises(LLMHTTPError) as e:
+        LLM(CFG).complete("в", model="тест-модель", json_format=True, busy_wait=0)
+
+    assert e.value.status == 200
+    assert len(журнал) == 1, "unknown — повтор не шлём"
+    assert not llm_mod._strict_json
+    assert "строгий JSON недоступен" not in capsys.readouterr().err
+
+
+def test_фраза_одна_у_stderr_и_доктора(_ollama_маршруты, capsys):
+    """Строку о двери печатает одна функция (`strict_json_sentence`): stderr и
+    доктор берут её оттуда дословно, а не повторяют текст каждый по-своему."""
+    llm = LLM(CFG)
+    _, чат = _сценарий_отказа(501, ПРИЧИНА)
+    _ollama_маршруты.сценарий_чата(чат)
+    LLM(CFG).complete("в", model="тест-модель", json_format=True)
+
+    err = capsys.readouterr().err
+    ожидание = llm_mod.strict_json_sentence("тест-модель", llm.base, ПРИЧИНА)
+    assert ожидание in err, err
+    assert llm_mod.STRUCTURED_OUTPUT_PHRASE in ожидание
+
+
 def test_probe_живости_ходит_в_generate_без_format(_сеть_закрыта):
     """Строгий JSON сломан (501 на `/api/chat`), но модель жива: проба ходит в
     `/api/generate` без `format` и получает True."""
@@ -219,6 +283,118 @@ def test_probe_живости_ходит_в_generate_без_format(_сеть_з�
     assert llm_health.probe(CFG) is True
     assert len(генерация) == 1 and "format" not in генерация[0]
     assert генерация[0]["prompt"] == "ok"
+
+
+def test_проба_строгого_json_идёт_на_чат_с_format(_сеть_закрыта):
+    """Транспорт пробы: тот же `/api/chat`, дешёвое тело двери — format, один
+    токен, think выключен, без стрима. Вердикт — по ответу сервера."""
+    import llm_health
+    base = privacy.llm_base_url(CFG)
+    тела: list = []
+    сроки: list = []
+
+    def чат(url, **k):
+        тела.append(k.get("json") or {})
+        сроки.append(k.get("timeout"))
+        return _ответ(200, {"message": {"content": "{}"}})
+
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = чат
+
+    assert llm_health.strict_json(base, "тест-модель") == (llm_mod.STRICT_YES, '{"message": {"content": "{}"}}')
+    assert len(тела) == 1
+    assert сроки == [90], "таймаут пробы по умолчанию — 90 с"
+    тело = тела[0]
+    assert тело["format"] == "json"
+    assert тело["options"] == {"num_predict": 1}
+    assert тело["think"] is False and тело["stream"] is False
+    assert тело["messages"] == [{"role": "user", "content": "ok"}]
+
+
+@pytest.mark.parametrize("статус, тело, ожидание", [
+    (501, {"error": ПРИЧИНА}, (llm_mod.STRICT_NO, ПРИЧИНА)),
+    (200, {"error": "иное"}, (llm_mod.STRICT_UNKNOWN, "иное")),
+    (503, {"error": ПРИЧИНА}, (llm_mod.STRICT_UNKNOWN, ПРИЧИНА)),
+], ids=["no", "unknown-на-200", "занято"])
+def test_проба_строгого_json_вердикт(_сеть_закрыта, статус, тело, ожидание):
+    import llm_health
+    base = privacy.llm_base_url(CFG)
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = lambda url, **k: _ответ(статус, тело)
+
+    assert llm_health.strict_json(base, "тест-модель") == ожидание
+
+
+def test_проба_строгого_json_на_сети_и_таймауте_unknown(_сеть_закрыта):
+    """Сети и таймаута ответа сервера нет — вердикта о грамматике из них не
+    вывести: наружу unknown с причиной, а не «нет строгого JSON»."""
+    import llm_health
+    base = privacy.llm_base_url(CFG)
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = lambda url, **k: (
+        _ for _ in ()).throw(requests.ConnectionError("нет маршрута"))
+
+    исход, причина = llm_health.strict_json(base, "тест-модель")
+    assert исход == llm_mod.STRICT_UNKNOWN
+    assert причина.startswith("сеть:")
+
+    _сеть_закрыта[("POST", f"{base}/api/chat")] = lambda url, **k: (
+        _ for _ in ()).throw(requests.ReadTimeout("тишина"))
+    исход, причина = llm_health.strict_json(base, "тест-модель")
+    assert (исход, причина) == (llm_mod.STRICT_UNKNOWN, "таймаут")
+
+
+def test_занятость_у_доктора_та_же_что_у_двери():
+    """Правило «занято» — одно, у двери в llm: проба живости читает его оттуда,
+    а не держит копию под тестом равенства (выходной круг 1 по №420 A, DS M4).
+    Копия в модуле — новый объект, и тест краснеет."""
+    import llm_health
+    assert llm_health.BUSY_STATUSES is llm_mod.BUSY_STATUSES
+
+
+def test_граф_спрашивает_занятость_у_двери(monkeypatch, capsys):
+    """Граф решает «модель занята» по правилу двери, а не по своему литералу:
+    код, добавленный в правило, граф видит сразу (выходной круг 1 по №420 A,
+    DS M4)."""
+    import graph_updater as gu
+
+    def отказ(*a, **k):
+        raise LLMHTTPError(500, "перегружен")
+
+    monkeypatch.setattr(llm_mod, "BUSY_STATUSES", frozenset({500}))
+    monkeypatch.setattr(gu.LLM, "complete", отказ)
+    assert gu._extract(CFG, "стенограмма") is None
+    assert "модель занята (HTTP 500)" in capsys.readouterr().out
+
+
+def test_detail_в_прежних_пределах_а_тело_целиком(_ollama_маршруты):
+    """`detail` печатают как есть (граф, статус): в нём прежние 500 знаков
+    тела, а полное тело — в `body`, его читает только дверь (выходной круг 1
+    по №420 A, DS I1)."""
+    длинное = "x" * 100_000     # латиница: ответ без charset, requests угадывает кодировку
+    _, чат = _всегда(500, длинное)
+    _ollama_маршруты.сценарий_чата(чат)
+
+    with pytest.raises(LLMHTTPError) as e:
+        LLM(CFG).complete("в", model="тест-модель")
+    assert len(e.value.detail) == 500
+    assert длинное in e.value.body
+
+
+def test_фраза_за_окном_доезжает_до_двери_через_complete(_ollama_маршруты):
+    """Не только чистая функция: через настоящий complete фраза, стоящая за
+    500-м знаком тела, всё равно даёт повтор без format. Обрезанное тело на
+    транспорте прошло бы все прочие тесты (выходной круг 1 по №420 A, DS M3)."""
+    журнал, чат = _сценарий_отказа(400, "х" * 600 + ПРИЧИНА, ответ='{"a": 1}')
+    _ollama_маршруты.сценарий_чата(чат)
+
+    assert LLM(CFG).complete("в", model="тест-модель", json_format=True) == '{"a": 1}'
+    assert [("format" in т) for т in журнал] == [True, False], журнал
+
+
+def test_фраза_в_соседнем_поле_тоже_отказ():
+    """Не-200 судит весь текст, а не только поле error: прокси кладёт фразу
+    в своё поле рядом (выходной круг 1 по №420 A, DS M2)."""
+    тело = json.dumps({"error": "Bad Request", "detail": ПРИЧИНА})
+    исход, причина = llm_mod.strict_json_verdict(400, тело)
+    assert (исход, причина) == (llm_mod.STRICT_NO, "Bad Request")
 
 
 def _часы(monkeypatch, старт: float = 1000.0):

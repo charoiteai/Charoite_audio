@@ -167,3 +167,176 @@ def test_full_disk_is_a_failure(capsys, monkeypatch):
 
     assert doctor.issues == 1
     assert "2.0 ГБ" in _lines(capsys)
+
+
+# ── дверь строгого JSON у доктора ─────────────────────────────────────────
+
+def _cfg_строгого(engine: str = "ollama") -> dict:
+    return {"llm": {"base_url": "http://127.0.0.1:11434", "engine": engine,
+                    "model": "qwen3.6:35b-a3b"}}
+
+
+def test_отвергнутый_адрес_молчит_о_строгом_json(capsys, monkeypatch):
+    """Адрес отвергнут политикой — диагноз уже назван `llm_url`, второй
+    строки нет; тем более её нет на mlx, где строгий JSON не спрашивают."""
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: None)
+
+    doctor.check_strict_json(_cfg_строгого("mlx-server"), True)
+
+    assert _lines(capsys) == ""
+    assert doctor.issues == 0
+
+
+def test_проба_живости_не_дошла_молчит(capsys, monkeypatch):
+    """`alive is None` — причина уже напечатана `check_llm_alive`."""
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+
+    doctor.check_strict_json(_cfg_строгого(), None)
+
+    assert _lines(capsys) == ""
+    assert doctor.issues == 0
+
+
+def test_mlx_движок_не_проверяется(capsys, monkeypatch):
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:8080")
+    monkeypatch.setattr(llm_health, "strict_json",
+                        lambda *a, **k: pytest.fail("на mlx строгий JSON не спрашивают"))
+
+    doctor.check_strict_json(_cfg_строгого("mlx-server"), True)
+
+    out = _lines(capsys)
+    assert "строгий JSON не проверяется на движке mlx-server" in out
+    assert doctor.issues == 0
+
+
+def test_непроверенный_строгий_json_по_исходу(capsys, monkeypatch):
+    """Модель занята / медлит / не найдена / не отвечает — запрос не шлём, а
+    называем исход пробы живости."""
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llm_health, "strict_json",
+                        lambda *a, **k: pytest.fail("при неживой модели проба не нужна"))
+
+    for состояние, слово in ((llm_health.BUSY, "модель занята"),
+                             (llm_health.SLOW, "модель отвечает медленно"),
+                             (llm_health.MISSING, "модель не найдена"),
+                             (False, "модель не отвечает")):
+        doctor.check_strict_json(_cfg_строгого(), состояние)
+        assert f"строгий JSON не проверен: {слово}" in _lines(capsys)
+    assert doctor.issues == 0
+
+
+def test_строгий_json_есть(capsys, monkeypatch):
+    import llm
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llm_health, "strict_json", lambda base, model, **k: (llm.STRICT_YES, ""))
+
+    doctor.check_strict_json(_cfg_строгого(), True)
+
+    assert "строгий JSON: есть" in _lines(capsys)
+    assert doctor.issues == 0
+
+
+def test_строгий_json_нет_печатает_фразу_двери(capsys, monkeypatch):
+    """`no` — та же строка, что и в stderr (`llm.strict_json_sentence`), плюс
+    указатель на документацию; рецепта пересборки сервера нет."""
+    import llm
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llm_health, "strict_json",
+                        lambda base, model, **k: (llm.STRICT_NO, "structured output is unavailable"))
+
+    doctor.check_strict_json(_cfg_строгого(), True)
+
+    out = _lines(capsys)
+    assert llm.strict_json_sentence("qwen3.6:35b-a3b", "http://127.0.0.1:11434",
+                                    "structured output is unavailable") in out
+    assert "docs/MODELS.md" in out
+    assert "ollama pull" not in out
+    assert doctor.issues == 0
+
+
+def test_строгий_json_не_проверен_причиной(capsys, monkeypatch):
+    import llm
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llm_health, "strict_json",
+                        lambda base, model, **k: (llm.STRICT_UNKNOWN, "таймаут"))
+
+    doctor.check_strict_json(_cfg_строгого(), True)
+
+    assert "строгий JSON не проверен — таймаут" in _lines(capsys)
+    assert doctor.issues == 0
+
+
+def test_без_llm_нет_строки_о_строгом_json(capsys, monkeypatch):
+    """`llm` не читается (нет requests) — строки о строгом JSON нет: доктор
+    обязан работать и на машине, где зависимостей ещё нет."""
+    import builtins
+
+    настоящее = builtins.__import__
+
+    def без_llm(name, *a, **k):
+        if name in ("llm", "llm_health"):
+            raise ImportError(name)
+        return настоящее(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", без_llm)
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+
+    doctor.check_strict_json(_cfg_строгого(), True)
+
+    assert _lines(capsys) == ""
+    assert doctor.issues == 0
+
+
+def test_check_llm_alive_возвращает_исход_пробы(capsys, monkeypatch):
+    """Пин: каким бы ни был исход пробы, функция отдаёт его наружу — на нём
+    строится решение `check_strict_json`."""
+    import llm_health
+
+    monkeypatch.setattr(doctor, "llm_url", lambda cfg: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
+    for состояние in (True, llm_health.BUSY, llm_health.MISSING, llm_health.SLOW, False):
+        monkeypatch.setattr(llm_health, "probe",
+                            lambda cfg, timeout=None, _s=состояние: _s)
+        assert doctor.check_llm_alive(_cfg_строгого()) is состояние
+
+
+def test_check_llm_alive_облако_тоже_возвращает_исход(capsys, monkeypatch):
+    """Облачная ветка — отдельный выход: и он отдаёт исход пробы наружу."""
+    import llm_health
+    import privacy
+
+    for рубильник in privacy.KILL_SWITCHES:
+        monkeypatch.delenv(рубильник, raising=False)
+    cfg = {"sufler": {"cloud_engine": True},
+           "llm": {"engine": "cloud", "model": "м",
+                   "cloud_base_url": "https://cloud.example/v1"}}
+    monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: False)
+
+    assert doctor.check_llm_alive(cfg) is False
+
+
+def test_main_передаёт_исход_пробы_в_строгую_дверь(capsys, monkeypatch, tmp_path):
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    for name in ("check_python", "check_deps", "check_ollama", "check_stt",
+                 "check_models", "check_pipeline", "check_import_queue", "check_disk"):
+        monkeypatch.setattr(doctor, name, lambda *a, **kw: None)
+    monkeypatch.setattr(doctor, "check_config", lambda: {})
+    monkeypatch.setattr(doctor, "check_llm_alive", lambda cfg: "МЕТКА")
+    seen: dict = {}
+    monkeypatch.setattr(doctor, "check_strict_json",
+                        lambda cfg, alive: seen.update(alive=alive))
+    monkeypatch.setattr(sys, "argv", ["doctor.py"])
+
+    doctor.main()
+
+    assert seen["alive"] == "МЕТКА"
