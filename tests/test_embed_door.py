@@ -164,6 +164,19 @@ def test_every_outcome_speaks_once(monkeypatch, capsys, имя, случай, п
     assert capsys.readouterr().err == "", f"{имя}: повтор должен молчать"
 
 
+@pytest.mark.parametrize("raw, строка", [
+    ("<" + "x" * 300, "ответ не JSON"),
+    ('"' + "x" * 300 + '"', "ответ не объект JSON"),
+])
+def test_the_line_quotes_the_body_up_to_120_chars(monkeypatch, capsys, raw, строка):
+    """Строка отказа цитирует тело — по нему дежурный отличает HTML прокси от
+    обрыва, — но не больше 120 знаков (выживший мутант `[:120] → [:0]`)."""
+    monkeypatch.setattr(embed_door, "_said", set())
+    assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
+    err = capsys.readouterr().err
+    assert строка in err and "x" * 118 in err and "x" * 121 not in err, err
+
+
 def test_a_different_key_is_not_silenced_by_the_first(monkeypatch, capsys):
     """Ключ — код и тело: другой отказ сервера обязан быть слышен (Opus M3)."""
     monkeypatch.setattr(embed_door, "_said", set())
