@@ -224,10 +224,19 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
   `options.num_ctx` 不会移动它：`/api/show` 声称 `bert.context_length = 8192`，
   服务器却在 2048 处截断。并非每个服务器构建都支持严格
   JSON：未编译语法库的构建会以「structured output is unavailable」拒绝带
-  `format:"json"` 的请求（501，其他构建为 400）。客户端识别该原因，记住
-  （服务器地址、实际发出的模型）这一对十分钟——长时间运行的进程期间服务器
-  可能已修复——每个进程只在 stderr 提示一次，并把请求去掉 `format` 重试
-  一次，改靠提示词。这类一次性提示——严格 JSON、无法读取的配置、mlx 上的
+  `format:"json"` 的请求（501，其他构建为 400）。统一的一道门按状态码与
+  响应体判定（`strict_json_verdict`）：200 且为不含 `error` 的 JSON 对象是
+  「yes」；200 且 `error` 含该短语是「no」，其余带错误的 200、空响应体、
+  HTML、非对象都是「unknown」；非 200 时原因含短语为「no」，其余——404、
+  繁忙的 429/502/503——为「unknown」：排队不等于缺少语法。原因取 `error`
+  字段或原始响应体，打印时截断到 500 字符窗口，而判定读取完整文本。判定为
+  「no」时，客户端记住（服务器地址、实际发出的模型）这一对十分钟——长时间
+  运行的进程期间服务器可能已修复——每个进程只在 stderr 用同一条语句
+  （`strict_json_sentence`，不猜测构建）提示一次，并把请求去掉 `format` 重试
+  一次，改靠提示词。doctor 用廉价的 `/api/chat` 探测向同一道门发问
+  （`llm_health.strict_json`，`format:"json"`，一个 token）——仅在模型存活且
+  引擎为 Ollama 时；mlx-server 与云端网关不承诺严格 JSON，繁忙或找不到的
+  模型也不探测。这类一次性提示——严格 JSON、无法读取的配置、mlx 上的
   外来模型、写不进去的模型租约——共用一个注册表 `src/once.py`（base 层，
   仅标准库）：键是 `(命名空间, 含义)`，含义包含使重复成为重复的东西——
   状态码、响应体、形式、异常类型、路径——而不是整条成品字符串；`forget`

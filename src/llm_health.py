@@ -183,6 +183,30 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     return r.status_code == 200
 
 
+def strict_json(base: str, model: str, *, timeout: float = 90) -> tuple[str, str]:
+    """Спрашивает у сервера строгий JSON дешёвой пробой и говорит вердикт.
+
+    Проба идёт на тот же `/api/chat`, что у боевого вызова, но с
+    `format: "json"`, одним предсказанным токеном и без стрима: сервер без
+    грамматики отвечает отказом, который классифицирует дверь
+    `llm.strict_json_verdict` по статусу и телу. Возвращает (исход, причина).
+
+    Сеть и таймаут — не вердикт о грамматике, а `unknown` с причиной: ответа
+    сервера не было, и «строгого JSON нет» по ним не сказать. Импорт `llm` —
+    внутри функции: модуль зовут и там, где `llm` ещё не импортирован (как в
+    облачной ветке `probe`).
+    """
+    from llm import STRICT_UNKNOWN, strict_json_probe_body, strict_json_verdict
+    try:
+        r = requests.post(base + "/api/chat", json=strict_json_probe_body(model),
+                          timeout=timeout)
+    except requests.Timeout:
+        return STRICT_UNKNOWN, "таймаут"
+    except requests.RequestException as e:
+        return STRICT_UNKNOWN, f"сеть: {type(e).__name__}"
+    return strict_json_verdict(r.status_code, r.text)
+
+
 def listener_path(url: str) -> str | None:
     """Путь к процессу, который реально слушает порт LLM.
 

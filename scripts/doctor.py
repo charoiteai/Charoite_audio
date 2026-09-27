@@ -247,47 +247,51 @@ def check_deps() -> None:
         line(OK, "python-зависимости")
 
 
-def check_llm_alive(cfg: dict) -> None:
+def check_llm_alive(cfg: dict):
     """Отвечает ли модель на самом деле.
 
     Проверка выше спрашивает список моделей — у вставшей Ollama он приходит
     мгновенно. Отличить работающий инференс от замершего может только
     генерация: 03.08 разница между этими двумя вопросами стоила разбора
     встречи и часа поисков.
+
+    Возвращает исход пробы (`llm_health.probe`) на КАЖДОМ выходе — его
+    спрашивает `check_strict_json`; `None` — адрес отвергнут политикой или
+    модуль пробы не читается (причина уже напечатана).
     """
     base = llm_url(cfg)
     if base is None:
-        return                      # адрес уже отвергнут выше, диагноз назван
+        return None                 # адрес уже отвергнут выше, диагноз назван
     sys.path.insert(0, str(CODE / "src"))
     try:
         import llm_health
     except Exception as e:  # noqa: BLE001 — модуль вспомогательный
         line(WARN, f"проба генерации недоступна ({type(e).__name__})")
-        return
+        return None
     started = time.monotonic()
     state = llm_health.probe(cfg, timeout=90)
     if state is True:
         line(OK, f"модель отвечает ({time.monotonic() - started:.1f} с)")
-        return
+        return state
     if state == llm_health.BUSY:
         # 503/429: сервер жив, модель занята другим запросом (пересборка,
         # ночной цикл, соседняя встреча) — перезапуск тут навредил бы
         line(WARN, "модель занята другим запросом (сервер жив, ответил 503/429)",
              "перезапускать не нужно: дождитесь конца разбора встречи или "
              "ночного цикла — конвейер сам ждёт занятую модель")
-        return
+        return state
     if state == llm_health.MISSING:
         line(FAIL, "сервер отвечает, а модели из конфига на нём нет (HTTP 404)",
              "установите модель (ollama pull …) или поправьте llm.model — "
              "перезапуск сервера тут не поможет")
-        return
+        return state
     if state == llm_health.SLOW:
         line(WARN, "сервер на связи, но генерация не ответила за 90 с",
              "модель может быть занята длинной генерацией (разбор встречи, ночной "
              "цикл); конвейер ждёт до 5 минут (проба 120 с и ожидание 180 с) и "
              "не перезапускает сервер под своей живой генерацией; застряло "
              "наверняка — scripts/doctor.py --restart-llm")
-        return
+        return state
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
     if _privacy.cloud_engine_active(cfg):
@@ -295,12 +299,58 @@ def check_llm_alive(cfg: dict) -> None:
              "проверьте сеть, llm.cloud_base_url, имя модели и ключ в "
              "llm.cloud_key_file; локальную Ollama перезапускать не нужно — "
              "на ней живут эмбеддинги")
-        return
+        return state
     port_owner = llm_health.listener_path(base)
     line(FAIL, "модель не отвечает на генерацию"
                + (f" (порт держит {port_owner})" if port_owner else ""),
          "инференс встал: перезапустите Ollama. Конвейер сделает это сам при "
          "следующей встрече — см. src/llm_health.py")
+    return state
+
+
+def check_strict_json(cfg: dict, alive) -> None:
+    """Умеет ли сервер строгий JSON — проба пробой, вердикт дверью `llm`.
+
+    Порядок решает, что вообще спрашивать: адрес отвергнут или проба живости
+    не дошла — молчим (причина уже названа); mlx-server и облако строгого
+    JSON не обещают — одна строка, без запроса; модель занята/не найдена/
+    молчит — проверять нечего, и запрос не шлём; и только живой Ollama
+    получает дешёвую пробу `/api/chat` с `format`. Текст строки — из двери
+    (`llm.strict_json_sentence`), один на stderr и доктора.
+    """
+    sys.path.insert(0, str(CODE / "src"))
+    try:
+        import llm
+        import llm_health
+        import privacy
+    except Exception:  # noqa: BLE001 — нет requests и прочего: строки о строгом JSON нет
+        return
+    base = llm_url(cfg)
+    if base is None:
+        return                      # адрес уже отвергнут выше, диагноз назван
+    if alive is None:
+        return                      # проба живости не дошла — причина уже напечатана
+    engine = privacy.llm_engine(cfg)
+    if engine == "mlx-server" or privacy.cloud_engine_active(cfg):
+        line(WARN, f"строгий JSON не проверяется на движке {engine}")
+        return
+    if alive is not True:
+        words = {
+            llm_health.BUSY: "модель занята",
+            llm_health.SLOW: "модель отвечает медленно",
+            llm_health.MISSING: "модель не найдена",
+        }.get(alive, "модель не отвечает")
+        line(WARN, f"строгий JSON не проверен: {words}")
+        return
+    model = str((cfg.get("llm") or {}).get("model") or "")
+    verdict, reason = llm_health.strict_json(base, model)
+    if verdict == llm.STRICT_YES:
+        line(OK, "строгий JSON: есть")
+    elif verdict == llm.STRICT_NO:
+        line(WARN, llm.strict_json_sentence(model, base, reason),
+             "движок и модели — docs/MODELS.md")
+    else:
+        line(WARN, f"строгий JSON не проверен — {reason}")
 
 
 def check_pipeline() -> None:
@@ -432,7 +482,8 @@ def main() -> None:
     check_stt(cfg)
     check_models()
     print("\nРабочее состояние")
-    check_llm_alive(cfg)
+    alive = check_llm_alive(cfg)
+    check_strict_json(cfg, alive)
     check_pipeline()
     check_import_queue(cfg)
     check_disk()

@@ -165,6 +165,22 @@ def _fit_cache_clear() -> None:
             _fit_sweeper = None
 
 
+# Дверь строгого JSON: сервер отвечает на запрос с format отказом, а клиент
+# решает по СТАТУСУ и ТЕЛУ, что это значит. Фраза — признак «грамматики нет»,
+# а не один код: сборка вправе ответить 501, 400 или чем угодно ещё.
+STRUCTURED_OUTPUT_PHRASE = "structured output is unavailable"
+
+#: Исходы двери: yes — строгий JSON есть; no — сервер назвал причину его
+#: отсутствия; unknown — по ответу решить нельзя (занятость, 404, пустое
+#: тело, HTML, отказ без фразы).
+STRICT_YES = "yes"
+STRICT_NO = "no"
+STRICT_UNKNOWN = "unknown"
+
+#: Окно печатаемой причины — в сообщении исключения, строке stderr и докторе.
+#: Вердикт при этом читает ПОЛНЫЙ текст: фраза может стоять за окном.
+REASON_WINDOW = 500
+
 # Строгий JSON (format:"json") есть не у каждой сборки сервера: Ollama,
 # собранная без библиотеки грамматики, отвечает на запрос с format ошибкой
 # «structured output is unavailable» (501, а у другой сборки — 400 с тем же
@@ -221,13 +237,11 @@ def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: s
     """Строка в stderr — один раз за процесс на пару (адрес, модель).
 
     Тонкая обёртка над общим реестром `once`: решение «первый ли раз» и печать
-    живут там, под своим замком. Рецепта в строке нет: она говорит, почему
-    строгий JSON не поехал и что делаем вместо него, а не советует пересобирать
-    сервер.
+    живут там, под своим замком. Текст строки — `strict_json_sentence`, один на
+    stderr и доктора. Рецепта в строке нет: она говорит, почему строгий JSON не
+    поехал и что делаем вместо него, а не советует пересобирать сервер.
     """
-    once.say(("strict_json", key),
-             f"llm: строгий JSON недоступен у {model} на {base} — "
-             f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте")
+    once.say(("strict_json", key), "llm: " + strict_json_sentence(model, base, reason))
 
 
 def _strict_json_clear() -> None:
@@ -236,6 +250,73 @@ def _strict_json_clear() -> None:
         _strict_json.clear()
         _strict_json_at.clear()
         once.reset("strict_json")
+
+
+def _response_reason(text: str) -> str:
+    """Причина отказа: поле error объекта JSON, иначе сырой текст."""
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(body, dict) and body.get("error"):
+        return str(body["error"])
+    return text
+
+
+def strict_json_verdict(status: int, text: str) -> tuple[str, str]:
+    """Вердикт двери строгого JSON по статусу и ПОЛНОМУ телу ответа.
+
+    Возвращает (исход, причина). Причина — поле error объекта JSON, иначе
+    сырой текст, обрезанный `REASON_WINDOW`. Классифицируется весь текст:
+    фраза `STRUCTURED_OUTPUT_PHRASE` может стоять далеко за окном печати.
+
+    200 с объектом без error — yes; 200 с error и фразой — no, без фразы —
+    unknown; всё прочее на 200 (пусто, HTML, не объект) — unknown.
+    Не-200 вне `BUSY_STATUSES` решает причину по фразе (no/unknown), а
+    занятость (429/502/503) — всегда unknown: это очередь, не грамматика.
+    """
+    text = text or ""
+    reason = _response_reason(text)
+    if status == 200:
+        try:
+            body = json.loads(text)
+        except (ValueError, TypeError):
+            return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+        if not isinstance(body, dict):
+            return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+        if not body.get("error"):
+            return STRICT_YES, reason[:REASON_WINDOW]
+        verdict = (STRICT_NO if STRUCTURED_OUTPUT_PHRASE in str(body["error"]).lower()
+                   else STRICT_UNKNOWN)
+        return verdict, reason[:REASON_WINDOW]
+    if status in BUSY_STATUSES:
+        return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+    verdict = STRICT_NO if STRUCTURED_OUTPUT_PHRASE in reason.lower() else STRICT_UNKNOWN
+    return verdict, reason[:REASON_WINDOW]
+
+
+def strict_json_sentence(model: str, base: str, reason: str) -> str:
+    """Строка о двери строгого JSON — одна на stderr и доктора.
+
+    Без «похоже, сборка без грамматики»: это не замерено (№438), а догадка в
+    строке о поломке — половина ложного диагноза. Говорим, чего лишаются
+    ответы, а не советуем пересобирать сервер.
+    """
+    return (f"строгий JSON недоступен у {model} на {base} — "
+            f"сервер: «{reason}»; ответы без грамматики — часть разбора и "
+            f"имён может не дойти")
+
+
+def strict_json_probe_body(model: str) -> dict:
+    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима."""
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": "ok"}],
+        "stream": False,
+        "format": "json",
+        "think": False,
+        "options": {"num_predict": 1},
+    }
 
 
 class LLMHTTPError(RuntimeError):
@@ -247,7 +328,9 @@ class LLMHTTPError(RuntimeError):
     """
 
     def __init__(self, status: int, detail: str = ""):
-        super().__init__(f"HTTP {status}: {detail[:200]}")
+        # Полный текст хранится в detail — по нему дверь строгого JSON решает
+        # исход; в сообщение идёт причина, обрезанная REASON_WINDOW.
+        super().__init__(f"HTTP {status}: {_response_reason(detail)[:REASON_WINDOW]}")
         self.status = status
         self.detail = detail
 
@@ -1188,11 +1271,12 @@ class LLM:
         except LLMHTTPError as e:
             # Строгий JSON не поддержан: запоминаем причину и повторяем ОДИН раз
             # без format. Любой другой отказ (занятость, таймаут, 404, 500 без
-            # этой причины) идёт наружу, как раньше, — реестр ему не место.
-            if not sends_format or not self._structured_output_unavailable(e):
+            # этой причины) идёт наружу, как раньше, — реестру ему не место.
+            verdict, reason = strict_json_verdict(e.status, e.detail)
+            if not sends_format or verdict != STRICT_NO:
                 raise
-            _strict_json_record(strict_key, e.detail)
-            _strict_json_announce(strict_key, sent, self.base, e.detail)
+            _strict_json_record(strict_key, reason)
+            _strict_json_announce(strict_key, sent, self.base, reason)
             del payload["format"]
             r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
             body = self._checked_body(r)
@@ -1231,31 +1315,20 @@ class LLM:
                 raise
             return self._post_busy(url, payload, timeout, busy_wait)
 
-    @staticmethod
-    def _structured_output_unavailable(err: LLMHTTPError) -> bool:
-        """Сервер сказал, что строгого JSON у него нет — сборка без грамматики.
-
-        501 — частый код у Ollama с MLX-раннером, но не единственный признак:
-        другая сборка вправе ответить 400 с тем же текстом, поэтому причина
-        распознаётся по телу, а не по статусу. Занятость (429/502/503) —
-        очередь, а не отсутствие грамматики: за неё повтор без format ничего
-        не чинит, и в реестр такой ответ не ложится.
-        """
-        if err.status in BUSY_STATUSES:
-            return False
-        return "structured output is unavailable" in (err.detail or "").lower()
-
     def _checked_body(self, r) -> dict:
         """Тело ответа или LLMHTTPError — общая часть всех движков.
 
         Не @staticmethod: тело ошибки чужого шлюза может содержать ключ
         эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
+        Полный текст тела уходит в `detail` — дверь строгого JSON решает по
+        нему исход (фраза может стоять за окном печати), а в сообщение
+        исключения идёт причина, обрезанная `REASON_WINDOW`.
         """
         if r.status_code != 200:
-            raise self._fail(r.status_code, r.text[:500])
+            raise self._fail(r.status_code, r.text)
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise self._fail(r.status_code, str(body["error"]))
+            raise self._fail(r.status_code, r.text)
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на
