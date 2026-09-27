@@ -51,6 +51,7 @@ from exit_codes import EXIT_ROOT_UNNAMED  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import channel_trace  # noqa: E402
+import decision_gate  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
@@ -1524,6 +1525,17 @@ def main():
               "на основной модели", file=sys.stderr, flush=True)
     quiet = bool(cfg["sufler"].get("quiet", True))
     instant_on = bool(cfg["sufler"].get("instant", True))
+    # Решающий гейт в ТЕНИ (src/decision_gate.py): вердикт «вопрос или нет»
+    # считается рядом с ⚡ и уходит в err-лог с исходом ответа. Ничего не
+    # решает — копит замер для scripts/gate_bench.py shadow.
+    gate_decider = (decision_gate.decider()
+                    if instant_on and decision_gate.shadow_enabled(cfg) else None)
+    if gate_decider is not None:
+        print(f"гейт в тени: {gate_decider.refused or gate_decider.name}",
+              file=sys.stderr, flush=True)
+
+    def gate_log(line: str) -> None:
+        print(line, file=sys.stderr, flush=True)
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
     cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
@@ -2114,6 +2126,8 @@ def main():
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
             q = fresh_question(_pending_q[0], time.monotonic())
             tail = tr.tail(1600)
+            # тень гейта считает вердикт параллельно ответу и ⚡ не ждёт
+            shadow = decision_gate.start_shadow(q, gate_decider, gate_log)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
             # подсказок. Явный вопрос — чувствительный режим. Опознанные
@@ -2150,6 +2164,9 @@ def main():
                 except Exception as e:  # noqa: BLE001
                     emit_error(f"⚡ ответ не собрался: {short_error(e)}")
                 answer = "".join(parts)
+                if shadow is not None:
+                    shadow.finish(decision_gate.outcome_of(
+                        answer, question_filter.is_refusal(answer)))
                 # Отказ модели («вопроса не вижу, уточните») — не ответ, и в
                 # полотно он не идёт: раньше такие абзацы занимали пол-панели.
                 if answer and not question_filter.is_refusal(answer):

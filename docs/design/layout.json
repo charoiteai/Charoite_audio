@@ -135,6 +135,10 @@
       "layer": "llm",
       "why": "ONNX-инференс NLI-модели; читают tier3 и daemon"
     },
+    "decision_gate": {
+      "layer": "llm",
+      "why": "ONNX-гейт «будить ли модель»: NLI zero-shot или обученная голова; читают daemon (тень ⚡) и scripts/gate_bench.py"
+    },
     "deps": {
       "layer": "runtime",
       "why": "рецепт про интерпретатор и .venv; ничего из репо не импортирует"
@@ -208,6 +212,7 @@
     "scripts/dedup_archive.py": "разовая уборка дублей архива руками",
     "scripts/diar_bench.py": "бенчмарк диаризации, ручной прогон",
     "scripts/fix_action_items.py": "разовая починка поручений руками",
+    "scripts/gate_bench.py": "замер решающего гейта, ручной прогон",
     "scripts/merge_graphs.py": "слияние графов руками",
     "scripts/migrate_placeholders.py": "разовая миграция заглушек руками",
     "scripts/stt_bench.py": "бенчмарк STT, ручной прогон",
@@ -282,6 +287,10 @@
       "why": "по коду: argparse"
     },
     "scripts/forget_meeting.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/gate_bench.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },
