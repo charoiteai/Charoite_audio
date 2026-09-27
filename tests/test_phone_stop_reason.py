@@ -300,7 +300,7 @@ def test_хвост_пишет_один_писатель_с_гейтом_expect_
     Теперь строку итога пишет один `channel_trace.sync_tail` поверх
     `safe_write.rewrite_file`; пересборка зовёт то же правило `tail_with_summary`."""
     import rebuild_transcript
-    import safe_write
+    from charoite_graph import safe_write
     body = "# Встреча 2026-09-07_1902\n\n[19:02:37] Иван: начнём\n"
     tpath = tmp_path / "2026-09-07_1902.md"
     tpath.write_text(body, encoding="utf-8")

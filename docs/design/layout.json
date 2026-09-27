@@ -12,10 +12,10 @@
   ],
   "brief_layers": {
     "base": [
-      "safe_write",
+      "charoite_graph.safe_write",
       "file_locks",
-      "frontmatter",
-      "redirects",
+      "charoite_graph.frontmatter",
+      "charoite_graph.redirects",
       "exit_codes"
     ],
     "runtime": [
@@ -30,11 +30,12 @@
     ],
     "graph": [
       "graphs",
-      "graph_names",
-      "graph_nodes",
+      "charoite_graph",
+      "charoite_graph.graph_names",
+      "charoite_graph.graph_nodes",
       "graph_links",
-      "dossier",
-      "graph_search"
+      "charoite_graph.dossier",
+      "charoite_graph.graph_search"
     ],
     "cloud": [
       "cloud"
@@ -123,7 +124,8 @@
       "meeting"
     ]
   },
-  "package_entry": "graph_search",
+  "package": "charoite_graph",
+  "package_entry": "charoite_graph.graph_search",
   "layer_overrides": {
     "tier3": {
       "layer": "graph",
@@ -161,7 +163,7 @@
       "layer": "runtime",
       "why": "корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)"
     },
-    "model_seam": {
+    "charoite_graph.model_seam": {
       "layer": "base",
       "why": "шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)"
     },

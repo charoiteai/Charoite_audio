@@ -36,7 +36,7 @@ from collections import Counter
 from typing import Callable, NamedTuple
 
 import live_sidecar
-import safe_write
+from charoite_graph import safe_write
 import transcript
 
 SIDECAR_KEY = "channel_events"

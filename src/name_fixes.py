@@ -27,7 +27,7 @@ import re
 import channel_labels
 import live_sidecar
 import review_bridge
-import safe_write
+from charoite_graph import safe_write
 import transcript
 
 NAMES_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*исправлени[ея] им[её]н\s*(?:\*\*)?\s*[:：.]?\s*(?:\*\*)?\s*$",

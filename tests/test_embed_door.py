@@ -25,8 +25,8 @@ sys.path.insert(0, str(REPO / "src"))
 
 import once  # noqa: E402
 import embed_door  # noqa: E402
-import graph_search  # noqa: E402
-from model_seam import SeamTransportError  # noqa: E402
+from charoite_graph import graph_search  # noqa: E402
+from charoite_graph.model_seam import SeamTransportError  # noqa: E402
 
 
 def _векторы(texts: list[str]) -> list[list[float]]:

@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import charoite_paths  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_archive as ma  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 
 KEY = "2026-09-20_1000_Тема"
 STAMP = "2026-09-20_1000"

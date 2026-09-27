@@ -31,16 +31,16 @@
 from __future__ import annotations
 
 import datetime as _dt
-import safe_write
-import frontmatter
+from charoite_graph import safe_write
+from charoite_graph import frontmatter
 import pathlib
 import re
 import shutil
 from collections.abc import Callable
 
 import embed_door
-from model_seam import Embedder, Judge, SeamTransportError
-from redirects import is_merged as _is_merged
+from charoite_graph.model_seam import Embedder, Judge, SeamTransportError
+from charoite_graph.redirects import is_merged as _is_merged
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
 EMB_PREFILTER = 0.55      # косинус bge-m3; ниже — пары даже не судим

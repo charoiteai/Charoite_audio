@@ -38,7 +38,7 @@ import sys
 import typing
 
 import meeting_stamp
-import safe_write
+from charoite_graph import safe_write
 
 TAIL = ".md.live.json"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")

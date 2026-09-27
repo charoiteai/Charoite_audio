@@ -2,7 +2,7 @@
 
 До №250 здесь жил HTTP-клиент сервера памяти (:8100) и тест держал его контракт
 живым сервером. Теперь память — индекс графа в процессе демона
-(src/graph_search.py); контракт для трёх контуров демона — значение: состояние
+(src/charoite_graph/graph_search.py); контракт для трёх контуров демона — значение: состояние
 полем `status` (Verdict), фрагменты для модели, текст для человека (круг 3 по
 #577: маркеры в строке разбирались префиксом и ломались), а сбой — исключение,
 деградацию каждый контур выбирает сам.
@@ -16,8 +16,8 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import brain  # noqa: E402
-import graph_search  # noqa: E402
-from model_seam import Embedder  # noqa: E402
+from charoite_graph import graph_search  # noqa: E402
+from charoite_graph.model_seam import Embedder  # noqa: E402
 
 
 def _graph(root: pathlib.Path, name: str, marker: str) -> pathlib.Path:

@@ -43,7 +43,7 @@ import embed_door
 import model_lease
 import once
 import privacy
-from model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
+from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
                         SeamTransportError, embed_model_name)
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером

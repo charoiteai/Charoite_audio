@@ -17,9 +17,9 @@ import pathlib
 import re
 import unicodedata
 
-import frontmatter
-import redirects
-from graph_names import name_key
+from charoite_graph import frontmatter
+from charoite_graph import redirects
+from charoite_graph.graph_names import name_key
 
 # цель до `#раздел`/`|алиас` — так считает ссылки doctor
 LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")

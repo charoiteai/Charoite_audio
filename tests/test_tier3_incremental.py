@@ -33,7 +33,7 @@ import tier3_cores  # noqa: E402
 
 def fake_embedder(vectors=None):
     """Векторизатор-подделка: заданные векторы или по одному на ядро."""
-    from model_seam import Embedder
+    from charoite_graph.model_seam import Embedder
 
     def run(texts, timeout):
         return vectors if vectors is not None else [[1.0, 0.0] for _ in texts]
@@ -47,7 +47,7 @@ def fake_judge(p=0.0, ready=True, refused="", entail=None):
     Отдельный `entail` — чтобы проверять отказ судьи посреди прогона: он
     бросает, а не возвращает ноль, и пара обязана вернуться в фокус.
     """
-    from model_seam import Judge
+    from charoite_graph.model_seam import Judge
 
     return Judge(lambda: ready, entail or (lambda a, b: p), refused)
 
@@ -82,7 +82,7 @@ def test_the_revision_asks_the_seam_and_does_not_name_the_model(monkeypatch):
         seen["texts"], seen["timeout"] = texts, timeout
         return [[1.0, 0.0] for _ in texts]
 
-    from model_seam import Embedder
+    from charoite_graph.model_seam import Embedder
     tier3._embed_all([{"repr": "ядро"}], Embedder(run, "чем-угодно"))
     assert seen["texts"] == ["ядро"] and seen["timeout"] == 120
     assert "llm" not in dir(tier3) and "nli" not in dir(tier3), \
@@ -212,7 +212,7 @@ def test_a_broken_seam_is_not_a_lying_ollama(tmp_path):
     он ловил всё, ночник годами печатал бы «ревизия не состоялась — лежит
     Ollama» на сломанном коде (круг 2 по 2б, GLM C2).
     """
-    from model_seam import Embedder
+    from charoite_graph.model_seam import Embedder
 
     graph = _graph(tmp_path, "Одно", "Другое")
     wrong = Embedder(lambda texts: [], "шов-без-таймаута")   # забыли параметр
@@ -232,7 +232,7 @@ def test_a_judge_that_goes_deaf_mid_run_returns_the_pair_to_focus(tmp_path):
     graph = _graph(tmp_path, "Одно", "Другое")
 
     def deaf(a, b):
-        from model_seam import SeamTransportError
+        from charoite_graph.model_seam import SeamTransportError
         raise SeamTransportError("судья исчез посреди прогона")
 
     r = tier3.revise(graph, embedder=fake_embedder([[1.0, 0.0], [1.0, 0.0]]),
@@ -511,7 +511,7 @@ def test_single_graph_main_speaks_through_the_same_exit_code(tmp_path, monkeypat
 
 
 def test_no_folder_and_a_refusing_transport_are_named(tmp_path):
-    from model_seam import Embedder, SeamTransportError
+    from charoite_graph.model_seam import Embedder, SeamTransportError
     r = tier3.revise(tmp_path / "Нет графа", embedder=fake_embedder(), judge=fake_judge(), may_continue=_open)
     assert r["status"] == "no_work" and "Ядра" in r["reason"]
 

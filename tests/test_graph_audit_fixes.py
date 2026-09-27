@@ -13,7 +13,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SCRIPTS))
 
-import dossier  # noqa: E402
+from charoite_graph import dossier  # noqa: E402
 import graph_updater  # noqa: E402
 import tier3  # noqa: E402
 
@@ -190,7 +190,7 @@ def test_a_pair_that_failed_nli_comes_back_by_name(tmp_path, monkeypatch):
 
 def test_the_index_is_written_atomically_and_without_the_lock():
     """Иначе занятый соседом граф оставлял бы свежие досье невидимыми сутки."""
-    src = (SRC / "dossier.py").read_text(encoding="utf-8")
+    src = (SRC / "charoite_graph" / "dossier.py").read_text(encoding="utf-8")
     assert "tmp.replace(folder / INDEX_JSON)" in src
     assert "tmp_md.replace(folder / INDEX_MD)" in src
     night = (SCRIPTS / "nightly_dossier.py").read_text(encoding="utf-8")
@@ -298,7 +298,7 @@ def test_a_merged_stub_does_not_steal_links_from_a_live_namesake(tmp_path):
 
 def test_two_index_writers_cannot_mix_bytes():
     """Общий tmp давал двум прогонам атомарно установить битый json."""
-    src = (SRC / "dossier.py").read_text(encoding="utf-8")
+    src = (SRC / "charoite_graph" / "dossier.py").read_text(encoding="utf-8")
     assert 'f"{INDEX_JSON}.{os.getpid()}.tmp"' in src
     assert 'f"{INDEX_MD}.{os.getpid()}.tmp"' in src
 

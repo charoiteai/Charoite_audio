@@ -436,7 +436,8 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
     assert "src/graphs.py" in out
-    assert "src/graph_search.py:1 импортирует динамически" in out and "путь приходит параметром" in out
+    assert "src/charoite_graph/graph_search.py:1 импортирует динамически" in out \
+        and "путь приходит параметром" in out
     assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
 
 
@@ -498,7 +499,7 @@ def test_entry_points_are_executables_not_mentions(world):
     layout, _, scanned, execs, _ = world
     assert "app/make_app.sh" in execs and "scripts/nightly.sh" in execs and "src/daemon.py" in execs
     assert ".github/workflows/release-app.yml" in scanned.mentions["app/make_app.sh"]
-    for lib in ("src/privacy.py", "src/graph_search.py", "src/llm_health.py"):
+    for lib in ("src/privacy.py", "src/charoite_graph/graph_search.py", "src/llm_health.py"):
         assert lib not in execs and lib not in layout["manual_entry_points"]
         assert lib in scanned.mentions, f"{lib} назван подсказкой — путь обязан существовать, но точкой входа не быть"
     assert set(layout["manual_entry_points"]) <= set(execs)
@@ -537,6 +538,7 @@ APPROVED_FIELDS = {
     "order": ("list", "decision", None),
     "brief_layers": ("dict", "decision", None),
     "allowed": ("dict", "decision", None),
+    "package": ("str", "decision", None),
     "package_entry": ("str", "decision", None),
     "layer_overrides": ("dict", "decision", {"layer": ("str", "decision", True), "why": ("str", "decision", True)}),
     "allowed_edges": ("list", "measured", {"from": ("str", "measured", True), "to": ("str", "measured", True),
@@ -1070,7 +1072,8 @@ def _layout(**over) -> dict:
     d = {"order": ["low", "high"], "allowed": {"low": [], "high": ["low"]},
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
-         "generated": "2026-09-19T00:00Z", "run_contracts": {}, "package_entry": "core_mod"}
+         "generated": "2026-09-19T00:00Z", "run_contracts": {},
+         "package": "charoite_graph", "package_entry": "core_mod"}
     d.update(over)
     return d
 
@@ -1923,7 +1926,8 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
         if any(isinstance(в, ast.Call) and isinstance(в.func, ast.Name) and в.func.id == lm.SHAPE_OWNER
                for в in ast.walk(узел)):
             зовут.add(узел.name)
-    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory"}
+    проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory",
+                 "_package_forms"}
     assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
 
     дерево = tmp_path / "src" / "p"
@@ -1946,6 +1950,8 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
     assert lm.packaging_conflicts({"src/a.py": "a", "src/a/b.py": "a.b"}) == [], \
         "конфликт упаковки считает владельца мимо формы"
     assert lm._owner("src/a/b.py") == "", "владелец мимо формы"
+    assert lm.package_members(честный, {"package": "p"}) == set(), "члены пакета считает мимо формы"
+    assert lm.package_inits(честный, {"package": "p"}) == set(), "__init__ пакета считает мимо формы"
     # инвентарь кормит конфликт именами от формы — с подделкой имён нет
     assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
     # гейт спрашивает роль: под подделкой модуль пакета обязан стать «дырой»
@@ -2281,7 +2287,8 @@ def test_the_gate_is_asked_about_the_seam_address(monkeypatch, capsys):
     monkeypatch.setitem(lm.ENV_SEAMS, "OpenSearch", ("graph_search", ("src/graphs.py",), "graphs.open_search"))
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
-    assert "шов graph_search.OpenSearch: в модуле graph_search нет объявления OpenSearch" in out, out
+    assert ("шов graph_search.OpenSearch: в модуле charoite_graph.graph_search "
+            "нет объявления OpenSearch") in out, out
 
 
 def test_the_env_gate_asks_the_artifact(tmp_path):
@@ -2348,10 +2355,166 @@ def test_the_package_is_the_closure_of_one_entry(world):
     closure = lm.package_closure(graph, entry)
     lay = lm.layer_of(layout)
     assert lay[entry] == "graph" and entry in closure
-    assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure
+    # план = замыкание входа плюс `__init__` пакета — явно, а не через ребро на пакет,
+    # которое даёт только `from charoite_graph import x` (выходной круг 2 по #650, DS I2)
+    assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure | lm.package_inits(inv, layout)
     assert {lay[m] for m in closure} <= set(lm.env_free_layers(layout))
     base = {m for m, layer in lay.items() if layer == "base"}
     assert base - closure, "замыкание уже, чем весь нижний слой: лишнее не становится поверхностью пакета"
     assert lm.package_closure(graph, "нет_такого") == set()
     assert lm.package_closure({"a": {"b"}, "b": {"a", "c"}, "c": set()}, "a") == {"a", "b", "c"}
+
+
+def test_members_are_imported_only_through_the_package(world):
+    """Ни один файл `src/`, `scripts/`, `tests/` не импортирует члена пакета мимо
+    пакета: `import graph_search` и `from safe_write import …` — обход, который
+    подорвал бы замыкание входа и спрятал модуль от гейта (№424). Список членов
+    берётся из артефакта (`form(...).package`), а не из литералов здесь: новый
+    член попадает под правило сам, без правки теста. Файлы `tests/` таблица
+    относит к `out` (инвентарь их не разбирает), поэтому корпус обходится с диска,
+    а не из инвентаря: тестовый импорт — тот же обход."""
+    layout, _, _, _, inv = world
+    # имя самого пакета — не обход: `import charoite_graph` и `from charoite_graph import x`
+    # законны; обход — короткое имя ЧЛЕНА (`graph_search`, `safe_write`) без префикса
+    # обход возможен только для членов первого уровня — у них были плоские имена; стемы
+    # глубоких членов (`sub/model.py` → `model`) давали бы ложный обход (DS M7)
+    short = {m.split(".", 1)[1] for m in lm.package_members(inv, layout) if m.count(".") == 1}
+    assert short, "артефакт не назвал членов пакета — правило сторожило бы пустоту"
+    offenders: list[str] = []
+    for root in ("src", "scripts", "tests"):
+        for f in sorted((ROOT / root).rglob("*.py")):
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    offenders += [f"{f.relative_to(ROOT)}:{node.lineno}: import {a.name}"
+                                  for a in node.names if a.name.split(".")[0] in short]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    if (node.module or "").split(".")[0] in short:
+                        offenders.append(f"{f.relative_to(ROOT)}:{node.lineno}: "
+                                         f"from {node.module} import …")
+    assert not offenders, ("импорт члена пакета мимо charoite_graph — замыкание входа\n"
+                           "такого модуля не увидит:\n" + "\n".join(offenders))
+
+
+def _package_tree(tmp_path, *, member_file: bool, outside_import: bool, dotted: bool = False,
+                  nested: bool = False, init: str = ""):
+    """Синтетическое дерево пакета `pkg` для гейта самодостаточности: вход `pkg.a`
+    зовёт `pkg.b`; лишний член `pkg.c` и импорт `outside` включаются по флагу.
+    `dotted` — вход пишет `import pkg.b` (ребра на сам пакет нет), `nested` —
+    подпакет `pkg.sub` с модулем `pkg.sub.x`, которого вход не зовёт, `init` —
+    текст `pkg/__init__.py`."""
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    (src / "pkg" / "__init__.py").write_text(init, encoding="utf-8")
+    head = ("import pkg.b\n" if dotted else "from pkg import b\n") + ("import outside\n" if outside_import else "")
+    (src / "pkg" / "a.py").write_text(head, encoding="utf-8")
+    (src / "pkg" / "b.py").write_text("", encoding="utf-8")
+    if member_file:
+        (src / "pkg" / "c.py").write_text("", encoding="utf-8")
+    if nested:
+        (src / "pkg" / "sub").mkdir()
+        (src / "pkg" / "sub" / "__init__.py").write_text("", encoding="utf-8")
+        (src / "pkg" / "sub" / "x.py").write_text("", encoding="utf-8")
+    (src / "outside.py").write_text("", encoding="utf-8")
+    modules = (["charoite_paths", "pkg", "pkg.a", "pkg.b", "outside"] + (["pkg.c"] if member_file else [])
+               + (["pkg.sub", "pkg.sub.x"] if nested else []))
+    layout = _layout(order=["base", "rt"], allowed={"base": [], "rt": ["base"]},
+                     brief_layers={"base": modules, "rt": ["charoite_paths"]},
+                     package="pkg", package_entry="pkg.a")
+    inv = lm.inventory(tmp_path)
+    return layout, lm.import_graph(inv), inv
+
+
+def test_the_package_gate_sees_members_at_any_depth(tmp_path):
+    """Член пакета — модуль поддерева на любой глубине, а не только первого
+    уровня: `pkg/sub/x.py`, которого вход не зовёт, — строка гейта, как и
+    `pkg/c.py`. Родитель формы (`pkg.sub`) членом его не делал, и каталог пакета
+    переставал быть равен замыканию молча (выходной круг 1 по #650, DS C1).
+    `__init__` подпакета — не член."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=False, nested=True)
+    assert lm.package_members(inv, layout) == {"pkg.a", "pkg.b", "pkg.sub.x"}
+    assert lm.package_inits(inv, layout) == {"pkg", "pkg.sub"}
+    problems = lm.package_problems(graph, layout, inv)
+    assert any("член пакета pkg.sub.x вне замыкания входа pkg.a" in p for p in problems), problems
+    assert not any("член пакета pkg.sub " in p for p in problems), problems
+
+
+def test_the_package_gate_does_not_depend_on_how_the_import_is_written(tmp_path):
+    """`import pkg.b` не даёт ребра на сам пакет, `from pkg import b` — даёт. Вердикт
+    от написания не зависит: `__init__` в сравнении каталога с замыканием не
+    участвует, и честный пакет молчит в обеих формах (выходной круг 1 по #650, DS I1),
+    а план копирования пробы несёт `__init__` и без ребра на него."""
+    for dotted in (False, True):
+        layout, graph, inv = _package_tree(tmp_path / str(dotted), member_file=False,
+                                           outside_import=False, dotted=dotted)
+        assert lm.package_problems(graph, layout, inv) == [], dotted
+        assert "src/pkg/__init__.py" in lm.package_files(inv, layout), dotted
+
+
+def test_the_package_init_stays_empty_of_imports(tmp_path):
+    """`__init__` пакета исполняется при импорте любого члена: импорт в нём —
+    строка гейта, сторонний (`yaml`) и член (`from . import b`) одинаково.
+    Обещание «`import charoite_graph` не тянет ни yaml, ни членов» без этого не
+    мерил никто (выходной круг 1 по #650, DS I2)."""
+    for init, name in (("import yaml\n", "yaml"), ("from . import b\n", "pkg.b")):
+        layout, graph, inv = _package_tree(tmp_path / name, member_file=False, outside_import=False,
+                                           init=init)
+        problems = lm.package_problems(graph, layout, inv)
+        assert any(p.startswith("src/pkg/__init__.py импортирует") and name in p for p in problems), problems
+    layout, graph, inv = _package_tree(tmp_path / "doc", member_file=False, outside_import=False,
+                                       init='"""Только докстринг."""\n')
+    assert lm.package_problems(graph, layout, inv) == []
+
+
+def test_a_declared_package_resolves_to_its_init(tmp_path):
+    """Объявленный пакет обязан быть пакетом: нет `src/<пакет>/__init__.py` —
+    строка гейта, а не пространство имён, где правило пустоты судит пустоту.
+    То же для опечатки в имени пакета: объявление, не разрешившееся в дереве, —
+    строка, а не «пакет без членов» (выходной круг 2 по #650, DS C1 и критика 2)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=False)
+    assert lm.package_problems(graph, layout, inv) == []
+    (tmp_path / "src" / "pkg" / "__init__.py").unlink()
+    inv = lm.inventory(tmp_path)
+    problems = lm.package_problems(lm.import_graph(inv), layout, inv)
+    assert any(p.startswith("package pkg: нет src/pkg/__init__.py") for p in problems), problems
+    typo = lm.package_problems(graph, {**layout, "package": "pgk"}, lm.inventory(tmp_path))
+    assert any(p.startswith("package pgk: нет src/pgk/__init__.py") for p in typo), typo
+
+
+def test_future_import_in_the_package_init_is_not_an_import(tmp_path):
+    """`from __future__ import annotations` в `__init__` — указание компилятору,
+    а не импорт модуля: домовой стиль пакета не краснит гейт (DS M4)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=False,
+                                       init="from __future__ import annotations\n")
+    assert lm.package_problems(graph, layout, inv) == []
+
+
+def test_the_package_gate_judges_the_directory_closure_and_outside_imports(tmp_path):
+    """Гейт самодостаточности (№424): лишний член в каталоге, модуль замыкания вне
+    каталога и импорт члена наружу — строки; честный пакет молчит. Список членов
+    гейт берёт из дерева (`form(...).package`), а не из артефакта: каталог и
+    замыкание сверяются в обе стороны, как всё в этом стороже."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=True)
+    assert lm.package_members(inv, layout) == {"pkg.a", "pkg.b", "pkg.c"}
+    assert lm.package_inits(inv, layout) == {"pkg"}
+    problems = lm.package_problems(graph, layout, inv)
+    assert any("член пакета pkg.c вне замыкания входа pkg.a" in p for p in problems), problems
+    assert any("outside — лежит вне пакета pkg/" in p for p in problems), problems
+    assert any("член пакета pkg.a импортирует outside вне пакета" in p for p in problems), problems
+
+    honest, honest_graph, honest_inv = _package_tree(tmp_path / "честный", member_file=False,
+                                                     outside_import=False)
+    assert lm.package_problems(honest_graph, honest, honest_inv) == []
+
+    # поле `package` — решение: без него (синтетические деревья других правил) гейт молчит
+    assert lm.package_problems(graph, {**layout, "package": ""}, inv) == []
+    # пустое имя пакета — это пустое МНОЖЕСТВО членов, а не None: возврат сравним
+    assert lm.package_members(inv, {"package": ""}) == set()
+    # вход, которого нет в графе, — не забота этого гейта (о нём скажет env_problems),
+    # но и он даёт пустой СПИСОК, а не None
+    assert lm.package_problems({}, layout, inv) == []
+    # `None` в любом из двух входов — «о пакете не спрашивают», и это не «пустой пакет»
+    assert lm.package_problems(graph, layout, None) == []
+    assert lm.package_problems(graph, None, inv) == []
 

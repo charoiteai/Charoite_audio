@@ -185,7 +185,7 @@ carried through the same ones. A pair with a shared chronicle is marked, not
 merged. Generic "hub" cores are never touched, and every write is preceded
 by a backup into `Ядра/.tier3_backup/`.
 
-**Topic dossiers** (`src/dossier.py`, `scripts/nightly_dossier.py`) — a summary
+**Topic dossiers** (`src/charoite_graph/dossier.py`, `scripts/nightly_dossier.py`) — a summary
 per cross-cutting topic: current state, chronology, decisions, open questions,
 who is involved, every point linked to its source node. A topic cluster is a
 core plus everything that links to it; boundaries come from the links a human
@@ -452,7 +452,7 @@ it signals degradation, it does not break the loop.
   history (top of «## Meetings»/«## History», status line) arrives as ⏮
   lines in the current thread topic: old agreements are visible while
   the talk is still going. No brain server, no LLM — name stems against
-  graph files (`src/graph_nodes.py`). The automatic path is strict: a
+  graph files (`src/charoite_graph/graph_nodes.py`). The automatic path is strict: a
   multi-word name must assemble fully, a single-word one must be heard
   twice (except digit codes and already-identified speakers), an
   ambiguous name stays silent, at most four nodes per meeting. The ⚡

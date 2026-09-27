@@ -27,7 +27,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 import once
-from model_seam import Embedder, SeamTransportError
+from charoite_graph.model_seam import Embedder, SeamTransportError
 
 
 #: Потолок одного запроса к /api/embed — по числу текстов и по знакам. Ollama

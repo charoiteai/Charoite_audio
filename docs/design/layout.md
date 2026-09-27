@@ -1,15 +1,15 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 69.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 70.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 11): `embed_door`, `exit_codes`, `file_locks`, `frontmatter`, `media_meta`, `model_seam`, `once`, `redirects`, `safe_write`, `task_line`, `vocabulary`
+- **base** (зависит от: —; модулей 11): `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `embed_door`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `vocabulary`
 - **runtime** (зависит от: base; модулей 5): `charoite_paths`, `config_loader`, `deps`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
-- **graph** (зависит от: base; модулей 6): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `tier3`
+- **graph** (зависит от: base; модулей 7): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_search`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
 - **audio** (зависит от: base, runtime; модулей 9): `audio`, `channel_labels`, `diarize`, `diarize_live`, `frame_drops`, `owner_voice`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 25): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
@@ -22,14 +22,15 @@
 - **base**: слою base окружение не дано (allowed: —): путь приходит параметром — его собирает вызывающий из слоя, которому виден runtime (runtime, llm, cloud, audio, meeting, app)
 - **graph**: слою graph окружение не дано (allowed: base): путь приходит параметром — его собирает вызывающий из слоя, которому виден runtime (meeting, app)
 
-## Пакет поиска по графу — замыкание входа `graph_search`
+## Пакет поиска по графу — замыкание входа `charoite_graph.graph_search`
 
 Ставится без приложения: модули ниже и только они; проба — `tests/test_entry_points_contract.py`.
 
-Модулей 8: `dossier`, `frontmatter`, `graph_names`, `graph_nodes`, `graph_search`, `model_seam`, `redirects`, `safe_write`
+Модулей 9: `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`
 
 ## Поправки к таблице брифа (с обоснованием)
 
+- `charoite_graph.model_seam` → base: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `charoite_paths` → runtime: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)
 - `deps` → runtime: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `embed_door` → base: шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph
@@ -38,7 +39,6 @@
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
 - `media_meta` → base: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
-- `model_seam` → base: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
 - `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует
@@ -126,9 +126,9 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `src/charoite_graph/graph_search.py` ← scripts/memory_bench.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/exit_codes.py` ← scripts/preflight.sh
-- `src/graph_search.py` ← scripts/memory_bench.py
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
@@ -171,17 +171,18 @@
 - `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/brain.py` ← docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md
+- `src/charoite_graph/dossier.py` ← docs/FEATURES.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `src/charoite_graph/frontmatter.py` ← docs/ru/ARCHITECTURE.md
+- `src/charoite_graph/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `src/charoite_graph/graph_search.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
+- `src/charoite_graph/redirects.py` ← docs/ru/ARCHITECTURE.md
 - `src/charoite_paths.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md
 - `src/cloud.py` ← docs/ARCHITECTURE.md, docs/MODELS.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/zh/MODELS.md
 - `src/config_loader.py` ← docs/design/OVERHAUL_2026-08.md
 - `src/daemon.py` ← SECURITY.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md
 - `src/deps.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
-- `src/dossier.py` ← docs/FEATURES.md, docs/design/UI_REVISION_2026-08.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md
-- `src/frontmatter.py` ← docs/ru/ARCHITECTURE.md
 - `src/graph_links.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
-- `src/graph_nodes.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
-- `src/graph_search.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
@@ -192,7 +193,6 @@
 - `src/once.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/privacy.py` ← MANIFESTO.md, PRIVACY.md, SECURITY.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/PRIVACY.md, docs/ru/SECURITY.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/PRIVACY.md, docs/zh/SECURITY.md
 - `src/rebuild_transcript.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/USER_GUIDE.md
-- `src/redirects.py` ← docs/ru/ARCHITECTURE.md
 - `src/speaker_names.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/stt_runtime.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md
 - `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
