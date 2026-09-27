@@ -52,7 +52,7 @@ import model_lease
 
 import privacy
 from charoite_paths import resolve_root, secure_dir, trim_log
-from llm import DEFAULT_MLX_MODEL
+from llm import BUSY_STATUSES, DEFAULT_MLX_MODEL
 
 
 def _root() -> pathlib.Path:
@@ -109,7 +109,6 @@ def is_local(cfg: dict) -> bool:
 BUSY = "busy"
 MISSING = "missing"   # сервер ответил 404: модели из конфига на нём нет — перезапуск не лечит (DS I2)
 SLOW = "slow"         # сервер на связи, генерация не ответила за таймаут: очередь или зависание (GLM I2)
-BUSY_STATUSES = (429, 502, 503)
 
 
 def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:

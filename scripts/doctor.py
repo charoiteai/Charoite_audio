@@ -247,7 +247,7 @@ def check_deps() -> None:
         line(OK, "python-зависимости")
 
 
-def check_llm_alive(cfg: dict):
+def check_llm_alive(cfg: dict) -> bool | str | None:
     """Отвечает ли модель на самом деле.
 
     Проверка выше спрашивает список моделей — у вставшей Ollama он приходит
@@ -308,7 +308,7 @@ def check_llm_alive(cfg: dict):
     return state
 
 
-def check_strict_json(cfg: dict, alive) -> None:
+def check_strict_json(cfg: dict, alive: bool | str | None) -> None:
     """Умеет ли сервер строгий JSON — проба пробой, вердикт дверью `llm`.
 
     Порядок решает, что вообще спрашивать: адрес отвергнут или проба живости

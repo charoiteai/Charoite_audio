@@ -642,7 +642,7 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   body (`strict_json_verdict`): a 200 with a JSON object lacking `error` is
   “yes”; a 200 whose `error` carries the phrase is “no”, while any other 200
   error, an empty body, HTML or a non-object is “unknown”; outside 200 the
-  phrase in the reason means “no”, and everything else — 404, a busy
+  phrase anywhere in the body means “no”, and everything else — 404, a busy
   429/502/503 — is “unknown”, because queueing is not a missing grammar. The
   reason is the `error` field or the raw body, cut to a 500-character window
   for printing while the verdict reads the whole text. On “no” the client

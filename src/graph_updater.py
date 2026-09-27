@@ -332,7 +332,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         # качать 20 ГБ, от которых облако и избавляет (круг-2 DS, M2).
         cloud = privacy.cloud_engine_active(cfg)
         who = "шлюз" if cloud else "Ollama"
-        if e.status in (429, 502, 503):
+        if e.status in llm.BUSY_STATUSES:
             print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "
                   f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
                   "часть пропущена; повтор подберёт незавершённую встречу")

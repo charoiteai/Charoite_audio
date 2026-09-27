@@ -341,11 +341,60 @@ def test_проба_строгого_json_на_сети_и_таймауте_unkn
     assert (исход, причина) == (llm_mod.STRICT_UNKNOWN, "таймаут")
 
 
-def test_здесь_же_равенство_занятости_у_доктора():
-    """Своя BUSY_STATUSES у llm_health — тот же набор, что у двери: иначе
-    проба живости и дверь строгого JSON считали бы «занято» по-разному."""
+def test_занятость_у_доктора_та_же_что_у_двери():
+    """Правило «занято» — одно, у двери в llm: проба живости читает его оттуда,
+    а не держит копию под тестом равенства (выходной круг 1 по №420 A, DS M4).
+    Копия в модуле — новый объект, и тест краснеет."""
     import llm_health
-    assert frozenset(llm_health.BUSY_STATUSES) == llm_mod.BUSY_STATUSES
+    assert llm_health.BUSY_STATUSES is llm_mod.BUSY_STATUSES
+
+
+def test_граф_спрашивает_занятость_у_двери(monkeypatch, capsys):
+    """Граф решает «модель занята» по правилу двери, а не по своему литералу:
+    код, добавленный в правило, граф видит сразу (выходной круг 1 по №420 A,
+    DS M4)."""
+    import graph_updater as gu
+
+    def отказ(*a, **k):
+        raise LLMHTTPError(500, "перегружен")
+
+    monkeypatch.setattr(llm_mod, "BUSY_STATUSES", frozenset({500}))
+    monkeypatch.setattr(gu.LLM, "complete", отказ)
+    assert gu._extract(CFG, "стенограмма") is None
+    assert "модель занята (HTTP 500)" in capsys.readouterr().out
+
+
+def test_detail_в_прежних_пределах_а_тело_целиком(_ollama_маршруты):
+    """`detail` печатают как есть (граф, статус): в нём прежние 500 знаков
+    тела, а полное тело — в `body`, его читает только дверь (выходной круг 1
+    по №420 A, DS I1)."""
+    длинное = "x" * 100_000     # латиница: ответ без charset, requests угадывает кодировку
+    _, чат = _всегда(500, длинное)
+    _ollama_маршруты.сценарий_чата(чат)
+
+    with pytest.raises(LLMHTTPError) as e:
+        LLM(CFG).complete("в", model="тест-модель")
+    assert len(e.value.detail) == 500
+    assert длинное in e.value.body
+
+
+def test_фраза_за_окном_доезжает_до_двери_через_complete(_ollama_маршруты):
+    """Не только чистая функция: через настоящий complete фраза, стоящая за
+    500-м знаком тела, всё равно даёт повтор без format. Обрезанное тело на
+    транспорте прошло бы все прочие тесты (выходной круг 1 по №420 A, DS M3)."""
+    журнал, чат = _сценарий_отказа(400, "х" * 600 + ПРИЧИНА, ответ='{"a": 1}')
+    _ollama_маршруты.сценарий_чата(чат)
+
+    assert LLM(CFG).complete("в", model="тест-модель", json_format=True) == '{"a": 1}'
+    assert [("format" in т) for т in журнал] == [True, False], журнал
+
+
+def test_фраза_в_соседнем_поле_тоже_отказ():
+    """Не-200 судит весь текст, а не только поле error: прокси кладёт фразу
+    в своё поле рядом (выходной круг 1 по №420 A, DS M2)."""
+    тело = json.dumps({"error": "Bad Request", "detail": ПРИЧИНА})
+    исход, причина = llm_mod.strict_json_verdict(400, тело)
+    assert (исход, причина) == (llm_mod.STRICT_NO, "Bad Request")
 
 
 def _часы(monkeypatch, старт: float = 1000.0):

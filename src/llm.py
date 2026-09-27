@@ -238,8 +238,7 @@ def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: s
 
     Тонкая обёртка над общим реестром `once`: решение «первый ли раз» и печать
     живут там, под своим замком. Текст строки — `strict_json_sentence`, один на
-    stderr и доктора. Рецепта в строке нет: она говорит, почему строгий JSON не
-    поехал и что делаем вместо него, а не советует пересобирать сервер.
+    stderr и доктора; что в нём говорится, решает только она.
     """
     once.say(("strict_json", key), "llm: " + strict_json_sentence(model, base, reason))
 
@@ -272,8 +271,11 @@ def strict_json_verdict(status: int, text: str) -> tuple[str, str]:
 
     200 с объектом без error — yes; 200 с error и фразой — no, без фразы —
     unknown; всё прочее на 200 (пусто, HTML, не объект) — unknown.
-    Не-200 вне `BUSY_STATUSES` решает причину по фразе (no/unknown), а
-    занятость (429/502/503) — всегда unknown: это очередь, не грамматика.
+    Не-200 вне `BUSY_STATUSES` ищет фразу во ВСЁМ тексте (no/unknown):
+    прокси перед сервером кладёт её и в соседнее поле, а не только в error
+    (выходной круг 1 по №420 A, DS M2). Занятость (429/502/503) — всегда
+    unknown: это очередь, не грамматика. На 200 судит только поле error:
+    остальное там — ответ модели, и эхо фразы в нём не отказ.
     """
     text = text or ""
     reason = _response_reason(text)
@@ -291,7 +293,7 @@ def strict_json_verdict(status: int, text: str) -> tuple[str, str]:
         return verdict, reason[:REASON_WINDOW]
     if status in BUSY_STATUSES:
         return STRICT_UNKNOWN, reason[:REASON_WINDOW]
-    verdict = STRICT_NO if STRUCTURED_OUTPUT_PHRASE in reason.lower() else STRICT_UNKNOWN
+    verdict = STRICT_NO if STRUCTURED_OUTPUT_PHRASE in text.lower() else STRICT_UNKNOWN
     return verdict, reason[:REASON_WINDOW]
 
 
@@ -303,8 +305,8 @@ def strict_json_sentence(model: str, base: str, reason: str) -> str:
     ответы, а не советуем пересобирать сервер.
     """
     return (f"строгий JSON недоступен у {model} на {base} — "
-            f"сервер: «{reason}»; ответы без грамматики — часть разбора и "
-            f"имён может не дойти")
+            f"сервер: «{reason}»; ответы идут на промпте, без грамматики — "
+            f"часть разбора и имён может не дойти")
 
 
 def strict_json_probe_body(model: str) -> dict:
@@ -327,12 +329,16 @@ class LLMHTTPError(RuntimeError):
     в mcp_server и graph_updater различают эти случаи.
     """
 
-    def __init__(self, status: int, detail: str = ""):
-        # Полный текст хранится в detail — по нему дверь строгого JSON решает
-        # исход; в сообщение идёт причина, обрезанная REASON_WINDOW.
+    def __init__(self, status: int, detail: str = "", body: str | None = None):
+        # Два значения, а не одно: detail — причина для людей в прежних
+        # пределах (читатели печатают его как есть), body — полный текст
+        # ответа для двери строгого JSON, где фраза может стоять за окном
+        # печати. Одно поле на обе роли довело всё тело до печати графа
+        # (выходной круг 1 по №420 A, DS I1).
         super().__init__(f"HTTP {status}: {_response_reason(detail)[:REASON_WINDOW]}")
         self.status = status
         self.detail = detail
+        self.body = detail if body is None else body
 
 
 def parse_json_block(text: str) -> dict | None:
@@ -732,7 +738,7 @@ class LLM:
             raise self._fail(r.status_code, f"неожиданная форма строки потока: {line[:120]!r}")
         return data
 
-    def _fail(self, status: int, detail: str) -> LLMHTTPError:
+    def _fail(self, status: int, detail: str, body: str | None = None) -> LLMHTTPError:
         """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
 
         Круг-1 закрыл утечку ключа «в точке, где тело становится
@@ -743,7 +749,8 @@ class LLM:
         один, и структурный тест следит, чтобы прямой `raise LLMHTTPError`
         в этом классе больше не появлялся.
         """
-        return LLMHTTPError(status, self._hide_key(detail))
+        return LLMHTTPError(status, self._hide_key(detail),
+                            None if body is None else self._hide_key(body))
 
     def _hide_key(self, text: str) -> str:
         """Убрать ключ из текста ошибки шлюза.
@@ -1272,7 +1279,7 @@ class LLM:
             # Строгий JSON не поддержан: запоминаем причину и повторяем ОДИН раз
             # без format. Любой другой отказ (занятость, таймаут, 404, 500 без
             # этой причины) идёт наружу, как раньше, — реестру ему не место.
-            verdict, reason = strict_json_verdict(e.status, e.detail)
+            verdict, reason = strict_json_verdict(e.status, e.body)
             if not sends_format or verdict != STRICT_NO:
                 raise
             _strict_json_record(strict_key, reason)
@@ -1320,15 +1327,15 @@ class LLM:
 
         Не @staticmethod: тело ошибки чужого шлюза может содержать ключ
         эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
-        Полный текст тела уходит в `detail` — дверь строгого JSON решает по
-        нему исход (фраза может стоять за окном печати), а в сообщение
-        исключения идёт причина, обрезанная `REASON_WINDOW`.
+        `detail` — причина в прежних пределах (первые 500 знаков тела или
+        поле error), её печатают читатели; полный текст тела — в `body`, по
+        нему дверь строгого JSON решает исход (фраза может стоять за окном).
         """
         if r.status_code != 200:
-            raise self._fail(r.status_code, r.text)
+            raise self._fail(r.status_code, r.text[:500], body=r.text)
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise self._fail(r.status_code, r.text)
+            raise self._fail(r.status_code, str(body["error"]), body=r.text)
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на
