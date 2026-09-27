@@ -155,14 +155,18 @@ def structural_row(text: str, gold: str) -> Row:
 
 
 def shadow_rows(lines) -> tuple[dict[str, list[Row]], dict[str, int]]:
-    """Строки тени → замер по бэкендам. Исход «failed» метки не даёт и не
-    считается; вердикта нет — счёт по причине (`busy`, `start:…`, `error:…`):
-    «голова не собралась» и «модель занята» — разные беды (DS M2)."""
+    """Строки тени → замер по бэкендам. Вердикта нет — счёт по причине (`busy`,
+    `hung:…`, `start:…`, `error:…`): «голова не собралась» и «модель занята» —
+    разные беды (DS M2). Исход «failed» (⚡ не ответила) метки не даёт: такие строки
+    считаются под причиной `no-outcome`, а не выпадают бесследно (круг 2, DS M3)."""
     by_backend: dict[str, list[Row]] = {}
     missing: dict[str, int] = {}
     for line in lines:
         rec = dg.parse_shadow_line(line)
-        if rec is None or rec["outcome"] == "failed":
+        if rec is None:
+            continue
+        if rec["outcome"] == "failed":
+            missing["no-outcome"] = missing.get("no-outcome", 0) + 1
             continue
         if rec.get("verdict") == "none":
             reason = str(rec.get("reason") or "unknown")
@@ -189,12 +193,16 @@ def harvest(directory: pathlib.Path, owner: str = "") -> list[dict]:
     """
     labels = channel_labels.ChannelLabels.from_config({"sufler": {"user_name": owner}})
     out, seen = [], set()
+    # «Я» в архиве — факт записи: так подписан только микрофонный канал (стенограммы до
+    # того, как имя появилось в настройках, или при имени-коллизии), а не свойство
+    # сегодняшнего конфига, по которому собран `labels` (круг 2 по #651, DS I1)
+    own = {channel_labels.NEUTRAL_MIC}
     for path in sorted(directory.rglob("*.md")):
         if not meeting_stamp.stamp_of(path.stem):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for block in transcript.parse_blocks(text):
-            if labels.is_owner_line(block["speaker"]):
+            if block["speaker"] in own or labels.is_owner_line(block["speaker"]):
                 continue
             body = " ".join(text[block["start"]:block["end"]].split())
             for phrase in _SENTENCE.split(body):
@@ -221,7 +229,10 @@ def _fmt(x, pct: bool = True) -> str:
 
 def print_report(name: str, rows: list[Row], thresholds) -> None:
     s = summary(rows)
-    print(f"\n## {name}: {s['n']} реплик")
+    asks = sum(r.gold == "ask" for r in rows)
+    # знаменатели долей — в шапке: «потеряно 2 %» на пяти вопросах и на пятистах —
+    # разные решения о пороге (критика DS круга 2 по #651)
+    print(f"\n## {name}: {s['n']} реплик (вопросов {asks}, пустых {s['n'] - asks})")
     calib = "—" if s["ece"] is None else f"{s['ece']:.3f}"
     print(f"точность {_fmt(s['accuracy'])} · вопросов удержано {_fmt(s['ask_kept'])} · "
           f"пустого отсеяно {_fmt(s['skip_caught'])} · ECE {calib} · "
@@ -299,7 +310,7 @@ def cmd_shadow(args) -> int:
         lines += pathlib.Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
     by_backend, missing = shadow_rows(lines)
     if missing:
-        print(f"вердиктов нет: {sum(missing.values())} — "
+        print(f"вне замера: {sum(missing.values())} — "
               + ", ".join(f"{reason} {n}" for reason, n in sorted(missing.items())))
     if not by_backend:
         print("строк тени нет: включите sufler.decision_gate_shadow и проведите встречу",

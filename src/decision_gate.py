@@ -16,8 +16,8 @@
 Модуль — исследовательский шаг, и за демона он ничего не решает. Режим один —
 ТЕНЬ (`sufler.decision_gate_shadow: true`): вердикт считается параллельно
 генерации ⚡ и печатается в err-лог рядом с исходом — ответила модель или
-отказалась. Контента в строке нет: метка, уверенность, задержка и короткий хеш
-вопроса. err-лог — про состояние, не про разговор (как `hint-pulse`). Включать
+отказалась. Контента в строке нет: метка, уверенность, задержка и ничего,
+выведенного из текста. err-лог — про состояние, не про разговор (как `hint-pulse`). Включать
 ли гейт по-настоящему и с каким порогом, решает `scripts/gate_bench.py` по
 накопленным строкам, а не догадка.
 
@@ -68,6 +68,11 @@ SHADOW_KEY = "decision_gate_shadow"
 #: Начало строки тени в err-логе. Формат строит `shadow_line`, разбирает
 #: `parse_shadow_line` — одно место на запись и чтение.
 SHADOW_PREFIX = "gate-shadow:"
+
+#: Сколько секунд прогон тени может думать, прежде чем пропуск станет «hung», а не
+#: «busy»: окно ответа ⚡ (слот подсказки ждёт 45 с). Дольше — вердикт живому гейту
+#: всё равно не успел бы, а замер должен видеть, что решатель встал (круг 2 по #651, DS I2).
+HUNG_S = 45.0
 
 #: Файлы обученной головы. Нет хоть одного — головы нет.
 HEAD_FILES = ("model.onnx", "tokenizer.json", "labels.json")
@@ -391,16 +396,19 @@ class ShadowRun:
             return self._done
 
     def _run(self) -> None:
-        verdict, reason = None, ""
+        verdict, reason = None, "error:BaseException"
         try:
             verdict = decide(self._decider, self._question, self._clock)
+            reason = ""
         except Exception as e:  # noqa: BLE001 — тень не смеет ронять поток; класс сбоя уходит в строку лога
             reason = f"error:{type(e).__name__}"
-        with self._lock:
-            self._verdict, self._reason, self._done = verdict, reason, True
-            ready = self._outcome is not None
-        if ready:
-            self._write()
+        finally:
+            # и на BaseException прогон отмечается решённым: иначе «в полёте» навсегда (DS I2)
+            with self._lock:
+                self._verdict, self._reason, self._done = verdict, reason, True
+                ready = self._outcome is not None
+            if ready:
+                self._write()
 
     def finish(self, outcome: str) -> None:
         """Исход ⚡ известен. Не бросает: тень не смеет ронять поток ⚡ (выходной
@@ -444,11 +452,14 @@ class Shadow:
     виден в замере ростом пропусков, а не копит потоки молча (DS I3).
     """
 
-    def __init__(self, dec: Decider | None, log: Callable[[str], None]) -> None:
+    def __init__(self, dec: Decider | None, log: Callable[[str], None],
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self._decider = dec
         self._log = log
+        self._clock = clock
         self._lock = threading.Lock()
         self._inflight: ShadowRun | None = None
+        self._inflight_at = 0.0
 
     @property
     def active(self) -> bool:
@@ -462,12 +473,15 @@ class Shadow:
         with self._lock:
             run = ShadowRun(question, self._decider, self._log)
             if self._inflight is not None and not self._inflight.decided:
-                run.skip("busy")
+                # возраст прогона в полёте — в причине: «медленно» и «встал» различимы
+                # по строке, а не глазами по счёту причин (круг 2 по #651, DS I2)
+                age = self._clock() - self._inflight_at
+                run.skip("busy" if age < HUNG_S else f"hung:{age:.0f}s")
                 return run
             try:
                 run.start()
             except Exception as e:  # noqa: BLE001 — отказ старта потока (лимит потоков, память) не смеет ронять ⚡: причина уходит в строку тени
                 run.skip(f"start:{type(e).__name__}")
                 return run
-            self._inflight = run
+            self._inflight, self._inflight_at = run, self._clock()
         return run

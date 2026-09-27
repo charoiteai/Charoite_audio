@@ -114,8 +114,9 @@ def test_shadow_rows_take_model_refusal_as_skip_and_drop_failures():
         dg.shadow_line(None, "answered", "error:FileNotFoundError"),
     ]
     by_backend, missing = gb.shadow_rows(lines)
-    # пропуски — по причине: «модель занята» и «голова не собралась» — разные беды
-    assert missing == {"busy": 2, "error:FileNotFoundError": 1}
+    # пропуски — по причине: «модель занята» и «голова не собралась» — разные беды;
+    # «⚡ не ответила» при известном вердикте — тоже вне замера, но не бесследно (круг 2, DS M3)
+    assert missing == {"busy": 2, "error:FileNotFoundError": 1, "no-outcome": 1}
     assert by_backend["nli"] == [R("skip", "skip", 0.9, 100.0), R("ask", "skip", 0.8, 100.0)]
     assert by_backend["head:question_gate"] == [R("ask", "ask", 0.6, 100.0)]
 
@@ -164,9 +165,11 @@ def test_harvest_skips_the_owners_lines_like_the_daemon(tmp_path):
     (tmp_path / "2026-09-27_101500.md").write_text(text, encoding="utf-8")
     # имени нет — канал микрофона подписан «Я», это владелец
     assert "А бюджет утвердили?" not in [r["text"] for r in gb.harvest(tmp_path)]
-    # имя задано — владелец подписан им, его вопрос в выборку не идёт
+    # имя задано — владелец подписан им, его вопрос в выборку не идёт; «Я» из стенограмм
+    # до имени в настройках — тоже владелец: так подписан только микрофон (круг 2, DS I1)
     rows = gb.harvest(tmp_path, owner="Мира")
-    assert "А что с деплоем?" not in [r["text"] for r in rows]
+    texts = [r["text"] for r in rows]
+    assert "А что с деплоем?" not in texts and "А бюджет утвердили?" not in texts
     assert rows[:2] == gb.harvest(tmp_path)[:2]
 
 
@@ -194,7 +197,7 @@ def test_report_prints_shares_latency_and_the_threshold_table(capsys):
     rows = [R("ask", "ask", 0.9, 100.0), R("skip", "skip", 0.95, 300.0)]
     gb.print_report("nli-zero-shot", rows, (0.9,))
     out = capsys.readouterr().out
-    assert "## nli-zero-shot: 2 реплик" in out
+    assert "## nli-zero-shot: 2 реплик (вопросов 1, пустых 1)" in out
     assert "точность 100.0%" in out and "ECE 0.075" in out
     assert "p50 200 мс" in out and "p95 300 мс" in out
     # уверенный «ask» не входит в отсечённое: отсечена одна реплика из двух, и она верна
@@ -284,7 +287,7 @@ def test_shadow_command_reports_each_backend_and_missing_verdicts(tmp_path, caps
     ]) + "\n", encoding="utf-8")
     assert gb.main(["shadow", str(log), "--thresholds", "0.9"]) == 0
     out = capsys.readouterr().out
-    assert "вердиктов нет: 1 — busy 1" in out
+    assert "вне замера: 1 — busy 1" in out
     assert "## nli-zero-shot (тень: отказ модели = skip): 2 реплик" in out
 
 

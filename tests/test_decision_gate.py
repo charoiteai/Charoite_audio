@@ -424,6 +424,7 @@ def test_one_shadow_in_flight_the_next_question_is_counted_as_busy():
     first = shadow.start("Когда релиз?")
     second = shadow.start("А сроки?")
     second.finish("answered")
+    second.join(0)                         # у пропуска потока нет — ждать нечего, и это не ошибка
     assert [dg.parse_shadow_line(x)["reason"] for x in log] == ["busy"]
     release.set()
     first.join(5)
@@ -503,3 +504,40 @@ def test_shadow_thread_never_holds_the_daemon_on_stop():
 
 def test_decider_repr_names_it_without_the_function():
     assert repr(_fixed({"ask": 1.0, "skip": 0.0})) == "Decider(name='fake', refused='')"
+
+
+def test_a_run_stuck_longer_than_the_answer_window_is_named_hung():
+    """Возраст прогона в полёте — в причине пропуска: до окна ответа ⚡ — `busy`,
+    дольше — `hung:<секунды>`. «Медленно» и «встал» различимы по строке, а не
+    глазами по счёту причин (выходной круг 2 по #651, DS I2)."""
+    release = threading.Event()
+    now = [0.0]
+    log = _Log()
+    shadow = dg.Shadow(dg.Decider("hung", lambda t: release.wait(5) and {}), log, clock=lambda: now[0])
+    first = shadow.start("Когда релиз?")
+    now[0] = 10.0
+    shadow.start("А сроки?").finish("answered")
+    now[0] = dg.HUNG_S + 55.0
+    shadow.start("И бюджет?").finish("answered")
+    assert [dg.parse_shadow_line(x)["reason"] for x in log] == ["busy", f"hung:{dg.HUNG_S + 55.0:.0f}s"]
+    release.set()
+    first.join(5)
+
+
+def test_a_base_exception_in_the_decider_does_not_leave_the_run_in_flight(monkeypatch):
+    """Прогон отмечается решённым и на `BaseException` — иначе «в полёте» навсегда,
+    и тень до конца встречи писала бы одни пропуски (круг 2 по #651, DS I2)."""
+    class Остановлен(BaseException):
+        pass
+
+    def stop(_text):
+        raise Остановлен()
+
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)   # поток падает — это ожидаемо
+    log = _Log()
+    shadow = dg.Shadow(dg.Decider("stop", stop), log)
+    run = shadow.start("Когда релиз?")
+    run.join(5)
+    assert run.decided
+    run.finish("answered")
+    assert dg.parse_shadow_line(log[0])["reason"] == "error:BaseException"
