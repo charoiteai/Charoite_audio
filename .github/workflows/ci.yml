@@ -171,6 +171,12 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # Имя отчёта шарда — одно на job: его пишет мутатор, читает сводка и забирает
+    # артефакт (машинная строка — это имя плюс суффикс, `shard_line_path`). Три
+    # литерала расходились бы молча: артефакт пуст, вердикт красный на каждом PR
+    # (выходной круг 2 по №441, DS M1).
+    env:
+      REPORT: mutation-report-${{ matrix.shard }}.txt
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -218,7 +224,7 @@ jobs:
           # по месту скрипта (№440); у раннера данных владельца нет, корень — сам checkout
           CHAROITE_ROOT: ${{ github.workspace }}
         run: |
-          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "mutation-report-$SHARD.txt" || rc=$?
+          rc=0; python scripts/mutate_check.py --range "$BASE_SHA...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "$REPORT" || rc=$?
           echo "шард $SHARD: код мутатора $rc — судит job mutation verdict"
       # Отчёт пишется после каждого мутанта, поэтому доезжает и тогда, когда шаг
       # оборвал свой потолок: итог — в сводку прогона, а не только в лог.
@@ -228,8 +234,8 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          if [ -f "mutation-report-$SHARD.txt" ]; then
-            { echo "### Мутация, шард $SHARD"; echo '```'; cat "mutation-report-$SHARD.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$REPORT" ]; then
+            { echo "### Мутация, шард $SHARD"; echo '```'; cat "$REPORT"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Мутация, шард $SHARD: отчёта нет — мутатор не дошёл до первой записи" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -243,7 +249,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: mutation-shard-${{ matrix.shard }}
-          path: mutation-report-${{ matrix.shard }}.txt*
+          path: ${{ env.REPORT }}*
           if-no-files-found: ignore
           retention-days: 7
 

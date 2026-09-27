@@ -619,6 +619,28 @@ def test_файл_не_в_utf8_это_неполнота_а_не_трассир�
     assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
 
 
+def test_файл_не_разбирается_это_неполнота_а_не_нечего(tmp_path, monkeypatch):
+    """Третья нога той же неполноты: `git show` прочитал, utf-8 декодировался, а
+    `ast.parse` отказал. Файл идёт в `files_unreadable`, и пустой план из него —
+    `partial`, а не «мутировать нечего» (выходной круг 2 по №441, DS C1: при
+    P = 0 вердикт шардов красил такой диапазон зелёным)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n",
+                                "src/bad.py": "def g(:\n    return 1\n"})
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
+        repo / "src" / "mod.py": {2}, repo / "src" / "bad.py": {1, 2}})
+
+    plan, totals = mc.plan_for(repo, "HEAD")
+
+    assert totals.files_in == 2 and totals.files_unreadable == 1, totals
+    assert {m.path for m in plan} == {repo / "src" / "mod.py"}
+    assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
+
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {repo / "src" / "bad.py": {1, 2}})
+    plan, totals = mc.plan_for(repo, "HEAD")
+    assert plan == [] and totals.files_unreadable == 1
+    assert mc.verdict_code([], 0, 0, 0, 0, totals) == mc.EXIT_PARTIAL
+
+
 def test_план_берёт_изменённые_строки_из_git(tmp_path):
     """Сквозь `changed_lines`: две ревизии, изменена одна строка."""
     repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return x\n"})
@@ -1164,6 +1186,60 @@ def test_шард_при_пустом_диапазоне_пишет_строку
     assert json.loads(строка.read_text(encoding="utf-8")) == \
         {"K": 2, "N": 4, "M": 0, "P": 0, "word": "nothing"}
     assert "шард 2 из 4" not in capsys.readouterr().out, "P = 0 — диагноз диапазона, а не «пустая доля»"
+
+
+def _шард_пустого_плана(tmp_path, monkeypatch, repo, k=1, n=4):
+    """Прогон шарда K/N по последнему коммиту `repo` — код и машинная строка."""
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / f"отчёт-{k}.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", f"{k}/{n}", "--max", "all",
+                  "--force", "--report", str(отчёт)])
+    return rc, json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+
+
+def test_шард_при_плане_без_операторов_пишет_unmutable(tmp_path, monkeypatch):
+    """Писатель пары «писатель/судья» для слепого пятна: правка из одного `if`
+    (узлы есть, операторов нет) даёт шарду код `EXIT_UNMUTABLE` и слово
+    `unmutable` в машинной строке — то самое, что судья при P = 0 читает
+    предупреждением (выходной круг 2 по №441, DS M3)."""
+    import exit_codes
+    repo = _репо_с_правкой(tmp_path, "def f(a, b):\n    if a:\n        pass\n    return a\n")
+    rc, строка = _шард_пустого_плана(tmp_path, monkeypatch, repo)
+    assert rc == exit_codes.EXIT_UNMUTABLE
+    assert строка == {"K": 1, "N": 4, "M": 0, "P": 0, "word": "unmutable"}
+
+
+def test_шард_с_неразобранным_файлом_пишет_partial_и_вердикт_красный(tmp_path, monkeypatch):
+    """Сквозь писателя и судью: правка, после которой файл не разбирается, —
+    P = 0, но слово шарда `partial`, и вердикт четырёх таких строк красный, а не
+    «мутировать нечего» (выходной круг 2 по №441, DS C1)."""
+    import exit_codes
+    repo = _репо_с_правкой(tmp_path, "def f(a, b):\n    return (a\n")
+    rc, строка = _шард_пустого_плана(tmp_path, monkeypatch, repo)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert строка == {"K": 1, "N": 4, "M": 0, "P": 0, "word": "partial"}
+    каталог = tmp_path / "шарды"
+    каталог.mkdir()
+    for k in range(1, 5):
+        (каталог / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(
+            json.dumps({**строка, "K": k}), encoding="utf-8")
+    assert mc.merge_shards(каталог) == 1
+
+
+def test_вердикт_с_битым_файлом_показывает_прочитанные_шарды(tmp_path, capsys):
+    """Один нечитаемый файл — красный с причиной, но три прочитанных шарда
+    остаются в сводке: «шардов 0, M=0, P=0» при трёх отработавших врал бы
+    читателю PR (выходной круг 2 по №441, DS M2)."""
+    for k in range(1, 4):
+        (tmp_path / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+            {"K": k, "N": 4, "M": 2, "P": 8, "word": "ok"}), encoding="utf-8")
+    (tmp_path / f"r4.txt{mc.SHARD_LINE_SUFFIX}").write_text('{"K": 4, "N"', encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "нечитаемый файл шарда" in out and "r4.txt" in out
+    assert "итог: шардов 3, M=6, P=8" in out
 
 
 def test_вердикт_при_пустом_диапазоне_не_краснеет(tmp_path):

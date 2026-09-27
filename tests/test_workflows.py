@@ -418,24 +418,32 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
 
 
 def test_mutation_artifact_carries_the_line_the_verdict_reads():
-    """Имя машинной строки шарда — одно на троих: отчёт шага + `SHARD_LINE_SUFFIX`
-    мутатора обязан попадать в глоб выгрузки артефакта. Переименование суффикса
-    иначе проходило бы все сторожа, а вердикт видел бы ноль файлов на каждом PR
-    (выходной круг 1 по №441, DS I3). Номер шарда подставляется в оба имени."""
-    import fnmatch
+    """Имя отчёта шарда объявлено один раз — `env.REPORT` job: мутатор пишет в
+    него (`--report "$REPORT"`), сводка читает его, артефакт забирает
+    `${{ env.REPORT }}*`. Машинная строка обязана лечь под этот глоб: в том же
+    каталоге и с именем-продолжением отчёта (`shard_line_path`), без `/` в
+    хвосте — глоб выгрузки через `/` не ходит. Прежний сторож сверял базовые
+    имена через `fnmatch` и пропускал отчёт в подкаталоге (выходной круг 2 по
+    №441, DS M1); до него переименование суффикса красило вердикт на каждом PR
+    (круг 1, DS I3)."""
     import sys
     sys.path.insert(0, str(WF.parent.parent / "scripts"))
     import mutate_check
 
     job = _load("ci.yml")["jobs"]["mutation"]
+    report = str(job.get("env", {}).get("REPORT", ""))
+    assert "${{ matrix.shard }}" in report, "имя отчёта — одно на job, с номером шарда"
     step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
-    report = re.search(r'--report\s+"?([^"\s]+)"?', str(step["run"]))
-    assert report, "шаг шарда обязан назвать --report"
+    assert re.search(r'--report\s+"\$REPORT"', str(step["run"])), "мутатор пишет отчёт в env.REPORT"
+    summary = [s for s in job["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert summary and all('"$REPORT"' in str(s["run"]) for s in summary), "сводка читает env.REPORT"
     upload = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact"))
+    assert upload["with"]["path"] == "${{ env.REPORT }}*", "артефакт забирает отчёт и его машинную строку"
     for shard in job["strategy"]["matrix"]["shard"]:
-        строка = mutate_check.shard_line_path(pathlib.Path(report.group(1).replace("$SHARD", str(shard)))).name
-        глоб = str(upload["with"]["path"]).replace("${{ matrix.shard }}", str(shard))
-        assert fnmatch.fnmatch(строка, глоб), f"артефакт {глоб!r} не забирает машинную строку {строка!r}"
+        имя = report.replace("${{ matrix.shard }}", str(shard))
+        строка = str(mutate_check.shard_line_path(pathlib.PurePosixPath(имя)))
+        assert строка.startswith(имя) and "/" not in строка[len(имя):], (
+            f"машинная строка {строка!r} не ложится под глоб {имя + '*'!r}")
 
 # ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
 #

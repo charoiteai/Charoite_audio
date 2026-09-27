@@ -125,6 +125,9 @@ class ScanReport:
     mutations: list
     lines_constant: int = 0     # строки диапазона, снятые как константы модуля
     nodes: int = 0              # узлы AST на оставшихся строках диапазона
+    #: Файл не разобрался (`SyntaxError`): ломать в нём было что, а план о нём
+    #: молчал бы — `plan_for` считает его непрочитанным (выходной круг 2 по №441, DS C1).
+    unparsed: bool = False
 
 
 @dataclasses.dataclass
@@ -153,7 +156,7 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
     нечего; `EXIT_UNJUDGED` — план был, не судился ни один мутант; `EXIT_PARTIAL`
     — судили не весь план (прервано встречей, срезано потолком, не применилось,
-    файл не прочитался); 0 — проверен весь план, чисто.
+    файл не прочитался или не разобрался); 0 — проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
@@ -168,8 +171,8 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     # `partial` CI пропускал это жёлтым (Important DeepSeek по PR #637).
     if planned and not tested:
         return EXIT_UNJUDGED
-    # Непрочитанный файл — неполнота при любом плане: его строки не судились,
-    # а пустой план из-за него — не «нечего» (№386).
+    # Непрочитанный файл (нет в ревизии, не utf-8, не разобрался) — неполнота при
+    # любом плане: его строки не судились, а пустой план из-за него — не «нечего» (№386).
     if totals.files_unreadable:
         return EXIT_PARTIAL
     if planned == 0:
@@ -264,7 +267,7 @@ def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> Scan
         tree = ast.parse(source if source is not None
                          else path.read_text(encoding="utf-8"))
     except SyntaxError:
-        return ScanReport([])
+        return ScanReport([], unparsed=True)
     consts = _module_constants(tree)
     report = ScanReport([], lines_constant=len(lines & consts))
     lines = lines - consts
@@ -343,6 +346,12 @@ def plan_for(root: pathlib.Path, rng: str,
             totals.files_unreadable += 1
             continue
         report = scan(path, lines, source)
+        if report.unparsed:
+            # Третья нога той же неполноты: прочитали, а разобрать нельзя. Без
+            # счётчика пустой план из такого файла выходил «мутировать нечего» —
+            # зелёным (выходной круг 2 по №441, DS C1).
+            totals.files_unreadable += 1
+            continue
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         plan.extend(report.mutations)
@@ -728,26 +737,39 @@ def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int,
 
     Обходим рекурсивно: CI раскладывает артефакты шардов по своим подкаталогам,
     и «все `*.json` шардов» — это они, а не только плоский уровень.
+
+    Нечитаемый файл не стирает прочитанные: сводка показывает шарды, которые
+    отработали, рядом с причиной красного, а не «шардов 0» (выходной круг 2 по
+    №441, DS M2).
     """
     rows: list[tuple[int, int, int, int, str]] = []
+    bad: list[str] = []
     for path in sorted(directory.rglob("*" + SHARD_LINE_SUFFIX)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             rows.append((int(data["K"]), int(data["N"]), int(data["M"]),
                          int(data["P"]), str(data["word"])))
         except (OSError, ValueError, KeyError, TypeError):
-            return [], f"нечитаемый файл шарда: {path}"
-    return rows, ""
+            bad.append(str(path))
+    return rows, (f"нечитаемый файл шарда: {', '.join(bad)}" if bad else "")
 
 
 def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) -> int:
     """Свести машинные строки шардов в один вердикт — код возврата.
 
-    Сначала покрытие: (число файлов, N, набор K, ΣM) обязаны сойтись с планом.
-    Сошлись — зелёный, только если каждый шард судил своё чисто (`ok`, либо
-    `nothing` при своём `M = 0`); `P = 0` со всеми `nothing` — «мутировать
-    нечего», тоже зелёный. Всё остальное (`partial`, `unjudged`, `unmutable`,
-    `fail`) — красный: в CI «судили часть» больше не жёлтая заметка.
+    Таблица вердикта — здесь одна; CONTRIBUTING на неё ссылается:
+
+    | состояние | исход | код |
+    |---|---|---|
+    | нечитаемый файл, файлов не N, разные N, повтор или пропуск K, ΣM ≠ P | «шарды не покрыли план» | 1 |
+    | P = 0, все шарды `nothing` | заметка «мутировать нечего» | 0 |
+    | P = 0, шарды `nothing` или `unmutable` | предупреждение «слепое пятно мутатора» | 0 |
+    | P > 0, каждый шард `ok` или `nothing` при своём M = 0 | «шарды чисты» | 0 |
+    | иначе (`partial`, `unjudged`, `fail`) | «неполный исход» | 1 |
+
+    `unmutable` бывает только при P = 0: шард с непустой долей судит её, а
+    пустая доля непустого плана пишет `nothing`. В CI «судили часть» — красный,
+    а не жёлтая заметка.
     """
     directory = pathlib.Path(directory)
     rows, why = _shard_rows(directory)
@@ -911,7 +933,8 @@ def main(argv: list[str]) -> int:
         else:
             print(f"План пуст, но проверено не всё: не прочитано файлов "
                   f"{totals.files_unreadable} из {totals.files_in} "
-                  f"(ревизия {head_of(args.range)}) — это НЕ «нечего мутировать».")
+                  f"(нет в ревизии {head_of(args.range)}, не utf-8 или не разбирается) — "
+                  f"это НЕ «нечего мутировать».")
         return code
 
     dropped = 0
