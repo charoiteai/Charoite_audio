@@ -1128,6 +1128,15 @@ def _sweepers() -> list:
             if getattr(t, "function", None) is llm_mod._fit_cache_sweep and t.is_alive()]
 
 
+def _armed():
+    """Таймер уборщика — на границе замка, где держится инвариант «кэш не пуст ⇒
+    уборщик взведён». Внутри тика между `_fit_sweeper = None` и присваиванием
+    нового таймера `Thread.start()` отпускает GIL, и чтение без замка видит там
+    `None`: под нагрузкой 2 падения из 40 (№461)."""
+    with llm_mod._fit_cache_lock:
+        return llm_mod._fit_sweeper
+
+
 def _until(cond, deadline: float = 2.0) -> bool:
     end = time.monotonic() + deadline
     while not cond():
@@ -1144,9 +1153,11 @@ def test_expired_digests_leave_memory_without_another_call(monkeypatch):
     monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
     monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     llm_mod._fit_cache_put(("а",), "сводка")
-    assert llm_mod._fit_sweeper.daemon, "уборщик не держит процесс MCP-сервера на выходе"
+    assert _armed().daemon, "уборщик не держит процесс MCP-сервера на выходе"
     time.sleep(0.05)                       # несколько тиков: живая запись на месте
-    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None
+    with llm_mod._fit_cache_lock:
+        жива = ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None
+    assert жива
     now[0] += llm_mod.FIT_CACHE_TTL
     assert _until(lambda: not llm_mod._fit_cache and llm_mod._fit_sweeper is None), \
         "таймер убрал истёкшую сводку и не взвёлся на пустой кэш"
@@ -1173,7 +1184,7 @@ def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
     monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     assert _until(lambda: not _sweepers()), "отменённые таймеры прошлых тестов вышли"
     llm_mod._fit_cache_put(("а",), "а")
-    old = llm_mod._fit_sweeper
+    old = _armed()
     with llm_mod._fit_cache_lock:
         # Timer ставит finished только после функции, а она ждёт этот замок:
         # ждём с запасом больше интервала, пока старый проснётся
