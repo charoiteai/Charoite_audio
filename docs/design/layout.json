@@ -471,12 +471,6 @@
     },
     {
       "rel": "src/charoite_graph/dossier.py",
-      "field": "dossier_dir",
-      "literal": "досье",
-      "ticket": "№422"
-    },
-    {
-      "rel": "src/charoite_graph/dossier.py",
       "field": "meeting_dir",
       "literal": "Встречи",
       "ticket": "№422"
@@ -704,5 +698,11 @@
       "ticket": "№422"
     }
   ],
-  "folder_literal_exemptions": {}
+  "folder_literal_exemptions": {
+    "src/charoite_graph/dossier.py": {
+      "dossier_dir": {
+        "досье": "ключ формата _index.json (поле со списком записей досье, рядом с «версия» и «обновлён»), а не имя папки: папку модуль берёт из DOSSIER_DIR; переезд потребителей на значение схемы его не снимает (выходной круг 1 по #654, DS I4)"
+      }
+    }
+  }
 }

@@ -556,6 +556,16 @@ def validate_layout(layout: object) -> dict:
                 if not isinstance(why, str) or not why.strip():
                     raise LayoutError(f"прощение литерала {literal!r} в {rel} (поле {field}): "
                                       f"нужна непустая причина")
+    # долг и прощение — два реестра одного факта: попадание в обоих и числится
+    # долгом, и прощено, а сверка с замером вычитает реестры друг из друга и
+    # молчит на обе стороны (выходной круг 1 по #654, DS I1)
+    both = {(e["rel"], e["field"], e["literal"]) for e in layout["folder_literals"]} & {
+        (rel, field, literal) for rel, fields in layout["folder_literal_exemptions"].items()
+        for field, literals in fields.items() for literal in literals}
+    if both:
+        rel, field, literal = sorted(both)[0]
+        raise LayoutError(f"литерал {literal!r} в {rel} (поле {field}) — и долг в folder_literals, и "
+                          f"прощение в folder_literal_exemptions: оставить одно")
     return layout
 
 
@@ -2686,9 +2696,13 @@ def decision_paths(layout: dict) -> tuple[str, str]:
 
 
 def decision_modules(layout: dict) -> set[str]:
-    """Модули объявленных путей-решений — те, что выведены из-под правила «модуль
-    пакета без замыкания входа»: они в пакете, но их позовёт PR B."""
-    return {m for rel in decision_paths(layout) if rel and (m := module_of(rel)) is not None}
+    """Модуль, выведенный из-под правила «модуль пакета без замыкания входа», —
+    только модуль схемы: он член пакета, но вход позовёт его в PR B. Файл
+    значения лежит вне пакета (значение Чароита — не пакет), выводить его не из
+    чего (выходной круг 1 по #654, DS I2)."""
+    schema_rel, _values_rel = decision_paths(layout)
+    module = module_of(schema_rel) if schema_rel else None
+    return {module} if module is not None else set()
 
 
 class Literals(NamedTuple):
@@ -2750,7 +2764,7 @@ def _class_annotations(tree: ast.Module, name: str) -> list[str] | None:
     return None
 
 
-def _value_strings(node: ast.AST, where: str) -> list[str]:
+def _value_strings(node: ast.AST, where: str, culprit: pathlib.Path) -> list[str]:
     """Строки значения поля — литерал или кортеж литералов; иначе отказ."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
@@ -2758,31 +2772,37 @@ def _value_strings(node: ast.AST, where: str) -> list[str]:
         out = []
         for elt in node.elts:
             if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
-                raise LayoutError(f"{where}: значение поля — строковый литерал, а не выражение")
+                raise LayoutError(f"{where}: значение поля — строковый литерал, а не выражение",
+                                  culprit=culprit)
             out.append(elt.value)
         return out
-    raise LayoutError(f"{where}: значение поля — строковый литерал или кортеж строк")
+    raise LayoutError(f"{where}: значение поля — строковый литерал или кортеж строк", culprit=culprit)
 
 
-def _schema_values(tree: ast.Module, var: str, cls: str) -> dict[str, list[str]] | None:
+def _schema_values(tree: ast.Module, var: str, cls: str,
+                   culprit: pathlib.Path) -> dict[str, list[str]] | None:
     """Значения полей из вызова `cls(...)` у переменной `var` — или None, если
-    вызова нет. `**kwargs` и повтор ключа — отказ: ключи обязаны быть видны."""
-    for node in tree.body:
-        if not (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == var for t in node.targets)):
-            continue
-        call = node.value
-        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == cls):
-            return None
-        out: dict[str, list[str]] = {}
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                raise LayoutError(f"{var} = {cls}(**...): ключи вызова обязаны быть названы")
-            if keyword.arg in out:
-                raise LayoutError(f"{var} = {cls}(...): ключ {keyword.arg!r} повторён")
-            out[keyword.arg] = _value_strings(keyword.value, f"{var}.{keyword.arg}")
-        return out
-    return None
+    вызова нет. `**kwargs` и повтор ключа — отказ: ключи обязаны быть видны.
+    Присваивание одно: Python исполняет последнее, а сторож мерил бы первое, и
+    второе значение жило бы мимо замера (выходной круг 1 по #654, DS M5)."""
+    assigns = [node for node in tree.body
+               if isinstance(node, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == var for t in node.targets)]
+    if not assigns:
+        return None
+    if len(assigns) > 1:
+        raise LayoutError(f"{var} присвоено {len(assigns)} раза — значение схемы одно", culprit=culprit)
+    call = assigns[0].value
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == cls):
+        return None
+    out: dict[str, list[str]] = {}
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise LayoutError(f"{var} = {cls}(**...): ключи вызова обязаны быть названы", culprit=culprit)
+        if keyword.arg in out:
+            raise LayoutError(f"{var} = {cls}(...): ключ {keyword.arg!r} повторён", culprit=culprit)
+        out[keyword.arg] = _value_strings(keyword.value, f"{var}.{keyword.arg}", culprit)
+    return out
 
 
 def _schema_field_names(tree: ast.Module, rel: str) -> list[str]:
@@ -2790,10 +2810,29 @@ def _schema_field_names(tree: ast.Module, rel: str) -> list[str]:
     fields = _class_annotations(tree, "GraphSchema")
     if not fields:
         raise LayoutError(f"{rel}: класса GraphSchema с аннотированными полями нет — "
-                          f"список полей читается оттуда")
+                          f"список полей читается оттуда", culprit=REPO / rel)
     if len(set(fields)) != len(fields):
-        raise LayoutError(f"{rel}: поле класса GraphSchema объявлено дважды")
+        raise LayoutError(f"{rel}: поле класса GraphSchema объявлено дважды", culprit=REPO / rel)
     return fields
+
+
+#: Группы правил поиска литерала — по одной на поле схемы. Правило выбирается
+#: первым совпадением ветки, поэтому поле в двух группах молча меняло бы правило,
+#: а имя, которого в схеме нет, жило бы в таблице мёртвым (выходной круг 1 по
+#: #654, DS M4). Судья — `_rule_groups_problem`, адрес — код сторожа.
+def _rule_groups_problem(fields: list[str]) -> str | None:
+    groups = (LITERAL_NAME_FIELDS, LITERAL_PREFIX_FIELDS, LITERAL_CONTAINS_FIELDS, LITERAL_SUFFIX_FIELDS)
+    counted: dict[str, int] = {}
+    for group in groups:
+        for name in group:
+            counted[name] = counted.get(name, 0) + 1
+    без = sorted(set(fields) - set(counted))
+    дважды = sorted(n for n, k in counted.items() if k > 1)
+    лишние = sorted(set(counted) - set(fields))
+    if без or дважды or лишние:
+        return (f"группы правил LITERAL_* разошлись с полями схемы: без группы {без}, "
+                f"в двух группах {дважды}, нет в схеме {лишние}")
+    return None
 
 
 def literals_measure(inv: Inventory, layout: dict) -> Literals:
@@ -2809,26 +2848,30 @@ def literals_measure(inv: Inventory, layout: dict) -> Literals:
     if not area:
         raise LayoutError("область сторожа литералов пуста — замыканию входа не из чего собраться")
     schema_rel, values_rel = decision_paths(layout)
-    schema_info = inv.files.get(schema_rel)
-    if schema_info is None or schema_info.tree is None:
-        raise LayoutError(f"модуль схемы {schema_rel} не читается или не разбирается")
-    values_info = inv.files.get(values_rel)
-    if values_info is None or values_info.tree is None:
-        raise LayoutError(f"файл значений {values_rel} не читается или не разбирается")
-    fields = _schema_field_names(schema_info.tree, schema_rel)
-    values = _schema_values(values_info.tree, "CHAROITE", "GraphSchema")
+    # адрес отказа — файл, который править (№384): нет файла в инвентаре — путь в
+    # артефакте; файл не разбирается или устроен не так — сам исходник; таблица
+    # правил — код сторожа (выходной круг 1 по #654, DS I3)
+    trees = {}
+    for what, rel in (("модуль схемы", schema_rel), ("файл значений", values_rel)):
+        info = inv.files.get(rel)
+        if info is None:
+            raise LayoutError(f"{what} {rel!r} не читается — путь-решение в артефакте не ведёт к файлу")
+        if info.tree is None:
+            raise LayoutError(f"{what} {rel} не разбирается", culprit=REPO / rel)
+        trees[rel] = info.tree
+    fields = _schema_field_names(trees[schema_rel], schema_rel)
+    values = _schema_values(trees[values_rel], "CHAROITE", "GraphSchema", REPO / values_rel)
     if values is None:
-        raise LayoutError(f"{values_rel}: вызова CHAROITE = GraphSchema(...) нет — значения неоткуда взять")
+        raise LayoutError(f"{values_rel}: вызова CHAROITE = GraphSchema(...) нет — значения неоткуда взять",
+                          culprit=REPO / values_rel)
     чужое = sorted(set(values) - set(fields))
     забыто = sorted(set(fields) - set(values))
     if чужое or забыто:
         raise LayoutError(f"{values_rel}: ключи вызова GraphSchema не совпадают с аннотациями "
-                          f"{schema_rel} — лишние {чужое}, пропущены {забыто}")
-    known = set(LITERAL_NAME_FIELDS) | set(LITERAL_PREFIX_FIELDS) \
-        | set(LITERAL_CONTAINS_FIELDS) | set(LITERAL_SUFFIX_FIELDS)
-    if set(fields) - known:
-        raise LayoutError(f"{schema_rel}: поля {sorted(set(fields) - known)} не отнесены к правилам "
-                          f"поиска литералов — объявить группу в LITERAL_*")
+                          f"{schema_rel} — лишние {чужое}, пропущены {забыто}", culprit=REPO / values_rel)
+    беда = _rule_groups_problem(fields)
+    if беда:
+        raise LayoutError(беда, culprit=LAYOUT_CODE)
     probes: dict[str, tuple[str, ...]] = {}
     discarded: dict[str, tuple[str, ...]] = {}
     for field in fields:
@@ -2841,7 +2884,8 @@ def literals_measure(inv: Inventory, layout: dict) -> Literals:
         discarded[field] = tuple(sorted(set(short)))
         if not probes[field]:
             raise LayoutError(f"{values_rel}: поле {field} без проб после отсева коротких "
-                              f"(короче {LITERAL_PROBE_MIN}) — сторожу нечем ловить копии")
+                              f"(короче {LITERAL_PROBE_MIN}) — сторожу нечем ловить копии",
+                              culprit=REPO / values_rel)
     hits: set[tuple[str, str, str]] = set()
     problems: list[str] = []
     for rel in area:
@@ -2856,15 +2900,9 @@ def literals_measure(inv: Inventory, layout: dict) -> Literals:
             for field in fields:
                 if any(_literal_hit(field, part, frozenset(probes[field])) for part in parts):
                     hits.add((rel, field, raw))
-    area_set = set(area)
-    declared = decision_modules(layout)
-    entry = layout.get("package_entry", "")
-    for rel, _f in _package_forms(inv, layout):
-        module = module_of(rel)
-        if rel in area_set or module is None or module in declared:
-            continue
-        problems.append(f"{rel}: модуль пакета {module} не в замыкании входа {entry} — "
-                        f"литералы из него не сторожатся")
+    # модуль пакета вне замыкания входа называет гейт пакета (`package_problems`)
+    # одной строкой; вторая, от замера, повторяла бы тот же факт (выходной круг 1
+    # по #654, DS M3)
     return Literals(frozenset(hits), probes, discarded, problems)
 
 
@@ -3059,18 +3097,6 @@ def regen(layout: dict, graph: dict[str, set[str]], inv: Inventory | None = None
     карточки. С замером состав пересобирается, прощённые попадания в долг не
     входят, а новое попадание без карточки возвращается вызывающему наравне с
     ребром (третий элемент кортежа — `(rel, поле, литерал)`)."""
-    kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
-    fresh = violations(graph, layout)
-    места = {n: "" for n, f in (_SCHEMA["allowed_edges"].record or {}).items()
-             if f.cls != "measured" and f.required}
-    edges = []
-    for a, b in fresh:
-        prev = kept.get((a, b), {})
-        перенос = {k: v for k, v in prev.items() if k not in MEASURED_EDGE_FIELDS}
-        edges.append({"from": a, "to": b, **места, **перенос})
-    if edges != layout["allowed_edges"]:
-        layout["allowed_edges"] = edges
-        layout["generated"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     kept = {(e["from"], e["to"]): e for e in layout["allowed_edges"]}
     fresh = violations(graph, layout)
     места = {n: "" for n, f in (_SCHEMA["allowed_edges"].record or {}).items()

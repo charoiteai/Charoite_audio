@@ -111,18 +111,86 @@ def test_the_literal_guard_is_silent_on_noise(tmp_path, body):
 
 
 def test_the_literal_guard_scans_exactly_the_package(tmp_path):
-    """Область сторожа — файлы пакета, ровно как план пробы; модуль пакета вне
-    замыкания — строка области, объявленный путь-решение под неё не попадает."""
+    """Область сторожа — файлы пакета, ровно как план пробы. Модуль пакета вне
+    замыкания называет гейт пакета одной строкой; замер литералов её не повторяет
+    (выходной круг 1 по #654, DS M3)."""
     inv, layout = _literal_area(tmp_path, "x = 1\n")
     assert lm.package_area(inv, layout) == lm.package_files(inv, layout)
     assert set(lm.package_area(inv, layout)) == {"src/pkg/__init__.py", "src/pkg/entry.py"}
     (tmp_path / "src" / "pkg" / "extra.py").write_text("", encoding="utf-8")
     inv2 = lm.inventory(tmp_path)
-    problems = lm.literals_measure(inv2, layout).problems
-    assert any("не в замыкании входа" in p and "pkg.extra" in p for p in problems), problems
-    # файлы самой области не называются, и путь-решение под правило не попадает
-    assert not any("src/pkg/entry.py" in p or "src/pkg/__init__.py" in p for p in problems), problems
-    assert not any("schema" in p for p in problems), problems
+    assert not any("pkg.extra" in p for p in lm.literals_measure(inv2, layout).problems)
+    gate = lm.package_problems(lm.import_graph(inv2), layout, inv2)
+    assert sum("pkg.extra" in p for p in gate) == 1, gate
+
+
+def test_only_the_schema_module_is_taken_out_of_the_closure_rule():
+    """Из правила «модуль пакета вне замыкания» выведен только модуль схемы: файл
+    значения лежит вне пакета, и его путь ничего не выводит (выходной круг 1 по
+    #654, DS I2)."""
+    layout = _layout(schema_module="src/pkg/schema.py", schema_values="src/pkg/values.py")
+    assert lm.decision_modules(layout) == {"pkg.schema"}
+    assert lm.decision_modules(_layout(schema_module="")) == set()
+
+
+def test_debt_and_exemption_of_one_hit_are_refused_at_load():
+    """Одно попадание и долгом, и прощением — артефакт себе противоречит, а сверка
+    вычитала реестры друг из друга и молчала на обе стороны (выходной круг 1 по
+    #654, DS I1). Отказ — на загрузке: такое состояние нельзя ни прочесть, ни
+    записать регеном."""
+    layout = lm.load_layout()
+    entry = layout["folder_literals"][0]
+    layout["folder_literal_exemptions"] = {entry["rel"]: {entry["field"]: {entry["literal"]: "шум"}}}
+    with pytest.raises(lm.LayoutError, match="оставить одно"):
+        lm.validate_layout(layout)
+
+
+@pytest.mark.parametrize("groups, fragment", [
+    ({"LITERAL_SUFFIX_FIELDS": ()}, "без группы ['raw_suffixes']"),
+    ({"LITERAL_SUFFIX_FIELDS": ("raw_suffixes", "raw_markers")}, "в двух группах ['raw_markers']"),
+    ({"LITERAL_PREFIX_FIELDS": lm.LITERAL_PREFIX_FIELDS + ("мёртвое",)}, "нет в схеме ['мёртвое']"),
+])
+def test_rule_groups_cover_the_schema_fields_exactly_once(tmp_path, monkeypatch, groups, fragment):
+    """Правило поиска выбирается первой совпавшей веткой: поле в двух группах молча
+    сменило бы правило, мёртвое имя жило бы в таблице. Отказ, и адрес — код сторожа
+    (выходной круг 1 по #654, DS M4 и I3)."""
+    inv, layout = _literal_area(tmp_path, "x = 1\n")
+    for name, value in groups.items():
+        monkeypatch.setattr(lm, name, value)
+    with pytest.raises(lm.LayoutError) as refused:
+        lm.literals_measure(inv, layout)
+    assert fragment in str(refused.value)
+    assert refused.value.culprit == lm.LAYOUT_CODE
+
+
+def test_refusals_name_the_file_to_fix(tmp_path):
+    """Адрес отказа — файл, который править (№384): нет файла в инвентаре — путь в
+    артефакте; значение без вызова или класс без полей — сам исходник (выходной
+    круг 1 по #654, DS I3)."""
+    inv, layout = _literal_area(tmp_path, "x = 1\n")
+    with pytest.raises(lm.LayoutError, match="не читается") as refused:
+        lm.literals_measure(inv, dict(layout, schema_module="src/нет.py"))
+    assert refused.value.culprit == lm.LAYOUT
+    values = tmp_path / "src" / "schema_values.py"
+    values.write_text("CHAROITE = None\n", encoding="utf-8")
+    with pytest.raises(lm.LayoutError, match="вызова CHAROITE") as refused:
+        lm.literals_measure(lm.inventory(tmp_path), layout)
+    assert refused.value.culprit == lm.REPO / "src/schema_values.py"
+    values.write_text(_values_source(), encoding="utf-8")
+    (tmp_path / "src" / "schema.py").write_text("X = 1\n", encoding="utf-8")
+    with pytest.raises(lm.LayoutError, match="класса GraphSchema") as refused:
+        lm.literals_measure(lm.inventory(tmp_path), layout)
+    assert refused.value.culprit == lm.REPO / "src/schema.py"
+
+
+def test_a_second_assignment_of_the_value_is_a_refusal(tmp_path):
+    """Python исполняет последнее присваивание, сторож мерил бы первое — значение
+    схемы одно (выходной круг 1 по #654, DS M5)."""
+    inv, layout = _literal_area(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "schema_values.py").write_text(_values_source() + _values_source(),
+                                                        encoding="utf-8")
+    with pytest.raises(lm.LayoutError, match="присвоено 2 раза"):
+        lm.literals_measure(lm.inventory(tmp_path), layout)
 
 
 def test_a_declared_decision_path_is_exempt_from_the_closure_rule(tmp_path):

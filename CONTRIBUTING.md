@@ -196,7 +196,10 @@ copy as `folder_literals` debt with a ticket; `folder_literal_exemptions` forgiv
 one copy with a written reason. A hit without a ticket, or a declared hit the
 measurement no longer finds, is red. `tests/test_graph_schema.py` snapshots
 `CHAROITE` against the live constants until PR B moves the consumers onto the
-value, which is when the debt goes to zero.
+value, which is when the debt goes to zero. One copy and one registry per hit: a
+hit that is both debt and forgiven is refused at load. The schema module sits in
+the package outside the entry closure until PR B imports it, and the package
+gate's closure rule skips exactly that one declared module.
 
 The `KINDS` table in the guard is pinned by a copy inside the test on purpose —
 the comment there explains why. Changing the policy means changing two files,
