@@ -414,7 +414,13 @@ def _urlopen_outside_seam(tree: ast.Module, seam: str = "urllib_post") -> list[s
     """Где вызывается `urlopen` вне шва двери: имя ближайшей функции или «уровень модуля».
 
     Пин одного написания, а не изоляция сети (круги 2–4 по №423): функцией, чтобы у
-    него был случай, на котором он обязан покраснеть."""
+    него был случай, на котором он обязан покраснеть. Шов — УЗЕЛ функции верхнего
+    уровня модуля, а не имя: одноимённая вложенная функция швом не считается
+    (выходной круг 5, DS M1)."""
+    allowed: set[int] = set()
+    for top in tree.body:
+        if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)) and top.name == seam:
+            allowed |= {id(n) for n in ast.walk(top)}
     owner: dict[int, str] = {}
 
     def mark(node: ast.AST, name: str) -> None:
@@ -426,7 +432,7 @@ def _urlopen_outside_seam(tree: ast.Module, seam: str = "urllib_post") -> list[s
     mark(tree, "уровень модуля")
     return [owner.get(id(n), "уровень модуля") for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "urlopen"
-            and owner.get(id(n)) != seam]
+            and id(n) not in allowed]
 
 
 @pytest.mark.parametrize("src, где", [
@@ -434,6 +440,9 @@ def _urlopen_outside_seam(tree: ast.Module, seam: str = "urllib_post") -> list[s
     ("import urllib.request\nX = urllib.request.urlopen('http://h')\n", ["уровень модуля"]),
     ("import urllib.request\nasync def go(r):\n    return urllib.request.urlopen(r)\n", ["go"]),
     ("import urllib.request\ndef urllib_post(r):\n    return urllib.request.urlopen(r)\n", []),
+    # одноимённая вложенная функция — не шов
+    ("import urllib.request\ndef other():\n    def urllib_post(r):\n        return urllib.request.urlopen(r)\n",
+     ["urllib_post"]),
 ])
 def test_the_urlopen_pin_sees_calls_outside_the_seam(src, где):
     assert _urlopen_outside_seam(ast.parse(src)) == где

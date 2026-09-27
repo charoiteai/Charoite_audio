@@ -174,7 +174,8 @@ def test_the_line_quotes_the_body_up_to_120_chars(monkeypatch, capsys, raw, ст
     monkeypatch.setattr(embed_door, "_said", set())
     assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
     err = capsys.readouterr().err
-    assert строка in err and "x" * 118 in err and "x" * 121 not in err, err
+    # первый знак тела — «<» или «"», дальше ровно 119 «x»: сдвиг потолка на единицу виден
+    assert строка in err and "x" * 119 in err and "x" * 120 not in err, err
 
 
 def test_a_different_key_is_not_silenced_by_the_first(monkeypatch, capsys):
@@ -384,6 +385,20 @@ def test_urllib_post_sends_json_and_reads_vectors(monkeypatch):
     assert request.get_method() == "POST"
     assert request.get_header("Content-type") == "application/json"
     assert json.loads(request.data.decode("utf-8"))["input"] == ["текст"]
+
+
+def test_urllib_post_sends_over_https(monkeypatch):
+    """https — единственная законная схема удалённого адреса (privacy запрещает http вне
+    своей сети): отказ по схеме её не задевает (выходной круг 5, DS M3)."""
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        return _Ответ(200, b'{"embeddings": [[1.0]]}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert embed_door.urllib_post("https://h/api/embed", {"input": ["т"]}, 1) == (200, '{"embeddings": [[1.0]]}')
+    assert seen["url"] == "https://h/api/embed"
 
 
 def test_the_network_guard_catches_the_default_transport():
