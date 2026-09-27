@@ -232,7 +232,7 @@ def test_embed_sends_model_from_config_and_keep_alive(monkeypatch):
 
     assert vecs == [[0.1, 0.2]]
     assert wire.sent["json"] == {"model": "тест-эмбеддер", "input": ["текст"],
-                                 "keep_alive": "60m"}
+                                 "keep_alive": "60m", "truncate": False}
     assert wire.sent["url"].endswith("/api/embed")
 
 
@@ -587,6 +587,38 @@ def test_the_route_guard_answers_the_vector_adapter(_ollama_маршруты, mo
     assert base in _ollama_маршруты.базы
 
 
+def test_the_route_guard_carries_the_truncating_retry(_ollama_маршруты, capsys):
+    """400 на длину и 200 после `truncate: true` — через адаптер `requests`.
+
+    Маршрутом сторожа, а не подменой транспорта: путь «дверь → `_requests_post`
+    → requests → ответ» остаётся настоящим, и поле `truncate` видно в теле.
+    """
+    тела = []
+
+    def ответ(url, **k):
+        запрос = k.get("json") or {}
+        тела.append(запрос)
+        r = requests.Response()
+        if запрос.get("truncate") is False:
+            r.status_code = 400
+            r._content = b"the input length exceeds the context length"
+        else:
+            r.status_code = 200
+            r._content = json.dumps(
+                {"embeddings": [[float(len(t)), 1.0] for t in запрос.get("input", [])]}).encode("utf-8")
+        return r
+
+    once.reset("embed")
+    _ollama_маршруты.сценарий_эмбеддингов(ответ)
+    LLM(CFG)
+
+    vecs = llm_mod.embedder(CFG).run(["длинный текст"], 5)
+
+    assert vecs == [[float(len("длинный текст")), 1.0]]
+    assert [з["truncate"] for з in тела] == [False, True]
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+
 def test_the_adapter_returns_no_model_when_the_config_is_empty():
     """Пустой конфиг — не «дефолты», а «моделей нет»: в сеть не ходим вовсе."""
     from charoite_graph import model_seam
@@ -779,19 +811,27 @@ def test_parse_json_block_prefers_the_fenced_answer_over_a_prose_example():
 # ── Дверь эмбеддингов: пачки, громкий отказ, контракт векторов (№358) ─────
 class _EmbedServer:
     """Подмена requests для /api/embed: отвечает по вектору на текст, помнит
-    каждую пачку. `fail_on` — номер запроса (с 1), на котором ответить отказом."""
+    каждую пачку. `fail_on` — номер запроса (с 1) или их набор, на которых
+    ответить отказом. Отказ на 400 повторяется дверью с `truncate: true`,
+    поэтому «сервер отказал навсегда» задаётся обоими ходами пачки."""
 
     RequestException = requests.exceptions.RequestException
     ConnectionError = requests.exceptions.ConnectionError
 
-    def __init__(self, fail_on: int | None = None, status: int = 400,
+    def __init__(self, fail_on: int | tuple | None = None, status: int = 400,
                  body: str = 'Post "http://127.0.0.1:1/tokenize": EOF', vectors=None):
         self.inputs: list[list[str]] = []
         self.fail_on, self.status, self.body, self.vectors = fail_on, status, body, vectors
 
+    def _провал(self, номер: int) -> bool:
+        if self.fail_on is None:
+            return False
+        номера = (self.fail_on,) if isinstance(self.fail_on, int) else tuple(self.fail_on)
+        return номер in номера
+
     def post(self, url, json=None, timeout=None, **kw):
         self.inputs.append(list(json["input"]))
-        if self.fail_on == len(self.inputs):
+        if self._провал(len(self.inputs)):
             return _Resp(status=self.status, content=self.body.encode("utf-8"))
         if self.vectors is not None:
             return _Resp({"embeddings": self.vectors(json["input"], len(self.inputs))})
@@ -831,7 +871,7 @@ def test_embed_cuts_by_characters_and_never_drops_a_long_text(monkeypatch):
 def test_embed_refusal_names_code_and_body_once(monkeypatch, capsys):
     """Отказ сервера — не молчаливый `[]`: код и тело в stderr, один раз на
     одинаковый ответ (месяц ночь печатала «лежит Ollama» на HTTP 400)."""
-    _embed_wire(monkeypatch, _EmbedServer(fail_on=2))
+    _embed_wire(monkeypatch, _EmbedServer(fail_on=(2, 3)))
     texts = ["текст"] * 100
 
     assert llm_mod.embedder(CFG).run(texts, 20) == [], "частичный ответ — не вектор на каждый текст"
@@ -839,7 +879,7 @@ def test_embed_refusal_names_code_and_body_once(monkeypatch, capsys):
     assert "HTTP 400" in first and "tokenize" in first and "2/2" in first, first
 
     # Тот же отказ на другой пачке другого размера — в журнал второй раз не идёт
-    _embed_wire(monkeypatch, _EmbedServer(fail_on=1), fresh=False)
+    _embed_wire(monkeypatch, _EmbedServer(fail_on=(1, 2)), fresh=False)
     assert llm_mod.embedder(CFG).run(["текст"] * 10, 20) == []
     assert "HTTP 400" not in capsys.readouterr().err, "тот же отказ повторён в журнал"
 
