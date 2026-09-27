@@ -638,11 +638,23 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   long-document Q&A (details in MODELS.md). Strict JSON is not something
   every server build can do: a server compiled without the grammar library
   answers a `format:"json"` request with “structured output is unavailable”
-  (501, or 400 on another build). The client recognises that reason, remembers
-  the pair (server address, model actually sent) for ten minutes — the server
-  may get fixed while a long-lived process runs — reports it once per process
-  on stderr and retries the request once without `format`, relying on the
-  prompt. One-time lines like that — strict JSON, an unreadable config, a
+  (501, or 400 on another build). One door classifies the answer by status and
+  body (`strict_json_verdict`): a 200 with a JSON object lacking `error` is
+  “yes”; a 200 whose `error` carries the phrase is “no”, while any other 200
+  error, an empty body, HTML or a non-object is “unknown”; outside 200 the
+  phrase anywhere in the body means “no”, and everything else — 404, a busy
+  429/502/503 — is “unknown”, because queueing is not a missing grammar. The
+  reason is the `error` field or the raw body, cut to a 500-character window
+  for printing while the verdict reads the whole text. On “no” the client
+  remembers the pair (server address, model actually sent) for ten minutes —
+  the server may get fixed while a long-lived process runs — reports it once
+  per process on stderr with one shared sentence (`strict_json_sentence`, no
+  guess about the build) and retries the request once without `format`,
+  relying on the prompt. The doctor asks the same door with a cheap `/api/chat`
+  probe (`llm_health.strict_json`, `format:"json"`, one token) — only when the
+  model is alive and the engine is Ollama; mlx-server and the cloud gateway
+  promise no strict JSON, and a busy or missing model is not probed at all.
+  One-time lines like that — strict JSON, an unreadable config, a
   mismatched mlx model, an unwritable model lease — share one registry,
   `src/once.py` (base layer, stdlib only): the key is `(namespace, meaning)`,
   where the meaning carries what makes a repeat a repeat — status code, body,
