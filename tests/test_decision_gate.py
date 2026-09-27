@@ -278,34 +278,33 @@ def test_lazy_remembers_a_failed_load():
 
 # --- строка тени ---------------------------------------------------------------
 
-def test_question_hash_ignores_case_and_spacing_but_not_words():
-    assert dg.question_hash("Когда  релиз?") == dg.question_hash("когда релиз?")
-    assert dg.question_hash("Когда релиз?") != dg.question_hash("Когда деплой?")
-    assert len(dg.question_hash("x")) == 10
-
-
-def test_shadow_line_round_trips_and_carries_no_words():
-    q = "Когда переносим витрину продаж?"
+def test_shadow_line_round_trips_and_carries_nothing_from_the_question():
+    """Строка тени — только состояние: ни слов вопроса, ни отпечатка текста. Хеш
+    короткой реплики подбирался перебором (выходной круг 1 по #651, DS I1)."""
     v = dg.Verdict("skip", 0.9314, {}, "nli-zero-shot", 412.4)
-    line = dg.shadow_line(v, "refusal", dg.question_hash(q))
-    for word in q.lower().strip("?").split():
-        assert word not in line.lower()
+    line = dg.shadow_line(v, "refusal")
+    assert "q=" not in line
     rec = dg.parse_shadow_line("2026-09-27 10:15:02 " + line)   # префикс лога не мешает
     assert rec == {"backend": "nli-zero-shot", "label": "skip", "p": 0.931, "ms": 412.0,
-                   "outcome": "refusal", "q": dg.question_hash(q)}
+                   "outcome": "refusal"}
 
 
 def test_shadow_line_without_verdict_names_the_reason():
-    rec = dg.parse_shadow_line(dg.shadow_line(None, "answered", "abc", "error:OSError"))
-    assert rec == {"verdict": "none", "reason": "error:OSError", "outcome": "answered", "q": "abc"}
+    rec = dg.parse_shadow_line(dg.shadow_line(None, "answered", "error:OSError"))
+    assert rec == {"verdict": "none", "reason": "error:OSError", "outcome": "answered"}
+
+
+def test_old_lines_with_a_question_hash_still_parse():
+    """Строки прежнего формата (с `q=`) в err-логе остаются замером, а не мусором."""
+    rec = dg.parse_shadow_line("gate-shadow: backend=x label=skip p=0.9 ms=1 outcome=refusal q=ab12")
+    assert (rec["label"], rec["outcome"]) == ("skip", "refusal")
 
 
 @pytest.mark.parametrize("line", [
     "hint-pulse: on=True new=10",
-    "gate-shadow: backend=x label=skip p=high ms=1 outcome=refusal q=a",
-    "gate-shadow: backend=x label=maybe p=0.9 ms=1 outcome=refusal q=a",
-    "gate-shadow: backend=x label=skip p=0.9 ms=1 outcome=weird q=a",
-    "gate-shadow: backend=x label=skip p=0.9 ms=1 outcome=refusal",
+    "gate-shadow: backend=x label=skip p=high ms=1 outcome=refusal",
+    "gate-shadow: backend=x label=maybe p=0.9 ms=1 outcome=refusal",
+    "gate-shadow: backend=x label=skip p=0.9 ms=1 outcome=weird",
 ])
 def test_foreign_or_broken_lines_are_not_shadow_records(line):
     assert dg.parse_shadow_line(line) is None
@@ -313,7 +312,7 @@ def test_foreign_or_broken_lines_are_not_shadow_records(line):
 
 def test_shadow_line_refuses_unknown_outcome():
     with pytest.raises(ValueError):
-        dg.shadow_line(None, "ok", "abc")
+        dg.shadow_line(None, "ok")
 
 
 # --- тень одного ⚡ -------------------------------------------------------------
@@ -332,7 +331,7 @@ def test_shadow_does_not_wait_for_a_slow_decider_and_writes_once():
         return {"ask": 0.1, "skip": 0.9}
 
     log = _Log()
-    run = dg.start_shadow("С какого бы?", dg.Decider("slow", slow), log)
+    run = dg.Shadow(dg.Decider("slow", slow), log).start("С какого бы?")
     run.finish("refusal")
     assert log == []                       # решатель ещё думает — ⚡ уже ушёл дальше
     release.set()
@@ -346,7 +345,7 @@ def test_shadow_does_not_wait_for_a_slow_decider_and_writes_once():
 
 def test_shadow_written_by_finish_when_decider_was_first():
     log = _Log()
-    run = dg.start_shadow("Когда релиз?", _fixed({"ask": 0.8, "skip": 0.2}), log)
+    run = dg.Shadow(_fixed({"ask": 0.8, "skip": 0.2}), log).start("Когда релиз?")
     run.join(5)
     assert log == []                       # без исхода писать нечего
     run.finish("answered")
@@ -358,26 +357,81 @@ def test_shadow_decider_failure_becomes_reason_not_crash():
         raise KeyError("x")
 
     log = _Log()
-    run = dg.start_shadow("Когда релиз?", dg.Decider("broken", broken), log)
+    run = dg.Shadow(dg.Decider("broken", broken), log).start("Когда релиз?")
     run.finish("answered")
     run.join(5)
     assert dg.parse_shadow_line(log[0])["reason"] == "error:KeyError"
 
 
-def test_shadow_survives_closed_stderr():
-    def closed(_line):
-        raise OSError("stderr закрыт")
+@pytest.mark.parametrize("error", [OSError("stderr закрыт"), ValueError("I/O operation on closed file"),
+                                   AttributeError("'NoneType' object has no attribute 'write'")])
+def test_shadow_survives_any_broken_sink(error):
+    """Сток тени (stderr) отказывает не только `OSError`: закрытый файл — это
+    `ValueError`, снятый `sys.stderr` на финализации — `AttributeError`. Ни один
+    из них не выходит в поток ⚡ (выходной круг 1 по #651, DS C1)."""
+    tried = []
 
-    run = dg.start_shadow("Когда релиз?", _fixed({"ask": 0.8, "skip": 0.2}), closed)
+    def broken(line):
+        tried.append(line)
+        raise error
+
+    run = dg.Shadow(_fixed({"ask": 0.8, "skip": 0.2}), broken).start("Когда релиз?")
     run.join(5)
     run.finish("answered")                 # не бросает
+    assert len(tried) == 1 and dg.parse_shadow_line(tried[0])["outcome"] == "answered"
 
 
-def test_shadow_refuses_unknown_outcome_at_once():
-    run = dg.start_shadow("Когда релиз?", _fixed({"ask": 0.8, "skip": 0.2}), _Log())
+def test_unknown_outcome_does_not_crash_the_instant_answer():
+    """Шов тотальный: исход не из `OUTCOMES` не роняет поток ⚡, а пишется как
+    «failed» — что ответила модель, тени неизвестно (выходной круг 1 по #651)."""
+    log = _Log()
+    run = dg.Shadow(_fixed({"ask": 0.8, "skip": 0.2}), log).start("Когда релиз?")
     run.join(5)
-    with pytest.raises(ValueError):
-        run.finish("ok")
+    run.finish("ok")
+    assert [dg.parse_shadow_line(x)["outcome"] for x in log] == ["failed"]
+
+
+def test_thread_start_refusal_becomes_a_reason_not_a_crash(monkeypatch):
+    """Отказ старта потока (лимит потоков процесса, память) — строка тени с
+    причиной `start:<тип>`, а не исключение в потоке ⚡ (DS C1)."""
+    import threading
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    log = _Log()
+    run = dg.Shadow(_fixed({"ask": 0.8, "skip": 0.2}), log).start("Когда релиз?")
+    run.finish("answered")
+    assert [dg.parse_shadow_line(x) for x in log] == [
+        {"verdict": "none", "reason": "start:RuntimeError", "outcome": "answered"}]
+
+
+def test_one_shadow_in_flight_the_next_question_is_counted_as_busy():
+    """Зависший решатель не копит потоки: пока прошлый вердикт не готов, новый
+    вопрос получает строку `reason=busy`, и пропуск виден в замере, а не
+    растворяется тишиной (выходной круг 1 по #651, DS I3)."""
+    release = threading.Event()
+    calls = []
+
+    def hung(_text):
+        calls.append(1)
+        release.wait(5)
+        return {"ask": 0.1, "skip": 0.9}
+
+    log = _Log()
+    shadow = dg.Shadow(dg.Decider("hung", hung), log)
+    first = shadow.start("Когда релиз?")
+    second = shadow.start("А сроки?")
+    second.finish("answered")
+    assert [dg.parse_shadow_line(x)["reason"] for x in log] == ["busy"]
+    release.set()
+    first.join(5)
+    first.finish("refusal")
+    third = shadow.start("И бюджет?")      # прошлый решил — новый снова судится
+    third.join(5)
+    third.finish("answered")
+    assert len(calls) == 2 and [dg.parse_shadow_line(x).get("label") for x in log[1:]] == ["skip", "skip"]
 
 
 @pytest.mark.parametrize("question, dec", [
@@ -386,7 +440,7 @@ def test_shadow_refuses_unknown_outcome_at_once():
     ("   ", dg.Decider("fake", lambda t: {"ask": 1.0, "skip": 0.0})),
 ])
 def test_no_shadow_when_nothing_or_nobody_to_judge(question, dec):
-    assert dg.start_shadow(question, dec, _Log()) is None
+    assert dg.Shadow(dec, _Log()).start(question) is None
 
 
 def test_default_head_dir_follows_the_data_root():
@@ -439,7 +493,7 @@ def test_verdict_and_decider_are_values():
 def test_shadow_thread_never_holds_the_daemon_on_stop():
     """Зависший решатель не должен держать процесс демона после «Стоп»."""
     release = threading.Event()
-    run = dg.start_shadow("Когда релиз?", dg.Decider("slow", lambda t: release.wait(5) and {}), _Log())
+    run = dg.Shadow(dg.Decider("slow", lambda t: release.wait(5) and {}), _Log()).start("Когда релиз?")
     try:
         assert run._thread.daemon
     finally:

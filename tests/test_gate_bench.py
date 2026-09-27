@@ -65,8 +65,11 @@ def test_sweep_cuts_only_confident_skips():
     assert by_tau[0.9]["lost"] == pytest.approx(1 / 3)    # ровно на пороге — отсечён
     assert by_tau[0.95]["saved"] == pytest.approx(0.5)
     assert by_tau[0.95]["lost"] == pytest.approx(0.0)
-    assert by_tau[0.95]["decided"] == pytest.approx(0.4)  # 0.95 и 0.99 из пяти
-    assert by_tau[0.95]["decided_acc"] == pytest.approx(1.0)
+    # уверенный «ask» (0.99) — тот же вызов модели, что эскалация: в отсечённое не входит
+    assert by_tau[0.95]["cut"] == pytest.approx(0.2)            # одна реплика из пяти
+    assert by_tau[0.95]["cut_precision"] == pytest.approx(1.0)
+    assert by_tau[0.7]["cut"] == pytest.approx(0.6)             # две пустых и один вопрос
+    assert by_tau[0.7]["cut_precision"] == pytest.approx(2 / 3)
 
 
 def test_ece_is_zero_when_confidence_tells_the_truth():
@@ -99,17 +102,20 @@ def test_ece_measures_underconfidence_per_bucket():
 
 def test_shadow_rows_take_model_refusal_as_skip_and_drop_failures():
     line = lambda label, p, outcome, backend="nli": dg.shadow_line(  # noqa: E731
-        dg.Verdict(label, p, {}, backend, 100.0), outcome, "q1")
+        dg.Verdict(label, p, {}, backend, 100.0), outcome)
     lines = [
         "hint-pulse: on=True",
         line("skip", 0.9, "refusal"),
         line("skip", 0.8, "answered"),
         line("ask", 0.7, "failed"),
         line("ask", 0.6, "answered", backend="head:question_gate"),
-        dg.shadow_line(None, "answered", "q2", "late"),
+        dg.shadow_line(None, "answered", "busy"),
+        dg.shadow_line(None, "refusal", "busy"),
+        dg.shadow_line(None, "answered", "error:FileNotFoundError"),
     ]
     by_backend, missing = gb.shadow_rows(lines)
-    assert missing == 1
+    # пропуски — по причине: «модель занята» и «голова не собралась» — разные беды
+    assert missing == {"busy": 2, "error:FileNotFoundError": 1}
     assert by_backend["nli"] == [R("skip", "skip", 0.9, 100.0), R("ask", "skip", 0.8, 100.0)]
     assert by_backend["head:question_gate"] == [R("ask", "ask", 0.6, 100.0)]
 
@@ -121,10 +127,11 @@ def test_read_labeled_skips_rows_without_a_verdict(tmp_path):
         {"text": "Что?", "label": ""},
         {"text": "", "label": "skip"},
         {"text": "С какого бы?", "label": "skip"},
-    ]) + "\n", encoding="utf-8")
+    ]) + "\n" + '{"text": "Сломано", "label": ask}\n["не объект"]\n', encoding="utf-8")
     rows, skipped = gb.read_labeled(data)
     assert [r["text"] for r in rows] == ["Когда релиз?", "С какого бы?"]
-    assert skipped == 2
+    # правленный руками файл: битая строка и не-объект — пропуск, а не трассировка (DS M5)
+    assert skipped == 4
 
 
 TRANSCRIPT = """# Встреча 27.09
@@ -147,6 +154,20 @@ def test_harvest_takes_question_candidates_from_main_transcripts_only(tmp_path):
     assert {r["source"] for r in rows} == {"2026-09-27_101500"}
     assert [r["structural"] for r in rows] == ["ask", "skip", "ask"]
     assert rows[2]["speaker"] == "Мира" and rows[0]["label"] == ""
+
+
+def test_harvest_skips_the_owners_lines_like_the_daemon(tmp_path):
+    """⚡ не отвечает на реплики владельца — и выборка их не берёт: метка «Я» и
+    имя владельца из `sufler.user_name` — тем же предикатом, что у демона
+    (выходной круг 1 по #651, DS M6)."""
+    text = TRANSCRIPT + "**Я** [10:16:00]:\nА бюджет утвердили?\n\n"
+    (tmp_path / "2026-09-27_101500.md").write_text(text, encoding="utf-8")
+    # имени нет — канал микрофона подписан «Я», это владелец
+    assert "А бюджет утвердили?" not in [r["text"] for r in gb.harvest(tmp_path)]
+    # имя задано — владелец подписан им, его вопрос в выборку не идёт
+    rows = gb.harvest(tmp_path, owner="Мира")
+    assert "А что с деплоем?" not in [r["text"] for r in rows]
+    assert rows[:2] == gb.harvest(tmp_path)[:2]
 
 
 def test_eval_structural_runs_end_to_end(tmp_path, capsys):
@@ -176,7 +197,8 @@ def test_report_prints_shares_latency_and_the_threshold_table(capsys):
     assert "## nli-zero-shot: 2 реплик" in out
     assert "точность 100.0%" in out and "ECE 0.075" in out
     assert "p50 200 мс" in out and "p95 300 мс" in out
-    assert "  0.90 |     100.0% |             100.0% |        100.0% |              0.0%" in out
+    # уверенный «ask» не входит в отсечённое: отсечена одна реплика из двух, и она верна
+    assert "  0.90 |    50.0% |         100.0% |        100.0% |              0.0%" in out
 
 
 def test_structural_report_has_no_threshold_table(capsys):
@@ -218,9 +240,11 @@ def test_eval_skips_nli_backend_that_refused(tmp_path, capsys, monkeypatch):
         refused = "нет модели"
 
     monkeypatch.setattr(gb.nli, "judge", lambda: Refused())
-    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "nli"]) == 0
+    # ни один бэкенд не отработал — замера нет, код 2, а не 0 (DS M4)
+    assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "nli"]) == 2
     captured = capsys.readouterr()
     assert "nli: нет модели" in captured.err and "##" not in captured.out
+    assert "мерить было нечем" in captured.err
 
 
 def test_eval_head_backend_loads_the_named_directory(tmp_path, capsys, monkeypatch):
@@ -238,7 +262,7 @@ def test_eval_head_backend_loads_the_named_directory(tmp_path, capsys, monkeypat
 
 def test_eval_skips_head_backend_without_files(tmp_path, capsys):
     assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "head",
-                    "--head-dir", str(tmp_path / "нет")]) == 0
+                    "--head-dir", str(tmp_path / "нет")]) == 2
     captured = capsys.readouterr()
     assert "head: в" in captured.err and "##" not in captured.out
 
@@ -254,13 +278,13 @@ def test_shadow_command_reports_each_backend_and_missing_verdicts(tmp_path, caps
     log = tmp_path / "daemon.err.log"
     log.write_text("\n".join([
         "hint-pulse: on=True",
-        dg.shadow_line(dg.Verdict("skip", 0.95, {}, "nli-zero-shot", 400.0), "refusal", "a"),
-        dg.shadow_line(dg.Verdict("ask", 0.7, {}, "nli-zero-shot", 380.0), "answered", "b"),
-        dg.shadow_line(None, "answered", "c", "late"),
+        dg.shadow_line(dg.Verdict("skip", 0.95, {}, "nli-zero-shot", 400.0), "refusal"),
+        dg.shadow_line(dg.Verdict("ask", 0.7, {}, "nli-zero-shot", 380.0), "answered"),
+        dg.shadow_line(None, "answered", "busy"),
     ]) + "\n", encoding="utf-8")
     assert gb.main(["shadow", str(log), "--thresholds", "0.9"]) == 0
     out = capsys.readouterr().out
-    assert "вердиктов нет (решатель опоздал или упал): 1" in out
+    assert "вердиктов нет: 1 — busy 1" in out
     assert "## nli-zero-shot (тень: отказ модели = skip): 2 реплик" in out
 
 

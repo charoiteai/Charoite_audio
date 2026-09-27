@@ -39,6 +39,7 @@ import statistics
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import channel_labels  # noqa: E402
 import decision_gate as dg  # noqa: E402
 import meeting_stamp  # noqa: E402
 import nli  # noqa: E402
@@ -102,17 +103,22 @@ def summary(rows: list[Row]) -> dict:
 
 
 def sweep(rows: list[Row], thresholds=DEFAULT_THRESHOLDS) -> list[dict]:
-    """Каскад по порогам: гейт отсекает, только если уверен в skip не меньше τ."""
+    """Каскад по порогам: гейт отсекает, только если уверен в skip не меньше τ.
+
+    Решение гейта, которое что-то меняет в продукте, одно — «отсечь». Уверенный
+    «ask» ведёт к тому же вызову модели, что и эскалация, поэтому в долю решений
+    он не входит: прежняя колонка «решено сам» считала его вместе с отсечением
+    и завышала роль гейта (выходной круг 1 по #651, DS M1).
+    """
     asks = sum(r.gold == "ask" for r in rows)
     skips = sum(r.gold == "skip" for r in rows)
     out = []
     for tau in thresholds:
         cut = [r for r in rows if dg.cascade(_verdict(r), tau) == "skip"]
-        decided = [r for r in rows if dg.cascade(_verdict(r), tau) != "escalate"]
         out.append({
             "tau": tau,
-            "decided": _share(len(decided), len(rows)),
-            "decided_acc": _share(sum(r.gold == r.label for r in decided), len(decided)),
+            "cut": _share(len(cut), len(rows)),
+            "cut_precision": _share(sum(r.gold == "skip" for r in cut), len(cut)),
             "saved": _share(sum(r.gold == "skip" for r in cut), skips),
             "lost": _share(sum(r.gold == "ask" for r in cut), asks),
         })
@@ -129,8 +135,13 @@ def read_labeled(path: pathlib.Path) -> tuple[list[dict], int]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        item = json.loads(line)
-        if item.get("label") in dg.LABELS and str(item.get("text") or "").strip():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            # файл правят руками: забытая кавычка — пропущенная строка, а не трассировка (DS M5)
+            skipped += 1
+            continue
+        if isinstance(item, dict) and item.get("label") in dg.LABELS and str(item.get("text") or "").strip():
             rows.append(item)
         else:
             skipped += 1
@@ -143,17 +154,19 @@ def structural_row(text: str, gold: str) -> Row:
     return Row(gold, label, 1.0)
 
 
-def shadow_rows(lines) -> tuple[dict[str, list[Row]], int]:
+def shadow_rows(lines) -> tuple[dict[str, list[Row]], dict[str, int]]:
     """Строки тени → замер по бэкендам. Исход «failed» метки не даёт и не
-    считается; вердикт none (решатель опоздал или упал) считается отдельно."""
+    считается; вердикта нет — счёт по причине (`busy`, `start:…`, `error:…`):
+    «голова не собралась» и «модель занята» — разные беды (DS M2)."""
     by_backend: dict[str, list[Row]] = {}
-    missing = 0
+    missing: dict[str, int] = {}
     for line in lines:
         rec = dg.parse_shadow_line(line)
         if rec is None or rec["outcome"] == "failed":
             continue
         if rec.get("verdict") == "none":
-            missing += 1
+            reason = str(rec.get("reason") or "unknown")
+            missing[reason] = missing.get(reason, 0) + 1
             continue
         gold = "skip" if rec["outcome"] == "refusal" else "ask"
         by_backend.setdefault(rec["backend"], []).append(
@@ -164,19 +177,25 @@ def shadow_rows(lines) -> tuple[dict[str, list[Row]], int]:
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 
 
-def harvest(directory: pathlib.Path) -> list[dict]:
+def harvest(directory: pathlib.Path, owner: str = "") -> list[dict]:
     """Кандидаты для разметки: фразы стенограмм, которые сегодня будят ⚡.
 
     Берутся только главные файлы встреч (производные `_hints`, `_minutes` и
     прочие — мимо, их отсекает `meeting_stamp.stamp_of`). Фраза — кандидат, если
-    её пропускает `looks_question`: ровно этот поток видит гейт.
+    её пропускает `looks_question` и говорит не владелец: ⚡ на реплики владельца
+    не срабатывает, и предикат тот же, что у демона (`ChannelLabels.is_owner_line`,
+    имя владельца — как в `sufler.user_name`). Без него корпус был шире потока
+    гейта (выходной круг 1 по #651, DS M6).
     """
+    labels = channel_labels.ChannelLabels.from_config({"sufler": {"user_name": owner}})
     out, seen = [], set()
     for path in sorted(directory.rglob("*.md")):
         if not meeting_stamp.stamp_of(path.stem):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for block in transcript.parse_blocks(text):
+            if labels.is_owner_line(block["speaker"]):
+                continue
             body = " ".join(text[block["start"]:block["end"]].split())
             for phrase in _SENTENCE.split(body):
                 phrase = phrase.strip()
@@ -209,9 +228,9 @@ def print_report(name: str, rows: list[Row], thresholds) -> None:
           f"p50 {_fmt(s['p50_ms'], False)} мс · p95 {_fmt(s['p95_ms'], False)} мс")
     if name.startswith("structural"):
         return      # детерминированному фильтру порог не нужен
-    print("   τ  | решено сам | точность решённого | снято пустого | потеряно вопросов")
+    print("   τ  | отсечено | верно отсечено | снято пустого | потеряно вопросов")
     for p in sweep(rows, thresholds):
-        print(f"  {p['tau']:.2f} | {_fmt(p['decided']):>10} | {_fmt(p['decided_acc']):>18} | "
+        print(f"  {p['tau']:.2f} | {_fmt(p['cut']):>8} | {_fmt(p['cut_precision']):>14} | "
               f"{_fmt(p['saved']):>13} | {_fmt(p['lost']):>17}")
 
 
@@ -245,6 +264,7 @@ def cmd_eval(args) -> int:
         print("размеченных строк нет — сначала harvest и разметка", file=sys.stderr)
         return 2
     thresholds = _thresholds(args.thresholds)
+    reported = 0
     for name in [b.strip() for b in args.backend.split(",") if b.strip()]:
         if name not in BACKENDS:
             print(f"бэкенд {name!r} неизвестен: {', '.join(BACKENDS)}", file=sys.stderr)
@@ -252,15 +272,24 @@ def cmd_eval(args) -> int:
         if name == "structural":
             print_report("structural (question_filter)",
                          [structural_row(i["text"], i["label"]) for i in items], thresholds)
+            reported += 1
             continue
         dec = _backend(name, args)
         if dec is None:
             continue
+        # прогрев вне замера: первый вызов поднимает сессию модели, и на наборе из
+        # десятка реплик p95 был бы временем загрузки, а не решения (DS M3)
+        dg.decide(dec, items[0]["text"])
         rows = []
         for i in items:
             v = dg.decide(dec, i["text"])
             rows.append(Row(i["label"], v.label, v.confidence, v.ms))
         print_report(dec.name, rows, thresholds)
+        reported += 1
+    if not reported:
+        # ни один бэкенд не отработал — замера нет, и код это говорит (DS M4)
+        print("ни один бэкенд не отработал — мерить было нечем", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -270,7 +299,8 @@ def cmd_shadow(args) -> int:
         lines += pathlib.Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
     by_backend, missing = shadow_rows(lines)
     if missing:
-        print(f"вердиктов нет (решатель опоздал или упал): {missing}")
+        print(f"вердиктов нет: {sum(missing.values())} — "
+              + ", ".join(f"{reason} {n}" for reason, n in sorted(missing.items())))
     if not by_backend:
         print("строк тени нет: включите sufler.decision_gate_shadow и проведите встречу",
               file=sys.stderr)
@@ -282,7 +312,7 @@ def cmd_shadow(args) -> int:
 
 
 def cmd_harvest(args) -> int:
-    rows = harvest(pathlib.Path(args.dir))
+    rows = harvest(pathlib.Path(args.dir), owner=args.owner)
     if args.limit:
         rows = rows[:args.limit]
     out = pathlib.Path(args.out)
@@ -317,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     hv.add_argument("dir")
     hv.add_argument("--out", required=True)
     hv.add_argument("--limit", type=int, default=0)
+    hv.add_argument("--owner", default="",
+                    help="имя владельца, как в sufler.user_name: его реплики (и метка «Я») в выборку не идут")
     hv.set_defaults(fn=cmd_harvest)
 
     args = ap.parse_args(argv)

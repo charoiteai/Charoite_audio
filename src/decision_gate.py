@@ -36,7 +36,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import math
 import pathlib
@@ -305,25 +304,27 @@ def decider(head_dir: pathlib.Path | None = None, judge: Callable[[], object] | 
 
 # --- тень ---------------------------------------------------------------------
 
-def question_hash(question: str) -> str:
-    """Короткий хеш вопроса: склеить строку тени с `_hints.md`, не храня текст."""
-    norm = " ".join(question.lower().split())
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:10]
+def shadow_line(verdict: Verdict | None, outcome: str, reason: str = "") -> str:
+    """Строка тени для err-лога. Ни слова из разговора и ничего, выведенного из
+    него: метка, уверенность, задержка и исход ⚡.
 
-
-def shadow_line(verdict: Verdict | None, outcome: str, qhash: str, reason: str = "") -> str:
-    """Строка тени для err-лога. Ни слова из разговора — только состояние."""
+    Хеша вопроса в строке нет: 40 бит SHA-256 без соли от короткой нормализованной
+    реплики подбираются перебором по любому списку кандидатов, а склейки с
+    `_hints.md`, ради которой он был, в коде нет (выходной круг 1 по #651, DS I1).
+    Понадобится склейка — ключом станет место в `_hints.md`, а не отпечаток текста.
+    """
     if outcome not in OUTCOMES:
         raise ValueError(f"исход тени — один из {OUTCOMES}, а не {outcome!r}")
     if verdict is None:
-        return f"{SHADOW_PREFIX} verdict=none reason={reason or 'unknown'} outcome={outcome} q={qhash}"
+        return f"{SHADOW_PREFIX} verdict=none reason={reason or 'unknown'} outcome={outcome}"
     return (f"{SHADOW_PREFIX} backend={verdict.backend} label={verdict.label} "
-            f"p={verdict.confidence:.3f} ms={verdict.ms:.0f} outcome={outcome} q={qhash}")
+            f"p={verdict.confidence:.3f} ms={verdict.ms:.0f} outcome={outcome}")
 
 
 def parse_shadow_line(line: str) -> dict | None:
     """Разбор строки тени. Чужая строка или битая — None, а не исключение:
-    err-лог общий, и в нём живут строки всех контуров."""
+    err-лог общий, и в нём живут строки всех контуров. Поле `q` строк прежнего
+    формата читается как лишнее и ни на что не влияет."""
     at = line.find(SHADOW_PREFIX)
     if at < 0:
         return None
@@ -332,7 +333,7 @@ def parse_shadow_line(line: str) -> dict | None:
         key, sep, value = token.partition("=")
         if sep:
             fields[key] = value
-    if fields.get("outcome") not in OUTCOMES or "q" not in fields:
+    if fields.get("outcome") not in OUTCOMES:
         return None
     if fields.get("verdict") == "none":
         return fields
@@ -353,6 +354,10 @@ class ShadowRun:
     тот, кто пришёл вторым, — поток решателя или сам `finish`. Так тень не
     добавляет ⚡ ни миллисекунды и не теряет запись, если первая загрузка
     модели дольше ответа. Строка пишется ровно один раз.
+
+    Прогон без потока (`skip`) — вердикта не будет по названной причине
+    (решатель ещё занят прошлым вопросом, поток не стартовал): `finish` пишет
+    строку `verdict=none reason=…`, и замер видит пропуск, а не тишину.
     """
 
     def __init__(self, question: str, dec: Decider, log: Callable[[str], None],
@@ -368,7 +373,22 @@ class ShadowRun:
         self._outcome: str | None = None
         self._written = False
         self._thread = threading.Thread(target=self._run, name="gate-shadow", daemon=True)
+
+    def start(self) -> None:
+        """Поток решателя. Может бросить (`RuntimeError` при исчерпании потоков
+        процесса) — `Shadow.start` превращает это в пропуск с причиной."""
         self._thread.start()
+
+    def skip(self, reason: str) -> None:
+        """Вердикта не будет: решатель не звался, причина уйдёт в строку."""
+        with self._lock:
+            self._reason, self._done = reason, True
+
+    @property
+    def decided(self) -> bool:
+        """Решатель отдал вердикт или отказ (либо прогон пропущен)."""
+        with self._lock:
+            return self._done
 
     def _run(self) -> None:
         verdict, reason = None, ""
@@ -383,9 +403,12 @@ class ShadowRun:
             self._write()
 
     def finish(self, outcome: str) -> None:
-        """Исход ⚡ известен. Неверный исход — ошибка проводки, падает сразу."""
+        """Исход ⚡ известен. Не бросает: тень не смеет ронять поток ⚡ (выходной
+        круг 1 по #651, DS C1). Исход не из `OUTCOMES` — «failed»: что ответила
+        модель, тени неизвестно; `outcome_of` отдаёт только законные исходы, и
+        это держат её тесты."""
         if outcome not in OUTCOMES:
-            raise ValueError(f"исход тени — один из {OUTCOMES}, а не {outcome!r}")
+            outcome = "failed"
         with self._lock:
             if self._outcome is not None:
                 return
@@ -399,21 +422,52 @@ class ShadowRun:
             if self._written:
                 return
             self._written = True
-            line = shadow_line(self._verdict, self._outcome or "failed",
-                               question_hash(self._question), self._reason)
+            line = shadow_line(self._verdict, self._outcome or "failed", self._reason)
         try:
             self._log(line)
-        except OSError:
-            pass    # закрытый stderr не повод ронять ⚡; тень — наблюдение, не контур
+        except Exception:  # noqa: BLE001 — сток тени (stderr) закрыт или сломан: тень — наблюдение, а не контур, ⚡ идёт дальше
+            pass
 
     def join(self, timeout: float | None = None) -> None:
         """Дождаться решателя (тестам и скриптам; демон не ждёт)."""
-        self._thread.join(timeout)
+        if self._thread.ident is not None:
+            self._thread.join(timeout)
 
 
-def start_shadow(question: str, dec: Decider | None,
-                 log: Callable[[str], None]) -> ShadowRun | None:
-    """Тень на один вопрос — или None, если судить нечего или нечем."""
-    if dec is None or dec.refused or not (question or "").strip():
-        return None
-    return ShadowRun(question, dec, log)
+class Shadow:
+    """Тень ⚡ на встречу: решатель, сток и не больше одного прогона в полёте.
+
+    Шов тотальный: `start` и `ShadowRun.finish` не бросают ничего, поэтому в
+    цикле ⚡ нет ни одного `try` вокруг тени (выходной круг 1 по #651, DS C1).
+    Прогон один в полёте: пока решатель думает над прошлым вопросом, новый вопрос
+    получает строку `reason=busy`, а не ещё один поток. Зависший решатель тогда
+    виден в замере ростом пропусков, а не копит потоки молча (DS I3).
+    """
+
+    def __init__(self, dec: Decider | None, log: Callable[[str], None]) -> None:
+        self._decider = dec
+        self._log = log
+        self._lock = threading.Lock()
+        self._inflight: ShadowRun | None = None
+
+    @property
+    def active(self) -> bool:
+        """Есть чем судить: решатель назван и не отказал."""
+        return self._decider is not None and not self._decider.refused
+
+    def start(self, question: str) -> ShadowRun | None:
+        """Тень на один вопрос — или None, если судить нечего или нечем."""
+        if not self.active or not (question or "").strip():
+            return None
+        with self._lock:
+            run = ShadowRun(question, self._decider, self._log)
+            if self._inflight is not None and not self._inflight.decided:
+                run.skip("busy")
+                return run
+            try:
+                run.start()
+            except Exception as e:  # noqa: BLE001 — отказ старта потока (лимит потоков, память) не смеет ронять ⚡: причина уходит в строку тени
+                run.skip(f"start:{type(e).__name__}")
+                return run
+            self._inflight = run
+        return run

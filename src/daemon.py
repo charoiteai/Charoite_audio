@@ -1536,6 +1536,9 @@ def main():
 
     def gate_log(line: str) -> None:
         print(line, file=sys.stderr, flush=True)
+    # шов тени тотальный: ни `start`, ни `finish` не бросают — поток ⚡ не
+    # оборачивает их в `try` и от тени не зависит (выходной круг 1 по #651)
+    gate_shadow = decision_gate.Shadow(gate_decider, gate_log)
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
     cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
@@ -2126,8 +2129,6 @@ def main():
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
             q = fresh_question(_pending_q[0], time.monotonic())
             tail = tr.tail(1600)
-            # тень гейта считает вердикт параллельно ответу и ⚡ не ждёт
-            shadow = decision_gate.start_shadow(q, gate_decider, gate_log)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
             # подсказок. Явный вопрос — чувствительный режим. Опознанные
@@ -2153,6 +2154,11 @@ def main():
                 manual_evt.clear()
                 if not tail:
                     continue
+                # тень гейта — на вопрос, на который ⚡ действительно отвечает:
+                # занятый слот и пустой хвост выше выходят без ответа, и вердикт
+                # там был бы работой впустую (выходной круг 1 по #651, DS I2).
+                # Считается параллельно генерации, ⚡ её не ждёт.
+                shadow = gate_shadow.start(q)
                 emit({"type": "status", "text": f"⚡ отвечаю: {q[:60]}" if q else "⚡ отвечаю"})
                 parts: list[str] = []
                 try:

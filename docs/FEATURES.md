@@ -86,7 +86,7 @@
   `models/decision/question_gate/`, otherwise zero-shot over the NLI model
   already in `models/nli/`) judges whether it was a real question and logs
   the verdict with the answer outcome to `logs/daemon.err.log` — label,
-  confidence, latency and a short hash, never the utterance text. It
+  confidence and latency, never the utterance text or a hash of it. It
   decides nothing: `scripts/gate_bench.py shadow` turns those lines into
   "model refusals it would have saved" vs "answers it would have lost" per
   confidence threshold. Research note: docs/research/decision-gate.md.
