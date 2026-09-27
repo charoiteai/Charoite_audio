@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import json
 import os
 import pathlib
 import re
@@ -110,7 +111,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
+from exit_codes import (EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_ROOT_UNNAMED,  # noqa: E402
+                        EXIT_UNJUDGED, EXIT_UNMUTABLE)
+# `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
+# (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
+# разошлось бы с ним. Слово исхода берём тем же классификатором, что и все.
+import exit_codes  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
@@ -133,6 +139,12 @@ class ScanTotals:
     lines_constant: int = 0
     nodes: int = 0
     files_unreadable: int = 0
+    #: Размер плана ДО среза шардом: знаменатель «0 из P» и сверка слияния
+    #: шардов `ΣM == P`. Без него пустой шард неотличим от «в диапазоне нечего».
+    planned: int = 0
+    #: (K, N) шарда, если он назван; None — план целиком. Из него берётся M
+    #: шарда для машинной строки; соседи по N восстанавливают покрытие.
+    shard: tuple[int, int] | None = None
 
 
 def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int,
@@ -298,8 +310,15 @@ def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> Scan
     return report
 
 
-def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
-    """План мутантов по диапазону и счётчики того, из чего он собран."""
+def plan_for(root: pathlib.Path, rng: str,
+             shard: tuple[int, int] | None = None) -> tuple[list[Mutation], ScanTotals]:
+    """План мутантов по диапазону и счётчики того, из чего он собран.
+
+    `shard=(K, N)` отдаёт долю плана: индексы `i % N == K-1` по порядку
+    ПОЛНОГО плана. Шард режет ДО `--max` — срез идёт в `main` по тому, что
+    вернулось отсюда; обратный порядок отдал бы шарду не его долю.
+    `totals.planned` хранит размер полного плана (P) и до среза шардом.
+    """
     targets = changed_lines(root, rng)
     totals = ScanTotals(files_in=len(targets),
                         lines_in=sum(len(ls) for ls in targets.values()))
@@ -328,6 +347,11 @@ def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         plan.extend(report.mutations)
+    totals.planned = len(plan)
+    if shard is not None:
+        k, n = shard
+        totals.shard = (k, n)
+        plan = [m for i, m in enumerate(plan) if i % n == k - 1]
     return plan, totals
 
 
@@ -634,16 +658,155 @@ def render_report(tested: int, survivors: list, skipped: list, planned: int, dro
     return "\n".join(lines)
 
 
+def _max_arg(value: str) -> int | None:
+    """`--max N` — потолок мутантов; `--max all` — без среза (None).
+
+    Потолок CI поднимается до полного плана шарда: план четырёх шардов при
+    `--max all` судится целиком, а не первыми шестьюдесятью.
+    """
+    if value == "all":
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: целое число или all")
+    if n < 0:
+        raise argparse.ArgumentTypeError("потолок мутантов не бывает отрицательным")
+    return n
+
+
+def parse_shard(value: str | None) -> tuple[int, int] | None:
+    """`K/N` из `--shard` — или None: шард не назван либо значение неверно.
+
+    Разбор идёт до git-корня и лока: «0/4», «5/4», «a/b», «1/0» отвергаются,
+    не начав работы, — кодом `EXIT_ROOT_UNNAMED` (5), тем же «не начал», что
+    у неназванного корня данных.
+    """
+    if value is None:
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", value)
+    if m is None:
+        return None
+    k, n = int(m.group(1)), int(m.group(2))
+    if n < 1 or not 1 <= k <= n:
+        return None
+    return (k, n)
+
+
+def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_n: int,
+                    m: int, p: int, rc: int) -> None:
+    """Отчёт и машинная строка шарда рядом с ним — одна точка записи.
+
+    Отчёт пишется после каждого мутанта (job, оборванный на потолке, уносил
+    бы его с собой), и там же кладётся `<report>.json`: K, N шарда, M его
+    мутантов, P всего плана и слово исхода. Вердикт CI читает эти строки
+    слиянием, а не печать шага. Без `--report` класть некуда — молча выходим.
+    """
+    if not report:
+        return
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(text + "\n", encoding="utf-8")
+    machine = report.with_name(report.name + ".json")
+    machine.write_text(json.dumps({"K": shard_k, "N": shard_n, "M": m, "P": p,
+                                   "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+
+
+def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int, str]], str]:
+    """Машинные строки шардов из каталога и причина, если какую-то не прочесть.
+
+    Обходим рекурсивно: CI раскладывает артефакты шардов по своим подкаталогам,
+    и «все `*.json` шардов» — это они, а не только плоский уровень.
+    """
+    rows: list[tuple[int, int, int, int, str]] = []
+    for path in sorted(directory.rglob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            rows.append((int(data["K"]), int(data["N"]), int(data["M"]),
+                         int(data["P"]), str(data["word"])))
+        except (OSError, ValueError, KeyError, TypeError):
+            return [], f"нечитаемый файл шарда: {path}"
+    return rows, ""
+
+
+def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) -> int:
+    """Свести машинные строки шардов в один вердикт — код возврата.
+
+    Сначала покрытие: (число файлов, N, набор K, ΣM) обязаны сойтись с планом.
+    Сошлись — зелёный, только если каждый шард судил своё чисто (`ok`, либо
+    `nothing` при своём `M = 0`); `P = 0` со всеми `nothing` — «мутировать
+    нечего», тоже зелёный. Всё остальное (`partial`, `unjudged`, `unmutable`,
+    `fail`) — красный: в CI «судили часть» больше не жёлтая заметка.
+    """
+    directory = pathlib.Path(directory)
+    rows, why = _shard_rows(directory)
+    lines: list[str] = []
+    problem = why
+    if not problem and not rows:
+        problem = "ни одного файла шарда"
+    if not problem:
+        ns = {r[1] for r in rows}
+        ps = {r[3] for r in rows}
+        if len(ns) != 1:
+            problem = "разные N"
+        else:
+            n = ns.pop()
+            if len(rows) != n:
+                problem = f"файлов {len(rows)}, а шардов {n}"
+            elif sorted(r[0] for r in rows) != list(range(1, n + 1)):
+                problem = "повтор или пропуск K"
+            elif len(ps) != 1 or sum(r[2] for r in rows) != ps.pop():
+                problem = "ΣM ≠ P"
+    for r in sorted(rows):
+        lines.append(f"  шард {r[0]} из {r[1]}: M={r[2]} — {r[4]}")
+    total_m = sum(r[2] for r in rows)
+    lines.append(f"итог: шардов {len(rows)}, M={total_m}, P={rows[0][3] if rows else 0}")
+    if problem:
+        lines.insert(0, f"шарды не покрыли план: {problem}")
+        code = 1
+    else:
+        p = rows[0][3]
+        clean = [r for r in rows if not (r[4] == "ok" or (r[4] == "nothing" and r[2] == 0))]
+        if p == 0:
+            if not clean:
+                lines.insert(0, "мутировать нечего")
+                code = 0
+            else:
+                lines.insert(0, "шарды дали неполный исход: "
+                                + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+                code = 1
+        elif not clean:
+            lines.insert(0, f"мутация: шарды чисты ({p} мутантов)")
+            code = 0
+        else:
+            lines.insert(0, "шарды дали неполный исход: "
+                            + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+            code = 1
+    text = "\n".join(lines)
+    print(text)
+    if report:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(text + "\n", encoding="utf-8")
+    return code
+
+
 def main(argv: list[str]) -> int:
     # Бюджет считается от старта процесса: подготовка дерева и база входят в него
     started = clock()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", default="origin/main...HEAD",
                     help="диапазон git, чьи строки мутируем")
-    ap.add_argument("--max", type=int, default=60,
-                    help="потолок мутантов (срезанное объявляется вслух)")
+    ap.add_argument("--max", type=_max_arg, default=60,
+                    help="потолок мутантов (срезанное объявляется вслух); "
+                         "«all» — без среза")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
+    ap.add_argument("--shard", default=None,
+                    help="доля плана K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
+                         "i %% N == K-1 ДО среза --max")
+    ap.add_argument("--merge-shards", type=pathlib.Path, default=None,
+                    help="каталог с машинными строками шардов (*.json): свести их "
+                         "вердиктом вместо прогона")
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
@@ -651,6 +814,20 @@ def main(argv: list[str]) -> int:
                     help="секунд на весь прогон от старта; не хватает на следующий "
                          "набор — остановка с отчётом о проверенном (--force не снимает)")
     args = ap.parse_args(argv[1:])
+
+    # Слияние шардов — ПЕРВЫМ: ему не нужны ни git-корень, ни гвард занятости,
+    # ни лок. Отдельный job CI сходится сюда на голом каталоге артефактов вне
+    # git-дерева, и любой шаг до этого был бы лишним отказом.
+    if args.merge_shards is not None:
+        return merge_shards(args.merge_shards, args.report)
+
+    # Неверный шард — отказ ДО работы: ни git, ни дерева, ни прогона. Код —
+    # существующий EXIT_ROOT_UNNAMED (5), тот же «не начал», что у неназванного
+    # корня данных; исход его — `fail`, и вердикт CI его не пропустит.
+    shard = parse_shard(args.shard)
+    if args.shard is not None and shard is None:
+        print(f"--shard {args.shard!r}: ожидается K/N, где 1 ≤ K ≤ N")
+        return EXIT_ROOT_UNNAMED
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
@@ -683,9 +860,21 @@ def main(argv: list[str]) -> int:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
                   "(--force, чтобы настоять)")
             return 3
-    plan, totals = plan_for(root, args.range)
+    plan, totals = plan_for(root, args.range, shard)
+    m_total = len(plan)
+    p_total = totals.planned
+    k, n = totals.shard or (1, 1)
     if not plan:
         code = verdict_code([], 0, 0, 0, 0, totals)
+        # Первый разбор пустого плана: шард назван, и полный план был (P > 0),
+        # а этой доле мутантов не досталось. Это не «в диапазоне нечего» —
+        # соседние шарды судят свою часть; отчёт и машинная строка (word
+        # `nothing`, M = 0) нужны слиянию, иначе ΣM ≠ P.
+        if shard is not None and p_total:
+            print(f"шард {k} из {n}: 0 из {p_total} — нечего")
+            write_artifacts(args.report, render_report(0, [], [], 0, 0, "", totals),
+                            k, n, m_total, p_total, EXIT_NOTHING_TO_CHECK)
+            return EXIT_NOTHING_TO_CHECK
         if code == EXIT_NOTHING_TO_CHECK and not totals.lines_in:
             print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
         elif code == EXIT_NOTHING_TO_CHECK:
@@ -703,7 +892,7 @@ def main(argv: list[str]) -> int:
         return code
 
     dropped = 0
-    if len(plan) > args.max:
+    if args.max is not None and len(plan) > args.max:
         # По кругу между файлами: срез подряд забирал всех мутантов одного
         # файла, а остальные не проверялись вовсе (ревью 20.08, локальная).
         by_file: dict[pathlib.Path, list[Mutation]] = {}
@@ -741,11 +930,13 @@ def main(argv: list[str]) -> int:
     aborted = ""
     durations: dict[tuple[str, ...], float] = {}
 
-    def save(reason: str) -> None:
-        if args.report:
-            args.report.parent.mkdir(parents=True, exist_ok=True)
-            args.report.write_text(render_report(tested, survivors, skipped, len(plan), dropped,
-                                                 reason, totals) + "\n", encoding="utf-8")
+    def save(reason: str, rc: int | None = None) -> None:
+        if rc is None:
+            rc = verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
+        write_artifacts(args.report,
+                        render_report(tested, survivors, skipped, len(plan), dropped,
+                                      reason, totals),
+                        k, n, m_total, p_total, rc)
     try:
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
@@ -782,7 +973,7 @@ def main(argv: list[str]) -> int:
             print("В отдельном дереве нет того, что лежит в .gitignore "
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
-            save(BASE_RED)
+            save(BASE_RED, 2)
             return 2
         for i, mut in enumerate([] if aborted else plan, 1):
             suite = suite_key(work, mut.path)

@@ -19,7 +19,8 @@ READERS = {
     "scripts/import_meeting.py": {"EXIT_NO_SPEECH", "EXIT_NO_GRAPH"},
     "src/daemon.py": {"EXIT_ROOT_UNNAMED"},
     "src/charoite_paths.py": {"EXIT_ROOT_UNNAMED"},   # дверь точки входа (№340)
-    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL", "EXIT_UNMUTABLE", "EXIT_UNJUDGED"},
+    "scripts/mutate_check.py": {"EXIT_NOTHING_TO_CHECK", "EXIT_PARTIAL", "EXIT_ROOT_UNNAMED",
+                                "EXIT_UNMUTABLE", "EXIT_UNJUDGED"},
 }
 #: Значения — снимок: их читают процессы вне этого репозитория (launchd, CI,
 #: приёмка), и молчаливая перенумерация ломает их без единого красного теста.
