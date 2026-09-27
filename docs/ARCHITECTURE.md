@@ -1051,9 +1051,25 @@ rebuilds what is `measured` and never touches what is `decision`. The declaratio
 it does not name is a load error, so a second carrier of one fact cannot
 appear in the JSON without a code change a reviewer reads — the free-text
 `notes` block went stale exactly that way and was removed. Debt is printed,
-not stored: the map groups the upward edges and the entry points without a
-probe by the card that removes them (`ticket`, `№…` at the start), and
-`--regen` prints only what changed; no gate reads that number. The gate is `tests/test_import_boundaries.py`,
+not stored: the map groups the upward edges, the entry points without a
+probe and the folder-name literals by the card that removes them (`ticket`,
+`№…` at the start), and `--regen` prints only what changed; no gate reads
+that number. The storage schema is a value, not literals scattered around:
+`charoite_graph.graph_schema.GraphSchema` declares the folder names, the
+section heads and the raw-file markers, its invariants (`__post_init__`)
+reject a name that is a regex, a dossier nested under an exclusion or a role
+that is also another role, and `src/charoite_schema.py` holds the one
+`CHAROITE = GraphSchema(…)` value as literals. A separate guard in
+`scripts/layout_map.py` reads the field list from the class annotations and
+the values from that call, looks for copies of those names among the string
+literals of the graph package (`package_entry`'s closure, the same set the
+package probe copies) and holds each copy as `folder_literals` debt with a
+ticket; `folder_literal_exemptions` forgives one copy with a written reason,
+and both are compared in both directions like every other entry. The
+snapshot in `tests/test_graph_schema.py` compares `CHAROITE` with the live
+`graph_nodes` / `dossier` / `graph_search` / `meeting_archive` constants
+while they are still alive — PR B moves the consumers onto the value and
+the debt goes to zero. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared

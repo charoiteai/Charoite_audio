@@ -185,6 +185,19 @@ directions**: an entry that no longer matches reality is just as red as a
 violation that is not declared. The list can only shrink by itself; it grows
 only through a diff a human wrote and a reviewer read.
 
+**The folder-name guard.** The storage schema is one value:
+`charoite_graph.graph_schema.GraphSchema` declares the folder names, section
+heads and raw-file markers with invariants, and `src/charoite_schema.py` holds
+the single `CHAROITE = GraphSchema(…)` value as literals. The guard in
+`scripts/layout_map.py` reads the field list from the class annotations and the
+values from that call, looks for copies of those names among the string literals
+of the graph package (the same closure the package probe copies) and holds each
+copy as `folder_literals` debt with a ticket; `folder_literal_exemptions` forgives
+one copy with a written reason. A hit without a ticket, or a declared hit the
+measurement no longer finds, is red. `tests/test_graph_schema.py` snapshots
+`CHAROITE` against the live constants until PR B moves the consumers onto the
+value, which is when the debt goes to zero.
+
 The `KINDS` table in the guard is pinned by a copy inside the test on purpose —
 the comment there explains why. Changing the policy means changing two files,
 and that is the point.

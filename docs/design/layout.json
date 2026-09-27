@@ -35,7 +35,8 @@
       "charoite_graph.graph_nodes",
       "graph_links",
       "charoite_graph.dossier",
-      "charoite_graph.graph_search"
+      "charoite_graph.graph_search",
+      "charoite_graph.graph_schema"
     ],
     "cloud": [
       "cloud"
@@ -190,6 +191,10 @@
     "threads": {
       "layer": "base",
       "why": "шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток"
+    },
+    "charoite_schema": {
+      "layer": "graph",
+      "why": "значение схемы хранилища (№422): имена папок и разделов читают модули графа, модуль тянет только stdlib и класс схемы из пакета графа; окружения не знает"
     }
   },
   "allowed_edges": [
@@ -448,5 +453,256 @@
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
     }
-  }
+  },
+  "schema_module": "src/charoite_graph/graph_schema.py",
+  "schema_values": "src/charoite_schema.py",
+  "folder_literals": [
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "core_folders",
+      "literal": "Ядра",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "dossier_dir",
+      "literal": "Досье",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "dossier_dir",
+      "literal": "досье",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "meeting_dir",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "meeting_folders",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "meeting_link_prefixes",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "node_folders",
+      "literal": "Ядра",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/dossier.py",
+      "field": "service_prefixes",
+      "literal": "Служебное_",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "core_folders",
+      "literal": "Cores",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "core_folders",
+      "literal": "Ядра",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "history_heads",
+      "literal": "## History",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "history_heads",
+      "literal": "## Meetings",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "history_heads",
+      "literal": "## Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "history_heads",
+      "literal": "## Хроника",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "meeting_dir",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "meeting_folders",
+      "literal": "Meetings",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "meeting_folders",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "meeting_link_prefixes",
+      "literal": "Meetings",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "meeting_link_prefixes",
+      "literal": "Встречи",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Blockers",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Cores",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Models",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "People",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Systems",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Teams",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Блокеры",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Команды",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Люди",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Модели",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Системы",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "node_folders",
+      "literal": "Ядра",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "people_folders",
+      "literal": "People",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_nodes.py",
+      "field": "people_folders",
+      "literal": "Люди",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "exclude_dirs",
+      "literal": "Встречи-архив",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "exclude_dirs",
+      "literal": "Документация/Стенограммы встреч",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "meeting_folders",
+      "literal": "Встречи-архив",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "meeting_link_prefixes",
+      "literal": "Встречи-архив",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "raw_markers",
+      "literal": "Документация/Стенограммы встреч",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "raw_markers",
+      "literal": "стенограмм|_live\\.md$|transcript",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "raw_suffixes",
+      "literal": "стенограмм|_live\\.md$|transcript",
+      "ticket": "№422"
+    },
+    {
+      "rel": "src/charoite_graph/graph_search.py",
+      "field": "service_prefixes",
+      "literal": "Служебное_",
+      "ticket": "№422"
+    }
+  ],
+  "folder_literal_exemptions": {}
 }
