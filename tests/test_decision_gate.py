@@ -434,3 +434,18 @@ def test_verdict_and_decider_are_values():
         _v("skip", 0.9).label = "ask"
     with pytest.raises(dataclasses.FrozenInstanceError):
         _fixed({"ask": 1.0, "skip": 0.0}).refused = "x"
+
+
+def test_shadow_thread_never_holds_the_daemon_on_stop():
+    """Зависший решатель не должен держать процесс демона после «Стоп»."""
+    release = threading.Event()
+    run = dg.start_shadow("Когда релиз?", dg.Decider("slow", lambda t: release.wait(5) and {}), _Log())
+    try:
+        assert run._thread.daemon
+    finally:
+        release.set()
+        run.join(5)
+
+
+def test_decider_repr_names_it_without_the_function():
+    assert repr(_fixed({"ask": 1.0, "skip": 0.0})) == "Decider(name='fake', refused='')"
