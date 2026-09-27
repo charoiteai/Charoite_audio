@@ -1059,7 +1059,10 @@ that number. The storage schema is a value, not literals scattered around:
 section heads and the raw-file markers, its invariants (`__post_init__`)
 reject a name that is a regex, a dossier nested under an exclusion or a role
 that is also another role, and `src/charoite_schema.py` holds the one
-`CHAROITE = GraphSchema(…)` value as literals. A separate guard in
+`CHAROITE = GraphSchema(…)` value as literals. The package takes the
+schema as a parameter: `GraphSearch(schema=…)` excludes the schema's
+`exclude_dirs`, and the application door `graphs.open_search` passes
+`CHAROITE`. A separate guard in
 `scripts/layout_map.py` reads the field list from the class annotations and
 the values from that call, looks for copies of those names among the string
 literals of the graph package (`package_entry`'s closure, the same set the

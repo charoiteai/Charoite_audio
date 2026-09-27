@@ -58,7 +58,10 @@ def open_search(graph: pathlib.Path, embedder):
     (Opus I1 круга 1 по коду №365). Копия теперь одна — здесь; `GraphSearch(` мимо этой
     функции сторож раскладки не пропускает (`ENV_SEAMS` в scripts/layout_map.py)."""
     from charoite_graph import graph_search
-    return graph_search.GraphSearch(graph, embedder=embedder, data_dir=search_cache_dir())
+    from charoite_schema import CHAROITE
+    # схема хранилища — значение владельца; пакет берёт её параметром (№422)
+    return graph_search.GraphSearch(graph, embedder=embedder, data_dir=search_cache_dir(),
+                                    schema=CHAROITE)
 
 
 def revise_cores(graph: pathlib.Path, **kw) -> dict:

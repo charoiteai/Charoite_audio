@@ -26,7 +26,7 @@
 
 Ставится без приложения: модули ниже и только они; проба — `tests/test_entry_points_contract.py`.
 
-Модулей 9: `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`
+Модулей 10: `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`
 
 ## Поправки к таблице брифа (с обоснованием)
 

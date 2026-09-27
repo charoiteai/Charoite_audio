@@ -59,6 +59,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from charoite_graph import dossier  # noqa: E402
 from charoite_graph import frontmatter  # noqa: E402
 from charoite_graph import graph_nodes  # noqa: E402
+from charoite_graph.graph_schema import GraphSchema  # noqa: E402
 from charoite_graph.model_seam import Embedder  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
@@ -817,10 +818,17 @@ class GraphSearch:
     def __init__(self, graph_dir: pathlib.Path, *,
                  embedder: Embedder,
                  data_dir: pathlib.Path,
-                 exclude: Iterable[str] = EXCLUDE_DIRS,
+                 exclude: Iterable[str] | None = None,
+                 schema: GraphSchema | None = None,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
-        self.exclude = tuple(exclude)
+        # Пакет берёт схему хранилища параметром (№422): исключения обхода — её;
+        # без схемы и без списка — прежнее умолчание. Два источника сразу — отказ:
+        # молча выбранный один из них был бы догадкой о намерении вызывающего.
+        if schema is not None and exclude is not None:
+            raise ValueError("исключения обхода — из схемы или списком, не оба")
+        self.exclude = tuple(schema.exclude_dirs if schema is not None
+                             else EXCLUDE_DIRS if exclude is None else exclude)
         self._now = now
         self._embedder = embedder
         # Причина отказа — СЛОВА источника, а не бит. Политика говорит «нельзя»
