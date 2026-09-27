@@ -293,16 +293,44 @@ def test_the_truncation_episode_is_known_per_address_and_model(capsys):
 
 
 def test_a_plain_400_retried_with_truncate_speaks_neutrally(capsys):
-    """Отказ не про длину: строка называет HTTP-код и тело, а не предел."""
+    """Тело не назвало длину: строка не выводит причину ни в одну сторону, но
+    говорит, что векторы построены с усечением, и называет самый длинный текст
+    (выходной круг 1 по №433, DS I4)."""
     once.reset("embed")
     e = _дверь(post=_усечение_сервер("bad request: the model choked"))
 
-    assert e.run(["т"], 10) == _векторы(["т"])
+    assert e.run(["к", "длинный"], 10) == _векторы(["к", "длинный"])
     err = capsys.readouterr().err
-    assert "сервер отказал без усечения" in err
-    assert "повтор с усечением прошёл" in err
+    assert "сервер отказал на запрос без усечения" in err
+    assert "повтор с усечением дал векторы" in err
+    assert "если отказ был о длине, хвост текста в вектор не попал" in err
+    assert "№2, 7 знаков" in err, err
     assert "bad request: the model choked" in err
     assert "вход длиннее предела" not in err
+
+
+@pytest.mark.parametrize("тело", [
+    "the input length exceeds the context length",           # Ollama 0.34, замер 27.09
+    "input length exceeds maximum context length",           # сборки 2024 — начала 2025
+    '{"error":"The Input Length Exceeds The Context Length"}',
+])
+def test_both_wordings_of_the_length_refusal_are_recognised(capsys, тело):
+    """Одна фраза целиком ловила только новую формулировку (DS I4)."""
+    once.reset("embed")
+    assert _дверь(post=_усечение_сервер(тело)).run(["т"], 10) == _векторы(["т"])
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("тело", [
+    "input length is fine, context length is fine",           # оба слова, но не отказ
+    "the input length exceeds the batch size",               # длина, но не контекст
+])
+def test_a_body_with_only_part_of_the_mark_is_not_a_length_refusal(capsys, тело):
+    """Признак — все куски: «context length» без «input length exceeds» не длина."""
+    once.reset("embed")
+    _дверь(post=_усечение_сервер(тело)).run(["т"], 10)
+    err = capsys.readouterr().err
+    assert "вход длиннее предела сервера" not in err and "если отказ был о длине" in err, err
 
 
 def test_a_second_400_returns_nothing_and_quotes_both_bodies(capsys):
@@ -324,6 +352,7 @@ def test_a_transport_break_on_the_retry_is_judged_by_the_first_answer(capsys):
     err = capsys.readouterr().err
     assert "HTTP 400" in err and "первый ответ" in err, err
     assert "обрыв связи" not in err, "транспорт не пересказывается как причина"
+    assert "повтор с усечением: повтор не дошёл" in err, "почему повтора нет — названо (DS M7)"
 
 
 def test_no_retry_when_the_deadline_expired_after_the_first_answer(monkeypatch, capsys):
@@ -341,11 +370,32 @@ def test_no_retry_when_the_deadline_expired_after_the_first_answer(monkeypatch, 
     assert _дверь(post=post).run(["т"], 10) == []
     assert len(вызовы) == 1, "на исходе срока в сеть второй раз не идём"
     assert [p["truncate"] for p in вызовы] == [False]
-    assert "HTTP 400" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "HTTP 400" in err and "повтор с усечением: срок вышел" in err, err
+
+
+def test_no_retry_reasons_do_not_silence_each_other(monkeypatch, capsys):
+    """«Срок вышел» и «повтор не дошёл» — два исхода и два ключа: второй не
+    глохнет от первого при одном и том же теле ответа (DS M7)."""
+    once.reset("embed")
+    часы = [1000.0]
+    monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
+
+    def post_срок(url, payload, timeout):
+        часы[0] += 10.0
+        return 400, "отказ"
+
+    _дверь(post=post_срок).run(["т"], 10)
+    assert "срок вышел" in capsys.readouterr().err
+    _дверь(post=Wire(script=[_отказ("отказ"), ConnectionResetError("обрыв")])).run(["т"], 10)
+    assert "повтор не дошёл" in capsys.readouterr().err
 
 
 def test_a_server_that_does_not_know_truncate_stays_quiet(capsys):
-    """Сервер игнорирует поле и отвечает 200 — векторы есть, строк нет."""
+    """Сервер игнорирует поле и отвечает 200 — векторы есть, строк нет.
+
+    Граница двери, а не обещание: 200 такого сервера неотличим от честного,
+    и докстрока `run` говорит об этом прямо (выходной круг 1 по №433, DS I3)."""
     once.reset("embed")
     w = Wire()                              # всегда 200 с векторами
 
@@ -375,6 +425,26 @@ def test_an_accepted_batch_forgets_the_truncation_episode(capsys):
     режим["усечён"] = True
     e.run(["длинный вход"], 10)             # новый эпизод говорит снова
     assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+
+def test_alternating_long_and_short_batches_speak_once_per_call(capsys):
+    """Длинная, короткая, длинная пачка в одном вызове — одна строка: эпизод
+    снимает только вызов без усечения, а не каждая принятая пачка (DS I2)."""
+    once.reset("embed")
+
+    def post(url, payload, timeout):
+        if payload["truncate"] is False and payload["input"][0].startswith("д"):
+            return 400, "the input length exceeds the context length"
+        return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+
+    тексты = ["д" * 40_000, "к" * 40_000, "д" * 40_000]
+    assert len(embed_door.batches(тексты)) == 3, "три пачки по одному тексту"
+    e = _дверь(post=post)
+    assert len(e.run(тексты, 30)) == 3
+    assert capsys.readouterr().err.count("вход длиннее предела сервера") == 1
+
+    e.run(тексты, 30)                        # тот же эпизод: вызов снова усекал
+    assert capsys.readouterr().err == ""
 
 
 # ── бюджет всего вызова, не пачки ────────────────────────────────────────
@@ -461,6 +531,47 @@ def test_pytest_fail_from_the_transport_escapes_the_door():
 
     with pytest.raises(pytest.fail.Exception):
         _дверь(post=post).run(["т"], 10)
+
+
+def test_a_seam_refusal_on_the_retry_keeps_its_policy_flag():
+    """Отказ шва на повторе с усечением летит как есть, а не глохнет в «повтор
+    не дошёл» с отказом по первому ответу: таблица исключений одна на оба хода
+    (выходной круг 1 по №433, DS C1)."""
+    отказ = SeamTransportError("адрес запрещён настройкой", policy=True)
+    w = Wire(script=[_отказ("the input length exceeds the context length"), отказ])
+
+    with pytest.raises(SeamTransportError) as e:
+        _дверь(post=w).run(["т"], 10)
+    assert e.value is отказ and e.value.policy is True
+    assert [p["truncate"] for p in w.payloads] == [False, True]
+
+
+@pytest.mark.parametrize("ошибка", [TypeError("проводка"), pytest.fail.Exception("бум")])
+def test_a_wiring_error_on_the_retry_escapes_the_door(ошибка):
+    """Ошибка проводки на повторе не становится «повтор не дошёл» и `[]`:
+    перехват повтора не шире транспортного (DS M6)."""
+    w = Wire(script=[_отказ("отказ"), ошибка])
+
+    with pytest.raises(type(ошибка)):
+        _дверь(post=w).run(["т"], 10)
+
+
+def test_every_quote_of_a_body_stops_at_the_one_ceiling(capsys):
+    """Код ответа, отказ повтора и строка усечения цитируют тело одним потолком
+    BODY_EXCERPT — раньше их было четыре, 120 и 200 (DS M5)."""
+    длинное = "<" + "x" * 300
+    случаи = [
+        Wire(status=503, body=длинное),                               # HTTP-код
+        Wire(script=[_отказ("а" + "y" * 300), _отказ(длинное)]),      # повтор отказал
+        _усечение_сервер(длинное),                                    # запасная строка усечения
+    ]
+    for транспорт in случаи:
+        once.reset("embed")
+        _дверь(post=транспорт).run(["т"], 10)
+        err = capsys.readouterr().err
+        assert "x" * (embed_door.BODY_EXCERPT - 1) in err, err
+        assert "x" * embed_door.BODY_EXCERPT not in err, err
+        assert "y" * embed_door.BODY_EXCERPT not in err, err
 
 
 # ── urllib_post ──────────────────────────────────────────────────────────
