@@ -1668,11 +1668,13 @@ def test_список_исключений_толкует_та_же_дверь_�
     assert s.exclude == ждём
 
 
-def test_список_исключений_множеством_отказ(tmp_path):
-    """Множество — не список имён: у него нет порядка, отказ той же двери."""
+@pytest.mark.parametrize("exclude", [{"Черновики"}, ""], ids=["множество", "пустое-имя"])
+def test_список_исключений_без_порядка_или_пустой_отказ(tmp_path, exclude):
+    """Множество — не список имён: у него нет порядка; пустое имя молча не
+    исключало бы ничего (выходной круг 4 по #654, DS M3) — отказ той же двери."""
     with pytest.raises(ValueError, match="exclude"):
         gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(),
-                       exclude={"Черновики"})
+                       exclude=exclude)
 
 
 def test_приложение_отдаёт_поиску_свою_схему(tmp_path, monkeypatch):

@@ -2687,6 +2687,13 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
 
 # --------------------------------------------------- сторож литералов имён (№422)
 
+def dump_layout(layout: dict) -> str:
+    """Текст артефакта: отступ 2 и кириллица как есть — артефакт читают глазами в
+    диффе PR, и `\\uXXXX` вместо имён папок сделал бы долг нечитаемым (мутатор по
+    #654: запись при `--regen` не была покрыта)."""
+    return json.dumps(layout, ensure_ascii=False, indent=2) + "\n"
+
+
 def decision_paths(layout: dict) -> tuple[str, str]:
     """Пути-решения сторожа литералов: модуль-владелец схемы хранилища и файл её
     значения. Оба — поля класса `decision`: сторож не выводит их сам. Синтетическое
@@ -3372,7 +3379,7 @@ def main(argv: list[str] | None = None) -> int:
                 for line in debt_delta(layout, fresh):
                     print("  ", line)
                 layout = fresh
-                LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                LAYOUT.write_text(dump_layout(layout), encoding="utf-8")
                 print(f"{_shown(LAYOUT)}: allowlist {len(layout['allowed_edges'])} рёбер, "
                       f"литералов {len(layout['folder_literals'])}")
         if "--check" not in args and not blocked:

@@ -23,6 +23,8 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
+import typing
 import unicodedata
 
 #: Поля-имена: каждое их значение — одно имя (папка, раздел, префикс). Форма
@@ -66,9 +68,8 @@ def _name_problem(value: str) -> str | None:
 
 
 def _literal_problem(value: str) -> str | None:
-    """Литерал: непустой и без меток регулярки «\\ ^ $ |»."""
-    if not value:
-        return "литерал непустой"
+    """Литерал: без меток регулярки «\\ ^ $ |». Пустой литерал сюда не доходит —
+    его отвергает дверь формы `as_names` (выходной круг 4 по #654, DS M3)."""
     метка = next((c for c in _LITERAL_METACHARS if c in value), None)
     if метка is not None:
         return f"литерал без метки регулярки {метка!r} — это подстрока, не шаблон"
@@ -84,13 +85,36 @@ def as_names(value: object, what: str) -> tuple[str, ...]:
     Прочее — отказ `ValueError` с именем значения (`what`): у множества нет
     порядка, и схема сравнивалась бы по-разному между процессами; байты
     рассыпались бы на числа; не-строка внутри списка дошла бы до сравнения имён
-    чужим исключением."""
+    чужим исключением. Пустое имя — тоже отказ: это отсутствие имени, и в поле
+    схемы его отверг бы инвариант, а в `exclude` поиска оно молча не исключало бы
+    ничего (выходной круг 4 по #654, DS M3). Отказ называет виновника — номер и
+    значение, а не только контейнер (M2)."""
     if isinstance(value, str):
-        return (value,)
-    if isinstance(value, (tuple, list)) and all(isinstance(v, str) for v in value):
-        return tuple(value)
-    raise ValueError(f"{what}: имя строкой или список имён (кортеж, список), "
-                     f"получено {type(value).__name__}")
+        names: tuple[object, ...] = (value,)
+    elif isinstance(value, (tuple, list)):
+        names = tuple(value)
+    else:
+        raise ValueError(f"{what}: имя строкой или список имён (кортеж, список), "
+                         f"получено {type(value).__name__}")
+    for номер, name in enumerate(names, 1):
+        if not isinstance(name, str):
+            raise ValueError(f"{what}: значение №{номер} ({name!r}) — не строка")
+        if not name:
+            raise ValueError(f"{what}: значение №{номер} пустое — пустая строка это отсутствие имени")
+    return names  # type: ignore[return-value]
+
+
+@functools.cache
+def _field_forms(cls: type) -> dict[str, object]:
+    """Формы полей класса — вычисленные аннотации, а не их текст: модуль с
+    `from __future__ import annotations` хранит строку, модуль без него — объект,
+    а форма одна (выходной круг 4 по #654, DS I1)."""
+    return typing.get_type_hints(cls)
+
+
+def _is_names_form(form: object) -> bool:
+    """Форма «кортеж имён» — `tuple[str, ...]` в любой записи (и `typing.Tuple`)."""
+    return typing.get_origin(form) is tuple and typing.get_args(form) == (str, Ellipsis)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -120,16 +144,18 @@ class GraphSchema:
         # `tuple()` стала бы кортежем букв (выходной круг 2 по #654, DS C1). Поле-
         # строка — только строкой: кортеж там дошёл бы до `unicodedata.normalize`
         # чужим `TypeError` (круг 3, M2). Аннотация другой формы — отказ, а не
-        # молчаливый пропуск нормализации (круг 3, M1).
+        # молчаливый пропуск нормализации (круг 3, M1). Форма — вычисленная
+        # аннотация, не её текст (круг 4, I1).
+        формы = _field_forms(type(self))
         for поле in dataclasses.fields(self):
-            value = getattr(self, поле.name)
-            if поле.type == "tuple[str, ...]":
+            value, форма = getattr(self, поле.name), формы[поле.name]
+            if _is_names_form(форма):
                 object.__setattr__(self, поле.name, as_names(value, поле.name))
-            elif поле.type == "str":
+            elif форма is str:
                 if not isinstance(value, str):
                     raise ValueError(f"{поле.name}: одно имя строкой, получено {type(value).__name__}")
             else:
-                raise TypeError(f"{поле.name}: форма {поле.type!r} не объявлена — "
+                raise TypeError(f"{поле.name}: форма {форма!r} не объявлена — "
                                 f"поле схемы либо str, либо tuple[str, ...]")
         self._check_names()
         self._check_literals()

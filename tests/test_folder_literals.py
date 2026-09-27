@@ -134,6 +134,80 @@ def test_the_schema_module_outside_the_entry_closure_is_a_gate_line(tmp_path):
     inv = lm.inventory(tmp_path)
     gate = lm.package_problems(lm.import_graph(inv), layout, inv)
     assert sum("pkg.schema" in p for p in gate) == 1, gate
+    measure = lm.literals_measure(inv, layout).problems
+    assert not any("pkg.schema" in p for p in measure), "строку называет гейт пакета, замер её не повторяет"
+
+
+@pytest.mark.parametrize("exemptions, fragment", [
+    ({"src/pkg/entry.py": {}}, "поле → литерал → причина"),
+    ({"src/pkg/entry.py": ["Люди"]}, "поле → литерал → причина"),
+    ({"src/pkg/entry.py": {"node_folders": {}}}, "литерал → причина"),
+    ({"src/pkg/entry.py": {"node_folders": ["Люди"]}}, "литерал → причина"),
+    ({"src/pkg/entry.py": {"node_folders": {"Люди": "  "}}}, "непустая причина"),
+    ({"src/pkg/entry.py": {"node_folders": {"Люди": 5}}}, "непустая причина"),
+], ids=["пустая-карта-полей", "список-вместо-карты", "пустая-карта-литералов",
+        "список-литералов", "причина-из-пробелов", "причина-не-строка"])
+def test_an_exemption_of_the_wrong_shape_is_refused_at_load(exemptions, fragment):
+    """Прощение — карта «поле → литерал → причина» с непустой причиной на каждое
+    попадание; иная форма — отказ загрузки, а не молчаливое прощение (мутатор по
+    #654: ветки формы не были покрыты)."""
+    layout = lm.load_layout()
+    layout["folder_literal_exemptions"] = exemptions
+    with pytest.raises(lm.LayoutError, match=fragment):
+        lm.validate_layout(layout)
+
+
+def test_only_name_fields_split_a_path_into_segments():
+    """Путь в поле-имени ловится и целиком, и сегментами; у поля сырья «/» — часть
+    литерала, а не граница имён (мутатор по #654)."""
+    assert lm._probe_parts("exclude_dirs", "Документация/Стенограммы встреч") == [
+        "документация/стенограммы встреч", "документация", "стенограммы встреч"]
+    assert lm._probe_parts("raw_markers", "стенограмм/черновик") == ["стенограмм/черновик"]
+
+
+def test_a_non_string_in_a_value_tuple_is_a_refusal(tmp_path):
+    """Элемент кортежа значения — строковый литерал; число там — отказ, а не проба
+    (мутатор по #654)."""
+    values = dict(GUARD_VALUES, raw_suffixes=("_live.md", 5))
+    inv, layout = _literal_area(tmp_path, "x = 1\n", values=values)
+    with pytest.raises(lm.LayoutError, match="строковый литерал, а не выражение"):
+        lm.literals_measure(inv, layout)
+
+
+def test_other_assignments_beside_the_value_are_not_the_value(tmp_path):
+    """Рядом со значением схемы живут другие присваивания — имя и атрибут; они не
+    второе значение и не ломают чтение (мутатор по #654)."""
+    _inv, layout = _literal_area(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "schema_values.py").write_text(
+        "OTHER = 1\nOTHER.attr = 2\n" + _values_source(), encoding="utf-8")
+    assert lm.literals_measure(lm.inventory(tmp_path), layout).hits == frozenset()
+
+
+def test_a_field_declared_twice_is_a_refusal(tmp_path):
+    """Поле класса схемы, объявленное дважды, — отказ с адресом исходника (мутатор
+    по #654)."""
+    _inv, layout = _literal_area(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "schema.py").write_text(_schema_source() + "    node_folders: object\n",
+                                                encoding="utf-8")
+    with pytest.raises(lm.LayoutError, match="объявлено дважды") as refused:
+        lm.literals_measure(lm.inventory(tmp_path), layout)
+    assert refused.value.culprit == lm.REPO / "src/schema.py"
+
+
+def test_a_values_file_that_does_not_parse_is_a_refusal(tmp_path):
+    """Файл значений не разбирается — отказ с адресом исходника, а не пустой замер
+    (мутатор по #654)."""
+    _inv, layout = _literal_area(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "schema_values.py").write_text("CHAROITE = (\n", encoding="utf-8")
+    with pytest.raises(lm.LayoutError, match="не разбирается") as refused:
+        lm.literals_measure(lm.inventory(tmp_path), layout)
+    assert refused.value.culprit == lm.REPO / "src/schema_values.py"
+
+
+def test_the_artifact_text_keeps_cyrillic_and_two_space_indent():
+    """Артефакт читают глазами в диффе PR: кириллица как есть, отступ 2 (мутатор по
+    #654: запись при `--regen` не была покрыта)."""
+    assert lm.dump_layout({"a": ["Люди"]}) == '{\n  "a": [\n    "Люди"\n  ]\n}\n'
 
 
 def test_debt_and_exemption_of_one_hit_are_refused_at_load():
@@ -194,16 +268,6 @@ def test_a_second_assignment_of_the_value_is_a_refusal(tmp_path):
                                                         encoding="utf-8")
     with pytest.raises(lm.LayoutError, match="присвоено 2 раза"):
         lm.literals_measure(lm.inventory(tmp_path), layout)
-
-
-def test_a_declared_decision_path_is_exempt_from_the_closure_rule(tmp_path):
-    """Модуль-владелец схемы лежит в пакете, но вход его пока не зовёт — объявленный
-    путь-решение выведен из-под правила «модуль пакета вне замыкания» объявлением."""
-    inv, layout = _literal_area(tmp_path, "x = 1\n")
-    (tmp_path / "src" / "pkg" / "extra.py").write_text(_schema_source(), encoding="utf-8")
-    layout["schema_module"] = "src/pkg/extra.py"
-    problems = lm.literals_measure(lm.inventory(tmp_path), layout).problems
-    assert not any("pkg.extra" in p for p in problems), problems
 
 
 def test_a_missing_schema_module_is_a_refusal(tmp_path):

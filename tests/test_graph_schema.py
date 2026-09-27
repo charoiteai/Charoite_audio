@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import charoite_schema  # noqa: E402
 import meeting_archive  # noqa: E402
 from charoite_graph import dossier, graph_nodes, graph_search  # noqa: E402
+from charoite_graph import graph_schema  # noqa: E402
 from charoite_graph.graph_schema import GraphSchema  # noqa: E402
 
 CHAROITE = charoite_schema.CHAROITE
@@ -105,13 +106,14 @@ def _kwargs(**over) -> dict:
 
 @pytest.mark.parametrize("имя, over, фрагмент", [
     # инвариант 1: форма имени
-    ("пустое", {"dossier_dir": ""}, "непустое"),
+    ("пустое", {"dossier_dir": ""}, "пустая строка это отсутствие имени"),
+    ("пустой сегмент пути", {"exclude_dirs": ("Документация//Копии",)}, "непустое"),
     ("пробельное", {"dossier_dir": "   "}, "непустое"),
     ("с косой", {"meeting_dir": "Встречи/Х"}, "без «/»"),
     ("с точки", {"meeting_link_prefixes": (".Встречи",)}, "точки"),
     ("сегмент пути", {"exclude_dirs": ("Документация//Х",)}, "сегмент"),
     # инвариант 2: литерал, не регулярка
-    ("пустой литерал", {"raw_markers": ("",)}, "непустой"),
+    ("пустой литерал", {"raw_markers": ("",)}, "пустая строка это отсутствие имени"),
     ("маркер с |", {"raw_markers": ("стенограмм|transcript",)}, "метки регулярки"),
     ("суффикс с экранированием", {"raw_suffixes": ("_live\\.md$",)}, "метки регулярки"),
     ("голова с ^", {"history_heads": ("## ^Встречи",)}, "метки регулярки"),
@@ -198,3 +200,35 @@ def test_поле_без_объявленной_формы_отказ_класс
 
     with pytest.raises(TypeError, match="лишнее"):
         Шире(**_kwargs())
+
+
+def test_форма_поля_читается_вычисленной_а_не_текстом():
+    """Аннотация объектом (класс собран без `from __future__ import annotations`)
+    даёт ту же форму, что и текстом: поле-кортеж нормализуется, поле-строка
+    проверяется (выходной круг 4 по #654, DS I1)."""
+    Своя = dataclasses.make_dataclass(
+        "Своя", [("ещё", tuple[str, ...], dataclasses.field(default=())),
+                 ("одно", str, dataclasses.field(default="x"))],
+        bases=(GraphSchema,), frozen=True)
+    assert Своя(**_kwargs(), ещё=["a", "b"]).ещё == ("a", "b")
+    with pytest.raises(ValueError, match="одно"):
+        Своя(**_kwargs(), одно=("x",))
+
+
+def test_каждое_поле_схемы_под_своим_инвариантом():
+    """Поле вне имён, литералов и путей исключений нормализовалось бы, но не
+    проверялось ни на пустоту, ни на «/», ни на метки регулярки (выходной круг 4 по
+    #654, DS I2)."""
+    поля = {f.name for f in dataclasses.fields(GraphSchema)}
+    assert set(graph_schema._NAME_FIELDS) | set(graph_schema._LITERAL_FIELDS) | {"exclude_dirs"} == поля
+
+
+def test_дверь_формы_называет_виновника_и_отказывает_пустому_имени():
+    """Отказ называет номер и значение, а не только контейнер (круг 4, M2); пустое
+    имя — отказ и в `exclude` поиска, как в полях схемы (круг 4, M3)."""
+    with pytest.raises(ValueError, match=r"exclude_dirs: значение №2 \(7\)"):
+        dataclasses.replace(CHAROITE, exclude_dirs=["Черновики", 7])
+    for пустое in ("", ["Черновики", ""]):
+        with pytest.raises(ValueError, match="пуст"):
+            graph_schema.as_names(пустое, "exclude")
+    assert graph_schema.as_names([], "exclude") == ()
