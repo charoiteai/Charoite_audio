@@ -107,7 +107,9 @@ def load_config() -> dict:
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeDecodeError, RecursionError, yaml.YAMLError) as e:   # глубокая вложенность — тоже битый файл
-        once.say(("config", f"не читается: {path}: {type(e).__name__}"),
+        # в ключе — и текст ошибки: две разные поломки одного файла (поправили и
+        # сломали иначе) — два события, как было до общего реестра (круг 1 по #652, DS I3)
+        once.say(("config", f"не читается: {path}: {type(e).__name__}: {e}"),
                  f"config: {path} не читается — беру умолчания ({type(e).__name__}: {e})")
         return {}
     return data if isinstance(data, dict) else {}

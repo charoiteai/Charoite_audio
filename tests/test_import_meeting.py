@@ -861,6 +861,29 @@ def test_keep_days_hint_is_by_value_and_once(capsys):
     assert capsys.readouterr().out.count("больше не влияет") == 1
     im.import_keep_days({"audio": {"record_keep_days": 30}})
     assert capsys.readouterr().out.count("больше не влияет") == 1
+    # ключ — нормализованное значение, как и сверка: 14.0 — то же, что 14 (круг 1 по #652, DS M1)
+    im.import_keep_days({"audio": {"record_keep_days": 14.0}})
+    assert "больше не влияет" not in capsys.readouterr().out
+
+
+def test_keep_days_hint_lost_to_a_broken_stdout_is_said_again(monkeypatch, capsys):
+    """Подсказка идёт через `once.say` в stdout: сбой печати забывает ключ, и
+    следующий вызов скажет снова, а не молчит до конца процесса (круг 1 по #652, DS M2)."""
+    import sys
+
+    class Сломан:
+        def write(self, s):
+            raise OSError("труба закрыта")
+
+        def flush(self):
+            pass
+
+    once.reset("import")
+    monkeypatch.setattr(sys, "stdout", Сломан())
+    im.import_keep_days({"audio": {"record_keep_days": 14}})
+    monkeypatch.undo()
+    im.import_keep_days({"audio": {"record_keep_days": 14}})
+    assert capsys.readouterr().out.count("больше не влияет") == 1
 
 
 def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch, capsys):

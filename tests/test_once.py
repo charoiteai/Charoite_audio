@@ -151,3 +151,42 @@ def test_say_flushes_stderr(monkeypatch):
 
     assert "".join(поток.wrote).strip() == "строка"
     assert поток.flushed >= 1, "строка осталась в буфере"
+
+
+class ПоМедленнойЗаписи(Поток):
+    """Двойник, который между двумя `write` одного `print` отдаёт процессор."""
+
+    def write(self, s):
+        self.wrote.append(s)
+        threading.Event().wait(0.01)
+
+
+def test_say_writes_the_line_in_one_call_so_threads_do_not_glue_lines():
+    """Строка уходит одним `write` вместе с «\\n»: `print` писал текст и перевод
+    строки двумя вызовами, и строки двух потоков склеивались (круг 1 по #652, DS I2)."""
+    once.reset()
+    поток = ПоМедленнойЗаписи()
+    нити = [threading.Thread(target=once.say, args=((f"т{i}", i), f"строка {i}", поток)) for i in range(4)]
+    for н in нити:
+        н.start()
+    for н in нити:
+        н.join(5)
+    assert sorted(поток.wrote) == [f"строка {i}\n" for i in range(4)], поток.wrote
+
+
+def test_say_speaks_to_the_given_stream_and_keeps_the_forget_contract():
+    """Сток — параметр: подсказка импорта уходит в stdout тем же `say`, и сбой
+    печати в любом стоке забывает ключ (круг 1 по #652, DS M2)."""
+    once.reset()
+
+    class Сломан:
+        def write(self, s):
+            raise OSError("труба закрыта")
+
+        def flush(self):
+            pass
+
+    assert once.say(("т", "к"), "раз", Сломан()) is False
+    поток = Поток()
+    assert once.say(("т", "к"), "два", поток) is True
+    assert поток.wrote == ["два\n"] and поток.flushed == 1

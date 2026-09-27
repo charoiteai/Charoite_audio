@@ -179,7 +179,7 @@
     },
     "once": {
       "layer": "base",
-      "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его все слои сразу — llm, graph, meeting, а реестр состояния разговора в llm дал бы ребро base → llm"
+      "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
     }
   },
   "allowed_edges": [

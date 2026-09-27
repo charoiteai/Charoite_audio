@@ -347,20 +347,21 @@ def _hint_keep_days_once(record_keep_days) -> None:
     """До 0.70.1 срок копии наследовался от record_keep_days — сказать в лог
     один раз на процесс, что теперь он свой; по значению, а не по строке:
     `2.0` — тот же дефолт (DS r2 по #499). Ключ общего реестра — само
-    значение, поэтому 14 и 30 скажут каждая своё, а 14 дважды — один раз."""
+    значение, нормализованное той же `float`, что и сверка: 14 и 30 скажут каждая
+    своё, а 14 и 14.0 — один раз (круг 1 по #652, DS M1)."""
     if record_keep_days is None:
         return
     try:
-        same = float(record_keep_days) == float(IMPORT_KEEP_DAYS_DEFAULT)
+        days = float(record_keep_days)
     except (TypeError, ValueError):
         return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2)
-    if same:
+    if days == float(IMPORT_KEEP_DAYS_DEFAULT):
         return
-    if not once.first(("import", f"keep_days:{record_keep_days}")):
-        return
-    print(f"import_keep_days не задан — копии импорта живут {IMPORT_KEEP_DAYS_DEFAULT} дн. "
-          f"(record_keep_days={record_keep_days} на них больше не влияет; "
-          f"задайте audio.import_keep_days явно)")
+    # `say` в stdout: сбой печати забывает ключ, как у всех строк реестра (DS M2)
+    once.say(("import", f"keep_days:{days}"),
+             f"import_keep_days не задан — копии импорта живут {IMPORT_KEEP_DAYS_DEFAULT} дн. "
+             f"(record_keep_days={record_keep_days} на них больше не влияет; "
+             f"задайте audio.import_keep_days явно)", stream=sys.stdout)
 
 
 def import_keep_days(cfg: dict, override=None) -> float:
