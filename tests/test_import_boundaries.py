@@ -64,7 +64,7 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv))
+                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv), inv=inv)
     assert not problems, "\n".join(problems)
 
 
@@ -567,7 +567,7 @@ APPROVED_KINDS = (
     ("app/", "code", "git"),
     ("scripts/", "code", "git"),
     ("src/", "code", "git"),
-    ("packages/", "prose", "git"),
+    ("packages/", "code", "git"),
     (".github/", "code", "git"),
     (".pre-commit-config.yaml", "code", "git"),
 )
@@ -684,6 +684,7 @@ def test_the_tables_of_the_gate_agree_over_the_whole_tree(world, tmp_path, monke
         # область — факт о корпусе: git накрывает файлы под git, walk не накрывает
         if scope == "git":
             assert covered.get(i, 0) > 0, f"правило {prefix!r} области git не накрывает ни одного файла под git"
+
         else:
             assert scope == "walk" and covered.get(i, 0) == 0, f"правило {prefix!r} области walk накрывает файлы под git"
     assert lm.decide("release.sh").by == "candidate", "корневой .sh — кандидат, значит код"
@@ -1487,6 +1488,7 @@ def test_the_level_of_a_node_is_measured_by_scope_not_by_statement_type():
 #: откатывается зелёной (круг 2 по коду №328, DS M5; круг 3, DS I6 — пиннинга
 #: по списку ролей мало).
 MODULE_SHAPES = (
+    ("src.py", "outside", "", None, ""),     # имя без каталога: ветка len(хвост) < 2
     # путь,                                  роль,           пакет,            модуль,                provider
     ("src/graphs.py",                        "module",       "",               "graphs",              "flat"),
     ("src/charoite_paths.py",                "module",       "",               "charoite_paths",      "flat"),
@@ -1866,7 +1868,8 @@ def test_a_layout_directory_is_not_spelled_inside_a_function():
     `import_graph()`, и переезд сделал их несогласованными молча (круг 1 по
     коду №328, DS M4).
 
-    Написания берутся из `LAYOUT_DIRS`, а не из копии списка в тесте: прежняя
+    Написания берутся из объявлений — `LAYOUT_DIRS` и каталогов правил `KINDS`
+    (выходной круг 1 по №424, DS M3: `LAYOUT_DIRS` схлопнулся до `src`), а не из копии списка в тесте: прежняя
     редакция держала свой набор из шести строк и молчала на глобе `"src/*.py"`
     — идиоме, которой написан сам модуль (`ENTRY_CANDIDATES`), то есть на том
     способе, который человек скопирует первым (круг 3 по коду №328, GLM C1).
@@ -1881,7 +1884,8 @@ def test_a_layout_directory_is_not_spelled_inside_a_function():
     `TOKEN_PREFIXES`) каталоги называют намеренно: они и есть источник.
     """
     src = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
-    написания = {w for d in lm.LAYOUT_DIRS for w in (d, f"{d}/", f"{d}/*", f"{d}/*.py", f"{d}/**")}
+    каталоги = set(lm.LAYOUT_DIRS) | {p.rstrip("/") for p, *_ in lm.KINDS if p.endswith("/") and p.count("/") == 1}
+    написания = {w for d in каталоги for w in (d, f"{d}/", f"{d}/*", f"{d}/*.py", f"{d}/**")}
     assert f"{lm.FLAT_DIR}/*.py" in написания, "глоб точек входа обязан попадать в сторож"
     чужие = []
     for node in ast.walk(ast.parse(src)):
@@ -2024,14 +2028,23 @@ def test_a_deep_module_is_code_and_no_shape_decision_remains():
 
     Пакетного гнезда, которое правилом невыразимо, не осталось: модуль пакета
     лежит на любой глубине одного `src/`, и решает его кандидатность форма
-    (№424). `packages/` теперь обычная проза для метаданных дистрибутива.
+    (№424). `packages/` — каталог метаданных дистрибутива: python там краснеет, пока
+    не принято решение (выходной круг 1 по №424, DS I1: вид «проза» глотал код молча).
     """
     assert lm.decide("src/p/sub/mod.py").kind == "code"
     d = lm.decide("src/p/sub/mod.py")
     assert d.by == "candidate" and d.by in lm.DECIDED_BY
-    assert lm.decide("packages/d/tests/test_x.py").kind == "prose"
     pd = lm.decide("packages/d/tests/test_x.py")
-    assert pd.by == "rule" and lm.KINDS[pd.rule][1] == "prose"
+    assert pd.kind == "code" and pd.by == "rule" and lm.KINDS[pd.rule][1] == "code"
+
+
+def test_python_under_the_distribution_directory_is_red(tmp_path):
+    """`packages/x/backend.py` — не модуль продукта и не кандидат: замер обязан назвать
+    его, а не принять за прозу (выходной круг 1 по №424, DS I1)."""
+    (tmp_path / "packages" / "x").mkdir(parents=True)
+    (tmp_path / "packages" / "x" / "backend.py").write_text("x = 1\n", encoding="utf-8")
+    problems = [p.text if hasattr(p, "text") else str(p) for p in lm.scan(lm.inventory(tmp_path)).problems]
+    assert any("packages/x/backend.py" in p for p in problems), problems
 
 
 def test_the_layer_shapes_see_every_way_to_reach_the_environment():

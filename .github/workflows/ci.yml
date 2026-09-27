@@ -133,6 +133,12 @@ jobs:
       - name: pytest
         timeout-minutes: 12
         run: python -m pytest tests/ -q
+      # гейт раскладки как гейт: main — единственный вызывающий check, он передаёт
+      # всё; тест-пересказ выше можно выключить забытым параметром (выходной
+      # круг 1 по №424, DS C1 — так пропал адрес шва)
+      - name: layout gate
+        timeout-minutes: 3
+        run: python3 scripts/layout_map.py --check
 
   mutation:
     name: mutation (changed lines)
