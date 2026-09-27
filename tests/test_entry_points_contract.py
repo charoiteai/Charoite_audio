@@ -247,13 +247,21 @@ WHEEL_ENV_DROP = (
 )
 #: Потолок сборки колеса: pip готовит метаданные и пакует — дольше пробника
 #: входа, но всё ещё секунды; общий TIMEOUT (30 с) на холодном кэше тесен.
-WHEEL_TIMEOUT = 180
+#: Ниже потолка теста (`timeout = 120` в pyproject): pytest-timeout считает и
+#: сессионную фикстуру, и потолок выше 120 не сработал бы никогда (выходной
+#: круг 1 по #657, DS M4).
+WHEEL_TIMEOUT = 90
 #: Файл CI — тот же путь, откуда `scripts/preflight.sh` читает `RUFF_VERSION`:
 #: пин setuptools для сборки берётся из его секции `env`.
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-#: Следы ручной сборки колеса в каталоге дистрибутива — копия раскладки для
-#: фикстуры их не берёт; те же имена не видит git (`.gitignore`).
+#: Чего копия для пробы и сборки не берёт. Байткод — всегда: проба правит
+#: копию по месту, а готовый `.pyc` с перенесённым mtime исполнился бы вместо
+#: правки (выходной круг 1 по #657, DS M6). Следы ручной сборки — только в
+#: каталоге дистрибутива (в пакете `build/` мог бы быть и модулем); те же имена
+#: не видит git (`.gitignore`).
+PACKAGE_IGNORE = ("__pycache__", "*.pyc")
 BUILD_LEFTOVERS = ("build", "dist", "*.egg-info")
+DIST_IGNORE = PACKAGE_IGNORE + BUILD_LEFTOVERS
 #: Утечка каждой снимаемой переменной — СВОИМ признаком: значение у родителя и то,
 #: чем проба обязана его показать, `(проблемы, признаки раннера, ловушка) → bool`.
 #: «Проба красная» признаком не считается: любая чужая причина падения прятала бы,
@@ -464,11 +472,17 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     return problems, out
 
 
-def _ci_env(name: str) -> str:
+def _ci_env(name: str, workflow: pathlib.Path = CI_WORKFLOW) -> str:
     """Значение `name` из секции `env` файла CI — тот же путь и тот же разбор,
     что у `scripts/preflight.sh` для `RUFF_VERSION`: пин setuptools живёт там, а
-    не отдельной константой теста, которая переживёт смену пина молча."""
-    return str(yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["env"][name])
+    не отдельной константой теста, которая переживёт смену пина молча.
+
+    Только строка: без кавычек YAML читает `2.10` числом 2.1, и рецепт назвал бы
+    версию, которой нет (выходной круг 1 по #657, DS M5)."""
+    value = yaml.safe_load(workflow.read_text(encoding="utf-8"))["env"][name]
+    if not isinstance(value, str):
+        pytest.fail(f"{name} в env {workflow.name} — не строка ({value!r}): пин пишется в кавычках")
+    return value
 
 
 def _installed_setuptools() -> str | None:
@@ -508,16 +522,28 @@ def _wheel_env(parent: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in parent.items() if not dropped(k)}
 
 
+def _sandbox_copy(src: pathlib.Path, dst: pathlib.Path, ignore: tuple[str, ...]) -> None:
+    """Записываемая копия дерева — одна на сборку колеса и отрицательные пробы.
+
+    `copyfile`, а не `copy2`: режим источника не переносится. Каталоги
+    `copytree` всё равно получает с режимом источника (`copystat`), поэтому
+    после копии им добавляется запись владельцу: из дерева без права записи
+    копия выходила только на чтение, и сборка с пробами краснели как дефект
+    пакета (выходной круг 1 по #657, DS C1)."""
+    shutil.copytree(src, dst, copy_function=shutil.copyfile, ignore=shutil.ignore_patterns(*ignore))
+    for path in (dst, *dst.rglob("*")):
+        if path.is_dir():
+            path.chmod(path.stat().st_mode | 0o700)
+
+
 def _copy_layout(src: pathlib.Path, work: pathlib.Path, package: str) -> None:
     """Копия раскладки для сборки колеса: каталог дистрибутива и каталог пакета
     лежат в `work` так же, как в `src`, поэтому `package-dir` разрешается в саму
     копию. Следы ручной сборки по README (`BUILD_LEFTOVERS`) не копируются:
     сборка без изоляции подхватила бы старый `build/lib`, и сверка плана краснела
     бы лишним модулем не по делу (опыт 27.09 по #657)."""
-    (work / "packages").mkdir()
-    shutil.copytree(src / "packages" / "charoite-graph", work / "packages" / "charoite-graph",
-                    ignore=shutil.ignore_patterns(*BUILD_LEFTOVERS))
-    shutil.copytree(src / lm.FLAT_DIR / package, work / lm.FLAT_DIR / package)
+    _sandbox_copy(src / "packages" / "charoite-graph", work / "packages" / "charoite-graph", DIST_IGNORE)
+    _sandbox_copy(src / lm.FLAT_DIR / package, work / lm.FLAT_DIR / package, PACKAGE_IGNORE)
 
 
 @pytest.fixture(scope="session")
@@ -559,10 +585,19 @@ def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
     """Сверка плана пробы с НАСТОЯЩИМ артефактом: имена `*.py` из колеса против
     `artifact_name` каждого файла `package_files`, в обе стороны. Списком строк —
     чтобы и честная сборка, и порченая копия судились одним кодом, а расхождение
-    называло лишние и недостающие модули, а не только факт неравенства (№427)."""
+    называло лишние и недостающие модули, а не только факт неравенства (№427).
+
+    Всё, что не модуль, судится тоже: кроме модулей плана в колесе может лежать
+    только ОДИН каталог `*.dist-info`. Сверка по одним `*.py` была слепа к данным
+    пакета и к любому лишнему файлу (выходной круг 1 по #657, DS I2); что
+    объявлять данными — №446."""
     want = {lm.artifact_name(rel) for rel in lm.package_files(INV, lm.load_layout())}
     with zipfile.ZipFile(built) as archive:
-        got = {name for name in archive.namelist() if name.endswith(".py")}
+        names = [name for name in archive.namelist() if not name.endswith("/")]
+    got = {name for name in names if name.endswith(".py")}
+    meta = {name.split("/", 1)[0] for name in names if name.split("/", 1)[0].endswith(".dist-info")}
+    чужое = sorted(name for name in names
+                   if not name.endswith(".py") and name.split("/", 1)[0] not in meta)
     избыток = sorted(got - want)
     недостача = sorted(want - got)
     out = []
@@ -570,6 +605,10 @@ def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
         out.append("в артефакте лишние модули: " + ", ".join(избыток))
     if недостача:
         out.append("в артефакте нет модулей плана: " + ", ".join(недостача))
+    if чужое:
+        out.append("в артефакте лишние файлы: " + ", ".join(чужое))
+    if len(meta) != 1:
+        out.append(f"в артефакте каталогов dist-info не один, а {len(meta)}: {sorted(meta)}")
     return out
 
 
@@ -580,7 +619,7 @@ def _copy_package(dest: pathlib.Path) -> None:
     репозитория, поэтому раннер зовёт `from charoite_graph import …` без правок."""
     package = lm.load_layout()["package"]
     dest.mkdir()
-    shutil.copytree(ROOT / lm.FLAT_DIR / package, dest / package)
+    _sandbox_copy(ROOT / lm.FLAT_DIR / package, dest / package, PACKAGE_IGNORE)
 
 
 def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
@@ -640,6 +679,45 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     assert got and "нет модулей плана" in got[0] and victim in got[0], got
     got = _wheel_plan_problems(rebuild(tmp_path / "extra.whl", extra="charoite_graph/лишний.py"))
     assert got and "лишние модули" in got[0] and "charoite_graph/лишний.py" in got[0], got
+    got = _wheel_plan_problems(rebuild(tmp_path / "data.whl", extra="charoite_graph/стоп-слова.txt"))
+    assert got == ["в артефакте лишние файлы: charoite_graph/стоп-слова.txt"], got
+    got = _wheel_plan_problems(rebuild(tmp_path / "meta.whl", extra="чужой-0.1.dist-info/METADATA"))
+    assert len(got) == 1 and "dist-info не один, а 2" in got[0], got
+
+
+def test_the_sandbox_copy_is_writable_from_a_read_only_tree(tmp_path: pathlib.Path) -> None:
+    """Копия для сборки и проб записываема, даже когда источник только на чтение
+    (клон круга, смонтированный каталог): в каждый каталог копии можно писать,
+    скопированный файл — перезаписать. Байткод не копируется."""
+    src = tmp_path / "src"
+    (src / "sub" / "__pycache__").mkdir(parents=True)
+    (src / "__init__.py").write_text("", encoding="utf-8")
+    (src / "sub" / "m.py").write_text("x = 1\n", encoding="utf-8")
+    (src / "sub" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\0")
+    (src / "stale.pyc").write_bytes(b"\0")
+    dirs = [src, src / "sub", src / "sub" / "__pycache__"]
+    for path in (*src.rglob("*"), src):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    try:
+        dst = tmp_path / "dst"
+        _sandbox_copy(src, dst, PACKAGE_IGNORE)
+    finally:
+        for path in dirs:
+            path.chmod(0o755)
+    assert sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*")) == ["__init__.py", "sub", "sub/m.py"]
+    for directory in (dst, dst / "sub"):
+        (directory / "новый.py").write_text("", encoding="utf-8")
+    (dst / "sub" / "m.py").write_text("x = 2\n", encoding="utf-8")
+
+
+def test_the_ci_pin_must_be_a_quoted_string(tmp_path: pathlib.Path) -> None:
+    """Пин без кавычек YAML читает числом (`2.10` → 2.1) — отказ, а не рецепт
+    на версию, которой нет."""
+    workflow = tmp_path / "ci.yml"
+    workflow.write_text('env:\n  GOOD: "2.10"\n  BAD: 2.10\n', encoding="utf-8")
+    assert _ci_env("GOOD", workflow) == "2.10"
+    with pytest.raises(pytest.fail.Exception, match="не строка"):
+        _ci_env("BAD", workflow)
 
 
 def test_the_layout_copy_leaves_manual_build_leftovers_behind(tmp_path: pathlib.Path) -> None:
