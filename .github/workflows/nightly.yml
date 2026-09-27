@@ -15,12 +15,14 @@ on:
 permissions:
   contents: read
 
-# Пин pytest — тот же, что в ci.yml (обновлять парой; аудит DeepSeek 16.08).
+# Пины pytest, pytest-timeout и setuptools — те же, что в ci.yml (обновлять
+# парой; аудит DeepSeek 16.08). Зачем setuptools — комментарий в ci.yml (№427, часть 1).
 env:
   PYTEST_VERSION: "9.1.1"
   # Тесты поднимают настоящие потоки и ждут их join: один зависший
   # съедал бы весь потолок джоба, а в логе не было бы видно, какой.
   PYTEST_TIMEOUT_VERSION: "2.4.0"
+  SETUPTOOLS_VERSION: "83.0.0"
 
 jobs:
   pytest:
@@ -44,7 +46,7 @@ jobs:
       # было причиной пятидневного красного — в нём не хватало sounddevice, а
       # список зависимостей живёт в pyproject и меняется без оглядки на CI.
       - name: Deps
-        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
       - run: python -m pytest tests/ -q
   swift:
     # macos-26, а не 15: SpeechAnalyzer живого черновика диктовки есть
