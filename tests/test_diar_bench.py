@@ -735,3 +735,14 @@ def test_an_unreadable_reference_names_the_file(tmp_path):
     f.write_bytes("0.0\t1.0\tАнна\n".encode("cp1251"))
     with pytest.raises(ValueError, match="разметка не читается"):
         diar_bench.read_truth(f)
+
+
+@pytest.mark.parametrize("kwargs, flag", [({}, False), ({"crosstalk": True}, True)],
+                         ids=["по умолчанию", "перебивания"])
+def test_a_missing_fixture_names_the_right_recipe(tmp_path, kwargs, flag):
+    """Рецепт «нет фикстуры» зовёт сборку той фикстуры, которой нет: без флага —
+    обычная, с флагом — с перебиваниями (выживший мутант умолчания `crosstalk`)."""
+    with pytest.raises(ValueError, match="нет фикстуры") as e:
+        diar_bench.reference(wav=None, truth=None, fixture=tmp_path / "нет", **kwargs)
+    assert ("--make --crosstalk" in str(e.value)) is flag, str(e.value)
+    assert "--make" in str(e.value)
