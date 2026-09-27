@@ -286,8 +286,9 @@ def test_каждая_точка_входа_закрывает_маску():
 
 def test_область_сторожа_не_сужается_молча():
     """Обе стороны сверки фильтрует одна `ENTRY_AREAS`: её сужение и переезд точки
-    входа из области (в `packages/`) сторож не увидел бы (Important DeepSeek,
-    круг 2 по PR #634). Область закреплена, а точка входа инвентаря вне неё — красная."""
+    входа из области сторож не увидел бы (Important DeepSeek, круг 2 по PR #634).
+    Область закреплена, а точка входа инвентаря вне неё — красная. Код пакета
+    теперь лежит в `src/<пакет>/` — та же область `src/` (№424)."""
     assert ENTRY_AREAS == ("src/", "scripts/"), "обещание PRIVACY — src/ и scripts/"
     вне = sorted(rel for rel, info in layout_map.inventory(ROOT).files.items()
                  if info.executable == layout_map.PY_ENTRY and not rel.startswith(ENTRY_AREAS))

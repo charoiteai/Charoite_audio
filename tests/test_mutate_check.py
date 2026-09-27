@@ -152,6 +152,33 @@ def test_имя_модуля_без_загрузки_не_тянет_файл(tm
     assert mc.tests_for(tmp_path, tmp_path / "scripts" / "lonely.py") == ["tests"]
 
 
+@pytest.mark.parametrize("written", [
+    "import graphs\n",
+    "import charoite_graph.graphs\n",
+    "from graphs import load\n",
+    "from charoite_graph.graphs import load\n",
+    "from charoite_graph import graphs\n",
+], ids=["плоский", "точечный", "из плоского", "из подмодуля", "из пакета"])
+def test_пакетные_формы_импорта_находят_тесты(tmp_path, written):
+    """Модуль пакета приходит точечным хвостом или импортом из пакета — мутатор
+    обязан найти тест по любой из этих форм, а не судить модуль всем набором
+    (№424)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_g.py").write_text(
+        written + "def test_ok():\n    assert True\n", encoding="utf-8")
+    assert mc.tests_for(tmp_path, tmp_path / "src" / "graphs.py") == ["tests/test_g.py"]
+
+
+def test_имя_модуля_в_другом_импорте_не_цепляет(tmp_path):
+    """Соседнее имя (`graphsx`, упоминание в строке) — не импорт модуля: иначе
+    новое правило снова стало бы поиском подстроки."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_other.py").write_text(
+        "import graphsx\nfrom charoite_graph import graphsx\n"
+        "def test_ok():\n    assert 'graphs' == 'graphs'\n", encoding="utf-8")
+    assert mc.tests_for(tmp_path, tmp_path / "src" / "graphs.py") == ["tests"]
+
+
 @pytest.mark.parametrize("module,test", [
     ("merge_graphs", "tests/test_merge_graphs.py"),
     ("nightly_dossier", "tests/test_dossier.py"),
