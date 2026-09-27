@@ -291,10 +291,12 @@ def test_a_seam_refusal_from_the_transport_keeps_its_policy_flag():
 
 @pytest.mark.parametrize("raw", ["[1, 2]", '"ok"', "null"])
 def test_json_that_is_not_an_object_is_named_not_raised(monkeypatch, capsys, raw):
-    """`.get` у списка вылетал бы AttributeError мимо таблицы строк (DS M2)."""
+    """`.get` у списка вылетал бы AttributeError мимо таблицы строк (выходной круг 1,
+    DS M2); строка называет форму, а не «не JSON» (круг 2, DS M1)."""
     monkeypatch.setattr(embed_door, "_said", set())
     assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
-    assert "ответ не JSON" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "ответ не объект JSON" in err and "ответ не JSON" not in err, err
 
 
 def test_pytest_fail_from_the_transport_escapes_the_door():

@@ -4,9 +4,9 @@
 800 ядер не укладывались в 20 с на машине, занятой встречей: кэш не грелся
 никогда, и каждый проход платил полной перепосылкой (круг 1 по коду, Opus I1).
 """
+import ast
 import json
 import pathlib
-import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -92,9 +92,9 @@ def test_the_deja_vu_loop_asks_through_deja_vu_embed():
     """Проводка: замыкание `main()` снаружи недостижимо, поэтому единственное, что
     здесь пиннится по исходнику, — ЧЕРЕЗ КОГО оно спрашивает; что уходит в
     запрос, меряет тест выше."""
-    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
-    m = re.search(r"^    def deja_vu_loop\(", src, re.M)
-    assert m, "deja_vu_loop"
-    nxt = re.search(r"^    def \w+\(", src[m.end():], re.M)
-    body = src[m.start():m.end() + (nxt.start() if nxt else len(src))]
-    assert "deja_vu_embed(cfg, texts)" in body and "llm_mod.embedder" not in body, body
+    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    loop = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "deja_vu_loop")
+    calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+             for c in ast.walk(loop) if isinstance(c, ast.Call)}
+    assert "deja_vu_embed" in calls and "embedder" not in calls, sorted(calls)

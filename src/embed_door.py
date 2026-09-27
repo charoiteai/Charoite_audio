@@ -198,13 +198,18 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
             try:
                 body = json.loads(text)
             except ValueError:
-                body = None
-            if not isinstance(body, dict):
-                # не JSON или JSON не объектом (`[1,2]`, `"ok"`): `.get` у списка
-                # вылетел бы исключением мимо таблицы строк (выходной круг 1, DS M2)
                 тело = (text or "").strip()[:120]
                 _say_once(f"эмбеддинги: ответ не JSON ({где}): {тело}",
                           key=f"embed:not-json:{тело}")
+                return []
+            if not isinstance(body, dict):
+                # JSON не объектом (`[1,2]`, `"ok"`, `null`): `.get` у списка вылетел
+                # бы исключением мимо таблицы строк (выходной круг 1, DS M2). Форма
+                # названа своей строкой: «не JSON» отправил бы дежурного искать HTML
+                # прокси, а сервер ответил разбираемым документом (круг 2, DS M1)
+                тело = (text or "").strip()[:120]
+                _say_once(f"эмбеддинги: ответ не объект JSON ({где}, {type(body).__name__}): {тело}",
+                          key=f"embed:not-object:{тело}")
                 return []
             got = body.get("embeddings", [])
             if not _vectors_ok(got, len(пачка), dim):
