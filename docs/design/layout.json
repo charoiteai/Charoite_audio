@@ -176,6 +176,10 @@
     "embed_door": {
       "layer": "base",
       "why": "шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph"
+    },
+    "once": {
+      "layer": "base",
+      "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
     }
   },
   "allowed_edges": [

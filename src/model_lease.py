@@ -44,9 +44,10 @@ import fcntl
 import json
 import os
 import pathlib
-import sys
 import time
 import uuid
+
+import once
 
 LEASE_DIR = pathlib.Path("data") / "llm_inflight"
 #: Запас поверх read-таймаута запроса: транспорт сам обрывает молчащий запрос
@@ -69,21 +70,17 @@ def lease_dir(root: pathlib.Path) -> pathlib.Path:
     return root / LEASE_DIR
 
 
-_writer_reported = False
 _last_sweep = 0.0
 
 
 def _report_writer_failure(exc: BaseException) -> None:
     """Аренду не записать — генерация идёт, но защита от перезапуска для неё
     выключена. Читатель при этом видит честно пустой каталог и сказать ничего
-    не может — говорит писатель, один раз на процесс (круг 2 DS I2)."""
-    global _writer_reported
-    if _writer_reported:
-        return
-    _writer_reported = True
-    with contextlib.suppress(Exception):
-        print(f"аренды модели не пишутся ({type(exc).__name__}: {exc}) — "
-              "перезапуск сервера не увидит эту генерацию", file=sys.stderr, flush=True)
+    не может — говорит писатель, один раз на процесс (круг 2 DS I2); не
+    удалось напечатать — ключ забыт, и следующий отказ скажет снова."""
+    once.say(("lease", "writer"),
+             f"аренды модели не пишутся ({type(exc).__name__}: {exc}) — "
+             "перезапуск сервера не увидит эту генерацию")
 
 
 def selfcheck(root: pathlib.Path) -> str:

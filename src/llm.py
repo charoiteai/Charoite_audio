@@ -41,6 +41,7 @@ import requests
 import charoite_paths
 import embed_door
 import model_lease
+import once
 import privacy
 from model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
                         SeamTransportError, embed_model_name)
@@ -171,11 +172,11 @@ def _fit_cache_clear() -> None:
 # (parse_json_block). Реестр помнит пару (адрес сервера, реально ушедшая
 # модель) → причину сервера дословно: он живёт на модуле, потому что LLM
 # строят на каждый вызов, и второй вызов иначе снова платил бы заведомо
-# провальный запрос. `_strict_json_said` — одна строка в stderr на процесс на
-# пару: журнал встречи не должен тонуть в повторах.
+# провальный запрос. Одна строка в stderr на процесс на пару живёт в общем
+# реестре `once` (пространство `strict_json`): журнал встречи не должен тонуть
+# в повторах.
 _strict_json: dict[tuple[str, str], str] = {}
 _strict_json_at: dict[tuple[str, str], float] = {}
-_strict_json_said: set[tuple[str, str]] = set()
 _strict_json_lock = threading.Lock()
 #: Сколько секунд верим записи «строгого JSON нет». Это факт о сборке сервера,
 #: а не о процессе: библиотеку грамматики могут положить, сборку — сменить, и
@@ -213,22 +214,20 @@ def _strict_json_restored(key: tuple[str, str]) -> None:
     with _strict_json_lock:
         _strict_json.pop(key, None)
         _strict_json_at.pop(key, None)
-        _strict_json_said.discard(key)
+        once.forget(("strict_json", key))
 
 
 def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: str) -> None:
     """Строка в stderr — один раз за процесс на пару (адрес, модель).
 
-    Рецепта в строке нет: она говорит, почему строгий JSON не поехал и что
-    делаем вместо него, а не советует пересобирать сервер.
+    Тонкая обёртка над общим реестром `once`: решение «первый ли раз» и печать
+    живут там, под своим замком. Рецепта в строке нет: она говорит, почему
+    строгий JSON не поехал и что делаем вместо него, а не советует пересобирать
+    сервер.
     """
-    with _strict_json_lock:
-        if key in _strict_json_said:
-            return
-        _strict_json_said.add(key)
-    print(f"llm: строгий JSON недоступен у {model} на {base} — "
-          f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте",
-          file=sys.stderr)
+    once.say(("strict_json", key),
+             f"llm: строгий JSON недоступен у {model} на {base} — "
+             f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте")
 
 
 def _strict_json_clear() -> None:
@@ -236,7 +235,7 @@ def _strict_json_clear() -> None:
     with _strict_json_lock:
         _strict_json.clear()
         _strict_json_at.clear()
-        _strict_json_said.clear()
+        once.reset("strict_json")
 
 
 class LLMHTTPError(RuntimeError):
@@ -420,8 +419,6 @@ class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
         self._cfg = cfg          # для оживления вставшей модели в complete()
-        self._warned_mlx: set[tuple[str, str]] = set()
-        self._warned_mlx_lock = threading.Lock()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
         # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
@@ -552,15 +549,6 @@ class LLM:
                 return m
         return self.model  # пусть ollama сам скажет об ошибке
 
-    def _first_mlx_warn(self, model: str) -> bool:
-        """True — эту пару (model, mlx_model) ещё не объявляли (потокобезопасно)."""
-        with self._warned_mlx_lock:
-            key = (model, self.mlx_model)
-            if key in self._warned_mlx:
-                return False
-            self._warned_mlx.add(key)
-            return True
-
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
@@ -582,14 +570,15 @@ class LLM:
             {"role": "user", "content": prompt},
         ]
         if self.engine == "mlx-server":
-            if model and model != self.mlx_model \
-                    and self._first_mlx_warn(model):
+            if model and model != self.mlx_model:
                 # Запрошенная модель на mlx-server не транслируется — это
                 # больше не молча (круг-2 DS), но и не потоп: одна строка на
                 # пару моделей за процесс, иначе err-лог с потолком 2 МБ
-                # вытесняет реальные диагностики (круг-3 DS I1).
-                print(f"llm: mlx-server игнорирует model={model} — "
-                      f"гонит {self.mlx_model}", file=sys.stderr, flush=True)
+                # вытесняет реальные диагностики (круг-3 DS I1). Пара живёт в
+                # общем реестре `once`, а не в объекте: LLM строят на вызов.
+                once.say(("mlx", (model, self.mlx_model)),
+                         f"llm: mlx-server игнорирует model={model} — "
+                         f"гонит {self.mlx_model}")
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature,

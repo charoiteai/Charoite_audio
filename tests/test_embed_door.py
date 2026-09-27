@@ -23,6 +23,7 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
+import once  # noqa: E402
 import embed_door  # noqa: E402
 import graph_search  # noqa: E402
 from model_seam import SeamTransportError  # noqa: E402
@@ -155,7 +156,7 @@ def _отказ_политики(monkeypatch):
     ("отказ политики", _отказ_политики, "эмбеддинги недоступны"),
 ])
 def test_every_outcome_speaks_once(monkeypatch, capsys, имя, случай, подстрока):
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     запуск = случай(monkeypatch)
 
     запуск()
@@ -171,7 +172,7 @@ def test_every_outcome_speaks_once(monkeypatch, capsys, имя, случай, п
 def test_the_line_quotes_the_body_up_to_120_chars(monkeypatch, capsys, raw, строка):
     """Строка отказа цитирует тело — по нему дежурный отличает HTML прокси от
     обрыва, — но не больше 120 знаков (выживший мутант `[:120] → [:0]`)."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
     err = capsys.readouterr().err
     # первый знак тела — «<» или «"», дальше ровно 119 «x»: сдвиг потолка на единицу виден
@@ -180,16 +181,16 @@ def test_the_line_quotes_the_body_up_to_120_chars(monkeypatch, capsys, raw, ст
 
 def test_a_different_key_is_not_silenced_by_the_first(monkeypatch, capsys):
     """Ключ — код и тело: другой отказ сервера обязан быть слышен (Opus M3)."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     _дверь(post=Wire(status=400, body="тело A")).run(["т"], 10)
     _дверь(post=Wire(status=400, body="тело B")).run(["т"], 10)
     assert capsys.readouterr().err.count("HTTP 400") == 2
 
 
 def test_the_same_key_prints_on_repeat_after_a_reset(monkeypatch, capsys):
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     _дверь(post=Wire(status=400, body="тело")).run(["т"], 10)
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     _дверь(post=Wire(status=400, body="тело")).run(["т"], 10)
     assert capsys.readouterr().err.count("HTTP 400") == 2
 
@@ -217,7 +218,7 @@ def test_vectors_ok_accepts_a_full_answer():
 
 def test_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
     """120 с ревизии на 13 пачках были 26 минутами: срок — на весь вызов."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     часы = [1000.0]
     monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
     сроки = []
@@ -234,7 +235,7 @@ def test_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
 
 def test_the_budget_stops_at_exactly_zero(monkeypatch, capsys):
     """Ровно ноль оставшегося срока — уже бюджет: вторым запросом не идём."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     часы = [1000.0]
     monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
     сроки = []
@@ -247,30 +248,6 @@ def test_the_budget_stops_at_exactly_zero(monkeypatch, capsys):
     assert _дверь(post=post).run(["т"] * 100, 20) == []
     assert сроки == [20.0], сроки
     assert "не уложились в 20 с" in capsys.readouterr().err
-
-
-def test_say_once_flushes_stderr(monkeypatch):
-    """Строка уходит владельцу сразу: на встрече между записью и чтением журнала
-    живёт процесс, и невытолкнутый буфер — это молчание."""
-    class Поток:
-        def __init__(self):
-            self.wrote: list[str] = []
-            self.flushed = 0
-
-        def write(self, s):
-            self.wrote.append(s)
-
-        def flush(self):
-            self.flushed += 1
-
-    поток = Поток()
-    monkeypatch.setattr(embed_door, "_said", set())
-    monkeypatch.setattr(embed_door.sys, "stderr", поток)
-
-    embed_door._say_once("строка")
-
-    assert "".join(поток.wrote).strip() == "строка"
-    assert поток.flushed >= 1, "строка осталась в буфере"
 
 
 # ── транспортные исходы ──────────────────────────────────────────────────
@@ -309,7 +286,7 @@ def test_a_seam_refusal_from_the_transport_keeps_its_policy_flag():
 def test_json_that_is_not_an_object_is_named_not_raised(monkeypatch, capsys, raw):
     """`.get` у списка вылетал бы AttributeError мимо таблицы строк (выходной круг 1,
     DS M2); строка называет форму, а не «не JSON» (круг 2, DS M1)."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
     err = capsys.readouterr().err
     assert "ответ не объект JSON" in err and "ответ не JSON" not in err, err
@@ -362,7 +339,7 @@ def test_urllib_post_reads_the_http_error_body(monkeypatch):
 
 
 def test_http_error_becomes_code_and_body_through_the_door(monkeypatch, capsys):
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     monkeypatch.setattr(urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(http_error(400, b"\xff\xfe<err>")))
 
@@ -455,7 +432,7 @@ def test_the_door_signature_does_not_take_a_config():
 
 
 def test_a_policy_refusal_is_built_not_raised_and_speaks_once(monkeypatch, capsys):
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
 
     e = embed_door.embedder("", "m", refused="чужой адрес")
     assert e.refused == "чужой адрес"

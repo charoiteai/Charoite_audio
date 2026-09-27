@@ -27,6 +27,7 @@ sys.path.insert(0, str(SRC))
 
 import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
+import once  # noqa: E402
 from llm import LLM, LLMHTTPError, parse_json_block  # noqa: E402
 
 CFG = {
@@ -348,6 +349,35 @@ def test_mlx_stream_parses_sse(monkeypatch):
     assert fake.sent["url"].endswith("/v1/chat/completions")
 
 
+def test_mlx_model_mismatch_is_reported_once_per_process(monkeypatch, capsys):
+    """Строка «mlx-server игнорирует model» — одна на пару моделей за ПРОЦЕСС,
+    а не на объект `LLM`: их строят на каждый вызов, и журнал тонул бы."""
+    once.reset("mlx")
+    fake = _Requests(_SSEResp([b'data: {"choices":[{"delta":{"content":"x"}}]}',
+                               b"data: [DONE]"]))
+    _подменить_requests(monkeypatch, fake)
+
+    for _ in range(2):
+        list(LLM(CFG_MLX).stream("вопрос", model="чужая-модель"))
+
+    err = capsys.readouterr().err
+    assert err.count("mlx-server игнорирует") == 1, err
+
+
+def test_mlx_matching_or_absent_model_is_not_a_mismatch(monkeypatch, capsys):
+    """Модель не названа (её выбирает сервер) или совпала с его единственной —
+    игнорировать нечего, строки быть не должно."""
+    once.reset("mlx")
+    fake = _Requests(_SSEResp([b'data: {"choices":[{"delta":{"content":"x"}}]}',
+                               b"data: [DONE]"]))
+    _подменить_requests(monkeypatch, fake)
+
+    list(LLM(CFG_MLX).stream("вопрос"))
+    list(LLM(CFG_MLX).stream("вопрос", model=CFG_MLX["llm"]["mlx_model"]))
+
+    assert "mlx-server игнорирует" not in capsys.readouterr().err
+
+
 def test_mlx_embeddings_stay_on_ollama(monkeypatch):
     """Эмбеддинги движка не выбирают: bge-m3 живёт на Ollama при любом engine."""
     wire = _wire(monkeypatch, _Resp({"embeddings": [[0.5]]}))
@@ -551,7 +581,7 @@ def test_the_route_guard_answers_the_vector_adapter(_ollama_маршруты, mo
     base = privacy.llm_base_url(CFG)
     _ollama_маршруты.сценарий_эмбеддингов()
     LLM(CFG)                                   # маршрут ставится при создании
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
 
     assert llm_mod.embedder(CFG).run(["т"], 5) == [[1.0, 1.0]]
     assert base in _ollama_маршруты.базы
@@ -567,7 +597,7 @@ def test_the_adapter_returns_no_model_when_the_config_is_empty():
 
 def test_the_adapter_carries_a_policy_refusal(monkeypatch, capsys):
     """Отказ политики виден при сборке: адрес не нужен, строка — один раз."""
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
     for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
         monkeypatch.delenv(k, raising=False)
     cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}
@@ -589,7 +619,7 @@ def test_the_route_guard_reports_the_servers_refusal(_ollama_маршруты, m
 
     _ollama_маршруты.сценарий_эмбеддингов(отказ)
     LLM(CFG)
-    monkeypatch.setattr(embed_door, "_said", set())
+    once.reset("embed")
 
     assert llm_mod.embedder(CFG).run(["т"], 5) == []
     assert "HTTP 503" in capsys.readouterr().err
@@ -771,7 +801,7 @@ class _EmbedServer:
 def _embed_wire(monkeypatch, server: _EmbedServer, fresh: bool = True) -> _EmbedServer:
     _подменить_requests(monkeypatch, server)
     if fresh:
-        monkeypatch.setattr(embed_door, "_said", set())
+        once.reset("embed")
     return server
 
 

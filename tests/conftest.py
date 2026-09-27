@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
+import once  # noqa: E402
 
 #: Корень данных прогона. Называется в `pytest_configure` — ДО СБОРКИ, но уже
 #: после импорта conftest: импорты тестовых модулей идут на сборке, и модуль,
@@ -269,6 +270,19 @@ def _кэш_свёртки_пуст():
         # (второй вызов перестал бы класть format).
         llm._strict_json_clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _реестр_однократных_пуст():
+    """Реестр «уже сказали» (`once`) живёт на модуле — весь прогон.
+
+    Тест, сказавший ключ, иначе молча менял бы поведение соседей: их строка
+    считалась бы уже сказанной. Сброс — до и после, как у кэша свёртки: ключ,
+    занятый в setup-части теста, не должен пережить его.
+    """
+    once.reset()
+    yield
+    once.reset()
 
 
 @pytest.fixture(autouse=True)

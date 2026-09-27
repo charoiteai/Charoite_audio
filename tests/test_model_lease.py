@@ -33,6 +33,7 @@ import embed_door  # noqa: E402
 import llm  # noqa: E402
 import llm_health  # noqa: E402
 import model_lease  # noqa: E402
+import once  # noqa: E402
 
 LOCAL = {"llm": {"base_url": "http://localhost:11434", "model": "qwen3.6:35b-a3b"}}
 SRV = "http://localhost:11434"
@@ -560,7 +561,7 @@ def test_writer_failure_is_reported_once(tmp_path, monkeypatch, capsys):
     """Каталог аренд не пишется — генерация идёт без защиты, а читатель видит
     честно пустой каталог и молчит. Говорит писатель: одна строка на процесс
     (круг 2 DS I2); `selfcheck` называет причину до встречи."""
-    monkeypatch.setattr(model_lease, "_writer_reported", False)
+    once.reset("lease")
     blocked = tmp_path / "ro"
     blocked.mkdir()
     blocked.chmod(0o500)
