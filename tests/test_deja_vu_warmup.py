@@ -5,12 +5,13 @@
 никогда, и каждый проход платил полной перепосылкой (круг 1 по коду, Opus I1).
 """
 import pathlib
+import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 import daemon  # noqa: E402
-import llm  # noqa: E402
+import embed_door  # noqa: E402
 
 
 def _cores(tmp_path, n):
@@ -23,7 +24,7 @@ def _cores(tmp_path, n):
 
 
 def test_warmup_keeps_every_good_batch_and_stops_at_the_first_refusal(tmp_path):
-    cores = _cores(tmp_path, 4 * llm.EMBED_BATCH_TEXTS)
+    cores = _cores(tmp_path, 4 * embed_door.EMBED_BATCH_TEXTS)
     вызовы = []
 
     def embed(payload):
@@ -32,12 +33,12 @@ def test_warmup_keeps_every_good_batch_and_stops_at_the_first_refusal(tmp_path):
 
     vecs: dict = {}
     added = daemon.warm_core_vectors(cores, vecs, embed, max_batches=4)
-    assert added == 2 * llm.EMBED_BATCH_TEXTS and len(vecs) == added, "удачные пачки потеряны"
-    assert вызовы == [llm.EMBED_BATCH_TEXTS] * 3, "после отказа проход продолжился: %s" % вызовы
+    assert added == 2 * embed_door.EMBED_BATCH_TEXTS and len(vecs) == added, "удачные пачки потеряны"
+    assert вызовы == [embed_door.EMBED_BATCH_TEXTS] * 3, "после отказа проход продолжился: %s" % вызовы
 
 
 def test_warmup_is_capped_per_pass_and_continues_next_pass(tmp_path):
-    cores = _cores(tmp_path, 5 * llm.EMBED_BATCH_TEXTS)
+    cores = _cores(tmp_path, 5 * embed_door.EMBED_BATCH_TEXTS)
     vecs: dict = {}
 
     def embed(payload):
@@ -45,8 +46,8 @@ def test_warmup_is_capped_per_pass_and_continues_next_pass(tmp_path):
 
     first = daemon.warm_core_vectors(cores, vecs, embed, max_batches=2)
     second = daemon.warm_core_vectors(cores, vecs, embed, max_batches=2)
-    assert first == second == 2 * llm.EMBED_BATCH_TEXTS
-    assert len(vecs) == 4 * llm.EMBED_BATCH_TEXTS, "второй проход начал не с того места"
+    assert first == second == 2 * embed_door.EMBED_BATCH_TEXTS
+    assert len(vecs) == 4 * embed_door.EMBED_BATCH_TEXTS, "второй проход начал не с того места"
 
 
 def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path):
@@ -56,3 +57,15 @@ def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path
     daemon.warm_core_vectors([p], {}, lambda payload: (отправлено.extend(payload), [[1.0]] * len(payload))[1])
     assert отправлено and отправлено[0].startswith("Ядро. идёт") and "_(" not in отправлено[0]
     assert len(отправлено[0]) == 400
+
+
+def test_deja_vu_asks_the_door_without_keep_alive():
+    """Дежавю делит слот с чат-моделью: фабрика собирается на каждый проход и
+    просит keep_alive=None, то есть поля в теле запроса нет — bge-m3 не
+    остаётся резидентом ради контура, который спрашивает раз в сорок секунд."""
+    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
+    m = re.search(r"^    def deja_vu_loop\(", src, re.M)
+    assert m, "deja_vu_loop"
+    nxt = re.search(r"^    def \w+\(", src[m.end():], re.M)
+    body = src[m.start():m.end() + (nxt.start() if nxt else len(src))]
+    assert "llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)" in body, body

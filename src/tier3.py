@@ -38,6 +38,7 @@ import re
 import shutil
 from collections.abc import Callable
 
+import embed_door
 from model_seam import Embedder, Judge, SeamTransportError
 from redirects import is_merged as _is_merged
 
@@ -410,8 +411,8 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         # формы) сюда не попадает намеренно: она обязана долететь до человека,
         # иначе ночник годами печатает «лежит Ollama» на сломанном коде
         # (круг 2 по 2б, GLM C2).
-        return _not_run("unavailable", f"эмбеддинги недоступны: {exc}")
-    # llm.embed при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
+        return _not_run("unavailable", embed_door.refusal_line(exc))
+    # дверь векторов при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
     # не найдена»): раньше это доезжало до IndexError в цикле пар и валило
     # CLI ночи (аудит DeepSeek 17.08). Неполный ответ = прогон не состоялся.
     # Код и тело ответа дверь уже напечатала строкой «эмбеддинги: HTTP …».

@@ -224,7 +224,7 @@ the zone's promises and closed the gaps:
   status shows «ревизия-ядер(поздно)», and the unjudged cores and the pairs
   already judged are stored next to the stamp, so the next night continues
   where this one stopped instead of re-judging the same top pairs. Batches for the embedder are cut by the
-  `llm.embed` door (at most 64 texts and 64,000 characters per request):
+  vector door `embed_door` (at most 64 texts and 72,000 characters per request):
   Ollama dropped the connection on 808 cores in one request. The list of
   unjudged cores is kept whole.
 - **The night is tested with the interpreter launchd uses.** The agent runs
@@ -603,8 +603,11 @@ lives in RAM alongside it, `num_ctx` is always explicit.
 - **Files are the source of truth.** No graph DB or vector store as the
   primary carrier: plain Markdown the user owns. Every chronicle fact
   carries provenance (who, when, verbatim transcript quote).
-- **One LLM gateway — src/llm.py.** Every chat and embedding call in the
-  python pipeline goes through it; no module speaks the wire format itself.
+- **One LLM gateway — src/llm.py.** Every chat call in the
+  python pipeline goes through it, and every embedding call through the vector
+  door `embed_door` (batches, whole-call deadline and response parsing live
+  there; the model layer only supplies the address, the name and the
+  transport); no module speaks the wire format itself.
   The model always comes from the config: the 14.08 audit found four modules
   still calling a hardcoded model long after the config had moved on. The
   gateway speaks two engines, picked by `llm.engine`: `ollama` (the default)

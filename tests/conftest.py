@@ -478,6 +478,7 @@ class _OllamaПрогона:
         self.спросили: list[str] = []
         self.базы: list[str] = []
         self.чат = None
+        self.векторы = None
         self._поставленные: set[tuple[str, str]] = set()
 
     def _поставить(self, метод: str, адрес: str, обработчик) -> None:
@@ -505,6 +506,24 @@ class _OllamaПрогона:
 
         return ответ
 
+    def _эмбеддинги(self):
+        """`/api/embed`: вектор на каждый текст запроса — контракт двери.
+
+        Тело — байты `content`, не `text`: адаптер двери (`llm._requests_post`)
+        читает `r.content`, и заглушка обязана говорить на его языке.
+        """
+        import requests
+
+        def ответ(url, **k):
+            r = requests.Response()
+            r.status_code = 200
+            вход = list(((k.get("json") or {}).get("input")) or [])
+            r._content = json.dumps(
+                {"embeddings": [[float(len(t)), 1.0] for t in вход]}).encode("utf-8")
+            return r
+
+        return ответ
+
     def экземпляр(self, base: str) -> None:
         if self.маршруты.открыта:
             # транспорт настоящий: маршрут ничего бы не перехватил, и запрос этого
@@ -516,12 +535,25 @@ class _OllamaПрогона:
         self._поставить("GET", f"{base}/api/tags", self._список_моделей(base))
         if self.чат is not None:
             self._поставить("POST", f"{base}/api/chat", self.чат)
+        if self.векторы is not None:
+            self._поставить("POST", f"{base}/api/embed", self.векторы)
 
     def сценарий_чата(self, обработчик) -> None:
         """`/api/chat` всех экземпляров теста — и уже созданных, и будущих."""
         self.чат = обработчик
         for base in self.базы:
             self._поставить("POST", f"{base}/api/chat", обработчик)
+
+    def сценарий_эмбеддингов(self, обработчик=None) -> None:
+        """`/api/embed` всех экземпляров: векторы, отказ или не-JSON — по заготовке.
+
+        Без обработчика — вектор на каждый текст. Маршрут ставится только когда
+        его попросили: иначе он попадал бы в набор маршрутов каждого `LLM` и
+        ломал проверки, которые считают маршруты (test_backup_offload).
+        """
+        self.векторы = обработчик or self._эмбеддинги()
+        for base in self.базы:
+            self._поставить("POST", f"{base}/api/embed", self.векторы)
 
 
 @pytest.fixture(autouse=True)

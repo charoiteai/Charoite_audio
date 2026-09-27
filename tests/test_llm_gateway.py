@@ -12,6 +12,7 @@ mlx-сборку, а Саммари и заметки продолжали зв�
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
@@ -24,6 +25,7 @@ import requests
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
 from llm import LLM, LLMHTTPError, parse_json_block  # noqa: E402
 
@@ -90,13 +92,29 @@ def _подменить_requests(monkeypatch, fake):
 
 
 class _Resp:
-    def __init__(self, payload: dict, status: int = 200, text: str = ""):
+    """Ответ requests с телом-байтами: дверь читает `content`, а не `json()`.
+
+    `content` — первоисточник; `text` и `json()` выведены из него. Так сторож
+    одинаково видит и векторный ответ, и не-JSON тело отказа (503 «busy»).
+    """
+
+    def __init__(self, payload: dict | None = None, status: int = 200,
+                 text: str | None = None, content: bytes | None = None):
+        if content is None:
+            if text is not None:
+                content = text.encode("utf-8")
+            else:
+                content = json.dumps(payload or {}).encode("utf-8")
+        self.content = content
         self._payload = payload
         self.status_code = status
-        self.text = text
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8", "replace")
 
     def json(self) -> dict:
-        return self._payload
+        return json.loads(self.text)
 
     def close(self) -> None:   # _post_busy закрывает ответ «занято» перед паузой
         pass
@@ -210,7 +228,7 @@ def test_network_error_without_revive_raises(monkeypatch):
 def test_embed_sends_model_from_config_and_keep_alive(monkeypatch):
     wire = _wire(monkeypatch, _Resp({"embeddings": [[0.1, 0.2]]}))
 
-    vecs = llm_mod.embed(CFG, ["текст"], keep_alive="60m")
+    vecs = llm_mod.embedder(CFG, keep_alive="60m").run(["текст"], 20)
 
     assert vecs == [[0.1, 0.2]]
     assert wire.sent["json"] == {"model": "тест-эмбеддер", "input": ["текст"],
@@ -222,7 +240,7 @@ def test_embed_without_vectors_returns_empty_list(monkeypatch):
     """Пустой ответ — пустой список: контуру дежавю дешевле пропустить проход."""
     _wire(monkeypatch, _Resp({}))
 
-    assert llm_mod.embed(CFG, ["текст"]) == []
+    assert llm_mod.embedder(CFG).run(["текст"], 20) == []
 
 
 def test_parse_json_block_digs_json_out_of_prose():
@@ -335,7 +353,7 @@ def test_mlx_embeddings_stay_on_ollama(monkeypatch):
     """Эмбеддинги движка не выбирают: bge-m3 живёт на Ollama при любом engine."""
     wire = _wire(monkeypatch, _Resp({"embeddings": [[0.5]]}))
 
-    llm_mod.embed(CFG_MLX, ["т"])
+    llm_mod.embedder(CFG_MLX).run(["т"], 20)
 
     assert wire.sent["url"].endswith("/api/embed")
     assert "11434" in wire.sent["url"], "эмбеддинги уехали с Ollama вслед за чатом"
@@ -518,11 +536,64 @@ def test_complete_busy_beyond_budget_is_http_error_not_revive(monkeypatch):
 
 def test_embed_on_busy_server_returns_empty_not_valueerror(monkeypatch):
     class _Busy(_Resp):
-        def json(self):
-            raise ValueError("not json")
+        def __init__(self):
+            super().__init__(status=503, content=b"busy")
 
-    _wire(monkeypatch, _Busy({}, status=503, text="busy"))
-    assert llm_mod.embed(CFG, ["текст"]) == []
+    _wire(monkeypatch, _Busy())
+    assert llm_mod.embedder(CFG).run(["текст"], 20) == []
+
+
+def test_the_route_guard_answers_the_vector_adapter(_ollama_маршруты, monkeypatch):
+    """Адаптер и сторож сети вместе: маршрут `/api/embed` отдаёт вектор на текст.
+
+    Заглушка говорит `content`-байтами — ровно тем, что читает `_requests_post`.
+    """
+    import privacy
+    base = privacy.llm_base_url(CFG)
+    _ollama_маршруты.сценарий_эмбеддингов()
+    LLM(CFG)                                   # маршрут ставится при создании
+    monkeypatch.setattr(embed_door, "_said", set())
+
+    assert llm_mod.embedder(CFG).run(["т"], 5) == [[1.0, 1.0]]
+    assert base in _ollama_маршруты.базы
+
+
+def test_the_adapter_returns_no_model_when_the_config_is_empty():
+    """Пустой конфиг — не «дефолты», а «моделей нет»: в сеть не ходим вовсе."""
+    import model_seam
+
+    quiet = llm_mod.embedder({})
+    assert quiet.model == model_seam.NO_MODEL and quiet.run(["т"], 5) == []
+
+
+def test_the_adapter_carries_a_policy_refusal(monkeypatch, capsys):
+    """Отказ политики виден при сборке: адрес не нужен, строка — один раз."""
+    monkeypatch.setattr(embed_door, "_said", set())
+    for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}
+
+    e = llm_mod.embedder(cfg)
+    assert e.refused and "10.1.2.3" in e.refused
+    with pytest.raises(llm_mod.SeamTransportError) as ошибка:
+        e.run(["т"], 5)
+    assert ошибка.value.policy is True
+    assert "эмбеддинги недоступны" in capsys.readouterr().err
+
+
+def test_the_route_guard_reports_the_servers_refusal(_ollama_маршруты, monkeypatch, capsys):
+    def отказ(url, **k):
+        r = requests.Response()
+        r.status_code = 503
+        r._content = b"busy"
+        return r
+
+    _ollama_маршруты.сценарий_эмбеддингов(отказ)
+    LLM(CFG)
+    monkeypatch.setattr(embed_door, "_said", set())
+
+    assert llm_mod.embedder(CFG).run(["т"], 5) == []
+    assert "HTTP 503" in capsys.readouterr().err
 
 
 def test_fit_survives_a_failed_part_and_keeps_head_and_tail(monkeypatch):
@@ -692,7 +763,7 @@ class _EmbedServer:
     def post(self, url, json=None, timeout=None, **kw):
         self.inputs.append(list(json["input"]))
         if self.fail_on == len(self.inputs):
-            return _Resp({}, status=self.status, text=self.body)
+            return _Resp(status=self.status, content=self.body.encode("utf-8"))
         if self.vectors is not None:
             return _Resp({"embeddings": self.vectors(json["input"], len(self.inputs))})
         return _Resp({"embeddings": [[float(len(t)), 1.0] for t in json["input"]]})
@@ -701,7 +772,7 @@ class _EmbedServer:
 def _embed_wire(monkeypatch, server: _EmbedServer, fresh: bool = True) -> _EmbedServer:
     _подменить_requests(monkeypatch, server)
     if fresh:
-        monkeypatch.setattr(llm_mod, "_said", set())
+        monkeypatch.setattr(embed_door, "_said", set())
     return server
 
 
@@ -712,7 +783,7 @@ def test_embed_cuts_a_long_list_into_batches_and_keeps_order(monkeypatch):
     server = _embed_wire(monkeypatch, _EmbedServer())
     texts = ["я" * (i % 7 + 1) for i in range(150)]
 
-    vecs = llm_mod.embed(CFG, texts)
+    vecs = llm_mod.embedder(CFG).run(texts, 20)
 
     assert [len(b) for b in server.inputs] == [64, 64, 22]
     assert [v[0] for v in vecs] == [float(len(t)) for t in texts], "порядок векторов сбит"
@@ -722,7 +793,7 @@ def test_embed_cuts_by_characters_and_never_drops_a_long_text(monkeypatch):
     server = _embed_wire(monkeypatch, _EmbedServer())
     texts = ["а" * 20_000] * 7 + ["б" * 70_000]
 
-    vecs = llm_mod.embed(CFG, texts)
+    vecs = llm_mod.embedder(CFG).run(texts, 20)
 
     assert [len(b) for b in server.inputs] == [3, 3, 1, 1], server.inputs and [len(b) for b in server.inputs]
     assert len(vecs) == len(texts), "длинный текст выпал вместо отдельной пачки"
@@ -734,13 +805,13 @@ def test_embed_refusal_names_code_and_body_once(monkeypatch, capsys):
     _embed_wire(monkeypatch, _EmbedServer(fail_on=2))
     texts = ["текст"] * 100
 
-    assert llm_mod.embed(CFG, texts) == [], "частичный ответ — не вектор на каждый текст"
+    assert llm_mod.embedder(CFG).run(texts, 20) == [], "частичный ответ — не вектор на каждый текст"
     first = capsys.readouterr().err
     assert "HTTP 400" in first and "tokenize" in first and "2/2" in first, first
 
     # Тот же отказ на другой пачке другого размера — в журнал второй раз не идёт
     _embed_wire(monkeypatch, _EmbedServer(fail_on=1), fresh=False)
-    assert llm_mod.embed(CFG, ["текст"] * 10) == []
+    assert llm_mod.embedder(CFG).run(["текст"] * 10, 20) == []
     assert "HTTP 400" not in capsys.readouterr().err, "тот же отказ повторён в журнал"
 
 
@@ -755,33 +826,33 @@ def test_embed_rejects_vectors_that_break_the_contract(monkeypatch, capsys, vect
     пара молча не судилась (входной круг №358, Codex I2)."""
     _embed_wire(monkeypatch, _EmbedServer(vectors=vectors))
 
-    assert llm_mod.embed(CFG, ["т"] * 70) == [], what
+    assert llm_mod.embedder(CFG).run(["т"] * 70, 20) == [], what
     assert "не по вектору на текст" in capsys.readouterr().err, what
 
 
 def test_embed_non_json_answer_is_empty_not_a_crash(monkeypatch):
     class _NotJson(_Resp):
-        def json(self):
-            raise ValueError("not json")
+        def __init__(self):
+            super().__init__(status=200, content=b"<html>")
 
     class _Server(_EmbedServer):
         def post(self, url, json=None, timeout=None, **kw):
-            return _NotJson({}, status=200, text="<html>")
+            return _NotJson()
 
     _embed_wire(monkeypatch, _Server())
-    assert llm_mod.embed(CFG, ["текст"]) == []
+    assert llm_mod.embedder(CFG).run(["текст"], 20) == []
 
 
 def test_embed_of_nothing_asks_nothing(monkeypatch):
     server = _embed_wire(monkeypatch, _EmbedServer())
-    assert llm_mod.embed(CFG, []) == [] and server.inputs == []
+    assert llm_mod.embedder(CFG).run([], 20) == [] and server.inputs == []
 
 
 def test_embed_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
     """120 с ревизии на 13 пачках были 26 минутами, 20 с дежавю — четырьмя:
     срок — на весь вызов (круг 1 по коду №358, Opus I1/I3)."""
     часы = [1000.0]
-    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: часы[0])
+    monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
     сроки = []
 
     class _Slow(_EmbedServer):
@@ -791,7 +862,7 @@ def test_embed_timeout_is_the_budget_of_the_whole_call(monkeypatch, capsys):
             return super().post(url, json=json, timeout=timeout, **kw)
 
     _embed_wire(monkeypatch, _Slow())
-    assert llm_mod.embed(CFG, ["т"] * 200, timeout=20) == [], "срок вышел — не вектор на каждый текст"
+    assert llm_mod.embedder(CFG).run(["т"] * 200, 20) == [], "срок вышел — не вектор на каждый текст"
     assert сроки == [20.0, 12.0, 4.0], сроки
     assert "не уложились в 20 с" in capsys.readouterr().err
 
@@ -800,7 +871,7 @@ def test_sixteen_search_chunks_stay_one_batch(monkeypatch):
     """Поиск шлёт по 16 кусков чуть больше 4000 знаков — одной пачкой, как раньше
     (круг 1 по коду №358, Opus M2)."""
     server = _embed_wire(monkeypatch, _EmbedServer())
-    llm_mod.embed(CFG, ["к" * 4_400] * 16)
+    llm_mod.embedder(CFG).run(["к" * 4_400] * 16, 20)
     assert [len(b) for b in server.inputs] == [16]
 
 
@@ -808,9 +879,9 @@ def test_a_different_bad_answer_is_not_silenced_by_the_first(monkeypatch, capsys
     """Ключ отказа — с формой ответа: в демоне, который живёт днями, второй сбой
     другой формы не молчит (круг 1 по коду №358, Opus M3)."""
     _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: [[1.0]] * (len(inp) - 1)))
-    llm_mod.embed(CFG, ["т"] * 5)
+    llm_mod.embedder(CFG).run(["т"] * 5, 20)
     _embed_wire(monkeypatch, _EmbedServer(vectors=lambda inp, n: {"x": 1}), fresh=False)
-    llm_mod.embed(CFG, ["т"] * 5)
+    llm_mod.embedder(CFG).run(["т"] * 5, 20)
     assert capsys.readouterr().err.count("не по вектору на текст") == 2
 
 

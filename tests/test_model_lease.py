@@ -370,12 +370,17 @@ def test_leased_stream_counts_only_payload_lines_as_progress(tmp_path, monkeypat
 
 
 def test_transport_seams_are_the_only_way_to_the_model():
-    """Структурный сторож: любое обращение к `requests` в llm.py — только в
-    двух швах с арендой (_open_stream, _post_busy) и двух названных
-    исключениях (embed — 0,2 с, убить не жалко; проба llm_health.probe — тот,
-    кто спрашивает). Ловится и `requests.request`, и `requests.Session` (M2 DS)."""
-    allowed = {"_open_stream", "_post_busy", "embed",
-               "_models_available"}       # GET списка моделей — метаданные, не генерация
+    """Структурный сторож: обращения к транспорту — только в объявленных швах.
+
+    В llm.py `requests.*` зовут два шва аренды (_open_stream, _post_busy), список
+    моделей (_models_available) и адаптер двери векторов (_requests_post): сам
+    векторизатор уехал в `embed_door`, поэтому `embed` из allowlist снят. В двери
+    `urllib.request.urlopen` зовётся только в `urllib_post`, а
+    `http.client.HTTPException` в `TRANSPORT_ERRORS` — тип исключения, не сырой
+    HTTP-запрос. Ловится и `requests.Session` (M2 DS)."""
+    allowed = {"_open_stream", "_post_busy", "_models_available",
+               "_requests_post"}          # GET списка моделей — метаданные, не генерация
+    assert "embed" not in allowed, "векторный транспорт уехал в дверь — llm.embed здесь не шов"
     tree = ast.parse((REPO / "src" / "llm.py").read_text(encoding="utf-8"))
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):
@@ -386,7 +391,22 @@ def test_transport_seams_are_the_only_way_to_the_model():
                     and node.func.attr not in {"RequestException", "ConnectionError", "Timeout", "HTTPError"}:
                 assert fn.name in allowed, f"requests.{node.func.attr} мимо швов с арендой: {fn.name}"
     src = (REPO / "src" / "llm.py").read_text(encoding="utf-8")
-    assert "Session(" not in src and "http.client" not in src, "сессии и сырой HTTP — мимо аренды"
+    assert "Session(" not in src, "сессии — мимо аренды"
+    assert "http.client" not in src, "сырой HTTP в слое моделей — только в двери векторов"
+
+    door_src = (REPO / "src" / "embed_door.py").read_text(encoding="utf-8")
+    door = ast.parse(door_src)
+    for fn in ast.walk(door):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr == "urlopen":
+                assert fn.name == "urllib_post", f"urlopen мимо транспорта двери: {fn.name}"
+    assert "TRANSPORT_ERRORS = (OSError, http.client.HTTPException)" in door_src, \
+        "http.client.HTTPException законен только как тип в TRANSPORT_ERRORS"
+    assert "Session(" not in door_src and "import requests" not in door_src, \
+        "дверь векторов не знает ни сессий, ни requests"
 
 
 # ------------------------------------------------------ решающий llm_health
