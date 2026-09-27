@@ -17,8 +17,10 @@
   停止后重发。录音期间重新打开应用不会触碰正在写入的文件；崩溃恢复
   会先验证文件再移入队列，提供方复制失败也不会留下只写了一半的 WAV。
   语音笔记（`note_`/`diary_` 前缀）会自动进入 Mac 的笔记流程。
-- **会议列表** — 读取所选图谱中「Встречи」文件夹下的 `.md` 文件，
-  最新在前，点击查看全文。
+- **会议列表** — 从所选图谱文件夹（第二个文件夹）读取：可移植的会议卡片
+  （`Встречи-архив/*/meeting.meta.json` — 参会者、概要、决策、任务、待解决
+  问题），没有卡片的旧会议则读取「Встречи」下的 `.md` 文件；最新在前，点击
+  查看卡片或全文。
 - **任务** — 图谱中所有 `- [ ]` 复选框汇总为一个列表；勾选直接写回
   markdown 文件，因此 Mac、Obsidian 和平板始终一致。
 
@@ -37,16 +39,22 @@
 
 ## 构建与安装
 
-需要 JDK 17 和 Android SDK（compileSdk 35）。SDK 路径写在
-`app-android/local.properties`（`sdk.dir=...`），该文件不在仓库中。
+需要 JDK 17 和 Android SDK（compileSdk 37——bom 2026.08 起的 Compose 基于该
+API 级别构建，更低版本会在 `checkDebugAarMetadata` 失败；`targetSdk` 有意保持
+35：36 和 37 改变了后台服务规则并强制 edge-to-edge，而伴侣应用要在后台录音）。
+SDK 路径写在 `app-android/local.properties`（`sdk.dir=...`），该文件不在仓库中。
+工具链为 Gradle 9.7 上的 AGP 9（wrapper 首次运行时下载）；AGP 9 自带 Kotlin
+支持，因此项目不声明单独的 `org.jetbrains.kotlin.android` 插件——加回去会导致
+构建失败。
 
 ```bash
 cd app-android
-./gradlew testDebugUnitTest        # 图谱解析与 WAV 头
+./gradlew testDebugUnitTest        # 图谱解析、WAV 头、崩溃恢复、取消过时扫描
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+`app-android/` 下的每次改动，CI 都会运行 `./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest`。
 真机检查（麦克风、服务、文件完整性）：
 
 ```bash
@@ -60,7 +68,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 2. **设置** → 「图谱根目录」→ 指向 Obsidian 图谱文件夹，
    即包含「Встречи」目录的那一个。
 
-两项都只需选择一次：文件夹授权在重启后依然有效。
+两项都只需选择一次：文件夹授权在重启后依然有效。界面语言跟随系统，
+除非在**设置** →「语言」中选择 Русский、English 或 中文。
 
 ## 隐私
 

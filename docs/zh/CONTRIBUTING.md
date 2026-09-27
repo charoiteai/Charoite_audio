@@ -9,24 +9,35 @@
 
 ## 基本规则
 
-- **本地优先不容妥协。** 不调用云端、无遥测、无账号。唯一的网络目标是 localhost（Ollama、可选的大脑伴侣服务）— 需手动开启的 Claude 层是唯一例外，且默认关闭。
-- **界面俄语为先，代码英语友好。** 目前 UI 字符串是俄语（英语 STT 可用；英语提示词已列入路线图）。代码、注释与提交信息使用英语。
+- **本地优先不容妥协。** 不调用云端、无遥测、无账号。唯一的网络目标是 localhost（Ollama 或 `mlx_lm.server`、可选的 STT 流服务与记忆伴侣）— 需手动开启的云端层（Claude CLI 与云端对话引擎）是例外，默认关闭，且每个可能携带会议数据的出口都要询问 `src/privacy.py`。两个不属于云端层的请求——版本检查与模型下载——写在 [PRIVACY](PRIVACY.md) 里；新增的请求也必须在那里写上一行。
+- **俄语为先，三种界面语言。** 应用支持俄语、英语和中文：语言由 `sufler.language` 决定，每条 UI 字符串在调用处以三元组书写——`L.t(ru, en, zh)` 必须给齐三种。会议文档（提示、纪要、图谱字段值）跟随同一个键——俄语、英语或中文；STT 在俄语上最强（GigaAM），英语走 Parakeet 或 Whisper，中文走 SenseVoice 或 Whisper。标识符用英语；本仓库的注释和提交信息大多是俄语，英语同样欢迎。
+- **测试必须能够失败。** 不是「覆盖了这些行」，而是行为坏掉时它会失败。要亲手验证：把缺陷放回去，确认测试变红。覆盖率抓不到这一点——一个没有任何断言的测试能 100% 覆盖代码并永远是绿的，而 CI 里的绿勾看起来像是这里受到了保护。粗糙的情形由 `scripts/check_test_assertions.py`（CI 与 pre-commit）捕获：没有 `assert`/`pytest.raises`/`raise ...Error` 的测试，以及放在 `return` 之后、执行永远到不了的断言。微妙的情形——同义反复、替换掉了被测逻辑本身的 mock——任何静态检查都找不到，只有放回去的缺陷能找到。
+- **对测试有疑问，就去弄坏代码。** `scripts/mutate_check.py --range main...HEAD` 把缺陷放回改动过的行，并要求测试变红。存活的变异体是一次无人察觉的行为变化：要么这个位置的测试存在却什么也守不住，要么根本没有测试。只变异 diff 中的行——对整个文件做一遍意味着成千上万个变异体、数小时而非数分钟。变异放在独立的 git worktree 中，因此测试的子进程看到的与 import 看到的是同一份被破坏的代码。每个变异体由能到达其模块的测试评判：`import X`、以子进程运行 `X.py`，或按路径加载（`spec_from_file_location("X", …)`、辅助函数 `_load("X")`）。没有任何测试以这些方式到达的模块由整套测试评判——在 CI 中很慢，而在本地基线运行可能超出时限，变异器会拒绝运行。等价变异（代码与测试从同一个常量读取的阈值）不必修——但值得一看：20.08 这样一个存活者揭示了恰好在阈值上的行为没有任何人测试。文本无法解析回同一棵被破坏语法树的变异体会带着原因报告为「未应用」（НЕ ПРИМЕНИЛОСЬ），而不是「已杀死」。有改动行却无可变异之处时结果为 `unmutable`（代码 8），并打印计划计数——文件、行、模块常量、AST 节点、无法读取的文件；空范围仍是 `nothing`（代码 6）。`--budget-s N` 是整次运行从开始算起的上限：每套基线测试之前需要剩余 4 × `--timeout`，每个变异体之前需要其测试套件的实测耗时。不够时以工具自己的一行 `прервано: бюджет`（「因预算中断」；`--force` 不能解除）停止，结果为 `partial`；若非空计划中一个变异体都没被评判，则为 `unjudged`（代码 9）——在 CI 中它是红的。`--report` 在每个变异体之后重写，因此在上限处被掐断的 job 仍会留下已检查的内容。在 CI 中，`mutation (changed lines)` job 在每个 pull request 上运行（`--range base...HEAD --max 40 --timeout 120 --budget-s 2400`），并把报告写进运行摘要；它不阻止合并，红了要在合并前读。
+- **决策放在纯函数里，循环只负责应用。** 实时回路（`stt_loop`、heartbeat 循环）是 `daemon.main()` 内的闭包——单元测试够不到它，21.08 的一次变异运行给出了数字：`daemon.py` 中 53 个变异体全部存活，而已经抽到 `src/stt_runtime.py` 的策略杀死了 15 个中的 14 个。因此实时回路的每个阈值、滞回和分支选择都是 `stt_runtime` 中的具名函数，并在 `tests/test_stt_runtime.py` 中有不变量（`progress_throttled`、`lag_transition`、`diarization_plan`、`live_input_young_enough`……）；循环调用它，别的什么都不决定。边界测试取非零的 `last`：取零时 `now - last` 与 `now + last` 无法区分——这是变异器揭示的。
+- **测试在密封环境中运行。** `tests/conftest.py` 中的 autouse fixture 给每个测试一个临时数据根——任何运行都不会碰到所有者的实时数据——并关闭网络：一次请求会以 `pytest.fail` 让测试失败（调用外围的 `except Exception` 吞不掉它）。「Ollama 没开」是这个守卫的默认回答，而不是被替换的方法；需要模型的测试声明 `@pytest.mark.ollama_отвечает("模型", …)`，真正需要套接字的测试申请 `сеть_разрешена`。后台线程崩溃会让整次运行失败（`pyproject.toml` 中的 `filterwarnings`），每个测试上限 120 秒。
 - **不搞模式黑名单。** 分类决策通过本地模型完成，而不是硬编码的词表 — 模式会腐烂，模型才理解上下文。
 
 ## 工作流程
 
 1. Fork 后从 `main` 拉分支：`feat/…`、`fix/…`、`docs/…`。
 2. 约定式提交（`feat(app): …`、`fix(daemon): …`）。
-3. 应用改动：`swift build` 干净通过、`swift test --filter '^CharoiteAppTests\.'` 全绿（实测探针仅手动运行）；守护进程：`python -m py_compile`；触碰搜索或提示词时运行 `scripts/memory_bench.py`。
-4. **在同一个 PR 里更新文档** — 代码改动若不触及 `docs/`、`README*` 与 `CHANGELOG.md`，CI 会拦截（纯技术性改动可打 `skip-docs` 标签）。
-5. PR 描述：改了什么、为什么改，可见之处附前后对比。
+3. 评审之前运行 `scripts/preflight.sh`（见最后一节）：ruff、布局守卫、隐私标记、完整 pytest、触及 `app/` 时的 Swift、改动行的变异检查。对应用改动而言，这意味着 `swift build` 干净通过、`swift test --filter '^CharoiteAppTests\.'` 全绿（实测探针仅手动运行）；触碰搜索或提示词时运行 `scripts/memory_bench.py`。
+4. **在同一个 PR 里更新文档** — PR 若改动代码（`src/`、`scripts/`、`app/`、`app-ios/`、`app-android/`）却不触及文档——`docs/`、`README.md`（根目录或上述文件夹的）、`PRIVACY.md`、`SECURITY.md`、`ROADMAP.md` 或 `CONTRIBUTING.md`——CI 会拦截。`CHANGELOG.md` 不算——它归 release-please 管。纯技术性改动可打 `skip-docs` 标签；依赖升级（`libs.versions.toml`、Gradle wrapper、`Package.resolved`）本身即被豁免。
+5. PR 标题是约定式提交——squash 合并时它就成为 `main` 上的那条提交（[RELEASING](RELEASING.md)）。PR 描述（模板会要求）：意图、不得被破坏的不变量、影响范围，以及如何验证——对界面或声音的改动，写明在真实设备上看了什么、听了什么。
 
 ### CI 检查什么
 
 | 时机 | 内容 |
 |---|---|
-| 每个 PR | 代码检查、Python 测试、应用 Swift 测试、iOS 构建、CodeQL、文档守卫 |
+| 每次 push 与 PR | `lint`：ruff、字节编译、「测试必须能够失败」、shellcheck、semgrep、mypy（参考）、示例配置的键 · `pytest (src/)`：完整 Python 测试，随后是布局门禁 |
+| 推送到 `main` 与每个 PR | CodeQL（`analyze`，另有每周定时）· 供应链：对工作流的 zizmor 与按公开格式的去标识化检查 |
+| 仅 PR | 改动行的变异（`mutation (changed lines)`）· 文档守卫 · 约定式 PR 标题 · dependency review（high 及以上即失败） |
+| 改动 `app/`、`app-ios/` 或 `app-android/` 时 | Swift 应用构建与确定性测试（含 SwiftLint）、iOS 构建 · Android 单元测试、lint 与 debug 构建 |
 | 每晚 | 同样的 Python 与 Swift 测试（macOS），外加**在模拟器中运行 iOS 测试** |
+
+只有 `lint` 与 `pytest (src/)` 阻止合并；其余为何只是参考见 [RELEASING](RELEASING.md) 的「分支保护」。参考性检查红了，合并前仍要读。
+
+代码检查规则只在一处：根目录 `pyproject.toml` 的 `[tool.ruff.lint]`；CI、pre-commit 与 `scripts/preflight.sh` 调用 `ruff check <路径>` 时不带任何标志，由一个测试守住这一点。除错误（`E9`、`F`）外，吞掉错误（处理器中没有 `raise`）的宽泛 `except Exception` 或 `except BaseException` 也会被拦下：收窄异常类，或标注 `# noqa: BLE001 — <理由>`；裸 `except:` 不允许。preflight 使用 CI 中固定的 ruff 版本（venv 中版本一致时用它，否则经 pipx 或 uvx）；若该引擎无法启动，该步骤记为跳过而非失败。
 
 iOS 测试放在夜间运行是有意为之：模拟器启动很慢，把它放进 PR 的快速检查里
 只会让所有人习惯等待。夜里有的是时间。
@@ -103,9 +114,9 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 
 ## 从哪里开始
 
-- [ROADMAP.zh.md](ROADMAP.md) — 我们接下来的计划
+- [ROADMAP](ROADMAP.md) — 我们接下来的计划
 - 带 `good first issue` 标签的 issue
-- `docs/ARCHITECTURE.md` — 守护进程、说话人分离与图谱流水线如何协同
+- [ARCHITECTURE](ARCHITECTURE.md) — 守护进程、说话人分离与图谱流水线如何协同
 
 ## 发布
 
@@ -119,8 +130,11 @@ pre-commit 钩子运行，会阻止引入其中任何一项的提交。
 
 标记列表本身是私有的，存放在 git 之外
 （`~/.config/charoite/private_markers.txt`）——一份「什么不得发布」的清单本身
-就很敏感。没有该文件时，钩子在本地按「失败即阻止」处理，在 CI 中则跳过，因此
-贡献者绝不会被一份他们无从获得的列表挡住。
+就很敏感。没有该文件时，钩子在 CI 之外按「失败即阻止」处理，在 CI 中（设置了 `CI`）则跳过。在 CI 之外，它还会拒绝 `git config user.email` 不是维护者地址的提交——公开仓库以同一个身份提交。两项检查在任何装了钩子的机器上都会运行，因此一个无从获得该列表的贡献者会在本地被这个钩子挡住；pre-commit 自带的 `SKIP=private-markers` 可以放行这样的提交，而下面的 CI 检查仍会在 pull request 上运行。
+
+**CI 中的第二道防线按格式，而不是按名字。** 钩子只保护装了它的那台机器：通过网页界面的提交、没有 `pre-commit install` 的新克隆或别人的 fork 都会绕过它。因此 CI 运行 `check_private_markers.py --public-only`：它查找内部主机名、非公开域名的邮箱、个人路径以及带首字母缩写的姓氏——这些格式本身不泄露什么，却能抓住最常见的泄漏方式：从工作机器上复制来的一段配置、日志或路径。
+
+注释里同事的名字**只有本地钩子**能抓到。请安装它——`pre-commit install`，每个克隆一次。
 
 该钩子检查**两**样东西：本次提交新增的行，以及整个被跟踪的文件树。第二项之所以
 重要，是因为*后来*才加入列表的标记，不会影响它此前已经存在的出现——之后每次提交
@@ -136,3 +150,11 @@ python3 scripts/check_private_markers.py --all   # 只打印位置，绝不打�
 
 长度不超过四个字符的标记按词边界匹配：否则一个三字母缩写会命中普通单词的内部，
 而一个总在狼来了的守卫，最终会被人们学会绕过。
+
+## 运行契约与 preflight：靠运行检验，而不是靠阅读
+
+每个可执行文件——哪些算，由 `scripts/layout_map.py` 判定：带真正 `__main__` 守卫的 Python 文件、shell 脚本——在 `docs/design/layout.json`（`run_contracts`）中都有一份**运行契约**。`help`：在隔离的数据根下 `--help` 以 0 退出。`refuse`：未命名数据根启动时以 `exit_codes.EXIT_ROOT_UNNAMED` 拒绝并打印配方——这个代码有意不是 2，2 是 argparse 给错误参数用的。`none`：没有安全的探测方式（stdio 服务器、没有 argparse 的守护进程、shell 脚本）；该文件不被运行，记录在自己的 `ticket` 字段里带上跟踪卡片（开头是 `№…`，编号后可以跟备注）——这是有主人的债务，而不是覆盖率数字。`docs/design/layout.md` 按卡片列出这笔债务，连同向上的边。`tests/test_entry_points_contract.py` 以进程方式运行每个入口点并核对契约——在 CI 中和变异检查下都是如此。新的可执行文件在代码能证明时从 `scripts/layout_map.py --regen` 获得契约（`parse_args` → `help`，根构造器 → `refuse`）；`none` 永远不由机器写——由人写，并附卡片。新增入口点时先运行 `--regen`：契约出现之前布局守卫一直是红的。
+
+`scripts/preflight.sh [基准]`（范围 `基准...HEAD`，默认 `origin/main`）是评审轮次之前、以及接收贡献者（或沙箱执行者）工作之前的本地汇总：机器是否忙碌（正在进行的会议、会后复盘或夜间循环会让它以退出码 3 停下；`PREFLIGHT_FORCE=1` 只能在所有者同意时使用）、CI 中固定版本的 ruff、布局守卫、隐私标记（`--all`）、完整 pytest、触及 `app/` 时的 SwiftLint 与 `swift build`/`swift test`，以及改动行的变异检查。最后一行是机器结论：所有步骤都运行且通过时为 `ok`，`FAIL: <步骤>`（上方列出失败测试的名字），或当某一步无法运行时为 `неполный — пропущены: …`（「不完整——已跳过」）——跳过会被明说，绝不算作通过。`PREFLIGHT_SKIP=mutation,swift` 在重跑时跳过步骤。它在 git worktree 中同样可用：所有者的数据根取自主 checkout，因此忙碌守卫仍能看到正在进行的会议。
+
+为什么要这样：连续五条评审发现都是关于进程行为的断言（「以代码 2 退出」「应用显示配方」），却没有人实际运行过。封住这一类问题的是一个真正运行进程的测试——而不是描述它的注释，也不是没人运行的 shell 步骤。

@@ -11,7 +11,7 @@ evidence, not a performance.
 - **The human owner** sets direction and priorities, defines the rules
   below, decides what ships and when, owns the privacy policy, and
   answers for the result.
-- **The AI maintainer** (Claude Code, committing as `Charoite AI`)
+- **The AI maintainer** (Claude Code, committing as `charoiteai`)
   writes the code: design, implementation, tests, documentation,
   releases — the full loop.
 
@@ -24,13 +24,21 @@ evidence, not a performance.
    reviewed by a second head that did not write it: a separate Claude
    agent, or a different model entirely (decorrelated review). Findings
    are fixed and re-checked before the PR opens.
-4. Full local test suites must pass (Python and Swift — currently
-   ~1,000 tests combined).
-5. A pull request runs the required CI: CodeQL, Python and Swift test
-   suites, lint, supply-chain checks (zizmor), documentation guards,
-   commit-message conventions, and the anonymization gate.
-6. Red CI blocks the merge. Green CI merges by squash; release-please
-   cuts versioned releases.
+4. The local gate passes: `scripts/preflight.sh` runs lint, the layout
+   guard, the privacy markers, the full Python suite, the Swift app tests
+   when the app changed, and the mutation check on the changed lines, and
+   ends with one verdict line. Measured on 2026-09-27: 3,936 Python tests,
+   530 Swift tests of the macOS app, 67 iOS and 28 Android tests.
+5. The pull request runs CI: `lint` and `pytest (src/)` (the layout gate
+   included) are required; CodeQL, the mutation check on the changed lines,
+   supply-chain checks (zizmor, dependency review), the documentation
+   guard, the conventional PR title, the anonymization gate and — when
+   their code changed — the Swift, iOS and Android builds report alongside
+   ([RELEASING.md](docs/RELEASING.md) explains why only two block).
+6. Red required checks block the merge, and a red advisory check is read
+   before merging, not waved through. Green CI merges by squash; release-please cuts versioned
+   releases, and each release stays a pre-release until the owner signs
+   its update manifest.
 
 ### Guards are not to be silenced
 
@@ -58,11 +66,13 @@ is built:
 
 - A **pre-commit anonymization gate** (`scripts/check_private_markers.py`)
   blocks names, employers, internal system names, and transcript
-  fragments from ever reaching the public repository.
+  fragments from ever reaching the public repository; a format-based
+  second line in CI also covers pull requests from forks.
 - When an external model is used for decorrelated review, it sees a
   **clean checkout of the public tree only** — never user data, never
   gitignored local state (recordings, transcripts, configs).
-- Secrets and tokens live outside the repository.
+- Secrets and tokens live outside the repository; the key that signs
+  update manifests never enters CI.
 
 ## What this means for contributors
 
@@ -70,4 +80,4 @@ External contributions are welcome and reviewed with the same pipeline —
 see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go through
 [SECURITY.md](SECURITY.md); they are read by the owner, not just the AI.
 
-*Last updated: 2026-08-16.*
+*Last updated: 2026-09-27.*
