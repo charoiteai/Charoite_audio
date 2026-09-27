@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import pathlib
 import re
 import statistics
@@ -71,12 +72,12 @@ def ece(rows: list[Row], bins: int = 10) -> float | None:
     """
     if not rows:
         return None
+    buckets: dict[int, list[Row]] = {}
+    for r in rows:
+        # корзина [k/bins, (k+1)/bins); уверенность 1.0 — в последнюю
+        buckets.setdefault(min(bins - 1, int(r.confidence * bins)), []).append(r)
     total = 0.0
-    for b in range(bins):
-        lo, hi = b / bins, (b + 1) / bins
-        inside = [r for r in rows if lo < r.confidence <= hi or (b == 0 and r.confidence == 0)]
-        if not inside:
-            continue
+    for inside in buckets.values():
         acc = sum(r.gold == r.label for r in inside) / len(inside)
         conf = sum(r.confidence for r in inside) / len(inside)
         total += len(inside) / len(rows) * abs(acc - conf)
@@ -95,7 +96,8 @@ def summary(rows: list[Row]) -> dict:
         "skip_caught": _share(sum(r.label == "skip" for r in skips), len(skips)),
         "ece": ece(rows),
         "p50_ms": statistics.median(times) if times else None,
-        "p95_ms": times[min(len(times) - 1, int(0.95 * len(times)))] if times else None,
+        # ближайший ранг: 95-й перцентиль из n замеров — ceil(0.95·n)-й по порядку
+        "p95_ms": times[math.ceil(0.95 * len(times)) - 1] if times else None,
     }
 
 

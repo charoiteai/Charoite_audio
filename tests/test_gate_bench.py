@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -27,12 +28,20 @@ def R(gold, label, p, ms=0.0):
 
 
 def test_summary_counts_kept_questions_and_caught_junk():
-    rows = [R("ask", "ask", 0.9), R("ask", "skip", 0.6), R("skip", "skip", 0.8), R("skip", "skip", 0.7)]
+    rows = [R("ask", "ask", 0.9), R("ask", "ask", 0.8), R("ask", "skip", 0.6),
+            R("skip", "skip", 0.8), R("skip", "ask", 0.7)]
     s = gb.summary(rows)
-    assert s["n"] == 4
-    assert s["accuracy"] == pytest.approx(0.75)
-    assert s["ask_kept"] == pytest.approx(0.5)
-    assert s["skip_caught"] == pytest.approx(1.0)
+    assert s["n"] == 5
+    assert s["accuracy"] == pytest.approx(0.6)
+    assert s["ask_kept"] == pytest.approx(2 / 3)
+    assert s["skip_caught"] == pytest.approx(0.5)
+
+
+def test_summary_p95_is_nearest_rank():
+    rows = [R("ask", "ask", 0.9, float(ms)) for ms in range(1, 21)]
+    s = gb.summary(rows)
+    assert s["p95_ms"] == 19.0 and s["p50_ms"] == 10.5
+    assert gb.summary([R("ask", "ask", 0.9, 7.0)])["p95_ms"] == 7.0
 
 
 def test_summary_says_nothing_for_an_absent_class():
@@ -46,15 +55,16 @@ def test_sweep_cuts_only_confident_skips():
         R("skip", "skip", 0.75),   # снято при τ ≤ 0.75
         R("ask", "skip", 0.9),     # потерян вопрос при τ ≤ 0.9
         R("ask", "ask", 0.99),     # решено самим, но не отсечено
+        R("ask", "ask", 0.6),      # ниже любого порога — модели, как сегодня
     ]
     by_tau = {p["tau"]: p for p in gb.sweep(rows, (0.7, 0.9, 0.95))}
     assert by_tau[0.7]["saved"] == pytest.approx(1.0)
-    assert by_tau[0.7]["lost"] == pytest.approx(0.5)
+    assert by_tau[0.7]["lost"] == pytest.approx(1 / 3)
     assert by_tau[0.9]["saved"] == pytest.approx(0.5)
-    assert by_tau[0.9]["lost"] == pytest.approx(0.5)      # ровно на пороге — отсечён
+    assert by_tau[0.9]["lost"] == pytest.approx(1 / 3)    # ровно на пороге — отсечён
     assert by_tau[0.95]["saved"] == pytest.approx(0.5)
     assert by_tau[0.95]["lost"] == pytest.approx(0.0)
-    assert by_tau[0.95]["decided"] == pytest.approx(0.5)  # 0.95 и 0.99
+    assert by_tau[0.95]["decided"] == pytest.approx(0.4)  # 0.95 и 0.99 из пяти
     assert by_tau[0.95]["decided_acc"] == pytest.approx(1.0)
 
 
@@ -66,6 +76,12 @@ def test_ece_is_zero_when_confidence_tells_the_truth():
 def test_ece_measures_overconfidence():
     rows = [R("skip", "ask", 0.9), R("ask", "ask", 0.9)]    # 90% уверен, прав в половине
     assert gb.ece(rows) == pytest.approx(0.4)
+
+
+def test_ece_measures_underconfidence_per_bucket():
+    rows = [R("ask", "ask", 0.75), R("skip", "skip", 0.75),  # прав всегда, а уверен на 75%
+            R("ask", "ask", 1.0)]                            # 1.0 — последняя корзина, не мимо
+    assert gb.ece(rows) == pytest.approx(2 / 3 * 0.25)
 
 
 def test_shadow_rows_take_model_refusal_as_skip_and_drop_failures():
@@ -127,7 +143,8 @@ def test_eval_structural_runs_end_to_end(tmp_path, capsys):
                     encoding="utf-8")
     assert gb.main(["eval", str(data), "--backend", "structural"]) == 0
     out = capsys.readouterr().out
-    assert "structural" in out and "точность 100.0%" in out
+    # фильтр детерминирован: уверенность 1.0 и при 100% точности ECE ноль
+    assert "structural" in out and "точность 100.0%" in out and "ECE 0.000" in out
 
 
 def test_eval_refuses_unknown_backend_and_bad_threshold(tmp_path):
@@ -144,7 +161,7 @@ def test_report_prints_shares_latency_and_the_threshold_table(capsys):
     gb.print_report("nli-zero-shot", rows, (0.9,))
     out = capsys.readouterr().out
     assert "## nli-zero-shot: 2 реплик" in out
-    assert "точность 100.0%" in out and "ECE" in out
+    assert "точность 100.0%" in out and "ECE 0.075" in out
     assert "p50 200 мс" in out and "p95 300 мс" in out
     assert "  0.90 |     100.0% |             100.0% |        100.0% |              0.0%" in out
 
@@ -245,6 +262,20 @@ def test_harvest_command_writes_jsonl_ready_for_labeling(tmp_path, capsys):
     (tmp_path / "2026-09-27_101500.md").write_text(TRANSCRIPT, encoding="utf-8")
     out = tmp_path / "gate.jsonl"
     assert gb.main(["harvest", str(tmp_path), "--out", str(out), "--limit", "2"]) == 0
-    rows = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+    raw = out.read_text(encoding="utf-8")
+    assert "Когда переносим витрину продаж?" in raw     # кириллица, а не \\u-экранирование
+    rows = [json.loads(x) for x in raw.splitlines()]
     assert [r["text"] for r in rows] == ["Когда переносим витрину продаж?", "Что?"]
     assert "2 кандидатов" in capsys.readouterr().out
+
+
+def test_cli_demands_a_command_and_an_output_file(tmp_path):
+    with pytest.raises(SystemExit):
+        gb.main([])
+    with pytest.raises(SystemExit):
+        gb.main(["harvest", str(tmp_path)])
+
+
+def test_bench_row_is_immutable():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        R("ask", "ask", 0.9).label = "skip"

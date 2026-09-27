@@ -40,6 +40,8 @@ def test_shadow_turns_on_with_literal_true():
 def test_normalize_turns_scores_into_distribution():
     probs = dg.normalize({"ask": 0.6, "skip": 0.2})
     assert probs == pytest.approx({"ask": 0.75, "skip": 0.25})
+    # ноль у одной гипотезы — законная уверенность, а не поломка
+    assert dg.normalize({"ask": 0.0, "skip": 0.4}) == {"ask": 0.0, "skip": 1.0}
 
 
 @pytest.mark.parametrize("scores", [
@@ -142,6 +144,7 @@ def test_head_meta_reads_order_temperature_and_length():
     labels, t, max_len = dg.read_head_meta('{"labels": ["skip", "ask"], "temperature": 1.7, "max_len": 128}')
     assert (labels, t, max_len) == (("skip", "ask"), 1.7, 128)
     assert dg.read_head_meta('{"labels": ["ask", "skip"]}')[1:] == (1.0, 256)
+    assert dg.read_head_meta('{"labels": ["ask", "skip"], "max_len": 8}')[2] == 8   # нижняя граница законна
 
 
 @pytest.mark.parametrize("raw", [
@@ -335,6 +338,7 @@ def test_shadow_does_not_wait_for_a_slow_decider_and_writes_once():
     release.set()
     run.join(5)
     run.finish("answered")                 # второй исход не перезаписывает первый
+    run._write()                           # и поздний второй писатель — тоже: гонка пишет строку раз
     assert len(log) == 1
     rec = dg.parse_shadow_line(log[0])
     assert (rec["label"], rec["outcome"]) == ("skip", "refusal")
@@ -421,3 +425,12 @@ def test_load_head_wires_meta_truncation_and_session(tmp_path, monkeypatch):
                     "providers": ["CPUExecutionProvider"]}
     probs = head("Когда релиз?")
     assert probs["skip"] == pytest.approx(math.exp(1) / (math.exp(1) + 1))
+
+
+def test_verdict_and_decider_are_values():
+    import dataclasses
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        _v("skip", 0.9).label = "ask"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        _fixed({"ask": 1.0, "skip": 0.0}).refused = "x"
