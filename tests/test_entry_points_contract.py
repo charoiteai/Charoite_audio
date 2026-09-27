@@ -15,6 +15,15 @@
 рядом, а сама проверка — pytest-тест, который гоняют и CI, и мутатор; первый
 черновик держал её bash-шагом в preflight и утверждал код отказа, которого в
 базе ветки не было.
+
+Проба пакета графа (№365, №427) судится с ДВУХ сторон. Положительная проба
+(`test_the_graph_package_runs_without_the_app`) идёт по НАСТОЯЩЕМУ артефакту:
+сессионная фикстура собирает колесо `charoite-graph` офлайн во временной копии
+раскладки, тест распаковывает его и сверяет имена `*.py` в архиве с планом
+`layout_map.package_files` (`artifact_name` — путь репозитория ↔ имя в колесе).
+Отрицательные пробы судят САМУ пробу, а не артефакт: им сборка не нужна, и они
+работают на копии каталога `src/<пакет>/` целиком (`_copy_package`), которую
+портят по месту.
 """
 from __future__ import annotations
 
@@ -25,8 +34,11 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
+import zipfile
 
 import pytest
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -198,10 +210,13 @@ def test_the_plan_lists_only_executables_with_a_contract() -> None:
 # ---------------------------------------------------------------- проба пакета графа
 #
 # Пакет поиска по графу ставится без приложения (№365): его модули — замыкание
-# одного объявленного входа (`package_entry` в артефакте), план копирования даёт
+# одного объявленного входа (`package_entry` в артефакте), план даёт
 # `layout_map.package_files`, а не список здесь. Статический гейт окружения по
-# слою видит формы в тексте; проба — поведение: копия замыкания во временном
-# каталоге, отдельный процесс, окружение приложения ведёт в ловушку.
+# слою видит формы в тексте; проба — поведение: отдельный процесс, окружение
+# приложения ведёт в ловушку. Положительная проба идёт по СОБРАННОМУ колесу
+# (№427): сессионная фикстура `wheel_path` собирает его офлайн в копии раскладки,
+# тест распаковывает архив и сверяет имена модулей с планом; отрицательные пробы
+# судят саму пробу на копии каталога `src/<пакет>/` целиком — им сборка не нужна.
 
 #: Тяжёлые зависимости приложения, которых пакету не нужно. Протечка меряется по
 #: `sys.modules` после импорта и поиска, а не по ошибке импорта: здесь они
@@ -215,6 +230,27 @@ POISONED_ENV = ("HOME", "CHAROITE_ROOT", "SUFLER_GRAPH_DIR", "CHAROITE_GRAPH_DIR
 #: проект его запретил — он тянет `-E` и глушит PYTHONPYCACHEPREFIX.
 ISOLATION_ENV = {"PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 ISOLATION_DROP = ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")
+#: Сборка колеса пакета графа (№427) — одна команда, рядом с изоляцией выше:
+#: тот же интерпретатор (`sys.executable`), офлайн и без изоляции сборки
+#: (setuptools уже стоит в venv по пину из CI). `-w` берёт каталог вывода
+#: последним аргументом — его подставляет фикстура.
+WHEEL_BUILD = ("-m", "pip", "wheel", "--no-build-isolation", "--no-deps", "--no-index", "--no-cache-dir", "-w")
+#: Что снимает окружение сборки — своя таблица, рядом с `ISOLATION_DROP`, у
+#: записи — причина. `PIP_*` по префиксу, прокси — в обоих регистрах (сверка
+#: регистронезависима): переменная pip задаёт индекс или уводит через прокси в
+#: сеть, а сборка обязана быть офлайн и воспроизводимой.
+WHEEL_ENV_DROP = (
+    ("PIP_*", "переменные pip задают индекс, кэш и требования — сборка их не слушает"),
+    ("HTTP_PROXY", "прокси уводит pip в сеть — сборка обязана быть офлайн"),
+    ("HTTPS_PROXY", "прокси уводит pip в сеть — сборка обязана быть офлайн"),
+    ("ALL_PROXY", "прокси уводит pip в сеть — сборка обязана быть офлайн"),
+)
+#: Потолок сборки колеса: pip готовит метаданные и пакует — дольше пробника
+#: входа, но всё ещё секунды; общий TIMEOUT (30 с) на холодном кэше тесен.
+WHEEL_TIMEOUT = 180
+#: Файл CI — тот же путь, откуда `scripts/preflight.sh` читает `RUFF_VERSION`:
+#: пин setuptools для сборки берётся из его секции `env`.
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 #: Утечка каждой снимаемой переменной — СВОИМ признаком: значение у родителя и то,
 #: чем проба обязана его показать, `(проблемы, признаки раннера, ловушка) → bool`.
 #: «Проба красная» признаком не считается: любая чужая причина падения прятала бы,
@@ -425,41 +461,141 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     return problems, out
 
 
-def _copy_package(dest: pathlib.Path) -> list[str]:
-    """Копия замыкания входа по плану сторожа — по ФОРМЕ раскладки: под
-    `dest/<пакет>/` теми же путями, что и в репозитории (`src/<пакет>/x.py`).
-    Плоская копия прошлого круга держалась на том, что модули лежали плоско;
-    после переезда в пакет она собирала бы `import graph_search` в никуда."""
-    rels = lm.package_files(INV, lm.load_layout())
-    prefix = lm.FLAT_DIR + "/"
+def _ci_env(name: str) -> str:
+    """Значение `name` из секции `env` файла CI — тот же путь и тот же разбор,
+    что у `scripts/preflight.sh` для `RUFF_VERSION`: пин setuptools живёт там, а
+    не отдельной константой теста, которая переживёт смену пина молча."""
+    return str(yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["env"][name])
+
+
+def _installed_setuptools() -> str | None:
+    """Версия setuptools текущего интерпретатора; нет пакета — None."""
+    try:
+        import setuptools
+    except ImportError:
+        return None
+    return setuptools.__version__
+
+
+def _setuptools_recipe(pin: str) -> str:
+    """Команда установки пина — одна на тест и человека, который читает отказ."""
+    return f"{sys.executable} -m pip install setuptools=={pin}"
+
+
+def _setuptools_problem(pin: str, have: str | None) -> str | None:
+    """Расхождение версии setuptools с пином — строкой с рецептом, иначе None.
+    Пропуска нет: без setuptools нужной версии колесо офлайн не собрать, и отказ
+    обязан назвать точную команду, а не «поставьте setuptools» (№427)."""
+    if have == pin:
+        return None
+    сейчас = "не установлен" if have is None else f"версия {have}"
+    return (f"сборке колеса нужен setuptools {pin} (пин из env файла CI), а в {sys.executable} он {сейчас} — "
+            f"поставьте: {_setuptools_recipe(pin)}")
+
+
+def _wheel_env(parent: dict[str, str]) -> dict[str, str]:
+    """Окружение сборки — копия родительского без `WHEEL_ENV_DROP`. Запись
+    таблицы с `*` — префикс, без `*` — точное имя; сверка регистронезависима,
+    поэтому прокси и `pip_*` ловятся в обоих регистрах, как и требует таблица."""
+    def dropped(name: str) -> bool:
+        upper = name.upper()
+        return any((pattern.endswith("*") and upper.startswith(pattern[:-1].upper()))
+                   or (not pattern.endswith("*") and upper == pattern.upper())
+                   for pattern, _why in WHEEL_ENV_DROP)
+    return {k: v for k, v in parent.items() if not dropped(k)}
+
+
+@pytest.fixture(scope="session")
+def wheel_path(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """Колесо `charoite-graph`, собранное офлайн в СВОЕЙ временной копии
+    раскладки: `packages/charoite-graph/` (метаданные) и каталог
+    `src/charoite_graph/` целиком лежат рядом так же, как в репозитории, поэтому
+    `package-dir = "../../src/charoite_graph"` разрешается в саму копию. Мусор
+    `build/` и `egg-info` остаётся там же и в дерево не попадает.
+
+    Путь один на сессию и не меняется (общий артефакт только читают), а сама
+    сборка идёт без изоляции сборки и офлайн, потому что setuptools стоит в venv
+    по пину из `env` файла CI; версия не та — `pytest.fail` с рецептом, без
+    `skip`: пропущенная сборка молча выключила бы и сверку плана."""
+    pin = _ci_env("SETUPTOOLS_VERSION")
+    if (problem := _setuptools_problem(pin, _installed_setuptools())):
+        pytest.fail(problem)
+    work = tmp_path_factory.mktemp("wheel")
+    package = lm.load_layout()["package"]
+    (work / "packages").mkdir()
+    shutil.copytree(ROOT / "packages" / "charoite-graph", work / "packages" / "charoite-graph")
+    shutil.copytree(ROOT / lm.FLAT_DIR / package, work / lm.FLAT_DIR / package)
+    out = work / "dist"
+    out.mkdir()
+    start = time.time()
+    r = _run([sys.executable, *WHEEL_BUILD, str(out), "packages/charoite-graph"],
+             work, _wheel_env(os.environ), WHEEL_TIMEOUT)
+    if r.returncode != 0:
+        pytest.fail(f"сборка колеса не прошла: код {r.returncode} — {_first_line(r)}")
+    wheels = list(out.glob("*.whl"))
+    if len(wheels) != 1:
+        pytest.fail(f"в {out} ожидали одно колесо, нашли {len(wheels)}: {[w.name for w in wheels]}")
+    built = wheels[0]
+    if built.stat().st_mtime < start:
+        pytest.fail(f"{built.name} старше начала сборки — колесо не собрано этим прогоном")
+    # общий артефакт сессии неизменяем: порчу проверяют на копии архива, а не тут
+    os.chmod(built, 0o444)
+    return built
+
+
+def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
+    """Сверка плана пробы с НАСТОЯЩИМ артефактом: имена `*.py` из колеса против
+    `artifact_name` каждого файла `package_files`, в обе стороны. Списком строк —
+    чтобы и честная сборка, и порченая копия судились одним кодом, а расхождение
+    называло лишние и недостающие модули, а не только факт неравенства (№427)."""
+    want = {lm.artifact_name(rel) for rel in lm.package_files(INV, lm.load_layout())}
+    with zipfile.ZipFile(built) as archive:
+        got = {name for name in archive.namelist() if name.endswith(".py")}
+    избыток = sorted(got - want)
+    недостача = sorted(want - got)
+    out = []
+    if избыток:
+        out.append("в артефакте лишние модули: " + ", ".join(избыток))
+    if недостача:
+        out.append("в артефакте нет модулей плана: " + ", ".join(недостача))
+    return out
+
+
+def _copy_package(dest: pathlib.Path) -> None:
+    """Копия КАТАЛОГА пакета целиком (`src/<пакет>/`) в `dest/<пакет>/` — не
+    файлы плана `package_files`: отрицательные пробы судят ПРОБУ и портят копию
+    по месту, а план и его сверка с колесом тут ни при чём. Форма та же, что у
+    репозитория, поэтому раннер зовёт `from charoite_graph import …` без правок."""
+    package = lm.load_layout()["package"]
     dest.mkdir()
-    for rel in rels:
-        assert rel.startswith(prefix), f"{rel}: модуль пакета вне {prefix}"
-        target = dest / rel[len(prefix):]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / rel, target)
-    return rels
+    shutil.copytree(ROOT / lm.FLAT_DIR / package, dest / package)
 
 
-def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
-    """Пакет поиска — это замыкание `package_entry` и ничего больше: копия
-    отдельно от репозитория строит индекс по демо-графу, пишет кэш векторов и
-    читает его обратно, находит узел — не прочитав ни одной переменной приложения
-    (HOME, корень, каталог графа, TMPDIR — ловушка) и не написав ничего вне своего
-    `data_dir`."""
+def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
+    """Пакет поиска — это замыкание `package_entry` и ничего больше, и едет он в
+    колесе ровно этими модулями: распакованный артефакт отдельно от репозитория
+    строит индекс по демо-графу, пишет кэш векторов и читает его обратно, находит
+    узел — не прочитав ни одной переменной приложения (HOME, корень, каталог
+    графа, TMPDIR — ловушка) и не написав ничего вне своего `data_dir`. План пробы
+    (`package_files`) сверяется с именами `*.py` в колесе в обе стороны, а не
+    доверяется каталогу репозитория."""
     layout = lm.load_layout()
-    rels = _copy_package(tmp_path / "pkg")
+    pkg = tmp_path / "pkg"
+    with zipfile.ZipFile(wheel_path) as archive:
+        archive.extractall(pkg)
+    plan = lm.package_files(INV, layout)
+    расхождения = _wheel_plan_problems(wheel_path)
+    assert not расхождения, "\n".join(расхождения)
     graph = tmp_path / "work" / "Демо"
     shutil.copytree(ROOT / "demo" / "graph", graph)
-    plan = {lm.module_of(rel) for rel in rels}
+    modules = {lm.module_of(rel) for rel in plan}
     # импортировано обязано быть замыкание входа; план шире на `__init__` подпакетов,
     # которых вход может не звать (выходной круг 2 по #650, DS M6)
     closure = lm.package_closure(lm.import_graph(INV), layout["package_entry"])
-    assert layout["package_entry"] in closure and closure <= plan
-    others = tuple(sorted(lm.modules(INV) - plan))
-    problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work",
-                                      outside=others)
-    # раннер мерил ровно `__init__` плана — список из копии сходится с артефактом
+    assert layout["package_entry"] in closure and closure <= modules
+    others = tuple(sorted(lm.modules(INV) - modules))
+    problems, out = run_package_probe(pkg, graph, "платёжный шлюз", tmp_path / "work", outside=others)
+    # раннер мерил ровно `__init__` плана — список из распакованного артефакта сходится
     assert set(out["inits"]) == lm.package_inits(INV, layout), out["inits"]
     assert not problems, "\n".join(problems)
     assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
@@ -468,6 +604,63 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
     assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
+
+
+def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
+                                                         wheel_path: pathlib.Path) -> None:
+    """Сверка плана проверена порчей: колесо без модуля — недостача, колесо с
+    лишним `.py` — избыток, каждое строкой с именем. Портим копию архива в своём
+    `tmp_path`; сессионное колесо только читается, поэтому порча его не трогает."""
+    assert _wheel_plan_problems(wheel_path) == [], "предпосылка: честное колесо сходится с планом"
+    plan = lm.package_files(INV, lm.load_layout())
+    victim = lm.artifact_name(next(rel for rel in plan if not rel.endswith("__init__.py")))
+
+    def rebuild(target: pathlib.Path, *, drop: str | None = None, extra: str | None = None) -> pathlib.Path:
+        with zipfile.ZipFile(wheel_path) as src, zipfile.ZipFile(target, "w") as dst:
+            for item in src.infolist():
+                if item.filename != drop:
+                    dst.writestr(item, src.read(item.filename))
+            if extra is not None:
+                dst.writestr(extra, "")
+        return target
+
+    got = _wheel_plan_problems(rebuild(tmp_path / "short.whl", drop=victim))
+    assert got and "нет модулей плана" in got[0] and victim in got[0], got
+    got = _wheel_plan_problems(rebuild(tmp_path / "extra.whl", extra="charoite_graph/лишний.py"))
+    assert got and "лишние модули" in got[0] and "charoite_graph/лишний.py" in got[0], got
+
+
+def test_the_wheel_env_drops_pip_and_proxies_in_both_registers() -> None:
+    """Каждая запись `WHEEL_ENV_DROP` снимает свою переменную, а незнакомая —
+    остаётся: `PIP_*` по префиксу, прокси обоих регистров. Самопроверка — новая
+    запись без своей переменной краснеет здесь, а не тихо не снимается."""
+    parent = {"PATH": "/usr/bin", "HOME": "/h",
+              "PIP_INDEX_URL": "http://127.0.0.1:1/", "PIP_CACHE_DIR": "/c", "pip_index_url": "http://127.0.0.1:1/",
+              "HTTP_PROXY": "http://127.0.0.1:1/", "http_proxy": "http://127.0.0.1:1/",
+              "HTTPS_PROXY": "http://127.0.0.1:1/", "https_proxy": "http://127.0.0.1:1/",
+              "ALL_PROXY": "http://127.0.0.1:1/", "all_proxy": "http://127.0.0.1:1/"}
+    assert _wheel_env(parent) == {"PATH": "/usr/bin", "HOME": "/h"}, _wheel_env(parent)
+    for pattern, why in WHEEL_ENV_DROP:
+        name = "PIP_INDEX_URL" if pattern.endswith("*") else pattern
+        assert why.strip(), f"{pattern}: запись без причины"
+        for sample in (name, name.lower()):
+            assert sample not in _wheel_env({**parent, sample: "x"}), f"{pattern}: не снимает {sample}"
+    assert set(_wheel_env(parent)) == {"PATH", "HOME"}, "снято лишнее — таблица шире, чем заявлено"
+
+
+def test_the_setuptools_pin_is_read_from_the_ci_env_and_names_the_recipe() -> None:
+    """Пин читается из `env` файла CI (как `RUFF_VERSION` у preflight), а отказ
+    называет точную команду: и когда setuptools нет, и когда версия другая.
+    Пропуска нет — иначе выключенной оказалась бы и сборка, и сверка плана."""
+    pin = _ci_env("SETUPTOOLS_VERSION")
+    assert pin and pin[0].isdigit(), pin
+    assert _setuptools_problem(pin, pin) is None, "совпавшая версия — не проблема"
+    нет = _setuptools_problem(pin, None)
+    другая = _setuptools_problem(pin, "0.0.0")
+    for problem in (нет, другая):
+        assert problem and pin in problem and sys.executable in problem, problem
+    assert "не установлен" in нет and "версия 0.0.0" in другая, (нет, другая)
+    assert _setuptools_recipe(pin) == f"{sys.executable} -m pip install setuptools=={pin}"
 
 
 def test_the_probe_sees_what_the_package_init_pulls(tmp_path: pathlib.Path) -> None:
