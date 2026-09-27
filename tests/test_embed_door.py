@@ -324,6 +324,18 @@ class _Ответ:
         return False
 
 
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://h/x", "localhost:11434/api/embed"])
+def test_urllib_post_refuses_a_non_http_address_before_opening(monkeypatch, url):
+    """`urlopen` умеет `file://`: транспорт по умолчанию отказывает сам, не открывая
+    ничего (находка semgrep dynamic-urllib-use в CI по #646)."""
+    def не_звать(*a, **k):
+        pytest.fail("urlopen не должен вызываться для не-http адреса")
+
+    monkeypatch.setattr(embed_door.urllib.request, "urlopen", не_звать)
+    with pytest.raises(ValueError):
+        embed_door.urllib_post(url, {"input": []}, 1)
+
+
 def test_urllib_post_reads_the_http_error_body(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(http_error(400, b"\xff\xfe<err>")))

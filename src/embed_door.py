@@ -117,11 +117,17 @@ def urllib_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     `urlopen` берётся атрибутом модуля, а не локальным именем: сторож сети в
     тестах подменяет `urllib.request.urlopen` и обязан видеть этот ход.
     `HTTPError` — тоже ответ сервера, а не сбой: отдаём её код и тело.
+
+    Схема — только http(s), и здесь тоже, а не только при сборке двери:
+    `urlopen` умеет `file://`, а транспорт по умолчанию зовут и напрямую.
     """
+    if urlsplit(url).scheme not in {"http", "https"}:
+        raise ValueError(f"транспорт векторов: адрес не http(s): {url!r}")
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
+        # nosemgrep — схема проверена строкой выше (только http/https), file:// не проходит
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
