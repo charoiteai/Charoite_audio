@@ -2355,7 +2355,9 @@ def test_the_package_is_the_closure_of_one_entry(world):
     closure = lm.package_closure(graph, entry)
     lay = lm.layer_of(layout)
     assert lay[entry] == "graph" and entry in closure
-    assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure
+    # план = замыкание входа плюс `__init__` пакета — явно, а не через ребро на пакет,
+    # которое даёт только `from charoite_graph import x` (выходной круг 2 по #650, DS I2)
+    assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure | lm.package_inits(inv, layout)
     assert {lay[m] for m in closure} <= set(lm.env_free_layers(layout))
     base = {m for m, layer in lay.items() if layer == "base"}
     assert base - closure, "замыкание уже, чем весь нижний слой: лишнее не становится поверхностью пакета"
@@ -2374,7 +2376,9 @@ def test_members_are_imported_only_through_the_package(world):
     layout, _, _, _, inv = world
     # имя самого пакета — не обход: `import charoite_graph` и `from charoite_graph import x`
     # законны; обход — короткое имя ЧЛЕНА (`graph_search`, `safe_write`) без префикса
-    short = {m.rsplit(".", 1)[-1] for m in lm.package_members(inv, layout)} - {layout["package"]}
+    # обход возможен только для членов первого уровня — у них были плоские имена; стемы
+    # глубоких членов (`sub/model.py` → `model`) давали бы ложный обход (DS M7)
+    short = {m.split(".", 1)[1] for m in lm.package_members(inv, layout) if m.count(".") == 1}
     assert short, "артефакт не назвал членов пакета — правило сторожило бы пустоту"
     offenders: list[str] = []
     for root in ("src", "scripts", "tests"):
@@ -2460,6 +2464,29 @@ def test_the_package_init_stays_empty_of_imports(tmp_path):
         assert any(p.startswith("src/pkg/__init__.py импортирует") and name in p for p in problems), problems
     layout, graph, inv = _package_tree(tmp_path / "doc", member_file=False, outside_import=False,
                                        init='"""Только докстринг."""\n')
+    assert lm.package_problems(graph, layout, inv) == []
+
+
+def test_a_declared_package_resolves_to_its_init(tmp_path):
+    """Объявленный пакет обязан быть пакетом: нет `src/<пакет>/__init__.py` —
+    строка гейта, а не пространство имён, где правило пустоты судит пустоту.
+    То же для опечатки в имени пакета: объявление, не разрешившееся в дереве, —
+    строка, а не «пакет без членов» (выходной круг 2 по #650, DS C1 и критика 2)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=False)
+    assert lm.package_problems(graph, layout, inv) == []
+    (tmp_path / "src" / "pkg" / "__init__.py").unlink()
+    inv = lm.inventory(tmp_path)
+    problems = lm.package_problems(lm.import_graph(inv), layout, inv)
+    assert any(p.startswith("package pkg: нет src/pkg/__init__.py") for p in problems), problems
+    typo = lm.package_problems(graph, {**layout, "package": "pgk"}, lm.inventory(tmp_path))
+    assert any(p.startswith("package pgk: нет src/pgk/__init__.py") for p in typo), typo
+
+
+def test_future_import_in_the_package_init_is_not_an_import(tmp_path):
+    """`from __future__ import annotations` в `__init__` — указание компилятору,
+    а не импорт модуля: домовой стиль пакета не краснит гейт (DS M4)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=False,
+                                       init="from __future__ import annotations\n")
     assert lm.package_problems(graph, layout, inv) == []
 
 

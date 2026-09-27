@@ -2476,21 +2476,31 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     исполняется при импорте ЛЮБОГО члена — `import charoite_graph` не тянет ни
     сторонних пакетов, ни членов (выходной круг 1 по #650, DS I1–I2).
 
-    `layout`/`inv` равны `None` — вызывающий о пакете не спрашивает (то же
-    соглашение, что у `env_problems`): синтетические деревья тестов, не
-    моделирующие пакет, поле `package` не несут и не судятся."""
-    if layout is None or inv is None:
+    Объявленное имя обязано разрешаться в дереве — та же дверь, что у
+    `package_entry` в `env_problems`: объявлен пакет — есть его
+    `src/<пакет>/__init__.py`. Без этой строки удалённый `__init__` делал
+    пакет пространством имён, правило пустоты — пустым, а объявление с
+    опечаткой — «пакетом без членов», о котором гейт молчал (выходной круг 2
+    по #650, DS C1 и критика 2).
+
+    `layout`/`inv` равны `None` или `package` пуст — вызывающий о пакете не
+    спрашивает (то же соглашение, что у `env_problems`): синтетические деревья
+    тестов, не моделирующие пакет, пакета не объявляют и не судятся."""
+    if layout is None or inv is None or not layout.get("package"):
         return []
-    members = package_members(inv, layout)
-    if not members:
-        return []
+    out: list[str] = []
+    init = f"{FLAT_DIR}/{layout['package']}/__init__.py"
+    if init not in inv.files:
+        out.append(f"package {layout['package']}: нет {init} — объявленный пакет обязан быть пакетом: "
+                   f"без __init__ копия пробы и колесо собирают пространство имён, а правило "
+                   f"пустоты __init__ судит пустоту")
     entry = layout["package_entry"]
     if entry not in graph:
         # об отсутствующем входе уже говорит `env_problems` — второй строкой не повторяем
-        return []
+        return out
+    members = package_members(inv, layout)
     inits = package_inits(inv, layout)
     closure = package_closure(graph, entry) - inits
-    out: list[str] = []
     for m in sorted(members - closure):
         out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
                    f"убрать из {layout['package']}/ или позвать из входа")
@@ -2503,7 +2513,12 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
                        f"друга (сторонние пакеты и stdlib — можно)")
     for rel, f in _package_forms(inv, layout):
         tree = inv.files[rel].tree
-        if f.role == "package_init" and tree is not None and (names := imports_of(rel, tree)):
+        if f.role != "package_init" or tree is None:
+            continue
+        # `from __future__ import …` — указание компилятору, в рантайме модулей не
+        # тянет; домовой стиль пакета, правка `__init__` «как везде» не краснеет (DS M4)
+        names = {n for n in imports_of(rel, tree) if n.split(".")[0] != "__future__"}
+        if names:
             out.append(f"{rel} импортирует {', '.join(sorted(names))} — __init__ пакета исполняется "
                        f"при импорте любого члена и держится пустым от импортов")
     return out
