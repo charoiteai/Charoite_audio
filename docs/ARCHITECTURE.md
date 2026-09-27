@@ -1061,7 +1061,14 @@ graph move is done: `src/charoite_graph/` holds the closure of the entry
 directory with that closure and forbids a member to import product code from
 outside the package — one batch form `src/<package>/…`, decided 26.09
 (№323, №424); `packages/` holds distribution
-metadata only (№427).
+metadata only (№427). The package probe itself is a wheel (№427): a session
+fixture builds `packages/charoite-graph/` offline, without build isolation, into
+a temporary copy of the layout, the test unpacks the archive and compares its
+`*.py` names with the probe plan (`package_files` against the form projection
+`artifact_name`) in both directions — a missing or extra module is a line naming
+it, and corruption is checked on a copy of the archive; the build needs
+`setuptools` at the version pinned in `env` of `ci.yml`, and a missing or
+different version fails with the exact install command instead of skipping.
 
 ## Stopping a recording
 

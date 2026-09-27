@@ -1614,6 +1614,48 @@ def test_the_corpus_agrees_on_form_token_candidacy_budget_and_provider():
             assert lm._bootstrap_budget(rel) == rel.count("/") >= 1, f"{rel}: бюджет подъёмов"
 
 
+def test_the_artifact_name_is_the_form_projection_of_a_package_file():
+    """Имя файла ВНУТРИ колеса — проекция формы, а не срез имени модуля (№427).
+
+    `module_of` свернул бы `src/<пакет>/__init__.py` в `<пакет>`, и в колесе
+    лёг бы `<пакет>.py` — модуль, которого никто не импортирует; `__init__`
+    обязан остаться `__init__.py`. Путь репозитория и имя в колесе различаются
+    ровно корнем раскладки, поэтому обратный перевод — `FLAT_DIR + "/" + имя`.
+    """
+    # корпус форм: у каждой строки-пакетного файла имя в колесе — путь без корня
+    for rel, role, _package, module, provider in MODULE_SHAPES:
+        if module is None or not provider.startswith("package:"):
+            continue
+        имя = lm.artifact_name(rel)
+        assert имя, f"{rel}: у файла пакета нет имени в колесе"
+        assert f"{lm.FLAT_DIR}/{имя}" == rel, f"{rel}: имя в колесе не переводится обратно — {имя}"
+        assert имя == rel[len(lm.FLAT_DIR) + 1:], f"{rel}: имя в колесе разошлось с путём"
+        # `__init__` — файл САМОГО пакета, а не модуль с его именем
+        if role == "package_init":
+            assert имя.endswith("/__init__.py") and имя != f"{module}.py", f"{rel}: __init__ стал модулем"
+    # синтетический вложенный пакет: `__init__` и модуль на глубине
+    assert lm.artifact_name("src/пакет/__init__.py") == "пакет/__init__.py"
+    assert lm.artifact_name("src/пакет/под/модуль.py") == "пакет/под/модуль.py"
+    # не файл пакета — пустая строка, а не исключение: вопрос к форме получает ответ
+    assert lm.artifact_name("scripts/doctor.py") == ""
+    assert lm.artifact_name("src/__init__.py") == ""
+
+
+def test_the_wheel_plan_is_the_artifact_names_of_the_package_files():
+    """План колеса (имена `*.py` в архиве) и план пробы (`package_files`) — две
+    стороны одной сверки: у каждого файла плана имя в колесе, а обратный перевод
+    имени даёт путь репозитория. Это и сверяет положительный тест по колесу
+    (№427, часть 1); здесь — только сама проекция, без сборки."""
+    inv = lm.inventory(ROOT)
+    rels = lm.package_files(inv, lm.load_layout())
+    assert rels, "предпосылка: план пробы не пуст"
+    артефакты = {lm.artifact_name(rel) for rel in rels}
+    assert len(артефакты) == len(rels), "разные файлы плана дают одно имя в колесе"
+    for имя in артефакты:
+        assert имя.endswith(".py"), f"{имя}: в колесо едет не python"
+        assert f"{lm.FLAT_DIR}/{имя}" in rels, f"{имя}: обратный перевод мимо плана"
+
+
 def test_a_flat_module_cannot_shadow_a_packaged_one(tmp_path):
     """Плоский модуль и пакет с тем же корнем рядом не ставятся.
 
@@ -1927,7 +1969,7 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
                for в in ast.walk(узел)):
             зовут.add(узел.name)
     проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory",
-                 "_package_forms"}
+                 "_package_forms", "artifact_name"}
     assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
 
     дерево = tmp_path / "src" / "p"
@@ -1952,6 +1994,7 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
     assert lm._owner("src/a/b.py") == "", "владелец мимо формы"
     assert lm.package_members(честный, {"package": "p"}) == set(), "члены пакета считает мимо формы"
     assert lm.package_inits(честный, {"package": "p"}) == set(), "__init__ пакета считает мимо формы"
+    assert lm.artifact_name("src/charoite_graph/__init__.py") == "", "имя в колесе считает мимо формы"
     # инвентарь кормит конфликт именами от формы — с подделкой имён нет
     assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
     # гейт спрашивает роль: под подделкой модуль пакета обязан стать «дырой»
