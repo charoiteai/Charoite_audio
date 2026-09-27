@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 71.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 72.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 11): `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `embed_door`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `vocabulary`
+- **base** (зависит от: —; модулей 12): `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `embed_door`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 5): `charoite_paths`, `config_loader`, `deps`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 7): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_search`, `graph_links`, `tier3`
@@ -43,6 +43,7 @@
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
 - `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует
+- `threads` → base: шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток
 - `tier3` → graph: ревизия ядер графа: bge-m3 и NLI приходят через шов model_seam, ночное окно — параметром may_continue, у приложения его собирает одна дверь graphs.revise_cores (№365); корня данных и замка демона модуль не знает — граф, не облако
 - `vocabulary` → base: декларативные замены из config.yaml; читают stt (audio) и import_meeting — в meeting дал бы ребро audio → meeting
 
@@ -128,12 +129,13 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
-- `src/charoite_graph/graph_search.py` ← scripts/memory_bench.py
+- `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/exit_codes.py` ← scripts/preflight.sh
 - `src/graphs.py` ← scripts/layout_map.py
 - `src/llm_health.py` ← scripts/doctor.py
 - `src/privacy.py` ← scripts/doctor.py
+- `src/threads.py` ← scripts/layout_map.py
 
 ## Пути, названные в документации и конфигах
 
@@ -199,6 +201,7 @@
 - `src/rebuild_transcript.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/USER_GUIDE.md
 - `src/speaker_names.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/stt_runtime.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md
+- `src/threads.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/transcript.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/transcript_origin.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

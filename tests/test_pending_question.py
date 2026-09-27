@@ -66,10 +66,25 @@ def test_pending_question_is_replaced_as_a_whole():
     assert "nonlocal_pending" not in src and ".update(text=" not in src
 
 
+def test_the_manual_hint_command_runs_with_the_manual_flag():
+    """Команда панели `hint` — ручной запрос: её стрим уходит отдельным потоком
+    продукта с `manual=True` (№415 перевёл поток на `threads.spawn`). Без флага
+    панель не отличит ручной стрим от авто-цикла и погасит чужую карточку.
+
+    `stdin_loop` — замыкание внутри `main()`, напрямую не вызвать; проверяется
+    исходник тем же приёмом, что соседние сторожа файла."""
+    src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
+    loop = src[src.index("def stdin_loop"):src.index("def live_context_loop")]
+    assert re.search(r"threads\.spawn\(\s*gen_hint,\s*kwargs=\{\"manual\": True\}", loop), loop
+
+
 def test_fast_trigger_reports_dropped_frames():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     tap = src[src.index("def _tap(src, part)"):src.index("hub.on_frame = _tap")]
-    assert "drops.dropped()" in tap and "target=emit_error" in tap, "сказать — не из аудио-потока (luna r1)"
+    # глашатай — отдельный поток продукта: после №415 это `threads.spawn(emit_error, …)`,
+    # и сверяется атом вызова регуляркой, а не прежнее `target=emit_error`
+    assert "drops.dropped()" in tap and re.search(r"threads\.spawn\(\s*emit_error\b", tap), \
+        "сказать — не из аудио-потока (luna r1)"
     assert "is_alive()" in tap, "один глашатай за раз (DS r2)"
     assert "put_nowait" in tap and "frame_q.full()" not in tap, "без TOCTOU full()+put (GLM)"
     assert "emit_error(msg)" not in tap

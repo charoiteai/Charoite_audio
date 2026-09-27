@@ -180,10 +180,14 @@ class _HangingCapture:
     def __init__(self, hang_seconds=30.0):
         self.hang = hang_seconds
         self.restarts = 0
+        #: застрявший restart() отпускается из теста: поток перезапуска
+        #: продукт бросает, и за границей пробы он уже не проверяемый код,
+        #: а хвост подставки — сторож брошенных потоков ждёт его зря (№415)
+        self.release = threading.Event()
 
     def restart(self):
         self.restarts += 1
-        time.sleep(self.hang)      # закрытие мёртвого стрима не возвращается
+        self.release.wait(self.hang)   # закрытие мёртвого стрима не возвращается
 
     def start(self):
         pass
@@ -201,11 +205,15 @@ class _QueueCapture:
         self.q = queue.Queue()
         self.hang = hang_seconds
         self.stopped = 0
+        #: застрявший stop() отпускается из теста: поток остановки канала
+        #: продукт бросает, и за границей пробы он только хвост подставки —
+        #: сторож брошенных потоков обязан видеть настоящий код, не её (№415)
+        self.release = threading.Event()
 
     def stop(self):
         self.stopped += 1
         if self.hang:
-            time.sleep(self.hang)
+            self.release.wait(self.hang)
 
     def restart(self):
         pass
@@ -243,7 +251,8 @@ def test_stop_не_виснет_и_на_живом_канале_со_завис�
     что и перезапуск, — финализация идёт, статус говорит о брошенном стриме."""
     hub = _hub()
     hub.STOP_TIMEOUT = 0.3
-    hub.captures = [_QueueCapture("mic", hang_seconds=5.0)]
+    dead = _QueueCapture("mic", hang_seconds=5.0)
+    hub.captures = [dead]
     said: list[str] = []
     hub.on_status = said.append
     done: list[str] = []
@@ -252,6 +261,7 @@ def test_stop_не_виснет_и_на_живом_канале_со_завис�
     hub.stop()
     assert time.time() - started < 2 and done == ["finalized"]
     assert any("не закрылся" in m for m in said)
+    dead.release.set()      # брошенный поток остановки отпускаем здесь (№415)
 
 
 def test_stop_дренирует_очередь_в_запись_до_финализации(tmp_path):
@@ -449,6 +459,7 @@ def test_зависший_перезапуск_не_останавливает_�
     assert spent < 2, (
         f"сторож не вернулся за {spent:.0f}с — конвейер встал вместе с ним, "
         "и микрофон перестал писать, хотя был исправен")
+    dead.release.set()      # брошенный поток перезапуска отпускаем здесь (№415)
 
 
 def test_мёртвый_канал_не_уносит_соседей_при_старте(monkeypatch, tmp_path):

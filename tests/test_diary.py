@@ -3,6 +3,7 @@
 Ollama в CI нет — постобработка честно падает в фолбэк (текст как есть),
 что и делает тест детерминированным: проверяется раскладка, не LLM.
 """
+import ast
 import datetime as dt
 import os
 import subprocess
@@ -92,11 +93,25 @@ def test_microphone_branch_keeps_warming_and_joining_the_stt():
     прогревает STT в фоне и ДОЖИДАЕТСЯ прогрева при любом выходе — иначе
     короткая запись или отмена бросали бы daemon-поток посреди нативного
     init и роняли процесс на выходе. Проверяется по исходнику: в CI
-    микрофона нет."""
+    микрофона нет. Прогрев — атомы AST вызова (`threads.spawn` с именем и
+    ролью), а не строка исходника: строка ломалась бы на любом переносе
+    (№415)."""
     src = (ROOT / "src" / "dictate_note.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    прогрев = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "spawn" and isinstance(node.func.value, ast.Name)
+               and node.func.value.id == "threads"]
+    assert len(прогрев) == 1, "прогрев STT — один поток продукта"
+    call = прогрев[0]
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "warm", ast.unparse(call)
+    аргументы = {k.arg: ast.literal_eval(k.value) for k in call.keywords if k.arg in ("name", "role")}
+    assert аргументы == {"name": "stt-warm", "role": "dictate"}, ast.unparse(call)
+    присвоен = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and n.value is call]
+    assert присвоен and isinstance(присвоен[0].targets[0], ast.Name) \
+        and присвоен[0].targets[0].id == "warm_t", "прогрев обязан остаться под именем warm_t"
     main_src = src[src.index("def main("):]
     mic = main_src[main_src.index("    else:\n"):main_src.index("    if diary:")]
-    assert "warm_t = threading.Thread(target=warm, daemon=True)" in mic
     assert "finally:" in mic and "warm_t.join(timeout=60)" in mic
     text = main_src[main_src.index("if text_mode:"):main_src.index("    else:\n")]
     assert "warm_t" not in text, "текстовый режим снова прогревает STT"

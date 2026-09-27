@@ -42,6 +42,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import sys
 import typing
 
@@ -370,6 +371,13 @@ def _code(src: str) -> "lm.FileInfo":
     return lm.FileInfo(kind="code", haystacks=(), tree=ast.parse(src), executable=None)
 
 
+def _файл_и_шов(line: str) -> tuple[str, str]:
+    """Находка судьи швов → пара (файл, «модуль.символ») для сверки."""
+    файл = line.split(":", 1)[0]
+    шов = line.split("зовёт ", 1)[1].split(" ", 1)[0]
+    return файл, шов
+
+
 def test_env_seams_of_the_graph_are_called_only_through_the_door():
     """Индекс поиска и ревизию ядер приложение строит через дверь окружения
     (`graphs.open_search`, `graphs.revise_cores`): там один каталог кэша векторов и одно
@@ -416,8 +424,20 @@ def test_env_seams_of_the_graph_are_called_only_through_the_door():
     for rel in ("src/чужой.py", "src/чужой_рядом.py", "src/чужой_псевдоним.py", "src/аннотации.py"):
         assert rel not in calls, f"{rel}: не шов, а правило его засчитало"
     assert calls["src/graphs.py"], "в двери те же написания обязаны быть найдены (иначе «зелено» — слепота)"
+    # находки сверяются ПАРАМИ (файл, шов): в `scripts/поток.py` теперь два шва —
+    # поток и ревизия на одной строке, и по одному «файл:строка» они неразличимы
+    index, symbols = lm.seam_tables()
+    expected = sorted(
+        (rel, f"{index[seam].module}.{seam}")
+        for rel, src in bypass.items()
+        for seam in lm._seam_refs(_code(src).tree, index, symbols)
+    )
+    # `src/graphs.py` — дверь швов графа: её собственные написания зелёные, а
+    # поток — чужой для неё шов, и обход обязан остаться в ожиданиях
+    expected.append(("src/graphs.py", f"{index['Thread'].module}.Thread"))
+    ожидаемые = sorted(expected)
     said = lm.seam_problems(calls)
-    assert sorted(line.split(" ")[0] for line in said) == sorted(f"{rel}:2" for rel in bypass)
+    assert sorted(_файл_и_шов(line) for line in said) == ожидаемые
     assert all("мимо двери окружения" in line for line in said)
     assert lm.seam_problems(None) == []
 
@@ -429,7 +449,9 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     слоя, а модуль слоя с окружением — не тронуть. Один прогон `main` на оба
     правила: полный `--check` — самая дорогая строка набора, который мутатор
     гоняет на каждого мутанта, и job мутации упирался в свой потолок."""
-    monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", tuple(
+        seam._replace(owners=()) if seam.symbol == "GraphSearch" else seam
+        for seam in lm.ENV_SEAMS))
     shapes = tuple(s._replace(find=lambda tree, rel: [1]) if s.name == "dynamic_import" else s
                    for s in lm.ROOT_SHAPES)
     monkeypatch.setattr(lm, "ROOT_SHAPES", shapes)
@@ -438,7 +460,10 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     assert "src/graphs.py" in out
     assert "src/charoite_graph/graph_search.py:1 импортирует динамически" in out \
         and "путь приходит параметром" in out
-    assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
+    # граница «:1» — регуляркой, а не подстрокой: `src/daemon.py:1` сидит в начале
+    # любой строки вида `src/daemon.py:1N`, и подстрока краснела бы о чужое число
+    assert not re.search(r"src/daemon\.py:1\b", out), \
+        "модуль слоя с окружением формами layer не меряется"
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
@@ -2238,7 +2263,8 @@ def test_the_seam_address_is_checked_whole(tmp_path, monkeypatch):
     (tmp_path / member).write_text("def revise(g):\n    pass\n", encoding="utf-8")
     inv = lm.Inventory(files={door: _code("tier3.revise(g)\n"),
                               member: _code("def revise(g):\n    pass\n")}, problems=[])
-    monkeypatch.setattr(lm, "ENV_SEAMS", {"revise": ("tier3", (door,), "graphs.revise_cores")})
+    monkeypatch.setattr(lm, "ENV_SEAMS",
+                        (lm.Seam("revise", "tier3", (door,), "graphs.revise_cores", "почему"),))
     хороший = {"graphs": set(), "tier3": set()}
     ссылки = {door: {"revise": [1]}}
     assert lm.seam_address_problems(хороший, inv, ссылки, tmp_path) == []
@@ -2266,6 +2292,40 @@ def test_the_seam_address_is_checked_whole(tmp_path, monkeypatch):
     assert lm.seam_address_problems(хороший, None, ссылки, tmp_path) == []
 
 
+def test_a_seam_symbol_imported_by_name_is_a_reference():
+    """`from tier3 import revise` + голое `revise(g)` — ссылка на шов, и форма
+    привязки тут другая, чем у атрибута: привязка идёт ИМЕНЕМ СИМВОЛА. Без неё
+    обход двери через from-импорт (и через псевдоним) не виден ни замеру, ни
+    судье, а глазами это «то же самое» (№424, №415)."""
+    src = {
+        "src/голое.py": "from tier3 import revise\nrevise(g, may_continue=lambda: True)\n",
+        "src/псевдоним.py": "from threading import Thread as Поток\nПоток(target=f)\n",
+        "src/чужое_имя.py": "from tier3 import TIER3_KEEP_ALIVE\nprint(TIER3_KEEP_ALIVE)\n",
+    }
+    inv = lm.Inventory(files={rel: _code(text) for rel, text in src.items()}, problems=[])
+    calls = lm.seam_calls(inv)
+    assert calls.get("src/голое.py") == {"revise": [2]}, "голое имя из from-импорта — ссылка на шов"
+    assert calls.get("src/псевдоним.py") == {"Thread": [2]}, "псевдоним символа шва — та же ссылка"
+    assert "src/чужое_имя.py" not in calls, "не-шов из того же модуля — не ссылка"
+
+
+def test_the_seam_table_load_checks(monkeypatch):
+    """Фабрика формы швов отвергает повтор символа и владельца без файла.
+
+    Индекс обязан быть однозначным — иначе `_seam_refs` молча теряет шов, —
+    а файл-владелец двери лежать в дереве: владельца без файла не найти, и
+    запрет превращается в совет."""
+    двойной = (lm.Seam("revise", "tier3", (), "d1", "почему"),
+               lm.Seam("revise", "tier3", (), "d2", "почему"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", двойной)
+    with pytest.raises(lm.LayoutError, match="объявлен дважды"):
+        lm.seam_tables()
+    monkeypatch.setattr(lm, "ENV_SEAMS", (
+        lm.Seam("Ghost", "ghost", ("src/нет_такого_модуля.py",), "ghost.door", "почему"),))
+    with pytest.raises(lm.LayoutError, match="файл-владелец двери"):
+        lm.seam_tables()
+
+
 def test_the_seam_member_is_an_ast_declaration():
     """Член шва — объявление ВЕРХНЕГО уровня: функция, класс или присваивание;
     ссылка внутри тела объявлением не считается, и ответ — строго `bool` (№424).
@@ -2284,7 +2344,9 @@ def test_the_seam_member_is_an_ast_declaration():
 def test_the_gate_is_asked_about_the_seam_address(monkeypatch, capsys):
     """Главный тракт отдаёт адрес шва в гейт: шов, члена которого в модуле нет,
     обязан покраснеть (№424)."""
-    monkeypatch.setitem(lm.ENV_SEAMS, "OpenSearch", ("graph_search", ("src/graphs.py",), "graphs.open_search"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", (*lm.ENV_SEAMS,
+                        lm.Seam("OpenSearch", "graph_search", ("src/graphs.py",),
+                                "graphs.open_search", "почему")))
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
     assert ("шов graph_search.OpenSearch: в модуле charoite_graph.graph_search "

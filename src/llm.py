@@ -43,6 +43,7 @@ import embed_door
 import model_lease
 import once
 import privacy
+import threads
 from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
                         SeamTransportError, embed_model_name)
 
@@ -114,9 +115,9 @@ def _fit_arm_sweeper_locked(now: float) -> None:
     # До ближайшего срока, но не дольше шага: таймер идёт по monotonic и после
     # сна проснулся бы поздно — с шагом отстаём от срока не больше минуты.
     due = min(stamp for stamp, _ in _fit_cache.values()) + FIT_CACHE_TTL - now
-    _fit_sweeper = threading.Timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep)
-    _fit_sweeper.daemon = True
-    _fit_sweeper.start()
+    _fit_sweeper = threads.timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep,
+                                 name="fit-cache-sweep", role="process",
+                                 detached="уборщик кэша свёрток зовётся концом срока, а не выходом")
 
 
 def _fit_cache_get(key: tuple) -> str | None:

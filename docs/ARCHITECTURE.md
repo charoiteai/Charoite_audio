@@ -647,7 +647,15 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   `src/once.py` (base layer, stdlib only): the key is `(namespace, meaning)`,
   where the meaning carries what makes a repeat a repeat — status code, body,
   form, exception kind, path — not the whole finished line; `forget` opens a
-  new episode, `reset` clears one namespace or all. Speaker names take the
+  new episode, `reset` clears one namespace or all. Product threads are born
+  one way, too: `src/threads.py` (base layer, stdlib only) is the only place
+  that builds `threading.Thread`/`threading.Timer`, through `threads.spawn` and
+  `threads.timer` with a mandatory name and a role from a fixed list (a foreign
+  role or an empty name is a refusal). The registry keeps the role and the
+  `detached` reason as metadata on the thread (weak keys), and tests use them to
+  wait for threads they did not join; the search package builds its own thread,
+  because it ships as a separate distribution without the app registry.
+  Speaker names take the
   first object (`parse_json_block`). On the
   rebuild path they pass the full trust guard (`speaker_names`); the
   diarization CLI keeps only a single word of 3–15 letters that is heard in

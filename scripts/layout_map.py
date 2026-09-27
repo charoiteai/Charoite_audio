@@ -2064,20 +2064,72 @@ def root_derivations(inv: Inventory, layout: dict | None = None) -> dict[str, di
     return out
 
 
-#: Швы окружения приложения у слоя графа: вызов → (модуль шва, файлы, где вызов
-#: разрешён, дверь для остальных). Модули графа окружения не знают — каталог кэша
-#: векторов и ночное окно ревизии им передают, и собирает их один адаптер, а не каждое
-#: место вызова: пять копий пути и две копии окна жили без единого теста, а дневной
-#: путь ревизии ядер не проверял никто (Opus C1 и I1 круга 1 по коду №365). Считается
+#: Швы окружения и потоков: символ, его модуль, файлы, где символ разрешён
+#: напрямую (двери), дверь для всех остальных и причина правила.
+#:
+#: Два первых шва — окружение приложения у слоя графа: каталог кэша векторов
+#: и ночное окно ревизии модулям графа передают, и собирает их один адаптер, а
+#: не каждое место вызова: пять копий пути и две копии окна жили без единого
+#: теста, а дневной путь ревизии ядер не проверял никто (Opus C1 и I1 круга 1
+#: по коду №365). Два вторых — потоки продукта: `Thread` и `Timer` заводит
+#: реестр `threads`, потому что поток без имени и роли неотличим от чужого, а
+#: тест не может дождаться того, о чьей границе не знает. Пакет поиска —
+#: отдельный дистрибутив, реестра приложения у него нет, поэтому он владелец
+#: `Thread` наравне с дверью.
+#:
+#: Таблица — КОРТЕЖ записей, а не словарь: форма одна, и её держит одна
+#: фабрика (`seam_tables`), а не соглашение о тройке в двух местах. Считается
 #: любая ссылка на шов, привязанная к его модулю (`_seam_refs`).
-ENV_SEAMS: dict[str, tuple[str, tuple[str, ...], str]] = {
-    "GraphSearch": ("graph_search", ("src/graphs.py",), "graphs.open_search"),
-    "revise": ("tier3", ("src/graphs.py",), "graphs.revise_cores"),
-}
+class Seam(NamedTuple):
+    symbol: str
+    module: str
+    owners: tuple[str, ...]
+    door: str
+    why: str
 
 
-def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
-    """Ссылки на швы окружения в файле — шов → строки.
+ENV_SEAMS: tuple[Seam, ...] = (
+    Seam("GraphSearch", "graph_search", ("src/graphs.py",), "graphs.open_search",
+         "у неё один каталог кэша векторов и одно ночное окно"),
+    Seam("revise", "tier3", ("src/graphs.py",), "graphs.revise_cores",
+         "у неё один каталог кэша векторов и одно ночное окно"),
+    Seam("Thread", "threading", ("src/threads.py", "src/charoite_graph/graph_search.py"),
+         "threads.spawn",
+         "поток продукта зовётся только реестром — имя и роль обязательны; "
+         "пакет поиска — отдельный дистрибутив, реестра приложения у пакета нет"),
+    Seam("Timer", "threading", ("src/threads.py",), "threads.timer",
+         "таймер продукта зовётся только реестром — имя и роль обязательны"),
+)
+
+
+def seam_tables() -> tuple[dict[str, Seam], dict[str, frozenset[str]]]:
+    """Одна фабрика формы таблицы швов: индекс «символ → запись» и проекция
+    «модуль → символы».
+
+    Проверки загрузки: символ не повторён (индекс однозначен — иначе `_seam_refs`
+    молча теряет шов) и каждый файл-владелец двери есть в дереве (владельца без
+    файла не найти, и запрет становится советом). Отказ — `LayoutError` с
+    виновником-кодом: таблица живёт здесь, а не в артефакте."""
+    index: dict[str, Seam] = {}
+    for seam in ENV_SEAMS:
+        if seam.symbol in index:
+            raise LayoutError(f"шов {seam.module}.{seam.symbol} объявлен дважды — "
+                              f"индекс теряет запись", culprit=LAYOUT_CODE)
+        for rel in seam.owners:
+            if not (REPO / rel).is_file():
+                raise LayoutError(f"шов {seam.module}.{seam.symbol}: файл-владелец двери "
+                                  f"{rel} не существует — дверь {seam.door} некуда положить",
+                                  culprit=LAYOUT_CODE)
+        index[seam.symbol] = seam
+    symbols: dict[str, frozenset[str]] = {}
+    for seam in ENV_SEAMS:
+        symbols[seam.module] = symbols.get(seam.module, frozenset()) | {seam.symbol}
+    return index, symbols
+
+
+def _seam_refs(tree: ast.Module, index: dict[str, Seam],
+               symbols: dict[str, frozenset[str]]) -> dict[str, list[int]]:
+    """Ссылки на швы в файле — символ → строки.
 
     Ссылка, а не только вызов: переменная (`f = tier3.revise`), `functools.partial`,
     `Thread(target=…)` и база подкласса обходят дверь так же, как вызов (Opus I2 круга 2
@@ -2086,15 +2138,16 @@ def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
     `from tier3 import revise [as …]`; чужой `revise` — не шов (Opus M2 круга 2).
     Аннотации типов — не обход: они не строят индекс и не зовут ревизию. Граница правила:
     динамику (`getattr(модуль, "имя")`) и переэкспорт из корня пакета статически не видно —
-    их закрывает гейт по рёбрам импорта шага 2 №365."""
-    modules = {module: seam for seam, (module, _o, _d) in ENV_SEAMS.items()}
+    их закрывает гейт по рёбрам импорта шага 2 №365.
 
+    Таблицы приходят параметром (`seam_tables`), а не берутся из литерала: форма
+    у швов одна, и строит её фабрика."""
     def seam_module(name: str) -> str | None:
         last = name.rsplit(".", 1)[-1]
-        return last if last in modules else None
+        return last if last in symbols else None
 
     bound_mod: dict[str, str] = {}      # имя в файле → модуль шва
-    bound_name: dict[str, str] = {}     # имя в файле → шов
+    bound_name: dict[str, str] = {}     # имя в файле → символ шва
     roots: set[str] = set()             # корни импортированных пакетов: `import charoite_graph`
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -2108,7 +2161,7 @@ def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
             # база всё равно разрешается по последнему сегменту модуля
             base = seam_module(node.module or "")
             for a in node.names:
-                if base and modules[base] == a.name:            # from tier3 import revise
+                if base and a.name in symbols[base]:            # from tier3 import revise
                     bound_name[a.asname or a.name] = a.name
                 elif (m := seam_module(a.name)):                 # from charoite_graph import tier3
                     bound_mod[a.asname or a.name] = m
@@ -2127,9 +2180,9 @@ def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
     for node in ast.walk(tree):
         if id(node) in annotations:
             continue
-        if isinstance(node, ast.Attribute) and node.attr in ENV_SEAMS:
+        if isinstance(node, ast.Attribute) and node.attr in index:
             recv = ast.unparse(node.value)
-            module = ENV_SEAMS[node.attr][0]
+            module = index[node.attr].module
             if bound_mod.get(recv) == module or (seam_module(recv) == module
                                                  and recv.split(".")[0] in roots):
                 out.setdefault(node.attr, set()).add(node.lineno)
@@ -2139,34 +2192,37 @@ def _seam_refs(tree: ast.Module) -> dict[str, list[int]]:
 
 
 def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
-    """Кто ссылается на швы окружения графа — файл → шов → строки. Замер для гейта:
+    """Кто ссылается на швы — файл → символ → строки. Замер для гейта:
     считает инвентарь, судит `seam_problems`, как у правила корня."""
+    index, symbols = seam_tables()
     out: dict[str, dict[str, list[int]]] = {}
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        found = _seam_refs(info.tree)
+        found = _seam_refs(info.tree, index, symbols)
         if found:
             out[rel] = found
     return out
 
 
 def seam_problems(calls: dict[str, dict[str, list[int]]] | None) -> list[str]:
-    """Вызовы швов окружения мимо двери — строками. `None` — вызывающий о швах не
+    """Вызовы швов мимо двери — строками. `None` — вызывающий о швах не
     спрашивает (то же соглашение, что у `root_problems`). Тесты вне области: они
     строят индекс и ревизию на своих каталогах намеренно. Область — `SEAM_SCOPE`:
-    замер (`seam_calls`) видит весь инвентарь, судья — её."""
+    замер (`seam_calls`) видит весь инвентарь, судья — её. Текст находки — из
+    `why` записи: причина у шва одна, и живёт она при шве, а не в судье."""
     if calls is None:
         return []
+    index = seam_tables()[0]
     out = []
     for rel, found in sorted(calls.items()):
         if not rel.startswith(SEAM_SCOPE):
             continue
         for seam, lines in sorted(found.items()):
-            module, owners, door = ENV_SEAMS[seam]
-            if rel not in owners:
-                out.append(f"{rel}:{','.join(map(str, lines))} зовёт {module}.{seam} мимо двери окружения "
-                           f"— через {door}: у неё один каталог кэша векторов и одно ночное окно")
+            запись = index[seam]
+            if rel not in запись.owners:
+                out.append(f"{rel}:{','.join(map(str, lines))} зовёт {запись.module}.{seam} "
+                           f"мимо двери окружения — через {запись.door}: {запись.why}")
     return out
 
 
@@ -2189,7 +2245,7 @@ def _declares_member(tree: ast.Module | None, name: str) -> bool:
 def seam_address_problems(graph: dict[str, set[str]], inv: Inventory | None,
                           seams: dict[str, dict[str, list[int]]] | None,
                           repo: pathlib.Path | None = None) -> list[str]:
-    """Адрес шва окружения графа обязан разрешаться ЦЕЛИКОМ (№424):
+    """Адрес шва обязан разрешаться ЦЕЛИКОМ (№424):
 
     * узел графа по последнему сегменту имени шва есть ровно один — два узла с
       одним хвостом не встанут рядом, и адрес неоднозначен;
@@ -2199,10 +2255,18 @@ def seam_address_problems(graph: dict[str, set[str]], inv: Inventory | None,
     * на живом дереве есть хотя бы одна ссылка на шов — иначе шов объявлен, но
       никем не зовётся, и сторож двери охраняет пустоту.
 
+    Первые два пункта — про модуль РЕПОЗИТОРИЯ. Модуль шва может быть и
+    чужим: `threading` приходит из stdlib, у него нет ни узла в графе, ни
+    объявления в дереве — его адрес разрешается самим stdlib. От опечатки в
+    имени модуля репозитория внешний отличается деревом: внутренний модуль
+    назван файлом (`trees`), внешний — нет; поэтому проверка узла и
+    объявления — только для названного файлом модуля, а владельцы и живая
+    ссылка спрашиваются у каждого шва.
+
     `None` в `inv` или `seams` значит «вызывающий о швах не спрашивает» — то же
     соглашение, что у `seam_problems`. Сверка по ПОСЛЕДНЕМУ сегменту, как у
     `_seam_refs`: после переезда пакет графа зовётся `charoite_graph.tier3`, а
-    ENV_SEAMS ключуется коротким именем модуля.
+    запись шва называет модуль коротким именем.
     """
     if inv is None or seams is None:
         return []
@@ -2216,29 +2280,30 @@ def seam_address_problems(graph: dict[str, set[str]], inv: Inventory | None,
             continue
         if (m := module_of(rel)) is not None:
             trees.setdefault(m, info.tree)
+    repo_tails = {m.rsplit(".", 1)[-1] for m in trees}
     referenced = {seam for found in seams.values() for seam in found}
     out: list[str] = []
-    for seam, (module, owners, door) in sorted(ENV_SEAMS.items()):
-        nodes = sorted(m for m in graph if m.rsplit(".", 1)[-1] == module)
-        if not nodes:
-            out.append(f"шов {module}.{seam}: узла графа с таким хвостом имени нет — "
-                       f"адрес шва нечем разрешить (дверь {door})")
-            continue
-        if len(nodes) > 1:
-            out.append(f"шов {module}.{seam}: хвост имени {module} у {len(nodes)} узлов "
-                       f"({', '.join(nodes)}) — адрес неоднозначен, рядом такие модули не встанут")
-            continue
-        node = nodes[0]
-        if not _declares_member(trees.get(node), seam):
-            out.append(f"шов {module}.{seam}: в модуле {node} нет объявления {seam} "
-                       f"верхнего уровня (функция, класс или присваивание) — адрес ведёт в пустоту")
-        for rel in owners:
+    for seam in sorted(ENV_SEAMS, key=lambda s: s.symbol):
+        if seam.module in repo_tails:
+            nodes = sorted(m for m in graph if m.rsplit(".", 1)[-1] == seam.module)
+            if not nodes:
+                out.append(f"шов {seam.module}.{seam.symbol}: узла графа с таким хвостом имени "
+                           f"нет — адрес шва нечем разрешить (дверь {seam.door})")
+            elif len(nodes) > 1:
+                out.append(f"шов {seam.module}.{seam.symbol}: хвост имени {seam.module} "
+                           f"у {len(nodes)} узлов ({', '.join(nodes)}) — адрес неоднозначен, "
+                           f"рядом такие модули не встанут")
+            elif not _declares_member(trees.get(nodes[0]), seam.symbol):
+                out.append(f"шов {seam.module}.{seam.symbol}: в модуле {nodes[0]} нет "
+                           f"объявления {seam.symbol} верхнего уровня (функция, класс или "
+                           f"присваивание) — адрес ведёт в пустоту")
+        for rel in seam.owners:
             if not (repo / rel).is_file():
-                out.append(f"шов {module}.{seam}: файл-владелец двери {rel} не существует "
-                           f"— дверь {door} некуда положить")
-        if seam not in referenced:
-            out.append(f"шов {module}.{seam}: на живом дереве нет ни одной ссылки — "
-                       f"шов объявлен, но никем не зовётся")
+                out.append(f"шов {seam.module}.{seam.symbol}: файл-владелец двери {rel} "
+                           f"не существует — дверь {seam.door} некуда положить")
+        if seam.symbol not in referenced:
+            out.append(f"шов {seam.module}.{seam.symbol}: на живом дереве нет ни одной "
+                       f"ссылки — шов объявлен, но никем не зовётся")
     return out
 
 
