@@ -111,8 +111,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
-from exit_codes import (EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_ROOT_UNNAMED,  # noqa: E402
-                        EXIT_UNJUDGED, EXIT_UNMUTABLE)
+from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
 # `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
 # (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
 # разошлось бы с ним. Слово исхода берём тем же классификатором, что и все.
@@ -675,22 +674,34 @@ def _max_arg(value: str) -> int | None:
     return n
 
 
-def parse_shard(value: str | None) -> tuple[int, int] | None:
-    """`K/N` из `--shard` — или None: шард не назван либо значение неверно.
+def _shard_arg(value: str) -> tuple[int, int]:
+    """`--shard K/N` — доля плана `i % N == K-1`; неверное значение — ошибка аргумента.
 
-    Разбор идёт до git-корня и лока: «0/4», «5/4», «a/b», «1/0» отвергаются,
-    не начав работы, — кодом `EXIT_ROOT_UNNAMED` (5), тем же «не начал», что
-    у неназванного корня данных.
+    Разбор — типом argparse, как у `--max`: отказ с usage и кодом 2 до git-корня,
+    дерева и лока. Не код 5: он значит «не назван корень данных», и проба
+    контракта запуска обязана отличать его от опечатки во флаге
+    (`exit_codes.EXIT_ROOT_UNNAMED`; выходной круг 1 по №441, DS M5).
     """
-    if value is None:
-        return None
     m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", value)
     if m is None:
-        return None
+        raise argparse.ArgumentTypeError(f"{value!r}: ожидается K/N")
     k, n = int(m.group(1)), int(m.group(2))
     if n < 1 or not 1 <= k <= n:
-        return None
+        raise argparse.ArgumentTypeError(f"{value!r}: нужно 1 ≤ K ≤ N")
     return (k, n)
+
+
+#: Суффикс машинной строки шарда рядом с отчётом: `<report>` + он. Одно имя на троих —
+#: писателя (`write_artifacts`), судью (`_shard_rows`) и шаг выгрузки артефакта в CI;
+#: сторож workflow собирает глоб артефакта из этой константы (выходной круг 1 по №441,
+#: DS I3: переименование суффикса иначе красило бы вердикт на каждом PR).
+SHARD_LINE_SUFFIX = ".json"
+
+
+def shard_line_path(report: pathlib.Path) -> pathlib.Path:
+    """Где лежит машинная строка шарда при отчёте `report` — одно правило имени для
+    писателя и для сторожа выгрузки артефакта в CI."""
+    return report.with_name(report.name + SHARD_LINE_SUFFIX)
 
 
 def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_n: int,
@@ -706,7 +717,7 @@ def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_
         return
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(text + "\n", encoding="utf-8")
-    machine = report.with_name(report.name + ".json")
+    machine = shard_line_path(report)
     machine.write_text(json.dumps({"K": shard_k, "N": shard_n, "M": m, "P": p,
                                    "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n",
                        encoding="utf-8")
@@ -719,7 +730,7 @@ def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int,
     и «все `*.json` шардов» — это они, а не только плоский уровень.
     """
     rows: list[tuple[int, int, int, int, str]] = []
-    for path in sorted(directory.rglob("*.json")):
+    for path in sorted(directory.rglob("*" + SHARD_LINE_SUFFIX)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             rows.append((int(data["K"]), int(data["N"]), int(data["M"]),
@@ -768,8 +779,19 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
         p = rows[0][3]
         clean = [r for r in rows if not (r[4] == "ok" or (r[4] == "nothing" and r[2] == 0))]
         if p == 0:
-            if not clean:
+            # План пуст у всего диапазона — слово у всех шардов одно и то же.
+            # «Нечего» и «строки есть, мутировать нечего» (слепое пятно, №386) —
+            # не отказ гейта: до шардов CI отвечал на них заметкой и
+            # предупреждением, и красный вердикт на каждом PR без python-строк
+            # приучил бы не смотреть на него вовсе (выходной круг 1 по №441, DS C1).
+            # «Не прочитан файл» (`partial`) — красный: план неполон.
+            words = {r[4] for r in rows}
+            if words <= {"nothing"}:
                 lines.insert(0, "мутировать нечего")
+                code = 0
+            elif words <= {"nothing", "unmutable"}:
+                lines.insert(0, "строки в диапазоне есть, а мутировать в них нечего — "
+                                "слепое пятно мутатора, см. отчёты шардов")
                 code = 0
             else:
                 lines.insert(0, "шарды дали неполный исход: "
@@ -801,7 +823,7 @@ def main(argv: list[str]) -> int:
                          "«all» — без среза")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
-    ap.add_argument("--shard", default=None,
+    ap.add_argument("--shard", type=_shard_arg, default=None,
                     help="доля плана K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
                          "i %% N == K-1 ДО среза --max")
     ap.add_argument("--merge-shards", type=pathlib.Path, default=None,
@@ -821,13 +843,7 @@ def main(argv: list[str]) -> int:
     if args.merge_shards is not None:
         return merge_shards(args.merge_shards, args.report)
 
-    # Неверный шард — отказ ДО работы: ни git, ни дерева, ни прогона. Код —
-    # существующий EXIT_ROOT_UNNAMED (5), тот же «не начал», что у неназванного
-    # корня данных; исход его — `fail`, и вердикт CI его не пропустит.
-    shard = parse_shard(args.shard)
-    if args.shard is not None and shard is None:
-        print(f"--shard {args.shard!r}: ожидается K/N, где 1 ≤ K ≤ N")
-        return EXIT_ROOT_UNNAMED
+    shard = args.shard            # неверное значение отвергнуто разбором аргументов
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
@@ -870,11 +886,18 @@ def main(argv: list[str]) -> int:
         # а этой доле мутантов не досталось. Это не «в диапазоне нечего» —
         # соседние шарды судят свою часть; отчёт и машинная строка (word
         # `nothing`, M = 0) нужны слиянию, иначе ΣM ≠ P.
-        if shard is not None and p_total:
-            print(f"шард {k} из {n}: 0 из {p_total} — нечего")
+        # Машинная строка — на ЛЮБОМ выходе прогона с шардом: без неё вердикт
+        # видит «ни одного файла шарда» и краснеет на каждом PR без python-строк
+        # (выходной круг 1 по №441, DS C1). P = 0 — диагноз всего диапазона,
+        # одинаковый у всех шардов; P > 0 при пустой доле — «нечего» ЭТОГО
+        # шарда: его мутантов нет, соседи судят свою часть.
+        if shard is not None:
+            word = EXIT_NOTHING_TO_CHECK if p_total else code
             write_artifacts(args.report, render_report(0, [], [], 0, 0, "", totals),
-                            k, n, m_total, p_total, EXIT_NOTHING_TO_CHECK)
-            return EXIT_NOTHING_TO_CHECK
+                            k, n, m_total, p_total, word)
+            if p_total:
+                print(f"шард {k} из {n}: 0 из {p_total} — нечего")
+                return EXIT_NOTHING_TO_CHECK
         if code == EXIT_NOTHING_TO_CHECK and not totals.lines_in:
             print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
         elif code == EXIT_NOTHING_TO_CHECK:

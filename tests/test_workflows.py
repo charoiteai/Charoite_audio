@@ -416,6 +416,27 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
     judge = [s for s in verdict["steps"] if "--merge-shards" in str(s.get("run", ""))]
     assert len(judge) == 1, "судья шардов — один шаг `mutate_check.py --merge-shards`"
 
+
+def test_mutation_artifact_carries_the_line_the_verdict_reads():
+    """Имя машинной строки шарда — одно на троих: отчёт шага + `SHARD_LINE_SUFFIX`
+    мутатора обязан попадать в глоб выгрузки артефакта. Переименование суффикса
+    иначе проходило бы все сторожа, а вердикт видел бы ноль файлов на каждом PR
+    (выходной круг 1 по №441, DS I3). Номер шарда подставляется в оба имени."""
+    import fnmatch
+    import sys
+    sys.path.insert(0, str(WF.parent.parent / "scripts"))
+    import mutate_check
+
+    job = _load("ci.yml")["jobs"]["mutation"]
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    report = re.search(r'--report\s+"?([^"\s]+)"?', str(step["run"]))
+    assert report, "шаг шарда обязан назвать --report"
+    upload = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact"))
+    for shard in job["strategy"]["matrix"]["shard"]:
+        строка = mutate_check.shard_line_path(pathlib.Path(report.group(1).replace("$SHARD", str(shard)))).name
+        глоб = str(upload["with"]["path"]).replace("${{ matrix.shard }}", str(shard))
+        assert fnmatch.fnmatch(строка, глоб), f"артефакт {глоб!r} не забирает машинную строку {строка!r}"
+
 # ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
 #
 # CI, pre-commit и preflight зовут `ruff check <пути>`; правила — только в

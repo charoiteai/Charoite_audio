@@ -10,6 +10,7 @@
 import ast
 import collections
 import json
+import re
 import os
 import pathlib
 import shutil
@@ -1107,23 +1108,134 @@ def test_пустой_шард_печатает_нечего_и_пишет_ар�
     assert data == {"K": 7, "N": 7, "M": 0, "P": 6, "word": "nothing"}
 
 
-def test_parse_shard_берёт_только_верные_доли():
-    assert mc.parse_shard(None) is None
-    assert mc.parse_shard("2/4") == (2, 4)
-    assert mc.parse_shard(" 3 / 7 ") == (3, 7)
-    for плохой in ("0/4", "5/4", "a/b", "1/0", "4", "1/", "/4", "2/4/6", "-1/2"):
-        assert mc.parse_shard(плохой) is None, плохой
+def test_shard_arg_берёт_только_верные_доли():
+    """Границы доли: `1/1`, `1/N` и `N/N` — законны, `0/N`, `N+1/N`, `K/0` — нет.
+    Выжившие мутанты круга 1 (`n < 1` → `n <= 1`, `1 <= k` → `1 < k`) держались
+    ровно на отсутствии этих краёв."""
+    import argparse
+    for good, want in (("1/1", (1, 1)), ("1/4", (1, 4)), ("4/4", (4, 4)),
+                       ("2/4", (2, 4)), (" 3 / 7 ", (3, 7))):
+        assert mc._shard_arg(good) == want, good
+    for плохой in ("0/4", "5/4", "a/b", "1/0", "0/0", "4", "1/", "/4", "2/4/6", "-1/2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc._shard_arg(плохой)
 
 
 @pytest.mark.parametrize("плохой", ["0/4", "5/4", "a/b", "1/0", "4", "1/", "/4"])
 def test_неверный_shard_отказ_до_работы(tmp_path, monkeypatch, capsys, плохой):
-    """`0/4`, `5/4`, `a/b` отвергаются до git-корня, дерева и лока: тест стоит
-    вне git-репозитория, и дойди код до `git rev-parse` — была бы трассировка."""
+    """`0/4`, `5/4`, `a/b` отвергаются разбором аргументов до git-корня, дерева и
+    лока: тест стоит вне git-репозитория, и дойди код до `git rev-parse` — была бы
+    трассировка. Код — 2 от argparse, а не 5: пятёрка значит «корень данных не
+    назван», и проба контракта запуска отличает её от опечатки во флаге."""
     import exit_codes
     monkeypatch.chdir(tmp_path)
-    assert mc.main(["mutate_check.py", "--shard", плохой]) == exit_codes.EXIT_ROOT_UNNAMED
-    assert "shard" in capsys.readouterr().out
-    assert exit_codes.outcome(exit_codes.EXIT_ROOT_UNNAMED) == "fail"
+    with pytest.raises(SystemExit) as отказ:
+        mc.main(["mutate_check.py", "--shard", плохой])
+    assert отказ.value.code == 2 != exit_codes.EXIT_ROOT_UNNAMED
+    assert "--shard" in capsys.readouterr().err
+
+
+def test_max_arg_ноль_законен_минус_нет():
+    """`--max 0` — законный потолок «ни одного» (им закрыт срез всего плана),
+    отрицательный — ошибка. Мутант `n < 0` → `n <= 0` выживал без этого края."""
+    import argparse
+    assert mc._max_arg("0") == 0
+    assert mc._max_arg("all") is None
+    with pytest.raises(argparse.ArgumentTypeError):
+        mc._max_arg("-1")
+
+
+def test_шард_при_пустом_диапазоне_пишет_строку_нечего(tmp_path, monkeypatch, capsys):
+    """P = 0 (правка без python-строк) — прогон с шардом всё равно кладёт машинную
+    строку: без неё вердикт видит «ни одного файла шарда» и краснеет на каждом PR
+    без кода (выходной круг 1 по №441, DS C1). Слово — диагноз всего диапазона."""
+    import exit_codes
+    repo = _git_repo(tmp_path, {"README.md": "было\n"})
+    (repo / "README.md").write_text("стало\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "только текст"], cwd=repo, check=True)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / "отчёт-2.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "2/4", "--max", "all",
+                  "--force", "--report", str(отчёт)])
+    assert rc == exit_codes.EXIT_NOTHING_TO_CHECK
+    строка = отчёт.with_name(отчёт.name + mc.SHARD_LINE_SUFFIX)
+    assert json.loads(строка.read_text(encoding="utf-8")) == \
+        {"K": 2, "N": 4, "M": 0, "P": 0, "word": "nothing"}
+    assert "шард 2 из 4" not in capsys.readouterr().out, "P = 0 — диагноз диапазона, а не «пустая доля»"
+
+
+def test_вердикт_при_пустом_диапазоне_не_краснеет(tmp_path):
+    """P = 0: «нечего» — заметка, «строки есть, мутировать нечего» (слепое пятно,
+    №386) — предупреждение, но не красный; «не прочитан файл» — красный."""
+    def шарды(каталог, слово):
+        каталог.mkdir()
+        for k in range(1, 5):
+            (каталог / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+                {"K": k, "N": 4, "M": 0, "P": 0, "word": слово}), encoding="utf-8")
+        return каталог
+    assert mc.merge_shards(шарды(tmp_path / "a", "nothing")) == 0
+    assert mc.merge_shards(шарды(tmp_path / "b", "unmutable")) == 0
+    assert mc.merge_shards(шарды(tmp_path / "c", "partial")) == 1
+
+
+def test_вердикт_без_файлов_называет_причину(tmp_path, capsys):
+    """Пустой каталог артефактов — красный с причиной «ни одного файла шарда»,
+    а не «разные N» из пустого множества."""
+    (tmp_path / "пусто").mkdir()
+    assert mc.merge_shards(tmp_path / "пусто") == 1
+    assert "ни одного файла шарда" in capsys.readouterr().out
+
+
+def test_шард_с_урезающим_потолком_пишет_долю_и_partial(tmp_path, monkeypatch):
+    """Шард 1/1 с `--max 3` при плане из шести: машинная строка несёт M = 6 (вся
+    доля) и слово `partial` — срез виден вердикту словом, а не арифметикой ΣM
+    (выходной круг 1 по №441, DS M4)."""
+    repo = _репо_с_правкой(tmp_path)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def run_tests(cwd, targets, timeout):
+        calls["n"] += 1
+        return calls["n"] == 1          # база зелёная, мутанты убиты
+
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "1/1", "--max", "3",
+             "--timeout", "5", "--force", "--report", str(отчёт)])
+    data = json.loads(отчёт.with_name(отчёт.name + mc.SHARD_LINE_SUFFIX).read_text(encoding="utf-8"))
+    assert (data["M"], data["P"], data["word"]) == (6, 6, "partial")
+
+
+def test_потолок_равный_плану_не_переставляет_мутантов(tmp_path, monkeypatch, capsys):
+    """План ровно в потолок — среза нет, и порядок прогона — порядок плана. Срез
+    раскладывает мутантов по кругу между файлами; `>=` вместо `>` включал бы его
+    на плане, который резать не нужно (выживший мутант круга 1 по №441)."""
+    repo = _git_repo(tmp_path, {"src/a.py": _БАЗА, "src/b.py": _БАЗА})
+    (repo / "src" / "a.py").write_text(_ПРАВКА, encoding="utf-8")
+    (repo / "src" / "b.py").write_text(_ПРАВКА, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "две правки"], cwd=repo, check=True)
+    план, _ = mc.plan_for(repo, _ДИАПАЗОН)
+    assert {m.path.name for m in план} == {"a.py", "b.py"} and len(план) > 2
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def run_tests(cwd, targets, timeout):
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--max", str(len(план)),
+             "--timeout", "5", "--force"])
+    out = capsys.readouterr().out
+    assert "СРЕЗАНО" not in out
+    прогон = re.findall(r"\] убит: (src/[ab]\.py:\d+)", out)
+    assert прогон == [f"src/{m.path.name}:{m.line}" for m in план], out[-800:]
 
 
 def test_max_all_снимает_потолок(tmp_path, monkeypatch, capsys):
@@ -1229,7 +1341,9 @@ def test_merge_шардов_p0_все_nothing_заметка(tmp_path, capsys):
     ([(1, 2, 3, 6, "partial"), (2, 2, 3, 6, "ok")], "неполный исход"),
     ([(1, 2, 3, 6, "unjudged"), (2, 2, 3, 6, "ok")], "неполный исход"),
     ([(1, 2, 4, 6, "ok"), (2, 2, 2, 6, "nothing")], "неполный исход"),  # nothing с M > 0
-    ([(1, 1, 0, 0, "unmutable")], "неполный исход"),                 # P = 0, но не nothing
+    # P > 0 и `unmutable` у шарда — красный; при P = 0 это слепое пятно всего
+    # диапазона, предупреждение (test_вердикт_при_пустом_диапазоне_не_краснеет)
+    ([(1, 2, 3, 6, "ok"), (2, 2, 3, 6, "unmutable")], "неполный исход"),
     ([(1, 1, 1, 1, "fail")], "неполный исход"),
 ])
 def test_merge_шардов_красный(tmp_path, capsys, ряды, фраза):
