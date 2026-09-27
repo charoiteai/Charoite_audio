@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 # Пины pytest, pytest-timeout и setuptools — те же, что в ci.yml (обновлять
-# парой; аудит DeepSeek 16.08). Зачем setuptools — комментарий в ci.yml (№427).
+# парой; аудит DeepSeek 16.08). Зачем setuptools — комментарий в ci.yml (№427, часть 1).
 env:
   PYTEST_VERSION: "9.1.1"
   # Тесты поднимают настоящие потоки и ждут их join: один зависший

@@ -35,7 +35,7 @@ env:
   PYTEST_TIMEOUT_VERSION: "2.4.0"
   # Известный setuptools в тестовом venv: колесо пакета графа тест собирает
   # офлайн, без изоляции (`pip wheel --no-build-isolation`), то есть
-  # setuptools окружения, и сверяет его версию с этим пином (№427). Сборку
+  # setuptools окружения, и сверяет его версию с этим пином (№427, часть 1). Сборку
   # самой дистрибуции (`pip install .`) пин не трогает — у неё изоляция и
   # свой [build-system]. Пара с nightly.yml: pytest, pytest-timeout,
   # setuptools; остальные пины живут только здесь. Dependabot их не видит.
