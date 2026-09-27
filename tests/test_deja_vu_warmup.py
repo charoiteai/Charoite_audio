@@ -4,13 +4,15 @@
 800 ядер не укладывались в 20 с на машине, занятой встречей: кэш не грелся
 никогда, и каждый проход платил полной перепосылкой (круг 1 по коду, Opus I1).
 """
+import ast
+import json
 import pathlib
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 import daemon  # noqa: E402
-import llm  # noqa: E402
+import embed_door  # noqa: E402
 
 
 def _cores(tmp_path, n):
@@ -23,7 +25,7 @@ def _cores(tmp_path, n):
 
 
 def test_warmup_keeps_every_good_batch_and_stops_at_the_first_refusal(tmp_path):
-    cores = _cores(tmp_path, 4 * llm.EMBED_BATCH_TEXTS)
+    cores = _cores(tmp_path, 4 * embed_door.EMBED_BATCH_TEXTS)
     вызовы = []
 
     def embed(payload):
@@ -32,12 +34,12 @@ def test_warmup_keeps_every_good_batch_and_stops_at_the_first_refusal(tmp_path):
 
     vecs: dict = {}
     added = daemon.warm_core_vectors(cores, vecs, embed, max_batches=4)
-    assert added == 2 * llm.EMBED_BATCH_TEXTS and len(vecs) == added, "удачные пачки потеряны"
-    assert вызовы == [llm.EMBED_BATCH_TEXTS] * 3, "после отказа проход продолжился: %s" % вызовы
+    assert added == 2 * embed_door.EMBED_BATCH_TEXTS and len(vecs) == added, "удачные пачки потеряны"
+    assert вызовы == [embed_door.EMBED_BATCH_TEXTS] * 3, "после отказа проход продолжился: %s" % вызовы
 
 
 def test_warmup_is_capped_per_pass_and_continues_next_pass(tmp_path):
-    cores = _cores(tmp_path, 5 * llm.EMBED_BATCH_TEXTS)
+    cores = _cores(tmp_path, 5 * embed_door.EMBED_BATCH_TEXTS)
     vecs: dict = {}
 
     def embed(payload):
@@ -45,8 +47,8 @@ def test_warmup_is_capped_per_pass_and_continues_next_pass(tmp_path):
 
     first = daemon.warm_core_vectors(cores, vecs, embed, max_batches=2)
     second = daemon.warm_core_vectors(cores, vecs, embed, max_batches=2)
-    assert first == second == 2 * llm.EMBED_BATCH_TEXTS
-    assert len(vecs) == 4 * llm.EMBED_BATCH_TEXTS, "второй проход начал не с того места"
+    assert first == second == 2 * embed_door.EMBED_BATCH_TEXTS
+    assert len(vecs) == 4 * embed_door.EMBED_BATCH_TEXTS, "второй проход начал не с того места"
 
 
 def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path):
@@ -56,3 +58,50 @@ def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path
     daemon.warm_core_vectors([p], {}, lambda payload: (отправлено.extend(payload), [[1.0]] * len(payload))[1])
     assert отправлено and отправлено[0].startswith("Ядро. идёт") and "_(" not in отправлено[0]
     assert len(отправлено[0]) == 400
+
+
+def test_deja_vu_asks_the_door_without_keep_alive(_ollama_маршруты):
+    """Дежавю делит слот с чат-моделью: в теле запроса поля keep_alive нет —
+    bge-m3 не остаётся резидентом ради контура, который спрашивает раз в сорок
+    секунд. Меряется тело запроса, а не написание вызова (выходной круг 1, DS I2).
+    Ответ — маршрутом сторожа сети, а не подменой глагола `requests`."""
+    import llm
+    import requests
+
+    seen: dict = {}
+
+    def ответ(url, **k):
+        seen.update(k.get("json") or {})
+        seen["timeout"] = k.get("timeout")
+        r = requests.Response()
+        r.status_code = 200
+        r._content = json.dumps({"embeddings": [[1.0, 0.0]]}).encode("utf-8")
+        return r
+
+    cfg = {"llm": {"model": "тест-модель", "small_model": "тест-мелкая",
+                   "num_ctx": 8192, "temperature": 0.4},
+           "sufler": {"role": "тестовая роль", "embed_model": "own-model"}}
+    _ollama_маршруты.сценарий_эмбеддингов(ответ)
+    llm.LLM(cfg)                        # маршрут /api/embed ставится по адресу экземпляра
+    assert daemon.deja_vu_embed(cfg, ["т"]) == [[1.0, 0.0]]
+    assert seen["model"] == "own-model" and "keep_alive" not in seen, seen
+    assert 0 < seen["timeout"] <= 20, "срок дежавю — 20 с на весь вызов"
+
+
+def test_the_deja_vu_loop_asks_through_deja_vu_embed():
+    """Проводка: замыкание `main()` снаружи недостижимо, поэтому единственное, что
+    здесь пиннится по исходнику, — ЧЕРЕЗ КОГО оно спрашивает; что уходит в
+    запрос, меряет тест выше."""
+    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    loop = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "deja_vu_loop")
+    calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+             for c in ast.walk(loop) if isinstance(c, ast.Call)}
+    # фабрику двери цикл не упоминает: ни вызовом, ни атрибутом, ни именем, ни строкой
+    # (`getattr(llm_mod, "embedder")`) — выходные круги 3–4, DS M3; импорт внутри
+    # функции с псевдонимом (`from llm import embedder as e`) это не ловит
+    atoms = {n.attr for n in ast.walk(loop) if isinstance(n, ast.Attribute)} \
+        | {n.id for n in ast.walk(loop) if isinstance(n, ast.Name)} \
+        | {n.value for n in ast.walk(loop) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "deja_vu_embed" in calls, sorted(calls)
+    assert "embedder" not in atoms, sorted(a for a in atoms if "embed" in a)

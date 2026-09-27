@@ -45,6 +45,8 @@ import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
+import embed_door  # noqa: E402
+import llm as llm_mod  # noqa: E402
 from exit_codes import EXIT_ROOT_UNNAMED  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
@@ -58,7 +60,7 @@ import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
-from llm import LLM, EMBED_BATCH_TEXTS, embed as llm_embed  # noqa: E402
+from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import MINUTES_DRAFT_MARK, Transcript, is_noise  # noqa: E402
 
@@ -84,6 +86,22 @@ from charoite_paths import (
 WARM_BATCHES = 4
 
 
+def deja_vu_embed(cfg: dict, texts: list[str]) -> list[list[float]]:
+    """Векторы для дежавю. 20 с, не 120: эмбеддинг занимает ~0.2 с, и если Ollama
+    занят тяжёлой генерацией — лучше пропустить проход дежавю, чем держать поток
+    заблокированным две минуты. keep_alive=None: дежавю делит слот с чат-моделью
+    и не держит bge-m3 резидентом.
+
+    Дверь собирается на каждый ВЫЗОВ — пачку прогрева или запрос прохода, адрес и
+    модель из текущего конфига; срок 20 с — тоже на вызов. Потолок прохода на
+    занятой машине — `WARM_BATCHES` × 20 с на прогрев плюс 20 с на запрос.
+
+    Функцией модуля, а не строкой в замыкании `main()`: поведение (тело запроса
+    без keep_alive) проверяет тест, а не поиск по исходнику (выходной круг 1 по
+    №423, DS I2)."""
+    return llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)
+
+
 def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES) -> int:
     """Добрать векторы ядер в кэш дежавю пачками двери, не больше `max_batches`
     за проход; удачная пачка ложится в кэш сразу, сбой — конец прохода.
@@ -95,8 +113,9 @@ def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES)
     """
     fresh = [p for p in cores if p.stem not in vecs]
     добавлено = 0
-    for старт in range(0, min(len(fresh), max_batches * EMBED_BATCH_TEXTS), EMBED_BATCH_TEXTS):
-        пачка = fresh[старт:старт + EMBED_BATCH_TEXTS]
+    for старт in range(0, min(len(fresh), max_batches * embed_door.EMBED_BATCH_TEXTS),
+                       embed_door.EMBED_BATCH_TEXTS):
+        пачка = fresh[старт:старт + embed_door.EMBED_BATCH_TEXTS]
         payload = []
         for p in пачка:
             txt = p.read_text(encoding="utf-8")
@@ -2397,10 +2416,7 @@ def main():
         vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
 
         def embed(texts: list[str]) -> list[list[float]]:
-            # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
-            # генерацией — лучше пропустить проход дежавю, чем держать поток
-            # заблокированным две минуты
-            return llm_embed(cfg, texts, timeout=20)
+            return deja_vu_embed(cfg, texts)     # срок и keep_alive — в докстринге функции
 
         def cosine(a: list[float], b: list[float]) -> float:
             num = sum(x * y for x, y in zip(a, b))

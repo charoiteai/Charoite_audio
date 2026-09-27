@@ -27,6 +27,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import dossier  # noqa: E402
+import embed_door  # noqa: E402
 import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
 import model_seam  # noqa: E402
@@ -719,10 +720,7 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
 
     class Reply:
         status_code = 200
-
-        @staticmethod
-        def json():
-            return {"embeddings": [[1.0, 0.0]]}
+        content = json.dumps({"embeddings": [[1.0, 0.0]]}).encode("utf-8")
 
     def post(url, json=None, timeout=None):
         seen.update(json)
@@ -730,7 +728,7 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
 
     monkeypatch.setattr(llm.requests, "post", post)
     cfg = {"sufler": {"embed_model": "own-model"}}
-    e = llm.embedder(cfg)
+    e = llm.embedder(cfg)      # умолчание фабрики — боевой путь brain, писателя и индекса (DS I1)
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
     assert s.cache_key().startswith("own-model|"), "кэш подписывает тот, кто считает"
     assert e.run(["текст"], 5) == [[1.0, 0.0]]
@@ -738,11 +736,15 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
     # а это ровно тот сценарий, ради которого константа заведена (DS M3 круга 1)
     assert seen["model"] == "own-model" and seen["keep_alive"] == "30m"
 
+    seen.clear()
+    assert llm.embedder(cfg, keep_alive=None).run(["текст"], 5) == [[1.0, 0.0]]
+    assert "keep_alive" not in seen, "keep_alive=None — поля в теле нет: модель не держим резидентом"
+
     with pytest.raises(ValueError):
         llm.embedder({}, model="own")      # считать негде: пин без адреса — ошибка вызывающего
 
     seen.clear()
-    quiet = llm.embedder({})
+    quiet = llm.embedder({}, keep_alive=llm.EMBED_KEEP_ALIVE)
     assert quiet.run(["текст"], 5) == [] and not seen, "конфига нет — в сеть не ходим вовсе"
     assert quiet.model == model_seam.NO_MODEL, \
         "«моделей нет» — своя подпись: иначе первый позвавший без конфига застолбит индекс графа"
@@ -772,6 +774,19 @@ def test_the_name_is_resolved_in_one_place_and_the_pin_wins(cfg, pin, expect):
     assert model_seam.embed_model_name(cfg, pin) == expect
 
 
+def test_embed_keep_alive_is_the_residency_of_the_embedding_model():
+    """Строка резидентности — боевое значение, а не украшение.
+
+    Под ней модель эмбеддингов держится в памяти между вопросами встречи;
+    длиннее — зряшный ГБ в RAM, короче — каждый вопрос после паузы платит
+    загрузку внутри короткого таймаута. Тест пиннит значение, чтобы смена
+    умолчания была решением, а не побочным эффектом правки (DS M3 круга 1).
+    """
+    import llm
+
+    assert llm.EMBED_KEEP_ALIVE == "30m"
+
+
 def test_an_empty_cache_is_not_a_busy_server(tmp_path):
     """Кэша нет — значит собирать было нечего, а не «модель занята».
 
@@ -799,13 +814,13 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     """
     import llm
 
-    monkeypatch.setattr(llm, "_said", set())
+    monkeypatch.setattr(embed_door, "_said", set())
     # рубильник офлайна проверяется раньше allow_remote: на машине, где он
     # взведён, причина была бы другой, и тест краснел бы от окружения (GLM I2)
     for k in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
         monkeypatch.delenv(k, raising=False)
     cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
-    e = llm.embedder(cfg)
+    e = llm.embedder(cfg, keep_alive=llm.EMBED_KEEP_ALIVE)
     assert e.refused, "фабрика знает отказ сразу — его не надо ждать от первого вектора"
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
     s.refresh(force=True)
