@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 67.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 68.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 9): `exit_codes`, `file_locks`, `frontmatter`, `media_meta`, `model_seam`, `redirects`, `safe_write`, `task_line`, `vocabulary`
+- **base** (зависит от: —; модулей 10): `embed_door`, `exit_codes`, `file_locks`, `frontmatter`, `media_meta`, `model_seam`, `redirects`, `safe_write`, `task_line`, `vocabulary`
 - **runtime** (зависит от: base; модулей 5): `charoite_paths`, `config_loader`, `deps`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 4): `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 6): `dossier`, `graph_links`, `graph_names`, `graph_nodes`, `graph_search`, `tier3`
@@ -32,6 +32,7 @@
 
 - `charoite_paths` → runtime: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)
 - `deps` → runtime: рецепт про интерпретатор и .venv; ничего из репо не импортирует
+- `embed_door` → base: шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app

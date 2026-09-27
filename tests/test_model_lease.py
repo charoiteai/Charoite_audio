@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import fcntl
+import http.client
 import json
 import os
 import pathlib
@@ -28,6 +29,7 @@ import charoite_paths
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
+import embed_door  # noqa: E402
 import llm  # noqa: E402
 import llm_health  # noqa: E402
 import model_lease  # noqa: E402
@@ -370,12 +372,23 @@ def test_leased_stream_counts_only_payload_lines_as_progress(tmp_path, monkeypat
 
 
 def test_transport_seams_are_the_only_way_to_the_model():
-    """Структурный сторож: любое обращение к `requests` в llm.py — только в
-    двух швах с арендой (_open_stream, _post_busy) и двух названных
-    исключениях (embed — 0,2 с, убить не жалко; проба llm_health.probe — тот,
-    кто спрашивает). Ловится и `requests.request`, и `requests.Session` (M2 DS)."""
-    allowed = {"_open_stream", "_post_busy", "embed",
-               "_models_available"}       # GET списка моделей — метаданные, не генерация
+    """Структурный сторож: обращения к транспорту — только в объявленных швах.
+
+    В llm.py `requests.*` зовут два шва аренды (_open_stream, _post_busy), список
+    моделей (_models_available) и адаптер двери векторов (_requests_post): сам
+    векторизатор уехал в `embed_door`, поэтому `embed` из allowlist снят. В двери
+    `urllib.request.urlopen` зовётся только в `urllib_post`, а
+    `http.client.HTTPException` в `TRANSPORT_ERRORS` — тип исключения, не сырой
+    HTTP-запрос. Ловится и `requests.Session` (M2 DS).
+
+    Это пин шва, а не изоляция сети: разбор исходника обходится привязкой модуля
+    к имени, `getattr`, `sys.modules`, другим клиентом (выходные круги 2–3 по
+    №423). Сторож сети conftest сегодня перехватывает только глаголы `requests` и
+    `urllib.request.urlopen`; `urlretrieve`, `http.client` и `socket` он не видит —
+    перехват на уровне сокета ещё не сделан, это №437."""
+    allowed = {"_open_stream", "_post_busy", "_models_available",
+               "_requests_post"}          # GET списка моделей — метаданные, не генерация
+    assert "embed" not in allowed, "векторный транспорт уехал в дверь — llm.embed здесь не шов"
     tree = ast.parse((REPO / "src" / "llm.py").read_text(encoding="utf-8"))
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):
@@ -386,7 +399,53 @@ def test_transport_seams_are_the_only_way_to_the_model():
                     and node.func.attr not in {"RequestException", "ConnectionError", "Timeout", "HTTPError"}:
                 assert fn.name in allowed, f"requests.{node.func.attr} мимо швов с арендой: {fn.name}"
     src = (REPO / "src" / "llm.py").read_text(encoding="utf-8")
-    assert "Session(" not in src and "http.client" not in src, "сессии и сырой HTTP — мимо аренды"
+    assert "Session(" not in src, "сессии — мимо аренды"
+    assert "http.client" not in src, "сырой HTTP в слое моделей — только в двери векторов"
+
+    door_src = (REPO / "src" / "embed_door.py").read_text(encoding="utf-8")
+    assert _urlopen_outside_seam(ast.parse(door_src)) == []
+    assert http.client.HTTPException in embed_door.TRANSPORT_ERRORS, \
+        "обрыв ответа (IncompleteRead, BadStatusLine) — не OSError: без типа он пролетит мимо шва"
+    assert "Session(" not in door_src and "import requests" not in door_src, \
+        "дверь векторов не знает ни сессий, ни requests"
+
+
+def _urlopen_outside_seam(tree: ast.Module, seam: str = "urllib_post") -> list[str]:
+    """Где вызывается `urlopen` вне шва двери: имя ближайшей функции или «уровень модуля».
+
+    Пин одного написания, а не изоляция сети (круги 2–4 по №423): функцией, чтобы у
+    него был случай, на котором он обязан покраснеть. Шов — УЗЕЛ функции верхнего
+    уровня модуля, а не имя: одноимённая вложенная функция швом не считается
+    (выходной круг 5, DS M1)."""
+    allowed: set[int] = set()
+    for top in tree.body:
+        if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)) and top.name == seam:
+            allowed |= {id(n) for n in ast.walk(top)}
+    owner: dict[int, str] = {}
+
+    def mark(node: ast.AST, name: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else name
+            owner[id(child)] = inner
+            mark(child, inner)
+
+    mark(tree, "уровень модуля")
+    return [owner.get(id(n), "уровень модуля") for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "urlopen"
+            and id(n) not in allowed]
+
+
+@pytest.mark.parametrize("src, где", [
+    ("import urllib.request\ndef run(r):\n    return urllib.request.urlopen(r)\n", ["run"]),
+    ("import urllib.request\nX = urllib.request.urlopen('http://h')\n", ["уровень модуля"]),
+    ("import urllib.request\nasync def go(r):\n    return urllib.request.urlopen(r)\n", ["go"]),
+    ("import urllib.request\ndef urllib_post(r):\n    return urllib.request.urlopen(r)\n", []),
+    # одноимённая вложенная функция — не шов
+    ("import urllib.request\ndef other():\n    def urllib_post(r):\n        return urllib.request.urlopen(r)\n",
+     ["urllib_post"]),
+])
+def test_the_urlopen_pin_sees_calls_outside_the_seam(src, где):
+    assert _urlopen_outside_seam(ast.parse(src)) == где
 
 
 # ------------------------------------------------------ решающий llm_health
