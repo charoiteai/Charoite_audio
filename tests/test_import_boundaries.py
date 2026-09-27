@@ -1868,9 +1868,9 @@ def test_a_layout_directory_is_not_spelled_inside_a_function():
     `import_graph()`, и переезд сделал их несогласованными молча (круг 1 по
     коду №328, DS M4).
 
-    Написания берутся из объявлений — `LAYOUT_DIRS` и каталогов, которые пишут грамматики
-    путей (`candidate_dirs()` из `ENTRY_CANDIDATES`; выходные круги 1–2 по №424, DS M3/I1:
-    `LAYOUT_DIRS` схлопнулся до `src`), а не из копии списка в тесте: прежняя
+    Написания берутся из всех объявлений каталогов — `LAYOUT_DIRS`, грамматик путей
+    (`candidate_dirs()` из `ENTRY_CANDIDATES`) и правил `KINDS` целиком, многосегментные тоже
+    (выходные круги 1–3 по №424: `LAYOUT_DIRS` схлопнулся до `src`), а не из копии списка в тесте: прежняя
     редакция держала свой набор из шести строк и молчала на глобе `"src/*.py"`
     — идиоме, которой написан сам модуль (`ENTRY_CANDIDATES`), то есть на том
     способе, который человек скопирует первым (круг 3 по коду №328, GLM C1).
@@ -1885,7 +1885,8 @@ def test_a_layout_directory_is_not_spelled_inside_a_function():
     `TOKEN_PREFIXES`) каталоги называют намеренно: они и есть источник.
     """
     src = (ROOT / "scripts" / "layout_map.py").read_text(encoding="utf-8")
-    каталоги = set(lm.LAYOUT_DIRS) | (lm.candidate_dirs() - {""})
+    каталоги = (set(lm.LAYOUT_DIRS) | (lm.candidate_dirs() - {""})
+                | {p.rstrip("/") for p, *_ in lm.KINDS if p.endswith("/")})
     написания = {w for d in каталоги for w in (d, f"{d}/", f"{d}/*", f"{d}/*.py", f"{d}/**")}
     assert f"{lm.FLAT_DIR}/*.py" in написания, "глоб точек входа обязан попадать в сторож"
     чужие = []

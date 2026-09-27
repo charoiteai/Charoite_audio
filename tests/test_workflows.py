@@ -323,6 +323,13 @@ def _retry_worst_s(run: str) -> int:
     return len(tries.group(1).split()) * per_try
 
 
+#: Потолок job меряется по стенным часам самой job: post-шаги `uses:` и старт раннера
+#: в сумму потолков шагов не входят. Без запаса последний шаг снимался бы потолком
+#: job, а не своим, — «exceeded the maximum execution time» вместо вердикта
+#: (выходной круг 3 по №424, DS I2).
+CEILING_MARGIN = 1
+
+
 def test_ceiled_jobs_fit_their_step_ceilings():
     """Потолки job сходятся (№395). У каждого шага свой потолок, их сумма не больше
     потолка job: иначе GitHub обрывает job раньше шага — вместе с отчётом (#625:
@@ -337,8 +344,9 @@ def test_ceiled_jobs_fit_their_step_ceilings():
         without = [str(step.get("name") or step.get("uses")) for step, minutes
                    in zip(job["steps"], ceilings) if not isinstance(minutes, int)]
         assert not without, f"{name}: шаги без своего потолка: {without}"
-        assert sum(ceilings) <= job["timeout-minutes"], (
-            f"{name}: сумма потолков шагов {sum(ceilings)} больше потолка job {job['timeout-minutes']}")
+        assert sum(ceilings) + CEILING_MARGIN <= job["timeout-minutes"], (
+            f"{name}: сумма потолков шагов {sum(ceilings)} плюс запас {CEILING_MARGIN} мин "
+            f"больше потолка job {job['timeout-minutes']}")
         for step in job["steps"]:
             run = str(step.get("run", ""))
             if re.search(r"for \w+ in ", run):

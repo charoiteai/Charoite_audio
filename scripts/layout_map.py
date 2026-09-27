@@ -561,7 +561,9 @@ def _rule(rel: str) -> int | None:
 
 def _by_suffix(base: str, rel: str) -> str:
     """Вид файла внутри правила, когда правило просит разбирать по суффиксу:
-    `code` — только настоящий код, иначе проза по прозовому суффиксу или `out`."""
+    `code` — только настоящий код, иначе проза по прозовому суффиксу или `out`.
+    Вид `prose` правилом сейчас ничего не решает сверх суффикса: каталог прозы
+    выражается прозовыми суффиксами (выходной круг 3 по №424, DS M2)."""
     if base == "code" and rel.endswith(CODE_SUFFIXES):
         return "code"
     return "prose" if rel.endswith(PROSE_SUFFIXES) else "out"
