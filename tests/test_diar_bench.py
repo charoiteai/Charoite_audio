@@ -345,9 +345,11 @@ def test_nemotron_without_model_explains_before_running_anything():
     """Нет весов (и, в CI, пакета) — рецепт сразу, а не после прогона остальных движков."""
     out = _bench("--engine", "compare")
     assert out.returncode == 1, out.stdout + out.stderr
+    # очная ставка режет живые движки как демон, флаг не нужен (круг 1 по #648, DS I5)
+    assert "нарезкой демона" in out.stdout
     assert "hf download mlx-community/Nemotron-3-Diarization" in out.stderr
     if importlib.util.find_spec("mlx_audio") is None:
-        assert "pip install mlx-audio" in out.stderr
+        assert diar_bench.nemotron.INSTALL_RECIPE in out.stderr
     assert "DER" not in out.stdout, "движки успели поработать до отказа"
 
 
@@ -586,3 +588,48 @@ def test_engine_names_call_the_right_runner_with_the_right_switches(monkeypatch)
         ("run_nemotron", ("M",), {}),
         ("run_nemotron_live", ("M", "ultra_low"), {}),
     ]
+
+
+def test_empty_reference_is_undefined_not_a_perfect_score():
+    """Эталон без речи — не «DER 0.000», а отказ: делить не на что (выходной круг 1
+    по #648, DS C1). Обе метрики, а не только новая."""
+    hyp = [{"start": 0.0, "end": 1.0, "speaker": "x"}]
+    with pytest.raises(ValueError, match="нет ни одного кадра речи"):
+        diar_bench.der_overlap([], hyp, 5.0)
+    with pytest.raises(ValueError, match="нет ни одного кадра речи"):
+        diar_bench.der([], hyp, 5.0)
+
+
+def test_point_labels_only_refuse_before_any_engine(tmp_path):
+    """Разметка из одних меток-точек читается в пустой эталон — бенч отказывает
+    до прогона движков, с кодом 1, а не печатает «DER 0.000» (DS C1)."""
+    wav = tmp_path / "meeting.wav"
+    diar_bench.sf.write(wav, np.zeros(16000, dtype=np.float32), 16000)
+    labels = tmp_path / "labels.txt"
+    labels.write_text("5.0\t5.0\tА\n", encoding="utf-8")
+    out = _bench("--wav", str(wav), "--truth", str(labels), "--engine", "live")
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "нет ни одного кадра речи" in out.stderr and "DER" not in out.stdout
+
+
+def test_json_reference_without_segments_names_the_file(tmp_path):
+    """JSON без ключа `segments` — ошибка с файлом в тексте, как у текстовых форматов (DS M3)."""
+    truth = tmp_path / "t.json"
+    truth.write_text('{"audio": "m.wav"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="нет ключа segments"):
+        diar_bench.read_truth(truth)
+
+
+def test_overlapping_hypothesis_is_scored_the_nist_way():
+    """Гипотеза с собственными перекрытиями (sherpa) судится по NIST: два голоса в
+    кадре при одном в эталоне — лишняя речь. Прежний `der` клал её на сетку
+    «последний побеждает» и давал меньше; равенство метрик — только без перекрытий
+    с обеих сторон (выходной круг 1 по #648, DS I1)."""
+    truth = [{"start": 0.0, "end": 4.0, "speaker": "A"}]
+    hyp = [{"start": 0.0, "end": 2.0, "speaker": "x"}, {"start": 1.0, "end": 4.0, "speaker": "y"}]
+    assert diar_bench.has_overlap(hyp)
+    assert diar_bench.der(truth, hyp, 4.0)["der"] == pytest.approx(0.25)
+    assert diar_bench.der_overlap(truth, hyp, 4.0)["der"] == pytest.approx(0.5)
+    plain = [{"start": 0.0, "end": 2.0, "speaker": "x"}, {"start": 2.0, "end": 4.0, "speaker": "y"}]
+    assert diar_bench.der_overlap(truth, plain, 4.0) | {"overlap_ref_s": 0, "overlap_hyp_s": 0} \
+        == diar_bench.der(truth, plain, 4.0) | {"overlap_ref_s": 0, "overlap_hyp_s": 0}

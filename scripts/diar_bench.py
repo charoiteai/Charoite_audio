@@ -138,6 +138,11 @@ def mix_turns(parts: list[np.ndarray], starts: list[int], tail: int) -> np.ndarr
     return out
 
 
+#: Эталон, в котором нет ни кадра речи: пустой файл, одни метки-точки, JSON без
+#: отрезков. DER на нём не «идеален», а не определён (выходной круг 1 по #648, DS C1).
+NO_SPEECH = "в эталоне нет ни одного кадра речи — DER не определён"
+
+
 def has_overlap(segments: list[dict]) -> bool:
     """Звучат ли где-нибудь два голоса одновременно (дольше кадра сетки)."""
     ordered = sorted(segments, key=lambda s: s["start"])
@@ -225,6 +230,8 @@ def der(truth: list[dict], hyp: list[dict], total: float) -> dict:
             taken.add(r)
 
     speech = sum(1 for r in ref if r)
+    if not speech:
+        raise ValueError(NO_SPEECH)
     missed = sum(1 for r, s in zip(ref, sys_) if r and not s)
     false = sum(1 for r, s in zip(ref, sys_) if s and not r)
     confusion = sum(1 for r, s in zip(ref, sys_)
@@ -256,8 +263,11 @@ def der_overlap(truth: list[dict], hyp: list[dict], total: float, *,
     В каждом кадре эталон R и гипотеза S — множества. Пропуск —
     max(0, |R|−|S|), лишнее — max(0, |S|−|R|), путаница — min(|R|,|S|) минус
     верно сопоставленные. Сопоставление меток то же, что в `der`: жадное, по
-    наибольшему совместному времени, один к одному. На разметке без
-    перекрытий это ровно `der` — тесты держат равенство.
+    наибольшему совместному времени, один к одному. Когда ни в разметке, ни в
+    гипотезе нет перекрытий, это ровно `der` — тесты держат равенство. Гипотеза
+    с собственными перекрытиями (sherpa) судится по NIST и может дать больше
+    `der`, который клал её на сетку «последний побеждает» (круг 1 по #648, DS I1).
+    Эталон без речи — не «DER 0», а отказ: делить не на что (DS C1).
 
     hyp_single — движок по контракту даёт один голос на момент (живой
     трекер): его окна перекрываются из-за нарезки чанков, а не потому, что он
@@ -289,6 +299,8 @@ def der_overlap(truth: list[dict], hyp: list[dict], total: float, *,
         false += max(0, len(ss) - len(rs))
         hit = sum(1 for s in ss if mapping.get(s) in rs)
         confusion += min(len(rs), len(ss)) - hit
+    if not speech:
+        raise ValueError(NO_SPEECH)
     return {
         "der": (missed + false + confusion) / speech if speech else 0.0,
         "missed": missed / speech if speech else 0.0,
@@ -442,6 +454,10 @@ def read_truth(path: pathlib.Path) -> list[dict]:
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() == ".json":
         data = json.loads(text)
+        if isinstance(data, dict) and "segments" not in data:
+            # дверь чтения эталона отказывает одним типом с файлом в тексте, как у
+            # текстовых форматов ниже, а не трассировкой KeyError (круг 1 по #648, DS M3)
+            raise ValueError(f"{path}: в JSON бенча нет ключа segments")
         return list(data["segments"] if isinstance(data, dict) else data)
     out: list[dict] = []
     for n, line in enumerate(text.splitlines(), 1):
@@ -583,6 +599,11 @@ def main() -> int:
         return 0
 
     names = GROUPS.get(args.engine, (args.engine,))
+    if args.engine == "compare" and not args.overlap:
+        # очная ставка решает встраивание Nemotron — живой движок в ней режется как в
+        # демоне, а не встык, который льстит себе (выходной круг 1 по #648, DS I5)
+        args.overlap = True
+        print("compare: живые движки — нарезкой демона (--overlap)")
     if any(n.startswith("nemotron") for n in names):
         problem = nemotron.availability(args.nemotron_model or nemotron.model_dir(_root()))
         if problem:
@@ -615,6 +636,11 @@ def main() -> int:
         truth = data["segments"]
         total = sf.info(str(wav)).duration
 
+    if truth is not None and not any(s["end"] > s["start"] for s in truth):
+        # пустой эталон — отказ до прогона, а не «DER 0.000» на всех движках (DS C1)
+        print(f"{args.truth or wav.name}: {NO_SPEECH} (метки-точки и строки частотного "
+              f"выделения Audacity речью не считаются)", file=sys.stderr)
+        return 1
     if truth is None:
         print(f"{wav.name}: {total:.1f}с, разметки нет — DER не считается\n")
     else:

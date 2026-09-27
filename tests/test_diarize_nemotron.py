@@ -149,8 +149,10 @@ def test_unknown_preset_is_refused_before_loading(tmp_path, fake_mlx):
 def test_missing_package_gives_install_recipe(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_audio", None)     # import → ImportError
     monkeypatch.setitem(sys.modules, "mlx_audio.vad", None)
-    with pytest.raises(nem.ModelUnavailable, match="pip install mlx-audio"):
+    with pytest.raises(nem.ModelUnavailable) as err:
         nem.load_model(_model_dir(tmp_path))
+    # рецепт с версией, по коду которой проверен стык (круг 1 по #648, DS M2)
+    assert nem.INSTALL_RECIPE in str(err.value) and "mlx-audio==" in nem.INSTALL_RECIPE
 
 
 def test_availability_lists_every_problem_at_once(tmp_path, monkeypatch):
@@ -341,3 +343,78 @@ def test_wrapper_speaks_the_real_mlx_audio_api(tmp_path, monkeypatch):
     for seg in small + whole:
         assert 0.0 <= seg["start"] < seg["end"] <= 4.0 + 1e-6, seg
         assert seg["speaker"] in {f"nem{i}" for i in range(8)}, seg
+
+
+@pytest.mark.parametrize("fail_at", ["load", "set_streaming_config"])
+def test_a_model_that_does_not_rise_gives_the_recipe_not_a_trace(tmp_path, monkeypatch, fail_at):
+    """Каталог прошёл проверку формы, а тензоры не той архитектуры или закачка
+    оборвана выше порога — `ModelUnavailable` с рецептом, а не трассировка mlx
+    (выходной круг 1 по #648, DS I4)."""
+    import types
+
+    class Model:
+        def set_streaming_config(self, preset):
+            if fail_at == "set_streaming_config":
+                raise KeyError("encoder.layers.0")
+
+    def load(path, strict):
+        if fail_at == "load":
+            raise ValueError("shape mismatch")
+        return Model()
+
+    vad = types.ModuleType("mlx_audio.vad")
+    vad.load = load
+    monkeypatch.setitem(sys.modules, "mlx_audio", types.ModuleType("mlx_audio"))
+    monkeypatch.setitem(sys.modules, "mlx_audio.vad", vad)
+    with pytest.raises(nem.ModelUnavailable, match="не поднялась") as err:
+        nem.load_model(_model_dir(tmp_path))
+    assert "hf download" in str(err.value)
+
+
+def test_unreadable_config_is_a_recipe(tmp_path, monkeypatch):
+    """`config.json`, который не читается (права, битый том), — строка с рецептом,
+    а не `OSError` наружу (DS I4)."""
+    d = _model_dir(tmp_path)
+    real = pathlib.Path.read_text
+
+    def refuse(self, *a, **kw):
+        if self.name == "config.json":
+            raise PermissionError("нет прав")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", refuse)
+    problem = nem.check_model_dir(d)
+    assert problem and "PermissionError" in problem and "hf download" in problem
+
+
+def test_the_product_does_not_import_the_experiment():
+    """Эксперимент зовут только бенч и тесты: ни один модуль продукта не
+    импортирует `diarize_nemotron` — по графу импортов раскладки, а не по
+    докстрингу (выходной круг 1 по #648, DS I2)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import layout_map as lm
+
+    graph = lm.import_graph(lm.inventory(REPO))
+    assert "diarize_nemotron" in graph, "модуль пропал из графа — сторож сторожил бы пустоту"
+    importers = sorted(m for m, deps in graph.items() if "diarize_nemotron" in deps)
+    assert importers == [], f"продукт зовёт эксперимент: {importers}"
+
+
+def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):
+    """Прогон обёртки с подменённой моделью по потоку и по файлу: на диске ничего
+    не появляется — ни в рабочем каталоге, ни в репозитории. Что пишет сама
+    mlx-audio, этот тест не видит: это прогон с весами на Mac (№443, DS I3)."""
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    before = {p for p in REPO.rglob("*") if ".git" not in p.parts}
+    stream = nem.NemotronStream(_FakeStreamModel())
+    rng = np.random.default_rng(0)
+    for _ in range(4):
+        stream.feed(rng.normal(0, 0.05, 8000).astype(np.float32))
+    stream.close()
+    assert list(work.iterdir()) == [], f"обёртка создала файлы: {list(work.iterdir())}"
+    new = {p for p in REPO.rglob("*") if ".git" not in p.parts} - before
+    assert not {p for p in new if "__pycache__" not in p.parts}, sorted(new)

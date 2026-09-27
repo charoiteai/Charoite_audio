@@ -150,8 +150,13 @@ not show this: its replies never overlap.
 where four replies start 0.8–1.5 s before the previous one ends. With
 overlapping ground truth, DER is scored the NIST way: a frame may hold several
 voices, too few voices is a miss, too many is a false alarm. Without overlaps
-this is exactly the old metric — the tests hold that equality, and the live
-and sherpa numbers on the plain fixture reproduce to the digit. The live
+this is exactly the old metric when the hypothesis has no overlaps either —
+the tests hold that equality, and the live numbers on the plain fixture
+reproduce to the digit. A hypothesis with overlaps of its own (sherpa can emit
+them) is scored the NIST way too and may read higher than the archived number,
+which laid it out "last one wins". A reference without a single frame of
+speech (an empty file, point labels only) is refused before any engine runs:
+DER is undefined there, not perfect. The live
 tracker names one voice per chunk by design, so its overlapping chunk windows
 are still laid out "last one wins" rather than counted as a second voice.
 
@@ -168,13 +173,15 @@ dependencies; both are one-time manual steps (paths are relative to the repo
 root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
 
 ```bash
-.venv/bin/pip install mlx-audio
+.venv/bin/pip install "mlx-audio==0.5.6"
 .venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
 .venv/bin/python scripts/diar_bench.py --make --crosstalk
 .venv/bin/python scripts/diar_bench.py --crosstalk --engine compare
 ```
 
-- `compare` runs `live-split` and `sherpa` against `nemotron` (the whole file,
+- `compare` runs `live-split` (always with the daemon's slicing — `--overlap`
+  is implied, so the live number is the one the daemon gets) and `sherpa`
+  against `nemotron` (the whole file,
   30.4 s buffer — the model's ceiling) and `nemotron-live` (a stream in 0.5 s
   blocks, as the daemon would feed it). `--nemotron-preset` picks the stream
   latency: `low` 1.04 s (default), `very_low` 0.64 s, `ultra_low` 0.32 s.
@@ -183,8 +190,11 @@ root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
   go to the hub. A repository id is refused with the download recipe, not
   downloaded.
 - **Voices.** The voice cache lives in the stream state in RAM and dies with
-  it; nothing derived from a voice is written to disk (the module is under
-  `tests/test_no_voice_biometrics.py` like the other audio modules).
+  it; our code writes nothing derived from a voice to disk — the static guard
+  `tests/test_no_voice_biometrics.py` and a run of the wrapper with a stub
+  model hold that. What mlx-audio itself writes cannot be read from our code:
+  that is an audio run with the weights on a Mac, together with the first
+  numbers.
 - **License.** The weights are under NVIDIA OpenMDW 1.1, not Apache-2.0, so
   they are never committed; mlx-audio also pulls `transformers`, which is why
   it is not in `pyproject.toml`.

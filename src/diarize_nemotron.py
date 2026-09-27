@@ -28,8 +28,10 @@ Nemotron 3 Diarization — end-to-end Sortformer на ~100M параметров
 действие человека, как `scripts/get_models.py`.
 
 Голос. Кэш голосов живёт в состоянии потока, в RAM, и умирает вместе с
-объектом; на диск не пишется ничего производного от голоса — тот же сторож,
-что у остальных модулей звука (`tests/test_no_voice_biometrics.py`).
+объектом; наш код не пишет на диск ничего производного от голоса — это держат
+статический сторож (`tests/test_no_voice_biometrics.py`) и прогон обёртки с
+подменённой моделью. Что пишет сама mlx-audio, по коду не проверить: это
+прогон по звуку с весами на Mac (№443).
 
 Лицензия весов — NVIDIA OpenMDW 1.1, не Apache-2.0: веса в репозиторий не
 кладутся, человек скачивает их сам и принимает условия.
@@ -53,7 +55,9 @@ MODEL_TYPE = "nemotron_diarization"
 PRESETS = ("offline", "low", "very_low", "ultra_low")
 
 HF_REPO = "mlx-community/Nemotron-3-Diarization"
-INSTALL_RECIPE = ".venv/bin/pip install mlx-audio   # только macOS на Apple Silicon"
+#: Версия — та, по коду которой проверен стык (`load`, `set_streaming_config`, `feed`):
+#: дрейф API иначе выяснился бы только на ручном прогоне (круг 1 по #648, DS M2).
+INSTALL_RECIPE = '.venv/bin/pip install "mlx-audio==0.5.6"   # только macOS на Apple Silicon'
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -95,8 +99,9 @@ def check_model_dir(path: pathlib.Path) -> str | None:
         return f"в {path} нет config.json — скачать заново: {recipe}"
     try:
         model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
-    except (ValueError, AttributeError) as e:
-        return f"{config} не читается как JSON-объект ({e}) — скачать заново: {recipe}"
+    except (OSError, ValueError, AttributeError) as e:
+        # OSError — права, битый том: тоже рецепт, а не трассировка (DS I4)
+        return f"{config} не читается как JSON-объект ({type(e).__name__}: {e}) — скачать заново: {recipe}"
     if model_type != MODEL_TYPE:
         return (f"в {path} не Nemotron Diarization: model_type={model_type!r}, "
                 f"ждали {MODEL_TYPE!r} — скачать: {recipe}")
@@ -140,8 +145,14 @@ def load_model(path: pathlib.Path, preset: str = "offline") -> Any:
         from mlx_audio.vad import load
     except ImportError as e:
         raise ModelUnavailable(f"нет пакета mlx-audio — {INSTALL_RECIPE}") from e
-    model = load(pathlib.Path(path), strict=True)
-    model.set_streaming_config(preset)
+    try:
+        model = load(pathlib.Path(path), strict=True)
+        model.set_streaming_config(preset)
+    except Exception as e:  # noqa: BLE001 — дверь «каталог → модель»: любой отказ библиотеки уходит одним типом с рецептом
+        # каталог прошёл проверку формы (model_type, размер весов), а тензоры не той
+        # архитектуры или закачка оборвана выше порога — рецепт, а не трассировка mlx (DS I4)
+        raise ModelUnavailable(f"модель в {path} не поднялась ({type(e).__name__}: {e}) — "
+                               f"скачать заново: {fetch_recipe(pathlib.Path(path))}") from e
     return model
 
 
@@ -157,7 +168,12 @@ def to_segments(raw: Iterable[_Segment], prefix: str = "nem") -> list[dict]:
     return sorted(out, key=lambda s: (s["start"], s["speaker"]))
 
 
-def merge_same_speaker(segments: list[dict], gap: float = 0.0) -> list[dict]:
+#: Порог склейки кусков одного голоса, секунды. НАЗНАЧЕН, а не измерен: модель ещё
+#: ни разу не прогонялась. Замер — первый прогон на Mac (№443, DS M1 круга 1 по #648).
+MERGE_GAP_S = 0.0
+
+
+def merge_same_speaker(segments: list[dict], gap: float = MERGE_GAP_S) -> list[dict]:
     """Склеить куски одного голоса, разрезанные границей чанка.
 
     Потоковый выход закрывает сегмент на краю каждого чанка: минута речи одного
