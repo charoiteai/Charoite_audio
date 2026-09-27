@@ -6,6 +6,16 @@
 .venv/bin/python -m pytest tests/ -x -q
 ```
 
+With pytest-xdist installed (CI pins it as `PYTEST_XDIST_VERSION` in `ci.yml`)
+the full set runs in several processes, as CI does:
+
+```bash
+.venv/bin/python -m pytest tests/ -q -n 4 --dist loadgroup
+```
+
+`--dist loadgroup` keeps the graph wheel tests (group `wheel`) in one worker,
+so the wheel is built once.
+
 The per-test timeout (`timeout = 120` in `pyproject.toml`) needs the
 plugin, and `pip install .` does not bring it: without
 `pip install pytest-timeout` pytest just warns about an unknown option,

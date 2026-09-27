@@ -33,12 +33,17 @@ env:
   # Тесты поднимают настоящие потоки и ждут их join: один зависший
   # съедал бы весь потолок джоба, а в логе не было бы видно, какой.
   PYTEST_TIMEOUT_VERSION: "2.4.0"
+  # Полный набор идёт в несколько процессов (`-n N --dist loadgroup`): замер на
+  # машине владельца — 253 с последовательно против 90–117 с на `-n 4` (№453).
+  # Тесты колеса пакета — одна группа `xdist_group("wheel")`: колесо собирается
+  # один раз, а не в каждом воркере.
+  PYTEST_XDIST_VERSION: "3.8.0"
   # Известный setuptools в тестовом venv: колесо пакета графа тест собирает
   # офлайн, без изоляции (`pip wheel --no-build-isolation`), то есть
   # setuptools окружения, и сверяет его версию с этим пином (№427, часть 1). Сборку
   # самой дистрибуции (`pip install .`) пин не трогает — у неё изоляция и
   # свой [build-system]. Пара с nightly.yml: pytest, pytest-timeout,
-  # setuptools; остальные пины живут только здесь. Dependabot их не видит.
+  # pytest-xdist, setuptools; остальные пины живут только здесь. Dependabot их не видит.
   SETUPTOOLS_VERSION: "83.0.0"
 
 jobs:
@@ -137,11 +142,11 @@ jobs:
           exit 1
       - name: Deps
         timeout-minutes: 6
-        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}" "pytest-xdist==${PYTEST_XDIST_VERSION}" "setuptools==${SETUPTOOLS_VERSION}"
       # замер: около 4 минут (3:55–3:57 на #633, 26.09)
       - name: pytest
         timeout-minutes: 12
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q -n 4 --dist loadgroup
       # гейт раскладки как гейт: main — единственный вызывающий check, он передаёт
       # всё; тест-пересказ выше можно выключить забытым параметром (выходной
       # круг 1 по №424, DS C1 — так пропал адрес шва)
