@@ -34,3 +34,9 @@ backups/
 # корень работы: 25.09 44 таких файла уехали в публичный PR (№622).
 /tmp*/
 app-ios/build/
+
+# Ручная сборка колеса пакета графа (packages/charoite-graph/README.md, №427)
+*.whl
+/dist/
+packages/*/build/
+packages/*/dist/

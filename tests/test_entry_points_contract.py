@@ -251,6 +251,9 @@ WHEEL_TIMEOUT = 180
 #: Файл CI — тот же путь, откуда `scripts/preflight.sh` читает `RUFF_VERSION`:
 #: пин setuptools для сборки берётся из его секции `env`.
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+#: Следы ручной сборки колеса в каталоге дистрибутива — копия раскладки для
+#: фикстуры их не берёт; те же имена не видит git (`.gitignore`).
+BUILD_LEFTOVERS = ("build", "dist", "*.egg-info")
 #: Утечка каждой снимаемой переменной — СВОИМ признаком: значение у родителя и то,
 #: чем проба обязана его показать, `(проблемы, признаки раннера, ловушка) → bool`.
 #: «Проба красная» признаком не считается: любая чужая причина падения прятала бы,
@@ -505,6 +508,18 @@ def _wheel_env(parent: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in parent.items() if not dropped(k)}
 
 
+def _copy_layout(src: pathlib.Path, work: pathlib.Path, package: str) -> None:
+    """Копия раскладки для сборки колеса: каталог дистрибутива и каталог пакета
+    лежат в `work` так же, как в `src`, поэтому `package-dir` разрешается в саму
+    копию. Следы ручной сборки по README (`BUILD_LEFTOVERS`) не копируются:
+    сборка без изоляции подхватила бы старый `build/lib`, и сверка плана краснела
+    бы лишним модулем не по делу (опыт 27.09 по #657)."""
+    (work / "packages").mkdir()
+    shutil.copytree(src / "packages" / "charoite-graph", work / "packages" / "charoite-graph",
+                    ignore=shutil.ignore_patterns(*BUILD_LEFTOVERS))
+    shutil.copytree(src / lm.FLAT_DIR / package, work / lm.FLAT_DIR / package)
+
+
 @pytest.fixture(scope="session")
 def wheel_path(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Колесо `charoite-graph`, собранное офлайн в СВОЕЙ временной копии
@@ -521,10 +536,7 @@ def wheel_path(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     if (problem := _setuptools_problem(pin, _installed_setuptools())):
         pytest.fail(problem)
     work = tmp_path_factory.mktemp("wheel")
-    package = lm.load_layout()["package"]
-    (work / "packages").mkdir()
-    shutil.copytree(ROOT / "packages" / "charoite-graph", work / "packages" / "charoite-graph")
-    shutil.copytree(ROOT / lm.FLAT_DIR / package, work / lm.FLAT_DIR / package)
+    _copy_layout(ROOT, work, lm.load_layout()["package"])
     out = work / "dist"
     out.mkdir()
     start = time.time()
@@ -628,6 +640,26 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     assert got and "нет модулей плана" in got[0] and victim in got[0], got
     got = _wheel_plan_problems(rebuild(tmp_path / "extra.whl", extra="charoite_graph/лишний.py"))
     assert got and "лишние модули" in got[0] and "charoite_graph/лишний.py" in got[0], got
+
+
+def test_the_layout_copy_leaves_manual_build_leftovers_behind(tmp_path: pathlib.Path) -> None:
+    """Старые `build/`, `dist/` и `*.egg-info` ручной сборки в каталоге
+    дистрибутива в копию для колеса не едут, метаданные и пакет — едут."""
+    src = tmp_path / "src_root"
+    dist = src / "packages" / "charoite-graph"
+    (dist / "build" / "lib" / "charoite_graph").mkdir(parents=True)
+    (dist / "build" / "lib" / "charoite_graph" / "старый.py").write_text("x = 1\n", encoding="utf-8")
+    (dist / "dist").mkdir()
+    (dist / "charoite_graph.egg-info").mkdir()
+    (dist / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (src / lm.FLAT_DIR / "pkg").mkdir(parents=True)
+    (src / lm.FLAT_DIR / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    _copy_layout(src, work, "pkg")
+    copied = sorted(p.relative_to(work).as_posix() for p in work.rglob("*"))
+    assert copied == ["packages", "packages/charoite-graph", "packages/charoite-graph/pyproject.toml",
+                      lm.FLAT_DIR, f"{lm.FLAT_DIR}/pkg", f"{lm.FLAT_DIR}/pkg/__init__.py"], copied
 
 
 def test_the_wheel_env_drops_pip_and_proxies_in_both_registers() -> None:
