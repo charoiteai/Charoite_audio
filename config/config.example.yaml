@@ -237,6 +237,12 @@ sufler:
   cloud_live_model: claude-haiku-4-5
 
   fast_trigger: true      # ранний детект вопросов через стриминговый STT (если поднят)
+  # Решающий гейт в тени: рядом с каждым ⚡ локальная решающая модель судит,
+  # был ли это вопрос, и пишет вердикт с исходом ответа в logs/daemon.err.log
+  # (без текста реплик). Ничего не решает — копит замер для
+  # scripts/gate_bench.py shadow. Нужна NLI-модель в models/nli/ или обученная
+  # голова в models/decision/question_gate/ (docs/research/decision-gate.md).
+  decision_gate_shadow: false
   live_diarize: true      # живая диаризация «Собеседник 1/2/…»
   live_diarize_threshold: 0.45
   live_dialog_markup: true  # лёгкая модель расставляет реплики внутри абзацев

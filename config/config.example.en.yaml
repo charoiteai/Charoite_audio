@@ -155,6 +155,12 @@ sufler:
   cloud_live_model: claude-haiku-4-5
 
   fast_trigger: true      # early question detection via streaming STT (if running)
+  # Decision gate in shadow mode: next to every ⚡ a local decision model judges
+  # whether it was a real question and logs the verdict with the answer outcome
+  # to logs/daemon.err.log (no utterance text). Decides nothing — collects data
+  # for scripts/gate_bench.py shadow. Needs the NLI model in models/nli/ or a
+  # trained head in models/decision/question_gate/. Hypotheses are Russian today.
+  decision_gate_shadow: false
   live_diarize: true      # live "Speaker 1/2/…" labels
   live_diarize_threshold: 0.45
   live_dialog_markup: true  # a light model splits paragraphs into speaker turns
