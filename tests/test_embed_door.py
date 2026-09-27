@@ -404,8 +404,8 @@ def test_a_server_that_does_not_know_truncate_stays_quiet(capsys):
     assert [p["truncate"] for p in w.payloads] == [False]
 
 
-def test_an_accepted_batch_forgets_the_truncation_episode(capsys):
-    """Принятая без усечения пачка снимает ключ: следующий длинный вход скажется снова."""
+def test_a_call_without_truncation_forgets_the_episode(capsys):
+    """Вызов без усечения снимает ключ: следующий длинный вход скажется снова."""
     once.reset("embed")
     режим = {"усечён": True}
 
@@ -425,6 +425,66 @@ def test_an_accepted_batch_forgets_the_truncation_episode(capsys):
     режим["усечён"] = True
     e.run(["длинный вход"], 10)             # новый эпизод говорит снова
     assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+
+def _эпизод_сервер(часы=None):
+    """Транспорт по первой букве первого текста пачки: «д» — длинный вход (400 без
+    усечения, векторы с ним), «р» — отказ на обоих ходах, «с» — съедает весь срок,
+    «о» — обрыв транспорта, иначе — 200 с векторами."""
+    def post(url, payload, timeout):
+        буква = payload["input"][0][:1]
+        if буква == "д":
+            if payload["truncate"] is False:
+                return 400, "the input length exceeds the context length"
+            return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+        if буква == "р":
+            return 400, "tokenize: EOF"
+        if буква == "с":
+            часы[0] += 1000.0
+            return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+        if буква == "о":
+            raise ConnectionResetError("обрыв")
+        return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+    return post
+
+
+@pytest.mark.parametrize("выход, тексты", [
+    ("бюджет", ["с" * 40_000, "к" * 40_000]),        # пачка приняла, срок вышел до следующей
+    ("отказ", ["к" * 40_000, "р" * 40_000]),         # пачка приняла, следующая — 400 на обоих ходах
+    ("исключение", ["к" * 40_000, "о" * 40_000]),    # пачка приняла, следующая — обрыв транспорта
+])
+def test_every_exit_of_a_call_without_truncation_ends_the_episode(monkeypatch, capsys, выход, тексты):
+    """Эпизод снимает любой выход вызова без усечения, а не только успех: иначе
+    вызов «пачка принята — следующая отказала» оставлял ключ до конца процесса,
+    и дверь снова резала вход молча (выходной круг 2 по №433, DS C1)."""
+    once.reset("embed")
+    часы = [1000.0]
+    monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
+    e = _дверь(post=_эпизод_сервер(часы))
+
+    e.run(["д" * 40_000], 30)
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+    if выход == "исключение":
+        with pytest.raises(SeamTransportError):
+            e.run(тексты, 30)
+    else:
+        assert e.run(тексты, 30) == [], выход
+    capsys.readouterr()
+
+    e.run(["д" * 40_000], 30)
+    assert "вход длиннее предела сервера" in capsys.readouterr().err, f"{выход}: эпизод не снят"
+
+
+def test_a_call_that_truncated_and_then_failed_keeps_the_episode(capsys):
+    """Обратная сторона: вызов, который сам усекал, эпизод не снимает — даже если
+    потом отказал; строка не повторяется на каждом таком вызове."""
+    once.reset("embed")
+    e = _дверь(post=_эпизод_сервер([0.0]))
+    e.run(["д" * 40_000], 30)
+    capsys.readouterr()
+    assert e.run(["д" * 40_000, "р" * 40_000], 30) == []
+    assert "вход длиннее предела сервера" not in capsys.readouterr().err
 
 
 def test_alternating_long_and_short_batches_speak_once_per_call(capsys):

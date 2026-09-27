@@ -616,8 +616,9 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   batch with `truncate: true`; when the retry returns vectors, the door says
   once per address and model which text of the batch was longest and how many
   characters it had (a refusal body that does not name the length gets a
-  neutral line that still warns the vectors were built with truncation), and a
-  call in which no batch needed truncation clears that episode. The limit is
+  neutral line: the retry returned vectors, and if the refusal was about
+  length, the tail never reached the vector), and a call in which no batch
+  needed truncation clears that episode, whichever way the call ends. The limit is
   the runner's physical batch of 2048 tokens, measured 26.09 (see *Chunks, not
   files* under "How search actually works"); `options.num_ctx` does not move
   it: `/api/show` claims `bert.context_length = 8192` while the server cuts at
