@@ -512,6 +512,12 @@ def _quiet_machine(monkeypatch):
     monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
 
 
+def _range_as_given(monkeypatch):
+    """Диапазон — как написан: тесты плана подают выдуманные имена ревизий и
+    подменяют план, а настоящее разрешение (`resolve_range`) судят свои тесты."""
+    monkeypatch.setattr(mc, "resolve_range", lambda root, rng: rng)
+
+
 def test_есть_изменённые_строки_но_ломать_нечего(monkeypatch, capsys):
     """Ветка «строки есть, мутировать нечего» отвечает своим кодом и печатает
     счётчики плана: под общим «нечего» 25.09 ноль мутантов от правки условия
@@ -519,6 +525,7 @@ def test_есть_изменённые_строки_но_ломать_нечег
     а план пустел раньше — на `git show` несуществующей ревизии."""
     import exit_codes
     _quiet_machine(monkeypatch)
+    _range_as_given(monkeypatch)
     totals = mc.ScanTotals(files_in=2, lines_in=7, lines_constant=3, nodes=11)
     monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_UNMUTABLE
@@ -534,6 +541,7 @@ def test_строки_без_кода_это_nothing_со_счётчиками(m
     врёт «нет изменённых строк» (критика DS круга 1 по #630)."""
     import exit_codes
     _quiet_machine(monkeypatch)
+    _range_as_given(monkeypatch)
     totals = mc.ScanTotals(files_in=1, lines_in=2, lines_constant=1, nodes=0)
     monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
@@ -546,6 +554,7 @@ def test_строки_без_кода_это_nothing_со_счётчиками(m
 def test_нет_изменённых_строк_это_nothing(monkeypatch, capsys):
     import exit_codes
     _quiet_machine(monkeypatch)
+    _range_as_given(monkeypatch)
     monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {})
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
     assert "нет изменённых строк" in capsys.readouterr().out
@@ -553,12 +562,13 @@ def test_нет_изменённых_строк_это_nothing(monkeypatch, caps
 
 def test_ни_один_файл_не_прочитался_это_неполнота(monkeypatch, capsys):
     """Файл, чей `git show` не прочитался, раньше молча выпадал из плана, и
-    пустой план отвечал «нечего» (№386)."""
+    пустой план отвечал «нечего» (№386). Файла нет в ревизии — диапазон при этом
+    настоящий: разрешается он до плана и отказал бы раньше (№460)."""
     import exit_codes
     _quiet_machine(monkeypatch)
     monkeypatch.setattr(mc, "changed_lines",
-                        lambda root, rng: {REPO / "scripts" / "mutate_check.py": {1, 2}})
-    assert mc.main(["mutate_check.py", "--range", "HEAD...нет-такой-ревизии"]) == exit_codes.EXIT_PARTIAL
+                        lambda root, rng: {REPO / "scripts" / "призрак_нет_в_ревизии.py": {1, 2}})
+    assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == exit_codes.EXIT_PARTIAL
     assert "не прочитано файлов 1 из 1" in capsys.readouterr().out
 
 
@@ -932,13 +942,16 @@ def _мутанты(rel: str, n: int) -> list:
 def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_на=None):
     """Подменить план, наборы, часы и `run_tests`. Набор модуля — свой файл
     тестов, новым списком на каждый вызов: ключ длительностей обязан от этого
-    не зависеть. Возвращает журнал вызовов `run_tests`: (набор, таймаут)."""
+    не зависеть. Возвращает журнал вызовов `run_tests`: (набор, таймаут).
+    `plan=None` — план настоящий: `plan_for` по репозиторию, из которого запущен
+    прогон (сквозные тесты копии, №460)."""
     _quiet_machine(monkeypatch)
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
-    monkeypatch.setattr(mc, "plan_for",
-                        lambda root, rng, shard=None: (list(plan),
-                                                       mc.ScanTotals(files_in=1, lines_in=1,
-                                                                     planned=len(plan))))
+    if plan is not None:
+        monkeypatch.setattr(mc, "plan_for",
+                            lambda root, rng, shard=None: (list(plan),
+                                                           mc.ScanTotals(files_in=1, lines_in=1,
+                                                                         planned=len(plan))))
     monkeypatch.setattr(mc, "tests_for", lambda root, module: [f"tests/test_{module.stem}.py"])
     часы = _Часы()
     monkeypatch.setattr(mc, "clock", часы)
@@ -953,6 +966,177 @@ def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_�
         return [t for t, _ in журнал].count(tuple(targets)) == 1
     monkeypatch.setattr(mc, "run_tests", run_tests)
     return журнал
+
+
+# ---- Диапазон и копия мутанта (№460) ----------------------------------------
+# Копия — локальный клон на SHA головы, диапазон разрешается в SHA один раз до
+# плана. `git worktree` писал реестр в общий `.git`, и параллельные `add`/`remove`
+# соседних прогонов падали (опыты 1–2 №460).
+
+
+def _два_коммита(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str, str]:
+    """Репозиторий теста: первый коммит — `return x`, второй — `return not x`."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return x\n"})
+    first = _rev(repo, "HEAD")
+    (repo / "src" / "mod.py").write_text("def f(x):\n    return not x\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "вторая"], cwd=repo, check=True)
+    return repo, first, _rev(repo, "HEAD")
+
+
+def _rev(repo: pathlib.Path, what: str) -> str:
+    return subprocess.run(["git", "rev-parse", what], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+@pytest.mark.parametrize("rng, ждём", [
+    ("A...B", ("A", "...", "B")),
+    ("A..B", ("A", "..", "B")),
+    ("X", ("", "", "X")),
+    ("..B", ("HEAD", "..", "B")),
+    ("A..", ("A", "..", "HEAD")),
+    ("...B", ("HEAD", "...", "B")),
+    (" A ... B ", ("A", "...", "B")),
+    ("", ("", "", "HEAD")),
+])
+def test_грамматика_диапазона_одна(rng, ждём):
+    """Пустой конец с любой стороны — `HEAD`, как читает git (`rev-parse ..X` —
+    это `HEAD..X`); `head_of` — проекция той же грамматики, а не вторая копия."""
+    assert mc.split_range(rng) == ждём
+    assert mc.head_of(rng) == ждём[2]
+
+
+def test_диапазон_разрешается_в_sha(tmp_path):
+    repo, first, second = _два_коммита(tmp_path)
+    assert mc.resolve_range(repo, "HEAD~1...HEAD") == f"{first}...{second}"
+    assert mc.resolve_range(repo, "HEAD~1..HEAD") == f"{first}..{second}"
+    assert mc.resolve_range(repo, "HEAD") == second
+    assert mc.resolve_range(repo, "..HEAD~1") == f"{second}..{first}"
+    with pytest.raises(mc.PreparationError, match="нет-такой") as отказ:
+        mc.resolve_range(repo, "HEAD...нет-такой")
+    assert "single revision" in str(отказ.value) or "fatal" in str(отказ.value), отказ.value
+
+
+def test_непонятный_диапазон_код_1_до_копии(tmp_path, monkeypatch, capsys):
+    """Отказ подготовки — «сломалась сама проверка» (код 1), а не `unjudged`: плана
+    не было. Разрешение идёт до копии — каталога `mutate-*` не заводится."""
+    import exit_codes
+    repo, _, _ = _два_коммита(tmp_path)
+    _quiet_machine(monkeypatch)
+    monkeypatch.chdir(repo)
+    копии = []
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", lambda **kw: копии.append(kw) or str(tmp_path / "x"))
+    rc = mc.main(["mutate_check.py", "--range", "HEAD...нет-такой"])
+    assert rc == 1 and exit_codes.outcome(rc) == "fail"
+    out = capsys.readouterr().out
+    assert "подготовка не удалась" in out and "нет-такой" in out, out
+    assert копии == []
+
+
+def test_сдвиг_head_после_разрешения_не_меняет_копию(tmp_path, monkeypatch):
+    """План строится по разрешённому диапазону, и коммит, сдвинувший HEAD посреди
+    прогона, копию не уводит: тесты мутантов идут на SHA, разрешённом до плана."""
+    repo, _, second = _два_коммита(tmp_path)
+    журнал = _прогон(tmp_path, monkeypatch, None, секунды={"tests/test_mod.py": 1})
+    monkeypatch.chdir(repo)
+    настоящий = mc.plan_for
+
+    def plan_for(root, rng, shard=None):
+        план = настоящий(root, rng, shard)
+        (repo / "src" / "mod.py").write_text("def f(x):\n    return x or 1\n", encoding="utf-8")
+        subprocess.run([*_GIT, "commit", "-qam", "сдвиг"], cwd=repo, check=True)
+        return план
+    monkeypatch.setattr(mc, "plan_for", plan_for)
+    ревизии = []
+    прежний = mc.run_tests
+
+    def run_tests(cwd, targets, timeout):
+        ревизии.append(_rev(cwd, "HEAD"))
+        return прежний(cwd, targets, timeout)
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    assert mc.main(["mutate_check.py", "--range", "HEAD~1...HEAD", "--timeout", "100"]) == 0
+    assert журнал and set(ревизии) == {second}, (ревизии, second)
+    assert _rev(repo, "HEAD") != second
+
+
+def test_копия_встаёт_на_любой_коммит_источника(tmp_path):
+    """(а) старая ревизия; (б) коммит отсоединённого HEAD вне веток; (в) коммит
+    только в reflog; (г) источник — linked worktree; (д) неглубокий источник;
+    (е) объекты у копии свои — `alternates` нет."""
+    repo, first, second = _два_коммита(tmp_path)
+    work = mc.copy_tree(repo, first, tmp_path / "а")
+    assert (work / "src" / "mod.py").read_text(encoding="utf-8").endswith("return x\n")
+    assert not (work / ".git" / "objects" / "info" / "alternates").exists()
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+    (repo / "src" / "mod.py").write_text("def f(x):\n    return 1\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "вне веток"], cwd=repo, check=True)
+    вне = _rev(repo, "HEAD")
+    assert (mc.copy_tree(repo, вне, tmp_path / "б") / "src" / "mod.py").read_text(encoding="utf-8").endswith("1\n")
+    subprocess.run(["git", "checkout", "-q", "-"], cwd=repo, check=True)
+    (repo / "src" / "mod.py").write_text("def f(x):\n    return 2\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "в reflog"], cwd=repo, check=True)
+    в_reflog = _rev(repo, "HEAD")
+    subprocess.run(["git", "reset", "-q", "--hard", second], cwd=repo, check=True)
+    assert (mc.copy_tree(repo, в_reflog, tmp_path / "в") / "src" / "mod.py").read_text(encoding="utf-8").endswith("2\n")
+    соседнее = tmp_path / "соседнее"
+    subprocess.run(["git", "worktree", "add", "-q", "--detach", str(соседнее), first], cwd=repo, check=True)
+    assert mc.copy_tree(соседнее, second, tmp_path / "г").joinpath("src", "mod.py").read_text(
+        encoding="utf-8").endswith("return not x\n")
+    мелкий = tmp_path / "мелкий"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(мелкий)], check=True)
+    assert mc.copy_tree(мелкий, second, tmp_path / "д").joinpath("src", "mod.py").exists()
+
+
+def test_копия_на_неизвестный_коммит_отказ_подготовки(tmp_path):
+    repo, _, _ = _два_коммита(tmp_path)
+    with pytest.raises(mc.PreparationError, match="git checkout"):
+        mc.copy_tree(repo, "0" * 40, tmp_path / "копия")
+
+
+def _снимок(корень: pathlib.Path) -> dict[str, bytes]:
+    return {str(p.relative_to(корень)): p.read_bytes() for p in sorted(корень.rglob("*")) if p.is_file()}
+
+
+def _права(корень: pathlib.Path, запись: bool) -> None:
+    for p in [корень, *корень.rglob("*")]:
+        if p.is_symlink():
+            continue
+        mode = p.stat().st_mode
+        p.chmod(mode | 0o200 if запись else mode & ~0o222)
+
+
+def test_мутатор_не_пишет_в_репозиторий_источник(tmp_path, monkeypatch):
+    """Сквозной прогон `main` на СВОЁМ репозитории теста, который на время прогона
+    только на чтение: любой путь записи в источник — `Popen`, `os.system`, внуки,
+    транзитная запись `worktree add` + `remove`, которой снимок «до/после» не
+    видит, — падает. `git worktree prune` на чистом репозитории ничего не пишет,
+    его ловит шпион по слову. После возврата прав содержимое — байт в байт."""
+    repo, _, _ = _два_коммита(tmp_path)
+    журнал = _прогон(tmp_path, monkeypatch, None, секунды={"tests/test_mod.py": 1})
+    monkeypatch.chdir(repo)
+    вызовы = []
+    настоящий = subprocess.Popen
+
+    class Шпион(настоящий):
+        def __init__(self, args, *a, **kw):
+            вызовы.append([str(x) for x in args] if not isinstance(args, (str, bytes)) else [str(args)])
+            super().__init__(args, *a, **kw)
+    monkeypatch.setattr(subprocess, "Popen", Шпион)
+    до = _снимок(repo)
+    _права(repo, запись=False)
+    try:
+        try:
+            (repo / ".git" / "проба").write_text("", encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.fail("запрет записи не держит (прогон под root?) — пин судить нечем")
+        rc = mc.main(["mutate_check.py", "--range", "HEAD~1...HEAD", "--timeout", "100"])
+    finally:
+        _права(repo, запись=True)
+    assert rc == 0 and журнал, (rc, журнал)
+    git = [c for c in вызовы if c and pathlib.Path(c[0]).name == "git"]
+    assert git and not [c for c in git if "worktree" in c], git
+    assert _снимок(repo) == до
 
 
 _MC = "tests/test_mutate_check.py"

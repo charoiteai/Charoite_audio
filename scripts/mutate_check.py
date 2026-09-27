@@ -11,8 +11,10 @@
 оттуда, а наши тесты в семи файлах запускают код подпроцессом по пути от
 корня РЕПОЗИТОРИЯ — подпроцесс возьмёт немутантный оригинал, и мутант
 «выживет» не потому, что тест плох, а потому, что до него не дошли. Здесь
-мутация кладётся в отдельный git worktree и тесты гоняются оттуда же:
-подпроцессы видят тот же мутантный код, что и импорт.
+мутация кладётся в отдельную копию репозитория — локальный клон на SHA
+головы диапазона — и тесты гоняются оттуда же: подпроцессы видят тот же
+мутантный код, что и импорт. Не `git worktree`: его реестр живёт в общем
+`.git`, и параллельные `add`/`remove` соседних прогонов падали (№460).
 
 Мутируем ТОЛЬКО строки, изменённые в заданном диапазоне: полный прогон по
 `src/audio.py` — это тысячи мутантов и часы, а по хункам диффа — минуты.
@@ -87,19 +89,66 @@ class Mutation:
         return f"{shown}:{self.line}: {self.what}"
 
 
+def split_range(rng: str) -> tuple[str, str, str]:
+    """Диапазон git → (левый конец, разделитель, правый конец). Грамматика
+    одна на мутатор: разделители `...` и `..`, пустой конец с любой стороны —
+    `HEAD`, как читает git (`git rev-parse ..X` — это `HEAD..X`). Без
+    разделителя — одна ревизия: левого конца нет, разделитель пуст."""
+    for sep in ("...", ".."):
+        if sep in rng:
+            left, right = (part.strip() for part in rng.split(sep, 1))
+            return left or "HEAD", sep, right or "HEAD"
+    return "", "", rng.strip() or "HEAD"
+
+
 def head_of(rng: str) -> str:
     """Правый конец диапазона — та ревизия, чей КОД мы ломаем.
 
-    Без этого worktree поднимался от текущего HEAD, а номера строк брались из
+    Без этого копия поднималась от текущего HEAD, а номера строк брались из
     чужого диапазона: мутации ложились мимо — в комментарии и пустые места,
     и «выжившими» объявлялось то, чего в коде нет. Поймано на первом же
     живом прогоне.
     """
-    for sep in ("...", ".."):
-        if sep in rng:
-            right = rng.split(sep, 1)[1].strip()
-            return right or "HEAD"
-    return rng.strip() or "HEAD"
+    return split_range(rng)[2]
+
+
+class PreparationError(Exception):
+    """Подготовка прогона не удалась — диапазон не разрешился, копия не
+    собралась. По канону исходов это «сломалась сама проверка» (код 1), а не
+    «план был, не судился ни один» (9): до плана дело не дошло или копии нет."""
+
+
+def resolve_range(root: pathlib.Path, rng: str) -> str:
+    """Тот же диапазон, где каждый конец — SHA коммита. Зовётся ОДИН раз, до
+    плана: имя ревизии, разрешённое трижды (дифф, чтение файлов плана, копия),
+    при сдвиге HEAD между ними давало план одного коммита и копию другого
+    (входной круг 4 по №460)."""
+    left, sep, right = split_range(rng)
+
+    def sha(end: str) -> str:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", f"{end}^{{commit}}"],
+                           capture_output=True, text=True)
+        if r.returncode:
+            raise PreparationError(f"ревизия {end!r} не разрешилась — {r.stderr.strip()}")
+        return r.stdout.strip()
+
+    return f"{sha(left)}{sep}{sha(right)}" if sep else sha(right)
+
+
+def copy_tree(root: pathlib.Path, sha: str, tmp: pathlib.Path) -> pathlib.Path:
+    """Копия репозитория для мутантов: локальный клон `root` в `tmp/tree` и
+    отсоединённый checkout на `sha`. В репозиторий-источник мутатор не пишет
+    ничего: клон читает его объекты (жёсткие ссылки на своём диске) и пишет
+    только в свой каталог; уборка — удалением `tmp`. Опыты №460: клон —
+    0,28 с против 0,15–0,19 у `worktree add`, 1440 параллельных клонов без
+    единой ошибки, источник-worktree и неглубокий источник клонируются."""
+    work = tmp / "tree"
+    for step, cmd in (("clone", ["git", "clone", "-q", "--no-checkout", str(root), str(work)]),
+                      ("checkout", ["git", "-C", str(work), "checkout", "-q", "--detach", sha])):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode:
+            raise PreparationError(f"копия {work}: git {step} — {r.stderr.strip()}")
+    return work
 
 
 # Области «нашего python» — у сторожа раскладки, не свой литерал `src/`: PR только
@@ -108,7 +157,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import layout_map  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # Путь от __file__, а не от корня данных: мутатор неотделим от репозитория —
-# он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
+# копию для мутантов он клонирует из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
 from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
@@ -499,7 +548,7 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
     """Текст мутанта — или None и причина словами.
 
     Прежде годность значила «текст изменился», и непарсящийся мутант уходил в
-    worktree, прогон падал на `SyntaxError`, а мутант засчитывался «убит» —
+    копию дерева, прогон падал на `SyntaxError`, а мутант засчитывался «убит» —
     ложь того же класса, что «нечего мутировать» при нуле мутантов (№386).
     Теперь мутант годен, только если его текст разбирается в то же дерево,
     что и сломанное `apply` (позиции в дамп не входят). Не сошлось — одна
@@ -624,6 +673,9 @@ RUNNING = "прогон не дошёл до конца плана"
 #: PR #640, та же дыра в #637).
 BASE_RUNNING = "базовый прогон не закончен"
 BASE_RED = "база красная"
+#: Копия дерева не собралась (клон или checkout): план есть, отчёт и машинная
+#: строка пишутся, как у красной базы; исход — «сломалась сама проверка».
+COPY_FAILED = "копия дерева не собралась"
 
 # Шов часов: бюджет прогона тесты судят подменённым временем, а не сном
 clock = time.monotonic
@@ -894,6 +946,16 @@ def main(argv: list[str]) -> int:
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
                                        check=True).stdout.strip())
+    # Диапазон — в SHA один раз, здесь: дифф, чтение файлов плана и копия
+    # получают только разрешённое, и сдвиг HEAD посреди прогона не разводит
+    # план и копию по разным коммитам (№460). Слова человека (`args.range`)
+    # остаются для печати.
+    try:
+        rng = resolve_range(root, args.range)
+    except PreparationError as e:
+        print(f"подготовка не удалась: {e}")
+        return 1
+    print(f"диапазон: {args.range} = {rng}")
     # Координация с живым контуром (ночь 23→24.08: мутатор делил qwen35b со
     # встречей и с ночным циклом — 35 ReadTimeout по 300 с у досье, прогон
     # оборван руками в 10:28). Правила: (1) на старте машина занята встречей
@@ -922,7 +984,7 @@ def main(argv: list[str]) -> int:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
                   "(--force, чтобы настоять)")
             return 3
-    plan, totals = plan_for(root, args.range, shard)
+    plan, totals = plan_for(root, rng, shard)
     m_total = len(plan)
     p_total = totals.planned
     k, n = totals.shard or (1, 1)
@@ -979,21 +1041,14 @@ def main(argv: list[str]) -> int:
     print(f"Мутантов к проверке: {len(plan)}"
           + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
 
-    # Лок — ДО подготовки дерева: отказ не должен оставлять сиротой
-    # зарегистрированный worktree (круг-2 по PR #399, DS Minor).
+    # Лок — ДО подготовки копии: отказ не должен оставлять за собой каталог
+    # копии (круг-2 по PR #399, DS Minor).
     lock = busy_signals.MutationLock(data_root)
     if not lock.acquire():
         print("другой мутатор уже держит лок — не стартую (--force не поможет: "
               "два прогона на одной модели бессмысленны)")
         return 3
-    # Убитый на полпути прогон оставляет зарегистрированное дерево; без
-    # уборки git будет считать его живым и мешать следующим запускам.
-    subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutate-"))
-    work = tmp / "tree"
-    rev = head_of(args.range)
-    subprocess.run(["git", "worktree", "add", "--detach", str(work), rev],
-                   cwd=root, capture_output=True, check=True)
     survivors: list[Mutation] = []
     skipped: list[tuple[Mutation, str]] = []
     tested = 0
@@ -1008,6 +1063,15 @@ def main(argv: list[str]) -> int:
                                       reason, totals),
                         k, n, m_total, p_total, rc)
     try:
+        # Копия — внутри `try`: провал клона или checkout отпускает лок и убирает
+        # каталог в `finally`, а отчёт и машинная строка ложатся, как у красной
+        # базы. Код — «сломалась сама проверка», не «план был, не судился» (№460).
+        try:
+            work = copy_tree(root, head_of(rng), tmp)
+        except PreparationError as e:
+            print(f"подготовка не удалась: {e}")
+            save(COPY_FAILED, 1)
+            return 1
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
         # сами по себе. Тогда КАЖДЫЙ мутант считается убитым, отчёт говорит
@@ -1018,7 +1082,7 @@ def main(argv: list[str]) -> int:
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
         subsets = {suite_key(work, m.path) for m in plan}
-        # Свежий worktree байткода не содержит, но запрет записи не мешает
+        # Свежая копия байткода не содержит, но запрет записи не мешает
         # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
@@ -1093,8 +1157,6 @@ def main(argv: list[str]) -> int:
             save(RUNNING)
     finally:
         lock.release()
-        subprocess.run(["git", "worktree", "remove", "--force", str(work)],
-                       cwd=root, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
     report = render_report(tested, survivors, skipped, len(plan), dropped, aborted, totals)
