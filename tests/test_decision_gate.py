@@ -438,17 +438,40 @@ def test_one_shadow_in_flight_the_next_question_is_counted_as_busy():
 @pytest.mark.parametrize("question, dec", [
     ("Когда релиз?", None),
     ("Когда релиз?", dg.Decider("none", lambda t: {}, refused="нет модели")),
-    ("   ", dg.Decider("fake", lambda t: {"ask": 1.0, "skip": 0.0})),
+    ("", None),
 ])
-def test_no_shadow_when_nothing_or_nobody_to_judge(question, dec):
-    """Судить нечего или нечем — прогон-пустышка: `finish` и `join` ничего не
-    делают и не пишут, поэтому цикл ⚡ зовёт их без условия."""
+def test_no_shadow_when_nobody_to_judge(question, dec):
+    """Судить нечем — прогон-пустышка: `finish` и `join` ничего не делают и не
+    пишут, поэтому цикл ⚡ зовёт их без условия."""
     log = _Log()
     run = dg.Shadow(dec, log).start(question)
     assert run is dg.IDLE and run.decided
     run.finish("answered")
     run.join(0)
     assert log == []
+
+
+@pytest.mark.parametrize("question", ["", "   ", None])
+def test_an_empty_question_is_a_named_skip_not_silence(question):
+    """⚡ отвечает и без вопроса — тень пишет пропуск `no-question`, и бенч видит
+    его в знаменателе, а не теряет (выходной круг 3 по #651, DS M3)."""
+    log = _Log()
+    decided = []
+    run = dg.Shadow(dg.Decider("fake", lambda t: decided.append(t) or {"ask": 1.0, "skip": 0.0}),
+                    log).start(question)
+    assert run is not dg.IDLE and run.decided
+    run.finish("answered")
+    assert decided == [], "решатель на пустом вопросе не зовётся"
+    assert len(log) == 1
+    rec = dg.parse_shadow_line(log[0])
+    assert rec["verdict"] == "none" and rec["reason"] == "no-question" and rec["outcome"] == "answered"
+
+
+def test_the_idle_run_holds_no_state():
+    """`IDLE` один на процесс — записать в него нельзя, общий объект не протечёт
+    от вопроса к вопросу (DS M1)."""
+    with pytest.raises(AttributeError):
+        dg.IDLE.question = "Когда релиз?"
 
 
 def test_default_head_dir_follows_the_data_root():
@@ -592,7 +615,8 @@ def test_default_sink_is_stderr_flushed_at_once(monkeypatch):
     monkeypatch.setattr(sys, "stderr", поток)
     monkeypatch.setattr(dg, "decider", lambda: dg.Decider("fake", lambda t: {}))
     dg.shadow_for({"sufler": {"decision_gate_shadow": True}}, True)
-    assert "".join(поток.wrote) == "гейт в тени: fake\n" and поток.flushed >= 1
+    # одним write: из двух потоков строки иначе склеиваются (DS M2 круга 3)
+    assert поток.wrote == ["гейт в тени: fake\n"] and поток.flushed >= 1
 
 
 def test_a_broken_sink_at_start_does_not_stop_the_daemon(monkeypatch):

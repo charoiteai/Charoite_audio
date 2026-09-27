@@ -444,10 +444,15 @@ class ShadowRun:
 
 
 class _Idle:
-    """Прогон, которого нет: тень выключена или судить нечего. Тот же интерфейс,
+    """Прогон, которого нет: тень выключена или решателя нет. Тот же интерфейс,
     что у `ShadowRun`, и ничего не пишет — поэтому цикл ⚡ зовёт `finish` без
-    условия, и в демоне нет ветки, до которой не дотягивается ни один тест."""
+    условия, и в демоне нет ветки, до которой не дотягивается ни один тест.
 
+    Объект один на процесс, и состояния у него нет по построению: `__slots__`
+    пуст, записать атрибут нельзя — общий объект не протечёт от вопроса к
+    вопросу (выходной круг 3 по #651, DS M1)."""
+
+    __slots__ = ()
     decided = True
 
     def finish(self, outcome: str) -> None:
@@ -461,7 +466,14 @@ IDLE = _Idle()
 
 
 def _stderr_line(line: str) -> None:
-    print(line, file=sys.stderr, flush=True)
+    """Строка в stderr одним `write`: `print` пишет строку и перевод двумя, и
+    строки тени из потока решателя и из потока ⚡ склеивались бы в одну — пропуск
+    `busy`/`hung` молча пропал бы из замера (выходной круг 3 по #651, DS M2;
+    то же правило, что у `once.say`). `sys.stderr` берётся в момент вызова:
+    демон подменяет поток файлом err-лога после импорта."""
+    stream = sys.stderr
+    stream.write(line + "\n")
+    stream.flush()
 
 
 def shadow_for(cfg: dict, instant_on: bool,
@@ -512,9 +524,18 @@ class Shadow:
             pass
 
     def start(self, question: str) -> "ShadowRun | _Idle":
-        """Тень на один вопрос — или `IDLE`, если судить нечего или нечем."""
-        if not self.active or not (question or "").strip():
+        """Тень на один вопрос — или `IDLE`, если судить нечем.
+
+        Пустой вопрос при живом решателе — не тишина, а пропуск с причиной
+        `no-question`: ⚡ отвечает и на хвост без вопроса («⚡ мгновенный
+        ответ»), и замеру нужен знаменатель — сколько ответов прошло мимо
+        гейта (выходной круг 3 по #651, DS M3)."""
+        if not self.active:
             return IDLE
+        if not (question or "").strip():
+            run = ShadowRun("", self._decider, self._log)
+            run.skip("no-question")
+            return run
         with self._lock:
             run = ShadowRun(question, self._decider, self._log)
             if self._inflight is not None and not self._inflight.decided:
