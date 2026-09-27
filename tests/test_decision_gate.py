@@ -441,7 +441,14 @@ def test_one_shadow_in_flight_the_next_question_is_counted_as_busy():
     ("   ", dg.Decider("fake", lambda t: {"ask": 1.0, "skip": 0.0})),
 ])
 def test_no_shadow_when_nothing_or_nobody_to_judge(question, dec):
-    assert dg.Shadow(dec, _Log()).start(question) is None
+    """Судить нечего или нечем — прогон-пустышка: `finish` и `join` ничего не
+    делают и не пишут, поэтому цикл ⚡ зовёт их без условия."""
+    log = _Log()
+    run = dg.Shadow(dec, log).start(question)
+    assert run is dg.IDLE and run.decided
+    run.finish("answered")
+    run.join(0)
+    assert log == []
 
 
 def test_default_head_dir_follows_the_data_root():
@@ -541,3 +548,58 @@ def test_a_base_exception_in_the_decider_does_not_leave_the_run_in_flight(monkey
     assert run.decided
     run.finish("answered")
     assert dg.parse_shadow_line(log[0])["reason"] == "error:BaseException"
+
+
+@pytest.mark.parametrize("instant_on, cfg", [(False, {"sufler": {"decision_gate_shadow": True}}),
+                                             (True, {"sufler": {}}),
+                                             (True, {"sufler": {"decision_gate_shadow": "true"}})])
+def test_shadow_for_stays_idle_when_off(monkeypatch, instant_on, cfg):
+    """Выключен ⚡ или тень (только буквальное `true` включает) — решатель не
+    строится, строки на старте нет, каждый вопрос получает пустышку. Прежде эти
+    условия жили в демоне, и мутации CI их не видели (круг 2 по #651)."""
+    built = []
+    monkeypatch.setattr(dg, "decider", lambda: built.append(1) or _fixed({"ask": 1.0, "skip": 0.0}))
+    log = _Log()
+    shadow = dg.shadow_for(cfg, instant_on, log)
+    assert built == [] and log == [] and not shadow.active
+    assert shadow.start("Когда релиз?") is dg.IDLE
+
+
+@pytest.mark.parametrize("dec, line", [(dg.Decider("nli-zero-shot", lambda t: {}), "гейт в тени: nli-zero-shot"),
+                                       (dg.Decider("none", lambda t: {}, refused="нет модели"), "гейт в тени: нет модели")])
+def test_shadow_for_names_its_decider_once_at_start(monkeypatch, dec, line):
+    """Включено — одна строка на старте: какой решатель поднялся или почему его нет."""
+    monkeypatch.setattr(dg, "decider", lambda: dec)
+    log = _Log()
+    dg.shadow_for({"sufler": {"decision_gate_shadow": True}}, True, log)
+    assert log == [line]
+
+
+def test_default_sink_is_stderr_flushed_at_once(monkeypatch):
+    """Строки тени по умолчанию идут в stderr и сразу сбрасываются: err-лог
+    демона читают по ходу встречи, буфер держал бы их до выхода."""
+    class Поток:
+        def __init__(self):
+            self.wrote, self.flushed = [], 0
+
+        def write(self, s):
+            self.wrote.append(s)
+
+        def flush(self):
+            self.flushed += 1
+
+    поток = Поток()
+    monkeypatch.setattr(sys, "stderr", поток)
+    monkeypatch.setattr(dg, "decider", lambda: dg.Decider("fake", lambda t: {}))
+    dg.shadow_for({"sufler": {"decision_gate_shadow": True}}, True)
+    assert "".join(поток.wrote) == "гейт в тени: fake\n" and поток.flushed >= 1
+
+
+def test_a_broken_sink_at_start_does_not_stop_the_daemon(monkeypatch):
+    """Сток сломан уже на старте — строка о решателе теряется, демон идёт дальше."""
+    def broken(_line):
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(dg, "decider", lambda: dg.Decider("fake", lambda t: {}))
+    shadow = dg.shadow_for({"sufler": {"decision_gate_shadow": True}}, True, broken)
+    assert shadow.active

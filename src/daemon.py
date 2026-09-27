@@ -1527,18 +1527,11 @@ def main():
     instant_on = bool(cfg["sufler"].get("instant", True))
     # Решающий гейт в ТЕНИ (src/decision_gate.py): вердикт «вопрос или нет»
     # считается рядом с ⚡ и уходит в err-лог с исходом ответа. Ничего не
-    # решает — копит замер для scripts/gate_bench.py shadow.
-    gate_decider = (decision_gate.decider()
-                    if instant_on and decision_gate.shadow_enabled(cfg) else None)
-    if gate_decider is not None:
-        print(f"гейт в тени: {gate_decider.refused or gate_decider.name}",
-              file=sys.stderr, flush=True)
-
-    def gate_log(line: str) -> None:
-        print(line, file=sys.stderr, flush=True)
-    # шов тени тотальный: ни `start`, ни `finish` не бросают — поток ⚡ не
-    # оборачивает их в `try` и от тени не зависит (выходной круг 1 по #651)
-    gate_shadow = decision_gate.Shadow(gate_decider, gate_log)
+    # решает — копит замер для scripts/gate_bench.py shadow. Вся проводка —
+    # в `shadow_for`: здесь одна строка без условий, шов тотальный и ⚡ от тени
+    # не зависит (выходные круги по #651; мутации CI нашли условия проводки,
+    # до которых не дотягивается ни один тест, пока они жили в демоне).
+    gate_shadow = decision_gate.shadow_for(cfg, instant_on)
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
     cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
@@ -2170,8 +2163,7 @@ def main():
                 except Exception as e:  # noqa: BLE001
                     emit_error(f"⚡ ответ не собрался: {short_error(e)}")
                 answer = "".join(parts)
-                if shadow is not None:
-                    shadow.finish(decision_gate.outcome_of(
+                shadow.finish(decision_gate.outcome_of(
                         answer, question_filter.is_refusal(answer)))
                 # Отказ модели («вопроса не вижу, уточните») — не ответ, и в
                 # полотно он не идёт: раньше такие абзацы занимали пол-панели.

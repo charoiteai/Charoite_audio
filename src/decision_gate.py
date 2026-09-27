@@ -39,6 +39,7 @@ import dataclasses
 import json
 import math
 import pathlib
+import sys
 import threading
 import time
 from typing import Callable, Mapping
@@ -442,6 +443,43 @@ class ShadowRun:
             self._thread.join(timeout)
 
 
+class _Idle:
+    """Прогон, которого нет: тень выключена или судить нечего. Тот же интерфейс,
+    что у `ShadowRun`, и ничего не пишет — поэтому цикл ⚡ зовёт `finish` без
+    условия, и в демоне нет ветки, до которой не дотягивается ни один тест."""
+
+    decided = True
+
+    def finish(self, outcome: str) -> None:
+        return None
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+
+IDLE = _Idle()
+
+
+def _stderr_line(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
+
+
+def shadow_for(cfg: dict, instant_on: bool,
+               log: Callable[[str], None] = _stderr_line) -> "Shadow":
+    """Тень на встречу по конфигу — вся проводка демона одним вызовом.
+
+    Выключено ⚡ или тень — `Shadow` без решателя, его `start` отдаёт `IDLE`.
+    Включено — строка о решателе на старте (какой поднялся или почему нет) и
+    тот же сток для строк тени. Прежде эти условия жили в демоне, и мутации CI
+    их не видели ни одним тестом (выходной круг 2 по #651, CI).
+    """
+    dec = decider() if instant_on and shadow_enabled(cfg) else None
+    shadow = Shadow(dec, log)
+    if dec is not None:
+        shadow.say(f"гейт в тени: {dec.refused or dec.name}")
+    return shadow
+
+
 class Shadow:
     """Тень ⚡ на встречу: решатель, сток и не больше одного прогона в полёте.
 
@@ -466,10 +504,17 @@ class Shadow:
         """Есть чем судить: решатель назван и не отказал."""
         return self._decider is not None and not self._decider.refused
 
-    def start(self, question: str) -> ShadowRun | None:
-        """Тень на один вопрос — или None, если судить нечего или нечем."""
+    def say(self, line: str) -> None:
+        """Строка в сток тени; сток сломан — тень молчит, демон идёт дальше."""
+        try:
+            self._log(line)
+        except Exception:  # noqa: BLE001 — сток тени (stderr) закрыт или сломан: тень — наблюдение, а не контур
+            pass
+
+    def start(self, question: str) -> "ShadowRun | _Idle":
+        """Тень на один вопрос — или `IDLE`, если судить нечего или нечем."""
         if not self.active or not (question or "").strip():
-            return None
+            return IDLE
         with self._lock:
             run = ShadowRun(question, self._decider, self._log)
             if self._inflight is not None and not self._inflight.decided:
