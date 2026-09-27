@@ -16,6 +16,7 @@ import pathlib
 import sys
 import time
 
+import once
 from charoite_paths import resolve_root
 
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
@@ -86,16 +87,6 @@ def config_path() -> pathlib.Path:
     return data_root() / "config" / "config.yaml"
 
 
-_config_said: set[str] = set()
-
-
-def _config_note(text: str) -> None:
-    """Одна строка в stderr на вид неполадки за процесс: конфиг читают часто."""
-    if text not in _config_said:
-        _config_said.add(text)
-        print(f"config: {text}", file=sys.stderr)
-
-
 def load_config() -> dict:
     """config.yaml целиком; {} — файла нет, он битый или корень не назван (пути
     fail-closed). Контракт «всегда словарь» прежний; битый файл и неназванный
@@ -108,14 +99,16 @@ def load_config() -> dict:
     try:
         path = config_path()
     except RuntimeError as e:          # корень данных не назван
-        _config_note(f"корень данных не назван — беру умолчания ({e})")
+        once.say(("config", "корень не назван"),
+                 f"config: корень данных не назван — беру умолчания ({e})")
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeDecodeError, RecursionError, yaml.YAMLError) as e:   # глубокая вложенность — тоже битый файл
-        _config_note(f"{path} не читается — беру умолчания ({type(e).__name__}: {e})")
+        once.say(("config", f"не читается: {path}: {type(e).__name__}"),
+                 f"config: {path} не читается — беру умолчания ({type(e).__name__}: {e})")
         return {}
     return data if isinstance(data, dict) else {}
 

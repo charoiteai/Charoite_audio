@@ -626,7 +626,13 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   the pair (server address, model actually sent) for ten minutes — the server
   may get fixed while a long-lived process runs — reports it once per process
   on stderr and retries the request once without `format`, relying on the
-  prompt. Speaker names take the first object (`parse_json_block`). On the
+  prompt. One-time lines like that — strict JSON, an unreadable config, a
+  mismatched mlx model, an unwritable model lease — share one registry,
+  `src/once.py` (base layer, stdlib only): the key is `(namespace, meaning)`,
+  where the meaning carries what makes a repeat a repeat — status code, body,
+  form, exception kind, path — not the whole finished line; `forget` opens a
+  new episode, `reset` clears one namespace or all. Speaker names take the
+  first object (`parse_json_block`). On the
   rebuild path they pass the full trust guard (`speaker_names`); the
   diarization CLI keeps only a single word of 3–15 letters that is heard in
   the talk and is not a speaker label.

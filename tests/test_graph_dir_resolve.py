@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
+import once  # noqa: E402
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 
@@ -97,6 +98,10 @@ def test_перенесённый_модуль_берёт_корень_у_выз
     (установка / "scripts").mkdir()                 # корень кода — где лежат src/ и scripts/
     (установка / "src" / "charoite_paths.py").write_text(
         (SRC / "charoite_paths.py").read_text(encoding="utf-8"), encoding="utf-8")
+    # graphs импортирует once (общий реестр однократных строк) — в перенесённой
+    # установке он тоже обязан быть рядом, как и в настоящем пакете.
+    (установка / "src" / "once.py").write_text(
+        (SRC / "once.py").read_text(encoding="utf-8"), encoding="utf-8")
     пакет = установка / ".venv" / "lib" / "python3" / "site-packages"
     пакет.mkdir(parents=True)
     (пакет / "graphs.py").write_text((SRC / "graphs.py").read_text(encoding="utf-8"), encoding="utf-8")
@@ -199,7 +204,7 @@ def test_конфиг_не_словарь_и_следы_неполадок(tmp_p
     """Контракт «всегда словарь» держится и для ямла-списка; битый файл и
     неназванный корень оставляют строку в stderr — одну за процесс на вид, —
     а отсутствие файла (свежая установка) молчит (№405, DS I2/I3 круга 2)."""
-    monkeypatch.setattr(graphs, "_config_said", set())
+    once.reset("config")
     данные = charoite_paths.use_data_root(tmp_path / "данные")
     (данные / "config").mkdir(parents=True)
     assert graphs.load_config() == {}
@@ -220,6 +225,20 @@ def test_конфиг_не_словарь_и_следы_неполадок(tmp_p
     monkeypatch.setattr(graphs, "config_path", нет_корня)
     assert graphs.load_config() == {}
     assert "корень данных не назван" in capsys.readouterr().err
+
+
+def test_два_корня_с_одной_ошибкой_дают_две_строки(tmp_path, capsys):
+    """Ключ строки о битом файле несёт путь: `config.yaml` не читается в двух
+    разных корнях данных — это две неполадки, а не одна (общий реестр `once`)."""
+    once.reset("config")
+    for имя in ("первый", "второй"):
+        данные = charoite_paths.use_data_root(tmp_path / имя, replace=True)
+        (данные / "config").mkdir(parents=True)
+        graphs.config_path().write_text("не: [ямл", encoding="utf-8")
+        assert graphs.load_config() == {}
+    err = capsys.readouterr().err
+    assert err.count("не читается") == 2, err
+    assert "первый" in err and "второй" in err
 
 
 def test_конфиг_без_пакета_yaml_пустой_словарь(monkeypatch):

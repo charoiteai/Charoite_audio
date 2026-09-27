@@ -10,36 +10,24 @@
 Транспорт — значение, а не импорт: `post(url, payload, timeout)` отдаёт
 `(status, text)` на ЛЮБОЙ HTTP-ответ и бросает только транспортные отказы.
 По умолчанию — `urllib_post`. Слой моделей подставляет `_requests_post`.
+
+Строки об отказах говорит общий реестр `once` (ключ — код и тело ответа).
+Своего `forget` у двери нет намеренно: сервер, который мигает (ответил —
+отказал — ответил), с ним печатал бы строку на каждом мигании, а эпизода у
+двери нет — есть поток запросов.
 """
 
 from __future__ import annotations
 
 import http.client
 import json
-import sys
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
+import once
 from model_seam import Embedder, SeamTransportError
-
-_said: set[str] = set()
-
-
-def _say_once(text: str, key: str | None = None) -> None:
-    """Сказать владельцу один раз за жизнь процесса.
-
-    Отказ политики повторяется на каждом вопросе; в журнале встречи это был бы
-    шум, из-за которого настоящую причину не видно. `key` — чем повтор
-    считается тем же: у отказа сервера в тексте есть размер пачки, а повтор —
-    это тот же код с тем же телом.
-    """
-    k = key or text
-    if k in _said:
-        return
-    _said.add(k)
-    print(text, file=sys.stderr, flush=True)
 
 
 #: Потолок одного запроса к /api/embed — по числу текстов и по знакам. Ollama
@@ -147,7 +135,8 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
     свой `requests`-адаптер.
     """
     if refused:
-        _say_once(refusal_line(refused))
+        строка = refusal_line(refused)
+        once.say(("embed", строка), строка)
 
         def run_refused(texts: list[str], timeout: float) -> list[list[float]]:
             raise SeamTransportError(refused, policy=True)
@@ -179,9 +168,9 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
             где = f"пачка {номер}/{len(пачки)}, {len(пачка)} текстов"
             осталось = срок - time.monotonic()
             if осталось <= 0:
-                _say_once(
-                    f"эмбеддинги: не уложились в {timeout:.0f} с на {len(texts)} текстов ({где})",
-                    key=f"embed:budget:{len(пачка)}")
+                once.say(
+                    ("embed", f"budget:{len(пачка)}"),
+                    f"эмбеддинги: не уложились в {timeout:.0f} с на {len(texts)} текстов ({где})")
                 return []
             try:
                 status, text = post(endpoint, payload, осталось)
@@ -198,15 +187,15 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 # ревизия ядер печатала «лежит Ollama» на HTTP 400 (№358). 503
                 # на занятом сервере приходит с не-JSON телом — тело текстом.
                 тело = (text or "").strip()[:200]
-                _say_once(f"эмбеддинги: HTTP {status} ({где}): {тело}",
-                          key=f"embed:{status}:{тело[:120]}")
+                once.say(("embed", f"{status}:{тело[:120]}"),
+                         f"эмбеддинги: HTTP {status} ({где}): {тело}")
                 return []
             try:
                 body = json.loads(text)
             except ValueError:
                 тело = (text or "").strip()[:120]
-                _say_once(f"эмбеддинги: ответ не JSON ({где}): {тело}",
-                          key=f"embed:not-json:{тело}")
+                once.say(("embed", f"not-json:{тело}"),
+                         f"эмбеддинги: ответ не JSON ({где}): {тело}")
                 return []
             if not isinstance(body, dict):
                 # JSON не объектом (`[1,2]`, `"ok"`, `null`): `.get` у списка вылетел
@@ -214,8 +203,8 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 # названа своей строкой: «не JSON» отправил бы дежурного искать HTML
                 # прокси, а сервер ответил разбираемым документом (круг 2, DS M1)
                 тело = (text or "").strip()[:120]
-                _say_once(f"эмбеддинги: ответ не объект JSON ({где}, {type(body).__name__}): {тело}",
-                          key=f"embed:not-object:{тело}")
+                once.say(("embed", f"not-object:{тело}"),
+                         f"эмбеддинги: ответ не объект JSON ({где}, {type(body).__name__}): {тело}")
                 return []
             got = body.get("embeddings", [])
             if not _vectors_ok(got, len(пачка), dim):
@@ -224,9 +213,8 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 # (круг 1 по коду, Opus M3)
                 форма = (f"{type(got).__name__}:{len(got) if isinstance(got, list) else '-'}"
                          f"/{len(пачка)}")
-                _say_once(
-                    f"эмбеддинги: сервер дал не по вектору на текст ({где}, ответ {форма})",
-                    key=f"embed:bad-vectors:{форма}")
+                once.say(("embed", f"bad-vectors:{форма}"),
+                         f"эмбеддинги: сервер дал не по вектору на текст ({где}, ответ {форма})")
                 return []
             dim = len(got[0])
             векторы.extend(got)
