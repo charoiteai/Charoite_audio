@@ -99,6 +99,14 @@ class GraphSchema:
     meeting_link_prefixes: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        # Одна форма значения на всех читателей: поле-кортеж приходит строкой (одно
+        # имя или путь) или любой последовательностью, а хранится кортежем. Иначе
+        # форму толковал бы потребитель, и строка в `tuple()` стала бы кортежем
+        # букв, которые инварианты ниже пропускают поштучно (выходной круг 2 по
+        # #654, DS C1).
+        for поле in dataclasses.fields(self):
+            if поле.type == "tuple[str, ...]":
+                object.__setattr__(self, поле.name, _as_names(getattr(self, поле.name)))
         self._check_names()
         self._check_literals()
         self._check_roles()

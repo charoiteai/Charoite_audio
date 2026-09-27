@@ -143,3 +143,17 @@ def test_the_charoite_snapshot_constructs_and_passes_every_invariant():
     не только «совпадает с константами», но и сам себе не врёт."""
     assert isinstance(CHAROITE, GraphSchema)
     assert GraphSchema(**_kwargs()) == CHAROITE
+
+
+@pytest.mark.parametrize("значение, ждём", [
+    ("Черновики", ("Черновики",)),
+    ("Документация/Черновики", ("Документация/Черновики",)),
+    (["Черновики", "Документация/Черновики"], ("Черновики", "Документация/Черновики")),
+], ids=["строка-имя", "строка-путь", "список"])
+def test_поле_кортеж_хранится_кортежем_и_строка_это_одно_значение(значение, ждём):
+    """Строка в поле-кортеже — одно имя или путь, а не набор букв: владелец
+    значения приводит форму сам, и потребителю толковать её нечего (выходной
+    круг 2 по #654, DS C1)."""
+    своя = dataclasses.replace(charoite_schema.CHAROITE, exclude_dirs=значение)
+    assert своя.exclude_dirs == ждём
+    assert isinstance(своя.node_folders, tuple)

@@ -2658,12 +2658,10 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     members = package_members(inv, layout)
     inits = package_inits(inv, layout)
     closure = package_closure(graph, entry) - inits
-    # модуль-владелец схемы — объявленный путь-решение (№422): он лежит в пакете,
-    # но вход его пока не зовёт — потребители переводит PR B. До тех пор «вне
-    # замыкания» о нём говорит сторож литералов, а не гейт пакета: объявленный
-    # путь-решение выведен из-под правила объявлением, а не забыт.
-    declared = decision_modules(layout)
-    for m in sorted(members - closure - declared):
+    # Член пакета вне замыкания входа — всегда отказ, без изъятий: модуль схемы
+    # хранилища вход зовёт (поиск берёт схему параметром, №422), и колесо везёт
+    # ровно то, что проба импортирует (сверка плана с артефактом, №427).
+    for m in sorted(members - closure):
         out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
                    f"убрать из {layout['package']}/ или позвать из входа")
     for m in sorted(closure - members):
