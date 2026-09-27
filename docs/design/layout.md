@@ -90,7 +90,7 @@
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
-- `scripts/layout_map.py` ← scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
+- `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
@@ -221,6 +221,6 @@
 - `app/` — code (git): приложение зовёт python и shell
 - `scripts/` — code (git): скрипты зовут друг друга и модули; проза по суффиксу (README)
 - `src/` — code (git): модули зовут скрипты и подсказывают пути человеку
-- `packages/` — code (git): дистрибутивы: модуль пакета — тот же продукт, что модуль src/
+- `packages/` — code (git): метаданные дистрибутива — №427; код пакета живёт в src/<пакет>/, python здесь краснеет, пока не принято решение
 - `.github/` — code (git): workflow CI — источник запуска
 - `.pre-commit-config.yaml` — code (git): хуки — источник запуска

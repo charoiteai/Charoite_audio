@@ -384,7 +384,7 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     problems += [f"модуль {m} вне замыкания package_entry загрузился в пакет" for m in sorted(loaded & set(outside))]
     # код продукта из репозитория, а не всё под корнем: у сопровождающего `.venv/`
     # лежит в репозитории, и yaml оттуда — законная зависимость пакета
-    product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, lm.DIST_DIR, "scripts")]
+    product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, "scripts")]
     problems += [f"пакет загрузил {f} мимо своей копии" for f in out["files"]
                  if any(pathlib.Path(f).is_relative_to(d) for d in product)]
     # путь импорта — поведением, при любом написании: грамматика гейта видит
