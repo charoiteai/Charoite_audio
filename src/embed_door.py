@@ -12,9 +12,16 @@
 По умолчанию — `urllib_post`. Слой моделей подставляет `_requests_post`.
 
 Строки об отказах говорит общий реестр `once` (ключ — код и тело ответа).
-Своего `forget` у двери нет намеренно: сервер, который мигает (ответил —
-отказал — ответил), с ним печатал бы строку на каждом мигании, а эпизода у
-двери нет — есть поток запросов.
+Своего `forget` у этих строк нет намеренно: сервер, который мигает (ответил —
+отказал — ответил), с ним печатал бы строку на каждом мигании. Исключение —
+эпизод усечения, и он один: запрос всегда несёт `truncate: false`, чтобы
+сервер не резал длинный вход молча (замер 27.09: bge-m3 при 2102 токенах
+ответил 200, а `prompt_eval_count` показал 2048 — хвост в вектор не попал).
+На HTTP 400 дверь повторяет ту же пачку с `truncate: true`; повтор дал
+векторы — дверь говорит один раз на адрес и модель, а пачка, принятая без
+усечения, зовёт `forget` этого ключа, и следующий длинный вход скажется
+снова. У остальных строк отказа `forget` нет: иначе мигающий сервер печатал
+бы строку на каждом мигании.
 """
 
 from __future__ import annotations
@@ -92,6 +99,69 @@ def refusal_line(reason: object) -> str:
     return f"эмбеддинги недоступны: {reason}"
 
 
+def _longest(texts: list[str]) -> tuple[int, int]:
+    """Номер (с единицы) и длина самого длинного текста; при равенстве — первого."""
+    номер = max(range(len(texts)), key=lambda i: len(texts[i]))
+    return номер + 1, len(texts[номер])
+
+
+def _parse_response(status: int, text: str, count: int, dim: int | None,
+                    where: str) -> tuple[list | None, str | None, str | None]:
+    """Ответ сервера → `(векторы, None, None)` или `(None, смысл, строка)`.
+
+    Смысл — то, что делает повтор повтором (код и тело, форма ответа), без
+    приставки пространства: ключ `once` собирает зовущий. Строку он же печатает
+    один раз. Разбор один для первого хода и для повтора: у отказа на повторе
+    та же таблица, отличается только приписка про первый ответ.
+    """
+    тело = (text or "").strip()
+    if status != 200:
+        краткое = тело[:200]
+        return (None, f"{status}:{тело[:120]}",
+                f"эмбеддинги: HTTP {status} ({where}): {краткое}")
+    try:
+        body = json.loads(text)
+    except ValueError:
+        краткое = тело[:120]
+        return (None, f"not-json:{краткое}",
+                f"эмбеддинги: ответ не JSON ({where}): {краткое}")
+    if not isinstance(body, dict):
+        # JSON не объектом (`[1,2]`, `"ok"`, `null`): `.get` у списка вылетел бы
+        # исключением мимо таблицы строк. Форма названа своей строкой.
+        краткое = тело[:120]
+        return (None, f"not-object:{краткое}",
+                f"эмбеддинги: ответ не объект JSON ({where}, {type(body).__name__}): {краткое}")
+    got = body.get("embeddings", [])
+    if not _vectors_ok(got, count, dim):
+        форма = (f"{type(got).__name__}:{len(got) if isinstance(got, list) else '-'}"
+                 f"/{count}")
+        return (None, f"bad-vectors:{форма}",
+                f"эмбеддинги: сервер дал не по вектору на текст ({where}, ответ {форма})")
+    return got, None, None
+
+
+#: Признак отказа сервера из-за длины входа. Ollama 0.34 с `truncate: false`
+#: так отвечает, когда вход длиннее контекста (замер 27.09, bge-m3). Сравнение
+#: без учёта регистра: сборки называют причину по-разному.
+CONTEXT_LENGTH_MARK = "exceeds the context length"
+
+
+def _truncate_line(first_body: str, texts: list[str], where: str) -> str:
+    """Строка эпизода усечения: повтор с `truncate: true` дал векторы.
+
+    `first_body` — тело первого отказа (HTTP 400 на запрос без усечения).
+    Текст входа в строку не попадает: только номер и число знаков самого
+    длинного текста пачки. Вторая ветка — сервер отказывал не из-за длины.
+    """
+    if CONTEXT_LENGTH_MARK in first_body.lower():
+        номер, знаков = _longest(texts)
+        return (f"эмбеддинги: вход длиннее предела сервера ({where}) — "
+                f"сервер усёк его, хвост текста в вектор не попал; "
+                f"самый длинный текст пачки — №{номер}, {знаков} знаков")
+    return (f"эмбеддинги: сервер отказал без усечения "
+            f"(HTTP 400 ({where}): {first_body[:200]}), повтор с усечением прошёл")
+
+
 #: Что дверь считает транспортным отказом. `requests.RequestException` и
 #: `urllib.error.URLError` — подклассы `OSError`; `http.client.HTTPException`
 #: ловит `IncompleteRead`/`BadStatusLine`, у которых общего предка с ним нет.
@@ -146,6 +216,20 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
     if urlsplit(base_url).scheme not in {"http", "https"}:
         raise ValueError(f"адрес эмбеддингов не http(s): {base_url!r}")
     endpoint = base_url.rstrip("/") + "/api/embed"
+    #: Ключ эпизода усечения — адрес и модель, а не пачка: эпизод один на
+    #: дверь, и `forget` снимает его целиком.
+    ключ_усечения = ("embed", ("truncate", endpoint, model))
+
+    def тело(пачка: list[str], truncate: bool) -> dict:
+        """Тело одного запроса — новое на каждый ход.
+
+        Один словарь на вызов протёк бы: `truncate: true` повтора остался бы в
+        следующей пачке, и она молча отдала бы усечённый вход.
+        """
+        запрос = {"model": model, "input": пачка, "truncate": truncate}
+        if keep_alive:
+            запрос["keep_alive"] = keep_alive
+        return запрос
 
     def run(texts: list[str], timeout: float) -> list[list[float]]:
         """Векторы через /api/embed. Пустой список — сервер не дал векторов.
@@ -155,16 +239,18 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
         ответа. `timeout` — срок всего вызова, а не каждой пачки: иначе 120 с
         ревизии на 13 пачках становились 26 минутами, а 20 с дежавю — четырьмя
         (круг 1 по коду, Opus I1/I3).
+
+        Первый ход пачки всегда несёт `truncate: false`: сервер обязан сказать
+        400, а не молча усечь длинный вход. На 400 — повтор той же пачки с
+        `truncate: true`, если срок ещё остался; повтор дал векторы — они
+        возвращаются. Пачка, принятая без усечения, зовёт `once.forget` ключа
+        усечения: эпизод кончился, следующий длинный вход скажется снова.
         """
-        payload: dict = {"model": model, "input": []}
-        if keep_alive:
-            payload["keep_alive"] = keep_alive
         пачки = batches(texts)
         векторы: list[list[float]] = []
         dim: int | None = None
         срок = time.monotonic() + timeout
         for номер, пачка in enumerate(пачки, 1):
-            payload["input"] = пачка
             где = f"пачка {номер}/{len(пачки)}, {len(пачка)} текстов"
             осталось = срок - time.monotonic()
             if осталось <= 0:
@@ -173,7 +259,7 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                     f"эмбеддинги: не уложились в {timeout:.0f} с на {len(texts)} текстов ({где})")
                 return []
             try:
-                status, text = post(endpoint, payload, осталось)
+                status, text = post(endpoint, тело(пачка, False), осталось)
             except SeamTransportError:
                 # свой отказ шва — как есть: он тоже OSError, и без этой строки
                 # кортеж ниже перевыпустил бы его с policy=False — отказ по
@@ -181,41 +267,49 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 raise
             except TRANSPORT_ERRORS as exc:       # отказ, таймаут, обрыв
                 raise SeamTransportError(str(exc), policy=False) from exc
-            if status != 200:
+
+            if status == 400:
+                # Сервер отказал — возможно, из-за длины входа. Повторяем ту же
+                # пачку с усечением, пока цел срок. Срок вышел или повтор
+                # оборвался транспортом — пути «как сегодня»: отказ по первому
+                # ответу, не исключение (сервер уже ответил).
+                первое = (status, text)
+                остаток = срок - time.monotonic()
+                повтор = None
+                if остаток > 0:
+                    try:
+                        повтор = post(endpoint, тело(пачка, True), остаток)
+                    except TRANSPORT_ERRORS:
+                        повтор = None
+                status, text = первое if повтор is None else повтор
+                got, смысл, строка = _parse_response(status, text, len(пачка), dim, где)
+                if got is None:
+                    if повтор is not None:
+                        # Строка — по второму ответу, в ней же тело первого:
+                        # дежурный видит, что и повтор с усечением не прошёл.
+                        строка = (f"{строка}; повтор с усечением не прошёл "
+                                  f"(первый ответ: {первое[1].strip()[:200]})")
+                        once.say(("embed", f"truncate-fail:{смысл}"), строка)
+                    else:
+                        once.say(("embed", смысл), строка)
+                    return []
+                if повтор is not None:
+                    once.say(ключ_усечения, _truncate_line(первое[1], пачка, где))
+                dim = len(got[0])
+                векторы.extend(got)
+                continue
+
+            got, смысл, строка = _parse_response(status, text, len(пачка), dim, где)
+            if got is None:
                 # Отказ сервера — не молча: код и тело в stderr, один раз на
                 # одинаковый ответ. `[]` без строки стоил месяца слепой ночи —
                 # ревизия ядер печатала «лежит Ollama» на HTTP 400 (№358). 503
                 # на занятом сервере приходит с не-JSON телом — тело текстом.
-                тело = (text or "").strip()[:200]
-                once.say(("embed", f"{status}:{тело[:120]}"),
-                         f"эмбеддинги: HTTP {status} ({где}): {тело}")
+                once.say(("embed", смысл), строка)
                 return []
-            try:
-                body = json.loads(text)
-            except ValueError:
-                тело = (text or "").strip()[:120]
-                once.say(("embed", f"not-json:{тело}"),
-                         f"эмбеддинги: ответ не JSON ({где}): {тело}")
-                return []
-            if not isinstance(body, dict):
-                # JSON не объектом (`[1,2]`, `"ok"`, `null`): `.get` у списка вылетел
-                # бы исключением мимо таблицы строк (выходной круг 1, DS M2). Форма
-                # названа своей строкой: «не JSON» отправил бы дежурного искать HTML
-                # прокси, а сервер ответил разбираемым документом (круг 2, DS M1)
-                тело = (text or "").strip()[:120]
-                once.say(("embed", f"not-object:{тело}"),
-                         f"эмбеддинги: ответ не объект JSON ({где}, {type(body).__name__}): {тело}")
-                return []
-            got = body.get("embeddings", [])
-            if not _vectors_ok(got, len(пачка), dim):
-                # Ключ — с формой ответа: в демоне, который живёт днями, другой
-                # сбой той же природы у другого потребителя не должен молчать
-                # (круг 1 по коду, Opus M3)
-                форма = (f"{type(got).__name__}:{len(got) if isinstance(got, list) else '-'}"
-                         f"/{len(пачка)}")
-                once.say(("embed", f"bad-vectors:{форма}"),
-                         f"эмбеддинги: сервер дал не по вектору на текст ({где}, ответ {форма})")
-                return []
+            # Пачка принята без усечения — эпизод кончился: следующий длинный
+            # вход сервер назовёт снова, а не промолчит навсегда.
+            once.forget(ключ_усечения)
             dim = len(got[0])
             векторы.extend(got)
         return векторы

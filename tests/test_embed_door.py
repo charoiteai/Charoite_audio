@@ -34,20 +34,32 @@ def _векторы(texts: list[str]) -> list[list[float]]:
 
 
 class Wire:
-    """Транспорт-кортеж: помнит пачки и тело, отвечает заготовкой."""
+    """Транспорт-кортеж: помнит пачки и тело, отвечает заготовкой.
+
+    `script` — очередь ходов: элемент либо исключение (бросается), либо
+    `payload -> (код, тело)`. Нужна там, где ответ зависит от номера запроса
+    (400 на первом ходе пачки, 200 на повторе); без неё отвечает заготовкой.
+    """
 
     def __init__(self, vectors=None, status: int = 200, body: str | None = None,
-                 raw: str | None = None, fail_on: int | None = None):
+                 raw: str | None = None, fail_on: int | None = None,
+                 script: list | None = None):
         self.inputs: list[list[str]] = []
         self.payloads: list[dict] = []
         self.timeouts: list[float] = []
         self.vectors, self.status, self.body, self.raw, self.fail_on = (
             vectors, status, body, raw, fail_on)
+        self.script = script
 
     def __call__(self, url, payload, timeout):
         self.inputs.append(list(payload["input"]))
         self.payloads.append(dict(payload))
         self.timeouts.append(timeout)
+        if self.script is not None:
+            шаг = self.script.pop(0)
+            if isinstance(шаг, BaseException):
+                raise шаг
+            return шаг(payload)
         if self.raw is not None:
             return self.status, self.raw
         if self.fail_on == len(self.inputs) or (self.fail_on is None and self.status != 200):
@@ -98,10 +110,17 @@ def test_the_char_budget_is_a_strict_ceiling():
 
 
 def test_a_failed_batch_returns_nothing_not_a_partial_answer():
-    w = Wire(fail_on=2, status=400, body='Post "tokenize": EOF')
+    """Вторая пачка отказала и на повторе с усечением — весь вызов пуст."""
+    def ок(payload):
+        return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+
+    def нет(payload):
+        return 400, 'Post "tokenize": EOF'
+
+    w = Wire(script=[ок, нет, нет])
 
     assert _дверь(post=w).run(["текст"] * 100, 30) == [], "частичный ответ — не вектор на каждый текст"
-    assert [len(b) for b in w.inputs] == [64, 36], w.inputs
+    assert [len(b) for b in w.inputs] == [64, 36, 36], w.inputs
 
 
 def test_nothing_asked_about_nothing():
@@ -212,6 +231,150 @@ def test_vectors_ok_reports_false_not_a_falsy_value(vectors, count, dim):
 
 def test_vectors_ok_accepts_a_full_answer():
     assert embed_door._vectors_ok([[1.0, 2.0], [3.0, 4.0]], 2, None) is True
+
+
+# ── усечение: `truncate: false`, повтор с `truncate: true` ───────────────
+
+def _отказ(тело: str, код: int = 400):
+    """Ход транспорта: ответ `(код, тело)` независимо от тела запроса."""
+    def ответ(payload):
+        return код, тело
+    return ответ
+
+
+def _ок(payload):
+    """Ход транспорта: 200 и вектор на каждый текст пачки."""
+    return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+
+
+def _усечение_сервер(тело: str = "the input length exceeds the context length"):
+    """Транспорт: без усечения — 400 с телом, с усечением — вектор на текст.
+
+    Так ведёт себя Ollama: с `truncate: false` она отвечает 400 на длинный
+    вход, а с `truncate: true` режет его и отдаёт векторы (замер 27.09).
+    """
+    def post(url, payload, timeout):
+        if payload["truncate"] is False:
+            return 400, тело
+        return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+    return post
+
+
+def test_the_truncate_field_is_false_first_and_true_only_on_the_retry():
+    """Поле не протекает: первая пачка и следующая — снова `false`."""
+    w = Wire(script=[_отказ("длинно"), _ок, _отказ("длинно"), _ок])
+    _дверь(post=w).run(["а" * 40_000, "б" * 40_000], 30)
+    assert [p["truncate"] for p in w.payloads] == [False, True, False, True], w.payloads
+    assert all(p["model"] == "m" for p in w.payloads)
+
+
+def test_a_length_refusal_retried_with_truncate_returns_vectors_and_speaks_once(capsys):
+    """Один эпизод на адрес и модель: вторая встреча того же длинного входа молчит."""
+    once.reset("embed")
+    e = _дверь(post=_усечение_сервер("The input length EXCEEDS THE CONTEXT LENGTH"))
+    texts = ["к" * 10, "д" * 50]
+
+    vecs = e.run(texts, 10)
+    assert len(vecs) == 2, "векторы повтора обязаны вернуться"
+    err = capsys.readouterr().err
+    assert "вход длиннее предела сервера" in err
+    assert "№2, 50 знаков" in err, "самый длинный текст пачки — №2"
+
+    e.run(texts, 10)
+    assert capsys.readouterr().err == "", "эпизод уже сказан"
+
+
+def test_the_truncation_episode_is_known_per_address_and_model(capsys):
+    """Ключ эпизода — адрес и модель: другая дверь скажется своим голосом."""
+    once.reset("embed")
+    embed_door.embedder("http://127.0.0.1:1", "m1", post=_усечение_сервер()).run(["т"], 10)
+    embed_door.embedder("http://127.0.0.1:2", "m2", post=_усечение_сервер()).run(["т"], 10)
+    assert capsys.readouterr().err.count("вход длиннее предела сервера") == 2
+
+
+def test_a_plain_400_retried_with_truncate_speaks_neutrally(capsys):
+    """Отказ не про длину: строка называет HTTP-код и тело, а не предел."""
+    once.reset("embed")
+    e = _дверь(post=_усечение_сервер("bad request: the model choked"))
+
+    assert e.run(["т"], 10) == _векторы(["т"])
+    err = capsys.readouterr().err
+    assert "сервер отказал без усечения" in err
+    assert "повтор с усечением прошёл" in err
+    assert "bad request: the model choked" in err
+    assert "вход длиннее предела" not in err
+
+
+def test_a_second_400_returns_nothing_and_quotes_both_bodies(capsys):
+    """Повтор тоже отказал: строка — по второму ответу, в ней же тело первого."""
+    once.reset("embed")
+    w = Wire(script=[_отказ("первое тело"), _отказ("второе тело")])
+
+    assert _дверь(post=w).run(["т"], 10) == []
+    err = capsys.readouterr().err
+    assert "HTTP 400" in err and "второе тело" in err and "первое тело" in err, err
+
+
+def test_a_transport_break_on_the_retry_is_judged_by_the_first_answer(capsys):
+    """Сервер уже ответил 400: «недоступен» было бы неправдой — не исключение, `[]`."""
+    once.reset("embed")
+    w = Wire(script=[_отказ("первый ответ"), ConnectionResetError("обрыв связи")])
+
+    assert _дверь(post=w).run(["т"], 10) == []
+    err = capsys.readouterr().err
+    assert "HTTP 400" in err and "первый ответ" in err, err
+    assert "обрыв связи" not in err, "транспорт не пересказывается как причина"
+
+
+def test_no_retry_when_the_deadline_expired_after_the_first_answer(monkeypatch, capsys):
+    """Срок вышел на первом ответе — повтора нет, отказ по первому, путь как сегодня."""
+    once.reset("embed")
+    часы = [1000.0]
+    monkeypatch.setattr(embed_door.time, "monotonic", lambda: часы[0])
+    вызовы = []
+
+    def post(url, payload, timeout):
+        вызовы.append(dict(payload))
+        часы[0] += 10.0                     # ровно весь срок
+        return 400, "отказ без усечения"
+
+    assert _дверь(post=post).run(["т"], 10) == []
+    assert len(вызовы) == 1, "на исходе срока в сеть второй раз не идём"
+    assert [p["truncate"] for p in вызовы] == [False]
+    assert "HTTP 400" in capsys.readouterr().err
+
+
+def test_a_server_that_does_not_know_truncate_stays_quiet(capsys):
+    """Сервер игнорирует поле и отвечает 200 — векторы есть, строк нет."""
+    once.reset("embed")
+    w = Wire()                              # всегда 200 с векторами
+
+    assert len(_дверь(post=w).run(["т", "т2"], 10)) == 2
+    assert capsys.readouterr().err == ""
+    assert [p["truncate"] for p in w.payloads] == [False]
+
+
+def test_an_accepted_batch_forgets_the_truncation_episode(capsys):
+    """Принятая без усечения пачка снимает ключ: следующий длинный вход скажется снова."""
+    once.reset("embed")
+    режим = {"усечён": True}
+
+    def post(url, payload, timeout):
+        if payload["truncate"] is False and режим["усечён"]:
+            return 400, "the input length exceeds the context length"
+        return 200, json.dumps({"embeddings": _векторы(payload["input"])})
+
+    e = _дверь(post=post)
+    e.run(["длинный вход"], 10)
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
+
+    режим["усечён"] = False
+    e.run(["короткий"], 10)                 # принято без усечения → forget
+    assert capsys.readouterr().err == ""
+
+    режим["усечён"] = True
+    e.run(["длинный вход"], 10)             # новый эпизод говорит снова
+    assert "вход длиннее предела сервера" in capsys.readouterr().err
 
 
 # ── бюджет всего вызова, не пачки ────────────────────────────────────────

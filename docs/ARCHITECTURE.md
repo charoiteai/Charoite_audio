@@ -607,7 +607,16 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   python pipeline goes through it, and every embedding call through the vector
   door `embed_door` (batches, whole-call deadline and response parsing live
   there; the model layer only supplies the address, the name and the
-  transport); no module speaks the wire format itself.
+  transport); no module speaks the wire format itself. Every request carries
+  `truncate: false`, so a server that cannot fit the input answers 400 instead
+  of silently cutting it (measured 27.09: bge-m3 answered 200 at 2102 tokens
+  while `prompt_eval_count` showed 2048 — the tail never reached the vector).
+  On 400 the door retries the same batch with `truncate: true`; when the retry
+  returns vectors, the door says once per address and model which text of the
+  batch was longest and how many characters it had, and a batch accepted
+  without truncation clears that episode. `options.num_ctx` does not move the
+  server's limit: `/api/show` claims `bert.context_length = 8192` while the
+  server cuts at 2048.
   The model always comes from the config: the 14.08 audit found four modules
   still calling a hardcoded model long after the config had moved on. The
   gateway speaks two engines, picked by `llm.engine`: `ollama` (the default)
