@@ -1032,6 +1032,40 @@ def test_непонятный_диапазон_код_1_до_копии(tmp_path
     assert копии == []
 
 
+def test_копия_не_собралась_пишет_fail_доли_и_отпускает_замок(tmp_path, monkeypatch, capsys):
+    """Отказ копии — после плана: отчёт и машинная строка доли ложатся, как у
+    красной базы, со словом `fail`, а слияние долей видит «шард K: fail», а не
+    пропавший файл. Замок отпущен, каталог копии убран (выходной круг 1 №460)."""
+    import busy_signals
+    import exit_codes
+    repo, _, _ = _два_коммита(tmp_path)
+    _прогон(tmp_path, monkeypatch, None, секунды={"tests/test_mod.py": 1})
+    monkeypatch.chdir(repo)
+    каталоги = []
+    настоящий = mc.tempfile.mkdtemp
+
+    def mkdtemp(**kw):
+        каталоги.append(pathlib.Path(настоящий(**kw)))
+        return str(каталоги[-1])
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", mkdtemp)
+
+    def сломанная(root, sha, tmp):
+        raise mc.PreparationError(f"копия {tmp / 'tree'}: git clone — нет места")
+    monkeypatch.setattr(mc, "copy_tree", сломанная)
+    отчёт = tmp_path / "отчёт.txt"
+    rc = mc.main(["mutate_check.py", "--range", "HEAD~1...HEAD", "--shard", "1/1", "--max", "all",
+                  "--timeout", "100", "--report", str(отчёт)])
+    assert rc == 1 and exit_codes.outcome(rc) == "fail"
+    assert "подготовка не удалась" in capsys.readouterr().out
+    строка = json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+    assert строка["word"] == "fail" and строка["M"] == строка["P"] > 0, строка
+    assert mc.COPY_FAILED in отчёт.read_text(encoding="utf-8")
+    assert каталоги and not any(d.exists() for d in каталоги)
+    замок = busy_signals.MutationLock(tmp_path)
+    assert замок.acquire(), "замок мутатора не отпущен после отказа копии"
+    замок.release()
+
+
 def test_сдвиг_head_после_разрешения_не_меняет_копию(tmp_path, monkeypatch):
     """План строится по разрешённому диапазону, и коммит, сдвинувший HEAD посреди
     прогона, копию не уводит: тесты мутантов идут на SHA, разрешённом до плана."""
