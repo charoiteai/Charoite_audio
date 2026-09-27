@@ -97,4 +97,7 @@ def test_the_deja_vu_loop_asks_through_deja_vu_embed():
                 if isinstance(n, ast.FunctionDef) and n.name == "deja_vu_loop")
     calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
              for c in ast.walk(loop) if isinstance(c, ast.Call)}
-    assert "deja_vu_embed" in calls and "embedder" not in calls, sorted(calls)
+    # фабрику двери цикл не упоминает вовсе — ни вызовом, ни ссылкой (круг 3, DS M3)
+    atoms = {n.attr for n in ast.walk(loop) if isinstance(n, ast.Attribute)} \
+        | {n.id for n in ast.walk(loop) if isinstance(n, ast.Name)}
+    assert "deja_vu_embed" in calls and "embedder" not in atoms, sorted(calls)

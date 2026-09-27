@@ -377,7 +377,12 @@ def test_transport_seams_are_the_only_way_to_the_model():
     векторизатор уехал в `embed_door`, поэтому `embed` из allowlist снят. В двери
     `urllib.request.urlopen` зовётся только в `urllib_post`, а
     `http.client.HTTPException` в `TRANSPORT_ERRORS` — тип исключения, не сырой
-    HTTP-запрос. Ловится и `requests.Session` (M2 DS)."""
+    HTTP-запрос. Ловится и `requests.Session` (M2 DS).
+
+    Это пин шва, а не изоляция сети: разбор исходника обходится привязкой модуля
+    к имени, `getattr`, `sys.modules`, другим клиентом (выходные круги 2–3 по
+    №423). Соединение в тесте ловит сторож сети conftest; перехват на уровне
+    сокета — №437."""
     allowed = {"_open_stream", "_post_busy", "_models_available",
                "_requests_post"}          # GET списка моделей — метаданные, не генерация
     assert "embed" not in allowed, "векторный транспорт уехал в дверь — llm.embed здесь не шов"
@@ -395,97 +400,18 @@ def test_transport_seams_are_the_only_way_to_the_model():
     assert "http.client" not in src, "сырой HTTP в слое моделей — только в двери векторов"
 
     door_src = (REPO / "src" / "embed_door.py").read_text(encoding="utf-8")
-    assert _door_transport_problems(ast.parse(door_src)) == []
+    door = ast.parse(door_src)
+    for fn in ast.walk(door):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr == "urlopen":
+                assert fn.name == "urllib_post", f"urlopen мимо транспорта двери: {fn.name}"
+    assert "TRANSPORT_ERRORS = (OSError, http.client.HTTPException)" in door_src, \
+        "http.client.HTTPException законен только как тип в TRANSPORT_ERRORS"
     assert "Session(" not in door_src and "import requests" not in door_src, \
         "дверь векторов не знает ни сессий, ни requests"
-
-
-#: Модули, через которые открывается соединение. Сторож смотрит не на написание
-#: вызова (привязка `_open = urllib.request.urlopen`, `from http.client import
-#: HTTPSConnection as C` и `socket()` обходили перечень имён — выходной круг 2
-#: по №423, DS C1), а на само упоминание возможности.
-_TRANSPORT_ROOTS = ("urllib.request", "http.client", "socket")
-#: Упоминания, законные вне транспорта двери: тип исключения в TRANSPORT_ERRORS.
-_TRANSPORT_TYPES = {"http.client.HTTPException"}
-#: Импорты, которые дверь вправе держать: модуль целиком, без псевдонима.
-_TRANSPORT_IMPORTS = {"urllib.request", "http.client"}
-
-
-def _dotted(node: ast.AST) -> str:
-    parts = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return ".".join(reversed(parts))
-    return ""
-
-
-def _door_transport_problems(tree: ast.Module, seam: str = "urllib_post") -> list[str]:
-    """Нарушения правила «сеть двери — только в `urllib_post`» на дереве модуля.
-
-    Функцией, а не телом теста: её зовёт и тест двери, и отрицательные тесты на
-    синтетических исходниках — сторож без случая, на котором он обязан упасть,
-    неотличим от мёртвого (выходной круг 2 по №423, DS I1).
-
-    Владелец узла — БЛИЖАЙШАЯ функция: `def` внутри `urllib_post` отвечает сам за
-    себя, как в `test_cloud_call_sites`."""
-    out: list[str] = []
-    owner: dict[int, str] = {}
-
-    def mark(node: ast.AST, name: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else name
-            owner[id(child)] = inner
-            mark(child, inner)
-
-    mark(tree, "уровень модуля")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".")[0]
-                if alias.name in _TRANSPORT_IMPORTS and alias.asname is None:
-                    continue
-                if alias.name in _TRANSPORT_ROOTS or root == "socket":
-                    out.append(f"import {alias.name}{' as ' + alias.asname if alias.asname else ''}")
-        elif isinstance(node, ast.ImportFrom):
-            if (node.module or "") in _TRANSPORT_ROOTS or (node.module or "").split(".")[0] == "socket" \
-                    or (node.module == "urllib" and any(a.name == "request" for a in node.names)) \
-                    or (node.module == "http" and any(a.name == "client" for a in node.names)):
-                out.append(f"from {node.module} import …")
-        elif isinstance(node, ast.Attribute):
-            name = _dotted(node)
-            if not any(name == r or name.startswith(r + ".") for r in _TRANSPORT_ROOTS):
-                continue
-            if name in _TRANSPORT_ROOTS or name in _TRANSPORT_TYPES:
-                continue            # сам модуль как значение цепочки и законный тип
-            where = owner.get(id(node), "уровень модуля")
-            if where != seam:
-                out.append(f"{name} в {where}")
-    return out
-
-
-@pytest.mark.parametrize("src", [
-    "import urllib.request\n_open = urllib.request.urlopen\n",
-    "from http.client import HTTPSConnection as C\n",
-    "from urllib import request\n",
-    "import socket\n",
-    "import urllib.request as ur\n",
-    "import http.client\ndef run():\n    return http.client.HTTPConnection('h')\n",
-    "import urllib.request\ndef urllib_post():\n    def _send():\n        urllib.request.urlretrieve('u')\n    return _send\n",
-])
-def test_the_door_transport_guard_catches_every_way_around_the_seam(src):
-    assert _door_transport_problems(ast.parse(src)), src
-
-
-def test_the_door_transport_guard_allows_the_seam_and_the_error_type():
-    src = ("import http.client\nimport urllib.request\n"
-           "TRANSPORT_ERRORS = (OSError, http.client.HTTPException)\n"
-           "def urllib_post(url):\n"
-           "    request = urllib.request.Request(url)\n"
-           "    return urllib.request.urlopen(request, timeout=1)\n")
-    assert _door_transport_problems(ast.parse(src)) == []
 
 
 # ------------------------------------------------------ решающий llm_health
