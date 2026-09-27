@@ -728,13 +728,17 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
 
     monkeypatch.setattr(llm.requests, "post", post)
     cfg = {"sufler": {"embed_model": "own-model"}}
-    e = llm.embedder(cfg, keep_alive=llm.EMBED_KEEP_ALIVE)
+    e = llm.embedder(cfg)      # умолчание фабрики — боевой путь brain, писателя и индекса (DS I1)
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
     assert s.cache_key().startswith("own-model|"), "кэш подписывает тот, кто считает"
     assert e.run(["текст"], 5) == [[1.0, 0.0]]
     # литералом, не константой: сверка с тем, что сторожишь, пропустит «30m» → «5m»,
     # а это ровно тот сценарий, ради которого константа заведена (DS M3 круга 1)
     assert seen["model"] == "own-model" and seen["keep_alive"] == "30m"
+
+    seen.clear()
+    assert llm.embedder(cfg, keep_alive=None).run(["текст"], 5) == [[1.0, 0.0]]
+    assert "keep_alive" not in seen, "keep_alive=None — поля в теле нет: модель не держим резидентом"
 
     with pytest.raises(ValueError):
         llm.embedder({}, model="own")      # считать негде: пин без адреса — ошибка вызывающего

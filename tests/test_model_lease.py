@@ -396,13 +396,27 @@ def test_transport_seams_are_the_only_way_to_the_model():
 
     door_src = (REPO / "src" / "embed_door.py").read_text(encoding="utf-8")
     door = ast.parse(door_src)
+    # любой способ открыть соединение, а не только urlopen: build_opener().open,
+    # urlretrieve и http.client.HTTP(S)Connection сторож сети тестов не видит —
+    # такой ход ушёл бы в настоящую сеть (выходной круг 1 по №423, DS M1)
+    transport_calls = {"urlopen", "urlretrieve", "build_opener", "OpenerDirector",
+                       "HTTPConnection", "HTTPSConnection", "create_connection"}
+    owner: dict[int, str] = {}
     for fn in ast.walk(door):
-        if not isinstance(fn, ast.FunctionDef):
-            continue
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                    and node.func.attr == "urlopen":
-                assert fn.name == "urllib_post", f"urlopen мимо транспорта двери: {fn.name}"
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(fn):
+                owner.setdefault(id(node), fn.name)       # обход сверху: внешняя функция первой
+    for node in ast.walk(door):
+        if isinstance(node, ast.Call):
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in transport_calls:
+                where = owner.get(id(node), "уровень модуля")
+                assert where == "urllib_post", f"{name} мимо транспорта двери: {where}"
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) \
+                and isinstance(node.value.value, ast.Name) and node.value.value.id == "http" \
+                and node.value.attr == "client":
+            assert node.attr == "HTTPException", \
+                f"http.client.{node.attr} в двери — сырой HTTP мимо транспорта"
     assert "TRANSPORT_ERRORS = (OSError, http.client.HTTPException)" in door_src, \
         "http.client.HTTPException законен только как тип в TRANSPORT_ERRORS"
     assert "Session(" not in door_src and "import requests" not in door_src, \

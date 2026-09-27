@@ -86,6 +86,19 @@ from charoite_paths import (
 WARM_BATCHES = 4
 
 
+def deja_vu_embed(cfg: dict, texts: list[str]) -> list[list[float]]:
+    """Векторы для дежавю. 20 с, не 120: эмбеддинг занимает ~0.2 с, и если Ollama
+    занят тяжёлой генерацией — лучше пропустить проход дежавю, чем держать поток
+    заблокированным две минуты. keep_alive=None: дежавю делит слот с чат-моделью
+    и не держит bge-m3 резидентом; дверь собирается на каждый проход — адрес и
+    модель из текущего конфига.
+
+    Функцией модуля, а не строкой в замыкании `main()`: поведение (тело запроса
+    без keep_alive) проверяет тест, а не поиск по исходнику (выходной круг 1 по
+    №423, DS I2)."""
+    return llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)
+
+
 def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES) -> int:
     """Добрать векторы ядер в кэш дежавю пачками двери, не больше `max_batches`
     за проход; удачная пачка ложится в кэш сразу, сбой — конец прохода.
@@ -2400,11 +2413,7 @@ def main():
         vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
 
         def embed(texts: list[str]) -> list[list[float]]:
-            # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
-            # генерацией — лучше пропустить проход дежавю, чем держать поток
-            # заблокированным две минуты. keep_alive=None: дежавю делит слот с
-            # чат-моделью и не держит её резидентом (своя дверь на каждый проход)
-            return llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)
+            return deja_vu_embed(cfg, texts)     # срок и keep_alive — в докстринге функции
 
         def cosine(a: list[float], b: list[float]) -> float:
             num = sum(x * y for x, y in zip(a, b))

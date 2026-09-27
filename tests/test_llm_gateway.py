@@ -106,7 +106,6 @@ class _Resp:
             else:
                 content = json.dumps(payload or {}).encode("utf-8")
         self.content = content
-        self._payload = payload
         self.status_code = status
 
     @property

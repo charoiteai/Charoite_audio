@@ -275,6 +275,28 @@ def test_transport_failures_become_a_seam_transport_error(exc):
     assert e.value.policy is False
 
 
+def test_a_seam_refusal_from_the_transport_keeps_its_policy_flag():
+    """Свой отказ шва — тоже OSError: кортеж транспорта не перевыпускает его с
+    policy=False, и отказ по настройке владельца не становится «сервер не
+    ответил» (выходной круг 1, DS C1)."""
+    отказ = SeamTransportError("адрес запрещён настройкой", policy=True)
+
+    def post(url, payload, timeout):
+        raise отказ
+
+    with pytest.raises(SeamTransportError) as e:
+        _дверь(post=post).run(["т"], 10)
+    assert e.value is отказ and e.value.policy is True
+
+
+@pytest.mark.parametrize("raw", ["[1, 2]", '"ok"', "null"])
+def test_json_that_is_not_an_object_is_named_not_raised(monkeypatch, capsys, raw):
+    """`.get` у списка вылетал бы AttributeError мимо таблицы строк (DS M2)."""
+    monkeypatch.setattr(embed_door, "_said", set())
+    assert _дверь(post=Wire(raw=raw)).run(["т"], 10) == []
+    assert "ответ не JSON" in capsys.readouterr().err
+
+
 def test_pytest_fail_from_the_transport_escapes_the_door():
     def post(url, payload, timeout):
         pytest.fail("бум")

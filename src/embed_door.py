@@ -179,6 +179,11 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 return []
             try:
                 status, text = post(endpoint, payload, осталось)
+            except SeamTransportError:
+                # свой отказ шва — как есть: он тоже OSError, и без этой строки
+                # кортеж ниже перевыпустил бы его с policy=False — отказ по
+                # настройке владельца стал бы «сервер не ответил» (выходной круг 1, DS C1)
+                raise
             except TRANSPORT_ERRORS as exc:       # отказ, таймаут, обрыв
                 raise SeamTransportError(str(exc), policy=False) from exc
             if status != 200:
@@ -191,12 +196,17 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                           key=f"embed:{status}:{тело[:120]}")
                 return []
             try:
-                got = (json.loads(text) or {}).get("embeddings", [])
+                body = json.loads(text)
             except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                # не JSON или JSON не объектом (`[1,2]`, `"ok"`): `.get` у списка
+                # вылетел бы исключением мимо таблицы строк (выходной круг 1, DS M2)
                 тело = (text or "").strip()[:120]
                 _say_once(f"эмбеддинги: ответ не JSON ({где}): {тело}",
                           key=f"embed:not-json:{тело}")
                 return []
+            got = body.get("embeddings", [])
             if not _vectors_ok(got, len(пачка), dim):
                 # Ключ — с формой ответа: в демоне, который живёт днями, другой
                 # сбой той же природы у другого потребителя не должен молчать

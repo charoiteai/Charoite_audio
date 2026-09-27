@@ -4,6 +4,7 @@
 800 ядер не укладывались в 20 с на машине, занятой встречей: кэш не грелся
 никогда, и каждый проход платил полной перепосылкой (круг 1 по коду, Opus I1).
 """
+import json
 import pathlib
 import re
 import sys
@@ -59,13 +60,41 @@ def test_warmup_sends_the_status_line_without_annotations_capped_at_400(tmp_path
     assert len(отправлено[0]) == 400
 
 
-def test_deja_vu_asks_the_door_without_keep_alive():
-    """Дежавю делит слот с чат-моделью: фабрика собирается на каждый проход и
-    просит keep_alive=None, то есть поля в теле запроса нет — bge-m3 не
-    остаётся резидентом ради контура, который спрашивает раз в сорок секунд."""
+def test_deja_vu_asks_the_door_without_keep_alive(_ollama_маршруты):
+    """Дежавю делит слот с чат-моделью: в теле запроса поля keep_alive нет —
+    bge-m3 не остаётся резидентом ради контура, который спрашивает раз в сорок
+    секунд. Меряется тело запроса, а не написание вызова (выходной круг 1, DS I2).
+    Ответ — маршрутом сторожа сети, а не подменой глагола `requests`."""
+    import llm
+    import requests
+
+    seen: dict = {}
+
+    def ответ(url, **k):
+        seen.update(k.get("json") or {})
+        seen["timeout"] = k.get("timeout")
+        r = requests.Response()
+        r.status_code = 200
+        r._content = json.dumps({"embeddings": [[1.0, 0.0]]}).encode("utf-8")
+        return r
+
+    cfg = {"llm": {"model": "тест-модель", "small_model": "тест-мелкая",
+                   "num_ctx": 8192, "temperature": 0.4},
+           "sufler": {"role": "тестовая роль", "embed_model": "own-model"}}
+    _ollama_маршруты.сценарий_эмбеддингов(ответ)
+    llm.LLM(cfg)                        # маршрут /api/embed ставится по адресу экземпляра
+    assert daemon.deja_vu_embed(cfg, ["т"]) == [[1.0, 0.0]]
+    assert seen["model"] == "own-model" and "keep_alive" not in seen, seen
+    assert 0 < seen["timeout"] <= 20, "срок дежавю — 20 с на весь вызов"
+
+
+def test_the_deja_vu_loop_asks_through_deja_vu_embed():
+    """Проводка: замыкание `main()` снаружи недостижимо, поэтому единственное, что
+    здесь пиннится по исходнику, — ЧЕРЕЗ КОГО оно спрашивает; что уходит в
+    запрос, меряет тест выше."""
     src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
     m = re.search(r"^    def deja_vu_loop\(", src, re.M)
     assert m, "deja_vu_loop"
     nxt = re.search(r"^    def \w+\(", src[m.end():], re.M)
     body = src[m.start():m.end() + (nxt.start() if nxt else len(src))]
-    assert "llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)" in body, body
+    assert "deja_vu_embed(cfg, texts)" in body and "llm_mod.embedder" not in body, body
