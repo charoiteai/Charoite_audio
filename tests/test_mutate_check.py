@@ -1121,8 +1121,10 @@ def test_копия_встаёт_на_любой_коммит_источника
 
 
 def test_копия_на_неизвестный_коммит_отказ_подготовки(tmp_path):
+    """Строка отказа несёт шаг и текст git как текст, а не байты: человек читает
+    «fatal: …», а не `b'fatal: …'` (выживший мутатора `text=True → False`)."""
     repo, _, _ = _два_коммита(tmp_path)
-    with pytest.raises(mc.PreparationError, match="git checkout"):
+    with pytest.raises(mc.PreparationError, match=r"git checkout — fatal: "):
         mc.copy_tree(repo, "0" * 40, tmp_path / "копия")
 
 
