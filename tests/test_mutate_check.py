@@ -596,7 +596,8 @@ def test_план_считает_строки_константы_узлы_и_н�
     plan, totals = mc.plan_for(repo, "HEAD")
 
     assert totals == mc.ScanTotals(files_in=2, lines_in=4, lines_constant=1, nodes=3,
-                                   files_unreadable=1, planned=2), totals
+                                   files_unreadable=1, planned=2,
+                                   unreadable=["src/ghost.py — нет в ревизии HEAD"]), totals
     assert collections.Counter(m.bare() for m in plan) == {"not X → X": 1, "return X → return None": 1}
     assert {m.path for m in plan} == {repo / "src" / "mod.py"}
 
@@ -639,6 +640,41 @@ def test_файл_не_разбирается_это_неполнота_а_не_
     plan, totals = mc.plan_for(repo, "HEAD")
     assert plan == [] and totals.files_unreadable == 1
     assert mc.verdict_code([], 0, 0, 0, 0, totals) == mc.EXIT_PARTIAL
+    # файл назван с причиной — и в отчёте, а не только числом (выходной круг 3 по №441, DS M1)
+    assert len(totals.unreadable) == 1 and totals.unreadable[0].startswith("src/bad.py — не разбирается (SyntaxError")
+    отчёт = mc.render_report(0, [], [], 0, 0, "", totals)
+    assert "НЕ ПРОЧИТАН src/bad.py — не разбирается" in отчёт, отчёт
+
+
+@pytest.mark.parametrize("text", ["x = 1\0\n", "x = " + "(" * 400 + "1" + ")" * 400 + "\n"])
+def test_любой_отказ_разбора_это_неполнота_а_не_трассировка(tmp_path, monkeypatch, text):
+    """NUL-байт и патологическая вложенность: тип отказа `ast.parse` зависит от
+    версии (NUL — `ValueError` до 3.12, `SyntaxError` с 3.12; вложенность —
+    `SyntaxError` или `RecursionError`). Любой такой отказ — файл «не разбирается»
+    в списке несудимого, а не трассировка до первой записи отчёта шарда
+    (выходной круг 3 по №441, DS I1)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n"})
+    (repo / "src" / "bad.py").write_bytes(text.encode("utf-8"))
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "не разбирается"], cwd=repo, check=True)
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {repo / "src" / "bad.py": {1}})
+    plan, totals = mc.plan_for(repo, "HEAD")
+    assert plan == [] and totals.files_unreadable == 1, totals
+    assert totals.unreadable[0].startswith("src/bad.py — не разбирается ("), totals.unreadable
+    assert mc.verdict_code([], 0, 0, 0, 0, totals) == mc.EXIT_PARTIAL
+
+
+@pytest.mark.parametrize("error", [ValueError("source code string cannot contain null bytes"),
+                                   RecursionError("maximum recursion depth exceeded")])
+def test_разбор_ловит_отказы_всех_версий(monkeypatch, error):
+    """`parse_source` называет причиной и те отказы, которых наш интерпретатор
+    сегодня не бросает: `ValueError` на NUL-байте у 3.11, `RecursionError` на
+    вложенности. Отказ — значение, а не исключение наружу."""
+    def отказ(text):
+        raise error
+    monkeypatch.setattr(mc.ast, "parse", отказ)
+    tree, why = mc.parse_source("x = 1\n")
+    assert tree is None and why.startswith(type(error).__name__ + ":"), why
 
 
 def test_план_берёт_изменённые_строки_из_git(tmp_path):

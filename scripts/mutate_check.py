@@ -125,9 +125,10 @@ class ScanReport:
     mutations: list
     lines_constant: int = 0     # строки диапазона, снятые как константы модуля
     nodes: int = 0              # узлы AST на оставшихся строках диапазона
-    #: Файл не разобрался (`SyntaxError`): ломать в нём было что, а план о нём
-    #: молчал бы — `plan_for` считает его непрочитанным (выходной круг 2 по №441, DS C1).
-    unparsed: bool = False
+    #: Почему файл не разобрался (пусто — разобрался): ломать в нём было что, а
+    #: план о нём молчал бы — `plan_for` считает его непрочитанным (выходной круг 2
+    #: по №441, DS C1).
+    unparsed: str = ""
 
 
 @dataclasses.dataclass
@@ -141,6 +142,10 @@ class ScanTotals:
     lines_constant: int = 0
     nodes: int = 0
     files_unreadable: int = 0
+    #: Какие файлы не судились и почему — строки «путь — причина». Счётчик выше —
+    #: их число; оба растут только в `_unreadable`: красный `partial` без имени
+    #: файла заставлял автора PR угадывать (выходной круг 3 по №441, DS M1).
+    unreadable: list[str] = dataclasses.field(default_factory=list)
     #: Размер плана ДО среза шардом: знаменатель «0 из P» и сверка слияния
     #: шардов `ΣM == P`. Без него пустой шард неотличим от «в диапазоне нечего».
     planned: int = 0
@@ -261,13 +266,26 @@ def _module_constants(tree: ast.Module) -> set[int]:
     return out
 
 
+#: Чем `ast.parse` отказывает: `SyntaxError`, NUL-байт в тексте (`ValueError`),
+#: патологическая вложенность (`RecursionError`, `MemoryError`). Одно место на
+#: «не разбирается»: прежде `scan` ловил только `SyntaxError`, и NUL-байт ронял
+#: шард трассировкой до первой записи отчёта (выходной круг 3 по №441, DS I1).
+PARSE_ERRORS = (SyntaxError, ValueError, RecursionError, MemoryError)
+
+
+def parse_source(text: str) -> tuple[ast.Module | None, str]:
+    """Текст → дерево и пустая причина, или `None` и причина отказа разбора."""
+    try:
+        return ast.parse(text), ""
+    except PARSE_ERRORS as e:
+        return None, f"{type(e).__name__}: {getattr(e, 'msg', None) or e}"
+
+
 def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> ScanReport:
     """Что можно сломать в этих строках — и сколько там было из чего ломать."""
-    try:
-        tree = ast.parse(source if source is not None
-                         else path.read_text(encoding="utf-8"))
-    except SyntaxError:
-        return ScanReport([], unparsed=True)
+    tree, why = parse_source(source if source is not None else path.read_text(encoding="utf-8"))
+    if tree is None:
+        return ScanReport([], unparsed=why)
     consts = _module_constants(tree)
     report = ScanReport([], lines_constant=len(lines & consts))
     lines = lines - consts
@@ -324,6 +342,10 @@ def plan_for(root: pathlib.Path, rng: str,
     targets = changed_lines(root, rng)
     totals = ScanTotals(files_in=len(targets),
                         lines_in=sum(len(ls) for ls in targets.values()))
+
+    def _unreadable(rel: pathlib.Path, why: str) -> None:
+        totals.files_unreadable += 1
+        totals.unreadable.append(f"{rel} — {why}")
     rev = head_of(rng)
     plan: list[Mutation] = []
     for path, lines in sorted(targets.items()):
@@ -336,21 +358,21 @@ def plan_for(root: pathlib.Path, rng: str,
                               capture_output=True)
         if blob.returncode:
             # Не молча: выпавший файл превращал «не прочитал» в «нечего» (№386)
-            totals.files_unreadable += 1
+            _unreadable(rel, f"нет в ревизии {rev}")
             continue
         try:
             source = blob.stdout.decode("utf-8")
         except UnicodeDecodeError:
             # `git show` прочитал, но это не наш текст: та же неполнота, что и
             # выпавший файл, а не трассировка посреди плана (DS M1 круга 1 по #630)
-            totals.files_unreadable += 1
+            _unreadable(rel, "не utf-8")
             continue
         report = scan(path, lines, source)
         if report.unparsed:
             # Третья нога той же неполноты: прочитали, а разобрать нельзя. Без
             # счётчика пустой план из такого файла выходил «мутировать нечего» —
             # зелёным (выходной круг 2 по №441, DS C1).
-            totals.files_unreadable += 1
+            _unreadable(rel, f"не разбирается ({report.unparsed})")
             continue
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
@@ -484,10 +506,9 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
     попытка в скобках: операнд бывает ниже по приоритету, чем место вставки
     (`x and not (a or b)` → `x and (a or b)`). Частных правил под операторы нет.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        return None, f"исходник не разбирается ({e.msg})"
+    tree, bad = parse_source(source)
+    if tree is None:
+        return None, f"исходник не разбирается ({bad})"
     found = mut.locate(tree)
     if found is None:
         return None, "узел не нашёлся на своём отрезке"
@@ -509,12 +530,11 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
         if text == source:
             why = "замена не изменила текст"
             continue
-        try:
-            got = ast.dump(ast.parse(text))
-        except SyntaxError:
+        got_tree, _ = parse_source(text)
+        if got_tree is None:
             why = "текст мутанта не разбирается"
             continue
-        if got == want:
+        if ast.dump(got_tree) == want:
             return text, ""
         why = "текст мутанта не совпал с мутированным деревом"
     return None, why
@@ -651,6 +671,7 @@ def render_report(tested: int, survivors: list, skipped: list, planned: int, dro
     if totals.files_unreadable:
         lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
                      f"— их строки не судились.")
+        lines += [f"  НЕ ПРОЧИТАН {entry}" for entry in totals.unreadable]
     if dropped:
         lines.append(f"Не проверено из-за потолка: {dropped}. "
                      f"Это НЕ значит «там всё хорошо».")
@@ -820,7 +841,10 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
                                 + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
                 code = 1
         elif not clean:
-            lines.insert(0, f"мутация: шарды чисты ({p} мутантов)")
+            # Обещание строки — ровно то, что проверено: все P мутантов плана
+            # судились. Строки без операторов в план не входят вовсе, и «покрыто
+            # мутацией» про них не сказано (критика DS круга 3 по №441)
+            lines.insert(0, f"мутация: шарды чисты — судились все {p} мутантов плана, выживших нет")
             code = 0
         else:
             lines.insert(0, "шарды дали неполный исход: "
@@ -932,9 +956,9 @@ def main(argv: list[str]) -> int:
                   f"узлов AST {totals.nodes}, не прочитано файлов {totals.files_unreadable}.")
         else:
             print(f"План пуст, но проверено не всё: не прочитано файлов "
-                  f"{totals.files_unreadable} из {totals.files_in} "
-                  f"(нет в ревизии {head_of(args.range)}, не utf-8 или не разбирается) — "
-                  f"это НЕ «нечего мутировать».")
+                  f"{totals.files_unreadable} из {totals.files_in} — это НЕ «нечего мутировать».")
+            for entry in totals.unreadable:
+                print(f"  НЕ ПРОЧИТАН {entry}")
         return code
 
     dropped = 0

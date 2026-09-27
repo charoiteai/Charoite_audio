@@ -263,6 +263,10 @@ jobs:
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Имя отчёта вердикта — одно на job, как у шардов `env.REPORT`: его пишет судья
+    # и читает сводка (выходной круг 3 по №441, DS M2)
+    env:
+      VERDICT: mutation-verdict.txt
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -280,13 +284,13 @@ jobs:
           path: shards
       - name: verdict
         timeout-minutes: 1
-        run: python scripts/mutate_check.py --merge-shards shards --report mutation-verdict.txt
+        run: python scripts/mutate_check.py --merge-shards shards --report "$VERDICT"
       - name: verdict summary
         if: always()
         timeout-minutes: 1
         run: |
-          if [ -f mutation-verdict.txt ]; then
-            { echo "### Мутация: вердикт по шардам"; echo '```'; cat mutation-verdict.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$VERDICT" ]; then
+            { echo "### Мутация: вердикт по шардам"; echo '```'; cat "$VERDICT"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Мутация: вердикта нет — см. лог шага verdict" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -415,6 +415,12 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
         "вердикт обязан идти и при провале шардов, и только на PR, как сами шарды")
     judge = [s for s in verdict["steps"] if "--merge-shards" in str(s.get("run", ""))]
     assert len(judge) == 1, "судья шардов — один шаг `mutate_check.py --merge-shards`"
+    # имя отчёта вердикта — одно на job: судья пишет, сводка читает (выходной круг 3 по №441, DS M2)
+    assert verdict.get("env", {}).get("VERDICT"), "имя отчёта вердикта — env.VERDICT job"
+    assert re.search(r'--report\s+"\$VERDICT"', str(judge[0]["run"])), "судья пишет отчёт в env.VERDICT"
+    summary = [s for s in verdict["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert len(summary) == 1 and str(summary[0]["run"]).count('"$VERDICT"') >= 2, (
+        "сводка вердикта читает env.VERDICT")
 
 
 def test_mutation_artifact_carries_the_line_the_verdict_reads():
