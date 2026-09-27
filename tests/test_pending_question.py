@@ -81,10 +81,38 @@ def test_the_manual_hint_command_runs_with_the_manual_flag():
 def test_fast_trigger_reports_dropped_frames():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     tap = src[src.index("def _tap(src, part)"):src.index("hub.on_frame = _tap")]
-    # глашатай — отдельный поток продукта: после №415 это `threads.spawn(emit_error, …)`,
-    # и сверяется атом вызова регуляркой, а не прежнее `target=emit_error`
-    assert "drops.dropped()" in tap and re.search(r"threads\.spawn\(\s*emit_error\b", tap), \
+    # глашатай — поток продукта; «один за раз» и «ручка до старта» судит поведением
+    # test_one_drop_reporter_at_a_time, здесь — только что аудио-поток его зовёт
+    assert "drops.dropped()" in tap and "report_drop_once(reporter, msg)" in tap, \
         "сказать — не из аудио-потока (luna r1)"
-    assert "is_alive()" in tap, "один глашатай за раз (DS r2)"
     assert "put_nowait" in tap and "frame_q.full()" not in tap, "без TOCTOU full()+put (GLM)"
     assert "emit_error(msg)" not in tap
+
+
+def test_one_drop_reporter_at_a_time(monkeypatch):
+    """Глашатай переполнения — один за раз и из своего потока: пока первый жив,
+    второе переполнение молчит; ручка лежит до старта, и повторный старт того же
+    потока невозможен (выходной круг 1 по #658)."""
+    import threading
+    gate = threading.Event()
+    said: list = []
+
+    def emit_error(text, reason=""):
+        said.append(text)
+        gate.wait(5)
+
+    monkeypatch.setattr(daemon, "emit_error", emit_error)
+    reporter: list = [None]
+    daemon.report_drop_once(reporter, "переполнение 1")
+    first = reporter[0]
+    try:
+        assert first is not None and first.is_alive(), "глашатай не поднят"
+        daemon.report_drop_once(reporter, "переполнение 2")
+        assert reporter[0] is first, "второй глашатай при живом первом"
+    finally:
+        gate.set()
+        first.join(5)
+    assert said == ["переполнение 1"], said
+    daemon.report_drop_once(reporter, "переполнение 3")
+    reporter[0].join(5)
+    assert said == ["переполнение 1", "переполнение 3"], said

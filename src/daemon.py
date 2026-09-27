@@ -242,6 +242,19 @@ def short_error(e: BaseException) -> str:
     return f"{type(e).__name__}: {s[:80]}"
 
 
+def report_drop_once(reporter: list, msg: str) -> None:
+    """Сказать о переполнении очереди кадров — из своего потока и одним глашатаем
+    за раз: зажатый stdout не плодит потоки (DS r2), а аудио-поток не пишет в
+    stdout сам (luna r1 по #457). Ручка кладётся до старта: проверку «глашатай
+    жив» делает аудио-поток на следующем переполнении (выходной круг 1 по #658)."""
+    if reporter[0] is not None and reporter[0].is_alive():
+        return
+    reporter[0] = threads.spawn(emit_error, args=(msg,), name="frame-drop-report",
+                                role="meeting", start=False,
+                                detached="глашатай переполнения очереди живёт, пока живо подключение")
+    reporter[0].start()
+
+
 _last_error: dict[str, float] = {}
 _ERROR_REPEAT_S = 300.0
 
@@ -2330,11 +2343,8 @@ def main():
             # заторе на той стороне _pump перестал бы забирать звук
             # (luna r1 по #457); сообщение уходит из своего потока.
             msg = drops.dropped()
-            if msg and (reporter[0] is None or not reporter[0].is_alive()):
-                reporter[0] = threads.spawn(emit_error, args=(msg,), name="frame-drop-report",
-                                            role="meeting", start=False,
-                                            detached="глашатай переполнения очереди живёт, пока живо подключение")
-                reporter[0].start()
+            if msg:
+                report_drop_once(reporter, msg)
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
