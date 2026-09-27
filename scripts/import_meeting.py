@@ -71,7 +71,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import media_meta  # noqa: E402
 import voice_memos_bridge  # noqa: E402
 import channel_trace  # noqa: E402

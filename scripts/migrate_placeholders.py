@@ -38,7 +38,7 @@ import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater  # noqa: E402
 import live_gate  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 from charoite_paths import RootNotNamed, require_data_root  # noqa: E402
 
 LOCK_WAIT = 5 * 60      # общий замок пишущих в граф (cloud_review, ночь): дольше держит только зависший сосед

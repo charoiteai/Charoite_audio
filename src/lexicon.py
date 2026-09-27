@@ -27,7 +27,7 @@ import dataclasses
 import pathlib
 import re
 
-import frontmatter
+from charoite_graph import frontmatter
 
 #: Каталоги графа, чьи узлы дают канон. Встречи/Досье — потребители, не источник.
 SOURCE_DIRS = ("Люди", "Системы")

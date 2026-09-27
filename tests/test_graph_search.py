@@ -26,12 +26,12 @@ import yaml
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-import dossier  # noqa: E402
+from charoite_graph import dossier  # noqa: E402
 import once  # noqa: E402
-import graph_nodes  # noqa: E402
-import graph_search as gs  # noqa: E402
-import model_seam  # noqa: E402
-from model_seam import DEFAULT_EMBED_MODEL, Embedder  # noqa: E402
+from charoite_graph import graph_nodes  # noqa: E402
+from charoite_graph import graph_search as gs  # noqa: E402
+from charoite_graph import model_seam  # noqa: E402
+from charoite_graph.model_seam import DEFAULT_EMBED_MODEL, Embedder  # noqa: E402
 
 
 _SYNONYMS = {"поставщик": "провайдер", "поставщика": "провайдер", "gateway": "шлюз"}   # «семантика» подделки: синоним — то же слово
@@ -1504,7 +1504,7 @@ def test_service_files_in_subfolders_leave_the_index_but_stay_in_coverage(tmp_pa
     assert "Встречи-архив" in note and "не открылось файлов: 1" in note and "служебных файлов вне индекса: 3" in note
     assert gs.coverage_gaps(weak) == ["Встречи-архив", "не открылось файлов: 1", "служебных файлов вне индекса: 3"]
     # переход из узла, не документ индекса — правило одно, локального `startswith("_")` в _hops нет
-    src = (REPO / "src" / "graph_search.py").read_text(encoding="utf-8")
+    src = (REPO / "src" / "charoite_graph" / "graph_search.py").read_text(encoding="utf-8")
     hops = src[src.index("def _hops"):src.index("def _hops") + 4000]
     assert 'startswith("_")' not in hops and "_SERVICE_PREFIXES" not in hops
 

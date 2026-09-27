@@ -38,7 +38,7 @@ import shutil
 import unicodedata
 from collections import defaultdict
 from datetime import date
-from redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
+from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
 # начинает терять детали, а генерация упирается в контекст.

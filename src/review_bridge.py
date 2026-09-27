@@ -20,7 +20,7 @@ import pathlib
 import re
 
 import action_items
-import safe_write
+from charoite_graph import safe_write
 import task_line
 
 # «## Восстановленные поручения», «**Восстановленные поручения:**»,

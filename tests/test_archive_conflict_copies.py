@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import dedup_graph as dg  # noqa: E402
 import meeting_archive as ma  # noqa: E402
 import meeting_stamp  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 
 
 def _sig(p: Path) -> tuple[int, int]:

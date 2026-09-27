@@ -970,7 +970,8 @@ a new signal and a separate card (№319).
 
 ## Layer boundaries (docs/design/layout.json)
 
-`src/` is a flat folder of 64 modules, and the layers in it (base → runtime →
+`src/` is one import root: flat modules beside the graph package
+`src/charoite_graph/` (№424), and the layers in it (base → runtime →
 llm / cloud / audio → meeting → app, with graph standing on base alone, so the
 graph search installs without the app's environment — №365) exist by the facts of the imports, but
 until №320 nothing held them except the author's memory and a one-off
@@ -1023,11 +1024,15 @@ every entry point is declared and present on disk — and the reverse: a declare
 point nobody calls fails too, and so does a code file outside the scanned
 area that names an entry point. Lazy imports inside functions count. The map
 `docs/design/layout.md` is generated from the same file, checked for freshness
-by the same gate, and never edited by hand. Not import-linter: it needs an importable package, and a flat folder of
-modules importing each other by short names is not one. Later phases move the
-data root out of `charoite_paths` (№321), cut `graph_updater` (№322) and only
-then move the graph modules into `src/charoite_graph/` — one batch form,
-`src/<package>/…`, decided 26.09 (№323, №424); `packages/` holds distribution
+by the same gate, and never edited by hand. Not import-linter: it needs one
+importable package, while `src/` is an import root of flat modules and a package
+whose members call each other by absolute name. Later phases move the
+data root out of `charoite_paths` (№321) and cut `graph_updater` (№322). The
+graph move is done: `src/charoite_graph/` holds the closure of the entry
+`charoite_graph.graph_search`, and a self-sufficiency gate compares the
+directory with that closure and forbids a member to import product code from
+outside the package — one batch form `src/<package>/…`, decided 26.09
+(№323, №424); `packages/` holds distribution
 metadata only (№427).
 
 ## Stopping a recording
@@ -1113,7 +1118,7 @@ alone — lexical catches internal identifiers a vector never will, semantic
 closes the vocabulary gap when the question uses different words than the note.
 
 **The daemon's memory during a meeting is the same design in Python**
-(`src/graph_search.py`). Until №250 the live contours asked a separate memory
+(`src/charoite_graph/graph_search.py`). Until №250 the live contours asked a separate memory
 server over HTTP, and on a working graph it answered in 2.6–22 s — the instant
 answer has a 2.5 s budget, so in practice it ran without memory. Now the index
 lives in the daemon process: files of the project graph without the meeting
@@ -1319,7 +1324,7 @@ numbers that cannot tell you whether a change helped or you got lucky. The
 pinned bench is what caught a prompt "improvement" of mine that was actually a
 regression.
 
-`scripts/memory_bench.py` measures the daemon's memory (`src/graph_search.py`)
+`scripts/memory_bench.py` measures the daemon's memory (`src/charoite_graph/graph_search.py`)
 — what the owner sees during a meeting; `--brain` and `--legacy` keep the old
 contours for before/after comparisons. It still cannot answer questions about
 the app's search, which is a separate Swift implementation.

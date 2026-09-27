@@ -589,7 +589,7 @@ def test_the_route_guard_answers_the_vector_adapter(_ollama_маршруты, mo
 
 def test_the_adapter_returns_no_model_when_the_config_is_empty():
     """Пустой конфиг — не «дефолты», а «моделей нет»: в сеть не ходим вовсе."""
-    import model_seam
+    from charoite_graph import model_seam
 
     quiet = llm_mod.embedder({})
     assert quiet.model == model_seam.NO_MODEL and quiet.run(["т"], 5) == []

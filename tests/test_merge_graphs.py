@@ -243,7 +243,7 @@ def test_collision_carries_donor_aliases_into_the_receiver(tmp_path):
     mg.apply(src, dst, *mg.plan(src, dst))
     merged = (dst / "Люди" / "Иван.md").read_text(encoding="utf-8")
     assert merged.count("---\n") >= 2 and merged.count("type: person") == 1
-    import frontmatter
+    from charoite_graph import frontmatter
     assert frontmatter.aliases(merged) == ["Ванька", "Ваня", "Иван П."]
     # след склейки машины едет с донором: иначе снятое человеком вето исчезало (№286, DS I2 по #576)
     assert frontmatter.list_field(merged, frontmatter.AUTO_ALIASES) == ["Ванёк"]

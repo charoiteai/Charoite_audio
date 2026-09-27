@@ -321,8 +321,28 @@ sys.addaudithook(hook)
 import json, pathlib
 sys.path.insert(0, PKG)
 PATH_BEFORE = list(sys.path)
-import graph_search
-import model_seam
+import codecs, importlib, re
+# Что тянет КАЖДЫЙ __init__ копии — окном на свой импорт. Список — из самой копии,
+# родитель раньше ребёнка: импорт подпакета исполняет и `__init__` родителя, и его
+# ноша иначе легла бы на подпакет (круг 3 по #650, DS M2 и критика 2). Интерпретатор
+# сам грузит ровно одно — кодек объявленной кодировки; он загружается ДО окна, и
+# окно обязано быть пустым целиком, без фильтра по именам (DS I1).
+PKG_ROOT = pathlib.Path(PKG)
+INITS = sorted((".".join(p.relative_to(PKG_ROOT).parent.parts) for p in PKG_ROOT.rglob("__init__.py")),
+               key=lambda n: (n.count("."), n))
+PULLED_BY_INIT = {}
+for name in INITS:
+    with open(PKG_ROOT.joinpath(*name.split("."), "__init__.py"), "rb") as f:
+        cookie = re.search(rb"coding[:=]\s*([-\w.]+)", f.readline() + f.readline())
+    if cookie:
+        try:
+            codecs.lookup(cookie.group(1).decode("ascii"))
+        except LookupError:
+            pass    # неизвестную кодировку назовёт сам импорт
+    before = set(sys.modules)
+    importlib.import_module(name)
+    PULLED_BY_INIT[name] = sorted(set(sys.modules) - before - {name})
+from charoite_graph import graph_search, model_seam
 
 
 def vectors(texts, timeout):
@@ -343,6 +363,7 @@ loaded = again.load_vectors()
 result = again.search(QUERY)
 print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
                   "embedded": embedded, "loaded": loaded, "path_before": PATH_BEFORE, "path_after": sys.path,
+                  "pulled_by_init": PULLED_BY_INIT, "inits": INITS,
                   "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
                   "modules": sorted(sys.modules),
                   "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
@@ -359,7 +380,8 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     `app_deps` — зависимости приложения, `outside` — модули продукта вне замыкания
     входа: у двух протечек разный диагноз. `outer` — что стояло в окружении
     родителя до изоляции (значение `{trap}` — путь ловушки), `drop` — что изоляция
-    снимает. Расхождения строками (пусто — принят) и выдача раннера; признаки
+    снимает. Что тянет каждый `__init__` копии, раннер меряет сам — список берёт из
+    копии. Расхождения строками (пусто — принят) и выдача раннера; признаки
     изоляции (`pycache_prefix`) — и когда процесс упал."""
     trap, data, cwd = work / "ловушка", work / "data", work / "cwd"
     for d in (trap, data, cwd):
@@ -371,7 +393,8 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     env = {k: v for k, v in parent.items() if k not in drop}
     env.update(ISOLATION_ENV)
     env.update({k: str(trap) for k in POISONED_ENV})
-    r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query], cwd, env, timeout)
+    r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query],
+             cwd, env, timeout)
     lines = r.stdout.strip().splitlines()
     head = ast.literal_eval(lines[0].removeprefix("isolation=")) if lines[:1] and lines[0].startswith("isolation=") else {}
     if r.returncode != 0:
@@ -392,17 +415,29 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     # (Critical головы круга 2 по PR №625 — граница грамматики, а не новая эвристика)
     if out["path_after"] != out["path_before"]:
         problems.append(f"пакет правит sys.path: было {out['path_before']}, стало {out['path_after']}")
+    # `import charoite_graph` — только сам пакет: его `__init__` исполняется при импорте
+    # любого члена, и всё, что он тянет, едет в каждый импорт. Статическое правило
+    # («__init__ пуст от импортов») стоит в гейте раскладки, здесь — поведение
+    # (выходной круг 1 по #650, DS I2)
+    for name, pulled in sorted((out.get("pulled_by_init") or {}).items()):
+        if pulled:
+            problems.append(f"import {name} тянет {', '.join(pulled)} — __init__ пакета обязан быть пустым")
     return problems, out
 
 
 def _copy_package(dest: pathlib.Path) -> list[str]:
-    """Копия замыкания входа по плану сторожа — плоско, имя модуля в имя файла."""
+    """Копия замыкания входа по плану сторожа — по ФОРМЕ раскладки: под
+    `dest/<пакет>/` теми же путями, что и в репозитории (`src/<пакет>/x.py`).
+    Плоская копия прошлого круга держалась на том, что модули лежали плоско;
+    после переезда в пакет она собирала бы `import graph_search` в никуда."""
     rels = lm.package_files(INV, lm.load_layout())
+    prefix = lm.FLAT_DIR + "/"
     dest.mkdir()
     for rel in rels:
-        name = lm.module_of(rel)
-        assert name is not None and "." not in name, f"{rel}: пакетная форма — копия пробы её ещё не знает"
-        shutil.copyfile(ROOT / rel, dest / f"{name}.py")
+        assert rel.startswith(prefix), f"{rel}: модуль пакета вне {prefix}"
+        target = dest / rel[len(prefix):]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / rel, target)
     return rels
 
 
@@ -416,18 +451,62 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path) -> None:
     rels = _copy_package(tmp_path / "pkg")
     graph = tmp_path / "work" / "Демо"
     shutil.copytree(ROOT / "demo" / "graph", graph)
-    closure = {lm.module_of(rel) for rel in rels}
-    assert layout["package_entry"] in closure
-    others = tuple(sorted(lm.modules(INV) - closure))
+    plan = {lm.module_of(rel) for rel in rels}
+    # импортировано обязано быть замыкание входа; план шире на `__init__` подпакетов,
+    # которых вход может не звать (выходной круг 2 по #650, DS M6)
+    closure = lm.package_closure(lm.import_graph(INV), layout["package_entry"])
+    assert layout["package_entry"] in closure and closure <= plan
+    others = tuple(sorted(lm.modules(INV) - plan))
     problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work",
                                       outside=others)
+    # раннер мерил ровно `__init__` плана — список из копии сходится с артефактом
+    assert set(out["inits"]) == lm.package_inits(INV, layout), out["inits"]
     assert not problems, "\n".join(problems)
     assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
     assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
-    assert closure <= set(out["modules"]), "проба импортирует не весь пакет — план копирования шире нужного"
+    assert closure <= set(out["modules"]), "проба импортирует не всё замыкание входа"
     # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
     assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
+
+
+def test_the_probe_sees_what_the_package_init_pulls(tmp_path: pathlib.Path) -> None:
+    """Отрицательный опыт признака `pulled_by_init`: копия пакета с импортом члена
+    в `__init__` — строка пробы. Без признака «`import charoite_graph` не тянет ни
+    yaml, ни членов» держалось бы одним статическим правилом гейта раскладки
+    (выходной круг 1 по #650, DS I2)."""
+    _copy_package(tmp_path / "pkg")
+    init = tmp_path / "pkg" / "charoite_graph" / "__init__.py"
+    init.write_text(init.read_text(encoding="utf-8") + "from charoite_graph import frontmatter\n",
+                    encoding="utf-8")
+    graph = tmp_path / "work" / "Демо"
+    shutil.copytree(ROOT / "demo" / "graph", graph)
+    problems, _ = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work")
+    assert any(p.startswith("import charoite_graph тянет") and "charoite_graph.frontmatter" in p
+               for p in problems), problems
+
+
+def test_the_probe_measures_every_init_and_blames_only_the_package(tmp_path: pathlib.Path) -> None:
+    """Признак пробы меряет каждый `__init__` копии, а не только корень: подпакет,
+    тянущий `yaml` динамически (`importlib`), и подпакет с `__import__("csv")` —
+    строки; AST-правило гейта такие импорты не видит (выходной круг 2 по #650,
+    DS I3; круг 3, DS I1 — стандартная библиотека тоже вина пакета). Кодек
+    объявленной кодировки грузит интерпретатор, а не пакет: он загружается до окна
+    и строкой не становится (DS M5)."""
+    _copy_package(tmp_path / "pkg")
+    root_init = tmp_path / "pkg" / "charoite_graph" / "__init__.py"
+    root_init.write_bytes(b"# -*- coding: cp1251 -*-\n" + root_init.read_bytes())
+    for name, body in (("sub", 'import importlib\nimportlib.import_module("yaml")\n'),
+                       ("sub2", '__import__("csv")\n')):
+        (tmp_path / "pkg" / "charoite_graph" / name).mkdir()
+        (tmp_path / "pkg" / "charoite_graph" / name / "__init__.py").write_text(body, encoding="utf-8")
+    graph = tmp_path / "work" / "Демо"
+    shutil.copytree(ROOT / "demo" / "graph", graph)
+    problems, out = run_package_probe(tmp_path / "pkg", graph, "платёжный шлюз", tmp_path / "work")
+    assert out["inits"] == ["charoite_graph", "charoite_graph.sub", "charoite_graph.sub2"], out["inits"]
+    assert any(p.startswith("import charoite_graph.sub тянет") and "yaml" in p for p in problems), problems
+    assert any(p.startswith("import charoite_graph.sub2 тянет") and " csv " in p for p in problems), problems
+    assert not any(p.startswith("import charoite_graph тянет") for p in problems), problems
 
 
 #: Как каждое событие из `MUTATIONS` выглядит в коде пакета: `V` — каталог-жертва
@@ -498,8 +577,13 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
         (victims / "f").write_text("x", encoding="utf-8")
         pkg = tmp_path / name / "pkg"
         pkg.mkdir(parents=True)
-        (pkg / "graph_search.py").write_text(template.format(victims=str(victims), extra=extra), encoding="utf-8")
-        shutil.copyfile(ROOT / "src" / "model_seam.py", pkg / "model_seam.py")
+        # копия повторяет форму раскладки: раннер зовёт `from charoite_graph import …`
+        (pkg / "charoite_graph").mkdir()
+        (pkg / "charoite_graph" / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "charoite_graph" / "graph_search.py").write_text(
+            template.format(victims=str(victims), extra=extra), encoding="utf-8")
+        shutil.copyfile(ROOT / "src" / "charoite_graph" / "model_seam.py",
+                        pkg / "charoite_graph" / "model_seam.py")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
         (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",

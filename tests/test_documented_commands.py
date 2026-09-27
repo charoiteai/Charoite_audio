@@ -49,8 +49,12 @@ USER_DOCS = ("README.md", "docs/ru/README.md", "docs/zh/README.md", "CONTRIBUTIN
              "docs/zh/USER_GUIDE.md", "docs/zh/DATA_AND_RECOVERY.md",
              "demo/README.md", "docs/ru/demo/README.md", "docs/zh/demo/README.md")
 
+#: Свои импортируемые имена: плоские модули `src/` и `scripts/` плюс пакеты
+#: `src/<пакет>/` (после №424 поиск по графу живёт в `src/charoite_graph/`, и
+#: без пакетов в этом множестве его импорт выглядел бы внешней зависимостью).
 _LOCAL = {p.stem for p in (REPO / "src").glob("*.py")} | \
-         {p.stem for p in (REPO / "scripts").glob("*.py")}
+         {p.stem for p in (REPO / "scripts").glob("*.py")} | \
+         {p.name for p in (REPO / "src").iterdir() if (p / "__init__.py").is_file()}
 
 
 def _module_level_imports(path: pathlib.Path) -> set[str]:

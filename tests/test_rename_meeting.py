@@ -363,7 +363,7 @@ def test_legacy_main_with_seconds_is_healed_by_the_minute_stamp(tmp_path):
 def test_apply_writes_the_note_atomically(tmp_path, monkeypatch):
     """Заметка встречи — единственный экземпляр: write_text усекал файл до
     записи, обрыв оставлял 0 байт (аудит 30.08, GLM Critical 1)."""
-    import safe_write
+    from charoite_graph import safe_write
     graph = tmp_path / "граф"
     (graph / "Встречи").mkdir(parents=True)
     note = graph / "Встречи" / f"{STAMP}.md"

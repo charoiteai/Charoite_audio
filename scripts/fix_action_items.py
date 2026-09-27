@@ -38,7 +38,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import task_line  # noqa: E402
 from action_items import normalize  # noqa: E402
 from charoite_paths import RootNotNamed, require_data_root, resolve_root  # noqa: E402

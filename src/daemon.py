@@ -37,7 +37,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 
 import action_items  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import channel_labels  # noqa: E402
 import cloud  # noqa: E402
@@ -714,7 +714,7 @@ def main():
     try:
         _gdir = graphs.graph_dir(cfg) or pathlib.Path("")
         if _gdir.exists():
-            import graph_nodes
+            from charoite_graph import graph_nodes
             node_index = graph_nodes.NodeIndex(_gdir)
             node_index.refresh()
             emit({"type": "status",

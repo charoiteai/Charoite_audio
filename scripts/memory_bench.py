@@ -234,7 +234,7 @@ _INDEX: dict[str, object] = {}
 
 
 def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
-    """Боевой контур подсказок демона — src/graph_search.py (№250): лексика,
+    """Боевой контур подсказок демона — src/charoite_graph/graph_search.py (№250): лексика,
     семантика по кэшу векторов (если cfg задан и Ollama доступна), досье,
     переход по ссылкам. Бенч меряет то, что видит владелец на встрече."""
     mem = _INDEX.get(str(graph))
@@ -320,7 +320,7 @@ def main() -> None:
     ap.add_argument("--brain", action="store_true",
                     help="искать через сервер памяти :8100 (сравнение с прежним контуром)")
     ap.add_argument("--legacy", action="store_true",
-                    help="прежний локальный фолбэк вместо src/graph_search.py (сравнение до/после)")
+                    help="прежний локальный фолбэк вместо src/charoite_graph/graph_search.py (сравнение до/после)")
     ap.add_argument("--stats", action="store_true",
                     help="без синтеза: по каждому кейсу покрытие, лучший косинус и вердикт гейта — для калибровки порогов")
     args = ap.parse_args()
@@ -373,8 +373,8 @@ def main() -> None:
 
     if args.stats:
         # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
-        # своих вопросах, без модели. Пороги — в src/graph_search.py.
-        import graph_search
+        # своих вопросах, без модели. Пороги — в src/charoite_graph/graph_search.py.
+        from charoite_graph import graph_search
         # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
         # векторизатор: демо меряет лексику, не ходя в сеть
         mem = graphs.open_search(graph, build_embedder(cfg if not args.demo else {}))
@@ -392,7 +392,7 @@ def main() -> None:
         return
     llm = LLM(cfg)
     passed, failures = 0, []
-    # по умолчанию — память демона (src/graph_search.py): то, что видит владелец
+    # по умолчанию — память демона (src/charoite_graph/graph_search.py): то, что видит владелец
     # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
     print("контур поиска: " + ("сервер памяти :8100" if args.brain else
                                "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))

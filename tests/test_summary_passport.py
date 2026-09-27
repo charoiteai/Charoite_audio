@@ -235,7 +235,7 @@ def test_write_derivative_returns_the_state_after_writing(tmp_path):
     wrote = live_sidecar.write_derivative(live, out, "summary", "тело 2", src, log=lambda m: None)
     assert (wrote.state, wrote.refused, wrote.written) == (live_sidecar.FRESH, None, True)
     # гонка: файл изменился под рукой между решением и записью — None, байты человека целы
-    import safe_write
+    from charoite_graph import safe_write
     real = safe_write.write_text
     def racing(path, body, **kw):
         if path == out and "expect" in kw:
@@ -403,7 +403,7 @@ def test_summary_pass_returns_the_outcome_as_a_value(tmp_path, monkeypatch):
     assert o.line() == "саммари — модель не ответила"
     # REFUSED: файл появился под рукой за время генерации — повтор бессмыслен, различаем (критика GLM круга 3)
     _fake_model(monkeypatch, calls)
-    import safe_write
+    from charoite_graph import safe_write
     real = safe_write.write_text
     out3 = folder3 / "Саммари.md"
     def racing(path, body, **kw):

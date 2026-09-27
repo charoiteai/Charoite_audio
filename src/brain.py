@@ -5,7 +5,7 @@
 сервера деградировали до узлов графа по стемам. Замер 16.09 на рабочем графе:
 сервер отвечал 2,6–22 с на запрос — в бюджет мгновенного ответа он не
 укладывался почти никогда. Теперь память живёт в процессе демона
-(src/graph_search.py): индекс файлов графа прогревается на старте (секунды),
+(src/charoite_graph/graph_search.py): индекс файлов графа прогревается на старте (секунды),
 запрос стоит десятки миллисекунд лексики плюс один вектор запроса, если
 Ollama свободна. Сеть и второй сервер не нужны.
 
@@ -21,7 +21,7 @@ import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-import graph_search  # noqa: E402
+from charoite_graph import graph_search  # noqa: E402
 import graphs  # noqa: E402
 import llm  # noqa: E402
 

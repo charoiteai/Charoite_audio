@@ -29,7 +29,7 @@ import privacy  # noqa: E402
 import live_sidecar  # noqa: E402
 import channel_trace  # noqa: E402
 import meeting_source  # noqa: E402
-import safe_write  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 import llm  # noqa: E402
 import nli  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
@@ -37,11 +37,11 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 from charoite_paths import code_root, harden_umask, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
-import frontmatter
+from charoite_graph import frontmatter
 import graphs
 import graph_links
-import graph_nodes
-import redirects
+from charoite_graph import graph_nodes
+from charoite_graph import redirects
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 
@@ -373,7 +373,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
 # Имена узлов, ключи сравнения и метки диаризации живут в graph_names —
 # лёгком модуле без requests/llm, который импортируют демон, doctor и
 # уборка ссылок; здесь — те же имена для прежних вызывающих и тестов.
-from graph_names import (  # noqa: E402,F401
+from charoite_graph.graph_names import (  # noqa: E402,F401
     _PLACEHOLDER_RE, bag_key, is_placeholder_node, is_speaker_placeholder,
     name_key, safe_name, strip_speaker_label,
 )
@@ -3416,7 +3416,7 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
 
 
 def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0) -> None:
-    """Векторы памяти подсказок (src/graph_search.py) по свежим файлам графа —
+    """Векторы памяти подсказок (src/charoite_graph/graph_search.py) по свежим файлам графа —
     сразу после встречи, коротко и только без живой записи: демон жив —
     следующая встреча уже идёт, слот модели эмбеддингов принадлежит её
     подсказкам, векторы доберёт ночь (scripts/nightly.sh). Сбой — не сбой

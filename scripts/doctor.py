@@ -188,7 +188,7 @@ def check_ollama(cfg: dict) -> None:
     # знать — иначе он ругается на отсутствие той, которой никто не пользуется,
     # и хвалит ту, которой не считает. Модуль шва без зависимостей: доктор
     # обязан печатать рецепт и на машине, где ещё нечем ходить в сеть.
-    import model_seam as _seam
+    from charoite_graph import model_seam as _seam
     want = _seam.embed_model_name(cfg)
     # Сверяем с тегом: `nomic` и `nomic-embed-text:latest` — разные имена для
     # Ollama, и по префиксу доктор похвалил бы модель, которой `/api/embed`

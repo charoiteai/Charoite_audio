@@ -82,7 +82,7 @@ PYTHON_AREAS = (f"{FLAT_DIR}/", "scripts/")
 
 #: Кандидаты в точки входа по расположению; исполняемым кандидата делает гвард
 #: `__main__` (python) или сам факт shell-скрипта (Minor DS круга 5: «цель» читалась
-#: как «исполняемый», а `src/graph_search.py` — кандидат, но не исполняемый).
+#: как «исполняемый», а `src/charoite_graph/graph_search.py` — кандидат, но не исполняемый).
 #: Пакетную форму сюда глобом не записать — модуль лежит на любой глубине, — и её
 #: кандидатность решает форма (`_is_candidate`, круг 3 по коду №328, GLM I2).
 ENTRY_CANDIDATES = (f"{FLAT_DIR}/*.py", "scripts/*.py", "scripts/*.sh", "app/*.sh", "*.sh")
@@ -375,6 +375,10 @@ _SCHEMA: dict[str, Field] = {
     "order": Field(list, "decision"),
     "brief_layers": Field(dict, "decision"),
     "allowed": Field(dict, "decision"),
+    # имя пакета поиска по графу — решение о раскладке: под `src/<package>/` лежат
+    # ровно его члены (№424). Гейт самодостаточности (`package_problems`) сверяет
+    # этот каталог с замыканием входа, а не доверяет списку имён
+    "package": Field(str, "decision"),
     # вход пакета поиска по графу: пакет — замыкание ОДНОГО имени по графу импортов
     # (`package_closure`), а не «весь base плюс graph» — иначе публичной поверхностью
     # молча стали бы модули, которых вход не зовёт (№365)
@@ -2384,10 +2388,14 @@ def package_closure(graph: dict[str, set[str]], entry: str) -> set[str]:
 
 
 def package_files(inv: Inventory, layout: dict) -> list[str]:
-    """План пробы пакета: файлы замыкания `package_entry`, по пути. Проба
-    копирует ровно их — список берётся здесь, а не собирается тестом заново."""
+    """План пробы пакета: файлы замыкания `package_entry` и `__init__` пакета, по
+    пути. Проба копирует ровно их — список берётся здесь, а не собирается тестом
+    заново. `__init__` — явно, а не через замыкание: ребро на сам пакет даёт только
+    `from charoite_graph import x`, и при `import charoite_graph.x` копия вышла бы
+    пакетом-пространством имён без своего `__init__` (выходной круг 1 по #650, DS I1)."""
     closure = package_closure(import_graph(inv), layout["package_entry"])
-    return sorted(rel for rel in inv.files if module_of(rel) in closure)
+    inits = package_inits(inv, layout)
+    return sorted(rel for rel in inv.files if (m := module_of(rel)) in closure or m in inits)
 
 
 def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
@@ -2423,6 +2431,98 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
         if lay.get(m) not in recipes:
             out.append(f"пакет {entry} тянет {m} ({lay.get(m, 'без слоя')}) — в замыкании входа только "
                        f"слои без окружения: {', '.join(recipes) or '—'}")
+    return out
+
+
+def _package_forms(inv: Inventory, layout: dict) -> list[tuple[str, Form]]:
+    """Файлы поддерева пакета `layout["package"]` на ЛЮБОЙ глубине с их формой —
+    одна проекция для членов и `__init__`. Родитель (`form(...).package`) видел
+    только первый уровень: `src/charoite_graph/sub/x.py` не был членом ни для
+    кого, и каталог пакета переставал быть равен замыканию молча (выходной круг 1
+    по #650, DS C1). Поддерево называет `provider` — корень пакета."""
+    package = layout.get("package")
+    if not package:
+        return []
+    return [(rel, f) for rel in sorted(inv.files)
+            if (f := form(rel)).provider == f"package:{package}" and module_of(rel) is not None]
+
+
+def package_members(inv: Inventory, layout: dict) -> set[str]:
+    """Модули-члены пакета `layout["package"]` — модули его поддерева, кроме
+    `__init__`. Каталог, а не список имён: список разошёлся бы с деревом молча, и
+    «член» держался бы памятью (№424). `__init__` — не член: его нельзя ни позвать
+    из входа, ни выбросить, он исполняется при импорте любого члена (DS I1)."""
+    return {f.module for _, f in _package_forms(inv, layout) if f.role == "module"}
+
+
+def package_inits(inv: Inventory, layout: dict) -> set[str]:
+    """`__init__` пакета и его подпакетов — имена самих пакетов (`charoite_graph`)."""
+    return {f.module for _, f in _package_forms(inv, layout) if f.role == "package_init"}
+
+
+def package_problems(graph: dict[str, set[str]], layout: dict | None,
+                     inv: Inventory | None) -> list[str]:
+    """Пакет самодостаточен — каталог, замыкание и внешние импорты сходятся.
+
+    Три равенства, каждое в свою сторону (№424): множество членов поддерева
+    (`package_members`, любая глубина) равно замыканию `package_entry` по графу
+    импортов; и ни один член не импортирует модуль продукта вне пакета —
+    сторонние пакеты и stdlib можно, свой код только внутрь. Так «пакет»
+    перестаёт быть списком имён в артефакте: лишний модуль в каталоге, забытый
+    входом, и переехавший, но оставшийся снаружи, — обе строки.
+
+    `__init__` пакета в сравнении не участвует (ребро на него зависит от того,
+    как написан импорт) и судится своим правилом: он пуст от импортов, потому что
+    исполняется при импорте ЛЮБОГО члена — `import charoite_graph` не тянет ни
+    сторонних пакетов, ни членов (выходной круг 1 по #650, DS I1–I2).
+
+    Объявленное имя обязано разрешаться в дереве — та же дверь, что у
+    `package_entry` в `env_problems`: объявлен пакет — есть его
+    `src/<пакет>/__init__.py`. Без этой строки удалённый `__init__` делал
+    пакет пространством имён, правило пустоты — пустым, а объявление с
+    опечаткой — «пакетом без членов», о котором гейт молчал (выходной круг 2
+    по #650, DS C1 и критика 2).
+
+    `layout`/`inv` равны `None` или `package` пуст — вызывающий о пакете не
+    спрашивает (то же соглашение, что у `env_problems`): синтетические деревья
+    тестов, не моделирующие пакет, пакета не объявляют и не судятся."""
+    if layout is None or inv is None or not layout.get("package"):
+        return []
+    out: list[str] = []
+    init = f"{FLAT_DIR}/{layout['package']}/__init__.py"
+    # вопрос «есть ли `__init__` пакета» — к проекции формы, а не к склейке пути: мимо
+    # формы файл, выведенный правилом KINDS из кода, считался бы «есть» (круг 3, DS M3)
+    if layout["package"] not in package_inits(inv, layout):
+        out.append(f"package {layout['package']}: нет {init} — объявленный пакет обязан быть пакетом: "
+                   f"без __init__ копия пробы и колесо собирают пространство имён, а правило "
+                   f"пустоты __init__ судит пустоту")
+    entry = layout["package_entry"]
+    if entry not in graph:
+        # об отсутствующем входе уже говорит `env_problems` — второй строкой не повторяем
+        return out
+    members = package_members(inv, layout)
+    inits = package_inits(inv, layout)
+    closure = package_closure(graph, entry) - inits
+    for m in sorted(members - closure):
+        out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
+                   f"убрать из {layout['package']}/ или позвать из входа")
+    for m in sorted(closure - members):
+        out.append(f"модуль замыкания {entry} — {m} — лежит вне пакета {layout['package']}/: "
+                   f"перенести в пакет или разорвать импорт")
+    for m in sorted(members):
+        for d in sorted(d for d in graph.get(m, ()) if d not in members | inits):
+            out.append(f"член пакета {m} импортирует {d} вне пакета — членам можно только друг "
+                       f"друга (сторонние пакеты и stdlib — можно)")
+    for rel, f in _package_forms(inv, layout):
+        tree = inv.files[rel].tree
+        if f.role != "package_init" or tree is None:
+            continue
+        # `from __future__ import …` — указание компилятору, в рантайме модулей не
+        # тянет; домовой стиль пакета, правка `__init__` «как везде» не краснеет (DS M4)
+        names = {n for n in imports_of(rel, tree) if n.split(".")[0] != "__future__"}
+        if names:
+            out.append(f"{rel} импортирует {', '.join(sorted(names))} — __init__ пакета исполняется "
+                       f"при импорте любого члена и держится пустым от импортов")
     return out
 
 
@@ -2528,6 +2628,8 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     problems += root_problems(roots, layout["root_exemptions"], layout)
     # слой без окружения: ни ребра в слой окружения, ни пакета, который его тянет (№365)
     problems += env_problems(graph, layout)
+    # пакет самодостаточен: каталог = замыкание входа, и члены не ходят наружу (№424)
+    problems += package_problems(graph, layout, inv)
     # индекс поиска и ревизию ядер приложение строит через одну дверь окружения (№365)
     problems += seam_problems(seams)
     # и адрес шва обязан разрешаться целиком: узел графа, объявление члена,

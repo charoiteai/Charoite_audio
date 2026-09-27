@@ -42,7 +42,7 @@ def _open() -> bool:
 
 def fake_embedder(vectors=None):
     """Векторизатор-подделка: заданные векторы или по одному на ядро."""
-    from model_seam import Embedder
+    from charoite_graph.model_seam import Embedder
 
     def run(texts, timeout):
         return vectors if vectors is not None else [[1.0, 0.0] for _ in texts]
@@ -56,7 +56,7 @@ def fake_judge(p=0.0, ready=True, refused="", entail=None):
     Отдельный `entail` — чтобы проверять отказ судьи посреди прогона: он
     бросает, а не возвращает ноль, и пара обязана вернуться в фокус.
     """
-    from model_seam import Judge
+    from charoite_graph.model_seam import Judge
 
     return Judge(lambda: ready, entail or (lambda a, b: p), refused)
 
@@ -460,7 +460,7 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
     """После слияния имя дубля и его псевдонимы живут в шапке канона: иначе
     следующее упоминание короткого псевдонима заводит дубль заново (GLM,
     круг-1 #451); заглушка псевдонимов не несёт."""
-    import frontmatter
+    from charoite_graph import frontmatter
     for p in sorted(graph.glob("Ядра/*.md")):
         text = frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"])
         p.write_text(frontmatter.with_list_field(text, frontmatter.AUTO_ALIASES, [f"след {p.stem}"]), encoding="utf-8")

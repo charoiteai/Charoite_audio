@@ -145,7 +145,7 @@ def test_names_by_time_never_assigns_to_owner_label():
 def test_safe_write_expect_gate(tmp_path):
     """Общий expect-гейт: снимок до чтения — чужая запись в окне не
     затирается (протокол один на всех писателей, критика DS по #464)."""
-    import safe_write
+    from charoite_graph import safe_write
     p = tmp_path / "m.md"
     p.write_text("v1", encoding="utf-8")
     snap = safe_write.stat_snapshot(p)

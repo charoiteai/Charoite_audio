@@ -25,7 +25,7 @@ import pathlib
 import threading
 
 from charoite_paths import MODELS_DIR, resolve_root
-from model_seam import Judge, SeamTransportError
+from charoite_graph.model_seam import Judge, SeamTransportError
 
 # Модели — ДАННЫЕ, а не поставка: `/models/` стоит в .gitignore, в подписанный
 # бандл каталог не попадает, и качает их скрипт моделей в корень данных. Так же

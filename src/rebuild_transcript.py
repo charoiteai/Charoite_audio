@@ -26,7 +26,7 @@ import channel_trace
 import os
 import pathlib
 import re
-import safe_write
+from charoite_graph import safe_write
 import transcript
 import subprocess
 import sys
