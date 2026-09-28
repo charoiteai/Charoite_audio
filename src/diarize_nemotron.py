@@ -91,6 +91,8 @@ MLX_AUDIO_VERSION = "0.5.6"
 #: доктора; сторона движка знает только имя. Бенч гоняет движок в своём процессе,
 #: ему пакет ставится в .venv разработчика.
 INSTALLER = "scripts/install_engine.py nemotron"
+#: Python приложения внутри бандла: им ставится окружение движка (копия — его).
+APP_PYTHON = "Charoite.app/Contents/Resources/python/bin/python3"
 INSTALL_RECIPE = (f"поставьте окружение движка: {INSTALLER} (бенч в .venv: "
                   f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; только Apple Silicon)')
 
@@ -129,13 +131,33 @@ def engine_python(root: pathlib.Path) -> pathlib.Path:
     return engine_dir(root) / "python" / "bin" / "python3"
 
 
-def install_command() -> str:
-    """Полная команда установщика для этого интерпретатора и этого дерева кода.
+def app_python() -> str:
+    """Python приложения, которым установщик примет команду, — или "", если его не узнать.
 
-    Её печатают сторона пересборки и доктор: у приложения это встроенный Python,
-    копию которого установщик и сделает окружением движка."""
-    return shlex.join([sys.executable, str(code_root(__file__) / "scripts" / "install_engine.py"),
-                       "nemotron"])
+    Команду печатают разные процессы: пересборка идёт Python приложения, доктор —
+    любым `python3` из терминала, а установщик примет только переносимую сборку
+    (копию он и делает окружением). Код внутри бандла лежит в
+    `Contents/Resources/charoite`, Python приложения — рядом, в
+    `Contents/Resources/python`. Вне бандла годится свой интерпретатор процесса,
+    если он сам переносимый (приложение, запущенное из репозитория). Иначе — не
+    угадывать: `sys.executable` доктора из venv разработчика установщик отклонит."""
+    code = code_root(__file__)
+    bundled = code.parent / "python" / "bin" / "python3"
+    if code.parent.name == "Resources" and bundled.is_file():
+        return str(bundled)
+    return sys.executable if foreign_python.is_portable() else ""
+
+
+def install_command() -> str:
+    """Команда установщика для человека: одно место для пересборки, доктора и `--check`.
+
+    Python приложения известен — готовая строка; нет — та же строка с путём
+    `APP_PYTHON` и просьбой подставить свой Charoite.app."""
+    script = [str(code_root(__file__) / "scripts" / "install_engine.py"), "nemotron"]
+    python = app_python()
+    if python:
+        return shlex.join([python, *script])
+    return f"{APP_PYTHON} {shlex.join(script)} (путь к Charoite.app — ваш)"
 
 
 def fetch_recipe(target: pathlib.Path) -> str:

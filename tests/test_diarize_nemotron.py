@@ -776,13 +776,31 @@ def test_the_engine_lives_under_the_data_root_next_to_its_weights(tmp_path):
     assert nem.model_dir(tmp_path) == tmp_path / "models" / "diar" / "nemotron"
 
 
-def test_the_install_command_names_this_interpreter_and_the_installer():
-    """Команда для человека — этим интерпретатором (у приложения — встроенный Python,
-    копию которого установщик сделает окружением) и установщиком этого дерева кода;
-    пути с пробелами не рвут команду."""
+def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp_path, monkeypatch):
+    """Код внутри Charoite.app: Python приложения — рядом, кто бы ни печатал команду
+    (доктор из терминала — тоже); пути с пробелами не рвут команду."""
+    resources = tmp_path / "Мой Charoite.app" / "Contents" / "Resources"
+    bundled = resources / "python" / "bin" / "python3"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("#", encoding="utf-8")
+    monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
+    monkeypatch.setattr(nem.foreign_python, "is_portable", lambda: False)
     assert shlex.split(nem.install_command()) == [
-        sys.executable, str(REPO / "scripts" / "install_engine.py"), "nemotron"]
+        str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"), "nemotron"]
     assert nem.INSTALLER in nem.INSTALL_RECIPE and nem.INSTALLER in nem.fetch_recipe(pathlib.Path("/м"))
+
+
+@pytest.mark.parametrize("portable", [True, False])
+def test_outside_the_bundle_only_a_portable_interpreter_is_named(monkeypatch, portable):
+    """Вне бандла свой интерпретатор годится, только если он переносимый: `sys.executable`
+    доктора из venv разработчика установщик отклонил бы. Иначе — путь приложения и просьба
+    подставить свой Charoite.app, а не угаданная команда."""
+    monkeypatch.setattr(nem.foreign_python, "is_portable", lambda: portable)
+    script = str(REPO / "scripts" / "install_engine.py")
+    if portable:
+        assert shlex.split(nem.install_command()) == [sys.executable, script, "nemotron"]
+    else:
+        assert nem.install_command() == f"{nem.APP_PYTHON} {shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)"
 
 
 def test_the_probe_passes_the_model_and_returns_the_version(tmp_path, monkeypatch):

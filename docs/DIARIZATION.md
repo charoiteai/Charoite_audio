@@ -340,7 +340,7 @@ nemotron_python: ""         # empty: the environment scripts/install_engine.py i
 ```
 
 The environment is installed by the product, once, on your command — with the
-app's own Python (the doctor prints the exact command):
+app's own Python (the doctor prints the command — with the app's interpreter when it can find it):
 
 ```bash
 <app python> scripts/install_engine.py nemotron          # install

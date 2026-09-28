@@ -245,17 +245,23 @@ def check_engine(cfg: dict) -> None:
     sufler = cfg.get("sufler") or {}
     if str(sufler.get("diarize_backend") or "sherpa").strip().lower() != "nemotron":
         return
+    root = _root()
     setting = str(sufler.get("nemotron_python") or "")
-    out = diarize_nemotron.probe_in_env(setting, root=_root())
+    # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
+    python, refusal = diarize_nemotron.engine_interpreter(setting, root)
+    out = diarize_nemotron.probe_in_env(setting, root=root)
     if out.ok:
-        # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
-        python, _ = diarize_nemotron.engine_interpreter(setting, _root())
         line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
-    else:
-        # причина «не установлено» уже несёт команду установщика — второй раз её не печатаем
-        hint = (out.reason if "install_engine.py" in out.reason
-                else f"{out.reason}; поставить окружение: {diarize_nemotron.install_command()}")
-        line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa", hint)
+        return
+    if refusal:          # окружения нет — отказ двери уже несёт команду установщика
+        advice = ""
+    elif setting.strip():  # ключ главнее установленного окружения: переустановка его не заменит
+        advice = (f"ключ sufler.nemotron_python главнее установленного окружения — исправьте или "
+                  f"очистите его; окружение ставит {diarize_nemotron.install_command()}")
+    else:                # установленное окружение есть, но не работает
+        advice = f"переставить окружение: {diarize_nemotron.install_command()}"
+    line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa",
+         out.reason + (f"; {advice}" if advice else ""))
 
 
 def check_deps() -> None:

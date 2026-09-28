@@ -372,20 +372,30 @@ def test_the_engine_line_names_the_interpreter_the_door_chose(capsys, monkeypatc
     assert "интерпретатор /venv/bin/python\n" in capsys.readouterr().out
 
 
-def test_an_unready_engine_is_a_warning_with_one_install_command(capsys, monkeypatch):
-    """Не готов — «–», не «✗»: пересборка уходит на sherpa с причиной в шапке. Команда
-    установщика в подсказке одна, даже если причина её уже несёт."""
+def test_an_unready_engine_is_a_warning_with_one_install_command(capsys, monkeypatch, tmp_path):
+    """Не готов — «–», не «✗»: пересборка уходит на sherpa с причиной в шапке. Совет — по
+    тому, что выбрала дверь: окружения нет — команда одна, из отказа двери; окружение есть,
+    но не работает — переставить; задан ключ — установка его не заменит, ключ исправить."""
     import foreign_python as fp
     issues = doctor.issues
-    reason = f"окружение движка не установлено (/д/engines/nemotron) — {doctor.diarize_nemotron.install_command()}"
-    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
-                        lambda setting, *, root: fp.Outcome(fp.UNAVAILABLE, reason=reason))
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
     doctor.check_engine({"sufler": {"diarize_backend": "nemotron"}})
     out = capsys.readouterr().out
     assert out.startswith(" – Nemotron выбран, но не готов") and out.count("install_engine.py") == 1
-    assert doctor.issues == issues
+    assert "не установлено" in out and doctor.issues == issues
+
+    installed = doctor.diarize_nemotron.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#", encoding="utf-8")
     monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
                         lambda setting, *, root: fp.Outcome(fp.UNAVAILABLE, reason="нет каталога модели"))
     doctor.check_engine({"sufler": {"diarize_backend": "nemotron"}})
     out = capsys.readouterr().out
-    assert "нет каталога модели; поставить окружение:" in out and out.count("install_engine.py") == 1
+    assert "нет каталога модели; переставить окружение:" in out and out.count("install_engine.py") == 1
+
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.FAILED, reason=f"нет интерпретатора {setting}"))
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": "/снесённый/venv/python"}})
+    out = capsys.readouterr().out
+    assert "нет интерпретатора /снесённый/venv/python; ключ sufler.nemotron_python главнее" in out
+    assert "исправьте или очистите его" in out and doctor.issues == issues

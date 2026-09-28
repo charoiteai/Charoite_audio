@@ -32,8 +32,9 @@ Python приложения mlx нет, бандл подписан. Раньш�
     <python приложения> scripts/install_engine.py nemotron          # поставить
     <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
 
-У приложения это `Charoite.app/Contents/Resources/python/bin/python3`; точную
-команду печатают доктор и шапка стенограммы, если движок выбран, а окружения нет.
+У приложения это `Charoite.app/Contents/Resources/python/bin/python3`; команду
+печатают доктор и шапка стенограммы, если движок выбран, а окружения нет
+(`diarize_nemotron.install_command`: питон приложения, когда его можно узнать).
 """
 from __future__ import annotations
 
@@ -65,10 +66,6 @@ CODE = code_root(__file__)
 #: Куда пойдёт сеть — печатается до соединения, как у get_models.
 NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами",
            "Hugging Face (huggingface.co) — веса с проверкой sha256")
-
-#: Отпечаток python-build-standalone: сборка идёт с префиксом /install, и он
-#: остаётся в данных sysconfig. У Homebrew и системного Python — путь установки.
-STANDALONE_PREFIX = "/install"
 
 PROBE_TIMEOUT_S = 180.0
 
@@ -133,12 +130,11 @@ def check_machine(lock: pathlib.Path) -> None:
     have_py = "{}.{}".format(*sys.version_info[:2])
     if have_py != want_py:
         raise Refused(f"Python {have_py}, а лок собран под {want_py} — запустите установщик "
-                      f"интерпретатором приложения (Charoite.app/Contents/Resources/python/bin/python3)")
-    prefix = sysconfig.get_config_var("prefix")
-    if prefix != STANDALONE_PREFIX:
+                      f"интерпретатором приложения ({diarize_nemotron.APP_PYTHON})")
+    if not foreign_python.is_portable():
         raise Refused(f"интерпретатор {sys.executable} собран не как python-build-standalone "
-                      f"(prefix {prefix}) — его копия не переносится. Запустите установщик "
-                      f"интерпретатором приложения (Charoite.app/Contents/Resources/python/bin/python3)")
+                      f"(prefix {sysconfig.get_config_var('prefix')}) — его копия не переносится. "
+                      f"Запустите установщик интерпретатором приложения ({diarize_nemotron.APP_PYTHON})")
 
 
 def copy_ignore(site_packages: pathlib.Path) -> Callable[[str, list[str]], set[str]]:

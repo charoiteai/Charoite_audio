@@ -88,7 +88,7 @@
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
-- `scripts/doctor.py` ← src/deps.py; проба help
+- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/gate_bench.py` ← ручной запуск: замер решающего гейта, ручной прогон; проба help
@@ -96,8 +96,9 @@
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
+- `scripts/install_engine.py` ← scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help
 - `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
-- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh; проба help
+- `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
@@ -132,7 +133,6 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
-- `scripts/install_engine.py` ← scripts/lock_runtime_deps.py, src/diarize_nemotron.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
 - `src/charoite_paths.py` ← scripts/layout_map.py
 - `src/exit_codes.py` ← scripts/preflight.sh
@@ -163,7 +163,7 @@
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/ru/scripts/README.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/install_engine.py` ← PRIVACY.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/ru/PRIVACY.md, docs/zh/PRIVACY.md
 - `scripts/layout_map.py` ← CONTRIBUTING.md, ROADMAP.md, docs/ARCHITECTURE.md, docs/RELEASING.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/RELEASING.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/RELEASING.md, docs/zh/ROADMAP.md, packages/README.md
-- `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/DIARIZATION.md, docs/RELEASING.md, docs/ru/DIARIZATION.md, docs/ru/RELEASING.md, docs/ru/SECURITY.md, docs/zh/RELEASING.md, docs/zh/SECURITY.md, requirements-runtime.in
+- `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/DIARIZATION.md, docs/RELEASING.md, docs/ru/DIARIZATION.md, docs/ru/RELEASING.md, docs/ru/SECURITY.md, docs/zh/RELEASING.md, docs/zh/SECURITY.md, requirements-nemotron.in, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, MANIFESTO.md, README.md, config/README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/README.md, docs/ru/config/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/README.md, docs/zh/config/README.md, docs/zh/demo/README.md
 - `scripts/merge_graphs.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
@@ -196,7 +196,7 @@
 - `src/daemon.py` ← SECURITY.md, app/README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md, docs/zh/app/README.md
 - `src/decision_gate.py` ← docs/ARCHITECTURE.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/scripts/README.md, scripts/README.md
 - `src/deps.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
-- `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, scripts/README.md
+- `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, requirements-nemotron.in, scripts/README.md
 - `src/exit_codes.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/foreign_python.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md

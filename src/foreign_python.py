@@ -22,6 +22,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sysconfig
 import typing
 
 from exit_codes import EXIT_ENGINE_UNAVAILABLE
@@ -59,6 +60,19 @@ ISOLATION: dict[str, str | None] = {
     # Родитель читает stdout и stderr ребёнка как UTF-8.
     "PYTHONIOENCODING": "utf-8",
 }
+
+
+#: Отпечаток python-build-standalone: сборка идёт с префиксом /install, и он
+#: остаётся в данных sysconfig. У Homebrew, системного Python и venv поверх них —
+#: путь установки. Переносимой сборкой собран Python приложения
+#: (`build_embedded_python.sh`), и только её копия годится окружением движка.
+STANDALONE_PREFIX = "/install"
+
+
+def is_portable() -> bool:
+    """Этот процесс — переносимая сборка python-build-standalone: копию его
+    `sys.base_prefix` можно унести в другой каталог (установщик движка, №474)."""
+    return sysconfig.get_config_var("prefix") == STANDALONE_PREFIX
 
 
 #: Виды исхода (`Outcome.kind`). Константы модуля, а не класса: в NamedTuple

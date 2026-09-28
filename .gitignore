@@ -3,6 +3,8 @@ transcripts/
 recordings/
 logs/
 /models/
+# Окружения движков (scripts/install_engine.py, №474): копия интерпретатора с пакетами, сотни МБ
+/engines/
 .venv/
 __pycache__/
 *.pyc
