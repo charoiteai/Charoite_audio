@@ -4,6 +4,8 @@
 import json
 import os
 import pathlib
+import signal
+import subprocess
 import sys
 import time
 
@@ -23,15 +25,62 @@ def test_lock_lifecycle(tmp_path):
     lock.release()  # повторный release — не ошибка
 
 
-def test_second_mutator_is_refused(tmp_path):
+def test_two_mutators_hold_the_lock_together(tmp_path):
+    """Замок разделяемый (№444 B): доли `--jobs` и соседние прогоны держат его
+    вместе, и «мутация идёт», пока держит хоть один."""
     first = busy_signals.MutationLock(tmp_path)
-    assert first.acquire()
     second = busy_signals.MutationLock(tmp_path)
-    # эксклюзивность атомарна: второй прогон не перезапишет чужой лок
-    assert not second.acquire()
-    first.release()
+    assert first.acquire()
     assert second.acquire()
+    assert busy_signals.mutation_running(tmp_path)
+    first.release()
+    assert busy_signals.mutation_running(tmp_path), "второй держатель ещё жив"
     second.release()
+    assert not busy_signals.mutation_running(tmp_path)
+
+
+def test_killed_holder_leaves_no_lock(tmp_path):
+    """Держатель в отдельном процессе, убитый `kill -9`, замок не оставляет: его
+    снимает ядро, сердцебиение не нужно."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import pathlib, sys, time; sys.path.insert(0, sys.argv[2]); import busy_signals; "
+         "lock = busy_signals.MutationLock(pathlib.Path(sys.argv[1])); assert lock.acquire(); "
+         "print('held', flush=True); time.sleep(60)",
+         str(tmp_path), str(REPO / "src")],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        assert busy_signals.mutation_running(tmp_path)
+    finally:
+        holder.send_signal(signal.SIGKILL)
+        holder.wait()
+        holder.stdout.close()
+    assert not busy_signals.mutation_running(tmp_path)
+
+
+def test_mutator_guard_does_not_count_other_mutators(tmp_path):
+    """Гвард старта мутатора (`count_mutation=False`) другого мутатора не видит,
+    а запись и ночь видит; прочие читатели считают мутацию, как прежде."""
+    import fcntl
+    import live_gate
+    lock = busy_signals.MutationLock(tmp_path)
+    assert lock.acquire()
+    try:
+        assert busy_signals.machine_busy(tmp_path) == ["мутация тестов"]
+        assert busy_signals.machine_busy(tmp_path, count_mutation=False) == []
+        night = tmp_path / "logs" / "nightly.json"
+        night.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+        daemon = live_gate.lock_path(tmp_path)
+        daemon.parent.mkdir(parents=True, exist_ok=True)
+        with daemon.open("a") as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            assert busy_signals.machine_busy(tmp_path, count_mutation=False) == \
+                ["живая запись", "ночной цикл"]
+            assert busy_signals.machine_busy(tmp_path) == \
+                ["живая запись", "ночной цикл", "мутация тестов"]
+    finally:
+        lock.release()
 
 
 def test_lock_file_is_private(tmp_path):

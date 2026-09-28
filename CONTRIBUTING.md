@@ -76,6 +76,16 @@ review gates, and who answers for what — is documented in
   `nothing` with its own `M = 0`; `partial`, `unjudged` and `fail` are red. So
   `partial` in CI is a failure now, not a warning. A file that does not parse
   counts as unread, like one missing from the revision.
+  Locally `--jobs N` (1–4, only with `--max all`) runs the same split on one
+  machine: the parent starts N ordinary mutators with `--shard k/N` on the
+  range resolved to hashes once and judges them with `merge_shards` — the
+  table above, codes 0/1. A finite `--max` is refused: a cap applied after
+  the split judges a different set than a sequential run with the same cap.
+  Parallel runs are allowed: the mutation lock is shared, and four shares on
+  one `.git` found the same survivors 3.3× faster (193 s → 59 s). Shares'
+  logs and reports stay in the `mutate-jobs-*` directory the parent prints;
+  SIGINT or SIGTERM to the parent reaches every share, which cleans up its
+  copy before exiting.
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put

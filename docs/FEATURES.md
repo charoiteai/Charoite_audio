@@ -741,12 +741,15 @@ it signals degradation, it does not break the loop.
   ReadTimeouts of 300 s each. The heavyweights now share one vocabulary
   (busy_signals): the mutator refuses to start while a meeting is being
   recorded or processed or the night is running (honest exit, --force to
-  insist), holds an exclusive flock for the whole run — the same kernel
-  mechanism as the daemon's meeting lock, so a killed process releases it
-  instantly — and yields between mutants the moment a recording or the
-  night starts; the night, in turn, waits for the mutation lock exactly
-  like it waits for meeting processing, and refreshes its running status
-  on every step so a long night never turns invisible.
+  insist), holds a flock for the whole run — the same kernel mechanism as
+  the daemon's meeting lock, so a killed process releases it instantly —
+  and yields between mutants the moment a recording or the night starts;
+  the night, in turn, waits for the mutation lock exactly like it waits
+  for meeting processing, and refreshes its running status on every step
+  so a long night never turns invisible. Since 28.09 the mutation lock is
+  shared: several mutators may run at once (`--jobs N` shares, a second
+  run beside the first), another mutator is no reason to refuse, and the
+  night waits while any of them holds the lock.
 - **The hint layer explains its own silence** (24.08) — three meetings in
   a row the auto-hint layer was silent while minutes and deja-vu worked,
   and a dead loop was indistinguishable from "nothing to say". The daemon

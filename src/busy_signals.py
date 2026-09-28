@@ -7,7 +7,9 @@
 Лок мутации — fcntl.flock по образцу live_gate.daemon.lock (круг-1 по
 PR #399, DeepSeek: pid+mtime+STALE-велосипед дал три дыры — неэксклюзивный
 захват, протухание на долгом базовом прогоне, pid-reuse; flock закрывает
-весь класс: эксклюзивность атомарна, смерть процесса освобождает ядром).
+весь класс: захват атомарен, смерть процесса освобождает ядром). С №444 B
+лок разделяемый: мутаторов может идти несколько сразу (`--jobs` и соседние
+прогоны), и «мутация идёт» значит «лок держит хоть один из них».
 """
 from __future__ import annotations
 
@@ -51,21 +53,28 @@ def night_running(root: pathlib.Path) -> bool:
 
 
 def mutation_running(root: pathlib.Path) -> bool:
-    """Держит ли кто-то лок мутатора — как live_gate.daemon_alive.
+    """Держит ли лок мутатора хоть один прогон.
 
-    «Мутация идёт» — только когда flock честно отказал из-за чужого лока;
-    нет файла или прав — судить не по чему, ночь вставать не должна.
+    Мутаторы держат лок разделяемо, и проба разделяемым (`held_by_someone`)
+    их не видит — поэтому проба эксклюзивом, `held_by_anyone`. «Мутация идёт»
+    — только когда flock честно отказал; нет файла, прав или flock на томе —
+    судить не по чему, ночь вставать не должна.
     """
     try:
         f = (root / LOCK_REL).open("r")
     except OSError:
         return False
     with f:
-        return file_locks.held_by_someone(f)
+        return file_locks.held_by_anyone(f)
 
 
-def machine_busy(root: pathlib.Path) -> list[str]:
-    """Чем занята машина, глазами тяжёлого процесса перед стартом."""
+def machine_busy(root: pathlib.Path, *, count_mutation: bool = True) -> list[str]:
+    """Чем занята машина, глазами тяжёлого процесса перед стартом.
+
+    `count_mutation=False` — для самого мутатора: другой мутатор ему не помеха
+    (замер №444 B: четыре доли разом на одном `.git` — 3,3× быстрее, выжившие те
+    же), а запись, разбор встречи и ночь — помеха. Остальные читатели считают
+    мутацию, как прежде."""
     busy: list[str] = []
     if live_recording(root):
         busy.append("живая запись")
@@ -75,16 +84,18 @@ def machine_busy(root: pathlib.Path) -> list[str]:
         pass
     if night_running(root):
         busy.append("ночной цикл")
-    if mutation_running(root):
+    if count_mutation and mutation_running(root):
         busy.append("мутация тестов")
     return busy
 
 
 class MutationLock:
-    """Эксклюзивный flock на время прогона мутатора.
+    """Разделяемый flock на время прогона мутатора: держателей может быть
+    несколько, а читатели (`mutation_running`) видят любого из них.
 
     fd живёт в объекте весь прогон: закрытие (или смерть процесса —
-    kill -9, ребут) освобождает лок ядром, сердцебиение не нужно.
+    kill -9, ребут) освобождает лок ядром, сердцебиение не нужно. pid в
+    файл не пишется: держателей несколько, а строка у файла одна.
     """
 
     def __init__(self, root: pathlib.Path):
@@ -92,18 +103,16 @@ class MutationLock:
         self._f = None
 
     def acquire(self) -> bool:
-        """True — лок наш; False — держит другой мутатор (не стартуем)."""
+        """True — лок наш; False — не взят за секунду (ретраи против
+        микросекундной пробы эксклюзивом кончились) или ФС без flock."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         f = self.path.open("a+")
-        # Ретраи против микросекундных LOCK_SH-проб — в хелпере
-        # (круг-2 по PR #399, DS); ФС без flock — отказ сразу.
-        if not file_locks.acquire_exclusive(f, attempts=5, pause=0.2):
+        # Ретраи против микросекундных проб эксклюзивом (`held_by_anyone`) —
+        # в хелпере (круг-2 по PR #399, DS); ФС без flock — отказ сразу.
+        if not file_locks.acquire_shared(f, attempts=5, pause=0.2):
             f.close()
             return False
         os.chmod(self.path, 0o600)   # политика приватных каталогов, как у демона
-        f.seek(0); f.truncate()
-        f.write(f"{os.getpid()} {int(time.time())}\n")
-        f.flush()
         self._f = f
         return True
 
