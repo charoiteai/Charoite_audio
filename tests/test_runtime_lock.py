@@ -11,9 +11,12 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 import sys
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -145,3 +148,79 @@ def test_вход_lock_это_проекция_объявления_строка
     raw = declared_deps()
     assert any(";" in d for d in raw) and any(d.startswith(SKIP) for d in raw), raw
     assert all(";" not in d for d in runtime_deps())
+
+
+# --- цели лока (№474): бандл по умолчанию, движок Nemotron второй целью ---
+
+NEM_LOCK = ROOT / "requirements-nemotron.lock"
+NEM_INPUT = ROOT / "requirements-nemotron.in"
+
+
+def test_without_arguments_the_bundle_lock_is_rebuilt_and_nothing_else(monkeypatch):
+    """Поведение до таблицы целей: без аргументов — лок бандла (сборка и CI зовут так)."""
+    import lock_runtime_deps as lrd
+    calls = []
+    monkeypatch.setattr(lrd.shutil, "which", lambda name: "/bin/uv")
+    monkeypatch.setattr(lrd, "compile_lock", lambda target, uv: calls.append((target, uv)) or 0)
+    assert lrd.main([]) == 0
+    assert calls == [(lrd.TARGETS["runtime"], "/bin/uv")]
+    assert (lrd.TARGETS["runtime"].input, lrd.TARGETS["runtime"].lock) == (INPUT, LOCK)
+    assert lrd.main(["nemotron"]) == 0
+    assert calls[-1] == (lrd.TARGETS["nemotron"], "/bin/uv")
+
+
+def test_one_compile_command_for_every_target_with_the_platform_floor_only_where_named(monkeypatch, tmp_path):
+    """Команда uv одна на все цели; минимальная macOS уходит в окружение uv и в шапку лока
+    только у цели, которая её назвала (бандл — умолчание uv, как было)."""
+    import lock_runtime_deps as lrd
+    seen = []
+
+    def run(cmd, cwd, env):
+        seen.append((cmd, env.get("MACOSX_DEPLOYMENT_TARGET")))
+        (tmp_path / cmd[cmd.index("-o") + 1]).write_text("# uv\na==1 \\\n    --hash=sha256:00\n", encoding="utf-8")
+        return lrd.subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(lrd.subprocess, "run", run)
+    monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", "")
+    for name, floor in (("engine", "14.0"), ("bundle", "")):
+        target = lrd.Target(tmp_path / f"{name}.in", tmp_path / f"{name}.lock", lambda: ["a==1"],
+                            source="# источник\n", why="# зачем\n", min_macos=floor)
+        assert lrd.compile_lock(target, "/bin/uv") == 0
+        assert target.input.read_text(encoding="utf-8") == "# источник\na==1\n"
+        head = target.lock.read_text(encoding="utf-8").splitlines()[:3]
+        assert head[1] == "# зачем" and (head[2] == f"# min-macos: {floor}") == bool(floor)
+    assert [c for c, _ in seen] == [
+        ["/bin/uv", "pip", "compile", f"{name}.in", "--generate-hashes", "--python-version",
+         lrd.PYTHON_VERSION, "--python-platform", "macos", "-o", f"{name}.lock"]
+        for name in ("engine", "bundle")]
+    assert [floor for _, floor in seen] == ["14.0", ""]
+
+
+def test_the_engine_lock_pins_the_version_the_engine_module_names():
+    """Версию стыка знает модуль движка; вход и лок движка от неё не отстают."""
+    import lock_runtime_deps as lrd
+    import diarize_nemotron
+    assert lrd.nemotron_deps() == [f"mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION}"]
+    listed = [ln.strip() for ln in NEM_INPUT.read_text(encoding="utf-8").splitlines()
+              if ln.strip() and not ln.startswith("#")]
+    assert listed == lrd.nemotron_deps(), "requirements-nemotron.in разъехался с MLX_AUDIO_VERSION"
+    text = NEM_LOCK.read_text(encoding="utf-8")
+    assert re.search(rf"^mlx-audio=={re.escape(diarize_nemotron.MLX_AUDIO_VERSION)} \\", text, re.M), (
+        "лок движка отстал — пересоберите: .venv/bin/python scripts/lock_runtime_deps.py nemotron")
+
+
+def test_the_engine_lock_names_its_platform_and_hashes_every_package():
+    """Шапку читает установщик (Python и min-macos) — из того, что ставит."""
+    import lock_runtime_deps as lrd
+    text = NEM_LOCK.read_text(encoding="utf-8")
+    assert f"# min-macos: {lrd.TARGETS['nemotron'].min_macos}" in text.splitlines()[:8]
+    assert f"--python-version {lrd.PYTHON_VERSION}" in text[:2000]
+    packages = [ln for ln in text.splitlines() if re.match(r"^[A-Za-z0-9]", ln)]
+    blocks = re.split(r"\n(?=[A-Za-z0-9])", text)
+    assert packages and all("--hash=sha256:" in b for b in blocks if re.match(r"^[A-Za-z0-9]", b))
+
+
+def test_a_lock_target_cannot_be_changed_in_place():
+    """Таблица целей — общая на процесс: правка поля одной цели меняла бы лок всем следующим вызовам."""
+    import lock_runtime_deps as lrd
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        lrd.TARGETS["nemotron"].min_macos = "13.0"

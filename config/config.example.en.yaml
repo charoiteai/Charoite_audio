@@ -166,9 +166,10 @@ sufler:
   # Who labels the call voices after the meeting: sherpa (built in) or
   # nemotron — NVIDIA Nemotron 3 Diarization on Apple Silicon, two voices at
   # once and seconds instead of minutes (docs/DIARIZATION.md). Nemotron lives
-  # in its own environment with mlx-audio: nemotron_python is the path to its
-  # bin/python. If it fails, sherpa labels the voices and the transcript
-  # header says why.
+  # in its own environment with mlx-audio, installed by
+  # scripts/install_engine.py nemotron; an empty nemotron_python means that
+  # environment, otherwise the path to your own bin/python. If it fails, sherpa
+  # labels the voices and the transcript header says why.
   diarize_backend: sherpa
   nemotron_python: ""
   live_dialog_markup: true  # a light model splits paragraphs into speaker turns

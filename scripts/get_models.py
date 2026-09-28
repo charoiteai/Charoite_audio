@@ -140,6 +140,40 @@ STT_MODELS = {
 }
 STT_DEFAULT = "sensevoice"
 
+# Веса движка Nemotron 3 Diarization (MLX-порт, №474). Ставит их установщик
+# движка (`scripts/install_engine.py nemotron`), а не флаг этого скрипта: веса
+# без окружения с mlx-audio бесполезны. Модель из двух файлов, как sensevoice:
+# веса — запись `Model`, config.json — спутник со своей суммой. Ревизия в URL
+# закреплена: `resolve/main` — подвижная цель, а сумма ловила бы законное
+# обновление как подмену. Куда класть — решает модуль движка (`model_dir`).
+# Лицензия весов — NVIDIA OpenMDW 1.1, в репозиторий они не кладутся.
+NEMOTRON_REVISION = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
+NEMOTRON_MIRROR = f"https://huggingface.co/mlx-community/Nemotron-3-Diarization/resolve/{NEMOTRON_REVISION}"
+NEMOTRON = Model(
+    url=f"{NEMOTRON_MIRROR}/model.safetensors",
+    sha256="21e8427d1795c9c46c5800f56b16061734ffd0dcadd71d9bcf0b4d6ef7261da5",
+    size_mb=190,
+    note="Nemotron 3 Diarization (MLX): до 8 голосов, два голоса в одном кадре",
+    source="https://huggingface.co/nvidia/Nemotron-3-Diarization",
+)
+#: sha256 спутника config.json (не LFS, сумма снята вручную 28.09 с файла ревизии выше)
+NEMOTRON_CONFIG_SHA256 = "f215091252bc54f8dcc7d682962a659e03a6bcb26d1c86e4728b8c6730130eb4"
+
+
+def fetch_nemotron(dest: pathlib.Path) -> None:
+    """Веса Nemotron в каталог `dest` — оба файла, каждый со своей суммой.
+
+    Файл на месте и с той же суммой не качается заново: повтор установки после
+    сбоя окружения не тянет 190 МБ второй раз."""
+    for name, url, size_mb, sha in (
+            ("config.json", f"{NEMOTRON_MIRROR}/config.json", 1, NEMOTRON_CONFIG_SHA256),
+            ("model.safetensors", NEMOTRON.url, NEMOTRON.size_mb, NEMOTRON.sha256)):
+        target = dest / name
+        if target.is_file() and _digest(target) == sha:
+            print(f"уже на месте: {target}")
+            continue
+        download(url, target, size_mb, onnx=False, sha256=sha)
+
 
 def seg_target(root: pathlib.Path | None = None) -> pathlib.Path:
     """Куда кладём модель сегментации (без аргумента — корень данных у канона)."""

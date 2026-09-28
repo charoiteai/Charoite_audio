@@ -232,7 +232,6 @@
     "scripts/migrate_placeholders.py": "разовая миграция заглушек руками",
     "scripts/stt_bench.py": "бенчмарк STT, ручной прогон",
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
-    "src/diarize_nemotron.py": "сторона движка Nemotron: пересборка зовёт её процессом чужого интерпретатора через diarize_in_env этого же модуля (путь SCRIPT), руками — отладка движка на одной записи; №473",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
     "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
@@ -325,6 +324,10 @@
     "scripts/import_meeting.py": {
       "mode": "help+refuse",
       "why": "по коду: дверь корня первой строкой main(), затем argparse — дети импорта получают названный корень; №340"
+    },
+    "scripts/install_engine.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
     },
     "scripts/layout_map.py": {
       "mode": "none",

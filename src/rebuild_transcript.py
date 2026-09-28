@@ -296,9 +296,11 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
         log(reason)
         return None, reason
     t0 = time.time()
+    # Раскладку движка (веса, установленное окружение) знает его модуль: отсюда
+    # уходят только настройка и корень данных (№474).
     out = diarize_nemotron.diarize_in_env(
-        str(sufler.get("nemotron_python") or "").strip(), wav,
-        model=diarize_nemotron.model_dir(_root()), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
+        str(sufler.get("nemotron_python") or ""), wav,
+        root=_root(), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
     if not out.ok:
         log(f"Nemotron не разметил голоса ({out.kind}: {out.reason}) — размечает sherpa")
         return None, f"Nemotron — {out.reason}"

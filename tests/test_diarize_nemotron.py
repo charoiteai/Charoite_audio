@@ -13,6 +13,7 @@
 """
 import json
 import pathlib
+import shlex
 import sys
 import types
 
@@ -413,7 +414,9 @@ def test_the_product_reaches_the_engine_only_from_the_rebuild():
     importers = sorted(m for m, deps in graph.items() if "diarize_nemotron" in deps)
     assert importers == ["rebuild_transcript"], f"движок зовут не только из пересборки: {importers}"
     # граф раскладки видит только src/: точки входа из scripts/ — отдельным обходом, и
-    # единственный законный импортёр назван явно (круг 2 по #648, DS I1)
+    # законные импортёры названы явно (круг 2 по #648, DS I1): бенч гоняет движок в
+    # своём процессе, установщик и доктор — только через двери движка (№474), живых
+    # путей среди них нет
     import ast
     callers = set()
     for f in sorted((REPO / "scripts").glob("*.py")):
@@ -422,7 +425,8 @@ def test_the_product_reaches_the_engine_only_from_the_rebuild():
                      else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
             if any(n.split(".")[0] == "diarize_nemotron" for n in names):
                 callers.add(f"scripts/{f.name}")
-    assert callers == {"scripts/diar_bench.py"}, f"эксперимент зовут не только из бенча: {callers}"
+    assert callers == {"scripts/diar_bench.py", "scripts/install_engine.py", "scripts/doctor.py"}, (
+        f"движок зовут не только бенч, установщик и доктор: {callers}")
 
 
 def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):
@@ -637,7 +641,7 @@ def test_the_real_entry_point_without_the_engine_exits_10(tmp_path):
     """Сквозь настоящую точку входа, как её зовёт пересборка: интерпретатор без
     mlx-audio (или каталог без весов) — UNAVAILABLE с рецептом, не падение."""
     wav = _wav(tmp_path / "bh.wav", [0] * 1600)
-    out = nem.diarize_in_env(sys.executable, wav, model=tmp_path / "нет-весов", timeout=60)
+    out = nem.diarize_in_env(sys.executable, wav, root=tmp_path / "нет-весов", timeout=60)
     assert out.kind == fp.UNAVAILABLE, out
     assert "нет" in out.reason and "\n" not in out.reason
 
@@ -670,35 +674,62 @@ def test_parse_segments_turns_labels_into_slot_numbers():
     assert nem.parse_segments({"segments": []}) == []
 
 
-def test_diarize_in_env_without_an_interpreter_is_unavailable(tmp_path):
-    out = nem.diarize_in_env("", tmp_path / "bh.wav", model=tmp_path, timeout=5)
-    assert out.kind == fp.UNAVAILABLE and "sufler.nemotron_python" in out.reason
+def test_diarize_in_env_without_a_setting_and_an_installed_engine_is_unavailable(tmp_path):
+    """Пустая настройка и не установленное окружение — отказ с каталогом и полной
+    командой установщика (№474), а не «не задан интерпретатор»."""
+    out = nem.diarize_in_env("", tmp_path / "bh.wav", root=tmp_path, timeout=5)
+    assert out.kind == fp.UNAVAILABLE
+    assert out.reason == (f"окружение движка не установлено ({tmp_path / 'engines' / 'nemotron'}) — "
+                          f"{nem.install_command()}")
+
+
+def test_an_empty_setting_takes_the_installed_engine(tmp_path, monkeypatch):
+    """Пустая настройка — установленное окружение `engine_python(root)`; настройка
+    задана — она, даже если окружение тоже стоит."""
+    installed = nem.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.symlink_to(sys.executable)
+    s = _engine_stub(tmp_path, 'import json, sys\n'
+                               'print(json.dumps({"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem0"}]}))\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.engine_interpreter("", tmp_path) == (str(installed), "")
+    assert nem.diarize_in_env("  ", tmp_path / "bh.wav", root=tmp_path, timeout=30).ok
+    assert nem.engine_interpreter(" /явный/python ", tmp_path) == ("/явный/python", "")
+
+
+def test_an_explicit_interpreter_that_is_missing_fails_with_its_path(tmp_path):
+    """Настройка задана, файла нет — отказ самой двери внешнего процесса (#669): путь в
+    причине, установленное окружение не подставляется молча вместо явной настройки."""
+    nem.engine_python(tmp_path).parent.mkdir(parents=True)
+    nem.engine_python(tmp_path).symlink_to(sys.executable)
+    missing = tmp_path / "нет" / "python"
+    out = nem.diarize_in_env(str(missing), tmp_path / "bh.wav", root=tmp_path, timeout=5)
+    assert out == fp.Outcome(fp.FAILED, reason=f"нет интерпретатора {missing}")
 
 
 def test_diarize_in_env_passes_the_recording_and_the_model_and_parses(tmp_path, monkeypatch):
-    s = _engine_stub(tmp_path, 'import json, sys\nwav, flag, model = sys.argv[1:]\n'
-                               'assert flag == "--model"\n'
-                               'print(json.dumps({"segments": [{"start": 0.0, "end": 2.0, "speaker": "nem3"}],'
-                               ' "argv": [wav, model]}))\n')
+    want = [str(tmp_path / "bh.wav"), "--model", str(nem.model_dir(tmp_path))]
+    s = _engine_stub(tmp_path, f'import json, sys\nassert sys.argv[1:] == {want!r}, sys.argv\n'
+                               'print(json.dumps({"segments": [{"start": 0.0, "end": 2.0, "speaker": "nem3"}]}))\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
-    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path / "w", timeout=30)
+    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30)
     assert out == fp.Outcome(fp.OK, payload=[(0.0, 2.0, 3)])
 
 
 def test_diarize_in_env_turns_a_protocol_breach_into_a_failure(tmp_path, monkeypatch):
     s = _engine_stub(tmp_path, 'print(\'{"segments": [{"start": 2.0, "end": 1.0, "speaker": "nem0"}]}\')\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
-    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30)
+    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30)
     assert out.kind == fp.FAILED and out.reason.startswith("ответ движка не по протоколу: границы")
 
 
 def test_diarize_in_env_passes_unavailable_and_failed_through(tmp_path, monkeypatch):
     s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
-    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30) == \
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30) == \
         fp.Outcome(fp.UNAVAILABLE, reason="нет весов")
     s.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
-    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30) == \
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30) == \
         fp.Outcome(fp.FAILED, reason="код 1: без вывода")
 
 
@@ -723,14 +754,102 @@ def test_the_caller_never_imports_mlx(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "meta_path", [Spy(), *sys.meta_path])
     s = _engine_stub(tmp_path, 'print(\'{"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem0"}]}\')\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
-    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30).ok
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30).ok
     monkeypatch.undo()
     wav = _wav(tmp_path / "bh.wav", [0] * 1600)
     for name in [m for m in sys.modules if m.split(".")[0] in ("mlx", "mlx_audio")]:
         monkeypatch.delitem(sys.modules, name)
     monkeypatch.setattr(sys, "meta_path", [Spy(), *sys.meta_path])
-    nem.diarize_in_env(sys.executable, wav, model=tmp_path, timeout=60)
+    nem.diarize_in_env(sys.executable, wav, root=tmp_path, timeout=60)
+    nem.probe_in_env(sys.executable, root=tmp_path, timeout=60)
     assert tried == [], f"процесс пересборки пытался импортировать {tried}"
     # сам искатель работает: прямой поиск модуля он видит (стоит mlx-audio или нет)
     importlib.util.find_spec("mlx_audio")
     assert tried == ["mlx_audio"]
+
+
+def test_the_engine_lives_under_the_data_root_next_to_its_weights(tmp_path):
+    """Раскладку движка — окружение и веса — знает его модуль (№474): установщик и
+    дверь берут пути отсюда, строка «nemotron» не живёт в двух местах."""
+    assert nem.engine_dir(tmp_path) == tmp_path / "engines" / "nemotron"
+    assert nem.engine_python(tmp_path) == tmp_path / "engines" / "nemotron" / "python" / "bin" / "python3"
+    assert nem.model_dir(tmp_path) == tmp_path / "models" / "diar" / "nemotron"
+
+
+def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp_path, monkeypatch):
+    """Код внутри Charoite.app: Python приложения — рядом, кто бы ни печатал команду
+    (доктор из терминала — тоже); пути с пробелами не рвут команду."""
+    resources = tmp_path / "Мой Charoite.app" / "Contents" / "Resources"
+    bundled = resources / "python" / "bin" / "python3"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("#", encoding="utf-8")
+    monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
+    assert shlex.split(nem.install_command()) == [
+        str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"), "nemotron"]
+    assert nem.INSTALLER in nem.INSTALL_RECIPE and nem.INSTALLER in nem.fetch_recipe(pathlib.Path("/м"))
+
+
+def test_a_bundle_without_its_python_is_not_named(tmp_path, monkeypatch):
+    """Код лежит как в бандле, а Python рядом нет: несуществующий путь не называем."""
+    resources = tmp_path / "Charoite.app" / "Contents" / "Resources"
+    monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
+    assert nem.app_python() == ""
+    assert nem.install_command().startswith(nem.APP_PYTHON + " ")
+
+
+def test_outside_the_bundle_the_command_asks_for_the_app_path():
+    """Вне бандла (код из клона) Python приложения не узнать: `sys.executable` печатающего —
+    доктор из venv разработчика, чужой переносимый Python другой версии — установщик отклонил
+    бы. Команда называет путь внутри приложения и просит подставить свой Charoite.app."""
+    script = str(REPO / "scripts" / "install_engine.py")
+    assert nem.app_python() == ""
+    assert nem.install_command() == f"{nem.APP_PYTHON} {shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)"
+
+
+def test_the_probe_has_a_working_default_timeout(tmp_path, monkeypatch):
+    """Доктор и `--check` зовут пробу без своего потолка: умолчание обязано дать движку ответить."""
+    monkeypatch.setattr(nem, "SCRIPT", _engine_stub(tmp_path, 'print(\'{"mlx_audio": "0.5.6"}\')\n'))
+    assert nem.probe_in_env(sys.executable, root=tmp_path) == fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"})
+
+
+def test_the_probe_passes_the_model_and_returns_the_version(tmp_path, monkeypatch):
+    want = ["--probe", "--model", str(nem.model_dir(tmp_path))]
+    s = _engine_stub(tmp_path, f'import sys\nassert sys.argv[1:] == {want!r}, sys.argv\n'
+                               'print(\'{"mlx_audio": "0.5.6"}\')\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.probe_in_env(sys.executable, root=tmp_path, timeout=30) == \
+        fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"})
+
+
+@pytest.mark.parametrize("body", ['print(\'{"mlx_audio": 5}\')', 'print(\'{"version": "0.5.6"}\')'])
+def test_the_probe_turns_a_protocol_breach_into_a_failure(tmp_path, monkeypatch, body):
+    monkeypatch.setattr(nem, "SCRIPT", _engine_stub(tmp_path, body + "\n"))
+    out = nem.probe_in_env(sys.executable, root=tmp_path, timeout=30)
+    assert out.kind == fp.FAILED and out.reason.startswith("проба движка не по протоколу")
+
+
+def test_the_probe_passes_unavailable_through_and_refuses_without_an_engine(tmp_path, monkeypatch):
+    s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.probe_in_env(sys.executable, root=tmp_path, timeout=30) == \
+        fp.Outcome(fp.UNAVAILABLE, reason="нет весов")
+    out = nem.probe_in_env("", root=tmp_path, timeout=30)
+    assert out.kind == fp.UNAVAILABLE and nem.install_command() in out.reason
+
+
+def test_main_probe_answers_the_version_without_reading_a_recording(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(nem, "availability", lambda path: None)
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda dist: {"mlx-audio": "0.5.6"}[dist])
+    monkeypatch.setattr(nem, "read_wav", lambda p: pytest.fail("проба читает запись"))
+    monkeypatch.setattr(nem, "load_model", lambda *a, **k: pytest.fail("проба грузит веса"))
+    assert nem.main(["--probe", "--model", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"mlx_audio": "0.5.6"}
+
+
+def test_main_probe_without_the_engine_exits_10_and_the_recording_stays_required(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(nem, "availability", lambda path: "нет пакета mlx-audio — рецепт")
+    assert nem.main(["--probe", "--model", str(tmp_path)]) == EXIT_ENGINE_UNAVAILABLE
+    assert capsys.readouterr().err == "нет пакета mlx-audio — рецепт\n"
+    with pytest.raises(SystemExit) as e:
+        nem.main(["--model", str(tmp_path)])
+    assert e.value.code == 2

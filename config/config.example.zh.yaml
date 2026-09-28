@@ -142,7 +142,8 @@ sufler:
   # 会后由谁标注通话方的声音：sherpa（内置）或 nemotron —— Apple Silicon 上的
   # NVIDIA Nemotron 3 Diarization，可同时识别两个声音，用时以秒计而非分钟
   # （docs/DIARIZATION.md）。Nemotron 运行在自带 mlx-audio 的独立环境中：
-  # nemotron_python 为其 bin/python 的路径。失败时由 sherpa 标注，稿件开头注明原因。
+  # 该环境由 scripts/install_engine.py nemotron 安装；nemotron_python 留空即使用它，
+  # 否则填写您自己的 bin/python 路径。失败时由 sherpa 标注，稿件开头注明原因。
   diarize_backend: sherpa
   nemotron_python: ""
   live_dialog_markup: true  # 轻量模型在段落内区分发言
