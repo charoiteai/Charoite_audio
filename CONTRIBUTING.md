@@ -12,12 +12,23 @@ review gates, and who answers for what — is documented in
 ## Ground rules
 
 - **Local-first is non-negotiable.** No cloud calls, no telemetry, no
-  accounts. The only network targets are localhost (Ollama, the optional
-  brain companion) — the opt-in Claude layer is the single exception and
-  stays off by default.
-- **Russian-first UI, English-friendly code.** UI strings are Russian
-  today (English STT works; English prompts are on the roadmap). Code,
-  comments and commit messages are in English.
+  accounts. The only network targets are localhost (Ollama or
+  `mlx_lm.server`, the optional STT stream server and memory companion) — the
+  opt-in cloud layer
+  (the Claude CLI and the cloud chat engine) is the exception, stays off by
+  default, and every exit that can carry meeting data asks `src/privacy.py`.
+  The two requests that are not the cloud layer — the version check and
+  model downloads — are named in [PRIVACY.md](PRIVACY.md); a new one needs
+  its line there.
+- **Russian first, three interface languages.** The app speaks Russian,
+  English and Chinese: the language is `sufler.language`, and each UI string
+  is written where it is used, as a triple — `L.t(ru, en, zh)` takes all
+  three. Meeting documents (hints, minutes, graph values) follow the same
+  key — Russian, English or Chinese; STT is strongest in Russian (GigaAM),
+  English goes through Parakeet or Whisper, Chinese through SenseVoice or
+  Whisper. Identifiers are English;
+  comments and commit messages in this repository are mostly Russian, and
+  English is just as welcome.
 - **A test must be able to fail.** Not "covers the lines" — fails when the
   behaviour breaks. Check it by hand: put the defect back and make sure the
   test turns red. Coverage does not catch this: a test with no assertion at
@@ -87,6 +98,15 @@ review gates, and who answers for what — is documented in
   `diarization_plan`, `live_input_young_enough`, …); the loop calls it and
   does nothing else. Boundary tests take a non-zero `last`: with zero,
   `now - last` and `now + last` are indistinguishable — the mutator showed it.
+- **Tests run sealed.** Autouse fixtures in `tests/conftest.py` give every
+  test a temporary data root, so no run touches the owner's live data, and
+  close the network: a request fails the test with `pytest.fail` (which an
+  `except Exception` around the call cannot swallow). "Ollama is down" is
+  the default answer of that guard, not a stubbed method; a test that needs
+  models declares `@pytest.mark.ollama_отвечает("model", …)`, and a test that
+  truly needs a socket asks for `сеть_разрешена`. A crash in a background
+  thread fails the run (`filterwarnings` in `pyproject.toml`), and each test
+  has a 120-second ceiling.
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.
@@ -95,19 +115,39 @@ review gates, and who answers for what — is documented in
 
 1. Fork, branch from `main`: `feat/…`, `fix/…`, `docs/…`.
 2. Conventional commits (`feat(app): …`, `fix(daemon): …`).
-3. `swift build` clean and `swift test --filter '^CharoiteAppTests\.'` green (live probes run only by hand) for app changes; `python -m py_compile` for the
-   daemon; run `scripts/memory_bench.py` if you touch search or prompts.
-4. **Update docs in the same PR** — CI blocks code changes that leave
-   `docs/`, `README*` and `CHANGELOG.md` untouched (label `skip-docs`
-   for purely technical changes).
-5. PR description: what changed, why, before/after where visible.
+3. Before review, `scripts/preflight.sh` (see the last section): ruff, the
+   layout guard, privacy markers, the full pytest set, Swift when `app/` is
+   touched, the mutation check on the changed lines. For app changes that
+   means `swift build` clean and `swift test --filter '^CharoiteAppTests\.'`
+   green (live probes run only by hand); run `scripts/memory_bench.py` if
+   you touch search or prompts.
+4. **Update docs in the same PR** — CI blocks a PR that changes code
+   (`src/`, `scripts/`, `app/`, `app-ios/`, `app-android/`) and leaves the
+   documentation untouched: `docs/`, `README.md` (root or of those folders),
+   `PRIVACY.md`, `SECURITY.md`, `ROADMAP.md` or `CONTRIBUTING.md`.
+   `CHANGELOG.md` does not count — release-please owns it. Label
+   `skip-docs` for purely technical changes; dependency bumps
+   (`libs.versions.toml`, the Gradle wrapper, `Package.resolved`) are exempt
+   by themselves.
+5. The PR title is a conventional commit — with squash merge it becomes the
+   commit on `main` ([RELEASING](docs/RELEASING.md)). PR description (the
+   template asks for it): the intent, the invariants that must not break,
+   the area of impact, and how it was checked — for screen or sound, what
+   you looked at and listened to on a real device.
 
 ### What CI checks
 
 | When | What |
 |---|---|
-| every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard, mutation (4 shards + verdict) |
+| every push and PR | `lint`: ruff, byte-compile, "a test must be able to fail", shellcheck, semgrep, mypy (advisory), example config keys · `pytest (src/)`: the full python suite in four processes (`-n 4 --dist loadgroup`), then the layout gate |
+| pushes to `main` and every PR | CodeQL (`analyze`, also weekly) · supply chain: zizmor on the workflows and the public-format de-identification check |
+| every PR only | mutation of the changed lines in four shards (`mutation (changed lines)`) and their verdict (`mutation verdict`) · docs guard · conventional PR title · dependency review (high severity fails) |
+| when `app/`, `app-ios/` or `app-android/` change | Swift app build and deterministic tests with SwiftLint, iOS build · Android unit tests, lint and debug build |
 | nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
+
+Only `lint` and `pytest (src/)` block a merge; why the rest is advisory is in
+[RELEASING](docs/RELEASING.md), "Branch protection". A red advisory check is
+still read before merging.
 
 Lint rules live in one place, `[tool.ruff.lint]` of the root `pyproject.toml`;
 CI, pre-commit and `scripts/preflight.sh` call `ruff check <paths>` without flags, and
@@ -117,6 +157,17 @@ narrow the class, or mark it `# noqa: BLE001 — <reason>`; a bare `except:` is 
 allowed. Preflight runs the ruff version pinned in CI (from the venv when it matches,
 otherwise via pipx or uvx); if that engine cannot start, the step is reported as
 skipped, not as failed.
+
+iOS tests live in the nightly run on purpose: the simulator takes a while
+to boot, and keeping that in the fast PR check would teach everyone to wait.
+At night there is time.
+
+The scenarios tap Russian labels while the runner lives in an English locale,
+so UI tests launch the app with `-ui.language ru` — the same key a person uses
+to pick the language in settings. Not by changing the simulator's locale: this
+way the test checks the app rather than the runner image, and stays honest on a
+machine with any language. Unit tests compare against `L.t` instead of Russian
+literals: the test is about behaviour, not about the interface language.
 
 ### The layout guard
 
@@ -226,23 +277,12 @@ The `KINDS` table in the guard is pinned by a copy inside the test on purpose �
 the comment there explains why. Changing the policy means changing two files,
 and that is the point.
 
-iOS tests live in the nightly run on purpose: the simulator takes a while
-to boot, and keeping that in the fast PR check would teach everyone to wait.
-At night there is time.
-
-The scenarios tap Russian labels while the runner lives in an English locale,
-so UI tests launch the app with `-ui.language ru` — the same key a person uses
-to pick the language in settings. Not by changing the simulator's locale: this
-way the test checks the app rather than the runner image, and stays honest on a
-machine with any language. Unit tests compare against `L.t` instead of Russian
-literals: the test is about behaviour, not about the interface language.
-
 ## Where to start
 
 - [ROADMAP.md](ROADMAP.md) — what we plan next
 - Issues labeled `good first issue`
-- `docs/ARCHITECTURE.md` — how the daemon, diarization and the graph
-  pipeline fit together
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the daemon,
+  diarization and the graph pipeline fit together
 
 ## Releases
 
@@ -259,8 +299,23 @@ a commit that adds any of them.
 The marker list itself is private and lives outside git
 (`~/.config/charoite/private_markers.txt`) — a list of what must not be
 published is sensitive on its own. Without the file the hook fails closed
-locally and skips in CI, so contributors are never blocked by a list they
-cannot have.
+outside CI and skips in CI (`CI` set). Outside CI it also refuses a commit
+whose `git config user.email` is not the maintainer's address — the public
+repository is committed to under one identity. Both checks run on any machine
+that installed the hook, so a contributor who cannot have the list is stopped
+by this hook locally; pre-commit's own `SKIP=private-markers` lets such a
+commit through, and the CI check below still runs on the pull request.
+
+**The second line in CI goes by format, not by name.** The hook guards only
+the machine where it is installed: a commit through the web UI, a fresh clone
+without `pre-commit install` or someone's fork passes it by. So CI runs
+`check_private_markers.py --public-only`: it looks for internal hosts, emails
+on non-public domains, personal paths and surnames with initials — formats
+that give nothing away by themselves but catch the most common leak, a pasted
+piece of config, log or path from a work machine.
+
+A colleague's name in a comment is caught **only by the local hook**. Install
+it — `pre-commit install`, once per clone.
 
 The hook checks **two** things: the lines a commit adds, and the whole tracked
 tree. The second one matters because a marker added to the list *later* leaves
@@ -300,18 +355,24 @@ never written by the machine — a human writes it, with the card. Run `--regen`
 first when you add an entry point: the layout guard is red until the contract
 exists.
 
-`scripts/preflight.sh [base]` is the local summary before a review round and
-before accepting a contributor's (or a sandboxed executor's) work: the machine
-is busy (a live meeting stops it; `PREFLIGHT_FORCE=1` only with the owner's
-consent), ruff, the layout guard, privacy markers, the full pytest set,
-`swift build`/`swift test` when `app/` is touched, and the mutation check on
-the changed lines. It prints a machine verdict — `preflight: ok` or
-`FAIL: <steps>` — with the names of failed tests. `PREFLIGHT_SKIP=mutation,swift`
-skips steps on a re-run. The full pytest set runs in `PREFLIGHT_JOBS` processes
-(4 by default) when pytest-xdist is installed, the same mode as CI; without it
-the set runs sequentially and the step says so with the install command — a
-slower run, not a skipped one. It works inside a git worktree: the owner's data root
-comes from the main checkout, so the busy guard still sees a live meeting.
+`scripts/preflight.sh [base]` (range `base...HEAD`, `origin/main` by default)
+is the local summary before a review round and before accepting a
+contributor's (or a sandboxed executor's) work: the machine is busy (a live
+meeting, a debrief, the nightly cycle or a running mutator stops it with exit
+code 3; `PREFLIGHT_FORCE=1` only with the owner's consent), ruff at the version
+pinned in CI, the layout guard, privacy markers (`--all`), the full pytest set,
+SwiftLint plus `swift build`/`swift test` when `app/` is touched, and the
+mutation check on the changed lines. The last line is the machine verdict:
+`ok` when every step ran and passed, `FAIL: <steps>` (with the names of
+failed tests above it), or `неполный — пропущены: …` ("incomplete —
+skipped") when a step could not run — a skip is said out loud, never counted
+as a pass.
+`PREFLIGHT_SKIP=mutation,swift` skips steps on a re-run. The full pytest set
+runs in `PREFLIGHT_JOBS` processes (4 by default) when pytest-xdist is
+installed, the same mode as CI; without it the set runs sequentially and the
+step says so with the install command — a slower run, not a skipped one. It
+works inside a git worktree: the owner's data root comes from the main
+checkout, so the busy guard still sees a live meeting.
 
 Why this exists: five review findings in a row were claims about process
 behaviour ("exits with code 2", "the app shows the recipe") that nobody had

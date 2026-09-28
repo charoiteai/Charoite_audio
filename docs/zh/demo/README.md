@@ -14,6 +14,9 @@ sufler:
   graph_dir: /path/to/Charoite_audio/demo/graph
 ```
 
+在克隆中相对路径 `demo/graph` 同样可用：相对的 `graph_dir` 从数据文件夹算起，
+而克隆本身就是数据文件夹。应用包内没有演示图谱——它们随仓库提供。
+
 打开应用（或命令行），提问（俄语演示图谱）：
 
 - «что решили по платёжному провайдеру?»
@@ -27,6 +30,9 @@ sufler:
 .venv/bin/python scripts/memory_bench.py --demo-en   # 英语演示图谱
 .venv/bin/python scripts/memory_bench.py --demo-zh   # 中文演示图谱
 ```
+
+演示运行使用词法搜索（不用嵌入），并由本地模型作答：尚无 `config.yaml` 时用
+Ollama 中的 `qwen3.5:4b`，否则用你配置的模型——因此 Ollama 需要在运行。
 
 体验完把 `graph_dir` 换回您真实的 vault。`demo/graph` 里的一切都是虚构的。
 

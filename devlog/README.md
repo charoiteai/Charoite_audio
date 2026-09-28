@@ -14,11 +14,14 @@ date: 2026-08-19
 ---
 ```
 
-Проверить локально (не обязательно, сборка всё равно пройдёт в CI):
+Проверить локально (не обязательно, сборка всё равно пройдёт в CI). Версии
+Jekyll и плагинов закреплены в `devlog/Gemfile` — тем же набором собирает
+workflow, поэтому локально ставим через bundler, а не `gem install`:
 
 ```bash
-gem install jekyll minima jekyll-feed jekyll-seo-tag
-jekyll serve --source devlog
+cd devlog
+bundle install
+bundle exec jekyll serve      # http://127.0.0.1:4000/Charoite_audio/
 ```
 
 Ветка `gh-pages` больше не источник: до 20.08 в ней лежал уже собранный

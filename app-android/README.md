@@ -22,8 +22,11 @@ heavy step (STT, diarization, LLM, graph building) runs on your Mac.
   and a failed provider copy leaves no half-published WAV. Voice notes
   (`note_`/`diary_` prefixes) are routed into the Mac's notes pipeline
   automatically.
-- **Meetings feed** — reads `.md` files from the graph's “Встречи”
-  folder (second folder you pick), newest first, full text on tap.
+- **Meetings feed** — reads from the graph folder you pick (second
+  folder): the portable meeting cards (`Встречи-архив/*/meeting.meta.json`
+  — participants, gist, decisions, action items, open questions) and, for
+  older meetings without a card, the `.md` files of “Встречи”; newest
+  first, the card or full text on tap.
 - **Tasks** — every `- [ ]` checkbox from the graph in one list; ticking
   writes back into the markdown file itself, so the Mac, Obsidian and
   the tablet always agree.
@@ -47,24 +50,26 @@ length into it.
 ## Build and install
 
 Requires JDK 17 and the Android SDK (compileSdk 37 — Compose from bom
-2026.08 is built against that API level and fails `checkDebugAarMetadata`
+2026.08 on is built against that API level and fails `checkDebugAarMetadata`
 on anything older; `targetSdk` deliberately stays at 35, since 36 and 37
 change background-service rules and force edge-to-edge, and the companion
 records audio in the background). The SDK path lives
 in `app-android/local.properties` (`sdk.dir=...`), which is not in the
-repository. The toolchain is AGP 9 on Gradle 9.5 (the wrapper downloads it
+repository. The toolchain is AGP 9 on Gradle 9.7 (the wrapper downloads it
 on first run); AGP 9 ships Kotlin support itself, so the project declares
 no separate `org.jetbrains.kotlin.android` plugin — adding it back breaks
 the build.
 
 ```bash
 cd app-android
-./gradlew testDebugUnitTest        # graph parsing and the WAV header
+./gradlew testDebugUnitTest        # graph parsing, WAV header, crash recovery, stale-scan cancel
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-On-device check (microphone, service, file integrity):
+CI runs `./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` on every
+change under `app-android/`. On-device check (microphone, service, file
+integrity):
 
 ```bash
 ./gradlew connectedDebugAndroidTest
@@ -78,6 +83,8 @@ On-device check (microphone, service, file integrity):
    the one that holds the “Встречи” section.
 
 Both are one-time choices: folder grants survive restarts and reboots.
+The interface language follows the system unless you pick Русский,
+English or 中文 in **Settings** → “Language”.
 
 ## Privacy
 

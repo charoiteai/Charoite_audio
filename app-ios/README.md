@@ -45,13 +45,29 @@ runs on your Mac.
   for more than three seconds (a call, an interruption, a stolen
   microphone), the screen says so in orange. An earlier build measured
   time by the wall clock: thirty minutes ran on screen while forty-one
-  seconds landed in the file, and there was no way to know.
+  seconds landed in the file, and there was no way to know. Outside a
+  call the app tries to resume by itself; after three failed attempts it
+  closes the file and continues the meeting in a new one. A codec error or
+  an iOS audio-service reset does the same — the file is kept and the
+  meeting goes on in the next one; three codec errors in a row stop the
+  recording honestly instead of producing empty pieces.
+- **Why a recording stopped** — every closed file gets a `<file>.json`
+  manifest beside it: who closed it, why (the Stop button, the microphone
+  not back within a minute after a call, an audio-service reset, a codec
+  error, a stall — or no stop recorded at all, when the app died), when,
+  and how many seconds. It travels to the Mac as a pair with the audio and
+  becomes an event in the meeting's recording trace, so a meeting that
+  arrives in three pieces says why.
 - **Delivery** — recordings land in an iCloud Drive folder you pick once
   (the same folder the Mac app watches as its import folder). No
   connection right now? An on-device outbox queue re-sends on every
-  launch and after every stop. Voice notes (`note_`/`diary_` prefixes)
-  are routed into the Mac's notes pipeline automatically.
-- **The queue is visible in full** — the "queued: N" line opens a list:
+  launch and after every stop. A file is published atomically (copied
+  under `.part`, then renamed) and leaves the queue only once iCloud
+  reports its copy uploaded, where iOS can tell at all — "copied into the
+  folder" is not yet "on its way to the Mac". Voice notes
+  (`note_`/`diary_` prefixes) are routed into the Mac's notes pipeline
+  automatically.
+- **The queue is visible in full** — the "Recordings queued: N" line opens a list:
   what was recorded, when, how large. Anything older than a day is
   highlighted: normal delivery takes seconds, so whatever hangs longer is
   no longer "about to leave". Re-send with one button from there.
@@ -59,22 +75,30 @@ runs on your Mac.
   file off anywhere, and the recordings folder shows up in Files and over
   the cable (`UIFileSharingEnabled`). The five most recent recordings stay
   on the phone after delivery: "iCloud accepted it" is not "the Mac got it".
-- **Meetings feed** — reads `Встречи/*.md` straight from a graph folder
-  you pick (second bookmark), newest first, full text on tap. Files not
-  yet downloaded from iCloud are requested and skipped honestly.
+- **Meetings feed** — reads straight from a graph folder you pick (second
+  bookmark): the portable meeting cards (`Встречи-архив/*/meeting.meta.json`
+  — participants, gist, decisions, action items, open questions) and, for
+  older meetings without a card, `Встречи/*.md`; newest first, the card or
+  full text on tap. Files not yet downloaded from iCloud are requested and
+  skipped honestly.
 - **Tasks** — every `- [ ]` checkbox from the graph in one list; ticking
   writes back into the markdown file itself, so the Mac, Obsidian and
   the phone always agree.
 
 ## Build and install
 
-Requires Xcode 15+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
+Requires Xcode 16+ (XcodeGen writes a project format Xcode 15 cannot open)
+and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
 
 ```bash
 cd app-ios
+export DEVELOPMENT_TEAM=<team id>   # read by project.yml; no team ID is stored in the repo
 xcodegen generate
-open CharoiteiOS.xcodeproj   # select your team, build to your device
+open CharoiteiOS.xcodeproj   # build to your device
 ```
+
+A build without signing, as CI does it, needs no team:
+`xcodebuild … CODE_SIGNING_ALLOWED=NO build`.
 
 The version shown in Record settings comes from `MARKETING_VERSION` in `project.yml`
 (bumped by release-please); check the generated plist after `xcodegen generate`:
@@ -83,7 +107,9 @@ and the built bundle resolves it to the release number. The build number
 (`CURRENT_PROJECT_VERSION`, both targets) is not managed by release-please:
 bump it by hand before every App Store / TestFlight upload.
 
-Tests: unit target (graph parsing) + UI tests. Run them on a simulator:
+Tests: a unit target (graph parsing, the recorder's policies for calls,
+stalls, codec errors, auto-start and stop manifests, the delivery queue)
+and UI tests. Run them on a simulator (CI does this nightly):
 
 ```bash
 xcrun simctl privacy booted grant microphone ai.charoite.CharoiteiOS
@@ -111,8 +137,8 @@ from the folders are gone — there is no hidden copy.
 
 ## TestFlight
 
-Сборка и загрузка — облачной подписью через ключ App Store Connect API
-(роль App Manager; ключ НЕ в репозитории):
+Build and upload with cloud signing through an App Store Connect API key
+(App Manager role; the key is NOT in the repository):
 
     export DEVELOPMENT_TEAM=<team id>
     xcodegen generate
@@ -128,10 +154,13 @@ from the folders are gone — there is no hidden copy.
       -authenticationKeyPath ~/.config/charoite/AuthKey_<KEY_ID>.p8 \
       -authenticationKeyID <KEY_ID> -authenticationKeyIssuerID <ISSUER_ID>
 
-`destination: upload` в ExportOptions.plist грузит билд прямо в TestFlight.
-Разовые предварительные шаги: bundle id регистрируется через ASC API
-(POST /v1/bundleIds — нужен ключ с ролью App Manager, ключ роли Developer
-получает 403), а ЗАПИСЬ ПРИЛОЖЕНИЯ создаётся только руками в ASC
-(App Store Connect → Apps → «+» → New App); без неё экспорт падает с
-«Error Downloading App Information». `ITSAppUsesNonExemptEncryption: false`
-в Info.plist избавляет каждый билд от ручного ответа про шифрование.
+`destination: upload` in `ExportOptions.plist` sends the build straight to
+TestFlight; the same file carries the owner's `teamID` — put yours there.
+One-time prerequisites: the bundle id is registered through the ASC API
+(POST /v1/bundleIds — this needs an App Manager key; a Developer-role key
+gets 403), while the APP RECORD can only be created by hand in ASC (App
+Store Connect → Apps → "+" → New App); without it the export fails with
+"Error Downloading App Information". `ITSAppUsesNonExemptEncryption: false`
+(set in `project.yml`, which generates Info.plist) spares every build the
+manual export-compliance question. Bump `CURRENT_PROJECT_VERSION` before
+each upload (see above).

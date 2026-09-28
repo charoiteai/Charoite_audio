@@ -12,8 +12,12 @@ language model — Ollama:
 ```bash
 brew install ollama
 brew services start ollama
-ollama pull qwen3.6:35b-mlx && ollama pull qwen3.5:4b && ollama pull gemma4:e4b
+ollama pull qwen3.5:4b   # the set of the shipped config (8–16 GB)
 ```
+
+On 32 GB the main model becomes `qwen3.8:27b-mlx`, on 64 GB+
+`qwen3.6:35b-mlx` (`qwen3.5:4b` stays the light one) — the first-run wizard
+picks the set for your memory and downloads it itself, see below.
 
 **Install one of the two: brew or Ollama.app — never both.** The app starts its
 own server and takes port 11434; the brew service then fails to start and sits
@@ -53,30 +57,49 @@ through system dialogs.
 ```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
-cp config/config.example.yaml config/config.yaml
+cp config/config.example.en.yaml config/config.yaml
 ```
+
+That copies the English preset; for Russian or Chinese meetings copy
+`config/config.example.yaml` or `config/config.example.zh.yaml` instead
+(see [config/README.md](../config/README.md)), then set `llm.model` and
+`llm.small_model` to the row of the RAM table in the README that fits your Mac.
 
 The app uses the embedded runtime when present and the `.venv` next to the
 repository otherwise. To build a bundle with the runtime yourself:
-`scripts/build_embedded_python.sh && app/make_app.sh`.
+`scripts/build_embedded_python.sh && app/make_app.sh`. The embedded runtime
+deliberately leaves out `parakeet-mlx` and `mlx-whisper` (they pull in half a
+gigabyte of torch): it recognises Russian with GigaAM and Chinese with
+SenseVoice. For the Parakeet (English) or Whisper presets use a source install
+or build the runtime with `scripts/build_embedded_python.sh --extras`.
+
+**Where the data lives.** A bundle carries its own code (signed, read-only),
+so the prebuilt app keeps your data — `config/`, `transcripts/`,
+`recordings/`, `models/`, `logs/` — in `~/Library/Application Support/Charoite`.
+To work from a clone, set Settings → Connection → Data folder to it; a clone at
+`~/Charoite_audio` is not adopted by itself — the Today screen offers it once.
+Running the clone's code as well is a separate, visible switch under the same
+field: "Run the daemon code from this folder (development)" — on for a folder
+you pick there, off when the clone is taken through the Today offer, which is
+about data only.
 
 Which models exactly — the app suggests itself: the first-run wizard reads
-your machine's memory and shows three ready sets ("Full", "Balanced",
-"Light") with the recommended one marked, writes the chosen one into the
-config and downloads it with a single button. Model details are in
-[MODELS.md](MODELS.md).
+your machine's memory and shows four ready sets ("Full" from 64 GB,
+"Precise" from 32, "Balanced" from 16, "Light" from 8) with the recommended
+one marked, writes the chosen one into the config and downloads it with a
+single button. Model details are in [MODELS.md](MODELS.md).
 
 ## 2. Config: two required fields
 
 **The easy way is in the app.** The first-run wizard asks for your name and
-graph folder and writes them into `config/config.yaml` itself; the folder is
-picked from a panel. If the file does not exist yet, the wizard creates it
-from the bundled example and lays out the `config/` directory on its own.
-When writing fails (no permission on the data folder, a broken install with
-no example), the wizard says so with the reason instead of showing "Saved":
-a silent refusal here would mean the person configured into the void and hit
-a permanently red readiness. Editing the file by hand, below, is for installs
-without the interface.
+graph folder and writes them into `config/config.yaml` in the data folder
+itself; the folder is picked from a panel. If the file does not exist yet, the
+wizard creates it from the bundled example and lays out the `config/` directory
+on its own. When writing fails (no permission on the data folder, a broken
+install with no example), the wizard says so with the reason instead of showing
+"Saved": a silent refusal here would mean the person configured into the void
+and hit a permanently red readiness. Editing the file by hand, below, is for
+installs without the interface.
 
 In `config/config.yaml`:
 
@@ -96,12 +119,20 @@ In `config/config.yaml`:
   `~/Documents/Obsidian/Work` — Charoite creates the structure itself. A
   relative path (`demo/graph`) is resolved by the app and by every script
   from the Charoite data folder (the one holding `config/`), never from the
-  directory a script happens to be launched from; `SUFLER_GRAPH_DIR` in the
-  environment overrides the setting for trial runs on another graph and also
-  narrows graph discovery to that graph's vault (the iCloud folder is not read).
+  directory a script happens to be launched from; `CHAROITE_GRAPH_DIR` (or the
+  older `SUFLER_GRAPH_DIR`) in the environment overrides the setting for trial
+  runs on another graph and also narrows graph discovery to that graph's vault
+  (the iCloud folder is not read).
 
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.
+
+**Language.** The interface and the meeting documents follow
+`sufler.language` (`ru`, `en` or `zh`), not the system locale. The example
+bundled with the app is the Russian one, so for English or Chinese set it in
+the config and restart the app. Speech recognition is a separate pair of keys,
+`stt.backend` and `stt.language` — section 1 says which backends the prebuilt
+runtime can run.
 
 ## 3. System audio (calls) — one permission and a restart
 
@@ -122,7 +153,8 @@ the microphone arrives in the same stream.
 Separate channels give free "you / the other side" diarization and echo
 filtering.
 
-**Fallback — BlackHole** (macOS before 13, or permission denied):
+**Fallback — BlackHole** (permission denied, or a terminal run without the
+app: the ScreenCaptureKit stream is raised by the app, the daemon only reads it):
 
 1. Install [BlackHole 2ch](https://existential.audio/blackhole/).
 2. Audio MIDI Setup → "+" → Multi-Output Device → tick speakers AND BlackHole.
@@ -159,30 +191,58 @@ rebuilt on every loss and cleared only when everything records again; if one
 channel comes back while another is still dead, the line names what is still
 missing.
 
+Every loss and return also stays with the meeting itself: a line in the
+meeting thread and in the transcript's notes, and a caveat in the minutes that
+the recording is incomplete — so a gap is not later mistaken for silence.
+
 ## 4. macOS permissions
 
 - **Microphone** — requested on first run.
 - **Screen & System Audio Recording** — requested on the first meeting
   recording; without it only the microphone is heard (or BlackHole, if you
   set it up).
-- **Universal Access** (optional) — only for dictation auto-paste; without
-  it the text simply stays in the clipboard.
+- **Notifications** — requested on the first recording: the alarm about a
+  lost channel and the autostop warning reach you as banners; without them
+  only the line inside the app remains.
+- **Accessibility** (optional) — only for dictation: auto-paste into the
+  field you were typing in and, on macOS 26, the live draft panel while you
+  speak; without it the text simply stays in the clipboard.
+- **Calendars** (optional) — only with Settings → Calendar → "Brief and a
+  nudge to record": reads event titles and times, locally.
+- **Full Disk Access** (optional) — only for the Voice Memos bridge
+  (`audio.voice_memos_bridge`): the Voice Memos container is protected by the
+  system. The grant is broad (the whole home Library), so the decision is yours.
 
 ## 5. Voice diarization (optional)
 
-Put an ERes2Net embedding model at `models/diar/embedding.onnx` — see
-[DIARIZATION.md](DIARIZATION.md). Without it labels are per-channel
-(you/them), with it — per voice ("Speaker 1/2/…").
+One command puts an ERes2Net embedding model at `models/diar/embedding.onnx`
+(in the app — the "Tell speakers apart" button of the first-run wizard):
+
+```bash
+.venv/bin/python scripts/get_models.py --diar    # model choices: --list
+```
+
+Details and tuning — [DIARIZATION.md](DIARIZATION.md). Without it labels are
+per-channel (you/them), with it — per voice ("Speaker 1/2/…").
 
 ## 6. Run
 
 ```bash
 CHAROITE_ROOT="$PWD" .venv/bin/python src/main.py     # CLI: live transcript + hints
-# The daemon does not guess where your data lives — name the root:
-CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py   # daemon for UI integration (NDJSON)
+# or the daemon for UI integration (NDJSON over stdout/stdin). It does not guess
+# where your data lives — whoever starts it names the root:
+CHAROITE_ROOT="$PWD" .venv/bin/python src/daemon.py
 ```
 
-First run downloads the STT model (~1 min).
+First run downloads the STT model (~1 min). Say something — transcript lines
+appear in the console.
+
+`CHAROITE_ROOT` is the data folder. The daemon, `src/main.py`, the transcript
+rebuild, the importer and the other pipeline entry points never infer it from
+where the code lies: without it they stop before doing anything, with a
+one-line recipe and exit code 5 (`EXIT_ROOT_UNNAMED` in `src/exit_codes.py`) —
+distinct from argparse's 2, so launchd and scripts can tell "not started" from
+"crashed". The app always passes the root itself.
 
 The first successful recording should end in a meeting card, not merely in a
 transcript file. Follow the end-to-end check in the
@@ -191,6 +251,9 @@ transcripts, graph documents and retention lives in
 [Data and recovery](DATA_AND_RECOVERY.md).
 
 ## 7. Where things live
+
+Relative to the data folder (the prebuilt app: `~/Library/Application Support/Charoite`;
+from source: the clone named by `CHAROITE_ROOT`):
 
 - `transcripts/` — transcripts and the meeting's working files
 - `recordings/` — full recordings (auto-deleted after `record_keep_days`)
@@ -203,7 +266,7 @@ order after a failure matter, use the
 
 ## Troubleshooting
 
-- **Empty transcript** — check inputs: `python -c "import sounddevice as sd; print(sd.query_devices())"`.
+- **Empty transcript** — check inputs: `.venv/bin/python -c "import sounddevice as sd; print(sd.query_devices())"`.
 - **Slow answers** — `ollama ps`: the model must stay in RAM; keep
   `num_ctx: 8192` in the config.
 - **No system audio** — check the permission: System Settings → Privacy →
@@ -227,14 +290,36 @@ incrementally as the graph changes (stored in
 
 ## Diagnosis
 
-`python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), and diarization — with an exact fix for every problem.
+`python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), the SenseVoice model when that backend is chosen, and diarization — with an exact fix for every problem.
 
 The second half of the report is about running, not installing: whether the model answers a **generation** probe (a stalled Ollama returns its model list instantly while inference sits still — that difference is the only way to tell them apart), whether any meetings got stuck on the way to the graph, how many files wait in the import folder, and how much disk is left. Any "Charoite is silent" starts here.
+
+The doctor reads the data folder named by `CHAROITE_ROOT`, otherwise the clone
+it lives in. For the prebuilt app's data, run it from a clone as
+`CHAROITE_ROOT="$HOME/Library/Application Support/Charoite" python3 scripts/doctor.py`.
+It changes nothing on its own; the one exception is an explicit
+`--restart-llm` — an emergency restart of the model server when a stuck
+generation holds it and the pipeline's own watchdog does not fire.
 
 The doctor is the one script that runs under any Python: it is written without
 dependencies so that it can answer *before* they are installed. Everything else
 runs via `.venv/bin/python` — and if you start it with the system Python, the
 answer is a one-line recipe instead of a traceback (`src/deps.py`).
+
+## Claude Code tools (optional)
+
+`src/mcp_server.py` is an MCP server that gives Claude Code the live (or
+latest) meeting as tools: status, live transcript, notes, hints, minutes by the
+local model and a graph update. Register it with the data folder named:
+
+```bash
+claude mcp add sufler -e CHAROITE_ROOT="$PWD" -- "$PWD/.venv/bin/python" "$PWD/src/mcp_server.py"
+```
+
+Registered without `CHAROITE_ROOT`, the server still starts, but every tool
+answers with a tool error carrying this recipe (and a JSON block with `env` for
+other MCP clients) — nothing is read, no model is called and no graph update
+is launched until the root is named.
 
 ## Versions: the app, the code and the release
 
@@ -248,23 +333,28 @@ spend half a day fixing a bug that no longer exists upstream.
 The app compares all three and says so on the Today tab when they diverge.
 Matching versions are the norm and get no line: a reminder about normality
 stops being read within a week. The code version comes from the git tag in
-your folder; the release number from a single GET to GitHub's public API
-once a day — no token, not a byte about you, and silent on any network
-error. Don't want it: `sufler.check_updates: false` in the config; the
+your folder; the release number from a single GET to GitHub's public API when
+you come back to the app, at most once every four hours (a daily pause used to
+turn release day into waiting day) — no token, not a byte about you, and
+silent on any network error. Don't want it: Settings → "Ask GitHub about a new
+version", or `sufler.check_updates: false` in the config; the
 `CHAROITE_NO_CLOUD` switch turns this off too.
 
 ## Night cycle (optional)
 
-`scripts/nightly.sh` keeps the graph tidy while you sleep: Tier-3 core
-revision (duplicates, merges — with backups), the morning brief
-`_Сегодня.md` (ready-made context for the day), and the memory bench
-(quality regression signal). The pass waits for meeting processing to finish and runs on a single model.
+`scripts/nightly.sh` keeps the graph tidy while you sleep: a graph health
+check, Tier-3 core revision (duplicates, merges — with backups), topic dossiers,
+the morning brief `_Сегодня.md` (ready-made context for the day), and the
+memory bench (quality regression signal). The pass waits for meeting
+processing to finish and runs on a single model.
 On Aug 12 the two collided: transcription, core revision and dossier building
 at once — 14 GB free out of 64 with 17 GB already compressed. The local server
 started swapping models in and out (41 loads in one pass), requests began to
 hang for 2-6 minutes, and then it died outright: 258 topics went unanalysed.
 The wait is capped at an hour (`NIGHTLY_WAIT`, seconds): missing a night
-entirely is worse than working in a crowded machine.
+entirely is worse than working in a crowded machine. The night also has to end
+by morning: `NIGHTLY_MAX_H` (4 hours by default) caps the whole pass — a long
+step stops between topics, and what is left is picked up the next night.
 
 The step order exists so that the brief is ready by morning no matter what: it
 is written right away, before the heavy steps, and once more at the end on top
@@ -274,7 +364,9 @@ still waiting last in line. On weekdays the revision now runs incrementally
 (`--since-last`: only cores changed since the previous pass); the full sweep
 happens on Sundays or by hand with `NIGHTLY_TIER3_FULL=1`.
 
-Schedule it with launchd:
+For an install from a clone the app schedules it for you: Settings → Nightly
+cycle → Turn on writes the launchd agent below (04:15, log in
+`logs/nightly.log` next to the data). By hand:
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
@@ -298,11 +390,13 @@ Whether the pass actually ran shows up in the app on the Today tab, at the
 bottom of the recent meetings column. Nightly work is invisible by
 definition: you are asleep, and in the morning a tidied graph looks exactly
 like an untouched one. So the script writes its outcome to
-`logs/nightly.json` next to your data (the launchd log lives in `/tmp` and
-disappears on reboot, which makes "never ran" indistinguishable from "the
-file is gone"), and the app reads it. A successful pass is one calm line
-with the time; a pass in progress, failed steps, an interrupted run and a
-skipped night are highlighted.
+`logs/nightly.json` next to your data (a log is for reading, not for the app
+to judge; and the launchd log used to live in `/tmp` and vanish on reboot,
+which made "never ran" indistinguishable from "the file is gone"), and the app
+reads it. A successful pass is one calm line with the time; a pass
+in progress, failed steps, an interrupted run, a night the Mac slept through
+and a skipped night are highlighted — and a problem night also turns the menu
+bar icon yellow.
 
 Only a night where nothing went wrong counts as a success. A silent model is
 caught separately: if the local server dies mid-pass, dossiers are built with
@@ -310,7 +404,7 @@ nothing to build from — topics stay unanalysed while the step still exits
 zero. Such a night is marked `досье(модель-молчала)`, otherwise the graph
 goes stale unnoticed.
 
-Check separately which path the agent points at: if the repository has
+The app also checks which path the agent points at: if the repository has
 moved, the `plist` keeps launching the script from the old location — the
-graph gets edited nightly by an older version of the code, and without the
-status file there is no way to notice.
+graph gets edited nightly by an older version of the code. The Today line then
+says the nightly pass runs from another folder and names the script.

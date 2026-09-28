@@ -14,6 +14,10 @@ sufler:
   graph_dir: /path/to/Charoite_audio/demo/graph
 ```
 
+In a clone the relative `demo/graph` works too: a relative `graph_dir` is
+resolved from the data folder, and a clone is its own data folder. The demo
+graphs are not inside the app bundle — they come with the repository.
+
 Open the app (or CLI) and ask:
 
 - «что решили по платёжному провайдеру?»
@@ -28,6 +32,10 @@ before `config.yaml` exists):
 .venv/bin/python scripts/memory_bench.py --demo-en   # English demo graph
 .venv/bin/python scripts/memory_bench.py --demo-zh   # Chinese demo graph
 ```
+
+The demo run searches lexically (no embeddings) and answers with the local
+model: `qwen3.5:4b` from Ollama when there is no `config.yaml` yet, your
+configured model otherwise — so Ollama has to be running.
 
 Switch `graph_dir` back to your real vault when done. Everything in
 `demo/graph` is fictional.

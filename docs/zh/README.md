@@ -18,14 +18,15 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 ## 为什么选 Charoite
 
-- **默认 100% 本地。** 音频、语音识别、说话人分离、LLM 摘要——全部在您的机器上（Ollama + ONNX）。无云端、无遥测、无账号。可选的 Claude 云层默认关闭。
+- **默认 100% 本地。** 音频、语音识别、说话人分离、LLM 摘要——全部在您的机器上（Ollama + ONNX）。无云端、无遥测、无账号。可选的云端层默认关闭。
 - **真正可用的说话人分离。** 会议中实时显示「说话人 1/2/…」标签，会后对完整录音离线重建——每位说话人的段落干净利落。有人自我介绍时姓名自动关联——绝不靠猜。
 - **知识图谱，而不是笔记堆。** 会议成为episode；人物、系统、决定成为节点；反复出现的主题成为带状态和历史的「核心」。会议中 Charoite 会低声提示：「⏮ 7月15日讨论过，当时的状态是……」。
 - **主题档案。** 夜间由本地模型为每个贯穿性主题生成综述：当前状态、时间线、已定事项、未决问题、相关人员——每一条都链接到来源节点。检索**优先**查询档案索引，因此「这个主题现在怎么样」由一份写好的综述回答，而不是十几个零散片段。重建是增量的：档案带有其来源的指纹，未变动的主题不会惊动模型。手工补充写在「作者修改」小节，重建时保留。
-- **云端模型——可选，每一步都可选。** 默认全部关闭，逐项启用：会后复盘（`cloud_enrich`）、对话节奏中的第二意见（`cloud_live`）、带修改权限的档案复核（`cloud_edit_graph`）。基于订阅运行，环境中不放 API 密钥。哪些内容会上云、哪些永不上云——见 [PRIVACY.zh.md](PRIVACY.md)。
+- **云端模型——可选，每一步都可选。** 五个开关默认全部关闭，逐项启用：会后复盘（`cloud_enrich`）、对话节奏中的第二意见（`cloud_live`，另有 `cloud_hints` 细化每条提示）、带修改权限的档案复核（`cloud_edit_graph`）——这些通过 Claude CLI 按订阅运行，环境中不放 API 密钥。第五个 `cloud_engine` 把整个对话交给你指定的 OpenAI 兼容网关（密钥放在单独文件里），笔记本从此不必常驻大模型。哪些内容会上云、哪些永不上云——见 [PRIVACY.md](PRIVACY.md)。
 - **每场会议的分层文档**：一分钟摘要（含与过往会议的关联）→ 会议纪要 → 复盘 → 完整逐字稿。想读多深读多深。
-- **实时辅助**：对方向您提问时的即时本地回答（⚡）、自动要点、实时纪要草稿、语音笔记和听写。
-- **中文原生的 LLM。** 默认主模型是 Qwen（阿里巴巴出品）——中文就是它的母语；语音识别用 Whisper（`stt.backend: whisper`，`language: zh`）。
+- **实时辅助**：屏幕上的会议脉络、对方向您提问时的即时本地回答（⚡）、按需生成的最近几分钟摘要、实时纪要草稿、语音笔记和听写。
+- **Claude Code 工具。** MCP 服务器（`src/mcp_server.py`）把进行中的会议交给 Claude Code：状态、逐字稿、提示、纪要以及图谱更新。只有在注册时指定了数据文件夹（`CHAROITE_ROOT`）才会工作——见[安装](SETUP.md)。
+- **中文原生的 LLM。** 默认主模型是 Qwen（阿里巴巴出品）——中文就是它的母语；语音识别用 Whisper（`stt.backend: whisper`，`language: zh`），或专为中文的 SenseVoice（`stt.backend: sensevoice`，模型用 `get_models.py --stt sensevoice` 安装）。
 
 ## 与其他方案的对比
 
@@ -45,10 +46,11 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 ## 系统要求
 
-- Apple Silicon Mac（M1 及以上），应用需要 macOS 14+，默认模型建议 32 GB 内存
+- Apple Silicon Mac（M1 及以上），应用需要 macOS 14+；建议 16 GB 内存——8 GB 可运行一个轻量模型，32 GB 与 64 GB 可用更大的方案（见下表）
 - [Ollama](https://ollama.com) — 哪些模型放得下，见下方内存表
 - Python 3.11+（仅在从源码运行时需要——应用自带运行环境）
-- 通话声音通过 macOS 自身（ScreenCaptureKit）捕获，无需设置：系统只会请求一次权限。仅在 macOS 13 之前或权限被拒绝时才需要 [BlackHole](https://existential.audio/blackhole/)
+- 通话声音通过 macOS 自身（ScreenCaptureKit）捕获，无需设置：系统只会请求一次权限。仅在权限被拒绝、或不经应用直接在终端运行时（ScreenCaptureKit 音频流由应用建立）才需要 [BlackHole](https://existential.audio/blackhole/)
+- 语音识别：应用内置运行环境可运行 GigaAM（俄语）与 SenseVoice（中文及另外四种语言；模型用 `scripts/get_models.py --stt sensevoice` 安装）；Parakeet 与 Whisper 需从源码安装（`pip install .`），或用 `scripts/build_embedded_python.sh --extras` 构建应用包
 - 可选：[Obsidian](https://obsidian.md) 浏览图谱
 
 ## 按内存选模型
@@ -70,9 +72,10 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 4 GB 只跑 STT；`llm.base_url` 指向你自己的另一台机器仅在显式设置 `llm.allow_remote: true` 时有效（逐字稿会离开本机；`CHAROITE_NO_CLOUD` 下被拒绝，见 `docs/MODELS.md`）。
 
-**iOS/iPadOS**：手机负责 STT 和轻量生成，更重的任务通过 REST API 交给 Mac。
-在 iOS 26+ 上，内置的约 3B Foundation Models 免费承担要点提取。
-完整的 macOS/iOS 模型表和选型依据：[docs/MODELS.zh.md](MODELS.md)。
+**手机**：目前不运行任何模型——iPhone 与 Android 伴侣应用只负责录音和投递，
+其余一切都在 Mac 上完成。设备端的 STT 与轻量生成（iOS 26+ 上借助内置的约 3B
+Foundation Models）只是计划，尚未发布。完整的 macOS 模型表、手机计划和选型依据：
+[docs/zh/MODELS.md](MODELS.md)。
 
 ## 快速开始
 
@@ -90,7 +93,7 @@ brew install ollama && brew services start ollama
 
 那么请**要么装 brew，要么装 Ollama.app，不要同时装。** Ollama 应用会启动自己的
 服务端并占用 11434 端口，此后 brew 服务只会悄悄停在 `error` 状态，其升级也不会
-生效——详见 [SETUP.zh.md](SETUP.md)。
+生效——详见 [SETUP.md](SETUP.md)。
 
 从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
 `Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。发布版本已用
@@ -100,16 +103,20 @@ Developer ID 证书签名并经 Apple 公证，双击即可打开。若你自行
 `xattr -d com.apple.quarantine /Applications/Charoite.app`）。macOS 15+ 上
 右键 → 打开已失效。
 
-之后应用会自行更新：有新版本时，「今天」标签页会出现一行带按钮的提示。下载内容
-会与发布中的校验和比对，旧副本在替换成功前一直保留；而在录制会议期间更新根本
-不会开始 —— 重启会中断录音。映像旁边还有 `Charoite.app.zip`：应用更新用的就是它，
-也可以手动解压。
+之后应用会自行更新：有新版本时，「今天」标签页会出现一行带按钮的提示。替换之前，
+下载内容必须与用维护者私钥签名的清单一致（该私钥从不进入 GitHub 或 CI），并带有
+本项目的 Apple Developer ID 签名——否则取消更新。旧副本在替换成功前一直保留；而在
+录制会议期间更新根本不会开始 —— 重启会中断录音。映像旁边还有 `Charoite.app.zip`：
+应用更新用的就是它，也可以手动解压。
 
 其余步骤都在界面中完成：首次运行向导询问姓名与图谱文件夹，展示匹配本机内存的
-模型方案并一键安装；麦克风与系统音频权限由 macOS 自行询问。
+模型方案并一键安装；麦克风与系统音频权限由 macOS 自行询问。应用把自己的数据——
+配置、逐字稿、录音、日志——放在 `~/Library/Application Support/Charoite`
+（在 设置 → 连接 → 数据文件夹 中可更改）。界面和会议文档都跟随该配置中的
+`sufler.language`——出厂为俄文；设为 `zh` 或 `en` 并重启后两者一起切换。
 
-实时逐字稿、要点与提示、档案问答与简报、带图谱记忆的本地聊天、听写（⌥⌘D）
-和语音笔记（⌥⌘N）。在提供录制按钮前，应用会检查真实会议链路：python 运行
+实时逐字稿与会议脉络、提示与即时回答、档案问答与简报、带图谱记忆的本地聊天、
+听写（⌥⌘D）、语音笔记（⌥⌘N）和日记（⌥⌘J）。在提供录制按钮前，应用会检查真实会议链路：python 运行
 环境、守护进程与配置、依赖、麦克风与音频输入、Ollama 模型以及图谱文件夹。
 缺少 `bge-m3` 或可选图谱会明确显示为功能限制，而不会伪装成原因不明的“故障”。
 
@@ -122,6 +129,10 @@ cp config/config.example.zh.yaml config/config.yaml   # 填入 user_name 和 gra
 CHAROITE_ROOT="$PWD" .venv/bin/python src/main.py     # 终端里的实时逐字稿 + 提示
 ```
 
+`CHAROITE_ROOT` 指明数据文件夹：守护进程、`src/main.py`、逐字稿重建和导入都不会
+根据代码所在位置去猜——没有它，它们会给出一行修复方法并以退出码 5 停止。英文预设是
+`config/config.example.en.yaml`，俄文预设是 `config/config.example.yaml`。
+
 自行构建带内置运行环境的应用包：
 `scripts/build_embedded_python.sh && app/make_app.sh`。
 
@@ -132,32 +143,34 @@ python3 scripts/doctor.py
 ```
 
 
-**还没有会议？** 把 `graph_dir` 指向内置[英文演示图谱](../../demo)（demo/graph_en），问一句 "what did we decide about the payment provider?" ——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo`。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或在应用里指定导入文件夹（设置 → 导入）——放进去的录音自动成为会议。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
+**还没有会议？** 把 `graph_dir` 指向内置的[中文演示图谱](demo/README.md)（`demo/graph_zh`；英文为 `demo/graph_en`，俄文为 `demo/graph`），问一句「支付服务商最后定了哪一家？」——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo-zh`（英文 `--demo-en`，俄文 `--demo`）。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或把文件拖到应用的「外部录音」标签页，或指定监视文件夹（设置 → 录音导入）——放进去的录音自动成为会议。iPhone 自带「语音备忘录」的录音也可以走同一条路（需主动开启，`audio.voice_memos_bridge`）。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
 
-STT 模型首次运行自动下载。实时说话人分离（按声音区分的「Собеседник 1/2/…」）只需一条命令：
+STT 模型首次运行自动下载。实时说话人分离（按声音区分的「Собеседник 1/2/…」）只需一条命令（在应用中是首次运行向导里的一个按钮）：
 
 ```bash
 .venv/bin/python scripts/get_models.py --diar    # 可选模型：--list
 ```
 
-没有它 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。详见 [docs/DIARIZATION.zh.md](DIARIZATION.md)。
+没有它 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。详见 [docs/zh/DIARIZATION.md](DIARIZATION.md)。
 
 ## iPhone 伴侣应用（app-ios/）
 
 手机是桌上的麦克风，大脑仍在 Mac。SwiftUI 伴侣应用
-（[app-ios/](../../app-ios)）录制会议、语音笔记和日记条目（后台安全，并在
+（[app-ios/](app-ios/README.md)）录制会议、语音笔记和日记条目（后台安全，并在
 灵动岛显示 Live Activity 计时器与「停止」按钮），通过设备本地的发件队列把文件放入你选定的
 iCloud Drive 文件夹——同时把图谱读回来：会议动态与任务复选框，直接来自
 Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen 构建：
 `cd app-ios && xcodegen generate`，然后打开 `CharoiteiOS.xcodeproj`。
 
-录音途中来电是暂停而非丢失：麦克风暂时交给通话，通话结束后继续写入同一个文件。
-若系统没有通知通话结束（iOS 并不保证），应用会自行检查输入——第一分钟之后每半分钟
-一次——并在麦克风空闲时立即恢复录音。
+打开应用即开始录音（一项设置，默认开启）；App Intent「用 Charoite 开始录音」可从
+Siri、快捷指令或操作按钮做同样的事。录音途中来电是暂停而非丢失：麦克风暂时交给通话，
+通话结束后应用最多等待一分钟让输入恢复，并继续写入同一个文件；若输入始终没有回来，
+会议就在新文件中继续。若系统没有通知通话结束（iOS 并不保证），应用会自行检查输入——
+第一分钟之后每半分钟一次——并在麦克风空闲时立即恢复录音。
 
 ## Android 伴侣应用（app-android/）
 
-平板或 Android 手机上的同一角色（[app-android/](../../app-android)）：通过
+平板或 Android 手机上的同一角色（[app-android/](app-android/README.md)）：通过
 前台服务后台录音、设备本地队列、来自同一批 markdown 文件的会议动态与任务
 复选框。录音以 16 kHz 单声道 WAV 写入——正是识别所需要的，也是一种能挺过
 崩溃的格式——并落入你只需选择一次的文件夹；Mac 通过 Syncthing 或任意同步
@@ -166,26 +179,26 @@ Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen �
 
 ## 文档
 
-- [路线图](../../ROADMAP.md) · [参与贡献](../../CONTRIBUTING.md)
+- [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md)
 
 - [宣言](MANIFESTO.md) — 为什么流水线交给本地模型、图谱交给强模型
-- [安装](SETUP.md) — 依赖、系统音频权限、首次运行
+- [安装](SETUP.md) — 依赖、配置、系统音频、权限、首次运行
 - [用户实用指南](USER_GUIDE.md) — 从就绪检查到结果卡片与重试的完整流程
 - [数据与恢复](DATA_AND_RECOVERY.md) — 存储位置、保留期、备份与安全恢复
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
 - [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
-- [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32 GB）与 iOS 的内存预设**
+- [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32/64 GB）与 iOS 的内存预设**
 - [安全](SECURITY.md) — 威胁模型：什么会离开本机、prompt injection 隔离、供应链
 - [说话人分离](DIARIZATION.md) — 声纹模型的安装与调优
 - [设计](DESIGN.md) — macOS 与 iOS 共用的设计令牌和界面约定
 
 ## 隐私
 
-见 [PRIVACY.zh.md](PRIVACY.md)。简而言之：无遥测，除本机 localhost 服务（Ollama）外无任何网络调用——代码开源，可自行验证。录音在 `record_keep_days` 天后自动删除。声纹向量只存在于会议进行时的内存中——不保存任何声纹。
+见 [PRIVACY.md](PRIVACY.md)。简而言之：无遥测，除本机 localhost 服务（Ollama）外无任何网络调用——代码开源，可自行验证。云层之外有两个明确列出的例外：向 GitHub 公共 API 查询版本（不发送任何关于你的信息；`sufler.check_updates: false` 可关闭）以及模型下载；`CHAROITE_NO_CLOUD=1` 会跳过版本检查，并拒绝守护进程在运行中自行下载权重（你亲自发起的安装属于你的明确操作）。录音在 `record_keep_days` 天后自动删除。声纹向量只存在于会议进行时的内存中——不保存任何声纹。
 
 ## 状态
 
-公开测试版——当前版本见[发布页](https://github.com/charoiteai/Charoite_audio/releases/latest)。欢迎 Issues 和反馈；提问请到 [Discussions](https://github.com/charoiteai/Charoite_audio/discussions)。原生 macOS 应用在 [app/](../../app)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](../../app-ios)，安卓伴侣应用在 [app-android/](../../app-android)。macOS 界面、会议文档、图谱内容和提示已支持中文；非俄语摘要卡片的结构解析和 iOS 本地化仍在路线图上。路线图见 [ROADMAP.zh.md](ROADMAP.md)。
+公开测试版——当前版本见[发布页](https://github.com/charoiteai/Charoite_audio/releases/latest)。欢迎 Issues 和反馈；提问请到 [Discussions](https://github.com/charoiteai/Charoite_audio/discussions)。原生 macOS 应用在 [app/](app/README.md)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](app-ios/README.md)，安卓伴侣应用在 [app-android/](app-android/README.md)。macOS 界面、手机应用、会议文档、图谱内容和提示已支持中文。路线图见 [ROADMAP.md](ROADMAP.md)：手机经 Wi-Fi 直接投递录音、结合图谱链接的档案回答、iPhone 伴侣应用上架 App Store，以及在应用内查看图谱节点。
 
 如果 Charoite 对您有用，一颗 ⭐ 能帮助更多人找到它。
 

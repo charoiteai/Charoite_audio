@@ -72,9 +72,14 @@
   itself: a repeat run rewrites the transcript in full.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
-  the question is visible in the status line while ⚡ is answering, and in full in the meeting's _hints.md. The gate is "anyone but the owner"
-  (word-level match against `user_name`), so answers keep firing after a
-  counterpart gets recognised by name mid-meeting. Short real questions
+  the question is visible in the status line while ⚡ is answering, and in
+  full in the meeting's _hints.md (the thread gets the clean answer — Aug 24
+  package). The gate is "anyone but the owner": a line from the owner's own
+  capture channel is the owner by definition, other labels are matched word
+  by word against `user_name`, so answers keep firing after a counterpart
+  gets recognised by name mid-meeting; from the microphone (an in-person
+  meeting) it fires only for a voice that is positively not the owner's.
+  Short real questions
   pass the filter: an explicit question form — a "?" plus an interrogative
   opening — softens the subject threshold, so "Что с деплоем?" triggers an
   answer while bare "Что?" still does not. The question is passed to the
@@ -96,7 +101,8 @@
   is read by `src/privacy.py` and checked inside the thread that actually
   launches `claude`, so a manual request (⌘⇧⏎) cannot slip past it either.
   With the layer off the button is greyed out and says why;
-  `SUFLER_NO_CLOUD=1` forces it off whatever the config says.
+  `CHAROITE_NO_CLOUD=1` (or the older `SUFLER_NO_CLOUD=1`) forces it off
+  whatever the config says.
   The prompt carries only your role,
   never a topic list, and instructs honesty over confidence: meeting facts
   (agenda, numbers, statuses) come from the transcript or are declared
@@ -148,7 +154,12 @@
    existing node, or matches several nodes: the name stays as text in the
    meeting note with links to the candidates, and the candidate goes to
    `_Кандидаты.md` at the graph root — confirm with an alias in the node or
-   create the node by hand.
+   create the node by hand. Speaker labels ("Собеседник N", "Speaker N") are
+   not people: they get neither a node nor a link, otherwise different people
+   from different meetings would be glued into one file. Label nodes left by
+   older versions are turned into plain text by
+   `scripts/migrate_placeholders.py` (a plan by default; `--apply` needs
+   `--backup`).
 3. **Meeting archive** — a "date — title" folder with every document and a
    link that opens the graph in Obsidian.
 4. **Summary** — a one-minute read: bottom line up front → topics →
@@ -198,7 +209,7 @@ by a backup into `Ядра/.tier3_backup/`.
 per cross-cutting topic: current state, chronology, decisions, open questions,
 who is involved, every point linked to its source node. A topic cluster is a
 core plus everything that links to it; boundaries come from the links a human
-already drew. Search consults `Dossiers/_index.json` **first** and only goes
+already drew. Search consults `Досье/_index.json` **first** and only goes
 into the graph for details, so "where does this topic stand" is answered from
 one written summary instead of a dozen fragments. Rebuilds are incremental: a
 dossier carries a fingerprint of its sources (microsecond precision — an edit
@@ -206,11 +217,11 @@ landing in the same second as the scan used to go unnoticed), and an unchanged
 fingerprint means the model is not called. Topics without a dossier yet come
 FIRST in the night's queue: sorting by cluster size alone gave every slot to
 the large topics while small new ones waited indefinitely. The per-run cap is
-shared across graphs rather than applied to each. Once a week (the night into
-Monday) every dossier is rebuilt: `--full` no longer stops at that cap. Writes
+shared across graphs rather than applied to each. Once a week (the Sunday
+run) every dossier is rebuilt: `--full` no longer stops at that cap. Writes
 take the shared graph lock — the same one the meeting pipeline and the cloud
 review take. Hand-written additions live in the
-`## Author edits` section and survive rebuilds. To check what a query would
+`## Правки автора` ("author edits") section and survive rebuilds. To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.
 
 **Cloud dossier review — optional** (`scripts/nightly_dossier_review.py`). The
@@ -226,14 +237,14 @@ reason), step failures (network, limit, exit code — not a content rejection)
 and proposed-but-not-applied when editing is off. Before
 anything is written the cloud's answer passes a real check, not a "looks like a
 dossier" one: exactly five headings in the given order and nothing else that
-starts with `#` (so a `### Author edits` smuggled in from a transcript is
+starts with `#` (so a `### Правки автора` smuggled in from a transcript is
 rejected, not pasted), exit code 0, no shorter than 60% of the previous body
 and not a single lost `[[link]]` to a source — a missing link means a dropped
 fact, and the whole revision is rejected, so the prompt tells the model to mark
 cancelled items with ⚠️ instead of deleting them. Links are compared the way
 the graph resolves them (`[[People/Name]]`, `[[Name.md]]` and `[[name]]` are
-one node). A dossier without a `## Sources` section was assembled by hand and
-is never touched. Transcripts, minutes and `## Author edits` are untouched in
+one node). A dossier without a `## Источники` ("sources") section was assembled
+by hand and is never touched. Transcripts, minutes and `## Правки автора` are untouched in
 either mode; every edit is backed up to `Досье/.backup/<date_time>/` first
 (seconds in the name: a second run never overwrites the copy taken before the
 first).
@@ -274,7 +285,10 @@ side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
 «Встречи/» node, the transcript copy under «Документация», chronicle lines in
 Cores (together with the fact that came from that meeting) and links in
-Dossiers and people's nodes. A meeting of which only the archive folder is
+Dossiers and people's nodes. The version in `transcripts/.prev`, the recording
+if retention has not removed it yet, the same files inside cloud-review
+snapshots and quarantine, and the meeting's facts in the external memory
+(`sufler.brain`) go too. A meeting of which only the archive folder is
 left is found by the `meeting_id` in its `meeting.meta.json`. Any other archive
 folder of that day the plan does not remove and no sound manifest gives to
 another meeting (no manifest; a broken one — unreadable, not JSON, or a meeting_id that is not a meeting stamp; a name without « — ») is named under
@@ -286,13 +300,27 @@ alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
 someone's notes. Transcript and recording only, leaving the graph alone:
 `--keep-graph`.
 
-**Nightly loop** (`scripts/nightly.sh`, cron/launchd it): **morning brief**
-(early) → Tier3 revision → **dossiers** → *(optional)* **cloud dossier review**
-→ file dedup → **morning brief** again → **memory bench**. The brief is written
+**Nightly loop** (`scripts/nightly.sh`, cron/launchd it): wait for a meeting
+being processed to finish (up to an hour) → **graph doctor** → file dedup →
+**memory vectors** → **morning brief** (early) → Tier3 revision → **dossiers**
+→ *(optional)* **cloud dossier review** → *(optional)* cloud core review →
+folder indexes → graph doctor again → **morning brief** again → **memory
+bench**. The brief is written
 twice: it takes seconds and never calls the model, while the revision on a large
 graph runs for hours — and one night ended before it did, leaving yesterday's
 `_Сегодня.md` on screen in the morning. The early pass guarantees a brief; the
-late one rewrites it on top of tidied cores and fresh dossiers.
+late one rewrites it on top of tidied cores and fresh dossiers. Night work
+must end at night: after `NIGHTLY_MAX_H` hours (default 4) the heavy steps
+(revision, cloud reviews, bench) are skipped and the dossiers stop between
+topics; what is left is picked up the next night, while the brief and the
+status are always written. The graph doctor (`scripts/graph_doctor.py`) is a
+deterministic lint without a model — broken links, diarization labels among
+People, orphans, duplicates and near-duplicates, `_MOC.md` coverage; its
+`logs/graph_doctor.json` feeds warnings into the brief, and the second pass
+measures the graph after the night's merges. Memory vectors
+(`scripts/graph_search_index.py`) embed changed graph blocks with bge-m3 for
+the daemon's in-process memory (see "Graph memory lives in the daemon") —
+the night is the one time the embedding model is free.
 The nightly revision merges cores
 only when `sufler.tier3_auto_apply: true`; without the key it stops at
 reversible marks — the right to irreversible edits lives in the config,
@@ -333,15 +361,27 @@ it signals degradation, it does not break the loop.
   replacement helper independently re-checks that the app really exited
   (a 10-second timeout is not proof) and gives up otherwise; the old copy
   survives until the new one is fully in place; paths travel as arguments,
-  so quotes or `$()` in an .app name stay data, not shell.
+  so quotes or `$()` in an .app name stay data, not shell. A checksum lying
+  next to the archive catches a broken download but not a forgery, so two
+  anchors GitHub cannot fake are checked before the swap: the release
+  manifest ("version  sha256") is signed with the owner's ed25519 key, which
+  lives neither in the repository nor in CI secrets, and its version must
+  match the release tag (no replaying an old honest release under a new
+  tag); the downloaded bundle must carry the team's Apple Developer ID
+  signature. The version check (`sufler.check_updates`, on by default; a
+  plain GET to GitHub's public API) runs when you come back to the app, at
+  most once every four hours, and "Check now" in Settings asks right away.
 - **First run without a terminal** — the onboarding screen shows the
-  readiness check (environment, config, Ollama, models, microphone, graph
-  folder), and a failed item is fixed in place: a missing model is pulled by
+  readiness check (environment, config, your name, microphone, system audio,
+  Ollama, models, graph folder), and a failed item is fixed in place: Ollama
+  itself is installed and started with a button (through Homebrew when it is
+  there, otherwise the download page opens — never a second copy fighting
+  for the port); a missing model is pulled by
   the app itself through the Ollama API, with percentages from its own
   stream; recipes that a button cannot fix are copied to the clipboard whole
   instead of being retyped from the screen. "Start listening" unlocks once
   no blocking items remain.
-- **Dictation** (global hotkey) — speak → recognized locally → pasted into
+- **Dictation** (global hotkey ⌥⌘D) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included. The text
   goes to the app — and, with the Accessibility right, the window — where
   dictation started: recognition takes seconds, and if something else is
@@ -430,8 +470,9 @@ it signals degradation, it does not break the loop.
   still open. Empty sections are skipped, and several topics inside one
   stretch of talk split into separate cards. The format lives in code
   (`src/llm.py`, `HINT_FORMAT`) and is the same for everyone: the role in
-  the config describes context and terminology, not layout. The ready
-  first-person answer is still there — on its own hotkey. A speaker is named only when the voice changes, with no reporting verbs — substance, not paraphrase.
+  the config describes context and terminology, not layout. On demand it is
+  the "Digest" button (⌘⏎). The ready first-person answer is still there —
+  as ⚡, fired by the other side's question itself. A speaker is named only when the voice changes, with no reporting verbs — substance, not paraphrase.
   **On screen the hint is a card ABOVE the thread, not instead of it**
   (#255 fixed twice, then #22): the old either/or pane let one hint hide
   the thread until the meeting ended, and a Stop used to wipe the
@@ -467,23 +508,38 @@ it signals degradation, it does not break the loop.
   ambiguous name stays silent, at most four nodes per meeting. The ⚡
   question path is looser: nodes mentioned in the question itself are
   added to the instant-answer prompt. The same nodes back up live
-  context and the manual ⏮ when the brain server is down.
-- **Cloud-refined hints** — the ladder pattern for hints: the local
-  model answers instantly, then a cloud model (Claude CLI, default
-  Haiku) appends «☁️ …» right into the SAME hint card (stale
-  refinements go to the hints log only). Sends transcript to the cloud
-  on every hint — separate switch, default OFF (`sufler.cloud_hints`).
+  context and the manual ⏮ while the graph memory is still warming up or
+  its matches are weak.
+- **Cloud-refined thread** — the ladder pattern: the local model writes
+  instantly, then a cloud model (Claude CLI, `sufler.cloud_hints_model`,
+  default Haiku) checks the thread against the fresh talk (after every
+  ~1,200 new transcript characters) and fixes inaccurate lines in place —
+  see "The cloud edits the thread" above; the full "was → became" trail goes
+  to the meeting's hints log. Sends the transcript to the cloud continuously
+  — a separate switch, default OFF (`sufler.cloud_hints`), which also needs
+  `sufler.cloud_live`.
 - **Opening brief** — the hint card is not empty at meeting start: it
   shows the last meeting's topic, agreed decisions and open-task count
   from the archive — instantly, file-parse only, main graph only.
 - **iPhone companion (v1, app-ios/)** — the phone records a
   meeting/note/diary entry; you pick the delivery folder once in iCloud
-  Drive (folder button) — the same import folder the Mac watches. A call or
+  Drive (the tray ↑ button) — the same import folder the Mac watches. A call or
   video meeting during a recording is a pause, not a failure: on iPhone the
   microphone belongs to the call (an iOS rule), the app says so plainly,
-  waits for the call to end and resumes THE SAME file; resume attempts and
+  waits for the call to end and resumes THE SAME file (iOS hands the
+  microphone back a few seconds after a long call, so the app waits up to a
+  minute; if the input never returns, the meeting continues in a new file);
+  resume attempts and
   file rotation are suppressed for the duration — on 07.08 they were what
-  turned a 30-minute meeting into a 40 KB scrap.
+  turned a 30-minute meeting into a 40 KB scrap. A Live Activity timer in
+  the Dynamic Island and on the lock screen carries a Stop button, so the
+  phone can lie face down; the Meetings and Tasks tabs read the graph folder
+  (a second bookmark), and ticking a task writes `[x]` into the markdown.
+  Why a file ended other than by Stop (the microphone did not come back
+  after a call, the audio service reset, a codec failure, a stalled file, no
+  stop recorded at all) travels to the Mac as a small manifest next to the
+  audio and lands in the transcript as a line (see "The transcript says where
+  the audio is missing").
   **Listens right away (№167)**: open the app and the recording is already
   running (setting “Record as soon as the app opens”, on by default, the
   last kind you picked, once per launch, not on return from background);
@@ -517,6 +573,18 @@ it signals degradation, it does not break the loop.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (an interruption, a stolen microphone), the
   screen says so in orange instead of running a timer over silence.
+- **Android companion (app-android/)** — the same role for a tablet or phone
+  on the table (Android 8+): meeting/note/diary recording through a
+  foreground service, a timer in the shade and on the lock screen with Stop
+  in the notification. Recordings go to a folder picked once through the
+  system picker, which the Mac must see through Syncthing or any sync tool
+  (on the Mac it is the import folder); an on-device queue re-sends on every
+  launch and after every stop. The format is 16 kHz mono 16-bit WAV — what
+  recognition on the Mac needs, and a file killed by the system stays
+  readable (the header is refreshed while recording), unlike an MPEG-4
+  container without a proper stop. Meetings and Tasks tabs read the graph
+  folder; ticking writes `[x]` into the markdown. Build: Gradle in
+  app-android/.
 - **Processing survives a stalled model** — Ollama can hang while looking
   healthy from outside: the model list answers instantly while the actual
   request waits for the timeout. A cheap generation probe runs before the
@@ -570,8 +638,9 @@ it signals degradation, it does not break the loop.
   A state from a newer pipeline also survives — it used to break decoding of
   the whole status, and the meeting vanished from the window entirely.
 - **The Meetings section (former "Recent meetings" window)** — twenty meetings from the last two
-  weeks: state as a colored dot, "Open" and "Transcript" on every row, a
-  "Retry" button on failed ones. A ready meeting's row shows its duration
+  weeks: state as a colored dot, reading-depth chips on every card (see the
+  card feed below), and for a meeting that is not ready — "Transcript" and
+  "Retry processing" in place of the card. A ready meeting's row shows its duration
   (from transcript timecodes, cached — the file is re-read only when the
   meeting was re-processed). While one meeting is being retried, the
   "working" indicator shows only on that row: ready meetings are not
@@ -590,18 +659,20 @@ it signals degradation, it does not break the loop.
 - **Recording from the Today screen** — a capsule button in the spirit of the sufler one: start/stop with a timer and a live waveform, an honest ⌘⇧␣ shortcut and a readiness line fed by the real setup checks (Python, microphone, system audio, Ollama, models, graph) with the passed-checks count and the first problem as a chip. Yesterday's ready result no longer hides the next-recording button: “Open result” and the capsule live side by side. During processing the capsule is deliberately absent: recording and the pipeline compete for local models. First launch routes to onboarding, not straight to recording.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
-  decisions and action items. By default the card shows the **detailed
-  minutes**: discussion topics, full wording of the decisions, action
-  items with deadlines, open questions and risks — everything that
-  previously required a trip to Obsidian. The "Detailed / Brief" switch
-  brings back the Summary digest, and a protocol written while the
-  meeting was still running is honestly marked as a draft. The model
+  decisions and action items. A segment of four reading depths — Summary ·
+  Minutes · Analysis · Transcript — reads each layer in place, and the
+  chosen depth is remembered between launches. Minutes show discussion
+  topics, full wording of the decisions, action items with deadlines, open
+  questions and risks — everything that previously required a trip to
+  Obsidian; a protocol written while the meeting was still running is
+  honestly marked "draft: the meeting was still running". The model
   writes minutes in several markup styles (`- Topics:`, `**Topics:**`,
   `## Discussion topics`); the parser understands all of them.
-  "Copy" puts the summary,
-  the tasks, or everything into the clipboard — into a mail without
-  opening a single file. "Open", "Transcript" and "Obsidian" buttons are
-  right there. "Meeting ready" no longer means "go figure out a markdown
+  One "Open in editor" button opens the file of the depth on screen (for the
+  transcript it hints: fix it, then "Rebuild result"); "More" holds
+  Obsidian, the participant protocol, "Copy summary", "Copy tasks", "Copy
+  everything" and "Rebuild result" — into a mail without opening a single
+  file. "Meeting ready" no longer means "go figure out a markdown
   file". When a cloud review ran for the meeting, the card honestly shows
   its outcome from the log: "N graph edits", with an unsaved review file
   highlighted — before, the review worked invisibly and its edits were
@@ -673,7 +744,8 @@ it signals degradation, it does not break the loop.
   action items and the last meeting's card. Everything gathers in one
   window a minute before the call, no tour across four windows.
 - **One meeting workspace** — the macOS app now has one main window with
-  Today, Meeting, Meetings, Tasks and Memory in the sidebar. Today follows
+  Today, Meeting, Meetings, External recording, Tasks and Memory in the
+  sidebar. Today follows
   the lifecycle from the next calendar event through recording and processing
   to the ready result. The meeting library keeps the list and card side by
   side, and a search hit opens that card instead of a raw Markdown file.
@@ -706,7 +778,7 @@ it signals degradation, it does not break the loop.
   "memory off" when the graph toggle was off for that answer, and a "⚠ weak
   graph matches" chip instead of chips when the search itself flagged low
   confidence (no invented sources). The header carries a live "Ollama
-  responds · 0 network requests" chip that turns into a warning when the
+  responding · 0 network calls" chip that turns into a warning when the
   local runtime is silent. On windows ≥760 pt a right column "What memory
   knows" shows meeting/node/dossier counts and the freshest cores with a
   status line each — counted from the graph on disk, refreshed at most once
@@ -729,12 +801,21 @@ it signals degradation, it does not break the loop.
   never reach the disk, keeping the "nothing voice-derived on disk"
   promise). Enabling the marking is a separate decision on top of field
   data from real meetings. Phrase buffers live only in process memory.
-- **Graph memory has one client** (24.08, overhaul batch D-П3) — the
-  daemon's three hand-rolled POSTs to the brain server are merged into
-  src/brain.py: one request body, the project-graph folder resolved in
-  one place; timeouts and degradation stay with the loops (⚡ 2.5 s,
-  deja-vu 8 s, deep 6 s). The owner's question in the audit label is no
-  longer cut at 120 chars — the cap is 400 (№95).
+- **Graph memory lives in the daemon** (September, №250) — the daemon used
+  to ask a separate memory server (:8100) and, without it, fell back to
+  graph nodes by stems; measured on 16.09 the server answered in 2.6–22 s, so
+  it almost never fit the instant answer's budget. Now `src/brain.py` is a
+  facade over an in-process index of the project graph
+  (`src/charoite_graph/graph_search.py`): warmed up at meeting start in
+  seconds, a query costs tens of milliseconds of lexical search (stems,
+  BM25-lite, freshness, links) plus one bge-m3 vector of the query when
+  Ollama is free, fused with block vectors built outside recordings (after
+  a meeting and at night). Dossiers come first; the meeting archive and
+  transcript copies are not indexed, and what stayed outside is said. When
+  both signals are weak, the prompt says "almost nothing in the part that
+  was read" instead of inventing. Timeouts and degradation stay with the
+  loops (⚡ 2.5 s, deja-vu 8 s, deep 6 s). The owner's question in the audit
+  label is no longer cut at 120 chars — the cap is 400 (№95).
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
@@ -776,8 +857,10 @@ it signals degradation, it does not break the loop.
   wraps its whole iteration step in try (an exception before the inner try
   used to kill the thread forever: the Aug 24 meeting went without a single
   auto hint while the heartbeat looked alive), three failures in a row are
-  reported as a status; all eight holders of the hint lock (auto, manual, ⚡, minutes, thread, ⏮,
-  deep analysis, archive topic) acquire it with a waiting ceiling — a wedged
+  reported as a status; every holder of the hint lock (auto and manual
+  hints, ⚡, questions, minutes and their draft, the thread, ⏮, dialogue
+  markup, names, theses, archive topic) acquires it with a waiting ceiling —
+  background layers give up silently after a second — a wedged
   neighbour no longer freezes the rest forever, the person gets "the hinter
   is busy" instead of silence; the manual request's "yield" signal is
   cleared on timeout too, otherwise auto hints would forever yield to a
@@ -839,7 +922,8 @@ it signals degradation, it does not break the loop.
   archiver no longer rewrites it — the log says `kept` and how many lines the
   machine version differs by. The price: machine corrections from a review do
   not reach minutes someone already edited, and the summary of such a meeting
-  is rebuilt once, on its next archive pass, from the edited minutes. Check
+  is rebuilt once, on its next archive pass, from the edited minutes (a
+  ticked checkbox does not count: it does not make the summary stale). Check
   and edit the archive folder's `Минутки.md`; the copy in
   `Документация/Стенограммы встреч` is derived from it and overwritten on the
   next pass.
@@ -853,15 +937,41 @@ it signals degradation, it does not break the loop.
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
 - **Models sized to your Mac** — the first-run wizard reads the machine's
-  memory and offers three sets ("Full", "Balanced", "Light") with model names
-  and the recommended one marked; the chosen set is written to the config and
+  memory and offers four sets — "Full" (64 GB), "Precise" (32 GB), "Balanced"
+  (16 GB), "Light" (8 GB) — with model names, a note from the extraction
+  bench and the recommended one marked (the largest set that fits with room
+  for the system, STT and a call); the chosen set is written to the config and
   downloaded with one button. Presets used to live as a config comment and
   people had to find their own line — a silent mistake: an oversized model
   does not fail, it swaps, and the product merely feels slow.
+- **Three chat engines** — `llm.engine`: `ollama` (the default);
+  `mlx-server` — an OpenAI-compatible `mlx_lm.server` with a prefix cache, so
+  the live thread gets its prefill in 0.3 s instead of 30 s (measured on
+  14.08), one model per server (`llm.mlx_model`), embeddings stay on Ollama;
+  and `cloud` — the whole chat goes to a cloud OpenAI-compatible gateway, and
+  the laptop stops holding a large model. The cloud engine needs two keys at
+  once (`llm.engine: cloud` and `sufler.cloud_engine: true`, the Settings
+  toggle "Cloud chat instead of the local model"): an address without
+  permission does nothing, and neither does permission without an address.
+  The gateway key lives in a separate file (`llm.cloud_key_file`, mode 600),
+  not in the config; if the network drops, the local model answers
+  (`llm.cloud_fallback_local`). Speech recognition, diarization, NLI,
+  embeddings and search stay on the Mac with any engine, and
+  `CHAROITE_NO_CLOUD=1` turns this off along with everything cloud.
+- **Cloud effort by pace** — every headless `claude -p` call gets an explicit
+  effort level instead of the CLI's "auto" (or a global `max` from the
+  shell): `sufler.cloud_effort` for the post-meeting review (default
+  `medium` — on auto/high, 22 of 80 reviews between 28.08 and 08.09
+  hit the 30-minute ceiling and their graph edits were rolled back), `sufler.cloud_live_effort` for calls at the pace of
+  the conversation (default `low`: the thread, answers), and
+  `sufler.cloud_night_effort` for the nightly dossier and core reviews
+  (default `high`: a 600 s ceiling and no graph lock, so depth matters more).
+  An unknown word falls back to the default out loud.
 - **Python runtime inside the app** — Charoite.app ships a portable CPython
   with the runtime dependencies (346 MB; heavy optional STT presets are left
-  out). `git clone`, `venv` and `pip` disappear from the install: the terminal
-  is only needed for Ollama. Running from source is unchanged — the app uses
+  out). `git clone`, `venv` and `pip` disappear from the install, and Ollama
+  is installed with a button too (see "First run without a terminal"), so
+  the terminal is not needed at all. Running from source is unchanged — the app uses
   the embedded runtime when present and the neighbouring `.venv` otherwise.
 - **Setup without a terminal or YAML** — the first-run wizard asks for your
   name and the graph folder and writes them into the config itself (the folder
@@ -910,11 +1020,12 @@ it signals degradation, it does not break the loop.
   very cycle of creating and destroying the tap aggregate wedges CoreAudio
   on macOS 26.5: after a meeting the machine's speakers go silent until the
   audio subsystem is restarted. Disabled on 2026-08-07, the code is now gone
-  from the package — a reserve that mutes the machine is not a reserve. What
-  stays is the cleanup: aggregates left behind by those versions or by an
-  app crash are destroyed at launch and at quit, because a single orphan
-  hung CoreAudio for the whole machine. The fallback when ScreenCaptureKit
-  is unavailable remains BlackHole.
+  from the package — a reserve that mutes the machine is not a reserve. The
+  orphan-aggregate cleanup that outlived it for the 0.69–0.72 releases was
+  removed on 2026-09-06: anyone updating straight from 0.68 or older removes a
+  leftover `ai.charoite.systemaudio.*` device in Audio MIDI Setup or by
+  rebooting. The fallback when ScreenCaptureKit is unavailable remains
+  BlackHole.
 - **The second window renders like the first** — the sidebar column width is
   set explicitly, so windows of the same scene no longer diverge in layout:
   the second window used to open with a collapsed sidebar, section labels
@@ -946,6 +1057,19 @@ it signals degradation, it does not break the loop.
   Channel start-up is per-channel too: one failing source no longer leaves the
   meeting with no recording at all. Incident of Aug 6 — four recordings in a
   row, 31 seconds each.
+- **The transcript says where the audio is missing** — a channel that drops
+  out, comes back, leaves a gap or never returns is one structured event of
+  the audio hub, and its trace lands in three places at once: the sidecar
+  next to the transcript (`channel_events`), a line in the transcript's tail
+  and the same line in the thread on screen — which channel, from when to
+  when, and what the recording is left without (the lines are Russian, e.g.
+  «…дальше запись без собеседников» — "from here on without the other
+  side"). At stop a "📋 запись неполная" (recording incomplete) line sums up
+  the intervals without each channel. After six
+  episodes per channel only the summary goes on, the sidecar keeps every
+  event. Phone recordings bring their own cause the same way (see the iPhone
+  companion). A transcript that silently lacks half the conversation reads
+  like a quiet meeting; this one says what was not captured.
 
 - **Diagnostics respect privacy** — `doctor` asks privacy for the LLM
   address (honouring both the remote-address ban and the kill switch), and
@@ -954,16 +1078,36 @@ it signals degradation, it does not break the loop.
   now asks privacy in the same function that launches it; the AST guard proves
   that the gate controls that exact call, not an unrelated branch in the file.
 
-- **Import folder (watched)** — a repeat of an already-imported meeting is
+- **Import folder (watched)** — point the app at a folder (Settings →
+  Recording import, or `--scan` in the CLI): recordings dropped there become graph
+  meetings on their own; processed files move to `done/`, failed ones
+  stay visible. A repeat of an already-imported meeting is
   a success, not a failure (the file moves to `done/` instead of being
   rescanned every two minutes forever), and meetings renamed by the
-  pipeline to `<stamp>_Topic.md` count as repeats too. A recording with no
+  pipeline to `<stamp>_Topic.md` count as repeats too: the name and size of
+  the source file are kept next to the transcript (`transcript_origin` in
+  its sidecar), so a hand-edited header does not break the check. A recording with no
   speech saves its transcript and finishes immediately — a three-second
   scrap no longer drives the LLM pipeline across the whole backlog.
 - **Version number in plain sight** — Mac: at the bottom of the sidebar
   (“Charoite 0.70.1”); iPhone: at the bottom of the recording settings with
   the build number. The iPhone companion rides the same release train as
   the Mac (release-please bumps `app-ios/project.yml`).
+- **The menu-bar icon sums up health** — one verdict from four owners
+  (recording, processing, Ollama, the night) paints the only surface that is
+  always visible: a red triangle only when data is being lost in a live
+  meeting (capture refused, a dead pump), a yellow mark for what costs time
+  but not the recording (a processing failure — the source is kept, Ollama
+  not answering, a night that slept through its steps), the usual icon
+  otherwise. The status line in the menu reads the same verdict, and an
+  unknown state before the first probe is not reported as "running".
+- **Native macOS integration** — a running recording holds off idle sleep;
+  meetings are donated to the system Spotlight (locally, without an expiry
+  date, the domain rewritten whole so renamed or forgotten meetings do not
+  linger), and a hit opens the meeting card; `charoite://` links drive the
+  app from Shortcuts, Terminal and other apps: `record/start`, `record/stop`,
+  `record/toggle`, `meeting/<id>`, `tasks`, `today`. Any action brings the
+  window up — there is no silent recording.
 - **Voice Memos bridge** — recordings made with the stock iPhone Voice Memos
   app and synced through iCloud to this Mac land in the import folder by
   themselves: on every scan the bridge copies new `.m4a` files out of the
@@ -1011,10 +1155,6 @@ it signals degradation, it does not break the loop.
   this version get their days from the first sweep that sees them. The
   term is independent of `record_keep_days`: someone else's recording must
   not outlive what was asked for.
-  Point the app at a folder (Settings →
-  Import, or `--scan` in the CLI): recordings dropped there become graph
-  meetings on their own; processed files move to `done/`, failed ones
-  stay visible.
 - **Replacement dictionary** — STT mangles domain terms and names;
   `sufler.vocabulary` in the config fixes them declaratively
   (case-insensitive, whole words only) on live meetings, dictation,
@@ -1028,8 +1168,9 @@ it signals degradation, it does not break the loop.
   spoken» text; a thought about today's meeting gets a link to it —
   backlinks connect the spheres while the text stays in the diary.
   Personal entries never leak into work search.
-- **Voice note** — speak a thought → the model cleans it up, adds a title,
-  extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
+- **Voice note** (⌥⌘N) — speak a thought → the model cleans it up, adds a title,
+  extracts tasks → a file in the graph (`Заметки/`), and into the external
+  memory too when `sufler.brain` is on.
   The raw text is kept alongside ("As spoken").
 
 - **Chinese recognition without Whisper** — `stt.backend: sensevoice` runs
@@ -1040,7 +1181,8 @@ it signals degradation, it does not break the loop.
   measure with `scripts/stt_bench.py --compare` (synthetic speech — a floor,
   not a benchmark).
 - **Documents in your language** — `sufler.language: ru|en|zh` switches minutes,
-  summary, instant answers and graph node content; hints speak the language of
+  summary, instant answers and graph node content (names, statuses,
+  topics); hints speak the language of
   your role. The archive summary used to be the exception: it was written in
   Russian whatever the setting, so an English meeting got English minutes and a
   Russian digest on top of them. Reading is separate from writing: new documents
@@ -1050,12 +1192,15 @@ it signals degradation, it does not break the loop.
   an English meeting showed empty «Decisions» and «Action items» while the file
   had both.
 - **Night cycle in one click** — Settings installs the 04:15 launchd
-  job (core revision with backups, morning brief, memory bench);
+  job that runs the nightly loop above (core revision with backups,
+  dossiers, morning brief, memory bench; log in /tmp/charoite_nightly.log);
   the same button removes it.
-- **Calendar brief** (opt-in) — a Settings toggle: before your next
-  meeting the bar shows a button with its title, one click builds an
-  archive brief. Only the title and time of the nearest event are
-  read, locally.
+- **Calendar access** (opt-in) — one Settings toggle, "Brief and a nudge to
+  record": the calendar feeds the recording nudge, the Prep screen and the
+  day feed of the meeting library. Only event titles and times (and whether
+  anyone else is invited) are read, locally, and nothing is written. The
+  separate "Brief" button in the meeting bar is gone (Aug 16): the brief for
+  the next event lives on the Prep screen.
 - **Custom minutes template** — `sufler.minutes_template` in
   config.yaml: your own markdown skeleton instead of the default
   sections.
@@ -1083,7 +1228,10 @@ it signals degradation, it does not break the loop.
   list runs from the latest meeting to the earliest and every group
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and
-  used to float them to the top as if they were fresh.
+  used to float them to the top as if they were fresh. A line above the
+  list sums up "N overdue · N open · N stale · N done", and a second view,
+  "By due date", regroups the open items into Overdue, Next 7 days, Later
+  and No due date; a due date shows as a chip on its row.
 - **Action items go to participants only.** If the minutes assign a task to
   someone who was not in the meeting (merely mentioned), the line loses its
   checkbox and gets a «⚠ не участник» mark: it stays out of the Tasks window
@@ -1100,23 +1248,31 @@ it signals degradation, it does not break the loop.
   with a typing cursor; the chat model picker lists what Ollama
   actually has.
 - **Answer history** — past Q&A collapsed under the current answer,
-  surviving restarts (up to 50 entries on disk).
+  surviving restarts (the last 200 messages on disk, in a file only you can
+  read: the history quotes the graph).
 - **Archive questions and briefs** — search v2: Russian morphology
   stemming, IDF (rare query terms weigh more), query coverage, file
   freshness, graph distillates ranked above raw transcripts, result
   diversity (one meeting no longer fills every slot). Weak matches are
-  flagged "⚠ possibly not in the archive" — the assistant doesn't
+  flagged "⚠ weak graph matches" — the assistant doesn't
   synthesize from irrelevant fragments. Answer sources are clickable
-  (open in Obsidian). With the optional brain companion (:8100) a
-  bge-m3 semantic layer finds answers even without word overlap.
-  Meeting facts, voice notes and diary entries are written there only
-  with `sufler.brain: true` (off by default).
+  chips: a meeting opens its card in the library, a node or dossier
+  opens as a file. A bge-m3 semantic layer finds answers even without
+  word overlap: the app keeps its own vectors per file block through the
+  local Ollama and fuses them with the lexical ranking (RRF); without bge-m3
+  the search stays lexical. If an optional brain companion is running on
+  :8100, the app asks it first. Meeting facts, voice notes and diary entries
+  are written into that external memory only with `sufler.brain: true` (off
+  by default); forgetting and renaming a meeting reach it either way.
 - **Claude Code tools need a named data root** — the MCP server no longer
   guesses that the data lives next to the code. Registered without
   `CHAROITE_ROOT`, it starts, and every tool answers with a refusal plus the
   ready recipe: the `claude mcp add … -e CHAROITE_ROOT=<path to data>` command
   and a JSON block with `env` for other MCP clients. Nothing is read, no model
   is called and the graph update is not launched until the root is named.
+  The same door guards the other entry points (pipeline modules, meeting
+  import, dictation and notes, the Voice Memos bridge): started without `CHAROITE_ROOT` they exit
+  with code 5 and the same recipe instead of guessing where the data lives.
 
 ## Document format
 

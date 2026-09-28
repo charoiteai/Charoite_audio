@@ -3,7 +3,9 @@
 *[English](../MODELS.md) · [Русский](../ru/MODELS.md) · **中文***
 
 一切都在本地运行。以下是每个默认选择的依据:我们在 M1 Max(32 GB)上的
-基准测试,加上独立来源。每个选择都可以在配置中替换。
+基准测试,加上独立来源。每个选择都可以在配置中替换。标题中的 LLM 属于「完整」
+配置（64 GB）；内存较小的机器从下文按 RAM 划分的预设中取用自己的组合，配置
+模板则从 16 GB 组合起步。
 
 ## STT:GigaAM v3(默认)
 
@@ -11,15 +13,18 @@
 由 [Sber](https://github.com/salute-developers/GigaAM) 开发的俄语 ASR 模型,MIT 许可。
 
 - **速度**:3 秒的音频块在 M1 Max 上约 0.1–0.6 秒完成转写 — 实时逐字稿的
-  延迟主要由 STT 决定,这留出了充足余量。
+  延迟主要由 STT 决定,这留出了充足余量。刻意使用 CPU 执行提供程序：CoreML
+  提供程序在 GigaAM 上运行时会崩溃，而 CPU 可达约 28 倍实时（17.6 秒音频用
+  0.63 秒，2026-07-16 实测）。
 - **俄语质量**:在真实会议上明显比 whisper-large-v3-turbo 更准确 —
   短音频块上的幻觉更少,对领域术语和缩写更稳健。
 - **内置标点和大小写**(e2e 模型)— 这一点至关重要:句尾的 “?” 是触发
   即时回答的主要信号,并且逐字稿无需处理即可直接阅读。
-- 模型在首次运行时自动下载。
+- 模型在首次使用时从 Hugging Face 下载。在 `CHAROITE_NO_CLOUD` 下下载被拒绝：
+  缓存为空时 STT 会给出明确的错误，而不是在会议中途联网。
 
-配置中的替代选项:`whisper`(mlx,支持 100+ 种语言)和 `parakeet`
-(英语,速度极快),用于非俄语会议。
+配置中的替代选项（`stt.backend`）：`whisper`(mlx,支持 100+ 种语言)、`parakeet`
+(英语,速度极快)和 `sensevoice`（中文，见下文）。
 
 ## 主 LLM:qwen3.6:35b-mlx（同一 MoE，MLX 引擎）
 
@@ -86,8 +91,8 @@ completion、vision、tools、thinking。无需迁移 —— 只改 `llm.model` 
 **代价。** 冷启动翻倍：21 秒对 9 秒。长时间闲置后，会议中的第一条提示会来得更晚；
 之后模型会依据 `keep_alive` 常驻内存。
 
-**回滚**只需一行：把 `qwen3.6:35b-a3b` 放回 `llm.model` 与 `think_model`。
-原值已作为注释保留在旁边。
+**回滚**只是换个标签：把 `qwen3.6:35b-a3b` 写入 `llm.model` 与
+`sufler.think_model`（「完整」配置会把 MLX 标签写进这两个键）。
 
 **Muse Glimmer 30B**（Meta Superintelligence Labs 首个开放权重模型，Apache 2.0）
 不适合作为对话模型：15–16 tok/s，首个 token 需要 5 到 13 秒。原因在架构 ——
@@ -106,7 +111,7 @@ OpenAI 兼容的 `mlx_lm.server`（配置里 `llm.engine: mlx-server`）——
 保留为「对长文档连续提问」场景的配置选项，待 `mlx_lm.server` 获得
 严格 JSON 模式或 Ollama 获得前缀缓存后再测。
 
-## 测过，未采用：Qwen3.8-27B（2026-08-14 实测）
+## Qwen3.8-27B：不是默认，而是 32 GB 预设（2026-08-14 实测）
 
 Qwen3.8 家族首个开放的 dense 模型 — 混合注意力（64 层中 48 层为线性注意力）、
 原生多模态、内置 MTP 草稿头、262K 上下文、Apache 2.0；`qwen3.8:27b-mlx`
@@ -137,9 +142,10 @@ Qwen3.8 家族首个开放的 dense 模型 — 混合注意力（64 层中 48 �
 - 预填充目前也慢：约 95 tok/s，MoE 约 520 — 很可能部分归因于当前运行时
   对混合注意力实现尚不成熟。
 
-它仍可能的去处：4-bit 构建只有 16.1 GB，在 32 GB 机器上比 21 GB 的默认
-模型留出更多余量 — 是紧凑预设的候选，但在改动任何预设之前，先与
-full-attention 的 8–14B 模型比一轮（它们保留缓存优势）。当运行时学会
+它的去处：32 GB「精确」预设的主模型（自下文 8 月 19 日的基准起）。16.9 GB
+（按 Ollama 清单）在 32 GB 机器上留出了余地，而 20.4 GB 的 MoE 在那里会进入
+交换分区；它的慢体现在图谱抽取上——那是后台工作，会为正在进行的会议让路，
+而自动提示与脉络运行在轻量模型上（`sufler.quiet`，默认开启）。当运行时学会
 它的 MTP 草稿头（投机解码可能改写速度结论）、或 `mlx_lm` 学会缓存混合
 注意力状态时，重新测。
 
@@ -150,14 +156,22 @@ full-attention 的 8–14B 模型比一轮（它们保留缓存优势）。当�
 - **我们对比 gemma4:e4b 的基准测试**(2026 年 7 月,真实助手任务):
   问题分类更准确(e4b 答错了一个直接提问),要点生成 2.9 秒对 3.3 秒
   且没有客套开场白,内存 3.4 GB 对 9.6 GB — 与主模型并行时轻了近 3 倍。
-- 例外是**对话标注**(`markup_model`):那里要求逐字保留
-  原文,而 qwen3.5:4b 倾向于轻微润色;gemma 能保持文本原样。
+- 例外是**对话标注**(`markup_model`):那里要求逐字保留原文,而 qwen3.5:4b
+  倾向于轻微润色——校验会丢弃这样的回答。配置在这里放的是本机上本就常驻的
+  模型：32/64 GB 上是主模型，8/16 GB 上是轻量模型，因此那里标注触发得更少。
+  `gemma4:latest` 已从默认中移除：没有任何配置会下载它，这条回路对所有人都
+  悄无声息地缺席了（8 月 19 日评审）。
+- 要点和会议纪要草稿运行在 `sufler.think_model` 上：64 GB 配置是主模型，
+  更低的配置是轻量模型。
 - 内存非常有限时 — `qwen3.5:2b`(同家族的 edge 级模型)。
 
 ## 说话人分离:ERes2Net(3D-Speaker)
 
 说话人嵌入 — [ERes2Net](https://github.com/modelscope/3D-Speaker)
-(ONNX,512 维)。
+(ONNX,512 维)。不随包提供：由 `scripts/get_models.py --diar` 安装（默认
+`eres2net-base`，40 MB；可选 `eres2net-en` 27 MB 与 `eres2netv2` 71 MB；每个
+文件都会与内置的 sha256 核对）。实时分段跟踪器和会后处理还需要 pyannote 3.0
+分段模型（`--segmentation`，7 MB）。详见 [DIARIZATION.md](DIARIZATION.md)。
 
 - **我们在真实会议录音上的基准测试**,对比 CAM++ 和 TitaNet:ERes2Net
   区分相同/不同说话人的能力最强 — 同一说话人余弦相似度 0.29–0.8,
@@ -167,11 +181,61 @@ full-attention 的 8–14B 模型比一轮（它们保留缓存优势）。当�
   也约为 19%,且以录音中途标签互换著称 — 因此 Charoite 在实时说话人
   分离之外,还对完整录音做离线重跑(回声过滤、微片段合并、姓名分配)。
 
-## 必须设置 num_ctx: 8192
+## 必须显式设置 num_ctx
 
 部分 Ollama Modelfile 的默认上下文是 262144 — 如果不显式设置
-`num_ctx`,KV cache 会膨胀数 GB,生成速度下降数倍。Charoite 的每次
-调用都显式传入 `num_ctx: 8192`。
+`num_ctx`,KV cache 会膨胀数 GB,生成速度下降数倍。Charoite 对 Ollama 的每次
+调用都显式传入 `num_ctx`：实时回路与文档用 `llm.num_ctx`（8192），会后读取长
+逐字稿的图谱抽取与纪要回填用 16384。`mlx_lm.server` 则在服务启动时设定上下文。
+
+## 嵌入：bge-m3
+
+`bge-m3`（Ollama，常驻约 1.2 GB）把文本转成向量，供既视感、核心复核（tier3）、
+提示记忆的图谱搜索和应用内搜索使用。无论 `llm.engine` 是什么，它都留在 Ollama
+上——`mlx_lm.server` 不提供嵌入。`sufler.embed_model` 可以替换它，但阈值（核心
+复核的 0.55 预筛、既视感的余量）是按 bge-m3 的余弦分布调出来的。
+
+**输入上限：2048 个 token。** 模型声称支持 8192，但 Ollama 按运行器的物理批大小
+截断输入：2026-09-26 在 Ollama 0.34.4 上实测，更长的输入返回 HTTP 200，
+`prompt_eval_count` 为 2048，超出上限的唯一尾部不改变向量（余弦 1.0）。这相当于
+5–6 千字符的图谱文本；搜索块都在其内（工作图谱 80 个块中最长的为 1587 token）。
+自 0.87.0 起每个请求都带 `truncate: false`：过长的输入会被拒绝（HTTP 400），
+而不是被悄悄截断；嵌入入口会用截断方式重试这一批，并说明一次，按编号和长度
+指出该批中最长的文本（绝不写出内容）。
+
+请求分批发送——每次最多 64 段文本、72 000 字符：Ollama 0.34 对一次性发送的
+808 个核心（162 677 字符）返回 HTTP 400，而同样的文本按每批 100 个都能通过。
+
+## NLI：mDeBERTa-v3（可选）
+
+嵌入衡量「说的是不是同一件事」，NLI 衡量「表述的是不是同一个意思」——「预算已
+批准」和「预算未批准」对 bge-m3 来说几乎一样，对 NLI 来说是矛盾。
+`MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7`（ONNX，约 1.1 GB）
+基于 onnxruntime + tokenizers 运行，不需要 torch。它为三件事做裁判：剔除彼此
+重复的要点（双向蕴含，阈值 0.8）、核心复核的语义去重，以及决策门的零样本后备
+（见下文）。
+
+没有任何脚本会下载它。请把 `model.onnx`、`tokenizer.json` 和 `config.json`
+放进数据根目录下的 `models/nli/`，例如：
+`optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`。
+没有它时，要点不做语义去重，核心复核不会运行（会在自己的日志里说明原因）；
+其他一切照常。
+
+## 决策门（研究，仅影子模式）
+
+一句话值不值得为 ⚡ 唤醒模型？今天由结构检查决定（「?」或疑问词，然后是长度
+和重复），模型找不到问题时回答「请澄清」——这样的拒绝不会进入脉络，但模型的
+时间（以及开启云层时的额度）已经花掉了。决策模型（编码器加决策头，一次前向、
+不生成）能在几十毫秒内作答并给出置信度。
+
+`sufler.decision_gate_shadow: true`（默认关闭）会在每次 ⚡ 旁运行它，但它什么
+也不决定：判定写入 `logs/daemon.err.log`，与结果（已回答 / 拒绝 / 无回答）并排——
+标签、置信度、延迟，绝不写文本。后端按优先级：`models/decision/question_gate/`
+中训练好的决策头（`model.onnx`、`tokenizer.json`、带校准温度的 `labels.json`），
+否则基于 NLI 模型的零样本，否则关闭并写一行说明原因。`scripts/gate_bench.py`
+（`harvest`、`eval`、`shadow`）把这些行变成数字：门能省下多少空调用、会丢掉
+多少真正的问题。候选模型与计划见
+[research/decision-gate.md](../research/decision-gate.md)（俄文）。
 
 ## 英文会议
 
@@ -204,16 +268,24 @@ Swift 推理的 Core AI;说话人分离通过 ANE 管线。模型选择仍在配
 ## 按 RAM 划分的预设 — macOS
 
 实时提示和图谱 LLM 是吃内存的部分;STT(约 1 GB)和说话人分离
-(约 0.5 GB)恒定。数字为 Apple Silicon 上的工作集,全程
-`num_ctx: 8192`(必须 — 更大的上下文会重新加载模型并撑爆内存)。
+(约 0.5 GB)恒定。数字为 Apple Silicon 上的工作集，所有实时工作都用
+`num_ctx: 8192`（必须——更大的上下文会撑爆内存；只有会后的图谱抽取使用 16384）。
 
 | RAM | 主 LLM | 轻量 LLM | STT | 能得到什么 |
 |----|----|----|----|----|
-| **4 GB** | — | — | GigaAM | 不够运行本地 LLM。只运行 STT(实时逐字稿 + 保存会议纪要)。提示可以交给你自己另一台机器上的 Ollama——但逐字稿会发往那里，因此配置中必须显式写上 `llm.allow_remote: true`，且在 `CHAROITE_NO_CLOUD` 下会被拒绝（见 PRIVACY.zh.md）。 |
+| **4 GB** | — | — | GigaAM | 不够运行本地 LLM。只运行 STT(实时逐字稿 + 保存会议纪要)。提示可以交给你自己另一台机器上的 Ollama——但逐字稿会发往那里，因此配置中必须显式写上 `llm.allow_remote: true`，且在 `CHAROITE_NO_CLOUD` 下会被拒绝（见 [PRIVACY.md](PRIVACY.md)）。 |
 | **8 GB** | `qwen3.5:4b` (3.2 GB) | 同一模型 | GigaAM | 逐字稿、要点、会议纪要草稿、基础提示。一个模型兼任两个角色;无并行 Claude 层。图谱可用（见下方 8 月 19 日基准），但既视感与核心复核关闭：两者都会拉起 `bge-m3`，在系统旁再占 1.2 GB。 |
 | **16 GB** | `qwen3.5:4b` (3.2 GB) | 同一模型 | GigaAM | 完整实时循环:提示 + 要点 + 会议纪要并行，另加语义记忆（既视感与核心复核：`bge-m3`，+1.2 GB）。模型与 8 GB 相同——基准中它比 `gemma4:12b` 发现更多，而 12b 加上嵌入模型会在 16 GB 机器上顶到 17–19 GB。推荐的入门配置。 |
 | **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | GigaAM | 引用更准确（96%），代价是抽取慢三倍——而抽取是后台工作，如今还会为正在进行的会议让路。这里刻意不放 35B：20.4 GB 权重加上 STT、嵌入模型与系统，就是 32 GB 里的 27–30 GB，第一次长抽取即进入交换分区。 |
 | **64 GB+** | `qwen3.6:35b-mlx` (20.4 GB) | `qwen3.5:4b` | GigaAM | 日常配置：每场会议 42 条决定、39 个核心，中位数 57 秒。有余量运行可选的云端 Claude 层、更长的会议，以及离线重建逐字稿而不挤掉模型。 |
+
+经验法则:8 GB 以下只在本地保留 STT。`small_model` 始终与主模型并行
+运行,因此要同时为两者预留内存。
+
+应用的首次运行向导会读取本机内存，推荐留有余量的那一行，并整体应用：除
+`model` 和 `small_model` 外，还写入 `think_model`（64 GB 上为主模型，更低为
+轻量模型）、`markup_model`（32/64 GB 上为主模型，8/16 GB 上为轻量模型）、
+`deja_vu` 与 `tier3`（仅 8 GB 上关闭），并在每个配置上写 `graph: true`。
 
 **对话标注与轻量配置。** 在段落内部划分发言边界的回路要求逐字不改：校验会
 比对词序列，只要模型改动了任何一个字就丢弃该结果。4B 比 gemma 更常改词，
@@ -228,10 +300,11 @@ Swift 推理的 Core AI;说话人分离通过 ANE 管线。模型选择仍在配
 也就是说 4B 抽取图谱比 12B 更好，破坏 schema 的是具体模型而非参数量级。
 `gemma4:latest` 因同样的原因离开 16 GB 一行：更重（8.9 对 7.0 GB）而发现更少。
 
-经验法则:8 GB 以下只在本地保留 STT。`small_model` 始终与主模型并行
-运行,因此要同时为两者预留内存。
+## 按 RAM 划分的预设 — iOS / iPadOS（计划）
 
-## 按 RAM 划分的预设 — iOS / iPadOS
+今天手机上不运行任何模型：[iPhone](app-ios/README.md) 与
+[Android](app-android/README.md) 伴侣应用负责录音和送达音频，STT、说话人分离、
+LLM 与图谱都在 Mac 上运行。下表是设备端工作的计划，而不是已发布的功能。
 
 手机和平板装不下 30B 模型,所以分工不同:设备负责 STT 和轻量生成,
 更重的任务通过 REST API(`llm.base_url`)交给 Mac。iOS 还对单个应用
@@ -251,15 +324,15 @@ Mac 的模型。
 
 ## 云端模型（当该层开启时）
 
-云层默认完全关闭——哪个开关启用什么，见 [PRIVACY.zh.md](PRIVACY.md)。本节
+云层默认完全关闭——哪个开关启用什么，见 [PRIVACY.md](PRIVACY.md)。本节
 只谈模型选择。
 
 | 配置键 | 默认值 | 在哪里运行 |
 |----|----|----|
 | `cloud_model` | `claude-opus-5` | 会后复盘、每夜的核心与档案修订——不在对话速度下运行，因此值得用最强的模型 |
 | `cloud_live_model` | `claude-haiku-4-5` | 会议进行中回答问题：速度更重要 |
-| `cloud_hints_model` | `claude-haiku-4-5` | 提示润色：同理，但更频繁 |
-| `cloud_effort` | `medium` | 会后复盘的推理强度（`low`…`max`）。无此项时 headless `claude -p` 以 `high` 运行：按 80 份复盘日志（28.08–08.09），22 次在 34–47 处图谱修改上撞到 30 分钟上限并被隔离；`medium` 让复盘落在 45 分钟上限之内 |
+| `cloud_hints_model` | `claude-haiku-4-5` | 修订屏幕上的脉络（`cloud_hints`）：同理，但更频繁 |
+| `cloud_effort` | `medium` | 会后复盘的推理强度（`low`…`max` 或 `auto`）。无此项时 headless `claude -p` 以 `high` 运行（从带全局设置的 shell 启动则为 `max`）：按 80 份复盘日志（28.08–08.09），22 次在 34–47 处图谱修改上撞到 30 分钟上限并被隔离；`medium` 缩短运行，使复盘落在这 30 分钟之内。上限没有提高：下一场会议的工作进程等待图谱锁的时间也同样长 |
 | `cloud_live_effort` | `low` | 会中调用（对话线修正、问题回答，60–90 秒上限）：推理更短，回复更快 |
 | `cloud_night_effort` | `high` | 每夜档案与核心修订：600 秒上限且无图谱锁，深度优先于速度 |
 
@@ -267,8 +340,16 @@ Mac 的模型。
 测试失败。此前这些字面量散落在每个调用点，其中一个键（`cloud_model`）有两个
 不同的默认值：配置被精简后，会后复盘与夜间修订会走向不同的模型。
 
+上面这些键驱动的是 Claude CLI。第三个聊天引擎是另一回事：`llm.engine: cloud`
+把提示、要点、脉络和会议纪要发往兼容 OpenAI 的网关，而不是本地模型。它的
+模型是 `llm.cloud_model`，没有默认值——缺了它引擎不会启动（示例配置写的是
+`deepseek-chat`），而且还需要 `sufler.cloud_engine: true`。无论哪个引擎，嵌入、
+NLI 与 STT 都留在本地；网关不可达时由本地模型作答（`llm.cloud_fallback_local`）。
+
 ## 更换模型
 
 所有设置都在 `config/config.yaml` 中:`stt.backend`、`llm.model`、
-`llm.small_model`;嵌入模型就是文件 `models/diar/embedding.onnx`。
-16 GB 的机器建议从 `llm.model: qwen3.5:4b`（见上文配置表）和更轻的 STT 后端开始。
+`llm.small_model`、`sufler.think_model`、`sufler.markup_model`、
+`sufler.embed_model`；说话人嵌入模型就是文件 `models/diar/embedding.onnx`，
+NLI 模型是文件夹 `models/nli/`。更换 LLM 组合最简单的方式是在首次运行向导里
+选一个配置（见上表）：它一步写入模型以及配套的开关。

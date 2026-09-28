@@ -4,45 +4,87 @@
 
 Charoite uses two diarization passes:
 
-1. **Live** (during the meeting): speaker-embedding model labels chunks as
-   «Собеседник 1/2/…» in real time. Requires an ERes2Net embedding model in
-   ONNX format at `models/diar/embedding.onnx` (512-dim output, 16 kHz input).
-   One command installs it:
+1. **Live** (during the meeting): speakers in both channels — the system
+   audio of a call and the microphone of a room — get labels
+   «Собеседник 1/2/…» in real time. Two models, neither bundled:
+
+   - the ERes2Net speaker-embedding model in ONNX format at
+     `models/diar/embedding.onnx` (512-dim output, 16 kHz input) — without it
+     there are no per-voice labels at all;
+   - the pyannote 3.0 segmentation model at `models/diar/segmentation.onnx` —
+     it finds utterance boundaries before voices are compared. Without it the
+     live tracker falls back to a simplified mode that compares whole
+     three-second chunks and confuses voices at utterance boundaries (the
+     status line says so and names the command; DER below).
 
    **Easiest: the "Tell speakers apart" button in the app's first-run
-   wizard.** The same thing from the terminal is below.
+   wizard** — it installs the embedding model. The segmentation model is one
+   more command:
 
    ```bash
-   .venv/bin/python scripts/get_models.py --diar          # default model
-   .venv/bin/python scripts/get_models.py --diar --list   # what else is available
+   .venv/bin/python scripts/get_models.py --diar          # embedding model (default)
+   .venv/bin/python scripts/get_models.py --segmentation  # segmentation model
+   .venv/bin/python scripts/get_models.py --list          # what else is available
    .venv/bin/python scripts/get_models.py --diar --check  # verify what is installed
    ```
 
-   The script prints the URL before connecting, verifies that what arrived is
-   really ONNX and not truncated, and puts the file where the daemon looks for
-   it. Models come from the [3D-Speaker project](https://github.com/modelscope/3D-Speaker)
-   (Apache-2.0; ERes2Net works well for Russian and English), with ONNX mirrors
-   assembled for sherpa-onnx. Your own link: `--url`.
+   The default embedding model is `eres2net-base` (40 MB, trained on 200k
+   speakers — the steadiest on mixed meetings); `--model eres2net-en`
+   (27 MB, lighter, trained on English) and `--model eres2netv2` (71 MB, more
+   accurate on similar voices, slower) are the alternatives. The script prints
+   the URL before connecting, checks the file against a sha256 pinned in the
+   script, verifies that it is really ONNX and not truncated, resumes an
+   interrupted download on the next run, and puts the file where the daemon
+   looks for it. Embedding models come from the
+   [3D-Speaker project](https://github.com/modelscope/3D-Speaker) (Apache-2.0;
+   ERes2Net works well for Russian and English), segmentation from
+   [pyannote](https://github.com/pyannote/pyannote-audio), with ONNX builds
+   assembled for sherpa-onnx. Your own link: `--url` (no checksum then).
 
-   This is the only place in the product besides the optional cloud layer that
-   reaches the network: only when you run it, once, offline afterwards.
-   `--check` opens no connections at all.
+   The script reaches the network only when you run it, once; the models work
+   offline afterwards, and `--check` opens no connections at all. Besides the
+   optional cloud layer, the product's only other network traffic is the
+   version check and the first-run STT download — see [PRIVACY.md](../PRIVACY.md).
+
+   When STT falls behind the audio (a backlog of two chunks, at least six
+   seconds), live diarization yields: chunks go to recognition under the
+   channel label until the queue drops below half a chunk. The recording on
+   disk is not affected, and the after-meeting pass labels those minutes again.
 2. **Offline re-pass** (after Stop): the full recording is re-diarized per
-   channel, echo between mic and system audio is filtered, micro-fragments are
-   merged into neighbours, and names heard in the conversation are assigned by
-   the local LLM. The result replaces the live draft transcript.
+   channel with sherpa-onnx (the same two models). The system channel is
+   clustered with the number of voices the live session heard as a hint;
+   microphone segments that overlap system-channel speech by more than half are
+   dropped as echo; clusters with too little speech (under 25 s on the system
+   channel, under 10 s on the microphone) go to the large cluster nearest in
+   time, so no text is lost; names heard in the conversation are assigned by
+   the local LLM behind trust guards (see "Names" below). The result replaces
+   the live draft transcript.
+   Without the recordings, or when neither channel yields segments, the live
+   transcript stays as it is.
 
 Without `models/diar/embedding.onnx` Charoite still works: channel labels
 (you vs. the other side) are used instead of per-voice labels.
 
 Tuning (`config/config.yaml`):
 
-- `live_diarize_threshold` (default 0.45) — cosine similarity to attach a chunk
-  to a known voice; raise it if different people get merged, lower it if one
-  person keeps splitting into two.
+- `live_diarize` (default `true`) — the live pass on or off.
+- `live_diarize_threshold` (default 0.45) — applies to the simplified mode
+  only: cosine similarity to attach a chunk to a known voice; raise it if
+  different people get merged, lower it if one person keeps splitting into two.
+  The full mode uses its own measured threshold (0.62: 0.55 merged different
+  people, 0.7 spawned extra voices).
 
 
 ## Which voice is the owner
+
+The owner's label comes from one rule shared by the capture, the daemon and
+the rebuild (`src/channel_labels.py`, since 2026-08-30): the microphone
+channel is labelled with `sufler.user_name`, or «Я» when the name is empty. A
+name that looks like a neutral label («Собеседник 2», «Собеседник») cannot
+sign anything — paragraphs are merged by label, and the rebuild picks the
+audio track by it, so the other side's lines would be recognised from the
+microphone; the owner's signature is then switched off and the app says so at
+start. Before, three copies of this rule could disagree within one meeting.
 
 The live transcript and the final one answer this differently, on purpose.
 
@@ -66,6 +108,20 @@ Three caveats, each paid for with a bug:
   not bundled, and previously, without it, the flag was never raised — so on a
   remote meeting the rule never applied at all.
 
+Echo is also compared by text: a microphone phrase that shares 80% of its
+words (five distinct words at least) with a system-channel phrase within
+eight seconds counts as a match. For now these matches only feed the
+once-a-minute `owner-pulse` line in the err log (call flag, counters, echoed
+voices, the current verdict) and do not change the signature: every guard
+tried against false marking had a hole on one side, so switching it on waits
+for field data.
+
+The ⚡ gate leans on the same bookkeeping: a question from the microphone
+triggers an instant answer only for a voice that is positively not the owner
+(owners already known, this voice not among them); until the owner is
+established the microphone triggers nothing, so the owner's own first
+questions do not get answered back.
+
 **An in-person meeting looks exactly like "no call"**: everyone sits in one
 room and lands in the microphone, the system channel stays silent. That is why
 the rule only engages when there is speech on the system channel.
@@ -86,8 +142,11 @@ tell people apart, not guess names.
 
 ```bash
 .venv/bin/python scripts/diar_bench.py --make    # synthetic dialogue + ground truth
-.venv/bin/python scripts/diar_bench.py           # measure both engines
+.venv/bin/python scripts/diar_bench.py           # measure both engines (live, sherpa)
 ```
+
+`--engine live-split|live-legacy|all` picks another mode, `--overlap` slices
+the audio the way production does. Measuring needs the two models above.
 
 There are no meeting recordings in this repository and there cannot be — those
 are other people's conversations. The fixture is built locally with the macOS
@@ -101,8 +160,8 @@ Measured on 2026-07-30 (32 s, 4 voices):
 
 | Engine | DER | Voices found |
 |---|---|---|
-| live mode today (segmentation + per-utterance embeddings) | **0.246** | 4 of 4 |
-| previous chunk tracker (`--engine live-legacy`) | 0.725 | 1 of 4 |
+| segment tracker (`--engine live`: segmentation + per-utterance embeddings) | **0.246** | 4 of 4 |
+| previous chunk tracker (`--engine live-legacy`; today's simplified mode without the segmentation model) | 0.725 | 1 of 4 |
 | after-meeting pass (`--engine sherpa`) | 0.296 | 3 of 4 |
 | same, told there are 4 speakers | 0.248 | 4 of 4 |
 
@@ -241,7 +300,9 @@ track (File → Import → Labels) to listen where they disagree.
 Segmentation often splits one person's speech across several clusters —
 especially in a room recorded by a single microphone: someone turns away,
 leans back, drops their voice. The merge step compares average cluster
-embeddings by cosine and joins the close ones.
+embeddings by cosine and joins the close ones. It runs when clustering picks
+the number of voices itself: always on the microphone channel, and on the
+system channel when the live session gave no usable hint.
 
 On Aug 14 the threshold was measured on a real recording: 65 minutes, one
 microphone, three speakers. Pairwise similarity split cleanly:
@@ -281,3 +342,35 @@ remarks, voice unidentified".
 What the merge never does: it never joins two speakers who both cleared the
 speech minimum, however similar they sound, and never attaches a shard that
 resembles nobody present. An extra label is honester than a wrong author.
+
+## Names: when a label gets one
+
+A name replaces «Собеседник N» retroactively across the whole meeting, and the
+minutes and the graph inherit it, so a wrong name costs more than a missing
+one. The live naming and the after-meeting pass go through the same guards
+(`src/speaker_names.py`; the rebuild uses them since 2026-09-13):
+
+- **The owner's name never goes to someone else.** It is compared by the words
+  of `user_name`, so a first name alone is recognised; in the final transcript
+  the owner's label never inherits a name either.
+- **A name nobody said is invented** and is dropped. It counts as heard when
+  it occurs as a whole word, or in the vocative or instrumental form
+  («Тань» → «Таня», «Колей» → «Коля»).
+- **A name heard only in the label's own lines**, without an introduction
+  («это…», «меня зовут…»), is the speaker addressing someone else.
+- **Case forms are brought to known people of the graph.** A vocative is
+  reversed exactly («Коль» → «Коля») and only when it matches one known
+  person; otherwise a four-letter prefix does it («Полин» → «Полина»). A stop
+  list keeps «Влад» from turning into «Влада».
+- **The voice vetoes a clear contradiction.** The median pitch of the label's
+  speech (`src/voice_pitch.py`) rejects a confidently female name for a
+  confidently low voice and the reverse; between roughly 145 and 190 Hz it
+  decides nothing. The pitch lives in the meeting's memory and is never
+  written to the transcript, the graph or any document.
+
+The graph adds two rules of its own (see [FEATURES.md](FEATURES.md)): a vocative
+does not create a second person node, and a person who never spoke and is
+mentioned at most once — a name called out in the background of a recording —
+does not become a meeting participant: the note keeps the name as a line
+«фон записи, не участник (узел не создан)» — background of the recording, not
+a participant, no node — so a wrong call is visible and fixable by hand.
