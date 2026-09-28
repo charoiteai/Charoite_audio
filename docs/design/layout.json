@@ -48,6 +48,7 @@
       "stt_runtime",
       "diarize",
       "diarize_live",
+      "diarize_nemotron",
       "owner_voice",
       "voice_pitch",
       "channel_labels",
