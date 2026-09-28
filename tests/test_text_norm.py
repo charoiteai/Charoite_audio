@@ -51,3 +51,19 @@ def test_старые_имена_это_те_же_функции():
     нормализация на пакет, а не три копии тела."""
     assert graph_nodes.norm is text_norm.norm
     assert graph_search.norm is text_norm.fold
+
+
+def test_norm_не_трогает_unicode_без_нужды(monkeypatch):
+    """Горячий путь: `norm` зовут на каждое слово индекса. ASCII не проверяется на форму
+    вовсе, собранная (NFC) строка не пересобирается; пересборка — только у разложенной."""
+    calls = []
+    real_is, real_norm = unicodedata.is_normalized, unicodedata.normalize
+    monkeypatch.setattr(unicodedata, "is_normalized", lambda f, s: (calls.append("проверка"), real_is(f, s))[1])
+    monkeypatch.setattr(unicodedata, "normalize", lambda f, s: (calls.append("сборка"), real_norm(f, s))[1])
+    text_norm.norm("Plain ASCII")
+    assert calls == []
+    text_norm.norm("Ёлки")
+    assert calls == ["проверка"]
+    calls.clear()
+    text_norm.norm(real_norm("NFD", "Ёлки"))
+    assert calls == ["проверка", "сборка"]

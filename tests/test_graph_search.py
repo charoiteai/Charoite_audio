@@ -1405,6 +1405,41 @@ def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
     assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
 
 
+def _hop_order(tmp_path, targets: dict[str, int]) -> list[str]:
+    """Узел «Сводка квартала» ссылается на каждую цель; возраст цели — в днях (mtime).
+    Запрос — имя узла: других игл нет, покрытие у всех целей полное, и порядок
+    переходов решают свежесть и демпфер сырья. -> пути целей в порядке переходов."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    links = "".join(f"- [[{pathlib.PurePosixPath(rel).stem}]]\n" for rel in targets)
+    (g / "Ядра" / "Сводка квартала.md").write_text(f"# Сводка квартала\nИтоги.\n\n## Связи\n{links}", encoding="utf-8")
+    now = time.time()
+    for rel, days in targets.items():
+        p = g / rel
+        p.write_text(f"# {p.stem}\nтекст цели {p.stem}\n", encoding="utf-8")
+        os.utime(p, (now - days * 86400, now - days * 86400))
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("сводка квартала", limit=4)
+    hops = [b.split("\n")[0][2:] for b in r.blocks if "↳ по ссылке из" in b]
+    return [h for h in hops if h in targets]
+
+
+def test_hops_rank_fresher_notes_first(tmp_path):
+    """Свежесть в счёте перехода — множитель: при полном покрытии заметка сегодняшняя
+    идёт раньше заметки годовой давности, хотя по имени та позже в алфавите."""
+    order = _hop_order(tmp_path, {"Документация/Итоги А.md": 0, "Документация/Итоги Я.md": 400})
+    assert order == ["Документация/Итоги А.md", "Документация/Итоги Я.md"], order
+
+
+def test_hops_dampen_raw_transcripts(tmp_path):
+    """Сырьё по схеме в переходе приглушено тем же множителем, что в выдаче: при равных
+    свежести и покрытии дистиллят идёт раньше стенограммы, хотя по имени она позже."""
+    order = _hop_order(tmp_path, {"Документация/Итоги.md": 0, "Документация/Протокол_стенограмма.md": 0})
+    assert order == ["Документация/Итоги.md", "Документация/Протокол_стенограмма.md"], order
+
+
 def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
     """Ответ не судит о том, чего не читал.
 

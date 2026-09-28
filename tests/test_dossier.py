@@ -1,6 +1,7 @@
 """Досье-слой: кластеризация, инкрементальность, поиск по индексу."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import sys
@@ -395,3 +396,28 @@ def test_пересборка_без_копии_не_перезаписывае�
     assert r["собрано"] == 0 and r["отказы"] == 1
     assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"
+
+
+def _nightly_dossier():
+    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "nightly_dossier.py"
+    spec = importlib.util.spec_from_file_location("nightly_dossier", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_ночное_досье_find_ищет_в_папке_досье_схемы(tmp_path, monkeypatch, capsys):
+    """`--find` отвечает по индексу в папке досье схемы Чароита: тема находится по ключу,
+    печатается с файлом; запрос мимо — «досье не найдено»."""
+    graph = tmp_path / "г"
+    dossier.write_index(graph / CHAROITE.dossier_dir, [{
+        "тема": "Платежи", "источников": 5, "собрано": "2026-08-03", "ключи": ["платежи", "шлюз"],
+        "файл": f"{CHAROITE.dossier_dir}/Платежи.md"}])
+    nd = _nightly_dossier()
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "платежи"])
+    assert nd.main() == 0
+    out = capsys.readouterr().out
+    assert "Платежи" in out and f"{CHAROITE.dossier_dir}/Платежи.md" in out
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "погода"])
+    assert nd.main() == 0
+    assert "досье не найдено" in capsys.readouterr().out

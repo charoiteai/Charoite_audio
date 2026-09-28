@@ -545,3 +545,45 @@ def test_полноширинные_имена_папок_сворачивают
     idx = graph_nodes.NodeIndex(g, schema=CHAROITE)
     idx.refresh()
     assert {n.name for n in idx._nodes.values()} == {"Platform"}
+
+
+# ---------------------------------------------------------------- выдача: демпфер и фрагмент
+
+def test_демпфер_сырья_приглушает_но_не_гасит():
+    """Сырьё по схеме — ниже дистиллята при равной релевантности, но в выдаче остаётся:
+    множитель строго между нулём и единицей; не-сырьё — без множителя."""
+    raw = gs.raw_dampener("Встречи/2026-08-01_стенограмма.md", CHAROITE)
+    assert 0.0 < raw < 1.0
+    assert gs.raw_dampener("Встречи/2026-08-01.md", CHAROITE) == 1.0
+    assert gs.raw_dampener("Встречи/2026-08-01_стенограмма.md", PLAIN) == 1.0, "у PLAIN сырья нет"
+
+
+def _doc(search: gs.GraphSearch, rel: str) -> gs.Doc:
+    return next(d for d in search._gen.docs.values() if d.rel == rel)
+
+
+def test_фрагмент_без_шапки_и_шире_у_дистиллята(tmp_path):
+    """Одно правило фрагмента на выдачу и переход: тело без YAML-шапки, у дистиллята окно
+    в полтора раза шире, чем у сырья того же текста."""
+    g = tmp_path / "г"
+    _write(g, "Документация/Коротко.md", "---\ntags: [СЕКРЕТ_ШАПКИ]\n---\nплатёжный шлюз запущен\n")
+    long = "вступление " * 300 + "платёжный шлюз запущен в пилот " + "хвост " * 300
+    _write(g, "Документация/Итоги.md", long)
+    _write(g, "Встречи/2026-08-01_стенограмма.md", long)
+    search = gs.GraphSearch(g, embedder=_embedder(), data_dir=tmp_path / "данные", schema=CHAROITE)
+    search.refresh(force=True)
+    rx = re.compile("шлюз")
+    short = search._fragment(_doc(search, "Документация/Коротко.md"), rx, 200, ["шлюз"])
+    assert "шлюз" in short and "СЕКРЕТ_ШАПКИ" not in short and "tags" not in short
+    dense = search._fragment(_doc(search, "Документация/Итоги.md"), rx, 200, ["шлюз"])
+    plain = search._fragment(_doc(search, "Встречи/2026-08-01_стенограмма.md"), rx, 200, ["шлюз"])
+    assert "шлюз" in dense and "шлюз" in plain
+    assert len(dense) > len(plain) * 1.2, (len(dense), len(plain))
+
+
+def test_дайджест_узла_без_истории_режет_первую_строку():
+    """Узел без статуса и истории отдаёт первую содержательную строку описания — не
+    длиннее 120 знаков: дайджест читают на встрече, простыня туда не помещается."""
+    text = "# Платформа\n" + "длинное описание платформы " * 20 + "\n"
+    lines = graph_nodes._digest(text, "2026", schema=CHAROITE)
+    assert len(lines) == 1 and len(lines[0]) == 120 and lines[0].startswith("длинное описание")

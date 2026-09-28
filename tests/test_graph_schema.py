@@ -186,14 +186,23 @@ def test_форма_поля_читается_вычисленной_а_не_т�
     (tuple[int, ...], False),
     (tuple[str], False),
     (tuple[str, str], False),
-], ids=["typing.Tuple", "кортеж-чисел", "кортеж-из-одного", "пара"])
+    (typing.Optional[str], True),
+    (int | None, False),
+    (str | int, False),
+], ids=["typing.Tuple", "кортеж-чисел", "кортеж-из-одного", "пара", "typing.Optional", "число-или-нет",
+        "строка-или-число"])
 def test_форма_имён_это_только_кортеж_строк_любой_длины(форма, принята):
-    """«Кортеж имён» — ровно `tuple[str, ...]` в любой записи: кортеж чисел или
-    кортеж фиксированной длины — другая форма, её не нормализуют как имена, а
-    отвергают как необъявленную (мутатор по #654)."""
+    """«Кортеж имён» — ровно `tuple[str, ...]` в любой записи, «имя или роли нет» —
+    ровно `str | None`: кортеж чисел, кортеж фиксированной длины, `int | None` и
+    `str | int` — другие формы, их отвергают как необъявленные (мутатор по #654 и
+    PR B №422)."""
+    optional = typing.get_origin(форма) is not tuple
     Своя = dataclasses.make_dataclass(
-        "Своя", [("ещё", форма, dataclasses.field(default=()))], bases=(GraphSchema,), frozen=True)
-    if принята:
+        "Своя", [("ещё", форма, dataclasses.field(default=None if optional else ()))],
+        bases=(GraphSchema,), frozen=True)
+    if принята and optional:
+        assert Своя(**_kwargs()).ещё is None and Своя(**_kwargs(), ещё="a").ещё == "a"
+    elif принята:
         assert Своя(**_kwargs(), ещё=["a"]).ещё == ("a",)
     else:
         with pytest.raises(TypeError, match="ещё"):

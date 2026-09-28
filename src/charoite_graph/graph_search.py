@@ -1180,8 +1180,7 @@ class GraphSearch:
             # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
             # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
             have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()}
-        return [d.path for d in gen.primary
-                if have.get(d.path, (None, -1)) != (d.mtime, self._expected_blocks(d))]
+        return [d.path for d in gen.primary if have.get(d.path) != (d.mtime, self._expected_blocks(d))]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1399,7 +1398,7 @@ class GraphSearch:
         shown: list[str] = []
         for rel in picked:
             d = by_rel[rel]
-            frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel, self.schema) == 1.0)
+            frag = self._fragment(d, rx, snippet_chars, rare_first or keys)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
@@ -1442,6 +1441,12 @@ class GraphSearch:
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
+    def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
+        """Фрагмент документа для выдачи и для перехода — одно правило на оба места:
+        текст без YAML-шапки, у дистиллята окно шире (`snippet(dense=…)`), у сырья
+        по схеме — обычное."""
+        return _frag_or_head(d.body or d.text, rx, chars, rare, dense=not self.schema.is_raw(d.rel))
+
     def _hops(self, shown: list[str], by_rel: dict[str, Doc], catalog: LinkCatalog, keys: list[str],
               rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
@@ -1483,7 +1488,7 @@ class GraphSearch:
                         cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel, self.schema), d, matched))
                 cands.sort(key=lambda x: (x[0], x[1].rel), reverse=True)
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
-                    frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel, self.schema) == 1.0)
+                    frag = self._fragment(d, rx, snippet_chars, rare_first)
                     seen.add(d.rel)
                     out.append(f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}")
                     if len(out) >= limit:
