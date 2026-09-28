@@ -443,6 +443,7 @@ def test_a_success_without_segments_is_a_refusal(payload, monkeypatch, tmp_path)
     ([(0.0, 1110.0, 0)], True),                          # один отрезок на 92,5 % записи
     ([(30.0, 1110.0, 0)], True),                         # ровно 90 % — тоже
     ([(0.0, 1070.0, 0)], False),                         # 89 % — ещё правдоподобно
+    ([(600.0, 1100.0, 0)], False),                       # поздний отрезок: считается длина, не конец
     ([(0.0, 600.0, 0), (601.0, 1190.0, 0)], False),      # звонок один на один: много отрезков
 ])
 def test_one_segment_over_the_whole_recording_is_a_refusal(payload, degenerate, monkeypatch, tmp_path):
