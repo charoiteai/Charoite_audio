@@ -377,9 +377,10 @@ def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
         ie.resolve_root = lambda _file: pathlib.Path({str(tmp_path)!r})
         sys.exit(ie.main(["nemotron"]))
     """)
-    # Запускающий PYTHONUNBUFFERED не выставлял — ровно случай команды из доктора или доков; у
-    # долей мутатора она выставлена (mutate_check), и без очистки тест не отличал бы правку от её отсутствия.
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    # Окружение задаёт тест, а не раннер: белый список, а не «всё, кроме PYTHONUNBUFFERED». Доли мутатора
+    # ставят PYTHONUNBUFFERED=1 (mutate_check), и с ним тест не отличал правку от её отсутствия; любая
+    # другая переменная раннера, меняющая вывод, так же не просочится (круг 2 по коду №481).
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
     out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120, env=env)
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
