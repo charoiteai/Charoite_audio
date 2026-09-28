@@ -19,6 +19,7 @@ from charoite_graph import graph_names  # noqa: E402
 import graph_updater as g  # noqa: E402
 from charoite_graph.graph_nodes import NodeIndex  # noqa: E402
 from speaker_names import nominative_candidates, resolve_vocative  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 
 
 def _graph(tmp: pathlib.Path) -> pathlib.Path:
@@ -117,7 +118,7 @@ def test_instrumental_case_resolves_to_a_known_person_only_when_unique():
 def test_node_index_skips_placeholder_nodes(tmp_path):
     graph = _graph(tmp_path)
     (graph / "Люди" / "Собеседник 3.md").write_text("# Собеседник 3\n", encoding="utf-8")
-    idx = NodeIndex(graph)
+    idx = NodeIndex(graph, schema=CHAROITE)
     idx.refresh()
     names = {n.name for n in idx._nodes.values()}
     assert "Петров Иван" in names and "Собеседник 3" not in names

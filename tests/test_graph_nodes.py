@@ -16,6 +16,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 from charoite_graph.graph_nodes import NodeIndex, stem  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 
 GOLDEN = json.loads(
     (REPO / "tests" / "stem_golden.json").read_text(encoding="utf-8"))
@@ -52,7 +53,7 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def test_multiword_name_matches_in_window(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("созвонимся с Иваном Мироненко по интеграции")
     assert [n.name for n in hits] == ["Иван Мироненко"]
@@ -60,14 +61,14 @@ def test_multiword_name_matches_in_window(tmp_path):
 
 def test_ivan_alone_does_not_match_ivanov(tmp_path):
     """Стемы, не подстроки: «Иван» не должен цеплять «Иванов»."""
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("Иван обещал перезвонить", strict=False)
     assert all(n.name != "Иванов" for n in hits)
 
 
 def test_single_word_strict_needs_two_lines(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     assert idx.lookup("обсуждали ретеншн партиций") == []
     hits = idx.lookup("обсуждали ретеншн партиций\nретеншн решили не менять")
@@ -75,7 +76,7 @@ def test_single_word_strict_needs_two_lines(tmp_path):
 
 
 def test_single_word_loose_matches_once(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("что там с ретеншном?", strict=False)
     assert [n.name for n in hits] == ["Ретеншн"]
@@ -83,7 +84,7 @@ def test_single_word_loose_matches_once(tmp_path):
 
 def test_known_speaker_person_matches_once(tmp_path):
     """Имя опознанного спикера — достаточное основание и в строгом режиме."""
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     assert idx.lookup("Мироненко за интеграцию") == []
     hits = idx.lookup("Мироненко за интеграцию",
@@ -92,7 +93,7 @@ def test_known_speaker_person_matches_once(tmp_path):
 
 
 def test_yo_normalisation_in_name(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("перенос платежного шлюза\nшлюз платежный не готов")
     assert [n.name for n in hits] == ["Платёжный шлюз"]
@@ -100,7 +101,7 @@ def test_yo_normalisation_in_name(tmp_path):
 
 def test_digest_takes_head_of_history_not_tail(tmp_path):
     """Конвейер пишет новые записи СВЕРХУ секции — дайджест берёт начало."""
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     node = idx.lookup("Иван Мироненко здесь")[0]
     lines = idx.digest(node)
@@ -110,7 +111,7 @@ def test_digest_takes_head_of_history_not_tail(tmp_path):
 
 
 def test_digest_skips_link_only_lines_and_keeps_status(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     node = idx.lookup("платёжный шлюз", strict=False)[0]
     lines = idx.digest(node)
@@ -120,7 +121,7 @@ def test_digest_skips_link_only_lines_and_keeps_status(tmp_path):
 
 
 def test_old_year_is_visible(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     node = idx.lookup("Иван Мироненко здесь")[0]
     joined = " ".join(idx.digest(node))
@@ -128,7 +129,7 @@ def test_old_year_is_visible(tmp_path):
 
 
 def test_service_files_are_not_nodes(tmp_path):
-    idx = NodeIndex(_graph(tmp_path))
+    idx = NodeIndex(_graph(tmp_path), schema=CHAROITE)
     idx.refresh()
     assert idx.lookup("ядра агрегат\nядра агрегат") == []
 
@@ -136,7 +137,7 @@ def test_service_files_are_not_nodes(tmp_path):
 def test_refresh_picks_up_appended_line(tmp_path):
     """Кэш по mtime+size файла: дописанная договорённость видна после refresh."""
     g = _graph(tmp_path)
-    idx = NodeIndex(g)
+    idx = NodeIndex(g, schema=CHAROITE)
     idx.refresh()
     p = g / "Ядра" / "Ретеншн.md"
     text = p.read_text(encoding="utf-8").replace(
@@ -152,7 +153,7 @@ def test_ambiguous_name_is_silent_in_strict(tmp_path):
     (g / "Системы" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
     (g / "Команды").mkdir()
     (g / "Команды" / "Шлюз.md").write_text("# Шлюз\n", encoding="utf-8")
-    idx = NodeIndex(g)
+    idx = NodeIndex(g, schema=CHAROITE)
     idx.refresh()
     assert idx.lookup("шлюз горит\nшлюз почини") == []
     loose = idx.lookup("что по шлюзу?", strict=False)
@@ -164,7 +165,7 @@ def test_digit_code_matches_once_in_strict(tmp_path):
     (g / "Системы" / "ИС 2049.md").write_text(
         "# ИС 2049\n\n## Встречи\n- [[Встречи/2026-08-05_1000]] — согласовали шину\n",
         encoding="utf-8")
-    idx = NodeIndex(g)
+    idx = NodeIndex(g, schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("подключаемся к 2049 после пилота")
     assert [n.name for n in hits] == ["ИС 2049"]
@@ -177,7 +178,7 @@ def test_aliases_from_the_header_are_read_by_the_shared_parser(tmp_path):
     (root / "Системы" / "Реестр.md").write_text(
         "---\ntype: система\nописание: План: перенос\naliases:\n  - Реестр поручений\n  - \"РП, реестр\"\n---\n"
         "# Реестр\n\n## Встречи\n- [[Встречи/2026-08-02_1500]]\n", encoding="utf-8")
-    idx = NodeIndex(root)
+    idx = NodeIndex(root, schema=CHAROITE)
     idx.refresh()
     hits = idx.lookup("обсудили реестр поручений на неделю")
     assert [n.name for n in hits] == ["Реестр"]
@@ -191,7 +192,7 @@ def test_redirect_stub_is_not_a_node(tmp_path):
         "---\ntype: ядро\n---\n# Старое ядро → [[Ядра/Ретеншн]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n", encoding="utf-8")
     (root / "Ядра" / "Ретеншн.md").write_text(
         "---\ntype: ядро\n---\n# Ретеншн\n\nУдержание клиентов после первого месяца.\n", encoding="utf-8")
-    idx = NodeIndex(root)
+    idx = NodeIndex(root, schema=CHAROITE)
     idx.refresh()
     assert all(n.name != "Старое ядро" for n in idx._nodes.values())
     hits = idx.lookup("обсудили ретеншн и старое ядро", strict=False)

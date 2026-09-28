@@ -18,6 +18,7 @@ sys.path.insert(0, str(SRC))
 
 import charoite_paths  # noqa: E402
 import graph_updater as g  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 
 
 def test_safe_name_escapes_wiki_syntax():
@@ -578,7 +579,7 @@ def test_description_supersede_edges(tmp_path):
     assert "## Хроника" not in yo.read_text(encoding="utf-8")
     # дайджест узла читает и хронику, и встречи — «## Встречи» после «## Хроника» сбор не обрывает
     from charoite_graph import graph_nodes
-    digest = graph_nodes._digest((graph / "Люди" / "Отпуск.md").read_text(encoding="utf-8"), "2026")
+    digest = graph_nodes._digest((graph / "Люди" / "Отпуск.md").read_text(encoding="utf-8"), "2026", schema=CHAROITE)
     assert any("2026-09-20" in d for d in digest) and any("обсудили отпуск" in d for d in digest), digest
 
 
@@ -715,7 +716,7 @@ def test_dossier_takes_stub_target_from_the_heading_not_frontmatter(tmp_path):
     (graph / "Ядра" / "Дубль.md").write_text(
         "---\nrelated: [[Ядра/Чужой]]\n---\n# Дубль → [[Ядра/Канон]]\n\nДубль слит.\n", encoding="utf-8")
     (graph / "Встречи" / "2026-08-01_1000.md").write_text("# Встреча\n- [[Ядра/Дубль]]\n", encoding="utf-8")
-    _files, backlinks = dossier.scan(graph)
+    _files, backlinks = dossier.scan(graph, schema=CHAROITE)
     assert "2026-08-01_1000" in backlinks.get("Канон", set()), backlinks
     assert not backlinks.get("Чужой"), "входящие ушли к узлу из frontmatter"
 
@@ -1500,8 +1501,9 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(g, "_is_placeholder", real_placeholder)
     assert not gone2.exists(), "фантом с типом из разбора не воскрес"
     assert "узел по решённому пути исчез: Модели/Исчезающий" in unlinked.read_text(encoding="utf-8")
-    # перечень папок — проекта (graph_nodes), сканы вердикта и канона его слушают (DS M5 / GLM M4; DS I4 круга 4)
-    assert g.NODE_FOLDERS is g.graph_nodes.NODE_FOLDERS
+    # перечень папок — значения схемы Чароита, сканы вердикта и канона его слушают (DS M5 / GLM M4; DS I4 круга 4;
+    # с PR B №422 источник — CHAROITE, а не константа пакета)
+    assert g.NODE_FOLDERS is CHAROITE.node_folders
     assert set(g._AUTO_ALIAS_FOLDERS) <= set(g.NODE_FOLDERS)
     assert "Люди" not in g._AUTO_ALIAS_FOLDERS and "People" not in g._AUTO_ALIAS_FOLDERS, "люди обоих графов — мимо автопсевдонимов"
     (graph / "People").mkdir()
@@ -1517,7 +1519,7 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(g, "NODE_FOLDERS", g.NODE_FOLDERS + ("Проекты",))
     assert g.entity_node_verdict(graph, "Системы", "Витрина Х") == ("existing", [])
     assert g.find_canonical(graph, "Витрина Х") == graph / "Проекты" / "Витрина Х.md"
-    monkeypatch.setattr(g, "NODE_FOLDERS", g.graph_nodes.NODE_FOLDERS)
+    monkeypatch.setattr(g, "NODE_FOLDERS", CHAROITE.node_folders)
     # два ключ-равных псевдонима в двух ЧУЖИХ папках — не гадаем; в папке типа — перехватывает первым (#451)
     (graph / "Команды").mkdir()
     (graph / "Команды" / "Другой.md").write_text('---\naliases: ["Kwen 32B"]\n---\n# Другой\n', encoding="utf-8")

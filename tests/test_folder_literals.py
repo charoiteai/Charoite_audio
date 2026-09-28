@@ -216,7 +216,9 @@ def test_debt_and_exemption_of_one_hit_are_refused_at_load():
     #654, DS I1). Отказ — на загрузке: такое состояние нельзя ни прочесть, ни
     записать регеном."""
     layout = lm.load_layout()
-    entry = layout["folder_literals"][0]
+    # свой долг: у боевого артефакта долг ноль с PR B №422, попадание — рукой
+    entry = {"rel": "src/charoite_graph/dossier.py", "field": "dossier_dir", "literal": "Досье", "ticket": "№422"}
+    layout["folder_literals"] = [entry]
     layout["folder_literal_exemptions"] = {entry["rel"]: {entry["field"]: {entry["literal"]: "шум"}}}
     with pytest.raises(lm.LayoutError, match="оставить одно"):
         lm.validate_layout(layout)

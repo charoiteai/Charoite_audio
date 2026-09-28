@@ -38,6 +38,7 @@ import shutil
 import unicodedata
 from collections import defaultdict
 from datetime import date
+from charoite_graph.graph_schema import GraphSchema
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
@@ -50,7 +51,6 @@ SRC_CHARS = 2500
 # Всего на промпт.
 PROMPT_CHARS = 28_000
 
-DOSSIER_DIR = "Досье"
 INDEX_MD = "_ИНДЕКС.md"
 INDEX_JSON = "_index.json"
 
@@ -131,11 +131,13 @@ def _title(p: pathlib.Path) -> str:
     return p.stem
 
 
-def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
+def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """Все .md графа → карта файлов и обратные ссылки.
 
     Возвращает (files, backlinks): files[title] = {path, text, mtime, kind},
-    backlinks[title] = множество тех, кто на него ссылается.
+    backlinks[title] = множество тех, кто на него ссылается. Роли папок — из
+    схемы хранилища: какие файлы служебные, где сами досье, какая папка — ядра.
+    Архив встреч читается: исключения схемы — правило обхода поиска, не досье.
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
@@ -147,9 +149,7 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
         # служебное, бэкапы и сами досье в кластеры не берём
         if any(part.startswith(".") for part in rel.parts):
             continue
-        if rel.parts[0] == DOSSIER_DIR or p.name.startswith("_"):
-            continue
-        if p.name.startswith("Служебное_"):
+        if schema.is_dossier(rel.as_posix()) or schema.is_service_name(p.name):
             continue
         try:
             text = p.read_text(encoding="utf-8")
@@ -183,7 +183,7 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
             old_meta = files[t]
             # rel в ключе — иначе при равном ранге выигрывал тот, кого
             # rglob вернул первым, и состав графа зависел от порядка обхода.
-            rank = lambda meta: (meta["kind"] == "Ядра", len(meta["text"]),
+            rank = lambda meta: (schema.is_core_folder(meta["kind"]), len(meta["text"]),
                                  meta["rel"])
             new_meta = {"path": p, "rel": str(rel), "text": text,
                         "mtime": p.stat().st_mtime, "kind": kind}
@@ -227,8 +227,8 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
     return files, dict(backlinks)
 
 
-def clusters(files: dict[str, dict], backlinks: dict[str, set[str]],
-             min_size: int = MIN_CLUSTER) -> dict[str, list[str]]:
+def clusters(files: dict[str, dict], backlinks: dict[str, set[str]], *,
+             schema: GraphSchema, min_size: int = MIN_CLUSTER) -> dict[str, list[str]]:
     """Тема → список источников. Хаб — ядро, на которое ссылаются больше всего.
 
     Кластер строится вокруг ядра: само ядро, всё что на него ссылается, и ядра,
@@ -237,7 +237,7 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]],
     """
     out: dict[str, list[str]] = {}
     for title, meta in files.items():
-        if meta["kind"] != "Ядра":
+        if not schema.is_core_folder(meta["kind"]):
             continue
         inbound = backlinks.get(title, set())
         outbound = {m.group(1).split("/")[-1].strip()
@@ -251,7 +251,7 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]],
             # источника, и страдали ровно самые большие темы (аудит графа
             # 26.08, GLM). Дальше встречи по дате, остальное по имени.
             rest = sorted(members - {title},
-                          key=lambda m: (files[m]["kind"] != "Встречи", m))
+                          key=lambda m: (not schema.is_meeting_folder(files[m]["kind"]), m))
             out[title] = [title] + rest
     return out
 
@@ -492,7 +492,7 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     ]
     for e in entries:
         keys = ", ".join(e["ключи"][:8])
-        lines.append(f"| [[{DOSSIER_DIR}/{e['тема']}\\|{e['тема']}]] "
+        lines.append(f"| [[{folder.name}/{e['тема']}\\|{e['тема']}]] "
                      f"| {e['источников']} | {e['собрано']} | {keys} |")
     lines += ["", "## Как этим пользоваться", "",
               "1. Ищем тему по ключам в таблице выше.",

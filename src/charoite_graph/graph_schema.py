@@ -5,17 +5,20 @@
 поиск исключал «Встречи-архив», досье читало «Досье», а сторож раскладки знал
 те же строки ещё раз своей таблицей. Пока имя не собрано в значение, переезд
 папки — это правка всех копий, и любая забытая копия молчит: граф просто
-перестаёт видеть кусок хранилища. Здесь схема объявлена значением, а список
-полей читает сторож литералов (`scripts/layout_map.py`), сверяя его с самими
-константами, пока те живы (PR B переводит потребителей на это значение).
+перестаёт видеть кусок хранилища. Здесь схема объявлена значением, модули
+пакета спрашивают у неё роли предикатами, а список полей читает сторож литералов
+(`scripts/layout_map.py`): литерал имени папки в модуле пакета — красный.
 
-Схема — хранилище Чароита, а не вкус запуска: значения приходят из
-`charoite_schema.CHAROITE`, а инварианты ниже отвергают схему, которой нельзя
-верить, — имя-регулярку, папку досье внутри исключения, роль в двух ролях.
-Проверки — в `__post_init__`, отказ `ValueError`: у полей НЕТ значений по
-умолчанию, и «значение Чароита» ровно одно — в `CHAROITE`. Поле без объявленной
-формы (не `str` и не `tuple[str, ...]`) — `TypeError`: это ошибка класса, а не
-значения.
+Значение Чароита — `charoite_schema.CHAROITE` (вне пакета); простое хранилище без
+ролей — `PLAIN`. Инварианты ниже отвергают схему, которой нельзя верить, —
+имя-регулярку, папку досье внутри исключения, роль в двух ролях. Проверки — в
+`__post_init__`, отказ `ValueError`: у полей НЕТ значений по умолчанию. Поле без
+объявленной формы (не `str`, не `str | None` и не `tuple[str, ...]`) — `TypeError`:
+это ошибка класса, а не значения.
+
+Сравнение ролей — одной формой пакета, `text_norm.fold`: и в инвариантах, и в
+предикатах. Две разные нормализации пропустили бы схему, чьи роли инвариант
+различает, а предикат склеивает (`Ёлки` и `Елки`).
 
 Модуль — член пакета `charoite_graph`: импортирует только stdlib и членов
 пакета, окружения не знает.
@@ -24,8 +27,11 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import re
+import types
 import typing
-import unicodedata
+
+from charoite_graph.text_norm import fold
 
 #: Поля-имена: каждое их значение — одно имя (папка, раздел, префикс). Форма
 #: одна на все — `_name_problem`. `exclude_dirs` — пути, поэтому форма
@@ -41,8 +47,8 @@ _LITERAL_FIELDS = ("raw_markers", "raw_suffixes", "history_heads")
 _LITERAL_METACHARS = ("\\", "^", "$", "|")
 
 #: Роли попарно не пересекаются — объявлением пар, а не россыпью `if`: пара с
-#: забытой проверкой не заводится, а видна списком. Сравнение — по
-#: нормализованному имени (NFC + casefold): «Люди» и «люди» — одна роль.
+#: забытой проверкой не заводится, а видна списком. Сравнение — формой `fold`:
+#: «Люди» и «люди» — одна роль.
 _DISJOINT_PAIRS = (
     ("people_folders", "core_folders"),
     ("node_folders", "meeting_folders"),
@@ -51,9 +57,9 @@ _DISJOINT_PAIRS = (
 )
 
 
-def _norm(value: str) -> str:
-    """Имя роли для сравнения: сборка Unicode + casefold."""
-    return unicodedata.normalize("NFC", value).casefold()
+#: Дата встречи в цели ссылки — правило схемы, а не поле: у любой схемы ссылка
+#: на встречу узнаётся и по дате, и по префиксу папки встреч.
+_DATE_RX = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _name_problem(value: str) -> str | None:
@@ -117,19 +123,27 @@ def _is_names_form(form: object) -> bool:
     return typing.get_origin(form) is tuple and typing.get_args(form) == (str, Ellipsis)
 
 
+def _is_optional_name_form(form: object) -> bool:
+    """Форма «имя или роли нет» — `str | None` в любой записи (и `typing.Optional`)."""
+    return (typing.get_origin(form) in (typing.Union, types.UnionType)
+            and set(typing.get_args(form)) == {str, type(None)})
+
+
 @dataclasses.dataclass(frozen=True)
 class GraphSchema:
     """Схема хранилища графа: имена папок и разделов — кортежами, как на диске.
 
     У полей нет значений по умолчанию: умолчание сделало бы схему частичной, и
-    забытое поле молча взяло бы чужое имя. Единственное значение — `CHAROITE`."""
+    забытое поле молча взяло бы чужое имя. Значения — `CHAROITE` (Чароит) и
+    `PLAIN` (простое хранилище без ролей). `dossier_dir` и `meeting_dir` —
+    `None`, если роли у хранилища нет."""
 
     node_folders: tuple[str, ...]
     people_folders: tuple[str, ...]
     core_folders: tuple[str, ...]
     meeting_folders: tuple[str, ...]
-    dossier_dir: str
-    meeting_dir: str
+    dossier_dir: str | None
+    meeting_dir: str | None
     exclude_dirs: tuple[str, ...]
     service_prefixes: tuple[str, ...]
     history_heads: tuple[str, ...]
@@ -151,20 +165,30 @@ class GraphSchema:
             value, форма = getattr(self, поле.name), формы[поле.name]
             if _is_names_form(форма):
                 object.__setattr__(self, поле.name, as_names(value, поле.name))
-            elif форма is str:
+            elif форма is str or _is_optional_name_form(форма):
+                if value is None and форма is not str:
+                    continue                 # роли нет — это значение формы, не пропуск
                 if not isinstance(value, str):
                     raise ValueError(f"{поле.name}: одно имя строкой, получено {type(value).__name__}")
             else:
                 raise TypeError(f"{поле.name}: форма {форма!r} не объявлена — "
-                                f"поле схемы либо str, либо tuple[str, ...]")
+                                f"поле схемы: str, str | None или tuple[str, ...]")
         self._check_names()
         self._check_literals()
         self._check_roles()
 
+    def _raw_names(self, имя: str) -> tuple[str, ...]:
+        """Одна дверь чтения поля-имени: кортеж как есть, строка — одним именем,
+        `None` (роли нет) — пустым кортежем. Проверки и предикаты читают поля
+        только через неё и `_names`, прямого `self.<поле>` в них нет: новая форма
+        поля иначе проходила мимо одной из проверок (входные круги 1–2 по PR B)."""
+        value = getattr(self, имя)
+        return () if value is None else as_names(value, имя)
+
     def _check_names(self) -> None:
         """Инвариант 1: форма имени — у полей-имён и у каждого сегмента путей."""
         for имя in _NAME_FIELDS:
-            for value in as_names(getattr(self, имя), имя):
+            for value in self._raw_names(имя):
                 беда = _name_problem(value)
                 if беда:
                     raise ValueError(f"{имя}: {value!r} — {беда}")
@@ -177,14 +201,15 @@ class GraphSchema:
     def _check_literals(self) -> None:
         """Инвариант 2: сырьё и головы — литералы без меток регулярки."""
         for имя in _LITERAL_FIELDS:
-            for value in as_names(getattr(self, имя), имя):
+            for value in self._raw_names(имя):
                 беда = _literal_problem(value)
                 if беда:
                     raise ValueError(f"{имя}: {value!r} — {беда}")
 
     def _names(self, имя: str) -> frozenset[str]:
-        """Нормализованные имена роли — и для строки-папки, и для кортежа."""
-        return frozenset(_norm(v) for v in as_names(getattr(self, имя), имя))
+        """Имена роли в форме сравнения `fold` — и для строки-папки, и для кортежа;
+        роли нет — пустое множество."""
+        return frozenset(fold(v) for v in self._raw_names(имя))
 
     def _check_roles(self) -> None:
         """Инварианты 3–7: подмножества, членство, досье против исключений,
@@ -194,12 +219,12 @@ class GraphSchema:
             raise ValueError("people_folders не подмножество node_folders")
         if not self._names("core_folders").issubset(nodes):
             raise ValueError("core_folders не подмножество node_folders")
-        if _norm(self.meeting_dir) not in self._names("meeting_folders"):
+        if not self._names("meeting_dir") <= self._names("meeting_folders"):
             raise ValueError(f"meeting_dir {self.meeting_dir!r} не из meeting_folders")
-        dossier = _norm(self.dossier_dir)
+        dossier = self._names("dossier_dir")
         for path in self.exclude_dirs:
-            segments = tuple(_norm(s) for s in path.split("/"))
-            if dossier in segments:
+            segments = tuple(fold(s) for s in path.split("/"))
+            if dossier & set(segments):
                 # досье — одно имя (инвариант 1), поэтому «исключение внутри досье»
                 # и «досье внутри исключения» совпадают с наличием имени в пути
                 raise ValueError(f"исключение {path!r} и папка досье {self.dossier_dir!r} "
@@ -215,3 +240,71 @@ class GraphSchema:
             общие = sorted(self._names(left) & self._names(right))
             if общие:
                 raise ValueError(f"роли {left} и {right} пересекаются: {', '.join(общие)}")
+
+    # ---- предикаты ролей: единственный способ для пакета спросить о пути ----
+    # Имена роли в форме сравнения считаются один раз на значение схемы. Схема
+    # заморожена, поэтому кэш — поле экземпляра через `cached_property`, который
+    # пишет в `__dict__` мимо запрета присваивания.
+
+    @functools.cached_property
+    def _folded(self) -> dict[str, frozenset[str]]:
+        return {поле.name: self._names(поле.name) for поле in dataclasses.fields(self)}
+
+    def is_service_name(self, name: str) -> bool:
+        """Имя файла с префиксом служебного — указатель, отчёт, кандидаты: не
+        документ поиска, не тема досье, не узел."""
+        return fold(name).startswith(tuple(self._folded["service_prefixes"]))
+
+    def is_dossier(self, rel: str) -> bool:
+        """Файл внутри папки досье: первая часть пути — папка досье, частей ≥ 2."""
+        parts = fold(rel).replace("\\", "/").strip("/").split("/")
+        return len(parts) >= 2 and parts[0] in self._folded["dossier_dir"]
+
+    def is_node_path(self, rel: str) -> bool:
+        """Узел графа: родитель файла на любой глубине — папка узлов, имя файла
+        не служебное."""
+        parts = fold(rel).replace("\\", "/").split("/")
+        return (len(parts) >= 2 and parts[-2] in self._folded["node_folders"]
+                and not self.is_service_name(parts[-1]))
+
+    def is_person_folder(self, name: str) -> bool:
+        """Папка людей — имя верхнего уровня, как его подаёт обход индекса узлов."""
+        return fold(name) in self._folded["people_folders"]
+
+    def is_core_folder(self, name: str) -> bool:
+        """Папка ядер (тем) — верхний уровень пути."""
+        return fold(name) in self._folded["core_folders"]
+
+    def is_meeting_folder(self, name: str) -> bool:
+        """Папка встреч, в том числе архив — верхний уровень пути."""
+        return fold(name) in self._folded["meeting_folders"]
+
+    def excluded(self, rel_dir: str) -> bool:
+        """Каталог вне обхода: накопленный путь от корня хранилища равен пути
+        исключения. Обе стороны — в форме `fold`: NFD-имя с диска совпадает с
+        NFC-литералом схемы."""
+        return fold(rel_dir).replace("\\", "/").strip("/") in self._folded["exclude_dirs"]
+
+    def is_raw(self, rel: str) -> bool:
+        """Сырьё (стенограмма, живой лог): маркер подстрокой или суффикс пути."""
+        f = fold(rel)
+        return (any(m in f for m in self._folded["raw_markers"])
+                or f.endswith(tuple(self._folded["raw_suffixes"])))
+
+    def is_meeting_link(self, target: str) -> bool:
+        """Ссылка на встречу: дата `YYYY-MM-DD` в цели или префикс папки встреч."""
+        return bool(_DATE_RX.search(target)) or fold(target).startswith(
+            tuple(self._folded["meeting_link_prefixes"]))
+
+    def is_history_head(self, line: str) -> bool:
+        """Заголовок секции истории узла («## Встречи», «## Хроника» у Чароита)."""
+        return fold(line.strip()).startswith(tuple(self._folded["history_heads"]))
+
+
+#: Простое хранилище: ролей нет — ни узлов, ни досье, ни встреч, ни сырья, ни
+#: служебного, ни исключений. Предикаты отвечают «нет» сами.
+PLAIN = GraphSchema(
+    node_folders=(), people_folders=(), core_folders=(), meeting_folders=(),
+    dossier_dir=None, meeting_dir=None, exclude_dirs=(), service_prefixes=(),
+    history_heads=(), raw_markers=(), raw_suffixes=(), meeting_link_prefixes=(),
+)

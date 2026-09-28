@@ -1059,24 +1059,40 @@ that number. The storage schema is a value, not literals scattered around:
 section heads and the raw-file markers, its invariants (`__post_init__`)
 reject a name that is a regex, a dossier nested under an exclusion or a role
 that is also another role, and `src/charoite_schema.py` holds the one
-`CHAROITE = GraphSchema(…)` value as literals. The package takes the
-schema as a parameter: `GraphSearch(schema=…)` excludes the schema's
-`exclude_dirs`, and the application door `graphs.open_search` passes
-`CHAROITE`. One door, `graph_schema.as_names`, reads the form of a name
-list for the schema's tuple fields and for `GraphSearch(exclude=…)` alike:
-a string is one name, a tuple or a list is kept, anything else is refused;
-a schema field whose annotation is neither `str` nor `tuple[str, ...]` is a
-class error. A separate guard in
+`CHAROITE = GraphSchema(…)` value as literals. The package asks the
+schema, never a literal: roles are predicates of the value (`is_node_path`,
+`is_dossier`, `is_service_name`, `excluded`, `is_raw`, `is_meeting_link`,
+`is_history_head`, …), and every one of them compares in one form,
+`text_norm.fold` (NFC, case, ё→е, full-width Latin and digits) — the form
+the search already used for words and paths. `GraphSearch(schema=…)`
+defaults to `PLAIN`, a storage with no roles (no nodes, no dossier, no
+exclusions), and the application door `graphs.open_search` passes
+`CHAROITE`; `NodeIndex` and `dossier.scan` / `clusters` take the schema as
+a required keyword — only Charoite calls them, and a forgotten schema is a
+`TypeError`, not an empty node index at a meeting. `Doc.role` and
+`Node.person` are derived from an init-only schema (`init=False` fields),
+so a fixture cannot hand a role past the predicate. The vector cache is
+checked by mtime and by the number of blocks: the block ceiling depends on
+whether a file is a node, and that now depends on the schema. One door,
+`graph_schema.as_names`, reads the form of a name list for the schema's
+tuple fields: a string is one name, a tuple or a list is kept, anything
+else is refused; `dossier_dir` and `meeting_dir` are `str | None` (`None`
+— the storage has no such role); a schema field whose annotation is none of
+`str`, `str | None`, `tuple[str, ...]` is a class error. A separate guard in
 `scripts/layout_map.py` reads the field list from the class annotations and
 the values from that call, looks for copies of those names among the string
 literals of the graph package (`package_entry`'s closure, the same set the
 package probe copies) and holds each copy as `folder_literals` debt with a
 ticket; `folder_literal_exemptions` forgives one copy with a written reason,
-and both are compared in both directions like every other entry. The
-snapshot in `tests/test_graph_schema.py` compares `CHAROITE` with the live
-`graph_nodes` / `dossier` / `graph_search` / `meeting_archive` constants
-while they are still alive — PR B moves the consumers onto the value and
-the debt goes to zero. The gate is `tests/test_import_boundaries.py`,
+and both are compared in both directions like every other entry. Since
+PR B of №422 the debt is zero and the package keeps no name constants of
+its own. `tests/test_graph_schema_roles.py` rotates the schema — every name
+of `CHAROITE` becomes an ASCII token, equal names one token — builds the
+same graph from the rotated names and requires the same observable
+behaviour of search, dossier and node index after substituting back: a
+surviving literal cannot equal a token, so it shows up as a mismatch. The
+rotation found the dossier index, which was service only through
+Charoite's `_` prefix; it is now service by its own name. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared

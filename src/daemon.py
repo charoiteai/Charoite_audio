@@ -729,7 +729,10 @@ def main():
         _gdir = graphs.graph_dir(cfg) or pathlib.Path("")
         if _gdir.exists():
             from charoite_graph import graph_nodes
-            node_index = graph_nodes.NodeIndex(_gdir)
+            from charoite_schema import CHAROITE
+            # схема хранилища обязательна: без неё индекс узлов не знает, какие
+            # папки — узлы, и отказывает громко, а не пустеет на встрече (№422)
+            node_index = graph_nodes.NodeIndex(_gdir, schema=CHAROITE)
             node_index.refresh()
             emit({"type": "status",
                   "text": f"Сверка с узлами графа: {node_index.size} узлов"})
