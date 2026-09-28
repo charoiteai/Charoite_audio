@@ -439,6 +439,26 @@ def test_a_success_without_segments_is_a_refusal(payload, monkeypatch, tmp_path)
         None, "Nemotron — ни одного отрезка на 1234 с записи")
 
 
+@pytest.mark.parametrize("payload,degenerate", [
+    ([(0.0, 1110.0, 0)], True),                          # один отрезок на 92,5 % записи
+    ([(30.0, 1110.0, 0)], True),                         # ровно 90 % — тоже
+    ([(0.0, 1070.0, 0)], False),                         # 89 % — ещё правдоподобно
+    ([(0.0, 600.0, 0), (601.0, 1190.0, 0)], False),      # звонок один на один: много отрезков
+])
+def test_one_segment_over_the_whole_recording_is_a_refusal(payload, degenerate, monkeypatch, tmp_path):
+    """Один отрезок почти на всю запись — вырожденный ответ (выходной круг 2 по
+    №473, M1); один голос с паузами — нет."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    segs, reason = rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
+                                          tmp_path / "bh.wav", 1200.0)
+    if degenerate:
+        assert (segs, reason) == (None, "Nemotron — один отрезок на всю запись (1200 с)")
+    else:
+        assert (segs, reason) == (payload, "")
+
+
 def _nemotron_cfg():
     return {"audio": {"samplerate": SR},
             "sufler": {"user_name": OWNER, "diarize_backend": "nemotron", "nemotron_python": "/env/bin/python"}}

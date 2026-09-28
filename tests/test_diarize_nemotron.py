@@ -573,6 +573,14 @@ def test_read_wav_gives_float32_mono_like_the_rebuild(tmp_path):
 def test_read_wav_refuses_anything_but_16_bit(tmp_path):
     with pytest.raises(ValueError, match=r"u8\.wav: не 16-битный PCM \(8 бит\)"):
         nem.read_wav(_wav(tmp_path / "u8.wav", [0, 255], width=1))
+    p24 = tmp_path / "s24.wav"
+    with wave.open(str(p24), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00\x00" * 4)
+    with pytest.raises(ValueError, match=r"s24\.wav: не 16-битный PCM \(24 бит\)"):
+        nem.read_wav(p24)
 
 
 def test_main_without_the_engine_refuses_before_reading_the_recording(tmp_path, monkeypatch, capsys):
