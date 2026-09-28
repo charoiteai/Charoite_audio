@@ -366,11 +366,12 @@ environment is installed by hand for now, with the recipe above into any venv
 - **Speaker echo in the mic.** A mic segment more than half covered by call
   speech is dropped as echo, and the share is taken over the *union* of the
   call segments, not one at a time: Nemotron cuts a turn into pieces, and echo
-  over three pieces of 30 % each used to pass as live speech. On a 15-minute
+  over three pieces of 30 % each used to pass as live speech. On an 8-minute
   call of 28.09 one-at-a-time kept 69 % of the mic speech with Nemotron against
   17.5 % with sherpa; the union keeps 17.8 %.
-- **Time.** The call channel of a 41-minute meeting: 6 s including the model
-  load; a 15-minute one: 2 s. sherpa takes minutes on the same recordings.
+- **Time.** The call channel of a 41-minute meeting: 5 s including the process
+  start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
+  sherpa pass runs at RTF 0.35 — about 7 minutes for 20 minutes of call.
 
 ### Your own recording
 
