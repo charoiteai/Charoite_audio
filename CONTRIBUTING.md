@@ -34,8 +34,12 @@ review gates, and who answers for what — is documented in
   behaviour change nobody noticed: either the test for that place exists but
   holds nothing, or there is no test at all. Only lines from the diff are
   mutated — a whole-file pass means thousands of mutants and hours instead of
-  minutes. The mutation lands in a separate git worktree, so test subprocesses
-  see the same broken code the imports do. Each mutant is judged by the tests
+  minutes. The mutation lands in a separate copy of the repository — a local
+  clone checked out at the head of the range — so test subprocesses see the
+  same broken code the imports do. The range is resolved to commit hashes once,
+  before the plan, and the copy never writes to the source repository: a
+  `git worktree` registry lives in the shared `.git`, and parallel runs broke
+  each other's `add` and `remove`. Each mutant is judged by the tests
   that reach its module: `import X`, a subprocess running `X.py`, or a load
   by path (`spec_from_file_location("X", …)`, the `_load("X")` helper). A
   module no test reaches that way is judged by the whole suite — slow in CI,
