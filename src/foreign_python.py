@@ -61,10 +61,11 @@ ISOLATION: dict[str, str | None] = {
 }
 
 
-#: Виды исхода (`Outcome.kind`). Константы модуля, а не класса: в NamedTuple
-#: `ClassVar` без отложенных аннотаций — TypeError, а с ними становится ПОЛЕМ, и
-#: атрибут класса оказывается дескриптором поля, а не строкой (так устроен
-#: `live_sidecar.WriteOutcome`, №477).
+#: Виды исхода (`Outcome.kind`) — константы модуля: их читают как `fp.OK`. В теле
+#: NamedTuple годится и голое имя (`OK = "ok"` — атрибут класса), а аннотированное
+#: становится полем кортежа — под отложенными аннотациями и с `ClassVar` тоже; так
+#: был устроен `live_sidecar.WriteOutcome` до №477, форму держит
+#: `tests/test_namedtuple_fields.py`.
 OK, UNAVAILABLE, FAILED = "ok", "unavailable", "failed"
 
 
