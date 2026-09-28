@@ -11,9 +11,9 @@ dossiers are other people's words, so every headless `claude -p` the app
 spawns is isolated. Text-only calls use an empty built-in tool set, deny all
 MCP tools, and ignore user/project settings. The post-meeting review is the
 only call that legitimately touches files: its visible tools are explicit,
-`Read(/**)` and optional `Edit(/**)` are anchored to `cwd=graph`, and
-`dontAsk` rejects paths outside that graph instead of prompting. Shell,
-network and MCP tools remain absent. `tests/test_cloud_isolation.py` and
+`Read(/**)` and optional `Edit(/**)` are anchored to its working directory —
+the graph, or in edit mode a sandbox copy of it — and `dontAsk` rejects paths
+outside it instead of prompting. Shell, network and MCP tools remain absent. `tests/test_cloud_isolation.py` and
 `tests/test_cloud_enrich_permissions.py` fail on a broad or non-isolated
 grant.
 
@@ -34,42 +34,60 @@ destroy a recording locally. Each gets its own defenses below.
 
 ## What leaves the machine
 
-- **One request by default: the daily version check.** A public GET to
-  api.github.com for the latest release number — no token, no data about
-  you or your meetings; `sufler.check_updates: false` turns it off, and
-  the `CHAROITE_NO_CLOUD` kill-switch covers it too. Everything else runs
-  on localhost: STT, diarization, the LLM and embeddings. `src/privacy.py`
-  is the single authority for every exit that can carry meeting data, and
-  it treats only an explicit `true` in the config as consent.
+- **One request by default: the version check.** A public GET to
+  api.github.com for the latest release number, at most once every four
+  hours while the app runs (and when you press the check button) — no
+  token, no data about you or your meetings; `sufler.check_updates: false`
+  turns it off, and the `CHAROITE_NO_CLOUD` kill-switch covers it too.
+  Everything else runs on localhost: STT, diarization, the LLM and
+  embeddings. `src/privacy.py` is the single authority for every exit that
+  can carry meeting data, and it treats only an explicit `true` in the
+  config as consent.
 - **The cloud layer is opt-in per capability, and the keys nest.**
   `cloud_live` gates mid-meeting answers (`cloud_hints` works only on top
   of it). `cloud_enrich` gates the post-meeting review — and the nightly
   graph reviews run under the same key: the cores revision and the dossier
   review send graph-derived text to Anthropic overnight. `cloud_edit_graph`
-  (on top of `cloud_enrich`) is the only key that grants writing; files
-  are backed up first and boundaries enforced afterwards, and the write
-  right is dropped whenever that backup cannot be taken. `CHAROITE_NO_CLOUD=1`
-  is a kill-switch that overrides any config on every path. The full key
-  table: [PRIVACY.md](PRIVACY.md).
+  (on top of `cloud_enrich`) is the only key that grants writing; the cloud
+  edits a copy of the graph, and only what passes the boundaries is carried
+  into the real one. `cloud_engine` together with `llm.engine: cloud` sends
+  the whole chat to an OpenAI-compatible gateway — https only, the key in a
+  separate file, never in the config. `CHAROITE_NO_CLOUD=1` is a
+  kill-switch that overrides any config on every path. The full key table:
+  [PRIVACY.md](PRIVACY.md).
+- **The LLM address is a privacy decision.** `llm.base_url` and
+  `llm.mlx_base_url` pass freely only on loopback; another machine needs an
+  explicit `llm.allow_remote: true`, plain http is accepted only inside your
+  own network (private or link-local addresses, `.local`-style names that
+  resolve to them), anything farther requires https, and the kill-switch
+  refuses every non-loopback address. The app's own "Ollama" field follows
+  the loopback / `allow_remote` / kill-switch part of that rule; the
+  http-versus-https check is the daemon's (`src/privacy.py`).
+- **Deliberate downloads.** An update is downloaded only when you press the
+  button (from the GitHub release, verified as described below); models are
+  fetched on first use or by an install button — see
+  [PRIVACY.md](PRIVACY.md) for what each one reaches.
 - The subscription CLI runs with `ANTHROPIC_API_KEY` scrubbed from its
   environment.
 
 ## Prompt injection
 
 Meeting transcripts, cores and dossiers are other people's words, so every
-headless `claude -p` the app spawns is isolated. Text-only calls carry a
-tool denylist covering every file, command and network tool the CLI ships
-today, plus `--setting-sources ""` and `--strict-mcp-config`
-(`cloud.text_only_args()`) — the latter matters because without it the
-machine owner's own `~/.claude/settings.json` allowlists would apply to
-these calls. Honest limits: it is a denylist, extended as the CLI grows,
-not an allowlist-grade guarantee. The one call that legitimately touches
-files (the post-meeting cloud review) gets its rights from an explicit
-privacy key and the same settings isolation — and drops the write right
-whenever the pre-edit backup cannot be taken.
-`tests/test_cloud_isolation.py` scans `src/` and `scripts/` for
-identifier-style call sites — a safety net for the common case, not a
-proof.
+headless `claude -p` the app spawns is isolated. Text-only calls get one
+set of flags from `cloud.text_only_args()`: `--tools ""` (the visible
+built-in tool set is empty), a denylist of every file, command and network
+tool plus `mcp__*` as a second layer, `--permission-mode dontAsk` (anything
+not granted is refused rather than waiting for a prompt nobody can answer),
+and `--setting-sources ""` with `--strict-mcp-config` — the latter matters
+because without it the machine owner's own `~/.claude/settings.json`
+allowlists, hooks and MCP servers would apply to these calls. The one call
+that legitimately touches files (the post-meeting cloud review) gets its
+rights from an explicit privacy key and the same settings isolation: it sees
+only the tools it is given, without `cloud_edit_graph` those are read-only,
+and with it the CLI works in a sandbox copy of the graph — nothing reaches
+the real graph except what passes the transfer checks. `tests/test_cloud_isolation.py`
+scans `src/` and `scripts/` for identifier-style call sites — a safety net
+for the common case, not a proof.
 
 ## Recordings are fail-closed
 
@@ -78,7 +96,9 @@ around it fail closed: the in-app updater re-checks for a live recording
 right before swapping the bundle, and its replacement helper refuses to
 touch the install while the app process is still alive; the desktop
 daemon's recording sinks open exclusively (`"xb"`), so a filename
-collision is a visible error rather than a silent overwrite; on stop the
+collision is a visible error rather than a silent overwrite; only one daemon
+runs at a time (an exclusive lock on `logs/daemon.lock` — a second one
+refuses to start rather than write into the same transcript); on stop the
 audio is handed over through atomic renames. The iOS and Android
 companions use their platforms' recorders and do not yet make the
 exclusive-open guarantee. Mechanics:
@@ -113,11 +133,20 @@ privilege boundary, not a path preference.
   and `sufler.post_meeting_hook` is a shell command by design. Anything
   that can write into that folder — Application Support included, it is
   not protected by TCC — can therefore run a command with the microphone
-  and screen-recording grants. Charoite keeps the folder `0700`
-  (`harden_existing` on every start) and never adopts a folder silently;
-  it does not, and cannot, defend against another process running as you
-  with write access to your own files. Leave the hook empty if you do not
-  use it.
+  and screen-recording grants. Charoite keeps its private subfolders —
+  `config/`, `transcripts/`, `recordings/`, `logs/`, `data/`, `backups/` —
+  at `0700` with files `0600` (`harden_existing` on every daemon start) and
+  never adopts a folder silently; it does not, and cannot, defend against
+  another process running as you with write access to your own files. Leave
+  the hook empty if you do not use it.
+- **Symlinks are not followed into the pipeline.** A symlink in the import
+  folder is skipped (a link would pull someone else's file into the graph
+  and the LLM pipeline), and its `done/` must be a real directory; the
+  cloud review denies the CLI every symlink in the graph — for reading too,
+  in any mode, since the target lies outside the graph — and checks its
+  sandbox with `O_NOFOLLOW` once, before the command is built; the
+  manifest-signing script refuses an archive whose `Charoite.app` is a
+  link.
 - **`charoite://record/start` is a front door, not a back door.** The URL
   scheme exists for Shortcuts and the terminal, and any local process or
   web page can open it. What it cannot do is record quietly: every call
@@ -151,7 +180,9 @@ privilege boundary, not a path preference.
   and that file then listens to every meeting. A mismatch aborts the
   install and asks a human to decide; `--url` (your own mirror) skips the
   check, since our digest cannot apply to someone else's file.
-- Dependabot updates actions, swift, gradle and pip weekly.
+- Dependabot updates actions, swift, gradle and pip weekly; the pinned
+  versions of the CI gate tools themselves (ruff, semgrep, mypy, pytest,
+  zizmor) are bumped by hand, together with a run that proves them.
 - Releases build strictly from the release tag. The embedded CPython is
   version-pinned and sha256-verified against upstream's published
   `SHA256SUMS`, and the build does not upgrade its pip from PyPI — the
@@ -160,6 +191,18 @@ privilege boundary, not a path preference.
   install); `Charoite.app.zip` and `Charoite.dmg` ship with published
   sha256 files, and the in-app updater verifies the checksum before
   installing anything.
+- **Two update anchors that do not live on GitHub.** A checksum next to the
+  archive only proves the download is intact: whoever could replace the
+  archive (a leaked CI token, a compromised account) could replace the sum
+  too. So before swapping the bundle the updater also requires (1) a
+  manifest `<version>  <sha256>` signed with the owner's ed25519 key — the
+  private half lives only on the owner's machine, never in the repository
+  or in GitHub Secrets; the signed version must match the tag and be newer
+  than the installed one, so an old honest release cannot be replayed under
+  a new tag — and (2) an Apple signature on the downloaded bundle from this
+  team's Developer ID. A release stays a pre-release (invisible to the
+  updater) until the owner signs it. Mechanics:
+  [RELEASING.md](docs/RELEASING.md), "Signing the update manifest".
 - **Signing and notarization:** release builds are signed with a
   Developer ID certificate, hardened runtime enabled for every executable
   in the bundle (the embedded python interpreter carries its own
@@ -176,7 +219,7 @@ privilege boundary, not a path preference.
   process) — writing `__pycache__` into a notarized bundle breaks its
   resource seal and Gatekeeper reports the app as damaged on the next launch
   (found on 0.52.0, fixed in 0.52.1).
-  Details: docs/RELEASING.md, «Signing and notarization».
+  Details: [RELEASING.md](docs/RELEASING.md), "Signing and notarization".
 
 ## Anonymization of this repository
 

@@ -4,7 +4,9 @@
 
 Everything runs locally. Below is the reasoning for each default: our own
 benchmarks on an M1 Max (32 GB) plus independent sources. Every choice is
-replaceable in the config.
+replaceable in the config. The LLMs named in the headings are the Full
+profile (64 GB); a smaller machine gets its set from the RAM presets below,
+and the config template starts on the 16 GB set.
 
 ## STT: GigaAM v3 (default)
 
@@ -12,17 +14,22 @@ replaceable in the config.
 a Russian ASR model by [Sber](https://github.com/salute-developers/GigaAM), MIT.
 
 - **Speed**: a 3-second chunk transcribes in ~0.1–0.6 s on M1 Max — live
-  transcript latency is dominated by STT, and this leaves headroom.
+  transcript latency is dominated by STT, and this leaves headroom. It runs
+  on the CPU execution provider on purpose: the CoreML provider crashes on
+  GigaAM at runtime, and the CPU gives ~28× real time (17.6 s of audio in
+  0.63 s, measured 2026-07-16).
 - **Russian quality**: on real meetings it is clearly more accurate than
   whisper-large-v3-turbo — fewer hallucinations on short chunks, more robust
   to domain terms and acronyms.
 - **Built-in punctuation & capitalization** (e2e model) — critical because
   the trailing «?» is the main trigger for instant answers, and it makes
   transcripts readable as-is.
-- The model downloads automatically on first run.
+- The model downloads from Hugging Face on first use. Under
+  `CHAROITE_NO_CLOUD` the download is refused: with an empty cache STT fails
+  with a clear error instead of reaching the network mid-meeting.
 
-Config alternatives: `whisper` (mlx, 100+ languages) and `parakeet`
-(English, extremely fast) for non-Russian meetings.
+Config alternatives (`stt.backend`): `whisper` (mlx, 100+ languages),
+`parakeet` (English, extremely fast) and `sensevoice` (Chinese, see below).
 
 ## Main LLM: qwen3.6:35b-mlx (same MoE, MLX engine)
 
@@ -114,8 +121,8 @@ swap. A realistic estimate of the win is 20–30%. Quantisation differs too
 first prompt on a meeting arrives later; afterwards the model stays resident
 via `keep_alive`.
 
-**Rollback** is one line: put `qwen3.6:35b-a3b` back into `llm.model` and
-`think_model`. The previous value is kept as a comment next to it.
+**Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and
+`sufler.think_model` (the Full profile writes the MLX tag into both).
 
 **Muse Glimmer 30B** (the first open-weight model from Meta Superintelligence
 Labs, Apache 2.0) is not usable as the chat model: 15–16 tok/s and 5 to 13
@@ -140,7 +147,7 @@ default stays `ollama`**; the engine remains a config option for
 long-document Q&A sessions, to re-measure when `mlx_lm.server` grows a
 strict JSON mode or Ollama grows a prefix cache.
 
-## Tested, not adopted: Qwen3.8-27B (measured 2026-08-14)
+## Qwen3.8-27B: not the default, the 32 GB preset (measured 2026-08-14)
 
 The first open dense model of the Qwen3.8 family — hybrid attention (linear
 on 48 of 64 layers), native VL, an MTP draft head, 262K context, Apache 2.0;
@@ -176,12 +183,14 @@ Better anchors — and still not the default:
 - Prefill is slow today too: ~95 tok/s against ~520 on the MoE — likely in
   part an immature hybrid-attention implementation in current runtimes.
 
-Where it may still land: at 16.1 GB the 4-bit build leaves noticeably more
-headroom on a 32 GB machine than the 21 GB default, so it stays a candidate
-for the tighter presets — to be compared against full-attention 8–14B
-models (which keep the caching win) before any preset changes. Re-measure
-when runtimes learn its MTP draft head (speculative decoding may change the
-speed verdict) or when `mlx_lm` learns to cache hybrid-attention state.
+Where it landed: the main model of the 32 GB "Precise" preset (since the
+2026-08-19 benchmark below). At 16.9 GB (Ollama manifest) it leaves room on a
+32 GB machine where the 20.4 GB MoE would swap; its slowness is paid in
+graph extraction, which is background work and yields to a live meeting,
+while automatic hints and the thread run on the light model (`sufler.quiet`,
+on by default). Re-measure when runtimes learn its MTP draft head
+(speculative decoding may change the speed verdict) or when `mlx_lm` learns to
+cache hybrid-attention state.
 
 ## Light model: qwen3.5:4b
 
@@ -192,15 +201,25 @@ few seconds in parallel with the main model.
   more accurate question classification (e4b failed a direct question),
   theses in 2.9 s vs 3.3 s without filler preambles, and 3.4 GB RAM vs
   9.6 GB — almost 3x lighter next to the main model.
-- The exception is **dialogue markup** (`markup_model`):
-  words must stay verbatim there, and qwen3.5:4b tends to slightly polish
-  them; gemma keeps the text exact.
+- The exception is **dialogue markup** (`markup_model`): words must stay
+  verbatim there, and qwen3.5:4b tends to slightly polish them — validation
+  drops such answers. The profile puts here the model that is resident on
+  the machine anyway: the main one on 32/64 GB, the light one on 8/16 GB, where
+  markup therefore fires less often. `gemma4:latest` left the default: no
+  profile downloads it, so the loop was silently missing for everyone
+  (review 19.08).
+- Theses and the minutes draft run on `sufler.think_model`: the main model on
+  the 64 GB profile, the light one below it.
 - Very low RAM — `qwen3.5:2b` (edge-class model of the same family).
 
 ## Diarization: ERes2Net (3D-Speaker)
 
 Speaker embeddings — [ERes2Net](https://github.com/modelscope/3D-Speaker)
-(ONNX, 512-dim).
+(ONNX, 512-dim). Not bundled: `scripts/get_models.py --diar` installs it
+(default `eres2net-base`, 40 MB; `eres2net-en` 27 MB and `eres2netv2` 71 MB
+on request; every file is checked against a pinned sha256). The live
+segment tracker and the after-meeting pass also need the pyannote 3.0
+segmentation model (`--segmentation`, 7 MB). Details — [DIARIZATION.md](DIARIZATION.md).
 
 - **Our benchmark on real meeting recordings** against CAM++ and TitaNet:
   ERes2Net separates same/other voices best — same-speaker cosine 0.29–0.8
@@ -212,11 +231,76 @@ Speaker embeddings — [ERes2Net](https://github.com/modelscope/3D-Speaker)
   re-pass over the full recording (echo filter, micro-fragment merging,
   name assignment).
 
-## Mandatory num_ctx: 8192
+## Mandatory explicit num_ctx
 
 Some Ollama Modelfiles ship with a 262144 context default — without an
 explicit `num_ctx` the KV cache balloons by gigabytes and generation slows
-down several-fold. Every Charoite call passes `num_ctx: 8192` explicitly.
+down several-fold. Every Charoite call to Ollama passes `num_ctx` explicitly:
+`llm.num_ctx` (8192) for the live loop and documents, 16384 for graph
+extraction and the retro-fill of minutes, which read a long transcript after
+the meeting. `mlx_lm.server` takes its context at server start instead.
+
+## Embeddings: bge-m3
+
+`bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for déjà vu, the
+core revision (tier3), the hint memory's graph search and the app's search.
+It stays on Ollama whatever `llm.engine` says — `mlx_lm.server` serves no
+embeddings. `sufler.embed_model` swaps it, but the
+thresholds (the core revision's 0.55 prefilter, the déjà vu margin) were
+tuned on bge-m3's cosine spread.
+
+**Input ceiling: 2048 tokens.** The model declares 8192, but Ollama cuts the
+input at the runner's physical batch: measured 2026-09-26 on Ollama 0.34.4, a
+longer input returns HTTP 200 with `prompt_eval_count` 2048, and a unique
+tail past the limit leaves the vector unchanged (cosine 1.0). That is 5–6
+thousand characters of graph text; search chunks stay under it (the longest
+of 80 on a working graph is 1587 tokens). Since 0.87.0 every request goes out
+with `truncate: false`, so an over-long input is refused (HTTP 400) instead of
+cut silently; the embedding door retries that batch with truncation and says
+so once, naming the batch's longest text by number and length (never its
+content).
+
+Requests are batched — at most 64 texts and 72 000 characters per call:
+Ollama 0.34 refused 808 cores (162 677 characters) sent as one request with
+HTTP 400, while the same texts in batches of 100 went through.
+
+## NLI: mDeBERTa-v3 (optional)
+
+Embeddings measure "is this about the same thing"; NLI measures "does this
+state the same thing" — "the budget is approved" and "the budget is not
+approved" are near twins for bge-m3 and a contradiction for NLI.
+`MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7` (ONNX, ~1.1 GB)
+runs on onnxruntime + tokenizers, no torch. It is the judge for three things:
+dropping theses that repeat each other (entailment both ways, threshold 0.8),
+the semantic dedup of the core revision, and the decision gate's zero-shot
+fallback (below).
+
+Nothing downloads it. Put `model.onnx`, `tokenizer.json` and `config.json`
+into `models/nli/` under the data root, for example with
+`optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`.
+Without it theses are not deduplicated by meaning and the core revision does
+not run (it says why in its log); everything else works as before.
+
+## Decision gate (research, shadow mode only)
+
+Should a remark wake the model for ⚡ at all? Today structural checks decide
+(a «?» or a question word, then length and repetition), and the model answers
+"please clarify" when it finds no question — the refusal stays out of the
+thread, but the seconds (and the cloud quota, if on) are spent. A decision
+model (an encoder with a decision head, one pass, no generation) answers in
+tens of milliseconds and returns a confidence.
+
+`sufler.decision_gate_shadow: true` (off by default) runs it next to every
+⚡ and decides nothing: the verdict is written to `logs/daemon.err.log` next to
+the outcome (answered / refusal / failed) — label, confidence, latency,
+never the text. Backends, best first: a trained head in
+`models/decision/question_gate/` (`model.onnx`, `tokenizer.json`,
+`labels.json` with the calibration temperature), otherwise zero-shot over the
+NLI model, otherwise off with a line saying why. `scripts/gate_bench.py`
+(`harvest`, `eval`, `shadow`) turns those lines into a number — how many
+empty calls the gate would save and how many real questions it would lose.
+Candidates and plan: [research/decision-gate.md](research/decision-gate.md)
+(in Russian).
 
 ## English meetings
 
@@ -265,12 +349,12 @@ pipelines. Model choice stays in the config.
 
 Live suggestions and the graph LLM are the memory-hungry parts; STT (~1 GB)
 and diarization (~0.5 GB) are constant. Numbers are the working set on Apple
-Silicon, `num_ctx: 8192` throughout (mandatory — larger contexts reload the
-model and blow up RAM).
+Silicon with `num_ctx: 8192` for everything live (mandatory — larger contexts
+blow up RAM; only graph extraction after the meeting asks for 16384).
 
 | RAM | Main LLM | Light LLM | STT | What you get |
 |----|----|----|----|----|
-| **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes). Suggestions can go to Ollama on another machine you own — but that sends transcripts off this device, so it requires an explicit `llm.allow_remote: true` in the config and is refused under `CHAROITE_NO_CLOUD` (see PRIVACY.md). |
+| **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes). Suggestions can go to Ollama on another machine you own — but that sends transcripts off this device, so it requires an explicit `llm.allow_remote: true` in the config and is refused under `CHAROITE_NO_CLOUD` (see [PRIVACY.md](../PRIVACY.md)). |
 | **8 GB** | `qwen3.5:4b` (3.2 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. The graph works — see the 19.08 benchmark below — but déjà vu and the core revision are off: both pull in `bge-m3`, another 1.2 GB next to the system. |
 | **16 GB** | `qwen3.5:4b` (3.2 GB) | same model | GigaAM | Full live loop: suggestions + theses + minutes in parallel, plus semantic memory (déjà vu and core revision: `bge-m3`, +1.2 GB). Same model as on 8 GB — in the benchmark it finds more than `gemma4:12b`, while 12b together with the embedder would hit 17–19 GB on a 16 GB machine. Recommended entry point. |
 | **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | GigaAM | More accurate quotes (96%) at the price of a three-times-slower extraction — which is background work and now yields to a live meeting. 35B is not here on purpose: 20.4 GB of weights plus STT, the embedder and the system is 27–30 GB out of 32, i.e. swap on the first long extraction. |
@@ -278,6 +362,12 @@ model and blow up RAM).
 
 Rules of thumb: below 8 GB, keep only STT locally. The `small_model` always
 runs next to the main one, so budget for both at once.
+
+The app's first-run wizard reads the machine's memory, recommends the row
+that fits with room to spare and applies it as a whole: besides `model` and
+`small_model` it writes `think_model` (main model on 64 GB, light below),
+`markup_model` (main on 32/64 GB, light on 8/16), `deja_vu` and `tier3` (off
+on 8 GB only) and `graph: true` on every profile.
 
 **Dialogue markup and the light profiles.** The loop that splits a paragraph
 into replies needs verbatim output: validation compares the words and drops
@@ -296,7 +386,12 @@ extracts the graph better than a 12B one, and what breaks the schema is a
 particular model rather than the size class. `gemma4:latest` left the 16 GB
 row for the same reason: it is heavier (8.9 GB against 7.0) and finds less.
 
-## Presets by RAM — iOS / iPadOS
+## Presets by RAM — iOS / iPadOS (plan)
+
+Today the phone runs no models at all: the [iPhone](../app-ios/README.md) and
+[Android](../app-android/README.md) companions record and deliver the audio,
+and STT, diarization, the LLM and the graph run on the Mac. The table below is
+the plan for on-device work, not a shipped feature.
 
 Phones and tablets can't hold a 30B model, so the split is different: the
 device does STT and light generation, anything heavier goes to a Mac over the
@@ -325,8 +420,8 @@ choice.
 |----|----|----|
 | `cloud_model` | `claude-opus-5` | post-meeting debrief, nightly core and dossier reviews — not at conversation speed, so the strongest model is worth it |
 | `cloud_live_model` | `claude-haiku-4-5` | answering a question mid-meeting: speed matters more |
-| `cloud_hints_model` | `claude-haiku-4-5` | hint refinement: same, but more often |
-| `cloud_effort` | `medium` | reasoning effort for the post-meeting debrief (`low`…`max`). Headless `claude -p` otherwise runs at `high`: by 80 review logs (28.08–08.09) 22 debriefs hit the 30-minute ceiling on 34–47 graph edits and were quarantined; `medium` keeps them inside the 45-minute ceiling |
+| `cloud_hints_model` | `claude-haiku-4-5` | revision of the on-screen thread (`cloud_hints`): same, but more often |
+| `cloud_effort` | `medium` | reasoning effort for the post-meeting debrief (`low`…`max`, or `auto`). Headless `claude -p` otherwise runs at `high` (at `max` from a shell with a global setting): by 80 review logs (28.08–08.09) 22 debriefs hit the 30-minute ceiling on 34–47 graph edits and were quarantined; `medium` shortens the run so it fits those 30 minutes. The ceiling was not raised: the next meeting's worker waits for the graph lock just as long |
 | `cloud_live_effort` | `low` | in-meeting calls (thread fixes, answer to a question, 60–90 s ceilings): shorter reasoning, faster reply |
 | `cloud_night_effort` | `high` | nightly dossier and core reviews: 600 s ceiling and no graph lock, depth over speed |
 
@@ -335,9 +430,21 @@ mismatch fails a test. Previously the literal sat in every call site, and one
 key (`cloud_model`) had two different defaults: with a trimmed config the
 post-meeting debrief and the nightly review went to different models.
 
+The keys above drive the Claude CLI. The third chat engine is a different
+thing: `llm.engine: cloud` sends hints, theses, the thread and minutes to an
+OpenAI-compatible gateway instead of the local model. Its model is
+`llm.cloud_model`, which has no default — the engine refuses to start without
+it (the example config names `deepseek-chat`) — and it needs
+`sufler.cloud_engine: true` as well. Embeddings, NLI and STT stay local with
+any engine; when the gateway is unreachable the local model answers
+(`llm.cloud_fallback_local`).
+
 ## Swapping models
 
 Everything lives in `config/config.yaml`: `stt.backend`, `llm.model`,
-`llm.small_model`; the embedding model is just the file
-`models/diar/embedding.onnx`. On 16 GB machines start with
-`llm.model: qwen3.5:4b` (see the profile table above) and a lighter STT backend.
+`llm.small_model`, `sufler.think_model`, `sufler.markup_model`,
+`sufler.embed_model`; the speaker-embedding model is just the file
+`models/diar/embedding.onnx`, the NLI model — the folder `models/nli/`. The
+simplest way to change the LLM set is a profile in the app's first-run wizard
+(see the table above): it writes the models and the flags that go with them
+in one step.

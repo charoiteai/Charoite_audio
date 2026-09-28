@@ -11,12 +11,16 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 | 位置 | 内容 | 生命周期 | 用途 |
 |---|---|---|---|
 | `recordings/` | 麦克风与系统声音的独立 PCM/WAV 声道 | `record_keep_days`，默认 2 天 | 精确重建的保险来源 |
+| `data/sck/` | 应用在会话期间写入的原始采集流 | 正常停止时删除；崩溃留下的残余在 `record_keep_days` 后删除 | 实时音频从应用到守护进程的通道 |
 | `transcripts/` | 实时与最终逐字稿、纪要、提示、复盘 | 直到明确删除 | 流水线输入与手动重试来源 |
 | `<graph_dir>/Встречи/` | 带链接和事实的会议事件笔记 | 长期保留 | 图谱中的规范会议记忆 |
 | `<graph_dir>/Встречи-архив/` | 可读会议文件夹：摘要、纪要、逐字稿等 | 长期保留 | Finder、Obsidian 与同步结果 |
 | `<graph_dir>/Документация/` | 图谱节点引用的文档副本 | 长期保留 | 图谱来源 |
 | `logs/meeting-status/` | 处理状态、逐字稿路径和错误 | 14 天 | 应用状态与“近期会议” |
-| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引 | 可重建 | 加速搜索，不是备份 |
+| 导入文件夹的 `done/`、归档文件夹中的 `Исходник.*` | 导入录音的副本及其放在会议旁的音频源 | `audio.import_keep_days`，默认导入后 2 天 | 在你核对结果期间的第二次机会 |
+| `backups/<图谱>-<哈希>/` | 图谱的服务副本：云端复核的快照与隔离区、移走的冲突副本、批量修改待办事项前的副本 | 快照保留一次运行，隔离区保留十次；移走的副本在你删除前一直保留 | 撤销对图谱的自动修改，不在 iCloud 中 |
+| `data/graph_search/` | 提示记忆的向量缓存：图谱块的向量和文件路径，不含文本 | 可重建（`scripts/graph_search_index.py`）；已消失文件的向量在下次索引时剔除 | 加速提示记忆，不是备份 |
+| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引，保存每个块约 700 字符的预览——包括逐字稿 | 可重建；已消失文件的条目在下次搜索时剔除 | 加速搜索，不是备份 |
 | `~/Library/Application Support/CharoiteApp/chat_history.json` | 本地聊天：对话的最近 200 条消息（回答可能复述图谱；图谱片段本身不存储） | 直到在聊天里按**清除**；`forget_meeting.py` 不会动它 | 对话连续性，没有其他读者 |
 
 `record_keep_days` 删除的是音频，不是会议文档。某条记录从“近期会议”中消失也
@@ -32,10 +36,14 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
   仍在，但无法再从音频识别争议片段。
 - `Встречи-архив` 是阅读层。启用 `sufler.dedup_files: true` 后，其中部分文件
   可能是指向 `Документация/` 原件的硬链接；从任一路径编辑都会修改同一内容。
-- `scripts/dedup_graph.py --apply-copies`（或 `sufler.dedup_copies: true`）从归档中
-  移走的冲突副本 `Имя 2.md … Имя 12.md` 不会被删除：它们位于数据根目录下的
-  `backups/<图谱>/dedup_copies/<批次>/`（不在 iCloud 中），附带 `manifest.tsv`
-  （副本、原件、字节数、sha256）。恢复时按第一列的路径复制回去即可。
+- 会议文档旁的冲突副本 `Имя 2.md … Имя 12.md`（在归档文件夹和
+  `Документация/Стенограммы встреч` 中）源于归档器在 iCloud 里原地重写未改动的
+  文档；自 0.84.0 起它只写入变化，并经由临时文件。`scripts/dedup_graph.py
+  --apply-copies`（或夜间流程中的 `sufler.dedup_copies: true`）只移走与原件逐字节
+  相同的副本，而且不会删除：它们位于数据根目录下的
+  `backups/<图谱>-<哈希>/dedup_copies/<批次>/`（不在 iCloud 中），附带
+  `manifest.tsv`（副本、原件、字节数、sha256；路径相对于图谱）。恢复时按第一列的
+  路径复制回图谱即可。与原件不同的副本留在原处，只写入报告——由人来决定。
 
 安全原则很简单：可以编辑最终笔记，但移动或重命名会议各层时，应使用应用和
 提供的命令，而不是分别手工操作。
@@ -46,16 +54,26 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 
 - `recordings/` 中早于 `audio.record_keep_days` 的 PCM/WAV，包括转换临时文件
   `*.wav.part*`；
+- 崩溃遗留在 `data/sck/` 中的原始采集流，同一保留期（实时会话自己的文件夹从不
+  触碰）；
 - 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log` 与 `logs/retry_*.log` 诊断日志；
+- 导入录音的副本——导入文件夹 `done/` 中的文件和会议归档文件夹中的音频
+  「Исходник」——在导入后 `audio.import_keep_days`（默认 2 天，与
+  `record_keep_days` 无关）删除；应用运行时每六小时清理一次，守护进程在每场会议
+  开始时清理，应用中选择的文件夹和 `audio.import_dir` 都会被清理；
 - 早于 14 天的处理状态。
 
-音频清理在守护进程启动时发生。因此 Charoite 长时间未运行时，文件可能超过名义
-期限仍存在；下一次启动时则会立即消失。
+音频清理在守护进程启动时发生。这意味着两件事：
+
+1. Charoite 长时间未运行时，文件可能超过名义期限仍在磁盘上；
+2. 下一次启动后，过期的音频可能立即消失。
 
 有一个刻意保留的例外：**正在重建的会议录音不会被删除，即使已过保留期。**
 守护进程启动时会找出被中断的会议、启动重建，并在此期间把它们的录音移出清理
-范围；从应用发起的重试会自行保护相关文件。这种延迟不是无声的，Charoite 会在
-状态栏中说明。
+范围；以其他方式启动的重建（从应用重试、手动运行）会刷新该会议录音的修改时间，
+保留期从那一刻起重新计算 `record_keep_days`。这种延迟不是无声的，Charoite 会在
+状态栏中说明（«Ретеншн придержал N записей: встречи ещё восстанавливаются»，
+即「保留期暂缓了 N 个录音：会议仍在恢复」）。
 
 清理只删除自己创建的文件：名称无法识别的文件一律不动。手动放入 `recordings/`
 的内容，也需要手动删除。
@@ -64,12 +82,16 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 
 ## 导入来源是例外
 
-`scripts/import_meeting.py` 会把导入的原始音频保存在图谱的会议材料旁。这份副本
-已经不在 `recordings/` 中，因此不受 `record_keep_days` 约束。图谱使用 iCloud
-同步时，原始音频也可能被同步。
+`scripts/import_meeting.py` 会把导入的原始音频以 `Исходник.<扩展名>` 复制到图谱
+中该会议的归档文件夹。这份副本不在 `recordings/` 中，`record_keep_days` 对它不
+适用。图谱使用 iCloud 同步时，原始音频也可能被同步。
 
-若你的政策是“音频只保留两天”，需要在确认结果后单独删除导入来源，或彻底忘记
-整场会议。
+经由导入文件夹进来的录音（应用的**外部录音**标签页、`--scan`；语音备忘录桥接
+也复制到同一文件夹）有自己的时钟：`done/` 中的副本和归档中的音频「Исходник」在
+导入后 `audio.import_keep_days` 删除（见上文）；归档中的文本或字幕来源会保留——
+其中没有声音。用 `import_meeting.py <文件>` 手动导入的单个文件在 `done/` 中没有
+副本，因此没人为它计时：它在归档中的「Исходник」会一直保留，直到你删除它或忘记
+这场会议。
 
 ## 最小备份集合
 
@@ -95,10 +117,11 @@ Charoite 不代替 Time Machine，也不会为任意手工编辑自动做版本�
 | 连续第二场会议没有对方声音 | 麦克风声道完好 | 0.48.0 之前，停止上一次捕获会删除已经开始的会议的音频流；请更新。这类会议无法重建——系统音频已不存在 |
 | “处理中”不再变化 | 状态可能来自已退出进程 | 运行 `doctor`，再重试 |
 | 没有状态但逐字稿存在 | 只丢了界面状态 | 手动运行 `rebuild_transcript.py` |
-| 崩溃后留下 PCM | 原始音频与实时逐字稿 | 下次启动守护进程会接手；不要删除 PCM |
+| 崩溃后留下 PCM | 原始音频与实时逐字稿 | 下次启动守护进程会接手这场会议并清理中断的转换残留；不要删除 PCM |
 | 只剩 WAV/M4A/VTT/SRT | 会议来源仍在 | 用 `import_meeting.py` 导入 |
 | 同一会议有两个归档文件夹 | 两边的文档通常都在 | 先试运行 `dedup_archive.py`，再 `--apply` |
-| 搜索找不到已知事实 | Markdown 可能完好，索引只是派生物 | 检查原文件并重新搜索 |
+| 搜索找不到已知事实 | Markdown 可能完好，索引只是派生物 | 检查原文件并重新搜索；不要把索引当作来源 |
+| 命令输出「корень данных не назван」（数据根目录未指定）并以代码 5 退出 | 一切完好——什么都没启动 | `rebuild_transcript.py`、`import_meeting.py` 等入口不会猜测数据位置：像下面的命令那样传入 `CHAROITE_ROOT` |
 
 基础诊断：
 
@@ -107,10 +130,11 @@ python3 scripts/doctor.py
 ```
 
 > **装的是应用而不是仓库？** 解释器和代码都在应用包内，因此下面的命令要加上
-> 前缀，并指向你自己的数据文件夹：
+> 前缀，并指向你自己的数据文件夹（下面是默认路径，或你在设置中选择的文件夹；
+> 如果应用放在别处，请相应修改 `APP`）：
 >
 > ```bash
-> APP=~/Applications/Charoite.app/Contents/Resources
+> APP=/Applications/Charoite.app/Contents/Resources
 > export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
 > cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
 > ```
@@ -140,6 +164,8 @@ CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <音频|文本|�
 .venv/bin/python scripts/rename_meeting.py 2026-08-03_1130 "新标题" --yes
 ```
 
+带秒的时间戳（`2026-08-03_113015`）用于选中同一分钟里的第二场会议。
+
 整理旧的重复归档文件夹：
 
 ```bash
@@ -156,12 +182,21 @@ CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <音频|文本|�
 .venv/bin/python scripts/forget_meeting.py 2026-07-15_1400 --yes
 ```
 
-第一次运行只列出受影响文件。`--yes` 会从逐字稿、录音、归档和图谱中删除会议——包括
-`logs/meeting-status/` 中的处理状态、图谱、云端复核与重试日志，以及「文档」下的全部
-`<时间戳>_*.md` 副本；带秒的时间戳（`2026-07-15_140030`）是另一场会议，不会随
-`2026-07-15_1400` 一起被删除；
-仍需保留但要去掉引用的节点，会先复制到 `.forget_backup/`。这个文件夹不是被删
-会议的回收站——确认后，会议自己的文件应视为已删除。
+第一次运行只列出受影响文件。`--yes` 会从逐字稿（包括 `transcripts/.prev/` 和实时
+附属文件）、录音、归档和图谱中删除会议——包括 `logs/meeting-status/` 中的处理状态、
+图谱、云端复核与重试日志、「文档」下的全部 `<时间戳>_*.md` 副本，以及 `backups/`
+下各类服务副本中该会议的文件。已发往可选外部记忆（`sufler.brain`）的事实也会在
+那里被忘记。带上 `--import-folder <文件夹>`（应用会传入）时，`done/` 中的导入副本
+一并删除；不带时，计划会说明该副本将按 `import_keep_days` 过期。`--keep-graph`
+只删除逐字稿和录音。
+
+按分钟的时间戳（`2026-07-15_1400`）会带走这场会议自己按秒命名的文件——守护进程和
+导入都按秒给录音命名——但绝不会带走同一分钟开始的另一场会议：凡是脚本无法证明
+属于这场会议的，都留在磁盘上，并在计划中以其自己的时间戳列出，供你单独忘记。
+只剩归档文件夹的会议会通过文件夹的清单被找到；当天计划未带走的归档文件夹也会
+连同原因一起列出。仍需保留但要去掉引用的节点，会先复制到图谱根目录下的
+`.forget_backup/<时间戳>/`。这个文件夹不是被删会议的回收站——确认后，会议自己的
+文件应视为已删除。
 
 ## 恢复时不要这样做
 
@@ -173,15 +208,4 @@ CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <音频|文本|�
 - 不要指望删除搜索索引能恢复缺失的 Markdown；索引是派生数据，不含完整图谱副本。
 
 日常只需记住三层：`recordings/` 让你能重新识别，`transcripts/` 让你能重跑
-流水线，`graph_dir` 保存长期记忆。> **安装的是应用而非仓库？** 解释器与代码位于应用包内，因此请这样运行下面的
-> 命令，并指向你的数据文件夹：
->
-> ```bash
-> APP=~/Applications/Чароит.app/Contents/Resources
-> export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
-> cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
-> ```
->
-> 下面命令中的 `.venv/bin/python` 假设你克隆了仓库。
-
-
+流水线，`graph_dir` 保存长期记忆。

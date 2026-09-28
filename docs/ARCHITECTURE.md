@@ -14,23 +14,40 @@ system audio ┘  (3s chunks)         │   · déjà vu · names · dialogue ma
 Stop → recording rebuild → graph update → archive + Summary → [Claude debrief]
 ```
 
-Everything runs on your machine; network calls go to localhost only
-(Ollama). The cloud layer is a separate, off-by-default option.
+Everything runs on your machine; the pipeline's network calls go to
+localhost only (Ollama). The cloud layer is a separate, off-by-default
+option; the app's only request of its own — the release check against
+GitHub — is described under "When the app learns about a new release".
 
 ## The daemon (src/daemon.py)
 
 One process, thread loops around a shared locked `Transcript`: STT loop,
-instant answers, auto-theses/hints, live minutes, déjà vu over Cores, name
-resolution, dialogue markup, the cloud loop, heartbeat. Events stream to
-stdout as line-JSON (`{"type": "transcript"|"thesis"|"hint"|…}`); commands
-arrive on stdin (`hint`, `ask <question>`, `summary`, `stop`). Any UI can
-sit on top of this protocol; a second instance is blocked via flock.
+the fast question trigger, instant answers, auto-hints, co-thinking
+(theses), the meeting thread, live minutes, déjà vu over Cores, name
+resolution, dialogue markup, the live archive context (the graph searched
+by the meeting's topic), autostop, the cloud loop, heartbeat. Events stream
+to stdout as line-JSON (`{"type": "transcript"|"thesis"|"hint"|…}`);
+commands arrive on stdin (`hint`, `ask <question>`, `expand [topic]`,
+`cloud`, `summary`, `set hints|theses|cloud on|off [quiet]`, `stop`). Any UI
+can sit on top of this protocol; a second instance is blocked via flock.
 `Transcript` lives in dependency-light `src/transcript.py`; runtime modules never import `main.py`.
 
 Daemon statuses carry a failure flag (`{"type": "status", "error": true}`):
 the app renders those as errors and a plain status clears the flag. A model
 failure never becomes hint text — only a status — so the last good hint
 stays on screen.
+
+**Where the audio comes from.** The app captures system audio with
+ScreenCaptureKit and writes it to a growing stream file described by
+`data/sck_stream.json`; since macOS 15 the microphone arrives in the same
+stream, and PortAudio is not opened at all. `AudioHub` reads the stream like
+`tail -f`. Without a fresh manifest the hub falls back to BlackHole (a driver
+installed by hand) plus the microphone through PortAudio. There is no third
+path: the Core Audio tap stream was removed on 02.09 — its aggregate devices
+hung CoreAudio four times on 06–07.08, and ScreenCaptureKit creates none. The
+two channels stay separate, which gives "me / them" diarization for free;
+when both channels carry speech at once, the microphone chunk is dropped as
+the speakers' echo.
 
 ### Channel labels and the owner — one source (src/channel_labels.py)
 
@@ -59,14 +76,18 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   STT and diarization included); the night waits with a cap (a morning
   meeting must not eat the night). Rebuilds run one at a time per machine
   (`logs/rebuild.lock`): an orphan released by the gate and the fresh
-  recording after "Stop" never start together. "A meeting is on" means only
+  recording after "Stop" never start together. Inside the queue already
+  taken, the rebuild's model calls (speaker names, minutes) wait for a live
+  meeting at most 10 minutes and then run cramped, with a log line: an
+  unbounded wait there would park the whole queue for someone else's
+  meeting. "A meeting is on" means only
   an honest `flock` refusal caused by someone else's lock; a missing file,
   missing permissions or a volume without `flock` never stall the background.
   The second sign — a daemon process on this machine, whatever its data
   root — is `live_gate.daemon_process`: one pattern (`python` with the
   script as its first argument) for the MCP status and the placeholder
   migration, so an editor with `src/daemon.py` open is not a daemon.
-- **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429` with growing
+- **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
   the server under someone else's generation.
@@ -130,6 +151,38 @@ Rules after the post-mortem:
   `set theses off quiet` since #394, so the loop never ran in a live
   session — code that "seems to do something" is worse than none.
 
+### The decision gate watches in shadow (src/decision_gate.py)
+
+Today the ⚡ question is picked by structural checks (`question_filter`: a
+"?" or a question word up front, then length and repetition). Everything
+that passes wakes the model, and when the model finds no question it answers
+"please clarify" — that refusal never reaches the thread, but the model's
+seconds (and the quota, with the cloud on) are already spent. A list of
+phrases is not an allowed cure, and an LLM judge per utterance costs as much
+as the answer itself.
+
+The decision gate answers "is this a question" in one pass without
+generation and returns a confidence; the plan is a cascade — the gate may
+stay silent for the model only where it is sure, everything else goes to the
+model as today. Backends in order of preference: a trained head in
+`models/decision/question_gate/` (`model.onnx`, `tokenizer.json`,
+`labels.json` with the calibration temperature), or zero-shot over the NLI
+model already in `models/nli/` (two hypotheses; no new packages, but the
+confidence is uncalibrated). With neither, the factory refuses with a line
+and the daemon works as before.
+
+For now the gate decides nothing. The only mode is the shadow
+(`sufler.decision_gate_shadow: true`, off by default): the verdict is
+computed in parallel with the ⚡ generation — ⚡ never waits for it — and a
+`gate-shadow:` line goes to the err log next to the outcome (`answered`,
+`refusal`, `failed`). The line carries no content: label, confidence, latency.
+One run is in flight at a time; a question arriving while the previous one is
+still being judged gets `reason=busy`, or `hung:<age>` after 45 s, so a stuck
+decider shows up in the measurement instead of piling up threads. Whether to
+switch the gate on for real, and at what threshold, is decided by
+`scripts/gate_bench.py` over the accumulated lines (and hand-labelled sets),
+not by a guess.
+
 ### What repaints in the app
 
 The local model and the recording share the machine with the interface
@@ -156,12 +209,12 @@ of that post-mortem:
 
 ### The cloud layer: what each loop pays
 
-Four loops call the cloud through the headless CLI: the in-conversation
-answer, the post-meeting review, the nightly dossier revision and the
-nightly cores revision. Their shared rules live in `src/cloud.py` (model
-per step, call isolation, proxy); permission comes from `src/privacy.py`.
-An audit on 26.08 (two independent reviewers) confirmed the frame and
-closed four seams:
+Five loops call the cloud through the headless CLI: the in-conversation
+answer and the thread revision during a meeting, the post-meeting review,
+the nightly dossier revision and the nightly cores revision. Their shared
+rules live in `src/cloud.py` (model and effort per step, call isolation,
+proxy); permission comes from `src/privacy.py`. An audit on 26.08 (two
+independent reviewers) confirmed the frame and closed four seams:
 
 - **A CLI error is not an answer.** The live loop took stdout and, when
   empty, substituted stderr: "Unknown model" and "403" reached the
@@ -183,18 +236,164 @@ closed four seams:
   read-only mode had no deny rules at all, so the boundary rested solely
   on an external program's behaviour.
 
+### A graph node is never lost mid-write
+
+`write_text` opens a file for writing and truncates it to zero BEFORE it
+writes anything. A full volume, an exhausted iCloud quota (the graph lives
+there), the nightly run killed mid-write — and a core that accumulated for a
+year becomes a zero-byte file. There is nothing to restore it from: it is
+the only copy.
+
+Every write into the graph goes through `safe_write.write_text`
+(`src/charoite_graph/safe_write.py`) — into a temporary file next to the
+target, then `replace`. Every means `graph_updater` (nodes, MOC, the meeting
+note, the debrief), core merges in `tier3` and the final transcript in
+`rebuild_transcript`; the one deliberate exception is the lock's PID file,
+where creating the file is the point. On POSIX this is atomic within a
+volume: a reader sees either the old version whole or the new one whole. The
+temporary file sits next to the target, not in `/tmp`: a move across volumes
+is never atomic. Its name carries the PID, so two processes never assemble
+one file interleaved — whoever replaces last wins, but whole. A symlink is
+dereferenced: a shared note in the graph is sometimes a link, and replacing
+the link itself with a plain file is wrong. Permissions and extended
+attributes (Finder tags, Spotlight comments) move to the new inode with an
+explicit `chmod` — otherwise a node would lose hand-set permissions after its
+first edit. Times are NOT carried over: the night picks its work by mtime
+(`tier3` takes cores fresher than the previous run), and a node updated today
+but first written a week ago would drop out of the increment. The explicit
+`chmod` is there because `copystat`, one letter away, drags the times along,
+so the intent "leave the times alone" is written in the line of code rather
+than implied. A caller that needs the source's times — the minutes canon in
+the archive — passes them explicitly (`times=`). The same function holds the
+lost-update gate: `expect` is a stat snapshot taken before the source was
+read, and a file that changed in the meantime is not written over.
+
+The pattern existed in the project before, copied by hand in five places
+(transcript, minutes, dossiers, forgetting a meeting, wav), while a dozen
+writes into graph nodes lived without it — the 0.62.0 release audit found
+exactly that. Now there is one copy for everyone: copies sitting side by side
+drift apart, one has a `finally`, the other does not.
+
+### The cloud edits a copy of the graph, not the graph
+
+The cloud review works in a SANDBOX — a second copy of the graph taken right
+before the run. The CLI's working directory points there, and `Edit(/**)`
+under `--permission-mode dontAsk` is bound to it: a write outside the
+directory is refused by the CLI itself (checked by experiment — a request for
+a file outside returns "no access beyond the working directory"). Meanwhile
+the pipeline keeps writing to the real graph: the next meeting's extraction,
+minutes tails, déjà vu over cores.
+
+Hence the main property: **authorship is known by construction.** Everything
+by which the sandbox differs from the snapshot was done by the cloud;
+everything else belongs to someone else and is invisible to the transfer.
+This replaced six signs of "our own file" (the meeting stamp in the name, the
+original in transcripts, the writer's signature, the pipeline's time window,
+a hidden path, executability), each of which caught a Critical on some edge
+case, and sixteen review rounds around them.
+
+The transfer runs under the graph lock and decides per file:
+
+- an edit in an allowed place — written into the graph;
+- a forbidden place (a protected folder, a hidden path, the author's
+  section) — to quarantine, never into the graph;
+- a file the pipeline changed during the window — left as it is, the cloud's
+  version goes to quarantine: live work wins. This is exactly the residual
+  risk of the previous scheme, where a rollback took the minutes tail away
+  together with the cloud's edit;
+- a deletion — not transferred at all. The cloud has no reason to erase nodes,
+  and "restoring what was erased" was the very rollback that on 27.08 took the
+  10:32 meeting note away together with five artefacts of the 11:33 meeting.
+
+An invalid answer (a timeout, a fragment, a non-zero exit code) needs no
+rollback: the graph did not change by a byte, and the sandbox is simply
+thrown away. Its edits go to quarantine, so a person can still look at what
+the cloud produced.
+
+Two copies of the graph on APFS are almost free, and that is measured, not
+claimed: on the live graph (6,071 files, 194 MB) each copy takes 1.8 seconds
+and 1.5–3.5 MB of real blocks — `clonefile` shares them with the original
+until someone writes. Against the half hour a review runs, that is nothing.
+A caveat: when the daemon's data live on another volume, `clonefile` does not
+work (EXDEV) and the copy becomes an honest 194 MB of I/O — noticeable but
+tolerable; on one volume, as in the standard install, the cost is zero. The
+snapshot stays separate and untouched — the source text is checked against it
+and a pipeline edit is caught by it.
+
+### Telemetry answers "why"
+
+Two diagnoses in a row hit the same wall: the numbers did not answer the main
+question.
+
+**STT.** "transcription_ms=3225" on its own means nothing: a slow model and a
+big piece look the same. The line also carries totals FOR THE WHOLE
+RECORDING: how many times the model was called, the shortest piece and the
+overall RTF. "audio_s=6.0" describes one six-second call and twelve
+half-second ones alike, yet their cost differs — a short piece carries the
+same fixed work (measured 27.08: 0.3 s runs at 13.7x against 29x at ten
+seconds).
+
+Totals accumulate per recording, not per cycle, and that is not a detail.
+The `state=lagging` line is written only while lagging, and while lagging the
+layout switches to `shed` and hands over one piece per whole chunk — per-cycle
+numbers in it would be constants (the channel count and the chunk length)
+whether or not the pipeline splits audio in healthy cycles. The measurement
+would sit exactly where the measured phenomenon cannot occur by construction.
+The cycle counts seconds of audio that went through the model, and the lag
+line carries `audio_s`, `rtf` and a timestamp — without it a calm machine and
+a loaded one are indistinguishable. The gigaam-v3 passport on this machine is
+28× (17.6 s of audio in 0.63 s, measured 16.07), and the 27.08 measurements
+confirmed it: the same model outside the pipeline gives 29×. So a field RTF
+near one is not model degradation but the cost of the harness: splitting a
+piece into half-second segments drops it to 13×, a single onnxruntime thread
+to 6×, and the second channel and the overlap take the rest. Background QoS
+stands apart: on E-cores the same work runs at RTF 0.37, seventy times slower,
+so transcription cannot be run "in the background" out of politeness to the
+neighbours. The transcript checks the overlap seam (0.5 s) only between
+neighbouring chunks of one channel — by the physical chunk number from the
+capture, not by the clock (a silent chunk between two speech chunks and a mic
+chunk dropped as echo consume a number too, and nothing becomes a neighbour
+through them) — and only at the head of a chunk by the layout. The seam has
+one source: the channel's previous label if it changed (lag → healthy:
+channel → voice), otherwise its own; another channel or a second voice of the
+same chunk is never checked this way — someone else repeating words is speech,
+not a seam.
+
+Every five minutes the log gets an `stt-summary` line, whatever the state.
+The lag line appears only while the queue grows, and on a calm machine that
+never happens: on 28.08 four meetings in a row passed without a single lag
+and left not one STT number behind. The pipeline would otherwise be judged by
+its single bad day, when the machine was busy with unrelated runs.
+
+**Hints.** The pulse names the reason for silence with the same human line
+the person sees in the status: "the model server is not answering", "the
+model is busy". Every exit records its own outcome, "lock busy" included —
+that branch used to exit silently, and the pulse kept the reason from the
+previous attempt. The auto and the manual hint keep their telemetry apart:
+they run in different threads, and a shared pair got overwritten. Time is
+split into `wait_ms` and `model_ms`: the hint lock is also held by the thread,
+the minutes, the answer to a question and the archive topic, and waiting for
+someone else's generation must not look like a slow model.
+
+Telemetry must not bring its own loops down: the audio count is wrapped,
+state is read with a default, failures stay a line on stderr.
+
 ### What the night promises the morning
 
 The nightly run (`scripts/nightly.sh`, 04:15) grooms the graph while nobody
-is at the machine: brief, cores revision, dossiers, cloud revisions, file
-dedup, memory bench. An audit on 26.08 (two independent reviewers) checked
-the zone's promises and closed the gaps:
+is at the machine: graph doctor, file dedup, memory vectors, an early brief,
+cores revision, dossiers, cloud revisions, folder indexes, a second doctor
+pass, the brief, memory bench. An audit on 26.08 (two independent reviewers)
+checked the zone's promises and closed the gaps:
 
 - **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
   visible to the tail steps too — dedup and the memory bench ran past it and
   woke the model in the morning. Waiting for a live meeting is capped by
   what is left of the night: a flat hour of waiting used to stretch the run
-  past the ceiling.
+  past the ceiling. File dedup has since moved to the front, right after the
+  doctor: it costs seconds (12.7 s on the working graph, 23.09), and at the
+  end of the night the ceiling cut it for 12 nights in a row from 10.09
+  (№361).
 - **A live meeting outranks the night — on the heaviest step too.** Judging
   core pairs holds the embedder and the NLI model; the gate existed only for
   dossiers and cloud revisions, so the cores revision kept sharing the model
@@ -305,11 +504,25 @@ code path is shared.
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker
    with hysteresis (0.45 threshold, a grey zone, a relative switch rule, new
    voices confirmed by two agreeing chunks). Embeddings live in RAM only.
+   In a call every microphone voice except echo is the owner
+   (`owner_voice.owner_voices`): the microphone carries one person, and
+   splitting them into "Собеседник 1" and "Собеседник 7" is an artefact of the
+   light tracker, not a second person in the room. An in-person meeting
+   keeps neutral labels.
 2. **Offline after stop** (src/rebuild_transcript.py): the full recording is
-   re-diarized per channel; speaker echo in the mic is cut by overlap,
-   voices shorter than 10 s merge into neighbours, segments are
-   re-transcribed, names are assigned by the LLM (the owner = the longest
-   voice on their own mic). The live version is kept as a draft.
+   re-diarized per channel (sherpa-onnx: pyannote segmentation plus ERes2Net
+   embeddings; the live session's voice count is a clustering hint for the
+   system channel); speaker echo in the mic is cut by overlap with
+   system-channel speech, mic voices shorter than 10 s and system voices
+   shorter than 25 s merge into neighbours, segments are re-transcribed. The
+   owner is the voice that clearly dominates their own microphone in a call
+   (at least 60 % of the in-room speech and 15 points ahead of the next
+   voice, echo excluded) and is signed with the name from the settings
+   (`ChannelLabels`); when nobody wins, the labels stay neutral — signing
+   someone else's words with the owner's name is worse than leaving the
+   owner unsigned. Other names are assigned by the LLM from what was said,
+   through the full trust guard (`speaker_names`). The live version is kept
+   as a draft.
 
 ## Post-meeting pipeline (src/graph_updater.py)
 
@@ -357,12 +570,28 @@ built, what was skipped and why.
 2. Graph update: a meeting note with `[[Folder/Name|Name]]` links, upserts
    of People/Systems nodes (dated facts, history never erased), Cores —
    "Status" is rewritten, "Chronicle" accumulates. Every chronicle line
-   carries provenance: who said it, at what time, verbatim quote. The quote
-   is verified against the transcript: exact word-level match first; if the
-   model paraphrased, a fuzzy search finds the closest transcript window
+   carries provenance: who said it, at what time, verbatim quote — and the
+   whole of it comes FROM THE TRANSCRIPT, not one field from the model's
+   answer. The quote: exact word-level match first; if the model
+   paraphrased, a fuzzy search finds the closest transcript window
    (difflib, 0.75 threshold) and the graph gets a slice of the TRANSCRIPT
    itself, never the model's wording; anything below the threshold is
-   dropped as fabrication.
+   dropped as fabrication. Who and when: the markup is read by
+   `transcript.parse_blocks`, the inverse of the renderer living next to
+   it — the quote's position falls inside exactly one block, and the speaker
+   and time are taken from there, with no guessing by lines. Foreign
+   transcripts without our markup keep the inline path («10:15 Name:
+   utterance», at most five lines up). A name is accepted only if it is a
+   PARTICIPANT OF THIS meeting — people from the extraction and the
+   «Участники (звучали в разговоре)» header; graph nodes do not count,
+   otherwise a colleague who left would stay an admissible speaker forever.
+   Without that check «Итог:», «Решения:», «Присутствовали:» became speakers —
+   half of an undiarized transcript is lines like that. Nobody recognised —
+   the quote goes unsigned: absence is more honest than invention. The live
+   minutes (the model writes them during the meeting) help the extraction
+   but never take part in the check — otherwise a quote found in a retelling
+   would get the "verbatim from the transcript" stamp in the graph, and the
+   fabrication check would be confirmed by a fabrication.
 3. Archive (src/meeting_archive.py): a "date — title" folder, human file
    names, Q&A assembled from the hints log, the Summary generated with
    historical context (Cores + two previous summaries; the future never
@@ -371,9 +600,10 @@ built, what was skipped and why.
    and enriches the graph with links visible only from history. What the
    review refutes does not live on: withdrawn action items move from the
    minutes' tasks into "Withdrawn by the review" with the reason, wrong
-   decisions in the note are marked ⛔ in place, and Charoite's memory of the
-   meeting is resent without them (facts used to reach memory before the
-   review, and the review never caught up with them). A speaker label the
+   decisions in the note are marked ⛔ in place, and Charoite's external
+   memory of the meeting (with `sufler.brain: true`) is resent without them
+   (facts used to reach memory before the review, and the review never
+   caught up with them). A speaker label the
    rebuild named after the wrong person (strict "Name fixes" section:
    label → name with the grounds) is restamped in the transcript's block
    headers and participants line and in the minutes' participants line,
@@ -412,17 +642,22 @@ live meeting, 31.08).
 
 ```
 <graph_dir>/
-  Meetings/…       ← episodes (raw material, never lost)
-  People/ Systems/ ← entities with backlinks
-  Cores/           ← cross-meeting topics: Status + Chronicle
-  Notes/           ← voice notes
-  Meeting-archive/ ← the reading layer (Finder-friendly)
-  _MOC.md          ← the map of content
+  Встречи/YYYY-MM-DD_HHMM_title.md       ← episodes: meetings (raw material, never lost)
+  Люди/ Системы/ Команды/ Модели/        ← entities: people, systems, teams, models
+  Ядра/                                  ← cores, cross-meeting topics: Status + Chronicle
+  Досье/                                 ← topic dossiers + _ИНДЕКС.md
+  Заметки/                               ← voice notes
+  Встречи-архив/date — title/            ← the reading layer (Finder-friendly)
+  Документация/Стенограммы встреч/       ← the meeting documents (see "Kinds of duplicates")
+  _MOC.md                                ← the map of content
 ```
 
-This is the three-layer "episodes → entities → communities" scheme (as in
-Graphiti/Zep) on plain markdown: grep, Obsidian, git and any editor just
-work. Superseded facts are dated, not deleted.
+The pipeline writes these Russian folder names whatever the interface
+language; search also reads the English folders of the demo graph
+(`People`, `Systems`, `Cores`, …). This is the three-layer "episodes →
+entities → communities" scheme (as in Graphiti/Zep) on plain markdown: grep,
+Obsidian, git and any editor just work. Superseded facts are dated, not
+deleted.
 
 **Picking the graph.** Every sphere of life gets its own graph next to the
 others; the «проект» field from the extraction decides where a meeting lands.
@@ -433,19 +668,38 @@ separators — «Project Alpha» and «Project_Alpha» are one graph, not two. A
 graph is created only for a clearly non-work topic; on a work meeting that is
 a mis-pick, so the log records which graphs were known at the time.
 
-**Graph hygiene as memory (memory audit, 07.09).** One resolver,
-`src/graph_links.py`, decides whether a `[[link]]` is alive for the
-nightly doctor, the cloud review and clean-ups alike: full path, note
+**Graph hygiene as memory.** Diarization labels («Собеседник 3»,
+«Speaker 2») are not people: they get no node in `Люди/` and stay text in
+the meeting note — otherwise different people from different meetings were
+glued into one file with a hundred incoming links (audit 28.08: 17 such
+nodes). Node names are compared by a key without punctuation, brackets and
+hyphens («Иван (Иванов)» and «Иван Иванов» are one node), and a line break
+inside `[[…]]` in the model's answer is glued on write — for Obsidian such a
+link is dead. A person's name is also compared regardless of word order
+(«Иван Петров» → the node «Петров Иван»), the instrumental case from speech
+(«с Сашей») leads to a known person the way the vocative does, a
+diarization label glued to a real name («Саша (Speaker 1)») is stripped,
+and a redirect stub left by a merge leads to its canon instead of taking the
+meeting into itself (memory audit, 07.09). At night
+`scripts/graph_doctor.py` measures every graph's health without a model —
+broken links (separately for active folders and for `Встречи-архив`, which
+the pipeline never re-reads), labels among People, orphans, duplicates,
+near-duplicates by the name key and across word order, `_MOC.md` coverage —
+into `logs/graph_doctor.json`; the morning brief shows a summary and
+warnings by thresholds (the broken-link threshold counts active links only).
+
+One resolver, `src/graph_links.py`, decides whether a `[[link]]` is alive
+for the doctor, the cloud review and clean-ups alike: full path, note
 name, an `aliases:` entry from the node header (as Obsidian does), or an
-attachment on disk. `scripts/graph_doctor.py` reports broken links
-separately for active folders and for `Встречи-архив`, which the
-pipeline never re-reads; the warning threshold applies to active links
-only, and near-duplicates are also found across word order («Иван
-Петров» / «Петров Иван»). The pipeline folds word order for people,
-resolves the instrumental case («с Сашей») the way it resolves the
-vocative, strips a diarization label glued to a real name («Саша
-(Speaker 1)») and follows a redirect stub to its canon instead of
-appending a meeting into the stub. When the cloud review's edits are
+attachment on disk. A note beats an attachment («Linux 1.8» and «v2.json»
+are nodes), otherwise the link is alive if a file lies at that path from the
+graph root; the doctor keeps no list of extensions, and an absolute path,
+`..`, hidden folders and hidden files (`.env`) are never targets. `Досье/X`
+— `Ядра/X` pairs and tier3 redirect stubs share a name by design and are
+not counted as duplicates. Every layer recognises a stub with one detector,
+`src/charoite_graph/redirects.py`, by the structure of the first heading
+(`# Name → [[Canon]]`) rather than by tier3's literal mark: the cloud marks
+its merges in its own words. When the cloud review's edits are
 carried from the sandbox into the graph, every link target is checked
 against the live graph and the nodes this run created: a link to a node
 that exists in neither becomes plain text, the log names the file and the
@@ -458,6 +712,52 @@ predicted — a write fails after the decision — so the «will this node land�
 probe is gone, and a failure of the stripping pass goes into the verdict as
 «dead links remain». The cost: a file that lost a link is written twice, and
 the window between the writes is what the doctor catches.
+
+In the meeting note's «## Связи» only a node that exists in the graph
+becomes a link; a pronoun or a word fragment stays text. People and systems
+carry a «last mention» line that is updated mechanically, and a description
+is a dated fact: a substantially new fact supersedes it with a trace in
+«## Хроника» (№194), and machine lines past ten move to «## Архив хроники»
+at the end of the node. The indexes `Люди/_ЛЮДИ.md`, `Системы/_СИСТЕМЫ.md`,
+`Команды/_КОМАНДЫ.md` are rebuilt for the touched folders after every
+meeting (newest on top) and in full at night, while `_MOC.md` stays a
+project overview plus the list of meetings. Aliases from the node header
+(`aliases:` — a YAML list, block or string; one parser,
+`src/charoite_graph/frontmatter.py`, for the pipeline and search) are read
+when looking for a canon after the exact name and the key in the target
+folder, and only inside that folder: «ИС 1494» and «Витрина 1494» are one
+node if a person or the cloud wrote so, and a person with the same alias
+cannot capture a system; two nodes with one alias — no guessing; a redirect
+stub gives away no aliases, and a tier3 merge moves the duplicate's name and
+aliases into the canon's header. A core's status is rewritten by every
+meeting, and the superseded one goes into the chronicle with the date it held
+since — a fact has a "from" and a "to"; re-processing the same meeting with a
+different status appends a clarification to its line, and a dash is not a
+status.
+
+The mark «facts sent to memory» (`logs/brain_sent/<stamp>.txt`; written only
+with `sufler.brain: true` — off by default, and then the step takes no lock
+and leaves no debt) remembers the keys of the facts already sent (the header
+by meeting, decisions by text): a repeat sends only what the mark lacks, not
+everything again. The main file of a meeting whose title ends in a service
+word («…разбор») is recognised by its content; a retitle moves only the
+meeting's own derivatives, never a neighbouring meeting of the same minute,
+and the title tail never coincides with a service suffix («Демо live» →
+`…_Демо-live.md`, otherwise `stamp_of` would take the main file for a
+`_live` copy); stubs left by merges stay out of the hint node index. The
+transcript rebuild (`src/rebuild_transcript.py`) holds `flock` on
+`logs/rebuild-<stamp>.pid` from start to exit — the only sign "a run is
+going": a second run of the same meeting sees the lock taken and exits, and
+the mark stays on disk after exit (the OS releases the lock) — the next run
+simply rewrites it. Liveness by pid and unlinking the mark are avoided on
+purpose: a pid gets reused, and an unlink by name under someone else's fresh
+lock would remove a live run's mark. On a volume without `flock` the
+protection is off, and the log says so. Label nodes accumulated before all
+this are cleared by `scripts/migrate_placeholders.py`: a plan by default,
+`--apply --backup DIR` turns links to them into plain text, moves the nodes
+into a copy with a manifest and rebuilds the index; it refuses while a
+meeting is live.
+
 An entity whose name matches several nodes, or differs from an existing
 node by one character, does not become a node: the name stays as text in
 the meeting note and the candidates go to `_Кандидаты.md` at the graph
@@ -491,12 +791,15 @@ the verdict and the write is a log event with a reason value, not a new
 node with the parser's type and not an overwrite.
 A real ambiguity (several candidates) only gets the counter: the machine
 must not merge it.
+
 A topic that already lives as a node of another kind (`Системы/X`) and is
-then named a core gets a parallel `Ядра/X` — the two cannot be merged, their
-structures differ — and from now on both carry a «see also» line under
-`## Связи` pointing at each other, written once and idempotent on retry, so
-a later merge by the reviewer or by the entity verdict has a visible cause
-instead of a mystery in `canon_link`.
+then named a core gets a parallel `Ядра/X` — the two cannot be merged
+automatically, their structures differ; the pipeline says so in the log and
+the doctor shows the pair in the morning — and from now on both carry a
+«see also» line under `## Связи` pointing at each other, written once and
+idempotent on retry, so a later merge by the reviewer or by the entity
+verdict has a visible cause instead of a mystery in `canon_link`.
+
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
 «the file is gone» and «could not reach the file» are three kinds carried by
 the signal itself, with the system's own detail in a separate field rather than
@@ -509,6 +812,7 @@ would break silently. One place builds the blame phrase for BOTH bridge calls:
 written out by hand in each handler, it drifted apart between neighbouring
 calls into the very same bridge within a single commit. Every other site prints
 the reason text as it is and invents no culprit.
+
 Text on its way into the graph is read STRICTLY and must not bring
 unreadable characters with it: a sandbox file that does not decode as UTF-8
 goes to quarantine with its own verdict line, and so does an edit that adds
@@ -520,6 +824,7 @@ headings or a People node, and a revision that is itself not UTF-8 is not
 copied into the graph (the meeting is still archived). Before this the
 transfer read the file with replacement and wrote the result back, so a
 single truncated byte stayed in the node forever.
+
 When a duplicate node is turned into a redirect stub, the body it displaces
 is copied next to the run quarantine but outside its rotation
 (`cloud_quarantine/вытеснено/<run>/`, the last 100 runs are kept), and the
@@ -547,13 +852,13 @@ details.
 from the links a human already drew; no graph clustering algorithm is needed.
 At night a local model writes a five-section summary per cluster.
 
-**Incremental.** Each dossier carries a fingerprint of its composition — the
-source list and their modification times. Unchanged fingerprint means the
+**Incremental.** Each dossier carries a fingerprint of its composition in
+its front matter — the source list and their modification times. Unchanged fingerprint means the
 topic did not move, so the model is not called. On a typical night a handful
 of topics out of dozens get rebuilt. A weekly full pass (`--full`) is still
 useful: incremental updates gradually blur cluster boundaries.
 
-**Index lookup** (`Dossiers/_index.json`) is lexical, over word stems with
+**Index lookup** (`Досье/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running
 Ollama required; semantics is layered on top. The dossier body in an answer
 comes from the search index snapshot, not from disk: a summary the walk has
@@ -583,7 +888,7 @@ links: that one decision supersedes another, that a deadline has expired,
 that two nodes disagree. Opus sees those. With
 `sufler.cloud_edit_graph: true` it edits dossiers itself at night; off (the
 default) it writes a report and a human applies the fixes. Transcripts,
-minutes and the "## Author edits" section are never touched; every edit is
+minutes and the «## Правки автора» (author edits) section are never touched; every edit is
 backed up first.
 
 From 2025-2026 practice this takes: the community-summaries idea (GraphRAG),
@@ -719,7 +1024,9 @@ long before the conversion finishes.
 **Catch-up on start.** Any `.pcm` that still has a transcript beside it and
 does not belong to the current meeting gets its rebuild launched when the
 daemon starts — before retention runs, so cleanup never removes the only copy
-of a meeting nobody has processed yet.
+of a meeting nobody has processed yet. Orphans are rebuilt one after another
+in a background chain, not as a volley of parallel processes: one rebuild
+holds the model and the memory, and the daemon's start does not wait for it.
 
 A broken stdout pipe (the app quit or restarted) sets the same stop event the
 UI would: the daemon finishes normally with graph and minutes written, instead
@@ -736,9 +1043,11 @@ later, answering with a restart of the whole meeting. A failure is not
 silent: a stderr line and a status to the owner, at most once per 30 s per
 exception type; no channel loss is declared — the channels are alive, the hub
 failed. The health snapshot carries `pump_alive` and `pump_failures` (into
-`stt_progress` through a JSON gate and into `hb`); the app has no reader for
-them yet — they are diagnostics, and an app reaction without restarting the
-recording is a separate card. The `AudioHub` constructor does no I/O:
+`stt_progress` through a JSON gate and into `hb`); since №313 the app reads
+them (`PipelineHealthMonitor`): a dead pump is a stopped recording and
+critical, consecutive failed passes are a warning — see the system-health
+paragraph below. The app does not restart the recording on them. The
+`AudioHub` constructor does no I/O:
 `discover_captures` finds the
 devices, the production path is `AudioHub.for_meeting`; tests call the real
 constructor, so production code no longer defends against its own test
@@ -1127,6 +1436,26 @@ written the same way in the root manifest. Every kind has its own corrupt-copy
 case, and the README example is taken from the artifact's description and run
 against the unpacked wheel.
 
+The environment has a layer too. It is runtime, where the path canon lives:
+a module of base or graph neither imports it nor touches the environment in
+any form (environment variables, the home folder, its own file location,
+`sys.path` on import, dynamic imports) — a path comes in as a parameter, assembled by a
+caller from a layer that sees runtime (№365). That is what lets the graph
+search install without the app.
+
+Every executable also carries a run contract in the same artifact
+(`run_contracts`), and `tests/test_entry_points_contract.py` accepts it by
+running the process, not by reading it: `help` — `--help` with an isolated
+data root exits 0; `refuse` — a launch without a named root refuses with
+exit code 5 and a recipe (see "Where code and data live"); `none` — there is
+no safe probe, the entry point is not run, and the reason stands in the map
+as debt out loud. The occasion was five Critical findings in a row of one
+class — claims about how a process behaves that no process launch had ever
+checked. `scripts/preflight.sh` is a local summary before review (machine
+load, static checks, the full pytest, swift when the app changed, the
+mutator over the range) and deliberately does not repeat the contract check:
+that lives in pytest, which both CI and the mutator run.
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the
@@ -1152,10 +1481,10 @@ same defect appeared — an event declared in the machine, covered by a green
 test, and never actually sent by the service. A test like that pins down
 behaviour the system does not have, which is worse than no test at all.
 
-## Two kinds of duplicates
+## Kinds of duplicates
 
-The graph accumulates duplicates of two different natures, and they are handled
-by two different mechanisms — mixing them up leads to fixing the wrong thing.
+The graph accumulates duplicates of different natures, and each is handled by
+its own mechanism — mixing them up leads to fixing the wrong thing.
 
 **Conceptual duplicates of cores** — the same topic split into twins by the
 extractor across meetings ("API access setup" and "getting a token"). Word
@@ -1197,7 +1526,7 @@ material copy keeps its source's times (freshness of the archive is read by
 mtime). The archive folder has one writer: the cloud review hands its file to
 `archive_meeting(extra=…)` instead of copying it on top. The second rule of
 `scripts/dedup_graph.py` moves a copy that is byte-identical to its neighbour
-out of the graph into `backups/<graph>/dedup_copies/<run>/` with a manifest
+out of the graph into `backups/<graph>-<hash>/dedup_copies/<run>/` with a manifest
 (`--apply-copies` or `sufler.dedup_copies`, off by default and independent of
 `dedup_files`); differing copies are only reported. `graph_doctor` counts them,
 so a regression shows up in the morning brief.
@@ -1273,10 +1602,11 @@ forbidden in prose; three review rounds in a row had caught exactly that in
 different branches of the walk, and a test now guards the shape (exactly two
 assignments).
 
-Who owns a key — a name or a path — is decided by one function everywhere: newest
-first, shortest path on a tie, because a node's date is its mtime and a checkout or
-a graph copy moves it. The single priority on top of that: for the name catalogue a
-live file beats a stub.
+Who owns a key — a name or a path — is decided by one function everywhere
+(`owner_key`): newest first, the lexicographically smaller path on a tie, because
+a node's date is its mtime and a checkout, a graph copy or cloud sync moves it.
+The single priority on top of that: for the name catalogue a live file beats a
+stub.
 
 What the fix did to ranking (30 queries, top 5): lexical coverage of the query did
 not move at all — 0.989 before and after, every reshuffle happens between files
@@ -1421,6 +1751,59 @@ regression.
 contours for before/after comparisons. It still cannot answer questions about
 the app's search, which is a separate Swift implementation.
 
+## The readiness probe does not trust the data folder
+
+The first-run probe counts missing modules and microphones with a separate
+interpreter and runs with its working directory in the data folder — where
+the graph, the pipeline and the owner all write. Python puts the current
+directory first on `sys.path`, so a `yaml.py` planted there would run with
+the app's rights and break the probe's JSON protocol on top of it.
+
+This is closed by the environment, not by the `-I` flag: `PYTHONSAFEPATH=1`
+removes the cwd, `PYTHONNOUSERSITE=1` the user's site directory, and
+`PYTHONPATH`, `PYTHONHOME` and `PYTHONSTARTUP` are cleared, because the first
+beats `SAFEPATH` and the second swaps out the whole standard library. `-I`
+would be broader and more dangerous: it implies `-E` and silences
+`PYTHONPYCACHEPREFIX`, which the app uses to keep the bundle sealed — the
+probe on the very first screen would write `.pyc` files into the signed
+`Resources` and break the signature, as in 0.52.0.
+
+The probe needs no bytecode at all: `PYTHONDONTWRITEBYTECODE=1`, and the cache
+prefix is removed together with writing. Otherwise the prefix would become an
+import path from the other side — a forged `.pyc` in a world-reachable cache
+folder would run instead of the module. A one-off run compiling in memory
+costs 85 ms.
+
+The tests reproduce the hole both ways: first the rig makes sure the hijack
+actually happens, and only then that the protection removes it. A test that
+only checks for the flag proves an intention, not a result.
+
+## When the app learns about a new release
+
+The version check used to live only in the service's `init` and held a
+one-day cache. The app stays up for days, so release day turned into waiting
+day: a release came out in the morning, and the version line learnt about it
+tomorrow.
+
+Now GitHub is asked when you come back to the app, at most once every four
+hours, and the "Check now" button in Settings bypasses the throttle: a person
+asked — we answer, instead of "already checked this morning". The timestamp is
+set on the ATTEMPT and before the request, not on a successful answer:
+otherwise being offline, 5xx and rate limits lifted the throttle, and every
+activation made a new GET — on a shared IP that is a self-sustaining burn of
+the quota. The same stamp absorbs the duplicate at start-up and overlapping
+requests. The honest cost: a failed attempt is retried after four hours or by
+the button. It is a plain GET to the public API with no token and nothing
+about the person; the "Ask GitHub about a new version" toggle
+(`sufler.check_updates`) turns it off, and so does `CHAROITE_NO_CLOUD` —
+whoever switched the cloud off entirely does not expect the app to go online
+for a version number.
+
+The code version (`git describe`) is held for half a minute: a subprocess on
+every activation is too much, but a cache for the whole uptime would freeze
+the line — `git pull` is run by hand while the app is running, and the "code
+has drifted" label would either hang on after the fix or never appear.
+
 ## Where code and data live
 
 The shipped code and the working files are deliberately separated.
@@ -1445,10 +1828,15 @@ The entry point names the working folder. The root is owned by the path canon
 variable stays the channel for children — nightly scripts, the indexer, the
 cloud worker — which derive the root themselves. The app still passes
 `CHAROITE_ROOT` to the daemon on launch. Without it the daemon refuses to
-start — exit code `EXIT_ROOT_UNNAMED` (5) and an error status carrying the recipe — because an
+start — exit code `EXIT_ROOT_UNNAMED` (5, not 2: argparse returns 2 on a bad
+flag) and an error status carrying the recipe — because an
 entry point NAMES the root rather than asking for it; deriving it from the
 file location and publishing that guess to children is what the refusal
-exists to prevent. A module that merely asks (`resolve_root`) still gets a
+exists to prevent. Entry points without the daemon's channel to the app take
+the same door, `name_data_root_or_exit`: a recipe on stderr and the same
+exit code, which the app, launchd and the run-contract probe all read. A
+manual run from a checkout may take the guess, but only by saying so in the
+call (`guess_from_code=True`). A module that merely asks (`resolve_root`) still gets a
 guess when nothing is named — the code root — and that is the only place the
 derivation survives. The code root is derived once, from where the canon
 itself lies (`<root>/src/charoite_paths.py` next to `<root>/scripts/`,

@@ -26,8 +26,8 @@ Everything below runs on an ordinary laptop, fully offline:
 
 - **Speech recognition.** GigaAM transcribes Russian near-verbatim —
   control phrases come back whole, with at most a rare proper noun
-  lost. English and Chinese run on Parakeet and Whisper, same local
-  story.
+  lost. English and Chinese run on Parakeet and Whisper (SenseVoice is an
+  option for Chinese), same local story.
 - **Speaker separation.** pyannote segmentation plus ERes2Net
   embeddings. On our benchmark the diarization error rate dropped from
   0.725 to 0.246 — a number from a frozen audio set, not a feeling.
@@ -93,25 +93,38 @@ calendar.
 
 Work is divided by task class, not by ideology.
 
-**Local, always:** audio, recognition, voices, theses, minutes,
+**Local by default:** audio, recognition, voices, theses, minutes,
 classification, search, node extraction from a fresh meeting. This is
-the conveyor — it runs every day and asks nobody's permission.
+the conveyor — it runs every day and asks nobody's permission. One
+exception is deliberate: a machine that cannot hold a large model may
+send the chat part — hints, theses, minutes — to a cloud gateway
+(`llm.engine: cloud`), behind two keys and the same kill switch.
+Recognition, voices, embeddings and NLI stay local with any engine.
 
 **Strong model, strictly opt-in:** core revision, cross-checking
-minutes against the transcript, dossier synthesis. These are rare,
-expensive, smart operations — once a night, not once a minute.
+minutes against the transcript, a second pass over the dossiers the
+local model built. These are rare, expensive, smart operations — once a
+night, not once a minute.
 
 And the key part — engineering of distrust around the cloud seam:
 
 - one decision point (`src/privacy.py`), fail-closed: any ambiguity in
   the config reads as "no";
-- a kill switch in one environment variable silences all cloud at once;
-- the cloud sees a prepared set of files, not the disk: no transcripts
-  of other meetings, no recordings, no config, no git history;
-- the right to edit the graph is a separate toggle, off by default —
+- a kill switch in one environment variable (`CHAROITE_NO_CLOUD`)
+  silences all cloud at once, the chat gateway included;
+- the cloud sees the graph, not the disk: its tools are anchored to the
+  graph folder, so the `transcripts/` folder, recordings, logs, the config
+  and the project's git history stay out of reach. The graph is the boundary you
+  grant — the transcript copies it keeps are readable inside it, and
+  writing to them is closed;
+- the right to edit the graph is a separate toggle, off by default — the
+  cloud works on a copy, and only permitted changes are carried back,
   with a graph backup, edit boundaries and a timeout;
-- the API key is always scrubbed from the environment: only the
-  subscription CLI works, per-token billing does not exist here;
+- the Claude layer runs only through the subscription CLI, and the API
+  key is always scrubbed from its environment: no per-token billing
+  behind your back. The one keyed path is the opt-in chat gateway above
+  — its key lives in a separate file, never in the config, and travels
+  over https only;
 - every rule is pinned by a structural test that reads the sources and
   fails on any attempt to weaken it.
 
@@ -121,10 +134,15 @@ landing page.
 ## What would change our mind
 
 A manifesto without a refutation criterion is an advertisement. Ours:
-we keep a graph-revision bench (reference questions over the archive
-plus edit verification) and run every notable local model through it.
-The day a local model passes it at cloud level, the cloud seam turns
-off with one line of config — the code is already built that way.
+we keep benches on our own archive and run every notable local model
+through them — `scripts/memory_bench.py` (reference questions over the
+archive, every night) and `scripts/bench_extract.py` (what a model pulls
+from real meetings into the graph, with every quote checked against the
+transcript). The revision task itself has no bench yet: a local model's
+core report next to the cloud one on the same cores is the next one to
+build. The day a local model holds that task at cloud level, the cloud
+seam turns off with one line of config — the code is already built that
+way.
 
 Until that day we say it plainly: local-first means "local by default
 and privacy by construction". It does not mean "never any cloud" — it

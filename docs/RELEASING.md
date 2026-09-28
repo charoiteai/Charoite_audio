@@ -11,12 +11,20 @@ happens on merge to `main`.
 
 1. Every push to `main` runs the `release-please` workflow.
 2. It collects `fix:`/`feat:` commits since the last release into a **release
-   PR** titled `chore(main): release X.Y.Z`, updating `CHANGELOG.md` and
-   `.github/.release-please-manifest.json`.
-3. Merging that PR tags the commit (`vX.Y.Z`) and creates a GitHub Release.
+   PR** titled `chore(main): release X.Y.Z`, updating `CHANGELOG.md`,
+   `.github/.release-please-manifest.json` and the iPhone companion's
+   `MARKETING_VERSION` in `app-ios/project.yml` (an `extra-files` entry in
+   `.github/release-please-config.json`).
+3. Merging that PR tags the commit (`vX.Y.Z`) and creates a GitHub Release —
+   as a pre-release until the owner signs it (see the gate below).
 
 The current version lives in `.github/.release-please-manifest.json` — not in
 a `version.txt` in the repo root. Git tags are the source of truth.
+
+The docs guard lets a release PR through by the content of its diff, not by
+its branch name: a diff made only of `CHANGELOG.md`, the manifest and
+`app-ios/project.yml` needs no documentation. A new `extra-files` entry turns
+the guard red until it is added there on purpose.
 
 ## Squash merges: the PR title IS the commit
 
@@ -44,8 +52,8 @@ Rules:
 The release PR must be created by a **personal access token**, not the built-in
 `GITHUB_TOKEN`. GitHub deliberately does not run CI on branches created by the
 built-in token (loop protection), so the release PR would sit `BLOCKED` with no
-required checks. A PAT makes the branch "human", and `lint`/`analyze` run
-normally.
+required checks. A PAT makes the branch "human", and the required `lint` and
+`pytest (src/)` run normally.
 
 To set it up (repo owner, once):
 
@@ -64,8 +72,11 @@ the PAT is in place.
 `release-app` builds `Charoite.dmg` (the installer for a first install),
 `Charoite.app.zip` (what the installed app updates from) and a `.sha256` for
 both — without a published checksum the in-app update refuses to install
-what it downloaded. It builds them on a macos runner and attaches
-it to the release. Three triggers:
+what it downloaded. It builds them on a `macos-26` runner (the same SDK as
+`swift-tests`: the live dictation draft needs SDK 26) and attaches them to
+the release. The job ceiling is 90 minutes: notarization waits for Apple
+twice, up to 35 minutes each (`scripts/notarize.sh`), and a bad day should
+end with Apple's log, not with the runner cutting the job. Three triggers:
 
 - `workflow_run` after the `release-please` workflow — the main path.
   release-please publishes releases with `GITHUB_TOKEN`, and GitHub's
@@ -92,19 +103,33 @@ The order inside the job is deliberate: the **first** step resolves which
 tag needs an asset and whether one already exists — before anything is
 built. `release-please` completes on every push to `main`, usually without
 creating a release, so most chained runs must end in seconds at the
-resolve step, not after a full macOS build.
+resolve step, not after a full macOS build. A chained run has no tag in its
+event and takes the newest release, drafts excluded: a draft has a tag name
+but no git tag, and checking it out would fail the run for as long as the
+draft exists.
 
 The build checks out `refs/tags/<tag>` — **the code of that release, not
 the tip of `main`**. `make_app.sh` stamps the version from `git describe`,
 which on a tag checkout is exactly the tag, so `CFBundleShortVersionString`
 matches the release. A full checkout (`fetch-depth: 0`) is required for
-`git describe` to see tags.
+`git describe` to see tags. The release job pins its actions by commit SHA
+and restores no build cache: what it builds is signed and shipped to every
+user, and a restored cache would be foreign artifacts in that delivery
+(zizmor: cache-poisoning). A few extra minutes once per release are cheaper.
 
-The embedded CPython that ships inside the bundle is downloaded from
+The embedded CPython that ships inside the bundle
+(`scripts/build_embedded_python.sh`) is downloaded from
 python-build-standalone with a pinned version and build tag, and its sha256
 is verified against the release's published `SHA256SUMS` before unpacking —
 a mismatch (including a poisoned local cache) fails the build instead of
-shipping an unverified interpreter.
+shipping an unverified interpreter. The runtime packages are installed only
+from `requirements-runtime.lock` with `--require-hashes`, and the build does
+not upgrade pip from PyPI: the signed bundle holds exactly what the
+repository records, transitive packages included. After changing the
+dependencies in `pyproject.toml`, rebuild the lock with
+`.venv/bin/python scripts/lock_runtime_deps.py` — `tests/test_runtime_lock.py`
+fails while the lock lags behind `pyproject.toml`, before the release build
+would fail with a bare "no hash".
 
 Validation after changing any of this: download the asset, `ditto -x -k`,
 `codesign -dv`, check `CFBundleShortVersionString` matches the tag.
@@ -218,7 +243,12 @@ as above: the unzipped app must report `CFBundleShortVersionString`
 
 ## Branch protection: what blocks a merge, and why
 
-Required checks on `main` are **`lint`** and **`pytest (src/)`**. Two
+Required checks on `main` are **`lint`** and **`pytest (src/)`**. The layout
+gate (`scripts/layout_map.py --check`) is a step of `pytest (src/)`, so it
+blocks too; it runs even when pytest is red, so a broken test collection does
+not hide its verdict. Everything else reports without blocking: `analyze`,
+`mutation (changed lines)`, the docs guard, the PR-title check, the
+supply-chain jobs, the Swift and iOS builds and the Android job. Two
 deliberate choices behind that short list:
 
 **Tests block merges now.** They did not before — required checks were
@@ -232,7 +262,10 @@ context then never arrives and the PR hangs forever on *"Expected —
 Waiting for status to be reported"*, unfixable by re-running anything.
 That was the whole story behind the "phantom checks" that used to be
 cured by recreating the branch from `main`. `lint` and `pytest` also run
-on `push`, so their contexts exist even on a conflicted PR.
+on `push`, so their contexts exist even on a conflicted PR. The same holds
+for every job that runs on `pull_request` only — `mutation (changed lines)`,
+the docs guard, the PR-title check, dependency review — so they stay
+advisory as well; a red one is still read before merging.
 
 **`strict` (require branches up to date) is off.** With four releases in
 a day, every merge into `main` pushed every open PR into BEHIND, and
@@ -240,25 +273,29 @@ a day, every merge into `main` pushed every open PR into BEHIND, and
 re-run from scratch, fresh chance of conflict. It buys protection against
 semantic conflicts, which nothing here implements anyway.
 
-**`swift test (app)` and `build (app-ios)` stay advisory** while their
-workflow keeps a `paths:` filter. A required check that never starts on
-PRs which touch no Swift would hang them exactly like `analyze` did.
+**`swift test (app)`, `build (app-ios)` and the Android job
+(`test, lint, assemble`) stay advisory** while their workflows keep a
+`paths:` filter. A required check that never starts on PRs which touch no
+Swift or Kotlin would hang them exactly like `analyze` did.
 
-## Ручная приёмка перед релизом (экран и звук)
+## Manual acceptance before a release (screen and sound)
 
-CI не воспроизводит ни живые устройства, ни конкуренцию с 30-гигабайтной
-локальной моделью, поэтому релиз с изменениями живого контура или UI не
-уходит без короткой ручной проверки на настоящей машине:
+CI reproduces neither live devices nor the competition with a large local
+model (20+ GB of weights on the full profile), so a release that changes the
+live loop or the UI does not go out without a short manual check on a real
+machine:
 
-1. Старт записи → 2 минуты живой речи в оба канала → лента идёт, метки
-   говорящих разумны, таймер тикает.
-2. Один вопрос вслух → ⚡-подсказка приходит.
-3. Стоп → минутки собраны, файлы записи на месте, уведомление пришло.
-4. `tail -40 <данные>/logs/daemon.err.log` — без новых ошибок и
+1. Start recording → 2 minutes of live speech in both channels → the feed
+   runs, speaker labels are sensible, the timer ticks.
+2. Ask one question aloud → the ⚡ hint arrives.
+3. Stop → the minutes are assembled, the recording files are in place, the
+   notification arrived.
+4. `tail -40 <data>/logs/daemon.err.log` — no new errors and no
    `stt-health state=stalled`.
 
-Что именно смотрелось — одной строкой в описание релизного PR. Изменения,
-не трогающие экран/звук (доки, конвейер, скрипты), приёмки не требуют.
+What exactly was checked goes as one line into the release PR description.
+Changes that touch neither screen nor sound (docs, pipeline, scripts) need no
+acceptance.
 
 ## Signing the update manifest (after every release)
 
@@ -268,13 +305,20 @@ the archive, and whoever could replace the archive could replace the checksum
 too. The key never enters CI.
 
 After a release is published (release-please + release-app), one command on
-the owner's machine (`gh` ≥ 2.28 — the `--latest` flag):
+the owner's machine (`gh` ≥ 2.28 — the `--latest` flag; the GitHub token is
+read from `~/.config/charoite/gh_token`):
 
     .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z
 
+Without the private key the script refuses with exit code 2 and signs
+nothing. `--file <path>` signs a local file instead (the signature lands next
+to it as `.sig`, no `gh` involved).
+
 It reads the release state, downloads `Charoite.app.zip`, unpacks it and
 VERIFIES the bundle signature (codesign --strict, team AR7PDJQNR4) — an
-archive swapped before signing is refused, not signed. It then builds the
+archive swapped before signing is refused, not signed; so is an archive whose
+`Charoite.app` is a symlink (codesign would follow it and vouch for the link's
+target, such as the installed app). It then builds the
 manifest `<version>  <sha256>` ITSELF (the signed file carries the version —
 a bare hash allowed replaying an old honest triple under a new tag), signs
 its raw bytes (raw ed25519 → base64) with
