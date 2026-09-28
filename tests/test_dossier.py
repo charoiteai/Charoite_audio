@@ -1,6 +1,7 @@
 """Досье-слой: кластеризация, инкрементальность, поиск по индексу."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import sys
@@ -9,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_graph import dossier  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 
 
 def _граф(tmp: pathlib.Path) -> pathlib.Path:
@@ -36,8 +38,8 @@ def _граф(tmp: pathlib.Path) -> pathlib.Path:
 
 def test_кластер_собирается_вокруг_ядра(tmp_path):
     g = _граф(tmp_path)
-    files, backlinks = dossier.scan(g)
-    cl = dossier.clusters(files, backlinks, min_size=3)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    cl = dossier.clusters(files, backlinks, min_size=3, schema=CHAROITE)
 
     assert "Настройка доступа" in cl
     члены = set(cl["Настройка доступа"])
@@ -47,25 +49,25 @@ def test_кластер_собирается_вокруг_ядра(tmp_path):
 
 def test_досье_и_служебное_в_кластеры_не_попадают(tmp_path):
     g = _граф(tmp_path)
-    (g / dossier.DOSSIER_DIR).mkdir()
-    (g / dossier.DOSSIER_DIR / "Настройка доступа.md").write_text(
+    (g / CHAROITE.dossier_dir).mkdir()
+    (g / CHAROITE.dossier_dir / "Настройка доступа.md").write_text(
         "# Досье\n[[Ядра/Настройка доступа]]\n", encoding="utf-8")
     (g / "Служебное_ночная_ревизия_2026-07-29.md").write_text(
         "# Ревизия\n[[Ядра/Настройка доступа]]\n", encoding="utf-8")
 
-    files, _ = dossier.scan(g)
-    assert all(not v["rel"].startswith(dossier.DOSSIER_DIR) for v in files.values())
+    files, _ = dossier.scan(g, schema=CHAROITE)
+    assert all(not v["rel"].startswith(CHAROITE.dossier_dir) for v in files.values())
     assert not any(k.startswith("Служебное_") for k in files)
 
 
 def test_отпечаток_меняется_только_при_правке_источника(tmp_path):
     g = _граф(tmp_path)
-    files, backlinks = dossier.scan(g)
-    члены = dossier.clusters(files, backlinks)["Настройка доступа"]
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    члены = dossier.clusters(files, backlinks, schema=CHAROITE)["Настройка доступа"]
     было = dossier.fingerprint(члены, files)
 
     # перечитали граф, ничего не трогая
-    files2, _ = dossier.scan(g)
+    files2, _ = dossier.scan(g, schema=CHAROITE)
     assert dossier.fingerprint(члены, files2) == было
 
     # правка одного источника
@@ -73,7 +75,7 @@ def test_отпечаток_меняется_только_при_правке_и
     p.write_text(p.read_text(encoding="utf-8") + "\nДописали строку.\n", encoding="utf-8")
     import os
     os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 120))
-    files3, _ = dossier.scan(g)
+    files3, _ = dossier.scan(g, schema=CHAROITE)
     assert dossier.fingerprint(члены, files3) != было
 
 
@@ -107,10 +109,10 @@ def test_предисловие_модели_отрезается():
     ("отпуск и график смен", False),      # мимо темы
 ])
 def test_поиск_по_индексу(tmp_path, запрос, ждём):
-    folder = tmp_path / dossier.DOSSIER_DIR
+    folder = tmp_path / CHAROITE.dossier_dir
     dossier.write_index(folder, [{
         "тема": "Настройка доступа",
-        "файл": f"{dossier.DOSSIER_DIR}/Настройка доступа.md",
+        "файл": f"{CHAROITE.dossier_dir}/Настройка доступа.md",
         "источников": 4, "собрано": "2026-07-29", "отпечаток": "abc",
         "ключи": ["доступ", "токен", "qwen3-32b", "403", "настроик"],
     }])
@@ -131,7 +133,7 @@ def test_имена_стенограмм_в_ключи_не_лезут():
 
 
 def test_индекс_читается_обратно(tmp_path):
-    folder = tmp_path / dossier.DOSSIER_DIR
+    folder = tmp_path / CHAROITE.dossier_dir
     записи = [{"тема": "А", "файл": "Досье/А.md", "источников": 3,
                "собрано": "2026-07-29", "отпечаток": "x", "ключи": ["а"]},
               {"тема": "Б", "файл": "Досье/Б.md", "источников": 5,
@@ -147,7 +149,7 @@ def test_индекс_читается_обратно(tmp_path):
 
 
 def test_битый_индекс_не_роняет_поиск(tmp_path):
-    folder = tmp_path / dossier.DOSSIER_DIR
+    folder = tmp_path / CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     (folder / dossier.INDEX_JSON).write_text("{это не json", encoding="utf-8")
     assert dossier.load_index(folder) == []
@@ -167,9 +169,9 @@ def test_заглушка_tier3_не_становится_темой(tmp_path):
     (g / "Встречи" / "2026-07-25_0900.md").write_text(
         "# Встреча\nСнова про [[Ядра/Доступ и токены]].\n", encoding="utf-8")
 
-    files, backlinks = dossier.scan(g)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
     assert "Доступ и токены" not in files
-    cl = dossier.clusters(files, backlinks, min_size=2)
+    cl = dossier.clusters(files, backlinks, min_size=2, schema=CHAROITE)
     assert "Доступ и токены" not in cl
 
 
@@ -192,7 +194,7 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
         "# Встреча\nПро [[Ядра/Отчётность]] и [[Люди/Пётр]].\n", encoding="utf-8")
     (g / "Люди" / "Пётр.md").write_text(
         "# Пётр\nВедёт [[Ядра/Настройка доступа]] и [[Ядра/Отчётность]].\n", encoding="utf-8")
-    folder = g / dossier.DOSSIER_DIR
+    folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
     for theme in ("Настройка доступа", "Отчётность"):
@@ -253,7 +255,7 @@ def test_закрытое_окно_не_зовёт_модель_и_не_теря
         "# Встреча\nПро [[Ядра/Отчётность]] и [[Люди/Пётр]].\n", encoding="utf-8")
     (g / "Люди" / "Пётр.md").write_text(
         "# Пётр\nВедёт [[Ядра/Настройка доступа]] и [[Ядра/Отчётность]].\n", encoding="utf-8")
-    folder = g / dossier.DOSSIER_DIR
+    folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
     for theme in ("Настройка доступа", "Отчётность"):
@@ -355,7 +357,7 @@ def test_пересборка_делает_копию_досье_до_перез
     ревизии стирала без единой копии (аудит 13.09, GLM C1)."""
     nd = _скрипт_пересборки()
     g = _граф(tmp_path)
-    folder = g / dossier.DOSSIER_DIR
+    folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Настройка доступа.md").write_text(
         "---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
@@ -377,7 +379,7 @@ def test_пересборка_без_копии_не_перезаписывае�
     и индекс терялись (круг-1 по #561: DS I2 / GLM I1)."""
     nd = _скрипт_пересборки()
     g = _граф(tmp_path)
-    folder = g / dossier.DOSSIER_DIR
+    folder = g / CHAROITE.dossier_dir
     folder.mkdir()
     old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
            "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
@@ -394,3 +396,28 @@ def test_пересборка_без_копии_не_перезаписывае�
     assert r["собрано"] == 0 and r["отказы"] == 1
     assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"
+
+
+def _nightly_dossier():
+    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "nightly_dossier.py"
+    spec = importlib.util.spec_from_file_location("nightly_dossier", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_ночное_досье_find_ищет_в_папке_досье_схемы(tmp_path, monkeypatch, capsys):
+    """`--find` отвечает по индексу в папке досье схемы Чароита: тема находится по ключу,
+    печатается с файлом; запрос мимо — «досье не найдено»."""
+    graph = tmp_path / "г"
+    dossier.write_index(graph / CHAROITE.dossier_dir, [{
+        "тема": "Платежи", "источников": 5, "собрано": "2026-08-03", "ключи": ["платежи", "шлюз"],
+        "файл": f"{CHAROITE.dossier_dir}/Платежи.md"}])
+    nd = _nightly_dossier()
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "платежи"])
+    assert nd.main() == 0
+    out = capsys.readouterr().out
+    assert "Платежи" in out and f"{CHAROITE.dossier_dir}/Платежи.md" in out
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--find", "погода"])
+    assert nd.main() == 0
+    assert "досье не найдено" in capsys.readouterr().out

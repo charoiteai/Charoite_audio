@@ -42,6 +42,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import sys
 import typing
 
@@ -64,7 +65,8 @@ def test_layout_matches_the_code(world):
     готовое действие."""
     layout, graph, scanned, execs, inv = world
     problems = lm.check(layout, graph, scanned, execs, map_text=lm.MAP.read_text(encoding="utf-8"),
-                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv), inv=inv)
+                        roots=lm.root_derivations(inv, layout), seams=lm.seam_calls(inv),
+                        literals=lm.literals_measure(inv, layout), inv=inv)
     assert not problems, "\n".join(problems)
 
 
@@ -370,6 +372,13 @@ def _code(src: str) -> "lm.FileInfo":
     return lm.FileInfo(kind="code", haystacks=(), tree=ast.parse(src), executable=None)
 
 
+def _файл_и_шов(line: str) -> tuple[str, str]:
+    """Находка судьи швов → пара (файл, «модуль.символ») для сверки."""
+    файл = line.split(":", 1)[0]
+    шов = line.split("зовёт ", 1)[1].split(" ", 1)[0]
+    return файл, шов
+
+
 def test_env_seams_of_the_graph_are_called_only_through_the_door():
     """Индекс поиска и ревизию ядер приложение строит через дверь окружения
     (`graphs.open_search`, `graphs.revise_cores`): там один каталог кэша векторов и одно
@@ -416,8 +425,20 @@ def test_env_seams_of_the_graph_are_called_only_through_the_door():
     for rel in ("src/чужой.py", "src/чужой_рядом.py", "src/чужой_псевдоним.py", "src/аннотации.py"):
         assert rel not in calls, f"{rel}: не шов, а правило его засчитало"
     assert calls["src/graphs.py"], "в двери те же написания обязаны быть найдены (иначе «зелено» — слепота)"
+    # находки сверяются ПАРАМИ (файл, шов): в `scripts/поток.py` теперь два шва —
+    # поток и ревизия на одной строке, и по одному «файл:строка» они неразличимы
+    index, symbols = lm.seam_tables()
+    expected = sorted(
+        (rel, f"{index[seam].module}.{seam}")
+        for rel, src in bypass.items()
+        for seam in lm._seam_refs(_code(src).tree, index, symbols)
+    )
+    # `src/graphs.py` — дверь швов графа: её собственные написания зелёные, а
+    # поток — чужой для неё шов, и обход обязан остаться в ожиданиях
+    expected.append(("src/graphs.py", f"{index['Thread'].module}.Thread"))
+    ожидаемые = sorted(expected)
     said = lm.seam_problems(calls)
-    assert sorted(line.split(" ")[0] for line in said) == sorted(f"{rel}:2" for rel in bypass)
+    assert sorted(_файл_и_шов(line) for line in said) == ожидаемые
     assert all("мимо двери окружения" in line for line in said)
     assert lm.seam_problems(None) == []
 
@@ -429,7 +450,9 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     слоя, а модуль слоя с окружением — не тронуть. Один прогон `main` на оба
     правила: полный `--check` — самая дорогая строка набора, который мутатор
     гоняет на каждого мутанта, и job мутации упирался в свой потолок."""
-    monkeypatch.setitem(lm.ENV_SEAMS, "GraphSearch", ("graph_search", (), "graphs.open_search"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", tuple(
+        seam._replace(owners=()) if seam.symbol == "GraphSearch" else seam
+        for seam in lm.ENV_SEAMS))
     shapes = tuple(s._replace(find=lambda tree, rel: [1]) if s.name == "dynamic_import" else s
                    for s in lm.ROOT_SHAPES)
     monkeypatch.setattr(lm, "ROOT_SHAPES", shapes)
@@ -438,7 +461,10 @@ def test_the_gate_is_actually_asked_about_the_seams_and_the_layer_shapes(monkeyp
     assert "src/graphs.py" in out
     assert "src/charoite_graph/graph_search.py:1 импортирует динамически" in out \
         and "путь приходит параметром" in out
-    assert "src/daemon.py:1" not in out, "модуль слоя с окружением формами layer не меряется"
+    # граница «:1» — регуляркой, а не подстрокой: `src/daemon.py:1` сидит в начале
+    # любой строки вида `src/daemon.py:1N`, и подстрока краснела бы о чужое число
+    assert not re.search(r"src/daemon\.py:1\b", out), \
+        "модуль слоя с окружением формами layer не меряется"
 
 
 def test_the_gate_is_actually_asked_about_the_roots(monkeypatch, capsys):
@@ -547,6 +573,12 @@ APPROVED_FIELDS = {
     "root_exemptions": ("dict", "decision", None),
     "run_contracts": ("dict", "measured", {"mode": ("str", "seed", True), "why": ("str", "seed", True),
                                            "ticket": ("str", "decision", False)}),
+    "schema_module": ("str", "decision", None),
+    "schema_values": ("str", "decision", None),
+    "folder_literals": ("list", "measured", {"rel": ("str", "measured", True), "field": ("str", "measured", True),
+                                             "literal": ("str", "measured", True),
+                                             "ticket": ("str", "decision", True)}),
+    "folder_literal_exemptions": ("dict", "decision", None),
 }
 APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
@@ -773,8 +805,12 @@ def test_regen_touches_only_what_the_declaration_lets_it():
     испорченный["run_contracts"].pop(next(k for k, c in испорченный["run_contracts"].items()
                                           if c["mode"] != "none"))
     испорченный["run_contracts"]["src/нет_такого.py"] = {"mode": "help", "why": "x"}  # и снимет лишний
+    # лишняя запись долга: замер её не находит — реген снимет, карточки живых не тронет
+    испорченный["folder_literals"] = испорченный["folder_literals"] + [
+        {"rel": "src/x.py", "field": "node_folders", "literal": "Фантом", "ticket": "№0"}]
     испорченный["generated"] = "2000-01-01T00:00Z"
-    fresh, _ = lm.regen(json.loads(json.dumps(испорченный)), graph, inv, [])
+    measured = lm.literals_measure(inv, факт)
+    fresh, _ = lm.regen(json.loads(json.dumps(испорченный)), graph, inv, [], literals=measured)
     for key, f in lm._SCHEMA.items():
         if f.cls == "decision":
             assert fresh[key] == испорченный[key], f"{key}: решение человека, реген его переписал"
@@ -782,6 +818,7 @@ def test_regen_touches_only_what_the_declaration_lets_it():
             assert fresh[key] != испорченный[key], f"{key}: объявлен замером, а реген его не пересобрал"
     assert {(e["from"], e["to"]) for e in fresh["allowed_edges"]} == set(lm.allowlist_edges(факт))
     assert set(fresh["run_contracts"]) == set(факт["run_contracts"])
+    assert {tuple(e.items()) for e in fresh["folder_literals"]} == {tuple(e.items()) for e in факт["folder_literals"]}
 
 
 def test_seed_fields_are_exactly_what_the_code_guess_writes(tmp_path, monkeypatch):
@@ -840,7 +877,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", stale_map)
 
-    def fake_regen(layout, graph, inv=None, notes=None):
+    def fake_regen(layout, graph, inv=None, notes=None, literals=None):
         layout["allowed_edges"] = [e for e in layout["allowed_edges"] if e["from"] != "x_mod"]   # черновик «чинит» запись
         return layout, [("low_mod", "top_mod")]
     monkeypatch.setattr(lm, "regen", fake_regen)
@@ -855,7 +892,7 @@ def test_regen_refuses_to_write_an_artifact_the_loader_rejects(monkeypatch, tmp_
     # убери `not blocked` из main, и строка появится (обе головы круга 7)
     assert "отстал от кода" not in out, "карта не писалась — строка о её свежести недостижима"
     # без блокировки та же устаревшая карта краснеет, а пропавшая — тоже
-    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (layout, []))
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None, literals=None: (layout, []))
     lm.main(["--check"])
     assert "отстал от кода" in capsys.readouterr().out, "вне блокировки устаревшая карта — расхождение"
     stale_map.unlink()
@@ -876,7 +913,7 @@ def test_regen_does_not_write_what_the_loader_would_reject(monkeypatch, tmp_path
     monkeypatch.setattr(lm, "LAYOUT", lay)
     monkeypatch.setattr(lm, "MAP", карта)
 
-    def regen_with_a_stray_field(layout, graph, inv=None, notes=None):
+    def regen_with_a_stray_field(layout, graph, inv=None, notes=None, literals=None):
         layout["allowed_edges"] = layout["allowed_edges"][1:]
         layout["allowed_edges"][0]["until"] = "2026-10-31"
         return layout, []
@@ -888,32 +925,37 @@ def test_regen_does_not_write_what_the_loader_would_reject(monkeypatch, tmp_path
     assert "загрузка отвергает" in out and "until" in out
     assert "долг №" not in out, "дельта долга — отчёт о записанном; при отказе на диске прежний долг"
     # без отказа тот же сдвиг долга печатается, и артефакт записан
-    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None: (
+    monkeypatch.setattr(lm, "regen", lambda layout, graph, inv=None, notes=None, literals=None: (
         {**layout, "allowed_edges": layout["allowed_edges"][1:]}, []))
     lm.main(["--regen"])
     assert "долг №322: было 3, стало 2" in capsys.readouterr().out
     assert len(json.loads(lay.read_text(encoding="utf-8"))["allowed_edges"]) == 2
 
 
-def test_debt_is_derived_from_both_carriers_by_one_card_parser():
-    """Долг по карточкам — производная из обоих носителей: ребро против стрелок и
-    вход без пробы (`none`); карточка — поле `ticket`, разобранное одним
-    `card_of`. Хвост после номера — пояснение, а не другая карточка."""
+def test_debt_is_derived_from_every_carrier_by_one_card_parser():
+    """Долг по карточкам — производная из носителей, объявленных в `_SCHEMA`
+    полем `ticket`: ребро против стрелок, вход без пробы (`none`) и литерал имени
+    (№422). Карточка — поле `ticket`, разобранное одним `card_of`. Хвост после
+    номера — пояснение, а не другая карточка."""
     layout = _layout(allowed_edges=[{"from": "low_mod", "to": "top_mod", "ticket": "№7 (пояснение, №9 — не в счёт)"},
                                     {"from": "core_mod", "to": "top_mod", "ticket": "№12"}],
                      run_contracts={"src/cli.py": {"mode": "none", "why": "нет пробы", "ticket": "№7"},
-                                    "src/tool.py": {"mode": "help", "why": "по коду: argparse"}})
+                                    "src/tool.py": {"mode": "help", "why": "по коду: argparse"}},
+                     folder_literals=[{"rel": "src/x.py", "field": "node_folders", "literal": "Люди", "ticket": "№7"}])
+    assert set(lm.DEBT_CARRIERS) == {"allowed_edges", "run_contracts", "folder_literals"}
     долг = lm.debt_by_card(layout)
     assert list(долг) == ["№7", "№12"], "порядок — по номеру карточки, а не по строке"
-    assert долг["№7"] == ["ребро `low_mod` → `top_mod`", "вход `src/cli.py` без пробы"]
+    assert долг["№7"] == ["ребро `low_mod` → `top_mod`", "вход `src/cli.py` без пробы",
+                          "литерал `Люди` в `src/x.py` (поле `node_folders`)"]
     assert lm.debt_delta(layout, _layout(allowed_edges=layout["allowed_edges"][:1],
-                                         run_contracts=layout["run_contracts"])) == ["долг №12: было 1, стало 0"]
+                                         run_contracts=layout["run_contracts"],
+                                         folder_literals=layout["folder_literals"])) == ["долг №12: было 1, стало 0"]
     assert lm.debt_delta(layout, layout) == []
-    # в реальном артефакте долг покрывает каждое ребро и каждый вход без пробы
+    # в реальном артефакте долг покрывает каждое ребро, каждый вход без пробы и каждый литерал
     real = lm.load_layout()
     всего = sum(len(v) for v in lm.debt_by_card(real).values())
     none = sum(1 for c in real["run_contracts"].values() if c["mode"] == "none")
-    assert всего == len(real["allowed_edges"]) + none
+    assert всего == len(real["allowed_edges"]) + none + len(real["folder_literals"])
     assert "без карточки" not in lm.debt_by_card(real)
 
 
@@ -933,6 +975,7 @@ def test_one_card_format_for_the_loader_the_map_and_the_tests(ticket, card):
     "layer_overrides": ("tier3", {"layer": "graph", "why": "проба"}),
     "allowed_edges": (None, {"from": "a_mod", "to": "b_mod", "ticket": "№0"}),
     "run_contracts": ("src/daemon.py", {"mode": "none", "why": "проба", "ticket": "№0"}),
+    "folder_literals": (None, {"rel": "src/x.py", "field": "node_folders", "literal": "Люди", "ticket": "№0"}),
 }
 
 
@@ -1073,6 +1116,8 @@ def _layout(**over) -> dict:
          "brief_layers": {"low": ["core_mod", "low_mod"], "high": ["top_mod"]}, "layer_overrides": {},
          "allowed_edges": [], "manual_entry_points": {}, "root_exemptions": {},
          "generated": "2026-09-19T00:00Z", "run_contracts": {},
+         "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
+         "folder_literals": [], "folder_literal_exemptions": {},
          "package": "charoite_graph", "package_entry": "core_mod"}
     d.update(over)
     return d
@@ -1614,6 +1659,48 @@ def test_the_corpus_agrees_on_form_token_candidacy_budget_and_provider():
             assert lm._bootstrap_budget(rel) == rel.count("/") >= 1, f"{rel}: бюджет подъёмов"
 
 
+def test_the_artifact_name_is_the_form_projection_of_a_package_file():
+    """Имя файла ВНУТРИ колеса — проекция формы, а не срез имени модуля (№427).
+
+    `module_of` свернул бы `src/<пакет>/__init__.py` в `<пакет>`, и в колесе
+    лёг бы `<пакет>.py` — модуль, которого никто не импортирует; `__init__`
+    обязан остаться `__init__.py`. Путь репозитория и имя в колесе различаются
+    ровно корнем раскладки, поэтому обратный перевод — `FLAT_DIR + "/" + имя`.
+    """
+    # корпус форм: у каждой строки-пакетного файла имя в колесе — путь без корня
+    for rel, role, _package, module, provider in MODULE_SHAPES:
+        if module is None or not provider.startswith("package:"):
+            continue
+        имя = lm.artifact_name(rel)
+        assert имя, f"{rel}: у файла пакета нет имени в колесе"
+        assert f"{lm.FLAT_DIR}/{имя}" == rel, f"{rel}: имя в колесе не переводится обратно — {имя}"
+        assert имя == rel[len(lm.FLAT_DIR) + 1:], f"{rel}: имя в колесе разошлось с путём"
+        # `__init__` — файл САМОГО пакета, а не модуль с его именем
+        if role == "package_init":
+            assert имя.endswith("/__init__.py") and имя != f"{module}.py", f"{rel}: __init__ стал модулем"
+    # синтетический вложенный пакет: `__init__` и модуль на глубине
+    assert lm.artifact_name("src/пакет/__init__.py") == "пакет/__init__.py"
+    assert lm.artifact_name("src/пакет/под/модуль.py") == "пакет/под/модуль.py"
+    # не файл пакета — пустая строка, а не исключение: вопрос к форме получает ответ
+    assert lm.artifact_name("scripts/doctor.py") == ""
+    assert lm.artifact_name("src/__init__.py") == ""
+
+
+def test_the_wheel_plan_is_the_artifact_names_of_the_package_files():
+    """План колеса (имена `*.py` в архиве) и план пробы (`package_files`) — две
+    стороны одной сверки: у каждого файла плана имя в колесе, а обратный перевод
+    имени даёт путь репозитория. Это и сверяет положительный тест по колесу
+    (№427, часть 1); здесь — только сама проекция, без сборки."""
+    inv = lm.inventory(ROOT)
+    rels = lm.package_files(inv, lm.load_layout())
+    assert rels, "предпосылка: план пробы не пуст"
+    артефакты = {lm.artifact_name(rel) for rel in rels}
+    assert len(артефакты) == len(rels), "разные файлы плана дают одно имя в колесе"
+    for имя in артефакты:
+        assert имя.endswith(".py"), f"{имя}: в колесо едет не python"
+        assert f"{lm.FLAT_DIR}/{имя}" in rels, f"{имя}: обратный перевод мимо плана"
+
+
 def test_a_flat_module_cannot_shadow_a_packaged_one(tmp_path):
     """Плоский модуль и пакет с тем же корнем рядом не ставятся.
 
@@ -1927,7 +2014,7 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
                for в in ast.walk(узел)):
             зовут.add(узел.name)
     проверены = {"module_of", "package_of", "_is_candidate", "decide", "_owner", "scan", "inventory",
-                 "_package_forms"}
+                 "_package_forms", "artifact_name"}
     assert зовут <= проверены, f"потребитель формы без проверки ниже: {зовут - проверены}"
 
     дерево = tmp_path / "src" / "p"
@@ -1952,6 +2039,7 @@ def test_every_consumer_takes_its_answer_from_the_shape(monkeypatch, tmp_path):
     assert lm._owner("src/a/b.py") == "", "владелец мимо формы"
     assert lm.package_members(честный, {"package": "p"}) == set(), "члены пакета считает мимо формы"
     assert lm.package_inits(честный, {"package": "p"}) == set(), "__init__ пакета считает мимо формы"
+    assert lm.artifact_name("src/charoite_graph/__init__.py") == "", "имя в колесе считает мимо формы"
     # инвентарь кормит конфликт именами от формы — с подделкой имён нет
     assert lm.inventory(tmp_path).problems == [], "inventory берёт имена мимо формы"
     # гейт спрашивает роль: под подделкой модуль пакета обязан стать «дырой»
@@ -2238,7 +2326,8 @@ def test_the_seam_address_is_checked_whole(tmp_path, monkeypatch):
     (tmp_path / member).write_text("def revise(g):\n    pass\n", encoding="utf-8")
     inv = lm.Inventory(files={door: _code("tier3.revise(g)\n"),
                               member: _code("def revise(g):\n    pass\n")}, problems=[])
-    monkeypatch.setattr(lm, "ENV_SEAMS", {"revise": ("tier3", (door,), "graphs.revise_cores")})
+    monkeypatch.setattr(lm, "ENV_SEAMS",
+                        (lm.Seam("revise", "tier3", (door,), "graphs.revise_cores", "почему"),))
     хороший = {"graphs": set(), "tier3": set()}
     ссылки = {door: {"revise": [1]}}
     assert lm.seam_address_problems(хороший, inv, ссылки, tmp_path) == []
@@ -2266,6 +2355,40 @@ def test_the_seam_address_is_checked_whole(tmp_path, monkeypatch):
     assert lm.seam_address_problems(хороший, None, ссылки, tmp_path) == []
 
 
+def test_a_seam_symbol_imported_by_name_is_a_reference():
+    """`from tier3 import revise` + голое `revise(g)` — ссылка на шов, и форма
+    привязки тут другая, чем у атрибута: привязка идёт ИМЕНЕМ СИМВОЛА. Без неё
+    обход двери через from-импорт (и через псевдоним) не виден ни замеру, ни
+    судье, а глазами это «то же самое» (№424, №415)."""
+    src = {
+        "src/голое.py": "from tier3 import revise\nrevise(g, may_continue=lambda: True)\n",
+        "src/псевдоним.py": "from threading import Thread as Поток\nПоток(target=f)\n",
+        "src/чужое_имя.py": "from tier3 import TIER3_KEEP_ALIVE\nprint(TIER3_KEEP_ALIVE)\n",
+    }
+    inv = lm.Inventory(files={rel: _code(text) for rel, text in src.items()}, problems=[])
+    calls = lm.seam_calls(inv)
+    assert calls.get("src/голое.py") == {"revise": [2]}, "голое имя из from-импорта — ссылка на шов"
+    assert calls.get("src/псевдоним.py") == {"Thread": [2]}, "псевдоним символа шва — та же ссылка"
+    assert "src/чужое_имя.py" not in calls, "не-шов из того же модуля — не ссылка"
+
+
+def test_the_seam_table_load_checks(monkeypatch):
+    """Фабрика формы швов отвергает повтор символа и владельца без файла.
+
+    Индекс обязан быть однозначным — иначе `_seam_refs` молча теряет шов, —
+    а файл-владелец двери лежать в дереве: владельца без файла не найти, и
+    запрет превращается в совет."""
+    двойной = (lm.Seam("revise", "tier3", (), "d1", "почему"),
+               lm.Seam("revise", "tier3", (), "d2", "почему"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", двойной)
+    with pytest.raises(lm.LayoutError, match="объявлен дважды"):
+        lm.seam_tables()
+    monkeypatch.setattr(lm, "ENV_SEAMS", (
+        lm.Seam("Ghost", "ghost", ("src/нет_такого_модуля.py",), "ghost.door", "почему"),))
+    with pytest.raises(lm.LayoutError, match="файл-владелец двери"):
+        lm.seam_tables()
+
+
 def test_the_seam_member_is_an_ast_declaration():
     """Член шва — объявление ВЕРХНЕГО уровня: функция, класс или присваивание;
     ссылка внутри тела объявлением не считается, и ответ — строго `bool` (№424).
@@ -2284,7 +2407,9 @@ def test_the_seam_member_is_an_ast_declaration():
 def test_the_gate_is_asked_about_the_seam_address(monkeypatch, capsys):
     """Главный тракт отдаёт адрес шва в гейт: шов, члена которого в модуле нет,
     обязан покраснеть (№424)."""
-    monkeypatch.setitem(lm.ENV_SEAMS, "OpenSearch", ("graph_search", ("src/graphs.py",), "graphs.open_search"))
+    monkeypatch.setattr(lm, "ENV_SEAMS", (*lm.ENV_SEAMS,
+                        lm.Seam("OpenSearch", "graph_search", ("src/graphs.py",),
+                                "graphs.open_search", "почему")))
     assert lm.main(["--check"]) == 1
     out = capsys.readouterr().out
     assert ("шов graph_search.OpenSearch: в модуле charoite_graph.graph_search "

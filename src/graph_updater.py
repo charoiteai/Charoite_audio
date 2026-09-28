@@ -40,8 +40,8 @@ from meeting_stamp import files_with_stamp, stamp_of
 from charoite_graph import frontmatter
 import graphs
 import graph_links
-from charoite_graph import graph_nodes
 from charoite_graph import redirects
+from charoite_schema import CHAROITE
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 
@@ -332,7 +332,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         # качать 20 ГБ, от которых облако и избавляет (круг-2 DS, M2).
         cloud = privacy.cloud_engine_active(cfg)
         who = "шлюз" if cloud else "Ollama"
-        if e.status in (429, 502, 503):
+        if llm.is_retry_later(e):
             print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "
                   f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
                   "часть пропущена; повтор подберёт незавершённую встречу")
@@ -999,13 +999,13 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     return tpath
 
 
-# Папки узлов — перечень ПРОЕКТА (graph_nodes.NODE_FOLDERS: русские боевые и
-# английские демо-графа), не свой список рядом: сканы вердикта и канона и
-# политика псевдонимов (_AUTO_ALIAS_FOLDERS) читают его — папка, добавленная в
-# один перечень и забытая в другом, давала псевдоним, невидимый вердикту
-# (круг 3, DS M5 / GLM M4; круг 4, DS I4 — третий список в другом модуле).
-NODE_FOLDERS = graph_nodes.NODE_FOLDERS
-_PEOPLE_FOLDERS = ("Люди", "People")
+# Папки узлов и людей — из схемы хранилища Чароита (`charoite_schema.CHAROITE`),
+# не свой список рядом: сканы вердикта и канона и политика псевдонимов
+# (_AUTO_ALIAS_FOLDERS) читают их — папка, добавленная в один перечень и
+# забытая в другом, давала псевдоним, невидимый вердикту (круг 3, DS M5 / GLM M4;
+# круг 4, DS I4 — третий список в другом модуле). Писатель целиком на схеме — №426.
+NODE_FOLDERS = CHAROITE.node_folders
+_PEOPLE_FOLDERS = CHAROITE.people_folders
 
 ENT_FOLDER = {"система": "Системы", "команда": "Команды", "проект": "Системы",
               "документ": "Системы", "модель": "Модели"}   # «модель» шла в Системы мимо живой Модели/ (GLM I5, 07.09)

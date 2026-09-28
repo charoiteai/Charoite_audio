@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pathlib
 import sys
-import threading
 
 import numpy as np
 import sounddevice as sd
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import threads  # noqa: E402
 from stt import STT  # noqa: E402
 
 from charoite_paths import resolve_root
@@ -40,9 +40,18 @@ def main():
     cfg = load_user_or_example(_root())
     frames: list[np.ndarray] = []
     stt_box: dict = {}
-    t = threading.Thread(target=lambda: stt_box.update(stt=STT(cfg)), daemon=True)
-    t.start()  # модель греется, пока человек говорит
+    # модель греется, пока человек говорит
+    t = threads.spawn(lambda: stt_box.update(stt=STT(cfg)), name="stt-warm", role="dictate")
+    try:
+        _record_and_print(cfg, frames, stt_box, t)
+    finally:
+        # Любой выход — нет кадров, случайное нажатие, ошибка — дожидается
+        # прогрева: брошенный посреди нативного init поток ронял процесс на
+        # выходе SIGABRT (№174, как в dictate_note; выходной круг 1 по #658, DS I1).
+        t.join(timeout=15)
 
+
+def _record_and_print(cfg, frames: list, stt_box: dict, t) -> None:
     stream = sd.InputStream(
         samplerate=SR, channels=1, dtype="float32",
         callback=lambda data, *_: frames.append(data[:, 0].copy()),

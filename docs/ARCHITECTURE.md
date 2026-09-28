@@ -943,16 +943,36 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   long-document Q&A (details in MODELS.md). Strict JSON is not something
   every server build can do: a server compiled without the grammar library
   answers a `format:"json"` request with “structured output is unavailable”
-  (501, or 400 on another build). The client recognises that reason, remembers
-  the pair (server address, model actually sent) for ten minutes — the server
-  may get fixed while a long-lived process runs — reports it once per process
-  on stderr and retries the request once without `format`, relying on the
-  prompt. One-time lines like that — strict JSON, an unreadable config, a
+  (501, or 400 on another build). One door classifies the answer by status and
+  body (`strict_json_verdict`): a 200 with a JSON object lacking `error` is
+  “yes”; a 200 whose `error` carries the phrase is “no”, while any other 200
+  error, an empty body, HTML or a non-object is “unknown”; outside 200 the
+  phrase anywhere in the body means “no”, and everything else — 404, a busy
+  429/502/503 — is “unknown”, because queueing is not a missing grammar. The
+  reason is the `error` field or the raw body, cut to a 500-character window
+  for printing while the verdict reads the whole text. On “no” the client
+  remembers the pair (server address, model actually sent) for ten minutes —
+  the server may get fixed while a long-lived process runs — reports it once
+  per process on stderr with one shared sentence (`strict_json_sentence`, no
+  guess about the build) and retries the request once without `format`,
+  relying on the prompt. The doctor asks the same door with a cheap `/api/chat`
+  probe (`llm_health.strict_json`, `format:"json"`, one token) — only when the
+  model is alive and the engine is Ollama; mlx-server and the cloud gateway
+  promise no strict JSON, and a busy or missing model is not probed at all.
+  One-time lines like that — strict JSON, an unreadable config, a
   mismatched mlx model, an unwritable model lease — share one registry,
   `src/once.py` (base layer, stdlib only): the key is `(namespace, meaning)`,
   where the meaning carries what makes a repeat a repeat — status code, body,
   form, exception kind, path — not the whole finished line; `forget` opens a
-  new episode, `reset` clears one namespace or all. Speaker names take the
+  new episode, `reset` clears one namespace or all. Product threads are born
+  one way, too: `src/threads.py` (base layer, stdlib only) is the only place
+  that builds `threading.Thread`/`threading.Timer`, through `threads.spawn` and
+  `threads.timer` with a mandatory name and a role from a fixed list (a foreign
+  role or an empty name is a refusal). The registry keeps the role and the
+  `detached` reason as metadata on the thread (weak keys), and tests use them to
+  wait for threads they did not join; the search package builds its own thread,
+  because it ships as a separate distribution without the app registry.
+  Speaker names take the
   first object (`parse_json_block`). On the
   rebuild path they pass the full trust guard (`speaker_names`); the
   diarization CLI keeps only a single word of 3–15 letters that is heard in
@@ -1340,9 +1360,48 @@ rebuilds what is `measured` and never touches what is `decision`. The declaratio
 it does not name is a load error, so a second carrier of one fact cannot
 appear in the JSON without a code change a reviewer reads — the free-text
 `notes` block went stale exactly that way and was removed. Debt is printed,
-not stored: the map groups the upward edges and the entry points without a
-probe by the card that removes them (`ticket`, `№…` at the start), and
-`--regen` prints only what changed; no gate reads that number. The gate is `tests/test_import_boundaries.py`,
+not stored: the map groups the upward edges, the entry points without a
+probe and the folder-name literals by the card that removes them (`ticket`,
+`№…` at the start), and `--regen` prints only what changed; no gate reads
+that number. The storage schema is a value, not literals scattered around:
+`charoite_graph.graph_schema.GraphSchema` declares the folder names, the
+section heads and the raw-file markers, its invariants (`__post_init__`)
+reject a name that is a regex, a dossier nested under an exclusion or a role
+that is also another role, and `src/charoite_schema.py` holds the one
+`CHAROITE = GraphSchema(…)` value as literals. The package asks the
+schema, never a literal: roles are predicates of the value (`is_node_path`,
+`is_dossier`, `is_service_name`, `excluded`, `is_raw`, `is_meeting_link`,
+`is_history_head`, …), and every one of them compares in one form,
+`text_norm.fold` (NFC, case, ё→е, full-width Latin and digits) — the form
+the search already used for words and paths. `GraphSearch(schema=…)`
+defaults to `PLAIN`, a storage with no roles (no nodes, no dossier, no
+exclusions), and the application door `graphs.open_search` passes
+`CHAROITE`; `NodeIndex` and `dossier.scan` / `clusters` take the schema as
+a required keyword — only Charoite calls them, and a forgotten schema is a
+`TypeError`, not an empty node index at a meeting. `Doc.role` and
+`Node.person` are derived from an init-only schema (`init=False` fields),
+so a fixture cannot hand a role past the predicate. The vector cache is
+checked by mtime and by the number of blocks: the block ceiling depends on
+whether a file is a node, and that now depends on the schema. One door,
+`graph_schema.as_names`, reads the form of a name list for the schema's
+tuple fields: a string is one name, a tuple or a list is kept, anything
+else is refused; `dossier_dir` and `meeting_dir` are `str | None` (`None`
+— the storage has no such role); a schema field whose annotation is none of
+`str`, `str | None`, `tuple[str, ...]` is a class error. A separate guard in
+`scripts/layout_map.py` reads the field list from the class annotations and
+the values from that call, looks for copies of those names among the string
+literals of the graph package (`package_entry`'s closure, the same set the
+package probe copies) and holds each copy as `folder_literals` debt with a
+ticket; `folder_literal_exemptions` forgives one copy with a written reason,
+and both are compared in both directions like every other entry. Since
+PR B of №422 the debt is zero and the package keeps no name constants of
+its own. `tests/test_graph_schema_roles.py` rotates the schema — every name
+of `CHAROITE` becomes an ASCII token, equal names one token — builds the
+same graph from the rotated names and requires the same observable
+behaviour of search, dossier and node index after substituting back: a
+surviving literal cannot equal a token, so it shows up as a mismatch. The
+rotation found the dossier index, which was service only through
+Charoite's `_` prefix; it is now service by its own name. The gate is `tests/test_import_boundaries.py`,
 the same class as the other AST guards in `tests/`: every module has a layer,
 every upward edge is in the allowlist, every allowlist entry still exists,
 every entry point is declared and present on disk — and the reverse: a declared
@@ -1358,7 +1417,24 @@ graph move is done: `src/charoite_graph/` holds the closure of the entry
 directory with that closure and forbids a member to import product code from
 outside the package — one batch form `src/<package>/…`, decided 26.09
 (№323, №424); `packages/` holds distribution
-metadata only (№427).
+metadata only (№427). The package probe itself is a wheel (№427): a session
+fixture builds `packages/charoite-graph/` offline, without build isolation, into
+a temporary copy of the layout, the test unpacks the archive and compares its
+`*.py` names with the probe plan (`package_files` against the form projection
+`artifact_name`) in both directions — a missing or extra module is a line naming
+it, and corruption is checked on a copy of the archive; the build needs
+`setuptools` at the version pinned in `env` of `ci.yml`, and a missing or
+different version fails with the exact install command instead of skipping.
+The wheel is also judged against its declaration (№446): one reader of
+`packages/charoite-graph/pyproject.toml`, METADATA read by `importlib.metadata`
+straight from the archive, and a table of line kinds with their dependencies —
+Name, Version, Requires-Python, License-Expression and Requires-Dist equal to
+the declaration as written, the METADATA body equal to the package README, the
+license text in the wheel equal to the file, every third-party import of the
+package declared (and nothing declared unused), and each package dependency
+written the same way in the root manifest. Every kind has its own corrupt-copy
+case, and the README example is taken from the artifact's description and run
+against the unpacked wheel.
 
 The environment has a layer too. It is runtime, where the path canon lives:
 a module of base or graph neither imports it nor touches the environment in

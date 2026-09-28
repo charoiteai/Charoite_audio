@@ -44,7 +44,7 @@
 
 - `get_models.py` — 一条命令装模型：`--diar`（说话人分离嵌入，没有它就无法按声音实时标注；`--model` 可选 `eres2net-base`、`eres2net-en` 或 `eres2netv2`）、`--segmentation`、`--stt sensevoice`（中文识别，228 MB）。另有 `--list`、`--check`（不联网）、`--url`、`--dest`。
 - `memory_bench.py` — 用 `config/memory_bench.yaml` 中的参考问题，或在演示图谱上（`--demo`、`--demo-en`、`--demo-zh`）对整个检索闭环做基准测试。`--stats` 跳过合成，逐条打印覆盖率与闸门判定。
-- `diar_bench.py` — 说话人分离的 DER：被错误标注的语音时间占比。`--make` 在本地生成合成测试样本——本仓库不可能存放会议录音。
+- `diar_bench.py` — 说话人分离的 DER：被错误标注的语音时间占比。`--make` 在本地生成合成测试样本——本仓库不可能存放会议录音；`--crosstalk` 加入重叠语音，`--wav`/`--truth` 测量你自己的录音，`--engine compare` 让当前引擎与实验性的 Nemotron 3 Diarization 对比（[详情，英文](../../DIARIZATION.md#crosstalk-and-the-nemotron-experiment)）。
 - `stt_bench.py` — 识别的 CER：识别错误的字符占比。`--compare` 用同一批合成语句把 SenseVoice 与 Whisper 跑一遍对比。与说话人分离同样的提醒：合成语音比真实语音干净，这是下限而非基准。
 - `bench_models.py` — 用我们自己的负载而非合成 tok/s 比较 Ollama 模型：短提示、中等抽取、真实长逐字稿，测首个 token 时间与总时间，冷启动的首次运行单独显示。
 - `bench_extract.py` — 比较模型的会议分析质量而非速度：同一个 `graph_updater.extract`、同一批逐字稿（最近 3 场、`--meetings N` 或 `--files`），检查那些悄悄出错的地方——逐字稿中不存在的引文、不存在的 HH:MM 时间、抽取了多少、JSON 能否解析。原始回答写入 `logs/bench_extract/`，供人阅读。

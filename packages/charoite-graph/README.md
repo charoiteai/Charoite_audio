@@ -1,0 +1,75 @@
+# `charoite-graph` — пакет поиска по графу ссылок
+
+Это метаданные дистрибутива для пакета `src/charoite_graph/`: поиск по графу
+ссылок с русской морфологией для любой папки markdown, устанавливаемый **без
+приложения**. Код в этот каталог не переезжает — он живёт под общим `src/`
+(решение №424); здесь только `pyproject.toml` и это описание.
+
+## Как собрать
+
+```bash
+rm -rf dist packages/charoite-graph/build packages/charoite-graph/*.egg-info
+python -m pip wheel --no-build-isolation --no-deps --no-index -w dist packages/charoite-graph
+```
+
+Сборка офлайн и без изоляции сборки: интерпретатору нужен `setuptools` (>= 77 —
+лицензия записана строкой SPDX) в своём окружении. Первая строка убирает следы
+прошлой сборки: без изоляции `build/` старого прогона уехал бы в новое колесо.
+Готовое колесо ложится в `dist/` и содержит модули `src/charoite_graph/` и один каталог
+метаданных `charoite_graph-<версия>.dist-info`.
+
+## Параметры поиска
+
+`GraphSearch(graph_dir, embedder=…, data_dir=…, schema=…)`: роли путей — папки узлов, досье, служебные файлы,
+сырьё, исключения обхода — задаёт схема хранилища (`schema`, значение `charoite_graph.graph_schema.GraphSchema`).
+Без схемы — `charoite_graph.graph_schema.PLAIN`: хранилище без ролей, каждая заметка — обычный документ, ничего не
+исключается. Своя схема перечисляет имена папок кортежами (строка — одно имя, пустое имя и множество — отказ
+`ValueError`); значение `None` у полей `dossier_dir` и `meeting_dir` — такой роли у хранилища нет. Имена сравниваются
+без учёта регистра, «ё» и формы Unicode.
+
+## Пример
+
+Граф из двух заметок во временном каталоге, игрушечный векторизатор и поиск. Блок исполняет тест на собранном
+колесе — именно в том виде, в каком он лежит в описании артефакта (METADATA), и ждёт статус `confident` и найденный
+узел.
+
+```python
+import pathlib
+import tempfile
+
+from charoite_graph.graph_search import GraphSearch
+from charoite_graph.model_seam import Embedder
+
+
+def vectors(texts, timeout):
+    # Игрушечный векторизатор: частоты пяти букв. Настоящий — ваша модель эмбеддингов.
+    return [[1.0 + text.lower().count(c) for c in "аеиор"] for text in texts]
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    graph = pathlib.Path(tmp, "граф")
+    graph.mkdir()
+    (graph / "Платёжный шлюз.md").write_text("Шлюз принимает платежи и передаёт их в [[Биллинг]].\n", encoding="utf-8")
+    (graph / "Биллинг.md").write_text("Биллинг выставляет счета.\n", encoding="utf-8")
+    # Имя модели подписывает кэш векторов в data_dir: одно имя — одно пространство векторов.
+    search = GraphSearch(graph, data_dir=pathlib.Path(tmp, "кэш"), embedder=Embedder(vectors, "частоты-букв"))
+    search.refresh(force=True)   # обход графа: без него индекс пуст
+    search.embed_pending()       # векторы заметок: без них выдача «не проверена семантикой»
+    result = search.search("кто принимает платежи")
+    print(result.status.value)   # confident — найдено и подтверждено векторами
+    print(result.text)
+```
+
+Вне приложения пару «векторизатор и имя» собирает пользователь пакета: двери, которая строит её по адресу модели,
+в пакете пока нет. Имя подписывает кэш векторов в `data_dir` — одно имя на одно пространство векторов.
+
+## Что сверяет тест колеса
+
+Метаданные артефакта против объявления (`Name`, `Version`, `Requires-Python`, `License-Expression`,
+`Requires-Dist`, `License-File` — строкой как есть: каноническую форму пишет инструмент сборки, объявление обязано
+быть в ней), тело METADATA против этого README, текст лицензии в колесе против файла, сторонние импорты пакета
+против `dependencies` и `dependencies` против корневого манифеста приложения.
+
+## Что здесь ещё не судится
+
+Сборка на месте поверх следов прошлого раза — сегодня тест эмулирует её копией раскладки.

@@ -308,10 +308,11 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
 
 
 #: Jobs, у которых потолок job — сумма потолков шагов, а повторы PortAudio — свой
-#: худший случай. Оба гоняют один и тот же цикл apt: правило, применённое к одной
-#: копии цикла, другую оставляло обрываться посреди второй попытки (DeepSeek по
-#: PR #637). Job без такого цикла сюда не входит: потолок шага там — не арифметика.
-CEILED_JOBS = ("tests", "mutation")
+#: худший случай. `tests` и `mutation` гоняют один и тот же цикл apt: правило,
+#: применённое к одной копии цикла, другую оставляло обрываться посреди второй
+#: попытки (DeepSeek по PR #637). `mutation-verdict` цикла не имеет, но его потолок —
+#: тоже сумма шагов: без неё обрыв job прятал бы вердикт шардов (№441).
+CEILED_JOBS = ("tests", "mutation", "mutation-verdict")
 
 
 def _retry_worst_s(run: str) -> int:
@@ -385,6 +386,71 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
         f"шаг сводки не читает {report.group(1)} — отчёт мутатора не доедет до сводки")
 
 
+
+def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
+    """Весь план шардами (№441): число шардов матрицы равно N в `--shard …/N`, срез
+    `--max` снят (`all`), артефакт шарда уезжает и при оборванном шаге (`if:
+    always()`), а вердикт — один job после всех шардов, тоже при их провале, и
+    судит его `mutate_check --merge-shards`, а не разбор текста в yaml. Разошедшееся
+    N дало бы «все отчёты зелёные» при непокрытой части плана."""
+    jobs = _load("ci.yml")["jobs"]
+    job = jobs["mutation"]
+    shards = job["strategy"]["matrix"]["shard"]
+    assert job["strategy"].get("fail-fast") is False, "упавший шард не должен отменять соседей"
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    run = str(step["run"])
+    n = re.search(r'--shard\s+"?\$SHARD/(\d+)"?', run)
+    assert n, "шаг мутатора обязан называть --shard $SHARD/N"
+    assert int(n.group(1)) == len(shards) and sorted(shards) == list(range(1, len(shards) + 1)), (
+        f"шардов в матрице {shards}, а мутатор делит на {n.group(1)}")
+    assert step.get("env", {}).get("SHARD") == "${{ matrix.shard }}", "номер шарда — из матрицы, через env"
+    assert re.search(r"--max\s+all\b", run), "срез --max в шарде снова прятал бы часть плана"
+    uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(uploads) == 1 and uploads[0].get("if") == "always()", (
+        "артефакт шарда обязан уехать и после оборванного шага: иначе вердикт видит «нет отчёта»")
+    assert "${{ matrix.shard }}" in str(uploads[0]["with"]["name"]), "одинаковые имена в матрице затирают друг друга"
+    verdict = jobs["mutation-verdict"]
+    assert verdict["needs"] == "mutation"
+    assert "always()" in verdict["if"] and "pull_request" in verdict["if"], (
+        "вердикт обязан идти и при провале шардов, и только на PR, как сами шарды")
+    judge = [s for s in verdict["steps"] if "--merge-shards" in str(s.get("run", ""))]
+    assert len(judge) == 1, "судья шардов — один шаг `mutate_check.py --merge-shards`"
+    # имя отчёта вердикта — одно на job: судья пишет, сводка читает (выходной круг 3 по №441, DS M2)
+    assert verdict.get("env", {}).get("VERDICT"), "имя отчёта вердикта — env.VERDICT job"
+    assert re.search(r'--report\s+"\$VERDICT"', str(judge[0]["run"])), "судья пишет отчёт в env.VERDICT"
+    summary = [s for s in verdict["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert len(summary) == 1 and str(summary[0]["run"]).count('"$VERDICT"') >= 2, (
+        "сводка вердикта читает env.VERDICT")
+
+
+def test_mutation_artifact_carries_the_line_the_verdict_reads():
+    """Имя отчёта шарда объявлено один раз — `env.REPORT` job: мутатор пишет в
+    него (`--report "$REPORT"`), сводка читает его, артефакт забирает
+    `${{ env.REPORT }}*`. Машинная строка обязана лечь под этот глоб: в том же
+    каталоге и с именем-продолжением отчёта (`shard_line_path`), без `/` в
+    хвосте — глоб выгрузки через `/` не ходит. Прежний сторож сверял базовые
+    имена через `fnmatch` и пропускал отчёт в подкаталоге (выходной круг 2 по
+    №441, DS M1); до него переименование суффикса красило вердикт на каждом PR
+    (круг 1, DS I3)."""
+    import sys
+    sys.path.insert(0, str(WF.parent.parent / "scripts"))
+    import mutate_check
+
+    job = _load("ci.yml")["jobs"]["mutation"]
+    report = str(job.get("env", {}).get("REPORT", ""))
+    assert "${{ matrix.shard }}" in report, "имя отчёта — одно на job, с номером шарда"
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    assert re.search(r'--report\s+"\$REPORT"', str(step["run"])), "мутатор пишет отчёт в env.REPORT"
+    summary = [s for s in job["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert summary and all('"$REPORT"' in str(s["run"]) for s in summary), "сводка читает env.REPORT"
+    upload = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact"))
+    assert upload["with"]["path"] == "${{ env.REPORT }}*", "артефакт забирает отчёт и его машинную строку"
+    for shard in job["strategy"]["matrix"]["shard"]:
+        имя = report.replace("${{ matrix.shard }}", str(shard))
+        строка = str(mutate_check.shard_line_path(pathlib.PurePosixPath(имя)))
+        assert строка.startswith(имя) and "/" not in строка[len(имя):], (
+            f"машинная строка {строка!r} не ложится под глоб {имя + '*'!r}")
+
 # ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
 #
 # CI, pre-commit и preflight зовут `ruff check <пути>`; правила — только в
@@ -446,3 +512,94 @@ def test_ruff_engine_version_is_the_same_in_ci_and_pre_commit():
     hooks = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
     rev = next(r["rev"] for r in hooks["repos"] if "ruff-pre-commit" in r["repo"])
     assert rev.removeprefix("v") == str(ci), (rev, ci)
+
+
+def test_nightly_installs_by_the_ci_pins():
+    # Ночь ставит pytest, pytest-timeout и setuptools по своим копиям пинов, а тест
+    # колеса пакета графа сверяет setuptools с ci.yml (№427): разъехавшиеся копии
+    # дали бы красную ночь со ссылкой не на тот файл (DS I2 выхода по части 0 №427).
+    ci, night = _load("ci.yml")["env"], _load("nightly.yml")["env"]
+    used = set(re.findall(r"\$\{(\w+_VERSION)\}", (WF / "nightly.yml").read_text(encoding="utf-8")))
+    assert used, "ночь ставит пакеты без пинов"
+    assert used <= night.keys(), f"пин без объявления в env nightly.yml: {sorted(used - night.keys())}"
+    assert {k: night[k] for k in used} == {k: ci.get(k) for k in used}
+
+
+def test_mutation_range_starts_at_the_current_base_branch():
+    """База диапазона мутаций — голова ветки назначения (`origin/<base_ref>`), а не
+    `pull_request.base.sha`: тот — голова на момент открытия PR, и против
+    merge-коммита он тянул в план правки, влитые в main позже (#649: 357 мутантов
+    вместо 96). Сторож держит источник базы в шаге мутаций."""
+    job = _load("ci.yml")["jobs"]["mutation"]
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")) and "--shard" in str(s.get("run", "")))
+    assert step.get("env", {}).get("BASE_REF") == "${{ github.base_ref }}", step.get("env")
+    assert '--range "origin/$BASE_REF...HEAD"' in step["run"], step["run"]
+    assert "base.sha" not in str(job)
+
+
+#: Кто гоняет весь набор `tests/` в workflow и сколькими процессами (№453). Реестр
+#: сверяется с тем, что написано в `run:`, в обе стороны: новый job с полным
+#: прогоном без записи здесь краснеет, а не остаётся тихо последовательным.
+#: Числа — по ядрам раннера (ubuntu-latest — 4 vCPU, macos-15 — 3), приёмка —
+#: первые прогоны; вне сторожа по замыслу — preflight (bash) и полный набор внутри
+#: `run_tests` мутатора (там xdist снят `-p no:xdist`).
+FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("nightly.yml", "pytest"): 3}
+#: Флаги параллельного режима xdist: вне реестра их нет ни в одном job.
+XDIST_FLAGS = ("-n", "--numprocesses", "--dist")
+
+
+def _pytest_calls(run: str) -> list[list[str]]:
+    """Аргументы каждого `-m pytest …` в тексте шага: строки продолжения склеены."""
+    calls = []
+    for line in run.replace("\\\n", " ").splitlines():
+        m = re.search(r"-m pytest\b(.*)$", line)
+        if m:
+            calls.append(m.group(1).split())
+    return calls
+
+
+def _full_suite(args: list[str]) -> bool:
+    """Полный набор: первый аргумент — каталог `tests`, и ни одного пути внутри него."""
+    return bool(args) and args[0].rstrip("/") == "tests" and not any(
+        a.startswith("tests/") and a.rstrip("/") != "tests" for a in args[1:])
+
+
+def _pair(args: list[str], flag: str, value: str) -> bool:
+    return any(a == flag and args[i + 1:i + 2] == [value] for i, a in enumerate(args))
+
+
+def _jobs() -> dict[tuple[str, str], tuple[list[list[str]], str]]:
+    out = {}
+    for path in sorted(WF.glob("*.yml")):
+        for name, job in (_load(path.name).get("jobs") or {}).items():
+            runs = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+            out[(path.name, name)] = ([c for c in _pytest_calls(runs)], runs)
+    return out
+
+
+def test_full_suite_runs_in_parallel_by_the_registry():
+    jobs = _jobs()
+    found = {key for key, (calls, _) in jobs.items() if any(_full_suite(c) for c in calls)}
+    assert found == set(FULL_SUITE_JOBS), (
+        f"полный набор гоняют {sorted(found)}, реестр FULL_SUITE_JOBS — {sorted(FULL_SUITE_JOBS)}")
+    for key, n in FULL_SUITE_JOBS.items():
+        calls, runs = jobs[key]
+        for call in (c for c in calls if _full_suite(c)):
+            assert _pair(call, "-n", str(n)) and _pair(call, "--dist", "loadgroup"), (key, call)
+        assert "pytest-xdist==${PYTEST_XDIST_VERSION}" in runs, f"{key}: xdist не ставится по пину"
+    for key, (calls, _) in jobs.items():
+        if key in FULL_SUITE_JOBS:
+            continue
+        for call in calls:
+            assert not [a for a in call if a.split("=", 1)[0] in XDIST_FLAGS], (key, call)
+
+
+def test_full_suite_helpers_read_the_run_lines():
+    """Разбор строки `run:` — на синтетике: сторож без этого проверял бы пустоту."""
+    assert _pytest_calls("python -m pytest tests/ -q -n 4 --dist loadgroup") == [
+        ["tests/", "-q", "-n", "4", "--dist", "loadgroup"]]
+    assert _pytest_calls("pip install . \\\n  && python -m pytest tests -q") == [["tests", "-q"]]
+    assert _full_suite(["tests/", "-q"]) and _full_suite(["tests"])
+    assert not _full_suite(["tests/test_a.py", "-q"]) and not _full_suite(["tests/", "tests/test_a.py"])
+    assert not _full_suite([]) and not _full_suite(["-q", "tests/"])
+    assert _pair(["-n", "4"], "-n", "4") and not _pair(["-n"], "-n", "4") and not _pair(["-n", "3"], "-n", "4")

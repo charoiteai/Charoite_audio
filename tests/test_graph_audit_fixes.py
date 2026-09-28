@@ -14,6 +14,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SCRIPTS))
 
 from charoite_graph import dossier  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 import graph_updater  # noqa: E402
 import tier3  # noqa: E402
 
@@ -68,7 +69,7 @@ def test_the_theme_core_itself_reaches_the_prompt():
         files[f"2026-08-{i + 1:02d}_1000"] = {"kind": "Встречи", "text": "[[Тема]]",
                                               "title": f"2026-08-{i + 1:02d}_1000"}
     back = {"Тема": {k for k in files if k != "Тема"}}
-    members = dossier.clusters(files, back)["Тема"]
+    members = dossier.clusters(files, back, schema=CHAROITE)["Тема"]
     assert members[0] == "Тема", "ядро темы должно идти первым"
     assert "Тема" in members[:dossier.MAX_SOURCES]
 
@@ -207,7 +208,7 @@ def test_links_are_read_only_from_the_surviving_file(tmp_path):
     (graph / "Люди" / "CRM.md").write_text("[[Ядра/Миграция]]", encoding="utf-8")
     (graph / "Ядра" / "CRM.md").write_text("## Статус\nидёт", encoding="utf-8")
     (graph / "Ядра" / "Миграция.md").write_text("## Статус\nидёт", encoding="utf-8")
-    files, back = dossier.scan(graph)
+    files, back = dossier.scan(graph, schema=CHAROITE)
     assert files["CRM"]["kind"] == "Ядра", "ядро должно побеждать в дубле имени"
     assert "CRM" not in back.get("Миграция", set()), \
         "ссылка проигравшего файла попала в кластер"
@@ -289,7 +290,7 @@ def test_a_merged_stub_does_not_steal_links_from_a_live_namesake(tmp_path):
     (graph / "Ядра" / "Миграция.md").write_text("## Статус\nидёт\n", encoding="utf-8")
     (graph / "Встречи" / "2026-08-27_1000.md").write_text(
         "обсудили [[Системы/CRM|CRM]]\n", encoding="utf-8")
-    files, back = dossier.scan(graph)
+    files, back = dossier.scan(graph, schema=CHAROITE)
     assert "CRM" in files and files["CRM"]["kind"] == "Системы"
     assert "2026-08-27_1000" in back.get("CRM", set()), "живой узел лишился ссылки"
     assert "2026-08-27_1000" not in back.get("Миграция", set()), \
@@ -362,7 +363,7 @@ def test_a_live_node_stops_the_redirect_chain(tmp_path):
     (graph / "Ядра" / "C.md").write_text("## Статус\nидёт\n", encoding="utf-8")
     (graph / "Встречи" / "2026-08-27_1100.md").write_text(
         "обсудили [[Ядра/A|A]]\n", encoding="utf-8")
-    _, back = dossier.scan(graph)
+    _, back = dossier.scan(graph, schema=CHAROITE)
     assert "2026-08-27_1100" in back.get("B", set()), "живое звено пропущено"
     assert "2026-08-27_1100" not in back.get("C", set()), "ссылка ушла мимо живого"
 

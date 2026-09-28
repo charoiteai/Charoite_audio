@@ -549,6 +549,42 @@ def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
     assert fake.calls == 3 and slept == [1.0, 2.0]
 
 
+def _clock_moves_only_in_sleep(monkeypatch):
+    """Подставные часы: стоят, пока нет паузы, и сдвигаются ровно на паузу. Граница
+    бюджета «пауза кончается ровно на busy_wait» тогда наступает точно, без шума."""
+    now, slept = [100.0], []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(llm_mod.time, "sleep", sleep)
+    return slept
+
+
+def test_stream_takes_the_pause_that_ends_exactly_at_the_budget(monkeypatch):
+    """Бюджет «занято» — не позже busy_wait, а не раньше: пауза, которая кончается ровно
+    на границе, ещё берётся (граница в `_open_stream`; выживший мутатора по №454)."""
+    ok = _StreamResp([b'{"message":{"content":"a"},"done":false}',
+                      b'{"message":{"content":"b"},"done":true}'])
+    fake = _BusyThenOk(1, ok)
+    _подменить_requests(monkeypatch, fake)
+    slept = _clock_moves_only_in_sleep(monkeypatch)
+
+    assert "".join(LLM(CFG).stream("в", model="м", busy_wait=llm_mod.BUSY_BACKOFF[0])) == "ab"
+    assert fake.calls == 2 and slept == [llm_mod.BUSY_BACKOFF[0]]
+
+
+def test_complete_takes_the_pause_that_ends_exactly_at_the_budget(monkeypatch):
+    """То же у запроса без стрима (`_post_busy`): одна пауза ровно в бюджет — один повтор."""
+    fake = _BusyThenOk(1, _Resp({"message": {"content": "готово"}}))
+    _подменить_requests(monkeypatch, fake)
+    slept = _clock_moves_only_in_sleep(monkeypatch)
+
+    assert LLM(CFG).complete("в", model="м", busy_wait=llm_mod.BUSY_BACKOFF[0]) == "готово"
+    assert fake.calls == 2 and slept == [llm_mod.BUSY_BACKOFF[0]]
+
+
 def test_complete_busy_beyond_budget_is_http_error_not_revive(monkeypatch):
     """503 — ответ сервера, не сеть: revive (перезапуск) на него не идёт."""
     fake = _Requests(_Resp({}, status=503, text="busy"))
@@ -1128,6 +1164,15 @@ def _sweepers() -> list:
             if getattr(t, "function", None) is llm_mod._fit_cache_sweep and t.is_alive()]
 
 
+def _armed():
+    """Таймер уборщика — на границе замка, где держится инвариант «кэш не пуст ⇒
+    уборщик взведён». Внутри тика между `_fit_sweeper = None` и присваиванием
+    нового таймера `Thread.start()` отпускает GIL, и чтение без замка видит там
+    `None`: под нагрузкой 2 падения из 40 (№461)."""
+    with llm_mod._fit_cache_lock:
+        return llm_mod._fit_sweeper
+
+
 def _until(cond, deadline: float = 2.0) -> bool:
     end = time.monotonic() + deadline
     while not cond():
@@ -1144,9 +1189,11 @@ def test_expired_digests_leave_memory_without_another_call(monkeypatch):
     monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
     monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     llm_mod._fit_cache_put(("а",), "сводка")
-    assert llm_mod._fit_sweeper.daemon, "уборщик не держит процесс MCP-сервера на выходе"
+    assert _armed().daemon, "уборщик не держит процесс MCP-сервера на выходе"
     time.sleep(0.05)                       # несколько тиков: живая запись на месте
-    assert ("а",) in llm_mod._fit_cache and llm_mod._fit_sweeper is not None
+    with llm_mod._fit_cache_lock:
+        в_кэше, уборщик = ("а",) in llm_mod._fit_cache, llm_mod._fit_sweeper
+    assert в_кэше and уборщик is not None, f"кэш: {в_кэше}, уборщик: {уборщик!r}"
     now[0] += llm_mod.FIT_CACHE_TTL
     assert _until(lambda: not llm_mod._fit_cache and llm_mod._fit_sweeper is None), \
         "таймер убрал истёкшую сводку и не взвёлся на пустой кэш"
@@ -1157,12 +1204,13 @@ def test_sweeper_wakes_at_the_nearest_deadline_not_a_full_step_later(monkeypatch
     now = [1000.0]
     monkeypatch.setattr(llm_mod, "_fit_clock", lambda: now[0])
     llm_mod._fit_cache_put(("а",), "а")
-    assert llm_mod._fit_sweeper.interval == llm_mod.FIT_CACHE_SWEEP == 60
-    llm_mod._fit_sweeper.cancel()
-    llm_mod._fit_sweeper = None
+    with llm_mod._fit_cache_lock:
+        assert llm_mod._fit_sweeper.interval == llm_mod.FIT_CACHE_SWEEP == 60
+        llm_mod._fit_sweeper.cancel()
+        llm_mod._fit_sweeper = None
     now[0] += llm_mod.FIT_CACHE_TTL - 5
     llm_mod._fit_cache_put(("б",), "б")
-    assert llm_mod._fit_sweeper.interval == 5, "до срока «а» — 5 с, а не минута"
+    assert _armed().interval == 5, "до срока «а» — 5 с, а не минута"
 
 
 def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
@@ -1173,10 +1221,13 @@ def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
     monkeypatch.setattr(llm_mod, "FIT_CACHE_SWEEP", 0.01)
     assert _until(lambda: not _sweepers()), "отменённые таймеры прошлых тестов вышли"
     llm_mod._fit_cache_put(("а",), "а")
-    old = llm_mod._fit_sweeper
     with llm_mod._fit_cache_lock:
-        # Timer ставит finished только после функции, а она ждёт этот замок:
-        # ждём с запасом больше интервала, пока старый проснётся
+        # Таймер берётся под замком: пока его держим, тик не перевзведёт цепочку, и
+        # взведён ровно тот, кто сработает и будет ждать замок (выходной круг по
+        # №461, DS I1). Timer ставит finished только после функции, а она ждёт этот
+        # замок: ждём с запасом больше интервала, пока старый проснётся
+        old = llm_mod._fit_sweeper
+        assert old is not None
         time.sleep(0.1)
         llm_mod._fit_cache.clear()         # тело _fit_cache_clear — под тем же замком
         old.cancel()
@@ -1185,10 +1236,10 @@ def test_a_stale_sweeper_does_not_start_a_second_chain(monkeypatch):
     llm_mod._fit_cache_put(("б",), "б")
     new = llm_mod._fit_sweeper
     assert _until(lambda: not old.is_alive())
-    assert llm_mod._fit_sweeper is new and _sweepers() == [new], \
+    assert _armed() is new and _until(lambda: _sweepers() == [new]), \
         "проснувшийся старый таймер не завёл вторую цепочку"
     llm_mod._fit_cache_sweep()             # и вызов не из таймера-владельца — не в счёт
-    assert llm_mod._fit_sweeper is new and _sweepers() == [new]
+    assert _armed() is new and _until(lambda: _sweepers() == [new])
     llm_mod._fit_cache_clear()
     assert llm_mod._fit_sweeper is None and _until(lambda: not _sweepers())
 

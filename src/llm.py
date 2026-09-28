@@ -43,6 +43,7 @@ import embed_door
 import model_lease
 import once
 import privacy
+import threads
 from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
                         SeamTransportError, embed_model_name)
 
@@ -53,6 +54,59 @@ from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder, 
 # паузой в пределах бюджета вызывающего — живой контур ждёт недолго
 # (BUSY_WAIT_LIVE), фоновый может и подольше.
 BUSY_STATUSES = frozenset({429, 502, 503})
+
+
+def is_busy_status(status: int) -> bool:
+    """Статус ответа сервера — «занято, повтори позже»: одно правило на дверь, пробу
+    здоровья и строгий JSON. Читатели спрашивают функцию, а не держат копию множества:
+    правило читается на вызове (№454)."""
+    return status in BUSY_STATUSES
+
+
+# Вид отказа двери — закрытый словарь (№454). Вид ставит место отказа, а не
+# читатель по числу или тексту: дверь сама делает 503 из «облако недоступно», и по
+# статусу его не отличить от очереди сервера (входной круг 1, DS C1).
+#   queue       — сервер ответил занятостью, бюджет ожидания кончился;
+#   unavailable — облако отказало, локального запаса нет (синтетический 503);
+#   http        — сервер ответил не-200 вне занятости;
+#   broken      — ответ пришёл (200), но негодный: оборван, пустой, с полем error;
+#   unreachable — транспорт: соединение не установилось (у `requests`, не у двери);
+#   timeout     — транспорт: сервер не ответил вовремя;
+#   other       — всё прочее, в том числе не модель вовсе (диск, звук).
+FAILURE_KINDS = ("queue", "unavailable", "http", "broken", "unreachable", "timeout", "other")
+
+
+def status_kind(status: int) -> str:
+    """Вид отказа по статусу ответа — там, где статус и есть причина."""
+    if is_busy_status(status):
+        return "queue"
+    return "broken" if status == 200 else "http"
+
+
+#: Виды, после которых работу стоит повторить позже, а не чинить настройку: очередь
+#: сервера и недоступное облако. Читатели спрашивают `is_retry_later`, а не держат
+#: свой кортеж видов (выходной круг 1 по №454, критика решения).
+RETRY_LATER_KINDS = frozenset({"queue", "unavailable"})
+
+
+def is_retry_later(e: BaseException) -> bool:
+    """Отказ из тех, что проходят сами: повторить позже, а не звать человека к настройке."""
+    return failure_kind(e) in RETRY_LATER_KINDS
+
+
+def failure_kind(e: BaseException) -> str:
+    """Вид любого исключения, дошедшего от двери, — по типу, без текста. Отказ
+    соединения по таймауту (`ConnectTimeout`) — «не отвечает»: он и
+    `ConnectionError`, и `Timeout`, и соединения не было."""
+    if isinstance(e, LLMHTTPError):
+        return e.kind
+    if isinstance(e, requests.ConnectionError):
+        return "unreachable"
+    if isinstance(e, requests.Timeout):
+        return "timeout"
+    return "other"
+
+
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
@@ -114,9 +168,9 @@ def _fit_arm_sweeper_locked(now: float) -> None:
     # До ближайшего срока, но не дольше шага: таймер идёт по monotonic и после
     # сна проснулся бы поздно — с шагом отстаём от срока не больше минуты.
     due = min(stamp for stamp, _ in _fit_cache.values()) + FIT_CACHE_TTL - now
-    _fit_sweeper = threading.Timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep)
-    _fit_sweeper.daemon = True
-    _fit_sweeper.start()
+    _fit_sweeper = threads.timer(min(FIT_CACHE_SWEEP, due), _fit_cache_sweep,
+                                 name="fit-cache-sweep", role="process",
+                                 detached="уборщик кэша свёрток зовётся концом срока, а не выходом")
 
 
 def _fit_cache_get(key: tuple) -> str | None:
@@ -164,6 +218,22 @@ def _fit_cache_clear() -> None:
             _fit_sweeper.cancel()
             _fit_sweeper = None
 
+
+# Дверь строгого JSON: сервер отвечает на запрос с format отказом, а клиент
+# решает по СТАТУСУ и ТЕЛУ, что это значит. Фраза — признак «грамматики нет»,
+# а не один код: сборка вправе ответить 501, 400 или чем угодно ещё.
+STRUCTURED_OUTPUT_PHRASE = "structured output is unavailable"
+
+#: Исходы двери: yes — строгий JSON есть; no — сервер назвал причину его
+#: отсутствия; unknown — по ответу решить нельзя (занятость, 404, пустое
+#: тело, HTML, отказ без фразы).
+STRICT_YES = "yes"
+STRICT_NO = "no"
+STRICT_UNKNOWN = "unknown"
+
+#: Окно печатаемой причины — в сообщении исключения, строке stderr и докторе.
+#: Вердикт при этом читает ПОЛНЫЙ текст: фраза может стоять за окном.
+REASON_WINDOW = 500
 
 # Строгий JSON (format:"json") есть не у каждой сборки сервера: Ollama,
 # собранная без библиотеки грамматики, отвечает на запрос с format ошибкой
@@ -221,13 +291,10 @@ def _strict_json_announce(key: tuple[str, str], model: str, base: str, reason: s
     """Строка в stderr — один раз за процесс на пару (адрес, модель).
 
     Тонкая обёртка над общим реестром `once`: решение «первый ли раз» и печать
-    живут там, под своим замком. Рецепта в строке нет: она говорит, почему
-    строгий JSON не поехал и что делаем вместо него, а не советует пересобирать
-    сервер.
+    живут там, под своим замком. Текст строки — `strict_json_sentence`, один на
+    stderr и доктора; что в нём говорится, решает только она.
     """
-    once.say(("strict_json", key),
-             f"llm: строгий JSON недоступен у {model} на {base} — "
-             f"сервер: «{reason}» (похоже, сборка без грамматики); держусь на промпте")
+    once.say(("strict_json", key), "llm: " + strict_json_sentence(model, base, reason))
 
 
 def _strict_json_clear() -> None:
@@ -238,18 +305,100 @@ def _strict_json_clear() -> None:
         once.reset("strict_json")
 
 
+def _response_reason(text: str) -> str:
+    """Причина отказа: поле error объекта JSON, иначе сырой текст."""
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(body, dict) and body.get("error"):
+        return str(body["error"])
+    return text
+
+
+def strict_json_verdict(status: int, text: str) -> tuple[str, str]:
+    """Вердикт двери строгого JSON по статусу и ПОЛНОМУ телу ответа.
+
+    Возвращает (исход, причина). Причина — поле error объекта JSON, иначе
+    сырой текст, обрезанный `REASON_WINDOW`. Классифицируется весь текст:
+    фраза `STRUCTURED_OUTPUT_PHRASE` может стоять далеко за окном печати.
+
+    200 с объектом без error — yes; 200 с error и фразой — no, без фразы —
+    unknown; всё прочее на 200 (пусто, HTML, не объект) — unknown.
+    Не-200 вне `BUSY_STATUSES` ищет фразу во ВСЁМ тексте (no/unknown):
+    прокси перед сервером кладёт её и в соседнее поле, а не только в error
+    (выходной круг 1 по №420 A, DS M2). Занятость (429/502/503) — всегда
+    unknown: это очередь, не грамматика. На 200 судит только поле error:
+    остальное там — ответ модели, и эхо фразы в нём не отказ.
+    """
+    text = text or ""
+    reason = _response_reason(text)
+    if status == 200:
+        try:
+            body = json.loads(text)
+        except (ValueError, TypeError):
+            return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+        if not isinstance(body, dict):
+            return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+        if not body.get("error"):
+            return STRICT_YES, reason[:REASON_WINDOW]
+        verdict = (STRICT_NO if STRUCTURED_OUTPUT_PHRASE in str(body["error"]).lower()
+                   else STRICT_UNKNOWN)
+        return verdict, reason[:REASON_WINDOW]
+    if is_busy_status(status):
+        return STRICT_UNKNOWN, reason[:REASON_WINDOW]
+    verdict = STRICT_NO if STRUCTURED_OUTPUT_PHRASE in text.lower() else STRICT_UNKNOWN
+    return verdict, reason[:REASON_WINDOW]
+
+
+def strict_json_sentence(model: str, base: str, reason: str) -> str:
+    """Строка о двери строгого JSON — одна на stderr и доктора.
+
+    Без «похоже, сборка без грамматики»: это не замерено (№438), а догадка в
+    строке о поломке — половина ложного диагноза. Говорим, чего лишаются
+    ответы, а не советуем пересобирать сервер.
+    """
+    return (f"строгий JSON недоступен у {model} на {base} — "
+            f"сервер: «{reason}»; ответы идут на промпте, без грамматики — "
+            f"часть разбора и имён может не дойти")
+
+
+def strict_json_probe_body(model: str) -> dict:
+    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима."""
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": "ok"}],
+        "stream": False,
+        "format": "json",
+        "think": False,
+        "options": {"num_predict": 1},
+    }
+
+
 class LLMHTTPError(RuntimeError):
     """Сервер ответил, но не результатом: HTTP-статус ≠ 200 или поле error.
 
     Отдельный класс, а не голый None: вызывающему коду нужны и статус
     (404 → «модель установлена?»), и текст ошибки — сообщения пользователю
-    в mcp_server и graph_updater различают эти случаи.
+    в mcp_server и graph_updater различают эти случаи. Вид отказа (`kind`,
+    словарь `FAILURE_KINDS`) — из статуса, если место отказа не назвало его само.
     """
 
-    def __init__(self, status: int, detail: str = ""):
-        super().__init__(f"HTTP {status}: {detail[:200]}")
+    def __init__(self, status: int, detail: str = "", body: str | None = None, *,
+                 kind: str | None = None):
+        # Два значения, а не одно: detail — причина для людей в прежних
+        # пределах (читатели печатают его как есть), body — полный текст
+        # ответа для двери строгого JSON, где фраза может стоять за окном
+        # печати. Одно поле на обе роли довело всё тело до печати графа
+        # (выходной круг 1 по №420 A, DS I1).
+        super().__init__(f"HTTP {status}: {_response_reason(detail)[:REASON_WINDOW]}")
         self.status = status
         self.detail = detail
+        self.body = detail if body is None else body
+        kind = status_kind(status) if kind is None else kind
+        if kind not in FAILURE_KINDS:
+            raise ValueError(f"вид отказа {kind!r} вне словаря {FAILURE_KINDS}")
+        self.kind = kind
 
 
 def parse_json_block(text: str) -> dict | None:
@@ -649,7 +798,8 @@ class LLM:
             raise self._fail(r.status_code, f"неожиданная форма строки потока: {line[:120]!r}")
         return data
 
-    def _fail(self, status: int, detail: str) -> LLMHTTPError:
+    def _fail(self, status: int, detail: str, body: str | None = None, *,
+              kind: str | None = None) -> LLMHTTPError:
         """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
 
         Круг-1 закрыл утечку ключа «в точке, где тело становится
@@ -660,7 +810,8 @@ class LLM:
         один, и структурный тест следит, чтобы прямой `raise LLMHTTPError`
         в этом классе больше не появлялся.
         """
-        return LLMHTTPError(status, self._hide_key(detail))
+        return LLMHTTPError(status, self._hide_key(detail),
+                            None if body is None else self._hide_key(body), kind=kind)
 
     def _hide_key(self, text: str) -> str:
         """Убрать ключ из текста ошибки шлюза.
@@ -799,7 +950,7 @@ class LLM:
                     raise
                 time.sleep(delay)
                 continue
-            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+            if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()
                 time.sleep(delay)
                 continue
@@ -961,7 +1112,7 @@ class LLM:
             reason = f"битый ответ шлюза: {type(e).__name__}"
         if not self.fallback_local:
             raise self._fail(503, f"облако недоступно ({reason}), "
-                                    "локальный запас выключен")
+                                    "локальный запас выключен", kind="unavailable")
         print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
               file=sys.stderr, flush=True)
         # _fit смотрит на флаг: сводку локального запаса нельзя класть в кэш
@@ -1130,7 +1281,7 @@ class LLM:
                     raise
                 if not self.fallback_local:
                     raise self._fail(503, f"облако недоступно ({type(e).__name__}), "
-                                          "локальный запас выключен") from e
+                                          "локальный запас выключен", kind="unavailable") from e
                 print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
@@ -1188,11 +1339,12 @@ class LLM:
         except LLMHTTPError as e:
             # Строгий JSON не поддержан: запоминаем причину и повторяем ОДИН раз
             # без format. Любой другой отказ (занятость, таймаут, 404, 500 без
-            # этой причины) идёт наружу, как раньше, — реестр ему не место.
-            if not sends_format or not self._structured_output_unavailable(e):
+            # этой причины) идёт наружу, как раньше, — реестру ему не место.
+            verdict, reason = strict_json_verdict(e.status, e.body)
+            if not sends_format or verdict != STRICT_NO:
                 raise
-            _strict_json_record(strict_key, e.detail)
-            _strict_json_announce(strict_key, sent, self.base, e.detail)
+            _strict_json_record(strict_key, reason)
+            _strict_json_announce(strict_key, sent, self.base, reason)
             del payload["format"]
             r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
             body = self._checked_body(r)
@@ -1210,7 +1362,7 @@ class LLM:
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
             with self._lease("complete", timeout):
                 r = requests.post(url, json=payload, timeout=timeout, **self._auth())
-            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+            if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
                 time.sleep(delay)
                 continue
@@ -1231,31 +1383,20 @@ class LLM:
                 raise
             return self._post_busy(url, payload, timeout, busy_wait)
 
-    @staticmethod
-    def _structured_output_unavailable(err: LLMHTTPError) -> bool:
-        """Сервер сказал, что строгого JSON у него нет — сборка без грамматики.
-
-        501 — частый код у Ollama с MLX-раннером, но не единственный признак:
-        другая сборка вправе ответить 400 с тем же текстом, поэтому причина
-        распознаётся по телу, а не по статусу. Занятость (429/502/503) —
-        очередь, а не отсутствие грамматики: за неё повтор без format ничего
-        не чинит, и в реестр такой ответ не ложится.
-        """
-        if err.status in BUSY_STATUSES:
-            return False
-        return "structured output is unavailable" in (err.detail or "").lower()
-
     def _checked_body(self, r) -> dict:
         """Тело ответа или LLMHTTPError — общая часть всех движков.
 
         Не @staticmethod: тело ошибки чужого шлюза может содержать ключ
         эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
+        `detail` — причина в прежних пределах (первые 500 знаков тела или
+        поле error), её печатают читатели; полный текст тела — в `body`, по
+        нему дверь строгого JSON решает исход (фраза может стоять за окном).
         """
         if r.status_code != 200:
-            raise self._fail(r.status_code, r.text[:500])
+            raise self._fail(r.status_code, r.text[:500], body=r.text)
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise self._fail(r.status_code, str(body["error"]))
+            raise self._fail(r.status_code, str(body["error"]), body=r.text)
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на

@@ -11,8 +11,10 @@
 оттуда, а наши тесты в семи файлах запускают код подпроцессом по пути от
 корня РЕПОЗИТОРИЯ — подпроцесс возьмёт немутантный оригинал, и мутант
 «выживет» не потому, что тест плох, а потому, что до него не дошли. Здесь
-мутация кладётся в отдельный git worktree и тесты гоняются оттуда же:
-подпроцессы видят тот же мутантный код, что и импорт.
+мутация кладётся в отдельную копию репозитория — локальный клон на SHA
+головы диапазона — и тесты гоняются оттуда же: подпроцессы видят тот же
+мутантный код, что и импорт. Не `git worktree`: его реестр живёт в общем
+`.git`, и параллельные `add`/`remove` соседних прогонов падали (№460).
 
 Мутируем ТОЛЬКО строки, изменённые в заданном диапазоне: полный прогон по
 `src/audio.py` — это тысячи мутантов и часы, а по хункам диффа — минуты.
@@ -22,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import json
 import os
 import pathlib
 import re
@@ -86,19 +89,66 @@ class Mutation:
         return f"{shown}:{self.line}: {self.what}"
 
 
+def split_range(rng: str) -> tuple[str, str, str]:
+    """Диапазон git → (левый конец, разделитель, правый конец). Грамматика
+    одна на мутатор: разделители `...` и `..`, пустой конец с любой стороны —
+    `HEAD`, как читает git (`git rev-parse ..X` — это `HEAD..X`). Без
+    разделителя — одна ревизия: левого конца нет, разделитель пуст."""
+    for sep in ("...", ".."):
+        if sep in rng:
+            left, right = (part.strip() for part in rng.split(sep, 1))
+            return left or "HEAD", sep, right or "HEAD"
+    return "", "", rng.strip() or "HEAD"
+
+
 def head_of(rng: str) -> str:
     """Правый конец диапазона — та ревизия, чей КОД мы ломаем.
 
-    Без этого worktree поднимался от текущего HEAD, а номера строк брались из
+    Без этого копия поднималась от текущего HEAD, а номера строк брались из
     чужого диапазона: мутации ложились мимо — в комментарии и пустые места,
     и «выжившими» объявлялось то, чего в коде нет. Поймано на первом же
     живом прогоне.
     """
-    for sep in ("...", ".."):
-        if sep in rng:
-            right = rng.split(sep, 1)[1].strip()
-            return right or "HEAD"
-    return rng.strip() or "HEAD"
+    return split_range(rng)[2]
+
+
+class PreparationError(Exception):
+    """Подготовка прогона не удалась — диапазон не разрешился, копия не
+    собралась. По канону исходов это «сломалась сама проверка» (код 1), а не
+    «план был, не судился ни один» (9): до плана дело не дошло или копии нет."""
+
+
+def resolve_range(root: pathlib.Path, rng: str) -> str:
+    """Тот же диапазон, где каждый конец — SHA коммита. Зовётся ОДИН раз, до
+    плана: имя ревизии, разрешённое трижды (дифф, чтение файлов плана, копия),
+    при сдвиге HEAD между ними давало план одного коммита и копию другого
+    (входной круг 4 по №460)."""
+    left, sep, right = split_range(rng)
+
+    def sha(end: str) -> str:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", f"{end}^{{commit}}"],
+                           capture_output=True, text=True)
+        if r.returncode:
+            raise PreparationError(f"ревизия {end!r} не разрешилась — {r.stderr.strip()}")
+        return r.stdout.strip()
+
+    return f"{sha(left)}{sep}{sha(right)}" if sep else sha(right)
+
+
+def copy_tree(root: pathlib.Path, sha: str, tmp: pathlib.Path) -> pathlib.Path:
+    """Копия репозитория для мутантов: локальный клон `root` в `tmp/tree` и
+    отсоединённый checkout на `sha`. В репозиторий-источник мутатор не пишет
+    ничего: клон читает его объекты (жёсткие ссылки на своём диске) и пишет
+    только в свой каталог; уборка — удалением `tmp`. Опыты №460: клон —
+    0,28 с против 0,15–0,19 у `worktree add`, 1440 параллельных клонов без
+    единой ошибки, источник-worktree и неглубокий источник клонируются."""
+    work = tmp / "tree"
+    for step, cmd in (("clone", ["git", "clone", "-q", "--no-checkout", str(root), str(work)]),
+                      ("checkout", ["git", "-C", str(work), "checkout", "-q", "--detach", sha])):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode:
+            raise PreparationError(f"копия {work}: git {step} — {r.stderr.strip()}")
+    return work
 
 
 # Области «нашего python» — у сторожа раскладки, не свой литерал `src/`: PR только
@@ -107,10 +157,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import layout_map  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 # Путь от __file__, а не от корня данных: мутатор неотделим от репозитория —
-# он делает git worktree из него же, и до вызова канона корня ещё не дошёл.
+# копию для мутантов он клонирует из него же, и до вызова канона корня ещё не дошёл.
 # «Два корня в одном процессе» (GLM I3, круг 5) здесь не расходятся: второго
 # сценария, где скрипт лежит отдельно от src/, попросту нет.
 from exit_codes import EXIT_NOTHING_TO_CHECK, EXIT_PARTIAL, EXIT_UNJUDGED, EXIT_UNMUTABLE  # noqa: E402
+# `outcome` — по имени модуля, не `from …`: список читателей кодов в тестах
+# (`tests/test_exit_codes.py`) выведен из from-импортов EXIT_*, и лишнее имя
+# разошлось бы с ним. Слово исхода берём тем же классификатором, что и все.
+import exit_codes  # noqa: E402
 MUTATION_AREAS = layout_map.PYTHON_AREAS
 
 
@@ -120,6 +174,10 @@ class ScanReport:
     mutations: list
     lines_constant: int = 0     # строки диапазона, снятые как константы модуля
     nodes: int = 0              # узлы AST на оставшихся строках диапазона
+    #: Почему файл не разобрался (пусто — разобрался): ломать в нём было что, а
+    #: план о нём молчал бы — `plan_for` считает его непрочитанным (выходной круг 2
+    #: по №441, DS C1).
+    unparsed: str = ""
 
 
 @dataclasses.dataclass
@@ -133,6 +191,16 @@ class ScanTotals:
     lines_constant: int = 0
     nodes: int = 0
     files_unreadable: int = 0
+    #: Какие файлы не судились и почему — строки «путь — причина». Счётчик выше —
+    #: их число; оба растут только в `_unreadable`: красный `partial` без имени
+    #: файла заставлял автора PR угадывать (выходной круг 3 по №441, DS M1).
+    unreadable: list[str] = dataclasses.field(default_factory=list)
+    #: Размер плана ДО среза шардом: знаменатель «0 из P» и сверка слияния
+    #: шардов `ΣM == P`. Без него пустой шард неотличим от «в диапазоне нечего».
+    planned: int = 0
+    #: (K, N) шарда, если он назван; None — план целиком. Из него берётся M
+    #: шарда для машинной строки; соседи по N восстанавливают покрытие.
+    shard: tuple[int, int] | None = None
 
 
 def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int,
@@ -142,7 +210,7 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
     нечего; `EXIT_UNJUDGED` — план был, не судился ни один мутант; `EXIT_PARTIAL`
     — судили не весь план (прервано встречей, срезано потолком, не применилось,
-    файл не прочитался); 0 — проверен весь план, чисто.
+    файл не прочитался или не разобрался); 0 — проверен весь план, чисто.
 
     Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
     лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
@@ -157,8 +225,8 @@ def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipp
     # `partial` CI пропускал это жёлтым (Important DeepSeek по PR #637).
     if planned and not tested:
         return EXIT_UNJUDGED
-    # Непрочитанный файл — неполнота при любом плане: его строки не судились,
-    # а пустой план из-за него — не «нечего» (№386).
+    # Непрочитанный файл (нет в ревизии, не utf-8, не разобрался) — неполнота при
+    # любом плане: его строки не судились, а пустой план из-за него — не «нечего» (№386).
     if totals.files_unreadable:
         return EXIT_PARTIAL
     if planned == 0:
@@ -247,13 +315,26 @@ def _module_constants(tree: ast.Module) -> set[int]:
     return out
 
 
+#: Чем `ast.parse` отказывает: `SyntaxError`, NUL-байт в тексте (`ValueError`),
+#: патологическая вложенность (`RecursionError`, `MemoryError`). Одно место на
+#: «не разбирается»: прежде `scan` ловил только `SyntaxError`, и NUL-байт ронял
+#: шард трассировкой до первой записи отчёта (выходной круг 3 по №441, DS I1).
+PARSE_ERRORS = (SyntaxError, ValueError, RecursionError, MemoryError)
+
+
+def parse_source(text: str) -> tuple[ast.Module | None, str]:
+    """Текст → дерево и пустая причина, или `None` и причина отказа разбора."""
+    try:
+        return ast.parse(text), ""
+    except PARSE_ERRORS as e:
+        return None, f"{type(e).__name__}: {getattr(e, 'msg', None) or e}"
+
+
 def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> ScanReport:
     """Что можно сломать в этих строках — и сколько там было из чего ломать."""
-    try:
-        tree = ast.parse(source if source is not None
-                         else path.read_text(encoding="utf-8"))
-    except SyntaxError:
-        return ScanReport([])
+    tree, why = parse_source(source if source is not None else path.read_text(encoding="utf-8"))
+    if tree is None:
+        return ScanReport([], unparsed=why)
     consts = _module_constants(tree)
     report = ScanReport([], lines_constant=len(lines & consts))
     lines = lines - consts
@@ -298,11 +379,22 @@ def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> Scan
     return report
 
 
-def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
-    """План мутантов по диапазону и счётчики того, из чего он собран."""
+def plan_for(root: pathlib.Path, rng: str,
+             shard: tuple[int, int] | None = None) -> tuple[list[Mutation], ScanTotals]:
+    """План мутантов по диапазону и счётчики того, из чего он собран.
+
+    `shard=(K, N)` отдаёт долю плана: индексы `i % N == K-1` по порядку
+    ПОЛНОГО плана. Шард режет ДО `--max` — срез идёт в `main` по тому, что
+    вернулось отсюда; обратный порядок отдал бы шарду не его долю.
+    `totals.planned` хранит размер полного плана (P) и до среза шардом.
+    """
     targets = changed_lines(root, rng)
     totals = ScanTotals(files_in=len(targets),
                         lines_in=sum(len(ls) for ls in targets.values()))
+
+    def _unreadable(rel: pathlib.Path, why: str) -> None:
+        totals.files_unreadable += 1
+        totals.unreadable.append(f"{rel} — {why}")
     rev = head_of(rng)
     plan: list[Mutation] = []
     for path, lines in sorted(targets.items()):
@@ -315,19 +407,30 @@ def plan_for(root: pathlib.Path, rng: str) -> tuple[list[Mutation], ScanTotals]:
                               capture_output=True)
         if blob.returncode:
             # Не молча: выпавший файл превращал «не прочитал» в «нечего» (№386)
-            totals.files_unreadable += 1
+            _unreadable(rel, f"нет в ревизии {rev}")
             continue
         try:
             source = blob.stdout.decode("utf-8")
         except UnicodeDecodeError:
             # `git show` прочитал, но это не наш текст: та же неполнота, что и
             # выпавший файл, а не трассировка посреди плана (DS M1 круга 1 по #630)
-            totals.files_unreadable += 1
+            _unreadable(rel, "не utf-8")
             continue
         report = scan(path, lines, source)
+        if report.unparsed:
+            # Третья нога той же неполноты: прочитали, а разобрать нельзя. Без
+            # счётчика пустой план из такого файла выходил «мутировать нечего» —
+            # зелёным (выходной круг 2 по №441, DS C1).
+            _unreadable(rel, f"не разбирается ({report.unparsed})")
+            continue
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         plan.extend(report.mutations)
+    totals.planned = len(plan)
+    if shard is not None:
+        k, n = shard
+        totals.shard = (k, n)
+        plan = [m for i, m in enumerate(plan) if i % n == k - 1]
     return plan, totals
 
 
@@ -445,17 +548,16 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
     """Текст мутанта — или None и причина словами.
 
     Прежде годность значила «текст изменился», и непарсящийся мутант уходил в
-    worktree, прогон падал на `SyntaxError`, а мутант засчитывался «убит» —
+    копию дерева, прогон падал на `SyntaxError`, а мутант засчитывался «убит» —
     ложь того же класса, что «нечего мутировать» при нуле мутантов (№386).
     Теперь мутант годен, только если его текст разбирается в то же дерево,
     что и сломанное `apply` (позиции в дамп не входят). Не сошлось — одна
     попытка в скобках: операнд бывает ниже по приоритету, чем место вставки
     (`x and not (a or b)` → `x and (a or b)`). Частных правил под операторы нет.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        return None, f"исходник не разбирается ({e.msg})"
+    tree, bad = parse_source(source)
+    if tree is None:
+        return None, f"исходник не разбирается ({bad})"
     found = mut.locate(tree)
     if found is None:
         return None, "узел не нашёлся на своём отрезке"
@@ -477,12 +579,11 @@ def applied(mut: Mutation, source: str) -> tuple[str | None, str]:
         if text == source:
             why = "замена не изменила текст"
             continue
-        try:
-            got = ast.dump(ast.parse(text))
-        except SyntaxError:
+        got_tree, _ = parse_source(text)
+        if got_tree is None:
             why = "текст мутанта не разбирается"
             continue
-        if got == want:
+        if ast.dump(got_tree) == want:
             return text, ""
         why = "текст мутанта не совпал с мутированным деревом"
     return None, why
@@ -555,8 +656,12 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     try:
         # Без `-x`: он останавливал прогон на первой ошибке, и упавший по
         # окружению тест выдавал бы «мутант убит» независимо от мутации.
+        # `-p no:xdist`: прогон мутанта — один процесс. Полные прогоны идут с
+        # `-n` (№453), и `-n` из `addopts` или `PYTEST_ADDOPTS` молча сделал бы
+        # параллельным каждый прогон мутанта; с выключенным плагином такой `-n` —
+        # громкий отказ разбора (код 4), база краснеет, мутатор останавливается.
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
-                            "-p", "no:cacheprovider", "--timeout", str(timeout)],
+                            "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
                            timeout=timeout * WORST_RUN_FACTOR)
     except subprocess.TimeoutExpired:
@@ -572,6 +677,9 @@ RUNNING = "прогон не дошёл до конца плана"
 #: PR #640, та же дыра в #637).
 BASE_RUNNING = "базовый прогон не закончен"
 BASE_RED = "база красная"
+#: Копия дерева не собралась (клон или checkout): план есть, отчёт и машинная
+#: строка пишутся, как у красной базы; исход — «сломалась сама проверка».
+COPY_FAILED = "копия дерева не собралась"
 
 # Шов часов: бюджет прогона тесты судят подменённым временем, а не сном
 clock = time.monotonic
@@ -619,6 +727,7 @@ def render_report(tested: int, survivors: list, skipped: list, planned: int, dro
     if totals.files_unreadable:
         lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
                      f"— их строки не судились.")
+        lines += [f"  НЕ ПРОЧИТАН {entry}" for entry in totals.unreadable]
     if dropped:
         lines.append(f"Не проверено из-за потолка: {dropped}. "
                      f"Это НЕ значит «там всё хорошо».")
@@ -634,16 +743,194 @@ def render_report(tested: int, survivors: list, skipped: list, planned: int, dro
     return "\n".join(lines)
 
 
+def _max_arg(value: str) -> int | None:
+    """`--max N` — потолок мутантов; `--max all` — без среза (None).
+
+    Потолок CI поднимается до полного плана шарда: план четырёх шардов при
+    `--max all` судится целиком, а не первыми шестьюдесятью.
+    """
+    if value == "all":
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: целое число или all")
+    if n < 0:
+        raise argparse.ArgumentTypeError("потолок мутантов не бывает отрицательным")
+    return n
+
+
+def _shard_arg(value: str) -> tuple[int, int]:
+    """`--shard K/N` — доля плана `i % N == K-1`; неверное значение — ошибка аргумента.
+
+    Разбор — типом argparse, как у `--max`: отказ с usage и кодом 2 до git-корня,
+    дерева и лока. Не код 5: он значит «не назван корень данных», и проба
+    контракта запуска обязана отличать его от опечатки во флаге
+    (`exit_codes.EXIT_ROOT_UNNAMED`; выходной круг 1 по №441, DS M5).
+    """
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", value)
+    if m is None:
+        raise argparse.ArgumentTypeError(f"{value!r}: ожидается K/N")
+    k, n = int(m.group(1)), int(m.group(2))
+    if not 1 <= k <= n:
+        raise argparse.ArgumentTypeError(f"{value!r}: нужно 1 ≤ K ≤ N")
+    return (k, n)
+
+
+#: Суффикс машинной строки шарда рядом с отчётом: `<report>` + он. Одно имя на троих —
+#: писателя (`write_artifacts`), судью (`_shard_rows`) и шаг выгрузки артефакта в CI;
+#: сторож workflow собирает глоб артефакта из этой константы (выходной круг 1 по №441,
+#: DS I3: переименование суффикса иначе красило бы вердикт на каждом PR).
+SHARD_LINE_SUFFIX = ".json"
+
+
+def shard_line_path(report: pathlib.Path) -> pathlib.Path:
+    """Где лежит машинная строка шарда при отчёте `report` — одно правило имени для
+    писателя и для сторожа выгрузки артефакта в CI."""
+    return report.with_name(report.name + SHARD_LINE_SUFFIX)
+
+
+def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_n: int,
+                    m: int, p: int, rc: int) -> None:
+    """Отчёт и машинная строка шарда рядом с ним — одна точка записи.
+
+    Отчёт пишется после каждого мутанта (job, оборванный на потолке, уносил
+    бы его с собой), и там же кладётся `<report>.json`: K, N шарда, M его
+    мутантов, P всего плана и слово исхода. Вердикт CI читает эти строки
+    слиянием, а не печать шага. Без `--report` класть некуда — молча выходим.
+    """
+    if not report:
+        return
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(text + "\n", encoding="utf-8")
+    machine = shard_line_path(report)
+    machine.write_text(json.dumps({"K": shard_k, "N": shard_n, "M": m, "P": p,
+                                   "word": exit_codes.outcome(rc)}) + "\n",
+                       encoding="utf-8")
+
+
+def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int, str]], str]:
+    """Машинные строки шардов из каталога и причина, если какую-то не прочесть.
+
+    Обходим рекурсивно: CI раскладывает артефакты шардов по своим подкаталогам,
+    и «все `*.json` шардов» — это они, а не только плоский уровень.
+
+    Нечитаемый файл не стирает прочитанные: сводка показывает шарды, которые
+    отработали, рядом с причиной красного, а не «шардов 0» (выходной круг 2 по
+    №441, DS M2).
+    """
+    rows: list[tuple[int, int, int, int, str]] = []
+    bad: list[str] = []
+    for path in sorted(directory.rglob("*" + SHARD_LINE_SUFFIX)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            rows.append((int(data["K"]), int(data["N"]), int(data["M"]),
+                         int(data["P"]), str(data["word"])))
+        except (OSError, ValueError, KeyError, TypeError):
+            bad.append(str(path))
+    return rows, (f"нечитаемый файл шарда: {', '.join(bad)}" if bad else "")
+
+
+def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) -> int:
+    """Свести машинные строки шардов в один вердикт — код возврата.
+
+    Таблица вердикта — здесь одна; CONTRIBUTING на неё ссылается:
+
+    | состояние | исход | код |
+    |---|---|---|
+    | нечитаемый файл, файлов не N, разные N, повтор или пропуск K, ΣM ≠ P | «шарды не покрыли план» | 1 |
+    | P = 0, все шарды `nothing` | заметка «мутировать нечего» | 0 |
+    | P = 0, шарды `nothing` или `unmutable` | предупреждение «слепое пятно мутатора» | 0 |
+    | P > 0, каждый шард `ok` или `nothing` при своём M = 0 | «шарды чисты» | 0 |
+    | иначе (`partial`, `unjudged`, `fail`) | «неполный исход» | 1 |
+
+    `unmutable` бывает только при P = 0: шард с непустой долей судит её, а
+    пустая доля непустого плана пишет `nothing`. В CI «судили часть» — красный,
+    а не жёлтая заметка.
+    """
+    directory = pathlib.Path(directory)
+    rows, why = _shard_rows(directory)
+    lines: list[str] = []
+    problem = why
+    if not problem and not rows:
+        problem = "ни одного файла шарда"
+    if not problem:
+        ns = {r[1] for r in rows}
+        ps = {r[3] for r in rows}
+        if len(ns) != 1:
+            problem = "разные N"
+        else:
+            n = ns.pop()
+            if len(rows) != n:
+                problem = f"файлов {len(rows)}, а шардов {n}"
+            elif sorted(r[0] for r in rows) != list(range(1, n + 1)):
+                problem = "повтор или пропуск K"
+            elif len(ps) != 1 or sum(r[2] for r in rows) != ps.pop():
+                problem = "ΣM ≠ P"
+    for r in sorted(rows):
+        lines.append(f"  шард {r[0]} из {r[1]}: M={r[2]} — {r[4]}")
+    total_m = sum(r[2] for r in rows)
+    lines.append(f"итог: шардов {len(rows)}, M={total_m}, P={rows[0][3] if rows else 0}")
+    if problem:
+        lines.insert(0, f"шарды не покрыли план: {problem}")
+        code = 1
+    else:
+        p = rows[0][3]
+        clean = [r for r in rows if not (r[4] == "ok" or (r[4] == "nothing" and r[2] == 0))]
+        if p == 0:
+            # План пуст у всего диапазона — слово у всех шардов одно и то же.
+            # «Нечего» и «строки есть, мутировать нечего» (слепое пятно, №386) —
+            # не отказ гейта: до шардов CI отвечал на них заметкой и
+            # предупреждением, и красный вердикт на каждом PR без python-строк
+            # приучил бы не смотреть на него вовсе (выходной круг 1 по №441, DS C1).
+            # «Не прочитан файл» (`partial`) — красный: план неполон.
+            words = {r[4] for r in rows}
+            if words <= {"nothing"}:
+                lines.insert(0, "мутировать нечего")
+                code = 0
+            elif words <= {"nothing", "unmutable"}:
+                lines.insert(0, "строки в диапазоне есть, а мутировать в них нечего — "
+                                "слепое пятно мутатора, см. отчёты шардов")
+                code = 0
+            else:
+                lines.insert(0, "шарды дали неполный исход: "
+                                + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+                code = 1
+        elif not clean:
+            # Обещание строки — ровно то, что проверено: все P мутантов плана
+            # судились. Строки без операторов в план не входят вовсе, и «покрыто
+            # мутацией» про них не сказано (критика DS круга 3 по №441)
+            lines.insert(0, f"мутация: шарды чисты — судились все {p} мутантов плана, выживших нет")
+            code = 0
+        else:
+            lines.insert(0, "шарды дали неполный исход: "
+                            + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+            code = 1
+    text = "\n".join(lines)
+    print(text)
+    if report:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(text + "\n", encoding="utf-8")
+    return code
+
+
 def main(argv: list[str]) -> int:
     # Бюджет считается от старта процесса: подготовка дерева и база входят в него
     started = clock()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", default="origin/main...HEAD",
                     help="диапазон git, чьи строки мутируем")
-    ap.add_argument("--max", type=int, default=60,
-                    help="потолок мутантов (срезанное объявляется вслух)")
+    ap.add_argument("--max", type=_max_arg, default=60,
+                    help="потолок мутантов (срезанное объявляется вслух); "
+                         "«all» — без среза")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
+    ap.add_argument("--shard", type=_shard_arg, default=None,
+                    help="доля плана K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
+                         "i %% N == K-1 ДО среза --max")
+    ap.add_argument("--merge-shards", type=pathlib.Path, default=None,
+                    help="каталог с машинными строками шардов (*.json): свести их "
+                         "вердиктом вместо прогона")
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
                          "или ночным циклом (чужой лок мутатора не обходится)")
@@ -652,9 +939,27 @@ def main(argv: list[str]) -> int:
                          "набор — остановка с отчётом о проверенном (--force не снимает)")
     args = ap.parse_args(argv[1:])
 
+    # Слияние шардов — ПЕРВЫМ: ему не нужны ни git-корень, ни гвард занятости,
+    # ни лок. Отдельный job CI сходится сюда на голом каталоге артефактов вне
+    # git-дерева, и любой шаг до этого был бы лишним отказом.
+    if args.merge_shards is not None:
+        return merge_shards(args.merge_shards, args.report)
+
+    shard = args.shard            # неверное значение отвергнуто разбором аргументов
+
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
                                        check=True).stdout.strip())
+    # Диапазон — в SHA один раз, здесь: дифф, чтение файлов плана и копия
+    # получают только разрешённое, и сдвиг HEAD посреди прогона не разводит
+    # план и копию по разным коммитам (№460). Слова человека (`args.range`)
+    # остаются для печати.
+    try:
+        rng = resolve_range(root, args.range)
+    except PreparationError as e:
+        print(f"подготовка не удалась: {e}")
+        return 1
+    print(f"диапазон: {args.range} = {rng}")
     # Координация с живым контуром (ночь 23→24.08: мутатор делил qwen35b со
     # встречей и с ночным циклом — 35 ReadTimeout по 300 с у досье, прогон
     # оборван руками в 10:28). Правила: (1) на старте машина занята встречей
@@ -683,9 +988,28 @@ def main(argv: list[str]) -> int:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
                   "(--force, чтобы настоять)")
             return 3
-    plan, totals = plan_for(root, args.range)
+    plan, totals = plan_for(root, rng, shard)
+    m_total = len(plan)
+    p_total = totals.planned
+    k, n = totals.shard or (1, 1)
     if not plan:
         code = verdict_code([], 0, 0, 0, 0, totals)
+        # Первый разбор пустого плана: шард назван, и полный план был (P > 0),
+        # а этой доле мутантов не досталось. Это не «в диапазоне нечего» —
+        # соседние шарды судят свою часть; отчёт и машинная строка (word
+        # `nothing`, M = 0) нужны слиянию, иначе ΣM ≠ P.
+        # Машинная строка — на ЛЮБОМ выходе прогона с шардом: без неё вердикт
+        # видит «ни одного файла шарда» и краснеет на каждом PR без python-строк
+        # (выходной круг 1 по №441, DS C1). P = 0 — диагноз всего диапазона,
+        # одинаковый у всех шардов; P > 0 при пустой доле — «нечего» ЭТОГО
+        # шарда: его мутантов нет, соседи судят свою часть.
+        if shard is not None:
+            word = EXIT_NOTHING_TO_CHECK if p_total else code
+            write_artifacts(args.report, render_report(0, [], [], 0, 0, "", totals),
+                            k, n, m_total, p_total, word)
+            if p_total:
+                print(f"шард {k} из {n}: 0 из {p_total} — нечего")
+                return EXIT_NOTHING_TO_CHECK
         if code == EXIT_NOTHING_TO_CHECK and not totals.lines_in:
             print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
         elif code == EXIT_NOTHING_TO_CHECK:
@@ -698,12 +1022,13 @@ def main(argv: list[str]) -> int:
                   f"узлов AST {totals.nodes}, не прочитано файлов {totals.files_unreadable}.")
         else:
             print(f"План пуст, но проверено не всё: не прочитано файлов "
-                  f"{totals.files_unreadable} из {totals.files_in} "
-                  f"(ревизия {head_of(args.range)}) — это НЕ «нечего мутировать».")
+                  f"{totals.files_unreadable} из {totals.files_in} — это НЕ «нечего мутировать».")
+            for entry in totals.unreadable:
+                print(f"  НЕ ПРОЧИТАН {entry}")
         return code
 
     dropped = 0
-    if len(plan) > args.max:
+    if args.max is not None and len(plan) > args.max:
         # По кругу между файлами: срез подряд забирал всех мутантов одного
         # файла, а остальные не проверялись вовсе (ревью 20.08, локальная).
         by_file: dict[pathlib.Path, list[Mutation]] = {}
@@ -720,33 +1045,37 @@ def main(argv: list[str]) -> int:
     print(f"Мутантов к проверке: {len(plan)}"
           + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
 
-    # Лок — ДО подготовки дерева: отказ не должен оставлять сиротой
-    # зарегистрированный worktree (круг-2 по PR #399, DS Minor).
+    # Лок — ДО подготовки копии: отказ не должен оставлять за собой каталог
+    # копии (круг-2 по PR #399, DS Minor).
     lock = busy_signals.MutationLock(data_root)
     if not lock.acquire():
         print("другой мутатор уже держит лок — не стартую (--force не поможет: "
               "два прогона на одной модели бессмысленны)")
         return 3
-    # Убитый на полпути прогон оставляет зарегистрированное дерево; без
-    # уборки git будет считать его живым и мешать следующим запускам.
-    subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutate-"))
-    work = tmp / "tree"
-    rev = head_of(args.range)
-    subprocess.run(["git", "worktree", "add", "--detach", str(work), rev],
-                   cwd=root, capture_output=True, check=True)
     survivors: list[Mutation] = []
     skipped: list[tuple[Mutation, str]] = []
     tested = 0
     aborted = ""
     durations: dict[tuple[str, ...], float] = {}
 
-    def save(reason: str) -> None:
-        if args.report:
-            args.report.parent.mkdir(parents=True, exist_ok=True)
-            args.report.write_text(render_report(tested, survivors, skipped, len(plan), dropped,
-                                                 reason, totals) + "\n", encoding="utf-8")
+    def save(reason: str, rc: int | None = None) -> None:
+        if rc is None:
+            rc = verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
+        write_artifacts(args.report,
+                        render_report(tested, survivors, skipped, len(plan), dropped,
+                                      reason, totals),
+                        k, n, m_total, p_total, rc)
     try:
+        # Копия — внутри `try`: провал клона или checkout отпускает лок и убирает
+        # каталог в `finally`, а отчёт и машинная строка ложатся, как у красной
+        # базы. Код — «сломалась сама проверка», не «план был, не судился» (№460).
+        try:
+            work = copy_tree(root, head_of(rng), tmp)
+        except PreparationError as e:
+            print(f"подготовка не удалась: {e}")
+            save(COPY_FAILED, 1)
+            return 1
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
         # сами по себе. Тогда КАЖДЫЙ мутант считается убитым, отчёт говорит
@@ -757,7 +1086,7 @@ def main(argv: list[str]) -> int:
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
         subsets = {suite_key(work, m.path) for m in plan}
-        # Свежий worktree байткода не содержит, но запрет записи не мешает
+        # Свежая копия байткода не содержит, но запрет записи не мешает
         # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
@@ -782,7 +1111,7 @@ def main(argv: list[str]) -> int:
             print("В отдельном дереве нет того, что лежит в .gitignore "
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
-            save(BASE_RED)
+            save(BASE_RED, 2)
             return 2
         for i, mut in enumerate([] if aborted else plan, 1):
             suite = suite_key(work, mut.path)
@@ -832,8 +1161,6 @@ def main(argv: list[str]) -> int:
             save(RUNNING)
     finally:
         lock.release()
-        subprocess.run(["git", "worktree", "remove", "--force", str(work)],
-                       cwd=root, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
     report = render_report(tested, survivors, skipped, len(plan), dropped, aborted, totals)

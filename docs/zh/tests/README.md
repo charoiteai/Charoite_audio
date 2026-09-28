@@ -7,10 +7,20 @@
 .venv/bin/python -m pytest tests/ -x -q
 ```
 
+安装 pytest-xdist 后（其版本在 `ci.yml` 中固定为 `PYTEST_XDIST_VERSION`），完整测试集可像 CI 一样多进程运行：
+
+```bash
+.venv/bin/python -m pytest tests/ -q -n 4 --dist loadgroup
+```
+
+`--dist loadgroup` 让图谱包 wheel 的测试（`wheel` 组）留在同一个 worker 中，wheel 只构建一次。
+
 单个测试的超时（`pyproject.toml` 中的 `timeout = 120`）需要插件，而
 `pip install .` 不会安装它（也不会安装 pytest 本身）：没有 `pytest-timeout`，
 pytest 只会警告未知选项，一个卡住的 `join` 就会让整次运行挂起——恰恰在最
 不希望出事的地方。
+
+图谱包的 wheel 测试在离线、无构建隔离的情况下构建 wheel，因此 venv 中需要安装与 `ci.yml` 的 `env` 中固定版本一致的 `setuptools`；Python 3.12 的 venv 默认不带它。缺失或版本不同时，测试会失败并给出确切命令（`<同一个 python> -m pip install setuptools==<固定版本>`）。
 
 无需网络、无需模型——所有重依赖均已打桩。`conftest.py` 隔离每一个测试，
 运行时不会触碰你的真实数据：

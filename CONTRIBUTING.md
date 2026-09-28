@@ -45,8 +45,12 @@ review gates, and who answers for what — is documented in
   behaviour change nobody noticed: either the test for that place exists but
   holds nothing, or there is no test at all. Only lines from the diff are
   mutated — a whole-file pass means thousands of mutants and hours instead of
-  minutes. The mutation lands in a separate git worktree, so test subprocesses
-  see the same broken code the imports do. Each mutant is judged by the tests
+  minutes. The mutation lands in a separate copy of the repository — a local
+  clone checked out at the head of the range — so test subprocesses see the
+  same broken code the imports do. The range is resolved to commit hashes once,
+  before the plan, and the copy never writes to the source repository: a
+  `git worktree` registry lives in the shared `.git`, and parallel runs broke
+  each other's `add` and `remove`. Each mutant is judged by the tests
   that reach its module: `import X`, a subprocess running `X.py`, or a load
   by path (`spec_from_file_location("X", …)`, the `_load("X")` helper). A
   module no test reaches that way is judged by the whole suite — slow in CI,
@@ -67,10 +71,22 @@ review gates, and who answers for what — is documented in
   ends as `partial`, or as `unjudged` (code 9) when not a single mutant of a
   non-empty plan was judged — in CI that one is red. `--report` is rewritten
   after every mutant, so a job killed at its ceiling still leaves what was
-  checked. In CI the job `mutation (changed lines)` runs on every pull
-  request (`--range base...HEAD --max 40 --timeout 120 --budget-s 2400`) and
-  puts the report into the run summary; it does not block the merge, and a
-  red one is read before merging.
+  checked.
+  In CI the changed lines are split across four shards: `--shard K/N` keeps
+  every N-th mutant (`i % N == K-1`, before `--max`), `--max all` lifts the
+  60-mutant ceiling, and each shard writes a machine line `<report>.json`
+  beside the report — `K`, `N`, `M` (its mutants), `P` (the whole plan) and
+  the outcome word. A shard left with no mutants of a non-empty plan prints
+  `шард K из N: 0 из P — нечего` and still writes both files; at `P = 0` every
+  shard writes the diagnosis of the whole range. A separate verdict job merges
+  them with `--merge-shards DIR`; its table lives in the `merge_shards`
+  docstring. In short: red when the files do not cover the plan exactly (one
+  per shard, keys 1..N, ΣM = P, every file readable); at `P = 0` all-`nothing`
+  is the note "nothing to mutate" and `nothing`/`unmutable` the blind-spot
+  warning, both green; at `P > 0` green only when every shard is `ok` — or
+  `nothing` with its own `M = 0`; `partial`, `unjudged` and `fail` are red. So
+  `partial` in CI is a failure now, not a warning. A file that does not parse
+  counts as unread, like one missing from the revision.
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put
@@ -123,9 +139,9 @@ review gates, and who answers for what — is documented in
 
 | When | What |
 |---|---|
-| every push and PR | `lint`: ruff, byte-compile, "a test must be able to fail", shellcheck, semgrep, mypy (advisory), example config keys · `pytest (src/)`: the full python suite, then the layout gate |
+| every push and PR | `lint`: ruff, byte-compile, "a test must be able to fail", shellcheck, semgrep, mypy (advisory), example config keys · `pytest (src/)`: the full python suite in four processes (`-n 4 --dist loadgroup`), then the layout gate |
 | pushes to `main` and every PR | CodeQL (`analyze`, also weekly) · supply chain: zizmor on the workflows and the public-format de-identification check |
-| every PR only | mutation of the changed lines (`mutation (changed lines)`) · docs guard · conventional PR title · dependency review (high severity fails) |
+| every PR only | mutation of the changed lines in four shards (`mutation (changed lines)`) and their verdict (`mutation verdict`) · docs guard · conventional PR title · dependency review (high severity fails) |
 | when `app/`, `app-ios/` or `app-android/` change | Swift app build and deterministic tests with SwiftLint, iOS build · Android unit tests, lint and debug build |
 | nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
 
@@ -239,6 +255,24 @@ directions**: an entry that no longer matches reality is just as red as a
 violation that is not declared. The list can only shrink by itself; it grows
 only through a diff a human wrote and a reviewer read.
 
+**The folder-name guard.** The storage schema is one value:
+`charoite_graph.graph_schema.GraphSchema` declares the folder names, section
+heads and raw-file markers with invariants, and `src/charoite_schema.py` holds
+the single `CHAROITE = GraphSchema(…)` value as literals. The guard in
+`scripts/layout_map.py` reads the field list from the class annotations and the
+values from that call, looks for copies of those names among the string literals
+of the graph package (the same closure the package probe copies) and holds each
+copy as `folder_literals` debt with a ticket; `folder_literal_exemptions` forgives
+one copy with a written reason. A hit without a ticket, or a declared hit the
+measurement no longer finds, is red. Since PR B of №422 the debt is zero: the
+package asks the schema's role predicates and keeps no name constants, and
+`tests/test_graph_schema_roles.py` rotates the schema (every name of `CHAROITE`
+becomes an ASCII token) and requires the same observable behaviour of search,
+dossier and node index — a literal that survived shows up as a mismatch there
+before the guard even runs. One copy and one registry per hit: a hit that is
+both debt and forgiven is refused at load. The schema module is an ordinary
+member of the entry closure: the search takes the schema as a parameter.
+
 The `KINDS` table in the guard is pinned by a copy inside the test on purpose —
 the comment there explains why. Changing the policy means changing two files,
 and that is the point.
@@ -324,18 +358,21 @@ exists.
 `scripts/preflight.sh [base]` (range `base...HEAD`, `origin/main` by default)
 is the local summary before a review round and before accepting a
 contributor's (or a sandboxed executor's) work: the machine is busy (a live
-meeting, a debrief or the nightly cycle stops it with exit code 3;
-`PREFLIGHT_FORCE=1` only with the owner's consent), ruff at the version pinned
-in CI, the layout guard, privacy markers (`--all`), the full pytest set,
+meeting, a debrief, the nightly cycle or a running mutator stops it with exit
+code 3; `PREFLIGHT_FORCE=1` only with the owner's consent), ruff at the version
+pinned in CI, the layout guard, privacy markers (`--all`), the full pytest set,
 SwiftLint plus `swift build`/`swift test` when `app/` is touched, and the
 mutation check on the changed lines. The last line is the machine verdict:
 `ok` when every step ran and passed, `FAIL: <steps>` (with the names of
 failed tests above it), or `неполный — пропущены: …` ("incomplete —
 skipped") when a step could not run — a skip is said out loud, never counted
 as a pass.
-`PREFLIGHT_SKIP=mutation,swift` skips steps on a re-run. It works inside a git
-worktree: the owner's data root comes from the main checkout, so the busy
-guard still sees a live meeting.
+`PREFLIGHT_SKIP=mutation,swift` skips steps on a re-run. The full pytest set
+runs in `PREFLIGHT_JOBS` processes (4 by default) when pytest-xdist is
+installed, the same mode as CI; without it the set runs sequentially and the
+step says so with the install command — a slower run, not a skipped one. It
+works inside a git worktree: the owner's data root comes from the main
+checkout, so the busy guard still sees a live meeting.
 
 Why this exists: five review findings in a row were claims about process
 behaviour ("exits with code 2", "the app shows the recipe") that nobody had

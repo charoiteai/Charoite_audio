@@ -29,9 +29,9 @@
 
 | 时机 | 内容 |
 |---|---|
-| 每次 push 与 PR | `lint`：ruff、字节编译、「测试必须能够失败」、shellcheck、semgrep、mypy（参考）、示例配置的键 · `pytest (src/)`：完整 Python 测试，随后是布局门禁 |
+| 每次 push 与 PR | `lint`：ruff、字节编译、「测试必须能够失败」、shellcheck、semgrep、mypy（参考）、示例配置的键 · `pytest (src/)`：完整 Python 测试（四个进程，`-n 4 --dist loadgroup`），随后是布局门禁 |
 | 推送到 `main` 与每个 PR | CodeQL（`analyze`，另有每周定时）· 供应链：对工作流的 zizmor 与按公开格式的去标识化检查 |
-| 仅 PR | 改动行的变异（`mutation (changed lines)`）· 文档守卫 · 约定式 PR 标题 · dependency review（high 及以上即失败） |
+| 仅 PR | 改动行的变异，分四个分片（`mutation (changed lines)`），以及它们的判定（`mutation verdict`）· 文档守卫 · 约定式 PR 标题 · dependency review（high 及以上即失败） |
 | 改动 `app/`、`app-ios/` 或 `app-android/` 时 | Swift 应用构建与确定性测试（含 SwiftLint）、iOS 构建 · Android 单元测试、lint 与 debug 构建 |
 | 每晚 | 同样的 Python 与 Swift 测试（macOS），外加**在模拟器中运行 iOS 测试** |
 
@@ -108,6 +108,16 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 每条授予例外的记录——逆箭头的边、手动入口点、允许自己推导根的模块——都需要卡片或书面理由，
 守卫**双向**比对工件与代码：不再符合现实的记录与未声明的违规同样是红的。列表只会自行缩短；
 只有人写、审阅者读过的 diff 才能让它增长。
+
+**文件夹名守卫。** 存储模式是一个值：`charoite_graph.graph_schema.GraphSchema` 声明文件夹名、章节头和
+原始文件标记及其不变量，而 `src/charoite_schema.py` 以字面量保存唯一的 `CHAROITE = GraphSchema(…)` 值。
+`scripts/layout_map.py` 中的守卫从类注解读取字段表、从该调用读取值，在图谱包（包探针复制的同一闭包）
+的字符串字面量中寻找这些名字的副本，并把每个副本作为带卡片的 `folder_literals` 债务保存；
+`folder_literal_exemptions` 以书面理由宽恕一个副本。没有卡片的命中，以及测量再也找不到的已声明记录，
+都是红的。自 №422 的 PR B 起债务为零：包只询问模式的角色谓词，自身不保存任何名称常量；
+`tests/test_graph_schema_roles.py` 对模式做轮换（`CHAROITE` 的每个名称换成一个 ASCII 记号），要求搜索、档案和
+节点索引的可观察行为保持不变——迁移后残留的字面量会在守卫运行之前就在那里表现为不一致。一个命中只属于一个
+登记表：既是债务又被宽恕的记录在加载时被拒绝。模式模块是入口闭包的普通成员：搜索以参数接收模式。
 
 守卫中的 `KINDS` 表有意在测试内以副本固定——原因见那里的注释。改变策略意味着改两个文件，
 这正是目的所在。

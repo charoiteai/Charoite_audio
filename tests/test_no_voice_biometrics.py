@@ -34,7 +34,7 @@ SRC = REPO / "src"
 sys.path.insert(0, str(SRC))
 
 # Модули, через которые проходит звук и всё, что из него считается.
-VOICE_MODULES = ("diarize_live.py", "diarize.py", "audio.py",
+VOICE_MODULES = ("diarize_live.py", "diarize.py", "diarize_nemotron.py", "audio.py",
                  "rebuild_transcript.py", "transcribe_file.py", "daemon.py")
 
 # Формы, которыми вектор превращается в файл. Каждая — готовый способ

@@ -35,7 +35,9 @@
       "charoite_graph.graph_nodes",
       "graph_links",
       "charoite_graph.dossier",
-      "charoite_graph.graph_search"
+      "charoite_graph.graph_search",
+      "charoite_graph.graph_schema",
+      "charoite_graph.text_norm"
     ],
     "cloud": [
       "cloud"
@@ -46,6 +48,7 @@
       "stt_runtime",
       "diarize",
       "diarize_live",
+      "diarize_nemotron",
       "owner_voice",
       "voice_pitch",
       "channel_labels",
@@ -186,6 +189,14 @@
     "once": {
       "layer": "base",
       "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
+    },
+    "threads": {
+      "layer": "base",
+      "why": "шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток"
+    },
+    "charoite_schema": {
+      "layer": "graph",
+      "why": "значение схемы хранилища (№422): имена папок и разделов читают модули графа, модуль тянет только stdlib и класс схемы из пакета графа; окружения не знает"
     }
   },
   "allowed_edges": [
@@ -443,6 +454,16 @@
     "src/voice_memos_bridge.py": {
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
+    }
+  },
+  "schema_module": "src/charoite_graph/graph_schema.py",
+  "schema_values": "src/charoite_schema.py",
+  "folder_literals": [],
+  "folder_literal_exemptions": {
+    "src/charoite_graph/dossier.py": {
+      "dossier_dir": {
+        "досье": "ключ формата _index.json (поле со списком записей досье, рядом с «версия» и «обновлён»), а не имя папки: папку модуль берёт из DOSSIER_DIR; переезд потребителей на значение схемы его не снимает (выходной круг 1 по #654, DS I4)"
+      }
     }
   }
 }

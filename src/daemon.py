@@ -59,6 +59,7 @@ import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
 import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
+import threads  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
@@ -228,17 +229,36 @@ def append_hint(tr_path: pathlib.Path, header: str, body: str):
         emit({"type": "status", "text": f"запись подсказок: {e}"})
 
 
+#: Фраза для человека по виду отказа двери модели (`llm.failure_kind`). Вида нет в
+#: таблице — строка ошибки с типом: битый ответ, прочий HTTP и не-модель (диск,
+#: звук) не притворяются «занятой моделью» (№454).
+SHORT_ERROR_PHRASES = {
+    "queue": "модель занята",
+    "unavailable": "облако недоступно",
+    "unreachable": "сервер модели не отвечает",
+    "timeout": "модель не ответила вовремя",
+}
+
+
 def short_error(e: BaseException) -> str:
     """Ошибка модели одной строкой для человека: «занята», «не отвечает», а не
-    стек requests с URL и портом на пол-экрана."""
-    s = str(e)
-    if "503" in s or "429" in s or "502" in s:
-        return "модель занята"
-    if "Connection" in type(e).__name__ or "Max retries" in s or "refused" in s:
-        return "сервер модели не отвечает"
-    if "Timeout" in type(e).__name__ or "timed out" in s:
-        return "модель не ответила вовремя"
-    return f"{type(e).__name__}: {s[:80]}"
+    стек requests с URL и портом на пол-экрана. Решает вид отказа у двери, а не
+    подстрока в тексте: «503» в пути или причине не делало ошибку очередью."""
+    phrase = SHORT_ERROR_PHRASES.get(llm_mod.failure_kind(e))
+    return phrase if phrase is not None else f"{type(e).__name__}: {str(e)[:80]}"
+
+
+def report_drop_once(reporter: list, msg: str) -> None:
+    """Сказать о переполнении очереди кадров — из своего потока и одним глашатаем
+    за раз: зажатый stdout не плодит потоки (DS r2), а аудио-поток не пишет в
+    stdout сам (luna r1 по #457). Ручка кладётся до старта: проверку «глашатай
+    жив» делает аудио-поток на следующем переполнении (выходной круг 1 по #658)."""
+    if reporter[0] is not None and reporter[0].is_alive():
+        return
+    reporter[0] = threads.spawn(emit_error, args=(msg,), name="frame-drop-report",
+                                role="meeting", start=False,
+                                detached="глашатай переполнения очереди живёт, пока живо подключение")
+    reporter[0].start()
 
 
 _last_error: dict[str, float] = {}
@@ -450,9 +470,8 @@ def _prune_import_folder(cfg: dict) -> threading.Thread:
         for folder in _import_folders(cfg):
             _prune_one_import_folder(folder)
 
-    t = threading.Thread(target=run, name="import-prune", daemon=True)
-    t.start()
-    return t
+    return threads.spawn(run, name="import-prune", role="process",
+                         detached="уборка копий импорта живёт, пока идёт встреча")
 
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
@@ -528,8 +547,8 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
 
 def _start_orphan_chain(lives: list[pathlib.Path]) -> None:
     """Фоновый поток цепочки: старт демона не ждёт часовых пересборок."""
-    threading.Thread(target=_rebuild_orphans_sequentially, args=(lives,),
-                     daemon=True, name="orphan-rebuild-chain").start()
+    threads.spawn(_rebuild_orphans_sequentially, args=(lives,), name="orphan-rebuild-chain",
+                  role="process", detached="старт демона не ждёт часовых пересборок сирот")
 
 
 def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
@@ -716,13 +735,17 @@ def main():
         _gdir = graphs.graph_dir(cfg) or pathlib.Path("")
         if _gdir.exists():
             from charoite_graph import graph_nodes
-            node_index = graph_nodes.NodeIndex(_gdir)
+            from charoite_schema import CHAROITE
+            # схема хранилища обязательна: без неё индекс узлов не знает, какие
+            # папки — узлы, и отказывает громко, а не пустеет на встрече (№422)
+            node_index = graph_nodes.NodeIndex(_gdir, schema=CHAROITE)
             node_index.refresh()
             emit({"type": "status",
                   "text": f"Сверка с узлами графа: {node_index.size} узлов"})
     except Exception as e:  # noqa: BLE001 — сверка вспомогательна
         print(f"узлы графа: {e}", file=sys.stderr, flush=True)
-    threading.Thread(target=llm.warmup, daemon=True).start()
+    threads.spawn(llm.warmup, name="llm-warmup", role="process",
+                  detached="прогрев модели не держит старт встречи")
 
     # память подсказок — индекс графа в процессе демона (№250): прогреть до
     # первого вопроса владельца, векторы блоков — из кэша; сервер памяти и сеть
@@ -735,7 +758,8 @@ def main():
             return
         if mem is not None:
             emit({"type": "status", "text": f"Память по графу: {mem.size} файлов, векторов {mem.vectors}"})
-    threading.Thread(target=_warm_memory, daemon=True, name="memory-warm").start()
+    threads.spawn(_warm_memory, name="memory-warm", role="process",
+                  detached="прогрев памяти по графу не держит старт встречи")
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
@@ -1815,7 +1839,8 @@ def main():
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ревизия нити ({short}, {len(applied)})", log)
             emit({"type": "thread", "text": thread.render()})
 
-        threading.Thread(target=cloud_thread_refine, daemon=True).start()
+        threads.spawn(cloud_thread_refine, name="cloud-thread-refine", role="meeting",
+                      detached="облачная ревизия нити не держит цикл встречи")
 
     def thread_loop():
         """Нить встречи: растёт по мере разговора, не переписывается заново.
@@ -2327,9 +2352,8 @@ def main():
             # заторе на той стороне _pump перестал бы забирать звук
             # (luna r1 по #457); сообщение уходит из своего потока.
             msg = drops.dropped()
-            if msg and (reporter[0] is None or not reporter[0].is_alive()):
-                reporter[0] = threading.Thread(target=emit_error, args=(msg,), daemon=True)
-                reporter[0].start()
+            if msg:
+                report_drop_once(reporter, msg)
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
@@ -2364,7 +2388,8 @@ def main():
                         except Exception:  # noqa: BLE001
                             pass
 
-                    threading.Thread(target=sender, daemon=True).start()
+                    threads.spawn(sender, name="fast-trigger-sender", role="meeting",
+                                  detached="отправка кадров живёт, пока живо подключение")
                     recent = ""
                     for msg in ws:
                         if stop.is_set():
@@ -3005,19 +3030,23 @@ def main():
                 stop.set()
                 return
             if cmd == "hint":
-                threading.Thread(target=gen_hint, kwargs={"manual": True}, daemon=True).start()
+                threads.spawn(gen_hint, kwargs={"manual": True}, name="hint-manual", role="meeting",
+                              detached="ручная подсказка не держит разбор команд панели")
             elif cmd.startswith("ask "):
                 q = raw.strip()[4:].strip()
                 if q:
-                    threading.Thread(target=gen_answer, args=(q,), daemon=True).start()
+                    threads.spawn(gen_answer, args=(q,), name="answer-ask", role="meeting",
+                                  detached="ответ на вопрос панели не держит разбор команд")
             elif cmd == "cloud":
                 cloud_evt.set()  # ручной запрос облачного ответа
             elif cmd == "expand" or cmd.startswith("expand "):
                 # ⏮: разбор темы нити по графу; без аргумента — текущая тема
                 t = raw.strip()[7:].strip() if cmd.startswith("expand ") else ""
-                threading.Thread(target=expand_topic, args=(t,), daemon=True).start()
+                threads.spawn(expand_topic, args=(t,), name="topic-expand", role="meeting",
+                              detached="разбор темы не держит разбор команд панели")
             elif cmd == "summary":
-                threading.Thread(target=_do_summary, daemon=True).start()
+                threads.spawn(_do_summary, name="summary-manual", role="meeting",
+                              detached="саммари по команде не держит разбор команд панели")
             elif cmd.startswith("set "):
                 parts = cmd.split()
                 if (len(parts) == 3 or (len(parts) == 4 and parts[3] == "quiet")) \
@@ -3233,18 +3262,33 @@ def main():
             emit_error("автостоп: приложение не ответило (старая версия?) — "
                        "запись продолжается, остановите её кнопкой «Стоп»")
 
-    threads = [threading.Thread(target=f, daemon=True) for f in (
-        stt_loop, think_loop, thread_loop, instant_loop, cloud_loop,
-        fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
-        minutes_loop, live_context_loop, stdin_loop, autostop_loop,
-    )]
+    # Слои встречи: имя у каждого своё, роль — одна на всех. Кортеж пар, а не
+    # список потоков: имя нужно и реестру, и сторожу, а поток без имени
+    # неотличим от чужого (№415).
+    loops = (
+        ("stt-loop", stt_loop),
+        ("think-loop", think_loop),
+        ("thread-loop", thread_loop),
+        ("instant-loop", instant_loop),
+        ("cloud-loop", cloud_loop),
+        ("fast-trigger-loop", fast_trigger_loop),
+        ("deja-vu-loop", deja_vu_loop),
+        ("dialog-markup-loop", dialog_markup_loop),
+        ("name-loop", name_loop),
+        ("minutes-loop", minutes_loop),
+        ("live-context-loop", live_context_loop),
+        ("stdin-loop", stdin_loop),
+        ("autostop-loop", autostop_loop),
+    )
+    for имя, цикл in loops:
+        threads.spawn(цикл, name=имя, role="meeting",
+                      detached="поток слоя живёт до конца встречи")
     # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
     # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
     # главном цикле перезапускает умершего и говорит об этом вслух.
-    hint_state["thread"] = threading.Thread(target=auto_hint_loop, daemon=True)
-    hint_state["thread"].start()
-    for t in threads:
-        t.start()
+    hint_state["thread"] = threads.spawn(
+        auto_hint_loop, name="auto-hint", role="meeting",
+        detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
     try:
         last_hb = 0.0
         last_stt_stall_log = 0.0
@@ -3345,9 +3389,9 @@ def main():
                               f"#{hint_state['restarts']}", file=sys.stderr, flush=True)
                         emit_error("слой авто-подсказок упал — перезапускаю "
                                    f"(#{hint_state['restarts']})")
-                        hint_state["thread"] = threading.Thread(
-                            target=auto_hint_loop, daemon=True)
-                        hint_state["thread"].start()
+                        hint_state["thread"] = threads.spawn(
+                            auto_hint_loop, name="auto-hint", role="meeting",
+                            detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
                     elif action == "gave_up":
                         emit_error("слой авто-подсказок падает повторно — "
                                    "оставляю до конца встречи, минутки и "

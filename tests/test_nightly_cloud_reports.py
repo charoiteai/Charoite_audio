@@ -281,7 +281,7 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     строки лога; бэкап с датой без времени терялся при втором прогоне за день."""
     ndr = _load("nightly_dossier_review")
     graph = tmp_path / "g"
-    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder = graph / ndr.CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     path = folder / "Платёжный провайдер.md"
     path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n\n"
@@ -289,9 +289,8 @@ def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypat
     rejected = folder / "Другое.md"
     rejected.write_text(_DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n",
                         encoding="utf-8")
-    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
-    monkeypatch.setattr(ndr.dossier, "clusters",
-                        lambda f, b: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
         "Идёт пилот", "Пилот ⚠️ идёт, срок 1.08 прошёл")
@@ -327,13 +326,13 @@ def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
 def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch):
     ndr = _load("nightly_dossier_review")
     graph = tmp_path / "g"
-    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder = graph / ndr.CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     for name in ("Одно", "Два"):
         (folder / f"{name}.md").write_text(
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
-    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
-    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {"Одно": ["a"], "Два": ["b"]})
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {"Одно": ["a"], "Два": ["b"]})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
@@ -353,13 +352,13 @@ _EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
 def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
     """Граф с досье под режим записи; облако и живой гейт подменены."""
     graph = tmp_path / "g"
-    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder = graph / ndr.CHAROITE.dossier_dir
     folder.mkdir(parents=True)
     for name in names:
         (folder / f"{name}.md").write_text(
             _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
-    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
-    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {n: ["a"] for n in names})
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g, **kw: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b, **kw: {n: ["a"] for n in names})
     monkeypatch.setattr(ndr.live_gate, "night_window_open", lambda *a, **k: True)
     return graph, folder
 
