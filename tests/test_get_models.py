@@ -18,9 +18,11 @@
        живой встрече.
     4. Ответ «чего не хватает» всегда содержит команду, которой это чинится.
 """
+import os
 import pathlib
 import subprocess
 import sys
+import textwrap
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -164,3 +166,27 @@ def test_nemotron_weights_on_disk_with_the_right_sum_are_not_fetched_again(monke
     monkeypatch.setattr(get_models, "download", lambda url, dest, *a, **k: calls.append(dest.name))
     get_models.fetch_nemotron(tmp_path)
     assert calls == ["model.safetensors"]
+
+
+def test_the_url_reaches_a_pipe_before_the_connection(tmp_path):
+    """В канале (`| tee`, лог) адрес доходит до читателя раньше соединения: сеть здесь — urlopen
+    в своём процессе, его подмена пишет отметку мимо буфера Python и обрывает загрузку (№481)."""
+    driver = textwrap.dedent(f"""
+        import os, sys, urllib.error
+        sys.path[:0] = [{str(REPO / "scripts")!r}, {str(REPO / "src")!r}]
+        import get_models
+
+        def urlopen(*a, **k):
+            os.write(1, b"CONNECT\\n")
+            raise urllib.error.URLError("соединение подменено тестом")
+
+        get_models.urllib.request.urlopen = urlopen
+        sys.argv = ["get_models.py", "--diar"]
+        sys.exit(get_models.main())
+    """)
+    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120,
+                         env={**os.environ, "CHAROITE_ROOT": str(tmp_path)})
+    lines = out.stdout.splitlines()
+    url = next(i for i, line in enumerate(lines) if line.strip().startswith("https://"))
+    assert url < lines.index("CONNECT"), lines
+    assert "не скачалось: <urlopen error соединение подменено тестом>" in out.stderr

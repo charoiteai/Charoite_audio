@@ -9,7 +9,9 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
+import subprocess
 import sys
+import textwrap
 import wave
 
 import pytest
@@ -349,3 +351,33 @@ def test_main_turns_a_refusal_into_code_one_and_a_reason(tmp_path, monkeypatch, 
     monkeypatch.setattr(ie, "install", refuse)
     assert ie.main(["nemotron"]) == 1
     assert "не поставлено: машина не та" in capsys.readouterr().err
+
+
+def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
+    """В канале (`| tee`, лог) строки «сеть: …» доходят до читателя раньше вывода pip, который
+    пишет в тот же дескриптор мимо буфера Python. Без строчной буферизации stdout они приходили
+    после всего вывода pip (выкатка №474, 29.09; №481)."""
+    driver = textwrap.dedent(f"""
+        import os, pathlib, sys
+        sys.path[:0] = [{str(ROOT / "scripts")!r}, {str(ROOT / "src")!r}]
+        import foreign_python as fp
+        import install_engine as ie
+
+        def copy(dest):
+            (dest / "bin").mkdir(parents=True)
+            (dest / "bin" / "python3").write_text("#", encoding="utf-8")
+            return dest / "bin" / "python3"
+
+        ie.check_machine = lambda lock: None
+        ie.copy_interpreter = copy
+        ie.pip_install = lambda python, lock: os.write(1, b"PIP\\n")   # как pip: мимо буфера Python
+        spec = ie.ENGINES["nemotron"]
+        ie.ENGINES["nemotron"] = ie.EngineSpec(**{{**spec.__dict__, "fetch_weights": lambda dest: None,
+                                                   "diarize": lambda *a, **k: fp.Outcome(fp.OK, payload=[])}})
+        ie.resolve_root = lambda _file: pathlib.Path({str(tmp_path)!r})
+        sys.exit(ie.main(["nemotron"]))
+    """)
+    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert lines.index("сеть:") < lines.index("PIP"), lines
