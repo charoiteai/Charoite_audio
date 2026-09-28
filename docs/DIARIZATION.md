@@ -135,6 +135,106 @@ Measured on the same fixture but with production slicing (3.0 s chunks,
 
 Speaker switches are equal in both modes — the transcript did not flicker.
 
+The bench also prints the run time and RTF (time divided by recording
+length, model loading included) for every engine.
+
+
+## Crosstalk, and the Nemotron experiment
+
+Both passes above give every piece of speech one voice. When two people talk
+at once — an interruption, an argument — the second voice is either lost or
+blended into a mixed embedding that resembles nobody. The first fixture could
+not show this: its replies never overlap.
+
+`--make --crosstalk` builds a second fixture (`data/diar_bench_crosstalk`)
+where four replies start 0.8–1.5 s before the previous one ends. With
+overlapping ground truth, DER is scored the NIST way: a frame may hold several
+voices, too few voices is a miss, too many is a false alarm. Without overlaps
+this is exactly the old metric when the hypothesis has no overlaps either —
+the tests hold that equality, and the live numbers on the plain fixture
+reproduce to the digit. A hypothesis with overlaps of its own (sherpa can emit
+them) is scored the NIST way too and may read higher than the archived number,
+which laid it out "last one wins". A reference without a single frame of
+speech (an empty file, point labels only) is refused before any engine runs:
+DER is undefined there, not perfect. The live
+tracker names one voice per chunk by design, so its overlapping chunk windows
+are still laid out "last one wins" rather than counted as a second voice.
+
+[Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization)
+(NVIDIA, September 2026) is an end-to-end streaming Sortformer, ~100M
+parameters, up to eight speakers: for every 10 ms frame it gives each voice
+its own activity probability, so two voices in one frame is a normal answer.
+`src/diarize_nemotron.py` wraps its MLX port. **This is an experiment**: the
+daemon and the transcript rebuild do not call it; the bench does, so the
+decision to integrate is made on numbers.
+
+Apple Silicon only. Neither the package nor the weights are product
+dependencies; both are one-time manual steps (paths are relative to the repo
+root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
+
+```bash
+.venv/bin/pip install "mlx-audio==0.5.6"
+.venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
+.venv/bin/python scripts/diar_bench.py --make --crosstalk
+.venv/bin/python scripts/diar_bench.py --crosstalk --engine compare
+```
+
+- `compare` runs `live-split` (always with the daemon's slicing — `--overlap`
+  is implied, so the live number is the one the daemon gets) and `sherpa`
+  against `nemotron` (the whole file,
+  30.4 s buffer — the model's ceiling) and `nemotron-live` (a stream in 0.5 s
+  blocks, as the daemon would feed it). `--nemotron-preset` picks the stream
+  latency: `low` 1.04 s (default), `very_low` 0.64 s, `ultra_low` 0.32 s.
+- **Version.** The version the seam was checked on lives in
+  `MLX_AUDIO_VERSION`, and a test keeps the recipe above equal to it. Another
+  `major.minor` branch or a package without distribution metadata is refused
+  before the run with the recipe; the same branch with another patch, a dev or
+  a local build gets a warning and the run goes on.
+- **Network.** The loader accepts only a local folder with `config.json` and
+  weights and hands mlx-audio a `pathlib.Path`, for which the library does not
+  go to the hub. A repository id is refused with the download recipe, not
+  downloaded.
+- **Voices.** The voice cache lives in the stream state in RAM and dies with
+  it; our code writes nothing derived from a voice to disk — the static guard
+  `tests/test_no_voice_biometrics.py` and a run of the wrapper with a stub
+  model hold that. What mlx-audio itself writes cannot be read from our code:
+  that is an audio run with the weights on a Mac, together with the first
+  numbers.
+- **License.** The weights are under NVIDIA OpenMDW 1.1, not Apache-2.0, so
+  they are never committed; mlx-audio also pulls `transformers`, which is why
+  it is not in `pyproject.toml`.
+- **Cost of streaming.** Every stream step re-encodes the voice cache and the
+  FIFO (up to ~530 frames) for a short new chunk, so a second of audio costs
+  much more than in the whole-file pass: on a random-weight run on a Linux CPU
+  (plumbing only, not quality) the stream took ~16× the whole-file time. The
+  number that matters is RTF on the Mac, next to GigaAM and the LLM.
+- **Russian** is not in the model card's training languages. Diarization
+  depends on language less than recognition does — but that is exactly what
+  to measure, not assume.
+
+No Nemotron numbers are published here yet: the first run happens on Apple
+Silicon.
+
+### Your own recording
+
+The synthetic fixture is a floor. A real verdict needs a real meeting — which
+cannot live in the repository, so it is measured where it lies:
+
+```bash
+# the other side's channel of a recent meeting: mono 16 kHz, as Charoite writes it
+.venv/bin/python scripts/diar_bench.py --wav recordings/<stamp>_blackhole.wav \
+    --engine compare --labels /tmp/diar_labels
+# with a hand-made reference for a fragment
+.venv/bin/python scripts/diar_bench.py --wav fragment.wav --truth fragment.txt --engine compare
+```
+
+The quickest reference: take 3–5 minutes of a heated stretch, label it in
+Audacity (select a reply, Ctrl+B, type the name), File → Export → Labels.
+RTTM and the bench's JSON are accepted too. Without `--truth` DER is not
+computed; the bench prints what each engine found (voices, speech, overlap,
+switches), and `--labels` writes each engine's hypothesis as an Audacity label
+track (File → Import → Labels) to listen where they disagree.
+
 
 ## The merge threshold is measured, not guessed
 
