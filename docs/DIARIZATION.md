@@ -223,9 +223,9 @@ are still laid out "last one wins" rather than counted as a second voice.
 (NVIDIA, September 2026) is an end-to-end streaming Sortformer, ~100M
 parameters, up to eight speakers: for every 10 ms frame it gives each voice
 its own activity probability, so two voices in one frame is a normal answer.
-`src/diarize_nemotron.py` wraps its MLX port. **This is an experiment**: the
-daemon and the transcript rebuild do not call it; the bench does, so the
-decision to integrate is made on numbers.
+`src/diarize_nemotron.py` wraps its MLX port. The post-meeting pass uses it
+behind a switch (see [Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron));
+the live contour and the daemon do not call it, the bench does.
 
 Apple Silicon only. Neither the package nor the weights are product
 dependencies; both are one-time manual steps (paths are relative to the repo
@@ -324,8 +324,53 @@ through huggingface_hub, probes symlink behaviour on import — an empty
 temporary folder with two empty files, removed at once. No network events.
 
 **Verdict.** On real meetings Nemotron beats the current post-meeting pass by
-a wide margin at a hundredth of its time. Integration is a separate task
-(card №473).
+a wide margin at a hundredth of its time — so the pass can run on it.
+
+### Post-meeting pass on Nemotron
+
+The transcript rebuild labels the call channel with Nemotron when the config
+says so (`config.yaml`, section `sufler`):
+
+```yaml
+diarize_backend: nemotron                 # sherpa by default
+nemotron_python: /path/to/env/bin/python  # an interpreter with mlx-audio 0.5.6
+```
+
+The app's own Python has no mlx, and its bundle is signed, so nothing is
+installed into it: the engine runs as a separate process of that interpreter.
+`diarize_in_env` starts `src/diarize_nemotron.py` through one door,
+`src/foreign_python.py`: a clean child environment (the readiness-probe recipe
+— `PYTHONSAFEPATH`, no user site, no inherited `PYTHONPATH`/`PYTHONHOME`, no
+bytecode, plus the variables of someone else's venv) and a typed outcome. The
+weights are read from `models/diar/nemotron` under the data root; the
+environment is installed by hand for now, with the recipe above into any venv
+(the product installing its own locked environment is card №474).
+
+- **Fallback, visible.** No interpreter, no package, no weights (exit code 10,
+  `EXIT_ENGINE_UNAVAILABLE`), a crash, a timeout (60 s plus a tenth of the
+  recording) or a reply off the protocol — the meeting is labelled by sherpa as
+  before, and the transcript header says why: «Голоса собеседников размечены
+  запасным движком (sherpa): …». A misspelt `diarize_backend` falls back the
+  same way, with its own reason.
+- **What happens to the segments.** Shorter than 1 s — dropped, as sherpa's
+  are. The call channel then loses overlaps, whatever the engine: a partial
+  overlap is split in the middle; a reply longer than 1 s inside someone else's
+  cuts it in three; a shorter one goes to the enclosing voice — its sound is
+  still transcribed inside that segment, only the authorship is lost, as with a
+  merged fragment. Every moment is transcribed once.
+- **Fragments.** A call voice with less than 5 s of speech over the meeting is
+  merged into its nearest neighbour (sherpa: 25 s — it shatters voices into
+  shards, Nemotron does not). Measured on five recordings of 28.09: voices with
+  10–22 s are real people with a reply or two, 2–4 s is noise; recalibration
+  after a week of real meetings is card №476. The mic channel keeps its 10 s.
+- **Speaker echo in the mic.** A mic segment more than half covered by call
+  speech is dropped as echo, and the share is taken over the *union* of the
+  call segments, not one at a time: Nemotron cuts a turn into pieces, and echo
+  over three pieces of 30 % each used to pass as live speech. On a 15-minute
+  call of 28.09 one-at-a-time kept 69 % of the mic speech with Nemotron against
+  17.5 % with sherpa; the union keeps 17.8 %.
+- **Time.** The call channel of a 41-minute meeting: 6 s including the model
+  load; a 15-minute one: 2 s. sherpa takes minutes on the same recordings.
 
 ### Your own recording
 

@@ -245,6 +245,13 @@ sufler:
   decision_gate_shadow: false
   live_diarize: true      # живая диаризация «Собеседник 1/2/…»
   live_diarize_threshold: 0.45
+  # Кто размечает голоса собеседников после встречи: sherpa (встроен) или
+  # nemotron — NVIDIA Nemotron 3 Diarization на Apple Silicon, два голоса разом
+  # и секунды вместо минут (docs/DIARIZATION.md). Nemotron живёт в своём
+  # окружении с mlx-audio: nemotron_python — путь к его bin/python. Не
+  # поднялся — голоса размечает sherpa, а шапка стенограммы говорит почему.
+  diarize_backend: sherpa
+  nemotron_python: ""
   live_dialog_markup: true  # лёгкая модель расставляет реплики внутри абзацев
   # Разметке нужна дословность: валидация сверяет слова и отбрасывает ответ,
   # где модель хоть что-то поправила. Раньше здесь стоял gemma4:latest

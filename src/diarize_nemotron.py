@@ -12,9 +12,15 @@ Nemotron 3 Diarization — end-to-end Sortformer на ~100M параметров
 о голосах (кэш AOSC + FIFO) живёт в состоянии потока, задержка входного буфера
 настраивается от 0.32 с до 30.4 с (пресеты NVIDIA, `PRESETS`).
 
-Статус — ЭКСПЕРИМЕНТ. Ни демон, ни пересборка стенограммы этот модуль не
-зовут. Его зовёт бенч (`scripts/diar_bench.py --engine nemotron…`): сначала
-число на своих записях, потом решение о встраивании.
+Где работает. Пересборка стенограммы после встречи зовёт движок за флагом
+`sufler.diarize_backend: nemotron` (№473) — процессом интерпретатора, в котором
+стоит mlx-audio (`sufler.nemotron_python`): в Python приложения mlx нет, бандл
+подписан. Протокол живёт в этом файле с обеих сторон: `diarize_in_env` —
+сторона пересборки (дверь `foreign_python`), `main()` — сторона движка (JSON
+в stdout, `EXIT_ENGINE_UNAVAILABLE`, если движку нечем работать). Отказ или
+сбой движка пересборка не прячет: голоса размечает sherpa, а шапка стенограммы
+говорит почему. Живой контур и демон модуль не зовут; бенч
+(`scripts/diar_bench.py --engine nemotron…`) зовёт его импортом.
 
 Только Apple Silicon. Инференс — MLX-порт из пакета mlx-audio
 (`mlx-community/Nemotron-3-Diarization`). В зависимости продукта пакет не
@@ -38,20 +44,33 @@ Nemotron 3 Diarization — end-to-end Sortformer на ~100M параметров
 """
 from __future__ import annotations
 
+import argparse
 import importlib.metadata
 import importlib.util
 import json
+import math
 import pathlib
 import re
 import sys
+import wave
 from typing import Any, Callable, Iterable, Protocol
 
 import numpy as np
+
+# Сторона движка запускается путём к файлу под PYTHONSAFEPATH: каталог скрипта
+# в sys.path сам не попадает, а соседи по src/ нужны (рецепт модуля под src/).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import foreign_python  # noqa: E402
+from charoite_paths import code_root, harden_umask  # noqa: E402
+from exit_codes import EXIT_ENGINE_UNAVAILABLE  # noqa: E402
 
 SAMPLE_RATE = 16000
 
 #: `model_type` в config.json чекпойнта mlx-audio (convert.py пишет asdict(config)).
 MODEL_TYPE = "nemotron_diarization"
+
+#: Метка голоса в ответе движка: «nem0», «nem1»… — номер слота модели, не человек.
+SPEAKER_PREFIX = "nem"
 
 #: Пресеты задержки NVIDIA (входной буфер, без вычислений и окна STFT):
 #: offline — 30.4 с, low — 1.04 с, very_low — 0.64 с, ultra_low — 0.32 с.
@@ -219,7 +238,7 @@ def load_model(path: pathlib.Path, preset: str = "offline") -> Any:
     return model
 
 
-def to_segments(raw: Iterable[_Segment], prefix: str = "nem") -> list[dict]:
+def to_segments(raw: Iterable[_Segment], prefix: str = SPEAKER_PREFIX) -> list[dict]:
     """Сегменты mlx-audio → формат бенча и стенограммы.
 
     Метки — «nem0», «nem1»…: номер слота модели, а не человек. Имена по-прежнему
@@ -303,3 +322,98 @@ class NemotronStream:
             np.zeros(0, dtype=np.float32), self._state, SAMPLE_RATE,
             final=True, threshold=self._threshold)
         return to_segments(result.segments)
+
+
+# ------------------------------------------------ протокол пересборки (№473)
+
+#: Файл движка для стороны вызывающего: путём к файлу, не `-m` — у чужого
+#: интерпретатора свой sys.path, и имени модуля он не знает. Путь — от корня
+#: кода, как у пересборки, которую зовёт демон.
+SCRIPT = code_root(__file__) / "src" / "diarize_nemotron.py"
+_LABEL = re.compile(rf"{SPEAKER_PREFIX}(\d+)")
+
+
+def read_wav(path: pathlib.Path) -> tuple[np.ndarray, int]:
+    """16-битный PCM → float32 в [-1, 1), как `load_wav` пересборки; каналы — в моно."""
+    with wave.open(str(path), "rb") as w:
+        if w.getsampwidth() != 2:
+            raise ValueError(f"{path.name}: не 16-битный PCM ({8 * w.getsampwidth()} бит)")
+        sr, channels = w.getframerate(), w.getnchannels()
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
+    return pcm.reshape(-1, channels).mean(axis=1, dtype=np.float32) / 32768.0, sr
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Сторона движка: голоса одной записи — JSON `{"segments": [...]}` в stdout.
+
+    Порядок: аргументы, затем проверка движка (нечем работать — причина одной
+    строкой в stderr и `EXIT_ENGINE_UNAVAILABLE`, запись не читается вовсе), затем
+    звук и модель. Любой другой сбой — трассировка и код 1: для вызывающего это
+    «движок упал», не «движка нет».
+    """
+    harden_umask()   # то, что создаст mlx-audio (временный каталог filelock), — только владельцу
+    ap = argparse.ArgumentParser(
+        description="Nemotron: голоса одной записи в JSON — сторона движка для пересборки "
+                    "стенограммы (её зовёт diarize_in_env процессом интерпретатора с mlx-audio).")
+    ap.add_argument("wav", type=pathlib.Path, help="запись канала собеседников, 16-битный WAV")
+    ap.add_argument("--model", type=pathlib.Path, required=True,
+                    help="каталог весов (config.json и веса) — models/diar/nemotron корня данных")
+    args = ap.parse_args(argv)
+    problem = availability(args.model)
+    if problem:
+        _stderr(problem.replace("\n", "; "))
+        return EXIT_ENGINE_UNAVAILABLE
+    audio, sr = read_wav(args.wav)
+    try:
+        model = load_model(args.model, "offline")
+    except ModelUnavailable as e:
+        _stderr(str(e).replace("\n", "; "))
+        return EXIT_ENGINE_UNAVAILABLE
+    print(json.dumps({"segments": diarize_file(model, audio, sr)}))
+    return 0
+
+
+def parse_segments(payload: dict) -> list[tuple[float, float, int]]:
+    """Ответ движка → `(start, end, N)`; отступление от протокола — ValueError."""
+    raw = payload.get("segments")
+    if not isinstance(raw, list):
+        raise ValueError("нет списка segments")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError(f"отрезок не объект: {item!r}")
+        s, e, label = item.get("start"), item.get("end"), item.get("speaker")
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                   for v in (s, e)) or not 0 <= s < e:
+            raise ValueError(f"границы отрезка: {item!r}")
+        m = _LABEL.fullmatch(label) if isinstance(label, str) else None
+        if m is None:
+            raise ValueError(f"метка голоса: {label!r}")
+        out.append((float(s), float(e), int(m.group(1))))
+    return out
+
+
+def diarize_in_env(python: str, wav: pathlib.Path, *, model: pathlib.Path,
+                   timeout: float) -> foreign_python.Outcome:
+    """Сторона пересборки: разметить запись процессом интерпретатора движка.
+
+    OK — сегменты `(start, end, N)`, N — слот модели; UNAVAILABLE — движка на этой
+    машине нет (или интерпретатор не задан); FAILED — движок упал или ответил не
+    по протоколу. mlx в процесс вызывающего не попадает: здесь только запуск и
+    разбор JSON.
+    """
+    if not python:
+        return foreign_python.Outcome(foreign_python.UNAVAILABLE,
+                                      reason="не задан интерпретатор движка (sufler.nemotron_python)")
+    out = foreign_python.run_json(python, SCRIPT, [str(wav), "--model", str(model)], timeout=timeout)
+    if not out.ok:
+        return out
+    try:
+        return foreign_python.Outcome(foreign_python.OK, payload=parse_segments(out.payload))
+    except ValueError as e:
+        return foreign_python.Outcome(foreign_python.FAILED,
+                                      reason=f"ответ движка не по протоколу: {e}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
