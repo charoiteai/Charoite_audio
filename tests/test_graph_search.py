@@ -1405,7 +1405,7 @@ def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
     assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
 
 
-def _hop_order(tmp_path, targets: dict[str, int]) -> list[str]:
+def _hop_order(tmp_path, targets: dict[str, int], limit: int = 4) -> list[str]:
     """Узел «Сводка квартала» ссылается на каждую цель; возраст цели — в днях (mtime).
     Запрос — имя узла: других игл нет, покрытие у всех целей полное, и порядок
     переходов решают свежесть и демпфер сырья. -> пути целей в порядке переходов."""
@@ -1421,7 +1421,7 @@ def _hop_order(tmp_path, targets: dict[str, int]) -> list[str]:
         os.utime(p, (now - days * 86400, now - days * 86400))
     s.refresh(force=True)
     s.embed_pending()
-    r = s.search("сводка квартала", limit=4)
+    r = s.search("сводка квартала", limit=limit)
     hops = [b.split("\n")[0][2:] for b in r.blocks if "↳ по ссылке из" in b]
     return [h for h in hops if h in targets]
 
@@ -1438,6 +1438,13 @@ def test_hops_dampen_raw_transcripts(tmp_path):
     свежести и покрытии дистиллят идёт раньше стенограммы, хотя по имени она позже."""
     order = _hop_order(tmp_path, {"Документация/Итоги.md": 0, "Документация/Протокол_стенограмма.md": 0})
     assert order == ["Документация/Итоги.md", "Документация/Протокол_стенограмма.md"], order
+
+
+def test_hops_take_at_most_half_of_the_limit(tmp_path):
+    """Переходы — добавка к выдаче, а не её замена: не больше половины лимита, даже
+    когда узел ссылается на большее число подходящих заметок."""
+    order = _hop_order(tmp_path, {f"Документация/Итоги {c}.md": 0 for c in "АБВГД"}, limit=4)
+    assert len(order) == 2, order
 
 
 def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
