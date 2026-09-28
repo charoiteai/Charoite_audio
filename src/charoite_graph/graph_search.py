@@ -5,8 +5,9 @@
 прошлые договорённости демон находит сам — по файлам графа проекта, локально,
 в бюджете живого контура (мгновенный ответ — 2,5 с).
 
-Устройство. Индекс — файлы графа без архива встреч и копий документации
-(EXCLUDE_DIRS: они дублируют заметки и втрое тяжелее всего остального): текст,
+Устройство. Индекс — файлы графа без исключений обхода схемы хранилища (у
+Чароита — архив встреч и копии стенограмм: они дублируют заметки и втрое
+тяжелее всего остального): текст,
 нормализованный текст, дата (из имени YYYY-MM-DD, иначе mtime), входящие
 [[ссылки]]. Обновляется по mtime, повторный обход — фоном. Лексика: слова
 запроса → стемы (graph_nodes.stem — тот же стеммер, что у узлов и у
@@ -40,7 +41,6 @@ from __future__ import annotations
 
 import array
 import dataclasses
-import functools
 import datetime as dt
 import enum
 import hashlib
@@ -59,19 +59,13 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from charoite_graph import dossier  # noqa: E402
 from charoite_graph import frontmatter  # noqa: E402
 from charoite_graph import graph_nodes  # noqa: E402
-from charoite_graph.graph_schema import GraphSchema, as_names  # noqa: E402
+from charoite_graph.graph_schema import PLAIN, GraphSchema  # noqa: E402
 from charoite_graph.model_seam import Embedder  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
+from charoite_graph import text_norm  # noqa: E402
 import uuid  # noqa: E402
 
-# Копии стенограмм и архив встреч: дублируют заметки встреч и узлы, но весят
-# втрое больше всего графа — без них холодный обход укладывается в секунды.
-# Пути относительно корня графа; сами документы (тезисы, концепции, ресёрчи)
-# в «Документации» остаются — исключена только папка копий стенограмм.
-EXCLUDE_DIRS = ("Встречи-архив", "Документация/Стенограммы встреч")
-# Служебные файлы (указатели, кандидаты, отчёты ревизий) — не память: в любой папке
-_SERVICE_PREFIXES = ("_", "Служебное_")
 # Роль документа — ставится ОДИН раз при чтении и живёт в `Doc`; потребители
 # (голоса, обход, переходы, отбор слотов) читают поле, а не строку пути.
 # Раньше каждый выводил своё правило из фрагмента пути — заглушки в цикле
@@ -83,7 +77,6 @@ DOSSIER = "dossier"        # ночная сводка по теме: цель �
 SERVICE = "service"        # указатель/кандидаты/отчёт: вне индекса, но в охвате
 BM25_B = 0.5               # нормализация длины: узел на 280 КБ не должен матчить всё подряд
 HUB_CAP = 1.5              # потолок буста хаба: владелец графа упомянут в каждой встрече
-NODE_DIRS = tuple(graph_nodes.norm(d) for d in graph_nodes.NODE_FOLDERS)
 REFRESH_S = 60.0           # свежесть обхода: чаще смысла нет, граф пишется после встреч
 CHUNK_CHARS = 4_000        # блок для эмбеддера: ниже потолка Ollama — 2048 токенов (замер 26.09: самый длинный блок 1587)
 MAX_CHUNKS = 12            # на файл: у узла новые встречи сверху — первые блоки самые свежие
@@ -132,7 +125,6 @@ _WORD_RX = re.compile(r"[А-Яа-яЁёA-Za-z0-9_-]{2,}")
 _DATE_RX = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 _MEETING_RX = re.compile(r"(20\d{2}-\d{2}-\d{2})[_ ]?(\d{4})?")
 _WIKILINK_RX = re.compile(r"\[\[([^\]|#\n]+)")
-_RAW_RX = re.compile(r"стенограмм|_live\.md$|transcript", re.IGNORECASE)
 _PLACEHOLDER_RX = re.compile(r"^(?:собеседник|участник|спикер|speaker|participant)(?: ?\d+)?(?: .*)?$")
 # Иероглифы пробелами не разделяются — «слова» из них не нарезать: берём
 # скользящие биграммы (支付服务商 → 支付, 付服, 服务, 务商) — стандартный приём
@@ -140,39 +132,37 @@ _PLACEHOLDER_RX = re.compile(r"^(?:собеседник|участник|спи�
 CJK = (r"一-鿿㐀-䶿豈-﫿぀-ヿｦ-ﾟ가-힯"
        r"\U00020000-\U0002ee5f\U0002f800-\U0002fa1f\U00030000-\U000323af")
 _CJK_RUN = re.compile(f"[{CJK}]+")
-_FULLWIDTH = {i: i - 0xFEE0 for i in range(0xFF01, 0xFF5F)}   # ＹｕＰａｙ → YuPay
 _HEADING_RX = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*$", re.M)
 
 
-def norm(s: str) -> str:
-    """Регистр, ё→е, полноширинные латиница и цифры → обычные.
-
-    Форму Unicode приводит `graph_nodes.norm` — одна нормализация на проект.
-    Здесь её повторять нельзя: NFC меняет ДЛИНУ разложенного текста, а
-    `snippet` по совпадению длин решает, из чего резать фрагмент, и NFD-заметка
-    уехала бы в выдачу строчными буквами (DS, круг 2 по №291). Текст приводится
-    к NFC один раз при чтении файла, в `_walk`."""
-    return graph_nodes.norm(s).translate(_FULLWIDTH)
+#: Регистр, ё→е, полноширинные латиница и цифры → обычные — тот же объект, что
+#: `text_norm.fold`: одна форма сравнения путей, имён и слов на поиск и схему
+#: хранилища. Форму Unicode здесь отдельно не приводят: NFC меняет ДЛИНУ
+#: разложенного текста, а `snippet` по совпадению длин решает, из чего резать
+#: фрагмент, и NFD-заметка уехала бы в выдачу строчными буквами (DS, круг 2 по
+#: №291). Текст приводится к NFC один раз при чтении файла, в `_walk`.
+norm = text_norm.fold
 
 
 def norm_text(s: str) -> str:
     return " ".join(norm(s).split())
 
 
-_SERVICE_PREFIXES_N = tuple(norm(p) for p in _SERVICE_PREFIXES)
-_DOSSIER_DIR_N = norm(dossier.DOSSIER_DIR)
-
-
-def doc_role(rel: str) -> str:
+def doc_role(rel: str, schema: GraphSchema) -> str:
     """Роль документа по относительному пути — единственное место, где она
-    выводится. Служебный: имя файла с служебным префиксом в ЛЮБОЙ папке (то же
-    правило, что у `dossier.scan`). Досье: верхняя папка `dossier.DOSSIER_DIR`.
-    Иначе первичный. Сравнение — в нормализованном виде, как у `NODE_DIRS`."""
-    parts = norm(rel).replace("\\", "/").strip("/").split("/")
-    if parts[-1].startswith(_SERVICE_PREFIXES_N):
+    выводится, по предикатам схемы хранилища. Служебный: имя файла со служебным
+    префиксом в ЛЮБОЙ папке (то же правило, что у `dossier.scan`) и индекс досье
+    в папке досье. Досье: прочий файл внутри папки досье. Иначе первичный.
+
+    Индекс досье (`dossier.INDEX_MD`) пишет сам пакет, и служебный он по своему
+    имени, а не по префиксу схемы: у Чароита его имя начинается со служебного «_»,
+    но у хранилища без такого префикса индекс стал бы документом досье — это
+    нашёл оборот схемы (№422, PR B)."""
+    name = rel.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if schema.is_service_name(name):
         return SERVICE
-    if len(parts) >= 2 and parts[0] == _DOSSIER_DIR_N:
-        return DOSSIER
+    if schema.is_dossier(rel):
+        return SERVICE if norm(name) == norm(dossier.INDEX_MD) else DOSSIER
     return PRIMARY
 
 
@@ -187,7 +177,7 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     """Иглы запроса: стемы слов и биграммы иероглифов, каждая по одному разу
     (повтор удваивал бы вклад в счёт). Пересечься списки не могут: слова — из
     латиницы, кириллицы и цифр, биграммы — только из иероглифов."""
-    query = unicodedata.normalize("NFC", query).translate(_FULLWIDTH)   # ＹｕＰａｙ — слово, а не пропуск;
+    query = unicodedata.normalize("NFC", query).translate(text_norm.FULLWIDTH)   # ＹｕＰａｙ — слово, а не пропуск;
     # форма — до разрезки: разложенный «май» дал бы иглу «ми», а она подстрокой
     # ловит «ками» и «милионер» (GLM, круг 3 по №291)
     # двухбуквенные слова — термины («ИИ», «тз», «БД», «v2»), кроме служебных из
@@ -218,7 +208,7 @@ def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0) -> V
     ничего», но только если проверена достаточная доля ИНДЕКСА (SEM_SHARE_MIN).
 
     Доля считается по индексу, а не по графу, и индекс — не весь граф: архив
-    встреч и копии стенограмм исключены (EXCLUDE_DIRS). Поэтому ни один вердикт
+    встреч и копии стенограмм у Чароита исключены схемой. Поэтому ни один вердикт
     не вправе говорить «в архиве нет»; что осталось непрочитанным, несёт
     `Result.skipped`, а слова об этом собирает фасад (замер 17.09: 11 506
     файлов вне индекса против 3 283 в нём, DS и GLM, входной круг по №295)."""
@@ -283,9 +273,10 @@ def coverage_factor(matched: int, total: int) -> float:
     return 1.0 if total <= 0 else (max(0, matched) / total) ** 0.5
 
 
-def raw_dampener(rel: str) -> float:
-    """×0,75 сырым стенограммам: дистиллят при равной релевантности выше."""
-    return 0.75 if _RAW_RX.search(rel) else 1.0
+def raw_dampener(rel: str, schema: GraphSchema) -> float:
+    """×0,75 сырью по схеме (стенограммы, живые логи): дистиллят при равной
+    релевантности выше."""
+    return 0.75 if schema.is_raw(rel) else 1.0
 
 
 def placeholder_factor(base: str) -> float:
@@ -297,11 +288,6 @@ def meeting_key(rel: str) -> str | None:
     """Ключ встречи из пути (дата[_время]): одна встреча живёт 3–4 файлами."""
     m = _MEETING_RX.search(rel)
     return (m.group(1) + (m.group(2) or "")) if m else None
-
-
-def is_node_path(rel: str) -> bool:
-    parts = norm(rel).replace("\\", "/").split("/")
-    return len(parts) >= 2 and parts[-2] in NODE_DIRS and doc_role(rel) != SERVICE
 
 
 def stub_base(text: str) -> str:
@@ -681,8 +667,18 @@ class Doc:
     base: str          # нормализованное имя файла без расширения — цель ГОЛОЙ [[ссылки]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
     stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
+    _: dataclasses.KW_ONLY
+    #: Схема хранилища — только на время конструирования: из неё выводится роль,
+    #: а сам документ её не хранит.
+    schema: dataclasses.InitVar[GraphSchema]
+    #: PRIMARY / DOSSIER / SERVICE — ВЫВОДИТСЯ из пути одним предикатом и только
+    #: так: переданная роль позволила бы оснастке подсунуть чужую мимо правила —
+    #: тот же класс «каждый выводит своё правило» через дверь тестов (выходной
+    #: круг GLM по №296). `rel` после конструирования не меняется.
+    role: str = dataclasses.field(init=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, schema: GraphSchema) -> None:
+        self.role = doc_role(self.rel, schema)
         # имя и стрелка нормализуются В ДОКУМЕНТЕ: обход их нормализует, а
         # оснастка тестов передавала сырыми — и тест «отчёт» против ключа
         # «отчет» проходил случайно, мимо продакшн-инварианта. Инвариант
@@ -690,15 +686,6 @@ class Doc:
         # документ, иначе его держать некому (GLM, круги 1 и 2 по №292)
         self.base = norm_text(self.base)
         self.stub_to = norm_text(self.stub_to)
-
-    @functools.cached_property
-    def role(self) -> str:
-        """PRIMARY / DOSSIER / SERVICE — из пути, одним предикатом, и только так:
-        поле с умолчанием позволяло бы оснастке подсунуть чужую роль мимо
-        предиката — тот же класс «каждый выводит своё правило» через дверь
-        тестов (выходной круг GLM по №296). `rel` после конструирования не
-        меняется, значение считается один раз."""
-        return doc_role(self.rel)
 
     @property
     def key(self) -> str:
@@ -785,10 +772,10 @@ class GraphSearch:
     потоков. Окружения приложения индекс не читает: каталог кэша векторов
     (`data_dir`) передаёт вызывающий, у Чароита — graphs.search_cache_dir()
     (№365: модуль графа на импорте и в конструкторе не берёт ничего вне своих
-    параметров). Исключения обхода — из схемы хранилища (`schema`) или списком
-    (`exclude`); без обоих — `EXCLUDE_DIRS` (архив встреч и копии стенограмм).
-    Форму списка толкует одна дверь `graph_schema.as_names`: строка — одно имя,
-    как и в полях схемы.
+    параметров). Роли путей — узлы, досье, служебное, сырьё, исключения обхода —
+    из схемы хранилища (`schema`); без неё — простое хранилище `PLAIN`, без
+    ролей. Чароит строит индекс только через `graphs.open_search` со своей
+    схемой — мимо неё конструктор не пускает сторож раскладки (`ENV_SEAMS`).
 
     Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
     связей, охват обхода). После инициализации его пишет ТОЛЬКО `_publish` —
@@ -821,17 +808,14 @@ class GraphSearch:
     def __init__(self, graph_dir: pathlib.Path, *,
                  embedder: Embedder,
                  data_dir: pathlib.Path,
-                 exclude: str | tuple[str, ...] | list[str] | None = None,
-                 schema: GraphSchema | None = None,
+                 schema: GraphSchema = PLAIN,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
-        # Пакет берёт схему хранилища параметром (№422): исключения обхода — её;
-        # без схемы и без списка — прежнее умолчание. Два источника сразу — отказ:
-        # молча выбранный один из них был бы догадкой о намерении вызывающего.
-        if schema is not None and exclude is not None:
-            raise ValueError("исключения обхода — из схемы или списком, не оба")
-        self.exclude = as_names(schema.exclude_dirs if schema is not None
-                                else EXCLUDE_DIRS if exclude is None else exclude, "exclude")
+        # Роли путей — только из схемы (№422): у пакета своих имён папок нет.
+        # Умолчание — объявленное значение `PLAIN`, а не `None`: внешнему
+        # пользователю хранилище без ролей, Чароиту — `CHAROITE` через open_search.
+        self.schema = schema
+        self.exclude = schema.exclude_dirs
         self._now = now
         self._embedder = embedder
         # Причина отказа — СЛОВА источника, а не бит. Политика говорит «нельзя»
@@ -845,6 +829,9 @@ class GraphSearch:
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
+        # Сколько блоков у файла при ТЕКУЩЕЙ схеме: путь → (mtime, потолок, число).
+        # Нарезка считается один раз на версию файла, а не на каждую сверку кэша.
+        self._block_counts: dict[str, tuple[float, int, int]] = {}
         base = pathlib.Path(data_dir)
         # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
         # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
@@ -939,6 +926,7 @@ class GraphSearch:
                 raise RuntimeError("публикация поколения от устаревшей основы")
             for p in gone:
                 self._vecs.pop(p, None)
+                self._block_counts.pop(p, None)
             self._gen = dataclasses.replace(base, **changes)
 
     def _walk(self) -> None:
@@ -963,7 +951,7 @@ class GraphSearch:
                 if d.startswith("."):
                     continue
                 rel = f"{rel_dir}/{d}" if rel_dir else d
-                if rel in self.exclude:
+                if self.schema.excluded(rel):
                     skipped.add(rel)
                 else:
                     keep.append(d)
@@ -972,7 +960,7 @@ class GraphSearch:
                 if not fn.endswith(".md"):
                     continue
                 rel = f"{rel_dir}/{fn}" if rel_dir else fn
-                if doc_role(rel) == SERVICE:
+                if doc_role(rel, self.schema) == SERVICE:
                     # указатель на всех людей конкурировал с заметками о людях по
                     # любому имени; вне индекса — но не молча: он в охвате ответа
                     service += 1
@@ -997,7 +985,8 @@ class GraphSearch:
                     continue
                 body = frontmatter.split(text)[1]     # по контракту не бросает: (None, text) без шапки
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
-                                  norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
+                                  norm_text(os.path.splitext(fn)[0]), body, stub_base(text),
+                                  schema=self.schema)
         scope = (tuple(sorted(skipped)), unread, service)
         gone = [p for p in current.docs if p not in seen]
         if not fresh and not gone:
@@ -1159,16 +1148,39 @@ class GraphSearch:
                 except OSError:
                     pass
 
+    def _blocks(self, d: Doc) -> list[str]:
+        """Блоки файла для эмбеддера — одна нарезка на доиндексацию и сверку кэша.
+        Потолок блоков зависит от роли файла, а роль — от схемы хранилища."""
+        limit = MAX_CHUNKS_NODE if self.schema.is_node_path(d.rel) else MAX_CHUNKS
+        return chunks(pathlib.PurePosixPath(d.rel).stem, d.text, limit=limit) or [d.text[:CHUNK_CHARS]]
+
+    def _expected_blocks(self, d: Doc) -> int:
+        """Число блоков файла при текущей схеме — с памятью на версию файла."""
+        limit = MAX_CHUNKS_NODE if self.schema.is_node_path(d.rel) else MAX_CHUNKS
+        seen = self._block_counts.get(d.path)
+        if seen is not None and seen[:2] == (d.mtime, limit):
+            return seen[2]
+        n = len(self._blocks(d))
+        self._block_counts[d.path] = (d.mtime, limit, n)
+        return n
+
     def pending_vectors(self, gen: Generation | None = None) -> list[str]:
         """Файлы без свежего вектора. `gen` — поколение вызывающего, если он уже
-        его взял: иначе список и тексты приедут из разных снимков."""
+        его взял: иначе список и тексты приедут из разных снимков.
+
+        Свежий — тот же mtime И то же число блоков, что даёт нарезка при текущей
+        схеме: потолок блоков зависит от роли файла (узел или нет), и смена схемы
+        при том же mtime иначе оставляла бы в кэше векторы чужой нарезки молча
+        (входной круг 16 по №422, M2). `cache_key()` схему не подписывает — у
+        владельца с постоянной схемой кэш не холодеет."""
         self.load_vectors()
         gen = gen or self._gen
         with self._lock:
             # векторы положены тем, кто участвует в семантике — первичным: сводки
             # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
             # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
-            return [d.path for d in gen.primary if self._vecs.get(d.path, (None, None))[0] != d.mtime]
+            have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()}
+        return [d.path for d in gen.primary if have.get(d.path) != (d.mtime, self._expected_blocks(d))]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1219,8 +1231,7 @@ class GraphSearch:
                 d = gen.docs.get(p)
                 if d is None:
                     continue
-                limit = MAX_CHUNKS_NODE if is_node_path(d.rel) else MAX_CHUNKS
-                parts = chunks(pathlib.PurePosixPath(d.rel).stem, d.text, limit=limit) or [d.text[:CHUNK_CHARS]]
+                parts = self._blocks(d)
                 queue += [(p, d.mtime, i, len(parts), t) for i, t in enumerate(parts)]
         got: dict[str, tuple[float, int, dict[int, array.array]]] = {}
         for i in range(0, len(queue), batch):
@@ -1287,6 +1298,7 @@ class GraphSearch:
         # ----- лексика
         lex: list[tuple[float, str]] = []
         best_cov = 0.0
+        # иглы от редкой к частой; пуст ровно тогда, когда пуст `keys`
         rare_first: list[str] = []
         by_rel: dict[str, Doc] = {d.rel: d for d in all_docs}
         if keys:
@@ -1310,7 +1322,7 @@ class GraphSearch:
                 matched = sum(1 for i in range(len(keys)) if t[i] or p[i])
                 best_cov = max(best_cov, matched / len(keys))
                 score *= coverage_factor(matched, len(keys)) * recency_factor(d.date_ts, now)
-                score *= hub_factor(indeg.get(d.key, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel)
+                score *= hub_factor(indeg.get(d.key, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel, self.schema)
                 lex.append((score, d.rel))
         else:
             for d in docs:
@@ -1352,7 +1364,7 @@ class GraphSearch:
                 for sim, d in sims[:max(limit * 4, 20)]:
                     # те же демпферы, что у лексики: метка диаризации с сотней упоминаний
                     # темы не должна всплывать через вектор, раз не всплывает через слова
-                    sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
+                    sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel, self.schema) * placeholder_factor(d.base), d.rel))
 
         dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
@@ -1387,12 +1399,12 @@ class GraphSearch:
         shown: list[str] = []
         for rel in picked:
             d = by_rel[rel]
-            frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
+            frag = self._fragment(d, rx, snippet_chars, rare_first)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first, max(1, limit // 2))
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
@@ -1410,7 +1422,9 @@ class GraphSearch:
         ни `../` вне папки, ни расхождение регистра или формы Unicode между
         темой и файлом (выходной круг DS I1 / GLM M3). Сводки, которой в снимке
         ещё нет, в ответе нет — до следующего обхода."""
-        folder = self.graph / dossier.DOSSIER_DIR
+        if self.schema.dossier_dir is None:
+            return [], 0.0              # у хранилища нет роли досье — секции нет
+        folder = self.graph / self.schema.dossier_dir
         try:
             entries = dossier.lookup(folder, query, limit=limit)
         except (OSError, ValueError, KeyError, TypeError):   # битый индекс — без секции, не без ответа
@@ -1420,13 +1434,19 @@ class GraphSearch:
         for e in entries:
             if e.get("счёт", 0) < 0.3:
                 continue
-            d = gen.dossiers.get(norm_text(f"{dossier.DOSSIER_DIR}/{e['тема']}"))
+            d = gen.dossiers.get(norm_text(f"{self.schema.dossier_dir}/{e['тема']}"))
             if d is None:
                 continue
             head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
             out.append(f"📁 Досье «{e['тема']}»\n  {head}")
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
+
+    def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
+        """Фрагмент документа для выдачи и для перехода — одно правило на оба места:
+        текст без YAML-шапки, у дистиллята окно шире (`snippet(dense=…)`), у сырья
+        по схеме — обычное."""
+        return _frag_or_head(d.body or d.text, rx, chars, rare, dense=not self.schema.is_raw(d.rel))
 
     def _hops(self, shown: list[str], by_rel: dict[str, Doc], catalog: LinkCatalog, keys: list[str],
               rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
@@ -1439,7 +1459,7 @@ class GraphSearch:
         базой оказывается заглушка-редирект, её отбрасывает фильтр узлов, и
         переход пропадает молча (замер 17.09: 40 переходов из 27 663 целей —
         столько доезжает до выдачи после всех фильтров и лимитов)."""
-        nodes = [r for r in shown if is_node_path(r)]
+        nodes = [r for r in shown if self.schema.is_node_path(r)]
         if not nodes or limit <= 0:
             return []
         out: list[str] = []
@@ -1460,16 +1480,16 @@ class GraphSearch:
                 for base in wiki_targets(node.text):
                     hit = catalog.live(base)
                     for d in ([hit] if hit is not None else []):
-                        if d.rel in seen or is_node_path(d.rel) or d.role != PRIMARY:
+                        if d.rel in seen or self.schema.is_node_path(d.rel) or d.role != PRIMARY:
                             continue      # переход — к первичной заметке, не к узлу и не к сводке
                         matched = sum(1 for k in other if k in d.low)
                         if other and not matched:
                             continue
                         cov = matched / len(other) if other else 1.0
-                        cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel), d, matched))
+                        cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel, self.schema), d, matched))
                 cands.sort(key=lambda x: (x[0], x[1].rel), reverse=True)
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
-                    frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel) == 1.0)
+                    frag = self._fragment(d, rx, snippet_chars, rare_first)
                     seen.add(d.rel)
                     out.append(f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}")
                     if len(out) >= limit:

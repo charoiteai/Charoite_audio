@@ -213,12 +213,14 @@ values from that call, looks for copies of those names among the string literals
 of the graph package (the same closure the package probe copies) and holds each
 copy as `folder_literals` debt with a ticket; `folder_literal_exemptions` forgives
 one copy with a written reason. A hit without a ticket, or a declared hit the
-measurement no longer finds, is red. `tests/test_graph_schema.py` snapshots
-`CHAROITE` against the live constants until PR B moves the consumers onto the
-value, which is when the debt goes to zero. One copy and one registry per hit: a
-hit that is both debt and forgiven is refused at load. The schema module sits in
-the package outside the entry closure until PR B imports it, and the package
-gate's closure rule skips exactly that one declared module.
+measurement no longer finds, is red. Since PR B of №422 the debt is zero: the
+package asks the schema's role predicates and keeps no name constants, and
+`tests/test_graph_schema_roles.py` rotates the schema (every name of `CHAROITE`
+becomes an ASCII token) and requires the same observable behaviour of search,
+dossier and node index — a literal that survived shows up as a mismatch there
+before the guard even runs. One copy and one registry per hit: a hit that is
+both debt and forgiven is refused at load. The schema module is an ordinary
+member of the entry closure: the search takes the schema as a parameter.
 
 The `KINDS` table in the guard is pinned by a copy inside the test on purpose —
 the comment there explains why. Changing the policy means changing two files,

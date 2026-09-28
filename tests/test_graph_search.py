@@ -32,6 +32,8 @@ from charoite_graph import graph_nodes  # noqa: E402
 from charoite_graph import graph_search as gs  # noqa: E402
 from charoite_graph import model_seam  # noqa: E402
 from charoite_graph.model_seam import DEFAULT_EMBED_MODEL, Embedder  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
+from charoite_graph.graph_schema import PLAIN  # noqa: E402
 
 
 _SYNONYMS = {"поставщик": "провайдер", "поставщика": "провайдер", "gateway": "шлюз"}   # «семантика» подделки: синоним — то же слово
@@ -100,6 +102,7 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
 def _search(tmp_path, **kw) -> gs.GraphSearch:
     """Индекс с векторами блоков: без семантики гейт всегда «⚠» (замер 17.09), так
     что уверенная выдача, переходы и досье проверяются с подделкой эмбеддинга."""
+    kw.setdefault("schema", CHAROITE)     # оснастка — граф Чароита: его папки и роли
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), **kw)
     s.refresh(force=True)
     s.embed_pending()
@@ -136,7 +139,7 @@ def test_index_skips_archive_transcript_copies_hidden_and_service_files(tmp_path
 
 def test_refresh_follows_mtime_and_removals(tmp_path):
     clock = {"t": 1_000_000.0}
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"])
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"], schema=CHAROITE)
     assert not s.ready and not s.search("шлюз").ready
     s.refresh(force=True)
     assert s.ready and s.size == 8
@@ -236,7 +239,7 @@ def test_honesty_gate_and_render_markers(tmp_path):
 
 def test_dossier_comes_first(tmp_path):
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Платёжный шлюз.md").write_text("---\ntype: досье\n---\n# Платёжный шлюз\n## Состояние\nпилот до сентября, провайдер ЮPay\n",
                                               encoding="utf-8")
@@ -273,7 +276,7 @@ def test_dossier_comes_first(tmp_path):
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
     assert s.pending_vectors() and s.embed_pending(budget_s=0) == 0, "нулевой бюджет — ни одного вызова"
     n = s.embed_pending()
@@ -285,7 +288,7 @@ def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_
     assert blocks > n, "у узла с секциями — несколько блоков, не один вектор на файл"
     assert s._vec_manifest.name.startswith("Работа-") and len(s._vec_manifest.stem.split("-")[-1]) == 8, "имя кэша — по пути графа, не по имени папки"
     # новый экземпляр читает кэш с диска; изменившийся файл снова ждёт вектора
-    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s2.refresh(force=True)
     assert s2.load_vectors() == n and not s2.pending_vectors()
     node = s.graph / "Системы" / "Платёжный шлюз.md"
@@ -300,7 +303,7 @@ def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_
     assert "Системы/Поставщик.md" not in _rels(s2.search("провайдер", limit=4, semantic=False))
     assert "Системы/Поставщик.md" in _rels(s2.search("провайдер", limit=4)), "синоним — только через вектор"
     # сервер эмбеддингов не ответил — чистая лексика, без падения
-    s3 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []))
+    s3 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []), schema=CHAROITE)
     s3.refresh(force=True)
     assert s3.embed_pending() == 0
     assert _rels(s3.search("платёжный шлюз", limit=2))[0] == "Системы/Платёжный шлюз.md"
@@ -334,7 +337,7 @@ def test_without_fcntl_vectors_are_not_written_and_the_index_says_why(tmp_path, 
     # модуль грузится и там, где fcntl нет, а векторы без замка не пишутся — отказ
     # тот же, что у тома без flock, а не трассировка из embed_pending (Opus M1 круга 1
     # по коду №365)
-    mem = gs.GraphSearch(_graph(tmp_path), embedder=fake_embedder(), data_dir=tmp_path / "data")
+    mem = gs.GraphSearch(_graph(tmp_path), embedder=fake_embedder(), data_dir=tmp_path / "data", schema=CHAROITE)
     mem.refresh(force=True)
     monkeypatch.setitem(sys.modules, "fcntl", None)
     assert mem.embed_pending(budget_s=5) == 0
@@ -347,7 +350,7 @@ def test_without_fcntl_vectors_are_not_written_and_the_index_says_why(tmp_path, 
 def test_demo_bench_facts_are_retrieved_without_a_model(tmp_path, graph, bench):
     """Три вопроса демо-бенча: обязательный факт — в найденном тексте (retrieval),
     синтез моделью здесь не при чём. Тот же контур, что у подсказок на встрече."""
-    s = gs.GraphSearch(REPO / graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []))
+    s = gs.GraphSearch(REPO / graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []), schema=CHAROITE)
     s.refresh(force=True)
     cases = yaml.safe_load((REPO / bench).read_text(encoding="utf-8"))
     for case in cases:
@@ -404,7 +407,7 @@ def test_gate_without_semantics_is_unverified_and_synonym_semantics_is_confident
     def busy(texts, timeout):
         calls["embed"] += 1
         return []
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(busy))
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(busy), schema=CHAROITE)
     s.refresh(force=True)
     s.embed_pending()          # занятый сервер отвечает без векторов — собирать нечего
     r = s.search("интеграцию платёжного шлюза ведёт Иван до пятницы срок", limit=3)
@@ -412,7 +415,7 @@ def test_gate_without_semantics_is_unverified_and_synonym_semantics_is_confident
     assert not r.sem_used and r.status is gs.Verdict.UNVERIFIED and r.blocks, "нашли по словам, но не подтвердили — «⚠» с причиной"
     assert "не проверены" in r.why_low and s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.UNVERIFIED
     # семантика есть: синоним даёт уверенность без единого общего слова
-    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s2.refresh(force=True)
     (s.graph / "Системы" / "Поставщик.md").write_text("# Поставщик\nпоставщик платежей: договор подписан\n", encoding="utf-8")
     s2.refresh(force=True)
@@ -440,7 +443,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     исчезнувшего файла уходит из памяти, второй писатель уступает по локу."""
     clock = {"t": 1_700_000_000.0}
     now = lambda: clock["t"]  # noqa: E731
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=now, schema=CHAROITE)
     s.refresh(force=True)
     n = s.embed_pending()
     manifest = s._vec_manifest
@@ -448,7 +451,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     # битый манифест: 0 векторов, но не навсегда — починили, часы ушли — загрузилось
     good = manifest.read_text(encoding="utf-8")
     manifest.write_text("{", encoding="utf-8")
-    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
+    s2 = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now, schema=CHAROITE)
     s2.refresh(force=True)
     assert s2.load_vectors() == 0
     manifest.write_text(good, encoding="utf-8")
@@ -479,12 +482,12 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     fourth_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
     assert fourth_blob != third_blob and fourth_blob.exists() and third_blob.exists() and not first_blob.exists()
     # чужая запись (ночь, апдейтер): манифест новее — экземпляр перечитывает, а не живёт старым
-    fresh = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
+    fresh = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now, schema=CHAROITE)
     fresh.refresh(force=True)
     assert fresh.load_vectors() >= 1 and str(s.graph / "Системы" / "Третий.md") in fresh._vecs
     # ... и уже загрузивший экземпляр видит чужую запись по mtime манифеста, а не живёт старым (GLM M6 r2)
     (s.graph / "Системы" / "Четвёртый.md").write_text("# Четвёртый\nещё узел с достаточно длинным текстом для блока\n", encoding="utf-8")
-    other = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now)
+    other = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=now, schema=CHAROITE)
     other.refresh(force=True)
     clock["t"] += 2
     assert other.embed_pending() >= 1
@@ -494,7 +497,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     assert str(s.graph / "Системы" / "Четвёртый.md") in fresh._vecs, "новый манифест на диске — перечитан без перезапуска"
     # ключ кэша: сменилась модель или нарезка — кэш холодный целиком (DS I2 r2)
     cold = gs.GraphSearch(s.graph, data_dir=tmp_path / "data",
-                          embedder=fake_embedder(model="other-model"), now=now)
+                          embedder=fake_embedder(model="other-model"), now=now, schema=CHAROITE)
     cold.refresh(force=True)
     assert cold.load_vectors() == 0 and len(cold.pending_vectors()) == cold.size
     # файл исчез — вектор уходит из памяти вместе с ним (DS M3)
@@ -511,7 +514,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     holder.close()
     assert s2.embed_pending() == 1
     # сервер эмбеддингов не ответил — причина названа (DS I5 / GLM M5 r2)
-    mute = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []), now=now)
+    mute = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(lambda t, to: []), now=now, schema=CHAROITE)
     mute.refresh(force=True)
     (s.graph / "Системы" / "Новый узел.md").write_text("# Новый узел\nдостаточно длинный текст для блока и вектора\n", encoding="utf-8")
     mute.refresh(force=True)
@@ -527,7 +530,7 @@ def test_indexing_stops_on_live_recording_and_respects_the_budget(tmp_path):
         calls.append(timeout)
         clock["t"] += 10.0
         return fake_embed(texts, timeout)
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(embed), now=lambda: clock["t"])
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(embed), now=lambda: clock["t"], schema=CHAROITE)
     s.refresh(force=True)
     assert s.embed_pending(budget_s=0) == 0 and calls == [] and "бюджет" in s.note
     live = {"on": False}
@@ -549,7 +552,7 @@ def test_metacharacters_in_graph_name_do_not_break_generation_cleanup(tmp_path):
     g = tmp_path / "Граф [тест]"
     (g / "Системы").mkdir(parents=True)
     (g / "Системы" / "Узел.md").write_text("# Узел\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
-    s = gs.GraphSearch(g, data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(g, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
     aged = time.time() - gs.BLOB_GRACE_S - 1
     for i in range(3):
@@ -568,7 +571,7 @@ def test_reader_retries_when_writer_publishes_between_manifest_and_blob(tmp_path
     s = _search(tmp_path)
     manifest = s._vec_manifest
     stale = json.loads(manifest.read_text(encoding="utf-8"))
-    r = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder())
+    r = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     r.refresh(force=True)
     real_read = pathlib.Path.read_text
     state = {"n": 0}
@@ -602,7 +605,7 @@ def test_semantic_fallback_fragment_skips_frontmatter(tmp_path):
 def test_node_files_keep_twice_as_many_chunks(tmp_path):
     """Узел человека с длинной историей: лимит блоков вдвое выше, чем у заметки —
     середина истории не исчезает целиком (GLM r2, критика 1)."""
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     long = "# Иван\n" + "\n\n".join(f"## Встреча {i}\n" + f"встреча {i} " + "слово " * 90 for i in range(40))
     (s.graph / "Люди" / "Иван Долгий.md").write_text(long, encoding="utf-8")
     (s.graph / "Встречи" / "2026-08-09_1000.md").write_text(long, encoding="utf-8")
@@ -667,7 +670,7 @@ def test_a_foreign_key_on_disk_is_a_cold_cache_and_does_not_latch_the_retry(tmp_
     assert s.vectors and s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
     clock = {"t": 1_700_000_000.0}
     t = gs.GraphSearch(s.graph, data_dir=tmp_path / "data",
-                       embedder=fake_embedder(model="third"), now=lambda: clock["t"])
+                       embedder=fake_embedder(model="third"), now=lambda: clock["t"], schema=CHAROITE)
     t.refresh(force=True)
     assert t.load_vectors() == 0, "кэш подписан чужой моделью — читать его нельзя"
     assert not t.search("платёжный шлюз", limit=2).sem_used and t._vecs_tried_at is not None
@@ -692,7 +695,7 @@ def test_a_dead_server_degrades_to_words_but_a_broken_seam_shouts(tmp_path):
         calls["n"] += 1
         raise ConnectionError("Ollama не отвечает")
 
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(dead))
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(dead), schema=CHAROITE)
     s.refresh(force=True)
     assert s.embed_pending() == 0, "транспорт лёг — векторов не собрали и не упали"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
@@ -700,7 +703,7 @@ def test_a_dead_server_degrades_to_words_but_a_broken_seam_shouts(tmp_path):
     assert r.blocks and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
 
     wrong = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d2",
-                           embedder=fake_embedder(lambda texts: []))   # забыли timeout
+                           embedder=fake_embedder(lambda texts: []), schema=CHAROITE)   # забыли timeout
     wrong.refresh(force=True)
     with pytest.raises(TypeError):
         wrong.embed_pending()
@@ -729,7 +732,7 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
     monkeypatch.setattr(llm.requests, "post", post)
     cfg = {"sufler": {"embed_model": "own-model"}}
     e = llm.embedder(cfg)      # умолчание фабрики — боевой путь brain, писателя и индекса (DS I1)
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e, schema=CHAROITE)
     assert s.cache_key().startswith("own-model|"), "кэш подписывает тот, кто считает"
     assert e.run(["текст"], 5) == [[1.0, 0.0]]
     # литералом, не константой: сверка с тем, что сторожишь, пропустит «30m» → «5m»,
@@ -795,7 +798,7 @@ def test_an_empty_cache_is_not_a_busy_server(tmp_path):
     занятость сервера — утверждение о мире, которого никто не проверял: Ollama
     жива и к ней не обращались (круг 4 по №321, DS C1).
     """
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
     assert s.vectors == 0, "кэш пуст: векторы никто не собирал"
     r = s.search("интеграцию платёжного шлюза ведёт Иван", limit=3)
@@ -822,7 +825,7 @@ def test_a_refused_address_is_a_transport_outcome_and_is_said_once(tmp_path, mon
     cfg = {"llm": {"base_url": "http://10.1.2.3:11434"}, "sufler": {}}   # чужая машина, allow_remote нет
     e = llm.embedder(cfg, keep_alive=llm.EMBED_KEEP_ALIVE)
     assert e.refused, "фабрика знает отказ сразу — его не надо ждать от первого вектора"
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=e, schema=CHAROITE)
     s.refresh(force=True)
     # Боевой путь демона: кэш пуст, потому что собрать его тот же отказ и не дал.
     # Поиск в этом случае шов не спрашивает вовсе — и раньше причина бралась из
@@ -855,7 +858,7 @@ def test_the_cache_key_is_a_contract_not_a_value(tmp_path):
     Поэтому он проверяется побайтово, а не на самосогласованность (GLM I5 r3).
     """
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data",
-                       embedder=fake_embedder(model=DEFAULT_EMBED_MODEL))
+                       embedder=fake_embedder(model=DEFAULT_EMBED_MODEL), schema=CHAROITE)
     assert s.cache_key() == (f"bge-m3:latest|chunks{gs.CHUNK_VERSION}|{gs.CHUNK_CHARS}"
                              f"|{gs.MAX_CHUNKS}|{gs.MAX_CHUNKS_NODE}")
     assert DEFAULT_EMBED_MODEL == "bge-m3:latest", "дефолт поставки — боевое значение, не заглушка"
@@ -865,7 +868,7 @@ def test_without_a_lock_nothing_is_written(tmp_path, monkeypatch):
     """Замок не взялся (том без flock, EMFILE): два писателя без замка стёрли бы блоб
     друг друга уборкой — не пишем вовсе, причина в note (DS I2 / GLM M4 r3)."""
     import fcntl
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder())
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
     monkeypatch.setattr(fcntl, "flock", lambda *a: (_ for _ in ()).throw(OSError(1, "Operation not permitted")))
     assert s.embed_pending() == 0 and "без замка" in s.note and not s._vec_manifest.exists()
@@ -878,11 +881,11 @@ def test_first_cache_read_is_not_throttled_by_a_zero_clock_and_foreign_key_is_no
     же чтении (DS M3 r3). Чужой ключ на диске у прогретого экземпляра — одна неудача и
     пауза VEC_RETRY_S, а не чтение манифеста каждым поиском (GLM M3 r3)."""
     s = _search(tmp_path)
-    zero = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: 0.0)
+    zero = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: 0.0, schema=CHAROITE)
     zero.refresh(force=True)
     assert zero.load_vectors() == s.vectors, "первое чтение — сразу, без оглядки на часы"
     clock = {"t": 1_700_000_000.0}
-    warm = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"])
+    warm = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"], schema=CHAROITE)
     warm.refresh(force=True)
     assert warm.load_vectors() == s.vectors
     foreign = json.loads(s._vec_manifest.read_text(encoding="utf-8"))
@@ -924,7 +927,7 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     def d(base, stub_to=""):
         """Документ с ключом-путём: `Ядра/<имя>` — так его видит каталог связей."""
         target = f"ядра/{stub_to}" if stub_to and "/" not in stub_to else stub_to
-        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", target)
+        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", target, schema=CHAROITE)
     # цепочка: «а» слит в «б», «б» — в живой «в»; ключи — пути (№292)
     chain = gs.LinkCatalog([d("а", "б"), d("б", "в"), d("в")]).canon
     assert chain == {"ядра/а": "ядра/в", "ядра/б": "ядра/в"}, chain
@@ -932,7 +935,7 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     # ключ-путь снял оговорку про однофамильца: «Досье/Отчёт» и «Ядра/Отчёт» —
     # разные ключи, и заглушка в одной папке не спорит с живым файлом в другой.
     # При ключе-имени это был костыль, без которого правка отнимала переходы (№291)
-    keep = gs.LinkCatalog([gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "ядра/сводка"),
+    keep = gs.LinkCatalog([gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "ядра/сводка", schema=CHAROITE),
                            d("сводка"), d("отчёт")]).canon
     assert keep == {"досье/отчет": "ядра/сводка"}, keep
     # одного ключа у заглушки и живого файла быть не может: путь уникален, и
@@ -946,8 +949,8 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     # два редиректа с одним ИМЕНЕМ в разных папках больше не спорят: путь уникален,
     # и каждый ведёт туда, куда написано. При ключе-имени здесь нужен был тай-брейк
     # по свежести, и три круга ушло на то, чтобы сделать его детерминированным (№291)
-    in_cores = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив")
-    in_dossier = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги")
+    in_cores = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив", schema=CHAROITE)
+    in_dossier = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги", schema=CHAROITE)
     both = [d("итоги"), d("архив")]
     expect = {"ядра/отчет": "ядра/архив", "досье/отчет": "ядра/итоги"}
     assert gs.LinkCatalog([in_cores, in_dossier, *both]).canon == expect
@@ -955,14 +958,14 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     # свежий редирект ведёт в никуда, старый — к живому: имя достаётся рабочему,
     # иначе свежая оборванная стрелка съедала бы базу целиком (DS, круг 4)
     # оборванная стрелка не даёт записи вовсе: канона нет — ключ не переписываем
-    dead = gs.Doc("", "Досье/пропажа.md", 0.0, "", "", 300.0, "пропажа", "", "ядра/исчез")
+    dead = gs.Doc("", "Досье/пропажа.md", 0.0, "", "", 300.0, "пропажа", "", "ядра/исчез", schema=CHAROITE)
     assert gs.LinkCatalog([dead, in_cores, d("архив")]).canon == {"ядра/отчет": "ядра/архив"}
     # свежесть решает независимо от алфавита папки: прошлый тест проходил случайно,
     # потому что свежая заглушка лежала в папке с буквой раньше (DS, круг 5)
     # один КЛЮЧ теперь у одного файла, поэтому свежесть решает внутри одного пути
     # один путь — один файл, поэтому свежесть решает только среди дублей ключа
-    new_late = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги")
-    old_early = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив")
+    new_late = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги", schema=CHAROITE)
+    old_early = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив", schema=CHAROITE)
     assert gs.LinkCatalog([old_early, new_late, d("итоги"), d("архив")]).canon == {"ядра/отчет": "ядра/итоги"}
     # КОЛЛИЗИЯ КЛЮЧА: нормализация схлопывает ё/е, поэтому два разных файла
     # дают один ключ. Хозяина выбирает owner_key — свежайший, — и цепочка идёт
@@ -970,9 +973,9 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     # был правилом мира, где одно ИМЯ законно носили два файла; для коллизии
     # путей он означал бы, что хозяин ключа зависит от данных на другом конце
     # цепочки. Стрелка свежайшего мертва — честный ответ «никуда» (круг 2 №292)
-    x = gs.Doc("", "Ядра/икс.md", 0.0, "", "", 50.0, "икс", "", "ядра/игрек")
-    fresh_dead = gs.Doc("", "Ядра/игрёк.md", 0.0, "", "", 300.0, "игрёк", "", "ядра/исчез")
-    older_live = gs.Doc("", "Ядра/игрек.md", 0.0, "", "", 100.0, "игрек", "", "ядра/итоги")
+    x = gs.Doc("", "Ядра/икс.md", 0.0, "", "", 50.0, "икс", "", "ядра/игрек", schema=CHAROITE)
+    fresh_dead = gs.Doc("", "Ядра/игрёк.md", 0.0, "", "", 300.0, "игрёк", "", "ядра/исчез", schema=CHAROITE)
+    older_live = gs.Doc("", "Ядра/игрек.md", 0.0, "", "", 100.0, "игрек", "", "ядра/итоги", schema=CHAROITE)
     pair = [x, fresh_dead, older_live, d("итоги")]
     assert fresh_dead.key == older_live.key, "ё и е обязаны схлопнуться в один ключ"
     assert gs.LinkCatalog(pair).canon == {}, "цепочка пошла мимо хозяина ключа"
@@ -986,10 +989,10 @@ def test_each_stub_of_a_key_collision_leads_to_its_own_target():
     ё/е в один ключ. Карта канонов отвечает про хозяина ключа, и заглушка-
     неудачник, найденная поиском по своему тексту, показывала чужой документ, а
     её собственная цель не показывалась никогда (Important DS, круг 3 по №292)."""
-    fresh = gs.Doc("", "Ядра/Ёлка.md", 0.0, "", "", 200.0, "Ёлка", "", "ядра/а")
-    older = gs.Doc("", "Ядра/Елка.md", 0.0, "", "", 100.0, "Елка", "", "ядра/б")
-    a = gs.Doc("", "Ядра/А.md", 0.0, "", "", 0.0, "А", "", "")
-    b = gs.Doc("", "Ядра/Б.md", 0.0, "", "", 0.0, "Б", "", "")
+    fresh = gs.Doc("", "Ядра/Ёлка.md", 0.0, "", "", 200.0, "Ёлка", "", "ядра/а", schema=CHAROITE)
+    older = gs.Doc("", "Ядра/Елка.md", 0.0, "", "", 100.0, "Елка", "", "ядра/б", schema=CHAROITE)
+    a = gs.Doc("", "Ядра/А.md", 0.0, "", "", 0.0, "А", "", "", schema=CHAROITE)
+    b = gs.Doc("", "Ядра/Б.md", 0.0, "", "", 0.0, "Б", "", "", schema=CHAROITE)
     cat = gs.LinkCatalog([fresh, older, a, b])
     assert fresh.key == older.key, "ё и е обязаны схлопнуться в один ключ"
     assert cat.instead_of_stub(fresh).rel == "Ядра/А.md"
@@ -1116,8 +1119,8 @@ def test_a_broken_stub_chain_gives_nobody_a_vote():
     `live` обещает живой документ; если за целью снова указатель, честный ответ
     «никуда». Иначе мёртвый файл получал входящий голос и буст хаба — ровно
     дефект, который закрывал №291 (Critical DS, круг 2 по №292)."""
-    a = gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "досье/б")
-    b = gs.Doc("", "Досье/б.md", 0.0, "", "", 0.0, "б", "", "ядра/исчез")
+    a = gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "досье/б", schema=CHAROITE)
+    b = gs.Doc("", "Досье/б.md", 0.0, "", "", 0.0, "б", "", "ядра/исчез", schema=CHAROITE)
     cat = gs.LinkCatalog([a, b])
     assert cat.canon == {}, "цепочка без живого конца попала в карту канонов"
     assert cat.named("ядра/а") is a, "документ по пути перестал находиться"
@@ -1138,12 +1141,12 @@ def test_a_self_loop_is_judged_by_where_the_arrow_resolves():
     правило `стрелка != база` отсекало этот случай по совпадению строк, а не по
     смыслу. В рабочем графе 18.09: 418 заглушек со стрелкой-путём, 2 с голым
     именем, ни одна не указывает на своё же имя."""
-    alone = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "тема")
+    alone = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "тема", schema=CHAROITE)
     assert gs.LinkCatalog([alone]).canon == {}, "голая стрелка в себя стала цепочкой"
-    by_path = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "ядра/тема")
+    by_path = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "ядра/тема", schema=CHAROITE)
     assert gs.LinkCatalog([by_path]).canon == {}, "стрелка путём в себя стала цепочкой"
     # живой тёзка — законная цель голой стрелки, а не жертва самопетли
-    twin = gs.Doc("", "Досье/тема.md", 0.0, "", "", 0.0, "тема", "", "")
+    twin = gs.Doc("", "Досье/тема.md", 0.0, "", "", 0.0, "тема", "", "", schema=CHAROITE)
     assert gs.LinkCatalog([alone, twin]).canon == {"ядра/тема": "досье/тема"}
 
 
@@ -1359,9 +1362,9 @@ def test_a_long_stub_chain_does_not_break_the_walk(tmp_path):
     (DS, круг 6 по №291). Проверяем ИСХОД, а не «не бросило»: `canon is not
     None` истинно всегда, потому что это свойство со словарём (Minor DS, круг 3
     по №292)."""
-    docs = [gs.Doc("", f"Ядра/н{i}.md", 0.0, "", "", float(i), f"н{i}", "", f"н{i + 1}")
+    docs = [gs.Doc("", f"Ядра/н{i}.md", 0.0, "", "", float(i), f"н{i}", "", f"н{i + 1}", schema=CHAROITE)
             for i in range(gs.MAX_STUB_HOPS + 200)]
-    docs.append(gs.Doc("", "Ядра/живой.md", 0.0, "", "", 0.0, f"н{len(docs)}", "", ""))
+    docs.append(gs.Doc("", "Ядра/живой.md", 0.0, "", "", 0.0, f"н{len(docs)}", "", "", schema=CHAROITE))
     cat = gs.LinkCatalog(docs)
     # хвост цепочки короче потолка и честно доходит до живого; начало — нет.
     # Предложенное кругом `canon == {}` неверно ровно поэтому: обрезается не вся
@@ -1370,9 +1373,9 @@ def test_a_long_stub_chain_does_not_break_the_walk(tmp_path):
     assert cat.live(f"ядра/н{len(docs) - 2}").rel == "Ядра/живой.md", "хвост не дошёл до живого"
     assert "ядра/н0" not in cat.canon, "звено за потолком попало в карту канонов"
     # короткая цепочка тем же кодом доходит до живого конца
-    short = [gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "ядра/б"),
-             gs.Doc("", "Ядра/б.md", 0.0, "", "", 0.0, "б", "", "ядра/в"),
-             gs.Doc("", "Ядра/в.md", 0.0, "", "", 0.0, "в", "", "")]
+    short = [gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "ядра/б", schema=CHAROITE),
+             gs.Doc("", "Ядра/б.md", 0.0, "", "", 0.0, "б", "", "ядра/в", schema=CHAROITE),
+             gs.Doc("", "Ядра/в.md", 0.0, "", "", 0.0, "в", "", "", schema=CHAROITE)]
     assert gs.LinkCatalog(short).live("ядра/а").rel == "Ядра/в.md"
 
 
@@ -1402,6 +1405,48 @@ def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
     assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
 
 
+def _hop_order(tmp_path, targets: dict[str, int], limit: int = 4) -> list[str]:
+    """Узел «Сводка квартала» ссылается на каждую цель; возраст цели — в днях (mtime).
+    Запрос — имя узла: других игл нет, покрытие у всех целей полное, и порядок
+    переходов решают свежесть и демпфер сырья. -> пути целей в порядке переходов."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    links = "".join(f"- [[{pathlib.PurePosixPath(rel).stem}]]\n" for rel in targets)
+    (g / "Ядра" / "Сводка квартала.md").write_text(f"# Сводка квартала\nИтоги.\n\n## Связи\n{links}", encoding="utf-8")
+    now = time.time()
+    for rel, days in targets.items():
+        p = g / rel
+        p.write_text(f"# {p.stem}\nтекст цели {p.stem}\n", encoding="utf-8")
+        os.utime(p, (now - days * 86400, now - days * 86400))
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("сводка квартала", limit=limit)
+    hops = [b.split("\n")[0][2:] for b in r.blocks if "↳ по ссылке из" in b]
+    return [h for h in hops if h in targets]
+
+
+def test_hops_rank_fresher_notes_first(tmp_path):
+    """Свежесть в счёте перехода — множитель: при полном покрытии заметка сегодняшняя
+    идёт раньше заметки годовой давности, хотя по имени та позже в алфавите."""
+    order = _hop_order(tmp_path, {"Документация/Итоги А.md": 0, "Документация/Итоги Я.md": 400})
+    assert order == ["Документация/Итоги А.md", "Документация/Итоги Я.md"], order
+
+
+def test_hops_dampen_raw_transcripts(tmp_path):
+    """Сырьё по схеме в переходе приглушено тем же множителем, что в выдаче: при равных
+    свежести и покрытии дистиллят идёт раньше стенограммы, хотя по имени она позже."""
+    order = _hop_order(tmp_path, {"Документация/Итоги.md": 0, "Документация/Протокол_стенограмма.md": 0})
+    assert order == ["Документация/Итоги.md", "Документация/Протокол_стенограмма.md"], order
+
+
+def test_hops_take_at_most_half_of_the_limit(tmp_path):
+    """Переходы — добавка к выдаче, а не её замена: не больше половины лимита, даже
+    когда узел ссылается на большее число подходящих заметок."""
+    order = _hop_order(tmp_path, {f"Документация/Итоги {c}.md": 0 for c in "АБВГД"}, limit=4)
+    assert len(order) == 2, order
+
+
 def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
     """Ответ не судит о том, чего не читал.
 
@@ -1421,7 +1466,7 @@ def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
     bare = tmp_path / "Голый"
     (bare / "Люди").mkdir(parents=True)
     (bare / "Люди" / "Иван.md").write_text("# Иван\nВедёт интеграцию.\n", encoding="utf-8")
-    s2 = gs.GraphSearch(bare, data_dir=tmp_path / "d2", embedder=fake_embedder())
+    s2 = gs.GraphSearch(bare, data_dir=tmp_path / "d2", embedder=fake_embedder(), schema=CHAROITE)
     s2.refresh(force=True)
     empty2 = s2.search("qqqzzz", limit=2)
     assert s2.exclude and empty2.skipped == (), "названо исключённым то, чего в графе нет"
@@ -1460,26 +1505,26 @@ def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
 
 def test_doc_role_is_one_predicate_for_every_consumer():
     """Роль выводится из пути один раз: служебный префикс — в ЛЮБОЙ папке (то же
-    правило, что у dossier.scan), досье — по верхней папке `dossier.DOSSIER_DIR`,
+    правило, что у dossier.scan), досье — по верхней папке `CHAROITE.dossier_dir`,
     сравнение нормализованное; служебный побеждает досье (`Досье/_ИНДЕКС.md`).
     Раньше обход знал только корень, переходы — только `_`, а досье — никто
     (входной круг DS и GLM по №296)."""
     cases = {
         "_MOC.md": gs.SERVICE, "Служебное_ревизия.md": gs.SERVICE,
         "Люди/_ЛЮДИ.md": gs.SERVICE, "Заметки/Служебное_отчёт.md": gs.SERVICE,
-        f"{dossier.DOSSIER_DIR}/_ИНДЕКС.md": gs.SERVICE,
-        f"{dossier.DOSSIER_DIR}/Платёжный шлюз.md": gs.DOSSIER,
-        f"{dossier.DOSSIER_DIR.lower()}/тема.md": gs.DOSSIER,
-        f"{dossier.DOSSIER_DIR}/вложенная/тема.md": gs.DOSSIER,
+        f"{CHAROITE.dossier_dir}/_ИНДЕКС.md": gs.SERVICE,
+        f"{CHAROITE.dossier_dir}/Платёжный шлюз.md": gs.DOSSIER,
+        f"{CHAROITE.dossier_dir.lower()}/тема.md": gs.DOSSIER,
+        f"{CHAROITE.dossier_dir}/вложенная/тема.md": gs.DOSSIER,
         "Встречи/2026-08-01_1000.md": gs.PRIMARY, "Люди/Иван Мироненко.md": gs.PRIMARY,
-        f"Документация/{dossier.DOSSIER_DIR}.md": gs.PRIMARY,   # файл с таким именем — не папка сводок
+        f"Документация/{CHAROITE.dossier_dir}.md": gs.PRIMARY,   # файл с таким именем — не папка сводок
     }
     for rel, role in cases.items():
-        assert gs.doc_role(rel) == role, rel
+        assert gs.doc_role(rel, CHAROITE) == role, rel
     # роль — свойство документа: оснастка без роли получает её из того же предиката
-    d = gs.Doc("", "Люди/_ЛЮДИ.md", 0.0, "", "", 0.0, "_люди")
-    assert d.role == gs.SERVICE and gs.Doc("", "Люди/Кто-то.md", 0.0, "", "", 0.0, "кто-то").role == gs.PRIMARY
-    assert not gs.is_node_path("Люди/_ЛЮДИ.md") and gs.is_node_path("Люди/Кто-то.md")
+    d = gs.Doc("", "Люди/_ЛЮДИ.md", 0.0, "", "", 0.0, "_люди", schema=CHAROITE)
+    assert d.role == gs.SERVICE and gs.Doc("", "Люди/Кто-то.md", 0.0, "", "", 0.0, "кто-то", schema=CHAROITE).role == gs.PRIMARY
+    assert not CHAROITE.is_node_path("Люди/_ЛЮДИ.md") and CHAROITE.is_node_path("Люди/Кто-то.md")
 
 
 def test_service_files_in_subfolders_leave_the_index_but_stay_in_coverage(tmp_path):
@@ -1515,7 +1560,7 @@ def test_dossiers_are_link_targets_but_neither_vote_nor_take_slots(tmp_path):
     целью ссылок и секцией «📁», но голосов не отдаёт и слот в «Найдено в
     графе» не берёт — иначе производное вытесняло бы первичное (DS I1)."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Интеграция.md").write_text(
         "---\ntype: досье\n---\n# Интеграция\nСВОДКА_МАРКЕР про [[Системы/Платёжный шлюз]] и "
@@ -1550,7 +1595,7 @@ def test_dossier_blocks_read_the_generation_not_the_disk(tmp_path, monkeypatch):
     JSON не склеивается в путь (`../` читал бы вне папки), чтение с диска на
     каждый вопрос снято (DS C4 / M2 по №296)."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Платёжный шлюз.md").write_text("---\ntype: досье\n---\n# Платёжный шлюз\nпилот, провайдер ЮPay\n",
                                               encoding="utf-8")
@@ -1575,7 +1620,7 @@ def test_hops_lead_to_primary_notes_only(tmp_path):
     """Переход из узла ведёт к первичной заметке: сводка досье — производное,
     показывать её фрагментом графа значило бы выдавать пересказ за источник."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Шлюз.md").write_text("---\ntype: досье\n---\n# Шлюз\nтокен авторизации ПЕРЕХОД_В_СВОДКУ\n", encoding="utf-8")
     node = s.graph / "Системы" / "Платёжный шлюз.md"
@@ -1592,7 +1637,7 @@ def test_a_stub_pointing_at_a_dossier_does_not_smuggle_it_into_slots(tmp_path):
     «Найдено в графе». Гейт — в резолвере `instead_of_stub`: производное не
     замена заглушке (выходной круг GLM I1 по №296)."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Старый шлюз.md").write_text("---\ntype: досье\n---\n# Старый шлюз\nСВОДКА_ВМЕСТО_ЗАГЛУШКИ\n",
                                            encoding="utf-8")
@@ -1611,14 +1656,14 @@ def test_dossier_theme_is_resolved_by_normalised_key_not_raw_path(tmp_path):
     досье поколения — по `Doc.key`, нормализованному, как у ссылок (DS I1 / GLM
     M3 выходного круга)."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "платёжный шлюз.md").write_text("---\ntype: досье\n---\n# платёжный шлюз\nпилот, провайдер ЮPay\n",
                                               encoding="utf-8")
     dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз"],   # регистр + NFD «ё»
                                   "источников": 3, "собрано": "2026-08-02"}])
     s.refresh(force=True)
-    assert set(s._gen.dossiers) == {gs.norm_text(f"{dossier.DOSSIER_DIR}/платёжный шлюз")}
+    assert set(s._gen.dossiers) == {gs.norm_text(f"{CHAROITE.dossier_dir}/платёжный шлюз")}
     r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
     assert len(r.dossiers) == 1 and "ЮPay" in r.dossiers[0], "тема нашла файл несмотря на регистр и форму"
 
@@ -1627,7 +1672,7 @@ def test_only_primary_documents_get_vectors(tmp_path):
     """Сводки в слоты и переходы не идут — их векторы никто не читал бы, а 256
     файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)."""
     s = _search(tmp_path)
-    folder = s.graph / dossier.DOSSIER_DIR
+    folder = s.graph / CHAROITE.dossier_dir
     folder.mkdir()
     (folder / "Тема.md").write_text("---\ntype: досье\n---\n# Тема\nтекст сводки для эмбеддера\n", encoding="utf-8")
     (s.graph / "Встречи" / "2026-08-09_1000.md").write_text("# Новая\nтекст заметки для эмбеддера\n", encoding="utf-8")
@@ -1642,18 +1687,18 @@ def test_only_primary_documents_get_vectors(tmp_path):
 
 
 def test_схема_хранилища_задаёт_исключения_обхода(tmp_path):
-    """Пакет берёт схему параметром (№422): исключения обхода — её, а не
-    умолчание модуля; два источника сразу — отказ."""
+    """Исключения обхода — только из схемы (№422 PR B): у пакета своих имён папок
+    нет. Без схемы — простое хранилище `PLAIN`, без исключений; отдельного
+    параметра `exclude` у конструктора больше нет."""
     import dataclasses
-    import charoite_schema
-    своя = dataclasses.replace(charoite_schema.CHAROITE, exclude_dirs=("Черновики",))
+    своя = dataclasses.replace(CHAROITE, exclude_dirs=("Черновики",))
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=своя)
-    assert s.exclude == ("Черновики",)
-    assert gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d2", embedder=fake_embedder()).exclude \
-        == gs.EXCLUDE_DIRS, "без схемы — прежнее умолчание"
-    with pytest.raises(ValueError, match="не оба"):
+    assert s.exclude == ("Черновики",) and s.schema is своя
+    plain = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d2", embedder=fake_embedder())
+    assert plain.schema is PLAIN and plain.exclude == ()
+    with pytest.raises(TypeError, match="exclude"):
         gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "d3", embedder=fake_embedder(),
-                       schema=своя, exclude=("x",))
+                       exclude=("x",))
 
 
 @pytest.mark.parametrize("exclude, ждём", [
@@ -1661,10 +1706,12 @@ def test_схема_хранилища_задаёт_исключения_обх�
     (["Черновики", "Документация/Черновики"], ("Черновики", "Документация/Черновики")),
 ], ids=["строка", "список"])
 def test_список_исключений_толкует_та_же_дверь_что_у_схемы(tmp_path, exclude, ждём):
-    """`exclude` строкой — одно имя, как в полях схемы, а не кортеж букв, который
-    не исключил бы ни одной папки (выходной круг 3 по #654, DS C1)."""
-    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(),
-                       exclude=exclude)
+    """Исключения строкой — одно имя, как в полях схемы, а не кортеж букв, который
+    не исключил бы ни одной папки (выходной круг 3 по #654, DS C1): форму толкует
+    дверь схемы, поиск берёт готовое значение."""
+    import dataclasses
+    своя = dataclasses.replace(CHAROITE, exclude_dirs=exclude)
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=своя)
     assert s.exclude == ждём
 
 
@@ -1672,9 +1719,9 @@ def test_список_исключений_толкует_та_же_дверь_�
 def test_список_исключений_без_порядка_или_пустой_отказ(tmp_path, exclude):
     """Множество — не список имён: у него нет порядка; пустое имя молча не
     исключало бы ничего (выходной круг 4 по #654, DS M3) — отказ той же двери."""
+    import dataclasses
     with pytest.raises(ValueError, match="exclude"):
-        gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(),
-                       exclude=exclude)
+        dataclasses.replace(CHAROITE, exclude_dirs=exclude)
 
 
 def test_приложение_отдаёт_поиску_свою_схему(tmp_path, monkeypatch):
