@@ -685,14 +685,19 @@ WHEEL_LINES: dict[str, Line] = {
     "license_archive": Line("сборка: в колесе нет {path}", True, ("license_pattern",)),
     "license_bytes": Line("сборка: {path} в колесе не равен файлу {source}", True,
                           ("license_pattern", "license_source", "license_archive")),
+    "duplicate_dependency": Line("объявление: {deps} — одно имя дистрибутива записано дважды", False),
     "missing_module": Line("окружение: у стороннего модуля {module} ({files}) нет дистрибутива", False),
     "undeclared_import": Line("объявление: импорт {module} ({files}) ведёт к {dists}, в dependencies их нет", False,
-                              ("missing_module",)),
+                              ("duplicate_dependency", "missing_module")),
+    # Судится зависимость, дистрибутив которой стоит в окружении: тогда известны его
+    # модули, и «к нему не ведёт ни один импорт» — факт. Не стоит — судить нечем, и
+    # зависимость молчит сама по себе, а не вся проверка из-за чужого модуля
+    # (выходной круг 1 по №446).
     "unused_dependency": Line("объявление: зависимость {dep} — к ней не ведёт ни один импорт пакета", False,
-                              ("missing_module",)),
-    "root_missing": Line("корневой манифест: зависимости пакета {dep} в нём нет", False),
+                              ("duplicate_dependency",)),
+    "root_missing": Line("корневой манифест: зависимости пакета {dep} в нём нет", False, ("duplicate_dependency",)),
     "root_differs": Line("корневой манифест: {dep} в пакете, {root} в корне — строки обязаны совпадать", False,
-                         ("root_missing",)),
+                         ("duplicate_dependency", "root_missing")),
 }
 
 
@@ -791,8 +796,18 @@ def _check_description(g: _GateInput) -> list[dict]:
 
 
 def _check_used(g: _GateInput) -> list[dict]:
+    installed = {lrd.dist_name(d) for dists in g.dists.values() for d in dists}
     used = {lrd.dist_name(d) for dists in (g.dists.get(m, []) for m in g.imports) for d in dists}
-    return [{"dep": dep} for name, dep in sorted(_declared_names(g).items()) if name not in used]
+    return [{"dep": dep} for name, dep in sorted(_declared_names(g).items()) if name in installed and name not in used]
+
+
+def _check_duplicates(g: _GateInput) -> list[dict]:
+    """Две строки `dependencies` с одним нормализованным именем: словарь имён молча
+    оставил бы одну, и остальные виды судили бы не всё объявление."""
+    by_name: dict[str, list[str]] = {}
+    for dep in g.declared.project.get("dependencies", []):
+        by_name.setdefault(lrd.dist_name(dep), []).append(dep)
+    return [{"deps": ", ".join(deps)} for _, deps in sorted(by_name.items()) if len(deps) > 1]
 
 
 def _check_undeclared(g: _GateInput) -> list[dict]:
@@ -827,6 +842,7 @@ _CHECKS = {
                                   if f"{g.own}/licenses/{f}" not in g.members],
     "license_bytes": lambda g: [{"path": f"{g.own}/licenses/{f}", "source": f} for f in _license_paths(g)
                                 if g.licenses.get(f"{g.own}/licenses/{f}") != (g.declared.base / f).read_bytes()],
+    "duplicate_dependency": _check_duplicates,
     "missing_module": lambda g: [{"module": m, "files": ", ".join(sorted(files))}
                                  for m, files in sorted(g.imports.items()) if not g.dists.get(m)],
     "undeclared_import": _check_undeclared,
@@ -1047,7 +1063,13 @@ CORRUPT_CASES = {
     "нет файла лицензии": (lambda w, d: {"wheel": w, "declared": _declared_copy(d, without_license=True)},
                            {"license_source"}),
     "модуль вне окружения": (lambda w, d: {"wheel": w, "dists": {
-        k: v for k, v in importlib.metadata.packages_distributions().items() if k != "yaml"}}, {"missing_module"}),
+        k: v for k, v in importlib.metadata.packages_distributions().items() if "PyYAML" not in v}}, {"missing_module"}),
+    "дубль зависимости": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', 'dependencies = ["pyyaml>=6.0", "PyYAML>=6"]', 1))},
+                          {"duplicate_dependency", "requires_dist"}),
+    "лишняя зависимость вне окружения": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', 'dependencies = ["pyyaml>=6.0", "not-installed-dist>=1"]', 1)),
+        "root": lrd.declared_deps() + ["not-installed-dist>=1"]}, {"requires_dist"}),
     "корень без pyyaml": (lambda w, d: {"wheel": w, "root": [
         r for r in lrd.declared_deps() if lrd.dist_name(r) != "pyyaml"]}, {"root_missing"}),
     "корень с маркером": (lambda w, d: {"wheel": w, "root": [
