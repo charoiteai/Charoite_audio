@@ -377,7 +377,10 @@ def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
         ie.resolve_root = lambda _file: pathlib.Path({str(tmp_path)!r})
         sys.exit(ie.main(["nemotron"]))
     """)
-    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120)
+    # Запускающий PYTHONUNBUFFERED не выставлял — ровно случай команды из доктора или доков; у
+    # долей мутатора она выставлена (mutate_check), и без очистки тест не отличал бы правку от её отсутствия.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120, env=env)
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert lines.index("сеть:") < lines.index("PIP"), lines

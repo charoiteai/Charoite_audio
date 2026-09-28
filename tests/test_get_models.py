@@ -184,8 +184,9 @@ def test_the_url_reaches_a_pipe_before_the_connection(tmp_path):
         sys.argv = ["get_models.py", "--diar"]
         sys.exit(get_models.main())
     """)
-    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120,
-                         env={**os.environ, "CHAROITE_ROOT": str(tmp_path)})
+    # PYTHONUNBUFFERED у запускающего нет — как у команды из доков; доли мутатора её выставляют.
+    env = {**{k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}, "CHAROITE_ROOT": str(tmp_path)}
+    out = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, timeout=120, env=env)
     lines = out.stdout.splitlines()
     url = next(i for i, line in enumerate(lines) if line.strip().startswith("https://"))
     assert url < lines.index("CONNECT"), lines

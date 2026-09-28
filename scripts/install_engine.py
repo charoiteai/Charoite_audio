@@ -285,13 +285,13 @@ def check(name: str, root: pathlib.Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    harden_umask()   # окружение и веса под корнем данных — только владельцу
     # Строки «сеть: …» обязаны дойти до читателя раньше соединения и раньше вывода
     # pip, который пишет в тот же дескриптор сам. В терминале stdout буферизуется
     # строкой, в канале (`| tee`, лог) — блоком, и адреса приходили после всего
     # вывода pip (выкатка №474, 29.09). Команду раздают людям голой строкой —
     # запускающего, который выставил бы PYTHONUNBUFFERED, как ночь и мутатор, нет (№481).
     sys.stdout.reconfigure(line_buffering=True)
-    harden_umask()   # окружение и веса под корнем данных — только владельцу
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("engine", choices=sorted(ENGINES), help="какой движок ставить")
     ap.add_argument("--check", action="store_true", help="только проверить, что стоит (без сети)")
