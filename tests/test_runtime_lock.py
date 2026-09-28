@@ -11,9 +11,12 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 import sys
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -214,3 +217,10 @@ def test_the_engine_lock_names_its_platform_and_hashes_every_package():
     packages = [ln for ln in text.splitlines() if re.match(r"^[A-Za-z0-9]", ln)]
     blocks = re.split(r"\n(?=[A-Za-z0-9])", text)
     assert packages and all("--hash=sha256:" in b for b in blocks if re.match(r"^[A-Za-z0-9]", b))
+
+
+def test_a_lock_target_cannot_be_changed_in_place():
+    """Таблица целей — общая на процесс: правка поля одной цели меняла бы лок всем следующим вызовам."""
+    import lock_runtime_deps as lrd
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        lrd.TARGETS["nemotron"].min_macos = "13.0"

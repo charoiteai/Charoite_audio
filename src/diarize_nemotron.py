@@ -132,20 +132,19 @@ def engine_python(root: pathlib.Path) -> pathlib.Path:
 
 
 def app_python() -> str:
-    """Python приложения, которым установщик примет команду, — или "", если его не узнать.
+    """Python приложения рядом с кодом — или "", если код лежит не в бандле.
 
-    Команду печатают разные процессы: пересборка идёт Python приложения, доктор —
-    любым `python3` из терминала, а установщик примет только переносимую сборку
-    (копию он и делает окружением). Код внутри бандла лежит в
-    `Contents/Resources/charoite`, Python приложения — рядом, в
-    `Contents/Resources/python`. Вне бандла годится свой интерпретатор процесса,
-    если он сам переносимый (приложение, запущенное из репозитория). Иначе — не
-    угадывать: `sys.executable` доктора из venv разработчика установщик отклонит."""
+    Команду печатают разные процессы: пересборка, доктор из терминала, `--check`
+    установщика. `sys.executable` любого из них годится не всегда: установщик
+    примет только переносимую сборку той версии, под которую собран лок, то есть
+    Python приложения. Код внутри бандла лежит в `Contents/Resources/charoite`,
+    Python приложения — рядом, в `Contents/Resources/python`: его и называем.
+    Вне бандла (код из клона) Python приложения отсюда не узнать, а угадывать
+    нельзя: чужой переносимый интерпретатор другой версии дал бы команду, которую
+    установщик отклонит (выходные круги 1–2 по №474)."""
     code = code_root(__file__)
     bundled = code.parent / "python" / "bin" / "python3"
-    if code.parent.name == "Resources" and bundled.is_file():
-        return str(bundled)
-    return sys.executable if foreign_python.is_portable() else ""
+    return str(bundled) if code.parent.name == "Resources" and bundled.is_file() else ""
 
 
 def install_command() -> str:

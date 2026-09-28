@@ -49,6 +49,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import wave
 from collections.abc import Callable
 
@@ -66,6 +67,11 @@ CODE = code_root(__file__)
 #: Куда пойдёт сеть — печатается до соединения, как у get_models.
 NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами",
            "Hugging Face (huggingface.co) — веса с проверкой sha256")
+
+#: Отпечаток python-build-standalone: сборка идёт с префиксом /install, и он
+#: остаётся в данных sysconfig. У Homebrew, системного Python и venv поверх них —
+#: путь установки: копию такого интерпретатора не унести в другой каталог.
+STANDALONE_PREFIX = "/install"
 
 PROBE_TIMEOUT_S = 180.0
 
@@ -131,10 +137,11 @@ def check_machine(lock: pathlib.Path) -> None:
     if have_py != want_py:
         raise Refused(f"Python {have_py}, а лок собран под {want_py} — запустите установщик "
                       f"интерпретатором приложения ({diarize_nemotron.APP_PYTHON})")
-    if not foreign_python.is_portable():
+    prefix = sysconfig.get_config_var("prefix")
+    if prefix != STANDALONE_PREFIX:
         raise Refused(f"интерпретатор {sys.executable} собран не как python-build-standalone "
-                      f"(prefix {sysconfig.get_config_var('prefix')}) — его копия не переносится. "
-                      f"Запустите установщик интерпретатором приложения ({diarize_nemotron.APP_PYTHON})")
+                      f"(prefix {prefix}) — его копия не переносится. Запустите установщик "
+                      f"интерпретатором приложения ({diarize_nemotron.APP_PYTHON})")
 
 
 def copy_ignore(site_packages: pathlib.Path) -> Callable[[str, list[str]], set[str]]:
@@ -248,8 +255,9 @@ def install(name: str, root: pathlib.Path) -> int:
             print(f"веса в {spec.weights(root)}…")
             spec.fetch_weights(spec.weights(root))
             print("проба: секунда тишины через дверь пересборки…")
-            out = spec.diarize(str(python), silence(staging / "probe.wav"), root=root, timeout=PROBE_TIMEOUT_S)
-            (staging / "probe.wav").unlink(missing_ok=True)
+            with tempfile.TemporaryDirectory() as tmp:   # запись пробы — не часть окружения
+                out = spec.diarize(str(python), silence(pathlib.Path(tmp) / "probe.wav"), root=root,
+                                   timeout=PROBE_TIMEOUT_S)
             if not out.ok:
                 raise Refused(f"проба не прошла ({out.kind}): {out.reason}")
             swap_in(staging, home)

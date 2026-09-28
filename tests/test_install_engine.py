@@ -6,9 +6,11 @@ Mac с сетью (сверка в PR). Здесь держится то, что
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import pathlib
 import sys
+import wave
 
 import pytest
 
@@ -66,8 +68,9 @@ def test_a_fitting_machine_passes(machine, tmp_path, mac):
 
 @pytest.mark.parametrize("patch,why", [
     (lambda m: m.setattr(ie.platform, "machine", lambda: "x86_64"), "Apple Silicon"),
-    (lambda m: m.setattr(ie.platform, "mac_ver", lambda: ("13.6", ("", "", ""), "arm64")), "14.0"),
-    (lambda m: m.setattr(ie.platform, "mac_ver", lambda: ("", ("", "", ""), "")), "14.0"),
+    (lambda m: m.setattr(ie.platform, "mac_ver", lambda: ("13.6", ("", "", ""), "arm64")),
+     "macOS 13.6, а колёса mlx собраны начиная с 14.0"),
+    (lambda m: m.setattr(ie.platform, "mac_ver", lambda: ("", ("", "", ""), "")), r"macOS \?, а колёса"),
     (lambda m: m.setattr(ie.sys, "version_info", (3, 13, 1, "final", 0)), "3.13"),
     (lambda m: m.setattr(ie.sysconfig, "get_config_var", lambda n: "/opt/homebrew/opt/python@3.12"),
      "python-build-standalone"),
@@ -242,3 +245,107 @@ def test_main_answers_help_before_any_work(capsys):
     with pytest.raises(SystemExit) as e:
         ie.main(["--help"])
     assert e.value.code == 0 and "--check" in capsys.readouterr().out
+
+
+def test_the_engine_table_cannot_be_changed_in_place():
+    """Таблица движков — общая на процесс: правка поля в одном вызове меняла бы лок или
+    раскладку всем следующим."""
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ie.ENGINES["nemotron"].lock = pathlib.Path("/чужой.lock")
+
+
+def _fake_python(tmp_path: pathlib.Path, code: int) -> pathlib.Path:
+    """«Интерпретатор», который пишет свои аргументы в args.txt и выходит с кодом `code`."""
+    exe = tmp_path / "python3"
+    exe.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{tmp_path}/args.txt"\nexit {code}\n', encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_pip_installs_exactly_the_lock_with_hashes(tmp_path):
+    lock = tmp_path / "x.lock"
+    assert ie.pip_install(_fake_python(tmp_path, 0), lock) is None
+    args = (tmp_path / "args.txt").read_text(encoding="utf-8").split()
+    assert args[:4] == ["-I", "-m", "pip", "install"] and args[-2:] == ["-r", str(lock)]
+    assert {"--require-hashes", "--no-deps"} <= set(args)
+
+
+def test_a_failed_pip_is_refused_with_its_code(tmp_path):
+    with pytest.raises(ie.Refused, match="код 3"):
+        ie.pip_install(_fake_python(tmp_path, 3), tmp_path / "x.lock")
+
+
+@pytest.mark.parametrize("seconds,duration", [(None, 1.0), (0.5, 0.5)])
+def test_the_probe_is_silence_of_the_asked_length(tmp_path, seconds, duration):
+    """Проба — тишина формата пересборки: моно, 16 бит, частота движка; по умолчанию секунда."""
+    path = ie.silence(tmp_path / "p.wav") if seconds is None else ie.silence(tmp_path / "p.wav", seconds)
+    with wave.open(str(path), "rb") as w:
+        assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (1, 2, nem.SAMPLE_RATE)
+        assert w.getnframes() == round(nem.SAMPLE_RATE * duration)
+
+
+def _stubborn_rmtree(monkeypatch):
+    """rmtree, который не может удалить: без ignore_errors — ошибка, с ним — тихо."""
+    def rmtree(path, ignore_errors=False, **kw):
+        if not ignore_errors:
+            raise OSError(f"занят: {path}")
+    monkeypatch.setattr(ie.shutil, "rmtree", rmtree)
+
+
+def test_an_old_env_that_cannot_be_removed_does_not_undo_the_swap(tmp_path, monkeypatch):
+    """Уборка прежнего окружения — после замены: её сбой не повод объявлять установку упавшей."""
+    home = tmp_path / "engines" / "nemotron"
+    home.mkdir(parents=True)
+    new = tmp_path / "engines" / ".nemotron.new-1"
+    (new / "new").mkdir(parents=True)
+    _stubborn_rmtree(monkeypatch)
+    ie.swap_in(new, home)
+    assert [p.name for p in home.iterdir()] == ["new"]
+
+
+def test_a_leftover_that_cannot_be_removed_does_not_stop_the_install(tmp_path, monkeypatch):
+    home = nem.engine_dir(tmp_path)
+    home.mkdir(parents=True)
+    (home.parent / ".nemotron.new-99").mkdir()
+    (home.parent / ".nemotron.old-98").mkdir()
+    _stubborn_rmtree(monkeypatch)
+    ie.sweep(home)
+    assert home.is_dir()
+
+
+def test_install_creates_a_data_root_that_is_not_there_yet(tmp_path, monkeypatch):
+    root = tmp_path / "новый корень"
+    _mocked_steps(tmp_path, monkeypatch, [])
+    assert ie.install("nemotron", root) == 0 and nem.engine_python(root).is_file()
+
+
+def test_check_says_when_the_env_is_there_but_the_engine_cannot_work(tmp_path, monkeypatch, capsys):
+    events = []
+    _, spec = _spec(tmp_path, events)
+    spec = ie.EngineSpec(**{**spec.__dict__, "probe": lambda setting, *, root:
+                            fp.Outcome(fp.UNAVAILABLE, reason="нет каталога весов")})
+    monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
+    nem.engine_python(tmp_path).parent.mkdir(parents=True)
+    nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    assert ie.check("nemotron", tmp_path) == 1
+    assert "движку нечем работать (unavailable): нет каталога весов" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv,called", [(["nemotron"], "install"), (["nemotron", "--check"], "check")])
+def test_main_returns_the_code_of_the_step_it_ran(tmp_path, monkeypatch, argv, called):
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "resolve_root", lambda _file: tmp_path)
+    monkeypatch.setattr(ie, "install", lambda name, root: 7 if (name, root) == ("nemotron", tmp_path) else 0)
+    monkeypatch.setattr(ie, "check", lambda name, root: 5 if (name, root) == ("nemotron", tmp_path) else 0)
+    assert ie.main(argv) == {"install": 7, "check": 5}[called]
+
+
+def test_main_turns_a_refusal_into_code_one_and_a_reason(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "resolve_root", lambda _file: tmp_path)
+
+    def refuse(name, root):
+        raise ie.Refused("машина не та")
+    monkeypatch.setattr(ie, "install", refuse)
+    assert ie.main(["nemotron"]) == 1
+    assert "не поставлено: машина не та" in capsys.readouterr().err

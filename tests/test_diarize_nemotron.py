@@ -784,23 +784,32 @@ def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#", encoding="utf-8")
     monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
-    monkeypatch.setattr(nem.foreign_python, "is_portable", lambda: False)
     assert shlex.split(nem.install_command()) == [
         str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"), "nemotron"]
     assert nem.INSTALLER in nem.INSTALL_RECIPE and nem.INSTALLER in nem.fetch_recipe(pathlib.Path("/м"))
 
 
-@pytest.mark.parametrize("portable", [True, False])
-def test_outside_the_bundle_only_a_portable_interpreter_is_named(monkeypatch, portable):
-    """Вне бандла свой интерпретатор годится, только если он переносимый: `sys.executable`
-    доктора из venv разработчика установщик отклонил бы. Иначе — путь приложения и просьба
-    подставить свой Charoite.app, а не угаданная команда."""
-    monkeypatch.setattr(nem.foreign_python, "is_portable", lambda: portable)
+def test_a_bundle_without_its_python_is_not_named(tmp_path, monkeypatch):
+    """Код лежит как в бандле, а Python рядом нет: несуществующий путь не называем."""
+    resources = tmp_path / "Charoite.app" / "Contents" / "Resources"
+    monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
+    assert nem.app_python() == ""
+    assert nem.install_command().startswith(nem.APP_PYTHON + " ")
+
+
+def test_outside_the_bundle_the_command_asks_for_the_app_path():
+    """Вне бандла (код из клона) Python приложения не узнать: `sys.executable` печатающего —
+    доктор из venv разработчика, чужой переносимый Python другой версии — установщик отклонил
+    бы. Команда называет путь внутри приложения и просит подставить свой Charoite.app."""
     script = str(REPO / "scripts" / "install_engine.py")
-    if portable:
-        assert shlex.split(nem.install_command()) == [sys.executable, script, "nemotron"]
-    else:
-        assert nem.install_command() == f"{nem.APP_PYTHON} {shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)"
+    assert nem.app_python() == ""
+    assert nem.install_command() == f"{nem.APP_PYTHON} {shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)"
+
+
+def test_the_probe_has_a_working_default_timeout(tmp_path, monkeypatch):
+    """Доктор и `--check` зовут пробу без своего потолка: умолчание обязано дать движку ответить."""
+    monkeypatch.setattr(nem, "SCRIPT", _engine_stub(tmp_path, 'print(\'{"mlx_audio": "0.5.6"}\')\n'))
+    assert nem.probe_in_env(sys.executable, root=tmp_path) == fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"})
 
 
 def test_the_probe_passes_the_model_and_returns_the_version(tmp_path, monkeypatch):

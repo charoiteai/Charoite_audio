@@ -146,12 +146,12 @@ def test_nemotron_weights_come_from_a_pinned_revision_with_sums(monkeypatch, tmp
     — подвижная цель, сумма поймала бы законное обновление как подмену."""
     calls = []
     monkeypatch.setattr(get_models, "download",
-                        lambda url, dest, size, onnx=True, sha256="": calls.append((url, dest, onnx, sha256)))
+                        lambda url, dest, size, onnx=True, sha256="": calls.append((url, dest, size, onnx, sha256)))
     get_models.fetch_nemotron(tmp_path)
     base = f"https://huggingface.co/mlx-community/Nemotron-3-Diarization/resolve/{get_models.NEMOTRON_REVISION}"
-    assert calls == [
-        (f"{base}/config.json", tmp_path / "config.json", False, get_models.NEMOTRON_CONFIG_SHA256),
-        (f"{base}/model.safetensors", tmp_path / "model.safetensors", False, get_models.NEMOTRON.sha256)]
+    assert calls == [  # размер — строка «качаю N МБ» перед загрузкой
+        (f"{base}/config.json", tmp_path / "config.json", 1, False, get_models.NEMOTRON_CONFIG_SHA256),
+        (f"{base}/model.safetensors", tmp_path / "model.safetensors", 190, False, get_models.NEMOTRON.sha256)]
     assert len(get_models.NEMOTRON_REVISION) == 40 and "/main/" not in base
 
 
