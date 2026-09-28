@@ -6,6 +6,16 @@
 .venv/bin/python -m pytest tests/ -x -q
 ```
 
+С установленным pytest-xdist (его версия закреплена в `ci.yml` как
+`PYTEST_XDIST_VERSION`) полный набор идёт в несколько процессов, как в CI:
+
+```bash
+.venv/bin/python -m pytest tests/ -q -n 4 --dist loadgroup
+```
+
+`--dist loadgroup` держит тесты колеса пакета графа (группа `wheel`) в одном
+воркере, и колесо собирается один раз.
+
 Потолок на тест (`timeout = 120` в `pyproject.toml`) работает только
 с плагином, а `pip install .` его не тянет: без
 `pip install pytest-timeout` pytest лишь предупредит о неизвестной

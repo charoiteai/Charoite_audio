@@ -206,6 +206,35 @@ def test_зависший_прогон_считается_убитым(tmp_path,
     assert mc.run_tests(tmp_path, ["tests"], timeout=1) is False
 
 
+def test_прогон_мутанта_без_xdist(tmp_path, monkeypatch):
+    """Прогон мутанта — один процесс: плагин xdist выключен в argv, и `-n` из
+    конфига или `PYTEST_ADDOPTS` его не распараллелит (№453)."""
+    import subprocess
+
+    seen: list = []
+
+    def run(cmd, **kw):
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert mc.run_tests(tmp_path, ["tests"], timeout=3) is True
+    argv = seen[0]
+    assert any(argv[i:i + 2] == ["-p", "no:xdist"] for i in range(len(argv))), argv
+
+
+def test_глобальный_n_роняет_прогон_мутанта_громко(tmp_path, monkeypatch):
+    """Живой прогон: при `-n 2` в `PYTEST_ADDOPTS` и установленном xdist набор,
+    зелёный сам по себе, красный — разбор аргументов отказывает, а не идёт в
+    воркерах молча. Без xdist опыт ничего не различает — пропуск."""
+    pytest.importorskip("xdist")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    assert mc.run_tests(tmp_path, ["tests"], timeout=30) is True
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-n 2")
+    assert mc.run_tests(tmp_path, ["tests"], timeout=30) is False
+
+
 def test_потолок_прогона_набора_выше_потолка_теста_в_худший_раз(tmp_path, monkeypatch):
     """Жёсткий потолок прогона набора — `WORST_RUN_FACTOR` × `--timeout`: потолок
     pytest действует на один тест, а тестов в наборе много. Ниже него живой, но

@@ -535,3 +535,71 @@ def test_mutation_range_starts_at_the_current_base_branch():
     assert step.get("env", {}).get("BASE_REF") == "${{ github.base_ref }}", step.get("env")
     assert '--range "origin/$BASE_REF...HEAD"' in step["run"], step["run"]
     assert "base.sha" not in str(job)
+
+
+#: Кто гоняет весь набор `tests/` в workflow и сколькими процессами (№453). Реестр
+#: сверяется с тем, что написано в `run:`, в обе стороны: новый job с полным
+#: прогоном без записи здесь краснеет, а не остаётся тихо последовательным.
+#: Числа — по ядрам раннера (ubuntu-latest — 4 vCPU, macos-15 — 3), приёмка —
+#: первые прогоны; вне сторожа по замыслу — preflight (bash) и полный набор внутри
+#: `run_tests` мутатора (там xdist снят `-p no:xdist`).
+FULL_SUITE_JOBS = {("ci.yml", "tests"): 4, ("nightly.yml", "pytest"): 3}
+#: Флаги параллельного режима xdist: вне реестра их нет ни в одном job.
+XDIST_FLAGS = ("-n", "--numprocesses", "--dist")
+
+
+def _pytest_calls(run: str) -> list[list[str]]:
+    """Аргументы каждого `-m pytest …` в тексте шага: строки продолжения склеены."""
+    calls = []
+    for line in run.replace("\\\n", " ").splitlines():
+        m = re.search(r"-m pytest\b(.*)$", line)
+        if m:
+            calls.append(m.group(1).split())
+    return calls
+
+
+def _full_suite(args: list[str]) -> bool:
+    """Полный набор: первый аргумент — каталог `tests`, и ни одного пути внутри него."""
+    return bool(args) and args[0].rstrip("/") == "tests" and not any(
+        a.startswith("tests/") and a.rstrip("/") != "tests" for a in args[1:])
+
+
+def _pair(args: list[str], flag: str, value: str) -> bool:
+    return any(a == flag and args[i + 1:i + 2] == [value] for i, a in enumerate(args))
+
+
+def _jobs() -> dict[tuple[str, str], tuple[list[list[str]], str]]:
+    out = {}
+    for path in sorted(WF.glob("*.yml")):
+        for name, job in (_load(path.name).get("jobs") or {}).items():
+            runs = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+            out[(path.name, name)] = ([c for c in _pytest_calls(runs)], runs)
+    return out
+
+
+def test_full_suite_runs_in_parallel_by_the_registry():
+    jobs = _jobs()
+    found = {key for key, (calls, _) in jobs.items() if any(_full_suite(c) for c in calls)}
+    assert found == set(FULL_SUITE_JOBS), (
+        f"полный набор гоняют {sorted(found)}, реестр FULL_SUITE_JOBS — {sorted(FULL_SUITE_JOBS)}")
+    for key, n in FULL_SUITE_JOBS.items():
+        calls, runs = jobs[key]
+        for call in (c for c in calls if _full_suite(c)):
+            assert _pair(call, "-n", str(n)) and _pair(call, "--dist", "loadgroup"), (key, call)
+        assert "pytest-xdist==${PYTEST_XDIST_VERSION}" in runs, f"{key}: xdist не ставится по пину"
+    for key, (calls, _) in jobs.items():
+        if key in FULL_SUITE_JOBS:
+            continue
+        for call in calls:
+            assert not [a for a in call if a.split("=", 1)[0] in XDIST_FLAGS], (key, call)
+
+
+def test_full_suite_helpers_read_the_run_lines():
+    """Разбор строки `run:` — на синтетике: сторож без этого проверял бы пустоту."""
+    assert _pytest_calls("python -m pytest tests/ -q -n 4 --dist loadgroup") == [
+        ["tests/", "-q", "-n", "4", "--dist", "loadgroup"]]
+    assert _pytest_calls("pip install . \\\n  && python -m pytest tests -q") == [["tests", "-q"]]
+    assert _full_suite(["tests/", "-q"]) and _full_suite(["tests"])
+    assert not _full_suite(["tests/test_a.py", "-q"]) and not _full_suite(["tests/", "tests/test_a.py"])
+    assert not _full_suite([]) and not _full_suite(["-q", "tests/"])
+    assert _pair(["-n", "4"], "-n", "4") and not _pair(["-n"], "-n", "4") and not _pair(["-n", "3"], "-n", "4")

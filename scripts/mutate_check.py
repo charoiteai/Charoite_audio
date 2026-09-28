@@ -656,8 +656,12 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     try:
         # Без `-x`: он останавливал прогон на первой ошибке, и упавший по
         # окружению тест выдавал бы «мутант убит» независимо от мутации.
+        # `-p no:xdist`: прогон мутанта — один процесс. Полные прогоны идут с
+        # `-n` (№453), и `-n` из `addopts` или `PYTEST_ADDOPTS` молча сделал бы
+        # параллельным каждый прогон мутанта; с выключенным плагином такой `-n` —
+        # громкий отказ разбора (код 4), база краснеет, мутатор останавливается.
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
-                            "-p", "no:cacheprovider", "--timeout", str(timeout)],
+                            "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
                            timeout=timeout * WORST_RUN_FACTOR)
     except subprocess.TimeoutExpired:

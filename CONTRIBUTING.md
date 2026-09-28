@@ -307,7 +307,10 @@ consent), ruff, the layout guard, privacy markers, the full pytest set,
 `swift build`/`swift test` when `app/` is touched, and the mutation check on
 the changed lines. It prints a machine verdict — `preflight: ok` or
 `FAIL: <steps>` — with the names of failed tests. `PREFLIGHT_SKIP=mutation,swift`
-skips steps on a re-run. It works inside a git worktree: the owner's data root
+skips steps on a re-run. The full pytest set runs in `PREFLIGHT_JOBS` processes
+(4 by default) when pytest-xdist is installed, the same mode as CI; without it
+the set runs sequentially and the step says so with the install command — a
+slower run, not a skipped one. It works inside a git worktree: the owner's data root
 comes from the main checkout, so the busy guard still sees a live meeting.
 
 Why this exists: five review findings in a row were claims about process
