@@ -36,6 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 from charoite_graph import dossier  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
@@ -326,7 +327,7 @@ def _mtime(p: pathlib.Path) -> float:
 
 
 def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
-    folder = graph / dossier.DOSSIER_DIR
+    folder = graph / CHAROITE.dossier_dir
     if not folder.is_dir():
         return 0
 
@@ -334,8 +335,8 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     # за разрешение, а этот ключ разрешает переписывать файлы графа.
     may_edit = privacy.cloud_edit_graph_enabled(cfg)
     model = cloud.model(cfg, "cloud_model")
-    files, backlinks = dossier.scan(graph)
-    cl = dossier.clusters(files, backlinks)
+    files, backlinks = dossier.scan(graph, schema=CHAROITE)
+    cl = dossier.clusters(files, backlinks, schema=CHAROITE)
 
     cutoff = dt.datetime.now() - dt.timedelta(days=FRESH_DAYS)
     # Берём только досье, у которых есть кластер-источник: написанные руками
@@ -509,7 +510,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         done += 1
         stats = revision_stats(old_body, fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
-                       f"`{dossier.DOSSIER_DIR}/.backup/{stamp}/`")
+                       f"`{CHAROITE.dossier_dir}/.backup/{stamp}/`")
         print(f"  ✓ {theme}: правки применены ({stats})")
 
     if (notes or applied or rejected or failed) and not dry:
@@ -555,7 +556,7 @@ def main() -> int:
     if args.all_graphs:
         # Все vault-ы, а не только iCloud: настроенный graph_dir вне iCloud
         # раньше не попадал в ночную ревизию досье (аудит 17.08).
-        graph_list = graphs.all_graphs(dossier.DOSSIER_DIR)
+        graph_list = graphs.all_graphs(CHAROITE.dossier_dir)
     else:
         # --graph: голое имя («Работа») — сначала папка рядом с настроенным
         # графом, потом путь от корня данных; путь с «/», «~» или «.» — как

@@ -1,17 +1,15 @@
-"""Схема хранилища графа: значение Чароита и его инварианты (№422, PR A).
+"""Схема хранилища графа: значение Чароита и его инварианты (№422, PR A и B).
 
 Схема (`charoite_graph.graph_schema.GraphSchema`) — значение, а не литералы по
 месту; `charoite_schema.CHAROITE` — единственное место значений владельца.
-Здесь два сторожа: снимок `CHAROITE` против живых констант кода (пока те живы —
-их переводит PR B) и инварианты, каждый отказ по отдельности. Снимок называет
-модуль каждого источника; ядер отдельной константы в коде нет, и это ожидание
-записано руками с адресом `файл:строка`.
+Здесь инварианты схемы, каждый отказ по отдельности, и два сторожа копий: пакет
+констант имён больше не держит (PR B №422 снял их вместе со снимком «значение
+против констант»), а копии имени архива на стороне Чароита (до №430) совпадают
+со схемой. Предикаты ролей — `tests/test_graph_schema_roles.py`.
 """
 from __future__ import annotations
 
-import ast
 import dataclasses
-import inspect
 import pathlib
 import sys
 import typing
@@ -30,58 +28,25 @@ from charoite_graph.graph_schema import GraphSchema  # noqa: E402
 CHAROITE = charoite_schema.CHAROITE
 
 
-def _person_folders() -> tuple[str, ...]:
-    """Папки-люди из `Node.person` (`self.folder in (…)`) — тем же AST."""
-    tree = ast.parse(inspect.getsource(graph_nodes))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "person":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Compare) and any(isinstance(op, ast.In) for op in sub.ops):
-                    tuple_ = sub.comparators[0]
-                    assert isinstance(tuple_, ast.Tuple), tuple_
-                    return tuple(e.value for e in tuple_.elts)
-    raise AssertionError("Node.person: кортеж папок-людей не найден")
+def test_the_package_keeps_no_copies_of_folder_names():
+    """Пакет своих копий имён не держит: константы сняты вместе с литералами
+    (PR B №422), правило ролей — предикаты схемы. Вернувшаяся константа была бы
+    второй правдой рядом со схемой, которую потребитель прочёл бы мимо неё."""
+    gone = {graph_nodes: ("NODE_FOLDERS", "HISTORY_HEADS"),
+            dossier: ("DOSSIER_DIR",),
+            graph_search: ("EXCLUDE_DIRS", "NODE_DIRS", "_SERVICE_PREFIXES", "_RAW_RX")}
+    assert {m.__name__: [n for n in names if hasattr(m, n)] for m, names in gone.items()} == \
+        {m.__name__: [] for m in gone}
 
 
-def _link_prefixes() -> tuple[str, ...]:
-    """Префиксы цели ссылки на встречу — кортеж в `startswith((…))` внутри
-    `graph_nodes._strip_links` (тот же литерал читает и сторож литералов)."""
-    tree = ast.parse(inspect.getsource(graph_nodes))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_strip_links":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
-                        and sub.func.attr == "startswith" and sub.args:
-                    tuple_ = sub.args[0]
-                    assert isinstance(tuple_, ast.Tuple), tuple_
-                    values = tuple(e.value for e in tuple_.elts)
-                    if "Встречи" in values:
-                        return values
-    raise AssertionError("_strip_links: кортеж префиксов встречи не найден")
-
-
-def test_charoite_snapshot_matches_the_live_constants():
-    """Снимок значения — против констант, пока те живы: у каждого источника
-    назван модуль. Снимок не переживёт переезд потребителей, и это правильно:
-    тогда источники исчезнут вместе с литералами (PR B)."""
-    assert CHAROITE.node_folders == graph_nodes.NODE_FOLDERS, "graph_nodes.NODE_FOLDERS"
-    assert CHAROITE.history_heads == graph_nodes.HISTORY_HEADS, "graph_nodes.HISTORY_HEADS"
-    assert CHAROITE.dossier_dir == dossier.DOSSIER_DIR, "dossier.DOSSIER_DIR"
-    assert CHAROITE.exclude_dirs == graph_search.EXCLUDE_DIRS, "graph_search.EXCLUDE_DIRS"
-    assert CHAROITE.service_prefixes == graph_search._SERVICE_PREFIXES, "graph_search._SERVICE_PREFIXES"
-    assert CHAROITE.people_folders == _person_folders(), "graph_nodes.Node.person"
-    assert CHAROITE.meeting_link_prefixes == _link_prefixes(), "graph_nodes._strip_links"
-    # сырьё — из `_RAW_RX.pattern`: делится по «|» ДО снятия якорей, кусок с «$» — суффикс
-    pieces = graph_search._RAW_RX.pattern.split("|")
-    assert CHAROITE.raw_markers == tuple(p for p in pieces if not p.endswith("$")), "graph_search._RAW_RX"
-    assert CHAROITE.raw_suffixes == tuple(p.replace("\\", "").rstrip("$")
-                                          for p in pieces if p.endswith("$")), "graph_search._RAW_RX"
-    # встречи — тот же литерал `_strip_links` плюс архив `meeting_archive.ARCHIVE_DIR`
-    assert set(CHAROITE.meeting_folders) == set(_link_prefixes()) | {meeting_archive.ARCHIVE_DIR}, \
-        "graph_nodes._strip_links + meeting_archive.ARCHIVE_DIR"
-    assert CHAROITE.meeting_dir in CHAROITE.meeting_folders, "meeting_archive._strip_links"
-    # ядер отдельной константой в коде нет — ожидание руками
-    assert CHAROITE.core_folders == ("Ядра", "Cores")  # graph_nodes.py:29 (в NODE_FOLDERS), рукой
+def test_charoite_copies_of_the_archive_name_are_in_the_schema():
+    """Имя архива встреч на стороне Чароита живёт копиями до №430 (`meeting_archive`,
+    `graph_links`): они обязаны быть папкой встреч схемы и исключением обхода
+    поиска — иначе архив, который пишет Чароит, поиск читал бы как свои документы."""
+    import graph_links
+    assert meeting_archive.ARCHIVE_DIR in CHAROITE.meeting_folders
+    assert meeting_archive.ARCHIVE_DIR in CHAROITE.exclude_dirs
+    assert set(graph_links.ARCHIVE_DIRS) <= set(CHAROITE.meeting_folders) & set(CHAROITE.exclude_dirs)
 
 
 def test_the_schema_is_frozen():

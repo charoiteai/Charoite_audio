@@ -27,6 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import charoite_paths  # noqa: E402
 from charoite_graph import dossier  # noqa: E402
+from charoite_schema import CHAROITE  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
@@ -70,7 +71,7 @@ def _index_entry_from_disk(theme: str, members: list[str], path: pathlib.Path,
     """Запись индекса для темы, которую этот прогон не пересобирал: досье
     на диске живо — в индексе оно должно остаться (отпечаток — фактический)."""
     return {
-        "тема": theme, "файл": f"{dossier.DOSSIER_DIR}/{theme}.md",
+        "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members),
         "собрано": _собрано(path) or today,
         "отпечаток": dossier.read_fingerprint(path) or fp,
@@ -124,12 +125,12 @@ def _graph_lock(graph: pathlib.Path):
 
 
 def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict:
-    folder = graph / dossier.DOSSIER_DIR
-    files, backlinks = dossier.scan(graph)
+    folder = graph / CHAROITE.dossier_dir
+    files, backlinks = dossier.scan(graph, schema=CHAROITE)
     if not files:
         return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0, "отказы": 0}
 
-    cl = dossier.clusters(files, backlinks)
+    cl = dossier.clusters(files, backlinks, schema=CHAROITE)
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
     entries, built, skipped = [], 0, 0
@@ -155,7 +156,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             unchanged += 1
             # индекс всё равно перечитываем — тема жива
             entries.append({
-                "тема": theme, "файл": f"{dossier.DOSSIER_DIR}/{theme}.md",
+                "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
                 "источников": len(members), "собрано": _собрано(path) or today,
                 "отпечаток": fp,
                 "ключи": dossier.keywords(theme + " " + " ".join(members)),
@@ -255,11 +256,11 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             safe_write.write_text(path, text)
         built += 1
         if copy is not None:
-            print(f"  копия прежнего досье: {dossier.DOSSIER_DIR}/.backup/{stamp}/")
+            print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{stamp}/")
         print(f"  ✓ {theme}: {len(members)} источников, {len(body)} зн., {time.time()-t0:.0f}с")
 
         entries.append({
-            "тема": theme, "файл": f"{dossier.DOSSIER_DIR}/{theme}.md",
+            "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
             "источников": len(members), "собрано": today, "отпечаток": fp,
             "ключи": dossier.keywords(theme + " " + " ".join(members) + " " + body),
         })
@@ -308,7 +309,7 @@ def main() -> int:
 
     if args.find:
         graph = pathlib.Path(args.graph).expanduser() if args.graph else default_graph(c)
-        hits = dossier.lookup(graph / dossier.DOSSIER_DIR, args.find)
+        hits = dossier.lookup(graph / CHAROITE.dossier_dir, args.find)
         if not hits:
             print("досье не найдено — поиск пойдёт по графу")
             return 0

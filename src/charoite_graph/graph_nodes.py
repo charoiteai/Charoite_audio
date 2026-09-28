@@ -1,11 +1,12 @@
 """Сверка разговора с узлами графа: кто/что упомянуто и что было раньше.
 
 Живая встреча должна сама находить старые договорённости (ревью 15.08):
-узлы графа — Люди/Команды/Системы/Модели/Блокеры/Ядра — это канонические
-точки входа в историю, и конвейер после каждой встречи дописывает в них
-секцию «## Встречи» (новые записи СВЕРХУ). Здесь — локальный лукап без
-brain-сервера и без LLM: стемы имён узлов против стемов текста, дайджест
-«что было раньше» прямо из файла узла.
+узлы графа — файлы папок узлов схемы хранилища — это канонические точки входа
+в историю, и конвейер после каждой встречи дописывает в них секцию истории
+(новые записи СВЕРХУ). Здесь — локальный лукап без brain-сервера и без LLM:
+стемы имён узлов против стемов текста, дайджест «что было раньше» прямо из
+файла узла. Какие папки — узлы, где люди, какие заголовки — история и какие
+ссылки ведут на встречи, говорит схема (`graph_schema`), а не литералы модуля.
 
 Модуль без демона и сети: индекс и правила тестируются на tmp-графе.
 Стеммер — порт таблицы из ArchiveSearch.swift; эквивалентность двух
@@ -24,16 +25,8 @@ import threading
 from charoite_graph import frontmatter
 from charoite_graph import graph_names
 from charoite_graph import redirects
-
-# Папки узлов: русские — боевой конвейер, английские — демо-граф продукта.
-NODE_FOLDERS = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра",
-                "People", "Teams", "Systems", "Models", "Blockers", "Cores")
-
-# Секции истории узла: «## Встречи» пишет конвейер (новые сверху),
-# «## Хроника» ведут ядра и, с №194, конвейер у людей/систем (вытеснения
-# описаний; хвост старше CHRONICLE_KEEP уезжает в «## Архив хроники», который
-# историей не считается — это цель, не пробел); английские — демо-граф.
-HISTORY_HEADS = ("## Встречи", "## Хроника", "## Meetings", "## History")
+from charoite_graph import text_norm
+from charoite_graph.graph_schema import GraphSchema
 
 # Русские окончания, от длинных к коротким — как в ArchiveSearch.swift.
 _RU_SUFFIXES = (
@@ -48,16 +41,10 @@ _RU_SUFFIXES = (
 _EN_SUFFIXES = ("ing", "ed", "es", "s")
 
 
-def norm(s: str) -> str:
-    """Регистр и ё→е, поверх единой формы Unicode.
-
-    NFC первой строкой: macOS отдаёт имя файла в разложенной форме, где «ё» —
-    это «е» плюс отдельные точки. Без сборки `_WORD` режет такое имя на «е» и
-    «лка» ещё до стемминга, и узел перестаёт узнавать сам себя (GLM, круг 2
-    по №291; та же ловушка, что `graph_links.norm` закрыл по #450)."""
-    if not s.isascii() and not unicodedata.is_normalized("NFC", s):
-        s = unicodedata.normalize("NFC", s)
-    return s.lower().replace("ё", "е")
+#: Регистр и ё→е поверх единой формы Unicode — тот же объект, что
+#: `text_norm.norm` (одно место нормализаций пакета); имя модуля остаётся для
+#: стеммера и его читателей.
+norm = text_norm.norm
 
 
 def stem(word: str) -> str:
@@ -99,17 +86,24 @@ def _has_digit(s: str) -> bool:
 @dataclasses.dataclass
 class Node:
     path: pathlib.Path
-    folder: str            # имя папки узла («Люди», «Системы», …)
+    folder: str            # имя папки узла, как его подаёт обход (роль — у схемы)
     name: str              # имя файла без .md
     name_stems: tuple[str, ...] = ()      # стемы имени
     alias_stems: tuple[tuple[str, ...], ...] = ()  # стемы каждого alias
     mtime: float = 0.0
     size: int = -1
     digest_lines: tuple[str, ...] = ()
+    _: dataclasses.KW_ONLY
+    #: Схема хранилища — только на время конструирования: из неё выводится
+    #: `person`, а сам узел её не хранит.
+    schema: dataclasses.InitVar[GraphSchema]
+    #: Человек ли это — ВЫВОДИТСЯ из папки по схеме, а не передаётся: переданный
+    #: флаг позволил бы оснастке подсунуть роль мимо правила (тот же класс, что
+    #: закрыл `Doc.role` по №296).
+    person: bool = dataclasses.field(init=False)
 
-    @property
-    def person(self) -> bool:
-        return self.folder in ("Люди", "People")
+    def __post_init__(self, schema: GraphSchema) -> None:
+        self.person = schema.is_person_folder(self.folder)
 
 
 _LINK = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
@@ -125,16 +119,16 @@ def _human_date(raw: str, this_year: str) -> str:
     return f"{d}.{mo}" if y == this_year else f"{d}.{mo}.{y[2:]}"
 
 
-def _strip_links(body: str) -> str:
-    """Вики-ссылки → читаемый текст: ссылка на встречу исчезает (дата уже
-    вынута), содержательная ссылка оставляет своё имя — «ответственный
-    [[Люди/Иван|Иван]]» не должен превращаться в «ответственный» (ревью
-    15.08 ×3)."""
+def _strip_links(body: str, schema: GraphSchema) -> str:
+    """Вики-ссылки → читаемый текст: ссылка на встречу (правило схемы — дата в
+    цели или префикс папки встреч) исчезает, дата уже вынута; содержательная
+    ссылка оставляет своё имя — «ответственный [[Люди/Иван|Иван]]» не должен
+    превращаться в «ответственный» (ревью 15.08 ×3)."""
     def repl(m: re.Match) -> str:
         target = m.group(1).strip()
         alias = (m.group(0).split("|", 1)[1].rstrip("]") if "|" in m.group(0)
                  else "")
-        if _STAMP.search(target) or target.startswith(("Встречи", "Meetings")):
+        if schema.is_meeting_link(target):
             return ""
         return alias or target.rsplit("/", 1)[-1]
     return _LINK.sub(repl, body)
@@ -150,7 +144,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     return "", text
 
 
-def _digest(text: str, this_year: str, limit: int = 3) -> list[str]:
+def _digest(text: str, this_year: str, limit: int = 3, *, schema: GraphSchema) -> list[str]:
     """«Что было раньше» из файла узла: статус + НАЧАЛО секции истории.
 
     Конвейер вставляет новую запись сразу после заголовка секции — порядок
@@ -175,12 +169,12 @@ def _digest(text: str, this_year: str, limit: int = 3) -> list[str]:
                     break
                 nxt = lines[j].strip(" -*")
             if nxt:
-                out.append(_strip_links(nxt)[:120])
+                out.append(_strip_links(nxt, schema)[:120])
             break
     in_history = False
     for line in lines:
         s = line.strip()
-        if any(s.startswith(h) for h in HISTORY_HEADS):
+        if schema.is_history_head(s):
             in_history = True
             continue
         if in_history:
@@ -190,7 +184,7 @@ def _digest(text: str, this_year: str, limit: int = 3) -> list[str]:
                 continue
             body = s.lstrip("- ").strip()
             date = _human_date(body, this_year)
-            body = _strip_links(body).strip(" —–-·")
+            body = _strip_links(body, schema).strip(" —–-·")
             if not body:      # голая ссылка без вклада — человеку нечего читать
                 continue
             out.append((f"{date}: " if date else "") + body[:120])
@@ -200,7 +194,7 @@ def _digest(text: str, this_year: str, limit: int = 3) -> list[str]:
         for line in lines:
             s = line.strip()
             if s and not s.startswith(("#", "-", ">", "|")):
-                out.append(_strip_links(s)[:120])
+                out.append(_strip_links(s, schema)[:120])
                 break
     return out[:limit + 1]
 
@@ -215,9 +209,13 @@ class NodeIndex:
     снапшот.
     """
 
-    def __init__(self, graph_dir: pathlib.Path, this_year: str = "2026"):
+    def __init__(self, graph_dir: pathlib.Path, this_year: str = "2026", *,
+                 schema: GraphSchema):
         self.graph = pathlib.Path(graph_dir)
         self.this_year = this_year
+        # Схема обязательна и без умолчания: индекс узлов строит только Чароит, и
+        # забытая схема — `TypeError` здесь, а не молча пустой индекс на встрече.
+        self.schema = schema
         self._nodes: dict[pathlib.Path, Node] = {}
         # refresh зовут три потока демона (⚡, живой контекст, ручной ⏮):
         # без лока один меняет словарь, пока другой его итерирует (ревью
@@ -228,13 +226,15 @@ class NodeIndex:
     def refresh(self) -> None:
         with self._refresh_lock:
             fresh: dict[pathlib.Path, Node] = {}
-            for folder in NODE_FOLDERS:
+            for folder in self.schema.node_folders:
                 d = self.graph / folder
                 if not d.is_dir():
                     continue
                 for p in sorted(d.glob("*.md")):
-                    if p.name.startswith(("_", ".")):
-                        continue   # _ЯДРА.md и служебные агрегаты — не узлы
+                    # точка — своё правило обхода; служебное (_ЯДРА.md, агрегаты,
+                    # «Служебное_*») — по схеме, как у поиска и досье
+                    if p.name.startswith(".") or self.schema.is_service_name(p.name):
+                        continue
                     try:
                         st = p.stat()
                     except OSError:
@@ -261,7 +261,7 @@ class NodeIndex:
             return self._nodes.get(p)   # файл переписывается прямо сейчас
         if redirects.is_merged(text):
             return None                 # заглушка после слияния — не узел (хвост 20.08, GLM)
-        if folder == "Люди" and graph_names.is_placeholder_node(p.stem):
+        if self.schema.is_person_folder(folder) and graph_names.is_placeholder_node(p.stem):
             return None                 # «Собеседник 3» — склейка разных людей, не подсказка (GLM I6, 07.09)
         name = p.stem
         # один разбор шапки на конвейер и поиск (frontmatter.py, #451)
@@ -270,7 +270,8 @@ class NodeIndex:
                     name_stems=tuple(stem(t) for t in tokens(name)),
                     alias_stems=tuple(aliases),
                     mtime=st2.st_mtime, size=st2.st_size,
-                    digest_lines=tuple(_digest(text, self.this_year)))
+                    digest_lines=tuple(_digest(text, self.this_year, schema=self.schema)),
+                    schema=self.schema)
 
     # --- лукап -----------------------------------------------------------
 
