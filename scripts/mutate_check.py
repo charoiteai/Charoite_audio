@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import dataclasses
 import json
 import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -777,6 +779,64 @@ def _shard_arg(value: str) -> tuple[int, int]:
     return (k, n)
 
 
+#: Потолок `--jobs`. Замер №444 B (27.09, машина владельца): четыре доли разом на
+#: одном `.git` — 59 с против 193 с последовательно (3,3×), выживших 0 = 0; четыре
+#: полных pytest разом — 266–274 с против 253 с у одного. Потолок прогона мутанта —
+#: WORST_RUN_FACTOR × `--timeout` (480 с при умолчании), и нагрузка четырёх долей до
+#: него не доводит. Больше четырёх не мерено.
+JOBS_MAX = 4
+
+
+def _jobs_arg(value: str) -> int:
+    """`--jobs N` — сколько долей плана гнать параллельно; 1 ≤ N ≤ JOBS_MAX."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: целое число от 1 до {JOBS_MAX}")
+    if not 1 <= n <= JOBS_MAX:
+        raise argparse.ArgumentTypeError(f"{value!r}: нужно 1 ≤ N ≤ {JOBS_MAX}")
+    return n
+
+
+#: Флаги, которые родитель `--jobs` пересылает долям (`child_argv`), и флаги только
+#: родителя — доли им он чеканит сам. Каждый флаг парсера стоит ровно в одном списке,
+#: тест держит это: новый флаг без решения «пересылать ли» краснеет, а не теряется
+#: у долей молча.
+CHILD_FORWARDED = ("range", "timeout", "budget_s", "force", "max")
+PARENT_ONLY = ("jobs", "shard", "report", "merge_shards")
+
+
+def check_pair(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Сочетания флагов, которых разбор по одному не видит, — отказ кодом 2, как у
+    ошибки аргумента, и до любого раннего возврата (`--merge-shards`).
+
+    `--jobs N > 1` режет план на доли сам: с `--shard` вышла бы доля доли, а её
+    грамматика `K/N` не выражает (круг 4 по №444 B); со слиянием сводить нечего; с
+    конечным `--max` потолок лёг бы на каждую долю после деления, и доли судили бы
+    не тот набор, что последовательный прогон с тем же `--max` (круг 8, C1)."""
+    if args.jobs == 1:
+        return
+    if args.shard is not None:
+        ap.error("--jobs N > 1 делит план на доли сам — --shard с ним не сочетается")
+    if args.merge_shards is not None:
+        ap.error("--jobs N > 1 гоняет доли, а --merge-shards сводит готовые — выбери одно")
+    if args.max is not None:
+        ap.error("--jobs N > 1 судит весь план — добавь --max all "
+                 "(потолок и деление на доли не коммутируют)")
+
+
+#: Отказ замка — нейтральный: другой мутатор больше не помеха (замок разделяемый);
+#: не взят он, только если ретраи против чужой пробы кончились или ФС без flock.
+LOCK_REFUSED = ("замок мутатора не взят (ретраи против чужой пробы кончились или ФС без flock) — "
+                "повтори запуск")
+#: Доля родителем не бывает. Долю узнаём по `--shard`: его ставит ей `child_argv`, а
+#: родителю `--shard` запрещён (`check_pair`), — отдельной метки не нужно, а метка в
+#: окружении ушла бы в pytest каждого прогона доли. Без этой проверки мутант входа
+#: (`jobs > 1` → `>= 1`) делал каждую долю родителем: цепочка мутаторов в новых
+#: сессиях росла мимо убийства прогона, и доля CI умирала (PR #667: код 143, 60 сирот).
+SHARE_REFUSED = "доля (--shard) не запускает долей — родителем бывает только прогон без --shard"
+
+
 #: Суффикс машинной строки шарда рядом с отчётом: `<report>` + он. Одно имя на троих —
 #: писателя (`write_artifacts`), судью (`_shard_rows`) и шаг выгрузки артефакта в CI;
 #: сторож workflow собирает глоб артефакта из этой константы (выходной круг 1 по №441,
@@ -829,6 +889,22 @@ def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int,
         except (OSError, ValueError, KeyError, TypeError):
             bad.append(str(path))
     return rows, (f"нечитаемый файл шарда: {', '.join(bad)}" if bad else "")
+
+
+def _unclean_line(rows: list[tuple[int, int, int, int, str]]) -> str:
+    """Первая строка красного вердикта: каждый нечистый шард — номером и словом.
+    `fail` — своей фразой: это выжившие, красная база или сбой подготовки, а не
+    «проверено не всё»; `partial` и `unjudged` — неполный исход."""
+    failed = [r for r in rows if r[4] == "fail"]
+    rest = [r for r in rows if r[4] != "fail"]
+    parts = []
+    if failed:
+        parts.append("шарды нашли выживших, красную базу или сбой подготовки: "
+                     + ", ".join(f"шард {r[0]}: {r[4]}" for r in failed))
+    if rest:
+        parts.append("шарды дали неполный исход: "
+                     + ", ".join(f"шард {r[0]}: {r[4]}" for r in rest))
+    return "; ".join(parts)
 
 
 def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) -> int:
@@ -893,8 +969,7 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
                                 "слепое пятно мутатора, см. отчёты шардов")
                 code = 0
             else:
-                lines.insert(0, "шарды дали неполный исход: "
-                                + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+                lines.insert(0, _unclean_line(clean))
                 code = 1
         elif not clean:
             # Обещание строки — ровно то, что проверено: все P мутантов плана
@@ -903,8 +978,7 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
             lines.insert(0, f"мутация: шарды чисты — судились все {p} мутантов плана, выживших нет")
             code = 0
         else:
-            lines.insert(0, "шарды дали неполный исход: "
-                            + ", ".join(f"шард {r[0]}: {r[4]}" for r in clean))
+            lines.insert(0, _unclean_line(clean))
             code = 1
     text = "\n".join(lines)
     print(text)
@@ -914,9 +988,126 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
     return code
 
 
-def main(argv: list[str]) -> int:
-    # Бюджет считается от старта процесса: подготовка дерева и база входят в него
-    started = clock()
+#: Сколько ждать доли после SIGINT родителя, прежде чем добить их группы SIGKILL:
+#: доле нужно время на свой `finally` — отпустить замок и убрать копию.
+CHILD_STOP_GRACE_S = 30
+
+
+class _Stopped(Exception):
+    """Родитель `--jobs` получил SIGINT или SIGTERM."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _raise_stopped(signum, frame):
+    """Обработчик остановки: ПЕРВЫМ делом глушит оба сигнала, потом поднимает
+    `_Stopped`. Глушить в `except` вызывающего поздно: второй Ctrl-C или повторный
+    SIGTERM в зазоре до этих строк поднимал второй `_Stopped` изнутри `except`, и
+    доли оставались без остановки (выходной круг 1 по №444 B, I1). Вложенный вызов
+    обработчика в его же первых строках даёт тот же один `_Stopped`."""
+    for s in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(s, signal.SIG_IGN)
+    raise _Stopped(signum)
+
+
+def child_argv(args: argparse.Namespace, k: int, n: int, logs: pathlib.Path,
+               rng: str) -> list[str]:
+    """Команда доли `k` из `n` — обычный мутатор этого же скрипта. Диапазон — SHA,
+    разрешённые родителем один раз: доли судят один коммит, сдвиг HEAD их не
+    разводит. Отчёт и машинная строка доли — в каталоге журналов родителя. Путь
+    скрипта — от корня кода канона: доля обязана быть этим же деревом кода."""
+    import charoite_paths  # noqa: E402
+    script = charoite_paths.code_root(__file__) / "scripts" / "mutate_check.py"
+    argv = [sys.executable, str(script), "--range", rng, "--timeout", str(args.timeout)]
+    if args.budget_s is not None:
+        argv += ["--budget-s", str(args.budget_s)]
+    if args.force:
+        argv.append("--force")
+    return argv + ["--max", "all", "--shard", f"{k}/{n}", "--report", str(logs / f"{k}.txt")]
+
+
+def stop_children(procs: list[subprocess.Popen], grace: float = CHILD_STOP_GRACE_S) -> None:
+    """Остановить доли: каждой группе SIGINT — у доли это KeyboardInterrupt и её
+    `finally` (замок, копия), — ждать всех до `grace` секунд, оставшимся — SIGKILL
+    всей группе: pytest внутри доли живёт в той же группе."""
+    for p in procs:
+        if p.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(p.pid, signal.SIGINT)
+    deadline = time.monotonic() + grace
+    for p in procs:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            p.wait(timeout=max(0.0, deadline - time.monotonic()))
+    for p in procs:
+        if p.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+
+
+def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int:
+    """Родитель `--jobs N`: N обычных мутаторов-долей `--shard k/N --max all`
+    параллельно; исход — только `merge_shards` по их машинным строкам, код —
+    политика CI 0/1 (канон слов долей — №455).
+
+    Родитель держит свой разделяемый замок мутатора всю жизнь: ночь и сторож видят
+    «мутация идёт» и в зазоре между стартами долей. Доли — обычные мутаторы: свой
+    гвард старта, свой замок, своя копия, свой бюджет и потолки прогонов; у
+    родителя своего потолка нет. Каталог журналов не удаляется: в отчётах долей —
+    выжившие, их текст родитель не разбирает.
+    """
+    if args.shard is not None:
+        print(SHARE_REFUSED)
+        return 2
+    import busy_signals  # noqa: E402
+    lock = busy_signals.MutationLock(data_root)
+    if not lock.acquire():
+        print(LOCK_REFUSED)
+        return 3
+    procs: list[subprocess.Popen] = []
+    try:
+        logs = pathlib.Path(tempfile.mkdtemp(prefix="mutate-jobs-"))
+        n = args.jobs
+        print(f"доли: {n}, журналы и отчёты — {logs}")
+        # Обработчики — ДО запуска долей: exec сбрасывает перехваченный сигнал в
+        # SIG_DFL, а игнорируемый наследуется. Родитель, запущенный из фона с
+        # SIGINT = SIG_IGN, иначе раздал бы долям игнор, и SIGINT остановки не
+        # дошёл бы до их `finally`.
+        prev = {s: signal.signal(s, _raise_stopped) for s in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            for k in range(1, n + 1):
+                with open(logs / f"{k}.log", "wb") as log:
+                    procs.append(subprocess.Popen(child_argv(args, k, n, logs, rng),
+                                                  stdout=log, stderr=subprocess.STDOUT,
+                                                  env=env, start_new_session=True))
+                print(f"  доля {k}/{n}: pid {procs[-1].pid}")
+            for p in procs:
+                p.wait()
+        except _Stopped as stop:
+            print(f"⏹ сигнал {stop.signum} — останавливаю доли: SIGINT, через "
+                  f"{CHILD_STOP_GRACE_S} с — SIGKILL")
+            stop_children(procs)
+            print(f"доли остановлены, журналы — {logs}")
+            return 128 + stop.signum
+        except BaseException:
+            stop_children(procs)
+            raise
+        finally:
+            for s, h in prev.items():
+                signal.signal(s, h)
+    finally:
+        lock.release()
+    code = merge_shards(logs, args.report)
+    for k, p in enumerate(procs, 1):
+        print(f"  доля {k}: код {p.returncode}, журнал {logs / f'{k}.log'}, "
+              f"отчёт {logs / f'{k}.txt'}")
+    return code
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", default="origin/main...HEAD",
                     help="диапазон git, чьи строки мутируем")
@@ -933,11 +1124,25 @@ def main(argv: list[str]) -> int:
                          "вердиктом вместо прогона")
     ap.add_argument("--force", action="store_true",
                     help="стартовать, даже если машина занята встречей, разбором "
-                         "или ночным циклом (чужой лок мутатора не обходится)")
+                         "или ночным циклом; другие мутаторы помехой не считаются и без него")
     ap.add_argument("--budget-s", type=float, default=None,
                     help="секунд на весь прогон от старта; не хватает на следующий "
                          "набор — остановка с отчётом о проверенном (--force не снимает)")
+    ap.add_argument("--jobs", type=_jobs_arg, default=1,
+                    help=f"гнать план N долями параллельно (1 ≤ N ≤ {JOBS_MAX}), только "
+                         "с --max all: родитель запускает N обычных мутаторов с --shard "
+                         "k/N и сводит их --merge-shards. Параллельные прогоны разрешены: "
+                         "замок мутатора разделяемый, а четыре доли на одном .git нашли "
+                         "тех же выживших втрое быстрее (замер №444 B)")
+    return ap
+
+
+def main(argv: list[str]) -> int:
+    # Бюджет считается от старта процесса: подготовка дерева и база входят в него
+    started = clock()
+    ap = build_parser()
     args = ap.parse_args(argv[1:])
+    check_pair(ap, args)
 
     # Слияние шардов — ПЕРВЫМ: ему не нужны ни git-корень, ни гвард занятости,
     # ни лок. Отдельный job CI сходится сюда на голом каталоге артефактов вне
@@ -982,12 +1187,16 @@ def main(argv: list[str]) -> int:
     # подставляется» было моей ошибкой, а не свойством кода (обе головы
     # выходного круга №321). «~/charoite» лечил ещё круг-1 (DS Minor).
     data_root = charoite_paths.resolve_root(__file__)
+    # Один вызов гварда старта на все роли — одиночный прогон, родитель `--jobs` и
+    # его доли: другой мутатор помехой не считается (замок разделяемый, №444 B).
     if busy_guard(args):
-        busy = busy_signals.machine_busy(data_root)
+        busy = busy_signals.machine_busy(data_root, count_mutation=False)
         if busy:
             print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
                   "(--force, чтобы настоять)")
             return 3
+    if args.jobs > 1:
+        return run_jobs(args, rng, data_root)
     plan, totals = plan_for(root, rng, shard)
     m_total = len(plan)
     p_total = totals.planned
@@ -1049,8 +1258,7 @@ def main(argv: list[str]) -> int:
     # копии (круг-2 по PR #399, DS Minor).
     lock = busy_signals.MutationLock(data_root)
     if not lock.acquire():
-        print("другой мутатор уже держит лок — не стартую (--force не поможет: "
-              "два прогона на одной модели бессмысленны)")
+        print(LOCK_REFUSED)
         return 3
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutate-"))
     survivors: list[Mutation] = []

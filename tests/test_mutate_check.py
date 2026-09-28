@@ -468,9 +468,13 @@ def test_занятая_машина_останавливает_мутатор_�
     """Поведение через `main`: при живой записи без флага — код 3 и ни одного
     прогона; `--force` проходит гвард и упирается в пустой диапазон, не в занятость."""
     import busy_signals
-    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: ["живая запись"])
+    вызовы = []
+    monkeypatch.setattr(busy_signals, "machine_busy",
+                        lambda *a, **kw: вызовы.append(kw) or ["живая запись"])
     assert mc.main(["mutate_check.py", "--range", "HEAD...HEAD"]) == 3
     assert "машина занята" in capsys.readouterr().out
+    # другой мутатор гварду старта не помеха: замок разделяемый (№444 B)
+    assert вызовы == [{"count_mutation": False}], вызовы
     # пустой диапазон — «проверять нечего» ИМЕННО этим кодом, а не любым не-3:
     # прежний `!= 3` проходил и при 0, то есть весь смысл круга 2 не держался
     import exit_codes
@@ -538,7 +542,7 @@ def test_таблица_исхода_прогона():
 
 def _quiet_machine(monkeypatch):
     import busy_signals
-    monkeypatch.setattr(busy_signals, "machine_busy", lambda root: [])
+    monkeypatch.setattr(busy_signals, "machine_busy", lambda *a, **kw: [])
 
 
 def _range_as_given(monkeypatch):
@@ -1727,7 +1731,7 @@ def test_merge_шардов_p0_все_nothing_заметка(tmp_path, capsys):
     # P > 0 и `unmutable` у шарда — красный; при P = 0 это слепое пятно всего
     # диапазона, предупреждение (test_вердикт_при_пустом_диапазоне_не_краснеет)
     ([(1, 2, 3, 6, "ok"), (2, 2, 3, 6, "unmutable")], "неполный исход"),
-    ([(1, 1, 1, 1, "fail")], "неполный исход"),
+    ([(1, 1, 1, 1, "fail")], "нашли выживших, красную базу или сбой подготовки"),
 ])
 def test_merge_шардов_красный(tmp_path, capsys, ряды, фраза):
     """Каждая строка таблицы вердикта — своим случаем: покрытие (число файлов,
@@ -1745,6 +1749,12 @@ def test_merge_шардов_красный(tmp_path, capsys, ряды, фраз�
     ([(1, 2, 3, 6, "partial"), (2, 2, 3, 6, "ok")], "шарды дали неполный исход: шард 1: partial"),
     # плана нет у всего диапазона, но один шард не прочитал файл — перечень тот же
     ([(1, 2, 0, 0, "nothing"), (2, 2, 0, 0, "partial")], "шарды дали неполный исход: шард 2: partial"),
+    # `fail` — своей фразой: выжившие, красная база или сбой подготовки — не «неполно»
+    ([(1, 2, 3, 6, "fail"), (2, 2, 3, 6, "partial")],
+     "шарды нашли выживших, красную базу или сбой подготовки: шард 1: fail; "
+     "шарды дали неполный исход: шард 2: partial"),
+    ([(1, 2, 3, 6, "ok"), (2, 2, 3, 6, "fail")],
+     "шарды нашли выживших, красную базу или сбой подготовки: шард 2: fail"),
 ])
 def test_merge_шардов_неполный_исход_называет_шард_и_его_слово(tmp_path, capsys, ряды, строка):
     """Первая строка вердикта называет КАЖДЫЙ нечистый шард его номером и словом:
@@ -1775,3 +1785,258 @@ def test_merge_shards_работает_вне_git_дерева(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     assert mc.main(["mutate_check.py", "--merge-shards", str(d)]) == 0
     assert "шарды чисты" in capsys.readouterr().out
+
+
+# --- `--jobs N`: доли плана параллельно (№444 B) -----------------------------
+# Родитель запускает N обычных мутаторов `--shard k/N --max all` на диапазоне,
+# разрешённом в SHA один раз, и сводит их `merge_shards`. Замок мутатора
+# разделяемый: доли и соседние прогоны держат его вместе.
+
+
+def test_jobs_arg_границы():
+    import argparse
+    assert mc._jobs_arg("1") == 1
+    assert mc._jobs_arg(str(mc.JOBS_MAX)) == mc.JOBS_MAX
+    for плохой in ("0", str(mc.JOBS_MAX + 1), "два", "-1", ""):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc._jobs_arg(плохой)
+
+
+@pytest.mark.parametrize("флаги, слово", [
+    (["--jobs", "2", "--shard", "1/4", "--max", "all"], "--shard"),
+    (["--jobs", "2", "--max", "5"], "--max all"),
+    (["--jobs", "2"], "--max all"),                       # умолчание 60 — тоже потолок
+    (["--jobs", "2", "--max", "all", "--merge-shards", "d"], "--merge-shards"),
+    (["--jobs", "2", "--merge-shards", "d"], "--merge-shards"),   # до раннего возврата слияния
+])
+def test_jobs_несочетаемые_флаги_отказ_кодом_2(tmp_path, monkeypatch, capsys, флаги, слово):
+    """Отказ — кодом 2 argparse и до git-корня: тест стоит вне git-репозитория, и
+    дойди код до `git rev-parse` или слияния — был бы другой исход."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as отказ:
+        mc.main(["mutate_check.py", *флаги])
+    assert отказ.value.code == 2
+    assert слово in capsys.readouterr().err
+
+
+def test_jobs_1_проверку_пары_не_включает():
+    """`--jobs 1` — сегодняшний путь: доля и конечный потолок с ним законны."""
+    ap = mc.build_parser()
+    for флаги in (["--shard", "1/4", "--max", "5"], ["--merge-shards", "d"], []):
+        assert mc.check_pair(ap, ap.parse_args(флаги)) is None
+
+
+def test_каждый_флаг_либо_пересылается_долям_либо_родительский():
+    """Новый флаг без решения «пересылать ли долям» краснеет здесь, а не теряется
+    у долей молча."""
+    dests = {a.dest for a in mc.build_parser()._actions} - {"help"}
+    assert not set(mc.CHILD_FORWARDED) & set(mc.PARENT_ONLY)
+    assert dests == set(mc.CHILD_FORWARDED) | set(mc.PARENT_ONLY), dests
+
+
+@pytest.mark.parametrize("флаги, хвост", [
+    ([], []),
+    (["--budget-s", "300", "--force"], ["--budget-s", "300.0", "--force"]),
+])
+def test_child_argv_таблицей(tmp_path, флаги, хвост):
+    """Доля — обычный мутатор этого же скрипта: SHA-диапазон родителя, `--timeout`,
+    пересылаемые флаги, `--max all`, своя доля и свой отчёт в каталоге журналов."""
+    ap = mc.build_parser()
+    args = ap.parse_args(["--range", "main...HEAD", "--timeout", "7", "--jobs", "3",
+                          "--max", "all", "--report", "сводка.txt", *флаги])
+    argv = mc.child_argv(args, 2, 3, tmp_path, "aaa...bbb")
+    assert argv == [sys.executable, str(REPO / "scripts" / "mutate_check.py"),
+                    "--range", "aaa...bbb", "--timeout", "7", *хвост,
+                    "--max", "all", "--shard", "2/3", "--report", str(tmp_path / "2.txt")]
+    # аргументы доли сами проходят разбор и проверку пары
+    доля = ap.parse_args(argv[2:])
+    assert mc.check_pair(ap, доля) is None and доля.jobs == 1 and доля.shard == (2, 3)
+
+
+_ТЕСТ_МОДУЛЯ = (
+    "import pathlib, sys\n"
+    "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'src'))\n"
+    "from mod import f\n\n\n"
+    "def test_f():\n"
+    "    assert f(1, 2) == 3\n"
+    "    assert f(0, 5) is True\n")
+
+
+def _репо_с_тестом(tmp_path: pathlib.Path, тест: str = _ТЕСТ_МОДУЛЯ) -> pathlib.Path:
+    """Репозиторий с правкой на шесть мутантов и своим тестом модуля: тест убивает
+    четырёх, `>` → `>=` и замена единицы выживают (граница b = 1 не проверена)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": _БАЗА, "tests/test_mod.py": тест})
+    (repo / "src" / "mod.py").write_text(_ПРАВКА, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+    return repo
+
+
+def _выжившие(текст: str) -> set[str]:
+    return {line.strip() for line in текст.splitlines() if line.strip().startswith("ВЫЖИЛ ")}
+
+
+def test_jobs_2_находит_тех_же_выживших_что_последовательный(tmp_path, monkeypatch, capsys):
+    """Настоящие процессы: доли — живые мутаторы со своими копиями и pytest. Выжившие
+    и код — те же, что у последовательного `--max all`; код — политика CI 0/1."""
+    import exit_codes
+    repo = _репо_с_тестом(tmp_path)
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+    monkeypatch.chdir(repo)
+    подряд = tmp_path / "подряд.txt"
+    rc_подряд = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--max", "all",
+                         "--timeout", "60", "--report", str(подряд)])
+    out = capsys.readouterr().out
+    assert rc_подряд == 1 and exit_codes.outcome(rc_подряд) == "fail", out[-800:]
+    ждём = _выжившие(подряд.read_text(encoding="utf-8"))
+    assert len(ждём) == 2, ждём
+
+    сводка = tmp_path / "сводка.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--jobs", "2", "--max", "all",
+                  "--timeout", "60", "--report", str(сводка)])
+    out = capsys.readouterr().out
+    assert rc == 1, out[-1500:]
+    журналы = pathlib.Path(re.search(r"журналы и отчёты — (\S+)", out).group(1))
+    отчёты = sorted(журналы.glob("[0-9].txt"))
+    assert [p.name for p in отчёты] == ["1.txt", "2.txt"], out[-1500:]
+    # долей ровно N и нумерация с единицы: лишняя доля 0 оставила бы свой журнал
+    assert sorted(p.name for p in журналы.glob("*.log")) == ["1.log", "2.log"], out[-1500:]
+    # у каждой доли свой процесс: строка запуска называет pid этой доли, а не первой
+    pids = dict(re.findall(r"доля (\d+)/2: pid (\d+)", out))
+    assert set(pids) == {"1", "2"} and pids["1"] != pids["2"], out[-1500:]
+    нашли = set().union(*(_выжившие(p.read_text(encoding="utf-8")) for p in отчёты))
+    assert нашли == ждём
+    текст = сводка.read_text(encoding="utf-8")
+    assert текст.startswith("шарды нашли выживших"), текст
+    assert "итог: шардов 2, M=6, P=6" in текст, текст
+    # после сводки — код каждой доли и где её журнал: номер строки — номер доли
+    for k in (1, 2):
+        assert re.search(rf"доля {k}: код \d+, журнал {re.escape(str(журналы / f'{k}.log'))}", out), out[-1500:]
+    assert "доля 1: код 1" in out or "доля 2: код 1" in out, out[-1500:]
+    import busy_signals
+    assert not busy_signals.mutation_running(данные)
+    shutil.rmtree(журналы)
+
+
+def test_jobs_родитель_без_замка_отказывает_кодом_3_и_долей_не_запускает(tmp_path, monkeypatch, capsys):
+    """Замок родителя — первым делом: не взялся — нейтральная строка и код занятости,
+    ни одной доли и ни одного каталога журналов."""
+    import busy_signals
+    monkeypatch.setattr(busy_signals.MutationLock, "acquire", lambda self: False)
+    spawned = []
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+    made = []
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", lambda *a, **kw: made.append(a))
+    args = mc.build_parser().parse_args(["--range", "a...b", "--jobs", "2", "--max", "all"])
+    assert mc.run_jobs(args, "a...b", tmp_path) == 3
+    assert mc.LOCK_REFUSED in capsys.readouterr().out
+    assert spawned == [] and made == []
+
+
+def test_jobs_доля_родителем_не_становится(tmp_path, monkeypatch, capsys):
+    """Доля с теми аргументами, что ей чеканит `child_argv`, попав в `run_jobs`, —
+    отказ кодом 2 до замка: ни замка, ни каталога журналов, ни одной доли. Мутант
+    входа (`jobs > 1` → `>= 1`) иначе делал каждую долю родителем, и цепочка
+    мутаторов в новых сессиях росла мимо убийства прогона (PR #667, доля 1 в CI)."""
+    import busy_signals
+    замки = []
+    monkeypatch.setattr(busy_signals.MutationLock, "acquire",
+                        lambda self: замки.append(self) or True)
+    spawned = []
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+    made = []
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", lambda *a, **kw: made.append(a))
+    ap = mc.build_parser()
+    родитель = ap.parse_args(["--range", "a...b", "--jobs", "2", "--max", "all"])
+    доля = ap.parse_args(mc.child_argv(родитель, 1, 2, tmp_path, "a...b")[2:])
+    assert mc.run_jobs(доля, "a...b", tmp_path) == 2
+    assert mc.SHARE_REFUSED in capsys.readouterr().out
+    assert spawned == [] and made == [] and замки == []
+
+
+def test_jobs_sigterm_родителя_останавливает_доли_их_finally(tmp_path):
+    """SIGTERM родителю: каждая доля получает SIGINT и в своём `finally` убирает
+    копию; замок мутатора после — свободен, родитель выходит кодом 128 + 15. Всё —
+    быстрее запаса `CHILD_STOP_GRACE_S`: SIGKILL не понадобился."""
+    import busy_signals
+    import signal
+    import time
+    медленный = _ТЕСТ_МОДУЛЯ + "\n\ndef test_долго():\n    import time\n    time.sleep(60)\n"
+    repo = _репо_с_тестом(tmp_path, медленный)
+    данные, врем = tmp_path / "данные", tmp_path / "tmp"
+    данные.mkdir()
+    врем.mkdir()
+    вывод = tmp_path / "родитель.log"
+    env = {**os.environ, "CHAROITE_ROOT": str(данные), "TMPDIR": str(врем),
+           "PYTHONUNBUFFERED": "1"}
+    with вывод.open("w") as out:
+        родитель = subprocess.Popen(
+            [sys.executable, str(REPO / "scripts" / "mutate_check.py"), "--range", _ДИАПАЗОН,
+             "--jobs", "2", "--max", "all", "--timeout", "120"],
+            cwd=repo, env=env, stdout=out, stderr=subprocess.STDOUT)
+    try:
+        копии = []
+        срок = time.monotonic() + 60
+        while len(копии) < 2 and time.monotonic() < срок and родитель.poll() is None:
+            time.sleep(0.2)
+            копии = [d for d in врем.glob("mutate-*")
+                     if not d.name.startswith("mutate-jobs-") and (d / "tree").is_dir()]
+        assert len(копии) == 2, вывод.read_text(encoding="utf-8")
+        assert busy_signals.mutation_running(данные)
+        time.sleep(1.5)                 # доли внутри базового прогона своего набора
+        t0 = time.monotonic()
+        родитель.send_signal(signal.SIGTERM)
+        rc = родитель.wait(timeout=mc.CHILD_STOP_GRACE_S + 30)
+        прошло = time.monotonic() - t0
+    finally:
+        if родитель.poll() is None:
+            родитель.kill()
+            родитель.wait()
+    текст = вывод.read_text(encoding="utf-8")
+    assert rc == 128 + signal.SIGTERM, текст
+    assert прошло < mc.CHILD_STOP_GRACE_S, (прошло, текст)
+    assert not any(d.exists() for d in копии), "доля не убрала свою копию"
+    assert not busy_signals.mutation_running(данные)
+    журналы = pathlib.Path(re.search(r"журналы и отчёты — (\S+)", текст).group(1))
+    for k in (1, 2):
+        assert "KeyboardInterrupt" in (журналы / f"{k}.log").read_text(encoding="utf-8"), k
+
+
+def test_обработчик_остановки_сначала_глушит_оба_сигнала():
+    """Второй сигнал в зазоре между первым и остановкой долей не должен поднять второй
+    `_Stopped` изнутри `except`: обработчик глушит SIGINT и SIGTERM ДО `raise`
+    (выходной круг 1 по №444 B, I1)."""
+    import signal
+    прежние = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with pytest.raises(mc._Stopped) as стоп:
+            mc._raise_stopped(signal.SIGTERM, None)
+        assert стоп.value.signum == signal.SIGTERM
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    finally:
+        for s, h in прежние.items():
+            signal.signal(s, h)
+
+
+def test_stop_children_добивает_глухую_к_sigint_группу(tmp_path):
+    """Доля, не отпустившая SIGINT за запас, получает SIGKILL всей группой."""
+    import signal
+    import time
+    глухая = subprocess.Popen(
+        [sys.executable, "-c",
+         "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+         "print('готова', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert глухая.stdout.readline().strip() == "готова"
+        t0 = time.monotonic()
+        mc.stop_children([глухая], grace=0.5)
+        assert time.monotonic() - t0 < 10
+        assert глухая.returncode == -signal.SIGKILL
+    finally:
+        if глухая.poll() is None:
+            глухая.kill()
+            глухая.wait()
+        глухая.stdout.close()

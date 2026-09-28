@@ -405,6 +405,11 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
         f"шардов в матрице {shards}, а мутатор делит на {n.group(1)}")
     assert step.get("env", {}).get("SHARD") == "${{ matrix.shard }}", "номер шарда — из матрицы, через env"
     assert re.search(r"--max\s+all\b", run), "срез --max в шарде снова прятал бы часть плана"
+    # Параллельность CI — шарды на отдельных раннерах. `--jobs` внутри шарда дал бы
+    # долю доли, которую `--shard K/N` не выражает, и мутатор отказал бы разбором
+    # (№444 B; больше шардов — №452).
+    assert not any("--jobs" in str(s.get("run", "")) for s in job["steps"]), (
+        "--jobs в шаге мутаций CI: доли — это шарды матрицы")
     uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
     assert len(uploads) == 1 and uploads[0].get("if") == "always()", (
         "артефакт шарда обязан уехать и после оборванного шага: иначе вердикт видит «нет отчёта»")
