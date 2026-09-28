@@ -1,4 +1,7 @@
 config/config.yaml
+# Копии конфига (config.yaml.bak-…) рядом с ним — тот же приватный конфиг: 29.09 три такие копии
+# лежали неотслеживаемыми в рабочей установке, в одном «git add -A» от публичного репозитория (№480).
+config/config.yaml.*
 transcripts/
 recordings/
 logs/
