@@ -901,6 +901,7 @@ def _copy_package(dest: pathlib.Path) -> None:
     _sandbox_copy(ROOT / lm.FLAT_DIR / package, dest / package, PACKAGE_IGNORE)
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
     """Пакет поиска — это замыкание `package_entry` и ничего больше, и едет он в
     колесе ровно этими модулями: распакованный артефакт отдельно от репозитория
@@ -936,6 +937,7 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_pa
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
                                                          wheel_path: pathlib.Path) -> None:
     """Сверка плана проверена порчей: колесо без модуля — недостача, колесо с
@@ -971,6 +973,7 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     assert _wheel_plan_problems(rebuild(tmp_path / "std.whl", extra="charoite_graph-0.1.0.data/scripts/x")) == []
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_wheel_matches_its_declaration(wheel_path: pathlib.Path) -> None:
     """Честное колесо проходит гейт «артефакт против объявления» целиком (№446)."""
     problems = wheel_problems(wheel_path)
@@ -1091,6 +1094,7 @@ def test_the_wheel_gate_tables_agree() -> None:
         assert not any(set(WHEEL_LINES[k].depends_on) & kinds for k in kinds), case
 
 
+@pytest.mark.xdist_group("wheel")
 @pytest.mark.parametrize("case", list(CORRUPT_CASES))
 def test_the_wheel_gate_reds_on_each_corruption(case: str, tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
     build, kinds = CORRUPT_CASES[case]
@@ -1099,6 +1103,7 @@ def test_the_wheel_gate_reds_on_each_corruption(case: str, tmp_path: pathlib.Pat
     assert {kind for kind, _ in got} == kinds, got
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_wheel_gate_is_silent_about_metadata_without_its_dist_info(tmp_path: pathlib.Path,
                                                                       wheel_path: pathlib.Path) -> None:
     """Свой `dist-info` переименован: о нём говорит сверка плана — ровно одна строка,
@@ -1145,6 +1150,7 @@ def run_readme_example(pkg: pathlib.Path, code: str, work: pathlib.Path) -> subp
                 _isolated_env(dict(os.environ), ISOLATION_DROP), TIMEOUT)
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_readme_example_runs_from_the_wheel(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
     """Пример из описания АРТЕФАКТА (не из файла репозитория) исполняется на
     распакованном колесе: статус `confident` — семантика сработала (без векторов
@@ -1165,6 +1171,64 @@ def test_the_readme_example_runs_from_the_wheel(tmp_path: pathlib.Path, wheel_pa
 def test_the_example_runner_reports_a_broken_example(tmp_path: pathlib.Path) -> None:
     r = run_readme_example(tmp_path / "pkg", "raise RuntimeError('сломано')\n", tmp_path / "work")
     assert r.returncode != 0 and "RuntimeError: сломано" in r.stderr, (r.returncode, r.stderr[-500:])
+
+
+def _wheel_group_problems(sources: dict[str, str]) -> list[str]:
+    """Под `--dist loadgroup` тесты колеса идут в одном воркере, и колесо
+    собирается один раз (№453). Параметр `wheel_path` бывает только у функций
+    `test_*` — промежуточная фикстура увела бы своих потребителей из-под
+    сторожа, — и у каждой такой функции метка `xdist_group("wheel")`.
+    `usefixtures`/`getfixturevalue` с `wheel_path` запрещены: их параметром не
+    увидеть. Строкой на нарушение: путь, функция, что не так."""
+    out = []
+    for rel, text in sorted(sources.items()):
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name)):
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+                if name in ("usefixtures", "getfixturevalue") and any(
+                        isinstance(a, ast.Constant) and a.value == "wheel_path" for a in node.args):
+                    out.append(f"{rel}:{node.lineno}: {name}(\"wheel_path\") — только параметром функции test_*")
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name == "wheel_path":
+                continue
+            if "wheel_path" not in {a.arg for a in node.args.args + node.args.kwonlyargs}:
+                continue
+            if not node.name.startswith("test"):
+                out.append(f"{rel}:{node.lineno}: {node.name} берёт wheel_path, но не тест — фикстура-посредник")
+                continue
+            # имя группы — позиционно или `name=`: pytest принимает обе формы
+            marked = any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "xdist_group"
+                         and [getattr(a, "value", None) for a in d.args]
+                         + [getattr(k.value, "value", None) for k in d.keywords if k.arg == "name"] == ["wheel"]
+                         for d in node.decorator_list)
+            if not marked:
+                out.append(f"{rel}:{node.lineno}: {node.name} без метки xdist_group(\"wheel\")")
+    return out
+
+
+def test_every_wheel_test_runs_in_the_wheel_group() -> None:
+    tests = ROOT / "tests"
+    sources = {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8") for p in sorted(tests.rglob("*.py"))}
+    problems = _wheel_group_problems(sources)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_wheel_group_guard_reds_on_each_form() -> None:
+    """Сторож группы — на синтетике: без метки, с чужой группой, фикстура-посредник,
+    `usefixtures` и `getfixturevalue`; с меткой — чисто."""
+    good = '@pytest.mark.xdist_group("wheel")\ndef test_a(wheel_path):\n    pass\n'
+    assert _wheel_group_problems({"t.py": good}) == []
+    named = '@pytest.mark.xdist_group(name="wheel")\ndef test_a(wheel_path):\n    pass\n'
+    assert _wheel_group_problems({"t.py": named}) == []
+    cases = {
+        "def test_a(wheel_path):\n    pass\n": "без метки",
+        '@pytest.mark.xdist_group("other")\ndef test_a(wheel_path):\n    pass\n': "без метки",
+        "def built(wheel_path):\n    return wheel_path\n": "фикстура-посредник",
+        '@pytest.mark.usefixtures("wheel_path")\ndef test_a():\n    pass\n': "usefixtures",
+        'def test_a(request):\n    request.getfixturevalue("wheel_path")\n': "getfixturevalue",
+    }
+    for source, word in cases.items():
+        got = _wheel_group_problems({"t.py": source})
+        assert len(got) == 1 and word in got[0], (source, got)
 
 
 def test_the_sandbox_copy_is_writable_from_a_read_only_tree(tmp_path: pathlib.Path) -> None:

@@ -15,6 +15,7 @@
 #   scripts/preflight.sh [база]          # диапазон база...HEAD, по умолчанию origin/main
 #   PREFLIGHT_SKIP=mutation,swift scripts/preflight.sh   # пропустить шаги (повторный прогон)
 #   PREFLIGHT_FORCE=1 ...                # идти поверх занятой машины — только с чужого согласия
+#   PREFLIGHT_JOBS=8 ...                 # процессов полного pytest (по умолчанию 4; нужен pytest-xdist)
 # Работает и в git worktree: корень данных владельца — основной checkout.
 # Bash читает файл по мере исполнения (правка во время прогона сломала прогон
 # 22.09) — тело в функции, разобрано целиком до старта. /bin/bash на macOS — 3.2:
@@ -88,7 +89,18 @@ fi
 
 step "2. pytest (полный набор — включая контракты точек входа)"
 if ! skipped pytest; then
-  "$PY" -m pytest tests/ -q -p no:cacheprovider > "$WORK/pytest.log" 2>&1; rc=$?
+  # Несколько процессов, если xdist стоит (№453): тот же режим, что у CI. Нет —
+  # набор идёт последовательно целиком, это не пропуск и в итог не попадает.
+  # Функция вместо массива аргументов: /bin/bash 3.2 и `set -u` (шапка).
+  pytest_run() { "$PY" -m pytest tests/ -q -p no:cacheprovider "$@" > "$WORK/pytest.log" 2>&1; }
+  if "$PY" -c "import xdist" 2>/dev/null; then
+    echo "   режим: pytest-xdist, процессов ${PREFLIGHT_JOBS:-4} (--dist loadgroup)"
+    pytest_run -n "${PREFLIGHT_JOBS:-4}" --dist loadgroup; rc=$?
+  else
+    xdist_v=$("$PY" -c "import yaml; print(yaml.safe_load(open('.github/workflows/ci.yml'))['env']['PYTEST_XDIST_VERSION'])" 2>/dev/null)
+    echo "   режим: последовательно — xdist не стоит (поставить: $PY -m pip install pytest-xdist==${xdist_v:-<пин PYTEST_XDIST_VERSION из ci.yml>})"
+    pytest_run; rc=$?
+  fi
   tail -1 "$WORK/pytest.log"
   # упавшие — по именам: хвост «1 failed» без имени — не отчёт, а загадка
   [ $rc -eq 0 ] || grep -E "^(FAILED|ERROR) " "$WORK/pytest.log" | head -20 | sed 's/^/   /'
