@@ -308,10 +308,11 @@ def test_release_app_can_be_pointed_at_a_tag_by_hand():
 
 
 #: Jobs, у которых потолок job — сумма потолков шагов, а повторы PortAudio — свой
-#: худший случай. Оба гоняют один и тот же цикл apt: правило, применённое к одной
-#: копии цикла, другую оставляло обрываться посреди второй попытки (DeepSeek по
-#: PR #637). Job без такого цикла сюда не входит: потолок шага там — не арифметика.
-CEILED_JOBS = ("tests", "mutation")
+#: худший случай. `tests` и `mutation` гоняют один и тот же цикл apt: правило,
+#: применённое к одной копии цикла, другую оставляло обрываться посреди второй
+#: попытки (DeepSeek по PR #637). `mutation-verdict` цикла не имеет, но его потолок —
+#: тоже сумма шагов: без неё обрыв job прятал бы вердикт шардов (№441).
+CEILED_JOBS = ("tests", "mutation", "mutation-verdict")
 
 
 def _retry_worst_s(run: str) -> int:
@@ -385,6 +386,71 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
         f"шаг сводки не читает {report.group(1)} — отчёт мутатора не доедет до сводки")
 
 
+
+def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
+    """Весь план шардами (№441): число шардов матрицы равно N в `--shard …/N`, срез
+    `--max` снят (`all`), артефакт шарда уезжает и при оборванном шаге (`if:
+    always()`), а вердикт — один job после всех шардов, тоже при их провале, и
+    судит его `mutate_check --merge-shards`, а не разбор текста в yaml. Разошедшееся
+    N дало бы «все отчёты зелёные» при непокрытой части плана."""
+    jobs = _load("ci.yml")["jobs"]
+    job = jobs["mutation"]
+    shards = job["strategy"]["matrix"]["shard"]
+    assert job["strategy"].get("fail-fast") is False, "упавший шард не должен отменять соседей"
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    run = str(step["run"])
+    n = re.search(r'--shard\s+"?\$SHARD/(\d+)"?', run)
+    assert n, "шаг мутатора обязан называть --shard $SHARD/N"
+    assert int(n.group(1)) == len(shards) and sorted(shards) == list(range(1, len(shards) + 1)), (
+        f"шардов в матрице {shards}, а мутатор делит на {n.group(1)}")
+    assert step.get("env", {}).get("SHARD") == "${{ matrix.shard }}", "номер шарда — из матрицы, через env"
+    assert re.search(r"--max\s+all\b", run), "срез --max в шарде снова прятал бы часть плана"
+    uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(uploads) == 1 and uploads[0].get("if") == "always()", (
+        "артефакт шарда обязан уехать и после оборванного шага: иначе вердикт видит «нет отчёта»")
+    assert "${{ matrix.shard }}" in str(uploads[0]["with"]["name"]), "одинаковые имена в матрице затирают друг друга"
+    verdict = jobs["mutation-verdict"]
+    assert verdict["needs"] == "mutation"
+    assert "always()" in verdict["if"] and "pull_request" in verdict["if"], (
+        "вердикт обязан идти и при провале шардов, и только на PR, как сами шарды")
+    judge = [s for s in verdict["steps"] if "--merge-shards" in str(s.get("run", ""))]
+    assert len(judge) == 1, "судья шардов — один шаг `mutate_check.py --merge-shards`"
+    # имя отчёта вердикта — одно на job: судья пишет, сводка читает (выходной круг 3 по №441, DS M2)
+    assert verdict.get("env", {}).get("VERDICT"), "имя отчёта вердикта — env.VERDICT job"
+    assert re.search(r'--report\s+"\$VERDICT"', str(judge[0]["run"])), "судья пишет отчёт в env.VERDICT"
+    summary = [s for s in verdict["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert len(summary) == 1 and str(summary[0]["run"]).count('"$VERDICT"') >= 2, (
+        "сводка вердикта читает env.VERDICT")
+
+
+def test_mutation_artifact_carries_the_line_the_verdict_reads():
+    """Имя отчёта шарда объявлено один раз — `env.REPORT` job: мутатор пишет в
+    него (`--report "$REPORT"`), сводка читает его, артефакт забирает
+    `${{ env.REPORT }}*`. Машинная строка обязана лечь под этот глоб: в том же
+    каталоге и с именем-продолжением отчёта (`shard_line_path`), без `/` в
+    хвосте — глоб выгрузки через `/` не ходит. Прежний сторож сверял базовые
+    имена через `fnmatch` и пропускал отчёт в подкаталоге (выходной круг 2 по
+    №441, DS M1); до него переименование суффикса красило вердикт на каждом PR
+    (круг 1, DS I3)."""
+    import sys
+    sys.path.insert(0, str(WF.parent.parent / "scripts"))
+    import mutate_check
+
+    job = _load("ci.yml")["jobs"]["mutation"]
+    report = str(job.get("env", {}).get("REPORT", ""))
+    assert "${{ matrix.shard }}" in report, "имя отчёта — одно на job, с номером шарда"
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")))
+    assert re.search(r'--report\s+"\$REPORT"', str(step["run"])), "мутатор пишет отчёт в env.REPORT"
+    summary = [s for s in job["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert summary and all('"$REPORT"' in str(s["run"]) for s in summary), "сводка читает env.REPORT"
+    upload = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact"))
+    assert upload["with"]["path"] == "${{ env.REPORT }}*", "артефакт забирает отчёт и его машинную строку"
+    for shard in job["strategy"]["matrix"]["shard"]:
+        имя = report.replace("${{ matrix.shard }}", str(shard))
+        строка = str(mutate_check.shard_line_path(pathlib.PurePosixPath(имя)))
+        assert строка.startswith(имя) and "/" not in строка[len(имя):], (
+            f"машинная строка {строка!r} не ложится под глоб {имя + '*'!r}")
+
 # ── Набор правил ruff: одно место, три потребителя (№405) ──────────────────────
 #
 # CI, pre-commit и preflight зовут `ruff check <пути>`; правила — только в
@@ -457,3 +523,15 @@ def test_nightly_installs_by_the_ci_pins():
     assert used, "ночь ставит пакеты без пинов"
     assert used <= night.keys(), f"пин без объявления в env nightly.yml: {sorted(used - night.keys())}"
     assert {k: night[k] for k in used} == {k: ci.get(k) for k in used}
+
+
+def test_mutation_range_starts_at_the_current_base_branch():
+    """База диапазона мутаций — голова ветки назначения (`origin/<base_ref>`), а не
+    `pull_request.base.sha`: тот — голова на момент открытия PR, и против
+    merge-коммита он тянул в план правки, влитые в main позже (#649: 357 мутантов
+    вместо 96). Сторож держит источник базы в шаге мутаций."""
+    job = _load("ci.yml")["jobs"]["mutation"]
+    step = next(s for s in job["steps"] if "mutate_check.py" in str(s.get("run", "")) and "--shard" in str(s.get("run", "")))
+    assert step.get("env", {}).get("BASE_REF") == "${{ github.base_ref }}", step.get("env")
+    assert '--range "origin/$BASE_REF...HEAD"' in step["run"], step["run"]
+    assert "base.sha" not in str(job)

@@ -9,6 +9,8 @@
 """
 import ast
 import collections
+import json
+import re
 import os
 import pathlib
 import shutil
@@ -518,7 +520,7 @@ def test_есть_изменённые_строки_но_ломать_нечег
     import exit_codes
     _quiet_machine(monkeypatch)
     totals = mc.ScanTotals(files_in=2, lines_in=7, lines_constant=3, nodes=11)
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([], totals))
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_UNMUTABLE
     out = capsys.readouterr().out
     assert "ничего мутируемого" in out
@@ -533,7 +535,7 @@ def test_строки_без_кода_это_nothing_со_счётчиками(m
     import exit_codes
     _quiet_machine(monkeypatch)
     totals = mc.ScanTotals(files_in=1, lines_in=2, lines_constant=1, nodes=0)
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([], totals))
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
     out = capsys.readouterr().out
     assert "нет кода" in out and "нет изменённых строк" not in out, out
@@ -594,7 +596,8 @@ def test_план_считает_строки_константы_узлы_и_н�
     plan, totals = mc.plan_for(repo, "HEAD")
 
     assert totals == mc.ScanTotals(files_in=2, lines_in=4, lines_constant=1, nodes=3,
-                                   files_unreadable=1), totals
+                                   files_unreadable=1, planned=2,
+                                   unreadable=["src/ghost.py — нет в ревизии HEAD"]), totals
     assert collections.Counter(m.bare() for m in plan) == {"not X → X": 1, "return X → return None": 1}
     assert {m.path for m in plan} == {repo / "src" / "mod.py"}
 
@@ -617,6 +620,64 @@ def test_файл_не_в_utf8_это_неполнота_а_не_трассир�
     assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
 
 
+def test_файл_не_разбирается_это_неполнота_а_не_нечего(tmp_path, monkeypatch):
+    """Третья нога той же неполноты: `git show` прочитал, utf-8 декодировался, а
+    `ast.parse` отказал. Файл идёт в `files_unreadable`, и пустой план из него —
+    `partial`, а не «мутировать нечего» (выходной круг 2 по №441, DS C1: при
+    P = 0 вердикт шардов красил такой диапазон зелёным)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n",
+                                "src/bad.py": "def g(:\n    return 1\n"})
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {
+        repo / "src" / "mod.py": {2}, repo / "src" / "bad.py": {1, 2}})
+
+    plan, totals = mc.plan_for(repo, "HEAD")
+
+    assert totals.files_in == 2 and totals.files_unreadable == 1, totals
+    assert {m.path for m in plan} == {repo / "src" / "mod.py"}
+    assert mc.verdict_code([], len(plan), len(plan), 0, 0, totals) == mc.EXIT_PARTIAL
+
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {repo / "src" / "bad.py": {1, 2}})
+    plan, totals = mc.plan_for(repo, "HEAD")
+    assert plan == [] and totals.files_unreadable == 1
+    assert mc.verdict_code([], 0, 0, 0, 0, totals) == mc.EXIT_PARTIAL
+    # файл назван с причиной — и в отчёте, а не только числом (выходной круг 3 по №441, DS M1)
+    assert len(totals.unreadable) == 1 and totals.unreadable[0].startswith("src/bad.py — не разбирается (SyntaxError")
+    отчёт = mc.render_report(0, [], [], 0, 0, "", totals)
+    assert "НЕ ПРОЧИТАН src/bad.py — не разбирается" in отчёт, отчёт
+
+
+@pytest.mark.parametrize("text", ["x = 1\0\n", "x = " + "(" * 400 + "1" + ")" * 400 + "\n"])
+def test_любой_отказ_разбора_это_неполнота_а_не_трассировка(tmp_path, monkeypatch, text):
+    """NUL-байт и патологическая вложенность: тип отказа `ast.parse` зависит от
+    версии (NUL — `ValueError` до 3.12, `SyntaxError` с 3.12; вложенность —
+    `SyntaxError` или `RecursionError`). Любой такой отказ — файл «не разбирается»
+    в списке несудимого, а не трассировка до первой записи отчёта шарда
+    (выходной круг 3 по №441, DS I1)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return not x\n"})
+    (repo / "src" / "bad.py").write_bytes(text.encode("utf-8"))
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "не разбирается"], cwd=repo, check=True)
+    monkeypatch.setattr(mc, "changed_lines", lambda root, rng: {repo / "src" / "bad.py": {1}})
+    plan, totals = mc.plan_for(repo, "HEAD")
+    assert plan == [] and totals.files_unreadable == 1, totals
+    assert totals.unreadable[0].startswith("src/bad.py — не разбирается ("), totals.unreadable
+    assert mc.verdict_code([], 0, 0, 0, 0, totals) == mc.EXIT_PARTIAL
+
+
+@pytest.mark.parametrize("error", [ValueError("source code string cannot contain null bytes"),
+                                   RecursionError("maximum recursion depth exceeded")])
+def test_разбор_ловит_отказы_всех_версий(monkeypatch, error):
+    """`parse_source` называет причиной и те отказы, которых наш интерпретатор
+    сегодня не бросает: `ValueError` на NUL-байте у 3.11, `RecursionError` на
+    вложенности. Отказ — значение, а не исключение наружу."""
+    def отказ(text):
+        raise error
+    monkeypatch.setattr(mc.ast, "parse", отказ)
+    tree, why = mc.parse_source("x = 1\n")
+    assert tree is None and why.startswith(type(error).__name__ + ":"), why
+    assert str(error) in why, "причина называет текст отказа, а не только его тип"
+
+
 def test_план_берёт_изменённые_строки_из_git(tmp_path):
     """Сквозь `changed_lines`: две ревизии, изменена одна строка."""
     repo = _git_repo(tmp_path, {"src/mod.py": "def f(x):\n    return x\n"})
@@ -625,7 +686,7 @@ def test_план_берёт_изменённые_строки_из_git(tmp_path
 
     plan, totals = mc.plan_for(repo, "HEAD~1...HEAD")
 
-    assert totals == mc.ScanTotals(files_in=1, lines_in=1, nodes=3), totals
+    assert totals == mc.ScanTotals(files_in=1, lines_in=1, nodes=3, planned=2), totals
     assert sorted(m.bare() for m in plan) == ["not X → X", "return X → return None"]
 
 
@@ -785,7 +846,9 @@ def test_main_не_засчитывает_битого_мутанта_убиты
                           capture_output=True, text=True, check=True).stdout
     mut = next(m for m in mc.scan(REPO / rel, set(range(1, 400)), head).mutations
                if m.bare() == "not X → X")
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng: ([mut], mc.ScanTotals(files_in=1, lines_in=1)))
+    monkeypatch.setattr(mc, "plan_for",
+                        lambda root, rng, shard=None: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
+                                                                            planned=1)))
     monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests"])
 
     def run_tests(cwd, targets, timeout):
@@ -872,7 +935,10 @@ def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_�
     не зависеть. Возвращает журнал вызовов `run_tests`: (набор, таймаут)."""
     _quiet_machine(monkeypatch)
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng: (list(plan), mc.ScanTotals(files_in=1, lines_in=1)))
+    monkeypatch.setattr(mc, "plan_for",
+                        lambda root, rng, shard=None: (list(plan),
+                                                       mc.ScanTotals(files_in=1, lines_in=1,
+                                                                     planned=len(plan))))
     monkeypatch.setattr(mc, "tests_for", lambda root, module: [f"tests/test_{module.stem}.py"])
     часы = _Часы()
     monkeypatch.setattr(mc, "clock", часы)
@@ -1002,6 +1068,9 @@ def test_без_бюджета_поведение_прежнее(tmp_path, monke
     assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--report", str(отчёт)]) == 0
     assert len(журнал) == 1 + 4 and {t for _, t in журнал} == {120}, журнал
     assert отчёт.read_text(encoding="utf-8") == "Проверено мутантов: 4 из 4, выжило: 0\n"
+    # машинная строка прогона без --shard — доля 1 из 1, весь план
+    строка = json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+    assert строка == {"K": 1, "N": 1, "M": 4, "P": 4, "word": "ok"}, строка
     out = capsys.readouterr().out
     assert "бюджет" not in out
     # счёт мутантов в строках прогона — с единицы и до конца плана
@@ -1017,3 +1086,443 @@ def test_отчёт_не_судившихся_не_считает_неприме
     assert текст.startswith("Проверено мутантов: 2 из 5 (остановка: бюджет), выжило: 0"), текст
     assert "НЕ СУДИЛОСЬ: 2 (прервано: бюджет)" in текст, текст
     assert "НЕ ПРИМЕНИЛОСЬ: 1" in текст, текст
+
+
+# --- Шарды плана и вердикт слияния (№441) ------------------------------------
+# План делится на N долей, каждая судится своим job'ом, а вердикт читает их
+# машинные строки. Ниже — репозиторий с правкой ровно на шесть мутантов: две
+# строки кода добавлены, и на них ложатся `not`, `return`, `>`, `1`, `+`, `return`.
+
+_БАЗА = "def f(a, b):\n    return a\n"
+_ПРАВКА = "def f(a, b):\n    if not a:\n        return b > 1\n    return a + b\n"
+_ДИАПАЗОН = "HEAD~1...HEAD"
+
+
+def _репо_с_правкой(tmp_path: pathlib.Path, code: str = _ПРАВКА) -> pathlib.Path:
+    """Git-репозиторий, где `src/mod.py` изменён последним коммитом."""
+    repo = _git_repo(tmp_path, {"src/mod.py": _БАЗА})
+    (repo / "src" / "mod.py").write_text(code, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+    return repo
+
+
+def test_шарды_не_пересекаются_и_покрывают_план(tmp_path):
+    """Доли одного плана: каждая берёт свои индексы `i % N == K-1`, вместе —
+    ровно план, и `planned` (P) у всех один."""
+    repo = _репо_с_правкой(tmp_path)
+    полный, итого = mc.plan_for(repo, _ДИАПАЗОН)
+    assert len(полный) == 6 and итого.planned == 6
+
+    куски = [mc.plan_for(repo, _ДИАПАЗОН, (k, 3)) for k in (1, 2, 3)]
+    for k, (часть, t) in zip((1, 2, 3), куски):
+        assert t.shard == (k, 3) and t.planned == 6
+        ждём = [m for i, m in enumerate(полный) if i % 3 == k - 1]
+        assert [(m.path, m.line, m.what) for m in часть] == \
+               [(m.path, m.line, m.what) for m in ждём], k
+    покрытие = collections.Counter((m.path, m.line, m.what)
+                                   for часть, _ in куски for m in часть)
+    assert покрытие == collections.Counter((m.path, m.line, m.what) for m in полный)
+
+
+def test_порядок_сначала_шард_потом_max(tmp_path, monkeypatch, capsys):
+    """`main` делит план шардом ДО среза `--max`: шард 3/3 берёт индексы 2 и 5
+    (два мутанта), и потолок 3 их не трогает. Обратный порядок (срезать шесть
+    до трёх, потом делить) отдал бы шарду 3/3 один мутант — индекс 2."""
+    repo = _репо_с_правкой(tmp_path)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def run_tests(cwd, targets, timeout):
+        calls["n"] += 1
+        return calls["n"] == 1          # база зелёная, мутанты убиты
+
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "3/3",
+                  "--max", "3", "--timeout", "5", "--force", "--report", str(отчёт)])
+    assert rc == 0, capsys.readouterr().out[-600:]
+    out = capsys.readouterr().out
+    assert "Мутантов к проверке: 2" in out, out
+    data = json.loads(отчёт.with_name(отчёт.name + ".json").read_text(encoding="utf-8"))
+    assert (data["K"], data["N"], data["M"], data["P"], data["word"]) == \
+           (3, 3, 2, 6, "ok")
+
+
+def test_пустой_шард_печатает_нечего_и_пишет_артефакты(tmp_path, monkeypatch, capsys):
+    """Шард назван, полный план был (P > 0), а доле не досталось мутантов: это
+    не «в диапазоне нечего». Отчёт и машинная строка нужны слиянию — иначе
+    ΣM ≠ P и вердикт красный из-за арифметики, а не из-за дела."""
+    import exit_codes
+    repo = _репо_с_правкой(tmp_path)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / "отчёт.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "7/7",
+                  "--force", "--report", str(отчёт)])
+    assert rc == exit_codes.EXIT_NOTHING_TO_CHECK
+    out = capsys.readouterr().out
+    assert "шард 7 из 7: 0 из 6 — нечего" in out, out
+    assert отчёт.exists()
+    data = json.loads(отчёт.with_name(отчёт.name + ".json").read_text(encoding="utf-8"))
+    assert data == {"K": 7, "N": 7, "M": 0, "P": 6, "word": "nothing"}
+
+
+def test_shard_arg_берёт_только_верные_доли():
+    """Границы доли: `1/1`, `1/N` и `N/N` — законны, `0/N`, `N+1/N`, `K/0` — нет.
+    Выжившие мутанты круга 1 (`n < 1` → `n <= 1`, `1 <= k` → `1 < k`) держались
+    ровно на отсутствии этих краёв."""
+    import argparse
+    for good, want in (("1/1", (1, 1)), ("1/4", (1, 4)), ("4/4", (4, 4)),
+                       ("2/4", (2, 4)), (" 3 / 7 ", (3, 7))):
+        assert mc._shard_arg(good) == want, good
+    for плохой in ("0/4", "5/4", "a/b", "1/0", "0/0", "4", "1/", "/4", "2/4/6", "-1/2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc._shard_arg(плохой)
+
+
+@pytest.mark.parametrize("плохой", ["0/4", "5/4", "a/b", "1/0", "4", "1/", "/4"])
+def test_неверный_shard_отказ_до_работы(tmp_path, monkeypatch, capsys, плохой):
+    """`0/4`, `5/4`, `a/b` отвергаются разбором аргументов до git-корня, дерева и
+    лока: тест стоит вне git-репозитория, и дойди код до `git rev-parse` — была бы
+    трассировка. Код — 2 от argparse, а не 5: пятёрка значит «корень данных не
+    назван», и проба контракта запуска отличает её от опечатки во флаге."""
+    import exit_codes
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as отказ:
+        mc.main(["mutate_check.py", "--shard", плохой])
+    assert отказ.value.code == 2 != exit_codes.EXIT_ROOT_UNNAMED
+    assert "--shard" in capsys.readouterr().err
+
+
+def test_max_arg_ноль_законен_минус_нет():
+    """`--max 0` — законный потолок «ни одного» (им закрыт срез всего плана),
+    отрицательный — ошибка. Мутант `n < 0` → `n <= 0` выживал без этого края."""
+    import argparse
+    assert mc._max_arg("0") == 0
+    assert mc._max_arg("all") is None
+    with pytest.raises(argparse.ArgumentTypeError):
+        mc._max_arg("-1")
+
+
+def test_шард_при_пустом_диапазоне_пишет_строку_нечего(tmp_path, monkeypatch, capsys):
+    """P = 0 (правка без python-строк) — прогон с шардом всё равно кладёт машинную
+    строку: без неё вердикт видит «ни одного файла шарда» и краснеет на каждом PR
+    без кода (выходной круг 1 по №441, DS C1). Слово — диагноз всего диапазона."""
+    import exit_codes
+    repo = _git_repo(tmp_path, {"README.md": "было\n"})
+    (repo / "README.md").write_text("стало\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "только текст"], cwd=repo, check=True)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / "отчёт-2.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "2/4", "--max", "all",
+                  "--force", "--report", str(отчёт)])
+    assert rc == exit_codes.EXIT_NOTHING_TO_CHECK
+    строка = отчёт.with_name(отчёт.name + mc.SHARD_LINE_SUFFIX)
+    assert json.loads(строка.read_text(encoding="utf-8")) == \
+        {"K": 2, "N": 4, "M": 0, "P": 0, "word": "nothing"}
+    assert "шард 2 из 4" not in capsys.readouterr().out, "P = 0 — диагноз диапазона, а не «пустая доля»"
+
+
+def _шард_пустого_плана(tmp_path, monkeypatch, repo, k=1, n=4):
+    """Прогон шарда K/N по последнему коммиту `repo` — код и машинная строка."""
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / f"отчёт-{k}.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", f"{k}/{n}", "--max", "all",
+                  "--force", "--report", str(отчёт)])
+    return rc, json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+
+
+def test_шард_при_плане_без_операторов_пишет_unmutable(tmp_path, monkeypatch):
+    """Писатель пары «писатель/судья» для слепого пятна: правка из одного `if`
+    (узлы есть, операторов нет) даёт шарду код `EXIT_UNMUTABLE` и слово
+    `unmutable` в машинной строке — то самое, что судья при P = 0 читает
+    предупреждением (выходной круг 2 по №441, DS M3)."""
+    import exit_codes
+    repo = _репо_с_правкой(tmp_path, "def f(a, b):\n    if a:\n        pass\n    return a\n")
+    rc, строка = _шард_пустого_плана(tmp_path, monkeypatch, repo)
+    assert rc == exit_codes.EXIT_UNMUTABLE
+    assert строка == {"K": 1, "N": 4, "M": 0, "P": 0, "word": "unmutable"}
+
+
+def test_шард_с_неразобранным_файлом_пишет_partial_и_вердикт_красный(tmp_path, monkeypatch):
+    """Сквозь писателя и судью: правка, после которой файл не разбирается, —
+    P = 0, но слово шарда `partial`, и вердикт четырёх таких строк красный, а не
+    «мутировать нечего» (выходной круг 2 по №441, DS C1)."""
+    import exit_codes
+    repo = _репо_с_правкой(tmp_path, "def f(a, b):\n    return (a\n")
+    rc, строка = _шард_пустого_плана(tmp_path, monkeypatch, repo)
+    assert rc == exit_codes.EXIT_PARTIAL
+    assert строка == {"K": 1, "N": 4, "M": 0, "P": 0, "word": "partial"}
+    каталог = tmp_path / "шарды"
+    каталог.mkdir()
+    for k in range(1, 5):
+        (каталог / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(
+            json.dumps({**строка, "K": k}), encoding="utf-8")
+    assert mc.merge_shards(каталог) == 1
+
+
+def test_вердикт_с_битым_файлом_показывает_прочитанные_шарды(tmp_path, capsys):
+    """Один нечитаемый файл — красный с причиной, но три прочитанных шарда
+    остаются в сводке: «шардов 0, M=0, P=0» при трёх отработавших врал бы
+    читателю PR (выходной круг 2 по №441, DS M2)."""
+    for k in range(1, 4):
+        (tmp_path / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+            {"K": k, "N": 4, "M": 2, "P": 8, "word": "ok"}), encoding="utf-8")
+    (tmp_path / f"r4.txt{mc.SHARD_LINE_SUFFIX}").write_text('{"K": 4, "N"', encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "нечитаемый файл шарда" in out and "r4.txt" in out
+    assert "итог: шардов 3, M=6, P=8" in out
+
+
+def test_вердикт_при_пустом_диапазоне_не_краснеет(tmp_path):
+    """P = 0: «нечего» — заметка, «строки есть, мутировать нечего» (слепое пятно,
+    №386) — предупреждение, но не красный; «не прочитан файл» — красный."""
+    def шарды(каталог, слово):
+        каталог.mkdir()
+        for k in range(1, 5):
+            (каталог / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+                {"K": k, "N": 4, "M": 0, "P": 0, "word": слово}), encoding="utf-8")
+        return каталог
+    assert mc.merge_shards(шарды(tmp_path / "a", "nothing")) == 0
+    assert mc.merge_shards(шарды(tmp_path / "b", "unmutable")) == 0
+    assert mc.merge_shards(шарды(tmp_path / "c", "partial")) == 1
+    # оба «нечего» сразу — тоже слепое пятно, а не неполный исход
+    смесь = шарды(tmp_path / "d", "nothing")
+    for k in (3, 4):
+        (смесь / f"r{k}.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+            {"K": k, "N": 4, "M": 0, "P": 0, "word": "unmutable"}), encoding="utf-8")
+    assert mc.merge_shards(смесь) == 0
+
+
+def test_вердикт_пишет_отчёт_и_в_новый_каталог(tmp_path):
+    """Каталог отчёта слияния создаётся вместе с родителями: артефакт CI
+    раскладывается по вложенным путям, которых до шага нет."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    (d / f"r1.txt{mc.SHARD_LINE_SUFFIX}").write_text(json.dumps(
+        {"K": 1, "N": 1, "M": 2, "P": 2, "word": "ok"}), encoding="utf-8")
+    отчёт = tmp_path / "новый" / "вложенный" / "вердикт.txt"
+    assert mc.merge_shards(d, отчёт) == 0
+    assert "шарды чисты" in отчёт.read_text(encoding="utf-8")
+
+
+def test_вердикт_без_файлов_называет_причину(tmp_path, capsys):
+    """Пустой каталог артефактов — красный с причиной «ни одного файла шарда»,
+    а не «разные N» из пустого множества."""
+    (tmp_path / "пусто").mkdir()
+    assert mc.merge_shards(tmp_path / "пусто") == 1
+    assert "ни одного файла шарда" in capsys.readouterr().out
+
+
+def test_шард_с_урезающим_потолком_пишет_долю_и_partial(tmp_path, monkeypatch):
+    """Шард 1/1 с `--max 3` при плане из шести: машинная строка несёт M = 6 (вся
+    доля) и слово `partial` — срез виден вердикту словом, а не арифметикой ΣM
+    (выходной круг 1 по №441, DS M4)."""
+    repo = _репо_с_правкой(tmp_path)
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def run_tests(cwd, targets, timeout):
+        calls["n"] += 1
+        return calls["n"] == 1          # база зелёная, мутанты убиты
+
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    отчёт = tmp_path / "отчёт.txt"
+    mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--shard", "1/1", "--max", "3",
+             "--timeout", "5", "--force", "--report", str(отчёт)])
+    data = json.loads(отчёт.with_name(отчёт.name + mc.SHARD_LINE_SUFFIX).read_text(encoding="utf-8"))
+    assert (data["M"], data["P"], data["word"]) == (6, 6, "partial")
+
+
+def test_потолок_равный_плану_не_переставляет_мутантов(tmp_path, monkeypatch, capsys):
+    """План ровно в потолок — среза нет, и порядок прогона — порядок плана. Срез
+    раскладывает мутантов по кругу между файлами; `>=` вместо `>` включал бы его
+    на плане, который резать не нужно (выживший мутант круга 1 по №441)."""
+    repo = _git_repo(tmp_path, {"src/a.py": _БАЗА, "src/b.py": _БАЗА})
+    (repo / "src" / "a.py").write_text(_ПРАВКА, encoding="utf-8")
+    (repo / "src" / "b.py").write_text(_ПРАВКА, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "две правки"], cwd=repo, check=True)
+    план, _ = mc.plan_for(repo, _ДИАПАЗОН)
+    assert {m.path.name for m in план} == {"a.py", "b.py"} and len(план) > 2
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def run_tests(cwd, targets, timeout):
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    monkeypatch.setattr(mc, "run_tests", run_tests)
+    mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--max", str(len(план)),
+             "--timeout", "5", "--force"])
+    out = capsys.readouterr().out
+    assert "СРЕЗАНО" not in out
+    прогон = re.findall(r"\] убит: (src/[ab]\.py:\d+)", out)
+    assert прогон == [f"src/{m.path.name}:{m.line}" for m in план], out[-800:]
+
+
+def test_max_all_снимает_потолок(tmp_path, monkeypatch, capsys):
+    """`--max all` — без среза: план длиннее умолчания (60) судится целиком."""
+    plan = _мутанты("scripts/mutate_check.py", 70)
+    assert len(plan) == 70
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force", "--max", "all",
+                    "--report", str(отчёт)]) == 0
+    out = capsys.readouterr().out
+    assert "СРЕЗАНО" not in out and "Мутантов к проверке: 70" in out, out
+    data = json.loads(отчёт.with_name(отчёт.name + ".json").read_text(encoding="utf-8"))
+    assert (data["M"], data["P"], data["N"]) == (70, 70, 1)
+
+
+def test_умолчание_max_остаётся_60(tmp_path, monkeypatch, capsys):
+    """Без `--max` потолок по-прежнему 60: 70 мутантов режутся до 60, и срез
+    объявлен вслух."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 70)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force"]) == exit_codes.EXIT_PARTIAL
+    out = capsys.readouterr().out
+    assert "Мутантов к проверке: 60 (СРЕЗАНО 10 — потолок --max=60)" in out, out
+
+
+def test_json_пишется_при_красной_базе(tmp_path, monkeypatch):
+    """Красная база — тоже исход, и он должен доехать машинной строкой: слово
+    `fail`, а не пустое место рядом с отчётом."""
+    plan = _мутанты("scripts/mutate_check.py", 2)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 1})
+    monkeypatch.setattr(mc, "run_tests", lambda cwd, targets, timeout: False)
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--force",
+                    "--report", str(отчёт)]) == 2
+    data = json.loads(отчёт.with_name(отчёт.name + ".json").read_text(encoding="utf-8"))
+    assert (data["word"], data["M"], data["P"]) == ("fail", 2, 2)
+
+
+def test_json_пишется_при_обрыве_по_бюджету(tmp_path, monkeypatch):
+    """Бюджет оборвал прогон до первого мутанта — машинная строка говорит
+    `unjudged`: слияние не примет это за покрытие."""
+    import exit_codes
+    plan = _мутанты("scripts/mutate_check.py", 3)
+    _прогон(tmp_path, monkeypatch, plan, секунды={_MC: 350})
+    отчёт = tmp_path / "отчёт.txt"
+    assert mc.main(["mutate_check.py", "--range", "HEAD", "--timeout", "100",
+                    "--budget-s", "399.9", "--force", "--report", str(отчёт)]) == \
+        exit_codes.EXIT_UNJUDGED
+    data = json.loads(отчёт.with_name(отчёт.name + ".json").read_text(encoding="utf-8"))
+    assert (data["word"], data["M"], data["P"]) == ("unjudged", 3, 3)
+
+
+def _шард(directory: pathlib.Path, имя: str, k: int, n: int, m: int, p: int, word: str):
+    (directory / имя).write_text(
+        json.dumps({"K": k, "N": n, "M": m, "P": p, "word": word}), encoding="utf-8")
+
+
+def test_merge_шардов_зелёный_и_пишет_таблицу(tmp_path, capsys):
+    """Полное покрытие и все `ok` — зелёный; таблица (K, M, слово) идёт и в
+    вывод, и в файл `--report`."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    _шард(d, "a.json", 1, 2, 3, 6, "ok")
+    _шард(d, "b.json", 2, 2, 3, 6, "ok")
+    отчёт = tmp_path / "вердикт.txt"
+    assert mc.merge_shards(d, отчёт) == 0
+    out = capsys.readouterr().out
+    assert "шард 1 из 2: M=3 — ok" in out and "шард 2 из 2: M=3 — ok" in out, out
+    assert "итог: шардов 2, M=6, P=6" in out and "шарды чисты" in out, out
+    assert отчёт.read_text(encoding="utf-8") == out
+
+
+def test_merge_шардов_nothing_при_своём_m_ноль_зелёный(tmp_path, capsys):
+    """Шард без мутантов (`nothing`, M = 0) среди чистых — не красный: покрытие
+    сходится, просто делить было нечего."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    _шард(d, "a.json", 1, 2, 5, 5, "ok")
+    _шард(d, "b.json", 2, 2, 0, 5, "nothing")
+    assert mc.merge_shards(d) == 0
+    assert "шарды чисты" in capsys.readouterr().out
+
+
+def test_merge_шардов_p0_все_nothing_заметка(tmp_path, capsys):
+    """P = 0 и все шарды — `nothing`: мутировать нечего, зелёный с заметкой."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    _шард(d, "a.json", 1, 2, 0, 0, "nothing")
+    _шард(d, "b.json", 2, 2, 0, 0, "nothing")
+    assert mc.merge_shards(d) == 0
+    assert "мутировать нечего" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ряды,фраза", [
+    ([], "шарды не покрыли план"),                                   # ни одного файла
+    ([(1, 2, 6, 6, "ok")], "шарды не покрыли план"),                 # файлов 1, а шардов 2
+    ([(1, 2, 3, 6, "ok"), (2, 3, 3, 6, "ok")], "разные N"),
+    ([(1, 2, 3, 6, "ok"), (1, 2, 3, 6, "ok")], "повтор или пропуск K"),
+    ([(1, 2, 2, 6, "ok"), (2, 2, 2, 6, "ok")], "ΣM ≠ P"),
+    ([(1, 2, 3, 6, "ok"), (2, 2, 3, 5, "ok")], "ΣM ≠ P"),            # разные P
+    ([(1, 2, 3, 6, "partial"), (2, 2, 3, 6, "ok")], "неполный исход"),
+    ([(1, 2, 3, 6, "unjudged"), (2, 2, 3, 6, "ok")], "неполный исход"),
+    ([(1, 2, 4, 6, "ok"), (2, 2, 2, 6, "nothing")], "неполный исход"),  # nothing с M > 0
+    # P > 0 и `unmutable` у шарда — красный; при P = 0 это слепое пятно всего
+    # диапазона, предупреждение (test_вердикт_при_пустом_диапазоне_не_краснеет)
+    ([(1, 2, 3, 6, "ok"), (2, 2, 3, 6, "unmutable")], "неполный исход"),
+    ([(1, 1, 1, 1, "fail")], "неполный исход"),
+])
+def test_merge_шардов_красный(tmp_path, capsys, ряды, фраза):
+    """Каждая строка таблицы вердикта — своим случаем: покрытие (число файлов,
+    N, набор K, ΣM), затем исходы шардов, кроме чистого."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    for i, (k, n, m, p, word) in enumerate(ряды):
+        _шард(d, f"{i}.json", k, n, m, p, word)
+    assert mc.merge_shards(d) == 1
+    assert фраза in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ряды,строка", [
+    # план есть: неполный — `partial` у первого шарда, чистый второй в перечень не входит
+    ([(1, 2, 3, 6, "partial"), (2, 2, 3, 6, "ok")], "шарды дали неполный исход: шард 1: partial"),
+    # плана нет у всего диапазона, но один шард не прочитал файл — перечень тот же
+    ([(1, 2, 0, 0, "nothing"), (2, 2, 0, 0, "partial")], "шарды дали неполный исход: шард 2: partial"),
+])
+def test_merge_шардов_неполный_исход_называет_шард_и_его_слово(tmp_path, capsys, ряды, строка):
+    """Первая строка вердикта называет КАЖДЫЙ нечистый шард его номером и словом:
+    человек идёт в отчёт именно этого шарда. Номер без слова (или слово номера)
+    в сводке не говорит, что случилось (ночной мутатор 28.09 — два выживших)."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    for i, (k, n, m, p, word) in enumerate(ряды):
+        _шард(d, f"{i}.json", k, n, m, p, word)
+    assert mc.merge_shards(d) == 1
+    assert capsys.readouterr().out.splitlines()[0] == строка
+
+
+def test_merge_шардов_битый_файл_красный(tmp_path, capsys):
+    d = tmp_path / "шарды"
+    d.mkdir()
+    (d / "x.json").write_text("{не json", encoding="utf-8")
+    assert mc.merge_shards(d) == 1
+    assert "шарды не покрыли план" in capsys.readouterr().out
+
+
+def test_merge_shards_работает_вне_git_дерева(tmp_path, monkeypatch, capsys):
+    """Режим слияния разбирается до `git rev-parse`: job вердикта стоит на голом
+    каталоге артефактов, вне git-дерева."""
+    d = tmp_path / "шарды"
+    d.mkdir()
+    _шард(d, "a.json", 1, 1, 2, 2, "ok")
+    monkeypatch.chdir(tmp_path)
+    assert mc.main(["mutate_check.py", "--merge-shards", str(d)]) == 0
+    assert "шарды чисты" in capsys.readouterr().out

@@ -57,6 +57,21 @@ review gates, and who answers for what — is documented in
   non-empty plan was judged — in CI that one is red. `--report` is rewritten
   after every mutant, so a job killed at its ceiling still leaves what was
   checked.
+  In CI the changed lines are split across four shards: `--shard K/N` keeps
+  every N-th mutant (`i % N == K-1`, before `--max`), `--max all` lifts the
+  60-mutant ceiling, and each shard writes a machine line `<report>.json`
+  beside the report — `K`, `N`, `M` (its mutants), `P` (the whole plan) and
+  the outcome word. A shard left with no mutants of a non-empty plan prints
+  `шард K из N: 0 из P — нечего` and still writes both files; at `P = 0` every
+  shard writes the diagnosis of the whole range. A separate verdict job merges
+  them with `--merge-shards DIR`; its table lives in the `merge_shards`
+  docstring. In short: red when the files do not cover the plan exactly (one
+  per shard, keys 1..N, ΣM = P, every file readable); at `P = 0` all-`nothing`
+  is the note "nothing to mutate" and `nothing`/`unmutable` the blind-spot
+  warning, both green; at `P > 0` green only when every shard is `ok` — or
+  `nothing` with its own `M = 0`; `partial`, `unjudged` and `fail` are red. So
+  `partial` in CI is a failure now, not a warning. A file that does not parse
+  counts as unread, like one missing from the revision.
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put
@@ -87,7 +102,7 @@ review gates, and who answers for what — is documented in
 
 | When | What |
 |---|---|
-| every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard |
+| every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard, mutation (4 shards + verdict) |
 | nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
 
 Lint rules live in one place, `[tool.ruff.lint]` of the root `pyproject.toml`;
