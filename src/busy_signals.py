@@ -109,7 +109,7 @@ class MutationLock:
         f = self.path.open("a+")
         # Ретраи против микросекундных проб эксклюзивом (`held_by_anyone`) —
         # в хелпере (круг-2 по PR #399, DS); ФС без flock — отказ сразу.
-        if not file_locks.acquire_shared(f, attempts=5, pause=0.2):
+        if not file_locks.acquire_shared(f):
             f.close()
             return False
         os.chmod(self.path, 0o600)   # политика приватных каталогов, как у демона

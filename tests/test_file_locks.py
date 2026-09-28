@@ -197,3 +197,29 @@ def test_shared_acquire_retries_past_a_probe(tmp_path):
     fcntl.flock(probe, fcntl.LOCK_EX)
     with path.open("a") as f:
         assert file_locks.acquire_shared(f, sleep=lambda _s: probe.close()) is True
+
+
+def test_try_lock_names_a_filesystem_without_flock(monkeypatch, tmp_path):
+    """Три исхода механики — значения, а не «не взят»: ФС без flock — свой исход, не
+    занятость и не `None`; таблица политики в докстринге модуля читает именно его."""
+    def no_flock(fd, op):
+        raise OSError(errno.ENOLCK, "no locks")
+    monkeypatch.setattr(file_locks.fcntl, "flock", no_flock)
+    with (tmp_path / "x.lock").open("a") as f:
+        got = file_locks._try_lock(f, fcntl.LOCK_EX, attempts=3, pause=0.0,
+                                   busy=(BlockingIOError,), sleep=lambda _s: None)
+    assert got == file_locks._NO_FLOCK and got is not None
+    assert len({file_locks._TAKEN, file_locks._BUSY, file_locks._NO_FLOCK}) == 3
+
+
+def test_shared_acquire_default_retries_are_spaced_against_probes(tmp_path):
+    """Умолчание разделяемого захвата — пять попыток через 0,2 с: проба эксклюзивом
+    держит файл микросекунды, и ретраи без паузы сгорели бы за одну пробу."""
+    path = tmp_path / "x.lock"
+    holder = path.open("w")
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    pauses: list[float] = []
+    with path.open("a") as f:
+        assert file_locks.acquire_shared(f, sleep=pauses.append) is False
+    holder.close()
+    assert pauses == [0.2] * 4

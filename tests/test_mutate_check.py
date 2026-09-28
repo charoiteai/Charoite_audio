@@ -1902,6 +1902,9 @@ def test_jobs_2_находит_тех_же_выживших_что_послед�
     assert [p.name for p in отчёты] == ["1.txt", "2.txt"], out[-1500:]
     # долей ровно N и нумерация с единицы: лишняя доля 0 оставила бы свой журнал
     assert sorted(p.name for p in журналы.glob("*.log")) == ["1.log", "2.log"], out[-1500:]
+    # у каждой доли свой процесс: строка запуска называет pid этой доли, а не первой
+    pids = dict(re.findall(r"доля (\d+)/2: pid (\d+)", out))
+    assert set(pids) == {"1", "2"} and pids["1"] != pids["2"], out[-1500:]
     нашли = set().union(*(_выжившие(p.read_text(encoding="utf-8")) for p in отчёты))
     assert нашли == ждём
     текст = сводка.read_text(encoding="utf-8")

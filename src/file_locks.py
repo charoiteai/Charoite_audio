@@ -75,7 +75,8 @@ def _try_lock(f, op: int, *, attempts: int, pause: float,
             sleep(pause)
         except OSError:
             return _NO_FLOCK
-    return _BUSY
+    # сюда не доходит: attempts ≥ 1, и последняя попытка возвращает в каждой ветке
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def acquire_exclusive(f, *, attempts: int = 5, pause: float = 0.2,
