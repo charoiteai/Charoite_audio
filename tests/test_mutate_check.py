@@ -1960,6 +1960,23 @@ def test_jobs_sigterm_родителя_останавливает_доли_их_
         assert "KeyboardInterrupt" in (журналы / f"{k}.log").read_text(encoding="utf-8"), k
 
 
+def test_обработчик_остановки_сначала_глушит_оба_сигнала():
+    """Второй сигнал в зазоре между первым и остановкой долей не должен поднять второй
+    `_Stopped` изнутри `except`: обработчик глушит SIGINT и SIGTERM ДО `raise`
+    (выходной круг 1 по №444 B, I1)."""
+    import signal
+    прежние = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with pytest.raises(mc._Stopped) as стоп:
+            mc._raise_stopped(signal.SIGTERM, None)
+        assert стоп.value.signum == signal.SIGTERM
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    finally:
+        for s, h in прежние.items():
+            signal.signal(s, h)
+
+
 def test_stop_children_добивает_глухую_к_sigint_группу(tmp_path):
     """Доля, не отпустившая SIGINT за запас, получает SIGKILL всей группой."""
     import signal

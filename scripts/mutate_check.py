@@ -826,8 +826,9 @@ def check_pair(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 
 
 #: Отказ замка — нейтральный: другой мутатор больше не помеха (замок разделяемый);
-#: не взят он лишь за секунду ретраев против чужой пробы или на ФС без flock.
-LOCK_REFUSED = "замок мутатора не взят за 1 с (чужая проба или ФС без flock) — повтори запуск"
+#: не взят он, только если ретраи против чужой пробы кончились или ФС без flock.
+LOCK_REFUSED = ("замок мутатора не взят (ретраи против чужой пробы кончились или ФС без flock) — "
+                "повтори запуск")
 
 
 #: Суффикс машинной строки шарда рядом с отчётом: `<report>` + он. Одно имя на троих —
@@ -995,6 +996,13 @@ class _Stopped(Exception):
 
 
 def _raise_stopped(signum, frame):
+    """Обработчик остановки: ПЕРВЫМ делом глушит оба сигнала, потом поднимает
+    `_Stopped`. Глушить в `except` вызывающего поздно: второй Ctrl-C или повторный
+    SIGTERM в зазоре до этих строк поднимал второй `_Stopped` изнутри `except`, и
+    доли оставались без остановки (выходной круг 1 по №444 B, I1). Вложенный вызов
+    обработчика в его же первых строках даёт тот же один `_Stopped`."""
+    for s in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(s, signal.SIG_IGN)
     raise _Stopped(signum)
 
 
@@ -1070,8 +1078,6 @@ def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int
             for p in procs:
                 p.wait()
         except _Stopped as stop:
-            for s in prev:
-                signal.signal(s, signal.SIG_IGN)
             print(f"⏹ сигнал {stop.signum} — останавливаю доли: SIGINT, через "
                   f"{CHILD_STOP_GRACE_S} с — SIGKILL")
             stop_children(procs)

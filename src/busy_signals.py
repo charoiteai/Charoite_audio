@@ -103,8 +103,8 @@ class MutationLock:
         self._f = None
 
     def acquire(self) -> bool:
-        """True — лок наш; False — не взят за секунду (ретраи против
-        микросекундной пробы эксклюзивом кончились) или ФС без flock."""
+        """True — лок наш; False — ретраи против микросекундной пробы
+        эксклюзивом кончились или ФС без flock."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         f = self.path.open("a+")
         # Ретраи против микросекундных проб эксклюзивом (`held_by_anyone`) —
