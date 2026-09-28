@@ -1,13 +1,13 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 76.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 77.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
 - **base** (зависит от: —; модулей 12): `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `embed_door`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
-- **runtime** (зависит от: base; модулей 5): `charoite_paths`, `config_loader`, `deps`, `live_gate`, `privacy`
+- **runtime** (зависит от: base; модулей 6): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 10): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
@@ -37,6 +37,7 @@
 - `deps` → runtime: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `embed_door` → base: шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
+- `foreign_python` → runtime: дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; из репо тянет только exit_codes (base), зовёт его audio (diarize_nemotron)
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
@@ -117,6 +118,7 @@
 - `scripts/wait_for_idle.py` ← scripts/nightly.sh; проба help
 - `src/daemon.py` ← app/Sources/CharoiteApp/Models/AppSettings.swift, app/Sources/CharoiteApp/Services/SetupReadinessService.swift, app/Sources/CharoiteApp/Services/SuflerService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; проба refuse
 - `src/diarize.py` ← ручной запуск: диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом; проба refuse
+- `src/diarize_nemotron.py` ← ручной запуск: сторона движка Nemotron: пересборка зовёт её процессом чужого интерпретатора через diarize_in_env этого же модуля (путь SCRIPT), руками — отладка движка на одной записи; №473; проба help
 - `src/dictate.py` ← app/Sources/CharoiteApp/Services/DictationService.swift; проба refuse
 - `src/dictate_note.py` ← app/Sources/CharoiteApp/Services/DictationService.swift, scripts/import_meeting.py; проба refuse
 - `src/graph_updater.py` ← scripts/import_meeting.py, src/mcp_server.py, src/rebuild_transcript.py, src/transcribe_file.py; проба refuse
@@ -195,6 +197,7 @@
 - `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md
 - `src/exit_codes.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/file_locks.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
+- `src/foreign_python.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md
 - `src/graph_links.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md

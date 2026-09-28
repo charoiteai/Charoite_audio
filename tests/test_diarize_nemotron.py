@@ -399,17 +399,19 @@ def test_unreadable_config_is_a_recipe(tmp_path, monkeypatch):
     assert problem and "PermissionError" in problem and "hf download" in problem
 
 
-def test_the_product_does_not_import_the_experiment():
-    """Эксперимент зовут только бенч и тесты: ни один модуль продукта не
-    импортирует `diarize_nemotron` — по графу импортов раскладки, а не по
-    докстрингу (выходной круг 1 по #648, DS I2)."""
+def test_the_product_reaches_the_engine_only_from_the_rebuild():
+    """Движок в продукте зовёт одна пересборка (№473), и только процессом чужого
+    интерпретатора: импортёр в `src/` ровно один — `rebuild_transcript`, по графу
+    импортов раскладки, а не по докстрингу (выходной круг 1 по #648, DS I2). Что
+    mlx при этом не попадает в процесс пересборки, держит
+    `test_the_caller_never_imports_mlx`."""
     sys.path.insert(0, str(REPO / "scripts"))
     import layout_map as lm
 
     graph = lm.import_graph(lm.inventory(REPO))
     assert "diarize_nemotron" in graph, "модуль пропал из графа — сторож сторожил бы пустоту"
     importers = sorted(m for m, deps in graph.items() if "diarize_nemotron" in deps)
-    assert importers == [], f"продукт зовёт эксперимент: {importers}"
+    assert importers == ["rebuild_transcript"], f"движок зовут не только из пересборки: {importers}"
     # граф раскладки видит только src/: точки входа из scripts/ — отдельным обходом, и
     # единственный законный импортёр назван явно (круг 2 по #648, DS I1)
     import ast
@@ -530,3 +532,205 @@ def test_the_docs_install_the_pinned_version():
     assert pins, "доки перестали называть версию mlx-audio — сторож смотрит мимо"
     for doc, versions in pins.items():
         assert set(versions) == {nem.MLX_AUDIO_VERSION}, (doc, versions)
+
+
+# ------------------------------------------------ протокол пересборки (№473)
+
+import importlib.abc  # noqa: E402
+import importlib.util  # noqa: E402
+import wave  # noqa: E402
+
+import foreign_python as fp  # noqa: E402
+from exit_codes import EXIT_ENGINE_UNAVAILABLE  # noqa: E402
+
+
+def _wav(path: pathlib.Path, samples, *, channels=1, width=2, rate=16000) -> pathlib.Path:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        dtype = {1: np.uint8, 2: np.int16}[width]
+        w.writeframes(np.asarray(samples, dtype=dtype).tobytes())
+    return path
+
+
+def _engine_stub(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
+    d = tmp_path / "engine"
+    d.mkdir(exist_ok=True)
+    p = d / "engine.py"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+def test_read_wav_gives_float32_mono_like_the_rebuild(tmp_path):
+    audio, sr = nem.read_wav(_wav(tmp_path / "m.wav", [0, 16384, -32768], rate=8000))
+    assert sr == 8000 and audio.dtype == np.float32
+    assert audio.tolist() == [0.0, 0.5, -1.0]
+    stereo, _ = nem.read_wav(_wav(tmp_path / "s.wav", [16384, 0, -16384, -16384], channels=2))
+    assert stereo.tolist() == [0.25, -0.5]
+
+
+def test_read_wav_refuses_anything_but_16_bit(tmp_path):
+    with pytest.raises(ValueError, match=r"u8\.wav: не 16-битный PCM \(8 бит\)"):
+        nem.read_wav(_wav(tmp_path / "u8.wav", [0, 255], width=1))
+    p24 = tmp_path / "s24.wav"
+    with wave.open(str(p24), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00\x00" * 4)
+    with pytest.raises(ValueError, match=r"s24\.wav: не 16-битный PCM \(24 бит\)"):
+        nem.read_wav(p24)
+
+
+def test_main_without_the_engine_refuses_before_reading_the_recording(tmp_path, monkeypatch, capsys):
+    """Нечем работать — код 10 и причины ОДНОЙ строкой (дверь берёт последнюю
+    строку stderr); запись не читается вовсе — её может и не быть."""
+    monkeypatch.setattr(nem, "availability", lambda path: "нет пакета mlx-audio — рецепт\nнет весов — рецепт")
+    monkeypatch.setattr(nem, "read_wav", lambda p: pytest.fail("запись читается до проверки движка"))
+    assert nem.main([str(tmp_path / "нет.wav"), "--model", str(tmp_path)]) == EXIT_ENGINE_UNAVAILABLE
+    out, err = capsys.readouterr()
+    assert out == "" and err == "нет пакета mlx-audio — рецепт; нет весов — рецепт\n"
+
+
+def test_main_reports_a_model_that_does_not_load_as_unavailable(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(nem, "availability", lambda path: None)
+
+    def refuse(path, preset="offline"):
+        raise nem.ModelUnavailable("модели не хватило памяти\n— закрыть приложения")
+    monkeypatch.setattr(nem, "load_model", refuse)
+    wav = _wav(tmp_path / "bh.wav", [0] * 160)
+    assert nem.main([str(wav), "--model", str(tmp_path)]) == EXIT_ENGINE_UNAVAILABLE
+    assert capsys.readouterr().err == "модели не хватило памяти; — закрыть приложения\n"
+
+
+def test_main_prints_the_segments_as_one_json_object(tmp_path, monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(nem, "availability", lambda path: seen.setdefault("checked", path) and None)
+
+    def load(path, preset="offline"):
+        seen["preset"] = preset
+        return "модель"
+
+    def diarize(model, audio, sr):
+        seen["args"] = (model, audio.tolist(), sr)
+        return [{"start": 0.5, "end": 1.5, "speaker": "nem0"}]
+    monkeypatch.setattr(nem, "load_model", load)
+    monkeypatch.setattr(nem, "diarize_file", diarize)
+    wav = _wav(tmp_path / "bh.wav", [16384, 0], rate=16000)
+    assert nem.main([str(wav), "--model", str(tmp_path / "w")]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "segments": [{"start": 0.5, "end": 1.5, "speaker": "nem0"}]}
+    assert seen == {"checked": tmp_path / "w", "preset": "offline", "args": ("модель", [0.5, 0.0], 16000)}
+
+
+def test_main_answers_help_and_refuses_without_the_model(tmp_path, capsys):
+    with pytest.raises(SystemExit) as e:
+        nem.main(["--help"])
+    assert e.value.code == 0 and "--model" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:
+        nem.main([str(tmp_path / "a.wav")])
+    assert e.value.code == 2
+
+
+def test_the_real_entry_point_without_the_engine_exits_10(tmp_path):
+    """Сквозь настоящую точку входа, как её зовёт пересборка: интерпретатор без
+    mlx-audio (или каталог без весов) — UNAVAILABLE с рецептом, не падение."""
+    wav = _wav(tmp_path / "bh.wav", [0] * 1600)
+    out = nem.diarize_in_env(sys.executable, wav, model=tmp_path / "нет-весов", timeout=60)
+    assert out.kind == fp.UNAVAILABLE, out
+    assert "нет" in out.reason and "\n" not in out.reason
+
+
+@pytest.mark.parametrize("payload,why", [
+    ({}, "нет списка segments"),
+    ({"segments": {}}, "нет списка segments"),
+    ({"segments": [["0", 1]]}, "отрезок не объект"),
+    ({"segments": [{"start": True, "end": 1.0, "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": "0", "end": 1.0, "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": float("nan"), "end": 1.0, "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": 0.0, "end": float("inf"), "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": -0.1, "end": 1.0, "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": 1.0, "end": 1.0, "speaker": "nem0"}]}, "границы"),
+    ({"segments": [{"start": 0.0, "end": 1.0, "speaker": "spk0"}]}, "метка"),
+    ({"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem"}]}, "метка"),
+    ({"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem1x"}]}, "метка"),
+    ({"segments": [{"start": 0.0, "end": 1.0, "speaker": 3}]}, "метка"),
+])
+def test_parse_segments_refuses_anything_off_the_protocol(payload, why):
+    with pytest.raises(ValueError, match=why):
+        nem.parse_segments(payload)
+
+
+def test_parse_segments_turns_labels_into_slot_numbers():
+    assert nem.parse_segments({"segments": [
+        {"start": 0, "end": 1.5, "speaker": "nem0"},
+        {"start": 1.5, "end": 3.25, "speaker": "nem12"},
+    ]}) == [(0.0, 1.5, 0), (1.5, 3.25, 12)]
+    assert nem.parse_segments({"segments": []}) == []
+
+
+def test_diarize_in_env_without_an_interpreter_is_unavailable(tmp_path):
+    out = nem.diarize_in_env("", tmp_path / "bh.wav", model=tmp_path, timeout=5)
+    assert out.kind == fp.UNAVAILABLE and "sufler.nemotron_python" in out.reason
+
+
+def test_diarize_in_env_passes_the_recording_and_the_model_and_parses(tmp_path, monkeypatch):
+    s = _engine_stub(tmp_path, 'import json, sys\nwav, flag, model = sys.argv[1:]\n'
+                               'assert flag == "--model"\n'
+                               'print(json.dumps({"segments": [{"start": 0.0, "end": 2.0, "speaker": "nem3"}],'
+                               ' "argv": [wav, model]}))\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path / "w", timeout=30)
+    assert out == fp.Outcome(fp.OK, payload=[(0.0, 2.0, 3)])
+
+
+def test_diarize_in_env_turns_a_protocol_breach_into_a_failure(tmp_path, monkeypatch):
+    s = _engine_stub(tmp_path, 'print(\'{"segments": [{"start": 2.0, "end": 1.0, "speaker": "nem0"}]}\')\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30)
+    assert out.kind == fp.FAILED and out.reason.startswith("ответ движка не по протоколу: границы")
+
+
+def test_diarize_in_env_passes_unavailable_and_failed_through(tmp_path, monkeypatch):
+    s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30) == \
+        fp.Outcome(fp.UNAVAILABLE, reason="нет весов")
+    s.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30) == \
+        fp.Outcome(fp.FAILED, reason="код 1: без вывода")
+
+
+def test_the_script_is_this_module_file():
+    assert nem.SCRIPT == REPO / "src" / "diarize_nemotron.py"
+    assert nem.SCRIPT.resolve() == pathlib.Path(nem.__file__).resolve()
+
+
+def test_the_caller_never_imports_mlx(tmp_path, monkeypatch):
+    """Искатель в sys.meta_path на всё время вызова: попытка импорта mlx в процессе
+    пересборки видна, даже если модуль потом выгрузили (круг 6 по №473, I4)."""
+    tried = []
+
+    class Spy(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] in ("mlx", "mlx_audio"):
+                tried.append(name)
+            return None
+
+    for name in [m for m in sys.modules if m.split(".")[0] in ("mlx", "mlx_audio")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [Spy(), *sys.meta_path])
+    s = _engine_stub(tmp_path, 'print(\'{"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem0"}]}\')\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", model=tmp_path, timeout=30).ok
+    monkeypatch.undo()
+    wav = _wav(tmp_path / "bh.wav", [0] * 1600)
+    for name in [m for m in sys.modules if m.split(".")[0] in ("mlx", "mlx_audio")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [Spy(), *sys.meta_path])
+    nem.diarize_in_env(sys.executable, wav, model=tmp_path, timeout=60)
+    assert tried == [], f"процесс пересборки пытался импортировать {tried}"
+    # сам искатель работает: прямой поиск модуля он видит (стоит mlx-audio или нет)
+    importlib.util.find_spec("mlx_audio")
+    assert tried == ["mlx_audio"]
