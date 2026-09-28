@@ -262,6 +262,145 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
     return inter / max(1e-6, a[1] - a[0])
 
 
+#: Карлик канала собеседников: голос, набравший за встречу меньше этого (с), —
+#: осколок кластеризации, а не отдельный человек. В звонке участники говорят
+#: подолгу, и кластер короче 25 с почти наверняка кусок чьего-то голоса
+#: (встреча 21.07: 23 «голоса» в канале звонка при 8 людях).
+BH_DWARF_S = 25.0
+#: Карлик микрофона. Порог с первой версии пересборки (21.07), отдельного
+#: замера у него нет.
+MIC_DWARF_S = 10.0
+
+
+def merge_dwarfs(segs: list[tuple[float, float, int]],
+                 min_dur: float) -> list[tuple[float, float, int]]:
+    """Кластеры-карлики (< min_dur суммарно) — осколки кластеризации
+    (встреча 21.07: 23 «голоса» в канале звонка): вливаем их сегменты
+    во временно ближайший крупный кластер — текст не теряется."""
+    durs: dict[int, float] = {}
+    for s, e, k in segs:
+        durs[k] = durs.get(k, 0.0) + (e - s)
+    big = {k for k, d in durs.items() if d >= min_dur} or set(durs)
+    bigsegs = [t for t in segs if t[2] in big]
+    if not bigsegs:
+        return segs
+
+    def nearest_big(s: float, e: float) -> int:
+        return min(bigsegs, key=lambda x: min(abs(x[0] - e), abs(s - x[1])))[2]
+    return [(s, e, k if k in big else nearest_big(s, e)) for s, e, k in segs]
+
+
+def resolve_channel_segments(
+        bh_raw: list[tuple[float, float, int]] | None,
+        mic_raw: list[tuple[float, float, int]] | None, *,
+        owner_label: str,
+        bh_dwarf_s: float = BH_DWARF_S,
+) -> tuple[list[tuple[float, float, str]], dict[str, str]]:
+    """Сырые сегменты двух каналов → отрезки (start, end, метка) и канал-источник
+    каждой метки («bh» / «mic»: по нему распознавание берёт звук).
+
+    `bh_raw` / `mic_raw` — (start, end, номер кластера) от движка разметки;
+    None — канал не размечали (записи нет или она короче 20 с). Ввода-вывода
+    здесь нет: звук читает и движок зовёт `rebuild()`. Порядок — системный
+    канал, затем микрофон: эхо в микрофоне отсекается по отрезкам собеседников,
+    а «Собеседник N» микрофона продолжает нумерацию звонка. `owner_label` —
+    подпись владельца из настроек (`ChannelLabels.mic_signed`); пустая —
+    владельца не подписываем.
+    """
+    segments: list[tuple[float, float, str]] = []  # (start, end, метка)
+    chan: dict[str, str] = {}  # метка → канал-источник звука
+    next_n = 1
+
+    # Объявляем ДО ветки: на mic-only машине (нет BlackHole или не выдано
+    # разрешение на системный звук) блок ниже не выполняется, а `bh_segs`
+    # читается дальше в `call=bool(bh_segs)`. Без объявления там NameError,
+    # который `main()` глотает как «пересборка не удалась» — и встреча молча
+    # остаётся без разбора по голосам, распознавания по абзацам и имён, а
+    # через record_keep_days запись удаляется и вернуть качество уже нечем
+    # (ревью 20.08, GLM).
+    bh_segs: list[tuple[float, float, int]] = []
+    if bh_raw is not None:
+        bh_segs = merge_dwarfs(bh_raw, bh_dwarf_s)
+        mapping: dict[int, str] = {}
+        for s, e, k in bh_segs:
+            if k not in mapping:
+                mapping[k] = f"Собеседник {next_n}"
+                chan[mapping[k]] = "bh"
+                next_n += 1
+            segments.append((s, e, mapping[k]))
+        log(f"blackhole: {len(bh_segs)} сегментов, голосов {len(mapping)}")
+
+    if mic_raw is not None:
+        # эхо динамиков: mic-сегмент, накрытый blackhole-речью, выбрасываем
+        bh_iv = [(s, e) for s, e, _ in segments]
+        mic_segs = [t for t in mic_raw
+                    if not any(overlap_frac((t[0], t[1]), iv) > 0.5 for iv in bh_iv)]
+        mic_segs = merge_dwarfs(mic_segs, MIC_DWARF_S)
+        durs: dict[int, float] = {}
+        for s, e, k in mic_segs:
+            durs[k] = durs.get(k, 0.0) + (e - s)
+        # Владелец — тот, чей голос ЯВНО преобладает в своём микрофоне.
+        # Просто «самый долгий» брать нельзя: это ровно то доминирование,
+        # от которого отказались 20.07, и в гибридной встрече (коллега
+        # рядом говорит дольше) имя владельца досталось бы коллеге —
+        # причём теперь настоящее имя, а не безобидный литерал
+        # «владелец» (ревью 19.08, DeepSeek). Пороги — те же, что у
+        # живой ленты, чтобы финал не переписывал её решение.
+        # Пересборка — НЕЗАВИСИМАЯ переоценка по всей записи, а не
+        # повтор решения живой ленты: там скользящее окно и инерция,
+        # здесь сырые суммы за встречу. Для звонка, где владелец один
+        # в микрофоне, обе дают одно и то же; на встрече с переломом
+        # формата могут разойтись — и финал, у которого есть вся
+        # запись, честнее (ревью 19.08, второй круг).
+        #
+        # Эхо здесь отсекает геометрия (пересечения с сегментами
+        # системной дорожки убраны выше), а не совпадение номеров
+        # голосов: нумерация двух дорожек независима.
+        heard = owner_voice_rules.Heard(mic=dict(durs), call=bool(bh_segs))
+        owner_voice = owner_voice_rules.owner_voice(heard)
+        # Имя — из настроек: живая лента подписывает владельца именем из
+        # того же ключа, и финальная стенограмма обязана говорить то же
+        # самое. Раньше здесь стоял литерал, и после Стопа человек в
+        # своей же встрече переименовывался. Пустое имя — «Я», как в
+        # хабе захвата (audio.py), а не «владелец»: иначе безымянный
+        # переименовывается по-прежнему.
+        # Правило одно с живой лентой и захватом — ChannelLabels (D-П2):
+        # имя из настроек, пустое — «Я»; имя, совпавшее с нейтральной
+        # меткой («Собеседник 2»), подписью быть не может — по метке
+        # выбирается дорожка для распознавания, и реплики удалённого
+        # собеседника поехали бы из микрофонного аудио (ревью 19.08).
+        if not owner_label:
+            owner_voice = None
+        mapping = {}
+        for s, e, k in mic_segs:
+            if k not in mapping:
+                if k == owner_voice:
+                    mapping[k] = owner_label
+                else:
+                    mapping[k] = f"Собеседник {next_n}"
+                    next_n += 1
+                chan[mapping[k]] = "mic"
+            segments.append((s, e, mapping[k]))
+        log(f"mic: {len(mic_segs)} сегментов, голосов {len(durs)}, "
+            f"владелец: {'по преобладанию' if owner_voice is not None else 'не назначен'}")
+    return segments, chan
+
+
+def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:
+    """Склейка соседних кусков одного голоса (зазор < gap) — цельные абзацы.
+
+    Вход сортируется по началу устойчиво: при равном начале отрезок звонка
+    остаётся раньше микрофонного, как их вернул `resolve_channel_segments`.
+    """
+    merged: list[list] = []
+    for s, e, spk in sorted(segments, key=lambda t: t[0]):
+        if merged and merged[-1][2] == spk and s - merged[-1][1] < gap:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e, spk])
+    return merged
+
+
 def _cut_lines(text: str, limit: int) -> str:
     """Первые `limit` знаков, но по границе строки (или слова, если строка
     одна): обрезок слова с заглавной («Лен» от «Ленинградское») стал бы для
@@ -589,123 +728,31 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         log("записей нет — оставляю живую стенограмму")
         return None
 
-    segments: list[tuple[float, float, str]] = []  # (start, end, метка)
-    chan: dict[str, str] = {}  # метка → канал-источник звука
-    next_n = 1
-
-    def merge_dwarfs(segs: list[tuple[float, float, int]],
-                     min_dur: float) -> list[tuple[float, float, int]]:
-        """Кластеры-карлики (< min_dur суммарно) — осколки кластеризации
-        (встреча 21.07: 23 «голоса» в канале звонка): вливаем их сегменты
-        во временно ближайший крупный кластер — текст не теряется."""
-        durs: dict[int, float] = {}
-        for s, e, k in segs:
-            durs[k] = durs.get(k, 0.0) + (e - s)
-        big = {k for k, d in durs.items() if d >= min_dur} or set(durs)
-        bigsegs = [t for t in segs if t[2] in big]
-        if not bigsegs:
-            return segs
-
-        def nearest_big(s: float, e: float) -> int:
-            return min(bigsegs, key=lambda x: min(abs(x[0] - e), abs(s - x[1])))[2]
-        return [(s, e, k if k in big else nearest_big(s, e)) for s, e, k in segs]
-
-    # Объявляем ДО ветки: на mic-only машине (нет BlackHole или не выдано
-    # разрешение на системный звук) блок ниже не выполняется, а `bh_segs`
-    # читается дальше в `call=bool(bh_segs)`. Без объявления там NameError,
-    # который `main()` глотает как «пересборка не удалась» — и встреча молча
-    # остаётся без разбора по голосам, распознавания по абзацам и имён, а
-    # через record_keep_days запись удаляется и вернуть качество уже нечем
-    # (ревью 20.08, GLM).
-    bh_segs: list[tuple[float, float, int]] = []
+    # Сырые сегменты каналов: None — канал не размечали (записи нет или она
+    # короче 20 с), [] — размечали, речи не нашли. Разметку по голосам и
+    # эхо решает resolve_channel_segments; здесь — только звук и движок.
+    bh_raw: list[tuple[float, float, int]] | None = None
+    mic_raw: list[tuple[float, float, int]] | None = None
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         if len(bh) > sr * 20:
-            # в звонке участники говорят подолгу — кластер короче 25с почти
-            # наверняка осколок чьего-то голоса, не отдельный человек
             # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
             # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
             hint = int(meta.get("speakers") or 0)
-            bh_segs = merge_dwarfs(
-                diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1), 25.0)
-            mapping: dict[int, str] = {}
-            for s, e, k in bh_segs:
-                if k not in mapping:
-                    mapping[k] = f"Собеседник {next_n}"
-                    chan[mapping[k]] = "bh"
-                    next_n += 1
-                segments.append((s, e, mapping[k]))
-            log(f"blackhole: {len(bh_segs)} сегментов, голосов {len(mapping)}")
-
+            bh_raw = diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1)
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
-            mic_segs = diarize_channel(mic, sr)
-            # эхо динамиков: mic-сегмент, накрытый blackhole-речью, выбрасываем
-            bh_iv = [(s, e) for s, e, _ in segments]
-            mic_segs = [t for t in mic_segs
-                        if not any(overlap_frac((t[0], t[1]), iv) > 0.5 for iv in bh_iv)]
-            mic_segs = merge_dwarfs(mic_segs, 10.0)
-            durs = {}
-            for s, e, k in mic_segs:
-                durs[k] = durs.get(k, 0.0) + (e - s)
-            # Владелец — тот, чей голос ЯВНО преобладает в своём микрофоне.
-            # Просто «самый долгий» брать нельзя: это ровно то доминирование,
-            # от которого отказались 20.07, и в гибридной встрече (коллега
-            # рядом говорит дольше) имя владельца досталось бы коллеге —
-            # причём теперь настоящее имя, а не безобидный литерал
-            # «владелец» (ревью 19.08, DeepSeek). Пороги — те же, что у
-            # живой ленты, чтобы финал не переписывал её решение.
-            # Пересборка — НЕЗАВИСИМАЯ переоценка по всей записи, а не
-            # повтор решения живой ленты: там скользящее окно и инерция,
-            # здесь сырые суммы за встречу. Для звонка, где владелец один
-            # в микрофоне, обе дают одно и то же; на встрече с переломом
-            # формата могут разойтись — и финал, у которого есть вся
-            # запись, честнее (ревью 19.08, второй круг).
-            #
-            # Эхо здесь отсекает геометрия (пересечения с сегментами
-            # системной дорожки убраны выше), а не совпадение номеров
-            # голосов: нумерация двух дорожек независима.
-            heard = owner_voice_rules.Heard(mic=dict(durs), call=bool(bh_segs))
-            owner_voice = owner_voice_rules.owner_voice(heard)
-            # Имя — из настроек: живая лента подписывает владельца именем из
-            # того же ключа, и финальная стенограмма обязана говорить то же
-            # самое. Раньше здесь стоял литерал, и после Стопа человек в
-            # своей же встрече переименовывался. Пустое имя — «Я», как в
-            # хабе захвата (audio.py), а не «владелец»: иначе безымянный
-            # переименовывается по-прежнему.
-            # Правило одно с живой лентой и захватом — ChannelLabels (D-П2):
-            # имя из настроек, пустое — «Я»; имя, совпавшее с нейтральной
-            # меткой («Собеседник 2»), подписью быть не может — по метке
-            # выбирается дорожка для распознавания, и реплики удалённого
-            # собеседника поехали бы из микрофонного аудио (ревью 19.08).
-            owner_label = channel_labels.ChannelLabels.from_config(cfg).mic_signed
-            if not owner_label:
-                owner_voice = None
-            mapping = {}
-            for s, e, k in mic_segs:
-                if k not in mapping:
-                    if k == owner_voice:
-                        mapping[k] = owner_label
-                    else:
-                        mapping[k] = f"Собеседник {next_n}"
-                        next_n += 1
-                    chan[mapping[k]] = "mic"
-                segments.append((s, e, mapping[k]))
-            log(f"mic: {len(mic_segs)} сегментов, голосов {len(durs)}, "
-                f"владелец: {'по преобладанию' if owner_voice is not None else 'не назначен'}")
-
+            mic_raw = diarize_channel(mic, sr)
+    # Подпись владельца читается из настроек, только когда микрофон размечен:
+    # без микрофона пересборка конфиг здесь не читала и не читает.
+    owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
+                   if mic_raw is not None else "")
+    segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label)
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
-    segments.sort(key=lambda t: t[0])
-    # склейка соседних кусков одного голоса (зазор < 2с) — цельные абзацы
-    merged: list[list] = []
-    for s, e, spk in segments:
-        if merged and merged[-1][2] == spk and s - merged[-1][1] < 2.0:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e, spk])
+    merged = paragraphs(segments)
     log(f"итог: {len(merged)} абзацев")
 
     # STT по абзацам (какой канал брать — по метке)
