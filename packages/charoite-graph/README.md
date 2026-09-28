@@ -26,8 +26,49 @@ python -m pip wheel --no-build-isolation --no-deps --no-index -w dist packages/c
 `ValueError` (порядок исключений определён), пустое имя — тоже отказ. Без обоих — умолчание пакета: архив встреч
 и копии стенограмм Чароита (умолчание уходит из пакета во второй части №422).
 
+## Пример
+
+Граф из двух заметок во временном каталоге, игрушечный векторизатор и поиск. Блок исполняет тест на собранном
+колесе — именно в том виде, в каком он лежит в описании артефакта (METADATA), и ждёт статус `confident` и найденный
+узел.
+
+```python
+import pathlib
+import tempfile
+
+from charoite_graph.graph_search import GraphSearch
+from charoite_graph.model_seam import Embedder
+
+
+def vectors(texts, timeout):
+    # Игрушечный векторизатор: частоты пяти букв. Настоящий — ваша модель эмбеддингов.
+    return [[1.0 + text.lower().count(c) for c in "аеиор"] for text in texts]
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    graph = pathlib.Path(tmp, "граф")
+    graph.mkdir()
+    (graph / "Платёжный шлюз.md").write_text("Шлюз принимает платежи и передаёт их в [[Биллинг]].\n", encoding="utf-8")
+    (graph / "Биллинг.md").write_text("Биллинг выставляет счета.\n", encoding="utf-8")
+    # Имя модели подписывает кэш векторов в data_dir: одно имя — одно пространство векторов.
+    search = GraphSearch(graph, data_dir=pathlib.Path(tmp, "кэш"), embedder=Embedder(vectors, "частоты-букв"))
+    search.refresh(force=True)   # обход графа: без него индекс пуст
+    search.embed_pending()       # векторы заметок: без них выдача «не проверена семантикой»
+    result = search.search("кто принимает платежи")
+    print(result.status.value)   # confident — найдено и подтверждено векторами
+    print(result.text)
+```
+
+Вне приложения пару «векторизатор и имя» собирает пользователь пакета: двери, которая строит её по адресу модели,
+в пакете пока нет. Имя подписывает кэш векторов в `data_dir` — одно имя на одно пространство векторов.
+
+## Что сверяет тест колеса
+
+Метаданные артефакта против объявления (`Name`, `Version`, `Requires-Python`, `License-Expression`,
+`Requires-Dist`, `License-File` — строкой как есть: каноническую форму пишет инструмент сборки, объявление обязано
+быть в ней), тело METADATA против этого README, текст лицензии в колесе против файла, сторонние импорты пакета
+против `dependencies` и `dependencies` против корневого манифеста приложения.
+
 ## Что здесь ещё не судится
 
-Метаданные (`Requires-Dist`, `Requires-Python`), проверяемый пример из README и
-шаг сборки в CI — предмет №446. Здесь проверяемого примера нет: этот README
-описывает пакет человеку, а не служит пробой.
+Сборка на месте поверх следов прошлого раза — сегодня тест эмулирует её копией раскладки.

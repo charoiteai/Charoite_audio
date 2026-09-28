@@ -1100,6 +1100,16 @@ a temporary copy of the layout, the test unpacks the archive and compares its
 it, and corruption is checked on a copy of the archive; the build needs
 `setuptools` at the version pinned in `env` of `ci.yml`, and a missing or
 different version fails with the exact install command instead of skipping.
+The wheel is also judged against its declaration (№446): one reader of
+`packages/charoite-graph/pyproject.toml`, METADATA read by `importlib.metadata`
+straight from the archive, and a table of line kinds with their dependencies —
+Name, Version, Requires-Python, License-Expression and Requires-Dist equal to
+the declaration as written, the METADATA body equal to the package README, the
+license text in the wheel equal to the file, every third-party import of the
+package declared (and nothing declared unused), and each package dependency
+written the same way in the root manifest. Every kind has its own corrupt-copy
+case, and the README example is taken from the artifact's description and run
+against the unpacked wheel.
 
 ## Stopping a recording
 

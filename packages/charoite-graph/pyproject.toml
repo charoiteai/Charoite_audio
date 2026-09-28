@@ -10,6 +10,10 @@ description = "Поиск по графу ссылок с русской мор�
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+# Текст лицензии едет в колесе (PEP 639). Путь — внутри каталога дистрибутива: `..` стандарт
+# запрещает, а без файла setuptools собирает колесо молча и без лицензии (опыт №446). Копия
+# побайтово равна корневому LICENSE — это держит тест.
+license-files = ["LICENSE"]
 dependencies = ["pyyaml>=6.0"]
 
 [tool.setuptools]
