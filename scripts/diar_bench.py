@@ -155,14 +155,18 @@ def speech_frames(truth: list[dict], total: float) -> int:
 
 
 def has_overlap(segments: list[dict]) -> bool:
-    """Звучат ли где-нибудь два голоса одновременно (дольше кадра сетки)."""
-    ordered = sorted(segments, key=lambda s: s["start"])
-    busy_until, who = float("-inf"), None
-    for seg in ordered:
-        if seg["start"] < busy_until - FRAME and seg["speaker"] != who:
+    """Звучат ли где-нибудь два голоса одновременно (дольше кадра сетки).
+
+    Для каждого голоса помним, докуда он уже звучал; отрезок перебивает, если
+    начинается больше чем за кадр до конца чужого голоса. Перекрытие ровно в кадр —
+    округление разметки, а не перебивание.
+    """
+    heard_until: dict[str, float] = {}
+    for seg in sorted(segments, key=lambda s: s["start"]):
+        if any(seg["start"] < end - FRAME
+               for voice, end in heard_until.items() if voice != seg["speaker"]):
             return True
-        if seg["end"] > busy_until:
-            busy_until, who = seg["end"], seg["speaker"]
+        heard_until[seg["speaker"]] = max(heard_until.get(seg["speaker"], seg["end"]), seg["end"])
     return False
 
 

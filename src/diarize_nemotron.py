@@ -236,6 +236,12 @@ def to_segments(raw: Iterable[_Segment], prefix: str = "nem") -> list[dict]:
 MERGE_GAP_S = 0.0
 
 
+def _us(seconds: float) -> int:
+    """Секунды в целых микросекундах: пауза сравнивается с порогом без шума плавающей
+    точки (1.3 - 1.0 — это 0.30000000000000004), и пауза, равная порогу, склеивается."""
+    return round(seconds * 1_000_000)
+
+
 def merge_same_speaker(segments: list[dict], gap: float = MERGE_GAP_S) -> list[dict]:
     """Склеить куски одного голоса, разрезанные границей чанка.
 
@@ -248,7 +254,7 @@ def merge_same_speaker(segments: list[dict], gap: float = MERGE_GAP_S) -> list[d
     by_speaker: dict[str, list[dict]] = {}
     for seg in sorted(segments, key=lambda s: s["start"]):
         runs = by_speaker.setdefault(seg["speaker"], [])
-        if runs and seg["start"] - runs[-1]["end"] <= gap + 1e-6:
+        if runs and _us(seg["start"] - runs[-1]["end"]) <= _us(gap):
             runs[-1]["end"] = max(runs[-1]["end"], seg["end"])
         else:
             runs.append(dict(seg))

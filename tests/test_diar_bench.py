@@ -555,6 +555,30 @@ def test_fixture_run_reads_the_fixture_it_was_given(tmp_path, monkeypatch, capsy
     assert "голосов в разметке: 4" in out and FOOTER in out
 
 
+@pytest.mark.parametrize("argv, cut", [
+    (("--engine", "compare"), True),
+    (("--engine", "compare", "--overlap"), True),
+    (("--engine", "live"), False),
+    (("--engine", "live", "--overlap"), True),
+], ids=["очная-ставка", "очная-ставка-с-флагом", "живой", "живой-с-флагом"])
+def test_compare_cuts_live_engines_like_the_daemon(tmp_path, monkeypatch, capsys, argv, cut):
+    """Очная ставка сама режет живые движки нарезкой демона; одиночный движок режется
+    так, как попросили (выходной круг 1 по #648, DS I5)."""
+    seen = []
+
+    def engines(args):
+        seen.append(args.overlap)
+        return {name: (lambda wav: CROSS, False) for name in diar_bench.ENGINE_NAMES}
+    monkeypatch.setattr(diar_bench, "_engines", engines)
+    monkeypatch.setattr(diar_bench.nemotron, "availability", lambda *a, **k: None)
+    wav = _wav(tmp_path / "m.wav", CROSS_TOTAL)
+    monkeypatch.setattr(sys, "argv", ["diar_bench.py", "--wav", str(wav), *argv])
+    assert diar_bench.main() == 0
+    assert seen == [cut]
+    said = "нарезкой демона" in capsys.readouterr().out
+    assert said is (argv == ("--engine", "compare"))
+
+
 def test_missing_crosstalk_fixture_names_the_right_recipe(monkeypatch, capsys):
     code, _out, err, runs = _main(monkeypatch, capsys, "--crosstalk", "--engine", "live")
     assert code == 1 and runs == []

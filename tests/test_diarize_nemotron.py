@@ -122,6 +122,17 @@ def test_git_lfs_pointer_is_not_a_model(tmp_path):
     assert nem.check_model_dir(d) is not None
 
 
+def test_unreadable_weights_are_a_recipe_not_a_trace(tmp_path):
+    """Файл весов в каталоге есть, но не читается (ссылка на отвалившийся том) — рецепт с
+    причиной, как у config.json, а не трассировка и не «каталог годится» (DS M4)."""
+    d = _model_dir(tmp_path)
+    (d / "model.safetensors").unlink()
+    (d / "model.safetensors").symlink_to(tmp_path / "том-отвалился.safetensors")
+    problem = nem.check_model_dir(d)
+    assert problem and "не читаются" in problem and "FileNotFoundError" in problem
+    assert nem.fetch_recipe(d) in problem
+
+
 # --- загрузка --------------------------------------------------------------
 
 def test_load_hands_mlx_a_path_not_a_string(tmp_path, fake_mlx):
@@ -495,6 +506,16 @@ def test_availability_warns_on_a_patch_and_still_passes(tmp_path, monkeypatch):
     warned = []
     assert nem.availability(_model_dir(tmp_path), warn=warned.append) is None
     assert len(warned) == 1 and "0.5.7" in warned[0]
+
+
+def test_availability_warns_to_stderr_by_default(tmp_path, monkeypatch, capsys):
+    """Без своего стока предупреждение — одна строка в stderr, stdout чист: бенч печатает
+    в stdout таблицу, и строка о версии не должна в неё попасть."""
+    monkeypatch.setattr(nem.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(nem.importlib.metadata, "version", lambda name: "0.5.7")
+    assert nem.availability(_model_dir(tmp_path)) is None
+    out, err = capsys.readouterr()
+    assert out == "" and err.endswith("\n") and err.count("\n") == 1 and "0.5.7" in err
 
 
 def test_the_docs_install_the_pinned_version():
