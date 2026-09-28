@@ -256,23 +256,76 @@ root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
 - **Voices.** The voice cache lives in the stream state in RAM and dies with
   it; our code writes nothing derived from a voice to disk — the static guard
   `tests/test_no_voice_biometrics.py` and a run of the wrapper with a stub
-  model hold that. What mlx-audio itself writes cannot be read from our code:
-  that is an audio run with the weights on a Mac, together with the first
-  numbers.
+  model hold that. What mlx-audio itself writes is measured below: nothing but
+  a filesystem probe of `filelock` on import.
 - **License.** The weights are under NVIDIA OpenMDW 1.1, not Apache-2.0, so
   they are never committed; mlx-audio also pulls `transformers`, which is why
   it is not in `pyproject.toml`.
 - **Cost of streaming.** Every stream step re-encodes the voice cache and the
   FIFO (up to ~530 frames) for a short new chunk, so a second of audio costs
   much more than in the whole-file pass: on a random-weight run on a Linux CPU
-  (plumbing only, not quality) the stream took ~16× the whole-file time. The
-  number that matters is RTF on the Mac, next to GigaAM and the LLM.
+  (plumbing only, not quality) the stream took ~16× the whole-file time. On an
+  M1 Max the stream costs RTF ≈ 0.04 and the whole-file pass ≈ 0.003 (below).
 - **Russian** is not in the model card's training languages. Diarization
   depends on language less than recognition does — but that is exactly what
   to measure, not assume.
 
-No Nemotron numbers are published here yet: the first run happens on Apple
-Silicon.
+### First numbers (M1 Max, 28 September 2026)
+
+mlx-audio 0.5.6, `mlx-community/Nemotron-3-Diarization` (bf16), time includes
+model loading. The post-meeting pass below is the production `diarize.diarize()`
+(clustering threshold 0.8, shard merging at 0.60), not the bench's `sherpa`
+engine, which runs sherpa-onnx with other settings (card №472).
+
+**Real meetings with a reference.** Two AMI test meetings (Mix-Headset, four
+speakers, English), reference from pyannote's AMI-diarization-setup
+(`only_words`), no collar. The reference is strict, so absolute numbers sit
+above published ones; the comparison between engines is what counts.
+
+| Engine | ES2004a (17.5 min) | IS1009a (14.0 min) | RTF |
+|---|---|---|---|
+| post-meeting pass (production) | 0.606 · confusion 0.393 · 3 voices | 0.453 · confusion 0.266 · 4 voices | 0.35–0.36 |
+| live-split (daemon slicing) | 0.676 · 8 voices | 0.541 · 9 voices | 0.06–0.07 |
+| nemotron (whole file) | **0.269** · confusion 0.004 · 4 voices | **0.277** · confusion 0.071 · 4 voices | 0.003 |
+| nemotron-live (`low`, 1.04 s) | 0.273 · 5 voices | 0.273 · 4 voices | 0.04 |
+
+Nemotron barely confuses voices; most of its error is missed speech — short
+words between pauses that the word-level reference counts. The production pass
+merged 19 clusters into 2 on ES2004a: four people came out as three voices,
+with four speaker switches in 17 minutes.
+
+**Russian, no reference.** The other side's channel of two ~20-minute work
+calls: the production pass, Nemotron and its stream found 4 / 4 / 4 voices in
+one and 9 / 8 / 8 in the other; the meeting notes name 3–4 and 7–8
+participants. A sanity check of the language, not a DER.
+
+**Synthetic fixtures mislead this model.** On the crosstalk fixture Nemotron is
+nearly perfect: DER 0.039, 4 of 4 voices, all 4.5 s of overlap found
+(live-split 0.405, the bench's sherpa 0.391, the stream 0.32–0.34 across
+presets). On the plain fixture without overlaps it puts all four macOS voices
+into one slot: DER 0.628, slot 0 ≈ 0.9 on every reply. Length is not the
+cause — a 27 s cut and 6 s of added silence give the same. The model opens a
+new speaker when voices overlap, and synthetic voices taking turns look like
+one person to it. Judge it on real recordings, not on `say`.
+
+**Chunk seams.** In the raw stream output 64–74 % of the gaps between pieces
+of one voice are exactly zero — the chunk cuts; under 1.2 % are shorter than
+0.08 s. `MERGE_GAP_S = 0.0` glues the cuts, and the glued stream matches the
+whole-file pass: 306 vs 305 and 236 vs 220 speaker switches, DER 0.273 vs
+0.269 and 0.273 vs 0.277. A 0.5 s gap lowers the AMI DER to 0.219 / 0.233 by
+filling pauses inside a turn — a transcript policy for the integration, not a
+seam artifact.
+
+**Nothing on disk.** Under a macOS sandbox that denies writes to `/Users`,
+`/private/var`, `/private/tmp` and `/private/etc`, loading, the whole-file pass
+and the stream over 300 s of a real recording complete. A Python audit hook
+sees one kind of write in the whole path: `filelock`, pulled in by the loader
+through huggingface_hub, probes symlink behaviour on import — an empty
+temporary folder with two empty files, removed at once. No network events.
+
+**Verdict.** On real meetings Nemotron beats the current post-meeting pass by
+a wide margin at a hundredth of its time. Integration is a separate task
+(card №473).
 
 ### Your own recording
 
