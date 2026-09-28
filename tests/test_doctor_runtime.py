@@ -340,3 +340,62 @@ def test_main_передаёт_исход_пробы_в_строгую_двер�
     doctor.main()
 
     assert seen["alive"] == "МЕТКА"
+
+
+def test_the_engine_line_appears_only_when_nemotron_is_chosen(capsys, monkeypatch):
+    """Строка движка — только если выбран не sherpa (№474); проба — дверью движка."""
+    import foreign_python as fp
+    asked = []
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: asked.append(setting) or fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"}))
+    doctor.check_engine({"sufler": {"diarize_backend": "sherpa"}})
+    doctor.check_engine({})
+    assert capsys.readouterr().out == "" and asked == []
+    doctor.check_engine({"sufler": {"diarize_backend": "Nemotron", "nemotron_python": "/env/python"}})
+    assert "✓ Nemotron: mlx-audio 0.5.6, веса на месте, интерпретатор /env/python" in capsys.readouterr().out
+    assert asked == ["/env/python"]
+
+
+def test_the_engine_line_names_the_interpreter_the_door_chose(capsys, monkeypatch, tmp_path):
+    """Заданный ключ главнее установленного окружения: доктор называет, чей интерпретатор
+    в работе, — иначе старый venv в конфиге молча перекрывал бы поставленное окружение."""
+    import foreign_python as fp
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"}))
+    installed = doctor.diarize_nemotron.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#", encoding="utf-8")
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": " "}})
+    assert f"интерпретатор {installed}\n" in capsys.readouterr().out
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": "/venv/bin/python"}})
+    assert "интерпретатор /venv/bin/python\n" in capsys.readouterr().out
+
+
+def test_an_unready_engine_is_a_warning_with_one_install_command(capsys, monkeypatch, tmp_path):
+    """Не готов — «–», не «✗»: пересборка уходит на sherpa с причиной в шапке. Совет — по
+    тому, что выбрала дверь: окружения нет — команда одна, из отказа двери; окружение есть,
+    но не работает — переставить; задан ключ — установка его не заменит, ключ исправить."""
+    import foreign_python as fp
+    issues = doctor.issues
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron"}})
+    out = capsys.readouterr().out
+    assert out.startswith(" – Nemotron выбран, но не готов") and out.count("install_engine.py") == 1
+    assert "не установлено" in out and doctor.issues == issues
+
+    installed = doctor.diarize_nemotron.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#", encoding="utf-8")
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.UNAVAILABLE, reason="нет каталога модели"))
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron"}})
+    out = capsys.readouterr().out
+    assert "нет каталога модели; переставить окружение:" in out and out.count("install_engine.py") == 1
+
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.FAILED, reason=f"нет интерпретатора {setting}"))
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": "/снесённый/venv/python"}})
+    out = capsys.readouterr().out
+    assert "нет интерпретатора /снесённый/venv/python; ключ sufler.nemotron_python главнее" in out
+    assert "исправьте или очистите его" in out and doctor.issues == issues

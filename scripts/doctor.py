@@ -33,6 +33,7 @@ import urllib.request
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_paths import code_root, harden_umask, resolve_root  # noqa: E402
+import diarize_nemotron  # noqa: E402 — только проба движка его интерпретатором, mlx сюда не попадает
 
 CODE = code_root(__file__)
 
@@ -231,6 +232,36 @@ def check_models() -> None:
         line(WARN, "диаризации нет (метки «Собеседник N» будут по каналам)",
              ".venv/bin/python scripts/get_models.py --diar — поставит модель "
              "(варианты: --list, подробности: docs/DIARIZATION.md)")
+
+
+def check_engine(cfg: dict) -> None:
+    """Движок диаризации после встречи — строка, только если выбран не sherpa (№474).
+
+    Без сети и без mlx в процессе доктора: окружение (настройка или установленное),
+    версия mlx-audio и каталог весов — пробой движка его же интерпретатором; строка
+    называет интерпретатор, который выбрала дверь (ключ главнее окружения). Не
+    готов — не авария: пересборка размечает голоса sherpa и пишет причину в шапку
+    стенограммы, поэтому «–», а не «✗»."""
+    sufler = cfg.get("sufler") or {}
+    if str(sufler.get("diarize_backend") or "sherpa").strip().lower() != "nemotron":
+        return
+    root = _root()
+    setting = str(sufler.get("nemotron_python") or "")
+    # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
+    python, refusal = diarize_nemotron.engine_interpreter(setting, root)
+    out = diarize_nemotron.probe_in_env(setting, root=root)
+    if out.ok:
+        line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
+        return
+    if refusal:          # окружения нет — отказ двери уже несёт команду установщика
+        advice = ""
+    elif setting.strip():  # ключ главнее установленного окружения: переустановка его не заменит
+        advice = (f"ключ sufler.nemotron_python главнее установленного окружения — исправьте или "
+                  f"очистите его; окружение ставит {diarize_nemotron.install_command()}")
+    else:                # установленное окружение есть, но не работает
+        advice = f"переставить окружение: {diarize_nemotron.install_command()}"
+    line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa",
+         out.reason + (f"; {advice}" if advice else ""))
 
 
 def check_deps() -> None:
@@ -481,6 +512,7 @@ def main() -> None:
     check_ollama(cfg)
     check_stt(cfg)
     check_models()
+    check_engine(cfg)
     print("\nРабочее состояние")
     alive = check_llm_alive(cfg)
     check_strict_json(cfg, alive)

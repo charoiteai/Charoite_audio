@@ -248,7 +248,8 @@ sufler:
   # Кто размечает голоса собеседников после встречи: sherpa (встроен) или
   # nemotron — NVIDIA Nemotron 3 Diarization на Apple Silicon, два голоса разом
   # и секунды вместо минут (docs/DIARIZATION.md). Nemotron живёт в своём
-  # окружении с mlx-audio: nemotron_python — путь к его bin/python. Не
+  # окружении с mlx-audio — его ставит scripts/install_engine.py nemotron;
+  # пустой nemotron_python — это окружение, иначе путь к своему bin/python. Не
   # поднялся — голоса размечает sherpa, а шапка стенограммы говорит почему.
   diarize_backend: sherpa
   nemotron_python: ""
