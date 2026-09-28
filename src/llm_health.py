@@ -52,7 +52,7 @@ import model_lease
 
 import privacy
 from charoite_paths import resolve_root, secure_dir, trim_log
-from llm import BUSY_STATUSES, DEFAULT_MLX_MODEL
+from llm import DEFAULT_MLX_MODEL, is_busy_status
 
 
 def _root() -> pathlib.Path:
@@ -175,7 +175,7 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
         return SLOW
     except (requests.RequestException, RuntimeError, KeyError):
         return False
-    if r.status_code in BUSY_STATUSES:
+    if is_busy_status(r.status_code):
         return BUSY
     if r.status_code == 404:
         return MISSING

@@ -54,6 +54,48 @@ from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder, 
 # паузой в пределах бюджета вызывающего — живой контур ждёт недолго
 # (BUSY_WAIT_LIVE), фоновый может и подольше.
 BUSY_STATUSES = frozenset({429, 502, 503})
+
+
+def is_busy_status(status: int) -> bool:
+    """Статус ответа сервера — «занято, повтори позже»: одно правило на дверь, пробу
+    здоровья и строгий JSON. Читатели спрашивают функцию, а не держат копию множества:
+    правило читается на вызове (№454)."""
+    return status in BUSY_STATUSES
+
+
+# Вид отказа двери — закрытый словарь (№454). Вид ставит место отказа, а не
+# читатель по числу или тексту: дверь сама делает 503 из «облако недоступно», и по
+# статусу его не отличить от очереди сервера (входной круг 1, DS C1).
+#   queue       — сервер ответил занятостью, бюджет ожидания кончился;
+#   unavailable — облако отказало, локального запаса нет (синтетический 503);
+#   http        — сервер ответил не-200 вне занятости;
+#   broken      — ответ пришёл (200), но негодный: оборван, пустой, с полем error;
+#   unreachable — транспорт: соединение не установилось (у `requests`, не у двери);
+#   timeout     — транспорт: сервер не ответил вовремя;
+#   other       — всё прочее, в том числе не модель вовсе (диск, звук).
+FAILURE_KINDS = ("queue", "unavailable", "http", "broken", "unreachable", "timeout", "other")
+
+
+def status_kind(status: int) -> str:
+    """Вид отказа по статусу ответа — там, где статус и есть причина."""
+    if is_busy_status(status):
+        return "queue"
+    return "broken" if status == 200 else "http"
+
+
+def failure_kind(e: BaseException) -> str:
+    """Вид любого исключения, дошедшего от двери, — по типу, без текста. Отказ
+    соединения по таймауту (`ConnectTimeout`) — «не отвечает»: он и
+    `ConnectionError`, и `Timeout`, и соединения не было."""
+    if isinstance(e, LLMHTTPError):
+        return e.kind
+    if isinstance(e, requests.ConnectionError):
+        return "unreachable"
+    if isinstance(e, requests.Timeout):
+        return "timeout"
+    return "other"
+
+
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
@@ -292,7 +334,7 @@ def strict_json_verdict(status: int, text: str) -> tuple[str, str]:
         verdict = (STRICT_NO if STRUCTURED_OUTPUT_PHRASE in str(body["error"]).lower()
                    else STRICT_UNKNOWN)
         return verdict, reason[:REASON_WINDOW]
-    if status in BUSY_STATUSES:
+    if is_busy_status(status):
         return STRICT_UNKNOWN, reason[:REASON_WINDOW]
     verdict = STRICT_NO if STRUCTURED_OUTPUT_PHRASE in text.lower() else STRICT_UNKNOWN
     return verdict, reason[:REASON_WINDOW]
@@ -327,10 +369,12 @@ class LLMHTTPError(RuntimeError):
 
     Отдельный класс, а не голый None: вызывающему коду нужны и статус
     (404 → «модель установлена?»), и текст ошибки — сообщения пользователю
-    в mcp_server и graph_updater различают эти случаи.
+    в mcp_server и graph_updater различают эти случаи. Вид отказа (`kind`,
+    словарь `FAILURE_KINDS`) — из статуса, если место отказа не назвало его само.
     """
 
-    def __init__(self, status: int, detail: str = "", body: str | None = None):
+    def __init__(self, status: int, detail: str = "", body: str | None = None, *,
+                 kind: str | None = None):
         # Два значения, а не одно: detail — причина для людей в прежних
         # пределах (читатели печатают его как есть), body — полный текст
         # ответа для двери строгого JSON, где фраза может стоять за окном
@@ -340,6 +384,10 @@ class LLMHTTPError(RuntimeError):
         self.status = status
         self.detail = detail
         self.body = detail if body is None else body
+        kind = status_kind(status) if kind is None else kind
+        if kind not in FAILURE_KINDS:
+            raise ValueError(f"вид отказа {kind!r} вне словаря {FAILURE_KINDS}")
+        self.kind = kind
 
 
 def parse_json_block(text: str) -> dict | None:
@@ -739,7 +787,8 @@ class LLM:
             raise self._fail(r.status_code, f"неожиданная форма строки потока: {line[:120]!r}")
         return data
 
-    def _fail(self, status: int, detail: str, body: str | None = None) -> LLMHTTPError:
+    def _fail(self, status: int, detail: str, body: str | None = None, *,
+              kind: str | None = None) -> LLMHTTPError:
         """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
 
         Круг-1 закрыл утечку ключа «в точке, где тело становится
@@ -751,7 +800,7 @@ class LLM:
         в этом классе больше не появлялся.
         """
         return LLMHTTPError(status, self._hide_key(detail),
-                            None if body is None else self._hide_key(body))
+                            None if body is None else self._hide_key(body), kind=kind)
 
     def _hide_key(self, text: str) -> str:
         """Убрать ключ из текста ошибки шлюза.
@@ -890,7 +939,7 @@ class LLM:
                     raise
                 time.sleep(delay)
                 continue
-            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+            if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()
                 time.sleep(delay)
                 continue
@@ -1052,7 +1101,7 @@ class LLM:
             reason = f"битый ответ шлюза: {type(e).__name__}"
         if not self.fallback_local:
             raise self._fail(503, f"облако недоступно ({reason}), "
-                                    "локальный запас выключен")
+                                    "локальный запас выключен", kind="unavailable")
         print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
               file=sys.stderr, flush=True)
         # _fit смотрит на флаг: сводку локального запаса нельзя класть в кэш
@@ -1221,7 +1270,7 @@ class LLM:
                     raise
                 if not self.fallback_local:
                     raise self._fail(503, f"облако недоступно ({type(e).__name__}), "
-                                          "локальный запас выключен") from e
+                                          "локальный запас выключен", kind="unavailable") from e
                 print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
@@ -1302,7 +1351,7 @@ class LLM:
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
             with self._lease("complete", timeout):
                 r = requests.post(url, json=payload, timeout=timeout, **self._auth())
-            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+            if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
                 time.sleep(delay)
                 continue
