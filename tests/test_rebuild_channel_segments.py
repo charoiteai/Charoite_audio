@@ -127,10 +127,18 @@ def test_a_mic_segment_covered_exactly_half_stays():
     assert segs == [(0.0, 30.0, "Собеседник 1"), (20.0, 40.0, OWNER)]
 
 
-def test_echo_is_judged_against_each_call_segment_separately():
-    """Сегодняшняя геометрия: доля считается по ОДНОМУ отрезку собеседников.
-    Микрофонный отрезок, накрытый двумя соседними наполовину каждым, остаётся."""
+def test_echo_is_judged_against_the_union_of_call_segments():
+    """Доля — по объединению отрезков собеседников (№473): микрофонный отрезок,
+    накрытый двумя соседними наполовину каждым, — эхо; до №473 он оставался, и с
+    Nemotron (мелкие куски) эхо шло в канал владельца (замер 28.09: 69 % против 17.5 %)."""
     bh = [(0.0, 30.0, 0), (30.0, 60.0, 1)]
+    segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER)
+    assert all(lbl != OWNER for *_, lbl in segs)
+
+
+def test_the_union_threshold_is_still_more_than_half():
+    """Два куска по 5 с на 20-секундном отрезке — ровно половина: остаётся."""
+    bh = [(0.0, 25.0, 0), (35.0, 60.0, 1)]
     segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER)
     assert (20.0, 40.0, OWNER) in segs
 
@@ -232,3 +240,180 @@ def test_the_owner_name_is_not_read_when_the_mic_is_not_diarized(meeting, monkey
         lambda cls, cfg, **kw: refuse(cfg)))
     out = rt.rebuild(meeting["live"], CFG)
     assert "Собеседник 1" in out.read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------ disjoint (№473)
+
+import random  # noqa: E402
+
+import foreign_python as fp  # noqa: E402
+
+
+def _union(segs):
+    """Объединение интервалов — отсортированный список непересекающихся [s, e]."""
+    out = []
+    for s, e, *_ in sorted(segs):
+        if out and s <= out[-1][1] + 1e-9:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def _same_union(a, b):
+    ua, ub = _union(a), _union(b)
+    return len(ua) == len(ub) and all(abs(x[0] - y[0]) < 1e-9 and abs(x[1] - y[1]) < 1e-9
+                                      for x, y in zip(ua, ub))
+
+
+def test_disjoint_splits_a_partial_overlap_in_the_middle_in_either_order():
+    a, b = (0.0, 10.0, 1), (6.0, 16.0, 2)
+    assert rt.disjoint([a, b]) == rt.disjoint([b, a]) == [(0.0, 8.0, 1), (8.0, 16.0, 2)]
+
+
+def test_disjoint_cuts_the_enclosing_voice_around_a_nested_reply_longer_than_a_second():
+    outer, inner = (0.0, 10.0, 1), (4.0, 5.5, 2)
+    assert rt.disjoint([outer, inner]) == rt.disjoint([inner, outer]) == [
+        (0.0, 4.0, 1), (4.0, 5.5, 2), (5.5, 10.0, 1)]
+
+
+@pytest.mark.parametrize("length", [0.4, 1.0])
+def test_a_nested_reply_of_a_second_or_less_goes_to_the_enclosing_voice(length):
+    outer, inner = (0.0, 10.0, 1), (4.0, 4.0 + length, 2)
+    assert rt.disjoint([outer, inner]) == rt.disjoint([inner, outer]) == [outer]
+
+
+def test_a_nested_reply_at_the_edge_leaves_no_empty_piece():
+    assert rt.disjoint([(0.0, 10.0, 1), (0.0, 3.0, 2)]) == [(0.0, 3.0, 2), (3.0, 10.0, 1)]
+    assert rt.disjoint([(0.0, 10.0, 1), (7.0, 10.0, 2)]) == [(0.0, 7.0, 1), (7.0, 10.0, 2)]
+
+
+def test_disjoint_keeps_what_does_not_overlap_and_drops_empty_segments():
+    segs = [(5.0, 6.0, 2), (0.0, 1.0, 1), (3.0, 3.0, 4), (4.0, 3.0, 5)]
+    assert rt.disjoint(segs) == [(0.0, 1.0, 1), (5.0, 6.0, 2)]
+    assert rt.disjoint([]) == []
+
+
+def test_a_long_segment_over_several_resolves_each_by_its_rule():
+    """Отрезок 0–20 поверх трёх: частичное слева, вложенное длинное, вложенное
+    короткое, частичное справа."""
+    segs = [(-2.0, 2.0, 1), (5.0, 8.0, 2), (10.0, 10.5, 3), (18.0, 25.0, 4), (0.0, 20.0, 9)]
+    got = rt.disjoint(segs)
+    assert got == [(-2.0, 1.0, 1), (1.0, 5.0, 9), (5.0, 8.0, 2), (8.0, 19.0, 9), (19.0, 25.0, 4)]
+
+
+def test_disjoint_properties_on_random_layouts():
+    """Без перекрытий, по порядку, объединение то же, метки только свои."""
+    rng = random.Random(473)
+    for _ in range(3000):
+        segs = []
+        for _ in range(rng.randint(0, 12)):
+            s = round(rng.uniform(0, 60), 2)
+            segs.append((s, round(s + rng.choice([rng.uniform(0.1, 1.2), rng.uniform(1, 15)]), 2),
+                         rng.randint(0, 4)))
+        got = rt.disjoint(segs)
+        assert all(e > s for s, e, _ in got), (segs, got)
+        assert all(got[i][1] <= got[i + 1][0] + 1e-9 for i in range(len(got) - 1)), (segs, got)
+        assert _same_union(segs, got), (segs, got)
+        assert {k for *_, k in got} <= {k for *_, k in segs}
+
+
+def test_a_voice_whose_only_reply_is_absorbed_leaves_the_numbering():
+    """Решение круга 5 (I4): короткая вложенная реплика отходит объемлющему голосу,
+    как слитый карлик; её голос не получает номера, следующий идёт по порядку."""
+    bh = [(0.0, 30.0, 7), (10.0, 10.8, 3), (40.0, 70.0, 5)]
+    segs, chan = rt.resolve_channel_segments(bh, None, owner_label=OWNER, bh_dwarf_s=5.0)
+    assert segs == [(0.0, 30.0, "Собеседник 1"), (40.0, 70.0, "Собеседник 2")]
+    assert set(chan) == {"Собеседник 1", "Собеседник 2"}
+
+
+def test_the_call_channel_has_no_overlaps_after_resolve():
+    bh = [(0.0, 30.0, 1), (25.0, 60.0, 2)]
+    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER)
+    assert segs == [(0.0, 27.5, "Собеседник 1"), (27.5, 60.0, "Собеседник 2")]
+
+
+# ------------------------------------------------- движок канала собеседников
+
+@pytest.mark.parametrize("backend", [None, "", "sherpa", " Sherpa "])
+def test_sherpa_is_the_default_and_calls_no_engine(backend, monkeypatch, tmp_path):
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: pytest.fail("движок позван при sherpa"))
+    cfg = {"sufler": {} if backend is None else {"diarize_backend": backend}}
+    assert rt.call_channel_engine(cfg, tmp_path / "bh.wav", 600.0) == (None, "")
+    assert rt.call_channel_engine({}, tmp_path / "bh.wav", 600.0) == (None, "")
+
+
+def test_an_unknown_backend_falls_back_with_a_reason(monkeypatch, tmp_path):
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: pytest.fail("движок позван при неизвестном имени"))
+    segs, reason = rt.call_channel_engine({"sufler": {"diarize_backend": "nemotorn"}},
+                                          tmp_path / "bh.wav", 600.0)
+    assert segs is None and "'nemotorn'" in reason and "sherpa, nemotron" in reason
+
+
+def test_nemotron_gets_its_interpreter_the_weights_of_the_data_root_and_a_ceiling(monkeypatch, tmp_path):
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    seen = {}
+
+    def fake(python, wav, *, model, timeout):
+        seen.update(python=python, wav=wav, model=model, timeout=timeout)
+        return fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0), (5.0, 5.9, 1), (6.0, 7.0, 1)])
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", fake)
+    cfg = {"sufler": {"diarize_backend": "Nemotron", "nemotron_python": " /env/bin/python "}}
+    segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0)
+    assert (segs, reason) == ([(0.0, 5.0, 0), (6.0, 7.0, 1)], "")     # короче секунды — прочь
+    assert seen == {"python": "/env/bin/python", "wav": tmp_path / "bh.wav",
+                    "model": tmp_path / "models" / "diar" / "nemotron", "timeout": 180.0}
+
+
+@pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])
+def test_a_refusal_of_nemotron_names_the_engine_and_the_reason(kind, monkeypatch, tmp_path):
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(kind, reason="нет весов"))
+    assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
+                                  tmp_path / "bh.wav", 60.0) == (None, "Nemotron — нет весов")
+
+
+def _nemotron_cfg():
+    return {"audio": {"samplerate": SR},
+            "sufler": {"user_name": OWNER, "diarize_backend": "nemotron", "nemotron_python": "/env/bin/python"}}
+
+
+def test_rebuild_on_nemotron_does_not_run_sherpa_on_the_call_and_keeps_small_voices(meeting, monkeypatch):
+    """Nemotron разметил — sherpa по каналу собеседников не зовётся, порог карликов
+    5 с: голос с 6 с речи остаётся отдельным человеком (у sherpa слился бы)."""
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", lambda *a, **k: fp.Outcome(
+        fp.OK, payload=[(100.0, 130.0, 0), (140.0, 146.0, 1)]))
+    out = rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    text = out.read_text(encoding="utf-8")
+    assert "Собеседник 2" in text and "Собеседник 3" in text   # два собеседника, затем микрофон
+    assert "запасным движком" not in text
+
+
+def test_rebuild_falls_back_to_sherpa_and_says_why_in_the_header(meeting, monkeypatch):
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", lambda *a, **k: fp.Outcome(
+        fp.FAILED, reason="не уложился в 66 с"))
+    meeting["meta"] = {"speakers": 3}
+    out = rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert ("blackhole", 3) in meeting["calls"]
+    text = out.read_text(encoding="utf-8")
+    assert rt.ENGINE_FALLBACK_NOTE.format(reason="Nemotron — не уложился в 66 с") in text
+    assert text.index("запасным движком") < text.index("**")          # в шапке, до реплик
+
+
+def test_rebuild_on_sherpa_writes_no_engine_note(meeting):
+    out = rt.rebuild(meeting["live"], CFG)
+    assert "запасным движком" not in out.read_text(encoding="utf-8")
+
+
+def test_the_nemotron_ceiling_grows_with_the_recording(meeting, monkeypatch):
+    seen = []
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda python, wav, *, model, timeout: seen.append(timeout) or fp.Outcome(
+                            fp.OK, payload=[(100.0, 130.0, 0)]))
+    meeting["len"]["blackhole"] = 600
+    rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert seen == [rt.NEMOTRON_TIMEOUT_S + 60.0]

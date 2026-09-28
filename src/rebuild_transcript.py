@@ -65,6 +65,7 @@ import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
+import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
@@ -80,6 +81,17 @@ NAMES_PENDING_NOTE = (
     "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
     "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py)."
 )
+
+
+#: Строка в шапке стенограммы, когда голоса собеседников размечены не тем
+#: движком, что выбран в настройках: причина видна в самом файле, а не только в
+#: logs/ (как у NAMES_PENDING_NOTE).
+ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников размечены запасным движком (sherpa): {reason}."
+#: Движки разметки канала собеседников (`sufler.diarize_backend`).
+DIARIZE_BACKENDS = ("sherpa", "nemotron")
+#: Потолок Nemotron: запуск интерпретатора и загрузка весов плюс десятая доля
+#: длительности записи (замер 28.09: 41 минута — 6 с разметки, 15 минут — 2 с).
+NEMOTRON_TIMEOUT_S = 60.0
 
 
 def log(msg: str):
@@ -241,7 +253,12 @@ def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
     return " ".join(parts)
 
 
-def diarize_channel(audio: np.ndarray, sr: int, min_len: float = 1.0,
+#: Отрезок разметки короче этого (с) выбрасывается до разбора голосов — у любого
+#: движка: осколок не несёт реплики, а своё STT на полсекунды звука — шум.
+MIN_SEGMENT_S = 1.0
+
+
+def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
                     num_speakers: int = -1) -> list[tuple[float, float, int]]:
     """Сегменты (start, end, cluster) канала; короче min_len — отброшены.
 
@@ -257,6 +274,35 @@ def diarize_channel(audio: np.ndarray, sr: int, min_len: float = 1.0,
         return []
 
 
+def call_channel_engine(cfg: dict, wav: pathlib.Path,
+                        duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str]:
+    """Разметка канала собеседников выбранным движком, если это не sherpa.
+
+    `(сегменты, "")` — разметил Nemotron; `(None, причина)` — выбранный движок
+    не разметил, размечает sherpa, а причина уходит в шапку стенограммы;
+    `(None, "")` — выбран sherpa. Отрезки короче MIN_SEGMENT_S отбрасываются, как
+    у sherpa в `diarize_channel`.
+    """
+    sufler = cfg.get("sufler") or {}
+    backend = str(sufler.get("diarize_backend") or "sherpa").strip().lower()
+    if backend == "sherpa":
+        return None, ""
+    if backend not in DIARIZE_BACKENDS:
+        reason = f"движок {backend!r} неизвестен (sufler.diarize_backend: {', '.join(DIARIZE_BACKENDS)})"
+        log(reason)
+        return None, reason
+    t0 = time.time()
+    out = diarize_nemotron.diarize_in_env(
+        str(sufler.get("nemotron_python") or "").strip(), wav,
+        model=diarize_nemotron.model_dir(_root()), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
+    if not out.ok:
+        log(f"Nemotron не разметил голоса ({out.kind}: {out.reason}) — размечает sherpa")
+        return None, f"Nemotron — {out.reason}"
+    segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
+    log(f"Nemotron: {len(segs)} сегментов из {len(out.payload)} за {time.time() - t0:.0f} с")
+    return segs, ""
+
+
 def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
     inter = max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
     return inter / max(1e-6, a[1] - a[0])
@@ -270,6 +316,70 @@ BH_DWARF_S = 25.0
 #: Карлик микрофона. Порог с первой версии пересборки (21.07), отдельного
 #: замера у него нет.
 MIC_DWARF_S = 10.0
+#: Карлик канала собеседников, когда голоса размечает Nemotron (№473). Sherpa
+#: дробит голос на осколки, Nemotron — нет: замер 28.09 на пяти записях — голоса
+#: с 10–22 с речи за встречу по ревизиям живые люди с одной-двумя репликами,
+#: 2–4 с — шум. Микрофон остаётся на MIC_DWARF_S. Пересчёт после недели — №476.
+NEMOTRON_BH_DWARF_S = 5.0
+#: Реплика не длиннее этого (с) целиком внутри чужой отходит объемлющему голосу
+#: и не режет чужую фразу на куски (см. `disjoint`).
+NESTED_MIN_S = 1.0
+
+
+def disjoint(segs: list[tuple[float, float, int]]) -> list[tuple[float, float, int]]:
+    """Разметка канала без перекрытий: каждый момент — у одного голоса.
+
+    Перекрытие двух отрезков давало два STT одного звука (входной круг 3 по №473,
+    C2). Правила для пары: частичное пересечение делится по середине; реплика
+    целиком внутри чужой и длиннее NESTED_MIN_S режет объемлющую («до / она /
+    после»); не длиннее — её время отходит объемлющей. Авторство короткой
+    реплики теряется, как у слитого карлика, звук — нет: STT идёт по интервалу
+    объемлющего отрезка, который её содержит (круг 5, I4). Объединение
+    интервалов не меняется — эхо-фильтр микрофона не теряет окон (круг 4, C2).
+    Несколько пересечений разбираются вставкой по началу, при равном начале —
+    длинный раньше. Выход отсортирован по началу.
+    """
+    out: list[tuple[float, float, int]] = []
+    for x in sorted(segs, key=lambda t: (t[0], t[0] - t[1])):
+        if x[1] > x[0]:
+            out = _insert(out, x)
+    return out
+
+
+def _insert(out: list[tuple[float, float, int]],
+            x: tuple[float, float, int]) -> list[tuple[float, float, int]]:
+    """Вставить `x` в отсортированную разметку без перекрытий по правилам `disjoint`."""
+    s, e, k = x
+    before = [o for o in out if o[1] <= s]
+    after = [o for o in out if o[0] >= e]
+    over = [o for o in out if o[1] > s and o[0] < e]
+    if not over:
+        return before + [x] + after
+    first = over[0]
+    if first[0] <= s and e <= first[1]:             # x целиком внутри чужого отрезка
+        if e - s <= NESTED_MIN_S:
+            return out
+        parts = [(first[0], s, first[2]), x, (e, first[1], first[2])]
+        return before + [p for p in parts if p[1] > p[0]] + after
+    pieces: list[tuple[float, float, int]] = []
+    cur = s                                          # начало ещё не размещённой части x
+    for os_, oe, ok in over:
+        if os_ < s:                                  # начался раньше x, кончается внутри
+            mid = (s + oe) / 2
+            pieces.append((os_, mid, ok))
+            cur = mid
+        elif oe <= e:                                # целиком внутри x
+            if oe - os_ <= NESTED_MIN_S:
+                continue                             # его время отходит x
+            pieces += [(cur, os_, k), (os_, oe, ok)]
+            cur = oe
+        else:                                        # начался внутри x, кончается позже
+            mid = (os_ + e) / 2
+            pieces += [(cur, mid, k), (mid, oe, ok)]
+            cur = oe
+    if cur < e:
+        pieces.append((cur, e, k))
+    return before + [p for p in pieces if p[1] > p[0]] + after
 
 
 def merge_dwarfs(segs: list[tuple[float, float, int]],
@@ -305,7 +415,9 @@ def resolve_channel_segments(
     канал, затем микрофон: эхо в микрофоне отсекается по отрезкам собеседников,
     а «Собеседник N» микрофона продолжает нумерацию звонка. `owner_label` —
     подпись владельца из настроек (`ChannelLabels.mic_signed`); пустая —
-    владельца не подписываем.
+    владельца не подписываем. Канал собеседников при любом движке сперва
+    лишается перекрытий (`disjoint`), потом карликов (`bh_dwarf_s` — порог
+    движка: BH_DWARF_S у sherpa, NEMOTRON_BH_DWARF_S у Nemotron).
     """
     segments: list[tuple[float, float, str]] = []  # (start, end, метка)
     chan: dict[str, str] = {}  # метка → канал-источник звука
@@ -320,7 +432,7 @@ def resolve_channel_segments(
     # (ревью 20.08, GLM).
     bh_segs: list[tuple[float, float, int]] = []
     if bh_raw is not None:
-        bh_segs = merge_dwarfs(bh_raw, bh_dwarf_s)
+        bh_segs = merge_dwarfs(disjoint(bh_raw), bh_dwarf_s)
         mapping: dict[int, str] = {}
         for s, e, k in bh_segs:
             if k not in mapping:
@@ -331,10 +443,15 @@ def resolve_channel_segments(
         log(f"blackhole: {len(bh_segs)} сегментов, голосов {len(mapping)}")
 
     if mic_raw is not None:
-        # эхо динамиков: mic-сегмент, накрытый blackhole-речью, выбрасываем
+        # Эхо динамиков: mic-сегмент, больше чем наполовину накрытый речью
+        # собеседников, выбрасываем. Доля — по ОБЪЕДИНЕНИЮ их отрезков (они уже без
+        # перекрытий, `disjoint`), а не по одному: Nemotron режет реплику на куски,
+        # и эхо поверх трёх кусков по 30 % каждый проходило как живая речь. Замер
+        # 28.09, встреча 15 минут: по одному отрезку в микрофоне оставалось 69 %
+        # речи против 17.5 % у sherpa, по объединению — 17.8 % (№473).
         bh_iv = [(s, e) for s, e, _ in segments]
         mic_segs = [t for t in mic_raw
-                    if not any(overlap_frac((t[0], t[1]), iv) > 0.5 for iv in bh_iv)]
+                    if not sum(overlap_frac((t[0], t[1]), iv) for iv in bh_iv) > 0.5]
         mic_segs = merge_dwarfs(mic_segs, MIC_DWARF_S)
         durs: dict[int, float] = {}
         for s, e, k in mic_segs:
@@ -733,13 +850,19 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # эхо решает resolve_channel_segments; здесь — только звук и движок.
     bh_raw: list[tuple[float, float, int]] | None = None
     mic_raw: list[tuple[float, float, int]] | None = None
+    bh_dwarf_s = BH_DWARF_S
+    engine_note = ""               # почему голоса собеседников размечены запасным движком
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         if len(bh) > sr * 20:
-            # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
-            # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
-            hint = int(meta.get("speakers") or 0)
-            bh_raw = diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1)
+            bh_raw, engine_note = call_channel_engine(cfg, bh_p, len(bh) / sr)
+            if bh_raw is not None:
+                bh_dwarf_s = NEMOTRON_BH_DWARF_S
+            else:
+                # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
+                # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
+                hint = int(meta.get("speakers") or 0)
+                bh_raw = diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1)
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
@@ -748,7 +871,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # без микрофона пересборка конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
                    if mic_raw is not None else "")
-    segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label)
+    segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label,
+                                              bh_dwarf_s=bh_dwarf_s)
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
@@ -814,6 +938,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     body = [f"# Встреча {stamp}", ""]
     if names_pending:
         body += [NAMES_PENDING_NOTE, ""]
+    if engine_note:
+        body += [ENGINE_FALLBACK_NOTE.format(reason=engine_note), ""]
     for s, e, spk, text in lines:
         spk = names.get(spk, spk)
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
