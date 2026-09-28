@@ -139,3 +139,28 @@ def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
 
     assert seen and seen[0] == "bytes=1000-", "докачка не запросила Range"
     assert dest.read_bytes() == body, "файл удвоен или не докачан"
+
+
+def test_nemotron_weights_come_from_a_pinned_revision_with_sums(monkeypatch, tmp_path):
+    """Два файла, каждый со своей суммой и из закреплённой ревизии (№474): `resolve/main`
+    — подвижная цель, сумма поймала бы законное обновление как подмену."""
+    calls = []
+    monkeypatch.setattr(get_models, "download",
+                        lambda url, dest, size, onnx=True, sha256="": calls.append((url, dest, onnx, sha256)))
+    get_models.fetch_nemotron(tmp_path)
+    base = f"https://huggingface.co/mlx-community/Nemotron-3-Diarization/resolve/{get_models.NEMOTRON_REVISION}"
+    assert calls == [
+        (f"{base}/config.json", tmp_path / "config.json", False, get_models.NEMOTRON_CONFIG_SHA256),
+        (f"{base}/model.safetensors", tmp_path / "model.safetensors", False, get_models.NEMOTRON.sha256)]
+    assert len(get_models.NEMOTRON_REVISION) == 40 and "/main/" not in base
+
+
+def test_nemotron_weights_on_disk_with_the_right_sum_are_not_fetched_again(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "model.safetensors").write_bytes(b"w")
+    sums = {"config.json": get_models.NEMOTRON_CONFIG_SHA256, "model.safetensors": "не та"}
+    monkeypatch.setattr(get_models, "_digest", lambda path: sums[path.name])
+    calls = []
+    monkeypatch.setattr(get_models, "download", lambda url, dest, *a, **k: calls.append(dest.name))
+    get_models.fetch_nemotron(tmp_path)
+    assert calls == ["model.safetensors"]

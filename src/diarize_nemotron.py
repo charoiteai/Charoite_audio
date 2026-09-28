@@ -14,18 +14,21 @@ Nemotron 3 Diarization — end-to-end Sortformer на ~100M параметров
 
 Где работает. Пересборка стенограммы после встречи зовёт движок за флагом
 `sufler.diarize_backend: nemotron` (№473) — процессом интерпретатора, в котором
-стоит mlx-audio (`sufler.nemotron_python`): в Python приложения mlx нет, бандл
-подписан. Протокол живёт в этом файле с обеих сторон: `diarize_in_env` —
-сторона пересборки (дверь `foreign_python`), `main()` — сторона движка (JSON
+стоит mlx-audio: в Python приложения mlx нет, бандл подписан. Интерпретатор —
+окружение, которое ставит `scripts/install_engine.py nemotron` (`engine_python`,
+№474), или явный путь `sufler.nemotron_python`. Протокол живёт в этом файле
+с обеих сторон: `diarize_in_env` — сторона пересборки (дверь `foreign_python`),
+`main()` — сторона движка (JSON
 в stdout, `EXIT_ENGINE_UNAVAILABLE`, если движку нечем работать). Отказ или
 сбой движка пересборка не прячет: голоса размечает sherpa, а шапка стенограммы
 говорит почему. Живой контур и демон модуль не зовут; бенч
 (`scripts/diar_bench.py --engine nemotron…`) зовёт его импортом.
 
 Только Apple Silicon. Инференс — MLX-порт из пакета mlx-audio
-(`mlx-community/Nemotron-3-Diarization`). В зависимости продукта пакет не
-входит и ставится руками (`INSTALL_RECIPE`); импорт mlx ленивый, поэтому
-модуль импортируется на любой машине, а чистые функции проверяются в CI.
+(`mlx-community/Nemotron-3-Diarization`). В зависимости приложения пакет не
+входит: его ставит установщик движка в своё окружение (`INSTALL_RECIPE`);
+импорт mlx ленивый, поэтому модуль импортируется на любой машине, а чистые
+функции проверяются в CI.
 
 Сеть. Загрузчик принимает только существующий каталог с config.json и весами
 и передаёт в mlx-audio `pathlib.Path`: для Path библиотека не обращается к
@@ -51,6 +54,7 @@ import json
 import math
 import pathlib
 import re
+import shlex
 import sys
 import wave
 from typing import Any, Callable, Iterable, Protocol
@@ -81,7 +85,14 @@ HF_REPO = "mlx-community/Nemotron-3-Diarization"
 #: дрейф API иначе выяснился бы только на ручном прогоне (круг 1 по #648, DS M2).
 #: `availability` сверяет её с установленной (круг 2, DS I2).
 MLX_AUDIO_VERSION = "0.5.6"
-INSTALL_RECIPE = f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"   # только macOS на Apple Silicon'
+#: Окружение движка ставит установщик продукта (№474): своя копия интерпретатора
+#: и пакеты из `requirements-nemotron.lock` с хешами. Полную команду — каким
+#: интерпретатором звать — собирает `install_command()` на стороне пересборки и
+#: доктора; сторона движка знает только имя. Бенч гоняет движок в своём процессе,
+#: ему пакет ставится в .venv разработчика.
+INSTALLER = "scripts/install_engine.py nemotron"
+INSTALL_RECIPE = (f"поставьте окружение движка: {INSTALLER} (бенч в .venv: "
+                  f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; только Apple Silicon)')
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -104,9 +115,32 @@ def model_dir(root: pathlib.Path) -> pathlib.Path:
     return root / "models" / "diar" / "nemotron"
 
 
+def engine_dir(root: pathlib.Path) -> pathlib.Path:
+    """Где живёт окружение движка: своя копия интерпретатора python-build-standalone
+    с пакетами из лока (№474). В корне данных, а не рядом с бандлом: копия не
+    зависит от того, где лежит и как обновляется приложение. Раскладку движка —
+    веса и окружение — знает этот модуль; установщик берёт пути отсюда."""
+    return root / "engines" / "nemotron"
+
+
+def engine_python(root: pathlib.Path) -> pathlib.Path:
+    """Интерпретатор установленного окружения — умолчание для пустого
+    `sufler.nemotron_python`."""
+    return engine_dir(root) / "python" / "bin" / "python3"
+
+
+def install_command() -> str:
+    """Полная команда установщика для этого интерпретатора и этого дерева кода.
+
+    Её печатают сторона пересборки и доктор: у приложения это встроенный Python,
+    копию которого установщик и сделает окружением движка."""
+    return shlex.join([sys.executable, str(code_root(__file__) / "scripts" / "install_engine.py"),
+                       "nemotron"])
+
+
 def fetch_recipe(target: pathlib.Path) -> str:
     """Команда разовой загрузки весов — печатается, но не выполняется."""
-    return f".venv/bin/hf download {HF_REPO} --local-dir {target}"
+    return f"{INSTALLER} (вручную: .venv/bin/hf download {HF_REPO} --local-dir {target})"
 
 
 def check_model_dir(path: pathlib.Path) -> str | None:
@@ -355,14 +389,22 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Nemotron: голоса одной записи в JSON — сторона движка для пересборки "
                     "стенограммы (её зовёт diarize_in_env процессом интерпретатора с mlx-audio).")
-    ap.add_argument("wav", type=pathlib.Path, help="запись канала собеседников, 16-битный WAV")
+    ap.add_argument("wav", type=pathlib.Path, nargs="?",
+                    help="запись канала собеседников, 16-битный WAV (без --probe обязательна)")
     ap.add_argument("--model", type=pathlib.Path, required=True,
                     help="каталог весов (config.json и веса) — models/diar/nemotron корня данных")
+    ap.add_argument("--probe", action="store_true",
+                    help="только проверить, чем работать: JSON {\"mlx_audio\": версия}, веса не грузятся")
     args = ap.parse_args(argv)
+    if not args.probe and args.wav is None:
+        ap.error("нужна запись (или --probe)")
     problem = availability(args.model)
     if problem:
         _stderr(problem.replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
+    if args.probe:
+        print(json.dumps({"mlx_audio": importlib.metadata.version("mlx-audio")}))
+        return 0
     audio, sr = read_wav(args.wav)
     try:
         model = load_model(args.model, "offline")
@@ -393,19 +435,57 @@ def parse_segments(payload: dict) -> list[tuple[float, float, int]]:
     return out
 
 
-def diarize_in_env(python: str, wav: pathlib.Path, *, model: pathlib.Path,
+def engine_interpreter(setting: str, root: pathlib.Path) -> tuple[str, str]:
+    """Чем запускать движок: `(путь, "")` или `("", причина отказа)`.
+
+    Настройка задана — она (нет файла — скажет сам запуск); пустая — установленное
+    окружение `engine_python(root)`, если оно есть. Одно место выбора для обеих
+    дверей движка — разметки и пробы."""
+    python = setting.strip()
+    if python:
+        return python, ""
+    installed = engine_python(root)
+    if installed.exists():
+        return str(installed), ""
+    return "", f"окружение движка не установлено ({engine_dir(root)}) — {install_command()}"
+
+
+def probe_in_env(setting: str, *, root: pathlib.Path, timeout: float = 60.0) -> foreign_python.Outcome:
+    """Сторона вызывающего: готов ли движок — без записи и без загрузки весов.
+
+    OK — `{"mlx_audio": версия}`; UNAVAILABLE — окружения нет или ему нечем
+    работать (причина со стороны движка: пакет, версия, каталог весов). Её зовут
+    доктор и `--check` установщика."""
+    python, refusal = engine_interpreter(setting, root)
+    if refusal:
+        return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal)
+    out = foreign_python.run_json(python, SCRIPT, ["--probe", "--model", str(model_dir(root))],
+                                  timeout=timeout)
+    if out.ok and not isinstance(out.payload.get("mlx_audio"), str):
+        return foreign_python.Outcome(foreign_python.FAILED,
+                                      reason=f"проба движка не по протоколу: {out.payload!r}")
+    return out
+
+
+def diarize_in_env(setting: str, wav: pathlib.Path, *, root: pathlib.Path,
                    timeout: float) -> foreign_python.Outcome:
     """Сторона пересборки: разметить запись процессом интерпретатора движка.
 
+    Интерпретатор — `setting` (`sufler.nemotron_python`), а пустая настройка —
+    установленное окружение `engine_python(root)`; веса — `model_dir(root)`.
+    Раскладку движка знает этот модуль, вызывающий передаёт только корень.
+
     OK — сегменты `(start, end, N)`, N — слот модели; UNAVAILABLE — движка на этой
-    машине нет (или интерпретатор не задан); FAILED — движок упал или ответил не
-    по протоколу. mlx в процесс вызывающего не попадает: здесь только запуск и
-    разбор JSON.
+    машине нет (настройка пуста и окружение не установлено) или ему нечем работать;
+    FAILED — движок упал, ответил не по протоколу или явного интерпретатора нет на
+    диске (так размечает дверь `foreign_python`). mlx в процесс вызывающего не попадает: здесь только
+    запуск и разбор JSON.
     """
-    if not python:
-        return foreign_python.Outcome(foreign_python.UNAVAILABLE,
-                                      reason="не задан интерпретатор движка (sufler.nemotron_python)")
-    out = foreign_python.run_json(python, SCRIPT, [str(wav), "--model", str(model)], timeout=timeout)
+    python, refusal = engine_interpreter(setting, root)
+    if refusal:
+        return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal)
+    out = foreign_python.run_json(python, SCRIPT, [str(wav), "--model", str(model_dir(root))],
+                                  timeout=timeout)
     if not out.ok:
         return out
     try:

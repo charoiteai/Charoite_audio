@@ -227,9 +227,12 @@ its own activity probability, so two voices in one frame is a normal answer.
 behind a switch (see [Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron));
 the live contour and the daemon do not call it, the bench does.
 
-Apple Silicon only. Neither the package nor the weights are product
-dependencies; both are one-time manual steps (paths are relative to the repo
-root; with `CHAROITE_ROOT` set, the bench prints the exact folder):
+Apple Silicon only. Neither the package nor the weights are app dependencies.
+For the product, `scripts/install_engine.py nemotron` installs both (see
+[Post-meeting pass on Nemotron](#post-meeting-pass-on-nemotron)). The bench runs
+the engine inside its own process, so for it they are one-time manual steps in
+the development venv (paths are relative to the repo root; with `CHAROITE_ROOT`
+set, the bench prints the exact folder):
 
 ```bash
 .venv/bin/pip install "mlx-audio==0.5.6"
@@ -332,9 +335,36 @@ The transcript rebuild labels the call channel with Nemotron when the config
 says so (`config.yaml`, section `sufler`):
 
 ```yaml
-diarize_backend: nemotron                 # sherpa by default
-nemotron_python: /path/to/env/bin/python  # an interpreter with mlx-audio 0.5.6
+diarize_backend: nemotron   # sherpa by default
+nemotron_python: ""         # empty: the environment scripts/install_engine.py installed
 ```
+
+The environment is installed by the product, once, on your command — with the
+app's own Python (the doctor prints the exact command):
+
+```bash
+<app python> scripts/install_engine.py nemotron          # install
+<app python> scripts/install_engine.py nemotron --check  # what is there, no network
+```
+
+In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`.
+The installer prints where it goes on the network before connecting, checks the
+machine against the header of `requirements-nemotron.lock` (Apple Silicon, macOS
+14 or newer — mlx wheels start there — and the Python the lock was built for),
+copies the running interpreter without the app's packages into
+`engines/nemotron` under the data root, installs the lock with
+`pip --require-hashes --no-deps`, fetches the weights from a pinned revision with
+sha256 checks (`scripts/get_models.py`), runs the engine on a second of silence
+through the same door the rebuild uses, and only then swaps the folder in by
+rename; a failure anywhere leaves the previous environment as it was. A copy,
+not a venv: a venv keeps the path of its base interpreter, and an app started
+from Downloads with quarantine runs from a random path (App Translocation), so a
+venv over the bundle would break on the next launch; python-build-standalone is
+relocatable, and the copy keeps the bundle's signature and entitlements, so the
+mlx wheels load. `nemotron_python` still takes an explicit interpreter; empty
+means the installed environment. The lock is rebuilt with
+`.venv/bin/python scripts/lock_runtime_deps.py nemotron` from `MLX_AUDIO_VERSION`
+in `src/diarize_nemotron.py`.
 
 The app's own Python has no mlx, and its bundle is signed, so nothing is
 installed into it: the engine runs as a separate process of that interpreter.
@@ -342,9 +372,9 @@ installed into it: the engine runs as a separate process of that interpreter.
 `src/foreign_python.py`: a clean child environment (the readiness-probe recipe
 — `PYTHONSAFEPATH`, no user site, no inherited `PYTHONPATH`/`PYTHONHOME`, no
 bytecode, plus the variables of someone else's venv) and a typed outcome. The
-weights are read from `models/diar/nemotron` under the data root; the
-environment is installed by hand for now, with the recipe above into any venv
-(the product installing its own locked environment is card №474).
+weights are read from `models/diar/nemotron` under the data root, the
+environment lives in `engines/nemotron`; both paths come from the engine module
+(`model_dir`, `engine_dir`).
 
 - **Fallback, visible.** No interpreter, no package, no weights (exit code 10,
   `EXIT_ENGINE_UNAVAILABLE`), a crash, a timeout (60 s plus a tenth of the

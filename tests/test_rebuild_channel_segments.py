@@ -399,12 +399,14 @@ def test_an_unknown_backend_falls_back_with_a_reason(monkeypatch, tmp_path):
     assert segs is None and "'nemotorn'" in reason and "sherpa, nemotron" in reason
 
 
-def test_nemotron_gets_its_interpreter_the_weights_of_the_data_root_and_a_ceiling(monkeypatch, tmp_path):
+def test_nemotron_gets_its_setting_the_data_root_and_a_ceiling(monkeypatch, tmp_path):
+    """Пересборка отдаёт двери настройку как есть и корень данных; где окружение и
+    веса — решает модуль движка (№474)."""
     charoite_paths.use_data_root(tmp_path, replace=True)
     seen = {}
 
-    def fake(python, wav, *, model, timeout):
-        seen.update(python=python, wav=wav, model=model, timeout=timeout)
+    def fake(setting, wav, *, root, timeout):
+        seen.update(setting=setting, wav=wav, root=root, timeout=timeout)
         return fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0), (5.0, 5.9, 1), (6.0, 7.0, 1)])
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", fake)
     said = []
@@ -413,8 +415,8 @@ def test_nemotron_gets_its_interpreter_the_weights_of_the_data_root_and_a_ceilin
     segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0)
     assert (segs, reason) == ([(0.0, 5.0, 0), (6.0, 7.0, 1)], "")     # короче секунды — прочь
     assert said == ["Nemotron: 2 сегментов из 3 за 0 с"]
-    assert seen == {"python": "/env/bin/python", "wav": tmp_path / "bh.wav",
-                    "model": tmp_path / "models" / "diar" / "nemotron", "timeout": 180.0}
+    assert seen == {"setting": " /env/bin/python ", "wav": tmp_path / "bh.wav",
+                    "root": tmp_path, "timeout": 180.0}
 
 
 @pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])
@@ -505,7 +507,7 @@ def test_rebuild_on_sherpa_writes_no_engine_note(meeting):
 def test_the_nemotron_ceiling_grows_with_the_recording(meeting, monkeypatch):
     seen = []
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
-                        lambda python, wav, *, model, timeout: seen.append(timeout) or fp.Outcome(
+                        lambda setting, wav, *, root, timeout: seen.append(timeout) or fp.Outcome(
                             fp.OK, payload=[(100.0, 130.0, 0)]))
     meeting["len"]["blackhole"] = 600
     rt.rebuild(meeting["live"], _nemotron_cfg())

@@ -33,6 +33,7 @@ import urllib.request
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_paths import code_root, harden_umask, resolve_root  # noqa: E402
+import diarize_nemotron  # noqa: E402 — только проба движка его интерпретатором, mlx сюда не попадает
 
 CODE = code_root(__file__)
 
@@ -231,6 +232,30 @@ def check_models() -> None:
         line(WARN, "диаризации нет (метки «Собеседник N» будут по каналам)",
              ".venv/bin/python scripts/get_models.py --diar — поставит модель "
              "(варианты: --list, подробности: docs/DIARIZATION.md)")
+
+
+def check_engine(cfg: dict) -> None:
+    """Движок диаризации после встречи — строка, только если выбран не sherpa (№474).
+
+    Без сети и без mlx в процессе доктора: окружение (настройка или установленное),
+    версия mlx-audio и каталог весов — пробой движка его же интерпретатором; строка
+    называет интерпретатор, который выбрала дверь (ключ главнее окружения). Не
+    готов — не авария: пересборка размечает голоса sherpa и пишет причину в шапку
+    стенограммы, поэтому «–», а не «✗»."""
+    sufler = cfg.get("sufler") or {}
+    if str(sufler.get("diarize_backend") or "sherpa").strip().lower() != "nemotron":
+        return
+    setting = str(sufler.get("nemotron_python") or "")
+    out = diarize_nemotron.probe_in_env(setting, root=_root())
+    if out.ok:
+        # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
+        python, _ = diarize_nemotron.engine_interpreter(setting, _root())
+        line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
+    else:
+        # причина «не установлено» уже несёт команду установщика — второй раз её не печатаем
+        hint = (out.reason if "install_engine.py" in out.reason
+                else f"{out.reason}; поставить окружение: {diarize_nemotron.install_command()}")
+        line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa", hint)
 
 
 def check_deps() -> None:
@@ -481,6 +506,7 @@ def main() -> None:
     check_ollama(cfg)
     check_stt(cfg)
     check_models()
+    check_engine(cfg)
     print("\nРабочее состояние")
     alive = check_llm_alive(cfg)
     check_strict_json(cfg, alive)
