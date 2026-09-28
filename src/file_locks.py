@@ -1,12 +1,23 @@
-"""Файловые локи: два общих приёма — проба и захват (партия D-П6).
+"""Файловые локи: общие приёмы пробы и захвата (партия D-П6).
 
 Пять контуров держат flock по-своему, и это НЕ дубль: проба ночного
-фона, отказ мутатора, очередь пересборок (блокирующий EX), deadline
-замка графа и одиночность демона — разные политики. Дословно
-дублировались только два приёма, они и сведены сюда. Всё остальное —
-shared/exclusive, blocking/nonblocking, таймауты, что писать в файл
-лока и как трактовать ФС без flock — остаётся у вызывающего (бриф
-партии, #407).
+фона, замок мутатора, очередь пересборок (блокирующий EX), deadline
+замка графа и одиночность демона — разные политики. Сюда сведены только
+приёмы, которые дублировались дословно. Всё остальное — blocking или
+nonblocking, таймауты, что писать в файл лока — остаётся у вызывающего
+(бриф партии, #407).
+
+Политика функций модуля — одной таблицей:
+
+| функция | flock | «занято» | ФС без flock (OSError) |
+|---|---|---|---|
+| `held_by_someone` | проба SH, одна попытка | чужой эксклюзив | «свободно» |
+| `held_by_anyone` | проба EX, 3 попытки через 0,1 с | любой держатель, SH или EX | «свободно» |
+| `acquire_exclusive` | EX, `attempts` через `pause` | чужой лок любого вида | отказ сразу (демон: `busy=(OSError,)` — ретраи) |
+| `acquire_shared` | SH, `attempts` через `pause` | чужой эксклюзив | отказ сразу |
+
+Пробы берут лок на микросекунды и сразу отпускают — поэтому у захватов и у
+пробы эксклюзивом есть ретраи: чужая проба не должна читаться как держатель.
 """
 from __future__ import annotations
 
@@ -37,37 +48,80 @@ def held_by_someone(f) -> bool:
     return False
 
 
-def acquire_exclusive(f, *, attempts: int = 5, pause: float = 0.2,
-                      busy: tuple[type[BaseException], ...] = (BlockingIOError,),
-                      sleep=time.sleep) -> bool:
-    """Неблокирующий эксклюзивный захват с короткими ретраями.
+#: Исходы попытки взять лок: взят; занят держателем (ретраи кончились); ФС
+#: без flock — судить не по чему. Три значения, а не bool: проба эксклюзивом
+#: читает «занят» и «без flock» по-разному, а захваты — одинаково (отказ).
+_TAKEN, _BUSY, _NO_FLOCK = "taken", "busy", "no-flock"
 
-    Ретраи — потому что разделяемые пробы (held_by_someone) держат файл
-    микросекунды, и единственная попытка ложно отказывала при свободном
-    локе (круг-2 по PR #399, DS). `busy` — что считать «занято и стоит
-    повторить»: по умолчанию только честный BlockingIOError, прочие
-    OSError (ФС без flock) — отказ сразу; демон передаёт (OSError,) —
-    он не различает причины и одинаково не стартует вторым. Взятый лок
-    остаётся на f: закрытие файла или смерть процесса освобождает его
-    ядром. При busy=(OSError,) вторая ветка except мертва намеренно —
-    порядок клауз менять нельзя (круг-1 по #415, DS: перестановка молча
-    сменила бы политику ENOLCK; вызов демона пиннит структурный тест).
-    """
+
+def _try_lock(f, op: int, *, attempts: int, pause: float,
+              busy: tuple[type[BaseException], ...], sleep) -> str:
+    """Одна механика неблокирующего захвата с короткими ретраями для всех
+    приёмов модуля: `op` — `LOCK_EX` или `LOCK_SH`. При busy=(OSError,) вторая
+    ветка except мертва намеренно — порядок клауз менять нельзя (круг-1 по
+    #415, DS: перестановка молча сменила бы политику ENOLCK; вызов демона
+    пиннит структурный тест)."""
     if attempts < 1:
         # «0 ретраев» читается как «одна попытка», а range(0) молча не делал
         # ни одной — для демона это ложное «уже слушает» (круг-1 по #415, GLM).
         raise ValueError(f"attempts must be >= 1, got {attempts}")
     for attempt in range(attempts):
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
+            fcntl.flock(f, op | fcntl.LOCK_NB)
+            return _TAKEN
         except busy:
             if attempt == attempts - 1:
-                return False
+                return _BUSY
             sleep(pause)
         except OSError:
-            return False
-    return False
+            return _NO_FLOCK
+    # сюда не доходит: attempts ≥ 1, и последняя попытка возвращает в каждой ветке
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def acquire_exclusive(f, *, attempts: int = 5, pause: float = 0.2,
+                      busy: tuple[type[BaseException], ...] = (BlockingIOError,),
+                      sleep=time.sleep) -> bool:
+    """Неблокирующий эксклюзивный захват с короткими ретраями.
+
+    Ретраи — потому что пробы (held_by_someone, held_by_anyone) держат файл
+    микросекунды, и единственная попытка ложно отказывала при свободном
+    локе (круг-2 по PR #399, DS). `busy` — что считать «занято и стоит
+    повторить»: по умолчанию только честный BlockingIOError, прочие
+    OSError (ФС без flock) — отказ сразу; демон передаёт (OSError,) —
+    он не различает причины и одинаково не стартует вторым. Взятый лок
+    остаётся на f: закрытие файла или смерть процесса освобождает его
+    ядром.
+    """
+    return _try_lock(f, fcntl.LOCK_EX, attempts=attempts, pause=pause,
+                     busy=busy, sleep=sleep) == _TAKEN
+
+
+def acquire_shared(f, *, attempts: int = 5, pause: float = 0.2, sleep=time.sleep) -> bool:
+    """Неблокирующий разделяемый захват — как `acquire_exclusive`, но `LOCK_SH`:
+    держателей может быть сколько угодно, конфликтует он только с чужим
+    эксклюзивом. Эксклюзивом файл берёт лишь проба `held_by_anyone` — на
+    микросекунды, отсюда ретраи. ФС без flock — отказ сразу. Взятый лок
+    остаётся на f до закрытия файла или смерти процесса."""
+    return _try_lock(f, fcntl.LOCK_SH, attempts=attempts, pause=pause,
+                     busy=(BlockingIOError,), sleep=sleep) == _TAKEN
+
+
+def held_by_anyone(f, *, sleep=time.sleep) -> bool:
+    """True — лок держит хоть кто-то, разделяемо или эксклюзивно; False —
+    свободен ИЛИ судить не по чему.
+
+    Проба эксклюзивом: он конфликтует с любым держателем. Три попытки через
+    0,1 с — такая же проба соседа держит файл микросекунды, и одна попытка
+    ложно отвечала бы «занято». «Занято» — только когда все попытки упёрлись
+    в BlockingIOError; ФС без flock — «свободно», фон не останавливается (как
+    у held_by_someone). Взятый эксклюзив отпускается сразу.
+    """
+    got = _try_lock(f, fcntl.LOCK_EX, attempts=3, pause=0.1,
+                    busy=(BlockingIOError,), sleep=sleep)
+    if got == _TAKEN:
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return got == _BUSY
 
 
 GRAPH_LOCK_POLL = 5.0
