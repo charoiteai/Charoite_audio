@@ -148,8 +148,10 @@ class WriteOutcome(typing.NamedTuple):
     state: str | None
     refused: str | None = None
 
-    RACE: typing.ClassVar[str] = "race"
-    PREV: typing.ClassVar[str] = "prev"
+    # Без аннотации: в теле NamedTuple аннотированное имя — поле кортежа (под
+    # отложенными аннотациями и `ClassVar` тоже, №477), голое — строка класса.
+    RACE = "race"
+    PREV = "prev"
 
     @property
     def written(self) -> bool:

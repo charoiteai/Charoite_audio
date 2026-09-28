@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -482,3 +483,13 @@ def test_archive_meeting_returns_the_summary_outcome_and_adopts_after_copying_ma
     assert ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem).summary.action == ma.SummaryOutcome.KEPT
     (graph / ma.ARCHIVE_DIR / "_исключено.md").write_text("2026-09-19_1000 — тест\n", encoding="utf-8")
     assert ma.archive_meeting(graph, tdir, "2026-09-19_1000", "Тема", files_key=live.stem) is None
+
+
+def test_write_outcome_is_a_pair_and_its_refusals_are_strings():
+    """Константы отказа — строки класса, не поля кортежа (№477): отказ уходит в JSON и
+    лог строкой, исход распаковывается парой."""
+    W = live_sidecar.WriteOutcome
+    assert W._fields == ("state", "refused")
+    assert (W.RACE, W.PREV) == ("race", "prev")
+    state, refused = W(None, W.RACE)
+    assert (state, refused) == (None, "race") and json.loads(json.dumps(W(None, W.PREV)._asdict()))["refused"] == "prev"
