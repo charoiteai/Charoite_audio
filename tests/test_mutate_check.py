@@ -1934,6 +1934,27 @@ def test_jobs_родитель_без_замка_отказывает_кодом
     assert spawned == [] and made == []
 
 
+def test_jobs_доля_родителем_не_становится(tmp_path, monkeypatch, capsys):
+    """Доля с теми аргументами, что ей чеканит `child_argv`, попав в `run_jobs`, —
+    отказ кодом 2 до замка: ни замка, ни каталога журналов, ни одной доли. Мутант
+    входа (`jobs > 1` → `>= 1`) иначе делал каждую долю родителем, и цепочка
+    мутаторов в новых сессиях росла мимо убийства прогона (PR #667, доля 1 в CI)."""
+    import busy_signals
+    замки = []
+    monkeypatch.setattr(busy_signals.MutationLock, "acquire",
+                        lambda self: замки.append(self) or True)
+    spawned = []
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+    made = []
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", lambda *a, **kw: made.append(a))
+    ap = mc.build_parser()
+    родитель = ap.parse_args(["--range", "a...b", "--jobs", "2", "--max", "all"])
+    доля = ap.parse_args(mc.child_argv(родитель, 1, 2, tmp_path, "a...b")[2:])
+    assert mc.run_jobs(доля, "a...b", tmp_path) == 2
+    assert mc.SHARE_REFUSED in capsys.readouterr().out
+    assert spawned == [] and made == [] and замки == []
+
+
 def test_jobs_sigterm_родителя_останавливает_доли_их_finally(tmp_path):
     """SIGTERM родителю: каждая доля получает SIGINT и в своём `finally` убирает
     копию; замок мутатора после — свободен, родитель выходит кодом 128 + 15. Всё —

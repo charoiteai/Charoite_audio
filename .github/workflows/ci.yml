@@ -234,6 +234,9 @@ jobs:
           # мутатор — точка входа: корень данных называется явно, а не угадывается
           # по месту скрипта (№440); у раннера данных владельца нет, корень — сам checkout
           CHAROITE_ROOT: ${{ github.workspace }}
+          # Строки мутатора — в лог по мере прогона: блочный буфер Python терял весь
+          # вывод доли, снятой вместе с раннером (PR #667, доля 1: код 143 и пустой лог).
+          PYTHONUNBUFFERED: "1"
         run: |
           rc=0; python scripts/mutate_check.py --range "origin/$BASE_REF...HEAD" --shard "$SHARD/4" --max all --timeout 120 --budget-s 2400 --report "$REPORT" || rc=$?
           echo "шард $SHARD: код мутатора $rc — судит job mutation verdict"
