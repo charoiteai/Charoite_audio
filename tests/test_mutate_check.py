@@ -1900,16 +1900,35 @@ def test_jobs_2_находит_тех_же_выживших_что_послед�
     журналы = pathlib.Path(re.search(r"журналы и отчёты — (\S+)", out).group(1))
     отчёты = sorted(журналы.glob("[0-9].txt"))
     assert [p.name for p in отчёты] == ["1.txt", "2.txt"], out[-1500:]
+    # долей ровно N и нумерация с единицы: лишняя доля 0 оставила бы свой журнал
+    assert sorted(p.name for p in журналы.glob("*.log")) == ["1.log", "2.log"], out[-1500:]
     нашли = set().union(*(_выжившие(p.read_text(encoding="utf-8")) for p in отчёты))
     assert нашли == ждём
     текст = сводка.read_text(encoding="utf-8")
     assert текст.startswith("шарды нашли выживших"), текст
     assert "итог: шардов 2, M=6, P=6" in текст, текст
-    # после сводки — код каждой доли и где её журнал
+    # после сводки — код каждой доли и где её журнал: номер строки — номер доли
+    for k in (1, 2):
+        assert re.search(rf"доля {k}: код \d+, журнал {re.escape(str(журналы / f'{k}.log'))}", out), out[-1500:]
     assert "доля 1: код 1" in out or "доля 2: код 1" in out, out[-1500:]
     import busy_signals
     assert not busy_signals.mutation_running(данные)
     shutil.rmtree(журналы)
+
+
+def test_jobs_родитель_без_замка_отказывает_кодом_3_и_долей_не_запускает(tmp_path, monkeypatch, capsys):
+    """Замок родителя — первым делом: не взялся — нейтральная строка и код занятости,
+    ни одной доли и ни одного каталога журналов."""
+    import busy_signals
+    monkeypatch.setattr(busy_signals.MutationLock, "acquire", lambda self: False)
+    spawned = []
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+    made = []
+    monkeypatch.setattr(mc.tempfile, "mkdtemp", lambda *a, **kw: made.append(a))
+    args = mc.build_parser().parse_args(["--range", "a...b", "--jobs", "2", "--max", "all"])
+    assert mc.run_jobs(args, "a...b", tmp_path) == 3
+    assert mc.LOCK_REFUSED in capsys.readouterr().out
+    assert spawned == [] and made == []
 
 
 def test_jobs_sigterm_родителя_останавливает_доли_их_finally(tmp_path):
