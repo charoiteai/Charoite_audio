@@ -44,6 +44,16 @@ def test_the_dwarf_test_sums_every_segment_of_a_voice():
     assert [k for *_, k in rt.merge_dwarfs(segs, 25.0)] == [1, 1, 1, 1]
 
 
+def test_nearness_is_the_gap_to_the_nearer_edge_of_each_big_segment():
+    """Карлик сразу после голоса 1 (зазор 1 с) и за 2 с до голоса 2 — к голосу 1;
+    карлик в 1 с перед голосом 2 и в 2 с после голоса 1 — к голосу 2. Длинные
+    крупные отрезки: расстояние считается до ближнего края, а не до начала."""
+    a, b = (0.0, 30.0, 1), (34.0, 60.0, 2)
+    assert rt.merge_dwarfs([a, (31.0, 32.0, 7), b], 25.0)[1] == (31.0, 32.0, 1)
+    a, b = (0.0, 29.0, 1), (33.0, 60.0, 2)
+    assert rt.merge_dwarfs([a, (31.0, 32.0, 7), b], 25.0)[1] == (31.0, 32.0, 2)
+
+
 def test_when_every_voice_is_a_dwarf_nothing_is_merged():
     segs = [(0.0, 5.0, 1), (6.0, 9.0, 2)]
     assert rt.merge_dwarfs(segs, 25.0) == segs
@@ -98,16 +108,22 @@ def call_with_two_mic_voices(owner_label):
     return rt.resolve_channel_segments(bh, mic, owner_label=owner_label)
 
 
-def test_in_a_call_the_dominant_mic_voice_is_the_owner_and_numbering_continues():
+def test_in_a_call_the_dominant_mic_voice_is_the_owner_and_numbering_continues(monkeypatch):
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
     segs, chan = call_with_two_mic_voices(OWNER)
+    assert said[-1] == "mic: 2 сегментов, голосов 2, владелец: по преобладанию"
     assert segs == [(100.0, 130.0, "Собеседник 1"), (140.0, 170.0, "Собеседник 2"),
                     (0.0, 40.0, OWNER), (45.0, 57.0, "Собеседник 3")]
     assert chan == {"Собеседник 1": "bh", "Собеседник 2": "bh", OWNER: "mic",
                     "Собеседник 3": "mic"}
 
 
-def test_an_empty_owner_label_leaves_the_owner_unsigned():
+def test_an_empty_owner_label_leaves_the_owner_unsigned(monkeypatch):
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
     segs, chan = call_with_two_mic_voices("")
+    assert said[-1].endswith("владелец: не назначен")
     assert [lbl for *_, lbl in segs] == ["Собеседник 1", "Собеседник 2",
                                          "Собеседник 3", "Собеседник 4"]
     assert chan["Собеседник 3"] == chan["Собеседник 4"] == "mic"
@@ -155,6 +171,14 @@ def test_paragraphs_join_one_voice_across_a_gap_shorter_than_two_seconds():
 def test_paragraphs_keep_the_longer_end_and_take_the_gap_as_a_parameter():
     assert rt.paragraphs([(0.0, 10.0, "A"), (1.0, 5.0, "A")]) == [[0.0, 10.0, "A"]]
     assert rt.paragraphs([(0.0, 1.0, "A"), (3.0, 4.0, "A")], gap=2.5) == [[0.0, 4.0, "A"]]
+
+
+def test_paragraphs_join_to_the_last_paragraph_not_the_first():
+    """Склейка смотрит на последний абзац: и зазор, и новый конец — его."""
+    assert rt.paragraphs([(0.0, 1.0, "A"), (5.0, 6.0, "B"), (6.5, 7.0, "B")]) == [
+        [0.0, 1.0, "A"], [5.0, 7.0, "B"]]
+    assert rt.paragraphs([(0.0, 30.0, "A"), (5.0, 6.0, "B"), (6.5, 7.0, "B")]) == [
+        [0.0, 30.0, "A"], [5.0, 7.0, "B"]]
 
 
 def test_paragraphs_sort_by_start_and_keep_the_call_first_on_a_tie():
@@ -302,6 +326,29 @@ def test_a_long_segment_over_several_resolves_each_by_its_rule():
     assert got == [(-2.0, 1.0, 1), (1.0, 5.0, 9), (5.0, 8.0, 2), (8.0, 19.0, 9), (19.0, 25.0, 4)]
 
 
+@pytest.mark.parametrize("segs,expected", [
+    # хвост, начинающийся ровно там, где кончается вставляемый, остаётся на месте
+    ([(0.0, 3.0, 1), (0.0, 4.0, 2), (1.0, 3.0, 3)],
+     [(0.0, 1.0, 1), (1.0, 3.0, 3), (3.0, 4.0, 2)]),
+    # ...и не удваивается, когда вставляемый пересекает несколько кусков
+    ([(0.0, 10.0, 1), (2.0, 6.0, 2), (3.0, 5.0, 3), (4.0, 6.0, 4)],
+     [(0.0, 2.0, 1), (2.0, 3.0, 2), (3.0, 4.5, 3), (4.5, 6.0, 4), (6.0, 10.0, 1)]),
+    # кусок, начавшийся вместе со вставляемым, — вложенный, а не «раньше»; секунда — поглощается
+    ([(0.0, 2.0, 1), (0.0, 3.0, 2), (2.0, 4.0, 3)],
+     [(0.0, 2.0, 1), (2.0, 4.0, 3)]),
+    # кусок, кончающийся вместе со вставляемым, — тоже вложенный
+    ([(0.0, 2.0, 1), (0.0, 3.0, 2), (1.0, 3.0, 3)],
+     [(0.0, 1.5, 1), (1.5, 3.0, 3)]),
+    # равное начало: длинный раньше — каждый голос сохраняет свою часть
+    ([(0.0, 2.0, 1), (0.0, 3.0, 2), (0.0, 5.0, 3)],
+     [(0.0, 2.0, 1), (2.0, 3.0, 2), (3.0, 5.0, 3)]),
+])
+def test_disjoint_on_boundaries_and_ties(segs, expected):
+    """Границы и равные начала — там, где случайные разметки почти не попадают
+    (мутатор диапазона 28.09: восемь выживших в `_insert`)."""
+    assert rt.disjoint(segs) == expected
+
+
 def test_disjoint_properties_on_random_layouts():
     """Без перекрытий, по порядку, объединение то же, метки только свои."""
     rng = random.Random(473)
@@ -360,9 +407,12 @@ def test_nemotron_gets_its_interpreter_the_weights_of_the_data_root_and_a_ceilin
         seen.update(python=python, wav=wav, model=model, timeout=timeout)
         return fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0), (5.0, 5.9, 1), (6.0, 7.0, 1)])
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", fake)
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
     cfg = {"sufler": {"diarize_backend": "Nemotron", "nemotron_python": " /env/bin/python "}}
     segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0)
     assert (segs, reason) == ([(0.0, 5.0, 0), (6.0, 7.0, 1)], "")     # короче секунды — прочь
+    assert said == ["Nemotron: 2 сегментов из 3 за 0 с"]
     assert seen == {"python": "/env/bin/python", "wav": tmp_path / "bh.wav",
                     "model": tmp_path / "models" / "diar" / "nemotron", "timeout": 180.0}
 
@@ -374,6 +424,19 @@ def test_a_refusal_of_nemotron_names_the_engine_and_the_reason(kind, monkeypatch
                         lambda *a, **k: fp.Outcome(kind, reason="нет весов"))
     assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
                                   tmp_path / "bh.wav", 60.0) == (None, "Nemotron — нет весов")
+
+
+@pytest.mark.parametrize("payload", [[], [(0.0, 0.5, 0), (3.0, 3.9, 1)]], ids=["пусто", "одни осколки"])
+def test_a_success_without_segments_is_a_refusal(payload, monkeypatch, tmp_path):
+    """Успех без единого отрезка (после отсева коротких) на записи длиннее 20 с —
+    отказ движка в другой форме: иначе канал собеседников молча пустел бы
+    (выходной круг 1 по №473, C1)."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
+                                  tmp_path / "bh.wav", 1234.4) == (
+        None, "Nemotron — ни одного отрезка на 1234 с записи")
 
 
 def _nemotron_cfg():
@@ -402,6 +465,15 @@ def test_rebuild_falls_back_to_sherpa_and_says_why_in_the_header(meeting, monkey
     text = out.read_text(encoding="utf-8")
     assert rt.ENGINE_FALLBACK_NOTE.format(reason="Nemotron — не уложился в 66 с") in text
     assert text.index("запасным движком") < text.index("**")          # в шапке, до реплик
+
+
+def test_rebuild_on_an_empty_nemotron_answer_labels_the_call_with_sherpa(meeting, monkeypatch):
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=[]))
+    out = rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert ("blackhole", -1) in meeting["calls"]
+    text = out.read_text(encoding="utf-8")
+    assert "ни одного отрезка" in text and "Собеседник 1" in text
 
 
 def test_rebuild_on_sherpa_writes_no_engine_note(meeting):

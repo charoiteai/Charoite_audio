@@ -339,10 +339,8 @@ def read_wav(path: pathlib.Path) -> tuple[np.ndarray, int]:
         if w.getsampwidth() != 2:
             raise ValueError(f"{path.name}: не 16-битный PCM ({8 * w.getsampwidth()} бит)")
         sr, channels = w.getframerate(), w.getnchannels()
-        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1)
-    return audio, sr
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
+    return pcm.reshape(-1, channels).mean(axis=1, dtype=np.float32) / 32768.0, sr
 
 
 def main(argv: list[str] | None = None) -> int:

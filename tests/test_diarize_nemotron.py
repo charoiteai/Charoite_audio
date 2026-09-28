@@ -571,7 +571,7 @@ def test_read_wav_gives_float32_mono_like_the_rebuild(tmp_path):
 
 
 def test_read_wav_refuses_anything_but_16_bit(tmp_path):
-    with pytest.raises(ValueError, match="не 16-битный PCM"):
+    with pytest.raises(ValueError, match=r"u8\.wav: не 16-битный PCM \(8 бит\)"):
         nem.read_wav(_wav(tmp_path / "u8.wav", [0, 255], width=1))
 
 

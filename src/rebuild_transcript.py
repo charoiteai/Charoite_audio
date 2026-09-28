@@ -300,6 +300,12 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
         return None, f"Nemotron — {out.reason}"
     segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
     log(f"Nemotron: {len(segs)} сегментов из {len(out.payload)} за {time.time() - t0:.0f} с")
+    if not segs:
+        # Успех без единого отрезка на записи длиннее 20 с — не «собеседники
+        # молчали», а отказ движка в другой форме (не тот канал, частота,
+        # дрейф API): канал собеседников иначе молча пустел бы целиком
+        # (выходной круг 1 по №473, C1). Размечает sherpa, шапка говорит почему.
+        return None, f"Nemotron — ни одного отрезка на {duration_s:.0f} с записи"
     return segs, ""
 
 
@@ -337,7 +343,9 @@ def disjoint(segs: list[tuple[float, float, int]]) -> list[tuple[float, float, i
     объемлющего отрезка, который её содержит (круг 5, I4). Объединение
     интервалов не меняется — эхо-фильтр микрофона не теряет окон (круг 4, C2).
     Несколько пересечений разбираются вставкой по началу, при равном начале —
-    длинный раньше. Выход отсортирован по началу.
+    длинный раньше: короткие, начавшиеся вместе с ним, вырезаются из него как
+    вложенные, и каждый голос сохраняет свою часть (обратный порядок поглощал
+    средний голос целиком). Выход отсортирован по началу.
     """
     out: list[tuple[float, float, int]] = []
     for x in sorted(segs, key=lambda t: (t[0], t[0] - t[1])):
@@ -377,8 +385,7 @@ def _insert(out: list[tuple[float, float, int]],
             mid = (os_ + e) / 2
             pieces += [(cur, mid, k), (mid, oe, ok)]
             cur = oe
-    if cur < e:
-        pieces.append((cur, e, k))
+    pieces.append((cur, e, k))          # хвост x; пустой или вывернутый отсеет фильтр
     return before + [p for p in pieces if p[1] > p[0]] + after
 
 
