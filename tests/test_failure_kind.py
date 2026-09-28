@@ -375,3 +375,18 @@ def test_перечень_читателей_отказа_совпадает_с_
     """Перехваты `LLMHTTPError` по всему коду — против перечня в обе стороны: новый
     читатель без строки и строка без читателя — красные."""
     assert _readers() == set(READERS)
+
+
+@pytest.mark.parametrize("исключение, позже", [
+    (llm.LLMHTTPError(503, "x"), True),
+    (llm.LLMHTTPError(503, "x", kind="unavailable"), True),
+    (llm.LLMHTTPError(404, "x"), False),
+    (llm.LLMHTTPError(200, "x"), False),
+    (requests.ConnectionError("x"), False),
+    (RuntimeError("503"), False),
+], ids=["очередь", "облако", "404", "битый", "соединение", "чужое"])
+def test_повторить_позже_решает_дверь(исключение, позже):
+    """«Повтор подберёт» — очередь и недоступное облако; решает дверь одним
+    предикатом, читатель не держит свой кортеж видов."""
+    assert llm.is_retry_later(исключение) is позже
+    assert llm.RETRY_LATER_KINDS <= set(llm.FAILURE_KINDS)

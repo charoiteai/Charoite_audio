@@ -83,6 +83,17 @@ def status_kind(status: int) -> str:
     return "broken" if status == 200 else "http"
 
 
+#: Виды, после которых работу стоит повторить позже, а не чинить настройку: очередь
+#: сервера и недоступное облако. Читатели спрашивают `is_retry_later`, а не держат
+#: свой кортеж видов (выходной круг 1 по №454, критика решения).
+RETRY_LATER_KINDS = frozenset({"queue", "unavailable"})
+
+
+def is_retry_later(e: BaseException) -> bool:
+    """Отказ из тех, что проходят сами: повторить позже, а не звать человека к настройке."""
+    return failure_kind(e) in RETRY_LATER_KINDS
+
+
 def failure_kind(e: BaseException) -> str:
     """Вид любого исключения, дошедшего от двери, — по типу, без текста. Отказ
     соединения по таймауту (`ConnectTimeout`) — «не отвечает»: он и
