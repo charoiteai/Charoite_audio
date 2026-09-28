@@ -1298,6 +1298,7 @@ class GraphSearch:
         # ----- лексика
         lex: list[tuple[float, str]] = []
         best_cov = 0.0
+        # иглы от редкой к частой; пуст ровно тогда, когда пуст `keys`
         rare_first: list[str] = []
         by_rel: dict[str, Doc] = {d.rel: d for d in all_docs}
         if keys:
@@ -1398,12 +1399,12 @@ class GraphSearch:
         shown: list[str] = []
         for rel in picked:
             d = by_rel[rel]
-            frag = self._fragment(d, rx, snippet_chars, rare_first or keys)
+            frag = self._fragment(d, rx, snippet_chars, rare_first)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first, max(1, limit // 2))
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
