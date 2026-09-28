@@ -24,17 +24,17 @@ INPUT = ROOT / "requirements-runtime.in"
 
 def _lock_names() -> set[str]:
     """Имена пакетов верхнего уровня из lock (без транзитивных отметок)."""
-    names = set()
-    for line in LOCK.read_text(encoding="utf-8").splitlines():
-        m = re.match(r"^([A-Za-z0-9][\w.\-]*)==", line)
-        if m:
-            names.add(m.group(1).lower().replace("_", "-"))
-    return names
+    from lock_runtime_deps import dist_name
+
+    return {dist_name(m.group(1)) for line in LOCK.read_text(encoding="utf-8").splitlines()
+            if (m := re.match(r"^([A-Za-z0-9][\w.\-]*)==", line))}
 
 
 def _dep_names(specs) -> set[str]:
-    return {re.split(r"[<>=!~\[ ]", s, 1)[0].strip().lower().replace("_", "-")
-            for s in specs}
+    """Проекция имени — одна на проект, `lock_runtime_deps.dist_name` (№446)."""
+    from lock_runtime_deps import dist_name
+
+    return {dist_name(s) for s in specs}
 
 
 def test_lock_существует_и_с_хешами():
@@ -115,3 +115,33 @@ def test_сборка_не_докачивает_pip_мимо_lock():
                 if line.strip() and not line.lstrip().startswith("#")]
     assert not [line for line in commands if "--upgrade pip" in line], (
         "сборка снова обновляет pip мимо lock-файла")
+
+
+def test_проекция_имени_требования_по_pep_508_и_503():
+    from lock_runtime_deps import dist_name
+
+    for spec, name in [("PyYAML>=6", "pyyaml"), ("zope.interface", "zope-interface"),
+                       ('a_b[c]; python_version<"3.12"', "a-b"), ("  Foo__Bar.baz==1", "foo-bar-baz"),
+                       ("x", "x")]:
+        assert dist_name(spec) == name, spec
+    for bad in ("", "  ", ">=1", "-x"):
+        try:
+            dist_name(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} принят как требование")
+
+
+def test_вход_lock_это_проекция_объявления_строка_в_строку():
+    """`runtime_deps` — проекция `declared_deps` (№446): вход lock, записанный
+    генератором, совпадает с ней строка в строку, а сырое объявление хранит
+    маркеры и пресеты, которые проекция снимает."""
+    from lock_runtime_deps import SKIP, declared_deps, runtime_deps
+
+    if INPUT.exists():
+        listed = [ln.strip() for ln in INPUT.read_text(encoding="utf-8").splitlines()
+                  if ln.strip() and not ln.startswith("#")]
+        assert runtime_deps() == listed
+    raw = declared_deps()
+    assert any(";" in d for d in raw) and any(d.startswith(SKIP) for d in raw), raw
+    assert all(";" not in d for d in runtime_deps())

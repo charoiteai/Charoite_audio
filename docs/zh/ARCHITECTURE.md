@@ -455,6 +455,7 @@ adopt / rebuild），在策略旁只有一个翻译器将其映射为策略—�
 把 `packages/charoite-graph/` 构建到布局的临时副本中；测试解压归档，并把其中的 `*.py` 名称与探针计划
 （`package_files` 对形状投影 `artifact_name`）双向比对——多余或缺失的模块会成为带名称的一行，而损坏只在归档副本上验证；
 构建需要 `ci.yml` 的 `env` 中所固定版本的 `setuptools`，缺失或版本不同时会以确切的安装命令失败，而不是跳过探针。
+wheel 还要与其声明对照（№446）：`packages/charoite-graph/pyproject.toml` 只有一个读取者，METADATA 由 `importlib.metadata` 直接从归档读取，门禁的各行是一张带依赖关系的类型表——Name、Version、Requires-Python、License-Expression 与 Requires-Dist 按原样与声明相等，METADATA 正文等于包的 README，wheel 中的许可证文本等于文件，包的每个第三方导入都已声明（且声明的都被使用），包的每个依赖在根清单中写法相同。每种类型都有自己的损坏副本用例，README 示例取自制品的描述，并在解压后的 wheel 上运行。
 
 ## 两类重复
 

@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.metadata
 import json
 import os
 import pathlib
@@ -37,6 +38,7 @@ import sys
 import time
 import tomllib
 import zipfile
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -44,6 +46,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import layout_map as lm  # noqa: E402
+import lock_runtime_deps as lrd  # noqa: E402
 import charoite_paths  # noqa: E402
 import exit_codes  # noqa: E402
 
@@ -420,6 +423,16 @@ print(json.dumps({"ready": result.ready, "total": result.total, "text": result.t
 """
 
 
+def _isolated_env(parent: dict[str, str], drop: tuple[str, ...]) -> dict[str, str]:
+    """Окружение подпроцесса пробы и примера README: родитель минус `drop`, плюс
+    `ISOLATION_ENV`. Чистое применение таблиц — своей политики нет: что снимать,
+    решает вызывающий (самопроверки утечек зовут пробу с `drop=()`), отравление
+    добавляет только проба (№446)."""
+    env = {k: v for k, v in parent.items() if k not in drop}
+    env.update(ISOLATION_ENV)
+    return env
+
+
 def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: pathlib.Path, *,
                       app_deps: tuple[str, ...] = APP_ONLY_DEPS, outside: tuple[str, ...] = (),
                       outer: dict[str, str] | None = None, drop: tuple[str, ...] = ISOLATION_DROP,
@@ -439,8 +452,7 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     runner = work / "probe_runner.py"
     runner.write_text(PROBE_RUNNER, encoding="utf-8")
     parent = {**os.environ, **{k: v.replace("{trap}", str(trap)) for k, v in (outer or {}).items()}}
-    env = {k: v for k, v in parent.items() if k not in drop}
-    env.update(ISOLATION_ENV)
+    env = _isolated_env(parent, drop)
     env.update({k: str(trap) for k in POISONED_ENV})
     r = _run([sys.executable, str(runner), str(pkg), str(data), str(graph), str(trap), query],
              cwd, env, timeout)
@@ -583,7 +595,7 @@ def wheel_path(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     return built
 
 
-def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
+def _wheel_plan_problems(built: pathlib.Path, declared: Declared | None = None) -> list[str]:
     """Сверка плана пробы с НАСТОЯЩИМ артефактом: имена `*.py` из колеса против
     `artifact_name` каждого файла `package_files`, в обе стороны. Списком строк —
     чтобы и честная сборка, и порченая копия судились одним кодом, а расхождение
@@ -612,18 +624,271 @@ def _wheel_plan_problems(built: pathlib.Path) -> list[str]:
         out.append("в артефакте нет модулей плана: " + ", ".join(недостача))
     if чужое:
         out.append("в артефакте лишние файлы (объявить данными или убрать): " + ", ".join(чужое))
-    own = _dist_info_dir()
+    own = _dist_info_dir(declared)
     if meta != {own}:
         out.append(f"в артефакте метаданные не своего дистрибутива: ждали {own}, нашли {sorted(meta)}")
     return out
 
 
-def _dist_info_dir(pyproject: pathlib.Path = ROOT / "packages" / "charoite-graph" / "pyproject.toml") -> str:
+#: Объявление дистрибутива пакета графа. Его пути (`readme`, `license-files`) по
+#: PEP 621/639 разрешаются от каталога объявления.
+PACKAGE_PYPROJECT = ROOT / "packages" / "charoite-graph" / "pyproject.toml"
+
+
+class Declared(NamedTuple):
+    """Объявление дистрибутива значением: таблица `[project]` и каталог, от которого
+    разрешаются её пути. Для гейта колеса объявление читает только `_declared` (№446)."""
+    project: dict
+    base: pathlib.Path
+
+
+def _declared(pyproject: pathlib.Path = PACKAGE_PYPROJECT) -> Declared:
+    return Declared(tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"], pyproject.parent)
+
+
+def _dist_info_dir(declared: Declared | None = None) -> str:
     """Имя каталога метаданных колеса по объявлению дистрибутива: `-` в имени —
-    `_`, как пишет его инструмент сборки (PEP 427). Один читатель объявления
-    переедет в гейт «артефакт против объявления» №446."""
-    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    `_`, как пишет его инструмент сборки (PEP 427). Без аргумента — объявление
+    репозитория (прямые вызовы теста порчи плана); гейт передаёт своё явно."""
+    project = (declared or _declared()).project
     return f"{project['name'].replace('-', '_')}-{project['version']}.dist-info"
+
+
+class Line(NamedTuple):
+    """Вид строки гейта колеса: шаблон; читает ли вид METADATA или архив своего
+    `dist-info` (каталога нет — вид не вычисляется: о нём уже сказала сверка плана);
+    виды, от которых он зависит (любой дал строку — этот не вычисляется)."""
+    template: str
+    needs_dist_info: bool
+    depends_on: tuple[str, ...] = ()
+
+
+#: Строки гейта «артефакт против объявления» (№446), по виду на проверку. Порядок —
+#: топологический относительно `depends_on`: гейт идёт по словарю, и вид считается
+#: после тех, от кого зависит. Поля METADATA сравниваются строкой как есть:
+#: каноническую форму пишет инструмент сборки, объявление обязано быть в ней —
+#: расхождение формы гейт называет, а не прощает. Строка начинается с того, что править.
+WHEEL_LINES: dict[str, Line] = {
+    "wheel_name": Line("сборка: имя файла колеса {got} не начинается с {want}", False),
+    "name": Line("объявление или сборка: Name в METADATA {got!r}, в объявлении {want!r}", True),
+    "version": Line("объявление или сборка: Version в METADATA {got!r}, в объявлении {want!r}", True),
+    "requires_python": Line("объявление или сборка: Requires-Python в METADATA {got!r}, в объявлении {want!r}", True),
+    "license_expression": Line("объявление или сборка: License-Expression в METADATA {got!r}, в объявлении {want!r}",
+                               True),
+    "requires_dist": Line("объявление: Requires-Dist в METADATA {got}, в dependencies {want} — строки сравниваются как есть",
+                          True),
+    "description": Line("README пакета: тело METADATA не равно файлу {path}", True),
+    "example": Line("README пакета: {why}", True),
+    "license_pattern": Line("объявление: license-files {got!r} — шаблон, а гейт судит литералы", False),
+    "license_source": Line("каталог дистрибутива: объявленного файла лицензии {path} нет", False, ("license_pattern",)),
+    "license_files": Line("сборка: License-File в METADATA {got}, в license-files {want}", True, ("license_pattern",)),
+    "license_archive": Line("сборка: в колесе нет {path}", True, ("license_pattern",)),
+    "license_bytes": Line("сборка: {path} в колесе не равен файлу {source}", True,
+                          ("license_pattern", "license_source", "license_archive")),
+    "duplicate_dependency": Line("объявление: {deps} — одно имя дистрибутива записано дважды", False),
+    "missing_module": Line("окружение: у стороннего модуля {module} ({files}) нет дистрибутива", False),
+    "undeclared_import": Line("объявление: импорт {module} ({files}) ведёт к {dists}, в dependencies их нет", False,
+                              ("duplicate_dependency", "missing_module")),
+    # Судится зависимость, дистрибутив которой стоит в окружении: тогда известны его
+    # модули, и «к нему не ведёт ни один импорт» — факт. Не стоит — судить нечем, и
+    # зависимость молчит сама по себе, а не вся проверка из-за чужого модуля
+    # (выходной круг 1 по №446).
+    "unused_dependency": Line("объявление: зависимость {dep} — к ней не ведёт ни один импорт пакета", False,
+                              ("duplicate_dependency",)),
+    "root_missing": Line("корневой манифест: зависимости пакета {dep} в нём нет", False, ("duplicate_dependency",)),
+    "root_differs": Line("корневой манифест: {dep} в пакете, {root} в корне — строки обязаны совпадать", False,
+                         ("duplicate_dependency", "root_missing")),
+}
+
+
+def _package_imports() -> dict[str, set[str]]:
+    """Сторонние модули пакета → файлы, где они импортированы: первый сегмент имени
+    вне стандартной библиотеки и вне самого пакета. Грамматика импорта и деревья —
+    у инвентаря раскладки (`lm.imports_of`, `INV.files[rel].tree`)."""
+    layout = lm.load_layout()
+    out: dict[str, set[str]] = {}
+    for rel in lm.package_files(INV, layout):
+        for name in lm.imports_of(rel, INV.files[rel].tree):
+            top = name.split(".")[0]
+            if top not in sys.stdlib_module_names and top != layout["package"]:
+                out.setdefault(top, set()).add(rel)
+    return out
+
+
+def _readme_example(body: str) -> str:
+    """Код примера из описания артефакта: раздел от строки `## Пример` до следующей
+    строки `## ` или до конца текста, в нём ровно один блок от строки ```python до
+    строки ```. Иначе — `ValueError` с причиной словами."""
+    lines = body.splitlines()
+    if "## Пример" not in lines:
+        raise ValueError("в описании нет раздела «## Пример»")
+    section = lines[lines.index("## Пример") + 1:]
+    section = section[:next((i for i, line in enumerate(section) if line.startswith("## ")), len(section))]
+    blocks: list[str] = []
+    current: list[str] | None = None
+    for line in section:
+        if current is None and line.strip() == "```python":
+            current = []
+        elif current is not None and line.strip() == "```":
+            blocks.append("\n".join(current) + "\n")
+            current = None
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        raise ValueError("в разделе «Пример» блок ```python не закрыт")
+    if len(blocks) != 1:
+        raise ValueError(f"в разделе «Пример» блоков ```python {len(blocks)}, ждали один")
+    return blocks[0]
+
+
+def _artifact_metadata(wheel: pathlib.Path, name: str):
+    """METADATA колеса стандартным читателем: колесо — zip на пути поиска
+    `importlib.metadata`, дистрибутив находится по имени каталога `dist-info`, текст —
+    UTF-8. Байты через `email.parser` дали бы суррогаты вместо русского тела (опыт №446)."""
+    found = list(importlib.metadata.distributions(name=name, path=[str(wheel)]))
+    return found[0].metadata if len(found) == 1 else None
+
+
+class _GateInput(NamedTuple):
+    wheel: pathlib.Path
+    own: str
+    members: frozenset[str]
+    licenses: dict[str, bytes]
+    md: object
+    declared: Declared
+    imports: dict[str, set[str]]
+    dists: dict[str, list[str]]
+    root: list[str]
+
+
+def _field(meta_key: str, project_key: str):
+    def check(g: _GateInput) -> list[dict]:
+        got, want = g.md.get(meta_key), g.declared.project.get(project_key)
+        return [] if got == want else [{"got": got, "want": want}]
+    return check
+
+
+def _license_paths(g: _GateInput) -> list[str]:
+    return list(g.declared.project.get("license-files", []))
+
+
+def _readme_path(g: _GateInput) -> pathlib.Path:
+    readme = g.declared.project.get("readme", "")
+    return g.declared.base / (readme["file"] if isinstance(readme, dict) else readme)
+
+
+def _declared_names(g: _GateInput) -> dict[str, str]:
+    return {lrd.dist_name(d): d for d in g.declared.project.get("dependencies", [])}
+
+
+def _check_example(g: _GateInput) -> list[dict]:
+    try:
+        _readme_example(g.md.get_payload())
+    except ValueError as e:
+        return [{"why": str(e)}]
+    return []
+
+
+def _check_description(g: _GateInput) -> list[dict]:
+    path = _readme_path(g)
+    text = path.read_text(encoding="utf-8") if path.is_file() else None
+    return [] if g.md.get_payload() == text else [{"path": path.name}]
+
+
+def _check_used(g: _GateInput) -> list[dict]:
+    installed = {lrd.dist_name(d) for dists in g.dists.values() for d in dists}
+    used = {lrd.dist_name(d) for dists in (g.dists.get(m, []) for m in g.imports) for d in dists}
+    return [{"dep": dep} for name, dep in sorted(_declared_names(g).items()) if name in installed and name not in used]
+
+
+def _check_duplicates(g: _GateInput) -> list[dict]:
+    """Две строки `dependencies` с одним нормализованным именем: словарь имён молча
+    оставил бы одну, и остальные виды судили бы не всё объявление."""
+    by_name: dict[str, list[str]] = {}
+    for dep in g.declared.project.get("dependencies", []):
+        by_name.setdefault(lrd.dist_name(dep), []).append(dep)
+    return [{"deps": ", ".join(deps)} for _, deps in sorted(by_name.items()) if len(deps) > 1]
+
+
+def _check_undeclared(g: _GateInput) -> list[dict]:
+    declared = set(_declared_names(g))
+    return [{"module": m, "files": ", ".join(sorted(files)), "dists": ", ".join(sorted(g.dists[m]))}
+            for m, files in sorted(g.imports.items())
+            if g.dists.get(m) and not {lrd.dist_name(d) for d in g.dists[m]} & declared]
+
+
+def _root_by_name(g: _GateInput) -> dict[str, str]:
+    return {lrd.dist_name(r): r for r in g.root}
+
+
+#: Проверка на каждый вид таблицы: вход гейта → подстановки строк (пусто — чисто).
+_CHECKS = {
+    "wheel_name": lambda g: [] if g.wheel.name.startswith(g.own.removesuffix(".dist-info") + "-")
+    else [{"got": g.wheel.name, "want": g.own.removesuffix(".dist-info") + "-"}],
+    "name": _field("Name", "name"),
+    "version": _field("Version", "version"),
+    "requires_python": _field("Requires-Python", "requires-python"),
+    "license_expression": _field("License-Expression", "license"),
+    "requires_dist": lambda g: [] if sorted(g.md.get_all("Requires-Dist") or []) == sorted(
+        g.declared.project.get("dependencies", [])) else [{"got": sorted(g.md.get_all("Requires-Dist") or []),
+                                                            "want": sorted(g.declared.project.get("dependencies", []))}],
+    "description": _check_description,
+    "example": _check_example,
+    "license_pattern": lambda g: [{"got": f} for f in _license_paths(g) if any(c in f for c in "*?[")],
+    "license_source": lambda g: [{"path": f} for f in _license_paths(g) if not (g.declared.base / f).is_file()],
+    "license_files": lambda g: [] if sorted(g.md.get_all("License-File") or []) == sorted(_license_paths(g))
+    else [{"got": sorted(g.md.get_all("License-File") or []), "want": sorted(_license_paths(g))}],
+    "license_archive": lambda g: [{"path": f"{g.own}/licenses/{f}"} for f in _license_paths(g)
+                                  if f"{g.own}/licenses/{f}" not in g.members],
+    "license_bytes": lambda g: [{"path": f"{g.own}/licenses/{f}", "source": f} for f in _license_paths(g)
+                                if g.licenses.get(f"{g.own}/licenses/{f}") != (g.declared.base / f).read_bytes()],
+    "duplicate_dependency": _check_duplicates,
+    "missing_module": lambda g: [{"module": m, "files": ", ".join(sorted(files))}
+                                 for m, files in sorted(g.imports.items()) if not g.dists.get(m)],
+    "undeclared_import": _check_undeclared,
+    "unused_dependency": _check_used,
+    "root_missing": lambda g: [{"dep": dep} for name, dep in sorted(_declared_names(g).items())
+                               if name not in _root_by_name(g)],
+    "root_differs": lambda g: [{"dep": dep, "root": _root_by_name(g)[name]}
+                               for name, dep in sorted(_declared_names(g).items())
+                               if name in _root_by_name(g) and _root_by_name(g)[name] != dep],
+}
+
+
+def wheel_problems(wheel: pathlib.Path, declared: Declared | None = None, **inputs) -> list[str]:
+    """Гейт «артефакт против объявления» (№446): строками, пусто — принят."""
+    return [line for _, line in _wheel_findings(wheel, declared, **inputs)]
+
+
+def _wheel_findings(wheel: pathlib.Path, declared: Declared | None = None, *,
+                    imports: dict[str, set[str]] | None = None, dists: dict[str, list[str]] | None = None,
+                    root: list[str] | None = None) -> list[tuple[str, str]]:
+    """Находки гейта парами (вид, строка); вид сверки плана — `plan`. Сначала
+    сверка плана `_wheel_plan_problems`, потом виды таблицы `WHEEL_LINES` по порядку.
+    Объявление резолвится здесь один раз и идёт во все вызовы явно; входы — значения
+    (по умолчанию — настоящие источники: импорты пакета по инвентарю, дистрибутивы
+    окружения тестов, объявление корневого манифеста), чтобы отрицательные опыты
+    подменяли ровно одно."""
+    declared = declared or _declared()
+    own = _dist_info_dir(declared)
+    with zipfile.ZipFile(wheel) as archive:
+        members = frozenset(archive.namelist())
+        licenses = {m: archive.read(m) for m in members if m.startswith(own + "/licenses/")}
+    has_own = any(m.startswith(own + "/") for m in members)
+    g = _GateInput(wheel, own, members, licenses,
+                   _artifact_metadata(wheel, declared.project["name"]) if has_own else None, declared,
+                   _package_imports() if imports is None else imports,
+                   importlib.metadata.packages_distributions() if dists is None else dists,
+                   lrd.declared_deps() if root is None else root)
+    out = [("plan", line) for line in _wheel_plan_problems(wheel, declared)]
+    fired: set[str] = set()
+    for kind, line in WHEEL_LINES.items():
+        if (line.needs_dist_info and g.md is None) or fired & set(line.depends_on):
+            continue
+        for fields in _CHECKS[kind](g):
+            out.append((kind, line.template.format(**fields)))
+            fired.add(kind)
+    return out
 
 
 def _copy_package(dest: pathlib.Path) -> None:
@@ -704,6 +969,202 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     got = _wheel_plan_problems(tmp_path / "swap.whl")
     assert len(got) == 1 and "ждали " + own in got[0], got
     assert _wheel_plan_problems(rebuild(tmp_path / "std.whl", extra="charoite_graph-0.1.0.data/scripts/x")) == []
+
+
+def test_the_wheel_matches_its_declaration(wheel_path: pathlib.Path) -> None:
+    """Честное колесо проходит гейт «артефакт против объявления» целиком (№446)."""
+    problems = wheel_problems(wheel_path)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_package_license_is_the_root_license() -> None:
+    """Копия лицензии в каталоге дистрибутива — тот же текст, что в корне: `..` в
+    `license-files` PEP 639 запрещает, а без файла setuptools собирает колесо молча и
+    без лицензии (опыт №446)."""
+    assert (PACKAGE_PYPROJECT.parent / "LICENSE").read_bytes() == (ROOT / "LICENSE").read_bytes()
+
+
+def _corrupt_copy(wheel: pathlib.Path, where: pathlib.Path, *, name: str | None = None, edit=None,
+                  drop: tuple[str, ...] = (), add: dict[str, bytes] | None = None) -> pathlib.Path:
+    """Копия архива в свой каталог `where`: имя — `name` или имя самого артефакта;
+    `edit(член, байты) -> байты` правит члены, `drop` снимает, `add` добавляет."""
+    where.mkdir(parents=True)
+    target = where / (name or wheel.name)
+    with zipfile.ZipFile(wheel) as src, zipfile.ZipFile(target, "w") as dst:
+        for item in src.infolist():
+            if item.filename in drop:
+                continue
+            data = src.read(item.filename)
+            dst.writestr(item, edit(item.filename, data) if edit else data)
+        for member, data in (add or {}).items():
+            dst.writestr(member, data)
+    return target
+
+
+def _metadata(transform):
+    """Правка METADATA своего `dist-info` текстом UTF-8."""
+    def edit(member: str, data: bytes) -> bytes:
+        return transform(data.decode("utf-8")).encode("utf-8") if member.endswith(".dist-info/METADATA") else data
+    return edit
+
+
+def _declared_copy(where: pathlib.Path, transform=None, *, without_license: bool = False) -> Declared:
+    """Каталог дистрибутива целиком (рядом README и LICENSE) и объявление из копии."""
+    dst = where / "packages" / "charoite-graph"
+    _sandbox_copy(PACKAGE_PYPROJECT.parent, dst, DIST_IGNORE)
+    pyproject = dst / "pyproject.toml"
+    if transform:
+        pyproject.write_text(transform(pyproject.read_text(encoding="utf-8")), encoding="utf-8")
+    if without_license:
+        (dst / "LICENSE").unlink()
+    return _declared(pyproject)
+
+
+def _own_license(wheel: pathlib.Path) -> str:
+    return f"{_dist_info_dir()}/licenses/LICENSE"
+
+
+#: Случаи порчи: что испорчено → входы гейта → ожидаемое множество видов. Каждый вид
+#: таблицы `WHEEL_LINES` получает свой случай (самопроверка ниже).
+CORRUPT_CASES = {
+    "чужое имя файла": (lambda w, d: {"wheel": _corrupt_copy(w, d, name="charoite_graph-9.9.9-py3-none-any.whl")},
+                        {"wheel_name"}),
+    "Name": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("Name: charoite-graph\n", "Name: чужой\n", 1)))}, {"name"}),
+    "Version": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("Version: 0.1.0\n", "Version: 9.9.9\n", 1)))}, {"version"}),
+    "License-Expression": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("License-Expression: Apache-2.0\n", "License-Expression: MIT\n", 1)))},
+                           {"license_expression"}),
+    "без Requires-Python": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("Requires-Python: >=3.11\n", "", 1)))}, {"requires_python"}),
+    "лишний Requires-Dist": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("Requires-Dist: pyyaml>=6.0\n", "Requires-Dist: pyyaml>=6.0\nRequires-Dist: rich>=13.0\n",
+                            1)))}, {"requires_dist"}),
+    "без License-File": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("License-File: LICENSE\n", "", 1)))}, {"license_files"}),
+    "тело без примера": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("\n## Пример\n", "\n## Образец\n", 1)))}, {"example", "description"}),
+    "два блока примера": (lambda w, d: {"wheel": _corrupt_copy(w, d, edit=_metadata(
+        lambda s: s.replace("    print(result.text)\n```\n", "    print(result.text)\n```\n\n```python\npass\n```\n",
+                            1)))}, {"example", "description"}),
+    "архив без лицензии": (lambda w, d: {"wheel": _corrupt_copy(w, d, drop=(_own_license(w),))}, {"license_archive"}),
+    "чужие байты лицензии": (lambda w, d: {"wheel": _corrupt_copy(
+        w, d, edit=lambda m, data: b"x\n" if m == _own_license(w) else data)}, {"license_bytes"}),
+    "объявление без pyyaml": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', "dependencies = []", 1))},
+                              {"undeclared_import", "requires_dist"}),
+    "лишняя зависимость": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', 'dependencies = ["pyyaml>=6.0", "rich>=13.0"]', 1))},
+                           {"unused_dependency", "requires_dist"}),
+    "шаблон лицензии": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('license-files = ["LICENSE"]', 'license-files = ["LICEN[CS]E"]', 1))},
+                        {"license_pattern"}),
+    "нет файла лицензии": (lambda w, d: {"wheel": w, "declared": _declared_copy(d, without_license=True)},
+                           {"license_source"}),
+    "модуль вне окружения": (lambda w, d: {"wheel": w, "dists": {
+        k: v for k, v in importlib.metadata.packages_distributions().items() if "PyYAML" not in v}}, {"missing_module"}),
+    "дубль зависимости": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', 'dependencies = ["pyyaml>=6.0", "PyYAML>=6"]', 1))},
+                          {"duplicate_dependency", "requires_dist"}),
+    "лишняя зависимость вне окружения": (lambda w, d: {"wheel": w, "declared": _declared_copy(
+        d, lambda s: s.replace('dependencies = ["pyyaml>=6.0"]', 'dependencies = ["pyyaml>=6.0", "not-installed-dist>=1"]', 1)),
+        "root": lrd.declared_deps() + ["not-installed-dist>=1"]}, {"requires_dist"}),
+    "корень без pyyaml": (lambda w, d: {"wheel": w, "root": [
+        r for r in lrd.declared_deps() if lrd.dist_name(r) != "pyyaml"]}, {"root_missing"}),
+    "корень с маркером": (lambda w, d: {"wheel": w, "root": [
+        "pyyaml>=6.0 ; python_version < '3.13'" if lrd.dist_name(r) == "pyyaml" else r for r in lrd.declared_deps()]},
+                          {"root_differs"}),
+}
+
+
+def test_the_wheel_gate_tables_agree() -> None:
+    """Самопроверка таблиц: у каждого вида — проверка и случай порчи; порядок видов
+    топологический (вид после всех, от кого зависит); ни один случай не ждёт вид
+    вместе с видом, от которого тот зависит."""
+    assert set(_CHECKS) == set(WHEEL_LINES)
+    assert set().union(*(kinds for _, kinds in CORRUPT_CASES.values())) == set(WHEEL_LINES)
+    order = list(WHEEL_LINES)
+    for kind, line in WHEEL_LINES.items():
+        assert all(order.index(dep) < order.index(kind) for dep in line.depends_on), kind
+    for case, (_, kinds) in CORRUPT_CASES.items():
+        assert not any(set(WHEEL_LINES[k].depends_on) & kinds for k in kinds), case
+
+
+@pytest.mark.parametrize("case", list(CORRUPT_CASES))
+def test_the_wheel_gate_reds_on_each_corruption(case: str, tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
+    build, kinds = CORRUPT_CASES[case]
+    kwargs = build(wheel_path, tmp_path / "случай")
+    got = _wheel_findings(kwargs.pop("wheel"), **kwargs)
+    assert {kind for kind, _ in got} == kinds, got
+
+
+def test_the_wheel_gate_is_silent_about_metadata_without_its_dist_info(tmp_path: pathlib.Path,
+                                                                      wheel_path: pathlib.Path) -> None:
+    """Свой `dist-info` переименован: о нём говорит сверка плана — ровно одна строка,
+    виды METADATA и архива не вычисляются."""
+    own = _dist_info_dir()
+    with zipfile.ZipFile(wheel_path) as src:
+        moved = {m.replace(own, "другой-0.1.dist-info", 1): src.read(m) for m in src.namelist() if m.startswith(own)}
+    swap = _corrupt_copy(wheel_path, tmp_path / "swap", drop=tuple(m.replace("другой-0.1.dist-info", own, 1)
+                                                                   for m in moved), add=moved)
+    got = wheel_problems(swap)
+    assert got == _wheel_plan_problems(swap) and len(got) == 1, got
+
+
+@pytest.mark.parametrize("body, why", [
+    ("# t\n\n## Пример\n\n```python\nx = 1\n```\n", None),
+    ("# t\n\n## Пример\n\n```python\nx = 1\n```\n\n## Дальше\n\n```python\ny = 2\n```\n", None),
+    ("# t\n\n## Образец\n", "нет раздела"),
+    ("# t\n\n## Пример\n\n```python\nx = 1\n```\n```python\ny = 2\n```\n", "блоков ```python 2"),
+    ("# t\n\n## Пример\n\nтекст\n", "блоков ```python 0"),
+    ("# t\n\n## Пример\n\n```python\nx = 1\n", "не закрыт"),
+])
+def test_the_readme_example_is_one_block_in_its_section(body: str, why: str | None) -> None:
+    """Раздел — до следующей `## ` или до конца текста; блок в нём ровно один."""
+    if why is None:
+        assert _readme_example(body) == "x = 1\n"
+    else:
+        with pytest.raises(ValueError, match=why):
+            _readme_example(body)
+
+
+#: Раннер примера README — отдельным процессом: путь к распакованному колесу он
+#: вставляет сам (с `PYTHONSAFEPATH` каталог скрипта в `sys.path` не попадает),
+#: пример исполняется как главный модуль.
+EXAMPLE_RUNNER = "import runpy, sys\nsys.path.insert(0, sys.argv[1])\nrunpy.run_path(sys.argv[2], run_name='__main__')\n"
+
+
+def run_readme_example(pkg: pathlib.Path, code: str, work: pathlib.Path) -> subprocess.CompletedProcess:
+    """Пример — в окружении изоляции без отравления: `TMPDIR` наследуется, пример
+    пишет только во временный каталог, который сам и создаёт."""
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "example.py").write_text(code, encoding="utf-8")
+    (work / "runner.py").write_text(EXAMPLE_RUNNER, encoding="utf-8")
+    return _run([sys.executable, str(work / "runner.py"), str(pkg), str(work / "example.py")], work,
+                _isolated_env(dict(os.environ), ISOLATION_DROP), TIMEOUT)
+
+
+def test_the_readme_example_runs_from_the_wheel(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
+    """Пример из описания АРТЕФАКТА (не из файла репозитория) исполняется на
+    распакованном колесе: статус `confident` — семантика сработала (без векторов
+    поиск не бывает уверенным), и узел найден. Судим по статусу, а не по маркеру
+    «⚠» в тексте: маркеры в тексте никто не разбирает."""
+    md = _artifact_metadata(wheel_path, _declared().project["name"])
+    code = _readme_example(md.get_payload())
+    pkg = tmp_path / "pkg"
+    with zipfile.ZipFile(wheel_path) as archive:
+        archive.extractall(pkg)
+    r = run_readme_example(pkg, code, tmp_path / "work")
+    assert r.returncode == 0, f"пример README упал: {r.stderr[-2000:]}"
+    lines = r.stdout.splitlines()
+    assert lines and lines[0] == "confident", r.stdout
+    assert "Платёжный шлюз" in r.stdout, r.stdout
+
+
+def test_the_example_runner_reports_a_broken_example(tmp_path: pathlib.Path) -> None:
+    r = run_readme_example(tmp_path / "pkg", "raise RuntimeError('сломано')\n", tmp_path / "work")
+    assert r.returncode != 0 and "RuntimeError: сломано" in r.stderr, (r.returncode, r.stderr[-500:])
 
 
 def test_the_sandbox_copy_is_writable_from_a_read_only_tree(tmp_path: pathlib.Path) -> None:

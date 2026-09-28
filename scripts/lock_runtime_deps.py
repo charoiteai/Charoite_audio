@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 
 # Вставка — только чтобы импортировать сам канон путей. LOCK и INPUT — файлы
 # РЕПОЗИТОРИЯ, то есть корень КОДА: канон считает его от положения файла.
@@ -40,22 +41,38 @@ INPUT = ROOT / "requirements-runtime.in"
 SKIP = ("mlx-whisper", "parakeet-mlx")
 
 
+#: Имя дистрибутива в начале строки требования — грамматика PEP 508 (`identifier`):
+#: буквы и цифры по краям, внутри ещё `.`, `_`, `-`. За именем идут extras, версии
+#: или маркер — их проекция имени не читает.
+_REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def dist_name(requirement: str) -> str:
+    """Строка требования → нормализованное имя дистрибутива по PEP 503: регистр
+    снят, серии `-`, `_`, `.` свёрнуты в `-`. Одна проекция на проект: её зовут
+    lock-тест и гейт колеса пакета графа (№446), чтобы одно объявление не судилось
+    двумя разными правилами имени."""
+    m = _REQUIREMENT_NAME.match(requirement.strip())
+    if not m:
+        raise ValueError(f"не требование PEP 508 — имени нет: {requirement!r}")
+    return re.sub(r"[-_.]+", "-", m.group(0)).lower()
+
+
+def declared_deps() -> list[str]:
+    """`[project].dependencies` корневого манифеста как есть: маркеры и пресеты
+    `SKIP` на месте. Один читатель объявления корня — `tomllib`; `runtime_deps`
+    и гейт колеса пакета графа (№446) берут строки отсюда."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8")).get("project", {})
+    if "dependencies" not in project:
+        raise SystemExit("в pyproject.toml нет [project].dependencies")
+    return list(project["dependencies"])
+
+
 def runtime_deps() -> list[str]:
-    """Рантайм-зависимости из pyproject — тем же правилом, что у сборки."""
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    block = re.search(r"dependencies = \[(.*?)\n\]", text, re.S)
-    if not block:
-        raise SystemExit("в pyproject.toml не нашлась секция dependencies")
-    out = []
-    for line in block.group(1).splitlines():
-        m = re.search(r'"([^"]+)"', line)
-        if not m:
-            continue
-        dep = m.group(1)
-        if any(dep.startswith(s) for s in SKIP):
-            continue
-        out.append(dep.split(";")[0].strip())
-    return out
+    """Рантайм-зависимости для lock — проекция объявления: пресеты `SKIP` сняты,
+    маркер отрезан. Вход `requirements-runtime.in` пишется отсюда."""
+    return [dep.split(";")[0].strip() for dep in declared_deps()
+            if not any(dep.startswith(s) for s in SKIP)]
 
 
 def main() -> int:
