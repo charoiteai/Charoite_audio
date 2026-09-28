@@ -973,6 +973,7 @@ def test_the_wheel_plan_check_reds_on_a_corrupt_artifact(tmp_path: pathlib.Path,
     assert _wheel_plan_problems(rebuild(tmp_path / "std.whl", extra="charoite_graph-0.1.0.data/scripts/x")) == []
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_wheel_matches_its_declaration(wheel_path: pathlib.Path) -> None:
     """Честное колесо проходит гейт «артефакт против объявления» целиком (№446)."""
     problems = wheel_problems(wheel_path)
@@ -1093,6 +1094,7 @@ def test_the_wheel_gate_tables_agree() -> None:
         assert not any(set(WHEEL_LINES[k].depends_on) & kinds for k in kinds), case
 
 
+@pytest.mark.xdist_group("wheel")
 @pytest.mark.parametrize("case", list(CORRUPT_CASES))
 def test_the_wheel_gate_reds_on_each_corruption(case: str, tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
     build, kinds = CORRUPT_CASES[case]
@@ -1101,6 +1103,7 @@ def test_the_wheel_gate_reds_on_each_corruption(case: str, tmp_path: pathlib.Pat
     assert {kind for kind, _ in got} == kinds, got
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_wheel_gate_is_silent_about_metadata_without_its_dist_info(tmp_path: pathlib.Path,
                                                                       wheel_path: pathlib.Path) -> None:
     """Свой `dist-info` переименован: о нём говорит сверка плана — ровно одна строка,
@@ -1147,6 +1150,7 @@ def run_readme_example(pkg: pathlib.Path, code: str, work: pathlib.Path) -> subp
                 _isolated_env(dict(os.environ), ISOLATION_DROP), TIMEOUT)
 
 
+@pytest.mark.xdist_group("wheel")
 def test_the_readme_example_runs_from_the_wheel(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
     """Пример из описания АРТЕФАКТА (не из файла репозитория) исполняется на
     распакованном колесе: статус `confident` — семантика сработала (без векторов
