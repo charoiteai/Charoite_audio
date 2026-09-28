@@ -229,17 +229,23 @@ def append_hint(tr_path: pathlib.Path, header: str, body: str):
         emit({"type": "status", "text": f"запись подсказок: {e}"})
 
 
+#: Фраза для человека по виду отказа двери модели (`llm.failure_kind`). Вида нет в
+#: таблице — строка ошибки с типом: битый ответ, прочий HTTP и не-модель (диск,
+#: звук) не притворяются «занятой моделью» (№454).
+SHORT_ERROR_PHRASES = {
+    "queue": "модель занята",
+    "unavailable": "облако недоступно",
+    "unreachable": "сервер модели не отвечает",
+    "timeout": "модель не ответила вовремя",
+}
+
+
 def short_error(e: BaseException) -> str:
     """Ошибка модели одной строкой для человека: «занята», «не отвечает», а не
-    стек requests с URL и портом на пол-экрана."""
-    s = str(e)
-    if "503" in s or "429" in s or "502" in s:
-        return "модель занята"
-    if "Connection" in type(e).__name__ or "Max retries" in s or "refused" in s:
-        return "сервер модели не отвечает"
-    if "Timeout" in type(e).__name__ or "timed out" in s:
-        return "модель не ответила вовремя"
-    return f"{type(e).__name__}: {s[:80]}"
+    стек requests с URL и портом на пол-экрана. Решает вид отказа у двери, а не
+    подстрока в тексте: «503» в пути или причине не делало ошибку очередью."""
+    phrase = SHORT_ERROR_PHRASES.get(llm_mod.failure_kind(e))
+    return phrase if phrase is not None else f"{type(e).__name__}: {str(e)[:80]}"
 
 
 def report_drop_once(reporter: list, msg: str) -> None:

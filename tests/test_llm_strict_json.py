@@ -341,12 +341,15 @@ def test_проба_строгого_json_на_сети_и_таймауте_unkn
     assert (исход, причина) == (llm_mod.STRICT_UNKNOWN, "таймаут")
 
 
-def test_занятость_у_доктора_та_же_что_у_двери():
-    """Правило «занято» — одно, у двери в llm: проба живости читает его оттуда,
-    а не держит копию под тестом равенства (выходной круг 1 по №420 A, DS M4).
-    Копия в модуле — новый объект, и тест краснеет."""
+def test_занятость_у_доктора_та_же_что_у_двери(monkeypatch):
+    """Правило «занято» — одно, у двери в llm: проба живости спрашивает функцию двери,
+    а не держит копию множества (выходной круг 1 по №420 A, DS M4). Функция читает
+    правило на вызове: подмена у двери видна доктору сразу (№454, круг 1, M1)."""
     import llm_health
-    assert llm_health.BUSY_STATUSES is llm_mod.BUSY_STATUSES
+    assert llm_health.is_busy_status is llm_mod.is_busy_status
+    assert not hasattr(llm_health, "BUSY_STATUSES")
+    monkeypatch.setattr(llm_mod, "BUSY_STATUSES", frozenset({500}))
+    assert llm_health.is_busy_status(500) and not llm_health.is_busy_status(503)
 
 
 def test_граф_спрашивает_занятость_у_двери(monkeypatch, capsys):

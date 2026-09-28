@@ -549,6 +549,42 @@ def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
     assert fake.calls == 3 and slept == [1.0, 2.0]
 
 
+def _clock_moves_only_in_sleep(monkeypatch):
+    """Подставные часы: стоят, пока нет паузы, и сдвигаются ровно на паузу. Граница
+    бюджета «пауза кончается ровно на busy_wait» тогда наступает точно, без шума."""
+    now, slept = [100.0], []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(llm_mod.time, "sleep", sleep)
+    return slept
+
+
+def test_stream_takes_the_pause_that_ends_exactly_at_the_budget(monkeypatch):
+    """Бюджет «занято» — не позже busy_wait, а не раньше: пауза, которая кончается ровно
+    на границе, ещё берётся (граница в `_open_stream`; выживший мутатора по №454)."""
+    ok = _StreamResp([b'{"message":{"content":"a"},"done":false}',
+                      b'{"message":{"content":"b"},"done":true}'])
+    fake = _BusyThenOk(1, ok)
+    _подменить_requests(monkeypatch, fake)
+    slept = _clock_moves_only_in_sleep(monkeypatch)
+
+    assert "".join(LLM(CFG).stream("в", model="м", busy_wait=llm_mod.BUSY_BACKOFF[0])) == "ab"
+    assert fake.calls == 2 and slept == [llm_mod.BUSY_BACKOFF[0]]
+
+
+def test_complete_takes_the_pause_that_ends_exactly_at_the_budget(monkeypatch):
+    """То же у запроса без стрима (`_post_busy`): одна пауза ровно в бюджет — один повтор."""
+    fake = _BusyThenOk(1, _Resp({"message": {"content": "готово"}}))
+    _подменить_requests(monkeypatch, fake)
+    slept = _clock_moves_only_in_sleep(monkeypatch)
+
+    assert LLM(CFG).complete("в", model="м", busy_wait=llm_mod.BUSY_BACKOFF[0]) == "готово"
+    assert fake.calls == 2 and slept == [llm_mod.BUSY_BACKOFF[0]]
+
+
 def test_complete_busy_beyond_budget_is_http_error_not_revive(monkeypatch):
     """503 — ответ сервера, не сеть: revive (перезапуск) на него не идёт."""
     fake = _Requests(_Resp({}, status=503, text="busy"))
