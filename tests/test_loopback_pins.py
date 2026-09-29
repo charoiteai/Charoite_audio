@@ -174,8 +174,10 @@ def test_gigastt_stream_client_without_the_library(monkeypatch, _сеть_зак
 
 
 def test_gigastt_websocket_address_is_loopback():
-    assert daemon.GIGASTT_WS == "ws://127.0.0.1:9876/v1/ws"
-    assert net.is_loopback_host("127.0.0.1")
+    from urllib.parse import urlsplit
+    assert daemon.GIGASTT_WS.startswith("ws://")
+    assert net.is_loopback_host(urlsplit(daemon.GIGASTT_WS).hostname)
+    assert net.is_loopback_host(urlsplit(daemon.GIGASTT_HEALTH).hostname)
 
 
 def test_mlx_probe_path_and_direct(_сеть_закрыта):
