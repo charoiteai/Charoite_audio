@@ -261,25 +261,29 @@ def _fake_python(tmp_path: pathlib.Path, code: int) -> pathlib.Path:
     видит, — в env.txt и выходит с кодом `code`."""
     exe = tmp_path / "python3"
     exe.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{tmp_path}/args.txt"\n'
-                   f'printf "%s\\n" "$PIP_CONFIG_FILE" "$NETRC" > "{tmp_path}/env.txt"\nexit {code}\n',
+                   f'printf "%s\\n" "$PIP_CONFIG_FILE" "$NETRC" "$VIRTUAL_ENV" "$PIP_PYTHON" > "{tmp_path}/env.txt"\n'
+                   f'exit {code}\n',
                    encoding="utf-8")
     exe.chmod(0o755)
     return exe
 
 
-def test_pip_installs_exactly_the_lock_with_hashes(tmp_path):
+def test_pip_installs_exactly_the_lock_with_hashes(tmp_path, monkeypatch):
     lock = tmp_path / "x.lock"
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "чужой-venv"))
+    monkeypatch.setenv("PIP_PYTHON", str(tmp_path / "чужой-python"))
     assert ie.pip_install(_fake_python(tmp_path, 0), lock) is None
     args = (tmp_path / "args.txt").read_text(encoding="utf-8").split()
     assert args[:3] == ["-I", "-m", "pip"] and args[-2:] == ["-r", str(lock)]
     assert {"install", "--isolated", "--require-hashes", "--no-deps"} <= set(args)
-    # через дверь pip (№484): ни файлов настроек pip, ни ~/.netrc человека ребёнок не читает
-    assert (tmp_path / "env.txt").read_text(encoding="utf-8").split() == [os.devnull, os.devnull]
+    # через дверь pip (№484): ни файлов настроек pip, ни ~/.netrc, ни venv и PIP_PYTHON родителя
+    assert (tmp_path / "env.txt").read_text(encoding="utf-8").splitlines() == [os.devnull, os.devnull, "", ""]
 
 
 def test_a_failed_pip_is_refused_with_its_code(tmp_path):
-    with pytest.raises(ie.Refused, match="код 3"):
+    with pytest.raises(ie.Refused, match="код 3") as refused:
         ie.pip_install(_fake_python(tmp_path, 3), tmp_path / "x.lock")
+    assert "pypi.org" in str(refused.value)      # причина: настройки pip человека выключены намеренно
 
 
 @pytest.mark.parametrize("seconds,duration", [(None, 1.0), (0.5, 0.5)])

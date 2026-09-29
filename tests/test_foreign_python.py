@@ -229,14 +229,16 @@ def test_outcome_kinds_are_strings_not_tuple_fields():
 
 # ------------------------------------------------------------------ pip ребёнка (№484)
 #
-# Человек, у которого pip настроен на чужие адреса со всех сторон: переменная, файл из
-# PIP_CONFIG_FILE, пользовательские pip.conf во всех местах, которые называет сам pip
-# (на macOS и Linux они разные), ~/.netrc с записью default. Окружение строится с нуля —
-# из окружения прогона не течёт ни прокси, ни настроек. Сначала стенд: сегодняшний рецепт
-# (`-I` и `clean_env`) каждую подмену честно берёт; потом дверь — ни одну.
+# Человек, у которого pip настроен на чужое со всех сторон: переменная индекса, файл из
+# PIP_CONFIG_FILE, пользовательские pip.conf во всех местах, которые называет сам pip (на macOS
+# и Linux они разные), PIP_PYTHON (главный разборщик pip читает его и под --isolated),
+# ~/.netrc с записью default. Окружение строится с нуля — из окружения прогона не течёт ни
+# прокси, ни настроек. Сначала стенд: сегодняшний рецепт (`-I` и `clean_env`) каждую подмену
+# честно берёт; потом дверь — ни одну. Свидетельства — со стороны сервера и маркера, а не текст
+# pip: у разных версий pip и вшитого urllib3 он разный (выходной круг №484, I2).
 
 _PIP_TAIL = ("download", "--no-deps", "--no-cache-dir", "--disable-pip-version-check",
-             "--retries", "0", "--timeout", "3", "-vv", "six==1.16.0")
+             "--retries", "0", "--timeout", "3", "six==1.16.0")
 
 
 def _closed_port(stack: contextlib.ExitStack) -> int:
@@ -247,25 +249,54 @@ def _closed_port(stack: contextlib.ExitStack) -> int:
     return s.getsockname()[1]
 
 
-def _pip(argv: list[str], env: dict[str, str]) -> str:
+def _recording_proxy(stack: contextlib.ExitStack) -> tuple[int, list[bytes]]:
+    """Прокси на loopback, который пишет первую строку каждого запроса и закрывает соединение:
+    куда ребёнок на самом деле пошёл, видно со стороны сервера."""
+    seen: list[bytes] = []
+    srv = stack.enter_context(socket.socket())
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+    srv.settimeout(0.2)
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                continue
+            with conn:
+                conn.settimeout(5)
+                try:
+                    seen.append(conn.makefile("rb").readline().rstrip())
+                except OSError:
+                    pass
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    stack.callback(t.join, 5)
+    stack.callback(stop.set)
+    return srv.getsockname()[1], seen
+
+
+def _run(argv: list[str], env: dict[str, str]) -> str:
     p = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     return p.stdout + p.stderr
 
 
-def _person(tmp_path: pathlib.Path, stack: contextlib.ExitStack) -> tuple[dict[str, str], dict[str, int], int]:
-    """(окружение человека, порт каждой подмены, мёртвый прокси)."""
+def _person(tmp_path: pathlib.Path, proxy: int) -> tuple[dict[str, str], dict[str, int], pathlib.Path]:
+    """(окружение человека со всеми подменами, порт каждой подмены индекса, файл-маркер PIP_PYTHON)."""
     home = tmp_path / "home"
     (home / "xdg").mkdir(parents=True)
     (tmp_path / "tmp").mkdir()
-    ports = {name: _closed_port(stack) for name in ("PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf")}
-    dead = _closed_port(stack)
+    with contextlib.ExitStack() as ports_stack:
+        ports = {name: _closed_port(ports_stack) for name in ("PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf")}
     env = {"PATH": os.environ["PATH"], "HOME": str(home), "XDG_CONFIG_HOME": str(home / "xdg"),
            "TMPDIR": str(tmp_path / "tmp"), "LC_ALL": "C.UTF-8"}
-    for proxy in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-        env[proxy] = f"http://127.0.0.1:{dead}"
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        env[name] = f"http://127.0.0.1:{proxy}"
     conf = "[global]\nindex-url = http://127.0.0.1:{}/simple\n"
-    listed = _pip([sys.executable, "-I", "-m", "pip", "config", "debug"], fp.clean_env(env))
-    user = listed.split("\nuser:\n", 1)[1].split("\n\n")[0] if "\nuser:\n" in listed else ""
+    listed = _run([sys.executable, "-I", "-m", "pip", "config", "debug"], fp.clean_env(env))
+    user = listed.split("\nuser:\n", 1)[1] if "\nuser:\n" in listed else ""
     user_files = [line.strip().rsplit(", exists:", 1)[0] for line in user.splitlines() if line.startswith("  ")]
     assert user_files, f"pip не назвал пользовательских pip.conf:\n{listed}"
     for f in user_files:
@@ -274,36 +305,50 @@ def _person(tmp_path: pathlib.Path, stack: contextlib.ExitStack) -> tuple[dict[s
     (tmp_path / "chosen.conf").write_text(conf.format(ports["PIP_CONFIG_FILE"]), encoding="utf-8")
     (home / ".netrc").write_text("default login leakuser password leaksecret\n", encoding="utf-8")
     (home / ".netrc").chmod(0o600)
-    return env, ports, dead
+    marker = tmp_path / "pip_python_ran"
+    fake = tmp_path / "fake_python"
+    fake.write_text(f'#!/bin/sh\necho "$@" > "{marker}"\nexit 0\n', encoding="utf-8")
+    fake.chmod(0o755)
+    env["PIP_PYTHON"] = str(fake)
+    return env, ports, marker
 
 
-@pytest.mark.parametrize("source", ["PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf"])
-def test_todays_recipe_takes_each_foreign_index(tmp_path, source):
+@pytest.mark.сеть_разрешена
+@pytest.mark.parametrize("source", ["PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf", "PIP_PYTHON"])
+def test_todays_recipe_takes_each_foreign_setting(tmp_path, source):
     """Стенд: `-I` — изоляция Python, pip она не касается; каждая подмена доходит."""
     with contextlib.ExitStack() as stack:
-        env, ports, _ = _person(tmp_path, stack)
+        env, ports, marker = _person(tmp_path, _closed_port(stack))
+        if source != "PIP_PYTHON":
+            env.pop("PIP_PYTHON")
         if source == "PIP_INDEX_URL":
             env["PIP_INDEX_URL"] = f"http://127.0.0.1:{ports[source]}/simple"
         elif source == "PIP_CONFIG_FILE":
             env["PIP_CONFIG_FILE"] = str(tmp_path / "chosen.conf")
-        out = _pip([sys.executable, "-I", "-m", "pip", *_PIP_TAIL], fp.clean_env(env))
-    assert f"Looking in indexes: http://127.0.0.1:{ports[source]}/simple" in out, out[-2000:]
+        out = _run([sys.executable, "-I", "-m", "pip", *_PIP_TAIL], fp.clean_env(env))
+    if source == "PIP_PYTHON":
+        assert marker.exists(), f"стенд: PIP_PYTHON не дошёл — тест пустой\n{out[-2000:]}"
+    else:
+        assert f"Looking in indexes: http://127.0.0.1:{ports[source]}/simple" in out, out[-2000:]
 
 
-def test_the_pip_door_reads_no_index_of_the_person(tmp_path):
-    """Все подмены разом: дверь идёт на PyPI через прокси окружения и ни на один чужой индекс.
-
-    Положительный контроль в том же прогоне: pip дошёл до сети — упёрся в мёртвый прокси
-    по дороге на pypi.org; без него пустой вывод упавшего раньше pip прошёл бы как «чисто»."""
+@pytest.mark.сеть_разрешена
+def test_the_pip_door_takes_no_setting_of_the_person(tmp_path):
+    """Все подмены разом: дверь идёт на PyPI через прокси окружения, ни на один чужой индекс,
+    и чужой интерпретатор из PIP_PYTHON не запускает. Положительный контроль — прокси записал
+    CONNECT на pypi.org: без него пустой вывод упавшего раньше pip прошёл бы как «чисто»."""
     with contextlib.ExitStack() as stack:
-        env, ports, dead = _person(tmp_path, stack)
+        proxy, seen = _recording_proxy(stack)
+        env, ports, marker = _person(tmp_path, proxy)
         env["PIP_INDEX_URL"] = f"http://127.0.0.1:{ports['PIP_INDEX_URL']}/simple"
         env["PIP_CONFIG_FILE"] = str(tmp_path / "chosen.conf")
-        argv, door_env = fp.pip_command(sys.executable, *_PIP_TAIL, base=env)
-        out = _pip(argv, door_env)
-    assert "https://pypi.org/simple/six/" in out and str(dead) in out, out[-2000:]
+        p = fp.run_pip(sys.executable, *_PIP_TAIL, base=env, capture_output=True, text=True, timeout=120,
+                       stdin=subprocess.DEVNULL)
+        out = p.stdout + p.stderr
+    assert any(line.startswith(b"CONNECT pypi.org:443") for line in seen), (seen, out[-2000:])
     assert "Looking in indexes" not in out, out[-2000:]
-    assert not [p for p in ports.values() if f"127.0.0.1:{p}" in out], out[-2000:]
+    assert not [port for port in ports.values() if f"127.0.0.1:{port}" in out], out[-2000:]
+    assert not marker.exists(), "PIP_PYTHON человека запустил чужой интерпретатор"
 
 
 @pytest.mark.сеть_разрешена
@@ -329,16 +374,25 @@ def test_the_pip_door_sends_no_netrc_credentials(tmp_path):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with contextlib.ExitStack() as stack:
-            env, _, _ = _person(tmp_path, stack)
-        for proxy in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-            env.pop(proxy)
+            env, _, _ = _person(tmp_path, _closed_port(stack))
+        for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "PIP_PYTHON"):
+            env.pop(name)
         tail = (*_PIP_TAIL, "--index-url", f"http://127.0.0.1:{srv.server_address[1]}/simple")  # после подкоманды
-        _pip([sys.executable, "-I", "-m", "pip", "--isolated", *tail], fp.clean_env(env))
+        _run([sys.executable, "-I", "-m", "pip", "--isolated", *tail], fp.clean_env(env))
         assert seen and seen[0] and seen[0].startswith("Basic "), f"стенд: .netrc не дошёл — тест пустой ({seen})"
         seen.clear()
-        argv, door_env = fp.pip_command(sys.executable, *tail, base=env)
-        _pip(argv, door_env)
+        fp.run_pip(sys.executable, *tail, base=env, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
     finally:
         srv.shutdown()
         srv.server_close()
     assert seen and not any(seen), seen
+
+
+def test_the_door_decides_the_environment_alone():
+    """Окружение pip — только решение двери: `env=` у вызывающего — отказ, а не тихая замена."""
+    with pytest.raises(TypeError, match="env"):
+        fp.run_pip(sys.executable, "--version", env={})
+    env = fp.pip_env({"PIP_PYTHON": "/x", "pip_index_url": "http://x", "VIRTUAL_ENV": "/v", "HOME": "/h"})
+    assert env["HOME"] == "/h" and "VIRTUAL_ENV" not in env
+    assert not {k for k in env if k.upper().startswith("PIP_") and k not in fp.PIP_ISOLATION}
+    assert {k: env[k] for k in fp.PIP_ISOLATION} == fp.PIP_ISOLATION

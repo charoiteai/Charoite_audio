@@ -12,9 +12,9 @@ probe does not trust the data folder»): ребёнок не подхватыв�
 заодно и то, что ребёнку нужно выставить. Проба готовности (Swift) и тестовая
 проба пакета держат свои копии перечня — один источник для всех — №402.
 
-pip ребёнка собирает только `pip_command` (№484): ему `-I` годится — выставлять
-нечего, — а настройки самого pip гасит своя таблица `PIP_ISOLATION` и флаг
-`--isolated`.
+pip ребёнка запускает только `run_pip` (№484): ему `-I` годится — выставлять
+нечего, — а настройки самого pip гасят снятые `PIP_*`, таблица `PIP_ISOLATION` и
+флаг `--isolated`.
 
 Исход — значением (`Outcome`), не исключением: вызывающий обязан отличать «движка
 нет на этой машине» (UNAVAILABLE — код `EXIT_ENGINE_UNAVAILABLE`) от «движок упал»
@@ -96,27 +96,38 @@ def clean_env(base: typing.Mapping[str, str]) -> dict[str, str]:
     return env
 
 
-#: Что pip ребёнка берёт у человека и что гасит дверь `pip_command` (№484, замер
-#: pip 26.2.1). `-I` — изоляция Python, pip она не касается. `--isolated` глушит
-#: переменные `PIP_*` и пользовательский pip.conf, но файл из `PIP_CONFIG_FILE`,
-#: глобальный и `sys.prefix/pip.conf` читает по-прежнему: их гасит пустой файл
-#: настроек. `~/.netrc` pip читает и под `--isolated`: запись `default` уходила
-#: заголовком Authorization на индекс. Прокси и сертификаты системы и окружения
-#: остаются — адрес назначения они не меняют.
+#: Что pip ребёнка берёт у человека и что гасит дверь `run_pip` (№484, замер
+#: pip 26.2 и 26.2.1). `-I` — изоляция Python, pip она не касается. `--isolated`
+#: доходит только до подкоманды: главный разборщик pip читает `PIP_*` всегда, и
+#: `PIP_PYTHON` человека перезапускал pip его интерпретатором, — поэтому все
+#: переменные `PIP_*` снимаются по префиксу. Файл из `PIP_CONFIG_FILE`, глобальный
+#: и `sys.prefix/pip.conf` гасит пустой файл настроек. `~/.netrc` pip читает и под
+#: `--isolated`: запись `default` уходила заголовком Authorization на индекс.
+#: Прокси и сертификаты системы и окружения остаются — адрес назначения они не
+#: меняют.
 PIP_ISOLATION: dict[str, str] = {
     "PIP_CONFIG_FILE": os.devnull,
     "NETRC": os.devnull,
 }
 
 
-def pip_command(python: str | os.PathLike, *args: str,
-                base: typing.Mapping[str, str] | None = None) -> tuple[list[str], dict[str, str]]:
-    """argv и окружение pip под интерпретатором `python` — единственное место, где
-    продукт собирает вызов pip: индексы, файлы настроек pip и `~/.netrc` человека
-    до ребёнка не доходят. `base` — окружение родителя (по умолчанию `os.environ`)."""
+def pip_env(base: typing.Mapping[str, str] | None = None) -> dict[str, str]:
+    """Окружение pip ребёнка: `clean_env`, без единой переменной `PIP_*` родителя
+    (в любом регистре), плюс `PIP_ISOLATION`. `base` — по умолчанию `os.environ`."""
+    env = {k: v for k, v in clean_env(os.environ if base is None else base).items()
+           if not k.upper().startswith("PIP_")}
+    return {**env, **PIP_ISOLATION}
+
+
+def run_pip(python: str | os.PathLike, *args: str, base: typing.Mapping[str, str] | None = None,
+            **run_kw: typing.Any) -> subprocess.CompletedProcess:
+    """Запустить pip под интерпретатором `python` — единственный путь, которым продукт
+    зовёт pip. Дверь запускает сама: пары argv и окружения наружу нет, и вызывающий не
+    может взять одно без другого. `env` передать нельзя — дверь уже передаёт своё, и
+    Python откажет дублем аргумента; остальное (`stdin`, `capture_output`, `timeout`…)
+    уходит в `subprocess.run`."""
     argv = [os.fspath(python), "-I", "-m", "pip", "--isolated", *args]
-    env = {**clean_env(os.environ if base is None else base), **PIP_ISOLATION}
-    return argv, env
+    return subprocess.run(argv, env=pip_env(base), **run_kw)
 
 
 def _last_line(text: str) -> str:

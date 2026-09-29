@@ -65,8 +65,8 @@ import get_models  # noqa: E402
 CODE = code_root(__file__)
 
 #: Куда пойдёт сеть — печатается до соединения, как у get_models.
-NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами; индексы и файлы настроек pip, "
-           "~/.netrc не читаются, прокси системы и окружения учитываются",
+NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами; ваши индексы и файлы настроек "
+           "pip, ~/.netrc не читаются, прокси системы и окружения учитываются",
            "Hugging Face (huggingface.co) — веса с проверкой sha256")
 
 #: Отпечаток python-build-standalone: сборка идёт с префиксом /install, и он
@@ -170,11 +170,12 @@ def copy_interpreter(dest: pathlib.Path) -> pathlib.Path:
 
 def pip_install(python: pathlib.Path, lock: pathlib.Path) -> None:
     """Пакеты лока в копию: только с хешами и ровно по списку."""
-    cmd, env = foreign_python.pip_command(python, "install", "--require-hashes", "--no-deps", "--no-cache-dir",
-                                          "--disable-pip-version-check", "--no-warn-script-location", "-r", str(lock))
-    proc = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL)
+    proc = foreign_python.run_pip(python, "install", "--require-hashes", "--no-deps", "--no-cache-dir",
+                                  "--disable-pip-version-check", "--no-warn-script-location", "-r", str(lock),
+                                  stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
-        raise Refused(f"pip не поставил пакеты лока (код {proc.returncode}) — вывод выше")
+        raise Refused(f"pip не поставил пакеты лока (код {proc.returncode}) — вывод выше; ваши индексы и "
+                      "настройки pip не читаются намеренно — нужен доступ к pypi.org напрямую или через прокси")
 
 
 def silence(path: pathlib.Path, seconds: float = 1.0) -> pathlib.Path:
