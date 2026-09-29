@@ -621,6 +621,23 @@ def test_forget_reaches_the_recover_log(tmp_path):
     assert theirs not in plan.delete
 
 
+def test_forget_reaches_the_live_shadow_journal(tmp_path):
+    """Журнал тени потока Nemotron и stderr её ребёнка назван штампом встречи (№478 A2) —
+    «забыть» доходит до обоих, соседку не трогает."""
+    root, graph = _world(tmp_path)
+    logs = root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    mine = [logs / f"nemotron_live_{STAMP}.jsonl", logs / f"nemotron_live_{STAMP}.err"]
+    theirs = logs / f"nemotron_live_{OTHER}.jsonl"
+    for f in [*mine, theirs]:
+        f.write_text("{}", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert all(f in plan.delete for f in mine), "журнал тени переживает забывание"
+    assert theirs not in plan.delete
+
+
 def test_edited_nodes_keep_their_permissions(tmp_path):
     """Конвейер пишет граф под harden_umask (0600). Перезапись узла через
     write_text давала 0644 по umask вызывающего — поправленный узел

@@ -53,7 +53,8 @@
       "voice_pitch",
       "channel_labels",
       "frame_drops",
-      "sherpa_config"
+      "sherpa_config",
+      "live_nemotron"
     ],
     "meeting": [
       "meeting_stamp",
@@ -149,7 +150,7 @@
     },
     "foreign_python": {
       "layer": "runtime",
-      "why": "дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; из репо тянет только exit_codes (base), зовёт его audio (diarize_nemotron)"
+      "why": "дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; долгий ребёнок с протоколом строками — spawn_stream (№478); из репо тянет exit_codes и threads (base), зовут его audio (diarize_nemotron, live_nemotron)"
     },
     "media_meta": {
       "layer": "base",

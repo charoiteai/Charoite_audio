@@ -860,6 +860,11 @@ def plan(stamp: str, root: pathlib.Path,
     # же stdout пересборки: имена, тема и сырой отказ движка с путями машины.
     for ls_ in log_stamps:
         p.delete += _with_stamp(logs, ls_, prefix="recover_", suffix=".log")
+    # Журнал тени потока Nemotron (nemotron_live_<штамп>.jsonl, №478) и stderr её
+    # ребёнка (.err) — назван посекундным штампом встречи.
+    for ls_ in log_stamps:
+        for suffix in (".jsonl", ".err"):
+            p.delete += _with_stamp(logs, ls_, prefix="nemotron_live_", suffix=suffix)
     # Отметка «факты встречи отправлены в память Чароита» (graph_updater):
     # без неё повторный разбор той же встречи после забывания молчал бы.
     # Отметка «факты отправлены» (logs/brain_sent/<ключ графа>.txt) и сами

@@ -172,6 +172,13 @@ sufler:
   # labels the voices and the transcript header says why.
   diarize_backend: sherpa
   nemotron_python: ""
+  # Live Nemotron stream on the call channel: off or shadow. In shadow mode a
+  # separate engine process (same environment) listens to the call and writes
+  # its labels to logs/nemotron_live_<stamp>.jsonl next to what the live tracker
+  # did — numbers, no audio and no utterance text. The transcript does not change:
+  # this measures delay, cost and label agreement before the live path moves to
+  # Nemotron (docs/DIARIZATION.md). The price is a second model process on the call.
+  live_nemotron: off
   live_dialog_markup: true  # a light model splits paragraphs into speaker turns
   markup_model: gemma4:latest  # markup must not paraphrase — gemma keeps words intact
 

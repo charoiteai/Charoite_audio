@@ -402,10 +402,10 @@ def test_unreadable_config_is_a_recipe(tmp_path, monkeypatch):
 
 
 def test_the_product_reaches_the_engine_only_from_the_rebuild():
-    """Движок в продукте зовёт одна пересборка (№473), и только процессом чужого
-    интерпретатора: импортёр в `src/` ровно один — `rebuild_transcript`, по графу
-    импортов раскладки, а не по докстрингу (выходной круг 1 по #648, DS I2). Что
-    mlx при этом не попадает в процесс пересборки, держит
+    """Движок в продукте зовут пересборка (№473) и живой поток в тени (№478), и только
+    процессом чужого интерпретатора: импортёров в `src/` ровно два — `rebuild_transcript`
+    и `live_nemotron`, по графу импортов раскладки, а не по докстрингу (выходной круг 1
+    по #648, DS I2). Что mlx при этом не попадает в процесс вызывающего, держит
     `test_the_caller_never_imports_mlx`."""
     sys.path.insert(0, str(REPO / "scripts"))
     import layout_map as lm
@@ -413,7 +413,7 @@ def test_the_product_reaches_the_engine_only_from_the_rebuild():
     graph = lm.import_graph(lm.inventory(REPO))
     assert "diarize_nemotron" in graph, "модуль пропал из графа — сторож сторожил бы пустоту"
     importers = sorted(m for m, deps in graph.items() if "diarize_nemotron" in deps)
-    assert importers == ["rebuild_transcript"], f"движок зовут не только из пересборки: {importers}"
+    assert importers == ["live_nemotron", "rebuild_transcript"], f"движок зовут не только пересборка и тень: {importers}"
     # граф раскладки видит только src/: точки входа из scripts/ — отдельным обходом, и
     # законные импортёры названы явно (круг 2 по #648, DS I1): бенч гоняет движок в
     # своём процессе, установщик и доктор — только через двери движка (№474), живых

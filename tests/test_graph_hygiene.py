@@ -118,6 +118,12 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     recover_old = logs / "recover_2020-01-01_1200.log"
     recover_old.write_text("имена: Дмитрий", encoding="utf-8")
     os.utime(recover_old, (stale, stale))
+    # nemotron_live_<штамп>.jsonl/.err — журнал тени потока Nemotron и stderr её
+    # ребёнка (пути машины в трассировках), №478 A2
+    shadow_old = [logs / "nemotron_live_2020-01-01_120000.jsonl", logs / "nemotron_live_2020-01-01_120000.err"]
+    for f in shadow_old:
+        f.write_text("{}", encoding="utf-8")
+        os.utime(f, (stale, stale))
 
     charoite_paths.use_data_root(tmp_path, replace=True)
     d._prune_graph_logs({"audio": {"record_keep_days": 2}})
@@ -125,6 +131,7 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     assert not old.exists(), "старый лог с содержимым встречи остался"
     assert not retry_old.exists(), "старый retry-лог с именами участников остался"
     assert not recover_old.exists(), "старый лог восстановления остался"
+    assert not any(f.exists() for f in shadow_old), "старый журнал тени остался"
     assert fresh.exists(), "свежий лог удалён — диагностику потеряли"
 
 

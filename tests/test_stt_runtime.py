@@ -52,7 +52,7 @@ def test_daemon_measures_and_sheds_before_positional_split():
     loop = source[source.index("    def stt_loop():"):
                   source.index("    # Промпт и фильтр тезисов")]
     policy = loop.index("stt_runtime.should_shed_diarization")
-    split = loop.index("res = spk_tracker.split")
+    split = loop.index("res, split_failed = stt_runtime.guarded_split(spk_tracker")
     assert policy < split
     # Ветка разгрузки: план целиком из чистой функции, метка — константа, а
     # не литерал -1 (n=0 — валидный индекс голоса; ревью 21.08, DeepSeek).
@@ -482,3 +482,23 @@ def test_дверь_статуса_пишет_в_stderr_только_недос�
     hub._say(stt_runtime.Status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон", error=True, topic=stt_runtime.TOPIC_DISK))
     err = capsys.readouterr().err
     assert "не дошёл до подписчика" in err and "диск полон" in err and "обычный статус" not in err
+
+
+def test_guarded_split_gives_the_result_or_none_with_the_failure():
+    """Раскладка трекера из замыкания демона: упала — (None, True), трекер не зовётся
+    второй раз; флаг сбоя идёт в строку тени (№478)."""
+    calls = []
+
+    class Tracker:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def split(self, chunk, channel):
+            calls.append((chunk, channel))
+            if self.fail:
+                raise RuntimeError("упал")
+            return ("разложил", chunk, channel)
+
+    assert stt_runtime.guarded_split(Tracker(False), "чанк", "Собеседник") == (("разложил", "чанк", "Собеседник"), False)
+    assert stt_runtime.guarded_split(Tracker(True), "чанк", "Собеседник") == (None, True)
+    assert len(calls) == 2

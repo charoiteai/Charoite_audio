@@ -104,6 +104,16 @@ def has_split_tracker(tracker: object) -> bool:
     return tracker is not None and hasattr(tracker, "split")
 
 
+def guarded_split(tracker: object, chunk: object, channel: str) -> tuple[object, bool]:
+    """Раскладка чанка трекером: (результат, упала ли). Упала — (None, True): jobs_for
+    даст канальную метку без voice_label, а повторный вызов трекера учил бы центроиды
+    тем же звуком дважды (ревью 15.08 ×2). Флаг сбоя — для строки тени (№478)."""
+    try:
+        return tracker.split(chunk, channel=channel), False
+    except Exception:  # noqa: BLE001 — диаризация вспомогательна
+        return None, True
+
+
 def diarization_plan(*, lagging: bool, has_split: bool) -> str:
     """Какой веткой идёт чанк: 'plain' — без трекера, 'shed' — трекер есть,
     но очередь растёт (одна STT-задача с канальной меткой), 'diarize' —

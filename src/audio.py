@@ -504,6 +504,13 @@ class Capture:
         self.start()
 
 
+def pcm16(part: np.ndarray) -> bytes:
+    """Блок канала → s16le: так его пишет запись `.pcm` и так его получает живой поток
+    Nemotron (№478). Одно преобразование на обе стороны: сверка потока по записи
+    режет `.wav` с `start0` и обязана получить те же байты, что ушли ребёнку."""
+    return (np.clip(part, -1, 1) * 32767).astype("<i2").tobytes()
+
+
 def _safe_stderr(msg: str) -> None:
     """Строка в stderr демона с пути потока-потребителя: полный диск или закрытый
     stderr не должны ронять запись (I3 DS по №235). Одна обёртка на модуль —
@@ -1517,7 +1524,7 @@ class AudioHub:
         sink_error = None
         if sink is not None:
             try:
-                sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
+                sink.write(pcm16(part))
                 # flush, иначе `written` означает «принято в буфер
                 # файла»: кончившийся диск всплыл бы только на close(),
                 # где исключение глотается, — и мы бы уже пообещали
