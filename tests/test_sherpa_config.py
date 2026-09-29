@@ -123,8 +123,22 @@ def test_the_guard_sees_every_way_to_build_a_config():
     assert _mentions("import sherpa_onnx\nsherpa_onnx.OfflineRecognizer\n") == []
 
 
+#: Скрипты, которым пока можно собирать конфиг сами, — с причиной и карточкой. Бенч
+#: гоняет свои настройки вместо продакшен-прохода — это №472; когда он перейдёт на
+#: `diarize.diarize()`, строка уходит (выходной круг 1 по №508, M1).
+SCRIPT_EXCEPTIONS = {"scripts/diar_bench.py": "№472: бенч должен звать продакшен-проход"}
+
+
 def test_sherpa_configs_are_built_only_by_the_factory():
-    offenders = [f"{p.relative_to(SRC)}:{line}"
-                 for p in sorted(SRC.rglob("*.py")) if p.name != "sherpa_config.py"
+    """Обход — `src/` и `scripts/`: скрипт, собранный мимо фабрики, тоже берёт умолчание
+    библиотеки, и замер потоков через него мерил бы не то, что уйдёт в прод."""
+    repo = SRC.parent
+    files = [p for p in sorted(SRC.rglob("*.py")) if p.name != "sherpa_config.py"]
+    files += sorted((repo / "scripts").glob("*.py"))
+    offenders = [f"{p.relative_to(repo)}:{line}" for p in files
+                 if str(p.relative_to(repo)) not in SCRIPT_EXCEPTIONS
                  for line in _mentions(p.read_text(encoding="utf-8"))]
     assert offenders == [], "конфиг sherpa мимо sherpa_config — умолчание библиотеки, один поток"
+    stale = [f for f in SCRIPT_EXCEPTIONS
+             if not _mentions((repo / f).read_text(encoding="utf-8"))]
+    assert stale == [], f"исключение без нарушения — убрать из списка: {stale}"
