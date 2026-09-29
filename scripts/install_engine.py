@@ -29,12 +29,14 @@ Python приложения mlx нет, бандл подписан. Раньш�
 интерпретатора сохраняет подпись и entitlements бандла, в том числе
 `disable-library-validation`: колёса mlx грузятся (опыт 28.09 — mlx 0.32.2 на GPU).
 
-    <python приложения> scripts/install_engine.py nemotron          # поставить
-    <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
+    CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron          # поставить
+    CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
 
 У приложения это `Charoite.app/Contents/Resources/python/bin/python3`; команду
-печатают доктор и шапка стенограммы, если движок выбран, а окружения нет
-(`diarize_nemotron.install_command`: питон приложения, когда его можно узнать).
+целиком — с корнем данных — печатают доктор и шапка стенограммы, если движок
+выбран, а окружения нет (`diarize_nemotron.install_command(root)`). Корень
+установщик НАЗЫВАЕТ дверью канона, а не выводит из положения файла: из бандла
+догадкой вышел бы сам бандл, и окружение легло бы в подписанный `.app` (№489).
 """
 from __future__ import annotations
 
@@ -56,7 +58,7 @@ from collections.abc import Callable
 # Вставки — канон путей и модуль движка (src), загрузчик весов (scripts).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from charoite_paths import code_root, harden_umask, resolve_root  # noqa: E402
+from charoite_paths import code_root, harden_umask, name_data_root_or_exit  # noqa: E402
 import diarize_nemotron  # noqa: E402
 import file_locks  # noqa: E402
 import foreign_python  # noqa: E402
@@ -274,9 +276,10 @@ def install(name: str, root: pathlib.Path) -> int:
 def check(name: str, root: pathlib.Path) -> int:
     """Что стоит — без сети: окружение, версия mlx-audio, веса (через пробу движка)."""
     spec = ENGINES[name]
+    lock_platform(spec.lock)   # лок читают и установка, и проверка: «нет лока» не ждёт до установки (№489)
     python = spec.python(root)
     if not python.exists():
-        print(f"окружения движка нет: {spec.home(root)} — {diarize_nemotron.install_command()}")
+        print(f"окружения движка нет: {spec.home(root)} — {diarize_nemotron.install_command(root)}")
         return 1
     out = spec.probe("", root=root)
     if not out.ok:
@@ -288,6 +291,9 @@ def check(name: str, root: pathlib.Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     harden_umask()   # окружение и веса под корнем данных — только владельцу
+    # Корень — до разбора аргументов, как у import_meeting: проба `refuse` зовёт
+    # вход без аргументов и ждёт отказа двери, а не ошибки argparse (№489).
+    root = name_data_root_or_exit(__file__)
     # Строки «сеть: …» обязаны дойти до читателя раньше соединения и раньше вывода
     # pip, который пишет в тот же дескриптор сам. В терминале stdout буферизуется
     # строкой, в канале (`| tee`, лог) — блоком, и адреса приходили после всего
@@ -298,7 +304,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("engine", choices=sorted(ENGINES), help="какой движок ставить")
     ap.add_argument("--check", action="store_true", help="только проверить, что стоит (без сети)")
     args = ap.parse_args(argv)
-    root = resolve_root(__file__)
     try:
         return check(args.engine, root) if args.check else install(args.engine, root)
     except Refused as e:

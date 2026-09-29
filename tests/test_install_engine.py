@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -147,8 +148,10 @@ def _spec(tmp_path, events, *, probe_ok=True):
     def diarize(setting, wav, *, root, timeout):
         events.append(("probe", pathlib.Path(setting).name, wav.name, root))
         return fp.Outcome(fp.OK, payload=[]) if probe_ok else fp.Outcome(fp.FAILED, reason="упал")
+    lock = _lock(tmp_path, "#    uv pip compile x.in --generate-hashes --python-version 3.12 -o x.lock\n"
+                           "# min-macos: 14.0\n")
     return copy, ie.EngineSpec(
-        lock=tmp_path / "x.lock", home=nem.engine_dir, python=nem.engine_python, weights=nem.model_dir,
+        lock=lock, home=nem.engine_dir, python=nem.engine_python, weights=nem.model_dir,
         fetch_weights=lambda dest: events.append(("weights", dest)),
         probe=lambda *a, **k: pytest.fail("установка не зовёт пробу --probe"), diarize=diarize)
 
@@ -345,7 +348,7 @@ def test_check_says_when_the_env_is_there_but_the_engine_cannot_work(tmp_path, m
 @pytest.mark.parametrize("argv,called", [(["nemotron"], "install"), (["nemotron", "--check"], "check")])
 def test_main_returns_the_code_of_the_step_it_ran(tmp_path, monkeypatch, argv, called):
     monkeypatch.setattr(ie, "harden_umask", lambda: None)
-    monkeypatch.setattr(ie, "resolve_root", lambda _file: tmp_path)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
     monkeypatch.setattr(ie, "install", lambda name, root: 7 if (name, root) == ("nemotron", tmp_path) else 0)
     monkeypatch.setattr(ie, "check", lambda name, root: 5 if (name, root) == ("nemotron", tmp_path) else 0)
     assert ie.main(argv) == {"install": 7, "check": 5}[called]
@@ -353,7 +356,7 @@ def test_main_returns_the_code_of_the_step_it_ran(tmp_path, monkeypatch, argv, c
 
 def test_main_turns_a_refusal_into_code_one_and_a_reason(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(ie, "harden_umask", lambda: None)
-    monkeypatch.setattr(ie, "resolve_root", lambda _file: tmp_path)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
 
     def refuse(name, root):
         raise ie.Refused("машина не та")
@@ -383,7 +386,7 @@ def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
         spec = ie.ENGINES["nemotron"]
         ie.ENGINES["nemotron"] = ie.EngineSpec(**{{**spec.__dict__, "fetch_weights": lambda dest: None,
                                                    "diarize": lambda *a, **k: fp.Outcome(fp.OK, payload=[])}})
-        ie.resolve_root = lambda _file: pathlib.Path({str(tmp_path)!r})
+        ie.name_data_root_or_exit = lambda _file: pathlib.Path({str(tmp_path)!r})
         sys.exit(ie.main(["nemotron"]))
     """)
     # Окружение задаёт тест, а не раннер: белый список, а не «всё, кроме PYTHONUNBUFFERED». Доли мутатора
@@ -394,3 +397,68 @@ def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert lines.index("сеть:") < lines.index("PIP"), lines
+
+
+def test_check_reads_the_lock_like_install(tmp_path, monkeypatch, capsys):
+    """`--check` читает лок тем же `lock_platform`, что установка: бандл без лока
+    отвечал «окружения нет — поставьте», а установка по этой команде падала на
+    «нет лока» (входной круг 1 по №489, C3)."""
+    events = []
+    _, spec = _spec(tmp_path, events)
+    spec = ie.EngineSpec(**{**spec.__dict__, "lock": tmp_path / "нет.lock"})
+    monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
+    with pytest.raises(ie.Refused, match="нет лока"):
+        ie.check("nemotron", tmp_path)
+
+
+def _staged_bundle(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Код, разложенный тем же `app/stage_code.sh`, что зовёт сборка, — в дерево формы бандла."""
+    code = tmp_path / "Мой Mac" / "Charoite.app" / "Contents" / "Resources" / "charoite"
+    subprocess.run(["bash", str(ROOT / "app" / "stage_code.sh"), str(code)], check=True, timeout=120)
+    return code
+
+
+def _listing(tree: pathlib.Path) -> set[str]:
+    return {str(p.relative_to(tree)) for p in tree.rglob("*")}
+
+
+def _check_from(code: pathlib.Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(code / "scripts" / "install_engine.py"), "nemotron", "--check"],
+                          capture_output=True, text=True, timeout=120, env=env)
+
+
+def test_the_bundle_code_installs_nothing_into_the_bundle(tmp_path):
+    """Установщик из кода бандла (№489): без корня и с корнем внутри `.app` — отказ двери
+    кодом `EXIT_ROOT_UNNAMED` с рецептом, и в бандле не появляется ничего; с корнем снаружи
+    `--check` проходит лок (он теперь едет в бандле) и доходит до «окружения нет»."""
+    sys.path.insert(0, str(ROOT / "src"))
+    import exit_codes
+    code = _staged_bundle(tmp_path)
+    app = code.parents[2]
+    before = _listing(app)
+    # Байткод пишет интерпретатор, не установщик: настоящий бандл только на чтение, и `.pyc`
+    # туда не ложится; во временной копии его выключаем, чтобы след считался только свой.
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом"), "PYTHONDONTWRITEBYTECODE": "1"}
+    for root in (None, str(code), str(app)):
+        out = _check_from(code, env if root is None else {**env, "CHAROITE_ROOT": root})
+        assert out.returncode == exit_codes.EXIT_ROOT_UNNAMED, (root, out.returncode, out.stderr[-300:])
+        assert "CHAROITE_ROOT" in out.stderr and "Traceback" not in out.stderr, out.stderr[-300:]
+    assert _listing(app) == before, "отказ оставил след внутри бандла"
+    data = tmp_path / "Application Support" / "Charoite"
+    data.mkdir(parents=True)
+    out = _check_from(code, {**env, "CHAROITE_ROOT": str(data)})
+    assert out.returncode == 1 and "окружения движка нет" in out.stdout, (out.stdout, out.stderr[-300:])
+    assert f"CHAROITE_ROOT={shlex.quote(str(data.resolve()))}" in out.stdout
+    assert _listing(app) == before
+
+
+def test_the_staged_bundle_carries_the_lock_the_installer_reads(tmp_path):
+    """Дифференциал к тесту выше: тот же `--check` из того же дерева без лока отказывает
+    «нет лока» — значит, зелёный прогон выше держится именно на локе в бандле."""
+    code = _staged_bundle(tmp_path)
+    (code / "requirements-nemotron.lock").unlink()
+    data = tmp_path / "данные"
+    data.mkdir()
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом"), "CHAROITE_ROOT": str(data)}
+    out = _check_from(code, env)
+    assert out.returncode == 1 and "нет лока" in out.stderr, (out.stdout, out.stderr[-300:])

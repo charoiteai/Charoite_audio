@@ -50,13 +50,7 @@ fi
 # Данные при этом остаются у человека: приложение передаёт демону
 # CHAROITE_ROOT — бандл подписан и доступен только на чтение.
 CODE="$APP/Contents/Resources/charoite"
-mkdir -p "$CODE"
-cp -Rc ../src "$CODE/src"
-cp -Rc ../scripts "$CODE/scripts"
-mkdir -p "$CODE/config"
-cp ../config/config.example.yaml "$CODE/config/config.example.yaml"
-cp ../pyproject.toml "$CODE/pyproject.toml"
-find "$CODE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+./stage_code.sh "$CODE"      # что едет в бандл — один список, его же читает тест (№489)
 echo "код демона вложен ($(du -sh "$CODE" | cut -f1))"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
