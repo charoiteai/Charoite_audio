@@ -761,6 +761,32 @@ def test_forget_reaches_the_status_named_after_the_live_transcript(tmp_path):
     assert broken not in plan.delete
 
 
+def test_the_recovery_log_is_found_by_the_name_the_status_kept(tmp_path):
+    """Журнал восстановления назван живой секундой, а после краха демона секунды нет в
+    сайдкаре, записи ушли по сроку, тема накатана: имя помнит только статус встречи —
+    его имя и `key`. «Забыть» минутным ключом приложения находит журнал по ним
+    (выходной круг 1 по №514, I1)."""
+    import json
+    root, graph = tmp_path / "repo", tmp_path / "vault" / "Работа"
+    (root / "transcripts").mkdir(parents=True)
+    (graph / "Встречи").mkdir(parents=True)
+    main = root / "transcripts" / f"{STAMP}_Платёжный_провайдер.md"
+    main.write_text("# Встреча\n", encoding="utf-8")
+    status = root / "logs" / "meeting-status"
+    status.mkdir(parents=True)
+    (status / f"{STAMP}05.json").write_text(json.dumps(
+        {"transcript_path": str(main), "key": f"{STAMP}05"}), encoding="utf-8")
+    mine = root / "logs" / f"recover_{STAMP}05.log"
+    theirs = root / "logs" / f"recover_{STAMP}45.log"          # соседка той же минуты
+    for f in (mine, theirs):
+        f.write_text("имена: Мария Соколова\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mine in plan.delete, "журнал восстановления переживает забывание"
+    assert theirs not in plan.delete
+
+
 def test_logs_of_a_seconds_stamped_meeting_next_to_an_old_minute_meeting(tmp_path):
     """Журнал графа назван минутой (`stem[:15]`) и общий у встреч минуты — посекундная
     встреча забирает его с собой (второе мнение DeepSeek по партии 16.08). Журналы

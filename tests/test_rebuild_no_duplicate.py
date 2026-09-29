@@ -387,3 +387,24 @@ def test_the_retry_child_lives_in_its_own_session(root, monkeypatch, tmp_path):
     text = log.read_text(encoding="utf-8")
     assert text.startswith("sid "), text
     assert int(text.split()[1]) != os.getsid(0), "повтор в сессии родителя — умрёт вместе с ней"
+
+
+def test_any_failure_to_start_the_retry_is_a_line_and_the_parent_does_not_wait(root, monkeypatch):
+    """Повтор попутен: не только `OSError` — любой сбой запуска остаётся строкой, а не
+    трейсбеком готовой пересборки; живую встречу ждёт ребёнок сам, родитель не держит
+    отметку своей встречи часами (выходной круг 1 по №514, M1 и критика)."""
+    import subprocess
+    t = root / "transcripts" / "2026-08-12_153201.md"
+    t.write_text("# Встреча\n", encoding="utf-8")
+    outs, lines = [], []
+
+    def refused(*a, **k):
+        outs.append(k["stdout"])
+        raise ValueError("stdout и stderr одинаковы")
+
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: pytest.fail("родитель ждёт живую встречу"))
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setattr(subprocess, "Popen", refused)
+    rt.retry_unfinished(_queue_of(t))
+    assert len(outs) == 1 and outs[0].closed
+    assert [m for m in lines if m.startswith("повтор 2026-08-12_153201.md не запустился (ValueError")], lines

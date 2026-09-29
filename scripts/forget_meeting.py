@@ -253,6 +253,20 @@ def _quarantine_of(name: str, stamp: str) -> bool:
     return rest.startswith("-") or rest.startswith("_")
 
 
+def _status_keys(statuses: list[pathlib.Path]) -> list[tuple[pathlib.Path, str]]:
+    """Статус → его `key` (штамп исходного файла стенограммы), одно чтение на план.
+    Нечитаемый или не-словарь — пустой ключ: статус всё равно уходит по имени."""
+    import json
+    out = []
+    for sf in statuses:
+        try:
+            data = json.loads(sf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        out.append((sf, str(data.get("key") or "") if isinstance(data, dict) else ""))
+    return out
+
+
 def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     """Статусы конвейера этой встречи.
 
@@ -842,10 +856,20 @@ def plan(stamp: str, root: pathlib.Path,
     # на все виды оставляло журналы повтора и восстановления, названные полным
     # стемом, при минутном ключе приложения (круги 1–3 по №514).
     logs = root / "logs"
-    # Доказанные за встречей штампы: ключ, свои посекундные файлы и точная
+    # Статусы конвейера этой встречи (logs/meeting-status/<живой стем>.json) —
+    # имена, которые встреча носила: файл назван живой стенограммой, `key` —
+    # штампом исходного файла. После краха демона секунды нет в сайдкаре, записи
+    # живут два дня, а журнал восстановления назван этой секундой — без статусов
+    # он переживал «забыть» минутным ключом (выходной круг 1 по №514, I1).
+    statuses = _status_files(root / STATUS_DIR, stamp)
+    status_keys = _status_keys(statuses)
+    worn = [s for sf, key in status_keys
+            for s in (meeting_stamp.stamp_of(sf.stem), meeting_stamp.stamp_of(key)) if s]
+    # Доказанные за встречей штампы: ключ, свои посекундные файлы, точная
     # секунда владельца минуты из сайдкара — даже когда файлов под ней уже нет
-    # (ретеншн записей), а журнал повтора назван ею (круг 3 по №514, I2).
-    proven = owned + ([own.exact] if own.exact else [])
+    # (ретеншн записей), а журнал повтора назван ею (круг 3 по №514, I2), — и
+    # имена из её статусов.
+    proven = owned + ([own.exact] if own.exact else []) + worn
     # Минута — ключ графа посекундной встречи только по положительной улике:
     # точная секунда владельца минуты — мы. «Не доказано чужая» — не «наша»:
     # при минутном владельце с темой graph_key отдаёт соседке секунды, и
@@ -872,16 +896,9 @@ def plan(stamp: str, root: pathlib.Path,
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
     # обязано дойти сразу (второе мнение по #324–#328, 16.08).
-    statuses = _status_files(root / STATUS_DIR, stamp)
     p.delete += statuses
     if prev_dir.is_dir():
-        import json as _json
-        for sf in statuses:
-            try:
-                data = _json.loads(sf.read_text(encoding="utf-8"))
-                key = str(data.get("key") or "") if isinstance(data, dict) else ""
-            except (OSError, ValueError):
-                continue
+        for _sf, key in status_keys:
             if key:
                 p.delete += [f for f in _with_stamp(prev_dir, key) if f not in p.delete]
 

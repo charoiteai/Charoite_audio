@@ -1538,10 +1538,21 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
         return
     if not pending:
         return
-    _yield_to_live("повтор незавершённой")
-    target = pathlib.Path(pending[0]["transcript_path"])
+    target = pathlib.Path(pending[0]["transcript_path"])   # запись очереди проверил unfinished()
     log(f"повтор незавершённой встречи: {target.name} "
         f"(в очереди {len(pending)}, попытка {int(pending[0].get('attempts', 0)) + 1})")
+    # Живую встречу родитель не ждёт: ребёнок уступает ей сам, до очереди пересборок.
+    # Готовый родитель, ждущий часами, держал отметку «пересборка идёт» своей встречи
+    # (выходной круг 1 по №514, критика). Повтор попутен: любой сбой его запуска —
+    # строка, а не трейсбек готовой пересборки (там же, M1).
+    try:
+        _spawn_retry(target)
+    except Exception as e:  # noqa: BLE001 — своя встреча уже готова, повтор её не судит
+        log(f"повтор {target.name} не запустился ({type(e).__name__}: {e})")
+
+
+def _spawn_retry(target: pathlib.Path) -> None:
+    """Запустить пересборку `target` в своей сессии, с журналом повтора, если он открылся."""
     env = dict(os.environ, CHAROITE_NO_RETRY="1")
     # по полному имени файла, не по 15 знакам: две встречи одной минуты
     # (и две минутные встречи прежних версий) писали в один лог, и второй
@@ -1558,9 +1569,6 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
             ["nice", "-n", "10", sys.executable, str(CODE / "src" / "rebuild_transcript.py"), str(target)],
             start_new_session=True, env=env, stdout=out, stderr=subprocess.STDOUT,
         )
-    except OSError as e:
-        # не запустился (нет nice, кончились процессы) — сломана машина, а не цель
-        log(f"повтор {target.name} не запустился ({type(e).__name__}: {e})")
     finally:
         if out is not subprocess.DEVNULL:
             out.close()   # у ребёнка своя копия дескриптора
