@@ -910,9 +910,10 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   carries provenance (who, when, verbatim transcript quote).
 - **One LLM gateway — src/llm.py.** Every chat call in the
   python pipeline goes through it, and every embedding call through the vector
-  door `embed_door` (batches, whole-call deadline and response parsing live
-  there; the model layer only supplies the address, the name and the
-  transport); no module speaks the wire format itself. Every request carries
+  door `charoite_graph.embed_door` (batches, whole-call deadline and response
+  parsing live there; the model layer only supplies the address, the name, the
+  transport and its once-registry; the door is the graph package's second entry,
+  so a package user builds the same pair by a model address); no module speaks the wire format itself. Every request carries
   `truncate: false`, so Ollama answers 400 on an input it cannot fit instead
   of silently cutting it (measured 27.09: without the field bge-m3 answered 200
   at 2102 tokens while `prompt_eval_count` showed 2048 — the tail never reached

@@ -131,6 +131,7 @@
   },
   "package": "charoite_graph",
   "package_entries": {
+    "charoite_graph.embed_door": "векторы по адресу модели — пользователь пакета собирает пару «векторизатор и имя» без приложения (№462, №323 PR 1)",
     "charoite_graph.graph_search": "поиск по графу ссылок с русской морфологией — поверхность пакета с первого колеса (№424, №427)"
   },
   "layer_overrides": {
@@ -190,13 +191,17 @@
       "layer": "meeting",
       "why": "дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app"
     },
-    "embed_door": {
+    "charoite_graph.embed_door": {
       "layer": "base",
-      "why": "шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph"
+      "why": "дверь векторов в пакете: тянет только model_seam и notices; в graph дала бы ребро llm → graph (llm импортирует её формой import charoite_graph.embed_door as …, без ребра на узел пакета)"
+    },
+    "charoite_graph.notices": {
+      "layer": "base",
+      "why": "реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524"
     },
     "once": {
       "layer": "base",
-      "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
+      "why": "общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его llm (llm, model_lease; llm передаёт его двери векторов значением), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm"
     },
     "threads": {
       "layer": "base",

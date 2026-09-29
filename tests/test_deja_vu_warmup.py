@@ -12,7 +12,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 import daemon  # noqa: E402
-import embed_door  # noqa: E402
+from charoite_graph import embed_door  # noqa: E402
 
 
 def _cores(tmp_path, n):
