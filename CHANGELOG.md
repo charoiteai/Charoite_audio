@@ -5,6 +5,31 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.0](https://github.com/charoiteai/Charoite_audio/compare/v0.87.0...v0.88.0) (2026-09-29)
+
+
+### Features
+
+* **diarization:** Nemotron 3 Diarization as an experimental bench engine ([#648](https://github.com/charoiteai/Charoite_audio/issues/648)) ([17af3db](https://github.com/charoiteai/Charoite_audio/commit/17af3db9c931b2d5a6cfd3a2608c331dbd5e1490))
+* **diarization:** the product installs the Nemotron engine environment from a hashed lock ([#474](https://github.com/charoiteai/Charoite_audio/issues/474)) ([#672](https://github.com/charoiteai/Charoite_audio/issues/672)) ([0f4e6de](https://github.com/charoiteai/Charoite_audio/commit/0f4e6de288a337efb1b5cc88cf119716d46220be))
+* **graph:** consumers of the graph package ask the storage schema ([#663](https://github.com/charoiteai/Charoite_audio/issues/663)) ([0c41c02](https://github.com/charoiteai/Charoite_audio/commit/0c41c0238ae95091f06413aef3447920529777fa))
+* **graph:** the vault schema as a value and a folder-literal guard with debt ([#654](https://github.com/charoiteai/Charoite_audio/issues/654)) ([0d8fec3](https://github.com/charoiteai/Charoite_audio/commit/0d8fec31edf78e764c896d8aba51cebde84ea3e8))
+* **llm:** one strict JSON door in llm, the doctor names the diagnosis by an explicit pair ([#656](https://github.com/charoiteai/Charoite_audio/issues/656)) ([843bb01](https://github.com/charoiteai/Charoite_audio/commit/843bb01b00fd58b156f5628c36fe9cb3e9094fc1))
+* **mutation:** --jobs N runs the mutation plan of a range as parallel shares under a shared lock ([#667](https://github.com/charoiteai/Charoite_audio/issues/667)) ([e8e7956](https://github.com/charoiteai/Charoite_audio/commit/e8e79566c3d6816534f4de8277883fd3d84e3627))
+* **mutation:** the whole plan in four shards, the verdict is the mutator's ([#649](https://github.com/charoiteai/Charoite_audio/issues/649)) ([269c0ea](https://github.com/charoiteai/Charoite_audio/commit/269c0eaf0f50e568ada52064381c14a5b650eb94))
+* **rebuild:** Nemotron labels the call voices after the meeting behind a switch with a visible sherpa fallback ([#473](https://github.com/charoiteai/Charoite_audio/issues/473)) ([#669](https://github.com/charoiteai/Charoite_audio/issues/669)) ([c5d0c54](https://github.com/charoiteai/Charoite_audio/commit/c5d0c5460acdd0cdaf2d8c0c456b58d4dcd4bd55))
+* **threads:** background threads only through threads.spawn and threads.timer, with name and role ([#658](https://github.com/charoiteai/Charoite_audio/issues/658)) ([1666e5b](https://github.com/charoiteai/Charoite_audio/commit/1666e5ba970a16b800fad73447260a873c8ba5a6))
+
+
+### Bug Fixes
+
+* **install:** the engine's pip takes nothing of the person's pip setup ([#484](https://github.com/charoiteai/Charoite_audio/issues/484)) ([#675](https://github.com/charoiteai/Charoite_audio/issues/675)) ([4da8ded](https://github.com/charoiteai/Charoite_audio/commit/4da8dede71553c06f6651760a9b62bbfe5d32a96))
+* **install:** the network announcement reaches a pipe before the connection ([#481](https://github.com/charoiteai/Charoite_audio/issues/481)) ([#674](https://github.com/charoiteai/Charoite_audio/issues/674)) ([9fc8c1f](https://github.com/charoiteai/Charoite_audio/commit/9fc8c1f367911afa3c31a0f3bdf6025f73e979f3))
+* **llm:** a model refusal carries its kind, the daemon's status line reads it ([#665](https://github.com/charoiteai/Charoite_audio/issues/665)) ([fedd875](https://github.com/charoiteai/Charoite_audio/commit/fedd875d29ea4e4071561785e7db17fb7c118c98))
+* **mutation:** the mutant copy is a local clone on a range resolved once ([#662](https://github.com/charoiteai/Charoite_audio/issues/662)) ([b0171b2](https://github.com/charoiteai/Charoite_audio/commit/b0171b233ef46831e041fdd292bbdce71f72e9b8))
+* **sidecar:** WriteOutcome refusals are class strings, not tuple fields ([#477](https://github.com/charoiteai/Charoite_audio/issues/477)) ([#671](https://github.com/charoiteai/Charoite_audio/issues/671)) ([079937d](https://github.com/charoiteai/Charoite_audio/commit/079937dfb730daed6effb52294d05288a846c46d))
+* **tests:** the fit-cache sweeper is read at the lock boundary, where its invariant holds ([#660](https://github.com/charoiteai/Charoite_audio/issues/660)) ([db09f46](https://github.com/charoiteai/Charoite_audio/commit/db09f463243a8095a2c4e9d7c6955b41905d5a58))
+
 ## [0.87.0](https://github.com/charoiteai/Charoite_audio/compare/v0.86.2...v0.87.0) (2026-09-27)
 
 
