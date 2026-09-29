@@ -25,7 +25,7 @@ import requests
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-import embed_door  # noqa: E402
+from charoite_graph import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
 import once  # noqa: E402
 from llm import LLM, LLMHTTPError, parse_json_block  # noqa: E402

@@ -38,7 +38,7 @@ import re
 import shutil
 from collections.abc import Callable
 
-import embed_door
+from charoite_graph import embed_door
 from charoite_graph.model_seam import Embedder, Judge, SeamTransportError
 from charoite_graph.redirects import is_merged as _is_merged
 

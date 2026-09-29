@@ -29,7 +29,7 @@ import charoite_paths
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-import embed_door  # noqa: E402
+from charoite_graph import embed_door  # noqa: E402
 import llm  # noqa: E402
 import llm_health  # noqa: E402
 import model_lease  # noqa: E402
@@ -403,8 +403,15 @@ def test_transport_seams_are_the_only_way_to_the_model():
     assert "Session(" not in src, "сессии — мимо аренды"
     assert "http.client" not in src, "сырой HTTP в слое моделей — только в двери векторов"
 
-    door_src = (REPO / "src" / "embed_door.py").read_text(encoding="utf-8")
-    assert _urlopen_outside_seam(ast.parse(door_src)) == []
+    # файл двери — у импортированного модуля, а не путь литералом: переезд в пакет
+    # иначе опустошил бы сторож вхолостую (вход 1 PR 1 №323, C2)
+    door_src = pathlib.Path(embed_door.__file__).read_text(encoding="utf-8")
+    door_tree = ast.parse(door_src)
+    assert _urlopen_outside_seam(door_tree) == []
+    seams = [f for f in door_tree.body if isinstance(f, ast.FunctionDef) and f.name == "urllib_post"]
+    assert len(seams) == 1, "шов сети двери — одна функция верхнего уровня urllib_post"
+    assert sum(isinstance(n, ast.Attribute) and n.attr == "urlopen" for n in ast.walk(seams[0])) == 1, \
+        "сторож читает не тот файл: в шве двери ровно один urlopen"
     assert http.client.HTTPException in embed_door.TRANSPORT_ERRORS, \
         "обрыв ответа (IncompleteRead, BadStatusLine) — не OSError: без типа он пролетит мимо шва"
     assert "Session(" not in door_src and "import requests" not in door_src, \
