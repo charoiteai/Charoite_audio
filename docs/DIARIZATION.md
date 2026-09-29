@@ -83,8 +83,10 @@ labeller carries its start on that axis, and so does every raw block handed to
 a frame listener (`add_frame_listener(fn(label, start, samples))`) — the same
 number, from one counter, under one lock. A second labeller fed from the
 blocks (the streaming Nemotron being prepared for the live contour) can then
-be matched to chunks without counting positions itself; the recorded `.pcm`
-holds each chunk at the same offset.
+be matched to chunks without counting positions itself. The recorded `.pcm`
+holds each chunk at the same offset while writing to disk works; after a disk
+failure the file stops short of the axis, and a block that failed to reach the
+buffer is on the disk but not on the axis.
 
 ## Which voice is the owner
 

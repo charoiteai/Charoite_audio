@@ -66,6 +66,24 @@ def test_every_chunk_is_the_stream_at_its_start_through_the_overlap():
     assert hub._appended["blackhole"] == fed
 
 
+def test_a_block_that_fails_to_reach_the_buffer_does_not_move_the_axis():
+    """Счётчик оси двигается вместе с буфером: блок, упавший на склейке, не сдвигает
+    начала следующих чанков — иначе чанк по обе стороны от пропуска пришёл бы с началом,
+    не равным месту его первого сэмпла (выходной круг 1 по №478 A1, M1)."""
+    hub = _hub()
+    stream = _stream(SR * 6)
+    cap = types.SimpleNamespace(label="blackhole")
+    hub._consume(cap, stream[:SR])
+    try:
+        hub._consume(cap, np.zeros((100, 2), dtype=np.float32))    # не того вида — склейка падает
+    except ValueError:
+        pass
+    assert hub._appended["blackhole"] == SR, "упавший блок не на оси"
+    hub._consume(cap, stream[SR:SR * 4])
+    (p,) = hub.pull_placed()
+    assert p.start == 0 and np.array_equal(p.chunk, stream[:len(p.chunk)])
+
+
 def test_the_axis_survives_the_buffer_cap():
     """Потолок режет голову буфера — начало чанка всё равно на оси потока, со сдвигом
     ровно на отрезанное."""

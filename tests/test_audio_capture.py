@@ -53,7 +53,7 @@ def test_cut_keeps_overlap_between_chunks():
     keep = int(hub.sr * hub.overlap_s)
     hub._bufs["mic"] = _tone(need * 2)
 
-    first = hub._cut("mic")
+    first = (lambda got: None if got is None else got[0])(hub._cut_placed("mic"))
 
     assert first is not None and len(first) == need
     # в буфере остался хвост предыдущего чанка длиной keep
@@ -64,7 +64,7 @@ def test_cut_waits_until_there_is_a_full_chunk():
     """Недобравший буфер не режем — иначе STT получает обрывки."""
     hub = _hub()
     hub._bufs["mic"] = _tone(int(hub.sr * hub.chunk_s) - 10)
-    assert hub._cut("mic") is None
+    assert (lambda got: None if got is None else got[0])(hub._cut_placed("mic")) is None
 
 
 def test_speaker_echo_is_dropped_from_microphone():

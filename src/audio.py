@@ -1774,10 +1774,6 @@ class AudioHub:
 
     BUF_CAP_S = 60            # сколько живого звука держим в памяти на канал
 
-    def _append(self, label: str, part: np.ndarray) -> float:
-        """Дописать кусок в буфер STT; вернуть, сколько секунд пришлось выбросить."""
-        return self._append_at(label, part)[0]
-
     def _append_at(self, label: str, part: np.ndarray) -> tuple[float, int]:
         """Дописать кусок в буфер STT; вернуть (сколько секунд выброшено, номер
         первого сэмпла куска на оси канала).
@@ -1793,7 +1789,6 @@ class AudioHub:
         """
         with self._lock:
             start = self._appended.get(label, 0)
-            self._appended[label] = start + len(part)
             cap = self.sr * self.BUF_CAP_S
             merged = np.concatenate([self._bufs[label], part])
             dropped = 0.0
@@ -1804,7 +1799,11 @@ class AudioHub:
                 # 20.08 — нашли и локальная голова, и DeepSeek).
                 dropped = (len(merged) - cap) / self.sr
                 merged = merged[-cap:]
+            # счётчик оси — вместе с буфером и только после того, как блок в него лёг:
+            # блок, упавший на склейке, не сдвигает начала следующих чанков (выходной
+            # круг 1 по №478 A1, M1); до слушателей такой блок тоже не доходит
             self._bufs[label] = merged
+            self._appended[label] = start + len(part)
         return dropped, start
 
     def health_snapshot(self, *, now: float | None = None) -> dict[str, object]:
@@ -1935,10 +1934,6 @@ class AudioHub:
                 # из четырёх писателей (Minor GLM выходного круга по №310)
                 _safe_stderr(f"статус об отказе не дошёл до подписчика: {st}")
 
-    def _cut(self, label: str) -> np.ndarray | None:
-        got = self._cut_placed(label)
-        return None if got is None else got[0]
-
     def _cut_placed(self, label: str) -> tuple[np.ndarray, int] | None:
         """Срез чанка и его начало на оси канала — под замком вызывающего.
 
@@ -1976,8 +1971,9 @@ class AudioHub:
         now = time.monotonic()
         if speech.get("blackhole"):
             # Эхо динамиков доживает в микрофоне до следующего среза, когда
-            # фазы нарезки каналов разъехались (перезапуск канала сторожем
-            # сбрасывает его буфер) — помним о недавней речи ещё один чанк.
+            # фазы нарезки каналов разъехались (каналы открываются и
+            # перезапускаются не одновременно) — помним о недавней речи ещё
+            # один чанк.
             self._sys_speech_until = now + self.chunk_s
         out: list[Placed] = []
         for label, chunk in cut.items():
