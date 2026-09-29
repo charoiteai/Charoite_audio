@@ -180,23 +180,29 @@ def test_the_engine_reads_its_audio_from_its_stdin():
     assert out.stdout.decode() == repr(b"\x01\x02\x03")
 
 
-@pytest.mark.parametrize("frames, fed, final, broken", [
-    (10, 10 * HOP, False, False),          # фронт ровно на звуке
-    (10, 10 * HOP - 1, False, True),       # на сэмпл впереди звука — не та единица
-    (0, 10 * HOP, False, False),           # в потоке отставать можно: модель ждёт окно
-    (10, 11 * HOP - 1, True, False),       # финал недобрал меньше кадра — хвост не кадр
-    (10, 11 * HOP, True, True),            # финал недобрал ровно кадр
-    (11, 10 * HOP, True, True),            # финал впереди звука
+AHEAD = "фронт модели {} с впереди поданного звука {} с ({} кадров по 0.01 с) — единица кадра не та"
+SHORT = "финал модели {} с не покрыл поданный звук {} с ({} кадров по 0.01 с) — единица кадра не та"
+
+
+@pytest.mark.parametrize("frames, fed, final, said", [
+    (10, 10 * HOP, False, None),           # фронт ровно на звуке
+    (10, 10 * HOP - 1, False, AHEAD.format("0.100", "0.100", 10)),   # на сэмпл впереди звука
+    (0, 10 * HOP, False, None),            # в потоке отставать можно: модель ждёт окно
+    (10, 11 * HOP - 1, True, None),        # финал недобрал меньше кадра — хвост не кадр
+    (10, 11 * HOP, True, SHORT.format("0.100", "0.110", 10)),       # финал недобрал ровно кадр
+    (11, 10 * HOP, True, AHEAD.format("0.110", "0.100", 11)),       # финал впереди звука
 ])
-def test_the_front_is_checked_against_the_audio_fed(frames, fed, final, broken):
+def test_the_front_is_checked_against_the_audio_fed(frames, fed, final, said):
     """Единица кадра сверяется с поданным звуком: модель не размечает звука, которого не
     получила, а финал размечает весь с точностью до кадра (замер на mlx-audio 0.5.6 —
-    на финале ровно `fed // hop`; входной круг фикса A2 №478, I1 и M3)."""
-    if broken:
-        with pytest.raises(RuntimeError, match="единица кадра не та"):
-            dn._check_front(frames, fed, 0.01, final=final)
-    else:
+    на финале ровно `fed // hop`; входной круг фикса A2 №478, I1 и M3). Строка отказа —
+    целиком: её читает человек в строке `end` журнала тени, секунды в ней — улика."""
+    if said is None:
         dn._check_front(frames, fed, 0.01, final=final)
+    else:
+        with pytest.raises(RuntimeError) as err:
+            dn._check_front(frames, fed, 0.01, final=final)
+        assert str(err.value) == said
 
 
 class _Unit(_Stream):
