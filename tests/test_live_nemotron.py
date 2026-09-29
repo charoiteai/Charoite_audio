@@ -314,10 +314,11 @@ class _Clock:
         return self.now
 
 
-def _shadow(tmp_path, door=None, clock=None):
+def _shadow(tmp_path, door=None, clock=None, memory=lambda: None):
+    """Память машины по умолчанию не спрашивается: тест не зависит от давления на машине прогона."""
     says = []
     sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-29_120000", say=says.append,
-                   clock=clock or time.monotonic)
+                   clock=clock or time.monotonic, memory=memory)
     door = door or _Door()
     sh.begin(python="python", script=tmp_path / "engine.py", args=[], errlog=tmp_path / "live.err", spawn=door)
     return sh, door, says
@@ -391,8 +392,10 @@ def test_a_gap_in_the_axis_stops_the_shadow_instead_of_shifting_labels(tmp_path)
     _wait(lambda: door.child.killed.is_set(), what="ребёнок убит")
     _wait(lambda: says, what="строка человеку")
     assert "разрыв оси" in says[-1]
-    end = _journal(tmp_path / "live.jsonl")[-1]
-    assert end["type"] == "end" and "разрыв оси" in end["reason"]
+    lines = _journal(tmp_path / "live.jsonl")
+    (end,) = [x for x in lines if x["type"] == "end"]
+    assert "разрыв оси" in end["reason"]
+    assert lines[-1]["type"] == "chunk", "чанк после конца потока — строкой после end, журнал открыт"
 
 
 def test_a_child_that_falls_behind_is_stopped_not_buffered(tmp_path):
@@ -516,6 +519,63 @@ def test_the_journal_is_private_and_holds_numbers_only(tmp_path):
     assert str(tmp_path) not in text and "python" not in text, "в журнале нет путей машины"
 
 
+def _pressure(levels):
+    it = iter(levels)
+    return lambda: {"pressure": next(it), "swap_used_mb": 1000}
+
+
+def _fronts(sh, door, clock, n):
+    for k in range(n):
+        clock.now += ln.PRESSURE_CHECK_S
+        door.on_message({"type": "front", "fed": SR, "frames": 1 + k})
+
+
+def test_memory_pressure_twice_in_a_row_stops_the_shadow(tmp_path):
+    """Опыт 29.09: с потоком своп рос на 2,7–6,9 ГБ за фазу и давление доходило до 2 —
+    тень обязана уступить встрече, а не копить своп."""
+    clock = _Clock()
+    sh, door, says = _live(tmp_path, clock=clock, memory=_pressure([1, 2, 2]))
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    _fronts(sh, door, clock, 3)
+    assert sh.state == ln.DEAD and "давление памяти" in sh.reason
+    mem = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
+    assert [m["pressure"] for m in mem] == [1, 2, 2] and mem[0]["swap_used_mb"] == 1000
+    _wait(lambda: door.child.killed.is_set(), what="ребёнок убит")
+    _wait(lambda: says, what="строка человеку")
+
+
+def test_a_single_spike_of_pressure_does_not_stop_it(tmp_path):
+    clock = _Clock()
+    sh, door, _ = _live(tmp_path, clock=clock, memory=_pressure([2, 1, 2, 1]))
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    _fronts(sh, door, clock, 4)
+    assert sh.state == ln.LIVE
+    sh.stop()
+    door.on_eof()
+
+
+def test_memory_is_asked_at_most_once_per_interval(tmp_path):
+    calls = []
+    clock = _Clock()
+
+    def probe():
+        calls.append(clock.now)
+        return {"pressure": 1, "swap_used_mb": 0}
+    sh, door, _ = _live(tmp_path, clock=clock, memory=probe)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    for k in range(10):                       # фронт каждые 0,5 с — память раз в PRESSURE_CHECK_S
+        clock.now += 0.5
+        door.on_message({"type": "front", "fed": SR, "frames": 1 + k})
+    assert len(calls) == 1
+    sh.stop()
+    door.on_eof()
+
+
+def test_memory_state_off_macos_is_none(monkeypatch):
+    monkeypatch.setattr(ln, "_sysctl", lambda name, value: False)
+    assert ln.memory_state() is None
+
+
 @pytest.mark.parametrize("cfg, sr, says_what", [
     ({"sufler": {}}, SR, None),
     ({"sufler": {"live_nemotron": "off"}}, SR, None),
@@ -615,7 +675,8 @@ def test_hub_to_child_to_journal_keeps_one_axis(tmp_path):
         placed += hub.pull_placed()
         pos += block
     says = []
-    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="s", say=says.append)
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="s", say=says.append,
+                   memory=lambda: None)
     hub.add_frame_listener(sh.on_frame)
     for p in placed:
         sh.note_chunk(p, "off")

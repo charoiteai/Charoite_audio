@@ -470,6 +470,15 @@ nothing in the transcript (default `off`).
   start where the previous one ended stops the shadow — labels are never
   shifted silently. More than 10 s of audio queued for the child stops it too:
   that is the answer "it does not keep up", not a reason to buffer.
+- **Memory.** Every 5 s the shadow reads the macOS memory pressure level and the
+  swap in use (`sysctlbyname`, no process) into a `mem` line; level 2 (warning)
+  on two checks in a row stops it — the meeting wins. A lab A/B run on 29.09
+  (ABBAAB on an idle M1 Max, 64 GB, the 35b and 4b chat models loaded, the
+  stream fed at 1× from a recording): the stream kept up (block lag p95 0.2 s,
+  every block processed), the hint model's first token came about 0.5 s later
+  (3.6 → 4.1 s) and generation about 4 % slower, but swap grew by 2.7–6.9 GB
+  during each 4-minute phase with the stream and the pressure reached level 2
+  once. The swap storm of 31.08 made a hint take 19.7 s.
 - **Chunks.** Every chunk the recognizer accepts gets exactly one journal line,
   written without waiting: when the child's front passes the chunk's end (the
   line holds the seconds per slot inside the chunk, how long it waited, how far
@@ -479,7 +488,7 @@ nothing in the transcript (default `off`).
   `off`.
 - **The journal.** `logs/nemotron_live_<stamp>.jsonl`, owner-only: numbers and
   stop reasons — no audio, no utterance text. Lines: `header`, `ready`, `start` (`start0`),
-  `seg`, `front`, `chunk`, `end` (reason and counters). A reconciliation cuts the
+  `seg`, `front`, `mem`, `chunk`, `end` (reason and counters). A reconciliation cuts the
   recording at `start0` into the same blocks.
 - **Stop.** At the end of the meeting, before the post-meeting pass starts,
   the child gets EOF, flushes its tail and exits; after 5 s it is killed. A

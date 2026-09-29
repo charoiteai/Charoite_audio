@@ -18,6 +18,11 @@
   метки молча.
 - Очередь к ребёнку с потолком `QUEUE_CAP_S`: ребёнок отстал больше — тень
   останавливается с причиной (это и есть ответ «не успевает»), а не копит память.
+- Давление памяти macOS — аварийная остановка: лабораторный опыт 29.09 (A/B ABBAAB на
+  свободной машине, 35b и 4b в памяти) показал, что поток не отстаёт (p95 0,2 с), но в
+  фазах с ним своп рос на 2,7–6,9 ГБ за четыре минуты и давление доходило до уровня 2;
+  своп-шторм 31.08 делал подсказку 19,7 с. Уровень ≥ `PRESSURE_STOP` на двух проверках
+  подряд — тень останавливается, встреча важнее замера.
 - Чанк распознавания (`note_chunk`) ждёт, пока фронт потока пройдёт его конец, — без
   ожидания в потоке STT: строка журнала ложится, когда метка готова. Строка — на
   КАЖДЫЙ принятый чанк: метка готова, чанк до старта потока, поток мёртв, не
@@ -27,6 +32,7 @@
 секунды) и причины остановки — ни звука, ни текста реплик. Строки: `header` (что известно до
 ребёнка), `ready` (рукопожатие), `start` (`start0` — с него сверка режет `.wav`),
 `seg` и `front` (поток на оси хаба; во фронте — CPU-секунды и пик памяти ребёнка),
+`mem` (давление памяти машины и занятый своп, раз в `PRESSURE_CHECK_S`),
 `chunk` (исход каждого чанка), `end` (причина конца и счётчики). Журнал открыт до
 конца процесса: чанк, принятый распознаванием после конца потока, тоже получает
 строку — она ложится после `end`.
@@ -34,6 +40,8 @@
 from __future__ import annotations
 
 import collections
+import ctypes
+import ctypes.util
 import json
 import math
 import os
@@ -68,6 +76,10 @@ SEG_KEEP_S = 900.0
 HANDSHAKE_S = 120.0
 #: Остановка: ребёнку на хвост, потом убийство.
 STOP_GRACE_S = 5.0
+#: Давление памяти: как часто смотреть и с какого уровня macOS тень уступает
+#: (1 — норма, 2 — предупреждение, 4 — критично; `kern.memorystatus_vm_pressure_level`).
+PRESSURE_CHECK_S = 5.0
+PRESSURE_STOP = 2
 
 #: Что живой трекер сделал с чанком — закрытый набор, пишет демон: разгрузка очереди,
 #: раскладка по кускам, вся речь исключена, раскладка упала, трекера раскладки нет.
@@ -82,6 +94,33 @@ STARTING, LIVE, STOPPING, DEAD = "starting", "live", "stopping", "dead"
 
 def _num(x: typing.Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+class _SwapUsage(ctypes.Structure):
+    _fields_ = [("total", ctypes.c_uint64), ("avail", ctypes.c_uint64), ("used", ctypes.c_uint64),
+                ("pagesize", ctypes.c_uint32), ("encrypted", ctypes.c_int32)]
+
+
+def _sysctl(name: bytes, value: ctypes._SimpleCData | ctypes.Structure) -> bool:
+    libc_path = ctypes.util.find_library("c")
+    if not libc_path:
+        return False
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    try:
+        libc = ctypes.CDLL(libc_path, use_errno=True)
+        return libc.sysctlbyname(name, ctypes.byref(value), ctypes.byref(size), None, 0) == 0
+    except (OSError, AttributeError):
+        return False
+
+
+def memory_state() -> dict | None:
+    """Давление памяти macOS и занятый своп — `sysctlbyname`, без процесса; не macOS — None."""
+    level = ctypes.c_int(0)
+    if not _sysctl(b"kern.memorystatus_vm_pressure_level", level):
+        return None
+    swap = _SwapUsage()
+    used = swap.used // 2**20 if _sysctl(b"vm.swapusage", swap) else None
+    return {"pressure": int(level.value), "swap_used_mb": used}
 
 
 def _open_private(path: pathlib.Path) -> typing.TextIO:
@@ -102,8 +141,12 @@ class Shadow:
 
     def __init__(self, *, journal: pathlib.Path, sr: int, stamp: str,
                  say: typing.Callable[[str], None],
-                 clock: typing.Callable[[], float] = time.monotonic):
+                 clock: typing.Callable[[], float] = time.monotonic,
+                 memory: typing.Callable[[], dict | None] = memory_state):
         self._sr = sr
+        self._memory = memory
+        self._mem_checked: float | None = None
+        self._mem_high = 0
         self._say = say
         self._clock = clock
         self._t0 = clock()
@@ -270,11 +313,26 @@ class Shadow:
                 del self._pending[key]
                 self._resolve_locked(entry, now)
         self._evict_locked(now)
+        self._check_memory_locked(now)
         floor = front - round(SEG_KEEP_S * self._sr)
         if floor > self._seg_floor:
             self._seg_floor = floor
             while self._segs and self._segs[0][1] <= floor:
                 self._segs.popleft()
+
+    def _check_memory_locked(self, now: float) -> None:
+        """Раз в `PRESSURE_CHECK_S`: строка `mem`; давление ≥ `PRESSURE_STOP` дважды подряд —
+        аварийная остановка тени."""
+        if self._mem_checked is not None and now - self._mem_checked < PRESSURE_CHECK_S:
+            return
+        self._mem_checked = now
+        state = self._memory()
+        if state is None:
+            return
+        self._line({"type": "mem", "t": self._t(now), **state})
+        self._mem_high = self._mem_high + 1 if state["pressure"] >= PRESSURE_STOP else 0
+        if self._mem_high >= 2:
+            self._die_locked(f"давление памяти (уровень {state['pressure']}) — тень уступает встрече")
 
     # ------------------------------------------------------------ чанки
 
