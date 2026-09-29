@@ -237,9 +237,10 @@ def test_write_text_mode_survives_an_orphan_tmp_of_the_same_pid(tmp_path):
     assert not (tmp_path / f"манифест.json.tmp{os.getpid()}").exists()
 
 
-def test_reindex_tightens_an_old_world_readable_manifest(tmp_path, capsys, monkeypatch):
-    """Манифест, оставшийся 0644 от библиотечного вызова по чужой маске, после `index`
-    становится 0600: режим задаётся при создании, а не переносится со старого файла."""
+def test_reindex_after_a_note_change_tightens_an_old_manifest(tmp_path, capsys, monkeypatch):
+    """Пересборка после правки заметки переписывает манифест, и старый 0644 становится
+    0600: режим задаётся при создании, а не переносится со старого файла. Без записи
+    (заметки не менялись) старый файл не перекрашивается — это №535."""
     monkeypatch.setattr(urllib.request, "urlopen", _ollama())
     graph, data = _graph(tmp_path), tmp_path / "кэш"
     assert cli.main(["index", str(graph), *_model(data)]) == cli.EXIT_OK
