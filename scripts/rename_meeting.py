@@ -27,6 +27,7 @@ import sys
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import privacy  # noqa: E402
 import graphs  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
@@ -378,7 +379,8 @@ def brain_rename(stamp: str, pretty: str, *, sent: bool, enabled: bool, explicit
     в конфиге — пустая строка (Opus I2 круга 1 по коду)."""
     try:
         import requests
-        r = requests.post(f"{BRAIN}/rename", json={"meeting": stamp, "title": pretty}, timeout=60)
+        r = requests.post(f"{BRAIN}/rename", json={"meeting": stamp, "title": pretty}, timeout=60,
+                          **privacy.proxies_for(BRAIN))
         text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
         return text if r.status_code == 200 else f"отказ ({r.status_code}): {text[:160]}"
     except Exception as e:  # noqa: BLE001

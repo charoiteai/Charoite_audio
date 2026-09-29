@@ -56,6 +56,9 @@ import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
+
+GIGASTT_HEALTH = "http://127.0.0.1:9876/health"
+GIGASTT_WS = "ws://127.0.0.1:9876/v1/ws"
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
 import stt_runtime  # noqa: E402
@@ -2366,7 +2369,7 @@ def main():
             return
         try:
             import requests as _rq
-            _rq.get("http://127.0.0.1:9876/health", timeout=2).raise_for_status()
+            _rq.get(GIGASTT_HEALTH, timeout=2, **privacy.proxies_for(GIGASTT_HEALTH)).raise_for_status()
             from websockets.sync.client import connect as ws_connect
         except (ImportError, OSError):   # requests.RequestException — подкласс OSError
             return  # сервера/библиотеки нет — обычный путь через чанки
@@ -2405,7 +2408,8 @@ def main():
                         frame_q.get_nowait()
                     except _q.Empty:
                         break
-                with ws_connect("ws://127.0.0.1:9876/v1/ws", max_size=None) as ws:
+                # proxy=None: loopback мимо прокси окружения — звук встречи (№525)
+                with ws_connect(GIGASTT_WS, max_size=None, proxy=None) as ws:
                     ws.recv()  # {"type":"ready"}
                     ws.send(json.dumps({"type": "configure", "sample_rate": hub.sr}))
 

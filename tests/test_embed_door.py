@@ -690,7 +690,7 @@ def test_urllib_post_refuses_a_non_http_address_before_opening(monkeypatch, url)
 
 
 def test_urllib_post_reads_the_http_error_body(monkeypatch):
-    monkeypatch.setattr(urllib.request, "urlopen",
+    monkeypatch.setattr(embed_door, "open_url",
                         lambda *a, **k: (_ for _ in ()).throw(http_error(400, b"\xff\xfe<err>")))
 
     status, text = embed_door.urllib_post("http://127.0.0.1:1/api/embed", {"input": ["т"]}, 5)
@@ -700,7 +700,7 @@ def test_urllib_post_reads_the_http_error_body(monkeypatch):
 
 def test_http_error_becomes_code_and_body_through_the_door(monkeypatch, capsys):
     once.reset("embed")
-    monkeypatch.setattr(urllib.request, "urlopen",
+    monkeypatch.setattr(embed_door, "open_url",
                         lambda *a, **k: (_ for _ in ()).throw(http_error(400, b"\xff\xfe<err>")))
 
     assert _дверь().run(["т"], 5) == []
@@ -715,7 +715,7 @@ def test_urllib_post_sends_json_and_reads_vectors(monkeypatch):
         seen["request"], seen["timeout"] = request, timeout
         return _Ответ(200, json.dumps({"embeddings": [[1.0, 2.0]]}).encode("utf-8"))
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(embed_door, "open_url", fake_urlopen)
 
     assert _дверь().run(["текст"], 7) == [[1.0, 2.0]]
     request = seen["request"]
