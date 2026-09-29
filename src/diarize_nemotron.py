@@ -104,7 +104,8 @@ INSTALL_RECIPE = ("поставьте окружение движка устан
 #: Указатель вместо команды — там, где текст уходит в стенограмму: её пересылают людям,
 #: а команда несёт пути машины (корень данных, код), то есть имя учётки (выходной круг 1
 #: по №489, M3). Команду целиком печатают доктор и `--check`.
-INSTALLER_POINTER = "команду установки печатает scripts/doctor.py"
+INSTALLER_POINTER = ("команда установки — docs/DIARIZATION.md, раздел Nemotron; доктор печатает её "
+                     "целиком, если запущен с CHAROITE_ROOT=<папка данных>")
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -172,12 +173,14 @@ def install_command(root: pathlib.Path) -> str:
     if inside_app_bundle(root):
         return ("корень данных не назван — установщику нужна папка данных: запустите его с "
                 "CHAROITE_ROOT, равной папке данных (в приложении — «Папка данных» в Настройках)")
+    # `-B`: python бандла из Терминала не пишет байткод в подписанный `.app` —
+    # и до того, как установщик успеет выключить его сам (Opus C1, 0.88.1).
     script = [str(code_root(__file__) / "scripts" / "install_engine.py"), "nemotron"]
     prefix = f"CHAROITE_ROOT={shlex.quote(str(root))} "
     python = app_python()
     if python:
-        return prefix + shlex.join([python, *script])
-    return f"{prefix}{APP_PYTHON} {shlex.join(script)} (путь к Charoite.app — ваш)"
+        return prefix + shlex.join([python, "-B", *script])
+    return f"{prefix}{APP_PYTHON} -B {shlex.join(script)} (путь к Charoite.app — ваш)"
 
 
 def fetch_recipe(target: pathlib.Path) -> str:

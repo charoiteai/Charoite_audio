@@ -89,7 +89,7 @@
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
-- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py, src/diarize_nemotron.py; проба help
+- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/gate_bench.py` ← ручной запуск: замер решающего гейта, ручной прогон; проба help
