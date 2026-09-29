@@ -135,9 +135,14 @@ def _in_loop_body(stmt: ast.stmt):
 
 
 def _state_values(node: ast.AST) -> list[object] | None:
-    """Значения, которые выражение может дать: константа или условное из констант."""
+    """Значения, которые выражение может дать: константа, условное из констант или
+    `live_nemotron.diarized_state(...)` — её ответы берутся у неё самой на всех входах."""
     if isinstance(node, ast.Constant):
         return [node.value]
+    if isinstance(node, ast.Call) and _call_name(node) == "live_nemotron.diarized_state":
+        import live_nemotron
+        return sorted({live_nemotron.diarized_state(failed, jobs)
+                       for failed in (False, True) for jobs in (None, [])})
     if isinstance(node, ast.IfExp):
         a, b = _state_values(node.body), _state_values(node.orelse)
         return None if a is None or b is None else a + b
@@ -163,9 +168,8 @@ def nemotron_wiring_problems(source: str) -> list[str]:
     if main is None or stt is None:
         return ["нет main или stt_loop — сторож смотрит мимо"]
     problems = []
-    listener = [n for n in ast.walk(main) if _call_name(n) == "hub.add_frame_listener"
-                and n.args and isinstance(n.args[0], ast.Attribute)
-                and _call_name(ast.Call(func=n.args[0], args=[], keywords=[])) == "nemotron_shadow.on_frame"]
+    listener = [n for n in ast.walk(main) if _call_name(n) == "nemotron_shadow.attach"
+                and [a.id for a in n.args if isinstance(a, ast.Name)] == ["hub"]]
     if not any(_call_name(n) == "live_nemotron.start" for n in ast.walk(main)) or not listener:
         problems.append("main не поднимает тень или не вешает её слушателем кадров")
     loop = next((n for n in ast.walk(stt) if isinstance(n, ast.For)
@@ -219,16 +223,16 @@ def test_the_daemon_wires_the_nemotron_shadow():
 
 
 @pytest.mark.parametrize("old, new, says", [
-    ("                    nemotron_shadow.note_chunk(placed, tracker_state)", "                    pass",
+    ("                nemotron_shadow.note_chunk(placed, tracker_state)", "                pass",
      "ровно раз"),
-    ("                if nemotron_shadow is not None:\n                    # строка тени",
-     "                if jobs is None:\n                    continue\n"
-     "                if nemotron_shadow is not None:\n                    # строка тени", "выход из цикла"),
+    ("                # строка тени — на КАЖДЫЙ",
+     "                if jobs is None:\n                    continue\n                # строка тени — на КАЖДЫЙ",
+     "выход из цикла"),
     ('                    tracker_state = "off"', "                    pass", "без состояния"),
     ('                    tracker_state = "off"', '                    tracker_state = "plain"', "вне набора"),
-    ('else "none" if jobs is None else "pieces")', 'else "none" if jobs is None else "split")', "вне набора"),
-    ("            hub.add_frame_listener(nemotron_shadow.on_frame)", "            pass", "слушателем"),
-    ("            nemotron_shadow.stop()\n        # Пересборка", "            pass\n        # Пересборка", "стоп"),
+    ("tracker_state = live_nemotron.diarized_state(split_failed, jobs)", 'tracker_state = "split"', "вне набора"),
+    ("        nemotron_shadow.attach(hub)", "        pass", "слушателем"),
+    ("        nemotron_shadow.stop()\n        # Пересборка", "        pass\n        # Пересборка", "стоп"),
 ])
 def test_the_nemotron_guard_turns_red_on_a_broken_wiring(old, new, says):
     problems = nemotron_wiring_problems(_broken(old, new))

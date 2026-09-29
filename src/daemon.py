@@ -1271,28 +1271,23 @@ def main():
                 elif plan == "diarize":
                     mark_stt_stage("diarization")
                     diarization_started = time.monotonic()
-                    split_failed = False
                     try:
-                        res = spk_tracker.split(chunk, channel=speaker)
-                    except Exception:  # noqa: BLE001 — диаризация вспомогательна
-                        res = None  # jobs_for даст канальную метку без
-                        # voice_label: повторный вызов трекера учил бы
-                        # центроиды тем же звуком дважды (ревью 15.08 ×2)
-                        split_failed = True
+                        # упала — (None, True): jobs_for даст канальную метку без
+                        # voice_label, повторного вызова трекера нет (ревью 15.08 ×2)
+                        res, split_failed = stt_runtime.guarded_split(spk_tracker, chunk, speaker)
                     finally:
                         cycle_diarization_ms += (
                             time.monotonic() - diarization_started) * 1000
                         mark_stt_stage("planning")
                     jobs = jobs_for(res, chunk)
-                    tracker_state = ("split_failed" if split_failed
-                                    else "none" if jobs is None else "pieces")
+                    tracker_state = live_nemotron.diarized_state(split_failed, jobs)
                 else:
                     jobs = [(chunk, None, None)]  # None: метку решит voice_label
                     tracker_state = "off"
-                if nemotron_shadow is not None:
-                    # строка тени — на КАЖДЫЙ принятый чанк: после выбора плана и
-                    # раскладки, до пропуска (вход 2 по №478, I2); не ждёт и не бросает
-                    nemotron_shadow.note_chunk(placed, tracker_state)
+                # строка тени — на КАЖДЫЙ принятый чанк: после выбора плана и
+                # раскладки, до пропуска (вход 2 по №478, I2); не ждёт и не бросает;
+                # тени нет — NO_SHADOW, проверок на None в цикле нет
+                nemotron_shadow.note_chunk(placed, tracker_state)
                 if jobs is None:
                     continue  # вся речь чанка исключена — пропуск
 
@@ -3307,18 +3302,16 @@ def main():
     # движка слушает канал собеседников и пишет метки в журнал рядом с тем, что
     # сделал живой трекер; стенограмма не меняется. До слоёв: распознавание видит
     # тень с первого чанка (пока модель грузится — строка «до старта потока»).
-    nemotron_shadow = None
+    nemotron_shadow = live_nemotron.NO_SHADOW
     try:
         nemotron_shadow = live_nemotron.start(
             cfg, root=_root(), stamp=tr.stamp, sr=hub.sr,
             labels={c.label for c in hub.captures},
             say=lambda text: emit({"type": "status", "text": text}))
-        if nemotron_shadow is not None:
-            hub.add_frame_listener(nemotron_shadow.on_frame)
+        nemotron_shadow.attach(hub)
     except Exception as e:  # noqa: BLE001 — тень вспомогательна: встреча идёт без неё
-        if nemotron_shadow is not None:
-            nemotron_shadow.stop()
-            nemotron_shadow = None
+        nemotron_shadow.stop()
+        nemotron_shadow = live_nemotron.NO_SHADOW
         emit({"type": "status", "text": f"поток Nemotron не поднялся: {e}"})
 
     # Слои встречи: имя у каждого своё, роль — одна на всех. Кортеж пар, а не
@@ -3470,10 +3463,9 @@ def main():
         pass
     finally:
         stop.set()
-        if nemotron_shadow is not None:
-            # тень — сразу и без ожидания: её ребёнок держит модель, а пересборке
-            # сейчас нужна машина
-            nemotron_shadow.stop()
+        # тень — сразу и без ожидания: её ребёнок держит модель, а пересборке
+        # сейчас нужна машина
+        nemotron_shadow.stop()
         # Пересборка финальной стенограммы + граф — ПЕРВЫМ делом (Popen мгновенен,
         # живёт в своей сессии и переживает terminate от Swift; часовая встреча
         # 17.07 потерялась именно на этом). rebuild сам ждёт финализацию записей

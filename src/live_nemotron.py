@@ -114,7 +114,7 @@ def _sysctl(name: bytes, value: ctypes._SimpleCData | ctypes.Structure) -> bool:
         return False
     size = ctypes.c_size_t(ctypes.sizeof(value))
     try:
-        libc = ctypes.CDLL(libc_path, use_errno=True)
+        libc = ctypes.CDLL(libc_path)
         return libc.sysctlbyname(name, ctypes.byref(value), ctypes.byref(size), None, 0) == 0
     except (OSError, AttributeError):
         return False
@@ -240,6 +240,10 @@ class Shadow:
         threads.spawn(stream.kill, name="nemotron-live-abandon", role="audio",
                       detached="убийство неподобранного ребёнка не держит ни захват, ни выход")
 
+    def attach(self, hub: typing.Any) -> None:
+        """Слушать кадры хаба."""
+        hub.add_frame_listener(self.on_frame)
+
     # ------------------------------------------------------------ звук
 
     def on_frame(self, label: str, start: int, part: typing.Any) -> None:
@@ -347,11 +351,9 @@ class Shadow:
                 self._resolve_locked(entry, now)
         self._evict_locked(now)
         self._check_health_locked(now)
-        floor = front - round(SEG_KEEP_S * self._sr)
-        if floor > self._seg_floor:
-            self._seg_floor = floor
-            while self._segs and self._segs[0][1] <= floor:
-                self._segs.popleft()
+        self._seg_floor = max(self._seg_floor, front - round(SEG_KEEP_S * self._sr))
+        while self._segs and self._segs[0][1] <= self._seg_floor:
+            self._segs.popleft()
 
     def _check_health_locked(self, now: float) -> None:
         """Раз в `PRESSURE_CHECK_S`: строка `mem`; давление ≥ `PRESSURE_STOP` дважды подряд —
@@ -571,10 +573,40 @@ class Shadow:
             return self._reason
 
 
+def diarized_state(split_failed: bool, jobs: typing.Any) -> str:
+    """Что живой трекер сделал с чанком на ветке раскладки: раскладка упала, вся речь
+    исключена (`jobs` — None) или разложил по кускам. Решение здесь, а не условием в
+    замыкании демона: там его не видел ни один тест."""
+    if split_failed:
+        return "split_failed"
+    return "none" if jobs is None else "pieces"
+
+
+class _NoShadow:
+    """Тени нет (выключена или не поднялась): те же методы, что у `Shadow`, и ничего не
+    делают. Решение «есть ли тень» принимает `start` один раз — демону не нужны проверки
+    на None в каждой точке вызова (мутатор диапазона: их не видел ни один тест)."""
+
+    def attach(self, hub: typing.Any) -> None:
+        pass
+
+    def on_frame(self, label: str, start: int, part: typing.Any) -> None:
+        pass
+
+    def note_chunk(self, placed: typing.Any, state: str) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
+NO_SHADOW = _NoShadow()
+
+
 def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.Collection[str],
           say: typing.Callable[[str], None],
-          memory: typing.Callable[[], dict | None] = memory_state) -> Shadow | None:
-    """Поднять тень, если её просит `sufler.live_nemotron`; иначе — None и строка, почему.
+          memory: typing.Callable[[], dict | None] = memory_state) -> Shadow | _NoShadow:
+    """Поднять тень, если её просит `sufler.live_nemotron`; иначе — `NO_SHADOW` и строка, почему.
 
     `labels` — метки захватов хаба: без канала собеседников ребёнок держал бы модель
     весь звонок впустую. Давление памяти уже на уровне `PRESSURE_STOP` — тень не
@@ -589,31 +621,31 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
     else:
         mode = str(raw).strip().lower() or OFF
     if mode == OFF:
-        return None
+        return NO_SHADOW
     if mode != SHADOW:
         say(f"sufler.live_nemotron: режим {mode!r} неизвестен ({', '.join(MODES)}) — поток Nemotron выключен")
-        return None
+        return NO_SHADOW
     if sr != diarize_nemotron.SAMPLE_RATE:
         say(f"поток Nemotron выключен: хаб пишет {sr} Гц, движку нужно {diarize_nemotron.SAMPLE_RATE}")
-        return None
+        return NO_SHADOW
     if CHANNEL not in labels:
         say("поток Nemotron выключен: канала собеседников в захвате нет")
-        return None
+        return NO_SHADOW
     state = memory()
     if state is not None and state["pressure"] >= PRESSURE_STOP:
         say(f"поток Nemotron выключен: давление памяти уже на уровне {state['pressure']}")
-        return None
+        return NO_SHADOW
     python, refusal = diarize_nemotron.engine_interpreter(str(sufler.get("nemotron_python") or ""), root)
     if refusal:
         say(f"поток Nemotron выключен: {refusal}")
-        return None
+        return NO_SHADOW
     logs = root / "logs"
     try:
         shadow = Shadow(journal=logs / f"nemotron_live_{stamp}.jsonl", sr=sr, stamp=stamp, say=say,
                     memory=memory)
     except OSError as e:
         say(f"поток Nemotron выключен: журнал не открылся ({e})")
-        return None
+        return NO_SHADOW
     shadow.begin(python=python, script=diarize_nemotron.SCRIPT,
                  args=["--stream", "--model", str(diarize_nemotron.model_dir(root)), "--preset", PRESET],
                  errlog=logs / f"nemotron_live_{stamp}.err")
