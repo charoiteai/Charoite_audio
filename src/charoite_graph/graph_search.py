@@ -1203,7 +1203,16 @@ class GraphSearch:
             # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
             # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
             have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()}
-        return [d.path for d in gen.primary if have.get(d.path) != (d.mtime, self._expected_blocks(d))]
+        # пустой файл не свидетель (то же правило, что у семантики в `search`): в очереди
+        # он ждал бы вектора вечно, и `index` отвечал бы «собрано не всё» на каждом запуске
+        # (выходной круг 1 по №323 PR 2, M1)
+        return [d.path for d in gen.primary
+                if d.low.strip() and have.get(d.path) != (d.mtime, self._expected_blocks(d))]
+
+    def coverage_gaps(self) -> list[str]:
+        """Чего текущее поколение индекса не читало — словами, тем же правилом, что у выдачи."""
+        gen = self._gen
+        return coverage_gaps(Result([], 0, skipped=gen.skipped, unread=gen.unread, service=gen.service))
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:

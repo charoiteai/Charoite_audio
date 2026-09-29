@@ -28,6 +28,7 @@ import json
 import os
 import pathlib
 import sys
+import threading
 
 from charoite_graph import embed_door
 from charoite_graph.graph_search import GraphSearch
@@ -45,6 +46,9 @@ QUERY_TIMEOUT_S = 30.0
 NO_MODEL = "нет-модели"
 REFUSED = "адрес модели не задан (--model-url) — ищу по словам"
 PRIVATE_UMASK = 0o077
+#: Маска — состояние процесса: два `main` из потоков одного процесса без замка
+#: вернули бы друг другу чужую прежнюю маску (выходной круг 1 по №323 PR 2, I2).
+_UMASK_LOCK = threading.Lock()
 
 
 def _no_color(version: tuple[int, ...]) -> dict:
@@ -104,11 +108,11 @@ def embedder_from_args(args: argparse.Namespace):
     return embed_door.embedder("", NO_MODEL, refused=REFUSED)
 
 
-def _open(args: argparse.Namespace) -> GraphSearch | None:
+def _open(args: argparse.Namespace, embedder) -> GraphSearch | None:
     """Индекс папки, обойдённый и с векторами из кэша; None — индекс пуст (строка в stderr)."""
     folder = pathlib.Path(args.folder).resolve()
     data_dir = pathlib.Path(args.data_dir).resolve() if args.data_dir else None
-    gs = GraphSearch(folder, embedder=embedder_from_args(args), data_dir=data_dir)
+    gs = GraphSearch(folder, embedder=embedder, data_dir=data_dir)
     gs.refresh(force=True)
     gs.load_vectors()
     if not gs.ready:
@@ -120,7 +124,8 @@ def _open(args: argparse.Namespace) -> GraphSearch | None:
 def _index(gs: GraphSearch) -> int:
     done = gs.embed_pending()
     left = len(gs.pending_vectors())
-    print(f"векторы: {done} файлов, ожидают {left}")
+    gaps = gs.coverage_gaps()      # охват — как у search: «ожидают 0» не значит «прочитано всё» (M3 выхода 1)
+    print(f"векторы: {done} файлов, ожидают {left}" + (f" (вне индекса: {', '.join(gaps)})" if gaps else ""))
     if left:
         print(f"charoite-graph: {gs.note or 'векторы собраны не все'}", file=sys.stderr)
         return EXIT_LEFT
@@ -140,11 +145,19 @@ def main(argv: list[str] | None = None) -> int:
     if not pathlib.Path(args.folder).resolve().is_dir():
         print(f"charoite-graph: не каталог: {args.folder}", file=sys.stderr)
         return EXIT_USAGE
-    previous = os.umask(PRIVATE_UMASK)
     try:
-        gs = _open(args)
-        if gs is None:
-            return EXIT_EMPTY
-        return _index(gs) if args.command == "index" else _search(gs, args)
-    finally:
-        os.umask(previous)
+        # адрес и имя модели проверяет дверь при сборке: кривой адрес — ошибка аргументов,
+        # код 2, а не трассировка с кодом 1, который у index значит «собрано не всё» (I1 выхода 1)
+        embedder = embedder_from_args(args)
+    except ValueError as e:
+        print(f"charoite-graph: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    with _UMASK_LOCK:
+        previous = os.umask(PRIVATE_UMASK)
+        try:
+            gs = _open(args, embedder)
+            if gs is None:
+                return EXIT_EMPTY
+            return _index(gs) if args.command == "index" else _search(gs, args)
+        finally:
+            os.umask(previous)

@@ -476,6 +476,9 @@ if PKG_ROOT.joinpath("charoite_graph", "cli.py").is_file():
         texts = json.loads(request.data)["input"]
         return Answer(json.dumps({"embeddings": [[1.0 + t.count(c) for c in "аеиоуртнс"] for t in texts]}).encode())
 
+    # маска вызывающего — заведомо слабая: у разработчика с 077 CLI без своей маски
+    # проходил бы проверку режимов молча (выходной круг 1 по №323 PR 2, M2)
+    os.umask(0o022)
     before = tree()
     code, text = cli_run(["search", GRAPH, QUERY, "--json"])
     CLI.update(search_code=code, search=json.loads(text) if code == 0 else text,
@@ -584,6 +587,12 @@ def _cli_problems(cli: dict) -> list[str]:
         out.append(f"командная строка: search без --data-dir создал {cli['search_created']}")
     if cli.get("index_code") != 0:
         out.append(f"командная строка: index — код {cli.get('index_code')}, вывод {cli.get('index_out')!r}")
+    if not any(rel.endswith(".json") for rel in cli.get("modes") or {}):
+        out.append(f"командная строка: index не оставил манифеста кэша: {sorted(cli.get('modes') or {})}")
+    model = cli.get("model_search")
+    if cli.get("model_code") != 0 or not isinstance(model, dict) or model.get("status") == "unverified":
+        out.append(f"командная строка: search с моделью не проверен семантикой — код {cli.get('model_code')}, "
+                   f"ответ {model!r}")
     loose = {rel: oct(mode) for rel, mode in (cli.get("modes") or {}).items() if mode & 0o077}
     if loose:
         out.append(f"командная строка: кэш доступен не только владельцу: {loose}")
@@ -1598,17 +1607,24 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                     "        return 0\n"
                     "    if '--data-dir' not in argv:\n"
                     "        {leak}\n"
-                    "    print('{{\"ready\": true, \"status\": \"unverified\", \"sources\": [\"a\"]}}')\n"
+                    "    status = 'confident' if '--data-dir' in argv else 'unverified'\n"
+                    "    print('{{\"ready\": true, \"status\": \"%s\", \"sources\": [\"a\"]}}' % status)\n"
                     "    return 0\n")
     honest_cli = cli_template.format(mask="os.umask(0o077)", leak="pass")
     got, out = run("строка честная", "pass", cli=honest_cli)
     assert got == [] and out["cli"]["entry"] is None and out["cli"]["index_code"] == 0, (got, out.get("cli"))
     got = probe("строка по маске", "pass", cli=cli_template.format(mask="os.umask(0o022)", leak="pass"))
     assert len(got) == 1 and "кэш доступен не только владельцу" in got[0], got
+    # без своей маски — маска раннера 022, а не маска того, кто запустил pytest (M2 выхода 1)
+    got = probe("строка без маски", "pass", cli=cli_template.format(mask="pass", leak="pass"))
+    assert len(got) == 1 and "кэш доступен не только владельцу" in got[0], got
     got = probe("строка пишет при поиске", "pass", cli=cli_template.format(
         mask="os.umask(0o077)", leak="(pathlib.Path.cwd().parent / 'data' / 'след').write_text('x')"))
     assert len(got) == 1 and "search без --data-dir создал" in got[0], got
     assert run("без строки", "pass")[1]["cli"] == {}, "без файла командной строки проверки нет"
+    got = probe("строка без кэша", "pass", cli=cli_template.format(mask="os.umask(0o077)", leak="pass")
+                .replace("(d / 'm.json').write_text('{}')", "pass"))
+    assert len(got) == 1 and "не оставил манифеста" in got[0], got
     # член пакета, которого не тянет ни один вход, тоже грузится под ловушкой: раннер
     # обходит каталог пакета копии, а не только замыкание входа (вход 4 хвоста, C1)
     got = probe("член вне входа", "pass",

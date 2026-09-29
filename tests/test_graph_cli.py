@@ -250,3 +250,57 @@ def test_reindex_tightens_an_old_world_readable_manifest(tmp_path, capsys, monke
 
     assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
     assert "Биллинг.md" in manifest.read_text(encoding="utf-8"), "пути в манифесте без экранирования"
+
+
+@pytest.mark.parametrize("url", ["localhost:11434", "ftp://127.0.0.1:1"])
+def test_a_bad_model_address_is_an_argument_error(tmp_path, capsys, url):
+    """Адрес без http(s) — код 2 и строка, а не трассировка с кодом 1 (I1 выхода 1)."""
+    graph = _graph(tmp_path)
+
+    code = cli.main(["search", str(graph), "q", "--model-url", url, "--model", "м", "--data-dir", str(tmp_path / "к")])
+
+    assert code == cli.EXIT_USAGE and "http(s)" in capsys.readouterr().err
+    assert not (tmp_path / "к").exists()
+
+
+def test_the_mask_window_is_held_under_the_lock(tmp_path, monkeypatch):
+    """Маска — состояние процесса: всё окно от `umask` до возврата прежней идёт под
+    замком модуля, иначе два `main` из потоков вернули бы друг другу чужую прежнюю
+    маску (I2 выхода 1). Судим по замку внутри окна — порядок потоков не случаен."""
+    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    graph = _graph(tmp_path)
+    seen = {}
+    real_open = cli._open
+
+    def spy(args, embedder):
+        seen["locked"], seen["mask"] = cli._UMASK_LOCK.locked(), os.umask(0o077)
+        return real_open(args, embedder)
+
+    monkeypatch.setattr(cli, "_open", spy)
+    old = os.umask(0o022)
+    try:
+        assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_OK
+        assert os.umask(0o022) == 0o022
+    finally:
+        os.umask(old)
+    assert seen == {"locked": True, "mask": cli.PRIVATE_UMASK}, seen
+
+
+def test_an_empty_note_does_not_keep_index_pending(tmp_path, capsys, monkeypatch):
+    """Пустая заметка не свидетель: `index` не ждёт для неё вектора вечно (M1 выхода 1)."""
+    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    graph = _graph(tmp_path)
+    (graph / "Без названия.md").write_text("", encoding="utf-8")
+
+    assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_OK
+    assert "ожидают 0" in capsys.readouterr().out
+
+
+def test_index_names_what_it_did_not_read(tmp_path, capsys, monkeypatch):
+    """Охват в выводе `index`: нечитаемая заметка названа, а не спрятана за «ожидают 0» (M3)."""
+    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    graph = _graph(tmp_path)
+    (graph / "битая.md").symlink_to(tmp_path / "нет-такого")
+
+    assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_OK
+    assert "не открылось файлов: 1" in capsys.readouterr().out
