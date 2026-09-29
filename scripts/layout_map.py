@@ -380,10 +380,12 @@ _SCHEMA: dict[str, Field] = {
     # ровно его члены (№424). Гейт самодостаточности (`package_problems`) сверяет
     # этот каталог с замыканием входа, а не доверяет списку имён
     "package": Field(str, "decision"),
-    # вход пакета поиска по графу: пакет — замыкание ОДНОГО имени по графу импортов
-    # (`package_closure`), а не «весь base плюс graph» — иначе публичной поверхностью
-    # молча стали бы модули, которых вход не зовёт (№365)
-    "package_entry": Field(str, "decision"),
+    # входы пакета поиска по графу: модуль → обоснование. Пакет — объединение замыканий
+    # входов по графу импортов (`package_union`), а не «весь base плюс graph» — иначе
+    # публичной поверхностью молча стали бы модули, которых ни один вход не зовёт (№365);
+    # входов может быть больше одного — дверь векторов и CLI (№323, PR 0). Таблицу
+    # читает один геттер `package_entries`
+    "package_entries": Field(dict, "decision"),
     "layer_overrides": Field(dict, "decision", {"layer": Field(str, "decision"),
                                                 "why": Field(str, "decision")}),
     "allowed_edges": Field(list, "measured", {"from": Field(str, "measured"),
@@ -538,6 +540,13 @@ def validate_layout(layout: object) -> dict:
     for path_, why in layout["manual_entry_points"].items():
         if not _is_candidate(path_) or not isinstance(why, str) or not why.strip():
             raise LayoutError(f"ручная точка входа {path_}: не путь к исполняемому файлу или пустое why")
+    # только форма: есть ли вход в дереве, судит `env_problems` — загрузчику артефакта
+    # дерева не видно (входной круг 4 хвоста №323, I3)
+    if not layout["package_entries"]:
+        raise LayoutError("package_entries: у пакета нет ни одного входа — пакету не из чего собраться")
+    for entry, why in layout["package_entries"].items():
+        if not entry.strip() or not isinstance(why, str) or not why.strip():
+            raise LayoutError(f"вход пакета {entry!r}: нужно имя модуля и непустое обоснование")
     for path_, contract in layout["run_contracts"].items():
         if not _is_candidate(path_):
             raise LayoutError(f"контракт запуска {path_}: не путь к исполняемому файлу")
@@ -2508,13 +2517,35 @@ def package_closure(graph: dict[str, set[str]], entry: str) -> set[str]:
     return seen
 
 
+def package_entries(layout: dict) -> list[str]:
+    """Входы пакета по порядку имён — единственный читатель таблицы `package_entries`:
+    сколько бы входов ни было, пакет — объединение их замыканий (№323, PR 0)."""
+    return sorted(layout["package_entries"])
+
+
+def package_pulled(graph: dict[str, set[str]], entries: list[str]) -> dict[str, list[str]]:
+    """Модуль пакета → входы, чьё замыкание его тянет, по порядку входов. Одна атрибуция
+    на оба гейта: строка называет вход, который тянет модуль, а не весь список
+    (выходной круг 1 по №323 PR 0, M2)."""
+    out: dict[str, list[str]] = {}
+    for entry in entries:
+        for m in sorted(package_closure(graph, entry)):
+            out.setdefault(m, []).append(entry)
+    return out
+
+
+def package_union(graph: dict[str, set[str]], entries: list[str]) -> set[str]:
+    """Модули пакета — объединение замыканий входов (`package_entries(layout)`)."""
+    return set(package_pulled(graph, entries))
+
+
 def package_files(inv: Inventory, layout: dict) -> list[str]:
-    """План пробы пакета: файлы замыкания `package_entry` и `__init__` пакета, по
+    """План пробы пакета: файлы замыканий входов и `__init__` пакета, по
     пути. Проба копирует ровно их — список берётся здесь, а не собирается тестом
     заново. `__init__` — явно, а не через замыкание: ребро на сам пакет даёт только
     `from charoite_graph import x`, и при `import charoite_graph.x` копия вышла бы
     пакетом-пространством имён без своего `__init__` (выходной круг 1 по #650, DS I1)."""
-    closure = package_closure(import_graph(inv), layout["package_entry"])
+    closure = package_union(import_graph(inv), package_entries(layout))
     inits = package_inits(inv, layout)
     return sorted(rel for rel in inv.files if (m := module_of(rel)) in closure or m in inits)
 
@@ -2560,8 +2591,9 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
 
     Ребро модуля слоя без окружения в слой окружения — расхождение, которое
     `allowed_edges` не прощает: долг с карточкой здесь означал бы пакет, который
-    тянет окружение приложения, пока долг жив. Пакет — замыкание `package_entry`:
-    вход обязан быть модулем дерева, и всё замыкание лежит в слоях без окружения."""
+    тянет окружение приложения, пока долг жив. Пакет — объединение замыканий входов:
+    каждый вход обязан быть модулем дерева, и всё замыкание каждого лежит в слоях без
+    окружения; модуль с окружением — одна строка со списком входов, которые его тянут."""
     lay = layer_of(layout)
     rt = runtime_layer(layout)
     if rt is None:
@@ -2580,13 +2612,14 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
         for b in sorted(package_closure(graph, a)):
             if lay.get(b) == rt and (a, b) not in direct:
                 out.append(f"{a} ({lay[a]}) тянет {b} ({rt}) через импорты — {recipes[lay[a]]}")
-    entry = layout["package_entry"]
-    if entry not in graph:
-        out.append(f"package_entry {entry}: модуля с таким именем в дереве нет — пакету не из чего собраться")
-    for m in sorted(package_closure(graph, entry)):
-        if lay.get(m) not in recipes:
-            out.append(f"пакет {entry} тянет {m} ({lay.get(m, 'без слоя')}) — в замыкании входа только "
-                       f"слои без окружения: {', '.join(recipes) or '—'}")
+    entries = package_entries(layout)
+    for entry in entries:
+        if entry not in graph:
+            out.append(f"вход пакета {entry}: модуля с таким именем в дереве нет — пакету не из чего собраться")
+    pulled = {m: by for m, by in package_pulled(graph, entries).items() if lay.get(m) not in recipes}
+    for m in sorted(pulled):
+        out.append(f"пакет {', '.join(pulled[m])} тянет {m} ({lay.get(m, 'без слоя')}) — в замыкании входа "
+                   f"только слои без окружения: {', '.join(recipes) or '—'}")
     return out
 
 
@@ -2621,7 +2654,7 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     """Пакет самодостаточен — каталог, замыкание и внешние импорты сходятся.
 
     Три равенства, каждое в свою сторону (№424): множество членов поддерева
-    (`package_members`, любая глубина) равно замыканию `package_entry` по графу
+    (`package_members`, любая глубина) равно объединению замыканий входов (`package_entries`) по графу
     импортов; и ни один член не импортирует модуль продукта вне пакета —
     сторонние пакеты и stdlib можно, свой код только внутрь. Так «пакет»
     перестаёт быть списком имён в артефакте: лишний модуль в каталоге, забытый
@@ -2633,7 +2666,7 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
     сторонних пакетов, ни членов (выходной круг 1 по #650, DS I1–I2).
 
     Объявленное имя обязано разрешаться в дереве — та же дверь, что у
-    `package_entry` в `env_problems`: объявлен пакет — есть его
+    входа пакета в `env_problems`: объявлен пакет — есть его
     `src/<пакет>/__init__.py`. Без этой строки удалённый `__init__` делал
     пакет пространством имён, правило пустоты — пустым, а объявление с
     опечаткой — «пакетом без членов», о котором гейт молчал (выходной круг 2
@@ -2652,21 +2685,29 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
         out.append(f"package {layout['package']}: нет {init} — объявленный пакет обязан быть пакетом: "
                    f"без __init__ копия пробы и колесо собирают пространство имён, а правило "
                    f"пустоты __init__ судит пустоту")
-    entry = layout["package_entry"]
-    if entry not in graph:
-        # об отсутствующем входе уже говорит `env_problems` — второй строкой не повторяем
+    # об отсутствующем входе говорит `env_problems`; остальные входы судятся — опечатка
+    # в одном не отключает проверки другого (входной круг 4 хвоста №323, M5)
+    declared = package_entries(layout)
+    entries = [e for e in declared if e in graph]
+    if not entries:
         return out
+    # член отсутствующего входа тоже краснеет — таблица и дерево расходятся, — но совет
+    # «убрать член» тогда ложный: строка называет входы вне дерева (выход 1 PR 0, M2)
+    missing = [e for e in declared if e not in graph]
+    tail = f" (входы вне дерева: {', '.join(missing)})" if missing else ""
     members = package_members(inv, layout)
     inits = package_inits(inv, layout)
-    closure = package_closure(graph, entry) - inits
-    # Член пакета вне замыкания входа — всегда отказ, без изъятий: модуль схемы
+    pulled = package_pulled(graph, entries)
+    closure = set(pulled) - inits
+    named = ", ".join(entries)
+    # Член пакета вне замыканий входов — всегда отказ, без изъятий: модуль схемы
     # хранилища вход зовёт (поиск берёт схему параметром, №422), и колесо везёт
     # ровно то, что проба импортирует (сверка плана с артефактом, №427).
     for m in sorted(members - closure):
-        out.append(f"член пакета {m} вне замыкания входа {entry} — вход его не зовёт: "
-                   f"убрать из {layout['package']}/ или позвать из входа")
+        out.append(f"член пакета {m} вне замыкания входа {named} — вход его не зовёт: "
+                   f"убрать из {layout['package']}/ или позвать из входа{tail}")
     for m in sorted(closure - members):
-        out.append(f"модуль замыкания {entry} — {m} — лежит вне пакета {layout['package']}/: "
+        out.append(f"модуль замыкания {', '.join(pulled[m])} — {m} — лежит вне пакета {layout['package']}/: "
                    f"перенести в пакет или разорвать импорт")
     for m in sorted(members):
         for d in sorted(d for d in graph.get(m, ()) if d not in members | inits):
@@ -3237,7 +3278,7 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
         mods = sorted(by_layer[layer])
         out.append(f"- **{layer}** (зависит от: {deps}; модулей {len(mods)}): " + ", ".join(f"`{m}`" for m in mods))
     envless = env_free_layers(layout)
-    entry = layout["package_entry"]
+    entries = package_entries(layout)
     out += ["", "## Слой окружения и слои без него", "",
             (f"Слой окружения — {runtime_layer(layout) or '—'} (там канон корней `{ENV_ROOT_OWNER}`). "
              f"Модуль слоя без окружения не импортирует его и не касается окружения ни одной формой "
@@ -3245,8 +3286,9 @@ def render_map(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: d
              + ", ".join(s.name for s in ROOT_SHAPES if s.scope == "layer") + "."), ""]
     for layer, recipe in envless.items():
         out.append(f"- **{layer}**: {recipe}")
-    closure = sorted(package_closure(graph, entry))
-    out += ["", f"## Пакет поиска по графу — замыкание входа `{entry}`", "",
+    closure = sorted(package_union(graph, entries))
+    named = ", ".join(f"`{e}`" for e in entries)
+    out += ["", f"## Пакет поиска по графу — замыкание вход{'а' if len(entries) == 1 else 'ов'} {named}", "",
             ("Ставится без приложения: модули ниже и только они; проба — "
              "`tests/test_entry_points_contract.py`."), "",
             f"Модулей {len(closure)}: " + ", ".join(f"`{m}`" for m in closure)]

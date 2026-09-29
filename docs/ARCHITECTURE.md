@@ -1390,7 +1390,7 @@ else is refused; `dossier_dir` and `meeting_dir` are `str | None` (`None`
 `str`, `str | None`, `tuple[str, ...]` is a class error. A separate guard in
 `scripts/layout_map.py` reads the field list from the class annotations and
 the values from that call, looks for copies of those names among the string
-literals of the graph package (`package_entry`'s closure, the same set the
+literals of the graph package (the closure of `package_entries`, the same set the
 package probe copies) and holds each copy as `folder_literals` debt with a
 ticket; `folder_literal_exemptions` forgives one copy with a written reason,
 and both are compared in both directions like every other entry. Since

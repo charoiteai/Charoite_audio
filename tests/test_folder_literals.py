@@ -47,7 +47,7 @@ def _layout(**over) -> dict:
             "generated": "2026-09-19T00:00Z", "run_contracts": {},
             "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
             "folder_literals": [], "folder_literal_exemptions": {},
-            "package": "pkg", "package_entry": "pkg.entry"}
+            "package": "pkg", "package_entries": {"pkg.entry": "вход"}}
     base.update(over)
     return base
 
@@ -72,7 +72,7 @@ def _literal_area(tmp_path, body: str, values: dict | None = None, entry: str = 
     (src / "pkg" / "entry.py").write_text(body, encoding="utf-8")
     (src / "schema.py").write_text(_schema_source(), encoding="utf-8")
     (src / "schema_values.py").write_text(_values_source(values), encoding="utf-8")
-    layout = _layout(package="pkg", package_entry=entry)
+    layout = _layout(package="pkg", package_entries={entry: "вход"})
     return lm.inventory(tmp_path), layout
 
 
@@ -317,7 +317,7 @@ def test_an_empty_literal_area_is_a_refusal(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "schema.py").write_text(_schema_source(), encoding="utf-8")
     (tmp_path / "src" / "schema_values.py").write_text(_values_source(), encoding="utf-8")
-    layout = _layout(package="pkg", package_entry="pkg.entry")
+    layout = _layout(package="pkg", package_entries={"pkg.entry": "вход"})
     with pytest.raises(lm.LayoutError, match="область сторожа литералов пуста"):
         lm.literals_measure(lm.inventory(tmp_path), layout)
 
@@ -422,7 +422,7 @@ def test_the_literal_guard_is_asked_by_the_main_path(tmp_path, monkeypatch, caps
         "brief_layers": {"base": ["pkg", "pkg.entry", "schema", "schema_values"]},
         "layer_overrides": {}, "allowed_edges": [], "manual_entry_points": {},
         "root_exemptions": {"scripts/layout_map.py": {"file": "пробное дерево: строка считает корень репозитория"}},
-        "run_contracts": {}, "package": "pkg", "package_entry": "pkg.entry",
+        "run_contracts": {}, "package": "pkg", "package_entries": {"pkg.entry": "вход"},
         "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
         "folder_literals": [], "folder_literal_exemptions": {},
     }

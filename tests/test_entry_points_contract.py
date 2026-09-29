@@ -214,7 +214,7 @@ def test_the_plan_lists_only_executables_with_a_contract() -> None:
 # ---------------------------------------------------------------- проба пакета графа
 #
 # Пакет поиска по графу ставится без приложения (№365): его модули — замыкание
-# одного объявленного входа (`package_entry` в артефакте), план даёт
+# объявленных входов (`package_entries` в артефакте), план даёт
 # `layout_map.package_files`, а не список здесь. Статический гейт окружения по
 # слою видит формы в тексте; проба — поведение: отдельный процесс, окружение
 # приложения ведёт в ловушку. Положительная проба идёт по СОБРАННОМУ колесу
@@ -465,7 +465,7 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     problems = [f"пакет импортировал {m}: зависимость приложения протекла в пакет" for m in sorted(loaded & set(app_deps))]
     # сосед по продукту — другой диагноз: замыкание входа расширилось, и публичной
     # поверхностью молча стал лишний модуль (Minor DeepSeek по PR №625)
-    problems += [f"модуль {m} вне замыкания package_entry загрузился в пакет" for m in sorted(loaded & set(outside))]
+    problems += [f"модуль {m} вне замыкания входов пакета загрузился в пакет" for m in sorted(loaded & set(outside))]
     # код продукта из репозитория, а не всё под корнем: у сопровождающего `.venv/`
     # лежит в репозитории, и yaml оттуда — законная зависимость пакета
     product = [(ROOT / d).resolve() for d in (lm.FLAT_DIR, "scripts")]
@@ -903,7 +903,7 @@ def _copy_package(dest: pathlib.Path) -> None:
 
 @pytest.mark.xdist_group("wheel")
 def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_path: pathlib.Path) -> None:
-    """Пакет поиска — это замыкание `package_entry` и ничего больше, и едет он в
+    """Пакет поиска — это замыкание его входов (`package_entries`) и ничего больше, и едет он в
     колесе ровно этими модулями: распакованный артефакт отдельно от репозитория
     строит индекс по демо-графу, пишет кэш векторов и читает его обратно, находит
     узел — не прочитав ни одной переменной приложения (HOME, корень, каталог
@@ -922,8 +922,9 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_pa
     modules = {lm.module_of(rel) for rel in plan}
     # импортировано обязано быть замыкание входа; план шире на `__init__` подпакетов,
     # которых вход может не звать (выходной круг 2 по #650, DS M6)
-    closure = lm.package_closure(lm.import_graph(INV), layout["package_entry"])
-    assert layout["package_entry"] in closure and closure <= modules
+    entries = lm.package_entries(layout)
+    closure = lm.package_union(lm.import_graph(INV), entries)
+    assert set(entries) <= closure and closure <= modules
     others = tuple(sorted(lm.modules(INV) - modules))
     problems, out = run_package_probe(pkg, graph, "платёжный шлюз", tmp_path / "work", outside=others)
     # раннер мерил ровно `__init__` плана — список из распакованного артефакта сходится
@@ -1491,7 +1492,7 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     assert probe("протечка", "import лишний_модуль") == [
         "пакет импортировал лишний_модуль: зависимость приложения протекла в пакет"]
     assert probe("сосед", "import соседний_модуль") == [
-        "модуль соседний_модуль вне замыкания package_entry загрузился в пакет"]
+        "модуль соседний_модуль вне замыкания входов пакета загрузился в пакет"]
     got = probe("мимо копии", f"import sys; sys.path.append({str(ROOT / 'src')!r}); import task_line")
     assert f"пакет загрузил {(ROOT / 'src' / 'task_line.py').resolve()} мимо своей копии" in got
     # правка пути импорта в написании, которого грамматика гейта не знает
