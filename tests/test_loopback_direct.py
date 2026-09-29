@@ -520,6 +520,8 @@ EVIL = "http://evil.example\\@127.0.0.1:11434"
 @pytest.mark.parametrize("url", [
     EVIL, "http://evil.example\\@[::1]:11434", "http://user@127.0.0.1:11434",
     "http://127.0.0.1 .evil.example:11434", "http://127.0.0.1\t:11434",
+    "http://[::1%5D.evil.example]:11434", "http://[::1%25lo0]:11434", "http://127.0.0.1%2e.evil.example:11434",
+    "http://127.0.0.1:11434x", "http://127。0。0。1:11434", "http://127.0.0.1\x00:11434", "http://[::1]x:11434",
 ])
 def test_an_ambiguous_authority_is_neither_loopback_nor_allowed(url):
     from charoite_graph import net
@@ -542,3 +544,49 @@ def test_open_url_does_not_take_the_direct_opener_for_an_ambiguous_address(monke
     monkeypatch.setattr(net.urllib.request, "urlopen", lambda r, timeout: seen.append("urlopen") or "x")
     monkeypatch.setattr(net, "_direct_opener", lambda: seen.append("direct") or pytest.fail("прямой opener"))
     assert net.open_url(EVIL + "/x", timeout=1) == "x" and seen == ["urlopen"]
+
+
+@pytest.mark.parametrize("url,host", [
+    ("http://127.0.0.1:11434/api/chat", "127.0.0.1"), ("http://LocalHost:11434", "localhost"),
+    ("http://[::1]:8100/x", "::1"), ("https://gpu.remote.example/v1", "gpu.remote.example"),
+    ("http://localhost./x", "localhost."), ("http://127.0.0.1/\\@evil", "127.0.0.1"),
+    ("http://127.0.0.1:11434/a?b=c@d#e", "127.0.0.1"),
+])
+def test_the_strict_parse_keeps_the_regular_addresses(url, host):
+    from charoite_graph import net
+    assert net.url_host(url) == host
+
+
+def test_a_broken_bracket_is_a_refusal_not_a_bare_valueerror():
+    for url in ("http://[::1", "http://evil[::1]:80"):
+        with pytest.raises(privacy.PrivacyRefused):
+            privacy.llm_base_url({"llm": {"base_url": url}}, env={})
+        from charoite_graph import net
+        assert net.loopback_url(url) is False
+
+
+_CORPUS = [
+    "http://127.0.0.1:11434/x", "http://[::1]:8100", "http://localhost.:1", "http://LOCALHOST", "https://gpu.remote.example/v1",
+    "http://evil.example\\@127.0.0.1:11434", "http://[::1%5D.evil.example]:11434", "http://[::1%25lo0]:1",
+    "http://user@127.0.0.1", "http://127.0.0.1%2e.evil.example", "http://127.0.0.1:99999999", "http://127.0.0.1:1x",
+    "http://127.0.0.1\t:1", "http://[::1", "http://127。0。0。1", "http://a b/", "http://127.0.0.1/\\@evil",
+]
+
+
+@pytest.mark.parametrize("url", _CORPUS)
+def test_the_gate_host_equals_the_host_every_transport_connects_to(url):
+    """Свойство, а не написание: гейт отказывает либо называет тот же хост, что выберут urllib.request и urllib3."""
+    import http.client
+    import urllib3.util
+    from urllib.request import Request
+    from charoite_graph import net
+    try:
+        host = net.url_host(url)
+    except (net.AmbiguousAddress, ValueError):
+        return
+    if host is None:
+        return
+    req = Request(url)
+    stdlib_host, _ = http.client.HTTPConnection(req.host)._get_hostport(req.host, None)
+    assert stdlib_host.strip("[]").lower() == host.strip("[]").lower(), url
+    assert (urllib3.util.parse_url(url).host or "").strip("[]").lower() == host.strip("[]").lower(), url

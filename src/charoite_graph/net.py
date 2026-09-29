@@ -34,27 +34,35 @@ class AmbiguousAddress(ValueError):
     """Адрес, который разные разборщики читают по-разному (`\\`, userinfo, пробелы в authority)."""
 
 
+#: Authority по белой грамматике: имя из букв (в том числе не латинских: IDN), цифр, точки, дефиса и `_` либо IPv6 в скобках
+#: без zone id, порт цифрами. Всё остальное (`\\`, `@`, `%`, пробелы, юникод) разные разборщики читают
+#: по-разному: urlsplit, `unquote` в urllib.request, http.client и urllib3 (№525, I3 и C1 круга 2).
+_AUTHORITY = re.compile(r"(?:(?P<name>[\w.-]+)|\[(?P<v6>[0-9A-Fa-f:.]+)\])(?::[0-9]{0,5})?\Z")
+
+
 def url_host(url: str) -> str | None:
     """Хост адреса — единственный разбор для гейта приватности и выбора транспорта.
 
-    `urlsplit` не считает `\\` концом authority и берёт хост после последнего `@`, а
-    urllib3 обрывает authority на `\\`: `http://evil.example\\@127.0.0.1:11434` для
-    первого — 127.0.0.1, для второго — evil.example. Такой адрес — отказ, а не свой и
-    не чужой (финальный Opus по №525, I3).
+    Authority берётся из сырой строки до первого `/`, `?` или `#` и обязана лечь в белую
+    грамматику, иначе `AmbiguousAddress`: `http://evil.example\\@127.0.0.1:11434` для urlsplit —
+    127.0.0.1, для urllib3 — evil.example, а `http://[::1%5D.evil.example]:1` после `unquote`
+    в urllib.request — имя в зоне evil.example. Адрес без authority — `None`.
     """
-    # urlsplit молча выкидывает \t \r \n из адреса, а другой разбор их не выкинет: смотрим сырую строку
     m = re.match(r"[^/?#]*://([^/?#]*)", url)
-    netloc = m.group(1) if m else urllib.parse.urlsplit(url).netloc
-    if "\\" in netloc or "@" in netloc or any(c.isspace() or ord(c) < 32 for c in netloc):
-        raise AmbiguousAddress(f"адрес {url!r}: authority неоднозначна (обратная косая, userinfo или пробел)")
-    return urllib.parse.urlsplit(url).hostname
+    authority = m.group(1) if m else urllib.parse.urlsplit(url).netloc
+    if not authority:
+        return None
+    g = _AUTHORITY.match(authority)
+    if g is None:
+        raise AmbiguousAddress(f"адрес {url!r}: authority вне белой грамматики (имя или IPv6 в скобках, порт цифрами)")
+    return (g.group("name") or g.group("v6")).lower()
 
 
 def loopback_url(url: str) -> bool:
     """Указывает ли адрес на эту машину; неоднозначный адрес — нет."""
     try:
         return is_loopback_host(url_host(url))
-    except AmbiguousAddress:
+    except (AmbiguousAddress, ValueError):
         return False
 
 
