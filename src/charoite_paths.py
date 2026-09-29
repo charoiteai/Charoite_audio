@@ -39,6 +39,7 @@ import hashlib
 import os
 import pathlib
 import threading
+import typing
 
 
 #: Корень данных, НАЗВАННЫЙ точкой входа. Пока не назван — выводится, как
@@ -498,6 +499,113 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     digest = hashlib.sha256(str(g).encode("utf-8")).hexdigest()[:8]
     base = (root or resolve_root(__file__)) / BACKUPS_DIR / f"{g.name}-{digest}"
     return base / kind
+
+
+#: Каталог журналов внутри корня данных.
+LOGS_DIR = "logs"
+
+
+class LogKind(typing.NamedTuple):
+    """Вид файла в `logs/`: как его называют писатели и как с ним обходятся читатели.
+
+    `stem` — префикс имени (`graph_` → `graph_<часть><суффикс>`) или, при `whole`, имя
+    целиком без суффикса (`graph_unlinked` → `graph_unlinked.log`). `role`: `meeting` —
+    файл одной встречи, «Забыть» стирает его по штампу правила `rule`; `shared` — общий
+    файл, «Забыть» его не трогает; `lock` — замок, его не трогает и ретеншн. `sweep`:
+    ретеншн стирает по сроку записей (`record_keep_days`); `any_suffix` — глоб ретеншна
+    без суффикса (журнал тени и stderr её ребёнка — один вид, №478 A2)."""
+    stem: str
+    role: str
+    rule: str | None
+    suffixes: tuple[str, ...]
+    sweep: bool
+    whole: bool = False
+    any_suffix: bool = False
+
+
+#: Правила штампа журнала встречи — каким штампом писатель называет файл, а «Забыть»
+#: его ищет: `minute` — `stem[:15]` (финал демона и приложение, журнал общий у двух
+#: встреч минуты); `stem` — полный стем файла встречи; `graph_key` — ключ графа встречи
+#: (`meeting_stamp.graph_key`), его писатель передаёт готовым.
+LOG_STAMP_RULES = ("minute", "stem", "graph_key")
+
+#: Реестр имён `logs/` (№514). Пока виды жили у писателей, ретеншна и «Забыть» тремя
+#: копиями, каждый новый журнал (`recover_` №495, `nemotron_live_` №478) правил все три,
+#: и копии расходились: «Забыть» искало журналы повтора минутой, а писатель называл их
+#: полным стемом (круг 1 по №514, C1). Имя файла — только `meeting_log` / `log_path`.
+LOG_KINDS: dict[str, LogKind] = {
+    "graph": LogKind("graph_", "meeting", "minute", (".log",), sweep=True),
+    "cloud_review": LogKind("cloud_review_", "meeting", "graph_key", (".log",), sweep=True),
+    "retry": LogKind("retry_", "meeting", "stem", (".log",), sweep=True),
+    "recover": LogKind("recover_", "meeting", "stem", (".log",), sweep=True),
+    "nemotron_live": LogKind("nemotron_live_", "meeting", "stem", (".jsonl", ".err"), sweep=True,
+                             any_suffix=True),
+    # общий журнал графовых решений: строки несут ссылку на встречу, построчная
+    # вычистка при «Забыть» — №527; ротация в .old — одно поколение. `.log` покрывает
+    # и глоб вида `graph` (`graph_*.log`): политика срока у них одна, и так обязано
+    # остаться (тест пересечения глобов)
+    "graph_unlinked": LogKind("graph_unlinked", "shared", None, (".log", ".old"), sweep=True,
+                              whole=True),
+    # вывод уборки папки импорта: имя — папка владельца
+    "import_prune": LogKind("import_prune-", "shared", None, (".log",), sweep=True),
+    # отметка «пересборка идёт» под flock: unlink по имени снял бы замок прогона,
+    # стартовавшего следом (mark_running); подметание под замком — №528
+    "rebuild_pid": LogKind("rebuild-", "lock", None, (".pid",), sweep=False),
+}
+
+
+def _log_kind(kind: str, suffix: str | None) -> tuple[LogKind, str]:
+    if kind not in LOG_KINDS:
+        raise ValueError(f"вид журнала {kind!r} не в LOG_KINDS — впишите его, иначе ретеншн "
+                         "и «забыть встречу» его не увидят")
+    entry = LOG_KINDS[kind]
+    suffix = entry.suffixes[0] if suffix is None else suffix
+    if suffix not in entry.suffixes:
+        raise ValueError(f"у журнала {kind!r} нет суффикса {suffix!r} (есть {entry.suffixes})")
+    return entry, suffix
+
+
+def meeting_log(root: pathlib.Path, kind: str, *, stem: str | None = None,
+                key: str | None = None, suffix: str | None = None) -> pathlib.Path:
+    """Имя журнала встречи в `logs/` — единственный способ его назвать.
+
+    Правило `minute` и `stem` получают стем файла встречи (`stem`), `graph_key` —
+    готовый ключ графа (`key`). Только называет: каталог не создаёт, файл не открывает."""
+    entry, suffix = _log_kind(kind, suffix)
+    if entry.role != "meeting":
+        raise ValueError(f"журнал {kind!r} — не журнал встречи ({entry.role}): его называет log_path")
+    if entry.rule == "graph_key":
+        if key is None or stem is not None:
+            raise ValueError(f"журнал {kind!r} называется ключом графа: key=, без stem=")
+        part = key
+    else:
+        if stem is None or key is not None:
+            raise ValueError(f"журнал {kind!r} называется стемом встречи: stem=, без key=")
+        part = stem[:15] if entry.rule == "minute" else stem
+    return pathlib.Path(root) / LOGS_DIR / f"{entry.stem}{part}{suffix}"
+
+
+def log_path(root: pathlib.Path, kind: str, part: str | None = None,
+             suffix: str | None = None) -> pathlib.Path:
+    """Имя общего журнала или замка в `logs/`: `whole` — без части, иначе префикс + часть."""
+    entry, suffix = _log_kind(kind, suffix)
+    if entry.role == "meeting":
+        raise ValueError(f"журнал {kind!r} — журнал встречи: его называет meeting_log")
+    if entry.whole != (part is None):
+        raise ValueError(f"журнал {kind!r}: " + ("имя целиком, part не нужен" if entry.whole
+                                                 else "нужна часть имени part="))
+    return pathlib.Path(root) / LOGS_DIR / f"{entry.stem}{part or ''}{suffix}"
+
+
+def sweep_globs(entry: LogKind) -> tuple[str, ...]:
+    """Глобы ретеншна вида: пусто — ретеншн вид не трогает."""
+    if not entry.sweep:
+        return ()
+    if entry.whole:
+        return tuple(entry.stem + s for s in entry.suffixes)
+    if entry.any_suffix:
+        return (entry.stem + "*",)
+    return tuple(f"{entry.stem}*{s}" for s in entry.suffixes)
 
 
 def harden_existing(root: pathlib.Path | None = None) -> int:

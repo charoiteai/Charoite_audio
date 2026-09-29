@@ -53,6 +53,7 @@ import time
 import typing
 
 import audio
+import charoite_paths
 import diarize_nemotron
 import foreign_python
 import threads
@@ -665,15 +666,14 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
     if refusal:
         say(f"поток Nemotron выключен: {refusal}")
         return NO_SHADOW
-    logs = root / "logs"
+    journal = charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
     try:
-        shadow = Shadow(journal=logs / f"nemotron_live_{stamp}.jsonl", sr=sr, stamp=stamp, say=say,
-                    memory=memory)
+        shadow = Shadow(journal=journal, sr=sr, stamp=stamp, say=say, memory=memory)
     except OSError as e:
         say(f"поток Nemotron выключен: журнал не открылся ({e})")
         return NO_SHADOW
     shadow.begin(python=python, script=diarize_nemotron.SCRIPT,
                  args=["--stream", "--model", str(diarize_nemotron.model_dir(root)), "--preset", PRESET],
-                 errlog=logs / f"nemotron_live_{stamp}.err")
-    say(f"поток Nemotron: тень включена, журнал nemotron_live_{stamp}.jsonl")
+                 errlog=charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".err"))
+    say(f"поток Nemotron: тень включена, журнал {journal.name}")
     return shadow

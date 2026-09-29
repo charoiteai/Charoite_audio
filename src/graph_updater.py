@@ -34,7 +34,7 @@ import llm  # noqa: E402
 import nli  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
-from charoite_paths import code_root, harden_umask, resolve_root
+from charoite_paths import code_root, harden_umask, log_path, meeting_log, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
 from charoite_graph import frontmatter
@@ -1489,7 +1489,7 @@ def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
     DS r3 I1, GLM r3 критика 2) и, с №194, вытеснение и пересказ описания
     узла. Сбой журнала запись в граф не останавливает."""
     try:
-        log = _root() / "logs" / "graph_unlinked.log"
+        log = log_path(_root(), "graph_unlinked")
         log.parent.mkdir(parents=True, exist_ok=True)
         import datetime as _dt
         with log.open("a", encoding="utf-8") as fh:
@@ -3058,7 +3058,7 @@ def main():
             # только решение «запускать разбор» и имена файлов
             slug3 = theme_slug(title) if title else ""
             rev = tpath.with_name(f"{stamp}_{slug3}_ревизия_claude.md" if slug3 else f"{stamp}_ревизия_claude.md")
-            log = _root() / "logs" / f"cloud_review_{stamp}.log"
+            log = meeting_log(_root(), "cloud_review", key=stamp)
             log.parent.mkdir(exist_ok=True)
             # Повтор обработки — не повод гонять облако второй раз: если
             # ревизия уже есть и она моложе стенограммы, оставляем её

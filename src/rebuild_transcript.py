@@ -34,7 +34,7 @@ import time
 import typing
 import wave
 
-from charoite_paths import code_root, harden_umask, resolve_root
+from charoite_paths import code_root, harden_umask, log_path, meeting_log, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -1557,9 +1557,10 @@ def _spawn_retry(target: pathlib.Path) -> None:
     # по полному имени файла, не по 15 знакам: две встречи одной минуты
     # (и две минутные встречи прежних версий) писали в один лог, и второй
     # спавн усекал лог первого (аудит 30.08, GLM; DS r1)
-    name = f"retry_{target.stem}.log"
+    journal = meeting_log(_root(), "retry", stem=target.stem)
+    name = journal.name
     try:
-        out = open(_root() / "logs" / name, "w")
+        out = open(journal, "w")
     except OSError as e:
         # журнал — не повод не повторять: без него повтор идёт молча (№514)
         log(f"журнал повтора {name} не открылся ({type(e).__name__}: {e}) — повтор без журнала")
@@ -1575,7 +1576,7 @@ def _spawn_retry(target: pathlib.Path) -> None:
 
 
 def _pid_file(stamp: str) -> pathlib.Path:
-    return _root() / "logs" / f"rebuild-{stamp}.pid"
+    return log_path(_root(), "rebuild_pid", stamp)
 
 
 _RUNNING_LOCKS: list = []   # открытые pid-файлы под flock (иначе GC закроет и снимет замок)
