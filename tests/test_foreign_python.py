@@ -283,13 +283,14 @@ def _run(argv: list[str], env: dict[str, str]) -> str:
     return p.stdout + p.stderr
 
 
-def _person(tmp_path: pathlib.Path, proxy: int) -> tuple[dict[str, str], dict[str, int], pathlib.Path]:
-    """(окружение человека со всеми подменами, порт каждой подмены индекса, файл-маркер PIP_PYTHON)."""
+def _person(tmp_path: pathlib.Path, proxy: int,
+            stack: contextlib.ExitStack) -> tuple[dict[str, str], dict[str, int], pathlib.Path]:
+    """(окружение человека со всеми подменами, порт каждой подмены индекса, файл-маркер PIP_PYTHON).
+    Порты подмен держит `stack` вызывающего — до конца теста их не займёт соседний воркер."""
     home = tmp_path / "home"
     (home / "xdg").mkdir(parents=True)
     (tmp_path / "tmp").mkdir()
-    with contextlib.ExitStack() as ports_stack:
-        ports = {name: _closed_port(ports_stack) for name in ("PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf")}
+    ports = {name: _closed_port(stack) for name in ("PIP_INDEX_URL", "PIP_CONFIG_FILE", "pip.conf")}
     env = {"PATH": os.environ["PATH"], "HOME": str(home), "XDG_CONFIG_HOME": str(home / "xdg"),
            "TMPDIR": str(tmp_path / "tmp"), "LC_ALL": "C.UTF-8"}
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
@@ -318,7 +319,7 @@ def _person(tmp_path: pathlib.Path, proxy: int) -> tuple[dict[str, str], dict[st
 def test_todays_recipe_takes_each_foreign_setting(tmp_path, source):
     """Стенд: `-I` — изоляция Python, pip она не касается; каждая подмена доходит."""
     with contextlib.ExitStack() as stack:
-        env, ports, marker = _person(tmp_path, _closed_port(stack))
+        env, ports, marker = _person(tmp_path, _closed_port(stack), stack)
         if source != "PIP_PYTHON":
             env.pop("PIP_PYTHON")
         if source == "PIP_INDEX_URL":
@@ -339,7 +340,7 @@ def test_the_pip_door_takes_no_setting_of_the_person(tmp_path):
     CONNECT на pypi.org: без него пустой вывод упавшего раньше pip прошёл бы как «чисто»."""
     with contextlib.ExitStack() as stack:
         proxy, seen = _recording_proxy(stack)
-        env, ports, marker = _person(tmp_path, proxy)
+        env, ports, marker = _person(tmp_path, proxy, stack)
         env["PIP_INDEX_URL"] = f"http://127.0.0.1:{ports['PIP_INDEX_URL']}/simple"
         env["PIP_CONFIG_FILE"] = str(tmp_path / "chosen.conf")
         p = fp.run_pip(sys.executable, *_PIP_TAIL, base=env, capture_output=True, text=True, timeout=120,
@@ -374,7 +375,7 @@ def test_the_pip_door_sends_no_netrc_credentials(tmp_path):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with contextlib.ExitStack() as stack:
-            env, _, _ = _person(tmp_path, _closed_port(stack))
+            env, _, _ = _person(tmp_path, _closed_port(stack), stack)
         for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "PIP_PYTHON"):
             env.pop(name)
         tail = (*_PIP_TAIL, "--index-url", f"http://127.0.0.1:{srv.server_address[1]}/simple")  # после подкоманды
@@ -396,3 +397,43 @@ def test_the_door_decides_the_environment_alone():
     assert env["HOME"] == "/h" and "VIRTUAL_ENV" not in env
     assert not {k for k in env if k.upper().startswith("PIP_") and k not in fp.PIP_ISOLATION}
     assert {k: env[k] for k in fp.PIP_ISOLATION} == fp.PIP_ISOLATION
+
+
+@pytest.mark.сеть_разрешена
+def test_the_pip_door_asks_no_keyring_of_the_person(tmp_path):
+    """На 401 pip без флагов двери зовёт `keyring` из PATH человека — второе хранилище его учётных
+    данных. Стенд: голый pip под `--isolated` его зовёт; дверь — нет, и отказывает без трейсбека."""
+    class Locked(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="index"')
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    try:
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Locked)
+    except PermissionError:            # песочница без права слушать сокет
+        pytest.skip("loopback недоступен: сокет слушать нечем")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    marker = tmp_path / "keyring_ran"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "keyring").write_text(f'#!/bin/sh\necho "$@" >> "{marker}"\nexit 1\n', encoding="utf-8")
+    (bin_dir / "keyring").chmod(0o755)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
+           "TMPDIR": str(tmp_path), "LC_ALL": "C.UTF-8"}
+    tail = (*_PIP_TAIL, "--index-url", f"http://127.0.0.1:{srv.server_address[1]}/simple")
+    try:
+        _run([sys.executable, "-I", "-m", "pip", "--isolated", "--keyring-provider", "subprocess", *tail],
+             fp.clean_env(env))
+        assert marker.exists(), "стенд: pip не позвал keyring человека — тест пустой"
+        marker.unlink()
+        p = fp.run_pip(sys.executable, *tail, base=env, capture_output=True, text=True, timeout=120,
+                       stdin=subprocess.DEVNULL)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert not marker.exists(), "дверь позвала keyring человека"
+    assert "Traceback" not in p.stdout + p.stderr, (p.stdout + p.stderr)[-2000:]

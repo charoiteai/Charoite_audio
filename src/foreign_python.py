@@ -102,9 +102,9 @@ def clean_env(base: typing.Mapping[str, str]) -> dict[str, str]:
 #: `PIP_PYTHON` человека перезапускал pip его интерпретатором, — поэтому все
 #: переменные `PIP_*` снимаются по префиксу. Файл из `PIP_CONFIG_FILE`, глобальный
 #: и `sys.prefix/pip.conf` гасит пустой файл настроек. `~/.netrc` pip читает и под
-#: `--isolated`: запись `default` уходила заголовком Authorization на индекс.
-#: Прокси и сертификаты системы и окружения остаются — адрес назначения они не
-#: меняют.
+#: `--isolated`: запись `default` уходила заголовком Authorization на индекс; keyring
+#: человека гасит `--no-input` двери. Прокси и сертификаты системы и окружения
+#: остаются — адрес назначения они не меняют.
 PIP_ISOLATION: dict[str, str] = {
     "PIP_CONFIG_FILE": os.devnull,
     "NETRC": os.devnull,
@@ -126,7 +126,10 @@ def run_pip(python: str | os.PathLike, *args: str, base: typing.Mapping[str, str
     может взять одно без другого. `env` передать нельзя — дверь уже передаёт своё, и
     Python откажет дублем аргумента; остальное (`stdin`, `capture_output`, `timeout`…)
     уходит в `subprocess.run`."""
-    argv = [os.fspath(python), "-I", "-m", "pip", "--isolated", *args]
+    # --no-input: на 401 pip иначе зовёт `keyring` из PATH человека (второе хранилище его учётных
+    # данных рядом с ~/.netrc; провайдер keyring по умолчанию работает, только пока ввод разрешён)
+    # и ждёт ввода с закрытого stdin (финальный круг №484, Opus M1; сторожит тест с 401)
+    argv = [os.fspath(python), "-I", "-m", "pip", "--isolated", "--no-input", *args]
     return subprocess.run(argv, env=pip_env(base), **run_kw)
 
 
