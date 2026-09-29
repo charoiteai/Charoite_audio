@@ -927,28 +927,126 @@ def test_исход_main_отдаёт_verdict_code():
         "исход прогона считает verdict_code — одна точка, а не константа по месту")
 
 
-def test_мутатор_из_чужого_клона_берёт_канон_своего_дерева(tmp_path):
-    """Мутатор одного клона, запущенный из каталога другого, собирает процесс из
-    своего дерева: канон и сигналы занятости берутся рядом со скриптом. Вторая
-    вставка `src/` git-корня текущего каталога брала канон чужого клона, и
-    сверка корня кода роняла мутатор трассировкой (круг 1 по коду №331, Opus M2).
-    Без `CHAROITE_ROOT` — ровно тот путь, где канон спрашивают о корне кода."""
-    import exit_codes
+def _чужой_клон(tmp_path) -> pathlib.Path:
+    """Git-клон с одним `src/` — каталог, из которого запускают мутатор другого
+    дерева. Клон целиком, а не один канон: сигналы занятости сами кладут свой
+    каталог первым в sys.path, и с одним каноном в чужом `src/` дефект круга 1
+    по коду №331 не воспроизводился."""
     чужой = tmp_path / "другой-клон"
-    # клон целиком, а не один канон: сигналы занятости сами кладут свой каталог
-    # первым в sys.path, и с одним каноном в чужом `src/` дефект не воспроизводился
     shutil.copytree(REPO / "src", чужой / "src", ignore=shutil.ignore_patterns("__pycache__"))
     (чужой / "scripts").mkdir()
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
     subprocess.run(["git", "init", "-q"], cwd=чужой, check=True)
     subprocess.run([*git, "add", "-A"], cwd=чужой, check=True)
     subprocess.run([*git, "commit", "-qm", "проба"], cwd=чужой, check=True)
+    return чужой
+
+
+def _мутатор(cwd: pathlib.Path, корень: str | None, *флаги: str) -> subprocess.CompletedProcess:
+    """Мутатор ЭТОГО дерева отдельным процессом; `корень=None` — переменной нет
+    вовсе, иначе `CHAROITE_ROOT` ровно такой, как дан (пустая строка — тоже)."""
     env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
-    out = subprocess.run([sys.executable, str(REPO / "scripts" / "mutate_check.py"),
-                          "--range", "HEAD...HEAD", "--force"],
-                         cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
+    if корень is not None:
+        env["CHAROITE_ROOT"] = корень
+    return subprocess.run([sys.executable, str(REPO / "scripts" / "mutate_check.py"),
+                           "--range", "HEAD...HEAD", "--force", *флаги],
+                          cwd=cwd, env=env, capture_output=True, text=True, timeout=120, check=False)
+
+
+@pytest.mark.parametrize("корень", [None, "", "   "], ids=["нет переменной", "пустая", "пробелы"])
+def test_мутатор_без_названного_корня_отказывает_дверью_канона(tmp_path, корень):
+    """Корень данных мутатор НАЗЫВАЕТ (№440): без `CHAROITE_ROOT` — отказ двери
+    канона её кодом и рецептом, до диапазона, плана и лока. Угадывание корня
+    (`resolve_root`) из рабочего дерева отвечало самим деревом: гвард «идёт
+    встреча» смотрел мимо лока демона владельца, а лок мутатора ложился не туда,
+    где его ждёт ночь. Запуск из чужого клона — ровно тот путь, где догадка
+    отвечала бы корнем кода."""
+    import exit_codes
+    чужой = _чужой_клон(tmp_path)
+    out = _мутатор(чужой, корень)
+    assert "Traceback" not in out.stderr, out.stderr[-800:]
+    assert out.returncode == exit_codes.EXIT_ROOT_UNNAMED, (out.returncode, out.stdout[-400:],
+                                                           out.stderr[-400:])
+    assert "CHAROITE_ROOT=" in out.stderr, out.stderr[-400:]
+    # ни диапазона, ни плана: отказ — первым делом после разбора аргументов
+    assert "диапазон:" not in out.stdout and "Мутантов" not in out.stdout, out.stdout[-400:]
+    # и ни одного лока ни в каталоге запуска, ни рядом со скриптом
+    assert not list(tmp_path.rglob("mutation.lock")), list(tmp_path.rglob("mutation.lock"))
+
+
+def test_мутатор_из_чужого_клона_с_корнем_строит_план(tmp_path):
+    """Названный корень — и мутатор одного клона, запущенный из каталога
+    другого, собирает процесс из своего дерева: канон и сигналы занятости
+    берутся рядом со скриптом. Вторая вставка `src/` git-корня текущего
+    каталога брала канон чужого клона, и сверка корня кода роняла мутатор
+    трассировкой (круг 1 по коду №331, Opus M2). Шапка прогона печатает
+    названный корень."""
+    import exit_codes
+    чужой = _чужой_клон(tmp_path)
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    out = _мутатор(чужой, str(данные))
     assert "Traceback" not in out.stderr, out.stderr[-800:]
     assert out.returncode == exit_codes.EXIT_NOTHING_TO_CHECK, (out.returncode, out.stdout[-400:])
+    assert f"корень данных: {данные.resolve()}" in out.stdout, out.stdout[-400:]
+
+
+def test_лок_демона_в_названном_корне_останавливает_мутатор(tmp_path):
+    """Сигналы занятости читаются по НАЗВАННОМУ корню: лок демона встречи в нём
+    — отказ кодом «занято», а тот же лок в каталоге запуска мутатор не судит
+    (корень не угадывается из дерева)."""
+    import fcntl
+    import live_gate
+    чужой = _чужой_клон(tmp_path)
+    данные = tmp_path / "данные"
+    for корень in (данные, чужой):
+        live_gate.lock_path(корень).parent.mkdir(parents=True, exist_ok=True)
+    with live_gate.lock_path(данные).open("w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+        env["CHAROITE_ROOT"] = str(данные)
+        out = subprocess.run([sys.executable, str(REPO / "scripts" / "mutate_check.py"),
+                              "--range", "HEAD...HEAD"],
+                             cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert out.returncode == 3, (out.returncode, out.stdout[-400:], out.stderr[-400:])
+    assert "машина занята (живая запись)" in out.stdout, out.stdout[-400:]
+    # тот же лок демона в каталоге запуска, а корень назван другой — не помеха
+    with live_gate.lock_path(чужой).open("w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env["CHAROITE_ROOT"] = str(tmp_path / "другие-данные")
+        out = subprocess.run([sys.executable, str(REPO / "scripts" / "mutate_check.py"),
+                              "--range", "HEAD...HEAD"],
+                             cwd=чужой, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert "машина занята" not in out.stdout, out.stdout[-400:]
+
+
+@pytest.mark.корень_называет_тест
+def test_лок_мутатора_и_гвард_берут_названный_корень(tmp_path, monkeypatch, capsys):
+    """Лок мутации и гвард старта получают корень, названный `CHAROITE_ROOT`, —
+    не дерево запуска и не корень кода: ночь ждёт `logs/mutation.lock` там."""
+    import busy_signals
+    данные = tmp_path / "данные"
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+    гвард, лок = [], []
+    monkeypatch.setattr(busy_signals, "machine_busy",
+                        lambda root, **kw: гвард.append(pathlib.Path(root)) or [])
+
+    class Лок:
+        def __init__(self, root):
+            лок.append(pathlib.Path(root))
+
+        def acquire(self):
+            return False                   # отказ замка — прогон кончается сразу, копии нет
+    monkeypatch.setattr(busy_signals, "MutationLock", Лок)
+    mut = object()                         # до мутанта дело не доходит: замок отказал раньше
+    monkeypatch.setattr(mc, "plan_for",
+                        lambda root, rng, shard=None: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
+                                                                            planned=1)))
+    _range_as_given(monkeypatch)
+    assert mc.main(["mutate_check.py", "--range", "HEAD"]) == 3
+    assert гвард == [данные.resolve()] and лок == [данные.resolve()], (гвард, лок)
+    out = capsys.readouterr().out
+    assert f"корень данных: {данные.resolve()}" in out, out
 
 
 # --- Бюджет прогона `--budget-s` (№395) --------------------------------------
@@ -1325,7 +1423,8 @@ def test_без_бюджета_поведение_прежнее(tmp_path, monke
     строка = json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
     assert строка == {"K": 1, "N": 1, "M": 4, "P": 4, "word": "ok"}, строка
     out = capsys.readouterr().out
-    assert "бюджет" not in out
+    # шапка прогона печатает корень данных — это путь tmp_path, а в нём имя теста
+    assert "бюджет" not in out.replace(str(tmp_path), "")
     # счёт мутантов в строках прогона — с единицы и до конца плана
     assert "  [1/4] убит: " in out and "  [4/4] убит: " in out, out
 

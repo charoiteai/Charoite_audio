@@ -40,8 +40,12 @@ review gates, and who answers for what — is documented in
   mock that replaced the very logic under test — no static check will find;
   only a restored defect will.
 - **When in doubt about a test, break the code.**
-  `scripts/mutate_check.py --range main...HEAD` puts defects back into the
-  changed lines and demands that the tests go red. A surviving mutant is a
+  `CHAROITE_ROOT=$PWD scripts/mutate_check.py --range main...HEAD` puts
+  defects back into the changed lines and demands that the tests go red. The
+  mutator names its data root like every other entry point: the meeting lock
+  it yields to and its own `logs/mutation.lock` live there. In a plain clone
+  the clone is the data root; without `CHAROITE_ROOT` it refuses with code 5
+  and the recipe. A surviving mutant is a
   behaviour change nobody noticed: either the test for that place exists but
   holds nothing, or there is no test at all. Only lines from the diff are
   mutated — a whole-file pass means thousands of mutants and hours instead of
