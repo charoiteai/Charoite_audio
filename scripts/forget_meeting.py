@@ -218,6 +218,16 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
 # грамматикой, иначе пятизначное имя извлекалось бы и тут же отбрасывалось (Minor DS, круг 2 по PR #635).
 _STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?(?:-\d+)?)(?![\d-])")
 STATUS_DIR = pathlib.Path("logs") / "meeting-status"
+# Журналы встречи в logs/: префикс → каким штампом его называет писатель и с какими
+# суффиксами (№514).
+#   minute    — `stem[:15]`: daemon.py (graph_) и приложение; журнал общий у двух встреч минуты;
+#   graph_key — meeting_stamp.graph_key: graph_updater.py (cloud_review_);
+#   stem      — полный стем файла встречи: rebuild_transcript.py (retry_), daemon.py (recover_),
+#               live_nemotron.py (nemotron_live_: журнал тени потока и stderr её ребёнка, №478).
+# Таблицу заменит реестр видов журналов в charoite_paths (PR 2 №514).
+MEETING_LOG_RULES = (("graph_", "minute", (".log",)), ("cloud_review_", "graph_key", (".log",)),
+                     ("retry_", "stem", (".log",)), ("recover_", "stem", (".log",)),
+                     ("nemotron_live_", "stem", (".jsonl", ".err")))
 
 
 def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
@@ -244,6 +254,20 @@ def _quarantine_of(name: str, stamp: str) -> bool:
     if rest[:1].isdigit() or not _QUARANTINE_TIME_RE.search(rest):
         return False
     return rest.startswith("-") or rest.startswith("_")
+
+
+def _status_keys(statuses: list[pathlib.Path]) -> list[tuple[pathlib.Path, str]]:
+    """Статус → его `key` (штамп исходного файла стенограммы), одно чтение на план.
+    Нечитаемый или не-словарь — пустой ключ: статус всё равно уходит по имени."""
+    import json
+    out = []
+    for sf in statuses:
+        try:
+            data = json.loads(sf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        out.append((sf, str(data.get("key") or "") if isinstance(data, dict) else ""))
+    return out
 
 
 def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
@@ -828,43 +852,42 @@ def plan(stamp: str, root: pathlib.Path,
             p.check.append(f"файлы с посекундным штампом {s} той же минуты: {why}; "
                            f"забыть отдельно по штампу {s}")
 
-    # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
-    # участников и куски цитат — «забыть» обязано дойти и до них, иначе
-    # содержимое встречи переживает саму встречу (аудит 0.46.0: «забыть»
-    # не доходит до логов).
+    # Журналы встречи: имена участников, куски цитат, тема в именах файлов и
+    # stderr CLI — «забыть» обязано дойти до них, иначе содержимое встречи
+    # переживает саму встречу (аудиты 0.46.0 и 16.08). Каждый вид ищется тем
+    # штампом, которым его называет писатель (MEETING_LOG_RULES): одно правило
+    # на все виды оставляло журналы повтора и восстановления, названные полным
+    # стемом, при минутном ключе приложения (круги 1–3 по №514).
     logs = root / "logs"
-    # Все три класса логов названы МИНУТНЫМ штампом (daemon: `stem[:15]`,
-    # graph_updater: parse_stem, rebuild: `stem[:15]`), а штамп посекундной
-    # встречи без темы — с секундами: по нему логи не находились и переживали
-    # забывание (второе мнение DeepSeek по партии 16.08). Две встречи одной
-    # минуты пишут в один и тот же лог — он общий, и удалить его при
-    # забывании любой из них честнее, чем оставить.
-    log_stamp = stamp[:15]
-    # Вторая встреча той же минуты живёт под посекундным ключом — её
-    # облачный лог и отметка brain названы им; минутный префикс с границей
-    # штампа их не видит (живая проверка 23.08, карточка №39).
-    log_stamps = [log_stamp] + ([stamp] if stamp != log_stamp else [])
-    for ls_ in log_stamps:
-        p.delete += _with_stamp(logs, ls_, prefix="graph_", suffix=".log")
-    # Лог облачной ревизии называется иначе и потому переживал забывание:
-    # внутри — имена файлов встречи (а тема встречи стоит в имени),
-    # счётчики и stderr CLI (аудит 16.08).
-    for ls_ in log_stamps:
-        p.delete += _with_stamp(logs, ls_, prefix="cloud_review_", suffix=".log")
-    # Лог повторной пересборки (retry_<штамп>.log): stdout rebuild_transcript
-    # с маппингом имён участников и темой — третий класс, который ни ретеншн,
-    # ни «забыть» не видели (аудит DeepSeek 16.08).
-    for ls_ in log_stamps:
-        p.delete += _with_stamp(logs, ls_, prefix="retry_", suffix=".log")
-    # Лог восстановления после падения демона (recover_<штамп>.log, №495) — тот
-    # же stdout пересборки: имена, тема и сырой отказ движка с путями машины.
-    for ls_ in log_stamps:
-        p.delete += _with_stamp(logs, ls_, prefix="recover_", suffix=".log")
-    # Журнал тени потока Nemotron (nemotron_live_<штамп>.jsonl, №478) и stderr её
-    # ребёнка (.err) — назван посекундным штампом встречи.
-    for ls_ in log_stamps:
-        for suffix in (".jsonl", ".err"):
-            p.delete += _with_stamp(logs, ls_, prefix="nemotron_live_", suffix=suffix)
+    # Статусы конвейера этой встречи (logs/meeting-status/<живой стем>.json) —
+    # имена, которые встреча носила: файл назван живой стенограммой, `key` —
+    # штампом исходного файла. После краха демона секунды нет в сайдкаре, записи
+    # живут два дня, а журнал восстановления назван этой секундой — без статусов
+    # он переживал «забыть» минутным ключом (выходной круг 1 по №514, I1).
+    statuses = _status_files(root / STATUS_DIR, stamp)
+    status_keys = _status_keys(statuses)
+    worn = [s for sf, key in status_keys
+            for s in (meeting_stamp.stamp_of(sf.stem), meeting_stamp.stamp_of(key)) if s]
+    # Доказанные за встречей штампы: ключ, свои посекундные файлы, точная
+    # секунда владельца минуты из сайдкара — даже когда файлов под ней уже нет
+    # (ретеншн записей), а журнал повтора назван ею (круг 3 по №514, I2), — и
+    # имена из её статусов.
+    proven = owned + ([own.exact] if own.exact else []) + worn
+    # Минута — ключ графа посекундной встречи только по положительной улике:
+    # точная секунда владельца минуты — мы. «Не доказано чужая» — не «наша»:
+    # при минутном владельце с темой graph_key отдаёт соседке секунды, и
+    # журнал ревизии минуты — его (круг 3 по №514, I1).
+    minute_mine = any(o.exact == stamp for o in minute_owners)
+    by_rule = {"minute": [minute], "stem": proven,
+               "graph_key": proven + ([minute] if minute_mine else [])}
+    for prefix, rule, suffixes in MEETING_LOG_RULES:
+        for s in dict.fromkeys(by_rule[rule]):
+            for suffix in suffixes:
+                p.delete += _with_stamp(logs, s, prefix=prefix, suffix=suffix)
+    if minute != stamp and not minute_mine and not minute_foreign:
+        for f in _with_stamp(logs, minute, prefix="cloud_review_", suffix=".log"):
+            p.check.append(f"{f.name}: журнал облачной ревизии минуты {minute}, владелец "
+                           "минуты не определён — не тронут")
     # Отметка «факты встречи отправлены в память Чароита» (graph_updater):
     # без неё повторный разбор той же встречи после забывания молчал бы.
     # Отметка «факты отправлены» (logs/brain_sent/<ключ графа>.txt) и сами
@@ -877,16 +900,9 @@ def plan(stamp: str, root: pathlib.Path,
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
     # обязано дойти сразу (второе мнение по #324–#328, 16.08).
-    statuses = _status_files(root / STATUS_DIR, stamp)
     p.delete += statuses
     if prev_dir.is_dir():
-        import json as _json
-        for sf in statuses:
-            try:
-                data = _json.loads(sf.read_text(encoding="utf-8"))
-                key = str(data.get("key") or "") if isinstance(data, dict) else ""
-            except (OSError, ValueError):
-                continue
+        for _sf, key in status_keys:
             if key:
                 p.delete += [f for f in _with_stamp(prev_dir, key) if f not in p.delete]
 
