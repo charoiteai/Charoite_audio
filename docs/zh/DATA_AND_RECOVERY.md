@@ -56,7 +56,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
   `*.wav.part*`；
 - 崩溃遗留在 `data/sck/` 中的原始采集流，同一保留期（实时会话自己的文件夹从不
   触碰）；
-- 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log`、`logs/retry_*.log`、`logs/recover_*.log` 与实时 Nemotron 影子流的 `logs/nemotron_live_*` 诊断日志；
+- 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log`、`logs/retry_*.log`、`logs/recover_*.log`、实时 Nemotron 影子流的 `logs/nemotron_live_*` 诊断日志、共享的图谱决策日志 `logs/graph_unlinked.log` 及其轮转文件 `logs/graph_unlinked.old`，以及导入清理输出 `logs/import_prune-*.log`（重建锁文件 `logs/rebuild-*.pid` 不会被清理）；
 - 导入录音的副本——导入文件夹 `done/` 中的文件和会议归档文件夹中的音频
   「Исходник」——在导入后 `audio.import_keep_days`（默认 2 天，与
   `record_keep_days` 无关）删除；应用运行时每六小时清理一次，守护进程在每场会议
@@ -184,7 +184,7 @@ CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py <音频|文本|�
 
 第一次运行只列出受影响文件。`--yes` 会从逐字稿（包括 `transcripts/.prev/` 和实时
 附属文件）、录音、归档和图谱中删除会议——包括 `logs/meeting-status/` 中的处理状态、
-图谱、云端复核与重试日志、「文档」下的全部 `<时间戳>_*.md` 副本，以及 `backups/`
+图谱、云端复核、重试、恢复与实时影子流日志、「文档」下的全部 `<时间戳>_*.md` 副本，以及 `backups/`
 下各类服务副本中该会议的文件。已发往可选外部记忆（`sufler.brain`）的事实也会在
 那里被忘记。带上 `--import-folder <文件夹>`（应用会传入）时，`done/` 中的导入副本
 一并删除；不带时，计划会说明该副本将按 `import_keep_days` 过期。`--keep-graph`

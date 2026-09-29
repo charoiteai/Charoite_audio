@@ -683,12 +683,12 @@ def _journal_unlinked(name: str, gone: list[str]) -> None:
     кандидат на узел или алиас, а не раствориться в логе прогона (GLM r2,
     критика 1). Сбой записи журнала перенос не останавливает."""
     try:
-        log = _root() / "logs" / "graph_unlinked.log"
+        log = charoite_paths.log_path(_root(), "graph_unlinked")
         log.parent.mkdir(parents=True, exist_ok=True)
         # ротация: журнал растёт с каждым прогоном (DS r3 M2) — старше
-        # полумегабайта уезжает в .old, одно поколение
+        # полумегабайта уезжает в .old, одно поколение; оба имени — из реестра
         if log.exists() and log.stat().st_size > 512 * 1024:
-            log.replace(log.with_suffix(".old"))
+            log.replace(charoite_paths.log_path(_root(), "graph_unlinked", suffix=".old"))
         with log.open("a", encoding="utf-8") as fh:
             stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
             for target in gone:
