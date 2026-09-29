@@ -42,8 +42,11 @@ def _feed(hub, stream, sizes):
     pos = 0
     out = []
     for size in sizes:
-        hub._consume(cap, stream[pos:pos + size])
-        pos += size
+        part = stream[pos:pos + size]
+        if not len(part):
+            break                          # поток кончился: дальше кормить нечем
+        hub._consume(cap, part)
+        pos += len(part)
         out += hub.pull_placed()
     return out, pos
 
