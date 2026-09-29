@@ -25,12 +25,16 @@ SETUP просят там «ваше имя» — человек пишет им
 Имена в тестах — из встроенного демо-графа (demo/graph), чтобы файл не тащил
 ничьих настоящих.
 """
+import io
 import pathlib
 import sys
+
+import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import speaker_names as sn  # noqa: E402
 from speaker_names import heard_forms, is_counterpart, is_owner, trustworthy_name  # noqa: E402
 
 
@@ -298,3 +302,112 @@ def test_back_formed_forms_need_the_position_of_a_name():
     assert heard_forms("Саша", "[·] Я: Сашей звали собаку") == (), "творительный без «с» — не форма имени"
     assert heard_forms("Таня", "[·] Я: я звонил Тане вчера") == (), "косвенный падеж третьего лица — намеренно мимо"
     assert heard_forms("Таня", "[·] Я: Тань глянь смету") == (), "обращение без знака — принятая цена"
+
+
+# №502. Каждое правило гварда — реальным входом, который к нему ведёт: код причины
+# называют журнал пересборки и журнал демона, и новый выход без своей причины (или
+# причина без входа) здесь краснеет.
+_OWN_ADDRESS = "\n".join((
+    "[10:00] Собеседник: Мария, а ты смету видела?",
+    "[10:01] Собеседник: Ладно, потом уточню.",
+))
+REFUSALS = [
+    ("NONE", dict(sample=INTRO, label="Собеседник"), sn.REASON_EMPTY),
+    ("Мария-2", dict(sample=INTRO, label="Собеседник"), sn.REASON_NOT_A_WORD),
+    ("Ян", dict(sample="[10:00] Собеседник: Это Ян.", label="Собеседник"), sn.REASON_LENGTH),
+    ("Собеседник", dict(sample=INTRO, label="Собеседник"), sn.REASON_LABEL),
+    ("Ольга", dict(sample=INTRO, label="Собеседник"), sn.REASON_NOT_HEARD),
+    ("Игорь", dict(sample=DIALOG, label="Собеседник", owner_name=OWNER), sn.REASON_OWNER),
+    ("Мария", dict(sample=_OWN_ADDRESS, label="Собеседник", owner_name=OWNER), sn.REASON_OWN_LINES),
+    ("Мария", dict(sample=INTRO, label="Собеседник", voice="low", name_gender="female"), sn.REASON_VOICE),
+]
+
+
+@pytest.mark.parametrize("raw, kw, reason", REFUSALS, ids=[r for *_, r in REFUSALS])
+def test_each_guard_names_its_own_reason(raw, kw, reason):
+    verdict = sn.judge_name(raw, **kw)
+    assert (verdict.name, verdict.reason) == (None, reason)
+    assert trustworthy_name(raw, **kw) is None
+
+
+def test_every_reason_has_a_text_and_a_real_input():
+    codes = {v for k, v in vars(sn).items() if k.startswith("REASON_") and isinstance(v, str)}
+    assert set(sn.REASON_TEXT) == codes
+    assert {r for *_, r in REFUSALS} == codes
+
+
+def test_an_accepted_name_carries_no_reason():
+    assert sn.judge_name("мария", sample=INTRO, label="Собеседник", owner_name=OWNER) == \
+        sn.NameVerdict("Мария", "", "Мария", "Мария")
+
+
+def test_a_none_answer_is_not_a_refusal_and_has_no_line():
+    """Одно решение «отказ или ответ имени нет» — у вердикта: пересборка и живой цикл
+    его не повторяют (выходной круг 1 по №502, M1)."""
+    none = sn.judge_name("NONE", sample=INTRO, label="Собеседник")
+    unheard = sn.judge_name("Ольга", sample=INTRO, label="Собеседник")
+    assert not sn.is_refusal(none) and sn.refusal_line("Собеседник", none) is None
+    assert sn.is_refusal(unheard) and sn.refusal_line("Собеседник", unheard)
+    accepted = sn.judge_name("Мария", sample=INTRO, label="Собеседник")
+    assert accepted.name and not sn.is_refusal(accepted)
+
+
+def test_refusal_line_says_what_the_model_proposed_and_what_it_became():
+    """Владелец ищет в стенограмме то, что сказала модель; приведённое падежом имя —
+    то, что судили правила владельца и голоса. Показаны оба, если они разные."""
+    verdict = sn.judge_name("игорёк", sample=DIALOG.replace("Игорь", "Игорёк"), label="Собеседник",
+                            owner_name=OWNER, known=("Игорь", "Мария"))
+    assert (verdict.reason, verdict.said, verdict.resolved) == (sn.REASON_OWNER, "Игорёк", "Игорь")
+    assert sn.refusal_line("Собеседник", verdict) == \
+        "«Игорёк» (→ Игорь) для «Собеседник» не принято — имя владельца"
+    plain = sn.judge_name("Ольга", sample=INTRO, label="Собеседник 1")
+    assert sn.refusal_line("Собеседник 1", plain) == \
+        "«Ольга» для «Собеседник 1» не принято — не звучало в разговоре"
+
+
+def test_a_refusal_is_said_once_per_meeting_and_again_for_a_new_reason_or_meeting():
+    """Живой цикл имён переспрашивает модель на каждом такте роста стенограммы: та же
+    тройка «метка, имя, правило» звучит один раз. Другое правило для той же пары —
+    новое событие; новая встреча начинает с чистого листа."""
+    out = io.StringIO()
+    sn.forget_refusals()
+    unheard = sn.judge_name("Ольга", sample=INTRO, label="Собеседник")
+    address = sn.judge_name("Ольга", sample=INTRO + "\n[10:02] Собеседник: Ольга, ты тут?",
+                            label="Собеседник")
+    assert address.reason == sn.REASON_OWN_LINES
+    assert sn.say_refusal("Собеседник", unheard, stream=out)
+    assert not sn.say_refusal("Собеседник", unheard, stream=out)
+    assert sn.say_refusal("Собеседник", address, stream=out)
+    sn.forget_refusals()
+    assert sn.say_refusal("Собеседник", unheard, stream=out)
+    assert sn.say_refusal("Собеседник", sn.judge_name("NONE", sample=INTRO, label="Собеседник"),
+                          stream=out) is False, "«имени нет» — ответ модели, а не отвергнутое имя"
+    assert sn.say_refusal("Собеседник", sn.judge_name("Мария", sample=INTRO, label="Собеседник"),
+                          stream=out) is False, "принятое имя — не отказ"
+    assert out.getvalue().splitlines() == [
+        "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
+        "имена: «Ольга» для «Собеседник» не принято — звучит только в своих репликах — обращение к другому",
+        "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
+    ]
+    sn.forget_refusals()
+
+
+def test_settle_names_only_a_label_of_the_sample_and_only_once():
+    """Решение живого цикла имён по паре «метка → имя» (№502), вынесенное из
+    замыкания демона: метка вне выборки — ни имени, ни строки журнала; отказ по
+    метке выборки — строка; имя, уже отданное другой метке, второй раз не раздаётся."""
+    out = io.StringIO()
+    sn.forget_refusals()
+    labels = ["Собеседник"]
+    accepted = sn.judge_name("Мария", sample=INTRO, label="Собеседник")
+    refused = sn.judge_name("Ольга", sample=INTRO, label="Собеседник")
+    assert sn.settle("Собеседник", accepted, labels=labels, stream=out) == "Мария"
+    assert sn.settle("Собеседник", accepted, labels=labels, taken=["Мария"], stream=out) is None, \
+        "имя уже у другой метки"
+    assert sn.settle("Собеседник 7", accepted, labels=labels, stream=out) is None, "метки нет в выборке"
+    assert sn.settle("Собеседник 7", refused, labels=labels, stream=out) is None
+    assert sn.settle("Собеседник", refused, labels=labels, stream=out) is None
+    assert out.getvalue().splitlines() == [
+        "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
+    ], "строка — только об отказе по метке выборки"
+    sn.forget_refusals()
