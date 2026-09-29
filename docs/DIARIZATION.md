@@ -426,7 +426,8 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   17.5 % with sherpa; the union keeps 17.8 %.
 - **Time.** The call channel of a 41-minute meeting: 5 s including the process
   start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
-  sherpa pass runs at RTF 0.35 — about 7 minutes for 20 minutes of call.
+  sherpa pass on one thread runs at RTF 0.35 — about 7 minutes for 20 minutes
+  of call; on two threads see below.
 
 ### Threads, and yielding to a live meeting
 
@@ -434,11 +435,23 @@ sherpa-onnx runs one thread unless told otherwise, and after a 69-minute meeting
 on 29 September the microphone channel took about 22 minutes on one core of
 eight. Every sherpa config is now built by one factory, `src/sherpa_config.py`:
 the live trackers always get one thread; the pass after a meeting gets one
-thread while a recording is running, and otherwise the largest thread count
-that was measured to give the same labels, capped at half the performance cores.
-Until that measurement is recorded, the list holds only 1 — nothing speeds up on
-a guess. A test forbids building a sherpa segmentation or embedding config
-anywhere else.
+thread while a recording is running, and otherwise the largest admitted thread
+count — measured to give the same labels and cheap enough next to a live
+meeting — capped at half the performance cores.
+A test forbids building a sherpa segmentation or embedding config anywhere else.
+
+The measurement (29 September, sherpa-onnx 1.13.7, M1 Max) went through the
+production path `rebuild_transcript.diarize_channel` → `diarize.diarize()`,
+shard merging included on the microphone: 20 minutes of a meeting's microphone
+and 20 minutes of a call channel with an eight-voice hint.
+On 2 and 4 threads the segments are byte-identical to one thread — 0 of 101,001
+and 0 of 96,356 speech frames differ — and the pass runs 1.53 times faster on 2
+threads and 2.28 times on 4 (RTF 0.41 → 0.27 → 0.18 on the microphone). The list
+holds 1 and 2. A pass that started before a meeting keeps its threads to the end,
+and next to it the live speech recognition (8-second chunks) loses 55 % at p95
+with 4 threads under `nice 10` and 9 % with 2; 4 threads wait until a pass can
+yield to a meeting mid-way. Another sherpa-onnx or onnxruntime version is a
+reason to measure again.
 
 The rebuild yields to a live meeting before each channel's labelling and
 before speech recognition (up to ten minutes each, like names and minutes), not
