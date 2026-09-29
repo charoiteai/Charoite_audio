@@ -6,6 +6,7 @@
 `resolve_channel_segments` / `merge_dwarfs` / `paragraphs` его не меняет, и
 следующий движок подключается поставщиком сырых сегментов, а не правкой блока.
 """
+import os
 import pathlib
 import sys
 
@@ -443,12 +444,16 @@ def test_nemotron_gets_its_setting_the_data_root_and_a_ceiling(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])
-def test_a_refusal_of_nemotron_names_the_engine_and_the_reason(kind, monkeypatch, tmp_path):
+def test_a_refusal_of_nemotron_gives_the_fixed_phrase_and_logs_the_raw_reason(kind, monkeypatch, tmp_path):
+    """№495: в шапку — закреплённая фраза, сырой отказ — только в журнал."""
     charoite_paths.use_data_root(tmp_path, replace=True)
+    said: list[str] = []
+    monkeypatch.setattr(rt, "log", said.append)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(kind, reason="нет весов"))
     assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
-                                  tmp_path / "bh.wav", 60.0) == (None, "Nemotron — нет весов")
+                                  tmp_path / "bh.wav", 60.0) == (None, rt.ENGINE_REFUSED_REASON)
+    assert any("нет весов" in line for line in said), said
 
 
 @pytest.mark.parametrize("payload", [[], [(0.0, 0.5, 0), (3.0, 3.9, 1)]], ids=["пусто", "одни осколки"])
@@ -509,8 +514,28 @@ def test_rebuild_falls_back_to_sherpa_and_says_why_in_the_header(meeting, monkey
     out = rt.rebuild(meeting["live"], _nemotron_cfg())
     assert ("blackhole", 3) in meeting["calls"]
     text = out.read_text(encoding="utf-8")
-    assert rt.ENGINE_FALLBACK_NOTE.format(reason="Nemotron — не уложился в 66 с") in text
+    assert rt.ENGINE_FALLBACK_NOTE.format(reason=rt.ENGINE_REFUSED_REASON) in text
+    assert "не уложился" not in text                                  # сырой отказ — в журнал (№495)
     assert text.index("запасным движком") < text.index("**")          # в шапке, до реплик
+
+
+@pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])
+def test_the_header_carries_no_local_path_of_a_refusal(kind, meeting, monkeypatch):
+    """№495, сторож по поведению: отказ движка несёт пути машины — домашний
+    каталог (имя учётки), корень данных, его realpath и рецепт скачивания весов с
+    путём, собранный настоящей `fetch_recipe`. Ни одно из них не доходит до
+    пересылаемой стенограммы."""
+    root = meeting["live"].parent.parent
+    home = pathlib.Path.home()
+    recipe = rt.diarize_nemotron.fetch_recipe(home / "models" / "diar" / "nemotron")
+    raw = (f"нет интерпретатора {home / 'venv' / 'bin' / 'python'}; веса в {root / 'models'} — "
+           f"{recipe}; {os.path.realpath(root)}")
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(kind, reason=raw))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert rt.ENGINE_REFUSED_REASON in text
+    for leaked in (str(home), str(root), os.path.realpath(root), "hf download"):
+        assert leaked not in text, leaked
 
 
 def test_rebuild_on_an_empty_nemotron_answer_labels_the_call_with_sherpa(meeting, monkeypatch):

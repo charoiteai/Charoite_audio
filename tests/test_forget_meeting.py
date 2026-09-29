@@ -604,6 +604,23 @@ def test_forget_reaches_the_retry_log(tmp_path):
     assert theirs not in plan.delete
 
 
+def test_forget_reaches_the_recover_log(tmp_path):
+    """`logs/recover_<штамп>.log` — stdout восстановления после падения демона (№495):
+    те же имена и сырой отказ движка с путями машины (выходной круг 1, I1)."""
+    root, graph = _world(tmp_path)
+    logs = root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    mine = logs / f"recover_{STAMP}.log"
+    mine.write_text("имена: Мария Соколова\n", encoding="utf-8")
+    theirs = logs / f"recover_{OTHER}.log"
+    theirs.write_text("имена: кто-то ещё\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mine in plan.delete, "лог восстановления переживает забывание"
+    assert theirs not in plan.delete
+
+
 def test_edited_nodes_keep_their_permissions(tmp_path):
     """Конвейер пишет граф под harden_umask (0600). Перезапись узла через
     write_text давала 0644 по umask вызывающего — поправленный узел

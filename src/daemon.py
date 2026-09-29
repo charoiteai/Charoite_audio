@@ -357,9 +357,11 @@ def _prune_graph_logs(cfg: dict) -> None:
     # имени), счётчики и stderr CLI. Имя другое, поэтому ретеншн его не
     # видел (аудит 16.08). retry_*.log — stdout повторной пересборки:
     # маппинг имён участников, тема, stderr LLM — тоже жил вечно
-    # (аудит DeepSeek 16.08).
+    # (аудит DeepSeek 16.08). recover_*.log — stdout восстановления после
+    # падения демона: то же содержимое плюс сырой отказ движка с путями машины
+    # (№495, выходной круг 1, I1).
     for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log"),
-                *logs.glob("retry_*.log")]:
+                *logs.glob("retry_*.log"), *logs.glob("recover_*.log")]:
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)
@@ -573,15 +575,32 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
             pass
         try:
             # start_new_session: пересборка переживает смерть демона (как и
-            # раньше); run вместо Popen — это и есть очередь.
-            subprocess.run(
-                ["nice", "-n", "10", sys.executable,
-                 str(CODE / "src" / "rebuild_transcript.py"), str(live)],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
-                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-                check=False,
-            )
+            # раньше); run вместо Popen — это и есть очередь. Журнал — как у
+            # основного пути (graph_*) и повтора (retry_*): шапка стенограммы
+            # отсылает причину отказа движка «в журнал разбора», и в DEVNULL она
+            # пропадала бы целиком (№495).
+            logs = _root() / "logs"
+            try:
+                logs.mkdir(exist_ok=True)
+                rlog = open(logs / f"recover_{live.stem}.log", "w")
+            except OSError as e:
+                # журнал не открылся (диск, права) — пересборка важнее журнала:
+                # без него она идёт как до №495 (выходной круг 1, M1)
+                print(f"журнал восстановления {live.stem} не открылся ({e}) — "
+                      f"пересборка без журнала", file=sys.stderr)
+                rlog = subprocess.DEVNULL
+            try:
+                subprocess.run(
+                    ["nice", "-n", "10", sys.executable,
+                     str(CODE / "src" / "rebuild_transcript.py"), str(live)],
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
+                    stdout=rlog, stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            finally:
+                if rlog is not subprocess.DEVNULL:
+                    rlog.close()
         except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
             statuses.failed(live, f"не удалось запустить восстановление: {e}")
 

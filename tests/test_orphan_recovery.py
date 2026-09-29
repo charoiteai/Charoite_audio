@@ -80,6 +80,52 @@ def test_ретеншн_не_съедает_запись_которую_сейч
     assert held == 1, "задержку сверх обещанного срока обязаны считать и показывать"
 
 
+def test_журнал_не_открылся_пересборка_всё_равно_идёт(data_root, monkeypatch):
+    """Диск или права не дали открыть журнал — пересборка идёт без него, как до №495,
+    а не падает статусом «не удалось запустить» (выходной круг 1, M1)."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    seen: dict = {}
+    real_open = open
+
+    def no_log(path, *a, **k):
+        if str(path).endswith(".log"):
+            raise PermissionError("нет прав")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", no_log)
+    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: seen.update(stdout=kw.get("stdout")))
+    failed = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed", lambda self, *a: failed.append(a))
+    daemon._rebuild_orphans_sequentially([live])
+
+    assert seen.get("stdout") is daemon.subprocess.DEVNULL, seen
+    assert failed == [], "без журнала пересборка обязана стартовать"
+
+
+def test_журнал_закрывается_и_при_сбое_пересборки(data_root, monkeypatch):
+    """Упал сам запуск — файл журнала закрыт, статус — «не удалось запустить»."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    opened: list = []
+
+    def boom(cmd, **kw):
+        opened.append(kw.get("stdout"))
+        raise OSError("нет nice")
+
+    monkeypatch.setattr(daemon.subprocess, "run", boom)
+    failed = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed", lambda self, *a: failed.append(a))
+    daemon._rebuild_orphans_sequentially([live])
+
+    assert opened and opened[0].closed, "журнал остался открытым"
+    assert failed and "не удалось запустить восстановление" in failed[0][1]
+
+
 def test_ретеншн_чистит_всё_остальное_как_обещано(data_root):
     """Защита адресная. Записи без ожидающей пересборки уходят по сроку —
     иначе мы молча нарушили бы обещание PRIVACY об удалении через N дней."""
@@ -131,6 +177,56 @@ def test_восстановление_запускает_существующи�
             f"пересборка запускает несуществующий {path}: во вложенной установке "
             "потомок умрёт молча в DEVNULL, встреча навсегда останется "
             "«recovering», а ретеншн через двое суток удалит её запись")
+
+
+def test_восстановление_пишет_журнал_разбора(data_root, monkeypatch):
+    """№495: шапка стенограммы отсылает причину отказа движка «в журнал разбора»
+    (logs/). У восстановления после падения демона он есть, как у основного пути и
+    повтора, а не DEVNULL, куда причина пропадала целиком."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        out = kw.get("stdout")
+        seen["name"] = getattr(out, "name", out)
+        out.write("проба журнала\n")
+
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    daemon._rebuild_orphans_sequentially([live])
+
+    log = data_root / "logs" / "recover_2026-08-07_181500.log"
+    assert seen.get("name") == str(log), seen
+    assert log.read_text(encoding="utf-8") == "проба журнала\n"
+
+
+def test_восстановление_в_своей_сессии_и_без_суда_над_кодом_возврата(data_root, monkeypatch, tmp_path):
+    """Настоящий потомок, а не подмена `subprocess.run`: пересборка восстановления
+    уходит в свою сессию (сигнал группе демона её не задевает — она переживает смерть
+    демона), а её код возврата демон не судит: статус встречи пишет сама пересборка,
+    и «не удалось запустить» поверх него было бы ложью. Оба флага до №495 не держал ни
+    один тест — их нашёл мутатор диапазона."""
+    import daemon
+
+    code = tmp_path / "code"
+    (code / "src").mkdir(parents=True)
+    (code / "src" / "rebuild_transcript.py").write_text(
+        "import os, sys\nprint('sid', os.getsid(0), flush=True)\nsys.exit(3)\n", encoding="utf-8")
+    monkeypatch.setattr(daemon, "CODE", code)
+    failed: list[str] = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed",
+                        lambda _self, _live, why: failed.append(str(why)))
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+
+    daemon._rebuild_orphans_sequentially([live])
+
+    log = (data_root / "logs" / "recover_2026-08-07_181500.log").read_text(encoding="utf-8")
+    assert log.startswith("sid "), log
+    assert int(log.split()[1]) != os.getsid(0), "пересборка в сессии демона — умрёт вместе с ним"
+    assert failed == [], f"код возврата пересборки перекрасил её статус: {failed}"
 
 
 def test_main_передаёт_чистке_защищённые_штампы():

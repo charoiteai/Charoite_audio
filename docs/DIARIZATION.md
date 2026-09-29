@@ -386,9 +386,14 @@ environment lives in `engines/nemotron`; both paths come from the engine module
 - **Fallback, visible.** No interpreter, no package, no weights (exit code 10,
   `EXIT_ENGINE_UNAVAILABLE`), a crash, a timeout (60 s plus a tenth of the
   recording) or a reply off the protocol — the meeting is labelled by sherpa as
-  before, and the transcript header says why: «Голоса собеседников размечены
-  запасным движком (sherpa): …». A misspelt `diarize_backend` falls back the
-  same way, with its own reason.
+  before, and the transcript header says so: «Голоса собеседников размечены
+  запасным движком (sherpa): Nemotron не разметил голоса — причина в журнале
+  разбора (logs/), проверка — доктор (scripts/doctor.py)». The raw refusal
+  (interpreter path, the engine's last stderr line with weight paths and the
+  download recipe) goes to the rebuild log only: transcripts are forwarded to
+  people, and a local path carries the account name. A misspelt
+  `diarize_backend`, a reply with no segments or one segment over the whole
+  recording fall back the same way, each with its own short reason.
 - **What happens to the segments.** Shorter than 1 s — dropped, as sherpa's
   are. The call channel then loses overlaps, whatever the engine: a partial
   overlap is split in the middle; a reply longer than 1 s inside someone else's
