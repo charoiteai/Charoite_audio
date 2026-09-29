@@ -65,7 +65,7 @@
 
 - `check_private_markers.py` — 去标识化守卫（pre-commit 钩子）：同时检查新增的行与整个被跟踪的文件树，只打印位置、绝不打印标记本身。`--all` 只扫描文件树；`--public-only` 是使用公开模式的 CI 模式。见[参与贡献](../CONTRIBUTING.md)。
 - `check_test_assertions.py` — 测试必须能够失败：找出 `test_*` 函数体中没有任何可失败之处的（没有 `assert`、`pytest.raises`/`fail`/`warns`、`self.assert*`、`raise …Error`），以及位于 `return` 之后的断言。在 CI 与 pre-commit 钩子中运行；默认检查 `tests/`。
-- `mutate_check.py` — 在独立的 git worktree 中把缺陷放回 `--range`（默认 `origin/main...HEAD`）中改动过的行，并要求测试变红。机器正忙于会议、处理或夜间流程时拒绝启动（`--force` 可越过这一点，但越不过其他变异器的锁）；`--budget-s` 限制总时长，`--report` 在每个变异体之后重写。CI 在每个 PR 的改动行上运行它。
+- `mutate_check.py` — 在独立的 git worktree 中把缺陷放回 `--range`（默认 `origin/main...HEAD`）中改动过的行，并要求测试变红。数据根目录由 `CHAROITE_ROOT` 指明（没有它：代码 5 并打印做法）；会议锁和 `logs/mutation.lock` 都在那里。机器正忙于会议、处理或夜间流程时拒绝启动（`--force` 可越过这一点，但越不过其他变异器的锁）；`--budget-s` 限制总时长，`--report` 在每个变异体之后重写。CI 在每个 PR 的改动行上运行它。
 - `layout_map.py` — 代码布局：分层、导入边、入口点，以及代码和文档中提到的所有可执行文件路径，与 `docs/design/layout.json` 对照。不带参数时写出地图 `docs/design/layout.md`；`--check` 是闸门（CI），`--regen` 按代码刷新白名单与运行契约，`--report` 测量接缝。
 - `preflight.sh` — 评审前的本地汇总：机器是否繁忙、ruff、布局闸门、隐私标记、完整 pytest、改动 `app/` 时的 Swift、区间上的变异检查。输出 `preflight: ok` 或 `FAIL: <步骤>`；重跑时 `PREFLIGHT_SKIP=mutation,swift` 可跳过步骤。
 
