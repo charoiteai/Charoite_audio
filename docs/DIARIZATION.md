@@ -366,8 +366,10 @@ not a venv: a venv keeps the path of its base interpreter, and an app started
 from Downloads with quarantine runs from a random path (App Translocation), so a
 venv over the bundle would break on the next launch; python-build-standalone is
 relocatable, and the copy keeps the bundle's signature and entitlements, so the
-mlx wheels load. `nemotron_python` still takes an explicit interpreter; empty
-means the installed environment. The lock is rebuilt with
+mlx wheels load. `nemotron_python` still takes an explicit interpreter, `~/…`
+included; the path is used as written, symlinks unresolved — a venv's
+`bin/python` is a symlink and has to stay one. Empty means the installed
+environment. The lock is rebuilt with
 `.venv/bin/python scripts/lock_runtime_deps.py nemotron` from `MLX_AUDIO_VERSION`
 in `src/diarize_nemotron.py`.
 
