@@ -218,13 +218,16 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
 # грамматикой, иначе пятизначное имя извлекалось бы и тут же отбрасывалось (Minor DS, круг 2 по PR #635).
 _STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?(?:-\d+)?)(?![\d-])")
 STATUS_DIR = pathlib.Path("logs") / "meeting-status"
-# Журналы встречи в logs/: префикс → каким штампом его называет писатель (№514).
+# Журналы встречи в logs/: префикс → каким штампом его называет писатель и с какими
+# суффиксами (№514).
 #   minute    — `stem[:15]`: daemon.py (graph_) и приложение; журнал общий у двух встреч минуты;
 #   graph_key — meeting_stamp.graph_key: graph_updater.py (cloud_review_);
-#   stem      — полный стем файла встречи: rebuild_transcript.py (retry_), daemon.py (recover_).
+#   stem      — полный стем файла встречи: rebuild_transcript.py (retry_), daemon.py (recover_),
+#               live_nemotron.py (nemotron_live_: журнал тени потока и stderr её ребёнка, №478).
 # Таблицу заменит реестр видов журналов в charoite_paths (PR 2 №514).
-MEETING_LOG_RULES = (("graph_", "minute"), ("cloud_review_", "graph_key"),
-                     ("retry_", "stem"), ("recover_", "stem"))
+MEETING_LOG_RULES = (("graph_", "minute", (".log",)), ("cloud_review_", "graph_key", (".log",)),
+                     ("retry_", "stem", (".log",)), ("recover_", "stem", (".log",)),
+                     ("nemotron_live_", "stem", (".jsonl", ".err")))
 
 
 def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
@@ -877,9 +880,10 @@ def plan(stamp: str, root: pathlib.Path,
     minute_mine = any(o.exact == stamp for o in minute_owners)
     by_rule = {"minute": [minute], "stem": proven,
                "graph_key": proven + ([minute] if minute_mine else [])}
-    for prefix, rule in MEETING_LOG_RULES:
+    for prefix, rule, suffixes in MEETING_LOG_RULES:
         for s in dict.fromkeys(by_rule[rule]):
-            p.delete += _with_stamp(logs, s, prefix=prefix, suffix=".log")
+            for suffix in suffixes:
+                p.delete += _with_stamp(logs, s, prefix=prefix, suffix=suffix)
     if minute != stamp and not minute_mine and not minute_foreign:
         for f in _with_stamp(logs, minute, prefix="cloud_review_", suffix=".log"):
             p.check.append(f"{f.name}: журнал облачной ревизии минуты {minute}, владелец "

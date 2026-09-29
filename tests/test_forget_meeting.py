@@ -644,8 +644,9 @@ def _minute_world(tmp: pathlib.Path, shape: str):
     чужой и журналы, о которых план обязан сказать вслух.
 
     Имена — правилами писателей: `graph_` — `stem[:15]` (daemon.py), `retry_` — стем цели
-    (rebuild_transcript.py), `recover_` — стем живого файла (daemon.py), `cloud_review_` —
-    настоящим `meeting_stamp.graph_key`, как зовёт его graph_updater, а не убеждением теста.
+    (rebuild_transcript.py), `recover_` и `nemotron_live_` (.jsonl и .err) — стем живого файла
+    (daemon.py, live_nemotron.py), `cloud_review_` — настоящим `meeting_stamp.graph_key`, как
+    зовёт его graph_updater, а не убеждением теста.
     """
     import json
     root, graph = tmp / "repo", tmp / "vault" / "Работа"
@@ -661,35 +662,39 @@ def _minute_world(tmp: pathlib.Path, shape: str):
     def review(stem: str) -> str:
         return f"cloud_review_{forget.meeting_stamp.graph_key(tdir, stem, graph)}.log"
 
+    def live(stem: str) -> list[str]:
+        """Журналы, названные стемом живого файла: восстановление и тень потока."""
+        return [f"recover_{stem}.log", f"nemotron_live_{stem}.jsonl", f"nemotron_live_{stem}.err"]
+
     sec, titled, other = f"{STAMP}30", f"{STAMP}_Платёжный_провайдер", [f"retry_{OTHER}.log",
                                                                         f"cloud_review_{OTHER}.log"]
     if shape == "голая посекундная — владелец минуты по порядку":
         main(sec)
         return root, graph, [sec, STAMP], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
-                                           f"recover_{sec}.log"], other, []
+                                           *live(sec)], other, []
     if shape == "посекундная при владельце минуты с сайдкаром":
         main(titled, exact=f"{STAMP}05")
         main(sec)
         assert review(sec) == f"cloud_review_{sec}.log", "graph_key отдаёт соседке секунды"
         return root, graph, [sec], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
-                                    f"recover_{sec}.log"], \
+                                    *live(sec)], \
             other + [f"cloud_review_{STAMP}.log", f"retry_{titled}.log", f"retry_{STAMP}05.log",
-                     f"recover_{STAMP}05.log"], []
+                     *live(f"{STAMP}05")], []
     if shape == "посекундная при владельце минуты без названной секунды":
         main(titled)
         main(sec)
         return root, graph, [sec], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
-                                    f"recover_{sec}.log"], \
+                                    *live(sec)], \
             other + [f"cloud_review_{STAMP}.log"], [f"cloud_review_{STAMP}.log"]
     if shape == "наш владелец минуты с темой, файлов под секундой нет":
         main(titled, exact=f"{STAMP}05")
         return root, graph, [STAMP, f"{STAMP}05"], [f"graph_{STAMP}.log", review(titled),
                                                     f"retry_{titled}.log", f"retry_{STAMP}05.log",
-                                                    f"recover_{STAMP}05.log"], other, []
+                                                    *live(f"{STAMP}05")], other, []
     assert shape == "встреча без секунд"
     main(STAMP)
     return root, graph, [STAMP], [f"graph_{STAMP}.log", review(STAMP), f"retry_{STAMP}.log",
-                                  f"recover_{STAMP}.log"], other, []
+                                  *live(STAMP)], other, []
 
 
 @pytest.mark.parametrize("shape", [
@@ -762,9 +767,9 @@ def test_forget_reaches_the_status_named_after_the_live_transcript(tmp_path):
 
 
 def test_the_recovery_log_is_found_by_the_name_the_status_kept(tmp_path):
-    """Журнал восстановления назван живой секундой, а после краха демона секунды нет в
-    сайдкаре, записи ушли по сроку, тема накатана: имя помнит только статус встречи —
-    его имя и `key`. «Забыть» минутным ключом приложения находит журнал по ним
+    """Журналы восстановления и тени потока названы живой секундой, а после краха демона
+    секунды нет в сайдкаре, записи ушли по сроку, тема накатана: имя помнит только статус
+    встречи — его имя и `key`. «Забыть» минутным ключом приложения находит журналы по ним
     (выходной круг 1 по №514, I1)."""
     import json
     root, graph = tmp_path / "repo", tmp_path / "vault" / "Работа"
@@ -776,15 +781,17 @@ def test_the_recovery_log_is_found_by_the_name_the_status_kept(tmp_path):
     status.mkdir(parents=True)
     (status / f"{STAMP}05.json").write_text(json.dumps(
         {"transcript_path": str(main), "key": f"{STAMP}05"}), encoding="utf-8")
-    mine = root / "logs" / f"recover_{STAMP}05.log"
-    theirs = root / "logs" / f"recover_{STAMP}45.log"          # соседка той же минуты
-    for f in (mine, theirs):
+    logs = root / "logs"
+    mine = [logs / f"recover_{STAMP}05.log", logs / f"nemotron_live_{STAMP}05.jsonl",
+            logs / f"nemotron_live_{STAMP}05.err"]
+    theirs = [logs / f"recover_{STAMP}45.log", logs / f"nemotron_live_{STAMP}45.jsonl"]   # соседка
+    for f in (*mine, *theirs):
         f.write_text("имена: Мария Соколова\n", encoding="utf-8")
 
     plan = forget.plan(STAMP, root, graph)
 
-    assert mine in plan.delete, "журнал восстановления переживает забывание"
-    assert theirs not in plan.delete
+    assert all(f in plan.delete for f in mine), "журнал живой секунды переживает забывание"
+    assert not any(f in plan.delete for f in theirs)
 
 
 def test_logs_of_a_seconds_stamped_meeting_next_to_an_old_minute_meeting(tmp_path):
