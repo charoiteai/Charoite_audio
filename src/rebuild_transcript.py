@@ -31,6 +31,7 @@ import transcript
 import subprocess
 import sys
 import time
+import typing
 import wave
 
 from charoite_paths import code_root, harden_umask, resolve_root
@@ -73,13 +74,28 @@ from transcript import Transcript, is_noise  # noqa: E402
 
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
-# Строка в шапке стенограммы, когда имена не разобраны из-за молчащей модели.
-# Живёт в самом файле, а не только в логе: человек открывает стенограмму, а не
-# logs/, и «Собеседник 1..5» без объяснения читается как «программа не умеет».
+# Строка в шапке стенограммы, когда имена не разобраны. Живёт в самом файле, а
+# не только в логе: человек открывает стенограмму, а не logs/, и «Собеседник
+# 1..5» без объяснения читается как «программа не умеет». Причин две, и у
+# каждой свой текст (№499): одна — общее начало, по нему names_pending узнаёт
+# обе плашки и стенограммы, записанные до разделения.
+NAMES_PENDING_PREFIX = "> ⚠️ Имена участников не определены"
+# Модель молчала (пустой ответ, не-JSON, исключение): повтор, когда модель
+# свободна, — честный совет.
 NAMES_PENDING_NOTE = (
-    "> ⚠️ Имена участников не определены: модель не ответила на разборе. "
+    f"{NAMES_PENDING_PREFIX}: модель не ответила на разборе. "
     "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
     "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py)."
+)
+# Модель ответила, но гварды доверия отвергли каждое имя: не звучало в
+# разговоре, обращение к другому, владелец. Пересборка на том же тексте
+# упрётся в те же гварды, поэтому совета «пересобрать» здесь нет (29.09: оба
+# отказа на боевой встрече были верными, а плашка звала пересобрать).
+NAMES_REJECTED_NOTE = (
+    f"{NAMES_PENDING_PREFIX}: модель ответила, но ни одно из предложенных "
+    "имён ({proposed}) не прошло проверку — имя не звучало в разговоре или "
+    "это обращение к другому. Метки остались «Собеседник N» — впишите имена "
+    "вручную."
 )
 
 
@@ -568,18 +584,37 @@ def _sample_line(spk: str, text: str) -> str:
     return f"[·] {spk}: {text}"
 
 
+class NamesOutcome(typing.NamedTuple):
+    """Итог разбора имён моделью — значением, не bool «ответила ли» (№499).
+
+    `outcome` — ANSWERED (ответ годен, даже если имён в разговоре не звучало),
+    SILENT (молчание, не-JSON, исключение) или REJECTED (модель предложила
+    `proposed` имён, гварды отвергли все). У двух последних своя плашка в
+    шапке: совет «пересобрать» честен только для молчания.
+    """
+    names: dict[str, str]
+    outcome: str
+    proposed: int = 0
+
+    # Без аннотации: в теле NamedTuple аннотированное имя — поле кортежа (№477).
+    ANSWERED = "answered"
+    SILENT = "silent"
+    REJECTED = "rejected"
+
+
 def name_speakers(cfg: dict, lines: list[tuple[str, str]],
-                  known: tuple[str, ...] = ()) -> tuple[dict[str, str], bool]:
+                  known: tuple[str, ...] = ()) -> NamesOutcome:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем.
 
-    Возвращает (имена, ответила ли модель). Второе — не педантизм: пустой
+    Возвращает NamesOutcome: имена и исход. Исход — не педантизм: пустой
     словарь означает и «имён в разговоре не звучало», и «модель молчала, ответ
     не разобрался». 12.08 случилось второе, стенограмма ушла с «Собеседник
     1..5», а прогон записался успешным — та же тихая деградация, которую
     чинили в ночных досье. Различаем: первое нормально, второе стоит показать.
-    Ответ, которым нельзя воспользоваться, — тоже не ответ: если гварды
-    отвергли всё, что предложила модель, снаружи это неотличимо от молчания,
-    и плашка «имена не разобраны» обязана остаться (критика DS по #551).
+    Ответ, которым нельзя воспользоваться, — тоже не годный ответ: если гварды
+    отвергли всё, что предложила модель, плашка «имена не определены» обязана
+    остаться (критика DS по #551) — но со своей причиной, не «модель молчала»
+    (№499).
 
     Ответ модели — кандидат, не приговор: каждое имя проходит те же гварды
     доверия, что живое опознание в демоне (speaker_names.trustworthy_name):
@@ -622,10 +657,10 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
             log("имена: не удалось ("
                 + (f"модель ответила не-JSON ({len(raw)} знаков)" if raw
                    else "пустой ответ") + ")")
-            return {}, False
+            return NamesOutcome({}, NamesOutcome.SILENT)
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
-        return {}, False
+        return NamesOutcome({}, NamesOutcome.SILENT)
     names: dict[str, str] = {}
     proposed = 0
     for k, v in (data.items() if isinstance(data, dict) else ()):
@@ -641,14 +676,16 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
         else:
             log(f"имена: «{v.strip()}» для «{k}» не принято (владелец, не звучало в тексте, "
                 "обращение в своей реплике, не имя или не одно слово)")
-    # «ответила» — вернула объект (массив или строка под json_format — тот же
-    # мусор, что молчание, GLM M1 по #551), и хоть чем-то из него можно
-    # воспользоваться: всё предложенное отвергнуто — снаружи это молчание.
-    # Владелец определён каналом и в ответе не ждётся.
-    answered = isinstance(data, dict) and not (proposed and not names)
+    # Годный ответ — объект (массив или строка под json_format — тот же мусор,
+    # что молчание, GLM M1 по #551), и хоть чем-то из него можно
+    # воспользоваться. Всё предложенное отвергнуто — отдельный исход со своей
+    # плашкой (№499). Владелец определён каналом и в ответе не ждётся.
+    if not isinstance(data, dict):
+        return NamesOutcome({}, NamesOutcome.SILENT)
     if proposed and not names:
-        log(f"имена: все {proposed} предложенных имени отвергнуты гвардами — считаю, что модель не ответила")
-    return names, answered
+        log(f"имена: модель предложила {proposed}, гварды отвергли все — плашка «имена не определены» с этой причиной")
+        return NamesOutcome({}, NamesOutcome.REJECTED, proposed)
+    return NamesOutcome(names, NamesOutcome.ANSWERED, proposed)
 
 
 def live_meta(live: pathlib.Path) -> dict:
@@ -935,27 +972,34 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     neutral = {spk for _, _, spk, _ in lines
                if channel_labels.is_neutral_label(spk)}
     rest = neutral - set(names)
-    model_answered = True
+    naming = NamesOutcome({}, NamesOutcome.ANSWERED)
     if rest:
-        guessed, model_answered = name_speakers(
+        naming = name_speakers(
             cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest],
             known=known_first_names(cfg))
+        guessed = naming.names
         for k, v in guessed.items():
             if k in rest and v not in names.values():  # одно имя — одной метке
                 names[k] = v
         if guessed:
             log("имена от модели: " + ", ".join(f"{k}→{v}" for k, v in guessed.items()))
-    # Молчащая модель + оставшиеся безымянные метки = встреча, которую стоит
-    # пересобрать. Пустой ответ модели при полностью названных участниках
-    # ничего не стоит: помечаем только когда потеря видна в самом файле.
+    # Молчащая модель или отвергнутые гвардами имена + оставшиеся безымянные
+    # метки = потеря, которую человеку надо видеть в самом файле; причина — своя
+    # у каждого исхода (№499). Пустой ответ модели при полностью названных
+    # участниках ничего не стоит: помечаем только когда потеря видна в файле.
     unnamed = neutral - set(names)
-    names_pending = not model_answered and bool(unnamed)
-    if names_pending:
+    pending_note = None
+    if unnamed and naming.outcome == NamesOutcome.SILENT:
+        pending_note = NAMES_PENDING_NOTE
         log(f"⚠️ имена не разобраны: модель молчала, безымянных меток {len(unnamed)}")
+    elif unnamed and naming.outcome == NamesOutcome.REJECTED:
+        pending_note = NAMES_REJECTED_NOTE.format(proposed=naming.proposed)
+        log(f"⚠️ имена не разобраны: модель предложила {naming.proposed}, гварды отвергли все, "
+            f"безымянных меток {len(unnamed)}")
     fmt = lambda sec: (base + dt.timedelta(seconds=sec)).strftime("%H:%M")
     body = [f"# Встреча {stamp}", ""]
-    if names_pending:
-        body += [NAMES_PENDING_NOTE, ""]
+    if pending_note:
+        body += [pending_note, ""]
     if engine_note:
         body += [ENGINE_FALLBACK_NOTE.format(reason=engine_note), ""]
     for s, e, spk, text in lines:
@@ -1449,9 +1493,10 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
 
 
 def names_pending(live: pathlib.Path) -> bool:
-    """Осталась ли в стенограмме пометка «имена не определены»."""
+    """Осталась ли в стенограмме пометка «имена не определены» — любой из двух
+    причин: ищем общее начало плашки, его же несут стенограммы до №499."""
     try:
-        return NAMES_PENDING_NOTE in live.read_text(encoding="utf-8")
+        return NAMES_PENDING_PREFIX in live.read_text(encoding="utf-8")
     except Exception:  # noqa: BLE001 — статус не должен ломать пайплайн
         return False
 

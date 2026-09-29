@@ -224,7 +224,7 @@ def meeting(tmp_path, monkeypatch):
     monkeypatch.setattr(rt, "live_meta", lambda live: state["meta"])
     monkeypatch.setattr(rt, "STT", lambda cfg: object())
     monkeypatch.setattr(rt, "stt_segment", lambda stt, chunk, sr: "реплика")
-    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines, **kw: ({}, True))
+    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines, **kw: rt.NamesOutcome({}, rt.NamesOutcome.ANSWERED))
     state["live"] = live
     return state
 
@@ -236,6 +236,29 @@ def test_rebuild_signs_the_owner_from_settings_in_a_call(meeting):
     out = rt.rebuild(meeting["live"], CFG)
     text = out.read_text(encoding="utf-8")
     assert OWNER in text and "Собеседник 1" in text and "Собеседник 3" in text
+
+
+@pytest.mark.parametrize("naming,note,not_note", [
+    (rt.NamesOutcome({}, rt.NamesOutcome.SILENT), rt.NAMES_PENDING_NOTE, "не прошло проверку"),
+    (rt.NamesOutcome({}, rt.NamesOutcome.REJECTED, 2), rt.NAMES_REJECTED_NOTE.format(proposed=2),
+     "не ответила на разборе"),
+])
+def test_unnamed_labels_get_the_note_of_their_cause(meeting, monkeypatch, naming, note, not_note):
+    """№499: плашка в шапке — по исходу разбора имён. Молчание зовёт пересобрать, отвергнутые гвардами
+    имена — нет (пересборка упрётся в те же гварды); признак names_pending видит обе."""
+    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines, **kw: naming)
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert note in text
+    assert not_note not in text
+    assert rt.names_pending(out) is True
+
+
+def test_a_usable_answer_leaves_no_note(meeting):
+    """Годный ответ модели без имён («имён не звучало») плашки не даёт — даже с безымянными метками."""
+    out = rt.rebuild(meeting["live"], CFG)
+    assert rt.NAMES_PENDING_PREFIX not in out.read_text(encoding="utf-8")
+    assert rt.names_pending(out) is False
 
 
 @pytest.mark.parametrize("speakers,expected", [(0, -1), (1, -1), (2, 2), (12, 12), (13, -1)])
