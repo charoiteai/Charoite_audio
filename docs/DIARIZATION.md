@@ -340,14 +340,19 @@ nemotron_python: ""         # empty: the environment scripts/install_engine.py i
 ```
 
 The environment is installed by the product, once, on your command — with the
-app's own Python (the doctor prints the command — with the app's interpreter when it can find it):
+app's own Python and your data folder named (the doctor prints the whole command — with
+the app's interpreter when it can find it, and with your data root):
 
 ```bash
-<app python> scripts/install_engine.py nemotron          # install
-<app python> scripts/install_engine.py nemotron --check  # what is there, no network
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron          # install
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --check  # what is there, no network
 ```
 
-In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`.
+In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`,
+and the data folder is the one under Settings → Data folder
+(`~/Library/Application Support/Charoite` by default). Without `CHAROITE_ROOT` the
+installer refuses: guessing the root from its own location would put the environment
+inside the signed `.app`, and a data root inside an `.app` is refused as well.
 The installer prints where it goes on the network before connecting, checks the
 machine against the header of `requirements-nemotron.lock` (Apple Silicon, macOS
 14 or newer — mlx wheels start there — and the Python the lock was built for),

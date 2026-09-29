@@ -88,7 +88,7 @@
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
-- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py; проба help
+- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py, src/diarize_nemotron.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/gate_bench.py` ← ручной запуск: замер решающего гейта, ручной прогон; проба help
@@ -96,7 +96,7 @@
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
-- `scripts/install_engine.py` ← scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help
+- `scripts/install_engine.py` ← scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help+refuse
 - `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
@@ -222,6 +222,7 @@
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
+- `stage_code.sh` ← app/make_app.sh
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 

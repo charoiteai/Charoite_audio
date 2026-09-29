@@ -98,6 +98,15 @@ def normalize_root(path) -> pathlib.Path:
     return pathlib.Path(s).expanduser().resolve()
 
 
+def inside_app_bundle(path) -> bool:
+    """Лежит ли путь внутри бандла приложения (`*.app` или глубже).
+
+    В бандле только код — подписанный и доступный на чтение. Корень данных там
+    ломает подпись первой же записью, а под App Translocation не пишется вовсе
+    (№489). Регистр суффикса не важен: файловая система macOS его не различает."""
+    return any(part.lower().endswith(".app") for part in pathlib.Path(path).parts)
+
+
 def use_data_root(path, *, replace: bool = False, origin: str = "owner") -> pathlib.Path:
     """Точка входа называет корень данных процесса.
 
@@ -134,8 +143,19 @@ def use_data_root(path, *, replace: bool = False, origin: str = "owner") -> path
     того, чтобы понять, почему корень уже назван. Объекты, собранные до
     смены, продолжают писать по старому пути — охранник заведён ровно от
     этого (круг 4 по коду №327, DS I1).
+
+    Корень внутри бандла приложения — отказ `RootNotNamed`, как ненайденный:
+    приложение его туда не кладёт никогда, а человек, пошедший по рецепту
+    «cd в бандл», легко называет `CHAROITE_ROOT=$PWD` — и установщик движка
+    писал бы сотни мегабайт в подписанный `.app` (входной круг 2 по №489, I2).
+    Правило здесь, при рождении корня, а не у каждого писателя.
     """
     root = normalize_root(path)
+    if inside_app_bundle(root):
+        raise RootNotNamed(
+            f"корень данных {root} лежит внутри бандла приложения — там только код, "
+            "подписанный и доступный на чтение. Передайте CHAROITE_ROOT=/путь/к/данным: "
+            "папку данных (в приложении — «Папка данных» в Настройках)")
     with _lock:
         global _given
         действующий = None if replace else (_given or _from_env())

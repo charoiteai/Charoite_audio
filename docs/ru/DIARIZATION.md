@@ -336,15 +336,19 @@ diarize_backend: nemotron   # по умолчанию sherpa
 nemotron_python: ""         # пусто — окружение, которое поставил scripts/install_engine.py
 ```
 
-Окружение ставит продукт, один раз и по вашей команде — Python приложения
-(команду печатает доктор — с интерпретатором приложения, когда может его найти):
+Окружение ставит продукт, один раз и по вашей команде — Python приложения и с
+названной папкой данных (команду целиком печатает доктор — с интерпретатором приложения,
+когда может его найти, и с вашим корнем данных):
 
 ```bash
-<python приложения> scripts/install_engine.py nemotron          # поставить
-<python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
+CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron          # поставить
+CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
 ```
 
-В приложении это `Charoite.app/Contents/Resources/python/bin/python3`.
+В приложении это `Charoite.app/Contents/Resources/python/bin/python3`, а папка данных —
+«Папка данных» в Настройках (по умолчанию `~/Library/Application Support/Charoite`).
+Без `CHAROITE_ROOT` установщик отказывает: корень, выведенный из его положения, положил
+бы окружение внутрь подписанного `.app`, а корень данных внутри `.app` отвергается тоже.
 Установщик печатает, куда пойдёт в сеть, до соединения; сверяет машину с шапкой
 `requirements-nemotron.lock` (Apple Silicon, macOS 14 и новее — колёса mlx
 начинаются с неё — и Python, под который собран лок); копирует интерпретатор,

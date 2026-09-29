@@ -65,7 +65,7 @@ import numpy as np
 # в sys.path сам не попадает, а соседи по src/ нужны (рецепт модуля под src/).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import foreign_python  # noqa: E402
-from charoite_paths import code_root, harden_umask  # noqa: E402
+from charoite_paths import code_root, harden_umask, inside_app_bundle  # noqa: E402
 from exit_codes import EXIT_ENGINE_UNAVAILABLE  # noqa: E402
 
 SAMPLE_RATE = 16000
@@ -86,15 +86,17 @@ HF_REPO = "mlx-community/Nemotron-3-Diarization"
 #: `availability` сверяет её с установленной (круг 2, DS I2).
 MLX_AUDIO_VERSION = "0.5.6"
 #: Окружение движка ставит установщик продукта (№474): своя копия интерпретатора
-#: и пакеты из `requirements-nemotron.lock` с хешами. Полную команду — каким
-#: интерпретатором звать — собирает `install_command()` на стороне пересборки и
-#: доктора; сторона движка знает только имя. Бенч гоняет движок в своём процессе,
-#: ему пакет ставится в .venv разработчика.
-INSTALLER = "scripts/install_engine.py nemotron"
+#: и пакеты из `requirements-nemotron.lock` с хешами. Команду целиком — каким
+#: интерпретатором и с каким корнем данных звать — собирает `install_command(root)`
+#: у того, кто корень знает: пересборка, доктор, `--check`. Сторона движка корня
+#: не знает и команды не печатает: её текст — причина, а команду к отказу
+#: дописывает вызывающий (входной круг 2 по №489, I1). Бенч гоняет движок в своём
+#: процессе, ему пакет ставится в .venv разработчика.
 #: Python приложения внутри бандла: им ставится окружение движка (копия — его).
 APP_PYTHON = "Charoite.app/Contents/Resources/python/bin/python3"
-INSTALL_RECIPE = (f"поставьте окружение движка: {INSTALLER} (бенч в .venv: "
-                  f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; только Apple Silicon)')
+INSTALL_RECIPE = ("поставьте окружение движка установщиком продукта (команду с корнем данных печатает "
+                  f'scripts/doctor.py; бенч в .venv: .venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; '
+                  "только Apple Silicon)")
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -147,21 +149,33 @@ def app_python() -> str:
     return str(bundled) if code.parent.name == "Resources" and bundled.is_file() else ""
 
 
-def install_command() -> str:
+def install_command(root: pathlib.Path) -> str:
     """Команда установщика для человека: одно место для пересборки, доктора и `--check`.
 
-    Python приложения известен — готовая строка; нет — та же строка с путём
-    `APP_PYTHON` и просьбой подставить свой Charoite.app."""
+    Корень данных — тот, с которым работает печатающий: установщик называет его
+    дверью канона и без `CHAROITE_ROOT` отказывает (№489), поэтому корень идёт в
+    саму команду. Python приложения известен — готовая строка; нет — та же строка
+    с путём `APP_PYTHON` и просьбой подставить свой Charoite.app.
+
+    Корень внутри бандла — не корень данных, а догадка процесса, запущенного из
+    бандла без `CHAROITE_ROOT`. Команды тогда нет: строка, которую можно вставить
+    в shell, поставила бы движок в подписанный `.app` — вместо неё слова, где взять
+    корень (входной круг 2 по №489, критика 1 и M1)."""
+    if inside_app_bundle(root):
+        return ("корень данных не назван — установщику нужна папка данных: запустите его с "
+                "CHAROITE_ROOT, равной папке данных (в приложении — «Папка данных» в Настройках)")
     script = [str(code_root(__file__) / "scripts" / "install_engine.py"), "nemotron"]
+    prefix = f"CHAROITE_ROOT={shlex.quote(str(root))} "
     python = app_python()
     if python:
-        return shlex.join([python, *script])
-    return f"{APP_PYTHON} {shlex.join(script)} (путь к Charoite.app — ваш)"
+        return prefix + shlex.join([python, *script])
+    return f"{prefix}{APP_PYTHON} {shlex.join(script)} (путь к Charoite.app — ваш)"
 
 
 def fetch_recipe(target: pathlib.Path) -> str:
-    """Команда разовой загрузки весов — печатается, но не выполняется."""
-    return f"{INSTALLER} (вручную: .venv/bin/hf download {HF_REPO} --local-dir {target})"
+    """Рецепт разовой загрузки весов — печатается, но не выполняется. Команду
+    установщика с корнем дописывает вызывающий (`install_command`)."""
+    return f"установщиком продукта (вручную: .venv/bin/hf download {HF_REPO} --local-dir {target})"
 
 
 def check_model_dir(path: pathlib.Path) -> str | None:
@@ -468,15 +482,27 @@ def engine_interpreter(setting: str, root: pathlib.Path) -> tuple[str, str]:
     installed = engine_python(root)
     if installed.exists():
         return str(installed), ""
-    return "", f"окружение движка не установлено ({engine_dir(root)}) — {install_command()}"
+    return "", f"окружение движка не установлено ({engine_dir(root)}) — {install_command(root)}"
+
+
+def _with_installer(out: foreign_python.Outcome, root: pathlib.Path) -> foreign_python.Outcome:
+    """К отказу движка «нечем работать» — команда установщика с корнем вызывающего.
+
+    Сторона движка корня не знает и команду не печатает; UNAVAILABLE лечится
+    (пере)установкой окружения, поэтому команда нужна ровно ему. FAILED —
+    падение, а не нехватка: переустановка его не обещает."""
+    if out.kind != foreign_python.UNAVAILABLE:
+        return out
+    return foreign_python.Outcome(foreign_python.UNAVAILABLE,
+                                  reason=f"{out.reason} — окружение ставит: {install_command(root)}")
 
 
 def probe_in_env(setting: str, *, root: pathlib.Path, timeout: float = 60.0) -> foreign_python.Outcome:
     """Сторона вызывающего: готов ли движок — без записи и без загрузки весов.
 
     OK — `{"mlx_audio": версия}`; UNAVAILABLE — окружения нет или ему нечем
-    работать (причина со стороны движка: пакет, версия, каталог весов). Её зовут
-    доктор и `--check` установщика."""
+    работать (причина со стороны движка: пакет, версия, каталог весов — с командой
+    установщика). Её зовут доктор и `--check` установщика."""
     python, refusal = engine_interpreter(setting, root)
     if refusal:
         return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal)
@@ -485,7 +511,7 @@ def probe_in_env(setting: str, *, root: pathlib.Path, timeout: float = 60.0) -> 
     if out.ok and not isinstance(out.payload.get("mlx_audio"), str):
         return foreign_python.Outcome(foreign_python.FAILED,
                                       reason=f"проба движка не по протоколу: {out.payload!r}")
-    return out
+    return _with_installer(out, root)
 
 
 def diarize_in_env(setting: str, wav: pathlib.Path, *, root: pathlib.Path,
@@ -508,7 +534,7 @@ def diarize_in_env(setting: str, wav: pathlib.Path, *, root: pathlib.Path,
     out = foreign_python.run_json(python, SCRIPT, [str(wav), "--model", str(model_dir(root))],
                                   timeout=timeout)
     if not out.ok:
-        return out
+        return _with_installer(out, root)
     try:
         return foreign_python.Outcome(foreign_python.OK, payload=parse_segments(out.payload))
     except ValueError as e:
