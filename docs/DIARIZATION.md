@@ -436,9 +436,18 @@ eight. Every sherpa config is now built by one factory, `src/sherpa_config.py`:
 the live trackers always get one thread; the pass after a meeting gets one
 thread while a recording is running, and otherwise the largest thread count
 that was measured to give the same labels, capped at half the performance cores.
-Until that measurement is recorded, the list holds only 1 — nothing speeds up on
-a guess. A test forbids building a sherpa segmentation or embedding config
-anywhere else.
+A test forbids building a sherpa segmentation or embedding config anywhere else.
+
+The measurement (29 September, sherpa-onnx 1.13.7, M1 Max): 20 minutes of a
+meeting's microphone and 20 minutes of a call channel with an eight-voice hint.
+On 2 and 4 threads the segments are byte-identical to one thread — 0 of 101,001
+and 0 of 96,356 speech frames differ — and the pass runs 1.53 times faster on 2
+threads and 2.28 times on 4 (RTF 0.41 → 0.27 → 0.18 on the microphone). The list
+holds 1 and 2. A pass that started before a meeting keeps its threads to the end,
+and next to it the live speech recognition (8-second chunks) loses 55 % at p95
+with 4 threads under `nice 10` and 9 % with 2; 4 threads wait until a pass can
+yield to a meeting mid-way. Another sherpa-onnx or onnxruntime version is a
+reason to measure again.
 
 The rebuild yields to a live meeting before each channel's labelling and
 before speech recognition (up to ten minutes each, like names and minutes), not
