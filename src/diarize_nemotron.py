@@ -424,6 +424,11 @@ def frame_seconds(model: Any) -> float:
     весов (входной круг фикса, M1). Сверка единицы со звуком — `_check_front`.
     """
     proc = model.config.processor_config
+    if proc.sampling_rate != SAMPLE_RATE:
+        # Поток идёт на частоте хаба; модель другой частоты `feed` отвергла бы на первом
+        # блоке, а кадр не был бы целым числом сэмплов потока, и сверка фронта лгала бы
+        # (выходной круг фикса A2 №478, M2). Отказ — до рукопожатия, с причиной.
+        raise ModelUnavailable(f"модель ждёт звук {proc.sampling_rate} Гц, поток идёт на {SAMPLE_RATE} Гц")
     return proc.hop_length / proc.sampling_rate
 
 
@@ -539,10 +544,10 @@ def serve_stream(model_dir: pathlib.Path, preset: str, read: Callable[[int], byt
 
     try:
         model = load_model(model_dir, preset)
+        frame_s = frame_seconds(model)
     except ModelUnavailable as e:
         _stderr(str(e).replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
-    frame_s = frame_seconds(model)
     emit({"type": "ready", "proto": STREAM_PROTO, "sr": SAMPLE_RATE, "preset": preset,
           "frame_s": frame_s, "step": STREAM_STEP})
     return run_stream(NemotronStream(model), frame_s=frame_s, read=read, emit=emit)

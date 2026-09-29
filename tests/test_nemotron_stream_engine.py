@@ -74,6 +74,21 @@ def test_the_frame_is_the_native_spectrum_hop_not_the_encoder_frame():
     assert dn.frame_seconds(_Model()) == pytest.approx(0.01)
 
 
+def test_a_model_of_another_rate_is_refused_before_the_handshake(monkeypatch, capsys):
+    """Модель не той частоты — отказ движка с причиной до рукопожатия: кадр был бы не целым
+    числом сэмплов потока, и сверка фронта лгала бы (выходной круг фикса A2 №478, M2)."""
+    model = _Model()
+    model.config.processor_config.sampling_rate = 8000
+    with pytest.raises(dn.ModelUnavailable, match="8000 Гц"):
+        dn.frame_seconds(model)
+    proto = io.StringIO()
+    monkeypatch.setattr(dn, "_protocol_channel", lambda: proto)
+    monkeypatch.setattr(dn, "load_model", lambda path, preset: model)
+    assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: b"") == EXIT_ENGINE_UNAVAILABLE
+    assert proto.getvalue() == "", "без своей частоты рукопожатия нет"
+    assert capsys.readouterr().err == f"модель ждёт звук 8000 Гц, поток идёт на {SR} Гц\n"
+
+
 class _Stream:
     """Поток без модели: сколько сэмплов в каждом `feed`, кадр на каждые 1280 с задержкой
     в кадр, сегмент от прошлого фронта до нового; `close` дописывает отставший кадр — как
@@ -196,7 +211,8 @@ def test_the_front_is_checked_against_the_audio_fed(frames, fed, final, said):
     """Единица кадра сверяется с поданным звуком: модель не размечает звука, которого не
     получила, а финал размечает весь с точностью до кадра (замер на mlx-audio 0.5.6 —
     на финале ровно `fed // hop`; входной круг фикса A2 №478, I1 и M3). Строка отказа —
-    целиком: её читает человек в строке `end` журнала тени, секунды в ней — улика."""
+    целиком: последней строкой журнала ребёнка она доходит до строки `end` журнала тени
+    (`foreign_python.StreamProcess.finish`), секунды в ней — улика."""
     if said is None:
         dn._check_front(frames, fed, 0.01, final=final)
     else:

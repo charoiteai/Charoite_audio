@@ -56,7 +56,7 @@ def _journal(path):
 class _FakeModelStream:
     """Поддельный поток: копит поданное, выдаёт кадры с задержкой `lag` сэмплов."""
 
-    def __init__(self, frame_s=0.08, lag=int(1.04 * SR)):
+    def __init__(self, frame_s=0.01, lag=int(1.04 * SR)):
         self.fed = []
         self.frame = int(frame_s * SR)
         self.lag = lag
@@ -94,7 +94,7 @@ def test_the_stream_loop_carries_odd_bytes_and_reports_a_front_after_every_block
     it = iter(pieces)
     out = []
     stream = _FakeModelStream()
-    assert dn.run_stream(stream, frame_s=0.08, read=lambda n: next(it), emit=out.append, step=4000) == 0
+    assert dn.run_stream(stream, frame_s=0.01, read=lambda n: next(it), emit=out.append, step=4000) == 0
     got = np.concatenate(stream.fed)
     assert np.array_equal(got, pcm.astype(np.float32) / 32768.0), "звук дошёл до модели без сдвига на байт"
     assert [len(p) for p in stream.fed[:-1]] == [4000] * (len(stream.fed) - 1)
@@ -108,9 +108,9 @@ def test_the_stream_loop_carries_odd_bytes_and_reports_a_front_after_every_block
 
 def test_a_segment_is_open_only_when_it_reaches_the_front_in_whole_frames():
     out = []
-    frame_s = 0.08
-    segs = [{"start": 0.0, "end": 0.24, "speaker": "nem0"},          # 3 кадра — до фронта
-            {"start": 0.24, "end": 0.4, "speaker": "nem2"}]          # 5 кадров — фронт
+    frame_s = 0.01                                                   # единица продукта: кадр спектра
+    segs = [{"start": 0.0, "end": 0.03, "speaker": "nem0"},          # 3 кадра — до фронта
+            {"start": 0.03, "end": 0.05, "speaker": "nem2"}]         # 5 кадров — фронт
     dn._emit_segments(segs, 5, frame_s, out.append, final=False)
     assert [(m["slot"], m["open"]) for m in out] == [(0, False), (2, True)]
     out.clear()
@@ -720,8 +720,9 @@ sys.path.insert(0, {src!r})
 import numpy as np
 import diarize_nemotron as dn
 
-FRAME = int(0.08 * dn.SAMPLE_RATE)
+FRAME = int(0.01 * dn.SAMPLE_RATE)          # кадр продукта: 10 мс спектра (фикс A2 №478)
 LAG = int(1.04 * dn.SAMPLE_RATE)
+CLAIMED = {claimed} * FRAME / dn.SAMPLE_RATE   # единица, которую ребёнок называет родителю
 
 
 class Voices:
@@ -758,8 +759,8 @@ def emit(m):
 
 
 emit({{"type": "ready", "proto": dn.STREAM_PROTO, "sr": dn.SAMPLE_RATE, "preset": "low",
-       "frame_s": FRAME / dn.SAMPLE_RATE, "step": dn.STREAM_STEP}})
-sys.exit(dn.run_stream(Voices(), frame_s=FRAME / dn.SAMPLE_RATE, read=lambda n: os.read(0, n), emit=emit))
+       "frame_s": CLAIMED, "step": dn.STREAM_STEP}})
+sys.exit(dn.run_stream(Voices(), frame_s=CLAIMED, read=lambda n: os.read(0, n), emit=emit))
 '''
 
 
@@ -772,13 +773,40 @@ def _hub():
     return hub
 
 
+def test_a_child_with_the_wrong_frame_unit_dies_and_the_journal_names_why(tmp_path):
+    """Прежняя ошибка A2 настоящим процессом: ребёнок называет кадр в восемь раз длиннее
+    того, которым считает модель. Сверка фронта роняет его на первом фронте, а строка
+    `end` журнала несёт её причину — последнюю строку журнала ребёнка, а не голый «код 1»
+    (выходной круг фикса A2 №478, M1 и критика 1)."""
+    engine = tmp_path / "engine.py"
+    engine.write_text(FAKE_ENGINE.format(src=str(SRC), claimed=8), encoding="utf-8")
+    hub = _hub()
+    cap = types.SimpleNamespace(label="blackhole")
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="s", say=lambda line: None,
+                   memory=lambda: None)
+    hub.add_frame_listener(sh.on_frame)
+    sh.begin(python=sys.executable, script=engine, args=[], errlog=tmp_path / "live.err")
+    _wait(lambda: sh.state == ln.LIVE, timeout=30, what="рукопожатие поддельного движка")
+    voice = np.full(6 * SR, 0.3, dtype=np.float32)
+    for pos in range(0, len(voice), 1600):
+        if sh.state == ln.DEAD:
+            break
+        hub._consume(cap, voice[pos:pos + 1600])
+        hub.pull_placed()
+    _wait(lambda: sh.state == ln.DEAD, timeout=30, what="ребёнок умер на сверке")
+    end = _journal(tmp_path / "live.jsonl")[-1]
+    assert end["type"] == "end" and end["exit"] == fp.FAILED
+    assert "впереди поданного звука" in end["exit_reason"] and "единица кадра не та" in end["exit_reason"]
+    assert "единица кадра не та" in sh.reason, sh.reason
+
+
 def test_hub_to_child_to_journal_keeps_one_axis(tmp_path, monkeypatch):
     """Первые 5 с звучат до старта потока (ось ребёнка начнётся не с нуля), голос
     меняется на 17-й секунде хаба. Каждый чанк после старта обязан получить слот
     своего голоса; сдвиг на `start0` перекрасил бы чанки 12,5–17 с, сдвиг на байт —
     все."""
     engine = tmp_path / "engine.py"
-    engine.write_text(FAKE_ENGINE.format(src=str(SRC)), encoding="utf-8")
+    engine.write_text(FAKE_ENGINE.format(src=str(SRC), claimed=1), encoding="utf-8")
     tried = []
 
     class Spy(importlib.abc.MetaPathFinder):
@@ -927,16 +955,26 @@ def test_the_queue_cap_is_exact_and_counts_what_the_writer_took(tmp_path):
     assert sh.state == ln.DEAD and "отстал" in sh.reason
 
 
-def test_a_closed_input_of_the_child_stops_the_shadow(tmp_path):
+@pytest.mark.parametrize("exit_, said", [
+    (fp.Outcome(fp.FAILED, reason="код 1: RuntimeError: фронт впереди"), "код 1: RuntimeError: фронт впереди"),
+    (fp.Outcome(fp.OK), "вышел"),
+])
+def test_a_closed_input_of_the_child_stops_the_shadow_with_the_child_exit(tmp_path, exit_, said):
+    """Писатель замечает смерть ребёнка раньше читателя. Причина в строке `end` — выход
+    ребёнка (код и последняя строка его журнала), а не сломанная труба: иначе сверка
+    фронта и падение модели терялись (выходной круг фикса A2 №478)."""
     door = _Door()
 
     def closed(data):
         raise BrokenPipeError("труба закрыта")
     door.child.write = closed
+    door.child.exit = exit_
     sh, door, _ = _live(tmp_path, door=door)
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
     _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
-    assert sh.reason.startswith("вход ребёнка закрыт")
+    assert sh.reason == f"вход ребёнка закрыт (труба закрыта); ребёнок: {said}"
+    end = _end(tmp_path)
+    assert end["exit"] == exit_.kind and end.get("exit_reason", "") == exit_.reason
 
 
 def _end(tmp_path):

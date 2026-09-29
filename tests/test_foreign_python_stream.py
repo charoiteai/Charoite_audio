@@ -58,10 +58,15 @@ def test_writing_after_the_input_is_closed_is_a_broken_pipe_and_closing_twice_is
 
 
 @pytest.mark.parametrize("tail, kind, reason", [
-    ("sys.exit(3)\n", fp.FAILED, "код 3"),
+    ("sys.exit(3)\n", fp.FAILED, "код 3: без вывода"),
+    ("sys.stderr.write('Traceback\\n  ...\\nRuntimeError: фронт впереди\\n\\n'); sys.exit(1)\n",
+     fp.FAILED, "код 1: RuntimeError: фронт впереди"),
     (f"sys.exit({EXIT_ENGINE_UNAVAILABLE})\n", fp.UNAVAILABLE, "движок недоступен"),
+    (f"sys.stderr.write('нет весов\\n'); sys.exit({EXIT_ENGINE_UNAVAILABLE})\n", fp.UNAVAILABLE, "нет весов"),
 ])
 def test_finish_tells_the_exit_of_the_child(tmp_path, tail, kind, reason):
+    """Причина выхода после рукопожатия — последняя непустая строка журнала ребёнка, тем
+    же правилом, что до рукопожатия (выходной круг фикса A2 №478, M1)."""
     stream, out = _spawn(_child(tmp_path, READY + WAIT_EOF + tail), tmp_path)
     assert out.ok
     stream.close_input()
@@ -128,8 +133,8 @@ def test_a_given_up_stream_calls_back_no_one(tmp_path, monkeypatch):
     made = []
 
     class Spy(fp.StreamProcess):
-        def __init__(self, proc):
-            super().__init__(proc)
+        def __init__(self, proc, stderr_path=None):
+            super().__init__(proc, stderr_path)
             made.append(self)
 
     monkeypatch.setattr(fp, "StreamProcess", Spy)
@@ -157,5 +162,5 @@ def test_kill_nowait_kills_without_reaping(tmp_path):
     assert out.ok
     stream.kill_nowait()
     got = stream.finish(10)
-    assert got.kind == fp.FAILED and got.reason == f"код {-9}"
+    assert got.kind == fp.FAILED and got.reason == f"код {-9}: без вывода"
     assert stream.alive() is False

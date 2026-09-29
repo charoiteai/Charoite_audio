@@ -467,8 +467,10 @@ nothing in the transcript (default `off`).
   streaming state), and every `front` is checked against the audio fed: frames
   never ahead of it, the final one covering it to within a frame (measured on
   mlx-audio 0.5.6, all four presets). A broken check means the library changed
-  its unit — the child exits with the numbers in its log and the shadow ends,
-  rather than writing a wrong front.
+  its unit — the child exits and the shadow ends, rather than writing a wrong
+  front; the journal's `end` line carries the check's numbers (the last line of
+  the child's log names the reason of any exit). A model whose rate is not the
+  stream's is refused before the handshake.
 - **The axis.** The call channel reaches the child through a frame listener
   (see "One sample axis per channel"). Blocks before the handshake are not
   kept: the stream starts at the first block after it, `start0` on the hub's
