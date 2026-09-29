@@ -182,10 +182,10 @@ def test_the_engine_reads_its_audio_from_its_stdin():
 
 @pytest.mark.parametrize("frames, fed, final, broken", [
     (10, 10 * HOP, False, False),          # фронт ровно на звуке
-    (11, 10 * HOP, False, True),           # на кадр впереди звука — не та единица
+    (10, 10 * HOP - 1, False, True),       # на сэмпл впереди звука — не та единица
     (0, 10 * HOP, False, False),           # в потоке отставать можно: модель ждёт окно
     (10, 11 * HOP - 1, True, False),       # финал недобрал меньше кадра — хвост не кадр
-    (9, 11 * HOP - 1, True, True),         # финал недобрал больше кадра
+    (10, 11 * HOP, True, True),            # финал недобрал ровно кадр
     (11, 10 * HOP, True, True),            # финал впереди звука
 ])
 def test_the_front_is_checked_against_the_audio_fed(frames, fed, final, broken):

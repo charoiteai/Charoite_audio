@@ -452,14 +452,17 @@ def _check_front(frames: int, fed: int, frame_s: float, *, final: bool) -> None:
     звук с точностью до кадра (замер на mlx-audio 0.5.6, четыре пресета, 0–31 с: на
     финале кадров ровно `fed // hop`). Нарушение — не та единица кадра: ребёнок умирает
     с числами в журнале, а не отдаёт тихо неверный фронт и неверное «открыт»
-    (входной круг фикса A2 №478, I1 и M3)."""
-    covered, heard, eps = frames * frame_s, fed / SAMPLE_RATE, 0.5 / SAMPLE_RATE
-    if covered > heard + eps:
-        raise RuntimeError(f"фронт модели {covered:.3f} с впереди поданного звука {heard:.3f} с "
-                           f"({frames} кадров по {frame_s} с) — единица кадра не та")
-    if final and covered < heard - frame_s - eps:
-        raise RuntimeError(f"финал модели {covered:.3f} с не покрыл поданный звук {heard:.3f} с "
-                           f"({frames} кадров по {frame_s} с) — единица кадра не та")
+    (входной круг фикса A2 №478, I1 и M3). Счёт — в целых сэмплах: кадр модели — целое
+    число сэмплов (частота модели равна частоте потока, иначе `feed` отказывает сам), и
+    границы точные, без допуска плавающей точки (мутатор диапазона фикса)."""
+    hop = round(frame_s * SAMPLE_RATE)
+    covered = frames * hop
+    if covered > fed:
+        raise RuntimeError(f"фронт модели {frames * frame_s:.3f} с впереди поданного звука "
+                           f"{fed / SAMPLE_RATE:.3f} с ({frames} кадров по {frame_s} с) — единица кадра не та")
+    if final and fed - covered >= hop:
+        raise RuntimeError(f"финал модели {frames * frame_s:.3f} с не покрыл поданный звук "
+                           f"{fed / SAMPLE_RATE:.3f} с ({frames} кадров по {frame_s} с) — единица кадра не та")
 
 
 def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_STEP) -> int:
