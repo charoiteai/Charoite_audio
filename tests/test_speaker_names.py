@@ -380,13 +380,34 @@ def test_a_refusal_is_said_once_per_meeting_and_again_for_a_new_reason_or_meetin
     assert sn.say_refusal("Собеседник", address, stream=out)
     sn.forget_refusals()
     assert sn.say_refusal("Собеседник", unheard, stream=out)
-    assert not sn.say_refusal("Собеседник", sn.judge_name("NONE", sample=INTRO, label="Собеседник"),
-                              stream=out), "«имени нет» — ответ модели, а не отвергнутое имя"
-    assert not sn.say_refusal("Собеседник", sn.judge_name("Мария", sample=INTRO, label="Собеседник"),
-                              stream=out), "принятое имя — не отказ"
+    assert sn.say_refusal("Собеседник", sn.judge_name("NONE", sample=INTRO, label="Собеседник"),
+                          stream=out) is False, "«имени нет» — ответ модели, а не отвергнутое имя"
+    assert sn.say_refusal("Собеседник", sn.judge_name("Мария", sample=INTRO, label="Собеседник"),
+                          stream=out) is False, "принятое имя — не отказ"
     assert out.getvalue().splitlines() == [
         "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
         "имена: «Ольга» для «Собеседник» не принято — звучит только в своих репликах — обращение к другому",
         "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
     ]
+    sn.forget_refusals()
+
+
+def test_settle_names_only_a_label_of_the_sample_and_only_once():
+    """Решение живого цикла имён по паре «метка → имя» (№502), вынесенное из
+    замыкания демона: метка вне выборки — ни имени, ни строки журнала; отказ по
+    метке выборки — строка; имя, уже отданное другой метке, второй раз не раздаётся."""
+    out = io.StringIO()
+    sn.forget_refusals()
+    labels = ["Собеседник"]
+    accepted = sn.judge_name("Мария", sample=INTRO, label="Собеседник")
+    refused = sn.judge_name("Ольга", sample=INTRO, label="Собеседник")
+    assert sn.settle("Собеседник", accepted, labels=labels, stream=out) == "Мария"
+    assert sn.settle("Собеседник", accepted, labels=labels, taken=["Мария"], stream=out) is None, \
+        "имя уже у другой метки"
+    assert sn.settle("Собеседник 7", accepted, labels=labels, stream=out) is None, "метки нет в выборке"
+    assert sn.settle("Собеседник 7", refused, labels=labels, stream=out) is None
+    assert sn.settle("Собеседник", refused, labels=labels, stream=out) is None
+    assert out.getvalue().splitlines() == [
+        "имена: «Ольга» для «Собеседник» не принято — не звучало в разговоре",
+    ], "строка — только об отказе по метке выборки"
     sn.forget_refusals()

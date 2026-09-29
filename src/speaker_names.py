@@ -386,6 +386,20 @@ def say_refusal(label: str, verdict: NameVerdict, stream=None) -> bool:
     return once.say(key, "имена: " + line, stream=stream)
 
 
+def settle(label: str, verdict: NameVerdict, *, labels, taken=(), stream=None) -> str | None:
+    """Имя, которое метка живого цикла получает по вердикту, или None (№502).
+
+    Метка вне выборки — модель назвала несуществующую или уже подписанную — не
+    получает ни имени, ни строки журнала. Отказ гварда по метке из выборки —
+    строка `say_refusal`, один раз за встречу. Имя, уже отданное другой метке,
+    второй раз не раздаётся. Решение живёт здесь, а не в замыкании `daemon.main()`:
+    там его условия не видел ни один тест."""
+    if label not in labels:
+        return None
+    say_refusal(label, verdict, stream=stream)
+    return verdict.name if verdict.name not in taken else None
+
+
 def forget_refusals() -> None:
     """Новая встреча — чистый лист: реестр живёт на процесс демона, и отказ новой
     встречи иначе молчал бы, если такая же тройка прозвучала на прошлой."""

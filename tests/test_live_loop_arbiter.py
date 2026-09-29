@@ -58,11 +58,14 @@ def test_name_loop_skips_a_tick_without_new_speech():
 
 
 def test_name_loop_logs_guard_refusals_once_per_meeting():
-    """Отказ гварда в живом цикле имён — строка в журнал из обеих веток (№502), а
-    реестр «сказано» чистится до цикла: он живёт на процесс демона, и отказ новой
-    встречи иначе молчал бы после такой же на прошлой."""
+    """Отказ гварда в живом цикле имён — строка в журнал из обеих веток (№502): у
+    мультиспикера через `speaker_names.settle` (там же решение по метке, его держат
+    тесты имён), у одиночной ветки — прямо. Реестр «сказано» чистится до цикла: он
+    живёт на процесс демона, и отказ новой встречи иначе молчал бы после такой же
+    на прошлой."""
     body = _body("name_loop")
-    assert body.count("speaker_names.say_refusal(") == 2
+    assert body.count("speaker_names.settle(") == 1
+    assert body.count("speaker_names.say_refusal(") == 1
     assert "speaker_names.forget_refusals()" in body.split("while not stop.is_set():")[0]
 
 def test_stream_read_timeout_is_two_minutes_for_live_and_five_for_documents():

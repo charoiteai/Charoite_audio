@@ -2734,11 +2734,9 @@ def main():
                                     owner_name=owner_name, known=tuple(known_first),
                                     voice=voice_pitch.register(_median_f0(label)),
                                     name_gender=name_gender(str(raw_name)))
-                                name = verdict.name
-                                if label in labels and not name:
-                                    speaker_names.say_refusal(label, verdict)
-                                if (label in labels and name
-                                        and name not in renamed.values()):
+                                name = speaker_names.settle(label, verdict, labels=labels,
+                                                            taken=renamed.values())
+                                if name:
                                     renamed[label] = name
                                     tr.rename_speaker(label, name)
                                     for vid, vname in list(voice_names.items()):
@@ -2770,8 +2768,8 @@ def main():
                             voice=voice_pitch.register(_median_f0("Собеседник")),
                             name_gender=name_gender(raw_name))
                         name = verdict.name
-                        if not name:
-                            speaker_names.say_refusal("Собеседник", verdict)
+                        # принятое имя — не отказ: строки не будет
+                        speaker_names.say_refusal("Собеседник", verdict)
                         if name:
                             tr.rename_speaker("Собеседник", name)
                             emit({"type": "rename", "from": "Собеседник", "to": name})
