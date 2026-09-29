@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.1](https://github.com/charoiteai/Charoite_audio/compare/v0.88.0...v0.88.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **diarization:** the bundle python leaves no bytecode in the signed app ([#489](https://github.com/charoiteai/Charoite_audio/issues/489)) ([#681](https://github.com/charoiteai/Charoite_audio/issues/681)) ([28d1980](https://github.com/charoiteai/Charoite_audio/commit/28d1980dc5b6a0e23a42f6313b668f8e15d61b5f))
+* **diarization:** the Nemotron installer works from the app bundle and never writes into it ([#489](https://github.com/charoiteai/Charoite_audio/issues/489)) ([#678](https://github.com/charoiteai/Charoite_audio/issues/678)) ([6a2f5de](https://github.com/charoiteai/Charoite_audio/commit/6a2f5deb317e7598c2ded712fa31a9e555c1f6d8))
+* **doctor:** the doctor starts on any Python again — numpy only where the engine runs ([#490](https://github.com/charoiteai/Charoite_audio/issues/490)) ([#679](https://github.com/charoiteai/Charoite_audio/issues/679)) ([d918438](https://github.com/charoiteai/Charoite_audio/commit/d91843815f01a5c4d1dd2ec132f264b33fa3efc7))
+
 ## [0.88.0](https://github.com/charoiteai/Charoite_audio/compare/v0.87.0...v0.88.0) (2026-09-29)
 
 
