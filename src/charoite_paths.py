@@ -99,12 +99,16 @@ def normalize_root(path) -> pathlib.Path:
 
 
 def inside_app_bundle(path) -> bool:
-    """Лежит ли путь внутри бандла приложения (`*.app` или глубже).
+    """Лежит ли путь внутри бандла приложения: сам `X.app` или глубже.
 
     В бандле только код — подписанный и доступный на чтение. Корень данных там
     ломает подпись первой же записью, а под App Translocation не пишется вовсе
-    (№489). Регистр суффикса не важен: файловая система macOS его не различает."""
-    return any(part.lower().endswith(".app") for part in pathlib.Path(path).parts)
+    (№489). Бандл — каталог `*.app` с `Contents/` внутри, а не любое имя с таким
+    суффиксом: папка «Journal.app», выбранная человеком под данные, бандлом не
+    является (выходной круг 1 по №489, M2). Регистр суффикса не важен: файловая
+    система macOS его не различает."""
+    p = pathlib.Path(path)
+    return any(a.name.lower().endswith(".app") and (a / "Contents").is_dir() for a in (p, *p.parents))
 
 
 def use_data_root(path, *, replace: bool = False, origin: str = "owner") -> pathlib.Path:

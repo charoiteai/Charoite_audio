@@ -251,6 +251,11 @@
       "why": "shell-скрипт: пробника нет",
       "ticket": "№364 (проба вместо none)"
     },
+    "app/stage_code.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; поведение держит test_install_engine (дерево бандла из него же)",
+      "ticket": "№364 (проба вместо none)"
+    },
     "scripts/bench_extract.py": {
       "mode": "help",
       "why": "по коду: argparse"

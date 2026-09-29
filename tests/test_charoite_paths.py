@@ -827,28 +827,43 @@ def test_the_entry_door_names_a_guess_only_when_asked(tmp_path):
     assert прогон.stdout.strip() == str((tmp_path / "установка").resolve())
 
 
-@pytest.mark.parametrize("внутри", ["Charoite.app", "Мой Charoite.app/Contents/Resources/charoite", "x.APP/данные"])
-def test_the_entry_door_refuses_a_root_inside_an_app_bundle(tmp_path, внутри):
+def _bundle(tmp_path: pathlib.Path, name: str) -> pathlib.Path:
+    """Каталог формы бандла: `X.app` с `Contents/` внутри."""
+    (tmp_path / name / "Contents").mkdir(parents=True)
+    return tmp_path / name
+
+
+def _дерево(корень: pathlib.Path) -> set[str]:
+    return {str(p.relative_to(корень)) for p in корень.rglob("*")}
+
+
+@pytest.mark.parametrize("бандл,внутри", [("Charoite.app", ""), ("Мой Charoite.app", "Contents/Resources/charoite"),
+                                          ("x.APP", "данные")])
+def test_the_entry_door_refuses_a_root_inside_an_app_bundle(tmp_path, бандл, внутри):
     """Корень данных внутри бандла — отказ двери тем же кодом и рецептом, что «не назван»:
     в бандле только подписанный код, и установщик движка писал бы туда сотни мегабайт
     (входной круг 2 по №489, I2). Правило в каноне, при рождении корня, — ничего не создано."""
     sys.path.insert(0, str(ROOT / "src"))
     import exit_codes
-    корень = tmp_path / внутри
-    прогон = _door(tmp_path, root=str(корень))
+    app = _bundle(tmp_path, бандл)
+    до = _дерево(app)
+    прогон = _door(tmp_path, root=str(app / внутри))
     assert прогон.returncode == exit_codes.EXIT_ROOT_UNNAMED, (прогон.returncode, прогон.stderr[-300:])
     assert "внутри бандла" in прогон.stderr and "CHAROITE_ROOT" in прогон.stderr, прогон.stderr[-300:]
     assert "Traceback" not in прогон.stderr and прогон.stdout == ""
-    assert not корень.exists(), "отказ создал корень внутри бандла"
+    assert _дерево(app) == до, "отказ оставил след внутри бандла"
 
 
-def test_inside_app_bundle_reads_path_parts_not_substrings(tmp_path):
-    """Бандл — часть пути с суффиксом .app (регистр macOS не различает), а не подстрока:
-    «.app.bak» и «application» — обычные каталоги."""
+def test_inside_app_bundle_is_a_bundle_not_a_suffix(tmp_path):
+    """Бандл — каталог `*.app` с `Contents/` (регистр macOS не различает), а не имя:
+    папка «Journal.app» под данные, «.app.bak» и «application» — обычные каталоги
+    (выходной круг 1 по №489, M2)."""
     sys.path.insert(0, str(ROOT / "src"))
     import charoite_paths as cp
-    assert cp.inside_app_bundle(tmp_path / "Charoite.app")
-    assert cp.inside_app_bundle(tmp_path / "Мой Charoite.APP" / "Contents" / "Resources")
-    assert not cp.inside_app_bundle(tmp_path / "app" / "данные")
+    app = _bundle(tmp_path, "Мой Charoite.APP")
+    assert cp.inside_app_bundle(app)
+    assert cp.inside_app_bundle(app / "Contents" / "Resources" / "ещё-нет")
+    (tmp_path / "Journal.app" / "данные").mkdir(parents=True)
+    assert not cp.inside_app_bundle(tmp_path / "Journal.app" / "данные")
     assert not cp.inside_app_bundle(tmp_path / "Charoite.app.bak" / "данные")
     assert not cp.inside_app_bundle(tmp_path / "my.application")

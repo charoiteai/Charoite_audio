@@ -71,13 +71,14 @@
 Нигде не хранится и ничего не останавливает: долг снимает карточка, карта его только показывает.
 
 - №322 — 3: ребро `audio` → `meeting_stamp`; ребро `channel_labels` → `speaker_names`; ребро `diarize` → `llm`
-- №364 — 9: вход `app/make_app.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы; вход `src/mcp_server.py` без пробы
+- №364 — 10: вход `app/make_app.sh` без пробы; вход `app/stage_code.sh` без пробы; вход `scripts/build_app_icon.sh` без пробы; вход `scripts/build_embedded_python.sh` без пробы; вход `scripts/layout_map.py` без пробы; вход `scripts/make_dmg.sh` без пробы; вход `scripts/nightly.sh` без пробы; вход `scripts/notarize.sh` без пробы; вход `scripts/preflight.sh` без пробы; вход `src/mcp_server.py` без пробы
 
 ## Точки входа — исполняемые файлы (кто зовёт из кода)
 
 Ручная точка входа — исполняемый файл, которого из кода репозитория никто не зовёт: запускает человек или внешний конфиг; обоснование обязательно, и пометку гейт снимает, как только файл начинает звать код.
 
 - `app/make_app.sh` ← .github/workflows/release-app.yml, scripts/doctor.py, scripts/make_dmg.sh; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `app/stage_code.sh` ← app/make_app.sh; не запускается: shell-скрипт: пробника нет; поведение держит test_install_engine (дерево бандла из него же); снимет №364 (проба вместо none)
 - `scripts/bench_extract.py` ← ручной запуск: бенчмарк извлечения, ручной прогон; проба help
 - `scripts/bench_models.py` ← ручной запуск: бенчмарк моделей, ручной прогон; проба help
 - `scripts/build_app_icon.sh` ← ручной запуск: сборка иконки приложения руками; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
@@ -144,6 +145,7 @@
 ## Пути, названные в документации и конфигах
 
 - `app/make_app.sh` ← README.md, app/README.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
+- `app/stage_code.sh` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/bench_extract.py` ← MANIFESTO.md, README.md, docs/MODELS.md, docs/ru/MANIFESTO.md, docs/ru/MODELS.md, docs/ru/README.md, docs/zh/MANIFESTO.md, docs/zh/MODELS.md, docs/zh/README.md
 - `scripts/bench_models.py` ← docs/MODELS.md, docs/ru/MODELS.md, docs/zh/MODELS.md
 - `scripts/build_app_icon.sh` ← docs/ru/scripts/README.md, docs/zh/scripts/README.md, scripts/README.md
@@ -222,7 +224,6 @@
 ## Голые имена без цели в репозитории (чужие или порождаемые скрипты — справка)
 
 - `replace.sh` ← app/Sources/CharoiteApp/Services/UpdateService.swift
-- `stage_code.sh` ← app/make_app.sh
 
 ## Область замера (таблица KINDS сторожа; кандидаты в точки входа — всегда код)
 

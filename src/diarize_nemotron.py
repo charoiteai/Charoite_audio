@@ -94,9 +94,12 @@ MLX_AUDIO_VERSION = "0.5.6"
 #: процессе, ему пакет ставится в .venv разработчика.
 #: Python приложения внутри бандла: им ставится окружение движка (копия — его).
 APP_PYTHON = "Charoite.app/Contents/Resources/python/bin/python3"
-INSTALL_RECIPE = ("поставьте окружение движка установщиком продукта (команду с корнем данных печатает "
-                  f'scripts/doctor.py; бенч в .venv: .venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; '
-                  "только Apple Silicon)")
+INSTALL_RECIPE = ("поставьте окружение движка установщиком продукта (бенч в .venv: "
+                  f'.venv/bin/pip install "mlx-audio=={MLX_AUDIO_VERSION}"; только Apple Silicon)')
+#: Указатель вместо команды — там, где текст уходит в стенограмму: её пересылают людям,
+#: а команда несёт пути машины (корень данных, код), то есть имя учётки (выходной круг 1
+#: по №489, M3). Команду целиком печатают доктор и `--check`.
+INSTALLER_POINTER = "команду установки печатает scripts/doctor.py"
 
 #: Нижняя граница размера файла весов. Полная модель — сотни мегабайт, 8-битная
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
@@ -482,19 +485,19 @@ def engine_interpreter(setting: str, root: pathlib.Path) -> tuple[str, str]:
     installed = engine_python(root)
     if installed.exists():
         return str(installed), ""
-    return "", f"окружение движка не установлено ({engine_dir(root)}) — {install_command(root)}"
+    return "", f"окружение движка не установлено ({engine_dir(root)})"
 
 
-def _with_installer(out: foreign_python.Outcome, root: pathlib.Path) -> foreign_python.Outcome:
-    """К отказу движка «нечем работать» — команда установщика с корнем вызывающего.
+def _with_remedy(out: foreign_python.Outcome, setting: str, remedy: str) -> foreign_python.Outcome:
+    """К отказу «нечем работать» — чем лечить, если лечит установщик.
 
-    Сторона движка корня не знает и команду не печатает; UNAVAILABLE лечится
-    (пере)установкой окружения, поэтому команда нужна ровно ему. FAILED —
-    падение, а не нехватка: переустановка его не обещает."""
-    if out.kind != foreign_python.UNAVAILABLE:
+    Сторона движка корня не знает и лечения не печатает. UNAVAILABLE при пустом
+    ключе лечится (пере)установкой окружения; при заданном `sufler.nemotron_python`
+    ключ главнее установленного окружения, и установщик его не вылечит (выходной
+    круг 1 по №489, I1). FAILED — падение, а не нехватка: переустановка его не обещает."""
+    if out.kind != foreign_python.UNAVAILABLE or setting.strip():
         return out
-    return foreign_python.Outcome(foreign_python.UNAVAILABLE,
-                                  reason=f"{out.reason} — окружение ставит: {install_command(root)}")
+    return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=f"{out.reason} — {remedy}")
 
 
 def probe_in_env(setting: str, *, root: pathlib.Path, timeout: float = 60.0) -> foreign_python.Outcome:
@@ -503,15 +506,16 @@ def probe_in_env(setting: str, *, root: pathlib.Path, timeout: float = 60.0) -> 
     OK — `{"mlx_audio": версия}`; UNAVAILABLE — окружения нет или ему нечем
     работать (причина со стороны движка: пакет, версия, каталог весов — с командой
     установщика). Её зовут доктор и `--check` установщика."""
+    remedy = f"окружение ставит: {install_command(root)}"
     python, refusal = engine_interpreter(setting, root)
     if refusal:
-        return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal)
+        return _with_remedy(foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal), setting, remedy)
     out = foreign_python.run_json(python, SCRIPT, ["--probe", "--model", str(model_dir(root))],
                                   timeout=timeout)
     if out.ok and not isinstance(out.payload.get("mlx_audio"), str):
         return foreign_python.Outcome(foreign_python.FAILED,
                                       reason=f"проба движка не по протоколу: {out.payload!r}")
-    return _with_installer(out, root)
+    return _with_remedy(out, setting, remedy)
 
 
 def diarize_in_env(setting: str, wav: pathlib.Path, *, root: pathlib.Path,
@@ -530,11 +534,12 @@ def diarize_in_env(setting: str, wav: pathlib.Path, *, root: pathlib.Path,
     """
     python, refusal = engine_interpreter(setting, root)
     if refusal:
-        return foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal)
+        return _with_remedy(foreign_python.Outcome(foreign_python.UNAVAILABLE, reason=refusal), setting,
+                            INSTALLER_POINTER)
     out = foreign_python.run_json(python, SCRIPT, [str(wav), "--model", str(model_dir(root))],
                                   timeout=timeout)
     if not out.ok:
-        return _with_installer(out, root)
+        return _with_remedy(out, setting, INSTALLER_POINTER)
     try:
         return foreign_python.Outcome(foreign_python.OK, payload=parse_segments(out.payload))
     except ValueError as e:
