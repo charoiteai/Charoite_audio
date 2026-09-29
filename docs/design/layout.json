@@ -52,7 +52,8 @@
       "owner_voice",
       "voice_pitch",
       "channel_labels",
-      "frame_drops"
+      "frame_drops",
+      "sherpa_config"
     ],
     "meeting": [
       "meeting_stamp",

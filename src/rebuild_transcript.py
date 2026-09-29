@@ -909,6 +909,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         if len(bh) > sr * 20:
+            # Уступка встрече — перед каждой тяжёлой разметкой, а не только на
+            # входе в очередь: пересборка, простоявшая за соседней, о начавшейся
+            # встрече не знает, а разметка канала — минуты работы (№508).
+            _yield_to_live("разметка голосов собеседников", cap=600)
             bh_raw, engine_note = call_channel_engine(cfg, bh_p, len(bh) / sr)
             if bh_raw is not None:
                 bh_dwarf_s = NEMOTRON_BH_DWARF_S
@@ -920,6 +924,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
+            _yield_to_live("разметка голосов микрофона", cap=600)
             mic_raw = diarize_channel(mic, sr)
     # Подпись владельца читается из настроек, только когда микрофон размечен:
     # без микрофона пересборка конфиг здесь не читала и не читает.
@@ -934,6 +939,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     log(f"итог: {len(merged)} абзацев")
 
     # STT по абзацам (какой канал брать — по метке)
+    _yield_to_live("распознавание", cap=600)
     stt = STT(cfg)
     mic_a = load_wav(mic_p)[0] if mic_p is not None else None
     bh_a = load_wav(bh_p)[0] if bh_p is not None else None
