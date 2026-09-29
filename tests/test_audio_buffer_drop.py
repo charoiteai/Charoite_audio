@@ -24,6 +24,17 @@ import audio  # noqa: E402
 SR = 16000
 
 
+def _append(hub, label, part):
+    """Шов дописывания хаба — `_append_at`, тот же, что зовёт `_consume` (№478): тест не
+    держит собственной обёртки, которой бой не пользуется."""
+    return hub._append_at(label, part)[0]
+
+
+def _cut(hub, label):
+    got = hub._cut_placed(label)
+    return None if got is None else got[0]
+
+
 def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     """Настоящий AudioHub настоящим конструктором: он без ввода-вывода
     (обнаружение устройств — `discover_captures`), поэтому оснастке не нужен
@@ -61,7 +72,7 @@ def _sec(n: float) -> np.ndarray:
 def test_буфер_не_переполняется():
     hub = Hub()
     for _ in range(200):                      # 200 секунд при потолке 60
-        hub._append("mic", _sec(1.0))
+        _append(hub, "mic", _sec(1.0))
 
     assert len(hub._bufs["mic"]) <= SR * hub.BUF_CAP_S
 
@@ -132,9 +143,9 @@ def test_sink_failure_is_reported_before_buffer_overflow(capsys):
 
 def test_теряется_ровно_излишек_а_не_полминуты():
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))   # буфер полон ровно по потолок
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))   # буфер полон ровно по потолок
 
-    dropped = hub._append("mic", _sec(2.0))
+    dropped = _append(hub, "mic", _sec(2.0))
 
     assert dropped == pytest.approx(2.0), (
         f"выброшено {dropped:.1f}с вместо 2с — вернулся сброс половины буфера")
@@ -143,14 +154,14 @@ def test_теряется_ровно_излишек_а_не_полминуты()
 
 def test_пока_есть_место_ничего_не_теряется():
     hub = Hub()
-    assert hub._append("mic", _sec(59.0)) == 0.0
-    assert hub._append("mic", _sec(1.0)) == 0.0
+    assert _append(hub, "mic", _sec(59.0)) == 0.0
+    assert _append(hub, "mic", _sec(1.0)) == 0.0
 
 
 def test_потеря_звука_не_остаётся_молчаливой():
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(5.0)))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(5.0)))
 
     assert hub.said, "человек обязан узнать, что живой звук потерян"
     assert "5" in hub.said[0], f"в статусе нет объёма потери: {hub.said[0]}"
@@ -159,10 +170,10 @@ def test_потеря_звука_не_остаётся_молчаливой():
 def test_статус_не_спамит_на_каждом_чанке(clock):
     """Отставание длится минутами — строка в ленте нужна одна, не сотня."""
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
     for _ in range(50):
         clock[0] += 0.5                      # полминуты окна не набирается
-        hub._note_drop("mic", hub._append("mic", _sec(0.5)))
+        hub._note_drop("mic", _append(hub, "mic", _sec(0.5)))
 
     assert len(hub.said) == 1, f"статусов {len(hub.said)} вместо одного"
     assert hub._drops["mic"][2] == pytest.approx(25.0), "итог потерь врёт"
@@ -173,7 +184,7 @@ def test_кусок_длиннее_потолка_не_раздувает_буф
     """Аномально длинный кусок обязан обрезаться сам, а не оставлять буфер
     выше лимита с недосчитанной потерей (ревью 20.08: локальная и DeepSeek)."""
     hub = Hub()
-    dropped = hub._append("mic", _sec(hub.BUF_CAP_S + 10))
+    dropped = _append(hub, "mic", _sec(hub.BUF_CAP_S + 10))
 
     assert len(hub._bufs["mic"]) == SR * hub.BUF_CAP_S
     assert dropped == pytest.approx(10.0), f"потеря посчитана как {dropped:.1f}с"
@@ -182,10 +193,10 @@ def test_кусок_длиннее_потолка_не_раздувает_буф
 def test_статус_говорит_свежую_потерю_а_не_сумму_с_начала(clock):
     """Копящаяся сумма не даёт понять, отстаём ли ПРЯМО сейчас."""
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(5.0)))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(5.0)))
     clock[0] += hub._DROP_REPORT_S + 1            # окно отчёта прошло
-    hub._note_drop("mic", hub._append("mic", _sec(3.0)))
+    hub._note_drop("mic", _append(hub, "mic", _sec(3.0)))
 
     assert len(hub.said) == 2
     assert "3с" in hub.said[1], f"вторая строка врёт про свежую потерю: {hub.said[1]}"
@@ -198,8 +209,8 @@ def test_без_записи_на_диск_статус_не_утешает():
     во всех трёх случаях выброшенный звук не вернуть ничем. Обещать человеку
     полную стенограмму в этот момент хуже, чем молчать (ревью 20.08, GLM)."""
     hub = Hub(recording=False)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(4.0)), written=False)
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(4.0)), written=False)
 
     assert hub.said, "потеря звука обязана быть озвучена и без записи"
     assert "не вернуть" in hub.said[0], f"статус утешает впустую: {hub.said[0]}"
@@ -208,8 +219,8 @@ def test_без_записи_на_диск_статус_не_утешает():
 
 def test_с_записью_на_диск_статус_успокаивает():
     hub = Hub(recording=True)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(4.0)))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(4.0)))
 
     assert "стенограмма будет полной" in hub.said[0]
 
@@ -221,10 +232,10 @@ def test_потребитель_читает_буфер_без_дыр_и_пер�
     дала бы перепутанные во времени реплики (ревью 20.08, DeepSeek)."""
     hub = Hub()
     # Пронумерованные сэмплы: по значению видно, какой кусок записи прочитан.
-    hub._append("mic", np.arange(SR * 10, dtype=np.float32))
+    _append(hub, "mic", np.arange(SR * 10, dtype=np.float32))
 
-    first = hub._cut("mic")
-    second = hub._cut("mic")
+    first = _cut(hub, "mic")
+    second = _cut(hub, "mic")
 
     assert first is not None and second is not None
     need = int(SR * hub.chunk_s)
@@ -241,12 +252,12 @@ def test_вытеснение_не_рвёт_порядок_для_потреби
     """После переполнения потребитель читает непрерывный кусок — пусть и без
     самого старого звука."""
     hub = Hub()
-    hub._append("mic", np.arange(SR * hub.BUF_CAP_S, dtype=np.float32))
-    dropped = hub._append("mic", np.arange(SR * hub.BUF_CAP_S,
+    _append(hub, "mic", np.arange(SR * hub.BUF_CAP_S, dtype=np.float32))
+    dropped = _append(hub, "mic", np.arange(SR * hub.BUF_CAP_S,
                                           SR * (hub.BUF_CAP_S + 5), dtype=np.float32))
 
     assert dropped == pytest.approx(5.0)
-    chunk = hub._cut("mic")
+    chunk = _cut(hub, "mic")
     assert chunk is not None
     assert chunk[0] == SR * 5, "голова буфера не совпала с границей вытеснения"
     assert np.all(np.diff(chunk) == 1), "вытеснение разорвало порядок сэмплов"
@@ -257,8 +268,8 @@ def test_четверть_секунды_не_повод_для_тревоги()
     доли секунды. Строка «потеряно 0с», а тем более «звук не вернуть» из-за
     неё — шум, который учит не читать предупреждения (ревью 20.08, GLM)."""
     hub = Hub(recording=False)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(0.25)), written=False)
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(0.25)), written=False)
 
     assert not hub.said, f"тревога из-за четверти секунды: {hub.said}"
     assert hub._drops["mic"][0] == pytest.approx(0.25), "потеря должна копиться"
@@ -266,10 +277,10 @@ def test_четверть_секунды_не_повод_для_тревоги()
 
 def test_потери_копятся_до_заметного_и_тогда_сообщаются():
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
     said_after = []
     for i in range(8):
-        hub._note_drop("mic", hub._append("mic", _sec(0.25)))
+        hub._note_drop("mic", _append(hub, "mic", _sec(0.25)))
         if i < 3:                         # накоплено меньше секунды
             said_after.append(len(hub.said))
     said_after = [max(said_after)] if said_after else [0]
@@ -288,10 +299,10 @@ def test_хвост_потерь_доскажут_на_стопе(monkeypatch):
     иначе исчезает вместе со встречей."""
     hub = Hub()
     monkeypatch.setattr(hub, "_finalize_recordings", lambda: None)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(4.0)))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(4.0)))
     hub.said.clear()
-    hub._note_drop("mic", hub._append("mic", _sec(6.0)))   # в окно не попало
+    hub._note_drop("mic", _append(hub, "mic", _sec(6.0)))   # в окно не попало
 
     hub.stop()
 
@@ -310,10 +321,10 @@ def test_записанный_кусок_не_пугает_даже_после_�
     Поэтому судим по факту записи этого куска, а не по состоянию словаря.
     """
     hub = Hub(recording=True)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
     hub._running = False
     hub._sinks = {}                      # так делает _finalize_recordings
-    hub._note_drop("mic", hub._append("mic", _sec(3.0)), written=True)
+    hub._note_drop("mic", _append(hub, "mic", _sec(3.0)), written=True)
 
     assert hub.said
     assert "не вернуть" not in hub.said[0], f"ложная тревога: {hub.said[0]}"
@@ -323,10 +334,10 @@ def test_незаписанный_хвост_на_стопе_честно_объ
     """Обратная сторона: кусок, домолотый после обнуления sink'ов, на диск не
     попал — молчать о нём нельзя."""
     hub = Hub(recording=True)
-    hub._append("mic", _sec(hub.BUF_CAP_S))
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
     hub._running = False
     hub._sinks = {}
-    hub._note_drop("mic", hub._append("mic", _sec(3.0)), written=False)
+    hub._note_drop("mic", _append(hub, "mic", _sec(3.0)), written=False)
 
     assert hub.said
     assert "не вернуть" in hub.said[0], f"потеря выдана за сохранённую: {hub.said[0]}"
@@ -344,8 +355,8 @@ def test_хвост_после_остановки_договаривает_са�
     import threading as _th
 
     hub = Hub()
-    hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(3.0)))   # первый отчёт
+    _append(hub, "mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", _append(hub, "mic", _sec(3.0)))   # первый отчёт
     assert len(hub.said) == 1
     hub.said.clear()
 

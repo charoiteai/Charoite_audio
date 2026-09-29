@@ -80,7 +80,7 @@ def test_the_manual_hint_command_runs_with_the_manual_flag():
 
 def test_fast_trigger_reports_dropped_frames():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
-    tap = src[src.index("def _tap(src, part)"):src.index("hub.on_frame = _tap")]
+    tap = src[src.index("def _tap(src, part)"):src.index("hub.add_frame_listener(")]
     # глашатай — поток продукта; «один за раз» и «ручка до старта» судит поведением
     # test_one_drop_reporter_at_a_time, здесь — только что аудио-поток его зовёт
     assert "drops.dropped()" in tap and "report_drop_once(reporter, msg)" in tap, \

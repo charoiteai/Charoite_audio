@@ -75,6 +75,19 @@ Tuning (`config/config.yaml`):
   people, 0.7 spawned extra voices).
 
 
+### One sample axis per channel
+
+The capture hub counts every sample it appends to a channel's recognition
+buffer, including audio the buffer cap had to drop. A chunk handed to the live
+labeller carries its start on that axis, and so does every raw block handed to
+a frame listener (`add_frame_listener(fn(label, start, samples))`) — the same
+number, from one counter, under one lock. A second labeller fed from the
+blocks (the streaming Nemotron being prepared for the live contour) can then
+be matched to chunks without counting positions itself. The recorded `.pcm`
+holds each chunk at the same offset while writing to disk works; after a disk
+failure the file stops short of the axis, and a block that failed to reach the
+buffer is on the disk but not on the axis.
+
 ## Which voice is the owner
 
 The owner's label comes from one rule shared by the capture, the daemon and
