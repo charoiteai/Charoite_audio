@@ -564,16 +564,25 @@ def test_a_protocol_line_that_breaks_the_shadow_kills_it(tmp_path, monkeypatch):
     assert sh.state == ln.DEAD and "строка протокола" in sh.reason
 
 
-def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch):
-    """Библиотека, печатающая на каждый блок, не заполнит диск (выходной круг 1, M5)."""
-    monkeypatch.setattr(ln, "ERRLOG_CAP_BYTES", 100)
+@pytest.mark.parametrize("size, dies", [(2**20, False), (2**20 + 1, True)])
+def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, dies):
+    """Библиотека, печатающая на каждый блок, не заполнит диск (выходной круг 1, M5). Потолок
+    свой размер ещё пропускает, байт сверх — нет; причина называет потолок в мегабайтах
+    (мутатор диапазона, 29.09)."""
+    monkeypatch.setattr(ln, "ERRLOG_CAP_BYTES", 2**20)
     clock = _Clock()
     sh, door, _ = _live(tmp_path, clock=clock)
-    (tmp_path / "live.err").write_bytes(b"x" * 200)
+    with open(tmp_path / "live.err", "wb") as fh:
+        fh.truncate(size)                  # разреженный файл: размер без записи мегабайта
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
     clock.now += ln.PRESSURE_CHECK_S
     door.on_message({"type": "front", "fed": SR, "frames": 5})
-    assert sh.state == ln.DEAD and "журнал ребёнка" in sh.reason
+    if dies:
+        assert sh.state == ln.DEAD and sh.reason == "журнал ребёнка вырос сверх 1 МБ"
+    else:
+        assert sh.state != ln.DEAD, sh.reason
+        sh.stop()
+        door.on_eof()
 
 
 def test_every_accepted_chunk_gets_exactly_one_line(tmp_path):
@@ -1179,6 +1188,18 @@ def test_start_raises_the_shadow_with_its_journal_and_the_stream_args(tmp_path, 
     assert kw["errlog"] == tmp_path / "logs" / f"nemotron_live_{stamp}.err"
     assert kw["args"][:2] == ["--stream", "--model"] and kw["args"][-2:] == ["--preset", ln.PRESET]
     assert says == [f"поток Nemotron: тень включена, журнал nemotron_live_{stamp}.jsonl"]
+
+
+def test_start_without_its_journal_is_no_shadow_and_starts_no_child(tmp_path, monkeypatch):
+    """Журнал тени не открылся — тени нет: тот же `NO_SHADOW`, что у любого отказа, и ребёнок
+    не запускается; демон зовёт у ответа `attach` и `stop` без проверок (мутатор диапазона, 29.09)."""
+    monkeypatch.setattr(ln.diarize_nemotron, "engine_interpreter", lambda setting, root: ("/py", None))
+    monkeypatch.setattr(ln.Shadow, "begin", lambda self, **kw: pytest.fail("ребёнок без журнала"))
+    (tmp_path / "logs").write_text("не каталог", encoding="utf-8")      # журнал не открыть
+    says = []
+    assert ln.start(SHADOW, root=tmp_path, stamp="s", sr=SR, labels=BOTH, say=says.append,
+                    memory=lambda: None) is ln.NO_SHADOW
+    assert len(says) == 1 and says[0].startswith("поток Nemotron выключен: журнал не открылся ("), says
 
 
 def test_no_shadow_answers_every_call_and_touches_nothing():
