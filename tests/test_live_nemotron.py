@@ -238,6 +238,32 @@ def test_the_child_log_is_private_even_if_it_existed(tmp_path):
     assert stat.S_IMODE(os.stat(err).st_mode) == 0o600
 
 
+def test_a_door_failure_after_launch_kills_the_child(tmp_path, monkeypatch):
+    """Нить-читатель не завелась (потоки исчерпаны) — ребёнок с моделью не остаётся без
+    хозяина: убит, исход FAILED значением (выходной круг 1 по №478 A2, I1)."""
+    import threads
+    script = _child(tmp_path, READY + 'time.sleep(60)\n')
+    real = threads.spawn
+
+    def no_reader(target, *, name, role, **kw):
+        if name == "foreign-stream-reader":
+            raise RuntimeError("can't start new thread")
+        return real(target, name=name, role=role, **kw)
+
+    monkeypatch.setattr(threads, "spawn", no_reader)
+    made = []
+    real_popen = fp.subprocess.Popen
+
+    def popen(*a, **k):
+        made.append(real_popen(*a, **k))
+        return made[-1]
+
+    monkeypatch.setattr(fp.subprocess, "Popen", popen)
+    stream, out, _got, _eof = _spawn(script, tmp_path)
+    assert stream is None and out.kind == fp.FAILED and "дверь упала" in out.reason
+    assert made and made[0].poll() is not None, "ребёнок пережил сбой двери"
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -469,13 +495,70 @@ def test_an_engine_that_did_not_start_is_said_once(tmp_path):
     assert sh.state == ln.DEAD and "нет весов" in says[0] and len(says) == 1
 
 
-def test_a_wrong_chunk_state_never_raises_into_recognition(tmp_path):
+def test_a_wrong_chunk_state_still_gets_its_line_and_never_raises(tmp_path):
+    """Состояние вне набора — строка с меткой unknown (инвариант не зависит от вызывающего),
+    сбой сказан один раз и своей нитью (выходной круг 1 по №478 A2, M1–M2)."""
     sh, door, says = _live(tmp_path)
     sh.note_chunk(_placed(0, 0, SR), "plain")
     sh.note_chunk(_placed(1, 0, SR), "plain")
+    _wait(lambda: says, what="строка человеку")
+    time.sleep(0.05)
     assert len(says) == 1 and "plain" in says[0], "сбой сказан один раз"
+    states = [c["state"] for c in _chunks(tmp_path / "live.jsonl")]
+    assert states == [ln.UNKNOWN_STATE, ln.UNKNOWN_STATE], "чанк со странным состоянием всё равно со строкой"
     sh.stop()
     door.on_eof()
+
+
+class _BrokenDoor(_Door):
+    def __call__(self, *a, **k):
+        raise RuntimeError("дверь сломалась")
+
+
+def test_a_door_that_raises_kills_the_shadow_with_an_end_line(tmp_path):
+    """Исключение вне перечня двери не оставляет тень в «стартует» навсегда: смерть со
+    строкой end и строкой человеку (выходной круг 1 по №478 A2, I1)."""
+    sh, door, says = _shadow(tmp_path, door=_BrokenDoor())
+    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    assert "не стартовал" in sh.reason and "дверь сломалась" in sh.reason
+    assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+    _wait(lambda: says, what="строка человеку")
+
+
+def test_a_writer_that_raises_kills_the_shadow(tmp_path):
+    door = _Door()
+
+    def boom(data):
+        raise ValueError("не байты")
+    door.child.write = boom
+    sh, door, _ = _live(tmp_path, door=door)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    assert "писатель упал" in sh.reason
+    _wait(lambda: door.child.killed.is_set(), what="ребёнок убит")
+
+
+def test_a_protocol_line_that_breaks_the_shadow_kills_it(tmp_path, monkeypatch):
+    sh, door, _ = _live(tmp_path)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+
+    def broken(m, now):
+        raise KeyError("frames")
+    monkeypatch.setattr(sh, "_take_front_locked", broken)
+    door.on_message({"type": "front", "fed": SR, "frames": 5})
+    assert sh.state == ln.DEAD and "строка протокола" in sh.reason
+
+
+def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch):
+    """Библиотека, печатающая на каждый блок, не заполнит диск (выходной круг 1, M5)."""
+    monkeypatch.setattr(ln, "ERRLOG_CAP_BYTES", 100)
+    clock = _Clock()
+    sh, door, _ = _live(tmp_path, clock=clock)
+    (tmp_path / "live.err").write_bytes(b"x" * 200)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    clock.now += ln.PRESSURE_CHECK_S
+    door.on_message({"type": "front", "fed": SR, "frames": 5})
+    assert sh.state == ln.DEAD and "журнал ребёнка" in sh.reason
 
 
 def test_every_accepted_chunk_gets_exactly_one_line(tmp_path):
@@ -577,18 +660,27 @@ def test_memory_state_off_macos_is_none(monkeypatch):
     assert ln.memory_state() is None
 
 
-@pytest.mark.parametrize("cfg, sr, says_what", [
-    ({"sufler": {}}, SR, None),
-    ({"sufler": {"live_nemotron": "off"}}, SR, None),
-    ({"sufler": {"live_nemotron": False}}, SR, None),               # голое off в YAML
-    ({"sufler": {"live_nemotron": "on"}}, SR, "неизвестен"),
-    ({"sufler": {"live_nemotron": True}}, SR, "неизвестен"),        # голое on в YAML
-    ({"sufler": {"live_nemotron": "shadow"}}, 48000, "Гц"),
-    ({"sufler": {"live_nemotron": "shadow"}}, SR, "не установлено"),
+SHADOW = {"sufler": {"live_nemotron": "shadow"}}
+BOTH = {"blackhole", "mic"}
+
+
+@pytest.mark.parametrize("cfg, sr, labels, pressure, says_what", [
+    ({"sufler": {}}, SR, BOTH, 1, None),
+    ({"sufler": {"live_nemotron": "off"}}, SR, BOTH, 1, None),
+    ({"sufler": {"live_nemotron": False}}, SR, BOTH, 1, None),           # голое off в YAML
+    ({"sufler": {"live_nemotron": "on"}}, SR, BOTH, 1, "неизвестен"),
+    ({"sufler": {"live_nemotron": True}}, SR, BOTH, 1, "неизвестен"),    # голое on в YAML
+    (SHADOW, 48000, BOTH, 1, "Гц"),
+    (SHADOW, SR, {"mic"}, 1, "канала собеседников"),                      # захват только микрофона
+    (SHADOW, SR, BOTH, 2, "давление памяти"),                             # машина уже в свопе
+    (SHADOW, SR, BOTH, 1, "не установлено"),
 ])
-def test_start_refuses_with_a_reason_and_leaves_nothing_behind(tmp_path, cfg, sr, says_what):
+def test_start_refuses_with_a_reason_and_leaves_nothing_behind(tmp_path, cfg, sr, labels, pressure,
+                                                               says_what):
     says = []
-    assert ln.start(cfg, root=tmp_path, stamp="s", sr=sr, say=says.append) is None
+    probe = lambda: {"pressure": pressure, "swap_used_mb": 0}   # noqa: E731
+    assert ln.start(cfg, root=tmp_path, stamp="s", sr=sr, labels=labels, say=says.append,
+                    memory=probe) is None
     if says_what is None:
         assert says == []
     else:

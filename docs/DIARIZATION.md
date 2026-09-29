@@ -470,15 +470,18 @@ nothing in the transcript (default `off`).
   start where the previous one ended stops the shadow — labels are never
   shifted silently. More than 10 s of audio queued for the child stops it too:
   that is the answer "it does not keep up", not a reason to buffer.
-- **Memory.** Every 5 s the shadow reads the macOS memory pressure level and the
-  swap in use (`sysctlbyname`, no process) into a `mem` line; level 2 (warning)
-  on two checks in a row stops it — the meeting wins. A lab A/B run on 29.09
-  (ABBAAB on an idle M1 Max, 64 GB, the 35b and 4b chat models loaded, the
-  stream fed at 1× from a recording): the stream kept up (block lag p95 0.2 s,
-  every block processed), the hint model's first token came about 0.5 s later
-  (3.6 → 4.1 s) and generation about 4 % slower, but swap grew by 2.7–6.9 GB
-  during each 4-minute phase with the stream and the pressure reached level 2
-  once. The swap storm of 31.08 made a hint take 19.7 s.
+- **Memory.** The shadow does not start if the macOS memory pressure level is
+  already 2 (warning), or if the hub has no call channel. Every 5 s it reads
+  the pressure level and the swap in use (`sysctlbyname`, no process) into a
+  `mem` line; level 2 on two checks in a row stops it — the meeting wins. So
+  does the child's own log growing past 20 MB. A lab A/B run on 29.09 (ABBAAB
+  on an idle M1 Max, 64 GB, the 35b and 4b chat models loaded, the stream fed
+  at 1× from a recording): the stream kept up (block lag p95 0.2 s, every block
+  processed), the hint model's first token came about 0.5 s later (3.6 → 4.1 s)
+  and generation about 4 % slower, but 2.1–8.3 GB went out to swap during each
+  4-minute phase with the stream (0–0.5 GB without it), swap in use grew by 2.7
+  and 6.9 GB in two of the three phases, and the pressure reached level 2 once.
+  The swap storm of 31.08 made a hint take 19.7 s.
 - **Chunks.** Every chunk the recognizer accepts gets exactly one journal line,
   written without waiting: when the child's front passes the chunk's end (the
   line holds the seconds per slot inside the chunk, how long it waited, how far

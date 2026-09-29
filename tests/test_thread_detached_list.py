@@ -56,6 +56,7 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("live_nemotron.py", "nemotron-live-abandon"),
     ("live_nemotron.py", "nemotron-live-kill"),
     ("live_nemotron.py", "nemotron-live-death"),
+    ("live_nemotron.py", "nemotron-live-say"),
     ("llm.py", "fit-cache-sweep"),
     ("main.py", "console-warmup"),
     ("main.py", "console-stt"),

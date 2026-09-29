@@ -20,9 +20,10 @@
   останавливается с причиной (это и есть ответ «не успевает»), а не копит память.
 - Давление памяти macOS — аварийная остановка: лабораторный опыт 29.09 (A/B ABBAAB на
   свободной машине, 35b и 4b в памяти) показал, что поток не отстаёт (p95 0,2 с), но в
-  фазах с ним своп рос на 2,7–6,9 ГБ за четыре минуты и давление доходило до уровня 2;
-  своп-шторм 31.08 делал подсказку 19,7 с. Уровень ≥ `PRESSURE_STOP` на двух проверках
-  подряд — тень останавливается, встреча важнее замера.
+  фазах с ним в своп выгружалось 2,1–8,3 ГБ за четыре минуты (без него — 0–0,5 ГБ),
+  занятый своп в двух фазах из трёх вырос на 2,7 и 6,9 ГБ, давление раз дошло до 2;
+  своп-шторм 31.08 делал подсказку 19,7 с. Уровень ≥ `PRESSURE_STOP` на старте — тень не
+  поднимается, на двух проверках подряд — останавливается: встреча важнее замера.
 - Чанк распознавания (`note_chunk`) ждёт, пока фронт потока пройдёт его конец, — без
   ожидания в потоке STT: строка журнала ложится, когда метка готова. Строка — на
   КАЖДЫЙ принятый чанк: метка готова, чанк до старта потока, поток мёртв, не
@@ -80,10 +81,16 @@ STOP_GRACE_S = 5.0
 #: (1 — норма, 2 — предупреждение, 4 — критично; `kern.memorystatus_vm_pressure_level`).
 PRESSURE_CHECK_S = 5.0
 PRESSURE_STOP = 2
+#: Потолок журнала ребёнка (stderr): библиотека, печатающая на каждый блок, не
+#: заполнит диск — тень остановится с причиной.
+ERRLOG_CAP_BYTES = 20 * 2**20
 
 #: Что живой трекер сделал с чанком — закрытый набор, пишет демон: разгрузка очереди,
 #: раскладка по кускам, вся речь исключена, раскладка упала, трекера раскладки нет.
 CHUNK_STATES = ("shed", "pieces", "none", "split_failed", "off")
+#: Состояние вне набора — чанк всё равно получает строку, с этой меткой (выходной
+#: круг 1 по №478 A2, M1): инвариант «строка на каждый чанк» не зависит от вызывающего.
+UNKNOWN_STATE = "unknown"
 
 #: Исходы чанка в журнале.
 LABELED, BEFORE_STREAM, DEAD_STREAM, TIMEOUT, STOPPED, LATE = (
@@ -165,6 +172,7 @@ class Shadow:
         self._seg_floor = 0                                       # раньше него сегменты выброшены
         self._pending: dict[tuple[str, int], dict] = {}           # порядок вставки — порядок чанков
         self._counts: collections.Counter = collections.Counter()
+        self._errlog: pathlib.Path | None = None
         self._journal: typing.TextIO | None = _open_private(journal)
         self._line({"type": "header", "v": JOURNAL_V, "sr": sr, "channel": CHANNEL,
                     "preset": PRESET, "stamp": stamp})
@@ -175,10 +183,19 @@ class Shadow:
               errlog: pathlib.Path,
               spawn: typing.Callable[..., typing.Any] = foreign_python.spawn_stream) -> None:
         """Запустить ребёнка своей нитью: рукопожатие — до `HANDSHAKE_S`, встреча не ждёт."""
+        self._errlog = errlog
         threads.spawn(self._start, name="nemotron-live-start", role="audio",
                       args=(python, script, list(args), errlog, spawn))
 
     def _start(self, python, script, args, errlog, spawn) -> None:
+        """Граница нити запуска: любой сбой — смерть тени со строкой `end`, а не вечное
+        «стартует» (выходной круг 1 по №478 A2, I1)."""
+        try:
+            self._start_inner(python, script, args, errlog, spawn)
+        except Exception as e:  # noqa: BLE001 — граница нити тени: сбой становится смертью со строкой end
+            self._die_from_thread(f"не стартовал: {type(e).__name__}: {e}")
+
+    def _start_inner(self, python, script, args, errlog, spawn) -> None:
         stream, out = spawn(python, script, args, stderr_path=errlog, handshake_timeout=HANDSHAKE_S,
                             role="audio", on_message=self._on_message, on_eof=self._on_eof,
                             cancel=self._cancel)
@@ -198,7 +215,10 @@ class Shadow:
             self._line({"type": "ready", "t": self._t(), "proto": out.payload["proto"],
                         "frame_s": self._frame_s, "step": out.payload["step"], "pid": stream.pid})
             self._state = LIVE
-        threads.spawn(self._write_loop, name="nemotron-live-writer", role="audio")
+        try:
+            threads.spawn(self._write_loop, name="nemotron-live-writer", role="audio")
+        except RuntimeError as e:          # нить не завелась — живой ребёнок без писателя не нужен
+            self._die_from_thread(f"писатель не завёлся: {e}")
 
     def _ready_problem(self, ready: typing.Any) -> str:
         if not isinstance(ready, dict):
@@ -248,7 +268,14 @@ class Shadow:
             self._fault("звук", e)
 
     def _write_loop(self) -> None:
-        """Нить-писатель: блоки — в трубу ребёнка; сентинель — закрыть вход (EOF ребёнку)."""
+        """Нить-писатель: блоки — в трубу ребёнка; сентинель — закрыть вход (EOF ребёнку).
+        Граница нити: сбой — смерть тени со строкой `end`."""
+        try:
+            self._write_loop_inner()
+        except Exception as e:  # noqa: BLE001 — граница нити тени: сбой становится смертью со строкой end
+            self._die_from_thread(f"писатель упал: {type(e).__name__}: {e}")
+
+    def _write_loop_inner(self) -> None:
         stream = self._stream
         while True:
             block = self._queue.get()
@@ -268,7 +295,14 @@ class Shadow:
     # ------------------------------------------------------------ протокол
 
     def _on_message(self, message: dict) -> None:
-        """Нить-читатель двери: сегменты и фронт — на ось хаба и в журнал."""
+        """Нить-читатель двери: сегменты и фронт — на ось хаба и в журнал. Сбой обработки —
+        смерть тени со строкой `end`, а не молчаливый счётчик двери."""
+        try:
+            self._on_message_inner(message)
+        except Exception as e:  # noqa: BLE001 — граница обратного вызова тени: сбой становится смертью
+            self._die_from_thread(f"строка протокола не разобрана: {type(e).__name__}: {e}")
+
+    def _on_message_inner(self, message: dict) -> None:
         now = self._clock()
         with self._lock:
             if self._state not in (LIVE, STOPPING) or self._start0 is None:
@@ -313,19 +347,27 @@ class Shadow:
                 del self._pending[key]
                 self._resolve_locked(entry, now)
         self._evict_locked(now)
-        self._check_memory_locked(now)
+        self._check_health_locked(now)
         floor = front - round(SEG_KEEP_S * self._sr)
         if floor > self._seg_floor:
             self._seg_floor = floor
             while self._segs and self._segs[0][1] <= floor:
                 self._segs.popleft()
 
-    def _check_memory_locked(self, now: float) -> None:
+    def _check_health_locked(self, now: float) -> None:
         """Раз в `PRESSURE_CHECK_S`: строка `mem`; давление ≥ `PRESSURE_STOP` дважды подряд —
-        аварийная остановка тени."""
+        аварийная остановка тени; журнал ребёнка больше `ERRLOG_CAP_BYTES` — тоже."""
         if self._mem_checked is not None and now - self._mem_checked < PRESSURE_CHECK_S:
             return
         self._mem_checked = now
+        if self._errlog is not None:
+            try:
+                size = self._errlog.stat().st_size
+            except OSError:
+                size = 0
+            if size > ERRLOG_CAP_BYTES:
+                self._die_locked(f"журнал ребёнка вырос сверх {ERRLOG_CAP_BYTES // 2**20} МБ")
+                return
         state = self._memory()
         if state is None:
             return
@@ -346,7 +388,8 @@ class Shadow:
             if label != CHANNEL:
                 return
             if state not in CHUNK_STATES:
-                raise ValueError(f"состояние чанка {state!r} вне {CHUNK_STATES}")
+                self._fault("чанк", ValueError(f"состояние чанка {state!r} вне {CHUNK_STATES}"))
+                state = UNKNOWN_STATE
             now = self._clock()
             start = int(placed.start)
             entry = {"chunk": number, "start": start, "end": start + len(placed.chunk),
@@ -429,7 +472,14 @@ class Shadow:
         stream.kill()
 
     def _on_eof(self) -> None:
-        """Ребёнок закрыл вывод: штатный конец после стопа или смерть."""
+        """Ребёнок закрыл вывод: штатный конец после стопа или смерть. Граница обратного
+        вызова: сбой — смерть тени со строкой `end`."""
+        try:
+            self._on_eof_inner()
+        except Exception as e:  # noqa: BLE001 — граница обратного вызова тени: сбой становится смертью
+            self._die_from_thread(f"конец потока не разобран: {type(e).__name__}: {e}")
+
+    def _on_eof_inner(self) -> None:
         stream = self._stream
         exit_ = stream.finish(STOP_GRACE_S) if stream is not None else None
         with self._lock:
@@ -470,6 +520,23 @@ class Shadow:
             stream.kill()
         self._say(f"поток Nemotron (тень) остановлен: {reason}")
 
+    def _die_from_thread(self, reason: str) -> None:
+        """Смерть из нити тени по сбою вне замка: под замком, один раз."""
+        with self._lock:
+            if self._state == STOPPING:
+                self._end_locked(reason)
+            else:
+                self._die_locked(reason)
+
+    def _say_async(self, text: str) -> None:
+        """Строка человеку — своей нитью: `say` демона пишет в трубу приложения, и нить
+        захвата или распознавания на ней не стоит (выходной круг 1 по №478 A2, M2)."""
+        try:
+            threads.spawn(self._say, name="nemotron-live-say", role="audio", args=(text,),
+                          detached="строка человеку не держит ни захват, ни распознавание")
+        except RuntimeError:
+            pass                           # нить не завелась — строка не важнее захвата
+
     # ------------------------------------------------------------ журнал
 
     def _t(self, now: float | None = None) -> float:
@@ -490,7 +557,7 @@ class Shadow:
             self._counts[f"fault_{where}"] += 1
             first = self._counts[f"fault_{where}"] == 1
         if first:
-            self._say(f"поток Nemotron (тень): сбой ({where}): {type(e).__name__}: {e}")
+            self._say_async(f"поток Nemotron (тень): сбой ({where}): {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------ для тестов и сводки
 
@@ -505,9 +572,15 @@ class Shadow:
             return self._reason
 
 
-def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int,
-          say: typing.Callable[[str], None]) -> Shadow | None:
-    """Поднять тень, если её просит `sufler.live_nemotron`; иначе — None и строка, почему."""
+def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.Collection[str],
+          say: typing.Callable[[str], None],
+          memory: typing.Callable[[], dict | None] = memory_state) -> Shadow | None:
+    """Поднять тень, если её просит `sufler.live_nemotron`; иначе — None и строка, почему.
+
+    `labels` — метки захватов хаба: без канала собеседников ребёнок держал бы модель
+    весь звонок впустую. Давление памяти уже на уровне `PRESSURE_STOP` — тень не
+    стартует: опыт 29.09 показал цену потока именно в памяти (выходной круг 1 по №478
+    A2, M3 и критика 1)."""
     sufler = cfg.get("sufler") or {}
     raw = sufler.get("live_nemotron")
     if raw is None or raw is False:            # YAML читает голое off как false
@@ -524,13 +597,21 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int,
     if sr != diarize_nemotron.SAMPLE_RATE:
         say(f"поток Nemotron выключен: хаб пишет {sr} Гц, движку нужно {diarize_nemotron.SAMPLE_RATE}")
         return None
+    if CHANNEL not in labels:
+        say("поток Nemotron выключен: канала собеседников в захвате нет")
+        return None
+    state = memory()
+    if state is not None and state["pressure"] >= PRESSURE_STOP:
+        say(f"поток Nemotron выключен: давление памяти уже на уровне {state['pressure']}")
+        return None
     python, refusal = diarize_nemotron.engine_interpreter(str(sufler.get("nemotron_python") or ""), root)
     if refusal:
         say(f"поток Nemotron выключен: {refusal}")
         return None
     logs = root / "logs"
     try:
-        shadow = Shadow(journal=logs / f"nemotron_live_{stamp}.jsonl", sr=sr, stamp=stamp, say=say)
+        shadow = Shadow(journal=logs / f"nemotron_live_{stamp}.jsonl", sr=sr, stamp=stamp, say=say,
+                    memory=memory)
     except OSError as e:
         say(f"поток Nemotron выключен: журнал не открылся ({e})")
         return None

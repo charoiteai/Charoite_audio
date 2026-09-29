@@ -299,10 +299,8 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     рукопожатие, строки после него идут в `on_message`, конец stdout — `on_eof()`.
     `role` — роль нити-читателя в реестре потоков (`threads.ROLES`): чья это нить,
     знает вызывающий, а не дверь. `cancel` (`threading.Event`) обрывает ожидание
-    рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED."""
-    import threading
-
-    import threads
+    рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED.
+    Исключение после запуска ребёнка — тоже FAILED, ребёнок убит."""
     try:
         err_fd = _open_private(stderr_path)
     except OSError as e:
@@ -318,6 +316,31 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     finally:
         os.close(err_fd)
     stream = StreamProcess(proc)
+    try:
+        return _await_handshake(proc, stream, stderr_path=stderr_path,
+                                handshake_timeout=handshake_timeout, role=role,
+                                on_message=on_message, on_eof=on_eof, cancel=cancel)
+    except BaseException as e:
+        # после Popen выхода без закрытого входа и убитого ребёнка нет: исход двери —
+        # значением, а ребёнок с моделью не остаётся без хозяина (выходной круг 1 по
+        # №478 A2, I1); Ctrl-C и выход процесса — дальше, но уже без ребёнка
+        stream._abandoned = True
+        stream.close_input()
+        stream.kill()
+        if not isinstance(e, Exception):
+            raise
+        return None, Outcome(FAILED, reason=f"дверь упала после запуска: {type(e).__name__}: {e}")
+
+
+def _await_handshake(proc: subprocess.Popen, stream: StreamProcess, *, stderr_path: pathlib.Path,
+                     handshake_timeout: float, role: str,
+                     on_message: typing.Callable[[dict], None], on_eof: typing.Callable[[], None],
+                     cancel: typing.Any) -> tuple[StreamProcess | None, Outcome]:
+    """Нить-читатель и рукопожатие — после запуска ребёнка; бросить может, убивает
+    ребёнка при исключении вызывающий (`spawn_stream`)."""
+    import threading
+
+    import threads
     got_ready = threading.Event()
     threads.spawn(_read_protocol, name="foreign-stream-reader", role=role,
                   args=(proc, stream, got_ready, on_message, on_eof))

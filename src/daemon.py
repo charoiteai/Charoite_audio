@@ -360,9 +360,12 @@ def _prune_graph_logs(cfg: dict) -> None:
     # маппинг имён участников, тема, stderr LLM — тоже жил вечно
     # (аудит DeepSeek 16.08). recover_*.log — stdout восстановления после
     # падения демона: то же содержимое плюс сырой отказ движка с путями машины
-    # (№495, выходной круг 1, I1).
+    # (№495, выходной круг 1, I1). nemotron_live_* — журнал тени потока Nemotron
+    # (числа) и stderr её ребёнка (пути машины в трассировках): тот же срок
+    # (№478 A2, выходной круг 1).
     for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log"),
-                *logs.glob("retry_*.log"), *logs.glob("recover_*.log")]:
+                *logs.glob("retry_*.log"), *logs.glob("recover_*.log"),
+                *logs.glob("nemotron_live_*")]:
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)
@@ -3308,6 +3311,7 @@ def main():
     try:
         nemotron_shadow = live_nemotron.start(
             cfg, root=_root(), stamp=tr.stamp, sr=hub.sr,
+            labels={c.label for c in hub.captures},
             say=lambda text: emit({"type": "status", "text": text}))
         if nemotron_shadow is not None:
             hub.add_frame_listener(nemotron_shadow.on_frame)
