@@ -2523,12 +2523,20 @@ def package_entries(layout: dict) -> list[str]:
     return sorted(layout["package_entries"])
 
 
+def package_pulled(graph: dict[str, set[str]], entries: list[str]) -> dict[str, list[str]]:
+    """Модуль пакета → входы, чьё замыкание его тянет, по порядку входов. Одна атрибуция
+    на оба гейта: строка называет вход, который тянет модуль, а не весь список
+    (выходной круг 1 по №323 PR 0, M2)."""
+    out: dict[str, list[str]] = {}
+    for entry in entries:
+        for m in sorted(package_closure(graph, entry)):
+            out.setdefault(m, []).append(entry)
+    return out
+
+
 def package_union(graph: dict[str, set[str]], entries: list[str]) -> set[str]:
     """Модули пакета — объединение замыканий входов (`package_entries(layout)`)."""
-    out: set[str] = set()
-    for entry in entries:
-        out |= package_closure(graph, entry)
-    return out
+    return set(package_pulled(graph, entries))
 
 
 def package_files(inv: Inventory, layout: dict) -> list[str]:
@@ -2608,11 +2616,7 @@ def env_problems(graph: dict[str, set[str]], layout: dict) -> list[str]:
     for entry in entries:
         if entry not in graph:
             out.append(f"вход пакета {entry}: модуля с таким именем в дереве нет — пакету не из чего собраться")
-    pulled: dict[str, list[str]] = {}
-    for entry in entries:
-        for m in package_closure(graph, entry):
-            if lay.get(m) not in recipes:
-                pulled.setdefault(m, []).append(entry)
+    pulled = {m: by for m, by in package_pulled(graph, entries).items() if lay.get(m) not in recipes}
     for m in sorted(pulled):
         out.append(f"пакет {', '.join(pulled[m])} тянет {m} ({lay.get(m, 'без слоя')}) — в замыкании входа "
                    f"только слои без окружения: {', '.join(recipes) or '—'}")
@@ -2683,21 +2687,27 @@ def package_problems(graph: dict[str, set[str]], layout: dict | None,
                    f"пустоты __init__ судит пустоту")
     # об отсутствующем входе говорит `env_problems`; остальные входы судятся — опечатка
     # в одном не отключает проверки другого (входной круг 4 хвоста №323, M5)
-    entries = [e for e in package_entries(layout) if e in graph]
+    declared = package_entries(layout)
+    entries = [e for e in declared if e in graph]
     if not entries:
         return out
+    # член отсутствующего входа тоже краснеет — таблица и дерево расходятся, — но совет
+    # «убрать член» тогда ложный: строка называет входы вне дерева (выход 1 PR 0, M2)
+    missing = [e for e in declared if e not in graph]
+    tail = f" (входы вне дерева: {', '.join(missing)})" if missing else ""
     members = package_members(inv, layout)
     inits = package_inits(inv, layout)
-    closure = package_union(graph, entries) - inits
+    pulled = package_pulled(graph, entries)
+    closure = set(pulled) - inits
     named = ", ".join(entries)
     # Член пакета вне замыканий входов — всегда отказ, без изъятий: модуль схемы
     # хранилища вход зовёт (поиск берёт схему параметром, №422), и колесо везёт
     # ровно то, что проба импортирует (сверка плана с артефактом, №427).
     for m in sorted(members - closure):
         out.append(f"член пакета {m} вне замыкания входа {named} — вход его не зовёт: "
-                   f"убрать из {layout['package']}/ или позвать из входа")
+                   f"убрать из {layout['package']}/ или позвать из входа{tail}")
     for m in sorted(closure - members):
-        out.append(f"модуль замыкания {named} — {m} — лежит вне пакета {layout['package']}/: "
+        out.append(f"модуль замыкания {', '.join(pulled[m])} — {m} — лежит вне пакета {layout['package']}/: "
                    f"перенести в пакет или разорвать импорт")
     for m in sorted(members):
         for d in sorted(d for d in graph.get(m, ()) if d not in members | inits):

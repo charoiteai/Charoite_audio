@@ -2649,29 +2649,35 @@ def test_the_entry_table_has_a_shape(entries, why):
         lm.validate_layout(layout)
 
 
-#: Кто читает сырую таблицу входов: геттер — всех, загрузчик — ради формы (пустая
-#: таблица, пустое обоснование); остальные спрашивают геттер.
-TABLE_READERS = {"package_entries", "validate_layout"}
+def test_the_package_follows_the_entry_getter(tmp_path, monkeypatch):
+    """Состав пакета берут из геттера `package_entries` все четыре потребителя: подменённый
+    ответ геттера меняет их вывод, а таблица в раскладке остаётся прежней. Поведение, а не
+    написание: сторож по AST обходили бы `.get`, `.items()` и распаковка (выходной круг 1
+    по №323 PR 0, M1; урок 21.09 о сторожах по тексту исходника)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=False)
+    assert layout["package_entries"] == {"pkg.a": "вход"}
+    monkeypatch.setattr(lm, "package_entries", lambda _layout: ["pkg.a", "pkg.c"])
+    assert lm.package_problems(graph, layout, inv) == [], "член второго входа — законный член"
+    assert "src/pkg/c.py" in lm.package_files(inv, layout)
+    text = lm.render_map(layout, graph, lm.Scan({}, {}, {}, []), {})
+    assert "замыкание входов `pkg.a`, `pkg.c`" in text
+    monkeypatch.setattr(lm, "package_entries", lambda _layout: ["pkg.a", "pkg.нет"])
+    assert "вход пакета pkg.нет: модуля с таким именем в дереве нет — пакету не из чего собраться" \
+        in lm.env_problems(graph, layout)
 
 
-def test_the_entry_table_is_read_by_one_getter():
-    """Таблицу входов читает один геттер `package_entries` — в гейте и в тестах: три
-    места, каждое со своим расчётом «какие модули составляют пакет», разошлись в круге
-    4 хвоста №323. Запись таблицы в тестах (синтетические раскладки) — можно."""
-    readers = []
-    for path in [ROOT / "scripts" / "layout_map.py", *sorted((ROOT / "tests").glob("test_*.py"))]:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        owner = {}
-        for fn in ast.walk(tree):
-            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for n in ast.walk(fn):
-                    owner.setdefault(n, fn.name)
-        for n in ast.walk(tree):
-            if (isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load)
-                    and isinstance(n.slice, ast.Constant) and n.slice.value == "package_entries"
-                    and not (path.name == "layout_map.py" and owner.get(n) in TABLE_READERS)):
-                readers.append(f"{path.name}:{n.lineno}")
-    assert readers == [], f"таблицу входов читают мимо геттера: {readers}"
+def test_a_line_names_the_entry_that_pulls_the_module(tmp_path):
+    """Атрибуция — одна на оба гейта (`package_pulled`): модуль вне пакета называет вход,
+    который его тянет, а не весь список; член отсутствующего входа краснеет с хвостом о
+    входе вне дерева — совет «убрать член» без него ложный (выход 1 PR 0, M2)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=True)
+    both = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.c": "второй"}}
+    problems = lm.package_problems(graph, both, inv)
+    assert any(p.startswith("модуль замыкания pkg.a — outside — лежит вне пакета pkg/") for p in problems), problems
+    typo = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.нет": "опечатка"}}
+    assert any(p.startswith("член пакета pkg.c вне замыкания входа pkg.a") and p.endswith("(входы вне дерева: pkg.нет)")
+               for p in lm.package_problems(graph, typo, inv))
+    assert lm.package_pulled(graph, ["pkg.a", "pkg.c"])["outside"] == ["pkg.a"]
 
 
 def test_a_declared_package_resolves_to_its_init(tmp_path):
