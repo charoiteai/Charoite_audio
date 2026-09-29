@@ -57,8 +57,6 @@ import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
 
-GIGASTT_HEALTH = "http://127.0.0.1:9876/health"
-GIGASTT_WS = "ws://127.0.0.1:9876/v1/ws"
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
 import stt_runtime  # noqa: E402
@@ -628,6 +626,20 @@ def fresh_question(pending: dict, now: float, ttl: float = PENDING_Q_TTL) -> str
     нет. `at` = 0.0 (вопросов не было) — пусто при любом monotonic."""
     text = pending.get("text", "")
     return text if text and now - pending.get("at", 0.0) < ttl else ""
+
+
+GIGASTT_HEALTH = "http://127.0.0.1:9876/health"
+GIGASTT_WS = "ws://127.0.0.1:9876/v1/ws"
+
+
+def gigastt_alive() -> bool:
+    """Отвечает ли gigastt на этой машине: `/health` напрямую, мимо прокси (№525)."""
+    import requests
+    try:
+        requests.get(GIGASTT_HEALTH, timeout=2, **privacy.proxies_for(GIGASTT_HEALTH)).raise_for_status()
+    except requests.RequestException:
+        return False
+    return True
 
 
 def main():
@@ -2368,11 +2380,11 @@ def main():
         if not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
             return
         try:
-            import requests as _rq
-            _rq.get(GIGASTT_HEALTH, timeout=2, **privacy.proxies_for(GIGASTT_HEALTH)).raise_for_status()
             from websockets.sync.client import connect as ws_connect
-        except (ImportError, OSError):   # requests.RequestException — подкласс OSError
-            return  # сервера/библиотеки нет — обычный путь через чанки
+        except ImportError:
+            return  # библиотеки нет — обычный путь через чанки
+        if not gigastt_alive():
+            return  # сервера нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
         drops = frame_drops.DropMeter()
