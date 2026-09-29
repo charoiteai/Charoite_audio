@@ -55,7 +55,13 @@ def url_host(url: str) -> str | None:
     g = _AUTHORITY.match(authority)
     if g is None:
         raise AmbiguousAddress(f"адрес {url!r}: authority вне белой грамматики (имя или IPv6 в скобках, порт цифрами)")
-    return (g.group("name") or g.group("v6")).lower()
+    v6 = g.group("v6")
+    if v6 is not None:
+        try:        # набор символов — не IPv6: «[127.0.0.1]» urllib3 отвергает, http.client снимает скобки
+            ipaddress.IPv6Address(v6)
+        except ValueError as e:
+            raise AmbiguousAddress(f"адрес {url!r}: в скобках не IPv6") from e
+    return (g.group("name") or v6).lower()
 
 
 def loopback_url(url: str) -> bool:

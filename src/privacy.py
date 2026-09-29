@@ -150,10 +150,10 @@ def cloud_llm_url(cfg: dict, env: dict | None = None) -> str:
             f"llm.engine = cloud запрещён рубильником "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))}")
     url = raw.rstrip("/")
-    scheme = urllib.parse.urlsplit(url).scheme
     try:
+        scheme = urllib.parse.urlsplit(url).scheme
         host = url_host(url)
-    except AmbiguousAddress as e:
+    except (AmbiguousAddress, ValueError) as e:
         raise PrivacyRefused(f"llm.cloud_base_url = {raw}: {e}") from e
     if scheme != "https" and not _is_loopback(host):
         raise PrivacyRefused(

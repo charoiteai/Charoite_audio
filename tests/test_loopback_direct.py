@@ -522,6 +522,7 @@ EVIL = "http://evil.example\\@127.0.0.1:11434"
     "http://127.0.0.1 .evil.example:11434", "http://127.0.0.1\t:11434",
     "http://[::1%5D.evil.example]:11434", "http://[::1%25lo0]:11434", "http://127.0.0.1%2e.evil.example:11434",
     "http://127.0.0.1:11434x", "http://127。0。0。1:11434", "http://127.0.0.1\x00:11434", "http://[::1]x:11434",
+    "http://[127.0.0.1]:11434", "http://[deadbeef]:11434",
 ])
 def test_an_ambiguous_authority_is_neither_loopback_nor_allowed(url):
     from charoite_graph import net
@@ -561,6 +562,8 @@ def test_a_broken_bracket_is_a_refusal_not_a_bare_valueerror():
     for url in ("http://[::1", "http://evil[::1]:80"):
         with pytest.raises(privacy.PrivacyRefused):
             privacy.llm_base_url({"llm": {"base_url": url}}, env={})
+        with pytest.raises(privacy.PrivacyRefused):
+            privacy.cloud_llm_url({"llm": {"engine": "cloud", "cloud_base_url": url}}, env={})
         from charoite_graph import net
         assert net.loopback_url(url) is False
 
@@ -570,23 +573,41 @@ _CORPUS = [
     "http://evil.example\\@127.0.0.1:11434", "http://[::1%5D.evil.example]:11434", "http://[::1%25lo0]:1",
     "http://user@127.0.0.1", "http://127.0.0.1%2e.evil.example", "http://127.0.0.1:99999999", "http://127.0.0.1:1x",
     "http://127.0.0.1\t:1", "http://[::1", "http://127。0。0。1", "http://a b/", "http://127.0.0.1/\\@evil",
+    "http://ｌｏｃａｌｈｏｓｔ:1", "http://ＬＯＣＡＬＨＯＳＴ:1", "http://127.1:1", "http://127.0.0.1.:1",
+    "http://[::ffff:127.0.0.1]:1", "http://0.0.0.0:1", "http://[::]:1", "http://[127.0.0.1]:1", "http://[deadbeef]:1",
 ]
 
 
-@pytest.mark.parametrize("url", _CORPUS)
-def test_the_gate_host_equals_the_host_every_transport_connects_to(url):
-    """Свойство, а не написание: гейт отказывает либо называет тот же хост, что выберут urllib.request и urllib3."""
+def _transport_hosts(url: str) -> list[str]:
+    """Хосты, к которым пойдут stdlib и urllib3; отказ транспорта — пустой список."""
     import http.client
     import urllib3.util
     from urllib.request import Request
-    from charoite_graph import net
+    out = []
     try:
-        host = net.url_host(url)
-    except (net.AmbiguousAddress, ValueError):
+        req = Request(url)
+        out.append(http.client.HTTPConnection(req.host)._get_hostport(req.host, None)[0])
+    except (ValueError, http.client.InvalidURL):
+        pass
+    try:
+        out.append(urllib3.util.parse_url(url).host or "")
+    except urllib3.exceptions.LocationParseError:
+        pass
+    # сокет кодирует не-ASCII имя через IDNA (NFKC): «ｌｏｃａｌｈｏｓｔ» приводит к localhost
+    return [h.strip("[]").encode("idna").decode("ascii").lower() for h in out if h]
+
+
+@pytest.mark.parametrize("url", _CORPUS)
+def test_the_gate_never_calls_local_what_a_transport_sends_elsewhere(url):
+    """Одно направление: «гейт — свой, транспорт — наружу» всегда красный.
+
+    Обратное («гейт — чужой, транспорт идёт к себе») допустимо: адрес лишь идёт по правилам
+    прокси или отказывается без allow_remote.
+    """
+    from charoite_graph import net
+    if not net.loopback_url(url):
         return
-    if host is None:
-        return
-    req = Request(url)
-    stdlib_host, _ = http.client.HTTPConnection(req.host)._get_hostport(req.host, None)
-    assert stdlib_host.strip("[]").lower() == host.strip("[]").lower(), url
-    assert (urllib3.util.parse_url(url).host or "").strip("[]").lower() == host.strip("[]").lower(), url
+    hosts = _transport_hosts(url)
+    assert hosts, f"гейт назвал {url} своим, а транспорты его не принимают"
+    for h in hosts:
+        assert net.is_loopback_host(h), f"{url}: гейт — своя машина, транспорт идёт на {h}"
