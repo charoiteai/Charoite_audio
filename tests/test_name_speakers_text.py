@@ -43,7 +43,7 @@ def test_rebuild_names_read_the_fenced_json(_ollama_маршруты, monkeypatc
 
     lines = [("Собеседник 1", "Привет, я Сергей")]
 
-    assert rt.name_speakers(CFG_REBUILD, lines) == ({"Собеседник 1": "Сергей"}, True)
+    assert rt.name_speakers(CFG_REBUILD, lines) == rt.NamesOutcome({"Собеседник 1": "Сергей"}, rt.NamesOutcome.ANSWERED, 1)
 
 
 def test_rebuild_names_name_the_reason_for_non_json(_ollama_маршруты, monkeypatch, capsys):
@@ -52,7 +52,7 @@ def test_rebuild_names_name_the_reason_for_non_json(_ollama_маршруты, mo
 
     lines = [("Собеседник 1", "Привет")]
 
-    assert rt.name_speakers(CFG_REBUILD, lines) == ({}, False), "не-JSON — это «не ответила»"
+    assert rt.name_speakers(CFG_REBUILD, lines) == rt.NamesOutcome({}, rt.NamesOutcome.SILENT), "не-JSON — это «не ответила»"
     out = capsys.readouterr().out
     assert "имена: не удалось" in out and "не-JSON" in out and "(17 знаков)" in out
 
@@ -61,7 +61,7 @@ def test_rebuild_names_name_the_empty_answer(_ollama_маршруты, monkeypat
     monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
     _ollama_маршруты.сценарий_чата(_чат(""))
 
-    assert rt.name_speakers(CFG_REBUILD, [("Собеседник 1", "Привет")]) == ({}, False)
+    assert rt.name_speakers(CFG_REBUILD, [("Собеседник 1", "Привет")]) == rt.NamesOutcome({}, rt.NamesOutcome.SILENT)
     out = capsys.readouterr().out
     assert "имена: не удалось" in out and "пустой ответ" in out
 
