@@ -80,7 +80,10 @@ def test_performance_cores_fall_back_to_half_the_logical_ones(monkeypatch):
 ])
 def test_performance_cores_take_the_perflevel0_answer_or_fall_back(monkeypatch, answer, want):
     def sysctl(argv, **kw):
+        # зависание sysctl тестом не смоделировать — потолок и немой stderr держит подмена
+        # (выходной круг 2 по №508, M1)
         assert argv[-1] == "hw.perflevel0.physicalcpu"
+        assert kw.get("timeout") == sc.SYSCTL_TIMEOUT_S and kw.get("stderr") == subprocess.DEVNULL, kw
         if isinstance(answer, BaseException):
             raise answer
         return answer
