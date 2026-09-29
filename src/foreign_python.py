@@ -193,8 +193,9 @@ class StreamProcess:
     счётчик `nonjson`; исключение обратного вызова не рвёт чтение: счётчик
     `callback_errors` и текст первого в `callback_error`."""
 
-    def __init__(self, proc: subprocess.Popen):
+    def __init__(self, proc: subprocess.Popen, stderr_path: pathlib.Path | None = None):
         self._proc = proc
+        self._stderr_path = stderr_path
         self.ready: dict = {}
         self.nonjson = 0
         self.callback_errors = 0
@@ -229,7 +230,10 @@ class StreamProcess:
                 pass
 
     def finish(self, timeout: float) -> Outcome:
-        """Дождаться выхода с потолком; не вышел — убить. Исход — кодом выхода."""
+        """Дождаться выхода с потолком; не вышел — убить. Исход — кодом выхода, причина —
+        последней строкой журнала ребёнка, тем же правилом, что у выхода до рукопожатия
+        (`_await_handshake`): «код 1» без строки отправлял человека в соседний файл
+        (выходной круг фикса A2 №478, M1)."""
         try:
             code = self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -237,9 +241,10 @@ class StreamProcess:
             return Outcome(FAILED, reason=f"не вышел за {timeout:.0f} с — убит")
         if code == 0:
             return Outcome(OK)
+        err = _last_line(_tail_text(self._stderr_path)) if self._stderr_path is not None else ""
         if code == EXIT_ENGINE_UNAVAILABLE:
-            return Outcome(UNAVAILABLE, reason="движок недоступен")
-        return Outcome(FAILED, reason=f"код {code}")
+            return Outcome(UNAVAILABLE, reason=err or "движок недоступен")
+        return Outcome(FAILED, reason=f"код {code}: {err or 'без вывода'}")
 
     def kill_nowait(self) -> None:
         """SIGKILL без ожидания выхода: годится под замком хозяина и там, где ждать нельзя;
@@ -340,7 +345,7 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
         return None, Outcome(FAILED, reason=f"не запустился: {e}")
     finally:
         os.close(err_fd)
-    stream = StreamProcess(proc)
+    stream = StreamProcess(proc, stderr_path)
     try:
         return _await_handshake(proc, stream, stderr_path=stderr_path,
                                 handshake_timeout=handshake_timeout, role=role,

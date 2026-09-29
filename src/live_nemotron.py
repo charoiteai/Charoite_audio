@@ -293,9 +293,15 @@ class Shadow:
             try:
                 stream.write(block)
             except OSError as e:
+                # Закрытый вход — симптом: ребёнок умер или умирает. Причину называет его
+                # выход (код и последняя строка журнала — у двери), а не сломанная труба:
+                # писатель замечает смерть раньше читателя, и строка `end` иначе теряла
+                # причину — сверку фронта, падение модели (выходной круг фикса A2 №478).
+                exit_ = stream.finish(STOP_GRACE_S)
                 with self._lock:
                     if self._state == LIVE:
-                        self._die_locked(f"вход ребёнка закрыт ({e})")
+                        self._die_locked(f"вход ребёнка закрыт ({e}); ребёнок: {exit_.reason or 'вышел'}",
+                                         exit_)
                 break
         stream.close_input()
 

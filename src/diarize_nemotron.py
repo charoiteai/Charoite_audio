@@ -414,9 +414,22 @@ class NemotronStream:
 
 
 def frame_seconds(model: Any) -> float:
-    """Длительность кадра разметки модели: hop · subsampling / частота (mlx-audio)."""
-    proc = model._processor_config
-    return proc.hop_length * model.config.fc_encoder_config.subsampling_factor / proc.sampling_rate
+    """Длительность единицы `frames_processed` потока — родного кадра спектра: hop / частота.
+
+    mlx-audio 0.5.x, `nemotron_diarization.StreamingState`: «Native 10 ms frames, before
+    output downsampling». Энкодер прореживает вход в 8 раз, но счёт состояния и выход
+    модели идут на шаге спектра; прежняя формула hop · 8 / частота читала поле конфига
+    sortformer, которого у этой модели нет, и ошибалась бы в восемь раз (фикс A2 №478).
+    Поля — из публичного `config.processor_config`, того же, что лежит в `config.json`
+    весов (входной круг фикса, M1). Сверка единицы со звуком — `_check_front`.
+    """
+    proc = model.config.processor_config
+    if proc.sampling_rate != SAMPLE_RATE:
+        # Поток идёт на частоте хаба; модель другой частоты `feed` отвергла бы на первом
+        # блоке, а кадр не был бы целым числом сэмплов потока, и сверка фронта лгала бы
+        # (выходной круг фикса A2 №478, M2). Отказ — до рукопожатия, с причиной.
+        raise ModelUnavailable(f"модель ждёт звук {proc.sampling_rate} Гц, поток идёт на {SAMPLE_RATE} Гц")
+    return proc.hop_length / proc.sampling_rate
 
 
 # ------------------------------------------------ живой поток (№478, `--stream`)
@@ -438,14 +451,34 @@ def _emit_segments(segments: list[dict], frames: int, frame_s: float, emit, *, f
               "open": (not final) and end_frames >= frames})
 
 
+def _check_front(frames: int, fed: int, frame_s: float, *, final: bool) -> None:
+    """Единица кадра против поданного звука — единственной величины, в которой нет
+    сомнений. Модель не размечает звук, которого не получила, а финал размечает весь
+    звук с точностью до кадра (замер на mlx-audio 0.5.6, четыре пресета, 0–31 с: на
+    финале кадров ровно `fed // hop`). Нарушение — не та единица кадра: ребёнок умирает
+    с числами в журнале, а не отдаёт тихо неверный фронт и неверное «открыт»
+    (входной круг фикса A2 №478, I1 и M3). Счёт — в целых сэмплах: кадр модели — целое
+    число сэмплов (частота модели равна частоте потока, иначе `feed` отказывает сам), и
+    границы точные, без допуска плавающей точки (мутатор диапазона фикса)."""
+    hop = round(frame_s * SAMPLE_RATE)
+    covered = frames * hop
+    if covered > fed:
+        raise RuntimeError(f"фронт модели {frames * frame_s:.3f} с впереди поданного звука "
+                           f"{fed / SAMPLE_RATE:.3f} с ({frames} кадров по {frame_s} с) — единица кадра не та")
+    if final and fed - covered >= hop:
+        raise RuntimeError(f"финал модели {frames * frame_s:.3f} с не покрыл поданный звук "
+                           f"{fed / SAMPLE_RATE:.3f} с ({frames} кадров по {frame_s} с) — единица кадра не та")
+
+
 def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_STEP) -> int:
     """Цикл живого потока: s16le со stdin блоками `step` → сегменты и фронт.
 
     Нечётный байт переносится в следующее чтение (как `TapStreamCapture._pump_file`):
     труба отдаёт куски любой длины, и звук без переноса съехал бы на байт молча.
     После каждого блока — фронт: `fed` — поданные сэмплы, `frames` — кадры,
-    выданные моделью, `cpu_s` и `rss_mb` — цена процесса. EOF — хвост блока,
-    `close()`, последний фронт с `final`.
+    выданные моделью, `cpu_s` и `rss_mb` — цена процесса; до строк фронт
+    сверяется со звуком (`_check_front`). EOF — хвост блока, `close()`, последний
+    фронт с `final`.
     """
     import numpy as np
     need = step * 2
@@ -464,9 +497,12 @@ def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_ST
             del buf[:take]
             segments = stream.feed(pcm)
             fed += len(pcm)
+            _check_front(stream.frames_processed, fed, frame_s, final=False)
             _emit_segments(segments, stream.frames_processed, frame_s, emit, final=False)
             emit({"type": "front", "fed": fed, "frames": stream.frames_processed, **_load()})
-    _emit_segments(stream.close(), stream.frames_processed, frame_s, emit, final=True)
+    segments = stream.close()
+    _check_front(stream.frames_processed, fed, frame_s, final=True)
+    _emit_segments(segments, stream.frames_processed, frame_s, emit, final=True)
     emit({"type": "front", "fed": fed, "frames": stream.frames_processed, "final": True, **_load()})
     return 0
 
@@ -508,10 +544,10 @@ def serve_stream(model_dir: pathlib.Path, preset: str, read: Callable[[int], byt
 
     try:
         model = load_model(model_dir, preset)
+        frame_s = frame_seconds(model)
     except ModelUnavailable as e:
         _stderr(str(e).replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
-    frame_s = frame_seconds(model)
     emit({"type": "ready", "proto": STREAM_PROTO, "sr": SAMPLE_RATE, "preset": preset,
           "frame_s": frame_s, "step": STREAM_STEP})
     return run_stream(NemotronStream(model), frame_s=frame_s, read=read, emit=emit)
