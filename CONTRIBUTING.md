@@ -44,8 +44,9 @@ review gates, and who answers for what — is documented in
   defects back into the changed lines and demands that the tests go red. The
   mutator names its data root like every other entry point: the meeting lock
   it yields to and its own `logs/mutation.lock` live there. In a plain clone
-  the clone is the data root; without `CHAROITE_ROOT` it refuses with code 5
-  and the recipe. A surviving mutant is a
+  the clone is the data root; if your data lives elsewhere (the app's data
+  folder), name that folder instead, or the lock misses the night. Without
+  `CHAROITE_ROOT` it refuses with code 5 and the recipe. A surviving mutant is a
   behaviour change nobody noticed: either the test for that place exists but
   holds nothing, or there is no test at all. Only lines from the diff are
   mutated — a whole-file pass means thousands of mutants and hours instead of

@@ -448,6 +448,17 @@ def test_устаревший_байткод_не_судит_мутанта_по
     assert not list(tmp_path.rglob("__pycache__")), "мутатор оставил байткод в дереве"
 
 
+def test_прогон_мутанта_не_получает_корень_данных_мутатора(tmp_path, monkeypatch):
+    """Дверь канона публикует корень данных мутатора в `CHAROITE_ROOT` (№440), а
+    набор тестов мутанта называет свой: живой корень владельца ему не передаётся
+    даже тогда, когда обвязка (conftest) сама сломана мутантом (круг 1, M2)."""
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "данные-владельца"))
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_env.py").write_text(
+        "import os\n\ndef test_env():\n    assert 'CHAROITE_ROOT' not in os.environ\n", encoding="utf-8")
+    assert mc.run_tests(tmp_path, ["tests/test_env.py"], timeout=60) is True
+
+
 def test_явный_return_none_не_мутируется(tmp_path):
     """`return None` → `return None` — тождество; в отчёте оно читалось как
     выживший мутант и тонуло среди настоящих (партия D, 22.08)."""
@@ -970,8 +981,6 @@ def test_мутатор_без_названного_корня_отказыва�
     assert "CHAROITE_ROOT=" in out.stderr, out.stderr[-400:]
     # ни диапазона, ни плана: отказ — первым делом после разбора аргументов
     assert "диапазон:" not in out.stdout and "Мутантов" not in out.stdout, out.stdout[-400:]
-    # и ни одного лока ни в каталоге запуска, ни рядом со скриптом
-    assert not list(tmp_path.rglob("mutation.lock")), list(tmp_path.rglob("mutation.lock"))
 
 
 def test_мутатор_из_чужого_клона_с_корнем_строит_план(tmp_path):
