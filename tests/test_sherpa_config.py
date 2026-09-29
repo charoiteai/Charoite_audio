@@ -47,12 +47,27 @@ def test_after_a_meeting_one_thread_while_a_recording_runs(measured, monkeypatch
     assert sc.threads_for(sc.POST, tmp_path) == 1
 
 
-def test_until_measured_the_factory_changes_nothing(monkeypatch):
-    """Без замера — только один поток: фабрика задаёт число явно и не ускоряет наугад."""
-    monkeypatch.setattr(sc, "performance_cores", lambda: 16)
-    monkeypatch.setattr(sc.live_gate, "daemon_alive", lambda root: False)
-    assert sc.threads_for(sc.POST, None) in sc.MEASURED_THREADS
+#: Числа потоков, для которых есть замер меток (29.09, №508): 1, 2 и 4 дали те же метки на
+#: обоих каналах. Расширить список числом вне этого набора — сначала замер.
+MEASURED_EQUAL = {1, 2, 4}
+
+
+def test_the_list_holds_only_measured_counts_starting_from_one():
+    """Допущенные числа — из замеренных, список начинается с 1 и возрастает: неизмеренное
+    число не выходит, а один поток есть всегда."""
     assert sc.MEASURED_THREADS[0] == 1
+    assert list(sc.MEASURED_THREADS) == sorted(set(sc.MEASURED_THREADS))
+    assert set(sc.MEASURED_THREADS) <= MEASURED_EQUAL
+
+
+def test_after_a_meeting_two_threads_until_the_pass_can_yield_mid_way(monkeypatch, tmp_path):
+    """На 8 производительных ядрах без записи — 2 потока, а не 4: проход, начатый до встречи,
+    держит потоки до конца, и 4 стоили бы живому распознаванию 55 % на p95 (№508). Четыре —
+    после уступки посреди прохода (№510)."""
+    monkeypatch.setattr(sc, "performance_cores", lambda: 8)
+    monkeypatch.setattr(sc.live_gate, "daemon_alive", lambda root: False)
+    assert sc.threads_for(sc.POST, tmp_path) == 2
+    assert sc.threads_for(sc.LIVE) == 1
 
 
 def test_an_unknown_kind_of_work_is_refused():
