@@ -228,7 +228,7 @@ derived from the same `allowed`: the path comes in as a parameter, and the
 caller from a layer that sees runtime assembles it — the way
 `graphs.open_search` does — never "go to the roots canon". The graph package is
 the union of the import closures of its declared entries, `package_entries` in
-`layout.json` (today two: `graph_search` and `embed_door`), not "all of base plus graph"; `tests/test_entry_points_contract.py`
+`layout.json` (today three: `graph_search`, `embed_door` and the command line `cli`), not "all of base plus graph"; `tests/test_entry_points_contract.py`
 copies that closure into a temporary directory and runs a search over the demo
 graph in a separate process with `HOME`, `CHAROITE_ROOT`, `SUFLER_GRAPH_DIR`,
 `CHAROITE_GRAPH_DIR` and `TMPDIR` pointing into a trap and an audit hook that

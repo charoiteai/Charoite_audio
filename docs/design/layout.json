@@ -31,6 +31,7 @@
     "graph": [
       "graphs",
       "charoite_graph",
+      "charoite_graph.cli",
       "charoite_graph.graph_names",
       "charoite_graph.graph_nodes",
       "graph_links",
@@ -131,6 +132,7 @@
   },
   "package": "charoite_graph",
   "package_entries": {
+    "charoite_graph.cli": "командная строка charoite-graph index|search <папка> — пользователь колеса ищет по своей папке без приложения и без окружения (№323 PR 2)",
     "charoite_graph.embed_door": "векторы по адресу модели — пользователь пакета собирает пару «векторизатор и имя» без приложения (№462, №323 PR 1)",
     "charoite_graph.graph_search": "поиск по графу ссылок с русской морфологией — поверхность пакета с первого колеса (№424, №427)"
   },

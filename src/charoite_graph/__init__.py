@@ -2,7 +2,7 @@
 
 Пакет намеренно пуст: ни импортов, ни реэкспорта — `import charoite_graph`
 не тянет ни `yaml`, ни один из модулей пакета. Поверхность входа собирается
-замыканием входов `package_entries` (сегодня `charoite_graph.graph_search` и
-`charoite_graph.embed_door`) по графу импортов;
+замыканием входов `package_entries` (сегодня `charoite_graph.graph_search`,
+`charoite_graph.embed_door` и командная строка `charoite_graph.cli`) по графу импортов;
 что именно выставлено наружу — предмет №324, колесо и метаданные — №427.
 """

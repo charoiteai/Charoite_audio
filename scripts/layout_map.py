@@ -2154,8 +2154,9 @@ class Seam(NamedTuple):
 
 
 ENV_SEAMS: tuple[Seam, ...] = (
-    Seam("GraphSearch", "graph_search", ("src/graphs.py",), "graphs.open_search",
-         "у неё один каталог кэша векторов и одно ночное окно"),
+    Seam("GraphSearch", "graph_search", ("src/graphs.py", "src/charoite_graph/cli.py"), "graphs.open_search",
+         "у приложения один каталог кэша векторов и одно ночное окно; командная строка пакета "
+         "собирает индекс сама — без окружения, каталог кэша только флагом (№323 PR 2)"),
     Seam("revise", "tier3", ("src/graphs.py",), "graphs.revise_cores",
          "у неё один каталог кэша векторов и одно ночное окно"),
     Seam("Thread", "threading", ("src/threads.py", "src/charoite_graph/graph_search.py"),

@@ -434,7 +434,64 @@ again = open_search()
 again.refresh(force=True)
 loaded = again.load_vectors()
 result = again.search(QUERY)
-print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
+# Командная строка — последним шагом (её кэш — свой подкаталог DATA, манифест шагов
+# выше она не трогает; входной круг 2 по №323 PR 2, I3). Точка входа — из
+# `entry_points.txt` распакованного колеса, а не импорт по имени: гейт колеса судит
+# артефакт (I5 входа r2 хвоста). У копий без метаданных — модуль по файлу.
+CLI = {}
+if PKG_ROOT.joinpath("charoite_graph", "cli.py").is_file():
+    import contextlib, importlib.metadata, io, stat, urllib.request
+    eps = [ep for dist in importlib.metadata.distributions(path=[PKG]) for ep in dist.entry_points
+           if ep.group == "console_scripts"]
+    if eps:
+        cli_main, CLI["entry"] = eps[0].load(), [f"{ep.name}={ep.value}" for ep in eps]
+    else:
+        from charoite_graph.cli import main as cli_main
+        CLI["entry"] = None
+    CLI_DATA = pathlib.Path(DATA) / "cli"
+
+    def cli_run(argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cli_main(argv)
+        return code, buf.getvalue()
+
+    def tree():
+        return sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*"))
+
+    class Answer:
+        def __init__(self, body):
+            self.status, self.body = 200, body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+    def fake_urlopen(request, timeout=None):
+        texts = json.loads(request.data)["input"]
+        return Answer(json.dumps({"embeddings": [[1.0 + t.count(c) for c in "аеиоуртнс"] for t in texts]}).encode())
+
+    # маска вызывающего — заведомо слабая: у разработчика с 077 CLI без своей маски
+    # проходил бы проверку режимов молча (выходной круг 1 по №323 PR 2, M2)
+    os.umask(0o022)
+    before = tree()
+    code, text = cli_run(["search", GRAPH, QUERY, "--json"])
+    CLI.update(search_code=code, search=json.loads(text) if code == 0 else text,
+               search_created=sorted(set(tree()) - set(before)))
+    urllib.request.urlopen = fake_urlopen
+    model = ["--model-url", "http://127.0.0.1:9", "--model", "проба-cli", "--data-dir", str(CLI_DATA)]
+    CLI["index_code"], CLI["index_out"] = cli_run(["index", GRAPH, *model])
+    code, text = cli_run(["search", GRAPH, QUERY, "--json", *model])
+    CLI.update(model_code=code, model_search=json.loads(text) if code == 0 else text)
+    CLI["modes"] = {str(p.relative_to(DATA)): stat.S_IMODE(p.stat().st_mode)
+                    for p in [CLI_DATA, *CLI_DATA.rglob("*")] if p.exists()}
+
+print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text, "cli": CLI,
                   "embedded": embedded, "loaded": loaded, "path_before": PATH_BEFORE, "path_after": sys.path,
                   "pulled_by_init": PULLED_BY_INIT, "inits": INITS, "door": DOOR,
                   "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
@@ -512,7 +569,34 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     door = out.get("door") or {}
     if door and door.get("vectors") != DOOR_VECTORS:
         problems.append(f"дверь векторов пакета не дала векторов под пробой: {door.get('vectors')!r}")
+    problems += _cli_problems(out.get("cli") or {})
     return problems, out
+
+
+def _cli_problems(cli: dict) -> list[str]:
+    """Что командная строка пакета обязана под пробой (№323 PR 2): лексический поиск без
+    адреса отвечает прогретым индексом и ничего не создаёт; `index` собирает векторы;
+    кэш — только владельцу (маска процесса на время работы входа). Пусто — CLI нет."""
+    if not cli:
+        return []
+    out = []
+    search = cli.get("search")
+    if cli.get("search_code") != 0 or not isinstance(search, dict) or not search.get("ready"):
+        out.append(f"командная строка: search без адреса модели — код {cli.get('search_code')}, ответ {search!r}")
+    if cli.get("search_created"):
+        out.append(f"командная строка: search без --data-dir создал {cli['search_created']}")
+    if cli.get("index_code") != 0:
+        out.append(f"командная строка: index — код {cli.get('index_code')}, вывод {cli.get('index_out')!r}")
+    if not any(rel.endswith(".json") for rel in cli.get("modes") or {}):
+        out.append(f"командная строка: index не оставил манифеста кэша: {sorted(cli.get('modes') or {})}")
+    model = cli.get("model_search")
+    if cli.get("model_code") != 0 or not isinstance(model, dict) or model.get("status") == "unverified":
+        out.append(f"командная строка: search с моделью не проверен семантикой — код {cli.get('model_code')}, "
+                   f"ответ {model!r}")
+    loose = {rel: oct(mode) for rel, mode in (cli.get("modes") or {}).items() if mode & 0o077}
+    if loose:
+        out.append(f"командная строка: кэш доступен не только владельцу: {loose}")
+    return out
 
 
 def _ci_env(name: str, workflow: pathlib.Path = CI_WORKFLOW) -> str:
@@ -963,6 +1047,12 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_pa
     assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
     assert modules <= set(out["modules"]), "проба импортирует не все модули плана"
     assert out["door"] == {"vectors": DOOR_VECTORS}, f"дверь векторов не проверена поведением: {out['door']}"
+    # командная строка — точкой входа из метаданных колеса, а не импортом по имени (№323 PR 2)
+    cli = out["cli"]
+    assert cli["entry"] == ["charoite-graph=charoite_graph.cli:main"], cli.get("entry")
+    assert cli["search"]["status"] == "unverified" and cli["search"]["sources"], cli["search"]
+    assert cli["model_code"] == 0 and cli["model_search"]["status"] != "unverified", cli["model_search"]
+    assert any(rel.endswith(".json") for rel in cli["modes"]), cli["modes"]
     # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
     assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
@@ -1460,7 +1550,7 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                 "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
 
     def run(name: str, extra: str, *, door: str | None = None, member: str | None = None,
-            **kw) -> tuple[list[str], dict]:
+            cli: str | None = None, **kw) -> tuple[list[str], dict]:
         victims = tmp_path / name / "жертва"
         (victims / "d").mkdir(parents=True)
         (victims / "f").write_text("x", encoding="utf-8")
@@ -1477,6 +1567,8 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
             (pkg / "charoite_graph" / "embed_door.py").write_text(door, encoding="utf-8")
         if member is not None:
             (pkg / "charoite_graph" / "член_вне_входа.py").write_text(member, encoding="utf-8")
+        if cli is not None:
+            (pkg / "charoite_graph" / "cli.py").write_text(cli, encoding="utf-8")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
         (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
@@ -1503,6 +1595,36 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     got, out = run("дверь честная", "pass", door=honest_door)
     assert got == [] and out["door"] == {"vectors": DOOR_VECTORS}, (got, out.get("door"))
     assert run("без двери", "pass")[1]["door"] == {}, "без файла двери проверки нет"
+    # командная строка в копии — поведением (№323 PR 2): кэш по маске вызывающего и файл,
+    # созданный лексическим поиском, — каждый своей строкой; честная — чисто, без файла — проверки нет
+    cli_template = ("import os, pathlib\n"
+                    "def main(argv):\n"
+                    "    {mask}\n"
+                    "    if argv[0] == 'index':\n"
+                    "        d = pathlib.Path(argv[argv.index('--data-dir') + 1])\n"
+                    "        d.mkdir(parents=True, exist_ok=True)\n"
+                    "        (d / 'm.json').write_text('{{}}')\n"
+                    "        return 0\n"
+                    "    if '--data-dir' not in argv:\n"
+                    "        {leak}\n"
+                    "    status = 'confident' if '--data-dir' in argv else 'unverified'\n"
+                    "    print('{{\"ready\": true, \"status\": \"%s\", \"sources\": [\"a\"]}}' % status)\n"
+                    "    return 0\n")
+    honest_cli = cli_template.format(mask="os.umask(0o077)", leak="pass")
+    got, out = run("строка честная", "pass", cli=honest_cli)
+    assert got == [] and out["cli"]["entry"] is None and out["cli"]["index_code"] == 0, (got, out.get("cli"))
+    got = probe("строка по маске", "pass", cli=cli_template.format(mask="os.umask(0o022)", leak="pass"))
+    assert len(got) == 1 and "кэш доступен не только владельцу" in got[0], got
+    # без своей маски — маска раннера 022, а не маска того, кто запустил pytest (M2 выхода 1)
+    got = probe("строка без маски", "pass", cli=cli_template.format(mask="pass", leak="pass"))
+    assert len(got) == 1 and "кэш доступен не только владельцу" in got[0], got
+    got = probe("строка пишет при поиске", "pass", cli=cli_template.format(
+        mask="os.umask(0o077)", leak="(pathlib.Path.cwd().parent / 'data' / 'след').write_text('x')"))
+    assert len(got) == 1 and "search без --data-dir создал" in got[0], got
+    assert run("без строки", "pass")[1]["cli"] == {}, "без файла командной строки проверки нет"
+    got = probe("строка без кэша", "pass", cli=cli_template.format(mask="os.umask(0o077)", leak="pass")
+                .replace("(d / 'm.json').write_text('{}')", "pass"))
+    assert len(got) == 1 and "не оставил манифеста" in got[0], got
     # член пакета, которого не тянет ни один вход, тоже грузится под ловушкой: раннер
     # обходит каталог пакета копии, а не только замыкание входа (вход 4 хвоста, C1)
     got = probe("член вне входа", "pass",

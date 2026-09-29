@@ -16,6 +16,9 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = ["pyyaml>=6.0"]
 
+[project.scripts]
+charoite-graph = "charoite_graph.cli:main"
+
 [tool.setuptools]
 package-dir = {"charoite_graph" = "../../src/charoite_graph"}
 packages = ["charoite_graph"]

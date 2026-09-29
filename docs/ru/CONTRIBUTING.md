@@ -218,7 +218,7 @@ meeting и app — все слои ниже.
 из того же `allowed`: путь приходит параметром, а собирает его вызывающий из
 слоя, которому виден runtime, — как `graphs.open_search`, — а не «иди к канону
 корней». Пакет графа — объединение замыканий объявленных входов, `package_entries` в
-`layout.json` (сегодня два: `graph_search` и `embed_door`), а не «весь base плюс graph»;
+`layout.json` (сегодня три: `graph_search`, `embed_door` и командная строка `cli`), а не «весь base плюс graph»;
 `tests/test_entry_points_contract.py` копирует это замыкание во временный
 каталог и ищет по демо-графу отдельным процессом: `HOME`, `CHAROITE_ROOT`,
 `SUFLER_GRAPH_DIR`, `CHAROITE_GRAPH_DIR` и `TMPDIR` ведут в ловушку, а
