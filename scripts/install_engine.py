@@ -33,8 +33,9 @@ Python приложения mlx нет, бандл подписан. Раньш�
     CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
 
 У приложения это `Charoite.app/Contents/Resources/python/bin/python3`; команду
-целиком — с корнем данных — печатают доктор и шапка стенограммы, если движок
-выбран, а окружения нет (`diarize_nemotron.install_command(root)`). Корень
+целиком — с корнем данных — печатают доктор и `--check`, если движок выбран, а
+окружения нет (`diarize_nemotron.install_command(root)`); в шапку стенограммы
+уходит только указатель — её пересылают людям, а команда несёт пути машины. Корень
 установщик НАЗЫВАЕТ дверью канона, а не выводит из положения файла: из бандла
 догадкой вышел бы сам бандл, и окружение легло бы в подписанный `.app` (№489).
 """
@@ -55,6 +56,11 @@ import tempfile
 import wave
 from collections.abc import Callable
 
+# Байткод — до первого импорта своих модулей: человек запускает установщик python
+# бандла из Терминала, мимо PYTHONPYCACHEPREFIX, который ставит детям приложение, и
+# `__pycache__` лёг бы в подписанный `.app` — `codesign --verify --strict` скажет
+# «file added» (предрелизный прогон 0.88.1, Opus C1).
+sys.dont_write_bytecode = True
 # Вставки — канон путей и модуль движка (src), загрузчик весов (scripts).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))

@@ -28,6 +28,10 @@ import sys
 import time
 import urllib.request
 
+# Байткод — до первого импорта своих модулей: доктор обещан любому Python, в том
+# числе python бандла из Терминала, мимо PYTHONPYCACHEPREFIX приложения, — и
+# `__pycache__` лёг бы в подписанный `.app` (предрелизный прогон 0.88.1, Opus C1).
+sys.dont_write_bytecode = True
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
