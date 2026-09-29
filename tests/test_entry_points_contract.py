@@ -1459,7 +1459,8 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                 "        import types\n"
                 "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
 
-    def run(name: str, extra: str, *, door: str | None = None, **kw) -> tuple[list[str], dict]:
+    def run(name: str, extra: str, *, door: str | None = None, member: str | None = None,
+            **kw) -> tuple[list[str], dict]:
         victims = tmp_path / name / "жертва"
         (victims / "d").mkdir(parents=True)
         (victims / "f").write_text("x", encoding="utf-8")
@@ -1474,6 +1475,8 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                         pkg / "charoite_graph" / "model_seam.py")
         if door is not None:
             (pkg / "charoite_graph" / "embed_door.py").write_text(door, encoding="utf-8")
+        if member is not None:
+            (pkg / "charoite_graph" / "член_вне_входа.py").write_text(member, encoding="utf-8")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
         (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
@@ -1500,6 +1503,11 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     got, out = run("дверь честная", "pass", door=honest_door)
     assert got == [] and out["door"] == {"vectors": DOOR_VECTORS}, (got, out.get("door"))
     assert run("без двери", "pass")[1]["door"] == {}, "без файла двери проверки нет"
+    # член пакета, которого не тянет ни один вход, тоже грузится под ловушкой: раннер
+    # обходит каталог пакета копии, а не только замыкание входа (вход 4 хвоста, C1)
+    got = probe("член вне входа", "pass",
+                member="import os, pathlib\n(pathlib.Path(os.environ['HOME']) / 'config.yaml').read_text()\n")
+    assert got and "чтение ловушки" in got[0], got
     # копия ИЗ-вне В data_dir законна: источник копии не запись
     assert probe("копия внутрь", "shutil.copyfile(V / 'f', self.data / 'копия')") == []
     assert "чтение ловушки" in probe("домашний", "(pathlib.Path.home() / 'config.yaml').read_text()")[0]
