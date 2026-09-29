@@ -56,7 +56,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
   `*.wav.part*`；
 - 崩溃遗留在 `data/sck/` 中的原始采集流，同一保留期（实时会话自己的文件夹从不
   触碰）；
-- 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log`、`logs/retry_*.log`、`logs/recover_*.log`、实时 Nemotron 影子流的 `logs/nemotron_live_*` 诊断日志、共享的图谱决策日志 `logs/graph_unlinked.log` 及其轮转文件 `logs/graph_unlinked.old`，以及导入清理输出 `logs/import_prune-*.log`（重建锁文件 `logs/rebuild-*.pid` 不会被清理）；
+- 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log`、`logs/retry_*.log`、`logs/recover_*.log`、实时 Nemotron 影子流的 `logs/nemotron_live_*` 诊断日志、共享的图谱决策日志 `logs/graph_unlinked.log` 及其轮转文件 `logs/graph_unlinked.old`（超过保留期未写入才删除，不逐行清理），以及导入清理输出 `logs/import_prune-*.log`（重建锁文件 `logs/rebuild-*.pid` 不会被清理）；
 - 导入录音的副本——导入文件夹 `done/` 中的文件和会议归档文件夹中的音频
   「Исходник」——在导入后 `audio.import_keep_days`（默认 2 天，与
   `record_keep_days` 无关）删除；应用运行时每六小时清理一次，守护进程在每场会议

@@ -63,7 +63,7 @@ Automatic cleanup is limited to data documented as temporary:
   including `*.wav.part*` conversion temporaries;
 - raw capture streams a crash left in `data/sck/`, on the same window (the
   live session's own folder is never touched);
-- `logs/graph_*.log`, `logs/cloud_review_*.log`, `logs/retry_*.log`, `logs/recover_*.log` and the live Nemotron shadow's `logs/nemotron_live_*` diagnostic logs, the shared graph-decision log `logs/graph_unlinked.log` with its rotated `logs/graph_unlinked.old`, and the import-cleanup output `logs/import_prune-*.log` on the same retention window (the rebuild lock files `logs/rebuild-*.pid` are left alone);
+- `logs/graph_*.log`, `logs/cloud_review_*.log`, `logs/retry_*.log`, `logs/recover_*.log` and the live Nemotron shadow's `logs/nemotron_live_*` diagnostic logs, the shared graph-decision log `logs/graph_unlinked.log` with its rotated `logs/graph_unlinked.old` (removed once nothing has been written to it for the retention window; it is not cleaned line by line), and the import-cleanup output `logs/import_prune-*.log` on the same retention window (the rebuild lock files `logs/rebuild-*.pid` are left alone);
 - copies of imported recordings — the file in the import folder's `done/` and
   the audio `Исходник` in the meeting's archive folder — `audio.import_keep_days`
   after the import (2 by default, independent of `record_keep_days`); the app

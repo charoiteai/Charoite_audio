@@ -369,8 +369,10 @@ def _prune_graph_logs(cfg: dict) -> None:
     # (№478 A2, выходной круг 1). Виды и глобы — из реестра LOG_KINDS (№514): там же
     # общий журнал графовых решений с его ротацией .old и вывод уборки импорта;
     # замок пересборки ретеншн не трогает (№528).
-    for old in [p for entry in LOG_KINDS.values() for pattern in sweep_globs(entry)
-                for p in logs.glob(pattern)]:
+    # set: глоб `graph_*.log` покрывает и общий журнал graph_unlinked.log — у обоих видов
+    # одна политика срока, пересечение держит тест (выходной круг 1 по №514 PR 2, M1)
+    for old in sorted({p for entry in LOG_KINDS.values() for pattern in sweep_globs(entry)
+                       for p in logs.glob(pattern)}):
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)

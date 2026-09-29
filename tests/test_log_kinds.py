@@ -112,6 +112,26 @@ NOT_SWEPT = ["graph_doctor.json", "daemon.lock", "rebuild.lock", "mutation.lock"
              "nightly.json", f"rebuild-{STEM}.pid", "lexicon_candidates.md"]
 
 
+def _names(entry: cp.LogKind) -> list[str]:
+    part = "" if entry.whole else STEM
+    return [f"{entry.stem}{part}{s}" for s in entry.suffixes]
+
+
+def test_overlapping_globs_share_one_retention_policy():
+    """Имя одного вида может попасть под глоб другого (`graph_*.log` ловит и
+    `graph_unlinked.log`) — тогда у обоих видов одна политика срока: иначе флаг `sweep`
+    вида ничего не решал бы, файл стирал бы глоб соседа (выходной круг 1, M1)."""
+    import fnmatch
+    for kind, entry in cp.LOG_KINDS.items():
+        for name in _names(entry):
+            owners = {k for k, other in cp.LOG_KINDS.items()
+                      if any(fnmatch.fnmatchcase(name, g) for g in cp.sweep_globs(other))}
+            if entry.sweep:
+                assert kind in owners, f"{name}: свой глоб вида его не ловит"
+            else:
+                assert owners == set(), f"{name}: вид без срока, а его стирает глоб {owners}"
+
+
 def test_retention_globs_miss_locks_and_non_journals(tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()

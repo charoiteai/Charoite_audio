@@ -65,7 +65,7 @@
   файлы конвертации `*.wav.part*`;
 - сырые потоки захвата, оставленные аварией в `data/sck/`, по тому же сроку
   (папку живой сессии уборка не трогает);
-- диагностические логи `logs/graph_*.log`, `logs/cloud_review_*.log`, `logs/retry_*.log`, `logs/recover_*.log`, журналы тени живого потока Nemotron `logs/nemotron_live_*`, общий журнал графовых решений `logs/graph_unlinked.log` с ротацией `logs/graph_unlinked.old` и вывод уборки импорта `logs/import_prune-*.log` по тому же сроку (отметки пересборки `logs/rebuild-*.pid` не трогаются);
+- диагностические логи `logs/graph_*.log`, `logs/cloud_review_*.log`, `logs/retry_*.log`, `logs/recover_*.log`, журналы тени живого потока Nemotron `logs/nemotron_live_*`, общий журнал графовых решений `logs/graph_unlinked.log` с ротацией `logs/graph_unlinked.old` (стирается, когда в него не писали дольше срока; построчно не чистится) и вывод уборки импорта `logs/import_prune-*.log` по тому же сроку (отметки пересборки `logs/rebuild-*.pid` не трогаются);
 - копии импортированных записей — файл в `done/` папки импорта и
   аудио-«Исходник» в папке встречи в архиве — через `audio.import_keep_days`
   после импорта (по умолчанию 2, независимо от `record_keep_days`); приложение

@@ -541,7 +541,9 @@ LOG_KINDS: dict[str, LogKind] = {
     "nemotron_live": LogKind("nemotron_live_", "meeting", "stem", (".jsonl", ".err"), sweep=True,
                              any_suffix=True),
     # общий журнал графовых решений: строки несут ссылку на встречу, построчная
-    # вычистка при «Забыть» — №527; ротация в .old — одно поколение
+    # вычистка при «Забыть» — №527; ротация в .old — одно поколение. `.log` покрывает
+    # и глоб вида `graph` (`graph_*.log`): политика срока у них одна, и так обязано
+    # остаться (тест пересечения глобов)
     "graph_unlinked": LogKind("graph_unlinked", "shared", None, (".log", ".old"), sweep=True,
                               whole=True),
     # вывод уборки папки импорта: имя — папка владельца
