@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 78.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 79.
 
 ## Слои и направление стрелок
 
@@ -11,7 +11,7 @@
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 10): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
-- **audio** (зависит от: base, runtime; модулей 11): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `owner_voice`, `sherpa_config`, `stt`, `stt_runtime`, `voice_pitch`
+- **audio** (зависит от: base, runtime; модулей 12): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 25): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 
@@ -37,7 +37,7 @@
 - `deps` → runtime: рецепт про интерпретатор и .venv; ничего из репо не импортирует
 - `embed_door` → base: шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
-- `foreign_python` → runtime: дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; из репо тянет только exit_codes (base), зовёт его audio (diarize_nemotron)
+- `foreign_python` → runtime: дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; долгий ребёнок с протоколом строками — spawn_stream (№478); из репо тянет exit_codes и threads (base), зовут его audio (diarize_nemotron, live_nemotron)
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
 - `graphs` → meeting: дверь окружения графа (№365): собирает каталог кэша векторов и ночное окно из корня данных, замка демона и конфига — то есть читает runtime, которого слою graph не дано. В graph она делала бы окружение частью пакета поиска; читают её meeting и app
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
