@@ -45,7 +45,7 @@ import socket
 import os
 import urllib.parse
 
-from charoite_graph.net import is_loopback_host
+from charoite_graph.net import AmbiguousAddress, is_loopback_host, loopback_url, url_host
 
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
@@ -151,7 +151,10 @@ def cloud_llm_url(cfg: dict, env: dict | None = None) -> str:
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))}")
     url = raw.rstrip("/")
     scheme = urllib.parse.urlsplit(url).scheme
-    host = urllib.parse.urlsplit(url).hostname
+    try:
+        host = url_host(url)
+    except AmbiguousAddress as e:
+        raise PrivacyRefused(f"llm.cloud_base_url = {raw}: {e}") from e
     if scheme != "https" and not _is_loopback(host):
         raise PrivacyRefused(
             f"llm.cloud_base_url = {raw}: только https — по http ключ "
@@ -187,7 +190,7 @@ def proxies_for(url: str) -> dict:
     уводил бы запрос на другую цель. Для остальных адресов — `{}`: их прокси
     решает окружение, как раньше (№525).
     """
-    if is_loopback_host(urllib.parse.urlsplit(url).hostname):
+    if loopback_url(url):
         return {"proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
     return {}
 
@@ -275,7 +278,10 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     raw = str((cfg.get("llm") or {}).get(key) or default)
     url = raw.rstrip("/")
     parts = urllib.parse.urlsplit(url)
-    host = parts.hostname
+    try:
+        host = url_host(url)
+    except AmbiguousAddress as e:
+        raise PrivacyRefused(f"llm.{key} = {raw}: {e}") from e
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
         raise PrivacyRefused(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
@@ -341,4 +347,4 @@ def is_loopback_url(url: str) -> bool:
     вправе ли мы трогать сам сервис: перезапустить вставшую Ollama у себя можно,
     а на чужой машине это значит уронить её соседям.
     """
-    return _is_loopback(urllib.parse.urlsplit(url).hostname)
+    return loopback_url(url)

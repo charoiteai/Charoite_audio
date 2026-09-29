@@ -510,3 +510,35 @@ def test_the_swift_external_list_is_real():
 ])
 def test_the_swift_guard_sees_each_form(src, want):
     assert len(swift_session_violations("x.swift", src)) == want
+
+
+# --- один разбор адреса для гейта и транспорта (I3 финального Opus) -----------
+
+EVIL = "http://evil.example\\@127.0.0.1:11434"
+
+
+@pytest.mark.parametrize("url", [
+    EVIL, "http://evil.example\\@[::1]:11434", "http://user@127.0.0.1:11434",
+    "http://127.0.0.1 .evil.example:11434", "http://127.0.0.1\t:11434",
+])
+def test_an_ambiguous_authority_is_neither_loopback_nor_allowed(url):
+    from charoite_graph import net
+    with pytest.raises(net.AmbiguousAddress):
+        net.url_host(url)
+    assert net.loopback_url(url) is False
+    assert privacy.proxies_for(url) == {}
+    for cfg_extra in ({}, {"allow_remote": True}):
+        for env in ({}, {"CHAROITE_NO_CLOUD": "1"}):
+            with pytest.raises(privacy.PrivacyRefused):
+                privacy.llm_base_url({"llm": {"base_url": url, **cfg_extra}}, env=env)
+            with pytest.raises(privacy.PrivacyRefused):
+                privacy.mlx_base_url({"llm": {"mlx_base_url": url, **cfg_extra}}, env=env)
+    assert privacy.is_loopback_url(url) is False
+
+
+def test_open_url_does_not_take_the_direct_opener_for_an_ambiguous_address(monkeypatch):
+    from charoite_graph import net
+    seen = []
+    monkeypatch.setattr(net.urllib.request, "urlopen", lambda r, timeout: seen.append("urlopen") or "x")
+    monkeypatch.setattr(net, "_direct_opener", lambda: seen.append("direct") or pytest.fail("прямой opener"))
+    assert net.open_url(EVIL + "/x", timeout=1) == "x" and seen == ["urlopen"]
