@@ -64,16 +64,15 @@
   and one meeting shipped with "Собеседник 1..5" labels while the run was
   recorded as fully successful. The two are now told apart: if the model stayed
   silent and unnamed labels remain, the transcript gets a warning line in its
-  header and the meeting status gets a `names_pending` field. If the model did
-  answer but the trust guards refused every name it proposed (a name never
-  spoken in the meeting, an address to someone else), the warning names that
-  cause and asks to type the names in by hand — a rebuild on the same text would
-  meet the same guards. The state stays
+  header and the meeting status gets a `names_pending` field. The state stays
   `ready` — the graph is updated, there is nothing to redo in the pipeline —
-  but it is visible that the meeting is worth rebuilding once the model is
-  free. In the recent meetings list "Ready" becomes "Ready, speakers unnamed",
-  right next to the "Retry" button that answers that line. The mark clears
-  itself: a repeat run rewrites the transcript in full.
+  and the warning says the meeting is worth rebuilding once the model is free;
+  a repeat run rewrites the transcript in full, the warning included. If the
+  model did answer but the trust guards refused every name it proposed (not
+  spoken in the meeting, an address to someone else, the owner's name, not a
+  name at all), the warning names that cause instead and asks to type the names
+  in by hand: a rebuild on the same text would meet the same guards. The app
+  does not show this state yet — the warning lives in the transcript header.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   the question is visible in the status line while ⚡ is answering, and in

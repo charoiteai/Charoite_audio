@@ -93,9 +93,9 @@ NAMES_PENDING_NOTE = (
 # отказа на боевой встрече были верными, а плашка звала пересобрать).
 NAMES_REJECTED_NOTE = (
     f"{NAMES_PENDING_PREFIX}: модель ответила, но ни одно из предложенных "
-    "имён ({proposed}) не прошло проверку — имя не звучало в разговоре или "
-    "это обращение к другому. Метки остались «Собеседник N» — впишите имена "
-    "вручную."
+    "имён ({proposed}) не прошло проверку — не звучало в разговоре, "
+    "обращение к другому, имя владельца или не имя. Метки остались "
+    "«Собеседник N» — впишите имена вручную."
 )
 
 
@@ -663,7 +663,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
         return NamesOutcome({}, NamesOutcome.SILENT)
     names: dict[str, str] = {}
     proposed = 0
-    for k, v in (data.items() if isinstance(data, dict) else ()):
+    for k, v in data.items():   # parse_json_block отдаёт только объект или None — None уже выше
         if not (isinstance(k, str) and k.startswith("Собеседник") and isinstance(v, str)):
             continue
         if v.strip() in ("", "?"):
@@ -676,12 +676,11 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
         else:
             log(f"имена: «{v.strip()}» для «{k}» не принято (владелец, не звучало в тексте, "
                 "обращение в своей реплике, не имя или не одно слово)")
-    # Годный ответ — объект (массив или строка под json_format — тот же мусор,
-    # что молчание, GLM M1 по #551), и хоть чем-то из него можно
-    # воспользоваться. Всё предложенное отвергнуто — отдельный исход со своей
-    # плашкой (№499). Владелец определён каналом и в ответе не ждётся.
-    if not isinstance(data, dict):
-        return NamesOutcome({}, NamesOutcome.SILENT)
+    # Годный ответ — объект, и хоть чем-то из него можно воспользоваться (массив
+    # или строка под json_format — тот же мусор, что молчание, GLM M1 по #551:
+    # parse_json_block отдаёт на них None, и это молчание выше). Всё предложенное
+    # отвергнуто — отдельный исход со своей плашкой (№499). Владелец определён
+    # каналом и в ответе не ждётся.
     if proposed and not names:
         log(f"имена: модель предложила {proposed}, гварды отвергли все — плашка «имена не определены» с этой причиной")
         return NamesOutcome({}, NamesOutcome.REJECTED, proposed)
