@@ -364,3 +364,26 @@ def test_retry_runs_after_the_queue_is_released_and_cannot_fail_the_ready_meetin
     monkeypatch.delenv("CHAROITE_NO_RETRY", raising=False)
     rt.main()
     assert events == ["ready", "очередь снята", "подбор незавершённых"], events
+
+
+def test_the_retry_child_lives_in_its_own_session(root, monkeypatch, tmp_path):
+    """Настоящий потомок, а не подмена `Popen`: повтор уходит в свою сессию — сигнал
+    группе процесса, который его запустил (приложение гасит пересборку), его не задевает.
+    Флаг нашёл мутатор диапазона (№514); образец — тест восстановления №495."""
+    import time
+    t = root / "transcripts" / "2026-08-12_153201.md"
+    t.write_text("# Встреча\n", encoding="utf-8")
+    code = tmp_path / "code"
+    (code / "src").mkdir(parents=True)
+    (code / "src" / "rebuild_transcript.py").write_text(
+        "import os\nprint('sid', os.getsid(0), flush=True)\n", encoding="utf-8")
+    monkeypatch.setattr(rt, "CODE", code)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    log = root / "logs" / "retry_2026-08-12_153201.log"
+    rt.retry_unfinished(_queue_of(t))
+    deadline = time.monotonic() + 20
+    while not log.read_text(encoding="utf-8").strip() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("sid "), text
+    assert int(text.split()[1]) != os.getsid(0), "повтор в сессии родителя — умрёт вместе с ней"
