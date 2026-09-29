@@ -250,7 +250,8 @@ sufler:
   # и секунды вместо минут (docs/DIARIZATION.md). Nemotron живёт в своём
   # окружении с mlx-audio — его ставит scripts/install_engine.py nemotron;
   # пустой nemotron_python — это окружение, иначе путь к своему bin/python. Не
-  # поднялся — голоса размечает sherpa, а шапка стенограммы говорит почему.
+  # поднялся — голоса размечает sherpa, шапка стенограммы говорит об откате,
+  # а причина — в журнале разбора (logs/) и в докторе.
   diarize_backend: sherpa
   nemotron_python: ""
   live_dialog_markup: true  # лёгкая модель расставляет реплики внутри абзацев

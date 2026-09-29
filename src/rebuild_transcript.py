@@ -100,9 +100,17 @@ NAMES_REJECTED_NOTE = (
 
 
 #: Строка в шапке стенограммы, когда голоса собеседников размечены не тем
-#: движком, что выбран в настройках: причина видна в самом файле, а не только в
-#: logs/ (как у NAMES_PENDING_NOTE).
+#: движком, что выбран в настройках: сам откат виден в файле, а не только в
+#: logs/ (как у NAMES_PENDING_NOTE). В `{reason}` идут только закреплённые
+#: фразы без путей машины: стенограмму пересылают людям (№495).
 ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников размечены запасным движком (sherpa): {reason}."
+#: Причина в шапке, когда Nemotron не разметил. Сырой отказ движка — путь
+#: интерпретатора, OSError, последняя строка stderr с путями весов и рецептом
+#: `hf download --local-dir …` — несёт имя учётки и уходит только в журнал
+#: разбора; человеку, которому переслали стенограмму, диагноз не нужен, а
+#: владельцу его покажут журнал и доктор (№495).
+ENGINE_REFUSED_REASON = ("Nemotron не разметил голоса — причина в журнале разбора (logs/), "
+                         "проверка — доктор (scripts/doctor.py)")
 #: Движки разметки канала собеседников (`sufler.diarize_backend`).
 DIARIZE_BACKENDS = ("sherpa", "nemotron")
 #: Потолок Nemotron: запуск интерпретатора и загрузка весов плюс десятая доля
@@ -299,7 +307,10 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
     """Разметка канала собеседников выбранным движком, если это не sherpa.
 
     `(сегменты, "")` — разметил Nemotron; `(None, причина)` — выбранный движок
-    не разметил, размечает sherpa, а причина уходит в шапку стенограммы;
+    не разметил, размечает sherpa, а причина уходит в шапку стенограммы: при
+    отказе Nemotron — закреплённая фраза ENGINE_REFUSED_REASON (сырой отказ с
+    путями машины — только в журнал, №495), в остальных случаях — своя фраза
+    без путей;
     `(None, "")` — выбран sherpa. Отрезки короче MIN_SEGMENT_S отбрасываются, как
     у sherpa в `diarize_channel`.
     """
@@ -319,7 +330,7 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
         root=_root(), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
     if not out.ok:
         log(f"Nemotron не разметил голоса ({out.kind}: {out.reason}) — размечает sherpa")
-        return None, f"Nemotron — {out.reason}"
+        return None, ENGINE_REFUSED_REASON
     segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
     log(f"Nemotron: {len(segs)} сегментов из {len(out.payload)} за {time.time() - t0:.0f} с")
     if not segs:

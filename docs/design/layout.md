@@ -89,7 +89,7 @@
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
-- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py; проба help
+- `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py, src/rebuild_transcript.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/gate_bench.py` ← ручной запуск: замер решающего гейта, ручной прогон; проба help
@@ -155,7 +155,7 @@
 - `scripts/dedup_archive.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
-- `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
+- `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/DIARIZATION.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/DIARIZATION.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
 - `scripts/fix_action_items.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/forget_meeting.py` ← PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
 - `scripts/gate_bench.py` ← ROADMAP.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/MODELS.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/ROADMAP.md

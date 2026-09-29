@@ -113,11 +113,18 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     retry_old.write_text("имена: Дмитрий", encoding="utf-8")
     os.utime(retry_old, (stale, stale))
 
+    # recover_<штамп>.log — stdout восстановления после падения демона (№495):
+    # те же имена плюс сырой отказ движка с путями машины
+    recover_old = logs / "recover_2020-01-01_1200.log"
+    recover_old.write_text("имена: Дмитрий", encoding="utf-8")
+    os.utime(recover_old, (stale, stale))
+
     charoite_paths.use_data_root(tmp_path, replace=True)
     d._prune_graph_logs({"audio": {"record_keep_days": 2}})
 
     assert not old.exists(), "старый лог с содержимым встречи остался"
     assert not retry_old.exists(), "старый retry-лог с именами участников остался"
+    assert not recover_old.exists(), "старый лог восстановления остался"
     assert fresh.exists(), "свежий лог удалён — диагностику потеряли"
 
 

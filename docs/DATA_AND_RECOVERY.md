@@ -63,7 +63,7 @@ Automatic cleanup is limited to data documented as temporary:
   including `*.wav.part*` conversion temporaries;
 - raw capture streams a crash left in `data/sck/`, on the same window (the
   live session's own folder is never touched);
-- `logs/graph_*.log`, `logs/cloud_review_*.log` and `logs/retry_*.log` diagnostic logs on the same retention window;
+- `logs/graph_*.log`, `logs/cloud_review_*.log`, `logs/retry_*.log` and `logs/recover_*.log` diagnostic logs on the same retention window;
 - copies of imported recordings — the file in the import folder's `done/` and
   the audio `Исходник` in the meeting's archive folder — `audio.import_keep_days`
   after the import (2 by default, independent of `record_keep_days`); the app
