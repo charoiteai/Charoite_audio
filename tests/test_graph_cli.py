@@ -308,3 +308,15 @@ def test_index_names_what_it_did_not_read(tmp_path, capsys, monkeypatch):
 
     assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_OK
     assert "не открылось файлов: 1" in capsys.readouterr().out
+
+
+def test_search_walks_the_folder_whatever_the_clock_says(tmp_path, capsys, monkeypatch):
+    """Обход в `_open` — принудительный: индекс с часами, для которых «только что
+    обходили» (`now() < REFRESH_S` при `_refreshed_at = 0`), всё равно читает папку.
+    Без `force` такой индекс остался бы пустым, и команда ответила бы кодом 3."""
+    graph = _graph(tmp_path)
+    real = cli.GraphSearch
+    monkeypatch.setattr(cli, "GraphSearch", lambda *a, **kw: real(*a, now=lambda: 1.0, **kw))
+
+    assert cli.main(["search", str(graph), "платежи", "--json"]) == cli.EXIT_OK
+    assert "Платёжный шлюз.md" in json.loads(capsys.readouterr().out)["sources"]
