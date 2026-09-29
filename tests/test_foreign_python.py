@@ -403,8 +403,11 @@ def test_the_door_decides_the_environment_alone():
 def test_the_pip_door_asks_no_keyring_of_the_person(tmp_path):
     """На 401 pip без флагов двери зовёт `keyring` из PATH человека — второе хранилище его учётных
     данных. Стенд: голый pip под `--isolated` его зовёт; дверь — нет, и отказывает без трейсбека."""
+    hits: list[str] = []
+
     class Locked(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            hits.append(self.path)
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="index"')
             self.end_headers()
@@ -430,10 +433,12 @@ def test_the_pip_door_asks_no_keyring_of_the_person(tmp_path):
              fp.clean_env(env))
         assert marker.exists(), "стенд: pip не позвал keyring человека — тест пустой"
         marker.unlink()
+        hits.clear()
         p = fp.run_pip(sys.executable, *tail, base=env, capture_output=True, text=True, timeout=120,
                        stdin=subprocess.DEVNULL)
     finally:
         srv.shutdown()
         srv.server_close()
+    assert hits, "дверь не дошла до индекса с 401 — проверка keyring пустая"
     assert not marker.exists(), "дверь позвала keyring человека"
     assert "Traceback" not in p.stdout + p.stderr, (p.stdout + p.stderr)[-2000:]
