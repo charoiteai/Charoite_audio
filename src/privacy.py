@@ -277,12 +277,11 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get(key) or default)
     url = raw.rstrip("/")
-    parts = urllib.parse.urlsplit(url)
     try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
         host = url_host(url)
-    except AmbiguousAddress as e:
+    except (AmbiguousAddress, ValueError) as e:     # «http://[::1» — тоже отказ, а не голый ValueError
         raise PrivacyRefused(f"llm.{key} = {raw}: {e}") from e
-    scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
         raise PrivacyRefused(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
     if _is_loopback(host):
