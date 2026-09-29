@@ -407,6 +407,111 @@ class NemotronStream:
             final=True, threshold=self._threshold)
         return to_segments(result.segments)
 
+    @property
+    def frames_processed(self) -> int:
+        """Кадров разметки, выданных моделью: фронт — всё, что до него, размечено."""
+        return int(self._state.frames_processed)
+
+
+def frame_seconds(model: Any) -> float:
+    """Длительность кадра разметки модели: hop · subsampling / частота (mlx-audio)."""
+    proc = model._processor_config
+    return proc.hop_length * model.config.fc_encoder_config.subsampling_factor / proc.sampling_rate
+
+
+# ------------------------------------------------ живой поток (№478, `--stream`)
+
+#: Версия протокола живого потока: JSON-строки в дескрипторе протокола.
+STREAM_PROTO = 1
+#: Блок, которым движок кормит поток, — в сэмплах (0,5 с, как бенч `nemotron-live`).
+STREAM_STEP = SAMPLE_RATE // 2
+
+
+def _emit_segments(segments: list[dict], frames: int, frame_s: float, emit, *, final: bool) -> None:
+    """Сегменты блока — строками протокола. «Открыт» — конец упирается во фронт: речь
+    ещё может продолжиться следующим блоком. Сравнение в целых кадрах: секунды
+    сегментов округлены, а фронт кратен кадру (выходной круг входа 2, I3)."""
+    for seg in segments:
+        end_frames = round(seg["end"] / frame_s)
+        emit({"type": "seg", "start": seg["start"], "end": seg["end"],
+              "slot": int(seg["speaker"][len(SPEAKER_PREFIX):]),
+              "open": (not final) and end_frames >= frames})
+
+
+def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_STEP) -> int:
+    """Цикл живого потока: s16le со stdin блоками `step` → сегменты и фронт.
+
+    Нечётный байт переносится в следующее чтение (как `TapStreamCapture._pump_file`):
+    труба отдаёт куски любой длины, и звук без переноса съехал бы на байт молча.
+    После каждого блока — фронт: `fed` — поданные сэмплы, `frames` — кадры,
+    выданные моделью, `cpu_s` и `rss_mb` — цена процесса. EOF — хвост блока,
+    `close()`, последний фронт с `final`.
+    """
+    import numpy as np
+    need = step * 2
+    buf = bytearray()
+    fed = 0
+    eof = False
+    while not eof:
+        data = read(65536)
+        if data:
+            buf += data
+        else:
+            eof = True
+        while len(buf) >= need or (eof and len(buf) >= 2):
+            take = need if len(buf) >= need else len(buf) - len(buf) % 2
+            pcm = np.frombuffer(bytes(buf[:take]), dtype="<i2").astype(np.float32) / 32768.0
+            del buf[:take]
+            segments = stream.feed(pcm)
+            fed += len(pcm)
+            _emit_segments(segments, stream.frames_processed, frame_s, emit, final=False)
+            emit({"type": "front", "fed": fed, "frames": stream.frames_processed, **_load()})
+    _emit_segments(stream.close(), stream.frames_processed, frame_s, emit, final=True)
+    emit({"type": "front", "fed": fed, "frames": stream.frames_processed, "final": True, **_load()})
+    return 0
+
+
+def _load() -> dict:
+    """Цена потока для журнала тени: CPU-секунды процесса движка (все нити) и пик его
+    памяти. Время GPU сюда не входит — его меряет лабораторный опыт (выходной круг
+    входа 2, критика 1)."""
+    import resource
+    import time
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss      # macOS — байты
+    return {"cpu_s": round(time.process_time(), 2), "rss_mb": round(peak / 2**20)}
+
+
+def _protocol_channel():
+    """Протокол — в дубликат дескриптора 1, а сам дескриптор 1 — в stderr.
+
+    Любая печать библиотек (прогресс загрузки, предупреждения) уходит в журнал
+    ребёнка и не рвёт протокол; строки протокола — с записью на каждую строку,
+    без блочной буферизации трубы (выходной круг входа 1, I1)."""
+    import os
+    proto_fd = os.dup(1)
+    os.dup2(2, 1)
+    return os.fdopen(proto_fd, "w", buffering=1, encoding="utf-8")
+
+
+def serve_stream(model_dir: pathlib.Path, preset: str) -> int:
+    """Сторона движка живого потока: модель, рукопожатие, цикл до EOF stdin."""
+    import os
+    proto = _protocol_channel()
+
+    def emit(message: dict) -> None:
+        proto.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+    try:
+        model = load_model(model_dir, preset)
+    except ModelUnavailable as e:
+        _stderr(str(e).replace("\n", "; "))
+        return EXIT_ENGINE_UNAVAILABLE
+    frame_s = frame_seconds(model)
+    emit({"type": "ready", "proto": STREAM_PROTO, "sr": SAMPLE_RATE, "preset": preset,
+          "frame_s": frame_s, "step": STREAM_STEP})
+    return run_stream(NemotronStream(model), frame_s=frame_s,
+                      read=lambda n: os.read(0, n), emit=emit)
+
 
 # ------------------------------------------------ протокол пересборки (№473)
 
@@ -446,13 +551,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="каталог весов (config.json и веса) — models/diar/nemotron корня данных")
     ap.add_argument("--probe", action="store_true",
                     help="только проверить, чем работать: JSON {\"mlx_audio\": версия}, веса не грузятся")
+    ap.add_argument("--stream", action="store_true",
+                    help="живой поток: s16le 16 кГц со stdin, JSON-строки протокола в stdout до EOF")
+    ap.add_argument("--preset", choices=PRESETS, default="low",
+                    help="задержка живого потока (--stream): low — 1.04 с")
     args = ap.parse_args(argv)
-    if not args.probe and args.wav is None:
-        ap.error("нужна запись (или --probe)")
+    if not (args.probe or args.stream) and args.wav is None:
+        ap.error("нужна запись (или --probe, или --stream)")
     problem = availability(args.model)
     if problem:
         _stderr(problem.replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
+    if args.stream:
+        return serve_stream(args.model, args.preset)
     if args.probe:
         print(json.dumps({"mlx_audio": importlib.metadata.version("mlx-audio")}))
         return 0

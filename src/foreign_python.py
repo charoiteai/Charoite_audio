@@ -26,6 +26,7 @@ import json
 import os
 import pathlib
 import subprocess
+import time
 import typing
 
 from exit_codes import EXIT_ENGINE_UNAVAILABLE
@@ -168,3 +169,191 @@ def run_json(python: str | os.PathLike, script: pathlib.Path, args: typing.Seque
     if not isinstance(payload, dict):
         return Outcome(FAILED, reason="ответ не JSON-объект")
     return Outcome(OK, payload=payload)
+
+
+# ------------------------------------------------ долгий ребёнок (№478)
+
+class StreamProcess:
+    """Долгий ребёнок в своём окружении: звук — на stdin, протокол — JSON-строками
+    на stdout, журнал — stderr в файл владельцу.
+
+    stdin без буфера: `write` уходит в трубу сразу, `close_input` — голое закрытие
+    дескриптора, которому нечего дописывать и не на чем встать. Писать и закрывать —
+    одной нитью владельца. Строки протокола читает своя нить и отдаёт в
+    `on_message`; конец stdout ребёнка — `on_eof()`. Строка не JSON-объект —
+    счётчик `nonjson`; исключение обратного вызова не рвёт чтение: счётчик
+    `callback_errors` и текст первого в `callback_error`."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+        self.ready: dict = {}
+        self.nonjson = 0
+        self.callback_errors = 0
+        self.callback_error = ""
+        self._abandoned = False
+
+    @property
+    def pid(self) -> int:
+        return self._proc.pid
+
+    def alive(self) -> bool:
+        return self._proc.poll() is None
+
+    def write(self, data: bytes) -> None:
+        """Отдать звук ребёнку целиком; мёртвая труба — OSError вызывающему."""
+        pipe = self._proc.stdin
+        if pipe is None or pipe.closed:
+            raise BrokenPipeError("вход ребёнка закрыт")
+        view = memoryview(data)
+        while view:
+            n = pipe.write(view)
+            view = view[n:]
+
+    def close_input(self) -> None:
+        """EOF ребёнку: он дописывает хвост и выходит сам. Повторный вызов — пустой."""
+        pipe = self._proc.stdin
+        if pipe is not None and not pipe.closed:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def finish(self, timeout: float) -> Outcome:
+        """Дождаться выхода с потолком; не вышел — убить. Исход — кодом выхода."""
+        try:
+            code = self._proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            return Outcome(FAILED, reason=f"не вышел за {timeout:.0f} с — убит")
+        if code == 0:
+            return Outcome(OK)
+        if code == EXIT_ENGINE_UNAVAILABLE:
+            return Outcome(UNAVAILABLE, reason="движок недоступен")
+        return Outcome(FAILED, reason=f"код {code}")
+
+    def kill(self) -> None:
+        try:
+            self._proc.kill()
+            self._proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def _deliver(self, fn: typing.Callable, *args: typing.Any) -> None:
+        if self._abandoned:
+            return
+        try:
+            fn(*args)
+        except Exception as e:  # noqa: BLE001 — чтение протокола не встаёт; след — в полях
+            self.callback_errors += 1
+            if not self.callback_error:
+                self.callback_error = f"{type(e).__name__}: {e}"
+
+
+def _open_private(path: pathlib.Path) -> int:
+    """Журнал ребёнка — только владельцу: режим при создании и `fchmod` для файла,
+    который уже был."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def _read_protocol(proc: subprocess.Popen, stream: StreamProcess, got_ready: typing.Any,
+                   on_message: typing.Callable[[dict], None], on_eof: typing.Callable[[], None]) -> None:
+    """Нить-читатель: первая строка `{"type": "ready"}` — рукопожатие, остальные —
+    в `on_message`; конец stdout — `on_eof()`, если рукопожатие было."""
+    import io
+    try:
+        for raw in io.BufferedReader(proc.stdout):
+            try:
+                message = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                message = None
+            if not isinstance(message, dict):
+                stream.nonjson += 1
+                continue
+            if not got_ready.is_set():
+                if message.get("type") == "ready":
+                    stream.ready = message
+                    got_ready.set()
+                continue
+            stream._deliver(on_message, message)
+    except (OSError, ValueError):
+        pass                          # труба умерла вместе с ребёнком — это и есть конец
+    finally:
+        got_ready.set()               # ждущий рукопожатия не висит до потолка
+        if stream.ready:
+            stream._deliver(on_eof)
+
+
+def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.Sequence[str], *,
+                 stderr_path: pathlib.Path, handshake_timeout: float, role: str,
+                 on_message: typing.Callable[[dict], None],
+                 on_eof: typing.Callable[[], None],
+                 cancel: typing.Any = None) -> tuple[StreamProcess | None, Outcome]:
+    """Запустить долгий скрипт в чистом окружении и дождаться рукопожатия.
+
+    Рукопожатие — первая JSON-строка вида `{"type": "ready", ...}` за
+    `handshake_timeout`. Ребёнок вышел раньше — исход его кодом (UNAVAILABLE по
+    `EXIT_ENGINE_UNAVAILABLE`, иначе FAILED с последней строкой журнала); не успел —
+    убит, FAILED, и обратных вызовов после этого не будет. При OK `payload` —
+    рукопожатие, строки после него идут в `on_message`, конец stdout — `on_eof()`.
+    `role` — роль нити-читателя в реестре потоков (`threads.ROLES`): чья это нить,
+    знает вызывающий, а не дверь. `cancel` (`threading.Event`) обрывает ожидание
+    рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED."""
+    import threading
+
+    import threads
+    try:
+        err_fd = _open_private(stderr_path)
+    except OSError as e:
+        return None, Outcome(FAILED, reason=f"журнал ребёнка не открылся: {e}")
+    cmd = [os.fspath(python), os.fspath(script), *args]
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_fd,
+                                env=clean_env(os.environ), cwd=pathlib.Path(script).parent, bufsize=0)
+    except FileNotFoundError:
+        return None, Outcome(FAILED, reason=f"нет интерпретатора {os.fspath(python)}")
+    except (OSError, ValueError) as e:       # ValueError — нулевой байт в пути из конфига
+        return None, Outcome(FAILED, reason=f"не запустился: {e}")
+    finally:
+        os.close(err_fd)
+    stream = StreamProcess(proc)
+    got_ready = threading.Event()
+    threads.spawn(_read_protocol, name="foreign-stream-reader", role=role,
+                  args=(proc, stream, got_ready, on_message, on_eof))
+    deadline = time.monotonic() + handshake_timeout
+    while not got_ready.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
+        if cancel is not None and cancel.is_set():
+            why = "ожидание рукопожатия отменено — убит"
+        elif time.monotonic() >= deadline:
+            why = f"нет рукопожатия за {handshake_timeout:.0f} с — убит"
+        else:
+            continue
+        stream._abandoned = True
+        stream.close_input()
+        stream.kill()
+        return None, Outcome(FAILED, reason=why)
+    if not stream.ready:
+        stream._abandoned = True
+        stream.close_input()
+        try:
+            code = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # stdout закрыт, а процесс жив — не наш протокол
+            stream.kill()
+            return None, Outcome(FAILED, reason="закрыл вывод без рукопожатия — убит")
+        err = _last_line(_tail_text(stderr_path))
+        if code == EXIT_ENGINE_UNAVAILABLE:
+            return None, Outcome(UNAVAILABLE, reason=err or "движок недоступен")
+        return None, Outcome(FAILED, reason=f"код {code}: {err or 'без вывода'}")
+    return stream, Outcome(OK, payload=dict(stream.ready))
+
+
+def _tail_text(path: pathlib.Path, size: int = 4096) -> str:
+    """Хвост журнала ребёнка — для причины отказа."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - size))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""

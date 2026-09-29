@@ -445,6 +445,46 @@ before speech recognition (up to ten minutes each, like names and minutes), not
 only when it enters the rebuild queue: a rebuild that waited behind another one
 does not know about a meeting that started meanwhile.
 
+### Live stream in shadow
+
+The live contour still labels call voices with the ERes2Net tracker. Before
+it waits for Nemotron's labels instead, three numbers are needed from real
+calls: how long a chunk would wait for its label, what a second model process
+costs next to the meeting, and whether the live slots agree with the pass
+after the meeting. `sufler.live_nemotron: shadow` collects them and changes
+nothing in the transcript (default `off`).
+
+- **The process.** `diarize_nemotron.py --stream --preset low` runs under the
+  engine's interpreter (the same environment the post-meeting pass uses), via
+  `foreign_python.spawn_stream`: a long-lived child in the clean environment,
+  audio in on stdin as s16le at 16 kHz, one JSON line per protocol message on a
+  duplicate of stdout (anything a library prints goes to its log,
+  `logs/nemotron_live_<stamp>.err`, owner-only). The handshake `ready` names
+  the protocol version, rate, preset, frame length and block; the child then
+  sends `seg` (start, end, slot, open) and `front` (samples fed, frames
+  labelled, its CPU seconds and peak memory) after every 0.5 s block.
+- **The axis.** The call channel reaches the child through a frame listener
+  (see "One sample axis per channel"). Blocks before the handshake are not
+  kept: the stream starts at the first block after it, `start0` on the hub's
+  axis, and the child's seconds are offsets from there. A block that does not
+  start where the previous one ended stops the shadow — labels are never
+  shifted silently. More than 10 s of audio queued for the child stops it too:
+  that is the answer "it does not keep up", not a reason to buffer.
+- **Chunks.** Every chunk the recognizer accepts gets exactly one journal line,
+  written without waiting: when the child's front passes the chunk's end (the
+  line holds the seconds per slot inside the chunk, how long it waited, how far
+  the front was behind), at once if the stream has not started or has died,
+  after 120 s without a front, or at the stop. The line also records what the
+  live tracker did with the chunk: `shed`, `pieces`, `none`, `split_failed` or
+  `off`.
+- **The journal.** `logs/nemotron_live_<stamp>.jsonl`, owner-only: numbers and
+  stop reasons — no audio, no utterance text. Lines: `header`, `ready`, `start` (`start0`),
+  `seg`, `front`, `chunk`, `end` (reason and counters). A reconciliation cuts the
+  recording at `start0` into the same blocks.
+- **Stop.** At the end of the meeting, before the post-meeting pass starts,
+  the child gets EOF, flushes its tail and exits; after 5 s it is killed. A
+  shadow that died on the call says so once in the status line.
+
 ### Your own recording
 
 The synthetic fixture is a floor. A real verdict needs a real meeting — which

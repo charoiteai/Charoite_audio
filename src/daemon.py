@@ -52,6 +52,7 @@ from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import channel_trace  # noqa: E402
 import decision_gate  # noqa: E402
+import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
@@ -1263,24 +1264,34 @@ def main():
                     # непрерывный текст с честной канальной меткой; финальный
                     # offline rebuild вернёт точных говорящих по записи.
                     jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]
+                    tracker_state = "shed"
                 elif plan == "diarize":
                     mark_stt_stage("diarization")
                     diarization_started = time.monotonic()
+                    split_failed = False
                     try:
                         res = spk_tracker.split(chunk, channel=speaker)
                     except Exception:  # noqa: BLE001 — диаризация вспомогательна
                         res = None  # jobs_for даст канальную метку без
                         # voice_label: повторный вызов трекера учил бы
                         # центроиды тем же звуком дважды (ревью 15.08 ×2)
+                        split_failed = True
                     finally:
                         cycle_diarization_ms += (
                             time.monotonic() - diarization_started) * 1000
                         mark_stt_stage("planning")
                     jobs = jobs_for(res, chunk)
-                    if jobs is None:
-                        continue  # вся речь чанка исключена — пропуск
+                    tracker_state = ("split_failed" if split_failed
+                                    else "none" if jobs is None else "pieces")
                 else:
                     jobs = [(chunk, None, None)]  # None: метку решит voice_label
+                    tracker_state = "off"
+                if nemotron_shadow is not None:
+                    # строка тени — на КАЖДЫЙ принятый чанк: после выбора плана и
+                    # раскладки, до пропуска (вход 2 по №478, I2); не ждёт и не бросает
+                    nemotron_shadow.note_chunk(placed, tracker_state)
+                if jobs is None:
+                    continue  # вся речь чанка исключена — пропуск
 
                 # сначала все распознавания, потом все добавления: упавший STT
                 # посреди чанка не оставляет в стенограмме половину с дублем
@@ -3289,6 +3300,23 @@ def main():
             emit_error("автостоп: приложение не ответило (старая версия?) — "
                        "запись продолжается, остановите её кнопкой «Стоп»")
 
+    # Тень потока Nemotron (№478, `sufler.live_nemotron: shadow`): свой процесс
+    # движка слушает канал собеседников и пишет метки в журнал рядом с тем, что
+    # сделал живой трекер; стенограмма не меняется. До слоёв: распознавание видит
+    # тень с первого чанка (пока модель грузится — строка «до старта потока»).
+    nemotron_shadow = None
+    try:
+        nemotron_shadow = live_nemotron.start(
+            cfg, root=_root(), stamp=tr.stamp, sr=hub.sr,
+            say=lambda text: emit({"type": "status", "text": text}))
+        if nemotron_shadow is not None:
+            hub.add_frame_listener(nemotron_shadow.on_frame)
+    except Exception as e:  # noqa: BLE001 — тень вспомогательна: встреча идёт без неё
+        if nemotron_shadow is not None:
+            nemotron_shadow.stop()
+            nemotron_shadow = None
+        emit({"type": "status", "text": f"поток Nemotron не поднялся: {e}"})
+
     # Слои встречи: имя у каждого своё, роль — одна на всех. Кортеж пар, а не
     # список потоков: имя нужно и реестру, и сторожу, а поток без имени
     # неотличим от чужого (№415).
@@ -3438,6 +3466,10 @@ def main():
         pass
     finally:
         stop.set()
+        if nemotron_shadow is not None:
+            # тень — сразу и без ожидания: её ребёнок держит модель, а пересборке
+            # сейчас нужна машина
+            nemotron_shadow.stop()
         # Пересборка финальной стенограммы + граф — ПЕРВЫМ делом (Popen мгновенен,
         # живёт в своей сессии и переживает terminate от Swift; часовая встреча
         # 17.07 потерялась именно на этом). rebuild сам ждёт финализацию записей
