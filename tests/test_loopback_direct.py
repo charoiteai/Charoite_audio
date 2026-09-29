@@ -335,7 +335,7 @@ def _has_proxies_for(node: ast.AST) -> bool:
 
 def transport_violations(rel: str, tree: ast.Module) -> list[str]:
     """Вызовы транспорта в файле мимо правила «loopback — напрямую»."""
-    requests_names, ws_names = set(), set()
+    requests_names, ws_names, ws_funcs = set(), set(), set()
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
             for a in n.names:
@@ -348,9 +348,23 @@ def transport_violations(rel: str, tree: ast.Module) -> list[str]:
                 for a in n.names:
                     if a.name == "connect":
                         ws_names.add(a.asname or a.name)
+                        ws_funcs.add(a.asname or a.name)
     out = []
     net_module = rel == "src/charoite_graph/net.py"
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
     for n in ast.walk(tree):
+        # connect передан значением: разрешено только `partial(connect, proxy=None)`
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in ws_funcs:
+            par = parents.get(n)
+            if isinstance(par, ast.Call) and par.func is n:
+                continue        # вызов — судит ветка ниже
+            fn = par.func if isinstance(par, ast.Call) else None
+            is_partial = isinstance(fn, (ast.Name, ast.Attribute)) and \
+                (getattr(fn, "id", None) or getattr(fn, "attr", None)) == "partial"
+            if not (is_partial and par.args and par.args[0] is n and any(
+                    k.arg == "proxy" and isinstance(k.value, ast.Constant) and k.value.value is None
+                    for k in par.keywords)):
+                out.append(f"{rel}:{n.lineno}: websocket connect передан мимо proxy=None")
         if not isinstance(n, ast.Call):
             continue
         f = n.func
@@ -407,6 +421,10 @@ def test_every_transport_call_in_src_and_scripts_goes_through_the_rule():
     ("from websockets.sync.client import connect as c\nc(u, proxy=True)\n", 1),
     ("import websockets\nwebsockets.connect(u)\n", 1),
     ("import websockets.sync.client as w\nw.connect(u, proxy=None)\n", 0),
+    ("from websockets.sync.client import connect\nimport functools\nf = functools.partial(connect, proxy=None)\n", 0),
+    ("from websockets.sync.client import connect\nfrom functools import partial\nf = partial(connect, proxy=None)\n", 0),
+    ("from websockets.sync.client import connect\nimport functools\nf = functools.partial(connect)\n", 1),
+    ("from websockets.sync.client import connect\nf = connect\n", 1),
 ])
 def test_the_transport_guard_sees_each_form(src, want):
     assert len(transport_violations("src/x.py", ast.parse(src))) == want

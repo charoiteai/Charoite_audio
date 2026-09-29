@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import functools
 import hashlib
 import json
 import math
@@ -640,6 +641,16 @@ def gigastt_alive() -> bool:
     except requests.RequestException:
         return False
     return True
+
+
+def gigastt_stream_client():
+    """`connect` websocket-клиента с `proxy=None`, если gigastt жив и библиотека есть, иначе None."""
+    try:
+        from websockets.sync.client import connect
+    except ImportError:
+        return None
+    # proxy=None: звук встречи к loopback мимо прокси окружения (№525)
+    return functools.partial(connect, proxy=None) if gigastt_alive() else None
 
 
 def main():
@@ -2379,12 +2390,9 @@ def main():
         """
         if not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
             return
-        try:
-            from websockets.sync.client import connect as ws_connect
-        except ImportError:
-            return  # библиотеки нет — обычный путь через чанки
-        if not gigastt_alive():
-            return  # сервера нет — обычный путь через чанки
+        ws_connect = gigastt_stream_client()
+        if ws_connect is None:
+            return  # сервера или библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
         drops = frame_drops.DropMeter()
@@ -2420,8 +2428,7 @@ def main():
                         frame_q.get_nowait()
                     except _q.Empty:
                         break
-                # proxy=None: loopback мимо прокси окружения — звук встречи (№525)
-                with ws_connect(GIGASTT_WS, max_size=None, proxy=None) as ws:
+                with ws_connect(GIGASTT_WS, max_size=None) as ws:
                     ws.recv()  # {"type":"ready"}
                     ws.send(json.dumps({"type": "configure", "sample_rate": hub.sr}))
 

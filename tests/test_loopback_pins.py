@@ -151,6 +151,19 @@ def test_gigastt_health_goes_direct_with_its_timeout(_сеть_закрыта):
     assert daemon.gigastt_alive() is False
 
 
+def test_gigastt_stream_client_needs_a_live_server(_сеть_закрыта):
+    from websockets.sync.client import connect
+    _route(_сеть_закрыта, "GET", daemon.GIGASTT_HEALTH)
+    client = daemon.gigastt_stream_client()
+    assert client.func is connect and client.keywords == {"proxy": None}
+
+    def down(url, **kw):
+        raise requests.ConnectionError("нет")
+
+    _сеть_закрыта[("GET", daemon.GIGASTT_HEALTH)] = down
+    assert daemon.gigastt_stream_client() is None
+
+
 def test_gigastt_websocket_address_is_loopback():
     assert daemon.GIGASTT_WS == "ws://127.0.0.1:9876/v1/ws"
     assert net.is_loopback_host("127.0.0.1")
