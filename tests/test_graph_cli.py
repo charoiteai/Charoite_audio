@@ -160,7 +160,7 @@ def test_argparse_exits_become_return_codes(capsys):
     assert cli.main([]) == cli.EXIT_USAGE, "команда обязательна"
 
 
-@pytest.mark.parametrize("version, extra", [((3, 13, 9), {}), ((3, 14, 0), {"color": False})])
+@pytest.mark.parametrize("version, extra", [((3, 13, 9), {}), ((3, 14), {"color": False}), ((3, 14, 0), {"color": False})])
 def test_color_is_off_only_where_argparse_has_it(version, extra):
     assert cli._no_color(version) == extra
 

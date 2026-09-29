@@ -167,7 +167,7 @@ def claim(path: pathlib.Path) -> bool:
     return True
 
 
-def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path, *, keep_mode: bool = True) -> None:
+def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path, *, keep_mode: bool) -> None:
     """Перенести на новый файл права и метки Finder со старого.
 
     `replace` создаёт новый inode, и без этого шага узел после первой же
