@@ -16,6 +16,8 @@ import pathlib
 
 import numpy as np
 
+import sherpa_config
+
 
 @dataclasses.dataclass(frozen=True)
 class Piece:
@@ -234,7 +236,7 @@ class SpeakerTracker:
                  sticky: float = 0.15):
         import sherpa_onnx
         self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-            sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model_path), num_threads=1))
+            sherpa_config.embedding_config(model_path, kind=sherpa_config.LIVE))
         self.sr = sample_rate
         self.threshold = threshold
         self.sticky = sticky            # гистерезис: инерция текущего голоса
@@ -371,17 +373,14 @@ class SegmentTracker:
         self.new_glue = 0.45
         self._diar = sherpa_onnx.OfflineSpeakerDiarization(
             sherpa_onnx.OfflineSpeakerDiarizationConfig(
-                segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
-                    pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                        model=str(seg_model))),
-                embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                    model=str(emb_model)),
+                segmentation=sherpa_config.segmentation_config(seg_model, kind=sherpa_config.LIVE),
+                embedding=sherpa_config.embedding_config(emb_model, kind=sherpa_config.LIVE),
                 clustering=sherpa_onnx.FastClusteringConfig(num_clusters=-1,
                                                             threshold=0.8),
                 min_duration_on=0.3,
                 min_duration_off=0.5))
         self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-            sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(emb_model)))
+            sherpa_config.embedding_config(emb_model, kind=sherpa_config.LIVE))
         self._centroids: list[np.ndarray] = []
         self._counts: list[int] = []
         self._last_by_channel: dict[str, int | None] = {}

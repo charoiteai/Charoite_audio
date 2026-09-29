@@ -255,6 +255,27 @@ def test_unnamed_labels_get_the_note_of_their_cause(meeting, monkeypatch, naming
     assert rt.names_pending(out) is True
 
 
+
+def test_the_rebuild_yields_to_a_live_meeting_before_each_heavy_step(meeting, monkeypatch):
+    """№508: уступка встрече — перед разметкой каждого канала и перед распознаванием,
+    а не только на входе в очередь: пересборка, простоявшая за соседней, о встрече,
+    начавшейся за это время, не знает, а разметка канала — минуты работы."""
+    order = []
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: order.append(("уступка", what, cap)))
+    real = rt.diarize_channel
+
+    def diarize_channel(audio, sr, **kw):
+        order.append(("разметка", "blackhole" if audio[0] == 1.0 else "mic"))
+        return real(audio, sr, **kw)
+
+    monkeypatch.setattr(rt, "diarize_channel", diarize_channel)
+    monkeypatch.setattr(rt, "STT", lambda cfg: order.append(("распознавание",)) or object())
+    rt.rebuild(meeting["live"], CFG)
+    heavy = [o for o in order if o[0] in ("уступка", "разметка", "распознавание")]
+    assert heavy[:6] == [("уступка", "разметка голосов собеседников", 600), ("разметка", "blackhole"),
+                         ("уступка", "разметка голосов микрофона", 600), ("разметка", "mic"),
+                         ("уступка", "распознавание", 600), ("распознавание",)]
+
 def test_a_usable_answer_leaves_no_note(meeting):
     """Годный ответ модели без имён («имён не звучало») плашки не даёт — даже с безымянными метками."""
     out = rt.rebuild(meeting["live"], CFG)
