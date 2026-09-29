@@ -37,14 +37,17 @@ class _Ответ:
         return None
 
 
-def _ollama(seen: list | None = None, *, dead: bool = False):
-    """Подставной /api/embed: вектор из частот букв, как у примера README."""
+def _ollama(seen: list | None = None, *, dead: bool = False, no_empty: bool = False):
+    """Подставной /api/embed: вектор из частот букв, как у примера README. `no_empty` —
+    пустой текст в пачке сервер отвергает, как вход без токенов."""
     def urlopen(request, timeout=None):
         payload = json.loads(request.data)
         if seen is not None:
             seen.append(payload)
         if dead:
             raise ConnectionRefusedError("сервер не слушает")
+        if no_empty and not all(t.strip() for t in payload["input"]):
+            return _Ответ(400, b'{"error": "input is empty"}')
         vectors = [[1.0 + t.lower().count(c) for c in "аеиор"] for t in payload["input"]]
         return _Ответ(200, json.dumps({"embeddings": vectors}).encode("utf-8"))
     return urlopen
@@ -287,8 +290,9 @@ def test_the_mask_window_is_held_under_the_lock(tmp_path, monkeypatch):
 
 
 def test_an_empty_note_does_not_keep_index_pending(tmp_path, capsys, monkeypatch):
-    """Пустая заметка не свидетель: `index` не ждёт для неё вектора вечно (M1 выхода 1)."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    """Пустая заметка не свидетель: `index` не ждёт для неё вектора вечно (M1 выхода 1),
+    даже если сервер пустой вход отвергает и валит этим всю пачку."""
+    monkeypatch.setattr(urllib.request, "urlopen", _ollama(no_empty=True))
     graph = _graph(tmp_path)
     (graph / "Без названия.md").write_text("", encoding="utf-8")
 
