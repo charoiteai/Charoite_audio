@@ -708,6 +708,25 @@ def test_an_explicit_interpreter_that_is_missing_fails_with_its_path(tmp_path):
     assert out == fp.Outcome(fp.FAILED, reason=f"нет интерпретатора {missing}")
 
 
+def test_an_explicit_interpreter_under_tilde_runs_expanded_and_nothing_more(tmp_path, monkeypatch):
+    """Ведущая `~` в настройке — домашний каталог (№503): раньше `subprocess` получал
+    `~/…` буквально, и пересборка молча уходила на sherpa. Путь только раскрывается:
+    симлинк `bin/python` окружения не разворачивается до базового интерпретатора (тот
+    без пакетов движка), а запись без `~` не нормализуется — «./python» через `Path`
+    стал бы «python», и его искали бы по PATH."""
+    home = tmp_path / "дом"
+    python = home / "eng" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    monkeypatch.setenv("HOME", str(home))
+    s = _engine_stub(tmp_path, 'import json, sys\n'
+                               'print(json.dumps({"segments": [{"start": 0.0, "end": 1.0, "speaker": "nem0"}]}))\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.engine_interpreter(" ~/eng/bin/python ", tmp_path) == (str(python), "")
+    assert nem.diarize_in_env("~/eng/bin/python", tmp_path / "bh.wav", root=tmp_path, timeout=30).ok
+    assert nem.engine_interpreter("./python", tmp_path) == ("./python", "")
+
+
 def test_diarize_in_env_passes_the_recording_and_the_model_and_parses(tmp_path, monkeypatch):
     want = [str(tmp_path / "bh.wav"), "--model", str(nem.model_dir(tmp_path))]
     s = _engine_stub(tmp_path, f'import json, sys\nassert sys.argv[1:] == {want!r}, sys.argv\n'

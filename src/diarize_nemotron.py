@@ -52,6 +52,7 @@ import importlib.metadata
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import re
 import shlex
@@ -490,10 +491,15 @@ def engine_interpreter(setting: str, root: pathlib.Path) -> tuple[str, str]:
 
     Настройка задана — она (нет файла — скажет сам запуск); пустая — установленное
     окружение `engine_python(root)`, если оно есть. Одно место выбора для обеих
-    дверей движка — разметки и пробы."""
+    дверей движка — разметки и пробы.
+
+    Ведущая `~` раскрывается: `subprocess` её не понимает, и `~/…/bin/python` молча
+    сводился к отказу «нет интерпретатора» (№503). Только `os.path.expanduser`: `Path`
+    нормализовал бы запись («./python» → «python» ищется по PATH), а `resolve` развернул
+    бы симлинк `bin/python` окружения до базового интерпретатора без его пакетов."""
     python = setting.strip()
     if python:
-        return python, ""
+        return os.path.expanduser(python), ""
     installed = engine_python(root)
     if installed.exists():
         return str(installed), ""
