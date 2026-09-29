@@ -51,6 +51,11 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("daemon.py", "auto-hint"),
     ("daemon.py", "auto-hint"),
     ("decision_gate.py", "gate-shadow"),
+    # тень потока Nemotron (№478): убийство ребёнка и строка человеку не держат ни
+    # захват, ни выход демона — их никто не дожидается
+    ("live_nemotron.py", "nemotron-live-abandon"),
+    ("live_nemotron.py", "nemotron-live-kill"),
+    ("live_nemotron.py", "nemotron-live-death"),
     ("llm.py", "fit-cache-sweep"),
     ("main.py", "console-warmup"),
     ("main.py", "console-stt"),

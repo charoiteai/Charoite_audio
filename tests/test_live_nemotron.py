@@ -12,6 +12,7 @@
   поддельной моделью, звук с известной сменой голоса после `start0`. Сдвиг оси на
   `start0` или на байт перекрасил бы чанки у границы.
 """
+import importlib.abc
 import json
 import os
 import pathlib
@@ -655,13 +656,25 @@ def _hub():
     return hub
 
 
-def test_hub_to_child_to_journal_keeps_one_axis(tmp_path):
+def test_hub_to_child_to_journal_keeps_one_axis(tmp_path, monkeypatch):
     """Первые 5 с звучат до старта потока (ось ребёнка начнётся не с нуля), голос
     меняется на 17-й секунде хаба. Каждый чанк после старта обязан получить слот
     своего голоса; сдвиг на `start0` перекрасил бы чанки 12,5–17 с, сдвиг на байт —
     все."""
     engine = tmp_path / "engine.py"
     engine.write_text(FAKE_ENGINE.format(src=str(SRC)), encoding="utf-8")
+    tried = []
+
+    class Spy(importlib.abc.MetaPathFinder):
+        """mlx не попадает в процесс демона: тень только пишет в трубу и читает строки."""
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] in ("mlx", "mlx_audio"):
+                tried.append(name)
+            return None
+
+    for name in [m for m in sys.modules if m.split(".")[0] in ("mlx", "mlx_audio")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [Spy(), *sys.meta_path])
     hub = _hub()
     cap = types.SimpleNamespace(label="blackhole")
     change = 17 * SR
@@ -716,3 +729,4 @@ def test_hub_to_child_to_journal_keeps_one_axis(tmp_path):
         labelled += 1
     assert labelled >= 6
     assert not (tmp_path / "live.err").read_text(encoding="utf-8").count("Traceback")
+    assert tried == [], f"процесс демона пытался импортировать {tried}"
