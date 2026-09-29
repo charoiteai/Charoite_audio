@@ -12,6 +12,7 @@ import pathlib
 import sys
 import urllib.request
 
+import pytest
 import requests
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -161,7 +162,15 @@ def test_gigastt_stream_client_needs_a_live_server(_сеть_закрыта):
         raise requests.ConnectionError("нет")
 
     _сеть_закрыта[("GET", daemon.GIGASTT_HEALTH)] = down
-    assert daemon.gigastt_stream_client() is None
+    with pytest.raises(daemon.GigasttUnavailable, match="не отвечает"):
+        daemon.gigastt_stream_client()
+
+
+def test_gigastt_stream_client_without_the_library(monkeypatch, _сеть_закрыта):
+    _route(_сеть_закрыта, "GET", daemon.GIGASTT_HEALTH)
+    monkeypatch.setitem(sys.modules, "websockets.sync.client", None)
+    with pytest.raises(daemon.GigasttUnavailable, match="websockets"):
+        daemon.gigastt_stream_client()
 
 
 def test_gigastt_websocket_address_is_loopback():
