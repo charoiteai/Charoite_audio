@@ -202,6 +202,33 @@ def test_восстановление_пишет_журнал_разбора(dat
     assert log.read_text(encoding="utf-8") == "проба журнала\n"
 
 
+def test_восстановление_в_своей_сессии_и_без_суда_над_кодом_возврата(data_root, monkeypatch, tmp_path):
+    """Настоящий потомок, а не подмена `subprocess.run`: пересборка восстановления
+    уходит в свою сессию (сигнал группе демона её не задевает — она переживает смерть
+    демона), а её код возврата демон не судит: статус встречи пишет сама пересборка,
+    и «не удалось запустить» поверх него было бы ложью. Оба флага до №495 не держал ни
+    один тест — их нашёл мутатор диапазона."""
+    import daemon
+
+    code = tmp_path / "code"
+    (code / "src").mkdir(parents=True)
+    (code / "src" / "rebuild_transcript.py").write_text(
+        "import os, sys\nprint('sid', os.getsid(0), flush=True)\nsys.exit(3)\n", encoding="utf-8")
+    monkeypatch.setattr(daemon, "CODE", code)
+    failed: list[str] = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed",
+                        lambda _self, _live, why: failed.append(str(why)))
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+
+    daemon._rebuild_orphans_sequentially([live])
+
+    log = (data_root / "logs" / "recover_2026-08-07_181500.log").read_text(encoding="utf-8")
+    assert log.startswith("sid "), log
+    assert int(log.split()[1]) != os.getsid(0), "пересборка в сессии демона — умрёт вместе с ним"
+    assert failed == [], f"код возврата пересборки перекрасил её статус: {failed}"
+
+
 def test_main_передаёт_чистке_защищённые_штампы():
     """Сторож проводки, а не текста.
 

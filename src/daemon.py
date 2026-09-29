@@ -587,7 +587,7 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
                 # журнал не открылся (диск, права) — пересборка важнее журнала:
                 # без него она идёт как до №495 (выходной круг 1, M1)
                 print(f"журнал восстановления {live.stem} не открылся ({e}) — "
-                      f"пересборка без журнала", file=sys.stderr, flush=True)
+                      f"пересборка без журнала", file=sys.stderr)
                 rlog = subprocess.DEVNULL
             try:
                 subprocess.run(
