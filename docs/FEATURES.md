@@ -71,7 +71,11 @@
   model did answer but the trust guards refused every name it proposed (not
   spoken in the meeting, an address to someone else, the owner's name, not a
   name at all), the warning names that cause instead and asks to type the names
-  in by hand: a rebuild on the same text would meet the same guards. The app
+  in by hand: a rebuild on the same text would meet the same guards. Which
+  guard refused which name is in the rebuild log, one line per name (the live
+  naming loop writes the same line to the daemon log, once per meeting); the
+  header keeps the general wording — the transcript gets forwarded, and the
+  action is the same whatever the rule. The app
   does not show this state yet — the warning lives in the transcript header.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,

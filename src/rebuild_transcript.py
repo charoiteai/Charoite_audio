@@ -669,13 +669,12 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
         if v.strip() in ("", "?"):
             continue
         proposed += 1
-        name = speaker_names.trustworthy_name(v, sample=sample, label=k, owner_name=user_name,
-                                              known=known)
-        if name:
-            names[k] = name
-        else:
-            log(f"имена: «{v.strip()}» для «{k}» не принято (владелец, не звучало в тексте, "
-                "обращение в своей реплике, не имя или не одно слово)")
+        verdict = speaker_names.judge_name(v, sample=sample, label=k, owner_name=user_name,
+                                           known=known)
+        if verdict.name:
+            names[k] = verdict.name
+        else:   # какое правило отказало — в журнал; шапка остаётся общей (№502)
+            log(f"имена: {speaker_names.refusal_line(k, verdict)}")
     # Годный ответ — объект, и хоть чем-то из него можно воспользоваться (массив
     # или строка под json_format — тот же мусор, что молчание, GLM M1 по #551:
     # parse_json_block отдаёт на них None, и это молчание выше). Всё предложенное

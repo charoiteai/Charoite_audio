@@ -2677,6 +2677,8 @@ def main():
         # в user_name обычно имя И фамилия, а модель предлагает одно имя.
         owner_name = chan.owner_name
         last_len = -1
+        # отказ гварда звучит в журнале раз на встречу (№502): чистый лист
+        speaker_names.forget_refusals()
         while not stop.is_set():
             time.sleep(90)
             grown = len(tr.full())
@@ -2727,11 +2729,14 @@ def main():
                                 # чтобы безмодельная ветка ниже не расходилась с этой:
                                 # владелец по словам user_name, «обращение ≠ говорящий»,
                                 # выдуманные имена, падежи по людям графа
-                                name = speaker_names.trustworthy_name(
+                                verdict = speaker_names.judge_name(
                                     raw_name, sample=sample, label=label,
                                     owner_name=owner_name, known=tuple(known_first),
                                     voice=voice_pitch.register(_median_f0(label)),
                                     name_gender=name_gender(str(raw_name)))
+                                name = verdict.name
+                                if label in labels and not name:
+                                    speaker_names.say_refusal(label, verdict)
                                 if (label in labels and name
                                         and name not in renamed.values()):
                                     renamed[label] = name
@@ -2759,11 +2764,14 @@ def main():
                         # эта ветка работает БЕЗ модели голосов, то есть по умолчанию,
                         # и раньше была слабее — гварда «обращение ≠ говорящий» в ней
                         # не было вовсе, а владелец узнавался только по полной строке
-                        name = speaker_names.trustworthy_name(
+                        verdict = speaker_names.judge_name(
                             raw_name, sample=sample, label="Собеседник",
                             owner_name=owner_name, known=tuple(known_first),
                             voice=voice_pitch.register(_median_f0("Собеседник")),
                             name_gender=name_gender(raw_name))
+                        name = verdict.name
+                        if not name:
+                            speaker_names.say_refusal("Собеседник", verdict)
                         if name:
                             tr.rename_speaker("Собеседник", name)
                             emit({"type": "rename", "from": "Собеседник", "to": name})

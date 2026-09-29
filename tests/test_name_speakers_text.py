@@ -66,6 +66,18 @@ def test_rebuild_names_name_the_empty_answer(_ollama_маршруты, monkeypat
     assert "имена: не удалось" in out and "пустой ответ" in out
 
 
+
+def test_rebuild_names_log_which_guard_refused(_ollama_маршруты, monkeypatch, capsys):
+    """Какое правило отвергло имя — в журнале разбора, а не общим перечнем (№502)."""
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    _ollama_маршруты.сценарий_чата(_чат('{"Собеседник 1": "Ольга"}'))
+
+    lines = [("Собеседник 1", "Привет, я Сергей")]
+
+    assert rt.name_speakers(CFG_REBUILD, lines) == rt.NamesOutcome({}, rt.NamesOutcome.REJECTED, 1)
+    out = capsys.readouterr().out
+    assert "имена: «Ольга» для «Собеседник 1» не принято — не звучало в разговоре" in out
+
 def test_diarize_names_read_the_fenced_json(_ollama_маршруты):
     _ollama_маршруты.сценарий_чата(_чат('```json\n{"speaker_0": "Сергей"}\n```'))
 

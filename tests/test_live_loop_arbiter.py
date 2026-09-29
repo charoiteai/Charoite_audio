@@ -56,6 +56,15 @@ def test_name_loop_skips_a_tick_without_new_speech():
     assert "if grown == last_len:" in _body("name_loop")
 
 
+
+def test_name_loop_logs_guard_refusals_once_per_meeting():
+    """Отказ гварда в живом цикле имён — строка в журнал из обеих веток (№502), а
+    реестр «сказано» чистится до цикла: он живёт на процесс демона, и отказ новой
+    встречи иначе молчал бы после такой же на прошлой."""
+    body = _body("name_loop")
+    assert body.count("speaker_names.say_refusal(") == 2
+    assert "speaker_names.forget_refusals()" in body.split("while not stop.is_set():")[0]
+
 def test_stream_read_timeout_is_two_minutes_for_live_and_five_for_documents():
     llm = (pathlib.Path(__file__).resolve().parent.parent / "src" / "llm.py").read_text(encoding="utf-8")
     assert "STREAM_TIMEOUT = (10.0, 120.0)" in llm and "DOC_STREAM_TIMEOUT = (10.0, 300.0)" in llm
