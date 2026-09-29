@@ -643,14 +643,20 @@ def gigastt_alive() -> bool:
     return True
 
 
+class GigasttUnavailable(Exception):
+    """Быстрого триггера нет: нет библиотеки websockets или gigastt не отвечает."""
+
+
 def gigastt_stream_client():
-    """`connect` websocket-клиента с `proxy=None`, если gigastt жив и библиотека есть, иначе None."""
+    """`connect` websocket-клиента с `proxy=None`; нет библиотеки или сервера — `GigasttUnavailable`."""
     try:
         from websockets.sync.client import connect
-    except ImportError:
-        return None
+    except ImportError as exc:
+        raise GigasttUnavailable("нет библиотеки websockets") from exc
+    if not gigastt_alive():
+        raise GigasttUnavailable("gigastt не отвечает")
     # proxy=None: звук встречи к loopback мимо прокси окружения (№525)
-    return functools.partial(connect, proxy=None) if gigastt_alive() else None
+    return functools.partial(connect, proxy=None)
 
 
 def main():
@@ -2390,8 +2396,9 @@ def main():
         """
         if not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
             return
-        ws_connect = gigastt_stream_client()
-        if ws_connect is None:
+        try:
+            ws_connect = gigastt_stream_client()
+        except GigasttUnavailable:
             return  # сервера или библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
