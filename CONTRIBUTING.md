@@ -222,8 +222,8 @@ grammar cannot see, the package probe below sees by behaviour. The fix is
 derived from the same `allowed`: the path comes in as a parameter, and the
 caller from a layer that sees runtime assembles it — the way
 `graphs.open_search` does — never "go to the roots canon". The graph package is
-the import closure of one declared entry, `package_entry` in `layout.json`
-(`graph_search`), not "all of base plus graph"; `tests/test_entry_points_contract.py`
+the union of the import closures of its declared entries, `package_entries` in
+`layout.json` (today one: `graph_search`), not "all of base plus graph"; `tests/test_entry_points_contract.py`
 copies that closure into a temporary directory and runs a search over the demo
 graph in a separate process with `HOME`, `CHAROITE_ROOT`, `SUFLER_GRAPH_DIR`,
 `CHAROITE_GRAPH_DIR` and `TMPDIR` pointing into a trap and an audit hook that
@@ -247,7 +247,7 @@ If a PR turns that check red, the message names the fix. The usual cases:
 | file derives the root itself | take it from `src/charoite_paths.py` instead of re-parsing `CHAROITE_ROOT` or walking up from `__file__` |
 | file remembers the canon's answer at import | ask on call (`def _root(): return resolve_root(__file__)`), don't freeze it in a module constant or a class field — the value would be taken before the entry point names the root |
 | edge into the environment layer / module of layer X touches the environment | layer X has no environment: pass the path or setting in as a parameter and assemble it in a door on a layer that sees runtime (like `graphs.open_search`); `allowed_edges` cannot excuse it and `root_exemptions` refuses these shapes at load |
-| package X pulls module Y | the closure of `package_entry` reached a layer with the environment — cut the import, the package must install without the app |
+| package X pulls module Y | the closure of an entry in `package_entries` reached a layer with the environment — cut the import, the package must install without the app |
 | map is stale | run `.venv/bin/python scripts/layout_map.py` |
 | `✗ scripts/layout_map.py: …` instead of `✗ docs/design/layout.json: …` | the defect is in a table of the guard's own code (`ROOT_SHAPES`, the scope table `SHAPE_SCOPES`, `PROBLEM_KINDS`), not in the artifact — fix the code |
 

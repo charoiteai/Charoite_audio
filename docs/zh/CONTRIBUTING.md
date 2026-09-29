@@ -75,8 +75,8 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 `_env_reads` 相同：赋值绑定（`S = sys`）、`getattr`、`exec` 以及除 `tempfile` 外的隐式读取者
 （`getpass.getuser`、`shutil.which`）不被识别。语法看不到的，由下面的包探针按行为发现。修复方法由同一个
 `allowed` 推出：路径以参数传入，由能看见 runtime 的层中的调用方组装——就像 `graphs.open_search`
-那样——而不是「去找根规范」。图谱包是一个声明入口的导入闭包，即 `layout.json` 中的
-`package_entry`（`graph_search`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
+那样——而不是「去找根规范」。图谱包是其声明入口的导入闭包之并集，即 `layout.json` 中的
+`package_entries`（目前只有一个：`graph_search`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
 把该闭包复制到临时目录，在独立进程中对演示图谱执行搜索：`HOME`、`CHAROITE_ROOT`、
 `SUFLER_GRAPH_DIR`、`CHAROITE_GRAPH_DIR` 和 `TMPDIR` 都指向陷阱目录，审计钩子在读取陷阱或在
 `data_dir` 之外写入时让探针失败。确定性的伪向量器让包写入向量缓存并读回，因此写入路径也被执行，
@@ -94,7 +94,7 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 | 文件自己推导根 | 从 `src/charoite_paths.py` 获取，不要重新解析 `CHAROITE_ROOT`，也不要从 `__file__` 向上走 |
 | 文件在导入时记住规范的答案 | 在调用时询问（`def _root(): return resolve_root(__file__)`），不要冻结在模块常量或类字段里——那个值会在入口点命名根之前就被取走 |
 | 指向环境层的边 / X 层模块触碰环境 | X 层没有环境：路径或设置以参数传入，由能看见 runtime 的层上的门组装（如 `graphs.open_search`）；`allowed_edges` 不能豁免，`root_exemptions` 在加载时拒绝这些形式 |
-| 包 X 拉入模块 Y | `package_entry` 的闭包到达了带环境的层——切断该导入：包必须能脱离应用安装 |
+| 包 X 拉入模块 Y | `package_entries` 中某个入口的闭包到达了带环境的层——切断该导入：包必须能脱离应用安装 |
 | 地图过期 | 运行 `.venv/bin/python scripts/layout_map.py` |
 | `✗ scripts/layout_map.py: …` 而不是 `✗ docs/design/layout.json: …` | 缺陷在守卫自身代码的表里（`ROOT_SHAPES`、范围表 `SHAPE_SCOPES`、`PROBLEM_KINDS`），不在工件里——修代码 |
 

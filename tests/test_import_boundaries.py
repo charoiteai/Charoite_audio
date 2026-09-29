@@ -565,7 +565,7 @@ APPROVED_FIELDS = {
     "brief_layers": ("dict", "decision", None),
     "allowed": ("dict", "decision", None),
     "package": ("str", "decision", None),
-    "package_entry": ("str", "decision", None),
+    "package_entries": ("dict", "decision", None),
     "layer_overrides": ("dict", "decision", {"layer": ("str", "decision", True), "why": ("str", "decision", True)}),
     "allowed_edges": ("list", "measured", {"from": ("str", "measured", True), "to": ("str", "measured", True),
                                            "ticket": ("str", "decision", True)}),
@@ -1118,7 +1118,7 @@ def _layout(**over) -> dict:
          "generated": "2026-09-19T00:00Z", "run_contracts": {},
          "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
          "folder_literals": [], "folder_literal_exemptions": {},
-         "package": "charoite_graph", "package_entry": "core_mod"}
+         "package": "charoite_graph", "package_entries": {"core_mod": "вход"}}
     d.update(over)
     return d
 
@@ -2238,7 +2238,7 @@ def _env_world(tmp_path, **allowed_over):
                               **allowed_over},
                      brief_layers={"base": ["base_mod"], "rt": ["charoite_paths"], "lib": ["lib_mod"],
                                    "top": ["top_mod"]},
-                     package_entry="lib_mod")
+                     package_entries={"lib_mod": "вход"})
     inv = lm.inventory(tmp_path)
     return layout, lm.import_graph(inv), inv
 
@@ -2262,7 +2262,7 @@ def test_the_layer_shapes_are_judged_wherever_the_module_lives(tmp_path, monkeyp
     (pkg / "app_mod.py").write_text("import os\nCACHE = os.environ.get('Y')\n", encoding="utf-8")
     layout = _layout(order=["base", "rt", "lib"], allowed={"base": [], "rt": ["base"], "lib": ["base"]},
                      brief_layers={"base": ["p"], "rt": ["charoite_paths", "p.app_mod"], "lib": ["p.lib_mod"]},
-                     package_entry="p.lib_mod")
+                     package_entries={"p.lib_mod": "вход"})
     inv = lm.inventory(tmp_path)
     derivations = lm.root_derivations(inv, layout)
     assert derivations["src/p/lib_mod.py"] == {"any_env": [2]}
@@ -2462,8 +2462,8 @@ def test_the_env_gate_asks_the_artifact(tmp_path):
     assert lm.env_edges(graph2, layout2) == []
 
     # вход, которого нет в дереве, — расхождение, а не пустой пакет
-    layout["package_entry"] = "нет_такого"
-    assert "package_entry нет_такого: модуля с таким именем в дереве нет — пакету не из чего собраться" \
+    layout["package_entries"] = {"нет_такого": "вход"}
+    assert "вход пакета нет_такого: модуля с таким именем в дереве нет — пакету не из чего собраться" \
         in lm.env_problems(graph, layout)
     # канона нет в таблице слоёв — гейту окружения опереться не на что, и он молчит:
     # о модуле без слоя уже говорит своя строка
@@ -2473,11 +2473,12 @@ def test_the_env_gate_asks_the_artifact(tmp_path):
 
 
 def test_the_package_is_the_closure_of_one_entry(world):
-    """Пакет — замыкание `package_entry` по графу импортов, а не «весь base плюс
-    graph»: модуль нижнего слоя, которого вход не зовёт, в план не попадает."""
+    """Пакет — замыкание входа по графу импортов, а не «весь base плюс graph»:
+    модуль нижнего слоя, которого вход не зовёт, в план не попадает. Сегодня вход
+    один (`package_entries`), и объединение замыканий — его замыкание."""
     layout, graph, _, _, inv = world
-    entry = layout["package_entry"]
-    closure = lm.package_closure(graph, entry)
+    (entry,) = lm.package_entries(layout)
+    closure = lm.package_union(graph, [entry])
     lay = lm.layer_of(layout)
     assert lay[entry] == "graph" and entry in closure
     # план = замыкание входа плюс `__init__` пакета — явно, а не через ребро на пакет,
@@ -2546,7 +2547,7 @@ def _package_tree(tmp_path, *, member_file: bool, outside_import: bool, dotted: 
                + (["pkg.sub", "pkg.sub.x"] if nested else []))
     layout = _layout(order=["base", "rt"], allowed={"base": [], "rt": ["base"]},
                      brief_layers={"base": modules, "rt": ["charoite_paths"]},
-                     package="pkg", package_entry="pkg.a")
+                     package="pkg", package_entries={"pkg.a": "вход"})
     inv = lm.inventory(tmp_path)
     return layout, lm.import_graph(inv), inv
 
@@ -2590,6 +2591,93 @@ def test_the_package_init_stays_empty_of_imports(tmp_path):
     layout, graph, inv = _package_tree(tmp_path / "doc", member_file=False, outside_import=False,
                                        init='"""Только докстринг."""\n')
     assert lm.package_problems(graph, layout, inv) == []
+
+
+def test_a_second_entry_brings_its_closure_into_the_package(tmp_path):
+    """Входов у пакета может быть несколько (дверь векторов, CLI — №323, PR 0): член,
+    которого зовёт второй вход, — законный член, а не «лишний модуль в каталоге»;
+    член вне замыканий всех входов краснеет, как краснел вне единственного."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=False)
+    assert any("член пакета pkg.c вне замыкания входа pkg.a" in p for p in lm.package_problems(graph, layout, inv))
+    both = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.c": "второй вход"}}
+    assert lm.package_problems(graph, both, inv) == []
+    assert "src/pkg/c.py" in lm.package_files(inv, both) and "src/pkg/c.py" not in lm.package_files(inv, layout)
+    assert lm.package_entries(both) == ["pkg.a", "pkg.c"]
+
+
+def test_a_missing_entry_does_not_switch_off_the_checks_of_the_others(tmp_path):
+    """Опечатка в одном входе — своя строка в `env_problems`, а проверки остальных
+    входов идут: ранний выход прятал «член импортирует наружу» (входной круг 4
+    хвоста №323, M5). Все входы вне дерева — сравнивать нечего, строк нет."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=False, outside_import=True)
+    typo = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.нет": "опечатка"}}
+    assert "вход пакета pkg.нет: модуля с таким именем в дереве нет — пакету не из чего собраться" \
+        in lm.env_problems(graph, typo)
+    assert any("член пакета pkg.a импортирует outside" in p for p in lm.package_problems(graph, typo, inv))
+    assert lm.package_problems(graph, {**layout, "package_entries": {"pkg.нет": "опечатка"}}, inv) == []
+
+
+def test_a_module_with_the_environment_pulled_by_two_entries_is_one_line(tmp_path):
+    """Модуль слоя окружения в замыкании двух входов — одна строка со списком входов
+    по порядку имён, а не строка на каждый вход (входной круг 4 хвоста №323, M6)."""
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "charoite_paths.py").write_text("import os\nROOT = os.environ.get('CHAROITE_ROOT')\n", encoding="utf-8")
+    (src / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("z", "a"):
+        (src / "pkg" / f"{name}.py").write_text("import charoite_paths\n", encoding="utf-8")
+    layout = _layout(order=["base", "rt"], allowed={"base": [], "rt": ["base"]},
+                     brief_layers={"base": ["pkg", "pkg.a", "pkg.z"], "rt": ["charoite_paths"]},
+                     package="pkg", package_entries={"pkg.z": "второй", "pkg.a": "первый"})
+    graph = lm.import_graph(lm.inventory(tmp_path))
+    pulled = [p for p in lm.env_problems(graph, layout) if "тянет charoite_paths" in p]
+    assert pulled == ["пакет pkg.a, pkg.z тянет charoite_paths (rt) — в замыкании входа только слои без "
+                      "окружения: base"], pulled
+
+
+@pytest.mark.parametrize("entries, why", [
+    ({}, "нет ни одного входа"),
+    ({"pkg.a": " "}, "непустое обоснование"),
+])
+def test_the_entry_table_has_a_shape(entries, why):
+    """Форма таблицы входов — в загрузчике артефакта: хотя бы один вход, у каждого
+    обоснование; есть ли вход в дереве, судит `env_problems` — загрузчику дерева не
+    видно (входной круг 4 хвоста №323, I3)."""
+    layout = json.loads((ROOT / "docs" / "design" / "layout.json").read_text(encoding="utf-8"))
+    layout["package_entries"] = entries
+    with pytest.raises(lm.LayoutError, match=why):
+        lm.validate_layout(layout)
+
+
+def test_the_package_follows_the_entry_getter(tmp_path, monkeypatch):
+    """Состав пакета берут из геттера `package_entries` все четыре потребителя: подменённый
+    ответ геттера меняет их вывод, а таблица в раскладке остаётся прежней. Поведение, а не
+    написание: сторож по AST обходили бы `.get`, `.items()` и распаковка (выходной круг 1
+    по №323 PR 0, M1; урок 21.09 о сторожах по тексту исходника)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=False)
+    assert layout["package_entries"] == {"pkg.a": "вход"}
+    monkeypatch.setattr(lm, "package_entries", lambda _layout: ["pkg.a", "pkg.c"])
+    assert lm.package_problems(graph, layout, inv) == [], "член второго входа — законный член"
+    assert "src/pkg/c.py" in lm.package_files(inv, layout)
+    text = lm.render_map(layout, graph, lm.Scan({}, {}, {}, []), {})
+    assert "замыкание входов `pkg.a`, `pkg.c`" in text
+    monkeypatch.setattr(lm, "package_entries", lambda _layout: ["pkg.a", "pkg.нет"])
+    assert "вход пакета pkg.нет: модуля с таким именем в дереве нет — пакету не из чего собраться" \
+        in lm.env_problems(graph, layout)
+
+
+def test_a_line_names_the_entry_that_pulls_the_module(tmp_path):
+    """Атрибуция — одна на оба гейта (`package_pulled`): модуль вне пакета называет вход,
+    который его тянет, а не весь список; член отсутствующего входа краснеет с хвостом о
+    входе вне дерева — совет «убрать член» без него ложный (выход 1 PR 0, M2)."""
+    layout, graph, inv = _package_tree(tmp_path, member_file=True, outside_import=True)
+    both = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.c": "второй"}}
+    problems = lm.package_problems(graph, both, inv)
+    assert any(p.startswith("модуль замыкания pkg.a — outside — лежит вне пакета pkg/") for p in problems), problems
+    typo = {**layout, "package_entries": {"pkg.a": "поиск", "pkg.нет": "опечатка"}}
+    assert any(p.startswith("член пакета pkg.c вне замыкания входа pkg.a") and p.endswith("(входы вне дерева: pkg.нет)")
+               for p in lm.package_problems(graph, typo, inv))
+    assert lm.package_pulled(graph, ["pkg.a", "pkg.c"])["outside"] == ["pkg.a"]
 
 
 def test_a_declared_package_resolves_to_its_init(tmp_path):

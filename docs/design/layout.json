@@ -130,7 +130,9 @@
     ]
   },
   "package": "charoite_graph",
-  "package_entry": "charoite_graph.graph_search",
+  "package_entries": {
+    "charoite_graph.graph_search": "поиск по графу ссылок с русской морфологией — поверхность пакета с первого колеса (№424, №427)"
+  },
   "layer_overrides": {
     "tier3": {
       "layer": "graph",
