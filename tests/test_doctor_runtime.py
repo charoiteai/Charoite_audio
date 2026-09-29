@@ -388,7 +388,7 @@ def test_an_unready_engine_is_a_warning_with_one_install_command(capsys, monkeyp
     installed.parent.mkdir(parents=True)
     installed.write_text("#", encoding="utf-8")
     # Отказ движка «нечем работать» идёт настоящей пробой: команду установщика к нему
-    # дописывает сторона вызывающего (`_with_installer`), доктор второй не добавляет (№489).
+    # дописывает сторона вызывающего (`_with_remedy`), доктор второй не добавляет (№489).
     monkeypatch.setattr(doctor.diarize_nemotron.foreign_python, "run_json",
                         lambda *a, **k: fp.Outcome(fp.UNAVAILABLE, reason="нет каталога модели"))
     doctor.check_engine({"sufler": {"diarize_backend": "nemotron"}})

@@ -789,7 +789,7 @@ def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp
     monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
     root = tmp_path / "Application Support" / "Charoite"
     assert shlex.split(nem.install_command(root)) == [
-        f"CHAROITE_ROOT={root}", str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"),
+        f"CHAROITE_ROOT={root}", str(bundled), "-B", str(resources / "charoite" / "scripts" / "install_engine.py"),
         "nemotron"]
 
 
@@ -823,7 +823,7 @@ def test_a_bundle_without_its_python_is_not_named(tmp_path, monkeypatch):
     monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
     assert nem.app_python() == ""
     assert nem.install_command(tmp_path / "данные").startswith(
-        f"CHAROITE_ROOT={shlex.quote(str(tmp_path / 'данные'))} {nem.APP_PYTHON} ")
+        f"CHAROITE_ROOT={shlex.quote(str(tmp_path / 'данные'))} {nem.APP_PYTHON} -B ")
 
 
 def test_outside_the_bundle_the_command_asks_for_the_app_path(tmp_path):
@@ -832,7 +832,7 @@ def test_outside_the_bundle_the_command_asks_for_the_app_path(tmp_path):
     бы. Команда называет путь внутри приложения и просит подставить свой Charoite.app."""
     script = str(REPO / "scripts" / "install_engine.py")
     assert nem.app_python() == ""
-    assert nem.install_command(tmp_path) == (f"CHAROITE_ROOT={shlex.quote(str(tmp_path))} {nem.APP_PYTHON} "
+    assert nem.install_command(tmp_path) == (f"CHAROITE_ROOT={shlex.quote(str(tmp_path))} {nem.APP_PYTHON} -B "
                                              f"{shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)")
 
 
@@ -891,7 +891,7 @@ def test_the_transcript_gets_a_pointer_not_the_paths_of_the_machine(tmp_path, mo
     monkeypatch.setattr(nem, "SCRIPT", s)
     out = nem.diarize_in_env("", tmp_path / "bh.wav", root=tmp_path, timeout=30)
     assert out == fp.Outcome(fp.UNAVAILABLE, reason=f"нет весов — {nem.INSTALLER_POINTER}")
-    assert "CHAROITE_ROOT" not in out.reason and "install_engine.py" not in out.reason
+    assert str(tmp_path) not in out.reason and "install_engine.py" not in out.reason
 
 
 def test_a_failure_of_the_engine_does_not_promise_that_reinstalling_helps(tmp_path, monkeypatch):

@@ -436,9 +436,10 @@ def test_the_bundle_code_installs_nothing_into_the_bundle(tmp_path):
     code = _staged_bundle(tmp_path)
     app = code.parents[2]
     before = _listing(app)
-    # Байткод пишет интерпретатор, не установщик: настоящий бандл только на чтение, и `.pyc`
-    # туда не ложится; во временной копии его выключаем, чтобы след считался только свой.
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом"), "PYTHONDONTWRITEBYTECODE": "1"}
+    # Байткод не выключается окружением теста: приложение в /Applications принадлежит
+    # человеку, и `__pycache__` из запуска в Терминале ложится в бандл — след считается
+    # весь (предрелизный прогон 0.88.1, Opus C1: прежний тест прятал ровно это).
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом")}
     for root in (None, str(code), str(app)):
         out = _check_from(code, env if root is None else {**env, "CHAROITE_ROOT": root})
         assert out.returncode == exit_codes.EXIT_ROOT_UNNAMED, (root, out.returncode, out.stderr[-300:])
@@ -462,3 +463,18 @@ def test_the_staged_bundle_carries_the_lock_the_installer_reads(tmp_path):
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом"), "CHAROITE_ROOT": str(data)}
     out = _check_from(code, env)
     assert out.returncode == 1 and "нет лока" in out.stderr, (out.stdout, out.stderr[-300:])
+
+
+def test_the_doctor_from_the_bundle_writes_no_bytecode_into_it(tmp_path):
+    """Доктор python бандла из Терминала — без PYTHONPYCACHEPREFIX приложения: его
+    импорты не оставляют `__pycache__` в `.app` (Opus C1, 0.88.1)."""
+    code = _staged_bundle(tmp_path)
+    app = code.parents[2]
+    before = _listing(app)
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "дом"),
+           "CHAROITE_ROOT": str(tmp_path / "данные")}
+    (tmp_path / "данные").mkdir()
+    out = subprocess.run([sys.executable, str(code / "scripts" / "doctor.py"), "--help"],
+                         capture_output=True, text=True, timeout=120, env=env)
+    assert out.returncode == 0, out.stderr[-300:]
+    assert _listing(app) == before, sorted(_listing(app) - before)
