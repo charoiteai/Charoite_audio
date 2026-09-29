@@ -21,11 +21,10 @@ def is_loopback_host(host: str | None) -> bool:
     """127.0.0.0/8, ::1 и localhost (без учёта регистра, с корневой точкой или без)."""
     if not host:
         return False
-    name = host.lower().rstrip(".")
-    if name in _LOCAL_NAMES:
+    if host.lower().rstrip(".") in _LOCAL_NAMES:
         return True
-    try:
-        return ipaddress.ip_address(name).is_loopback
+    try:        # IP разбирается как написан: «127.0.0.1.» — уже DNS-имя, а не адрес
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:      # имя машины, .local, домен — что угодно не-IP
         return False
 

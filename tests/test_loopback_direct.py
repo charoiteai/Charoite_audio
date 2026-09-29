@@ -48,7 +48,7 @@ def _ollama_маршруты():
     ("127.0.0.1", True), ("127.9.9.9", True), ("::1", True), ("localhost", True),
     ("LocalHost", True), ("localhost.", True), ("", False), (None, False),
     ("example.com", False), ("192.168.1.5", False), ("127.0.0.1.evil.com", False),
-    ("localhost.evil.com", False),
+    ("localhost.evil.com", False), ("127.0.0.1.", False), ("::1.", False),
 ])
 def test_loopback_host_rule(host, want):
     assert is_loopback_host(host) is want
@@ -286,16 +286,18 @@ def test_the_audio_websocket_goes_direct(stand):
     from websockets.sync.client import connect
     from websockets.sync.server import serve
     proxy, _ = stand
-    got = []
+    got, done = [], threading.Event()
 
     def handler(ws):
         got.append(ws.recv())
+        done.set()
 
     with serve(handler, "127.0.0.1", 0) as srv:
         port = srv.socket.getsockname()[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         with connect(f"ws://127.0.0.1:{port}/v1/ws", proxy=None) as ws:
             ws.send("кадр")
+        assert done.wait(5)
         srv.shutdown()
     assert got == ["кадр"] and proxy.hits == 0
     # контроль: без proxy=None клиент идёт к прокси окружения
@@ -335,7 +337,7 @@ def _has_proxies_for(node: ast.AST) -> bool:
 
 def transport_violations(rel: str, tree: ast.Module) -> list[str]:
     """Вызовы транспорта в файле мимо правила «loopback — напрямую»."""
-    requests_names, ws_names, ws_funcs = set(), set(), set()
+    requests_names, ws_names, ws_funcs, out_from = set(), set(), set(), []
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
             for a in n.names:
@@ -344,15 +346,23 @@ def transport_violations(rel: str, tree: ast.Module) -> list[str]:
                 if a.name.split(".")[0] == "websockets":
                     ws_names.add(a.asname or a.name.split(".")[0])
         elif isinstance(n, ast.ImportFrom) and n.module:
+            if n.module == "requests" and any(a.name in REQUESTS_VERBS | {"Session"} for a in n.names):
+                out_from.append(f"{rel}:{n.lineno}: глагол requests импортирован именем — мимо правила")
             if n.module.split(".")[0] == "websockets":
                 for a in n.names:
                     if a.name == "connect":
                         ws_names.add(a.asname or a.name)
                         ws_funcs.add(a.asname or a.name)
-    out = []
+    out = out_from
     net_module = rel == "src/charoite_graph/net.py"
     parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
     for n in ast.walk(tree):
+        # `post = post or requests.post`: глагол взят значением, вызов ниже не увидеть
+        if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load) and n.attr in REQUESTS_VERBS \
+                and isinstance(n.value, ast.Name) and n.value.id in requests_names:
+            par = parents.get(n)
+            if not (isinstance(par, ast.Call) and par.func is n):
+                out.append(f"{rel}:{n.lineno}: requests.{n.attr} взят значением — мимо правила")
         # connect передан значением: разрешено только `partial(connect, proxy=None)`
         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in ws_funcs:
             par = parents.get(n)
@@ -425,6 +435,9 @@ def test_every_transport_call_in_src_and_scripts_goes_through_the_rule():
     ("from websockets.sync.client import connect\nfrom functools import partial\nf = partial(connect, proxy=None)\n", 0),
     ("from websockets.sync.client import connect\nimport functools\nf = functools.partial(connect)\n", 1),
     ("from websockets.sync.client import connect\nf = connect\n", 1),
+    ("import requests\npost = requests.post\n", 1),
+    ("import requests\ndef f(post=None):\n    post = post or requests.post\n", 1),
+    ("from requests import post\npost(u)\n", 1),
 ])
 def test_the_transport_guard_sees_each_form(src, want):
     assert len(transport_violations("src/x.py", ast.parse(src))) == want
@@ -463,7 +476,8 @@ def swift_session_violations(rel: str, text: str) -> list[str]:
         end = i + 1
         while end < len(lines) and not _DECL.match(lines[end]):
             end += 1
-        if "connectionProxyDictionary = [:]" not in "\n".join(lines[start:end]):
+        window = "\n".join(ln.split("//", 1)[0] for ln in lines[start:end])
+        if "connectionProxyDictionary = [:]" not in window:
             out.append(f"{rel}:{i + 1}: сессия без connectionProxyDictionary = [:] в той же функции")
     return out
 
@@ -492,6 +506,7 @@ def test_the_swift_external_list_is_real():
     ("func a() {\n    cfg.connectionProxyDictionary = [:]\n}\nfunc b() {\n    URLSession.shared.data(from: u)\n}\n", 1),
     ("private static let s: URLSession = {\n  cfg.connectionProxyDictionary = [:]\n  return URLSession(configuration: cfg)\n}()\n", 0),
     ("func a() {\n    // URLSession.shared в комментарии\n}\n", 0),
+    ("func a() {\n    // cfg.connectionProxyDictionary = [:]\n    let s = URLSession(configuration: cfg)\n}\n", 1),
 ])
 def test_the_swift_guard_sees_each_form(src, want):
     assert len(swift_session_violations("x.swift", src)) == want
