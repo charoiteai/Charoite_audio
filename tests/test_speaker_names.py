@@ -341,6 +341,17 @@ def test_an_accepted_name_carries_no_reason():
         sn.NameVerdict("Мария", "", "Мария", "Мария")
 
 
+def test_a_none_answer_is_not_a_refusal_and_has_no_line():
+    """Одно решение «отказ или ответ имени нет» — у вердикта: пересборка и живой цикл
+    его не повторяют (выходной круг 1 по №502, M1)."""
+    none = sn.judge_name("NONE", sample=INTRO, label="Собеседник")
+    unheard = sn.judge_name("Ольга", sample=INTRO, label="Собеседник")
+    assert not sn.is_refusal(none) and sn.refusal_line("Собеседник", none) is None
+    assert sn.is_refusal(unheard) and sn.refusal_line("Собеседник", unheard)
+    accepted = sn.judge_name("Мария", sample=INTRO, label="Собеседник")
+    assert accepted.name and not sn.is_refusal(accepted)
+
+
 def test_refusal_line_says_what_the_model_proposed_and_what_it_became():
     """Владелец ищет в стенограмме то, что сказала модель; приведённое падежом имя —
     то, что судили правила владельца и голоса. Показаны оба, если они разные."""

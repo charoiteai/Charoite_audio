@@ -78,6 +78,19 @@ def test_rebuild_names_log_which_guard_refused(_ollama_маршруты, monkeyp
     out = capsys.readouterr().out
     assert "имена: «Ольга» для «Собеседник 1» не принято — не звучало в разговоре" in out
 
+
+@pytest.mark.parametrize("answer", ["NONE", "none", "..."])
+def test_rebuild_names_a_none_answer_is_not_a_refused_name(_ollama_маршруты, monkeypatch, capsys, answer):
+    """«NONE» — ответ «имени нет», а не предложенное имя: ни строки отказа в журнале, ни
+    плашки «гварды отвергли все» — как у живого цикла (выходной круг 1 по №502, M1)."""
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    _ollama_маршруты.сценарий_чата(_чат(json.dumps({"Собеседник 1": answer}, ensure_ascii=False)))
+
+    out_names = rt.name_speakers(CFG_REBUILD, [("Собеседник 1", "Привет, я Сергей")])
+
+    assert out_names == rt.NamesOutcome({}, rt.NamesOutcome.ANSWERED, 0)
+    assert "не принято" not in capsys.readouterr().out
+
 def test_diarize_names_read_the_fenced_json(_ollama_маршруты):
     _ollama_маршруты.сценарий_чата(_чат('```json\n{"speaker_0": "Сергей"}\n```'))
 

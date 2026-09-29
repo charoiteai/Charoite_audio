@@ -668,12 +668,15 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]],
             continue
         if v.strip() in ("", "?"):
             continue
-        proposed += 1
         verdict = speaker_names.judge_name(v, sample=sample, label=k, owner_name=user_name,
                                            known=known)
         if verdict.name:
+            proposed += 1
             names[k] = verdict.name
-        else:   # какое правило отказало — в журнал; шапка остаётся общей (№502)
+        elif speaker_names.is_refusal(verdict):
+            # какое правило отказало — в журнал; шапка остаётся общей (№502). «NONE» —
+            # ответ «имени нет», не предложенное имя: плашку «отвергнуты» не зовёт
+            proposed += 1
             log(f"имена: {speaker_names.refusal_line(k, verdict)}")
     # Годный ответ — объект, и хоть чем-то из него можно воспользоваться (массив
     # или строка под json_format — тот же мусор, что молчание, GLM M1 по #551:

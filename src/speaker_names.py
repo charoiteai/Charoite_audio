@@ -349,10 +349,20 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
                       voice=voice, name_gender=name_gender).name
 
 
-def refusal_line(label: str, verdict: NameVerdict) -> str:
+def is_refusal(verdict: NameVerdict) -> bool:
+    """Отверг ли гвард предложенное имя. «Пусто или NONE» — не отказ, а ответ «имени
+    нет»: он не считается предложенным именем и не пишется в журнал — одно решение
+    на пересборку и живой цикл (выходной круг 1 по №502, M1)."""
+    return verdict.reason not in ("", REASON_EMPTY)
+
+
+def refusal_line(label: str, verdict: NameVerdict) -> str | None:
     """Строка журнала об отвергнутом имени: что предложила модель, во что его
     привели, для какой метки и какое правило отказало. Одна на пересборку и демон,
-    чтобы текст причины жил в одном месте (REASON_TEXT)."""
+    чтобы текст причины жил в одном месте (REASON_TEXT). Не отказ (`is_refusal`) —
+    None: писать нечего."""
+    if not is_refusal(verdict):
+        return None
     moved = verdict.resolved != verdict.said
     shown = f"«{verdict.said}»" + (f" (→ {verdict.resolved})" if moved else "")
     return f"{shown} для «{label}» не принято — {REASON_TEXT[verdict.reason]}"
@@ -369,10 +379,11 @@ def say_refusal(label: str, verdict: NameVerdict, stream=None) -> bool:
     правило для той же пары — новое событие, звучит снова. «Пусто или NONE» —
     не отвергнутое имя, а ответ «имени нет» (одиночная ветка так и просит
     отвечать), и в журнал он не идёт."""
-    if verdict.reason in ("", REASON_EMPTY):
+    line = refusal_line(str(label), verdict)
+    if line is None:
         return False
     key = (REFUSALS, (str(label), verdict.said, verdict.reason))
-    return once.say(key, "имена: " + refusal_line(str(label), verdict), stream=stream)
+    return once.say(key, "имена: " + line, stream=stream)
 
 
 def forget_refusals() -> None:
