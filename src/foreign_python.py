@@ -12,6 +12,10 @@ probe does not trust the data folder»): ребёнок не подхватыв�
 заодно и то, что ребёнку нужно выставить. Проба готовности (Swift) и тестовая
 проба пакета держат свои копии перечня — один источник для всех — №402.
 
+pip ребёнка собирает только `pip_command` (№484): ему `-I` годится — выставлять
+нечего, — а настройки самого pip гасит своя таблица `PIP_ISOLATION` и флаг
+`--isolated`.
+
 Исход — значением (`Outcome`), не исключением: вызывающий обязан отличать «движка
 нет на этой машине» (UNAVAILABLE — код `EXIT_ENGINE_UNAVAILABLE`) от «движок упал»
 (FAILED — другой код, потолок времени, нет интерпретатора, ответ не JSON-объект).
@@ -90,6 +94,29 @@ def clean_env(base: typing.Mapping[str, str]) -> dict[str, str]:
         else:
             env[key] = value
     return env
+
+
+#: Что pip ребёнка берёт у человека и что гасит дверь `pip_command` (№484, замер
+#: pip 26.2.1). `-I` — изоляция Python, pip она не касается. `--isolated` глушит
+#: переменные `PIP_*` и пользовательский pip.conf, но файл из `PIP_CONFIG_FILE`,
+#: глобальный и `sys.prefix/pip.conf` читает по-прежнему: их гасит пустой файл
+#: настроек. `~/.netrc` pip читает и под `--isolated`: запись `default` уходила
+#: заголовком Authorization на индекс. Прокси и сертификаты системы и окружения
+#: остаются — адрес назначения они не меняют.
+PIP_ISOLATION: dict[str, str] = {
+    "PIP_CONFIG_FILE": os.devnull,
+    "NETRC": os.devnull,
+}
+
+
+def pip_command(python: str | os.PathLike, *args: str,
+                base: typing.Mapping[str, str] | None = None) -> tuple[list[str], dict[str, str]]:
+    """argv и окружение pip под интерпретатором `python` — единственное место, где
+    продукт собирает вызов pip: индексы, файлы настроек pip и `~/.netrc` человека
+    до ребёнка не доходят. `base` — окружение родителя (по умолчанию `os.environ`)."""
+    argv = [os.fspath(python), "-I", "-m", "pip", "--isolated", *args]
+    env = {**clean_env(os.environ if base is None else base), **PIP_ISOLATION}
+    return argv, env
 
 
 def _last_line(text: str) -> str:
