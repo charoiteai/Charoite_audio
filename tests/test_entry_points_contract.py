@@ -394,7 +394,28 @@ for name in INITS:
     before = set(sys.modules)
     importlib.import_module(name)
     PULLED_BY_INIT[name] = sorted(set(sys.modules) - before - {name})
+# Каждый модуль копии — под ловушкой, не только то, что потянет вход: второй вход
+# (дверь векторов, №323 PR 1) иначе не загружался бы вовсе. Обход — каталоги пакетов
+# верхнего уровня копии (`INITS` без точки), не её корень: там лежат корневые модули
+# отрицательной фикстуры (вход 2, I1); после цикла `INITS`, чтобы окно `__init__`
+# не считало их ношей.
+for top in [n for n in INITS if "." not in n]:
+    for f in sorted(PKG_ROOT.joinpath(top).rglob("*.py")):
+        if f.name != "__init__.py":
+            importlib.import_module(".".join(f.relative_to(PKG_ROOT).with_suffix("").parts))
 from charoite_graph import graph_search, model_seam
+
+
+def door_post(url, payload, timeout):
+    return 200, json.dumps({"embeddings": [[1.0, float(len(t))] for t in payload["input"]]})
+
+
+# Дверь векторов — поведением, если её файл есть в копии (по файлу, а не по ImportError:
+# сломанный импорт двери иначе молча выпал бы из проверки, вход 3 Q3)
+DOOR = {}
+if PKG_ROOT.joinpath("charoite_graph", "embed_door.py").is_file():
+    from charoite_graph import embed_door
+    DOOR = {"vectors": embed_door.embedder("http://127.0.0.1:9", "проба-дверь", post=door_post).run(["а", "бб"], 5)}
 
 
 def vectors(texts, timeout):
@@ -415,7 +436,7 @@ loaded = again.load_vectors()
 result = again.search(QUERY)
 print(json.dumps({"ready": result.ready, "total": result.total, "text": result.text,
                   "embedded": embedded, "loaded": loaded, "path_before": PATH_BEFORE, "path_after": sys.path,
-                  "pulled_by_init": PULLED_BY_INIT, "inits": INITS,
+                  "pulled_by_init": PULLED_BY_INIT, "inits": INITS, "door": DOOR,
                   "cache": sorted(str(p.relative_to(DATA)) for p in pathlib.Path(DATA).rglob("*") if p.is_file()),
                   "modules": sorted(sys.modules),
                   "files": sorted(os.path.realpath(m.__file__) for m in list(sys.modules.values())
@@ -431,6 +452,11 @@ def _isolated_env(parent: dict[str, str], drop: tuple[str, ...]) -> dict[str, st
     env = {k: v for k, v in parent.items() if k not in drop}
     env.update(ISOLATION_ENV)
     return env
+
+
+#: Что дверь векторов пакета обязана отдать под пробой на поддельном транспорте раннера
+#: (`door_post`: вектор [1, длина текста]) для текстов «а» и «бб».
+DOOR_VECTORS = [[1.0, 1.0], [1.0, 2.0]]
 
 
 def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: pathlib.Path, *,
@@ -483,6 +509,9 @@ def run_package_probe(pkg: pathlib.Path, graph: pathlib.Path, query: str, work: 
     for name, pulled in sorted((out.get("pulled_by_init") or {}).items()):
         if pulled:
             problems.append(f"import {name} тянет {', '.join(pulled)} — __init__ пакета обязан быть пустым")
+    door = out.get("door") or {}
+    if door and door.get("vectors") != DOOR_VECTORS:
+        problems.append(f"дверь векторов пакета не дала векторов под пробой: {door.get('vectors')!r}")
     return problems, out
 
 
@@ -932,7 +961,8 @@ def test_the_graph_package_runs_without_the_app(tmp_path: pathlib.Path, wheel_pa
     assert not problems, "\n".join(problems)
     assert out["ready"] and out["total"], f"индекс по демо-графу пуст: {out}"
     assert "Платёжный шлюз" in out["text"], f"поиск не нашёл узел демо-графа: {out['text'][:300]}"
-    assert closure <= set(out["modules"]), "проба импортирует не всё замыкание входа"
+    assert modules <= set(out["modules"]), "проба импортирует не все модули плана"
+    assert out["door"] == {"vectors": DOOR_VECTORS}, f"дверь векторов не проверена поведением: {out['door']}"
     # путь записи пройден: векторы собраны, кэш лёг в data_dir и прочитан вторым экземпляром
     assert out["embedded"] > 0 and out["loaded"] == out["embedded"], out
     assert any(c.startswith("graph_search/") and c.endswith(".json") for c in out["cache"]), out["cache"]
@@ -1429,7 +1459,8 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
                 "        import types\n"
                 "        return types.SimpleNamespace(ready=True, total=1, text=q)\n")
 
-    def run(name: str, extra: str, **kw) -> tuple[list[str], dict]:
+    def run(name: str, extra: str, *, door: str | None = None, member: str | None = None,
+            **kw) -> tuple[list[str], dict]:
         victims = tmp_path / name / "жертва"
         (victims / "d").mkdir(parents=True)
         (victims / "f").write_text("x", encoding="utf-8")
@@ -1442,6 +1473,10 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
             template.format(victims=str(victims), extra=extra), encoding="utf-8")
         shutil.copyfile(ROOT / "src" / "charoite_graph" / "model_seam.py",
                         pkg / "charoite_graph" / "model_seam.py")
+        if door is not None:
+            (pkg / "charoite_graph" / "embed_door.py").write_text(door, encoding="utf-8")
+        if member is not None:
+            (pkg / "charoite_graph" / "член_вне_входа.py").write_text(member, encoding="utf-8")
         (pkg / "лишний_модуль.py").write_text("", encoding="utf-8")
         (pkg / "соседний_модуль.py").write_text("", encoding="utf-8")
         return run_package_probe(pkg, graph, "запрос", tmp_path / name / "work",
@@ -1453,6 +1488,26 @@ def test_the_package_probe_catches_what_it_guards(tmp_path: pathlib.Path) -> Non
     assert {"POISONED_ENV": POISONED_ENV, "ISOLATION_ENV": ISOLATION_ENV, "ISOLATION_DROP": ISOLATION_DROP,
             "WRITE_FLAG_NAMES": WRITE_FLAG_NAMES} == APPROVED_PROBE, "таблицы пробы — политика, снимок обязателен"
     assert probe("честный", "pass") == []
+    # дверь векторов в копии проверяется поведением: пустая дверь — строка пробы, честная —
+    # чисто и с результатом; без файла двери проверки нет (вход 4 PR 1 №323, I1)
+    empty_door = ("from charoite_graph.model_seam import Embedder\n"
+                  "def embedder(base_url, model, **kw):\n"
+                  "    return Embedder(lambda texts, timeout: [], model)\n")
+    honest_door = ("import json\n"
+                   "from charoite_graph.model_seam import Embedder\n"
+                   "def embedder(base_url, model, *, post, **kw):\n"
+                   "    return Embedder(lambda texts, timeout: json.loads(post(base_url, {'input': texts}, timeout)[1])"
+                   "['embeddings'], model)\n")
+    got, _ = run("дверь пуста", "pass", door=empty_door)
+    assert any("дверь векторов пакета не дала векторов" in line for line in got), got
+    got, out = run("дверь честная", "pass", door=honest_door)
+    assert got == [] and out["door"] == {"vectors": DOOR_VECTORS}, (got, out.get("door"))
+    assert run("без двери", "pass")[1]["door"] == {}, "без файла двери проверки нет"
+    # член пакета, которого не тянет ни один вход, тоже грузится под ловушкой: раннер
+    # обходит каталог пакета копии, а не только замыкание входа (вход 4 хвоста, C1)
+    got = probe("член вне входа", "pass",
+                member="import os, pathlib\n(pathlib.Path(os.environ['HOME']) / 'config.yaml').read_text()\n")
+    assert got and "чтение ловушки" in got[0], got
     # копия ИЗ-вне В data_dir законна: источник копии не запись
     assert probe("копия внутрь", "shutil.copyfile(V / 'f', self.data / 'копия')") == []
     assert "чтение ловушки" in probe("домашний", "(pathlib.Path.home() / 'config.yaml').read_text()")[0]

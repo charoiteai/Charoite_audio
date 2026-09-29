@@ -24,9 +24,17 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import once  # noqa: E402
-import embed_door  # noqa: E402
+from charoite_graph import embed_door  # noqa: E402
 from charoite_graph import graph_search  # noqa: E402
 from charoite_graph.model_seam import SeamTransportError  # noqa: E402
+
+
+def _embedder(*args, **kwargs):
+    """Дверь с реестром процесса — как её собирает приложение (`llm.embedder`): строки и
+    их сброс (`once.reset`, `conftest`) общие с реестром процесса (вход 3 PR 1 №323,
+    критика 2). Дверь без реестра судит отдельный тест."""
+    kwargs.setdefault("notices", once)
+    return embed_door.embedder(*args, **kwargs)
 
 
 def _векторы(texts: list[str]) -> list[list[float]]:
@@ -73,7 +81,7 @@ def _дверь(*, post=None, refused: str = "", keep_alive: str | None = None):
     kwargs = {"refused": refused, "keep_alive": keep_alive}
     if post is not None:
         kwargs["post"] = post
-    return embed_door.embedder("http://127.0.0.1:11434", "m", **kwargs)
+    return _embedder("http://127.0.0.1:11434", "m", **kwargs)
 
 
 def http_error(code: int, body: bytes) -> urllib.error.HTTPError:
@@ -287,8 +295,8 @@ def test_a_length_refusal_retried_with_truncate_returns_vectors_and_speaks_once(
 def test_the_truncation_episode_is_known_per_address_and_model(capsys):
     """Ключ эпизода — адрес и модель: другая дверь скажется своим голосом."""
     once.reset("embed")
-    embed_door.embedder("http://127.0.0.1:1", "m1", post=_усечение_сервер()).run(["т"], 10)
-    embed_door.embedder("http://127.0.0.1:2", "m2", post=_усечение_сервер()).run(["т"], 10)
+    _embedder("http://127.0.0.1:1", "m1", post=_усечение_сервер()).run(["т"], 10)
+    _embedder("http://127.0.0.1:2", "m2", post=_усечение_сервер()).run(["т"], 10)
     assert capsys.readouterr().err.count("вход длиннее предела сервера") == 2
 
 
@@ -760,7 +768,7 @@ def test_a_real_http_server_round_trip():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         base = f"http://127.0.0.1:{srv.server_address[1]}"
-        assert embed_door.embedder(base, "m").run(["аб"], 5) == [[2.0, 1.0]]
+        assert _embedder(base, "m").run(["аб"], 5) == [[2.0, 1.0]]
     finally:
         srv.shutdown()
         srv.server_close()
@@ -778,26 +786,44 @@ def test_a_search_batch_fits_in_one_door_batch():
 # ── фабрика: сигнатура, отказ, адрес, имя ────────────────────────────────
 
 def test_the_door_signature_does_not_take_a_config():
+    """Дверь не знает конфига: адрес и имя — позиционно, остальное — только по имени,
+    реестр строк — значением (вход 4 PR 1 №323, M1: пин сторожит смысл, а не порядок)."""
     p = inspect.signature(embed_door.embedder).parameters
     assert "cfg" not in p
-    assert list(p) == ["base_url", "model", "keep_alive", "post", "refused"]
+    assert list(p)[:2] == ["base_url", "model"]
+    assert all(v.kind is inspect.Parameter.KEYWORD_ONLY for k, v in p.items() if k not in ("base_url", "model"))
+    assert p["notices"].default is None
+
+
+def test_doors_without_a_registry_do_not_share_one(capsys):
+    """Без реестра у каждой собранной двери свой `Notices()`: глобала в пакете нет, и
+    отказ второй двери звучит снова. Умолчание раскрывается до ветки отказа — отказу
+    реестр нужен тоже (вход 4 PR 1 №323, M2)."""
+    for _ in range(2):
+        e = embed_door.embedder("", "m", refused="чужой адрес")
+        assert e.refused == "чужой адрес"
+    assert capsys.readouterr().err.count("эмбеддинги недоступны: чужой адрес") == 2
+    once.reset("embed")
+    for _ in range(2):
+        _embedder("", "m", refused="чужой адрес")
+    assert capsys.readouterr().err.count("эмбеддинги недоступны: чужой адрес") == 1, "реестр процесса — один на все"
 
 
 def test_a_policy_refusal_is_built_not_raised_and_speaks_once(monkeypatch, capsys):
     once.reset("embed")
 
-    e = embed_door.embedder("", "m", refused="чужой адрес")
+    e = _embedder("", "m", refused="чужой адрес")
     assert e.refused == "чужой адрес"
     with pytest.raises(SeamTransportError) as ошибка:
         e.run(["т"], 5)
     assert ошибка.value.policy is True
 
-    embed_door.embedder("", "m", refused="чужой адрес")            # вторая сборка
+    _embedder("", "m", refused="чужой адрес")            # вторая сборка
     assert capsys.readouterr().err.count("эмбеддинги недоступны: чужой адрес") == 1
 
 
 def test_the_exception_carries_the_raw_reason_and_the_line_is_formatted():
-    e = embed_door.embedder("", "m", refused="чужой адрес")
+    e = _embedder("", "m", refused="чужой адрес")
     with pytest.raises(SeamTransportError) as ошибка:
         e.run(["т"], 5)
     assert str(ошибка.value) == "чужой адрес", "исключение несёт сырую причину, без приставки"
@@ -811,7 +837,7 @@ def test_the_exception_carries_the_raw_reason_and_the_line_is_formatted():
 ])
 def test_a_bad_address_or_empty_model_is_a_value_error(base, model):
     with pytest.raises(ValueError):
-        embed_door.embedder(base, model)
+        _embedder(base, model)
 
 
 def test_the_address_is_stripped_of_the_trailing_slash():
@@ -821,7 +847,7 @@ def test_the_address_is_stripped_of_the_trailing_slash():
         seen["url"] = url
         return 200, json.dumps({"embeddings": [[1.0]]})
 
-    embed_door.embedder("http://127.0.0.1:11434/", "m", post=post).run(["т"], 5)
+    _embedder("http://127.0.0.1:11434/", "m", post=post).run(["т"], 5)
     assert seen["url"] == "http://127.0.0.1:11434/api/embed"
 
 
@@ -833,7 +859,7 @@ def test_keep_alive_none_omits_the_key_and_a_value_travels():
         seen.update(payload)
         return 200, json.dumps({"embeddings": [[1.0]]})
 
-    embed_door.embedder("http://x", "m", keep_alive=None, post=post).run(["т"], 5)
+    _embedder("http://x", "m", keep_alive=None, post=post).run(["т"], 5)
     assert "keep_alive" not in seen and seen["model"] == "m"
-    embed_door.embedder("http://x", "m", keep_alive="30m", post=post).run(["т"], 5)
+    _embedder("http://x", "m", keep_alive="30m", post=post).run(["т"], 5)
     assert seen["keep_alive"] == "30m"

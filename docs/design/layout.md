@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 79.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 80.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 12): `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `embed_door`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
+- **base** (зависит от: —; модулей 13): `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.notices`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 6): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 10): `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
@@ -22,20 +22,21 @@
 - **base**: слою base окружение не дано (allowed: —): путь приходит параметром — его собирает вызывающий из слоя, которому виден runtime (runtime, llm, cloud, audio, meeting, app)
 - **graph**: слою graph окружение не дано (allowed: base): путь приходит параметром — его собирает вызывающий из слоя, которому виден runtime (meeting, app)
 
-## Пакет поиска по графу — замыкание входа `charoite_graph.graph_search`
+## Пакет поиска по графу — замыкание входов `charoite_graph.embed_door`, `charoite_graph.graph_search`
 
 Ставится без приложения: модули ниже и только они; проба — `tests/test_entry_points_contract.py`.
 
-Модулей 11: `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `charoite_graph.text_norm`
+Модулей 13: `charoite_graph`, `charoite_graph.dossier`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.notices`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `charoite_graph.text_norm`
 
 ## Поправки к таблице брифа (с обоснованием)
 
+- `charoite_graph.embed_door` → base: дверь векторов в пакете: тянет только model_seam и notices; в graph дала бы ребро llm → graph (llm импортирует её формой import charoite_graph.embed_door as …, без ребра на узел пакета)
 - `charoite_graph.model_seam` → base: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
+- `charoite_graph.notices` → base: реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524
 - `charoite_paths` → runtime: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)
 - `charoite_schema` → graph: значение схемы хранилища (№422): имена папок и разделов читают модули графа, модуль тянет только stdlib и класс схемы из пакета графа; окружения не знает
 - `decision_gate` → llm: ONNX-гейт «будить ли модель»: NLI zero-shot или обученная голова; читают daemon (тень ⚡) и scripts/gate_bench.py
 - `deps` → runtime: рецепт про интерпретатор и .venv; ничего из репо не импортирует
-- `embed_door` → base: шов векторов: тянет только model_seam; в graph дал бы ребро llm → graph
 - `fact_check` → meeting: сверка якорей документа со стенограммой; ничего из репо не импортирует, читают daemon, main, rebuild_transcript
 - `foreign_python` → runtime: дверь «скрипт продукта под чужим интерпретатором» (№473): чистое окружение ребёнка по рецепту пробы готовности и исход значением; долгий ребёнок с протоколом строками — spawn_stream (№478); из репо тянет exit_codes и threads (base), зовут его audio (diarize_nemotron, live_nemotron)
 - `graph_updater` → meeting: до разреза (№322) целиком встречный: встречная и графовая половины в одном файле
@@ -43,7 +44,7 @@
 - `install_profile` → meeting: бриф ставит в app, но по коду это предикат над конфигом, импортирующий graphs; читают graph_updater и rebuild_transcript — до фазы 3 (№321: flag() в config_loader) держим в meeting
 - `media_meta` → base: разбор контейнеров mp4/caf/wav ради момента записи; ничего из репо не импортирует
 - `nli` → llm: ONNX-инференс NLI-модели; читают tier3 и daemon
-- `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его base (embed_door), llm (llm, model_lease), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
+- `once` → base: общий реестр «уже сказали» на процесс: ключ (пространство, смысл), только stdlib. Зовут его llm (llm, model_lease; llm передаёт его двери векторов значением), meeting (graphs) и scripts/import_meeting — реестр в llm дал бы ребро base → llm
 - `task_line` → base: грамматика строки поручения (№366): статус чекбокса и пометка контроля задач; читают action_items и review_bridge (meeting), fix_action_items и meeting_archive — источник саммари без учёта после встречи, without_statuses (№392); ничего из репо не импортирует
 - `threads` → base: шов потоков продукта: поток — сам threading.Thread/Timer, реестр — метаданные при потоке (роль и причина detached). Импортов из репозитория нет, только stdlib; зовут его app (daemon, main, dictate), audio, llm и meeting. В app он дал бы ребро base → app: реестр обязан быть ниже всех, кто заводит поток
 - `tier3` → graph: ревизия ядер графа: bge-m3 и NLI приходят через шов model_seam, ночное окно — параметром may_continue, у приложения его собирает одна дверь graphs.revise_cores (№365); корня данных и замка демона модуль не знает — граф, не облако

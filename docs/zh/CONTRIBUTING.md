@@ -76,7 +76,7 @@ runtime 的边——`allowed_edges` 不能豁免这种边——也不能出现 `
 （`getpass.getuser`、`shutil.which`）不被识别。语法看不到的，由下面的包探针按行为发现。修复方法由同一个
 `allowed` 推出：路径以参数传入，由能看见 runtime 的层中的调用方组装——就像 `graphs.open_search`
 那样——而不是「去找根规范」。图谱包是其声明入口的导入闭包之并集，即 `layout.json` 中的
-`package_entries`（目前只有一个：`graph_search`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
+`package_entries`（目前有两个：`graph_search` 与 `embed_door`），而不是「全部 base 加 graph」；`tests/test_entry_points_contract.py`
 把该闭包复制到临时目录，在独立进程中对演示图谱执行搜索：`HOME`、`CHAROITE_ROOT`、
 `SUFLER_GRAPH_DIR`、`CHAROITE_GRAPH_DIR` 和 `TMPDIR` 都指向陷阱目录，审计钩子在读取陷阱或在
 `data_dir` 之外写入时让探针失败。确定性的伪向量器让包写入向量缓存并读回，因此写入路径也被执行，

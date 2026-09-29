@@ -2472,15 +2472,17 @@ def test_the_env_gate_asks_the_artifact(tmp_path):
     assert lm.env_problems(graph, layout) == []
 
 
-def test_the_package_is_the_closure_of_one_entry(world):
-    """Пакет — замыкание входа по графу импортов, а не «весь base плюс graph»:
-    модуль нижнего слоя, которого вход не зовёт, в план не попадает. Сегодня вход
-    один (`package_entries`), и объединение замыканий — его замыкание."""
+def test_the_package_is_the_union_of_its_entries_closures(world):
+    """Пакет — объединение замыканий входов по графу импортов, а не «весь base плюс
+    graph»: модуль нижнего слоя, которого ни один вход не зовёт, в план не попадает.
+    Входы — только через `package_entries`, без распаковки одного входа и пина его слоя
+    (вход 2 PR 1 №323, C2): второй вход — дверь векторов в слое base."""
     layout, graph, _, _, inv = world
-    (entry,) = lm.package_entries(layout)
-    closure = lm.package_union(graph, [entry])
+    entries = lm.package_entries(layout)
+    assert len(entries) >= 2, "дверь векторов — второй вход пакета (№462)"
+    closure = lm.package_union(graph, entries)
     lay = lm.layer_of(layout)
-    assert lay[entry] == "graph" and entry in closure
+    assert all(e in closure for e in entries)
     # план = замыкание входа плюс `__init__` пакета — явно, а не через ребро на пакет,
     # которое даёт только `from charoite_graph import x` (выходной круг 2 по #650, DS I2)
     assert {lm.module_of(rel) for rel in lm.package_files(inv, layout)} == closure | lm.package_inits(inv, layout)

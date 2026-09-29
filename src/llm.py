@@ -39,7 +39,7 @@ from collections.abc import Iterator
 import requests
 
 import charoite_paths
-import embed_door
+import charoite_graph.embed_door as embed_door   # без ребра на узел пакета (слой graph)
 import model_lease
 import once
 import privacy
@@ -560,8 +560,8 @@ def embedder(cfg: dict, *, model: str | None = None,
     try:
         base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused as exc:
-        return embed_door.embedder("", name, keep_alive=keep_alive, refused=str(exc))
-    return embed_door.embedder(base, name, keep_alive=keep_alive, post=_requests_post)
+        return embed_door.embedder("", name, keep_alive=keep_alive, refused=str(exc), notices=once)
+    return embed_door.embedder(base, name, keep_alive=keep_alive, post=_requests_post, notices=once)
 
 
 class LLM:

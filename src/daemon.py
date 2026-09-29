@@ -45,7 +45,7 @@ import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
-import embed_door  # noqa: E402
+from charoite_graph import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
 from exit_codes import EXIT_ROOT_UNNAMED  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
