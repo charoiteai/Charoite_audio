@@ -428,6 +428,23 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
   sherpa pass runs at RTF 0.35 — about 7 minutes for 20 minutes of call.
 
+### Threads, and yielding to a live meeting
+
+sherpa-onnx runs one thread unless told otherwise, and after a 69-minute meeting
+on 29 September the microphone channel took about 22 minutes on one core of
+eight. Every sherpa config is now built by one factory, `src/sherpa_config.py`:
+the live trackers always get one thread; the pass after a meeting gets one
+thread while a recording is running, and otherwise the largest thread count
+that was measured to give the same labels, capped at half the performance cores.
+Until that measurement is recorded, the list holds only 1 — nothing speeds up on
+a guess. A test forbids building a sherpa segmentation or embedding config
+anywhere else.
+
+The rebuild yields to a live meeting before each channel's labelling and
+before speech recognition (up to ten minutes each, like names and minutes), not
+only when it enters the rebuild queue: a rebuild that waited behind another one
+does not know about a meeting that started meanwhile.
+
 ### Your own recording
 
 The synthetic fixture is a floor. A real verdict needs a real meeting — which

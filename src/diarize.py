@@ -28,6 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 
 from charoite_paths import MODELS_DIR, harden_umask, resolve_root
+import sherpa_config  # noqa: E402
 from config_loader import load_user_or_example
 
 
@@ -111,12 +112,12 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     clustering = (sherpa_onnx.FastClusteringConfig(num_clusters=num_speakers)
                   if num_speakers > 0
                   else sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=threshold))
+    # Потоки — у фабрики (№508): умолчание sherpa — один поток, и микрофон
+    # часовой встречи размечался одним ядром из восьми около 22 минут.
+    root = _root()
     cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
-        segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
-            pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                model=str(_seg_model())),
-        ),
-        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(_emb_model())),
+        segmentation=sherpa_config.segmentation_config(_seg_model(), kind=sherpa_config.POST, root=root),
+        embedding=sherpa_config.embedding_config(_emb_model(), kind=sherpa_config.POST, root=root),
         clustering=clustering,
         min_duration_on=0.6,
         min_duration_off=0.6,
@@ -239,7 +240,7 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
     if len(by) <= 1:
         return segs
     ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(_emb_model())))
+        sherpa_config.embedding_config(_emb_model(), kind=sherpa_config.POST, root=_root()))
     embs: dict[int, np.ndarray] = {}
     for k, items in by.items():
         vecs = []
