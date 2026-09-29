@@ -374,8 +374,8 @@
       "why": "по коду: argparse"
     },
     "scripts/mutate_check.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
+      "mode": "help+refuse",
+      "why": "по коду: argparse, затем дверь корня name_data_root_or_exit — лок демона и лок мутации в названном корне, без CHAROITE_ROOT код 5 и рецепт; --merge-shards корня не спрашивает; №440"
     },
     "scripts/nightly.sh": {
       "mode": "none",
