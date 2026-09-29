@@ -283,7 +283,7 @@ def test_pip_installs_exactly_the_lock_with_hashes(tmp_path, monkeypatch):
 def test_a_failed_pip_is_refused_with_its_code(tmp_path):
     with pytest.raises(ie.Refused, match="код 3") as refused:
         ie.pip_install(_fake_python(tmp_path, 3), tmp_path / "x.lock")
-    assert "pypi.org" in str(refused.value)      # причина: настройки pip человека выключены намеренно
+    assert "не читаются намеренно" in str(refused.value)   # причина: настройки pip человека выключены нарочно
 
 
 @pytest.mark.parametrize("seconds,duration", [(None, 1.0), (0.5, 0.5)])
