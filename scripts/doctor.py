@@ -253,13 +253,19 @@ def check_engine(cfg: dict) -> None:
     if out.ok:
         line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
         return
-    if refusal:          # окружения нет — отказ двери уже несёт команду установщика
+    # Команду установщика несёт один текст. При пустом ключе отказ «нечем работать»
+    # (UNAVAILABLE) приходит из пробы уже с ней — второй раз не дописываем (№489); при
+    # заданном ключе проба команду не даёт: установщик ключ не вылечит, лечит правка ключа.
+    command = diarize_nemotron.install_command(root)
+    if refusal:          # окружения нет — отказ пробы уже несёт команду установщика
         advice = ""
     elif setting.strip():  # ключ главнее установленного окружения: переустановка его не заменит
-        advice = (f"ключ sufler.nemotron_python главнее установленного окружения — исправьте или "
-                  f"очистите его; окружение ставит {diarize_nemotron.install_command()}")
-    else:                # установленное окружение есть, но не работает
-        advice = f"переставить окружение: {diarize_nemotron.install_command()}"
+        advice = ("ключ sufler.nemotron_python главнее установленного окружения — исправьте или "
+                  f"очистите его; окружение ставит {command}")
+    elif out.kind == "unavailable":  # установленное окружение неполно — команда пришла с причиной
+        advice = ""
+    else:                # установленное окружение есть, но падает
+        advice = f"переставить окружение: {command}"
     line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa",
          out.reason + (f"; {advice}" if advice else ""))
 

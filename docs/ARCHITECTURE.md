@@ -1808,9 +1808,13 @@ has drifted" label would either hang on after the fix or never appear.
 
 The shipped code and the working files are deliberately separated.
 
-- **Code** — `src/`, `scripts/`, the config example. In the app it lives inside
+- **Code** — `src/`, `scripts/`, the config example, `pyproject.toml` and the
+  diarization engine lock `requirements-nemotron.lock`. In the app it lives inside
   the bundle (`Charoite.app/Contents/Resources/charoite`) next to the python
-  runtime; in development, in the cloned repository.
+  runtime — one list, `app/stage_code.sh`, used by the build and by the test; in
+  development, in the cloned repository. A data root inside an `.app` is refused
+  by the root canon (`charoite_paths.use_data_root`): the bundle is signed and
+  read-only.
 - **Data** — recordings, transcripts, logs, models, `config/config.yaml`. These
   belong to the user and live in the working folder.
 

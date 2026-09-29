@@ -251,6 +251,11 @@
       "why": "shell-скрипт: пробника нет",
       "ticket": "№364 (проба вместо none)"
     },
+    "app/stage_code.sh": {
+      "mode": "none",
+      "why": "shell-скрипт: пробника нет; поведение держит test_install_engine (дерево бандла из него же)",
+      "ticket": "№364 (проба вместо none)"
+    },
     "scripts/bench_extract.py": {
       "mode": "help",
       "why": "по коду: argparse"
@@ -326,8 +331,8 @@
       "why": "по коду: дверь корня первой строкой main(), затем argparse — дети импорта получают названный корень; №340"
     },
     "scripts/install_engine.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
+      "mode": "help+refuse",
+      "why": "по коду: дверь корня первой строкой main(), затем argparse — из бандла догадкой вышел бы сам .app; №489"
     },
     "scripts/layout_map.py": {
       "mode": "none",

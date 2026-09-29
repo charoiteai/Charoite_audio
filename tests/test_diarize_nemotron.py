@@ -14,6 +14,7 @@
 import json
 import pathlib
 import shlex
+import subprocess
 import sys
 import types
 
@@ -680,7 +681,7 @@ def test_diarize_in_env_without_a_setting_and_an_installed_engine_is_unavailable
     out = nem.diarize_in_env("", tmp_path / "bh.wav", root=tmp_path, timeout=5)
     assert out.kind == fp.UNAVAILABLE
     assert out.reason == (f"окружение движка не установлено ({tmp_path / 'engines' / 'nemotron'}) — "
-                          f"{nem.install_command()}")
+                          f"{nem.INSTALLER_POINTER}")
 
 
 def test_an_empty_setting_takes_the_installed_engine(tmp_path, monkeypatch):
@@ -724,6 +725,7 @@ def test_diarize_in_env_turns_a_protocol_breach_into_a_failure(tmp_path, monkeyp
 
 
 def test_diarize_in_env_passes_unavailable_and_failed_through(tmp_path, monkeypatch):
+    """Заданный ключ: UNAVAILABLE и FAILED уходят как есть — установщик ключ не лечит."""
     s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
     assert nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30) == \
@@ -778,15 +780,41 @@ def test_the_engine_lives_under_the_data_root_next_to_its_weights(tmp_path):
 
 def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp_path, monkeypatch):
     """Код внутри Charoite.app: Python приложения — рядом, кто бы ни печатал команду
-    (доктор из терминала — тоже); пути с пробелами не рвут команду."""
+    (доктор из терминала — тоже), а корень данных — тот, с которым работает печатающий
+    (№489); пути с пробелами не рвут команду."""
     resources = tmp_path / "Мой Charoite.app" / "Contents" / "Resources"
     bundled = resources / "python" / "bin" / "python3"
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#", encoding="utf-8")
     monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
-    assert shlex.split(nem.install_command()) == [
-        str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"), "nemotron"]
-    assert nem.INSTALLER in nem.INSTALL_RECIPE and nem.INSTALLER in nem.fetch_recipe(pathlib.Path("/м"))
+    root = tmp_path / "Application Support" / "Charoite"
+    assert shlex.split(nem.install_command(root)) == [
+        f"CHAROITE_ROOT={root}", str(bundled), str(resources / "charoite" / "scripts" / "install_engine.py"),
+        "nemotron"]
+
+
+def test_the_command_is_one_shell_line_that_names_the_root(tmp_path):
+    """Команду человек вставляет в shell целиком: присваивание корня — отдельным
+    словом перед интерпретатором, путь с пробелом и кавычкой не рвёт его. Проверка —
+    настоящим `sh -c`, а не разбором shlex (входной круг 1 по №489, I1)."""
+    root = tmp_path / "Мои данные" / "it's"
+    echo = f"{shlex.quote(sys.executable)} -c 'import os, sys; print(os.environ[\"CHAROITE_ROOT\"]); print(sys.argv[1:])'"
+    command = nem.install_command(root)
+    prefix = f"CHAROITE_ROOT={shlex.quote(str(root))}"
+    assert command.startswith(prefix + " "), command
+    out = subprocess.run(["sh", "-c", f"{prefix} {echo} nemotron"], capture_output=True, text=True, check=True)
+    assert out.stdout.splitlines() == [str(root), "['nemotron']"]
+
+
+@pytest.mark.parametrize("inside", ["", "Contents/Resources/charoite", "data"])
+def test_a_root_inside_an_app_bundle_gets_words_not_a_command(tmp_path, inside):
+    """Корень внутри бандла — догадка процесса, запущенного из бандла без корня:
+    строка для shell поставила бы движок в подписанный `.app`. Вместо команды — слова,
+    где взять корень, без метасимволов shell (входной круг 2 по №489, M1)."""
+    (tmp_path / "Charoite.app" / "Contents").mkdir(parents=True)
+    text = nem.install_command(tmp_path / "Charoite.app" / inside)
+    assert "install_engine.py" not in text and "CHAROITE_ROOT" in text
+    assert not set("<>|;&$`") & set(text)
 
 
 def test_a_bundle_without_its_python_is_not_named(tmp_path, monkeypatch):
@@ -794,16 +822,18 @@ def test_a_bundle_without_its_python_is_not_named(tmp_path, monkeypatch):
     resources = tmp_path / "Charoite.app" / "Contents" / "Resources"
     monkeypatch.setattr(nem, "code_root", lambda _file: resources / "charoite")
     assert nem.app_python() == ""
-    assert nem.install_command().startswith(nem.APP_PYTHON + " ")
+    assert nem.install_command(tmp_path / "данные").startswith(
+        f"CHAROITE_ROOT={shlex.quote(str(tmp_path / 'данные'))} {nem.APP_PYTHON} ")
 
 
-def test_outside_the_bundle_the_command_asks_for_the_app_path():
+def test_outside_the_bundle_the_command_asks_for_the_app_path(tmp_path):
     """Вне бандла (код из клона) Python приложения не узнать: `sys.executable` печатающего —
     доктор из venv разработчика, чужой переносимый Python другой версии — установщик отклонил
     бы. Команда называет путь внутри приложения и просит подставить свой Charoite.app."""
     script = str(REPO / "scripts" / "install_engine.py")
     assert nem.app_python() == ""
-    assert nem.install_command() == f"{nem.APP_PYTHON} {shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)"
+    assert nem.install_command(tmp_path) == (f"CHAROITE_ROOT={shlex.quote(str(tmp_path))} {nem.APP_PYTHON} "
+                                             f"{shlex.join([script, 'nemotron'])} (путь к Charoite.app — ваш)")
 
 
 def test_the_probe_has_a_working_default_timeout(tmp_path, monkeypatch):
@@ -831,10 +861,44 @@ def test_the_probe_turns_a_protocol_breach_into_a_failure(tmp_path, monkeypatch,
 def test_the_probe_passes_unavailable_through_and_refuses_without_an_engine(tmp_path, monkeypatch):
     s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
     monkeypatch.setattr(nem, "SCRIPT", s)
+    # заданный ключ главнее установленного окружения: установщик его не лечит, команды нет (I1)
     assert nem.probe_in_env(sys.executable, root=tmp_path, timeout=30) == \
         fp.Outcome(fp.UNAVAILABLE, reason="нет весов")
     out = nem.probe_in_env("", root=tmp_path, timeout=30)
-    assert out.kind == fp.UNAVAILABLE and nem.install_command() in out.reason
+    assert out.kind == fp.UNAVAILABLE and out.reason.count(nem.install_command(tmp_path)) == 1
+
+
+def test_an_installed_engine_that_cannot_work_gets_the_command_once_in_the_probe(tmp_path, monkeypatch):
+    """Пустой ключ, окружение стоит, движку нечем работать — проба (доктор, `--check`)
+    отдаёт причину и команду установщика с корнем, один раз."""
+    installed = nem.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.symlink_to(sys.executable)
+    s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    assert nem.probe_in_env("", root=tmp_path, timeout=30) == \
+        fp.Outcome(fp.UNAVAILABLE, reason=f"нет весов — окружение ставит: {nem.install_command(tmp_path)}")
+
+
+def test_the_transcript_gets_a_pointer_not_the_paths_of_the_machine(tmp_path, monkeypatch):
+    """Причина отказа пересборки уходит в шапку стенограммы, а её пересылают людям:
+    команда с корнем данных и путём к коду несёт имя учётки. В шапке — указатель на
+    доктора, без `CHAROITE_ROOT` и путей установщика (выходной круг 1 по №489, M3)."""
+    installed = nem.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.symlink_to(sys.executable)
+    s = _engine_stub(tmp_path, f'import sys\nprint("нет весов", file=sys.stderr)\nsys.exit({EXIT_ENGINE_UNAVAILABLE})\n')
+    monkeypatch.setattr(nem, "SCRIPT", s)
+    out = nem.diarize_in_env("", tmp_path / "bh.wav", root=tmp_path, timeout=30)
+    assert out == fp.Outcome(fp.UNAVAILABLE, reason=f"нет весов — {nem.INSTALLER_POINTER}")
+    assert "CHAROITE_ROOT" not in out.reason and "install_engine.py" not in out.reason
+
+
+def test_a_failure_of_the_engine_does_not_promise_that_reinstalling_helps(tmp_path, monkeypatch):
+    """FAILED — падение, а не нехватка: команду установщика к нему вызывающий не дописывает."""
+    monkeypatch.setattr(nem, "SCRIPT", _engine_stub(tmp_path, "import sys\nsys.exit(3)\n"))
+    out = nem.diarize_in_env(sys.executable, tmp_path / "bh.wav", root=tmp_path, timeout=30)
+    assert out.kind == fp.FAILED and "install_engine.py" not in out.reason
 
 
 def test_main_probe_answers_the_version_without_reading_a_recording(tmp_path, monkeypatch, capsys):
