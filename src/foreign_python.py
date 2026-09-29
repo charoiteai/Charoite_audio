@@ -173,6 +173,15 @@ def run_json(python: str | os.PathLike, script: pathlib.Path, args: typing.Seque
 
 # ------------------------------------------------ долгий ребёнок (№478)
 
+#: Режим журнала ребёнка и файлов его хозяина — только владельцу.
+PRIVATE_MODE = 0o600
+#: Сколько ждать выхода убитого ребёнка и ребёнка, закрывшего вывод без рукопожатия.
+KILL_WAIT_S = 5.0
+EXIT_WAIT_S = 5.0
+#: Шаг опроса рукопожатия: отмена и потолок видны не позже чем через него.
+HANDSHAKE_POLL_S = 0.2
+
+
 class StreamProcess:
     """Долгий ребёнок в своём окружении: звук — на stdin, протокол — JSON-строками
     на stdout, журнал — stderr в файл владельцу.
@@ -210,9 +219,10 @@ class StreamProcess:
             view = view[n:]
 
     def close_input(self) -> None:
-        """EOF ребёнку: он дописывает хвост и выходит сам. Повторный вызов — пустой."""
+        """EOF ребёнку: он дописывает хвост и выходит сам. Повторный вызов — пустой:
+        закрытие закрытого файла ничего не делает."""
         pipe = self._proc.stdin
-        if pipe is not None and not pipe.closed:
+        if pipe is not None:
             try:
                 pipe.close()
             except OSError:
@@ -234,7 +244,7 @@ class StreamProcess:
     def kill(self) -> None:
         try:
             self._proc.kill()
-            self._proc.wait(timeout=5)
+            self._proc.wait(timeout=KILL_WAIT_S)
         except (OSError, subprocess.TimeoutExpired):
             pass
 
@@ -249,11 +259,16 @@ class StreamProcess:
                 self.callback_error = f"{type(e).__name__}: {e}"
 
 
-def _open_private(path: pathlib.Path) -> int:
-    """Журнал ребёнка — только владельцу: режим при создании и `fchmod` для файла,
-    который уже был."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    os.fchmod(fd, 0o600)
+def open_private(path: pathlib.Path) -> int:
+    """Файл на дозапись только владельцу: режим при создании и `fchmod` для файла,
+    который уже был. Журнал ребёнка здесь и журнал тени (`live_nemotron`) — одним
+    способом."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_MODE)
+    try:
+        os.fchmod(fd, PRIVATE_MODE)
+    except BaseException:
+        os.close(fd)
+        raise
     return fd
 
 
@@ -289,7 +304,8 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
                  stderr_path: pathlib.Path, handshake_timeout: float, role: str,
                  on_message: typing.Callable[[dict], None],
                  on_eof: typing.Callable[[], None],
-                 cancel: typing.Any = None) -> tuple[StreamProcess | None, Outcome]:
+                 cancel: typing.Any = None,
+                 clock: typing.Callable[[], float] = time.monotonic) -> tuple[StreamProcess | None, Outcome]:
     """Запустить долгий скрипт в чистом окружении и дождаться рукопожатия.
 
     Рукопожатие — первая JSON-строка вида `{"type": "ready", ...}` за
@@ -300,9 +316,10 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     `role` — роль нити-читателя в реестре потоков (`threads.ROLES`): чья это нить,
     знает вызывающий, а не дверь. `cancel` (`threading.Event`) обрывает ожидание
     рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED.
-    Исключение после запуска ребёнка — тоже FAILED, ребёнок убит."""
+    Исключение после запуска ребёнка — тоже FAILED, ребёнок убит. `clock` — часы
+    потолка рукопожатия (тестам — свои)."""
     try:
-        err_fd = _open_private(stderr_path)
+        err_fd = open_private(stderr_path)
     except OSError as e:
         return None, Outcome(FAILED, reason=f"журнал ребёнка не открылся: {e}")
     cmd = [os.fspath(python), os.fspath(script), *args]
@@ -319,7 +336,7 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     try:
         return _await_handshake(proc, stream, stderr_path=stderr_path,
                                 handshake_timeout=handshake_timeout, role=role,
-                                on_message=on_message, on_eof=on_eof, cancel=cancel)
+                                on_message=on_message, on_eof=on_eof, cancel=cancel, clock=clock)
     except BaseException as e:
         # после Popen выхода без закрытого входа и убитого ребёнка нет: исход двери —
         # значением, а ребёнок с моделью не остаётся без хозяина (выходной круг 1 по
@@ -335,7 +352,8 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
 def _await_handshake(proc: subprocess.Popen, stream: StreamProcess, *, stderr_path: pathlib.Path,
                      handshake_timeout: float, role: str,
                      on_message: typing.Callable[[dict], None], on_eof: typing.Callable[[], None],
-                     cancel: typing.Any) -> tuple[StreamProcess | None, Outcome]:
+                     cancel: typing.Any,
+                     clock: typing.Callable[[], float]) -> tuple[StreamProcess | None, Outcome]:
     """Нить-читатель и рукопожатие — после запуска ребёнка; бросить может, убивает
     ребёнка при исключении вызывающий (`spawn_stream`)."""
     import threading
@@ -344,11 +362,11 @@ def _await_handshake(proc: subprocess.Popen, stream: StreamProcess, *, stderr_pa
     got_ready = threading.Event()
     threads.spawn(_read_protocol, name="foreign-stream-reader", role=role,
                   args=(proc, stream, got_ready, on_message, on_eof))
-    deadline = time.monotonic() + handshake_timeout
-    while not got_ready.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
+    deadline = clock() + handshake_timeout
+    while not got_ready.wait(HANDSHAKE_POLL_S):          # потолок — с точностью до шага опроса
         if cancel is not None and cancel.is_set():
             why = "ожидание рукопожатия отменено — убит"
-        elif time.monotonic() >= deadline:
+        elif clock() >= deadline:
             why = f"нет рукопожатия за {handshake_timeout:.0f} с — убит"
         else:
             continue
@@ -357,10 +375,11 @@ def _await_handshake(proc: subprocess.Popen, stream: StreamProcess, *, stderr_pa
         stream.kill()
         return None, Outcome(FAILED, reason=why)
     if not stream.ready:
-        stream._abandoned = True
+        # сюда приходят, когда читатель уже вышел (конец stdout без рукопожатия):
+        # обратных вызовов больше не будет и без отметки «брошен»
         stream.close_input()
         try:
-            code = proc.wait(timeout=5)
+            code = proc.wait(timeout=EXIT_WAIT_S)
         except subprocess.TimeoutExpired:  # stdout закрыт, а процесс жив — не наш протокол
             stream.kill()
             return None, Outcome(FAILED, reason="закрыл вывод без рукопожатия — убит")

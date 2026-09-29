@@ -131,10 +131,9 @@ def memory_state() -> dict | None:
 
 
 def _open_private(path: pathlib.Path) -> typing.TextIO:
-    """Журнал только владельцу: режим при создании и `fchmod` для файла, который был."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    """Журнал только владельцу — тем же способом, что журнал ребёнка у двери."""
+    fd = foreign_python.open_private(path)
     try:
-        os.fchmod(fd, 0o600)
         return os.fdopen(fd, "a", buffering=1, encoding="utf-8")
     except BaseException:
         os.close(fd)

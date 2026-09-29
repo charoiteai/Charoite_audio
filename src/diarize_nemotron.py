@@ -459,7 +459,7 @@ def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_ST
         else:
             eof = True
         while len(buf) >= need or (eof and len(buf) >= 2):
-            take = need if len(buf) >= need else len(buf) - len(buf) % 2
+            take = min(need, len(buf) - len(buf) % 2)       # need чётно: целые сэмплы
             pcm = np.frombuffer(bytes(buf[:take]), dtype="<i2").astype(np.float32) / 32768.0
             del buf[:take]
             segments = stream.feed(pcm)
@@ -493,13 +493,18 @@ def _protocol_channel():
     return os.fdopen(proto_fd, "w", buffering=1, encoding="utf-8")
 
 
-def serve_stream(model_dir: pathlib.Path, preset: str) -> int:
-    """Сторона движка живого потока: модель, рукопожатие, цикл до EOF stdin."""
+def _read_stdin(n: int) -> bytes:
     import os
+    return os.read(0, n)
+
+
+def serve_stream(model_dir: pathlib.Path, preset: str, read: Callable[[int], bytes] = _read_stdin) -> int:
+    """Сторона движка живого потока: модель, рукопожатие, цикл до EOF stdin. Протокол —
+    ASCII: числа, слоты и имя пресета."""
     proto = _protocol_channel()
 
     def emit(message: dict) -> None:
-        proto.write(json.dumps(message, ensure_ascii=False) + "\n")
+        proto.write(json.dumps(message) + "\n")
 
     try:
         model = load_model(model_dir, preset)
@@ -509,8 +514,7 @@ def serve_stream(model_dir: pathlib.Path, preset: str) -> int:
     frame_s = frame_seconds(model)
     emit({"type": "ready", "proto": STREAM_PROTO, "sr": SAMPLE_RATE, "preset": preset,
           "frame_s": frame_s, "step": STREAM_STEP})
-    return run_stream(NemotronStream(model), frame_s=frame_s,
-                      read=lambda n: os.read(0, n), emit=emit)
+    return run_stream(NemotronStream(model), frame_s=frame_s, read=read, emit=emit)
 
 
 # ------------------------------------------------ протокол пересборки (№473)
