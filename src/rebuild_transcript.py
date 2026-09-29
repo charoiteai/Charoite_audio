@@ -1543,15 +1543,27 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
     log(f"повтор незавершённой встречи: {target.name} "
         f"(в очереди {len(pending)}, попытка {int(pending[0].get('attempts', 0)) + 1})")
     env = dict(os.environ, CHAROITE_NO_RETRY="1")
-    subprocess.Popen(
-        ["nice", "-n", "10", sys.executable, str(CODE / "src" / "rebuild_transcript.py"), str(target)],
-        start_new_session=True, env=env,
-        # по полному имени файла, не по 15 знакам: две встречи одной минуты
-        # (и две минутные встречи прежних версий) писали в один лог, и второй
-        # спавн усекал лог первого (аудит 30.08, GLM; DS r1)
-        stdout=open(_root() / "logs" / f"retry_{target.stem}.log", "w"),
-        stderr=subprocess.STDOUT,
-    )
+    # по полному имени файла, не по 15 знакам: две встречи одной минуты
+    # (и две минутные встречи прежних версий) писали в один лог, и второй
+    # спавн усекал лог первого (аудит 30.08, GLM; DS r1)
+    name = f"retry_{target.stem}.log"
+    try:
+        out = open(_root() / "logs" / name, "w")
+    except OSError as e:
+        # журнал — не повод не повторять: без него повтор идёт молча (№514)
+        log(f"журнал повтора {name} не открылся ({type(e).__name__}: {e}) — повтор без журнала")
+        out = subprocess.DEVNULL
+    try:
+        subprocess.Popen(
+            ["nice", "-n", "10", sys.executable, str(CODE / "src" / "rebuild_transcript.py"), str(target)],
+            start_new_session=True, env=env, stdout=out, stderr=subprocess.STDOUT,
+        )
+    except OSError as e:
+        # не запустился (нет nice, кончились процессы) — сломана машина, а не цель
+        log(f"повтор {target.name} не запустился ({type(e).__name__}: {e})")
+    finally:
+        if out is not subprocess.DEVNULL:
+            out.close()   # у ребёнка своя копия дескриптора
 
 
 def _pid_file(stamp: str) -> pathlib.Path:
@@ -1722,10 +1734,6 @@ def main():
         # версии — пометки нет), и после повторного прогона, где стенограмма
         # переписывается целиком и метка исчезает сама, если имена нашлись.
         publish(status.ready, live, note, names_pending(live))
-        # Своя встреча готова — значит конвейер жив и LLM отвечает. Лучший
-        # момент вернуться к тем, кому в прошлый раз не повезло.
-        if os.environ.get("CHAROITE_NO_RETRY") != "1":
-            retry_unfinished(status)
     except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")
@@ -1733,6 +1741,13 @@ def main():
     finally:
         if queue is not None:
             queue.close()   # отпускаем очередь: следующая пересборка может стартовать
+    # Своя встреча готова — значит конвейер жив и LLM отвечает. Лучший момент
+    # вернуться к тем, кому в прошлый раз не повезло. Повтор — после очереди и
+    # вне перехвата статуса: его сбой не красит готовую встречу в «ошибку», а
+    # ожидание чужой встречи не держит очередь пересборок (круги 1–3 по №514);
+    # ребёнок берёт очередь сам.
+    if os.environ.get("CHAROITE_NO_RETRY") != "1":
+        retry_unfinished(status)
 
 
 if __name__ == "__main__":

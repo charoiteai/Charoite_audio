@@ -638,6 +638,86 @@ def test_forget_reaches_the_live_shadow_journal(tmp_path):
     assert theirs not in plan.delete
 
 
+def _minute_world(tmp: pathlib.Path, shape: str):
+    """Одна минута встреч в той форме, в которой писатели журналов называют их по-разному
+    (№514, круги 1–3). Отдаёт корень, граф, ключи «Забыть», журналы своей встречи, журналы
+    чужой и журналы, о которых план обязан сказать вслух.
+
+    Имена — правилами писателей: `graph_` — `stem[:15]` (daemon.py), `retry_` — стем цели
+    (rebuild_transcript.py), `recover_` — стем живого файла (daemon.py), `cloud_review_` —
+    настоящим `meeting_stamp.graph_key`, как зовёт его graph_updater, а не убеждением теста.
+    """
+    import json
+    root, graph = tmp / "repo", tmp / "vault" / "Работа"
+    tdir = root / "transcripts"
+    tdir.mkdir(parents=True)
+    (graph / "Встречи").mkdir(parents=True)
+
+    def main(stem: str, exact: str | None = None) -> None:
+        (tdir / f"{stem}.md").write_text("# Встреча\n[14:00] Я: начнём.\n", encoding="utf-8")
+        if exact:
+            (tdir / f"{stem}.md.live.json").write_text(json.dumps({"stamp": exact}), encoding="utf-8")
+
+    def review(stem: str) -> str:
+        return f"cloud_review_{forget.meeting_stamp.graph_key(tdir, stem, graph)}.log"
+
+    sec, titled, other = f"{STAMP}30", f"{STAMP}_Платёжный_провайдер", [f"retry_{OTHER}.log",
+                                                                        f"cloud_review_{OTHER}.log"]
+    if shape == "голая посекундная — владелец минуты по порядку":
+        main(sec)
+        return root, graph, [sec, STAMP], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
+                                           f"recover_{sec}.log"], other, []
+    if shape == "посекундная при владельце минуты с сайдкаром":
+        main(titled, exact=f"{STAMP}05")
+        main(sec)
+        assert review(sec) == f"cloud_review_{sec}.log", "graph_key отдаёт соседке секунды"
+        return root, graph, [sec], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
+                                    f"recover_{sec}.log"], \
+            other + [f"cloud_review_{STAMP}.log", f"retry_{titled}.log", f"retry_{STAMP}05.log",
+                     f"recover_{STAMP}05.log"], []
+    if shape == "посекундная при владельце минуты без названной секунды":
+        main(titled)
+        main(sec)
+        return root, graph, [sec], [f"graph_{STAMP}.log", review(sec), f"retry_{sec}.log",
+                                    f"recover_{sec}.log"], \
+            other + [f"cloud_review_{STAMP}.log"], [f"cloud_review_{STAMP}.log"]
+    if shape == "наш владелец минуты с темой, файлов под секундой нет":
+        main(titled, exact=f"{STAMP}05")
+        return root, graph, [STAMP, f"{STAMP}05"], [f"graph_{STAMP}.log", review(titled),
+                                                    f"retry_{titled}.log", f"retry_{STAMP}05.log",
+                                                    f"recover_{STAMP}05.log"], other, []
+    assert shape == "встреча без секунд"
+    main(STAMP)
+    return root, graph, [STAMP], [f"graph_{STAMP}.log", review(STAMP), f"retry_{STAMP}.log",
+                                  f"recover_{STAMP}.log"], other, []
+
+
+@pytest.mark.parametrize("shape", [
+    "голая посекундная — владелец минуты по порядку",
+    "посекундная при владельце минуты с сайдкаром",
+    "посекундная при владельце минуты без названной секунды",
+    "наш владелец минуты с темой, файлов под секундой нет",
+    "встреча без секунд",
+])
+def test_every_meeting_log_is_found_by_the_stamp_its_writer_used(tmp_path, shape):
+    """Каждый вид журнала «Забыть» ищет тем штампом, которым его назвал писатель, и
+    обоими ключами встречи: минутой (приложение) и секундой. Одно правило на все виды
+    оставляло журналы повтора и восстановления при минутном ключе, а журнал ревизии
+    чужого владельца минуты уходил с соседкой (№514, круги 1–3)."""
+    root, graph, keys, mine, theirs, loud = _minute_world(tmp_path, shape)
+    logs = root / "logs"
+    logs.mkdir()
+    for name in {*mine, *theirs}:
+        (logs / name).write_text("имена: Мария Соколова\n", encoding="utf-8")
+    for key in keys:
+        plan = forget.plan(key, root, graph)
+        in_logs = [f for f in plan.delete if f.parent == logs]
+        assert sorted(f.name for f in in_logs) == sorted(mine), f"ключ {key}"
+        assert len(in_logs) == len(set(in_logs)), f"ключ {key}: журнал в плане дважды"
+        said = [line for line in plan.check if "журнал облачной ревизии минуты" in line]
+        assert [line.split(":")[0] for line in said] == loud, f"ключ {key}: {plan.check}"
+
+
 def test_edited_nodes_keep_their_permissions(tmp_path):
     """Конвейер пишет граф под harden_umask (0600). Перезапись узла через
     write_text давала 0644 по umask вызывающего — поправленный узел
@@ -681,27 +761,29 @@ def test_forget_reaches_the_status_named_after_the_live_transcript(tmp_path):
     assert broken not in plan.delete
 
 
-def test_logs_of_a_seconds_stamped_meeting_are_found_by_the_minute(tmp_path):
-    """Логи названы минутным штампом (`stem[:15]`), а штамп посекундной
-    встречи без темы — с секундами: по нему логи не находились и
-    переживали забывание (второе мнение DeepSeek по партии 16.08)."""
+def test_logs_of_a_seconds_stamped_meeting_next_to_an_old_minute_meeting(tmp_path):
+    """Журнал графа назван минутой (`stem[:15]`) и общий у встреч минуты — посекундная
+    встреча забирает его с собой (второе мнение DeepSeek по партии 16.08). Журналы
+    ревизии и повтора своего правила: рядом лежит минутная встреча прежних версий
+    (`STAMP.md`), её `cloud_review_` и `retry_` — не наши, а чей журнал ревизии минуты —
+    не решить без сайдкара и строки «Стенограмма:», и план говорит это вслух (№514)."""
     root, graph = _world(tmp_path)
     sec = f"{STAMP}30"                       # 2026-07-15_140030
     (root / "transcripts" / f"{sec}.md").write_text("стенограмма", encoding="utf-8")
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    mine = [logs / f"graph_{STAMP}.log", logs / f"cloud_review_{STAMP}.log",
-            logs / f"retry_{STAMP}.log"]
-    for f in mine:
+    mine = [logs / f"graph_{STAMP}.log", logs / f"cloud_review_{sec}.log", logs / f"retry_{sec}.log"]
+    theirs = [logs / f"graph_{OTHER}.log", logs / f"cloud_review_{STAMP}.log", logs / f"retry_{STAMP}.log"]
+    for f in mine + theirs:
         f.write_text("имена: Мария Соколова\n", encoding="utf-8")
-    theirs = logs / f"graph_{OTHER}.log"
-    theirs.write_text("другая", encoding="utf-8")
 
     plan = forget.plan(sec, root, graph)
 
     for f in mine:
         assert f in plan.delete, f"{f.name} переживает забывание посекундной встречи"
-    assert theirs not in plan.delete
+    for f in theirs:
+        assert f not in plan.delete, f"{f.name} — журнал чужой встречи"
+    assert any(line.startswith(f"cloud_review_{STAMP}.log: ") for line in plan.check), plan.check
 
 def test_new_place_snapshot_copies_are_forgotten_too(tmp_path, monkeypatch):
     """Снимки уехали из графа в данные (21.08) — «забыть» обязано дойти и

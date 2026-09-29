@@ -264,3 +264,103 @@ def test_retry_log_is_named_by_the_full_file_name(root, monkeypatch):
                 return [{"transcript_path": str(t), "attempts": 0}]
         rt.retry_unfinished(S())
     assert names == ["retry_2026-08-12_153201_Первая.log", "retry_2026-08-12_153245_Вторая.log"], names
+
+
+def _queue_of(t: pathlib.Path):
+    class S:
+        def unfinished(self):
+            return [{"transcript_path": str(t), "attempts": 0}]
+    return S()
+
+
+def test_retry_without_its_log_starts_anyway_and_says_why(root, monkeypatch):
+    """Каталог на месте журнала повтора — повтор идёт без журнала, причина — строкой
+    в журнале родителя; прежде OSError уходил в перехват статуса и красил готовую
+    встречу в «ошибку» (№514, круг 1 I2, круг 2 M2)."""
+    import subprocess
+    t = root / "transcripts" / "2026-08-12_153201.md"
+    t.write_text("# Встреча\n", encoding="utf-8")
+    (root / "logs" / "retry_2026-08-12_153201.log").mkdir()
+    outs, lines = [], []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: outs.append(k["stdout"]))
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "log", lines.append)
+    rt.retry_unfinished(_queue_of(t))
+    assert outs == [subprocess.DEVNULL]
+    assert [m for m in lines if m.startswith("журнал повтора retry_2026-08-12_153201.log не открылся "
+                                             "(IsADirectoryError")], lines
+
+
+def test_the_parent_closes_its_copy_of_the_retry_log_whether_or_not_the_child_starts(root, monkeypatch):
+    """У ребёнка своя копия дескриптора: родитель свою закрывает — и когда запуск
+    удался, и когда `Popen` бросил (нет `nice`, кончились процессы); сбой запуска —
+    строка, а не исключение из готовой пересборки (№514, круг 2 M1)."""
+    import subprocess
+    t = root / "transcripts" / "2026-08-12_153201.md"
+    t.write_text("# Встреча\n", encoding="utf-8")
+    outs, lines = [], []
+
+    def refused(*a, **k):
+        outs.append(k["stdout"])
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "log", lines.append)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: outs.append(k["stdout"]))
+    rt.retry_unfinished(_queue_of(t))
+    monkeypatch.setattr(subprocess, "Popen", refused)
+    rt.retry_unfinished(_queue_of(t))
+    assert len(outs) == 2 and all(o.closed for o in outs)
+    assert [m for m in lines if m.startswith("повтор 2026-08-12_153201.md не запустился (OSError")], lines
+
+
+def test_retry_runs_after_the_queue_is_released_and_cannot_fail_the_ready_meeting(root, monkeypatch):
+    """Повтор — после снятия очереди пересборок и вне перехвата статуса: ожидание
+    чужой встречи не держит очередь, а сбой запуска повтора не красит свою готовую
+    встречу в «ошибку» (№514, круг 2 M1, круг 3 M1)."""
+    import subprocess
+    live = _live(root)
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text("sufler:\n  graph: false\n", encoding="utf-8")
+    waiting = root / "transcripts" / "2026-08-12_153245.md"
+    waiting.write_text("# Встреча\n", encoding="utf-8")
+    events = []
+
+    class Queue:
+        def close(self):
+            events.append("очередь снята")
+
+    class Status:
+        def __init__(self, *a, **k):
+            pass
+
+        def processing(self, *a):
+            pass
+
+        def ready(self, *a):
+            events.append("ready")
+
+        def failed(self, *a):
+            events.append("failed")
+
+        def has_transcript(self, _live):
+            return True
+
+        def unfinished(self):
+            events.append("подбор незавершённых")
+            return [{"transcript_path": str(waiting), "attempts": 0}]
+
+    def refused(*a, **k):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(sys, "argv", ["rebuild_transcript.py", str(live)])
+    monkeypatch.setattr(rt, "MeetingStatusStore", Status)
+    monkeypatch.setattr(rt, "_take_rebuild_queue", Queue)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "rebuild", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "log", lambda m: None)
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: subprocess.CompletedProcess(argv, 0))
+    monkeypatch.setattr(subprocess, "Popen", refused)
+    monkeypatch.delenv("CHAROITE_NO_RETRY", raising=False)
+    rt.main()
+    assert events == ["ready", "очередь снята", "подбор незавершённых"], events
