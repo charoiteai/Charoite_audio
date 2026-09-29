@@ -74,8 +74,12 @@ import hint_guard  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
+    LOG_KINDS,
     MODELS_DIR,
     code_root,
+    log_path,
+    meeting_log,
+    sweep_globs,
     harden_existing,
     harden_umask,
     resolve_root,
@@ -362,10 +366,13 @@ def _prune_graph_logs(cfg: dict) -> None:
     # падения демона: то же содержимое плюс сырой отказ движка с путями машины
     # (№495, выходной круг 1, I1). nemotron_live_* — журнал тени потока Nemotron
     # (числа) и stderr её ребёнка (пути машины в трассировках): тот же срок
-    # (№478 A2, выходной круг 1).
-    for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log"),
-                *logs.glob("retry_*.log"), *logs.glob("recover_*.log"),
-                *logs.glob("nemotron_live_*")]:
+    # (№478 A2, выходной круг 1). Виды и глобы — из реестра LOG_KINDS (№514): там же
+    # общий журнал графовых решений с его ротацией .old и вывод уборки импорта;
+    # замок пересборки ретеншн не трогает (№528).
+    # set: глоб `graph_*.log` покрывает и общий журнал graph_unlinked.log — у обоих видов
+    # одна политика срока, пересечение держит тест (выходной круг 1 по №514 PR 2, M1)
+    for old in sorted({p for entry in LOG_KINDS.values() for pattern in sweep_globs(entry)
+                       for p in logs.glob(pattern)}):
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)
@@ -428,7 +435,7 @@ def _prune_one_import_folder(folder: pathlib.Path) -> None:
     # прошлого демона ещё пишет в свой файл, когда новый открывает «w»
     # (Minor GLM r2)
     safe_name = re.sub(r"[^-\w]", "_", folder.name)
-    log = _root() / "logs" / f"import_prune-{safe_name}.log"
+    log = log_path(_root(), "import_prune", safe_name)
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "w", encoding="utf-8") as out:
@@ -583,10 +590,10 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
             # основного пути (graph_*) и повтора (retry_*): шапка стенограммы
             # отсылает причину отказа движка «в журнал разбора», и в DEVNULL она
             # пропадала бы целиком (№495).
-            logs = _root() / "logs"
             try:
-                logs.mkdir(exist_ok=True)
-                rlog = open(logs / f"recover_{live.stem}.log", "w")
+                journal = meeting_log(_root(), "recover", stem=live.stem)
+                journal.parent.mkdir(exist_ok=True)
+                rlog = open(journal, "w")
             except OSError as e:
                 # журнал не открылся (диск, права) — пересборка важнее журнала:
                 # без него она идёт как до №495 (выходной круг 1, M1)
@@ -3498,8 +3505,7 @@ def main():
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
         try:
-            gstamp = pathlib.Path(tr.path).stem[:15]
-            glog = open(_root() / "logs" / f"graph_{gstamp}.log", "w")  # не DEVNULL: молчаливые падения графа
+            glog = open(meeting_log(_root(), "graph", stem=pathlib.Path(tr.path).stem), "w")  # не DEVNULL: молчаливые падения графа
             statuses = MeetingStatusStore(_root())
             try:
                 statuses.processing(tr.path, "waiting_for_audio")
