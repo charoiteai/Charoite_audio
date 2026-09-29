@@ -246,6 +246,35 @@ def test_open_url_goes_direct_and_refuses_an_off_host_redirect(stand):
     assert proxy.hits == 0
 
 
+def test_open_url_follows_a_redirect_inside_this_machine(stand):
+    import http.server as hs
+
+    class Hop(hs.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/a":
+                self.send_response(302)
+                self.send_header("Location", "/b")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    httpd = hs.ThreadingHTTPServer(("127.0.0.1", 0), Hop)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        with open_url(f"http://127.0.0.1:{httpd.server_address[1]}/a", timeout=3) as r:
+            assert r.read() == b"ok"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert stand[0].hits == 0
+
+
 def test_memory_writer_default_post_goes_direct(stand):
     proxy, server = stand
     graph_updater._post_direct(server.url + "/forget", json={"meeting": "x"}, timeout=3)
