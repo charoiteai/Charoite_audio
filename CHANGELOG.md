@@ -5,6 +5,31 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.0](https://github.com/charoiteai/Charoite_audio/compare/v0.88.1...v0.89.0) (2026-09-29)
+
+
+### Features
+
+* **audio:** one sample axis per channel for chunks and frame listeners ([#687](https://github.com/charoiteai/Charoite_audio/issues/687)) ([414bc7f](https://github.com/charoiteai/Charoite_audio/commit/414bc7feed0c30c98c3cc7d7e27d657acb758a2a))
+* **graph:** the vector door is the graph package's second entry ([#462](https://github.com/charoiteai/Charoite_audio/issues/462)) ([#693](https://github.com/charoiteai/Charoite_audio/issues/693)) ([b5eba00](https://github.com/charoiteai/Charoite_audio/commit/b5eba0011957410e0460459cd7e5be2aa2d516e4))
+* **live:** streaming Nemotron runs in shadow on the call channel ([#478](https://github.com/charoiteai/Charoite_audio/issues/478) A2) ([#689](https://github.com/charoiteai/Charoite_audio/issues/689)) ([2bfb494](https://github.com/charoiteai/Charoite_audio/commit/2bfb494332cb3d086a86d74f7755ffc0e501b5ff))
+
+
+### Bug Fixes
+
+* **diarize:** an interpreter setting under ~ runs the engine instead of falling back ([#684](https://github.com/charoiteai/Charoite_audio/issues/684)) ([a52bfde](https://github.com/charoiteai/Charoite_audio/commit/a52bfde02414b9b75488b2193f07c3f4ff12496a))
+* **forget:** every meeting log is found by the stamp its writer used ([#514](https://github.com/charoiteai/Charoite_audio/issues/514)) ([#691](https://github.com/charoiteai/Charoite_audio/issues/691)) ([0676615](https://github.com/charoiteai/Charoite_audio/commit/0676615fea294f6edf4b5a4a2336550eeaf1876f))
+* **live:** the Nemotron stream frame is the model's 10 ms hop and every front is checked against the audio ([#478](https://github.com/charoiteai/Charoite_audio/issues/478)) ([#692](https://github.com/charoiteai/Charoite_audio/issues/692)) ([bcaeaa8](https://github.com/charoiteai/Charoite_audio/commit/bcaeaa867e7f4abb7cb5bf86781241d6755b0505))
+* **names:** the name guard says which rule refused a proposed name ([#685](https://github.com/charoiteai/Charoite_audio/issues/685)) ([d92ed99](https://github.com/charoiteai/Charoite_audio/commit/d92ed99102a4d6a65c829c918acb5cc1f188b148))
+* **rebuild:** the names warning tells a silent model from refused names ([#682](https://github.com/charoiteai/Charoite_audio/issues/682)) ([e60b6e7](https://github.com/charoiteai/Charoite_audio/commit/e60b6e721a8ef583a181ade97cec7cadc7923e93))
+* **rebuild:** the transcript header keeps no local path of an engine refusal ([#686](https://github.com/charoiteai/Charoite_audio/issues/686)) ([1dbd0a3](https://github.com/charoiteai/Charoite_audio/commit/1dbd0a3378967b220f84a9ed911ec0bd5082b274))
+
+
+### Performance Improvements
+
+* **diarize:** one factory decides sherpa threads, the rebuild yields to a live meeting before each heavy step ([#688](https://github.com/charoiteai/Charoite_audio/issues/688)) ([bba62c4](https://github.com/charoiteai/Charoite_audio/commit/bba62c4521579df73e7dd6b3547604076c1c5d10))
+* **diarize:** the pass after a meeting labels on two sherpa threads ([#508](https://github.com/charoiteai/Charoite_audio/issues/508)) ([#694](https://github.com/charoiteai/Charoite_audio/issues/694)) ([5fcac38](https://github.com/charoiteai/Charoite_audio/commit/5fcac38215ae1bab201fa4b6f4c248e57b095724))
+
 ## [0.88.1](https://github.com/charoiteai/Charoite_audio/compare/v0.88.0...v0.88.1) (2026-09-29)
 
 
