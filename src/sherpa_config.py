@@ -40,6 +40,8 @@ POST = "post"
 #: Числа потоков, для которых замер показал те же метки, что у одного потока.
 #: Пока замера нет — только 1: фабрика задаёт число явно и ничего не меняет.
 MEASURED_THREADS: tuple[int, ...] = (1,)
+#: Потолок опроса `sysctl`, секунды.
+SYSCTL_TIMEOUT_S = 2
 
 
 def performance_cores() -> int:
@@ -49,14 +51,13 @@ def performance_cores() -> int:
     от него заняла бы все производительные ядра. Нет ключа (Intel, Rosetta,
     не macOS) — половина логических ядер, но не меньше одного."""
     try:
-        out = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.perflevel0.physicalcpu"],
-                             capture_output=True, text=True, timeout=2, check=True).stdout
-        n = int(out.strip())
+        n = int(subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.perflevel0.physicalcpu"],
+                                        stderr=subprocess.DEVNULL, timeout=SYSCTL_TIMEOUT_S))
         if n > 0:
             return n
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
-    return max(1, (os.cpu_count() or 2) // 2)
+    return max(1, (os.cpu_count() or 0) // 2)
 
 
 def threads_for(kind: str, root: pathlib.Path | None = None) -> int:
@@ -67,9 +68,8 @@ def threads_for(kind: str, root: pathlib.Path | None = None) -> int:
         raise ValueError(f"вид работы {kind!r} неизвестен; есть: {LIVE}, {POST}")
     if root is not None and live_gate.daemon_alive(root):
         return 1
-    cap = max(1, performance_cores() // 2)
-    fitting = [n for n in MEASURED_THREADS if n <= cap]
-    return max(fitting) if fitting else 1
+    cap = performance_cores() // 2
+    return max((n for n in MEASURED_THREADS if n <= cap), default=1)
 
 
 def segmentation_config(model: pathlib.Path, *, kind: str, root: pathlib.Path | None = None):

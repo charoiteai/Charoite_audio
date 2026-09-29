@@ -8,6 +8,7 @@
 """
 import ast
 import pathlib
+import subprocess
 import sys
 import types
 
@@ -60,14 +61,40 @@ def test_an_unknown_kind_of_work_is_refused():
 
 
 def test_performance_cores_fall_back_to_half_the_logical_ones(monkeypatch):
-    """Нет ключа perflevel0 (Intel, Rosetta, не macOS) — половина логических ядер."""
+    """Нет ключа perflevel0 (Intel, Rosetta, не macOS) — половина логических ядер, но
+    не меньше одного."""
     def no_sysctl(*a, **k):
         raise OSError("нет sysctl")
-    monkeypatch.setattr(sc.subprocess, "run", no_sysctl)
+    monkeypatch.setattr(sc.subprocess, "check_output", no_sysctl)
+    for logical, want in ((10, 5), (1, 1), (None, 1)):
+        monkeypatch.setattr(sc.os, "cpu_count", lambda n=logical: n)
+        assert sc.performance_cores() == want, logical
+
+
+@pytest.mark.parametrize("answer, want", [
+    (b"8\n", 8),                                               # ответ sysctl — байты, int их берёт
+    (b"0\n", 5),                                               # ноль ядер — не ответ
+    (b"", 5),                                                  # пустой вывод отказа sysctl
+    (subprocess.CalledProcessError(1, "sysctl"), 5),
+    (subprocess.TimeoutExpired("sysctl", sc.SYSCTL_TIMEOUT_S), 5),
+])
+def test_performance_cores_take_the_perflevel0_answer_or_fall_back(monkeypatch, answer, want):
+    def sysctl(argv, **kw):
+        assert argv[-1] == "hw.perflevel0.physicalcpu"
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    monkeypatch.setattr(sc.subprocess, "check_output", sysctl)
     monkeypatch.setattr(sc.os, "cpu_count", lambda: 10)
-    assert sc.performance_cores() == 5
-    monkeypatch.setattr(sc.os, "cpu_count", lambda: None)
-    assert sc.performance_cores() == 1
+    assert sc.performance_cores() == want
+
+
+def test_nothing_measured_fits_the_cap_means_one_thread(monkeypatch, tmp_path):
+    """Проверенных чисел в пределе нет (2 и 4 при двух ядрах) — один поток, а не ноль."""
+    monkeypatch.setattr(sc, "MEASURED_THREADS", (2, 4))
+    monkeypatch.setattr(sc.live_gate, "daemon_alive", lambda root: False)
+    monkeypatch.setattr(sc, "performance_cores", lambda: 2)
+    assert sc.threads_for(sc.POST, tmp_path) == 1
 
 
 def test_the_configs_carry_the_thread_count(monkeypatch, tmp_path):
