@@ -23,8 +23,10 @@ install .`), а дальше предлагает запускать скрип�
 и продукт, который на это отвечает стеной трассировки, теряет его насовсем.
 """
 import ast
+import os
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -111,12 +113,23 @@ def test_documented_commands_work_in_the_environment_the_docs_create():
         "этой же документации:\n  " + "\n  ".join(broken))
 
 
-def test_doctor_stays_runnable_by_any_python():
+def test_doctor_stays_runnable_by_any_python(tmp_path):
     """Диагностика обязана работать до установки зависимостей — иначе она
-    бесполезна ровно в тот момент, когда нужна."""
-    assert not _module_level_imports(REPO / "scripts" / "doctor.py"), \
-        "doctor.py потянул внешний пакет на верхнем уровне — он больше не запустится " \
-        "системным питоном, а именно этим он и ценен"
+    бесполезна ровно в тот момент, когда нужна.
+
+    Проверка — запуском, а не чтением импортов: статический разбор вычитал свои
+    модули и внутрь не заходил, и `import numpy` на верху `diarize_nemotron`,
+    который доктор импортирует, прошёл мимо (№490). `-E -S` снимает сторонние
+    пакеты у любого интерпретатора — venv и нет; `-B` не пишет байткод в дерево.
+    Предел: импорт и разбор аргументов (`--help`) интерпретатором теста; полный
+    прогон и нижние версии Python — №493."""
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "CHAROITE_ROOT": str(tmp_path)}
+    run = subprocess.run([sys.executable, "-E", "-S", "-B", str(REPO / "scripts" / "doctor.py"), "--help"],
+                         capture_output=True, text=True, timeout=60, env=env, cwd=tmp_path)
+    out = run.stdout + run.stderr
+    assert run.returncode == 0 and "usage" in out.lower() and "Traceback" not in out, (
+        "doctor.py не запускается без сторонних пакетов — системным питоном он больше не "
+        f"поднимется, а именно этим он и ценен:\n{out[-600:]}")
 
 
 def _scripts_in_user_docs() -> set[str]:

@@ -57,9 +57,14 @@ import re
 import shlex
 import sys
 import wave
-from typing import Any, Callable, Iterable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 
-import numpy as np
+if TYPE_CHECKING:
+    # numpy нужен только стороне движка — её функции импортируют его сами. Сторону
+    # вызывающего (пробу, `engine_interpreter`, `install_command`) импортирует доктор,
+    # которого обещано запускать любым Python: numpy на верху модуля валил его
+    # `ModuleNotFoundError` ещё до разбора аргументов (№490).
+    import numpy as np
 
 # Сторона движка запускается путём к файлу под PYTHONSAFEPATH: каталог скрипта
 # в sys.path сам не попадает, а соседи по src/ нужны (рецепт модуля под src/).
@@ -344,6 +349,7 @@ def diarize_file(model: Any, audio: np.ndarray, sample_rate: int) -> list[dict]:
 
     Многоканальный звук сводится в моно, частота приводится моделью.
     """
+    import numpy as np
     audio = np.asarray(audio, dtype=np.float32)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -365,6 +371,7 @@ class NemotronStream:
         self._state = model.init_streaming_state()
 
     def feed(self, pcm: np.ndarray) -> list[dict]:
+        import numpy as np
         pcm = np.asarray(pcm, dtype=np.float32)
         if pcm.ndim != 1:
             raise ValueError("поток ждёт моно: один канал, одномерный массив")
@@ -373,6 +380,7 @@ class NemotronStream:
         return to_segments(result.segments)
 
     def close(self) -> list[dict]:
+        import numpy as np
         result, self._state = self._model.feed(
             np.zeros(0, dtype=np.float32), self._state, SAMPLE_RATE,
             final=True, threshold=self._threshold)
@@ -390,6 +398,7 @@ _LABEL = re.compile(rf"{SPEAKER_PREFIX}(\d+)")
 
 def read_wav(path: pathlib.Path) -> tuple[np.ndarray, int]:
     """16-битный PCM → float32 в [-1, 1), как `load_wav` пересборки; каналы — в моно."""
+    import numpy as np
     with wave.open(str(path), "rb") as w:
         if w.getsampwidth() != 2:
             raise ValueError(f"{path.name}: не 16-битный PCM ({8 * w.getsampwidth()} бит)")
