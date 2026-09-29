@@ -76,6 +76,7 @@ def test_search_without_a_model_is_lexical_and_says_why(tmp_path, capsys):
     assert cli.main(["search", str(graph), "платежи", "--json"]) == cli.EXIT_OK
 
     out = capsys.readouterr()
+    assert "Платёжный шлюз.md" in out.out, "JSON без экранирования: пути читаются глазами"
     got = json.loads(out.out)
     assert got["ready"] is True and got["status"] == "unverified", got
     assert cli.REFUSED in got["reason"] and cli.REFUSED in out.err
@@ -113,7 +114,7 @@ def test_index_with_a_dead_server_exits_one(tmp_path, capsys, monkeypatch):
     assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_LEFT
 
     out = capsys.readouterr()
-    assert "ожидают 2" in out.out and out.err.strip(), out
+    assert "ожидают 2" in out.out and "не ответил" in out.err, out   # причина — заметка индекса, а не общая фраза
 
 
 @pytest.mark.parametrize("command", ["search", "index"])
@@ -156,6 +157,12 @@ def test_argparse_exits_become_return_codes(capsys):
     assert cli.main(["--help"]) == 0
     assert "index" in capsys.readouterr().out
     assert cli.main(["нет-такой-команды"]) == cli.EXIT_USAGE
+    assert cli.main([]) == cli.EXIT_USAGE, "команда обязательна"
+
+
+@pytest.mark.parametrize("version, extra", [((3, 13, 9), {}), ((3, 14, 0), {"color": False})])
+def test_color_is_off_only_where_argparse_has_it(version, extra):
+    assert cli._no_color(version) == extra
 
 
 def test_help_width_does_not_read_columns(monkeypatch, capsys):
@@ -212,9 +219,9 @@ def test_write_text_mode_is_set_at_creation_not_carried_over(tmp_path):
     assert target.read_text(encoding="utf-8") == "новый"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
-    target.chmod(0o644)
+    target.chmod(0o640)       # не 0o644: при маске 022 новый файл и без переноса был бы 0o644
     assert safe_write.write_text(target, "ещё")
-    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
 
 
 def test_write_text_mode_survives_an_orphan_tmp_of_the_same_pid(tmp_path):
@@ -242,3 +249,4 @@ def test_reindex_tightens_an_old_world_readable_manifest(tmp_path, capsys, monke
     assert cli.main(["index", str(graph), *_model(data)]) == cli.EXIT_OK
 
     assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+    assert "Биллинг.md" in manifest.read_text(encoding="utf-8"), "пути в манифесте без экранирования"

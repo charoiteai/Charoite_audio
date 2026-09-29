@@ -47,9 +47,15 @@ REFUSED = "адрес модели не задан (--model-url) — ищу по
 PRIVATE_UMASK = 0o077
 
 
+def _no_color(version: tuple[int, ...]) -> dict:
+    """argparse с 3.14 красит справку по NO_COLOR/FORCE_COLOR/TERM — чтение окружения;
+    параметра `color` до 3.14 нет, и передать его значило бы TypeError."""
+    return {"color": False} if version >= (3, 14) else {}
+
+
 def _parser() -> argparse.ArgumentParser:
     fmt = functools.partial(argparse.HelpFormatter, width=HELP_WIDTH)
-    extra = {"color": False} if sys.version_info >= (3, 14) else {}   # 3.14 красит по NO_COLOR/TERM
+    extra = _no_color(sys.version_info)
     ap = argparse.ArgumentParser(prog="charoite-graph", formatter_class=fmt,
                                  description="Поиск по графу ссылок папки markdown.", **extra)
     sub = ap.add_subparsers(dest="command", required=True)
