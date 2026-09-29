@@ -58,10 +58,10 @@ def test_model_answered_without_names_is_not_a_failure(monkeypatch):
         "answer": '{"Собеседник 1": "?", "Собеседник 2": "?"}'})
     monkeypatch.setattr(llm_mod, "LLM", fake)
 
-    names, answered = rt.name_speakers(CFG, LINES)
+    out = rt.name_speakers(CFG, LINES)
 
-    assert names == {}
-    assert answered is True
+    assert out.names == {}
+    assert out.outcome == rt.NamesOutcome.ANSWERED
 
 
 def test_silent_model_is_reported_as_such(monkeypatch):
@@ -71,10 +71,10 @@ def test_silent_model_is_reported_as_such(monkeypatch):
 
     monkeypatch.setattr(llm_mod, "LLM", _Silent)
 
-    names, answered = rt.name_speakers(CFG, LINES)
+    out = rt.name_speakers(CFG, LINES)
 
-    assert names == {}
-    assert answered is False, "молчание модели неотличимо от «имён нет»"
+    assert out.names == {}
+    assert out.outcome == rt.NamesOutcome.SILENT, "молчание модели неотличимо от «имён нет»"
 
 
 def test_pending_note_is_found_in_the_transcript(tmp_path):
@@ -83,6 +83,36 @@ def test_pending_note_is_found_in_the_transcript(tmp_path):
                     encoding="utf-8")
 
     assert rt.names_pending(live) is True
+
+
+def test_both_notes_share_the_prefix_the_flag_looks_for():
+    """№499: две причины — два текста, признак один. Обе плашки начинаются с
+    общего префикса, по нему names_pending и узнаёт любую."""
+    rejected = rt.NAMES_REJECTED_NOTE.format(proposed=2)
+    assert rt.NAMES_PENDING_NOTE.startswith(rt.NAMES_PENDING_PREFIX)
+    assert rejected.startswith(rt.NAMES_PENDING_PREFIX)
+    assert rejected != rt.NAMES_PENDING_NOTE
+
+
+def test_rejected_note_names_the_count_and_does_not_promise_a_rebuild():
+    """Модель ответила, гварды отвергли всё: пересборка на том же тексте упрётся в
+    те же гварды — совета «пересобрать» и слов «не ответила» в плашке нет (№499)."""
+    rejected = rt.NAMES_REJECTED_NOTE.format(proposed=2)
+    assert "(2)" in rejected
+    assert "пересоберите" not in rejected and "не ответила" not in rejected
+    assert "впишите имена" in rejected
+
+
+def test_flag_finds_the_rejected_note_and_the_note_written_before_the_split(tmp_path):
+    """Признак видит плашку любой причины и плашку, записанную до №499 (её текст
+    зашит литералом — константа с тех пор могла измениться)."""
+    before_split = ("> ⚠️ Имена участников не определены: модель не ответила на разборе. "
+                    "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
+                    "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py).")
+    for note in (rt.NAMES_REJECTED_NOTE.format(proposed=1), before_split):
+        live = tmp_path / "2026-09-29_103224.md"
+        live.write_text(f"# Встреча\n\n{note}\n\n**Собеседник 1** [10:32]:\nда\n", encoding="utf-8")
+        assert rt.names_pending(live) is True, note
 
 
 def test_clean_transcript_has_no_pending_flag(tmp_path):

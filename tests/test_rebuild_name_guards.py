@@ -37,25 +37,26 @@ def test_owner_first_name_is_not_given_to_a_participant(monkeypatch):
     """Р1: «Игорь» — это «Игорь Ветров», владелец; собеседнику не достаётся."""
     lines = [("Собеседник 2", "Игорь, привет, это Сергей"), ("Собеседник 1", "Привет, Сергей")]
     _model(monkeypatch, {"Собеседник 1": "Игорь", "Собеседник 2": "Сергей"})
-    names, answered = rt.name_speakers(CFG, lines)
-    assert names == {"Собеседник 2": "Сергей"}
-    assert answered is True
+    out = rt.name_speakers(CFG, lines)
+    assert out.names == {"Собеседник 2": "Сергей"}
+    assert out.outcome == rt.NamesOutcome.ANSWERED
 
 
 def test_invented_name_is_refused(monkeypatch):
     """Р3: имени, которого в разговоре не было, не существует."""
     lines = [("Собеседник 1", "Смету посмотрим завтра"), ("Собеседник 2", "Хорошо")]
     _model(monkeypatch, {"Собеседник 1": "Виктор", "Собеседник 2": "?"})
-    names, answered = rt.name_speakers(CFG, lines)
-    assert names == {}
-    assert answered is False, "всё предложенное отвергнуто — снаружи это молчание, плашка остаётся (критика DS по #551)"
+    out = rt.name_speakers(CFG, lines)
+    assert out.names == {}
+    # всё предложенное отвергнуто — плашка остаётся (критика DS по #551), но со своей причиной, не «молчала» (№499)
+    assert (out.outcome, out.proposed) == (rt.NamesOutcome.REJECTED, 1)
 
 
 def test_address_in_own_line_is_not_the_speaker(monkeypatch):
     """Р2: «Маш, ты смету видела?» говорит НЕ Маша."""
     lines = [("Собеседник 1", "Маш, ты смету видела?"), ("Собеседник 2", "Потом посмотрю")]
     _model(monkeypatch, {"Собеседник 1": "Маша"})
-    assert rt.name_speakers(CFG, lines) == ({}, False)
+    assert rt.name_speakers(CFG, lines) == rt.NamesOutcome({}, rt.NamesOutcome.REJECTED, 1)
 
 
 def test_vocative_from_the_other_side_is_accepted_in_nominative(monkeypatch):
@@ -63,20 +64,20 @@ def test_vocative_from_the_other_side_is_accepted_in_nominative(monkeypatch):
     промпт просит именительный падеж, гвард не должен принимать его за выдумку."""
     lines = [("Собеседник 1", "Маш, ты смету видела?"), ("Собеседник 2", "Видела, завтра пришлю")]
     _model(monkeypatch, {"Собеседник 2": "Маша"})
-    assert rt.name_speakers(CFG, lines) == ({"Собеседник 2": "Маша"}, True)
+    assert rt.name_speakers(CFG, lines) == rt.NamesOutcome({"Собеседник 2": "Маша"}, rt.NamesOutcome.ANSWERED, 1)
 
 
 def test_junk_keys_and_values_are_ignored(monkeypatch):
     """Мусорные ключи и «?» — не предложения: модель честно сказала «имён нет»."""
     lines = [("Собеседник 1", "Привет, я Сергей")]
     _model(monkeypatch, {"Я": "Сергей", "Собеседник 1": 7, "Собеседник 9": " ", "Собеседник 3": "?"})
-    assert rt.name_speakers(CFG, lines) == ({}, True)
+    assert rt.name_speakers(CFG, lines) == rt.NamesOutcome({}, rt.NamesOutcome.ANSWERED, 0)
 
 
 def test_partial_acceptance_is_still_an_answer(monkeypatch):
     lines = [("Собеседник 1", "Привет, я Сергей"), ("Собеседник 2", "А я тут")]
     _model(monkeypatch, {"Собеседник 1": "Сергей", "Собеседник 2": "Виктор"})
-    assert rt.name_speakers(CFG, lines) == ({"Собеседник 1": "Сергей"}, True)
+    assert rt.name_speakers(CFG, lines) == rt.NamesOutcome({"Собеседник 1": "Сергей"}, rt.NamesOutcome.ANSWERED, 2)
 
 
 def test_yield_to_live_has_a_cap(monkeypatch):
@@ -123,8 +124,8 @@ def test_sample_is_cut_on_a_line_boundary(monkeypatch):
     lines.append(("Собеседник 2", pad + " Ленинградское шоссе обсудили"))
     joined = "\n".join(rt._sample_line(s_, t) for s_, t in lines)
     assert joined[6997:7000] == "Лен", joined[6990:7005]
-    names, answered = rt.name_speakers(CFG, lines)
-    assert names == {} and answered is False, names       # единственное предложенное отвергнуто
+    out = rt.name_speakers(CFG, lines)
+    assert out.names == {} and out.outcome == rt.NamesOutcome.REJECTED, out   # единственное предложенное отвергнуто
     assert seen["sample"] == rt._cut_lines(joined, 7000)
     assert joined.startswith(seen["sample"] + "\n"), "обрезка не по границе строки"
     assert "Лен" not in seen["sample"]
@@ -143,7 +144,7 @@ def test_non_object_json_is_not_an_answer(monkeypatch):
             return json.dumps(["Собеседник 1"])
     monkeypatch.setattr(llm_mod, "LLM", _Fake)
     monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
-    assert rt.name_speakers(CFG, [("Собеседник 1", "да")]) == ({}, False)
+    assert rt.name_speakers(CFG, [("Собеседник 1", "да")]) == rt.NamesOutcome({}, rt.NamesOutcome.SILENT)
 
 
 def test_known_people_of_the_graph_fold_the_case(monkeypatch, tmp_path):
@@ -157,6 +158,6 @@ def test_known_people_of_the_graph_fold_the_case(monkeypatch, tmp_path):
     assert rt.known_first_names(CFG) == ("Полина",)
     lines = [("Собеседник 1", "Полин, привет, глянь смету"), ("Собеседник 2", "Привет, гляну")]
     _model(monkeypatch, {"Собеседник 2": "Полин"})
-    assert rt.name_speakers(CFG, lines, known=rt.known_first_names(CFG)) == ({"Собеседник 2": "Полина"}, True)
+    assert rt.name_speakers(CFG, lines, known=rt.known_first_names(CFG)) == rt.NamesOutcome({"Собеседник 2": "Полина"}, rt.NamesOutcome.ANSWERED, 1)
     monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg=None, **k: None)
     assert rt.known_first_names(CFG) == ()
