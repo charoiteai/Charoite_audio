@@ -315,14 +315,11 @@ def test_diarize_file_downmixes_and_glues():
 
 
 # --- настоящий mlx-audio (только там, где он стоит: Mac с Apple Silicon) -------
+# Здесь стоит importorskip: mlx-audio живёт в окружении движка (№474), в тестовом
+# окружении и в CI его нет — постоянный прогон этих тестов в окружении движка — №521.
 
-def test_wrapper_speaks_the_real_mlx_audio_api(tmp_path, monkeypatch):
-    """Крошечная модель со случайными весами — не качество, а стык с библиотекой.
-
-    Ловит дрейф API mlx-audio при обновлении пакета: загрузку из каталога,
-    пресеты, feed/final, форму сегментов. И держит обещание модуля: ответ
-    потока не зависит от того, какими кусками пришёл звук.
-    """
+def _tiny_model(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Крошечная модель со случайными весами в каталоге — стык с библиотекой, не качество."""
     pytest.importorskip("mlx_audio.vad.models.nemotron_diarization.nemotron_diarization")
     from dataclasses import asdict
 
@@ -339,6 +336,17 @@ def test_wrapper_speaks_the_real_mlx_audio_api(tmp_path, monkeypatch):
     mx.save_safetensors(str(d / "model.safetensors"),
                         dict(tree_flatten(arch.Model(cfg).parameters())))
     (d / "config.json").write_text(json.dumps(asdict(cfg)), encoding="utf-8")
+    return d
+
+
+def test_wrapper_speaks_the_real_mlx_audio_api(tmp_path, monkeypatch):
+    """Крошечная модель со случайными весами — не качество, а стык с библиотекой.
+
+    Ловит дрейф API mlx-audio при обновлении пакета: загрузку из каталога,
+    пресеты, feed/final, форму сегментов. И держит обещание модуля: ответ
+    потока не зависит от того, какими кусками пришёл звук.
+    """
+    d = _tiny_model(tmp_path)
     monkeypatch.setattr(nem, "MIN_WEIGHTS_BYTES", 0)
 
     audio = np.random.default_rng(0).normal(0, 0.1, nem.SAMPLE_RATE * 4).astype(np.float32)
@@ -357,6 +365,29 @@ def test_wrapper_speaks_the_real_mlx_audio_api(tmp_path, monkeypatch):
     for seg in small + whole:
         assert 0.0 <= seg["start"] < seg["end"] <= 4.0 + 1e-6, seg
         assert seg["speaker"] in {f"nem{i}" for i in range(8)}, seg
+
+
+@pytest.mark.parametrize("preset", ["low", "offline"])
+def test_the_real_stream_engine_keeps_its_front_on_the_audio(tmp_path, preset):
+    """Сторона движка живого потока целиком — модель, рукопожатие, цикл по трубе, фронт —
+    на настоящей mlx-audio и отдельным процессом, как её зовёт тень: `_protocol_channel`
+    переставляет дескриптор 1, в процессе pytest его звать нельзя, а порог весов снят в
+    самом ребёнке — подмена в pytest туда не доходит (входной круг фикса A2 №478, I2).
+    Прежняя формула кадра роняла здесь ребёнка до рукопожатия, а с верным именем поля —
+    сверкой фронта со звуком."""
+    d = _tiny_model(tmp_path)
+    n = nem.SAMPLE_RATE * 3 + 37
+    code = ("import pathlib, sys; sys.path.insert(0, %r); import diarize_nemotron as dn; "
+            "dn.MIN_WEIGHTS_BYTES = 0; sys.exit(dn.serve_stream(pathlib.Path(%r), %r))"
+            % (str(REPO / "src"), str(d), preset))
+    pcm = (np.random.default_rng(1).normal(0, 0.1, n) * 32767).astype("<i2").tobytes()
+    out = subprocess.run([sys.executable, "-c", code], input=pcm, capture_output=True, timeout=300)
+    assert out.returncode == 0, out.stderr.decode(errors="replace")[-2000:]
+    lines = [json.loads(x) for x in out.stdout.decode().splitlines()]
+    fronts = [m for m in lines if m["type"] == "front"]
+    assert lines[0]["type"] == "ready" and lines[0]["frame_s"] == pytest.approx(0.01)
+    assert fronts[-1].get("final") is True and fronts[-1]["fed"] == n
+    assert fronts[-1]["frames"] == n // 160, "финал разметил весь звук, кадр — родной hop"
 
 
 @pytest.mark.parametrize("fail_at", ["load", "set_streaming_config"])

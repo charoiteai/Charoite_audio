@@ -462,7 +462,13 @@ nothing in the transcript (default `off`).
   `logs/nemotron_live_<stamp>.err`, owner-only). The handshake `ready` names
   the protocol version, rate, preset, frame length and block; the child then
   sends `seg` (start, end, slot, open) and `front` (samples fed, frames
-  labelled, its CPU seconds and peak memory) after every 0.5 s block.
+  labelled, its CPU seconds and peak memory) after every 0.5 s block. The frame
+  is the model's native 10 ms spectrum frame (hop / rate, the unit of its
+  streaming state), and every `front` is checked against the audio fed: frames
+  never ahead of it, the final one covering it to within a frame (measured on
+  mlx-audio 0.5.6, all four presets). A broken check means the library changed
+  its unit — the child exits with the numbers in its log and the shadow ends,
+  rather than writing a wrong front.
 - **The axis.** The call channel reaches the child through a frame listener
   (see "One sample axis per channel"). Blocks before the handshake are not
   kept: the stream starts at the first block after it, `start0` on the hub's
