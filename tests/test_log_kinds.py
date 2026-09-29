@@ -60,6 +60,9 @@ def test_shared_logs_and_locks_are_named_by_log_path():
     lambda: cp.meeting_log(ROOT, "graph", stem=STEM, suffix=".txt"),       # чужой суффикс
     lambda: cp.meeting_log(ROOT, "graph_unlinked", stem=STEM),             # не журнал встречи
     lambda: cp.meeting_log(ROOT, "cloud_review", stem=STEM),               # ключ графа — key=
+    lambda: cp.meeting_log(ROOT, "cloud_review", key=STEM, stem=STEM),     # и то, и другое
+    lambda: cp.meeting_log(ROOT, "cloud_review"),                          # ни того, ни другого
+    lambda: cp.meeting_log(ROOT, "retry"),
     lambda: cp.meeting_log(ROOT, "retry", key=STEM),                       # стем — stem=
     lambda: cp.meeting_log(ROOT, "retry", stem=STEM, key=STEM),
     lambda: cp.log_path(ROOT, "retry", STEM),                              # журнал встречи
