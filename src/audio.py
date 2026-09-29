@@ -91,7 +91,7 @@ CH_END = "end"        # запись остановлена, канал так �
 CH_CAUSES = ("restart_failed", "hung", "start_error", "missing", "restarted", "stop")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class Placed:
     """Речевой чанк канала на оси хаба (№478).
 

@@ -7,11 +7,13 @@
 потока по своему началу через перекрытие, отрезание потолком и дренаж; тот же
 срез лежит в записанном .pcm.
 """
+import dataclasses
 import pathlib
 import sys
 import types
 
 import numpy as np
+import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -152,3 +154,15 @@ def test_the_recorded_pcm_holds_the_chunk_at_its_start(tmp_path):
     recorded = np.frombuffer(pcm.read_bytes(), dtype="<i2").astype(np.float32) / 32767
     for p in placed:
         assert np.allclose(recorded[p.start:p.start + len(p.chunk)], np.clip(p.chunk, -1, 1), atol=1e-4)
+
+
+def test_a_placed_chunk_cannot_be_moved_by_its_consumer():
+    """Чанк идёт потребителям конвейера демона значением: сдвинуть `start` у одного —
+    сдвинуть ось всем. Любое присваивание — отказ frozen, и новому полю тоже: со
+    `slots=True` CPython 3.12 отвечает на него TypeError из `super()`, а не
+    FrozenInstanceError (опыт 29.09) — slots у Placed сняты."""
+    p = a.Placed("Собеседник", np.zeros(4, np.float32), SR, ("Собеседник", 1))
+    for name in ("start", "extra"):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(p, name, 0)
+    assert p.start == SR
