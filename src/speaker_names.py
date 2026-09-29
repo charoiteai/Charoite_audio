@@ -28,7 +28,9 @@
 from __future__ import annotations
 
 import re
+import typing
 
+import once
 import voice_pitch
 
 # Планка длины. Ниже трёх — мусор от лёгкой модели («Ок», «Да»); выше
@@ -245,12 +247,48 @@ def _own_lines_only(name: str, sample: str, label: str,
     return not re.search(intro, sample, re.I)
 
 
-def trustworthy_name(raw: str, *, sample: str, label: str,
-                     owner_name: str = "", known: tuple[str, ...] | list[str] = (),
-                     voice: str | None = None, name_gender: str | None = None,
-                     ) -> str | None:
-    """Имя, которому можно доверять, или None — с одинаковой строгостью в
-    обоих режимах опознания.
+#: Причины отказа гварда (№502) — код, по которому журнал называет сработавшее
+#: правило. Текст для человека — только в REASON_TEXT: журнал пересборки и журнал
+#: демона берут его оттуда, а шапка пересылаемой стенограммы причин не несёт
+#: вовсе — плашка общая, действие владельца от причины не меняется.
+REASON_EMPTY = "empty"
+REASON_NOT_A_WORD = "not_a_word"
+REASON_LENGTH = "length"
+REASON_LABEL = "label"
+REASON_NOT_HEARD = "not_heard"
+REASON_OWNER = "owner"
+REASON_OWN_LINES = "own_lines"
+REASON_VOICE = "voice"
+
+REASON_TEXT = {
+    REASON_EMPTY: "пусто или NONE",
+    REASON_NOT_A_WORD: "не одно слово из букв",
+    REASON_LENGTH: f"длина вне {MIN_LEN}–{MAX_LEN} букв",
+    REASON_LABEL: "это метка, а не имя",
+    REASON_NOT_HEARD: "не звучало в разговоре",
+    REASON_OWNER: "имя владельца",
+    REASON_OWN_LINES: "звучит только в своих репликах — обращение к другому",
+    REASON_VOICE: "голос и род имени противоречат",
+}
+
+
+class NameVerdict(typing.NamedTuple):
+    """Вердикт гварда: `name` — принятое имя или None; `reason` — код причины
+    отказа (пусто — принято); `said` — что предложила модель, после чистки;
+    `resolved` — имя после приведения падежа, ровно то, что судили последние
+    правила («Андрюх» → «Андрей» → владелец)."""
+    name: str | None
+    reason: str
+    said: str
+    resolved: str
+
+
+def judge_name(raw: str, *, sample: str, label: str,
+               owner_name: str = "", known: tuple[str, ...] | list[str] = (),
+               voice: str | None = None, name_gender: str | None = None,
+               ) -> NameVerdict:
+    """Имя, которому можно доверять, — с одинаковой строгостью в обоих режимах
+    опознания, и какое правило отказало, если нет.
 
     raw    — что предложила модель (может быть мусором и «NONE»)
     sample — хвост стенограммы, по которому она решала
@@ -265,18 +303,18 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
     уверенном противоречии: обе стороны определённы и противоположны.
     Пусто, «не знаю» или «unisex» («Саша», «Женя») ничего не блокируют.
     """
-    name = _clean(raw)
+    said = name = _clean(raw)
     if not name or name.upper() == "NONE":
-        return None
+        return NameVerdict(None, REASON_EMPTY, said, name)
     if not name.replace("-", "").isalpha():
-        return None
+        return NameVerdict(None, REASON_NOT_A_WORD, said, name)
     if not (MIN_LEN <= len(name) <= MAX_LEN):
-        return None
+        return NameVerdict(None, REASON_LENGTH, said, name)
     if name.casefold() == label.casefold() or name.casefold().startswith("собеседник"):
-        return None
+        return NameVerdict(None, REASON_LABEL, said, name)
     forms = heard_forms(name, sample)
     if not forms:
-        return None    # модель выдумала имя, которого в разговоре не было
+        return NameVerdict(None, REASON_NOT_HEARD, said, name)    # модель выдумала имя, которого в разговоре не было
 
     # падежи — по известным людям графа, до проверки владельца: «Игорёк» из
     # разговора должен сначала стать «Игорь», чтобы владелец узнался.
@@ -294,9 +332,75 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
                 name = hit[0]
 
     if is_owner(name, owner_name):
-        return None
+        return NameVerdict(None, REASON_OWNER, said, name)
     if _own_lines_only(name, sample, label, forms):
-        return None
+        return NameVerdict(None, REASON_OWN_LINES, said, name)
     if voice_pitch.contradicts(voice, name_gender):
-        return None     # басовитый голос и женское имя — оставляем «Собеседник N»
-    return name
+        return NameVerdict(None, REASON_VOICE, said, name)     # басовитый голос и женское имя — оставляем «Собеседник N»
+    return NameVerdict(name, "", said, name)
+
+
+def trustworthy_name(raw: str, *, sample: str, label: str,
+                     owner_name: str = "", known: tuple[str, ...] | list[str] = (),
+                     voice: str | None = None, name_gender: str | None = None,
+                     ) -> str | None:
+    """Имя, которому можно доверять, или None — вердикт `judge_name` без причины."""
+    return judge_name(raw, sample=sample, label=label, owner_name=owner_name, known=known,
+                      voice=voice, name_gender=name_gender).name
+
+
+def is_refusal(verdict: NameVerdict) -> bool:
+    """Отверг ли гвард предложенное имя. «Пусто или NONE» — не отказ, а ответ «имени
+    нет»: он не считается предложенным именем и не пишется в журнал — одно решение
+    на пересборку и живой цикл (выходной круг 1 по №502, M1)."""
+    return verdict.reason not in ("", REASON_EMPTY)
+
+
+def refusal_line(label: str, verdict: NameVerdict) -> str | None:
+    """Строка журнала об отвергнутом имени: что предложила модель, во что его
+    привели, для какой метки и какое правило отказало. Одна на пересборку и демон,
+    чтобы текст причины жил в одном месте (REASON_TEXT). Не отказ (`is_refusal`) —
+    None: писать нечего."""
+    if not is_refusal(verdict):
+        return None
+    moved = verdict.resolved != verdict.said
+    shown = f"«{verdict.said}»" + (f" (→ {verdict.resolved})" if moved else "")
+    return f"{shown} для «{label}» не принято — {REASON_TEXT[verdict.reason]}"
+
+
+#: Пространство реестра «сказать один раз» для отказов гварда в живом цикле имён.
+REFUSALS = "names"
+
+
+def say_refusal(label: str, verdict: NameVerdict, stream=None) -> bool:
+    """Строка журнала об отказе гварда — один раз за встречу на тройку «метка,
+    предложенное имя, правило» (№502). Живой цикл имён переспрашивает модель на
+    каждом такте роста стенограммы, и та же строка иначе повторялась бы. Другое
+    правило для той же пары — новое событие, звучит снова. «Пусто или NONE» —
+    не отвергнутое имя, а ответ «имени нет» (одиночная ветка так и просит
+    отвечать), и в журнал он не идёт."""
+    line = refusal_line(str(label), verdict)
+    if line is None:
+        return False
+    key = (REFUSALS, (str(label), verdict.said, verdict.reason))
+    return once.say(key, "имена: " + line, stream=stream)
+
+
+def settle(label: str, verdict: NameVerdict, *, labels, taken=(), stream=None) -> str | None:
+    """Имя, которое метка живого цикла получает по вердикту, или None (№502).
+
+    Метка вне выборки — модель назвала несуществующую или уже подписанную — не
+    получает ни имени, ни строки журнала. Отказ гварда по метке из выборки —
+    строка `say_refusal`, один раз за встречу. Имя, уже отданное другой метке,
+    второй раз не раздаётся. Решение живёт здесь, а не в замыкании `daemon.main()`:
+    там его условия не видел ни один тест."""
+    if label not in labels:
+        return None
+    say_refusal(label, verdict, stream=stream)
+    return verdict.name if verdict.name not in taken else None
+
+
+def forget_refusals() -> None:
+    """Новая встреча — чистый лист: реестр живёт на процесс демона, и отказ новой
+    встречи иначе молчал бы, если такая же тройка прозвучала на прошлой."""
+    once.reset(REFUSALS)
