@@ -1129,7 +1129,7 @@ def main():
             try:
                 mark_stt_stage("audio_pull")
                 queued_before_pull = hub.health_snapshot()
-                batch = hub.pull_labeled()
+                batch = hub.pull_placed()
             except Exception as e:  # noqa: BLE001 — смерть этого потока «тихая»:
                 # heartbeat живёт, а стенограмма просто молчит (профиль 20.07);
                 # в трёх соседних местах это уже чинили, вызов остался вне try
@@ -1195,7 +1195,9 @@ def main():
             # медленная или кусок большой. С ним считается RTF, и причина
             # отставания обсуждается по цифре, а не по догадке (№105).
             cycle_audio_s = 0.0
-            for speaker, chunk in batch:
+            for placed in batch:
+                # чанк с местом на оси хаба и номером среза — из одного замка (№478)
+                speaker, chunk = placed.speaker, placed.chunk
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
                 # «угу» собеседника (микро-куски, отсеянные политикой
@@ -1347,7 +1349,7 @@ def main():
                 prev_label = last_label_by_channel.get(speaker)
                 seams = stt_runtime.seam_for_rows(prev_label, [(name, head) for name, _, head in rows])
                 added_labels: list[str] = []
-                seq = hub.chunk_seq(speaker)
+                seq = placed.seq
                 for (name, text, _head), (head, seam_with) in zip(rows, seams):
                     try:
                         added = tr.add(text, speaker=name, seam_with=seam_with,
@@ -2355,7 +2357,7 @@ def main():
             if msg:
                 report_drop_once(reporter, msg)
 
-        hub.on_frame = _tap
+        hub.add_frame_listener(lambda label, _start, part: _tap(label, part))
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
         delay = 5.0
         while not stop.is_set():
