@@ -45,6 +45,8 @@ import socket
 import os
 import urllib.parse
 
+from charoite_graph.net import is_loopback_host
+
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
 KILL_SWITCHES = ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD")
@@ -171,20 +173,23 @@ def llm_engine(cfg: dict) -> str:
             "mlx-server и cloud")
     return raw
 
-# localhost — не IP, ip_address() его не разбирает, а это самый частый адрес
-# в конфиге. Остальное решает is_loopback: 127.0.0.0/8 целиком и ::1.
-_LOCAL_NAMES = ("localhost",)
-
-
 def _is_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    if host.lower() in _LOCAL_NAMES:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:      # имя машины, .local, домен — что угодно не-IP
-        return False
+    return is_loopback_host(host)
+
+
+def proxies_for(url: str) -> dict:
+    """Аргументы `requests` для адреса: на этой машине — без прокси и без редиректов.
+
+    `proxies` с `None` отключает и переменные окружения, и системные настройки
+    (requests берёт их через urllib.getproxies). Ключ `all` обязателен: `ALL_PROXY`
+    окружения ложится в него, и без `None` там прокси обходил бы `http`/`https`
+    (опыт с подставным прокси: ProxyError на loopback). Редирект с loopback
+    уводил бы запрос на другую цель. Для остальных адресов — `{}`: их прокси
+    решает окружение, как раньше (№525).
+    """
+    if is_loopback_host(urllib.parse.urlsplit(url).hostname):
+        return {"proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
+    return {}
 
 
 def llm_base_url(cfg: dict, env: dict | None = None) -> str:

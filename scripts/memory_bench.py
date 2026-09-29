@@ -193,6 +193,8 @@ def search_brain(graph: pathlib.Path, query: str) -> tuple[str, str]:
     import json
     import urllib.request
 
+    from charoite_graph.net import open_url
+
     folder = graph.name  # стандартная раскладка: vault/<граф>/…
     # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
     req = urllib.request.Request(
@@ -204,7 +206,7 @@ def search_brain(graph: pathlib.Path, query: str) -> tuple[str, str]:
     )
     try:
         # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with open_url(req, timeout=25) as resp:
             text = json.load(resp).get("text", "")
     except (OSError, ValueError):
         return BRAIN_DEAD, ""

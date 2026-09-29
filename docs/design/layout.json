@@ -195,6 +195,10 @@
       "layer": "base",
       "why": "дверь векторов в пакете: тянет только model_seam и notices; в graph дала бы ребро llm → graph (llm импортирует её формой import charoite_graph.embed_door as …, без ребра на узел пакета)"
     },
+    "charoite_graph.net": {
+      "layer": "base",
+      "why": "транспорт к адресу на этой машине мимо прокси (№525): is_loopback_host и open_url, только stdlib; читают privacy (слой runtime, правило proxies_for для requests) и дверь векторов пакета"
+    },
     "charoite_graph.notices": {
       "layer": "base",
       "why": "реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524"

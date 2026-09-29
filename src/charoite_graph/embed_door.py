@@ -34,6 +34,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from charoite_graph.model_seam import Embedder, SeamTransportError
+from charoite_graph.net import open_url
 from charoite_graph.notices import Notices
 
 
@@ -196,8 +197,9 @@ TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
 def urllib_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     """POST на /api/embed через stdlib: `(код, тело)` на любой HTTP-ответ.
 
-    `urlopen` берётся атрибутом модуля, а не локальным именем: сторож сети в
-    тестах подменяет `urllib.request.urlopen` и обязан видеть этот ход.
+    Ход идёт через `net.open_url`: адрес на этой машине — мимо прокси окружения и
+    системы (№525), иначе — `urllib.request.urlopen`, атрибутом модуля: сторож
+    сети в тестах подменяет его и обязан видеть этот ход.
     `HTTPError` — тоже ответ сервера, а не сбой: отдаём её код и тело.
 
     Схема — только http(s), и здесь тоже, а не только при сборке двери:
@@ -210,7 +212,7 @@ def urllib_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
         url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
         # nosemgrep — схема проверена строкой выше (только http/https), file:// не проходит
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
