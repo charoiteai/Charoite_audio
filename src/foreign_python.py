@@ -241,11 +241,19 @@ class StreamProcess:
             return Outcome(UNAVAILABLE, reason="движок недоступен")
         return Outcome(FAILED, reason=f"код {code}")
 
-    def kill(self) -> None:
+    def kill_nowait(self) -> None:
+        """SIGKILL без ожидания выхода: годится под замком хозяина и там, где ждать нельзя;
+        выход дождутся `finish`, `kill` или сборщик `subprocess`."""
         try:
             self._proc.kill()
+        except OSError:
+            pass
+
+    def kill(self) -> None:
+        self.kill_nowait()
+        try:
             self._proc.wait(timeout=KILL_WAIT_S)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             pass
 
     def _deliver(self, fn: typing.Callable, *args: typing.Any) -> None:

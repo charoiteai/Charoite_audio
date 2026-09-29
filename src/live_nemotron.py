@@ -142,8 +142,9 @@ def _open_private(path: pathlib.Path) -> typing.TextIO:
 
 class Shadow:
     """Тень одной встречи. Замок один на состояние, очередь ожидающих и журнал; под ним
-    не ждут ни процесса, ни трубы, ни чужого кода — убийство ребёнка и строка человеку
-    уходят в свою нить."""
+    не ждут ни процесса, ни трубы, ни чужого кода. Ребёнка убивает переход в DEAD —
+    SIGKILL без ожидания, на любом пути; ожидание выхода и строка человеку — своей нитью,
+    и её потеря теряет строку, а не убийство."""
 
     def __init__(self, *, journal: pathlib.Path, sr: int, stamp: str,
                  say: typing.Callable[[str], None],
@@ -183,8 +184,11 @@ class Shadow:
               spawn: typing.Callable[..., typing.Any] = foreign_python.spawn_stream) -> None:
         """Запустить ребёнка своей нитью: рукопожатие — до `HANDSHAKE_S`, встреча не ждёт."""
         self._errlog = errlog
-        threads.spawn(self._start, name="nemotron-live-start", role="audio",
-                      args=(python, script, list(args), errlog, spawn))
+        try:
+            threads.spawn(self._start, name="nemotron-live-start", role="audio",
+                          args=(python, script, list(args), errlog, spawn))
+        except RuntimeError as e:          # нить не завелась — тень кончается строкой end, а не висит
+            self._die_from_thread(f"нить запуска не завелась: {e}")
 
     def _start(self, python, script, args, errlog, spawn) -> None:
         """Граница нити запуска: любой сбой — смерть тени со строкой `end`, а не вечное
@@ -231,14 +235,14 @@ class Shadow:
         return ""
 
     def _abandon_locked(self, stream: foreign_python.StreamProcess, reason: str) -> None:
-        """Ребёнок поднялся, а брать его нельзя: закрыть вход, убить вне замка."""
+        """Ребёнок поднялся, а брать его нельзя: вход закрыт и SIGKILL — сразу, без нити и
+        без ожидания (выход дождётся сборщик `subprocess`); потом конец тени."""
         stream.close_input()
+        stream.kill_nowait()
         if self._state == STOPPING:
             self._end_locked(reason)
         else:
             self._die_locked(reason)
-        threads.spawn(stream.kill, name="nemotron-live-abandon", role="audio",
-                      detached="убийство неподобранного ребёнка не держит ни захват, ни выход")
 
     def attach(self, hub: typing.Any) -> None:
         """Слушать кадры хаба."""
@@ -465,12 +469,14 @@ class Shadow:
             self._kill_after_grace()
 
     def _kill_after_grace(self) -> None:
+        """Отсрочка вышла: живой ребёнок — SIGKILL без ожидания (выход дождётся `finish` в
+        конце потока); в главной нити демона сюда приходят, если таймер не завёлся."""
         with self._lock:
             stream = self._stream
-            if self._state == DEAD or stream is None or not stream.alive():
+            if stream is None or not stream.alive():
                 return
             self._counts["killed_after_grace"] += 1
-        stream.kill()
+        stream.kill_nowait()
 
     def _on_eof(self) -> None:
         """Ребёнок закрыл вывод: штатный конец после стопа или смерть. Граница обратного
@@ -497,14 +503,21 @@ class Shadow:
         if self._state == DEAD:
             return
         self._finish(DEAD_STREAM, reason, exit_)
-        threads.spawn(self._after_death, name="nemotron-live-death", role="audio",
-                      args=(reason,), detached="убийство ребёнка тени не держит ни захват, ни выход")
+        try:
+            threads.spawn(self._after_death, name="nemotron-live-death", role="audio",
+                          args=(reason,), detached="ожидание выхода ребёнка и строка человеку не держат ни захват, ни выход")
+        except RuntimeError:
+            pass                           # ребёнок уже убит в _finish; теряется только строка человеку
 
     def _end_locked(self, reason: str, exit_: foreign_python.Outcome | None = None) -> None:
         self._finish(STOPPED, reason, exit_)
 
     def _finish(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
+        """Единственный переход в DEAD — и он же владеет ребёнком: живой получает SIGKILL здесь,
+        на любом пути (смерть, штатный конец, сбой нити в остановке), без нити и без ожидания
+        (выходной круг 2 по №478 A2, I1)."""
         self._state, self._reason = DEAD, reason
+        self._reap_locked()
         self._cancel.set()
         self._queue.put(None)
         self._finish_pending_locked(outcome, reason)
@@ -514,6 +527,13 @@ class Shadow:
             if exit_.reason:
                 line["exit_reason"] = exit_.reason
         self._line(line)
+
+    def _reap_locked(self) -> None:
+        """Живой ребёнок — SIGKILL без ожидания. Вход не закрывается: им владеет писатель, и
+        его следующая запись в трубу убитого получит BrokenPipeError."""
+        stream = self._stream
+        if stream is not None and stream.alive():
+            stream.kill_nowait()
 
     def _after_death(self, reason: str) -> None:
         stream = self._stream

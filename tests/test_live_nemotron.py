@@ -294,6 +294,7 @@ class _FakeChild:
         self.gate = threading.Event()
         self.gate.set()
         self.exited = False                        # вышел сам, без убийства
+        self.nowait_kills = 0
         self.exit = fp.Outcome(fp.OK)
         self.nonjson = 0
         self.callback_errors = 0
@@ -314,6 +315,10 @@ class _FakeChild:
     def kill(self):
         self.killed.set()
         self.gate.set()
+
+    def kill_nowait(self):
+        self.nowait_kills += 1
+        self.kill()
 
     def finish(self, timeout):
         return self.exit
@@ -1203,3 +1208,70 @@ def test_the_diarized_state_names_what_the_tracker_did():
 def test_pcm16_keeps_the_sign_and_clips_to_full_scale():
     raw = audio.pcm16(np.array([-2.0, -0.5, 0.0, 0.5, 2.0], dtype=np.float32))
     assert np.frombuffer(raw, dtype="<i2").tolist() == [-32767, -16383, 0, 16383, 32767]
+
+
+# ------------------------------------------------ ребёнок принадлежит переходу в DEAD (выходной круг 2, I1)
+
+def test_a_writer_failing_during_the_stop_leaves_no_child(tmp_path):
+    """Писатель упал не на трубе, пока тень останавливается: конец штатный, но ребёнок
+    без EOF убит тем же переходом в DEAD — отсрочка на DEAD уже ничего не делает."""
+    door = _Door()
+    release = threading.Event()
+
+    def stuck_then_broken(data):
+        release.wait(10)
+        raise ValueError("не байты")
+    door.child.write = stuck_then_broken
+    sh, door, says = _live(tmp_path, door=door)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    sh.stop()
+    release.set()
+    _wait(lambda: sh.state == ln.DEAD, what="тень закончилась")
+    assert sh.reason.startswith("писатель упал")
+    assert door.child.killed.is_set(), "ребёнок без EOF пережил тень"
+    assert says == [], "остановка — не смерть: человеку не пишется"
+
+
+def test_no_thread_for_the_writer_or_the_death_still_kills_the_child(tmp_path, monkeypatch):
+    import threads
+    real = threads.spawn
+
+    def exhausted(target, *, name, role, **kw):
+        if name in ("nemotron-live-writer", "nemotron-live-death"):
+            raise RuntimeError("can't start new thread")
+        return real(target, name=name, role=role, **kw)
+    monkeypatch.setattr(threads, "spawn", exhausted)
+    sh, door, _ = _shadow(tmp_path)
+    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    assert "писатель не завёлся" in sh.reason
+    assert door.child.killed.is_set(), "ребёнок с моделью остался без хозяина"
+    assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+
+
+def test_a_start_thread_that_does_not_start_ends_the_shadow_with_a_line(tmp_path, monkeypatch):
+    import threads
+    real = threads.spawn
+
+    def no_start(target, *, name, role, **kw):
+        if name == "nemotron-live-start":
+            raise RuntimeError("can't start new thread")
+        return real(target, name=name, role=role, **kw)
+    monkeypatch.setattr(threads, "spawn", no_start)
+    sh, door, _ = _shadow(tmp_path)
+    assert sh.state == ln.DEAD and sh.reason.startswith("нить запуска не завелась")
+    assert _end(tmp_path)["reason"] == sh.reason
+    assert door.on_eof is None, "дверь не звали — ребёнка нет"
+
+
+def test_a_stop_without_a_timer_kills_at_once_without_waiting(tmp_path, monkeypatch):
+    """Таймер отсрочки не завёлся — главная нить демона убивает сразу и не ждёт выхода:
+    пересборке нужна машина, а не пять секунд ожидания."""
+    import threads
+
+    def no_timer(*a, **k):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threads, "timer", no_timer)
+    sh, door, _ = _live(tmp_path)
+    sh.stop()
+    assert door.child.killed.is_set() and door.child.nowait_kills == 1
+    door.on_eof()

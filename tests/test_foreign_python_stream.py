@@ -149,3 +149,13 @@ def test_a_given_up_stream_calls_back_no_one(tmp_path, monkeypatch):
     stream, out = _spawn(_child(tmp_path, "time.sleep(60)\n"), tmp_path, clock=lambda: next(ticks))
     assert stream is None and out.reason.startswith("дверь упала после запуска: StopIteration")
     assert made[2]._abandoned is True
+
+
+def test_kill_nowait_kills_without_reaping(tmp_path):
+    """SIGKILL без ожидания: ребёнок умирает, а `finish` потом собирает его выход."""
+    stream, out = _spawn(_child(tmp_path, READY + "time.sleep(60)\n"), tmp_path)
+    assert out.ok
+    stream.kill_nowait()
+    got = stream.finish(10)
+    assert got.kind == fp.FAILED and got.reason == f"код {-9}"
+    assert stream.alive() is False
