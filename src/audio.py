@@ -91,6 +91,21 @@ CH_END = "end"        # запись остановлена, канал так �
 CH_CAUSES = ("restart_failed", "hung", "start_error", "missing", "restarted", "stop")
 
 
+@dataclasses.dataclass(frozen=True)
+class Placed:
+    """Речевой чанк канала на оси хаба (№478).
+
+    `start` — номер первого сэмпла чанка в потоке канала с начала захвата,
+    включая звук, отрезанный потолком буфера: ось одна для чанков и для блоков,
+    которые получают слушатели кадров (`add_frame_listener`). `seq` — (канал,
+    номер физического чанка) для шва стенограммы, из того же среза под тем же
+    замком, что и сам чанк."""
+    speaker: str
+    chunk: np.ndarray
+    start: int
+    seq: tuple[str, int]
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ChannelEvent:
     label: str
@@ -556,8 +571,6 @@ def discover_captures(mode: str, sr: int) -> Discovery:
 
 
 class AudioHub:
-    # Подписка на сырые фреймы (для быстрого триггера gigastt): callback(source, float32[])
-    on_frame = None
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
     # Событие канала (пропал / вернулся / дыра / не вернулся до конца): callback(ChannelEvent).
@@ -618,6 +631,13 @@ class AudioHub:
         self.captures: list = list(captures)
         self.sources: list[str] = list(sources)
         self._bufs: dict[str, np.ndarray] = {}
+        # Ось сэмплов канала (№478): сколько сэмплов дописано в STT-буфер с начала
+        # захвата, включая отрезанное потолком. Растёт только в _append; начало
+        # буфера — «дописано минус длина буфера», второй изменяемой величины нет.
+        self._appended: dict[str, int] = {}
+        # Слушатели сырых блоков: fn(label, start, samples). Кортеж — замена
+        # целиком под замком, обход без замка (копия при записи).
+        self._frame_listeners: tuple = ()
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
         self._last_frame: dict[str, float] = {}
         # когда канал в последний раз ПЫТАЛИСЬ перезапустить — анти-шторм
@@ -699,6 +719,18 @@ class AudioHub:
         после (Important GLM 2 входного круга по №311)."""
         for c in captures:
             self._bufs.setdefault(c.label, np.zeros(0, dtype=np.float32))
+            self._appended.setdefault(c.label, 0)
+
+    def add_frame_listener(self, fn) -> None:
+        """Подписать fn(label, start, samples) на сырые блоки каналов.
+
+        `start` — номер первого сэмпла блока на оси хаба, той же, что у чанков
+        `pull_placed`: потребитель ничего не считает сам. Слушатель зовётся из
+        аудиопотока — только положить блок в свою очередь, держать нельзя.
+        Ошибка слушателя не роняет захват и не мешает остальным. Дренаж при
+        stop() слушателей не зовёт — хвост после «Стоп» им не нужен."""
+        with self._lock:
+            self._frame_listeners = self._frame_listeners + (fn,)
 
     @classmethod
     def for_meeting(cls, cfg: dict, stamp: str | None = None) -> "AudioHub":
@@ -1500,7 +1532,7 @@ class AudioHub:
                     self._sinks.pop(c.label, None)
                 written = False
                 sink_error = e
-        dropped = self._append(c.label, part)
+        dropped, start = self._append_at(c.label, part)
         if sink_error is not None:
             # Не ждём переполнения минутного STT-буфера, чтобы сказать
             # о смерти страховочной записи. После pop эта ветка для
@@ -1517,11 +1549,12 @@ class AudioHub:
             # «не вернуть» превращалось бы в ложное «будет полной»
             # (ревью 20.08, круг 3, DeepSeek).
             self._note_drop(c.label, dropped, written)
-        if notify_frame and self.on_frame is not None:
-            try:
-                self.on_frame(c.label, part)
-            except Exception:  # noqa: BLE001 — триггер не должен ронять захват
-                pass
+        if notify_frame:
+            for listener in self._frame_listeners:
+                try:
+                    listener(c.label, start, part)
+                except Exception:  # noqa: BLE001 — слушатель не должен ронять захват и соседей
+                    pass
 
     def _restart_guarded(self, c):
         """Перезапустить канал, не подставив под удар конвейер.
@@ -1741,8 +1774,9 @@ class AudioHub:
 
     BUF_CAP_S = 60            # сколько живого звука держим в памяти на канал
 
-    def _append(self, label: str, part: np.ndarray) -> float:
-        """Дописать кусок в буфер STT; вернуть, сколько секунд пришлось выбросить.
+    def _append_at(self, label: str, part: np.ndarray) -> tuple[float, int]:
+        """Дописать кусок в буфер STT; вернуть (сколько секунд выброшено, номер
+        первого сэмпла куска на оси канала).
 
         Потолок нужен на случай мёртвого потребителя: запись на диск идёт
         отдельным sink, а буфер иначе рос бы до конца встречи (аудит 14.08).
@@ -1754,6 +1788,7 @@ class AudioHub:
         кусками, не всю речь» (ревью 20.08, DeepSeek).
         """
         with self._lock:
+            start = self._appended.get(label, 0)
             cap = self.sr * self.BUF_CAP_S
             merged = np.concatenate([self._bufs[label], part])
             dropped = 0.0
@@ -1764,8 +1799,12 @@ class AudioHub:
                 # 20.08 — нашли и локальная голова, и DeepSeek).
                 dropped = (len(merged) - cap) / self.sr
                 merged = merged[-cap:]
+            # счётчик оси — вместе с буфером и только после того, как блок в него лёг:
+            # блок, упавший на склейке, не сдвигает начала следующих чанков (выходной
+            # круг 1 по №478 A1, M1); до слушателей такой блок тоже не доходит
             self._bufs[label] = merged
-        return dropped
+            self._appended[label] = start + len(part)
+        return dropped, start
 
     def health_snapshot(self, *, now: float | None = None) -> dict[str, object]:
         """Cheap live-pipeline gauges; never consumes or copies audio.
@@ -1895,20 +1934,30 @@ class AudioHub:
                 # из четырёх писателей (Minor GLM выходного круга по №310)
                 _safe_stderr(f"статус об отказе не дошёл до подписчика: {st}")
 
-    def _cut(self, label: str) -> np.ndarray | None:
+    def _cut_placed(self, label: str) -> tuple[np.ndarray, int] | None:
+        """Срез чанка и его начало на оси канала — под замком вызывающего.
+
+        Буфер — всегда хвост потока канала (потолок режет голову, срез уносит
+        голову без перекрытия), поэтому начало буфера = дописано − длина."""
         need = int(self.sr * self.chunk_s)
         keep = int(self.sr * self.overlap_s)
         buf = self._bufs[label]
         if len(buf) < need:
             return None
+        start = self._appended.get(label, 0) - len(buf)
         chunk = buf[:need].copy()
         self._bufs[label] = buf[need - keep:]
-        return chunk
+        return chunk, start
 
     def pull_labeled(self) -> list[tuple[str, np.ndarray]]:
-        """Готовые речевые чанки по каналам: [(speaker, chunk)]."""
+        """Готовые речевые чанки по каналам: [(speaker, chunk)] — проекция pull_placed."""
+        return [(p.speaker, p.chunk) for p in self.pull_placed()]
+
+    def pull_placed(self) -> list[Placed]:
+        """Готовые речевые чанки по каналам с местом на оси и номером среза."""
         with self._lock:
-            cut = {label: self._cut(label) for label in self._bufs}
+            placed = {label: self._cut_placed(label) for label in self._bufs}
+            cut = {label: (got[0] if got is not None else None) for label, got in placed.items()}
             # Номер ФИЗИЧЕСКОГО чанка канала — растёт и на тихих, и на отброшенных
             # как эхо: шов стенограммы считает соседями только n и n-1, а тихий
             # чанк между двумя речевыми — разрыв, не перекрытие (luna, круг-2 #452).
@@ -1917,14 +1966,16 @@ class AudioHub:
             for label, c in cut.items():
                 if c is not None:
                     chunk_no[label] = chunk_no.get(label, -1) + 1
+            seqs = {label: (label, chunk_no[label]) for label, c in cut.items() if c is not None}
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
         now = time.monotonic()
         if speech.get("blackhole"):
             # Эхо динамиков доживает в микрофоне до следующего среза, когда
-            # фазы нарезки каналов разъехались (перезапуск канала сторожем
-            # сбрасывает его буфер) — помним о недавней речи ещё один чанк.
+            # фазы нарезки каналов разъехались (каналы открываются и
+            # перезапускаются не одновременно) — помним о недавней речи ещё
+            # один чанк.
             self._sys_speech_until = now + self.chunk_s
-        out: list[tuple[str, np.ndarray]] = []
+        out: list[Placed] = []
         for label, chunk in cut.items():
             if not speech.get(label):
                 continue
@@ -1938,7 +1989,7 @@ class AudioHub:
                     # системный чанк есть и он тихий, собеседник реально
                     # замолчал — свой ответ глушить нельзя.
                     continue
-            out.append((self.SPEAKER.get(label, label), chunk))
+            out.append(Placed(self.SPEAKER.get(label, label), chunk, placed[label][1], seqs[label]))
         return out
 
     def channel_of(self, speaker: str) -> str:

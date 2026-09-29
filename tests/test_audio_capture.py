@@ -53,7 +53,7 @@ def test_cut_keeps_overlap_between_chunks():
     keep = int(hub.sr * hub.overlap_s)
     hub._bufs["mic"] = _tone(need * 2)
 
-    first = hub._cut("mic")
+    first = (lambda got: None if got is None else got[0])(hub._cut_placed("mic"))
 
     assert first is not None and len(first) == need
     # в буфере остался хвост предыдущего чанка длиной keep
@@ -64,7 +64,7 @@ def test_cut_waits_until_there_is_a_full_chunk():
     """Недобравший буфер не режем — иначе STT получает обрывки."""
     hub = _hub()
     hub._bufs["mic"] = _tone(int(hub.sr * hub.chunk_s) - 10)
-    assert hub._cut("mic") is None
+    assert (lambda got: None if got is None else got[0])(hub._cut_placed("mic")) is None
 
 
 def test_speaker_echo_is_dropped_from_microphone():
@@ -1871,14 +1871,14 @@ def test_a_bad_block_on_one_channel_does_not_starve_the_neighbour_or_the_watchdo
     сбоев виден в снапшоте."""
     bad, good = _QueueCapture("blackhole"), _QueueCapture("mic")
     hub = _hub(captures=[bad, good])
-    real_append = hub._append
+    real_append = hub._append_at      # шов дописывания в _consume (№478: с началом на оси)
 
     def append(label, part):
         if label == "blackhole":
             raise ValueError("битый блок")
         return real_append(label, part)
 
-    hub._append = append
+    hub._append_at = append
     watched = {"n": 0}
     hub._watch_streams = lambda: watched.__setitem__("n", watched["n"] + 1)
     hub.on_status = lambda m: None
@@ -1894,7 +1894,7 @@ def test_a_bad_block_on_one_channel_does_not_starve_the_neighbour_or_the_watchdo
     assert hub._pump_failures == 4 and hub.health_snapshot()["pump_failures"] == 4, "единица — проход"
     # сбой обработки блока — видимая потеря живого звука, а не здоровый канал (DS I5 круга 2)
     assert hub._drops.get("blackhole", [0])[0] > 0, "потеря блока учтена в отчёте о потерях"
-    hub._append = real_append
+    hub._append_at = real_append
     bad.q.put(_tone(1600))
     hub._tick()
     assert hub._pump_failures == 0, "проход без сбоев обнуляет счётчик"
@@ -1949,7 +1949,7 @@ def test_two_bad_channels_in_one_pass_count_as_one_failed_pass():
     """Единица счётчика — проход, как читает потребитель снапшота (DS I2)."""
     bad1, bad2 = _QueueCapture("blackhole"), _QueueCapture("mic")
     hub = _hub(captures=[bad1, bad2])
-    hub._append = lambda label, part: (_ for _ in ()).throw(ValueError("битый"))
+    hub._append_at = lambda label, part: (_ for _ in ()).throw(ValueError("битый"))
     hub.on_status = lambda m: None
     hub._watch_streams = lambda: None
     hub._running = True
