@@ -133,6 +133,29 @@ def test_восстановление_запускает_существующи�
             "«recovering», а ретеншн через двое суток удалит её запись")
 
 
+def test_восстановление_пишет_журнал_разбора(data_root, monkeypatch):
+    """№495: шапка стенограммы отсылает причину отказа движка «в журнал разбора»
+    (logs/). У восстановления после падения демона он есть, как у основного пути и
+    повтора, а не DEVNULL, куда причина пропадала целиком."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        out = kw.get("stdout")
+        seen["name"] = getattr(out, "name", out)
+        out.write("проба журнала\n")
+
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    daemon._rebuild_orphans_sequentially([live])
+
+    log = data_root / "logs" / "recover_2026-08-07_181500.log"
+    assert seen.get("name") == str(log), seen
+    assert log.read_text(encoding="utf-8") == "проба журнала\n"
+
+
 def test_main_передаёт_чистке_защищённые_штампы():
     """Сторож проводки, а не текста.
 

@@ -573,15 +573,21 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
             pass
         try:
             # start_new_session: пересборка переживает смерть демона (как и
-            # раньше); run вместо Popen — это и есть очередь.
-            subprocess.run(
-                ["nice", "-n", "10", sys.executable,
-                 str(CODE / "src" / "rebuild_transcript.py"), str(live)],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
-                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-                check=False,
-            )
+            # раньше); run вместо Popen — это и есть очередь. Журнал — как у
+            # основного пути (graph_*) и повтора (retry_*): шапка стенограммы
+            # отсылает причину отказа движка «в журнал разбора», и в DEVNULL она
+            # пропадала бы целиком (№495).
+            logs = _root() / "logs"
+            logs.mkdir(exist_ok=True)
+            with open(logs / f"recover_{live.stem}.log", "w") as rlog:
+                subprocess.run(
+                    ["nice", "-n", "10", sys.executable,
+                     str(CODE / "src" / "rebuild_transcript.py"), str(live)],
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
+                    stdout=rlog, stderr=subprocess.STDOUT,
+                    check=False,
+                )
         except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
             statuses.failed(live, f"не удалось запустить восстановление: {e}")
 
