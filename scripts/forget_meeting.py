@@ -856,6 +856,10 @@ def plan(stamp: str, root: pathlib.Path,
     # ни «забыть» не видели (аудит DeepSeek 16.08).
     for ls_ in log_stamps:
         p.delete += _with_stamp(logs, ls_, prefix="retry_", suffix=".log")
+    # Лог восстановления после падения демона (recover_<штамп>.log, №495) — тот
+    # же stdout пересборки: имена, тема и сырой отказ движка с путями машины.
+    for ls_ in log_stamps:
+        p.delete += _with_stamp(logs, ls_, prefix="recover_", suffix=".log")
     # Отметка «факты встречи отправлены в память Чароита» (graph_updater):
     # без неё повторный разбор той же встречи после забывания молчал бы.
     # Отметка «факты отправлены» (logs/brain_sent/<ключ графа>.txt) и сами

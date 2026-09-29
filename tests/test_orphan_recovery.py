@@ -80,6 +80,52 @@ def test_ретеншн_не_съедает_запись_которую_сейч
     assert held == 1, "задержку сверх обещанного срока обязаны считать и показывать"
 
 
+def test_журнал_не_открылся_пересборка_всё_равно_идёт(data_root, monkeypatch):
+    """Диск или права не дали открыть журнал — пересборка идёт без него, как до №495,
+    а не падает статусом «не удалось запустить» (выходной круг 1, M1)."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    seen: dict = {}
+    real_open = open
+
+    def no_log(path, *a, **k):
+        if str(path).endswith(".log"):
+            raise PermissionError("нет прав")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", no_log)
+    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: seen.update(stdout=kw.get("stdout")))
+    failed = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed", lambda self, *a: failed.append(a))
+    daemon._rebuild_orphans_sequentially([live])
+
+    assert seen.get("stdout") is daemon.subprocess.DEVNULL, seen
+    assert failed == [], "без журнала пересборка обязана стартовать"
+
+
+def test_журнал_закрывается_и_при_сбое_пересборки(data_root, monkeypatch):
+    """Упал сам запуск — файл журнала закрыт, статус — «не удалось запустить»."""
+    import daemon
+
+    live = data_root / "transcripts" / "2026-08-07_181500.md"
+    live.write_text("живой черновик", encoding="utf-8")
+    opened: list = []
+
+    def boom(cmd, **kw):
+        opened.append(kw.get("stdout"))
+        raise OSError("нет nice")
+
+    monkeypatch.setattr(daemon.subprocess, "run", boom)
+    failed = []
+    monkeypatch.setattr(daemon.MeetingStatusStore, "failed", lambda self, *a: failed.append(a))
+    daemon._rebuild_orphans_sequentially([live])
+
+    assert opened and opened[0].closed, "журнал остался открытым"
+    assert failed and "не удалось запустить восстановление" in failed[0][1]
+
+
 def test_ретеншн_чистит_всё_остальное_как_обещано(data_root):
     """Защита адресная. Записи без ожидающей пересборки уходят по сроку —
     иначе мы молча нарушили бы обещание PRIVACY об удалении через N дней."""
