@@ -149,7 +149,10 @@ def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
     gdir = graph_dir or graphs.graph_dir(cfg)
     if gdir is None:
         return None
-    key = f"{gdir}\n{embedder.model}"
+    # ключ — по пути после resolve(), как и имя файла кэша: два написания одного
+    # графа давали два индекса над одним манифестом. resolve() — до замка: это
+    # обращение к диску на пути подсказки (входной круг 2 по №323 PR 2, M2)
+    key = f"{pathlib.Path(gdir).resolve()}\n{embedder.model}"
     with _shared_lock:
         gs = _shared.get(key)
         if gs is None:

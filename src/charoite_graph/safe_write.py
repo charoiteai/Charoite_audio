@@ -39,7 +39,8 @@ def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
                expect: tuple[int, int] | None = None,
                expect_absent: bool = False,
-               times: tuple[int, int] | None = None) -> bool:
+               times: tuple[int, int] | None = None,
+               mode: int | None = None) -> bool:
     """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое.
 
     `expect` — снимок `stat_snapshot`, взятый ДО чтения исходника: если к
@@ -56,6 +57,10 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     свежесть читается по времени источника: канон минуток в архиве встречи
     (`summary_adoptable` сравнивает mtime материалов с саммари, №366). Без
     него времена — время записи, как всегда (правило `_carry_over_metadata`).
+    `mode` — права нового файла, заданные при создании (`os.open` с режимом, под
+    umask процесса), а не перенесённые со старого: кэш пакета графа хранит пути
+    заметок, и старый 0644 пережил бы любую маску (входной круг 1 по №323 PR 2,
+    I7). Атрибуты Finder переносятся и тогда. Без `mode` — права старого файла.
     """
     # Симлинк в графе ведёт к настоящему файлу, и писать надо в него: иначе
     # `replace` подменил бы саму ссылку обычным файлом, а цель осталась со
@@ -67,8 +72,16 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     # друг за другом. Кто заменит последним — тот и победил, но целиком.
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
     try:
-        tmp.write_text(text, encoding=encoding)
-        _carry_over_metadata(path, tmp)
+        if mode is None:
+            tmp.write_text(text, encoding=encoding)
+        else:
+            # сирота прошлого обрыва с тем же pid иначе валила бы O_EXCL на каждом
+            # запуске; unlink по симлинку не идёт (входной круг 2 по №323 PR 2, M1)
+            tmp.unlink(missing_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(text.encode(encoding))
+        _carry_over_metadata(path, tmp, keep_mode=mode is None)
         if times is not None:
             os.utime(tmp, ns=times)
         if expect is not None and stat_snapshot(path) != expect:
@@ -154,7 +167,7 @@ def claim(path: pathlib.Path) -> bool:
     return True
 
 
-def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
+def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path, *, keep_mode: bool = True) -> None:
     """Перенести на новый файл права и метки Finder со старого.
 
     `replace` создаёт новый inode, и без этого шага узел после первой же
@@ -176,10 +189,11 @@ def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
     """
     if not src.exists():
         return
-    try:
-        os.chmod(dst, stat.S_IMODE(src.stat().st_mode))
-    except OSError:
-        pass
+    if keep_mode:     # права, заданные писателем при создании (`write_text(mode=)`), не перебиваются старыми
+        try:
+            os.chmod(dst, stat.S_IMODE(src.stat().st_mode))
+        except OSError:
+            pass
     try:                              # расширенные атрибуты: теги и комментарии
         for name in os.listxattr(src):
             try:
