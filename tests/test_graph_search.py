@@ -205,6 +205,8 @@ def test_one_meeting_does_not_eat_all_slots_and_hop_follows_links_from_a_node(tm
     assert _rels(r) == ["Люди/Иван Мироненко.md", "Встречи/2026-08-01_1000.md"], r.blocks
     assert "↳ по ссылке из Люди/Иван Мироненко.md" in r.blocks[1] and "15 августа" in r.blocks[1]
     assert r.total >= len(r.blocks)
+    # источники — полем и с переходом, в порядке показа (№323 PR 2, I6)
+    assert r.sources == ("Люди/Иван Мироненко.md", "Встречи/2026-08-01_1000.md"), r.sources
 
 
 def test_honesty_gate_and_render_markers(tmp_path):
@@ -1614,6 +1616,7 @@ def test_dossier_blocks_read_the_generation_not_the_disk(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "read_text", no_disk)
     r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
     assert len(r.dossiers) == 1 and "ЮPay" in r.dossiers[0], "сводка из снимка; тема-путь мимо папки — пропущена"
+    assert r.sources[0] == f"{CHAROITE.dossier_dir}/Платёжный шлюз.md", r.sources   # досье — первым источником
 
 
 def test_hops_lead_to_primary_notes_only(tmp_path):

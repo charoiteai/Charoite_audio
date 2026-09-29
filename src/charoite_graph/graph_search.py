@@ -723,6 +723,10 @@ class Result:
     skipped: tuple[str, ...] = ()   # области графа ВНЕ индекса: их не читали, и ответ не вправе о них судить
     unread: int = 0                 # файлы, до которых обход дошёл, но не смог прочитать
     service: int = 0                # служебные указатели, сознательно оставленные вне индекса
+    # пути показанного (`rel` от корня графа) в порядке показа: досье, блоки, переходы.
+    # Источники — поле, а не разбор «• путь» из `blocks`: маркеры в тексте никто не
+    # разбирает (входные круги 1–2 по №323 PR 2, I6)
+    sources: tuple[str, ...] = ()
 
     @property
     def low_conf(self) -> bool:
@@ -755,6 +759,16 @@ class Result:
     @property
     def text(self) -> str:
         return render(self, self.query)
+
+    def as_dict(self) -> dict:
+        """Выдача словарём — одна проекция для CLI и будущих входов пакета (MCP №520).
+        `ready` в проекции обязателен: непрогретый индекс несёт статус по умолчанию
+        `empty`, и без него пустая папка читалась бы как «ничего не найдено»
+        (входной круг 1 по №323 PR 2, C2). Охват — `skipped`, `unread`, `service`:
+        ответ не вправе судить о том, чего не читал."""
+        return {"ready": self.ready, "status": self.status.value, "reason": self.reason, "text": self.text,
+                "sources": list(self.sources), "total": self.total, "skipped": list(self.skipped),
+                "unread": self.unread, "service": self.service}
 
 
 def _dot(a, b) -> float:
@@ -807,7 +821,7 @@ class GraphSearch:
 
     def __init__(self, graph_dir: pathlib.Path, *,
                  embedder: Embedder,
-                 data_dir: pathlib.Path,
+                 data_dir: pathlib.Path | None,
                  schema: GraphSchema = PLAIN,
                  now: Callable[[], float] = time.time) -> None:
         self.graph = pathlib.Path(graph_dir)
@@ -832,11 +846,14 @@ class GraphSearch:
         # Сколько блоков у файла при ТЕКУЩЕЙ схеме: путь → (mtime, потолок, число).
         # Нарезка считается один раз на версию файла, а не на каждую сверку кэша.
         self._block_counts: dict[str, tuple[float, int, int]] = {}
-        base = pathlib.Path(data_dir)
+        # `data_dir=None` — кэша нет: векторы не читаются и не пишутся (лексический поиск
+        # CLI без адреса модели), а не «несуществующий путь», который создал бы первый
+        # писатель (входной круг 2 по №323 PR 2, M3)
+        base = None if data_dir is None else pathlib.Path(data_dir)
         # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
         # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
         tag = hashlib.sha256(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]   # имя файла по пути, не подпись; sha256 — чтобы CI не спорил
-        self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
+        self._vec_manifest = None if base is None else base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
         self._vecs_tried_at: float | None = None   # None — не пробовали: часы могут считать от нуля (DS M3 r3)
         self._manifest_seen = 0.0   # mtime манифеста при последней загрузке: чужая запись — перечитать
@@ -1055,6 +1072,8 @@ class GraphSearch:
         неизменяемый плоский float32. Неудача не защёлкивается — повтор не чаще
         VEC_RETRY_S: защёлка гасила семантику на всю встречу после одного
         совпадения с писателем (круг 1 по #577, DS I1 / GLM I1)."""
+        if self._vec_manifest is None:
+            return len(self._vecs)
         try:
             seen = self._vec_manifest.stat().st_mtime
         except OSError:
@@ -1106,6 +1125,8 @@ class GraphSearch:
         return entries, flat, dim, mtime
 
     def save_vectors(self) -> None:
+        if self._vec_manifest is None:
+            return
         with self._lock:
             items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._gen.docs and vs]
         if not items:
@@ -1130,9 +1151,11 @@ class GraphSearch:
         with open(tmp, "wb") as fh:
             fh.write(flat.tobytes())
         tmp.replace(blob)
+        # манифест несёт пути заметок — только владельцу, и при перезаписи тоже: без
+        # `mode` старый 0644 переносился бы на новый файл (входной круг 1 по №323 PR 2, I7)
         safe_write.write_text(self._vec_manifest, json.dumps(
             {"dim": dim, "key": self.cache_key(), "blob": blob.name,
-             "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False))
+             "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False), mode=0o600)
         # уборка поколений: текущее и предыдущее живут — читатель без лока может
         # держать в руках прошлый манифест (DS I4 / GLM I1 r2); остальные — только
         # старше BLOB_GRACE_S: окно читателя перекрывается временем, а не удачей, и
@@ -1180,7 +1203,16 @@ class GraphSearch:
             # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
             # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
             have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()}
-        return [d.path for d in gen.primary if have.get(d.path) != (d.mtime, self._expected_blocks(d))]
+        # пустой файл не свидетель (то же правило, что у семантики в `search`): в очереди
+        # он ждал бы вектора вечно, и `index` отвечал бы «собрано не всё» на каждом запуске
+        # (выходной круг 1 по №323 PR 2, M1)
+        return [d.path for d in gen.primary
+                if d.low.strip() and have.get(d.path) != (d.mtime, self._expected_blocks(d))]
+
+    def coverage_gaps(self) -> list[str]:
+        """Чего текущее поколение индекса не читало — словами, тем же правилом, что у выдачи."""
+        gen = self._gen
+        return coverage_gaps(Result([], 0, skipped=gen.skipped, unread=gen.unread, service=gen.service))
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1195,6 +1227,9 @@ class GraphSearch:
         ответил — останавливаемся, недобранное дособерём в следующий раз.
         -> сколько файлов получили векторы."""
         self.note = ""
+        if self._vec_manifest is None:
+            self.note = "кэша векторов нет (data_dir не задан) — векторы не пишем"
+            return 0
         lock = None
         try:
             # только POSIX: модуль грузится и там, где fcntl нет, а без замка векторов не
@@ -1366,7 +1401,9 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel, self.schema) * placeholder_factor(d.base), d.rel))
 
-        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
+        dossier_pairs, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
+        dossiers = [block for _, block in dossier_pairs]
+        dossier_rels = tuple(rel for rel, _ in dossier_pairs)
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
@@ -1389,7 +1426,8 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service)
+                          reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service,
+                          sources=dossier_rels)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1405,13 +1443,15 @@ class GraphSearch:
         total = len(fused)
         if not low_conf:
             hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first, max(1, limit // 2))
-            blocks += hops
+            blocks += [block for _, block in hops]
+            shown += [rel for rel, _ in hops]
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service)
+                      reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service,
+                      sources=dossier_rels + tuple(shown))
 
     def _dossier_blocks(self, query: str, snippet_chars: int, gen: Generation,
-                        limit: int = 2) -> tuple[list[str], float]:
+                        limit: int = 2) -> tuple[list[tuple[str, str]], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
         моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие).
 
@@ -1421,7 +1461,8 @@ class GraphSearch:
         имя на диске знает только обход, а тема из JSON в путь не склеивается —
         ни `../` вне папки, ни расхождение регистра или формы Unicode между
         темой и файлом (выходной круг DS I1 / GLM M3). Сводки, которой в снимке
-        ещё нет, в ответе нет — до следующего обхода."""
+        ещё нет, в ответе нет — до следующего обхода. Блоки — парами (`rel`
+        сводки, текст): путь идёт в `Result.sources`."""
         if self.schema.dossier_dir is None:
             return [], 0.0              # у хранилища нет роли досье — секции нет
         folder = self.graph / self.schema.dossier_dir
@@ -1429,7 +1470,7 @@ class GraphSearch:
             entries = dossier.lookup(folder, query, limit=limit)
         except (OSError, ValueError, KeyError, TypeError):   # битый индекс — без секции, не без ответа
             return [], 0.0
-        out: list[str] = []
+        out: list[tuple[str, str]] = []
         best = 0.0
         for e in entries:
             if e.get("счёт", 0) < 0.3:
@@ -1438,7 +1479,7 @@ class GraphSearch:
             if d is None:
                 continue
             head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
-            out.append(f"📁 Досье «{e['тема']}»\n  {head}")
+            out.append((d.rel, f"📁 Досье «{e['тема']}»\n  {head}"))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
@@ -1449,7 +1490,7 @@ class GraphSearch:
         return _frag_or_head(d.body or d.text, rx, chars, rare, dense=not self.schema.is_raw(d.rel))
 
     def _hops(self, shown: list[str], by_rel: dict[str, Doc], catalog: LinkCatalog, keys: list[str],
-              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
+              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[tuple[str, str]]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
         запроса ВНЕ имени узла (покрытие × свежесть), при голом имени — самые
         свежие; тёзки в разных папках — один кандидат; по одному слоту на узел,
@@ -1458,11 +1499,12 @@ class GraphSearch:
         Ссылка на слитый узел ведёт к канону: иначе свежайшим кандидатом под
         базой оказывается заглушка-редирект, её отбрасывает фильтр узлов, и
         переход пропадает молча (замер 17.09: 40 переходов из 27 663 целей —
-        столько доезжает до выдачи после всех фильтров и лимитов)."""
+        столько доезжает до выдачи после всех фильтров и лимитов). Переходы —
+        парами (`rel` цели, блок): путь идёт в `Result.sources`."""
         nodes = [r for r in shown if self.schema.is_node_path(r)]
         if not nodes or limit <= 0:
             return []
-        out: list[str] = []
+        out: list[tuple[str, str]] = []
         seen = set(shown)
         for per_node in (1, limit):
             for node_rel in nodes:
@@ -1491,7 +1533,7 @@ class GraphSearch:
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
                     frag = self._fragment(d, rx, snippet_chars, rare_first)
                     seen.add(d.rel)
-                    out.append(f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}")
+                    out.append((d.rel, f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}"))
                     if len(out) >= limit:
                         return out
         return out
