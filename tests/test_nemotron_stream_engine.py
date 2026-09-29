@@ -8,6 +8,7 @@ EOF, «открыт» сегмента до и после `close` — держа
 import io
 import json
 import pathlib
+import subprocess
 import sys
 import types
 
@@ -159,3 +160,12 @@ def test_the_engine_shakes_hands_and_runs_the_stream_to_eof(monkeypatch):
     assert lines[0] == {"type": "ready", "proto": dn.STREAM_PROTO, "sr": SR, "preset": "very_low",
                         "frame_s": 0.08, "step": dn.STREAM_STEP}
     assert lines[-1]["type"] == "front" and lines[-1]["final"] is True and lines[-1]["fed"] == SR
+
+
+def test_the_engine_reads_its_audio_from_its_stdin():
+    """Боевой читатель потока — дескриптор 0 процесса движка; тесты выше подставляют свой."""
+    code = ("import sys; sys.path.insert(0, %r); import diarize_nemotron as dn; "
+            "sys.stdout.write(repr(dn._read_stdin(64)))" % str(SRC))
+    out = subprocess.run([sys.executable, "-c", code], input=b"\x01\x02\x03", capture_output=True, timeout=60)
+    assert out.returncode == 0, out.stderr.decode(errors="replace")
+    assert out.stdout.decode() == repr(b"\x01\x02\x03")
