@@ -622,5 +622,5 @@ def test_the_package_command_reaches_the_model_directly(stand, tmp_path):
     (folder / "а.md").write_text("# Заметка\n\nтекст про прокси и модель\n", encoding="utf-8")
     code = cli.main(["index", str(folder), "--model-url", server.url, "--model", "тест-модель",
                      "--data-dir", str(tmp_path / "кэш")])
-    assert code == 0
+    assert code == cli.EXIT_OK
     assert any(path == "/api/embed" for _, path in server.requests) and proxy.hits == 0
