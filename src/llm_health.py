@@ -138,17 +138,20 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
             key = _llm.cloud_key(cfg)
             if not key:
                 return False
+            url = privacy.cloud_llm_url(cfg) + "/chat/completions"
             r = requests.post(
-                privacy.cloud_llm_url(cfg) + "/chat/completions",
+                url,
                 json={"model": str((cfg.get("llm") or {}).get("cloud_model") or ""),
                       "messages": [{"role": "user", "content": "ok"}],
                       "stream": False, "max_tokens": 1},
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=timeout,
+                **privacy.proxies_for(url),
             )
         elif privacy.llm_engine(cfg) == "mlx-server":
+            url = privacy.mlx_base_url(cfg) + "/v1/chat/completions"
             r = requests.post(
-                privacy.mlx_base_url(cfg) + "/v1/chat/completions",
+                url,
                 json={
                     "model": str((cfg.get("llm") or {}).get("mlx_model")
                                  or DEFAULT_MLX_MODEL),
@@ -158,10 +161,12 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
                     "chat_template_kwargs": {"enable_thinking": False},
                 },
                 timeout=timeout,
+                **privacy.proxies_for(url),
             )
         else:
+            url = privacy.llm_base_url(cfg) + "/api/generate"
             r = requests.post(
-                privacy.llm_base_url(cfg) + "/api/generate",
+                url,
                 json={
                     "model": cfg["llm"]["model"],
                     "prompt": "ok",
@@ -170,6 +175,7 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
                     "options": {"num_predict": 1},
                 },
                 timeout=timeout,
+                **privacy.proxies_for(url),
             )
     except requests.ReadTimeout:
         return SLOW
@@ -197,8 +203,9 @@ def strict_json(base: str, model: str, *, timeout: float = 90) -> tuple[str, str
     """
     from llm import STRICT_UNKNOWN, strict_json_probe_body, strict_json_verdict
     try:
-        r = requests.post(base + "/api/chat", json=strict_json_probe_body(model),
-                          timeout=timeout)
+        url = base + "/api/chat"
+        r = requests.post(url, json=strict_json_probe_body(model), timeout=timeout,
+                          **privacy.proxies_for(url))
     except requests.Timeout:
         return STRICT_UNKNOWN, "таймаут"
     except requests.RequestException as e:

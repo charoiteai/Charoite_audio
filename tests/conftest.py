@@ -444,6 +444,14 @@ def _сеть_закрыта(request):
         отказ(getattr(url, "full_url", url))
 
     urllib.request.urlopen = отказ_urlopen
+    # loopback идёт своим opener'ом мимо прокси (`charoite_graph.net.open_url`,
+    # №525): он не зовёт `urlopen`, и без этой подмены сторож его не видел бы
+    был_open = urllib.request.OpenerDirector.open
+
+    def отказ_open(self, fullurl, *a, **k):
+        отказ(getattr(fullurl, "full_url", fullurl))
+
+    urllib.request.OpenerDirector.open = отказ_open
     try:
         yield маршруты
     finally:
@@ -452,6 +460,7 @@ def _сеть_закрыта(request):
                 setattr(requests, имя, значение)
         requests.Session.request = был_request
         urllib.request.urlopen = был_urlopen
+        urllib.request.OpenerDirector.open = был_open
 
 
 #: Маркер теста, которому нужен ответивший Ollama: аргументы маркера — имена

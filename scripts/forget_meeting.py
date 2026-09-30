@@ -65,6 +65,7 @@ import typing
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import privacy  # noqa: E402
 import deps  # noqa: E402
 import live_sidecar  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
@@ -1187,7 +1188,8 @@ def brain_forget(key: str, *, sent: bool, enabled: bool, explicit: bool) -> str:
     """
     try:
         import requests
-        r = requests.post(f"{BRAIN}/forget", json={"meeting": key}, timeout=30)
+        r = requests.post(f"{BRAIN}/forget", json={"meeting": key}, timeout=30,
+                          **privacy.proxies_for(BRAIN))
         text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
         if r.status_code == 200:
             return text or f"забыто: {key}"

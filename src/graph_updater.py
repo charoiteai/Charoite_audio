@@ -45,6 +45,13 @@ from charoite_schema import CHAROITE
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 
+def _post_direct(url: str, **kw):
+    """`requests.post` для памяти на этой машине: мимо прокси окружения и системы (№525).
+
+    `requests.post` читается при вызове: тесты подменяют атрибут модуля."""
+    return requests.post(url, **{**privacy.proxies_for(url), **kw})
+
+
 def _root() -> pathlib.Path:
     """Корень данных — спрашиваем канон на вызове, а не запоминаем на импорте.
 
@@ -525,7 +532,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     """
     if not enabled:
         return 0
-    post = post or requests.post
+    post = post or _post_direct
     keyed = _meeting_facts(stamp, title, people, topics, decisions)
     # Один отправитель фактов встречи за раз: без замка чужой /forget
     # (оплата долга из другого воркера) ложился посреди своей отправки —
@@ -737,7 +744,7 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     Внешняя память выключена (`enabled`, №249) — None: ни /forget, ни долга, ни строки лога."""
     if not enabled:
         return None
-    post = post or requests.post
+    post = post or _post_direct
     try:
         after = note.read_text(encoding="utf-8")
     except OSError as e:

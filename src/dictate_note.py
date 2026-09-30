@@ -29,6 +29,9 @@ import requests
 
 from charoite_paths import code_root, harden_umask, resolve_root
 from config_loader import load_user_or_example
+import privacy
+
+BRAIN_REMEMBER = "http://127.0.0.1:8100/remember"
 
 CODE = code_root(__file__)
 
@@ -277,7 +280,7 @@ def main():
     # (`sufler.brain`, №249); файл заметки уже записан, запрос — лишь копия
     if install_profile.brain_enabled(cfg()):
         try:
-            requests.post("http://127.0.0.1:8100/remember", json={
+            requests.post(BRAIN_REMEMBER, **privacy.proxies_for(BRAIN_REMEMBER), json={
                 "text": f"Голосовая заметка {now:%d.%m} «{title}»: {body[:300]}",
                 "category": "voice_note",
             }, timeout=5)
@@ -345,7 +348,7 @@ def diary_entry(raw: str) -> None:
     # личный текст — во внешнюю память только при включённой (`sufler.brain`, №249)
     if install_profile.brain_enabled(cfg()):
         try:
-            requests.post("http://127.0.0.1:8100/remember", json={
+            requests.post(BRAIN_REMEMBER, **privacy.proxies_for(BRAIN_REMEMBER), json={
                 "text": f"Дневник {now:%d.%m %H:%M}: {body[:300]}",
                 "category": "diary",
             }, timeout=5)

@@ -45,6 +45,8 @@ import socket
 import os
 import urllib.parse
 
+from charoite_graph.net import AmbiguousAddress, is_loopback_host, loopback_url, url_host
+
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
 KILL_SWITCHES = ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD")
@@ -148,8 +150,11 @@ def cloud_llm_url(cfg: dict, env: dict | None = None) -> str:
             f"llm.engine = cloud запрещён рубильником "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))}")
     url = raw.rstrip("/")
-    scheme = urllib.parse.urlsplit(url).scheme
-    host = urllib.parse.urlsplit(url).hostname
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme
+        host = url_host(url)
+    except (AmbiguousAddress, ValueError) as e:
+        raise PrivacyRefused(f"llm.cloud_base_url = {raw}: {e}") from e
     if scheme != "https" and not _is_loopback(host):
         raise PrivacyRefused(
             f"llm.cloud_base_url = {raw}: только https — по http ключ "
@@ -171,20 +176,23 @@ def llm_engine(cfg: dict) -> str:
             "mlx-server и cloud")
     return raw
 
-# localhost — не IP, ip_address() его не разбирает, а это самый частый адрес
-# в конфиге. Остальное решает is_loopback: 127.0.0.0/8 целиком и ::1.
-_LOCAL_NAMES = ("localhost",)
-
-
 def _is_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    if host.lower() in _LOCAL_NAMES:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:      # имя машины, .local, домен — что угодно не-IP
-        return False
+    return is_loopback_host(host)
+
+
+def proxies_for(url: str) -> dict:
+    """Аргументы `requests` для адреса: на этой машине — без прокси и без редиректов.
+
+    `proxies` с `None` отключает и переменные окружения, и системные настройки
+    (requests берёт их через urllib.getproxies). Ключ `all` обязателен: `ALL_PROXY`
+    окружения ложится в него, и без `None` там прокси обходил бы `http`/`https`
+    (опыт с подставным прокси: ProxyError на loopback). Редирект с loopback
+    уводил бы запрос на другую цель. Для остальных адресов — `{}`: их прокси
+    решает окружение, как раньше (№525).
+    """
+    if loopback_url(url):
+        return {"proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
+    return {}
 
 
 def llm_base_url(cfg: dict, env: dict | None = None) -> str:
@@ -269,9 +277,11 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get(key) or default)
     url = raw.rstrip("/")
-    parts = urllib.parse.urlsplit(url)
-    host = parts.hostname
-    scheme = parts.scheme.lower()
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        host = url_host(url)
+    except (AmbiguousAddress, ValueError) as e:     # «http://[::1» — тоже отказ, а не голый ValueError
+        raise PrivacyRefused(f"llm.{key} = {raw}: {e}") from e
     if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
         raise PrivacyRefused(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
     if _is_loopback(host):
@@ -336,4 +346,4 @@ def is_loopback_url(url: str) -> bool:
     вправе ли мы трогать сам сервис: перезапустить вставшую Ollama у себя можно,
     а на чужой машине это значит уронить её соседям.
     """
-    return _is_loopback(urllib.parse.urlsplit(url).hostname)
+    return loopback_url(url)

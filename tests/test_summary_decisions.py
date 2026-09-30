@@ -49,7 +49,7 @@ def test_decisions_section_does_not_demand_an_owner(tmp_path, monkeypatch):
     class _Resp:
         def json(self): return {"message": {"content": ""}}
 
-    def fake_post(url, json, timeout):  # noqa: A002
+    def fake_post(url, json, timeout, **kw):  # noqa: A002
         captured["user"] = json["messages"][-1]["content"]
         return _Resp()
 
@@ -74,7 +74,7 @@ def test_empty_case_still_has_an_explicit_wording(tmp_path, monkeypatch):
     class _Resp:
         def json(self): return {"message": {"content": ""}}
 
-    def fake_post(url, json, timeout):  # noqa: A002
+    def fake_post(url, json, timeout, **kw):  # noqa: A002
         captured["user"] = json["messages"][-1]["content"]
         return _Resp()
 
@@ -97,7 +97,7 @@ def test_materials_reach_the_model_decisions_first(tmp_path, monkeypatch):
     class _Resp:
         def json(self): return {"message": {"content": ""}}
 
-    def fake_post(url, json, timeout):  # noqa: A002
+    def fake_post(url, json, timeout, **kw):  # noqa: A002
         captured["user"] = json["messages"][-1]["content"]
         return _Resp()
 

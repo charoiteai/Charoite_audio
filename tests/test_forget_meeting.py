@@ -877,7 +877,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
 
     class FakeRequests:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             calls.append((url, json))
             return Resp()
 
@@ -887,7 +887,7 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
@@ -1205,7 +1205,7 @@ def test_forget_still_reaches_the_external_memory_when_writing_is_off(monkeypatc
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             calls.append((url, json))
             raise ConnectionError("refused")
 
@@ -1260,7 +1260,7 @@ def test_forget_erases_with_an_empty_or_broken_config(tmp_path, monkeypatch, con
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             calls.append(url)
             raise ConnectionError("refused")
 
@@ -1288,7 +1288,7 @@ def test_forget_says_what_the_mark_and_the_flag_tell(tmp_path, monkeypatch, caps
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
@@ -1308,7 +1308,7 @@ def test_apply_defaults_say_nothing_and_touch_nothing(tmp_path, monkeypatch, cap
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
@@ -1327,7 +1327,7 @@ def test_one_meeting_gets_one_story_about_the_memory(tmp_path, monkeypatch, caps
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)

@@ -46,7 +46,7 @@ def _fake_model(monkeypatch, calls: list, answer="**Суть** встреча.\n
         def json(self): return {"message": {"content": self._b}}
         def raise_for_status(self): pass
 
-    def fake_post(url, json, timeout):  # noqa: A002
+    def fake_post(url, json, timeout, **kw):  # noqa: A002
         calls.append(json["messages"][-1]["content"])
         return _Resp(answer)
 

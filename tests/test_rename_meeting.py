@@ -168,7 +168,7 @@ def test_rename_main_says_what_the_mark_and_the_flag_tell(world, tmp_path, monke
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)
@@ -558,7 +558,7 @@ def test_rename_still_reaches_the_external_memory_when_writing_is_off(monkeypatc
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             calls.append((url, json))
             raise ConnectionError("refused")
 
@@ -587,7 +587,7 @@ def test_rename_reads_the_flag_and_the_mark_itself(tmp_path, monkeypatch, mark, 
 
     class Down:
         @staticmethod
-        def post(url, json=None, timeout=None):
+        def post(url, json=None, timeout=None, **kw):
             raise ConnectionError("refused")
 
     monkeypatch.setitem(sys.modules, "requests", Down)

@@ -528,7 +528,7 @@ def _requests_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     подменяют атрибут модуля, и обёртка обязана видеть подмену. Тело — байты
     ответа, декодированные как UTF-8 с заменой: 503 приходит не-JSON.
     """
-    r = requests.post(url, json=payload, timeout=timeout)
+    r = requests.post(url, json=payload, timeout=timeout, **privacy.proxies_for(url))
     return r.status_code, r.content.decode("utf-8", "replace")
 
 
@@ -659,7 +659,8 @@ class LLM:
         об этом (№397). Форма ответа проверяется явно, а не падением на `m["name"]`.
         """
         try:
-            r = requests.get(f"{self.base}/api/tags", timeout=3)
+            url = f"{self.base}/api/tags"
+            r = requests.get(url, timeout=3, **privacy.proxies_for(url))
             body = r.json()
         except requests.RequestException:
             return set()
@@ -944,7 +945,7 @@ class LLM:
         for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
             try:
                 r = requests.post(url, json=payload, stream=True, timeout=timeout,
-                                  **self._auth())
+                                  **self._auth(), **privacy.proxies_for(url))
             except requests.ConnectionError:
                 if time.monotonic() + delay > deadline:
                     raise
@@ -1361,7 +1362,8 @@ class LLM:
         # паузы «занято» между попытками — без аренды
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
             with self._lease("complete", timeout):
-                r = requests.post(url, json=payload, timeout=timeout, **self._auth())
+                r = requests.post(url, json=payload, timeout=timeout, **self._auth(),
+                                  **privacy.proxies_for(url))
             if is_busy_status(r.status_code) and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
                 time.sleep(delay)

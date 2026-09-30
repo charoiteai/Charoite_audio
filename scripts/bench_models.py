@@ -25,6 +25,7 @@ import time
 
 # Вставка нужна только чтобы импортировать сам канон путей.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import privacy  # noqa: E402
 from charoite_paths import resolve_root  # noqa: E402
 
 BASE = "http://127.0.0.1:11434"
@@ -57,7 +58,8 @@ def ask(model: str, prompt: str, timeout: int = 600) -> dict:
     t0 = time.monotonic()
     first = None
     chunks = []
-    with requests.post(f"{BASE}/api/chat", stream=True, timeout=timeout, json={
+    with requests.post(f"{BASE}/api/chat", stream=True, timeout=timeout,
+                       **privacy.proxies_for(BASE), json={
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
@@ -124,7 +126,7 @@ def main() -> int:
     a = ap.parse_args()
 
     try:
-        requests.get(f"{BASE}/api/version", timeout=3)
+        requests.get(f"{BASE}/api/version", timeout=3, **privacy.proxies_for(BASE))
     except requests.RequestException:
         print("ollama не отвечает на 11434")
         return 1
