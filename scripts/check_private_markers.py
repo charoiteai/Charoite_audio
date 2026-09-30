@@ -75,8 +75,12 @@ class GitError(Exception):
 # Настройки владельца не должны менять то, что страж читает: кавычки в
 # кириллических путях, цвет, скрытый дифф корневого коммита.
 # `--no-replace-objects`: refs/replace меняет то, что показывает log, но не то,
-# что уходит push-ем — страж обязан видеть настоящие объекты.
-_GIT = ("git", "--no-replace-objects", "-c", "core.quotepath=false", "-c", "color.ui=never",
+# что уходит push-ем — страж обязан видеть настоящие объекты. Атрибуты — из
+# пустого дерева: `.gitattributes` ветки (`* diff`, `-diff`) не должен решать,
+# что двоичное, а что текст (узкий круг 4 №541, Sonnet I1).
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+_GIT = ("git", "--no-replace-objects", f"--attr-source={_EMPTY_TREE}",
+        "-c", "core.attributesFile=/dev/null", "-c", "core.quotepath=false", "-c", "color.ui=never",
         "-c", "log.showRoot=true")
 
 
@@ -357,8 +361,20 @@ def allowed_blobs() -> set[str]:
     path = blob_allow_path()
     if not path.exists():
         return set()
-    return {ln.split()[0] for ln in path.read_text(encoding="utf-8").splitlines()
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as e:
+        raise GitError(f"{path.name} не читается ({type(e).__name__})") from None
+    return {ln.split()[0].lower() for ln in text.splitlines()
             if ln.strip() and not ln.strip().startswith("#")}
+
+
+def new_objects(revs: list[str]) -> set[str]:
+    """Объекты, которые push действительно отправит: уже опубликованное (слияние
+    main в ветку, переименование, откат к старой версии) не судится заново
+    (узкий круг 4 №541, Sonnet I2)."""
+    out = git("rev-list", "--objects", "--no-object-names", *revs, "--")
+    return set(out.decode().split())
 
 
 def binary_files(revs: list[str]) -> list[tuple[str, str]]:
@@ -410,8 +426,9 @@ def extra_headers(raw: str) -> list[tuple[str, str]]:
 def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: bool,
                  extra: list[tuple[str, str]] = (),
                  extra_emails: list[tuple[str, str]] = ()) -> tuple[int, list[str]]:
-    """Что публикует каждый коммит набора — строки, имена файлов (и содержимое
-    двоичных), сообщение, имена и почты — против обоих наборов; плюс `extra`
+    """Что публикует каждый коммит набора — строки, имена файлов, сообщение,
+    имена и почты — против обоих наборов; двоичное вне медиа — отказ, если его
+    блоба нет в списке владельца; плюс `extra`
     (имена ссылок, аннотации тегов) и почты тегеров. Возвращает (число
     коммитов, находки).
 
@@ -467,7 +484,8 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         for k in kinds(text):
             hits.append(f"{sha[:9]} {mask(name)}:{lineno}: {k}")
     kept = set(present)
-    allowed = allowed_blobs()
+    allowed: set[str] | None = None
+    fresh: set[str] | None = None
     for sha, name in binary_files(revs):
         if (sha, name) not in kept or \
                 pathlib.PurePosixPath(name).suffix.lower() in _COMMIT_SKIP:
@@ -475,9 +493,13 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         if not git_ok("cat-file", "-e", f"{sha}:{name}"):
             raise GitError(f"{sha[:9]} {mask(name)}: объект файла не найден — имя не разобрать")
         blob = git("rev-parse", f"{sha}:{name}").decode().strip()
+        fresh = new_objects(revs) if fresh is None else fresh
+        if blob not in fresh:
+            continue                     # этот блоб уже опубликован
+        allowed = allowed_blobs() if allowed is None else allowed
         if blob not in allowed:
-            hits.append(f"{sha[:9]} {mask(name)} (двоичный): содержимое не проверить — если "
-                        f"файл можно публиковать, впишите {blob} в {blob_allow_path()}")
+            hits.append(f"{sha[:9]} {mask(name)} (двоичный): содержимое не проверить — "
+                        f"сопровождающий пропускает версию строкой {blob} в {blob_allow_path()}")
     return len(metas), hits
 
 

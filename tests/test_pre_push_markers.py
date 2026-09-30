@@ -1008,3 +1008,44 @@ def test_deleting_a_published_binary_is_not_a_refusal(repo):
     repo.commit("удалил")
     p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
     assert p.returncode == 0, p.stderr
+
+
+# ── узкий круг 4 (№541) ─────────────────────────────────────────────────────
+
+def test_branch_attributes_do_not_decide_what_is_binary(repo):
+    """`.gitattributes` ветки с `* diff` сделал бы файл с NUL «текстом» для git —
+    и содержимое в UTF-16 ушло бы без отказа."""
+    repo.write(".gitattributes", "* diff\n")
+    (repo.work / "data.bin").write_bytes(f"запуск на {MARKER}".encode("utf-16-le"))
+    repo.commit("attrs")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "data.bin (двоичный)" in p.stderr, p.stdout + p.stderr
+
+
+def test_merging_main_does_not_rejudge_its_published_binaries(repo):
+    """Двоичное, уже опубликованное в main, после слияния main в ветку не судится
+    заново — push ветки не отказывает на чужой иконке."""
+    wt = repo.worktree("feat")
+    repo.write("f.md", "своё\n", wt)
+    repo.commit("feat", wt)
+    (repo.work / "AppIcon.icns").write_bytes(b"icns\x00\x01")
+    repo.commit("icon on main")
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "push", "-q", "origin",
+        "main", env=repo.env)
+    git(wt, "fetch", "-q", "origin", env=repo.env)
+    git(wt, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "merge", "-q", "--no-edit",
+        "origin/main", env=repo.env)
+    repo.install()
+    p = git(wt, "push", "origin", "feat", env=repo.env, check=False)
+    assert p.returncode == 0, p.stdout + p.stderr
+
+
+def test_allow_list_with_bom_and_upper_case(repo, monkeypatch):
+    path = repo.tmp / "home" / ".config" / "charoite" / "blob_allow.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes("\ufeffABCDEF0123\n".encode())
+    monkeypatch.setenv("HOME", str(repo.tmp / "home"))
+    assert guard.allowed_blobs() == {"abcdef0123"}
+    path.write_bytes(b"\xff\xfe\x00")
+    with pytest.raises(guard.GitError, match="blob_allow.txt не читается"):
+        guard.allowed_blobs()
