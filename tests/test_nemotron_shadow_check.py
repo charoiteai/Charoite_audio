@@ -344,10 +344,11 @@ class _Tracker:
         return self.result
 
 
-def _decide(tracker, start=1000):
-    placed = audio.Placed("Собеседник", np.zeros(3 * SR, dtype=np.float32), start, ("blackhole", 0))
+def _decide(tracker, start=1000, label="blackhole"):
+    placed = audio.Placed("Собеседник", np.zeros(3 * SR, dtype=np.float32), start, (label, 0))
     return rp.chunk_decision(tracker, placed, stt_runtime=__import__("stt_runtime"),
-                             jobs_for=diarize_live.jobs_for, diarized_state=ln.diarized_state)
+                             jobs_for=diarize_live.jobs_for, heard_pieces=diarize_live.heard_pieces,
+                             diarized_state=ln.diarized_state)
 
 
 def test_chunk_decision_names_every_tracker_path_on_the_hub_axis():
@@ -356,6 +357,20 @@ def test_chunk_decision_names_every_tracker_path_on_the_hub_axis():
     assert _decide(_Tracker(diarize_live.SplitResult([], 1))) == ("none", "excluded", [])
     assert _decide(_Tracker(diarize_live.SplitResult(None, 3))) == ("pieces", "whole", [(1000, 1000 + 3 * SR, 3)])
     assert _decide(_Tracker(raises=True)) == ("split_failed", "split_failed", [])
+
+
+def test_chunk_decision_carries_a_voiceless_window_like_the_daemon():
+    """№571: окно кандидата без места (voice None) на канале собеседников — задание под
+    меткой канала: путь `pieces`, интервал с голосом None; на микрофоне оно выпадает, как у
+    демона, и чанк из одного такого окна — `excluded`. Прогон не падает на `int(None)`."""
+    known = diarize_live.Piece(start=0, end=SR, voice=2, raw_start=100, raw_end=900)
+    stranger = diarize_live.Piece(start=SR, end=2 * SR, voice=None, raw_start=SR + 50, raw_end=2 * SR - 50)
+    both = _Tracker(diarize_live.SplitResult([known, stranger], 2))
+    assert _decide(both) == ("pieces", "pieces", [(1100, 1900, 2), (1000 + SR + 50, 1000 + 2 * SR - 50, None)])
+    assert _decide(both, label="mic") == ("pieces", "pieces", [(1100, 1900, 2)])
+    alone = _Tracker(diarize_live.SplitResult([stranger], None))
+    assert _decide(alone) == ("pieces", "pieces", [(1000 + SR + 50, 1000 + 2 * SR - 50, None)])
+    assert _decide(alone, label="mic") == ("none", "excluded", [])
 
 
 def test_run_root_refuses_an_existing_output(tmp_path):

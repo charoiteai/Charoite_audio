@@ -346,26 +346,35 @@ def unlink_links(root: pathlib.Path) -> None:
         (root / name).unlink(missing_ok=True)
 
 
-def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, diarized_state):
+def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, heard_pieces, diarized_state):
     """Зеркало ветки чанка демона без STT: (состояние для тени, путь, интервалы на оси).
 
-    Путь: `split_failed` — раскладка упала (канальная метка); `excluded` — вся речь
-    исключена политикой (`pieces == []`); `pieces` — окна по голосам; `whole` — чанк
-    целиком одним голосом (`pieces is None`, голос `main`, может быть None)."""
+    Путь: `split_failed` — раскладка упала (канальная метка); `excluded` — заданий STT
+    нет (`jobs_for` отдал None: придержка, микро-куски или, на микрофоне, только куски без
+    голоса); `pieces` — окна; `whole` — чанк целиком одним голосом (`pieces is None`, голос
+    `main`, может быть None). Какие куски стали заданиями, решает то же правило, что у
+    демона (`heard_pieces`, №571); кусок без голоса идёт в интервалы с голосом None —
+    метка канала, как у сбоя раскладки. Признак канала — метка захвата: на микрофоне метка
+    канала подписывает владельца."""
     plan = stt_runtime.diarization_plan(lagging=False,
                                         has_split=stt_runtime.has_split_tracker(tracker))
     if plan != "diarize":
         raise Refused(f"план чанка {plan!r}: в прогоне ждали раскладку трекером")
     res, split_failed = stt_runtime.guarded_split(tracker, placed.chunk, placed.speaker)
-    jobs = jobs_for(res, placed.chunk)
+    neutral = placed.seq[0] != "mic"
+    jobs = jobs_for(res, placed.chunk, channel_label_neutral=neutral)
     state = diarized_state(split_failed, jobs)
     start = int(placed.start)
     if split_failed:
         return state, "split_failed", []
-    if res.pieces is not None and not res.pieces:
+    if jobs is None:
         return state, "excluded", []
     if res.pieces:
-        return state, "pieces", [(start + p.raw_start, start + p.raw_end, int(p.voice)) for p in res.pieces]
+        heard = heard_pieces(res, channel_label_neutral=neutral)
+        return state, "pieces", [
+            (start + p.raw_start, start + p.raw_end,
+             None if n == stt_runtime.CHANNEL_LABEL_ONLY else int(n))
+            for p, (_piece, n, _raw) in zip(heard, jobs)]
     return state, "whole", [(start, start + len(placed.chunk), res.main)]
 
 
@@ -446,6 +455,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
             counts["placed"] += 1
             state, path, intervals = chunk_decision(
                 tracker, placed, stt_runtime=stt_runtime, jobs_for=diarize_live.jobs_for,
+                heard_pieces=diarize_live.heard_pieces,
                 diarized_state=live_nemotron.diarized_state)
             shadow.note_chunk(placed, state)
             if placed.seq[0] == live_nemotron.CHANNEL:
