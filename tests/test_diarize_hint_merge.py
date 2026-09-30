@@ -69,6 +69,7 @@ def test_auto_mode_is_not_merged_twice(monkeypatch):
     monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=-1: list(SEGS))
     monkeypatch.setattr(rt, "merge_voice_shards", lambda *a: (_ for _ in ()).throw(AssertionError("вторая склейка")))
     assert len(rt.diarize_channel(AUDIO, 16000, merge_shards=True)) == 3
+    assert len(rt.diarize_channel(AUDIO, 16000, num_speakers=0, merge_shards=True)) == 3
 
 
 # ------------------------------------------------ контракт diarize() (выход r2, GLM I1)
