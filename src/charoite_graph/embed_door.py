@@ -6,8 +6,10 @@
 бюджет всего вызова, разбор ответа и таблица стока ошибок. Слой моделей
 приложения (`llm.embedder`) — только адаптер: он резолвит имя, спрашивает
 политику адреса и передаёт сюда адрес, способ отправки и свой реестр строк.
-Политики адреса у двери нет — адрес задаёт вызывающий (фабрика с политикой —
-№522). Шов (`model_seam`) остаётся без знания о сервере.
+У самой двери (`embedder`) политики адреса нет — адрес задаёт вызывающий;
+пользователю пакета векторизатор собирает фабрика `ollama_embedder`: адрес
+проходит `address_policy.guard_model_url` (№522). Шов (`model_seam`) остаётся
+без знания о сервере.
 
 Транспорт — значение, а не импорт: `post(url, payload, timeout)` отдаёт
 `(status, text)` на ЛЮБОЙ HTTP-ответ и бросает только транспортные отказы.
@@ -33,6 +35,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
+import charoite_graph.address_policy as address_policy   # атрибутом модуля: сторож подменяет guard_model_url
 from charoite_graph.model_seam import Embedder, SeamTransportError
 from charoite_graph.net import open_url
 from charoite_graph.notices import Notices
@@ -381,3 +384,23 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
                 notices.forget(ключ_усечения)
 
     return Embedder(run, model)
+
+
+def ollama_embedder(model: str, *, url: str = address_policy.DEFAULT_OLLAMA_URL,
+                    allow_remote: bool = False, keep_alive: str | None = None,
+                    post=urllib_post, notices=None) -> Embedder:
+    """Векторизатор Ollama `/api/embed` по адресу и имени модели — вход пакета.
+
+    Адрес проходит `address_policy.guard_model_url`: сервер на этой машине —
+    да; другой — только при `allow_remote=True` и только по https, открытый http —
+    в своей сети. Отказ — `address_policy.AddressRefused` (подкласс `ValueError`)
+    сразу, при сборке: вызывающий назвал адрес явно, и тихая лексика вместо
+    векторов значила бы «сделали вид, что настройка применена». Дверь-отказ
+    (`embedder(..., refused=...)`) — путь приложения, где демон не должен падать.
+
+    `keep_alive` по умолчанию не задан — сколько держать модель в памяти, решает
+    сервер (у Ollama — 5 минут). Остальное — как у `embedder`: транспорт `post`,
+    реестр строк `notices`; собирайте векторизатор один раз.
+    """
+    return embedder(address_policy.guard_model_url(url, allow_remote=allow_remote), model,
+                    keep_alive=keep_alive, post=post, notices=notices)

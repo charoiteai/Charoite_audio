@@ -22,10 +22,12 @@ pip ребёнка запускает только `run_pip` (№484): ему `-
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import pathlib
 import subprocess
+import threading
 import time
 import typing
 
@@ -181,6 +183,58 @@ EXIT_WAIT_S = 5.0
 #: Шаг опроса рукопожатия: отмена и потолок видны не позже чем через него.
 HANDSHAKE_POLL_S = 0.2
 
+#: Живые долгие дети процесса: pid → `Popen`. Ссылка сильная — хозяин, потерявший
+#: `StreamProcess`, не прячет ребёнка от уборки при выходе (`Popen` при сборке
+#: мусора ребёнка не убивает). Вышедшие вычищаются при следующей регистрации.
+_children: dict[int, subprocess.Popen] = {}
+_children_lock = threading.Lock()
+_exiting = False                     # уборка при выходе уже сняла реестр — новых детей не выдаём
+
+
+def _adopt(proc: subprocess.Popen) -> None:
+    """Ребёнок `spawn_stream` — в реестр процесса, который уборка при выходе убивает.
+
+    Смерть долгого ребёнка при выходе родителя держится здесь, а не у хозяина: выход
+    мимо его `finally` (исключение до `try`, `sys.exit`, SIGTERM с обработчиком) проходит
+    через `atexit` (выход по №533). SIGKILL родителя `atexit` не видит — №540. Процесс
+    уже выходит (реестр снят) — `RuntimeError`: ребёнка, которого уборка не увидит, убивает
+    граница `spawn_stream` (финальный Opus по №533, M1)."""
+    with _children_lock:
+        if _exiting:
+            raise RuntimeError("процесс выходит — долгих детей не заводим")
+        for pid, known in list(_children.items()):
+            if known.poll() is not None:
+                del _children[pid]
+        _children[proc.pid] = proc
+
+
+def _kill_children() -> None:
+    """Выход процесса: живым детям — SIGKILL без ожидания. Снимок реестра — под его
+    замком, но с потолком: нить-демон, застрявшая в `_adopt` на выходе, не держит выход.
+    После снимка `_adopt` отказывает: ребёнок нити-демона, запущенный позже, не проскочит."""
+    global _exiting
+    locked = _children_lock.acquire(timeout=1.0)
+    try:
+        _exiting = True
+        children: list = []
+        for _ in range(3):                 # без замка словарь может меняться под снимком
+            try:
+                children = list(_children.values())
+                break
+            except RuntimeError:
+                continue
+    finally:
+        if locked:
+            _children_lock.release()
+    for proc in children:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+atexit.register(_kill_children)       # при импорте: ребёнок, пришедший уже на выходе, не взводит хук сам
+
 
 class StreamProcess:
     """Долгий ребёнок в своём окружении: звук — на stdin, протокол — JSON-строками
@@ -331,6 +385,8 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED.
     Исключение после запуска ребёнка — тоже FAILED, ребёнок убит. `clock` — часы
     потолка рукопожатия (тестам — свои)."""
+    if _exiting:                             # уборка при выходе уже прошла — модель не поднимать зря
+        return None, Outcome(FAILED, reason="процесс выходит — долгих детей не заводим")
     try:
         err_fd = open_private(stderr_path)
     except OSError as e:
@@ -347,6 +403,7 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
         os.close(err_fd)
     stream = StreamProcess(proc, stderr_path)
     try:
+        _adopt(proc)                       # владение ребёнком — внутри границы: сбой здесь его убивает
         return _await_handshake(proc, stream, stderr_path=stderr_path,
                                 handshake_timeout=handshake_timeout, role=role,
                                 on_message=on_message, on_eof=on_eof, cancel=cancel, clock=clock)

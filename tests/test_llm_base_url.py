@@ -23,6 +23,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import privacy  # noqa: E402
+import charoite_graph.own_network as own_network  # noqa: E402
 
 NO_ENV: dict[str, str] = {}
 KILL = {"CHAROITE_NO_CLOUD": "1"}
@@ -119,8 +120,8 @@ def _resolving_to(monkeypatch, ip: str | None):
         if ip is None:
             raise OSError("no such host")
         return [(2, 1, 6, "", (ip, 0))]
-    monkeypatch.setattr(privacy.socket, "getaddrinfo", getaddrinfo)
-    privacy._resolves_private.cache_clear()
+    monkeypatch.setattr(own_network.socket, "getaddrinfo", getaddrinfo)
+    own_network._resolves_own.cache_clear()
 
 
 def test_remote_http_inside_own_network_and_https_anywhere_are_allowed_with_flag(monkeypatch):
@@ -141,7 +142,7 @@ def test_home_name_that_resolves_outside_the_home_network_is_refused(monkeypatch
             cfg = {"llm": {"base_url": url, "allow_remote": True}}
             with pytest.raises(RuntimeError, match="https"):
                 privacy.llm_base_url(cfg, NO_ENV)
-    privacy._resolves_private.cache_clear()
+    own_network._resolves_own.cache_clear()
 
 
 def test_unknown_scheme_is_refused_even_for_loopback():

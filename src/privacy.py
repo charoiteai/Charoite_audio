@@ -39,13 +39,11 @@ True, то есть строка вместо булева давала обла
 """
 from __future__ import annotations
 
-import functools
-import ipaddress
-import socket
 import os
 import urllib.parse
 
-from charoite_graph.net import AmbiguousAddress, is_loopback_host, loopback_url, url_host
+import charoite_graph.address_policy as address_policy   # без ребра на узел пакета (слой graph)
+from charoite_graph.net import AmbiguousAddress, direct_url, is_loopback_host, loopback_url, url_host
 
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
@@ -97,7 +95,7 @@ def cloud_edit_graph_enabled(cfg: dict, env: dict | None = None) -> bool:
     return _allowed(cfg, "cloud_edit_graph", env) and cloud_enrich_enabled(cfg, env)
 
 
-DEFAULT_LLM_URL = "http://127.0.0.1:11434"
+DEFAULT_LLM_URL = address_policy.DEFAULT_OLLAMA_URL
 DEFAULT_MLX_URL = "http://127.0.0.1:8080"
 
 
@@ -181,16 +179,18 @@ def _is_loopback(host: str | None) -> bool:
 
 
 def proxies_for(url: str) -> dict:
-    """Аргументы `requests` для адреса: на этой машине — без прокси и без редиректов.
+    """Аргументы `requests` для адреса: прямой адрес (`net.direct_url`: эта машина или
+    открытый http в свою сеть, №522) — без прокси и без редиректов.
 
     `proxies` с `None` отключает и переменные окружения, и системные настройки
     (requests берёт их через urllib.getproxies). Ключ `all` обязателен: `ALL_PROXY`
     окружения ложится в него, и без `None` там прокси обходил бы `http`/`https`
     (опыт с подставным прокси: ProxyError на loopback). Редирект с loopback
-    уводил бы запрос на другую цель. Для остальных адресов — `{}`: их прокси
-    решает окружение, как раньше (№525).
+    уводил бы запрос на другую цель. Открытый http в свою сеть политика пустила,
+    потому что текст остаётся в локальной сети, — прокси увёл бы его наружу. Для
+    остальных адресов — `{}`: их прокси решает окружение, как раньше (№525).
     """
-    if loopback_url(url):
+    if direct_url(url):
         return {"proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
     return {}
 
@@ -225,44 +225,6 @@ def mlx_base_url(cfg: dict, env: dict | None = None) -> str:
     return _guarded_url(cfg, env, key="mlx_base_url", default=DEFAULT_MLX_URL)
 
 
-_HOME_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa")   # RFC 8375 — .home.arpa
-
-
-def _ip_private(ip) -> bool:
-    return ip.is_private or ip.is_link_local or ip.is_loopback
-
-
-@functools.lru_cache(maxsize=64)
-def _resolves_private(host: str) -> bool:
-    """Имя своей сети обязано и резолвиться в свою сеть: имя без точки на macOS
-    дополняется search domain, и «ollama» в корпоративной сети — чужой хост
-    (круг-1 по #562, GLM I1). Не резолвится или публичный адрес — отказ."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
-    ips = {info[4][0].split("%")[0] for info in infos}
-    try:
-        return bool(ips) and all(_ip_private(ipaddress.ip_address(ip)) for ip in ips)
-    except ValueError:
-        return False
-
-
-def _is_private_host(host: str | None) -> bool:
-    """Адрес своей сети: частный, link-local или loopback IP; имя из домашних
-    доменов (.local, .home.arpa и подобные) или без точек — если резолвится в
-    такой же адрес. Для него http допустим."""
-    if not host:
-        return False
-    try:
-        return _ip_private(ipaddress.ip_address(host))
-    except ValueError:
-        h = host.lower().rstrip(".")       # FQDN с корневой точкой — то же имя (DS I2)
-        if "." not in h or h.endswith(_HOME_SUFFIXES):
-            return _resolves_private(h)
-        return False
-
-
 class PrivacyRefused(RuntimeError):
     """Политика запретила адрес: чужая машина, открытый http наружу, рубильник.
 
@@ -273,39 +235,47 @@ class PrivacyRefused(RuntimeError):
     """
 
 
-def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
+def _switches_set(env: dict | None) -> list[str]:
+    """Имена взведённых рубильников — для «взведён ли» и для текста отказа."""
     env = os.environ if env is None else env
-    raw = str((cfg.get("llm") or {}).get(key) or default)
-    url = raw.rstrip("/")
-    try:
-        scheme = urllib.parse.urlsplit(url).scheme.lower()
-        host = url_host(url)
-    except (AmbiguousAddress, ValueError) as e:     # «http://[::1» — тоже отказ, а не голый ValueError
-        raise PrivacyRefused(f"llm.{key} = {raw}: {e}") from e
-    if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
-        raise PrivacyRefused(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
-    if _is_loopback(host):
-        return url
-    if any(env.get(k) for k in KILL_SWITCHES):
-        raise PrivacyRefused(
-            f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
-            f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
-            "любой выход наружу")
-    # Схема — часть политики, не только адрес: allow_remote разрешал http на
-    # чужую машину, и стенограмма шла бы по сети открытым текстом (аудит 13.09,
-    # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
-    # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
-    if scheme == "http" and not _is_private_host(host):
-        raise PrivacyRefused(
-            f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
-            "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
-            "(llm.allow_remote этого не снимает)")
-    if (cfg.get("llm") or {}).get("allow_remote") is True:
-        return url
-    raise PrivacyRefused(
+    return [k for k in KILL_SWITCHES if env.get(k)]
+
+
+#: Текст отказа приложения по виду отказа политики: ключ конфига и совет — наши,
+#: решение — `address_policy.guard_model_url`.
+_REFUSAL = {
+    "ambiguous": lambda key, raw, e, sw: f"llm.{key} = {raw}: {e.detail}",
+    "scheme": lambda key, raw, e, sw: (
+        f"llm.{key} = {raw}: схема «{e.scheme or '—'}» не поддерживается, нужен http(s)"),
+    "offline": lambda key, raw, e, sw: (
+        f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
+        f"{'/'.join(sw)} запрещает любой выход наружу"),
+    "cleartext": lambda key, raw, e, sw: (
+        f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
+        "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
+        "(llm.allow_remote этого не снимает)"
+        + (address_policy.UNSPECIFIED_HINT if e.detail == address_policy.UNSPECIFIED else "")),
+    "remote": lambda key, raw, e, sw: (
         f"llm.{key} = {raw} указывает не на эту машину. Чароит локальный "
         "по умолчанию: чтобы слать запросы на другой адрес, поставьте в "
-        "config.yaml явное llm.allow_remote: true")
+        "config.yaml явное llm.allow_remote: true"),
+}
+
+
+def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
+    """Конфиг и рубильник → аргументы политики пакета; отказ → `PrivacyRefused`.
+
+    Решает `address_policy.guard_model_url` — атрибутом модуля, а не именем:
+    сторож подменяет его и требует, чтобы вердикт прошёл сюда как есть (№522).
+    """
+    llm = cfg.get("llm") or {}
+    raw = str(llm.get(key) or default)
+    switches = _switches_set(env)
+    try:
+        return address_policy.guard_model_url(raw, allow_remote=llm.get("allow_remote"),
+                                              offline=bool(switches))
+    except address_policy.AddressRefused as e:
+        raise PrivacyRefused(_REFUSAL[e.kind](key, raw, e, switches)) from e
 
 
 def offline_required(env: dict | None = None) -> bool:
@@ -317,8 +287,7 @@ def offline_required(env: dict | None = None) -> bool:
     на huggingface.co посреди встречи, и рубильник этого не видел
     (аудит 16.08).
     """
-    env = os.environ if env is None else env
-    return any(env.get(k) for k in KILL_SWITCHES)
+    return bool(_switches_set(env))
 
 
 def enforce_offline_downloads(env: dict | None = None) -> None:
