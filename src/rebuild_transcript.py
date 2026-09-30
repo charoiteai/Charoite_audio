@@ -65,7 +65,7 @@ import lexicon  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
-from diarize import diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
+from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
@@ -296,19 +296,22 @@ MIN_SEGMENT_S = 1.0
 
 def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
                     num_speakers: int = -1,
-                    merge_shards: bool = False) -> list[tuple[float, float, int]] | None:
+                    merge_shards: bool = False,
+                    veto: float | None = None) -> list[tuple[float, float, int]] | None:
     """Сегменты (start, end, cluster) канала; короче min_len — отброшены.
 
     num_speakers > 0 — число кластеров из живой сессии: авто-режим на моно-миксе
     плодит осколки (21.07: 14 «голосов» на встрече, где живьём их было 8).
     merge_shards=True — после подсказки ещё склейка осколков: число становится
     верхней границей (diarize.merge_shards; микрофон очной встречи, №559).
+    veto — авто-режим со склейкой под запретом (микрофон комнаты, №565).
     Сбой разметки — None, как «канал не размечали» (контракт None/[] — в
     докстринге resolve_channel_segments): пустой список значил бы «речи нет»,
     а канал собеседников, размеченный пустым, — это молчание (№559).
     """
     try:
-        segs = diarize(audio, sr, num_speakers=num_speakers)
+        segs = (diarize(audio, sr, num_speakers=num_speakers) if veto is None
+                else diarize(audio, sr, num_speakers=num_speakers, veto=veto))
         if merge_shards and num_speakers > 0:     # в авто diarize() уже склеил сам
             segs = merge_voice_shards(audio, sr, segs)
         return [(s, e, k) for s, e, k in segs if e - s >= min_len]
@@ -796,6 +799,34 @@ def mic_hint(meta: dict, call_silent: bool) -> int | None:
     return n if call_silent and n is not None and n >= MIC_HINT_MIN else None
 
 
+#: Запись канала собеседников короче этой доли микрофона — канал умер посреди
+#: встречи, и его тишина ничего не говорит о комнате (вход №565, r3).
+ROOM_MIN_CALL_SHARE = 0.8
+
+
+def mic_plan(meta: dict, call_silent: bool, call_s: float | None,
+             mic_s: float) -> tuple[int | None, float | None]:
+    """Как размечать микрофон: (подсказка числа голосов, запрет склейки).
+
+    Сегодняшняя ячейка подсказки (`mic_hint`) делится надвое по положительному
+    факту. Запись канала собеседников есть, размечена пустой и идёт почти всю
+    встречу (`call_s` — её длина, None — записи нет) — это комната: микрофон
+    идёт в авто со склейкой под запретом (`diarize.VETO_BELOW`), без подсказки.
+    Подсказку даёт живой трекер, который упирается в 8 мест и сливает людей, а
+    число кластеров sherpa решает внутри себя, куда запрет не достаёт: на очной
+    29.09 подсказка дала 3 метки, запрет — 4 (№565). Записи канала нет вовсе
+    (машина без системного звука, стрим не открылся) — различить комнату и звонок
+    в наушниках нечем, подсказка как была (№559). Вне ячейки подсказки — авто без
+    запрета, как было: монолог при живых < 3 запрет раскалывал бы.
+    """
+    hint = mic_hint(meta, call_silent)
+    if hint is None:
+        return None, None
+    if call_s is not None and call_s >= ROOM_MIN_CALL_SHARE * mic_s:
+        return None, VETO_BELOW
+    return hint, None
+
+
 def collapsed_mic_labels(chan: dict[str, str], live_count: int | None,
                          call_silent: bool) -> set[str]:
     """Нейтральная метка микрофона, в которую разметка свела всех, — когда её
@@ -998,8 +1029,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     mic_raw: list[tuple[float, float, int]] | None = None
     bh_dwarf_s = BH_DWARF_S
     engine_note = ""               # почему голоса собеседников размечены запасным движком
+    call_s: float | None = None    # длина записи канала собеседников — для признака комнаты
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
+        call_s = len(bh) / sr
         if len(bh) > sr * 20:
             # Уступка встрече — перед каждой тяжёлой разметкой, а не только на
             # входе в очередь: пересборка, простоявшая за соседней, о начавшейся
@@ -1023,12 +1056,16 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
             _yield_to_live("разметка голосов микрофона", cap=600)
-            # Очная встреча: в микрофоне вся комната, а авто-режим сцепляет разных
-            # людей в один голос (29.09: 30 кластеров → 1, №565). Число живой
-            # сессии идёт микрофону верхней границей: со склейкой осколков после,
-            # иначе живой трекер, дробящий один голос, нарезал бы монолог (№559).
-            hint = mic_hint(meta, call_silent)
-            if hint is not None:
+            # Очная встреча: в микрофоне вся комната, а одиночная связь авто-режима
+            # сцепляет разных людей в один голос (29.09: 30 кластеров → 1). Запись
+            # канала собеседников есть и молчит — комната: авто со склейкой под
+            # запретом (№565). Записи нет — число живой сессии верхней границей,
+            # со склейкой осколков после (№559). Выбор — mic_plan.
+            hint, veto = mic_plan(meta, call_silent, call_s, len(mic) / sr)
+            if veto is not None:
+                log(f"mic: комната ({silence}), авто-разметка, склейка с запретом пар ниже {veto}")
+                mic_raw = diarize_channel(mic, sr, veto=veto)
+            elif hint is not None:
                 log(f"mic: подсказка голосов {hint} ({silence}), склейка осколков после")
                 mic_raw = diarize_channel(mic, sr, num_speakers=hint, merge_shards=True)
                 if not mic_raw:
