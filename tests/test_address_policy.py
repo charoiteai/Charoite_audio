@@ -151,6 +151,19 @@ def test_ambiguous_names_the_address_once():
         assert str(e.value).count("адрес") == 1, str(e.value)
 
 
+@pytest.mark.parametrize("url", ["http://0.0.0.0:11434", "http://[::]:11434"])
+def test_listen_all_address_is_refused_with_a_hint(url):
+    with pytest.raises(AddressRefused) as e:
+        guard_model_url(url, allow_remote=True)
+    assert e.value.kind == "cleartext" and str(e.value).endswith(address_policy.UNSPECIFIED_HINT)
+    with pytest.raises(privacy.PrivacyRefused) as app:
+        privacy.llm_base_url({"llm": {"base_url": url, "allow_remote": True}}, {})
+    assert str(app.value).endswith(address_policy.UNSPECIFIED_HINT)
+    with pytest.raises(AddressRefused) as far:             # обычный отказ — без совета
+        guard_model_url("http://8.8.8.8:11434", allow_remote=True)
+    assert address_policy.UNSPECIFIED_HINT not in str(far.value)
+
+
 def test_no_host_is_not_own_network():
     for host in (None, ""):
         assert own_network.is_own_host(host) is False

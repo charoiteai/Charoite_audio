@@ -253,7 +253,8 @@ _REFUSAL = {
     "cleartext": lambda key, raw, e, sw: (
         f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
         "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
-        "(llm.allow_remote этого не снимает)"),
+        "(llm.allow_remote этого не снимает)"
+        + (address_policy.UNSPECIFIED_HINT if e.detail == address_policy.UNSPECIFIED else "")),
     "remote": lambda key, raw, e, sw: (
         f"llm.{key} = {raw} указывает не на эту машину. Чароит локальный "
         "по умолчанию: чтобы слать запросы на другой адрес, поставьте в "

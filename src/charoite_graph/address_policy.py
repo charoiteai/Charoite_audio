@@ -25,6 +25,10 @@ from charoite_graph.own_network import is_own_host
 #: Адрес Ollama по умолчанию — сервер на этой машине.
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
+#: `detail` отказа `cleartext` для 0.0.0.0 и ::: вызывающий добавляет совет «укажите 127.0.0.1».
+UNSPECIFIED = "unspecified"
+UNSPECIFIED_HINT = " 0.0.0.0 и :: — не адрес сервера, а «слушать все адреса»: укажите 127.0.0.1."
+
 #: Виды отказа: вызывающий строит по ним свой текст (ключ конфига, флаг командной строки).
 KINDS = ("ambiguous", "scheme", "offline", "cleartext", "remote")
 
@@ -54,7 +58,7 @@ _TEXT = {
     "offline": lambda e: f"адрес {e.url} указывает не на эту машину, а выход наружу запрещён",
     "cleartext": lambda e: (f"адрес {e.url} — вне своей сети по открытому http: текст ушёл бы по сети "
                             "открытым текстом. Для удалённого адреса нужен https (разрешение на удалённый "
-                            "адрес этого не снимает)"),
+                            "адрес этого не снимает)" + (UNSPECIFIED_HINT if e.detail == UNSPECIFIED else "")),
     "remote": lambda e: (f"адрес {e.url} указывает не на эту машину: чтобы слать туда тексты, нужно явное "
                          "разрешение на удалённый адрес"),
 }
@@ -84,7 +88,9 @@ def guard_model_url(url: str, *, allow_remote: object = False, offline: bool = F
     # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
     # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
     if scheme == "http" and not is_own_host(host):
-        raise AddressRefused("cleartext", url, scheme=scheme)
+        # 0.0.0.0 и :: — не адрес сервера, а «слушать всё» из OLLAMA_HOST: совет назвать 127.0.0.1
+        raise AddressRefused("cleartext", url, scheme=scheme,
+                             detail=UNSPECIFIED if host in ("0.0.0.0", "::") else "")
     if allow_remote is True:
         return url
     raise AddressRefused("remote", url, scheme=scheme)

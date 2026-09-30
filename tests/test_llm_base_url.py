@@ -23,7 +23,6 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import privacy  # noqa: E402
-import charoite_graph.address_policy as address_policy  # noqa: E402
 import charoite_graph.own_network as own_network  # noqa: E402
 
 NO_ENV: dict[str, str] = {}
