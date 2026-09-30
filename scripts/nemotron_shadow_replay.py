@@ -125,8 +125,10 @@ def run_numbers(n: int, start0: int, sr: int, handshake_s: float, feed_wall: flo
             "speed_x": round((n - start0) / sr / feed_wall, META_DIGITS) if feed_wall > 0 else None}
 
 
-def check_cuts(cuts: dict[str, int], expect: int) -> None:
-    """Каналы разрезаны в ногу и ровно по формуле хаба — иначе прогон брак."""
+def check_cuts(chunk_no: dict[str, int], labels: typing.Sequence[str], expect: int) -> None:
+    """Каналы разрезаны в ногу и ровно по формуле хаба — иначе прогон брак. Срезов канала —
+    номер его последнего чанка плюс один; канал, не разрезанный ни разу, — ноль."""
+    cuts = {label: chunk_no.get(label, -1) + 1 for label in labels}
     if len(set(cuts.values())) != 1 or next(iter(cuts.values())) != expect:
         raise Refused(f"срезов каналов {cuts}, ожидали по {expect}: каналы разошлись")
 
@@ -333,7 +335,7 @@ def run_root(out: pathlib.Path, data_root: pathlib.Path) -> pathlib.Path:
     for name in LINKS:
         target = data_root / name
         if target.exists():
-            (out / name).symlink_to(target, target_is_directory=True)
+            (out / name).symlink_to(target)
     return out
 
 
@@ -502,7 +504,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         witness.close()
         unlink_links(root)
     expect = expected_cuts(n, sr, hub.chunk_s, hub.overlap_s)
-    check_cuts({label: hub.chunk_no.get(label, -1) + 1 for label in LABELS}, expect)
+    check_cuts(hub.chunk_no, LABELS, expect)
     if not dead():
         raise Refused(f"тень не закончилась за {END_WAIT_S:.0f} с после стопа")
     journal = charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
@@ -513,7 +515,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
             "cuts_per_channel": expect, "chunks": counts,
             "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
             "journal": str(journal.relative_to(root))}
-    (root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    (root / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta
 
 

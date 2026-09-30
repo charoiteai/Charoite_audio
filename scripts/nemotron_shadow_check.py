@@ -199,7 +199,7 @@ def quantiles(xs: typing.Sequence[float]) -> dict:
     s = sorted(xs)
 
     def q(p: float) -> float:
-        return round(s[min(len(s) - 1, max(0, math.ceil(p * len(s)) - 1))], 3)
+        return round(s[max(0, math.ceil(p * len(s)) - 1)], 3)
     return {"n": len(s), "p50": q(0.5), "p90": q(0.9), "p95": q(0.95), "max": round(s[-1], 3)}
 
 

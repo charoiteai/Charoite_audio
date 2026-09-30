@@ -419,11 +419,17 @@ def test_sweep_removes_only_its_own_meeting_folders_whose_recording_is_gone(tmp_
             rp.mark_owner(rp.CACHE_BASE / name, owner)
     (rp.CACHE_BASE / "gone" / "run" / "models").symlink_to(target, target_is_directory=True)
     (rp.CACHE_BASE / "link").symlink_to(target, target_is_directory=True)
+    ours = tmp_path / "ours_elsewhere"
+    (ours / "run").mkdir(parents=True)
+    rp.mark_owner(ours, rec)
+    (rp.CACHE_BASE / "alias").symlink_to(ours, target_is_directory=True)
     (rp.CACHE_BASE / "broken").mkdir()
     (rp.CACHE_BASE / "broken" / rp.OWNER).write_text("[", encoding="utf-8")
     assert rp.sweep_orphans(rec) == ["gone"]
-    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == ["bare", "broken", "foreign", "kept", "link", "raw"]
+    left = ["alias", "bare", "broken", "foreign", "kept", "link", "raw"]
+    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == left
     assert (target / "w.bin").exists(), "по ссылкам уборка не ходит"
+    assert (ours / "run").is_dir(), "ссылка на наш каталог с пометкой — тоже не наша"
     rp.CACHE_BASE.rename(tmp_path / "moved")
     assert rp.sweep_orphans(rec) == [], "нет кэша — нечего убирать"
 
@@ -527,8 +533,9 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     out = rp.CACHE_BASE / stamp / "run"
     (rp.CACHE_BASE / "2025-01-01_100000" / "run").mkdir(parents=True)     # запись забыта
     rp.mark_owner(rp.CACHE_BASE / "2025-01-01_100000", data / "rec")
-    said = []
-    meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=said.append)
+    said, asked = [], []
+    meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: asked.append(1), say=said.append)
+    assert asked, "читатель памяти прогона дошёл до тени"
     assert meta["cuts_per_channel"] == rp.expected_cuts(SR * 20, SR, 3.0, 0.5)
     assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == [stamp], "производные без записи убраны"
     assert json.loads((out.parent / rp.OWNER).read_text())["rec_dir"] == str((data / "rec").resolve())
@@ -977,11 +984,13 @@ def test_run_numbers_are_rounded_to_a_tenth_and_speed_is_audio_over_wall():
 
 
 def test_check_cuts_refuses_channels_out_of_step_or_off_the_hub_formula():
-    rp.check_cuts({"blackhole": 5, "mic": 5}, 5)
-    for cuts, expect in (({"blackhole": 5, "mic": 4}, 5), ({"blackhole": 4, "mic": 5}, 4),
-                         ({"blackhole": 4, "mic": 4}, 5)):
+    """Срезов — номер последнего чанка плюс один; канал без единого среза — ноль."""
+    rp.check_cuts({"blackhole": 4, "mic": 4}, rp.LABELS, 5)
+    rp.check_cuts({}, rp.LABELS, 0)
+    for chunk_no, expect in (({"blackhole": 4, "mic": 3}, 5), ({"blackhole": 3, "mic": 4}, 4),
+                             ({"blackhole": 3, "mic": 3}, 5), ({"blackhole": 0}, 1), ({}, 1)):
         with pytest.raises(rp.Refused, match="разошлись"):
-            rp.check_cuts(cuts, expect)
+            rp.check_cuts(chunk_no, rp.LABELS, expect)
 
 
 def test_replay_config_turns_the_shadow_on_and_the_hub_recording_off_on_a_copy():
