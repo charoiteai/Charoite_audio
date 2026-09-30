@@ -392,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     out = args.out or default_out(args.stamp)
     try:
-        refuse_inside(out, data_root, pathlib.Path(__file__).resolve().parent.parent)
+        refuse_inside(out, data_root, charoite_paths.CODE_ROOT)
         meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll,
                       cache_limit_mb=args.cache_limit_mb)
     except Refused as e:
