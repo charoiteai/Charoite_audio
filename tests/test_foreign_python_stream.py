@@ -381,3 +381,29 @@ def test_adoption_is_refused_once_the_process_is_leaving(monkeypatch):
     finally:
         proc.kill()
         proc.wait(10)
+
+
+def test_the_exit_hook_waits_for_a_briefly_held_registry(tmp_path, monkeypatch):
+    """Замок реестра занят ненадолго (нить кладёт ребёнка) — уборка дожидается его и видит
+    этого ребёнка: потолок ожидания — секунда, а не ноль."""
+    import subprocess
+    monkeypatch.setattr(fp, "_exiting", False)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    held = threading.Event()
+
+    def adopt_slowly():
+        with fp._children_lock:
+            held.set()
+            time.sleep(0.3)
+            fp._children[proc.pid] = proc
+    holder = threading.Thread(target=adopt_slowly)
+    try:
+        holder.start()
+        assert held.wait(5)
+        fp._kill_children()
+        assert proc.wait(5) is not None, "ребёнок, положенный под замком, уборку миновал"
+    finally:
+        holder.join(5)
+        if proc.poll() is None:
+            proc.kill()
+        fp._children.pop(proc.pid, None)

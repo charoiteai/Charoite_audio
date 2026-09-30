@@ -583,7 +583,8 @@ def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, 
     (мутатор диапазона, 29.09)."""
     monkeypatch.setattr(ln, "ERRLOG_CAP_BYTES", 2**20)
     clock = _Clock()
-    sh, door, _ = _live(tmp_path, clock=clock)
+    probed = []
+    sh, door, _ = _live(tmp_path, clock=clock, memory=lambda: probed.append(1) or None)
     with open(tmp_path / "live.err", "wb") as fh:
         fh.truncate(size)                  # разреженный файл: размер без записи мегабайта
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
@@ -593,6 +594,7 @@ def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, 
         assert sh.state == ln.DEAD and sh.reason == "журнал ребёнка вырос сверх 1 МБ"
     else:
         assert sh.state != ln.DEAD, sh.reason
+        assert probed == [1], "журнал ровно по потолку — память всё равно спрашивается"
         sh.stop()
         door.on_eof()
 
@@ -1547,10 +1549,13 @@ def test_close_counts_the_grace_from_the_stop_not_anew(tmp_path, monkeypatch):
     assert time.monotonic() - t0 < 0.1
 
 
-def test_close_is_capped_by_its_timeout(tmp_path):
+def test_close_is_capped_by_its_timeout(tmp_path, monkeypatch):
+    """Потолок `timeout` держат оба ожидания `close` — и конца тени, и строки end после
+    убийства: ребёнок-заглушка EOF не шлёт, ждать больше потолка нечего."""
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 3.0)
     sh, door, _ = _live(tmp_path)
     t0 = time.monotonic()
-    sh.close(0.1)
+    sh.close(0.2)
     assert time.monotonic() - t0 < 1.0
     door.on_eof()
 
@@ -1646,4 +1651,25 @@ def test_one_kill_is_counted_once_when_the_grace_and_close_race(tmp_path, monkey
     sh.close(0.2)
     assert door.child.nowait_kills == 1
     assert sh._counts["killed_after_grace"] == 1 and sh._counts["killed_at_close"] == 0
+    door.on_eof()
+
+
+def test_only_a_well_formed_front_asks_for_the_health_check(tmp_path):
+    """Проверку здоровья (опрос памяти вне замка) заказывает только разобранный фронт —
+    не сегмент и не битый фронт."""
+    clock = _Clock()
+    probed = []
+    sh, door, _ = _live(tmp_path, clock=clock, memory=lambda: probed.append(1) or None)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    clock.now += ln.PRESSURE_CHECK_S
+    door.on_message({"type": "seg", "start": 0.0, "end": 0.5, "slot": 0})
+    door.on_message({"type": "front", "fed": "много", "frames": 1})
+    assert probed == []
+    with sh._lock:
+        assert sh._take_front_locked({"frames": "x", "fed": 1}, clock.now) is False
+    door.on_message({"type": "front", "fed": SR, "frames": 1})
+    assert probed == [1]
+    with sh._lock:
+        assert sh._take_front_locked({"frames": 2, "fed": SR}, clock.now) is False, "рано: интервал не прошёл"
+    sh.stop()
     door.on_eof()
