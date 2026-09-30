@@ -213,7 +213,13 @@ def _kill_children() -> None:
     замком, но с потолком: нить-демон, застрявшая в `_adopt` на выходе, не держит выход."""
     locked = _children_lock.acquire(timeout=1.0)
     try:
-        children = list(_children.values())
+        children: list = []
+        for _ in range(3):                 # без замка словарь может меняться под снимком
+            try:
+                children = list(_children.values())
+                break
+            except RuntimeError:
+                continue
     finally:
         if locked:
             _children_lock.release()

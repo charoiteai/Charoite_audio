@@ -84,6 +84,11 @@ STOP_GRACE_S = 5.0
 #: отсрочки здесь нельзя (выходной круг 1 по №533, C1).
 CLOSE_WAIT_S = 1.0
 CLOSE_MARGIN_S = 0.5
+#: Отсрочка ребёнку на выходе демона: `stop` стоит первым в `finally`, а `close` — последним,
+#: после `hub.stop()` (до 5 с на каналы и 1 с на помпу). Таймер с этой отсрочкой убивает
+#: повисшего ребёнка на первой секунде выхода, раньше SIGKILL сторожа приложения
+#: (выходной круг 2 по №533, I1).
+EXIT_GRACE_S = 1.0
 #: Давление памяти: как часто смотреть и с какого уровня macOS тень уступает
 #: (1 — норма, 2 — предупреждение, 4 — критично; `kern.memorystatus_vm_pressure_level`).
 PRESSURE_CHECK_S = 5.0
@@ -184,6 +189,8 @@ class Shadow:
         self._counts: collections.Counter = collections.Counter()
         self._errlog: pathlib.Path | None = None
         self._stopped_at: float | None = None
+        self._grace = STOP_GRACE_S
+        self._killed = False                         # SIGKILL ребёнку уже послан отсрочкой или close
         self._dead = threading.Event()
         self._death_said: str | None = None         # смерть есть, нить «после смерти» ещё не заведена
         self._out: collections.deque = collections.deque()   # строки журнала к записи
@@ -497,19 +504,21 @@ class Shadow:
 
     # ------------------------------------------------------------ конец
 
-    def stop(self) -> None:
-        """Штатная остановка без ожидания: ребёнку EOF, через `STOP_GRACE_S` — убийство.
-        Журнал не дописывает: `_drain` ждёт диска, а главная нить демона после `stop` сразу
-        запускает пересборку; допишут писатель, читатель и `close`."""
+    def stop(self, grace: float | None = None) -> None:
+        """Штатная остановка без ожидания: ребёнку EOF, через `grace` (по умолчанию
+        `STOP_GRACE_S`; выход демона даёт `EXIT_GRACE_S`) — убийство. Журнал не дописывает:
+        `_drain` ждёт диска, а главная нить демона после `stop` сразу запускает пересборку;
+        допишут писатель, читатель и `close`."""
+        grace = STOP_GRACE_S if grace is None else grace
         with self._lock:
             if self._state in (STOPPING, DEAD):
                 return
             self._state = STOPPING
-            self._stopped_at = self._clock()
+            self._stopped_at, self._grace = self._clock(), grace
             self._cancel.set()
             self._queue.put(None)
         try:
-            threads.timer(STOP_GRACE_S, self._kill_after_grace, name="nemotron-live-kill", role="audio",
+            threads.timer(grace, self._kill_after_grace, name="nemotron-live-kill", role="audio",
                           detached="уборка ребёнка тени после стопа не держит выход демона")
         except RuntimeError:                  # нить не завелась — без отсрочки
             self._kill_after_grace()
@@ -517,11 +526,17 @@ class Shadow:
     def _kill_after_grace(self) -> None:
         """Отсрочка вышла: живой ребёнок — SIGKILL без ожидания (выход дождётся `finish` в
         конце потока); в главной нити демона сюда приходят, если таймер не завёлся."""
+        self._kill_child("killed_after_grace")
+
+    def _kill_child(self, counter: str) -> None:
+        """Живому ребёнку — SIGKILL без ожидания, один раз на тень: таймер отсрочки и `close`
+        не считают одно убийство дважды (выходной круг 2 по №533, M3)."""
         with self._lock:
             stream = self._stream
-            if stream is None or not stream.alive():
+            if stream is None or self._killed or not stream.alive():
                 return
-            self._counts["killed_after_grace"] += 1
+            self._killed = True
+            self._counts[counter] += 1
         stream.kill_nowait()
 
     def _on_eof(self) -> None:
@@ -556,10 +571,7 @@ class Shadow:
     def _end_locked(self, reason: str, exit_: foreign_python.Outcome | None = None) -> None:
         self._finish(STOPPED, reason, exit_)
 
-    def _finish(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
-        """Единственный переход в DEAD — и он же владеет ребёнком: живой получает SIGKILL здесь,
-        на любом пути (смерть, штатный конец, сбой нити в остановке), без нити и без ожидания
-        (выходной круг 2 по №478 A2, I1)."""
+    def _finish_lines(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
         self._state, self._reason = DEAD, reason
         self._reap_locked()
         self._cancel.set()
@@ -570,10 +582,17 @@ class Shadow:
             if exit_.reason:
                 line["exit_reason"] = exit_.reason
         self._line(line)
-        # Будить ждущих — последним: проснувшийся писатель и `close` дописывают журнал, и
-        # строки конца к этому моменту уже в очереди (выходной круг 1 по №533, I1).
-        self._queue.put(None)
-        self._dead.set()
+
+    def _finish(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
+        """Единственный переход в DEAD — и он же владеет ребёнком: живой получает SIGKILL здесь,
+        на любом пути (смерть, штатный конец, сбой нити в остановке), без нити и без ожидания
+        (выходной круг 2 по №478 A2, I1). Ждущих (писатель, `close`) будит последним и при
+        любом исходе: строки конца к этому моменту уже в очереди (выходной круги 1–2 по №533)."""
+        try:
+            self._finish_lines(outcome, reason, exit_)
+        finally:
+            self._queue.put(None)
+            self._dead.set()
 
     def _reap_locked(self) -> None:
         """Живой ребёнок — SIGKILL без ожидания. Вход не закрывается: им владеет писатель, и
@@ -608,17 +627,11 @@ class Shadow:
             self.stop()
             with self._lock:
                 since = self._stopped_at if self._stopped_at is not None else self._clock()
+                grace = self._grace
             deadline = time.monotonic() + max(0.0, timeout)
-            left = min(CLOSE_WAIT_S, since + STOP_GRACE_S - self._clock())
+            left = min(CLOSE_WAIT_S, since + grace - self._clock())
             if not self._dead.wait(max(0.0, min(left, deadline - time.monotonic()))):
-                with self._lock:
-                    stream = self._stream
-                    if stream is not None and stream.alive():
-                        self._counts["killed_at_close"] += 1
-                    else:
-                        stream = None
-                if stream is not None:
-                    stream.kill_nowait()
+                self._kill_child("killed_at_close")
                 self._dead.wait(max(0.0, min(CLOSE_MARGIN_S, deadline - time.monotonic())))
         finally:
             self._drain()
@@ -715,7 +728,7 @@ class _NoShadow:
     def note_chunk(self, placed: typing.Any, state: str) -> None:
         pass
 
-    def stop(self) -> None:
+    def stop(self, grace: float | None = None) -> None:
         pass
 
     def close(self, timeout: float) -> None:

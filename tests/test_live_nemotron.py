@@ -1499,8 +1499,7 @@ def test_close_kills_a_hung_child_inside_the_watchdog_window(tmp_path):
     sh.close(ln.STOP_GRACE_S)
     took = time.monotonic() - t0
     assert took < ln.CLOSE_WAIT_S + ln.CLOSE_MARGIN_S + 1.0, f"close ждал {took:.2f} с"
-    _wait(lambda: not _alive(pid), timeout=2.0, what="ребёнок убит закрытием")
-    assert sh.state == ln.DEAD
+    _wait(lambda: not _alive(pid) and sh.state == ln.DEAD, timeout=2.0, what="ребёнок убит закрытием")
     (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
     assert end["counts"]["killed_at_close"] == 1
 
@@ -1561,3 +1560,78 @@ def test_close_writes_what_the_audio_thread_left_in_the_queue(tmp_path, monkeypa
 
 def test_no_shadow_closes_quietly():
     ln.NO_SHADOW.close(1.0)
+
+
+def _hung_engine(tmp_path):
+    script = tmp_path / "engine.py"
+    script.write_text(
+        "import json, sys, time\n"
+        f"print(json.dumps({json.dumps(READY_OK)}), flush=True)\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-30_120000", say=lambda t: None,
+                   memory=lambda: None)
+    sh.begin(python=sys.executable, script=script, args=[], errlog=tmp_path / "live.err")
+    _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
+    return sh
+
+
+def test_the_exit_grace_kills_a_hung_child_before_the_hub_is_done(tmp_path):
+    """Боевой порядок выхода: `stop` первым, потом `hub.stop()` (до 6 с), `close` последним.
+    Повисшего ребёнка убивает таймер отсрочки выхода, а не `close` — раньше SIGKILL сторожа
+    приложения через 5 с (выходной круг 2 по №533, I1)."""
+    sh = _hung_engine(tmp_path)
+    pid = sh._stream.pid
+    sh.stop(grace=ln.EXIT_GRACE_S)
+    _wait(lambda: not _alive(pid), timeout=ln.EXIT_GRACE_S + 2.0, what="ребёнок убит отсрочкой выхода")
+    sh.close(ln.STOP_GRACE_S)
+    (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+    assert end["counts"].get("killed_after_grace") == 1 and "killed_at_close" not in end["counts"]
+
+
+class _WatchedQueue:
+    """Очередь к писателю с наблюдателем `put`; писатель ждёт на той же настоящей очереди."""
+
+    def __init__(self, real, watch):
+        self.real, self.watch = real, watch
+
+    def put(self, item):
+        self.watch(item)
+        self.real.put(item)
+
+    def get(self, *a, **k):
+        return self.real.get(*a, **k)
+
+
+def test_the_writer_is_woken_after_the_end_is_queued(tmp_path):
+    sh, door, _ = _live(tmp_path)
+    seen = []
+    sh._queue = _WatchedQueue(sh._queue, lambda item: item is None and seen.append(
+        any(o.get("type") == "end" for o in sh._out)))
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.on_frame("blackhole", 1601, np.zeros(1600, dtype=np.float32))     # разрыв оси — смерть
+    assert seen and all(seen)
+
+
+def test_a_finish_that_breaks_still_wakes_the_waiters(tmp_path, monkeypatch):
+    sh, door, _ = _live(tmp_path)
+
+    def boom(outcome, reason=""):
+        raise RuntimeError("сломался конец")
+    monkeypatch.setattr(sh, "_finish_pending_locked", boom)
+    woken = []
+    sh._queue = _WatchedQueue(sh._queue, woken.append)
+    with pytest.raises(RuntimeError), sh._lock:
+        sh._die_locked("проверка")
+    assert sh._dead.is_set() and None in woken
+
+
+def test_one_kill_is_counted_once_when_the_grace_and_close_race(tmp_path, monkeypatch):
+    sh, door, _ = _live(tmp_path)
+    door.child.alive = lambda: True           # ребёнок «не умирает» от сигнала — оба пути видят его живым
+    sh.stop(grace=0.01)
+    _wait(lambda: door.child.nowait_kills >= 1, what="таймер убил")
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 0.0)
+    sh.close(0.2)
+    assert door.child.nowait_kills == 1
+    assert sh._counts["killed_after_grace"] == 1 and sh._counts["killed_at_close"] == 0
+    door.on_eof()

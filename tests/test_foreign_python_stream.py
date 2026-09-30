@@ -262,3 +262,42 @@ def test_the_registry_forgets_children_that_left(tmp_path):
         stays.kill()
         stays.wait(10)
         fp._children.pop(stays.pid, None)
+
+
+def test_a_failed_adoption_kills_the_child_and_fails_the_door(tmp_path, monkeypatch):
+    """Регистрация ребёнка — внутри границы двери: её сбой убивает ребёнка, исход FAILED."""
+    def boom(proc):
+        (tmp_path / "pid").write_text(str(proc.pid))
+        raise RuntimeError("реестр сломан")
+    monkeypatch.setattr(fp, "_adopt", boom)
+    stream, out = _spawn(_child(tmp_path, HUNG), tmp_path)
+    assert stream is None and out.kind == fp.FAILED and "реестр сломан" in out.reason
+    pid = int((tmp_path / "pid").read_text())
+    deadline = time.monotonic() + 5
+    while not _gone(pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert _gone(pid)
+
+
+def test_the_exit_hook_does_not_wait_for_a_held_registry(tmp_path):
+    """Нить, застрявшая с замком реестра на выходе, не держит уборку: потолок — секунда."""
+    import subprocess
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    release = threading.Event()
+    holder = threading.Thread(target=lambda: (fp._children_lock.acquire(), release.wait(10),
+                                              fp._children_lock.release()))
+    try:
+        fp._children[proc.pid] = proc
+        holder.start()
+        time.sleep(0.05)
+        t0 = time.monotonic()
+        fp._kill_children()
+        took = time.monotonic() - t0
+        assert took < 1.5, f"уборка ждала {took:.2f} с"
+        assert proc.wait(5) is not None
+    finally:
+        release.set()
+        holder.join(5)
+        if proc.poll() is None:
+            proc.kill()
+        fp._children.pop(proc.pid, None)
