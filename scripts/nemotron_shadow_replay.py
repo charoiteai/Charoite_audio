@@ -81,22 +81,43 @@ def default_out(stamp: str) -> pathlib.Path:
     return CACHE_BASE / stamp / time.strftime("%Y%m%d-%H%M%S")
 
 
+#: Пометка владельца каталога штампа в кэше: из какого каталога записей он прогнан.
+OWNER = "owner.json"
+
+
+def mark_owner(stamp_dir: pathlib.Path, rec_dir: pathlib.Path) -> None:
+    (stamp_dir / OWNER).write_text(json.dumps({"rec_dir": str(rec_dir.resolve())}), encoding="utf-8")
+
+
 def sweep_orphans(rec_dir: pathlib.Path) -> list[str]:
-    """Производные встречи живут не дольше её записи: каталог штампа в кэше, у которого
-    записи уже нет (ретеншн, «Забыть»), удаляется целиком. `rmtree` по ссылкам не ходит."""
+    """Производные встречи живут не дольше её записи: каталог штампа в кэше, прогнанный из
+    этого же каталога записей (пометка `owner.json`), у которого записи уже нет (ретеншн,
+    «Забыть»), удаляется целиком. Чужой корень, чужой каталог и всё без пометки не трогаются;
+    сырой `.pcm` — тоже запись. `rmtree` по ссылкам не ходит."""
     import meeting_stamp
     gone: list[str] = []
     if not CACHE_BASE.is_dir():
         return gone
+    mine = str(rec_dir.resolve())
     for entry in sorted(CACHE_BASE.iterdir()):
-        if meeting_stamp.recording_path(rec_dir, entry.name, LABELS[0], "wav").exists():
-            continue
+        marker = entry / OWNER
         if entry.is_symlink() or not entry.is_dir():
-            entry.unlink()
-        else:
-            shutil.rmtree(entry)
+            continue
+        try:                             # нет пометки — не наш каталог
+            owner = json.loads(marker.read_text(encoding="utf-8")).get("rec_dir")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if owner != mine or any(meeting_stamp.recording_path(rec_dir, entry.name, LABELS[0], ext).exists()
+                                for ext in ("wav", "pcm")):
+            continue
+        shutil.rmtree(entry)
         gone.append(entry.name)
     return gone
+
+
+def redact(text: str, stamp: str) -> str:
+    """Штамп встречи и домашний каталог — маской: вывод прогона вставляют в отчёты."""
+    return text.replace(stamp, "<штамп>").replace(os.path.expanduser("~"), "~")
 
 
 def read_channel(path: pathlib.Path, sr: int):
@@ -104,7 +125,7 @@ def read_channel(path: pathlib.Path, sr: int):
     import numpy as np
     with wave.open(str(path), "rb") as w:
         if w.getframerate() != sr or w.getnchannels() != 1 or w.getsampwidth() != 2:
-            raise Refused(f"{path.name}: нужен моно s16 {sr} Гц")
+            raise Refused(f"канал {path.stem.rsplit('_', 1)[-1]}: нужен моно s16 {sr} Гц")
         pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
     return pcm.astype(np.float32) / 32768.0
 
@@ -299,16 +320,16 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     tell = say or (lambda s: print(s, file=sys.stderr, flush=True))
 
     def say(s: str) -> None:
-        tell(s.replace(stamp, "<штамп>"))
+        tell(redact(s, stamp))
     cfg = copy.deepcopy(config_loader.load_user_or_example(data_root))
     cfg.setdefault("sufler", {})["live_nemotron"] = live_nemotron.SHADOW
     cfg.setdefault("audio", {})["record"] = False
     sr = int(cfg["audio"]["samplerate"])
     rec_dir = data_root / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     paths = [meeting_stamp.recording_path(rec_dir, stamp, label, "wav") for label in LABELS]
-    missing = [p.name for p in paths if not p.exists()]
+    missing = [label for label, p in zip(LABELS, paths) if not p.exists()]
     if missing:
-        raise Refused(f"нет записей: {', '.join(missing)}")
+        raise Refused(f"нет записей каналов: {', '.join(missing)}")
     sweep_orphans(rec_dir)
     bh, mic = pad_equal(*(read_channel(p, sr) for p in paths))
 
@@ -317,6 +338,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     if diarize_live.tracker_kind(seg_model, emb_model) != "segments":
         raise Refused("нет моделей трекера по кускам речи (models/diar)")
     root = run_root(out, data_root)
+    mark_owner(root.parent, rec_dir)
 
     hub = audio.AudioHub(cfg, stamp=stamp, captures=[])
     captures = [types.SimpleNamespace(label=label) for label in LABELS]
@@ -465,8 +487,11 @@ def main(argv: list[str] | None = None) -> int:
         meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll,
                       cache_limit_mb=args.cache_limit_mb)
     except Refused as e:
-        print(f"прогон не состоялся: {e}", file=sys.stderr)
+        print(f"прогон не состоялся: {redact(str(e), args.stamp)}", file=sys.stderr)
         return 2
+    except Exception as e:  # noqa: BLE001 — трейсбек несёт пути и штамп; причина — маской
+        print(f"прогон упал: {type(e).__name__}: {redact(str(e), args.stamp)}", file=sys.stderr)
+        return 1
     # в сводку — только агрегаты: штамп встречи и домашний путь сюда не попадают (её вставляют в отчёт)
     print(json.dumps({k: v for k, v in meta.items() if k in PRINTED}, ensure_ascii=False, indent=1))
     return 0

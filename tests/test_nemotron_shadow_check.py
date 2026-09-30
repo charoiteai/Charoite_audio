@@ -400,24 +400,36 @@ def test_run_root_refuses_the_data_root_by_file_identity_and_removes_what_it_mad
         rp.run_root(code / "cache" / "s" / "run", data)
 
 
-def test_sweep_removes_the_derivatives_of_a_meeting_whose_recording_is_gone(tmp_path):
-    """Финальный Opus, C1: производные прогона живут не дольше записи (ретеншн, «Забыть»);
-    ссылка-вход удаляется сама, её цель остаётся."""
-    rec = tmp_path / "rec"
+def test_sweep_removes_only_its_own_meeting_folders_whose_recording_is_gone(tmp_path):
+    """Финальный Opus, C1; Sonnet по правкам, I1: папка штампа, прогнанная из этого же
+    каталога записей, убирается, когда записи нет; чужой корень, сырой `.pcm`, папка без
+    пометки и ссылка — не трогаются; по ссылкам уборка не ходит."""
+    rec, other = tmp_path / "rec", tmp_path / "other"
     rec.mkdir()
+    other.mkdir()
     (rec / "kept_blackhole.wav").write_bytes(b"")
-    for name in ("kept", "gone"):
-        (rp.CACHE_BASE / name / "run" / "logs").mkdir(parents=True)
+    (rec / "raw_blackhole.pcm").write_bytes(b"")
     target = tmp_path / "weights"
     target.mkdir()
     (target / "w.bin").write_bytes(b"1")
+    for name, owner in (("kept", rec), ("raw", rec), ("gone", rec), ("foreign", other), ("bare", None)):
+        (rp.CACHE_BASE / name / "run").mkdir(parents=True)
+        if owner is not None:
+            rp.mark_owner(rp.CACHE_BASE / name, owner)
     (rp.CACHE_BASE / "gone" / "run" / "models").symlink_to(target, target_is_directory=True)
     (rp.CACHE_BASE / "link").symlink_to(target, target_is_directory=True)
-    assert rp.sweep_orphans(rec) == ["gone", "link"]
-    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == ["kept"]
+    (rp.CACHE_BASE / "broken").mkdir()
+    (rp.CACHE_BASE / "broken" / rp.OWNER).write_text("[", encoding="utf-8")
+    assert rp.sweep_orphans(rec) == ["gone"]
+    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == ["bare", "broken", "foreign", "kept", "link", "raw"]
     assert (target / "w.bin").exists(), "по ссылкам уборка не ходит"
     rp.CACHE_BASE.rename(tmp_path / "moved")
     assert rp.sweep_orphans(rec) == [], "нет кэша — нечего убирать"
+
+
+def test_redact_masks_the_stamp_and_the_home_folder():
+    home = str(pathlib.Path.home())
+    assert rp.redact(f"{home}/x/2026-01-01_100000_mic.wav", "2026-01-01_100000") == "~/x/<штамп>_mic.wav"
 
 
 # ------------------------------------------------------------------ прогон целиком
@@ -510,10 +522,12 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     monkeypatch.setattr(fp, "spawn_stream", door)
     out = rp.CACHE_BASE / stamp / "run"
     (rp.CACHE_BASE / "2025-01-01_100000" / "run").mkdir(parents=True)     # запись забыта
+    rp.mark_owner(rp.CACHE_BASE / "2025-01-01_100000", data / "rec")
     said = []
     meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=said.append)
     assert meta["cuts_per_channel"] == rp.expected_cuts(SR * 20, SR, 3.0, 0.5)
     assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == [stamp], "производные без записи убраны"
+    assert json.loads((out.parent / rp.OWNER).read_text())["rec_dir"] == str((data / "rec").resolve())
     assert not any((out / x).is_symlink() for x in rp.LINKS), "ссылки на веса после прогона сняты"
     assert not (data / "logs").exists()
     assert said and not any(stamp in s for s in said), "штамп встречи в строках тени — маской"
@@ -710,7 +724,7 @@ def test_read_channel_refuses_anything_but_mono_s16_at_the_rate(tmp_path, rate, 
         w.setsampwidth(width)
         w.setframerate(rate)
         w.writeframes(b"\0" * width * channels * 10)
-    with pytest.raises(rp.Refused):
+    with pytest.raises(rp.Refused, match=r"^канал x: "):
         rp.read_channel(p, SR)
 
 
@@ -752,10 +766,23 @@ def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monke
     assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
     assert seen["out"] == tmp_path / "o", "место проверяет run_root, а не разбор аргументов"
 
+    home = str(pathlib.Path.home())
+
     def refuse(stamp, **kw):
-        raise rp.Refused("нет")
+        raise rp.Refused(f"нет {home}/{stamp}_mic.wav")
     monkeypatch.setattr(rp, "replay", refuse)
+    capsys.readouterr()
     assert rp.main(["2026-01-01_100000"]) == 2
+    err = capsys.readouterr().err
+    assert "2026-01-01_100000" not in err and home not in err and "<штамп>" in err, (
+        "Sonnet по правкам, I2: отказ печатается маской")
+
+    def crash(stamp, **kw):
+        raise OSError(f"{home}/{stamp}_blackhole.wav")
+    monkeypatch.setattr(rp, "replay", crash)
+    assert rp.main(["2026-01-01_100000"]) == 1
+    err = capsys.readouterr().err
+    assert "OSError" in err and "2026-01-01_100000" not in err and "Traceback" not in err
 
 
 def test_coverage_and_fragmentation_skip_the_no_voice_column_and_short_voices():
@@ -881,3 +908,12 @@ def test_a_replay_that_lost_chunks_or_their_lines_is_invalid():
     assert any("строк chunk 2" in p for p in chk.validity(journal(chunk_ends=[START0 + 64000, START0 + 72000]),
                                                            noted_expected=3))
     assert chk.validity(journal(chunk_ends=[START0 + 64000]), noted_expected=1) == []
+
+
+def test_a_missing_channel_is_named_by_its_label_not_by_the_meeting_file(tmp_path):
+    """Sonnet по правкам Opus, I2: причина отказа не несёт имени файла со штампом."""
+    data, stamp = _replay_data(tmp_path)
+    (data / "rec" / f"{stamp}_mic.wav").unlink()
+    with pytest.raises(rp.Refused) as e:
+        rp.replay(stamp, data_root=data, out=rp.CACHE_BASE / stamp / "run", say=lambda s: None)
+    assert str(e.value) == "нет записей каналов: mic"
