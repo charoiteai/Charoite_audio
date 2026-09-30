@@ -270,9 +270,10 @@ def link_clusters(nodes, sim: dict[tuple[int, int], float], threshold: float,
         return parent
     members = {k: {k} for k in nodes}
     banned = 0
-    for (a, b), v in sorted(sim.items(), key=lambda kv: (-kv[1], kv[0])):
-        if v < threshold:
-            break
+    # кандидаты — только пары ≥ порога: NaN (эмбеддинг с нулевой нормой) не проходит
+    # сравнение, как и в union-find выше, и не ломает порядок сортировки (выход №565)
+    pairs = [(ab, v) for ab, v in sim.items() if v >= threshold]
+    for (a, b), v in sorted(pairs, key=lambda kv: (-kv[1], kv[0])):
         ra, rb = find(a), find(b)
         if ra == rb:
             continue

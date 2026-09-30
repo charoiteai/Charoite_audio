@@ -97,6 +97,16 @@ def test_a_veto_that_never_fires_gives_the_union_find_partition(seed):
         _groups(D.link_clusters(list(vecs), sim, 0.60))
 
 
+def test_a_nan_similarity_merges_nothing_under_the_veto():
+    """Эмбеддинг с нулевой нормой даёт NaN: без запрета такая пара не сливается
+    (NaN >= порога — ложь), с запретом — тоже, и порядок пар не ломается (выход №565,
+    r1b, Sonnet M1)."""
+    sim = {(0, 1): float("nan"), (0, 2): 0.3, (1, 2): 0.3}
+    singles = {frozenset({0}), frozenset({1}), frozenset({2})}
+    assert _groups(D.link_clusters([0, 1, 2], sim, 0.60, D.VETO_BELOW)) == singles
+    assert _groups(D.link_clusters([0, 1, 2], sim, 0.60)) == singles
+
+
 def test_the_veto_is_checked_against_every_member_of_both_groups():
     """Запрет по худшей паре между группами, а не по мосту: мост 0.9, а третий член
     группы с чужаком — 0.2."""
