@@ -86,6 +86,8 @@ else
 fi
 "$PY" scripts/layout_map.py --check > "$WORK/layout.log" 2>&1; rc=$?;  [ $rc -eq 0 ] || show "$WORK/layout.log";  verdict $rc layout
 "$PY" scripts/check_private_markers.py --all > "$WORK/markers.log" 2>&1; rc=$?; [ $rc -eq 0 ] || show "$WORK/markers.log"; verdict $rc markers
+# Каждый коммит ветки, а не итог (№541): промежуточный коммит публикуется навсегда.
+"$PY" scripts/check_private_markers.py --range "$BASE..HEAD" > "$WORK/markers_range.log" 2>&1; rc=$?; [ $rc -eq 0 ] || show "$WORK/markers_range.log"; verdict $rc markers-commits
 
 step "2. pytest (полный набор — включая контракты точек входа)"
 if ! skipped pytest; then
