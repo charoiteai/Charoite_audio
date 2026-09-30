@@ -104,6 +104,13 @@ NAMES_REJECTED_NOTE = (
 #: logs/ (как у NAMES_PENDING_NOTE). В `{reason}` идут только закреплённые
 #: фразы без путей машины: стенограмму пересылают людям (№495).
 ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников размечены запасным движком (sherpa): {reason}."
+#: Строка в шапке, когда разметка микрофона без звонка свела всех в одну метку,
+#: а живая сессия слышала несколько голосов (№559): имя одного человека на всех
+#: было бы ложью, поэтому метка остаётся нейтральной. Своя строка, не
+#: NAMES_PENDING_PREFIX: совет «пересобрать» тут не поможет — пересборка
+#: упрётся в ту же разметку.
+MIC_COLLAPSED_NOTE = ("> ⚠️ Голоса в микрофоне слились в одну метку, хотя живая стенограмма "
+                      "слышала {live} — имена не присвоены, впишите их вручную.")
 #: Причина в шапке, когда Nemotron не разметил. Сырой отказ движка — путь
 #: интерпретатора, OSError, последняя строка stderr с путями весов и рецептом
 #: `hf download --local-dir …` — несёт имя учётки и уходит только в журнал
@@ -287,19 +294,25 @@ MIN_SEGMENT_S = 1.0
 
 
 def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
-                    num_speakers: int = -1) -> list[tuple[float, float, int]]:
+                    num_speakers: int = -1,
+                    merge_shards: bool | None = None) -> list[tuple[float, float, int]] | None:
     """Сегменты (start, end, cluster) канала; короче min_len — отброшены.
 
-    num_speakers > 0 — жёстко фиксирует число кластеров. Подсказку даёт живая
-    сессия: авто-режим на моно-миксе плодит осколки (21.07: 14 «голосов» на
-    встрече, где живьём их было 8).
+    num_speakers > 0 — число кластеров из живой сессии: авто-режим на моно-миксе
+    плодит осколки (21.07: 14 «голосов» на встрече, где живьём их было 8).
+    merge_shards=True — после подсказки ещё склейка осколков: число становится
+    верхней границей (см. diarize.diarize; микрофон очной встречи, №559).
+    Сбой разметки — None, как «канал не размечали» (контракт None/[] — в
+    докстринге resolve_channel_segments): пустой список значил бы «речи нет»,
+    а канал собеседников, размеченный пустым, — это молчание (№559).
     """
+    kw = {} if merge_shards is None else {"merge_shards": merge_shards}
     try:
-        return [(s, e, k) for s, e, k in diarize(audio, sr, num_speakers=num_speakers)
+        return [(s, e, k) for s, e, k in diarize(audio, sr, num_speakers=num_speakers, **kw)
                 if e - s >= min_len]
     except Exception as e:  # noqa: BLE001
         log(f"диаризация канала не удалась: {e}")
-        return []
+        return None
 
 
 def call_channel_engine(cfg: dict, wav: pathlib.Path,
@@ -455,7 +468,8 @@ def resolve_channel_segments(
     каждой метки («bh» / «mic»: по нему распознавание берёт звук).
 
     `bh_raw` / `mic_raw` — (start, end, номер кластера) от движка разметки;
-    None — канал не размечали (записи нет или она короче 20 с). Ввода-вывода
+    None — канал не размечали (записи нет, она короче 20 с или разметка не
+    удалась), [] — размечали, речи нет. Ввода-вывода
     здесь нет: звук читает и движок зовёт `rebuild()`. Порядок — системный
     канал, затем микрофон: эхо в микрофоне отсекается по отрезкам собеседников,
     а «Собеседник N» микрофона продолжает нумерацию звонка. `owner_label` —
@@ -740,6 +754,62 @@ def live_session_names(meta: dict) -> dict[str, str]:
             if isinstance(k, str) and isinstance(v, str) and v.strip()}
 
 
+#: Сколько голосов живой сессии пересборка вообще готова принять за правду:
+#: больше — правленый руками или битый сайдкар, числу не верим.
+MAX_LIVE_SPEAKERS = 60
+#: Подсказка числа голосов кластеризатору: вне этого диапазона — авто-режим.
+HINT_RANGE = (2, 12)
+#: Микрофону подсказка идёт с этого числа: на двоих авто справляется, а
+#: монолог, раздробленный живым трекером на 2 метки, не режем (№559).
+MIC_HINT_MIN = 3
+
+
+def speakers_count(meta: dict) -> int | None:
+    """Сколько голосов слышала живая сессия (`speakers` в live.json) — с санитайзом
+    формы, как у live_session_names: целое (bool — нет, float — только целый) от
+    1 до MAX_LIVE_SPEAKERS, иначе None. Строка из правленого руками сайдкара —
+    тоже None: `int(...)` на мусоре ронял бы всю пересборку (№559)."""
+    v = meta.get("speakers") if isinstance(meta, dict) else None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if not isinstance(v, int) or not 1 <= v <= MAX_LIVE_SPEAKERS:
+        return None
+    return v
+
+
+def speakers_hint(meta: dict) -> int | None:
+    """Число голосов для кластеризатора: speakers_count в HINT_RANGE, иначе None."""
+    n = speakers_count(meta)
+    return n if n is not None and HINT_RANGE[0] <= n <= HINT_RANGE[1] else None
+
+
+def mic_hint(meta: dict, call_silent: bool) -> int | None:
+    """Подсказка числа голосов микрофону: только когда канал собеседников молчит
+    (очная встреча, машина без системного звука) и живых голосов не меньше
+    MIC_HINT_MIN. Со звонком `speakers` считает оба канала — число для
+    микрофона неизвестно, там авто, как было."""
+    n = speakers_hint(meta)
+    return n if call_silent and n is not None and n >= MIC_HINT_MIN else None
+
+
+def collapsed_mic_labels(chan: dict[str, str], live_count: int | None,
+                         call_silent: bool) -> set[str]:
+    """Нейтральная метка микрофона, в которую разметка свела всех, — когда её
+    одну не отличить от слияния людей: звонка нет, нейтральная метка микрофона
+    ровно одна, а живая сессия слышала не меньше MIC_HINT_MIN голосов. Имя
+    одного живого участника на такой метке — ложь о всех остальных (встреча
+    29.09: 93 реплики шестерых под одним именем), поэтому ей не дают имени ни
+    перенос по времени, ни модель. Две и больше меток — не слияние: очная
+    встреча на двоих с живым трекером, насчитавшим шесть, остаётся с именами."""
+    if not call_silent or live_count is None or live_count < MIC_HINT_MIN:
+        return set()
+    neutral = {lbl for lbl, c in chan.items()
+               if c == "mic" and channel_labels.is_neutral_label(lbl)}
+    return neutral if len(neutral) == 1 else set()
+
+
 def minutes_names(meta: dict) -> dict[str, str]:
     """Имена для перештамповки минуток — по тому, ЧЬЕЙ нумерацией они написаны.
 
@@ -763,13 +833,14 @@ def minutes_names(meta: dict) -> dict[str, str]:
 
 
 def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]],
-                  allowed: set[str]) -> dict[str, str]:
+                  allowed: set[str], exclude: set[str] = frozenset()) -> dict[str, str]:
     """Переносит имена из живой стенограммы на метки пересборки ПО ВРЕМЕНИ.
 
     Метки живой сессии и пересборки — разные кластеризации, поэтому переносить
     «Собеседник 1» → «Собеседник 1» нельзя (приклеит имя не тому). Сопоставляем
     по пересечению интервалов: у какой метки больше всего совпадений по времени
     с репликами живого «Алексея» — та и Алексей. Имя достаётся одной метке.
+    `exclude` — метки, которым имени не дают вовсе (collapsed_mic_labels).
     """
     import datetime as _dt
     spans: list[tuple[float, float, str]] = []
@@ -800,8 +871,9 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
         # владельца в чужое имя в финальной стенограмме (№147, класс
         # Critical DS по #464). Владелец уже подписан каналом; живые имена —
         # только нейтральным меткам пересборки.
-        if not channel_labels.is_neutral_label(spk) or spk == channel_labels.NEUTRAL_OTHER:
-            continue   # владельца и голую канальную метку не скорим
+        if (not channel_labels.is_neutral_label(spk) or spk == channel_labels.NEUTRAL_OTHER
+                or spk in exclude):
+            continue   # владельца, голую канальную метку и слитую метку не скорим
         for ls, le, name in spans:
             ov = min(e, le) - max(s, ls)
             if ov > 0:
@@ -912,8 +984,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         log("записей нет — оставляю живую стенограмму")
         return None
 
-    # Сырые сегменты каналов: None — канал не размечали (записи нет или она
-    # короче 20 с), [] — размечали, речи не нашли. Разметку по голосам и
+    # Сырые сегменты каналов: None — канал не размечали (записи нет, она
+    # короче 20 с или разметка не удалась), [] — размечали, речи не нашли. Разметку по голосам и
     # эхо решает resolve_channel_segments; здесь — только звук и движок.
     bh_raw: list[tuple[float, float, int]] | None = None
     mic_raw: list[tuple[float, float, int]] | None = None
@@ -932,13 +1004,31 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             else:
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
-                hint = int(meta.get("speakers") or 0)
-                bh_raw = diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1)
+                bh_raw = diarize_channel(bh, sr, num_speakers=speakers_hint(meta) or -1)
+    # Канал собеседников молчит: записи нет, она не размечалась (короче 20 с,
+    # сбой) или размечена пустой. Одно значение на подсказку микрофону и на
+    # вердикт слияния ниже — два места не расходятся (№559, вход r3 GLM I2).
+    call_silent = not bh_raw
+    silence = ("канала собеседников нет" if bh_p is None else
+               "канал собеседников не размечен" if bh_raw is None else
+               "канал собеседников размечен пустым")
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
             _yield_to_live("разметка голосов микрофона", cap=600)
-            mic_raw = diarize_channel(mic, sr)
+            # Очная встреча: в микрофоне вся комната, а авто-режим сцепляет разных
+            # людей в один голос (29.09: 30 кластеров → 1, №565). Число живой
+            # сессии идёт микрофону верхней границей: со склейкой осколков после,
+            # иначе живой трекер, дробящий один голос, нарезал бы монолог (№559).
+            hint = mic_hint(meta, call_silent)
+            if hint is not None:
+                log(f"mic: подсказка голосов {hint} ({silence}), склейка осколков после")
+                mic_raw = diarize_channel(mic, sr, num_speakers=hint, merge_shards=True)
+                if not mic_raw:
+                    log("mic: разметка с подсказкой ничего не дала — повторяю без подсказки")
+                    mic_raw = diarize_channel(mic, sr)
+            else:
+                mic_raw = diarize_channel(mic, sr)
     # Подпись владельца читается из настроек, только когда микрофон размечен:
     # без микрофона пересборка конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
@@ -948,6 +1038,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
+    live_count = speakers_count(meta)
+    collapsed = collapsed_mic_labels(chan, live_count, call_silent)
+    if collapsed:
+        log(f"⚠️ разметка микрофона свела всех в одну метку при живых голосах {live_count} "
+            f"({silence}) — имена ей не переносятся и модели не отдаются")
     merged = paragraphs(segments)
     log(f"итог: {len(merged)} абзацев")
 
@@ -979,7 +1074,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # времени. Затем qwen досматривает только те метки, которым имя не досталось.
     allowed = set(live_session_names(meta).values())
     names = names_by_time(live.read_text(encoding="utf-8"), base,
-                          [(s, e, spk) for s, e, spk, _ in lines], allowed) if allowed else {}
+                          [(s, e, spk) for s, e, spk, _ in lines], allowed,
+                          exclude=collapsed) if allowed else {}
     if names:
         log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
     # Безымянными считаются только НЕЙТРАЛЬНЫЕ метки: владелец имя по
@@ -989,7 +1085,9 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # названной встрече (DS+GLM I1 по #465).
     neutral = {spk for _, _, spk, _ in lines
                if channel_labels.is_neutral_label(spk)}
-    rest = neutral - set(names)
+    # Слитая метка микрофона модели не отдаётся: она назвала бы её по
+    # самопредставлению любого из тех, кто под ней (№559, вход r1 C2).
+    rest = neutral - set(names) - collapsed
     naming = NamesOutcome({}, NamesOutcome.ANSWERED)
     if rest:
         naming = name_speakers(
@@ -1005,7 +1103,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # метки = потеря, которую человеку надо видеть в самом файле; причина — своя
     # у каждого исхода (№499). Пустой ответ модели при полностью названных
     # участниках ничего не стоит: помечаем только когда потеря видна в файле.
-    unnamed = neutral - set(names)
+    unnamed = neutral - set(names) - collapsed
     pending_note = None
     if unnamed and naming.outcome == NamesOutcome.SILENT:
         pending_note = NAMES_PENDING_NOTE
@@ -1018,6 +1116,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     body = [f"# Встреча {stamp}", ""]
     if pending_note:
         body += [pending_note, ""]
+    if collapsed:
+        body += [MIC_COLLAPSED_NOTE.format(live=live_count), ""]
     if engine_note:
         body += [ENGINE_FALLBACK_NOTE.format(reason=engine_note), ""]
     for s, e, spk, text in lines:

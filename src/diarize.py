@@ -105,7 +105,14 @@ def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
     return audio, sr
 
 
-def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float = 0.8):
+def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float = 0.8,
+            merge_shards: bool | None = None):
+    """Сегменты (start, end, кластер). Склейка осколков `_merge_shards` по умолчанию —
+    только в авто-режиме; `merge_shards=True` зовёт её и после подсказки числа
+    голосов: тогда подсказка — верхняя граница, а не приговор. Живой трекер дробит
+    один голос на несколько меток (owner_voice.owner_voices), и жёсткое число
+    нарезало бы одного человека на n кластеров; склейка сводит куски одного голоса
+    обратно (замер №559: монолог звонка — 3 голоса против 6 у авто)."""
     import sherpa_onnx
     # threshold=0.55 на моно-миксе дал 119 «голосов» (каждый сегмент — новый).
     # Выше порог = агрессивнее слияние. Если знаешь число людей — задай num_speakers.
@@ -128,7 +135,7 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     print("диаризация…", flush=True)
     result = sd.process(audio).sort_by_start_time()
     segs = [(s.start, s.end, s.speaker) for s in result]
-    if num_speakers <= 0:
+    if (num_speakers <= 0) if merge_shards is None else merge_shards:
         segs = _merge_shards(audio, sr, segs)
     return segs
 
