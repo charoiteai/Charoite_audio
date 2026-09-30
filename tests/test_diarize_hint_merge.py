@@ -50,3 +50,15 @@ def test_a_failing_merge_is_a_failed_channel(monkeypatch):
     monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=-1: list(SEGS))
     monkeypatch.setattr(rt, "merge_voice_shards", boom)
     assert rt.diarize_channel(AUDIO, 16000, num_speakers=3, merge_shards=True) is None
+
+
+def test_the_short_segment_filter_keeps_exactly_min_len_and_drops_late_short_ones(monkeypatch):
+    monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=-1: [(7.0, 8.0, 0), (50.0, 50.5, 1)])
+    assert rt.diarize_channel(AUDIO, 16000) == [(7.0, 8.0, 0)]
+
+
+def test_an_unhinted_channel_asks_the_diarizer_for_auto_mode(monkeypatch):
+    seen = []
+    monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=None: seen.append(num_speakers) or [])
+    rt.diarize_channel(AUDIO, 16000)
+    assert seen == [-1]
