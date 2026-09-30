@@ -77,31 +77,45 @@ review gates, and who answers for what — is documented in
   non-empty plan was judged — in CI that one is red. `--report` is rewritten
   after every mutant, so a job killed at its ceiling still leaves what was
   checked.
-  In CI the changed lines are split across four shards: `--shard K/N` keeps
-  every N-th mutant (`i % N == K-1`, before `--max`), `--max all` lifts the
-  60-mutant ceiling, and each shard writes a machine line `<report>.json`
-  beside the report — `K`, `N`, `M` (its mutants), `P` (the whole plan) and
-  the outcome word. A shard left with no mutants of a non-empty plan prints
-  `шард K из N: 0 из P — нечего` and still writes both files; at `P = 0` every
-  shard writes the diagnosis of the whole range. A separate verdict job merges
-  them with `--merge-shards DIR`; its table lives in the `merge_shards`
-  docstring. In short: red when the files do not cover the plan exactly (one
-  per shard, keys 1..N, ΣM = P, every file readable); at `P = 0` all-`nothing`
-  is the note "nothing to mutate" and `nothing`/`unmutable` the blind-spot
-  warning, both green; at `P > 0` green only when every shard is `ok` — or
-  `nothing` with its own `M = 0`; `partial`, `unjudged` and `fail` are red. So
-  `partial` in CI is a failure now, not a warning. A file that does not parse
-  counts as unread, like one missing from the revision.
-  Locally `--jobs N` (1–4, only with `--max all`) runs the same split on one
-  machine: the parent starts N ordinary mutators with `--shard k/N` on the
-  range resolved to hashes once and judges them with `merge_shards` — the
-  table above, codes 0/1. A finite `--max` is refused: a cap applied after
-  the split judges a different set than a sequential run with the same cap.
-  Parallel runs are allowed: the mutation lock is shared, and four shares on
-  one `.git` found the same survivors 3.3× faster (193 s → 59 s). Shares'
-  logs and reports stay in the `mutate-jobs-*` directory the parent prints;
-  SIGINT or SIGTERM to the parent reaches every share, which cleans up its
-  copy before exiting.
+  Only product code is mutated: `src/` and the scripts the product launches
+  (`layout_map.mutation_area` over the head revision); benchmarks, tooling and
+  `tests/` are not. The plan is sampled with `--max` (default 60, `all` — the
+  whole plan): mutants in critical zones first, a floor of 15 for the rest,
+  round-robin across files within a layer, and within a file by the hash of the
+  mutant's identity (path, function, description, canonical node text — no line
+  number). Editing a test or shifting lines does not change the sample; CI and a
+  local run judge the same set. The sample is the plan: what it leaves out is
+  policy, not "not everything was checked".
+  Critical zones are `mutation_critical` in `docs/design/layout.json` (a module,
+  a script path or `module::function`): sound written to disk or lost, data
+  leaving the machine, owner data written or deleted. The list is the union of
+  the range's base and head. A module in the area that imports a network library
+  or the `safe_write` door must be listed in `mutation_critical` or in
+  `mutation_not_critical` with a reason — `layout_map --check` guards it. A
+  survivor in a critical zone is red; outside them it is green and listed.
+  In CI the sample is split across four shards: `--shard K/N` keeps every N-th
+  mutant of the sample (`i % N == K-1`), and each shard writes its facts
+  `<report>.json` beside the report (format version, `K`, `N`, `M` — its
+  mutants, `P` — the sample, `full` — the whole plan, judged and not applied,
+  survivors with their zone, the run key). A separate verdict job merges them
+  with `--merge-shards DIR`; its table lives in the `merge_shards` docstring,
+  and the outcome comes from the same judge `verdict_code` as a single run. In
+  short: red when the files do not cover the sample (one per shard, keys 1..N,
+  ΣM = P, one sample, zones and revisions, readable format), when a mutant in a
+  critical zone survived or the check itself broke, or when the sample was not
+  judged in full; at `P = 0` the note "nothing to mutate" or the blind-spot
+  warning, both green.
+  Every run writes a journal of judged mutants `logs/mutation_run-<key>-<k>.jsonl`
+  under the data root and prints the key; `--resume <key>` judges only those not
+  in it (a foreign key or an expired journal is refused with its reason).
+  Locally `--jobs N` (1–4) splits the sample the same way on one machine: the
+  parent starts N ordinary mutators with `--shard k/N` and the same `--max` on
+  the range resolved to hashes once and judges them with `merge_shards`, codes
+  0/1. Parallel runs are allowed: the mutation lock is shared, and four shares on
+  one `.git` found the same survivors 3.3× faster (193 s → 59 s). SIGINT or
+  SIGTERM to the parent reaches every share, which cleans up its copy; the
+  parent prints "прервано сигналом S: N из M — продолжить: --resume <key>" and
+  exits with 128 + S.
 - **Decisions live in pure functions, loops only apply them.** The live
   contour (`stt_loop`, the heartbeat loop) is a closure inside
   `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put

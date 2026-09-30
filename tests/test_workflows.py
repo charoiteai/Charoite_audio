@@ -388,8 +388,8 @@ def test_mutation_step_budget_fits_its_ceiling_and_the_report_reaches_the_summar
 
 
 def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
-    """Весь план шардами (№441): число шардов матрицы равно N в `--shard …/N`, срез
-    `--max` снят (`all`), артефакт шарда уезжает и при оборванном шаге (`if:
+    """Выборка шардами (№441, №469): число шардов матрицы равно N в `--shard …/N`,
+    `--max` — выборка мутатора, одна на CI и локальный прогон, артефакт шарда уезжает и при оборванном шаге (`if:
     always()`), а вердикт — один job после всех шардов, тоже при их провале, и
     судит его `mutate_check --merge-shards`, а не разбор текста в yaml. Разошедшееся
     N дало бы «все отчёты зелёные» при непокрытой части плана."""
@@ -404,7 +404,12 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
     assert int(n.group(1)) == len(shards) and sorted(shards) == list(range(1, len(shards) + 1)), (
         f"шардов в матрице {shards}, а мутатор делит на {n.group(1)}")
     assert step.get("env", {}).get("SHARD") == "${{ matrix.shard }}", "номер шарда — из матрицы, через env"
-    assert re.search(r"--max\s+all\b", run), "срез --max в шарде снова прятал бы часть плана"
+    # Выборка — это план (№469): каждый шард строит ту же выборку и берёт свои
+    # индексы; её размер — умолчание мутатора, одно число на CI и локальный прогон
+    import mutate_check as mc
+    m = re.search(r"--max\s+(\S+)", run)
+    assert m and m.group(1) == str(mc.SAMPLE_MAX), (
+        f"шаг мутатора обязан судить выборку --max {mc.SAMPLE_MAX}, а не {m and m.group(1)}")
     # Параллельность CI — шарды на отдельных раннерах. `--jobs` внутри шарда дал бы
     # долю доли, которую `--shard K/N` не выражает, и мутатор отказал бы разбором
     # (№444 B; больше шардов — №452).

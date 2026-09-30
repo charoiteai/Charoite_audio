@@ -25,6 +25,7 @@ import argparse
 import ast
 import contextlib
 import dataclasses
+import hashlib
 import json
 import os
 import pathlib
@@ -62,11 +63,23 @@ class Mutation:
     на этом месте тот же узел, а не соседа с теми же координатами (№386).
     """
 
-    def __init__(self, path: pathlib.Path, node, what: str, change):
+    def __init__(self, path: pathlib.Path, node, what: str, change, *,
+                 qualname: str = "", key: str = ""):
         self.path, self.line, self._bare, self.change = path, node.lineno, what, change
         self.what = f"{what} @{node.col_offset}-{node.end_col_offset}"
         self.kind, self.span = type(node), _span(node)
         self.target = ast.dump(node)
+        #: Личность мутанта без номера строки (№469): путь, qualname области,
+        #: описание, канонический текст узла и порядковый номер среди одинаковых.
+        #: По ней — порядок выборки, журнал прогона и `--resume`.
+        self.qualname, self.key = qualname, key
+        #: Лежит ли в критичной зоне (`layout.json`, `mutation_critical`) — ставит `plan_for`
+        self.critical = False
+
+    @property
+    def rank(self) -> str:
+        """Место в очереди выборки: хеш личности, без сида — один на CI и локально."""
+        return hashlib.sha256(self.key.encode("utf-8")).hexdigest()
 
     def bare(self) -> str:
         return self._bare
@@ -197,53 +210,196 @@ class ScanTotals:
     #: их число; оба растут только в `_unreadable`: красный `partial` без имени
     #: файла заставлял автора PR угадывать (выходной круг 3 по №441, DS M1).
     unreadable: list[str] = dataclasses.field(default_factory=list)
-    #: Размер плана ДО среза шардом: знаменатель «0 из P» и сверка слияния
+    #: Размер ВЫБОРКИ до среза шардом: знаменатель «0 из P» и сверка слияния
     #: шардов `ΣM == P`. Без него пустой шард неотличим от «в диапазоне нечего».
+    #: Выборка — это план (№469): не судилось из выборки — неполнота, а то, что
+    #: выборка не взяла из полного плана, — политика, а не срез.
     planned: int = 0
+    #: Полный план до выборки и сколько в нём и в выборке критичных мутантов
+    full: int = 0
+    critical_full: int = 0
+    critical_sampled: int = 0
+    #: Список критичных зон — дайджест объединения base ∪ head и заметка, если в
+    #: какой-то ревизии его нет; шарды одного прогона обязаны назвать один дайджест
+    zones: str = ""
+    zones_note: str = ""
+    #: Дайджест ключей выборки (до шарда) и ключ прогона (`run_key`)
+    sample: str = ""
+    run: str = ""
     #: (K, N) шарда, если он назван; None — план целиком. Из него берётся M
     #: шарда для машинной строки; соседи по N восстанавливают покрытие.
     shard: tuple[int, int] | None = None
 
 
-def verdict_code(survivors: list, tested: int, planned: int, dropped: int, skipped: int,
-                 totals: ScanTotals | None = None) -> int:
-    """Исход прогона одним значением: 1 — найдены выжившие; `EXIT_NOTHING_TO_CHECK`
-    — в изменённых строках нет кода (строк нет, или только комментарии и
-    константы модуля); `EXIT_UNMUTABLE` — код в строках есть, а мутировать в нём
-    нечего; `EXIT_UNJUDGED` — план был, не судился ни один мутант; `EXIT_PARTIAL`
-    — судили не весь план (прервано встречей, срезано потолком, не применилось,
-    файл не прочитался или не разобрался); 0 — проверен весь план, чисто.
+#: Версия формата машинной строки шарда и журнала прогона. Строка без неё или с
+#: другой — вердикт красный с причиной: старые артефакты судить по новым правилам нельзя.
+FACTS_VERSION = 2
 
-    Функция от состояния, а не лестница `if` в конце `main`: в круге 3 такая
-    лестница спрашивала `tested == 0` РАНЬШЕ полноты, и прогон, прерванный на
-    первом же мутанте при плане из сорока, отвечал «проверять было нечего» —
-    CI печатал это дословно. Обе головы круга 4 независимо (DS C1 = GLM 1).
-    """
-    totals = totals or ScanTotals()
-    if survivors:
+
+@dataclasses.dataclass
+class Facts:
+    """Факты прогона или шарда — единственное, что пишет исполнитель (№469).
+
+    Слово исхода и код — производные, их считает один судья `verdict_code`; шард
+    ничего не классифицирует сам. Прежде машинная строка несла только слово, и
+    судья не отличал «выжили некритичные» от «выжили некритичные, а бюджет оборвал
+    доли» (входной круг 2 по №469, Sonnet C1). `M` — доля этого прогона, `P` —
+    выборка, `full` — полный план. `survivors` — выжившие: ключ, путь, строка,
+    описание, критичность."""
+    K: int = 1
+    N: int = 1
+    M: int = 0
+    P: int = 0
+    full: int = 0
+    tested: int = 0
+    skipped: int = 0
+    unread: int = 0
+    nodes: int = 0
+    lines_in: int = 0
+    broken: str = ""
+    broken_rc: int = 0
+    aborted: str = ""
+    critical_full: int = 0
+    critical_sampled: int = 0
+    zones: str = ""
+    zones_note: str = ""
+    base: str = ""
+    head: str = ""
+    #: Ключ прогона — имя журнала рассуждённых и аргумент `--resume`
+    run: str = ""
+    survivors: list = dataclasses.field(default_factory=list)
+
+    @property
+    def critical_survivors(self) -> list:
+        return [s for s in self.survivors if s["critical"]]
+
+
+def survivor_row(m: Mutation, root: pathlib.Path) -> dict:
+    """Выживший для фактов: ключ, путь от корня, строка, описание, зона."""
+    try:
+        rel = m.path.relative_to(root).as_posix()
+    except ValueError:
+        rel = m.path.as_posix()
+    return {"key": m.key, "path": rel, "line": m.line, "what": m.what, "critical": m.critical}
+
+
+def verdict_code(f: Facts) -> int:
+    """Исход одним значением — единственный судья (№455, №469): одиночного прогона,
+    шарда и свода шардов (`merge_shards` зовёт его на сложенных фактах).
+
+    1 — выжил мутант в критичной зоне или сломалась сама проверка (красная база —
+    её код 2, копия не собралась — 1); `EXIT_UNJUDGED` — была доля, не судился ни
+    один; `EXIT_PARTIAL` — судили не всю долю (бюджет, встреча, не применилось,
+    файл не прочитан); `EXIT_NOTHING_TO_CHECK` / `EXIT_UNMUTABLE` — доля пуста;
+    0 — доля судилась целиком, критичных выживших нет. Выжившие вне критичных зон
+    исход не меняют: их список — в отчёте (решение владельца 30.09).
+
+    Функция от состояния, а не лестница `if` в конце `main`: в круге 3 по №441
+    такая лестница спрашивала «ничего не судилось» раньше полноты (DS C1 = GLM 1).
+    Критичный выживший — раньше полноты: он красный при любой полноте."""
+    if f.broken:
+        return f.broken_rc or 1
+    if f.critical_survivors:
         return 1
-    # План был, а не судился ни один мутант (бюджет съела база, прервано на первом,
-    # ни один не применился) — не «проверено не всё», а «не проверено ничего»: под
-    # `partial` CI пропускал это жёлтым (Important DeepSeek по PR #637).
-    if planned and not tested:
+    if f.M and not f.tested:
         return EXIT_UNJUDGED
     # Непрочитанный файл (нет в ревизии, не utf-8, не разобрался) — неполнота при
     # любом плане: его строки не судились, а пустой план из-за него — не «нечего» (№386).
-    if totals.files_unreadable:
+    if f.unread:
         return EXIT_PARTIAL
-    if planned == 0:
-        # Срез потолком оставляет пустой план, но проверять БЫЛО что: «нечего»
-        # тут врёт ровно так же, как врал `tested == 0` в круге 4 (GLM I2).
-        if dropped:
-            return EXIT_PARTIAL
+    if f.M == 0:
+        # Пустая доля непустой выборки — «нечего» этого шарда, соседи судят своё.
         # «Мутировать нечего» — только когда в строках есть код: правка одного
-        # комментария или константы модуля иначе давала то же слово, что и
-        # слепое пятно операторов, и слово переставало быть сигналом (критика
-        # DS круга 1 по #630). Узлы считает `scan` по тем же строкам.
-        return EXIT_UNMUTABLE if totals.nodes else EXIT_NOTHING_TO_CHECK
-    if tested < planned or dropped or skipped:
+        # комментария иначе давала то же слово, что и слепое пятно операторов (#630).
+        return EXIT_UNMUTABLE if f.nodes and not f.P else EXIT_NOTHING_TO_CHECK
+    if f.tested < f.M or f.skipped:
         return EXIT_PARTIAL
     return 0
+
+
+#: Вид журнала рассуждённых в реестре `charoite_paths.LOG_KINDS`
+RUN_LOG_KIND = "mutation_run"
+
+
+def run_key(rng: str, max_n: int | None, timeout: int, sample: str) -> str:
+    """Ключ прогона: разрешённый диапазон (SHA), выборка, таймаут, версия формата.
+    `--jobs`, `--budget-s`, `--force` в него не входят — они меняют, сколько
+    успели, а не что судили. Правка теста сдвигает HEAD — и ключ: «убит» по
+    старым тестам на новые не переносится (входные круги 1–2 по №469)."""
+    raw = json.dumps({"v": FACTS_VERSION, "range": rng, "max": max_n, "timeout": timeout,
+                      "sample": sample}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _manifest(rng: str, args: argparse.Namespace, totals: ScanTotals) -> dict:
+    return {"manifest": FACTS_VERSION, "range": rng, "max": args.max,
+            "timeout": args.timeout, "sample": totals.sample}
+
+
+def journal_add(path: pathlib.Path, row: dict) -> None:
+    """Строка журнала — одним `write` в режиме добавления: параллельные доли пишут
+    каждая в свой файл, но возобновление с другим N может дописывать в чужой."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def journal_read(data_root: pathlib.Path, key: str) -> tuple[list[dict], dict[str, dict]]:
+    """Все файлы журнала прогона `key` (любое N долей): манифесты и исходы по
+    ключу мутанта. Оборванная последняя строка (SIGKILL посреди записи) — не
+    ошибка: мутант просто не рассуждён."""
+    import charoite_paths  # noqa: E402
+    first = charoite_paths.log_path(data_root, RUN_LOG_KIND, part=f"{key}-1", suffix=".jsonl")
+    manifests: list[dict] = []
+    done: dict[str, dict] = {}
+    for path in sorted(first.parent.glob(f"{first.name[:-len('1.jsonl')]}*.jsonl")):
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if "manifest" in row:
+                manifests.append(row)
+            elif isinstance(row.get("key"), str) and row.get("outcome") in \
+                    ("killed", "survived", "skipped"):
+                done[row["key"]] = row
+    return manifests, done
+
+
+def journal_open(data_root: pathlib.Path, totals: ScanTotals, k: int, rng: str,
+                 args: argparse.Namespace) -> dict[str, dict]:
+    """Открыть журнал доли и вернуть рассуждённых прежним прогоном.
+
+    Без `--resume` журнал доли начинается заново (манифест первой строкой). С
+    `--resume` ключ обязан совпасть с ключом этой выборки, а журнал — найтись:
+    иначе отказ с названием разошедшейся части, а не «чисто» по пустоте."""
+    import charoite_paths  # noqa: E402
+    path = charoite_paths.log_path(data_root, RUN_LOG_KIND, part=f"{totals.run}-{k}",
+                                   suffix=".jsonl")
+    manifest = _manifest(rng, args, totals)
+    if not args.resume:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest, ensure_ascii=False) + "\n", encoding="utf-8")
+        return {}
+    manifests, done = journal_read(data_root, args.resume)
+    if not manifests:
+        raise PreparationError(f"журнал прогона {args.resume} не найден или истёк "
+                               f"(ретеншн logs/) — запусти прогон без --resume")
+    if args.resume != totals.run:
+        old = manifests[0]
+        diff = [name for name in ("range", "max", "timeout", "sample")
+                if old.get(name) != manifest[name]]
+        what = {"range": "диапазон (новый коммит)", "max": "--max", "timeout": "--timeout",
+                "sample": "выборка (код в области изменился)"}
+        raise PreparationError(f"ключ {args.resume} — прогон другой выборки: разошлись "
+                               + (", ".join(what[d] for d in diff) or "версия формата")
+                               + f"; ключ этой выборки — {totals.run}")
+    if not path.exists():
+        journal_add(path, manifest)
+    return done
 
 
 def busy_guard(args) -> bool:
@@ -332,65 +488,187 @@ def parse_source(text: str) -> tuple[ast.Module | None, str]:
         return None, f"{type(e).__name__}: {getattr(e, 'msg', None) or e}"
 
 
-def scan(path: pathlib.Path, lines: set[int], source: str | None = None) -> ScanReport:
-    """Что можно сломать в этих строках — и сколько там было из чего ломать."""
+def _candidate(node: ast.AST):
+    """Что можно сделать с узлом: (описание, поломка) или None."""
+    if isinstance(node, ast.Compare) and node.ops:
+        op = type(node.ops[0])
+        if op in CMP_SWAP:
+            return f"{op.__name__} → {CMP_SWAP[op].__name__}", _swap_cmp
+    elif isinstance(node, ast.BoolOp) and type(node.op) in BOOL_SWAP:
+        return (f"{type(node.op).__name__} → {BOOL_SWAP[type(node.op)].__name__}",
+                _swap_bool)
+    elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        # `if not apply or not same:` → `if not apply:` / `elif not same:`
+        # дала ноль мутантов: отрицание не ломалось вовсе (№386). Обратного
+        # оператора («добавить not») нет: он удваивает план, а класс ошибок
+        # тот же — перевёрнутое условие.
+        return "not X → X", _drop_not
+    elif isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return f"{node.value} → {not node.value}", _swap_const(not node.value)
+        if isinstance(node.value, (int, float)) and node.value not in (0,):
+            return f"{node.value} → 0", _swap_const(0)
+    elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP and not _neutral(node):
+        return (f"{type(node.op).__name__} → {BIN_SWAP[type(node.op)].__name__}",
+                _swap_bin)
+    elif isinstance(node, ast.Return) and node.value is not None \
+            and not (isinstance(node.value, ast.Constant) and node.value.value is None):
+        # `return None` → `return None` — мутант-тождество, в отчёте он
+        # неотличим от настоящей дыры (прогон партии D, 22.08)
+        return "return X → return None", _drop_return
+    return None
+
+
+def canon(node: ast.AST) -> str:
+    """Канонический текст узла для ключа мутанта: имя типа и поля, без позиций,
+    без `None` и пустых списков. Не `ast.dump`: его формат меняется между версиями
+    Python (3.13 опускает пустые поля), а ключ уходит из процесса — в журнал
+    прогона и в выборку, одинаковую для CI (3.12) и машины владельца (входной круг
+    1 по №469, Sonnet C2)."""
+    parts = [type(node).__name__]
+    for name, value in ast.iter_fields(node):
+        # `None` опускаем, кроме значения константы: `x == None` — не пустое место
+        if (value is None and not (isinstance(node, ast.Constant) and name == "value")) \
+                or (isinstance(value, list) and not value):
+            continue
+        if isinstance(value, ast.AST):
+            parts.append(f"{name}={canon(value)}")
+        elif isinstance(value, list):
+            parts.append(name + "=[" + ",".join(canon(v) if isinstance(v, ast.AST) else repr(v)
+                                                 for v in value) + "]")
+        else:
+            parts.append(f"{name}={type(value).__name__}:{value!r}")
+    return "(" + " ".join(parts) + ")"
+
+
+def scan(path: pathlib.Path, lines: set[int], source: str | None = None,
+         rel: str | None = None) -> ScanReport:
+    """Что можно сломать в этих строках — и сколько там было из чего ломать.
+
+    Ключ мутанта считается по ВСЕМ кандидатам файла, до фильтра по строкам
+    диапазона и констант модуля: порядковый номер среди одинаковых (qualname,
+    описание, текст) иначе зависел бы от того, какую из одинаковых строк правил
+    коммит, и `--resume` записал бы чужой исход на другой код (входной круг 1 по
+    №469, Sonnet I1). `rel` — путь от корня репозитория для ключа."""
     tree, why = parse_source(source if source is not None else path.read_text(encoding="utf-8"))
     if tree is None:
         return ScanReport([], unparsed=why)
+    rel = rel if rel is not None else path.name
     consts = _module_constants(tree)
     report = ScanReport([], lines_constant=len(lines & consts))
     lines = lines - consts
-    found = report.mutations
-    for node in ast.walk(tree):
+    seen: dict[tuple[str, str, str], int] = {}
+    for node, qual in layout_map.scoped_nodes(tree):
         ln = getattr(node, "lineno", None)
-        if ln is None or ln not in lines:
+        mine = ln is not None and ln in lines
+        if mine:
+            report.nodes += 1
+        got = _candidate(node)
+        if got is None:
             continue
-        report.nodes += 1
-        if isinstance(node, ast.Compare) and node.ops:
-            op = type(node.ops[0])
-            if op in CMP_SWAP:
-                found.append(Mutation(path, node, f"{op.__name__} → {CMP_SWAP[op].__name__}",
-                                      _swap_cmp))
-        elif isinstance(node, ast.BoolOp) and type(node.op) in BOOL_SWAP:
-            found.append(Mutation(path, node, f"{type(node.op).__name__} → "
-                                              f"{BOOL_SWAP[type(node.op)].__name__}",
-                                  _swap_bool))
-        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-            # `if not apply or not same:` → `if not apply:` / `elif not same:`
-            # дала ноль мутантов: отрицание не ломалось вовсе (№386). Обратного
-            # оператора («добавить not») нет: он удваивает план, а класс ошибок
-            # тот же — перевёрнутое условие.
-            found.append(Mutation(path, node, "not X → X", _drop_not))
-        elif isinstance(node, ast.Constant):
-            if isinstance(node.value, bool):
-                found.append(Mutation(path, node, f"{node.value} → {not node.value}",
-                                      _swap_const(not node.value)))
-            elif isinstance(node.value, (int, float)) and node.value not in (0,):
-                found.append(Mutation(path, node, f"{node.value} → 0", _swap_const(0)))
-        elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP \
-                and not _neutral(node):
-            found.append(Mutation(path, node, f"{type(node.op).__name__} → "
-                                              f"{BIN_SWAP[type(node.op)].__name__}",
-                                  _swap_bin))
-        elif isinstance(node, ast.Return) and node.value is not None \
-                and not (isinstance(node.value, ast.Constant)
-                         and node.value.value is None):
-            # `return None` → `return None` — мутант-тождество, в отчёте он
-            # неотличим от настоящей дыры (прогон партии D, 22.08)
-            found.append(Mutation(path, node, "return X → return None", _drop_return))
+        what, change = got
+        text = hashlib.sha256(canon(node).encode("utf-8")).hexdigest()[:16]
+        n = seen[(qual, what, text)] = seen.get((qual, what, text), -1) + 1
+        if mine:
+            report.mutations.append(Mutation(path, node, what, change, qualname=qual,
+                                             key=f"{rel}::{qual}::{what}::{text}#{n}"))
     return report
 
 
-def plan_for(root: pathlib.Path, rng: str,
-             shard: tuple[int, int] | None = None) -> tuple[list[Mutation], ScanTotals]:
-    """План мутантов по диапазону и счётчики того, из чего он собран.
+#: Потолок выборки на задачу (решение владельца 30.09, №469) и пол некритичным:
+#: критичные мутанты берутся первыми, но PR-рефакторинг критичной зоны не оставляет
+#: остальные файлы с нулём навсегда; неиспользованный пол возвращается критичным.
+SAMPLE_MAX = 60
+NONCRITICAL_FLOOR = 15
+#: Где лежит список зон в ревизии — то же имя, что у сторожа раскладки
+ZONES_REL = layout_map.LAYOUT.relative_to(layout_map.REPO).as_posix()
 
-    `shard=(K, N)` отдаёт долю плана: индексы `i % N == K-1` по порядку
-    ПОЛНОГО плана. Шард режет ДО `--max` — срез идёт в `main` по тому, что
-    вернулось отсюда; обратный порядок отдал бы шарду не его долю.
-    `totals.planned` хранит размер полного плана (P) и до среза шардом.
+
+def zones_for(root: pathlib.Path, rng: str) -> tuple[frozenset[str], str, str]:
+    """Критичные зоны диапазона: объединение `mutation_critical` базы и головы.
+
+    Одна база не держит модуль, который PR сам вносит в список; одна голова даёт
+    PR снять модуль и тут же позеленеть его выжившими. Объединение: добавление
+    действует сразу, снятие — после мержа (входной круг 2 по №469, Sonnet C2 =
+    GLM C2). Ревизии без файла или без ключа — пустой вклад и заметка, а не отказ:
+    первый PR №469 сам вводит ключ. Возвращает (записи, дайджест, заметка)."""
+    left, _, right = split_range(rng)
+    entries: set[str] = set()
+    notes: list[str] = []
+    for rev in ([left] if left else []) + [right]:
+        r = subprocess.run(["git", "show", f"{rev}:{ZONES_REL}"], cwd=root, capture_output=True)
+        data = {}
+        if not r.returncode:
+            try:
+                data = json.loads(r.stdout.decode("utf-8"))
+            except ValueError:
+                raise PreparationError(f"{ZONES_REL} в {rev[:12]} не разбирается")
+        got = data.get(layout_map.ZONE_KEYS[0]) if isinstance(data, dict) else None
+        if not isinstance(got, dict):
+            notes.append(f"в {rev[:12]} списка зон нет")
+            continue
+        entries.update(got)
+    digest = hashlib.sha256("\n".join(sorted(entries)).encode("utf-8")).hexdigest()[:12]
+    return frozenset(entries), digest, "; ".join(notes)
+
+
+def _round_robin(muts: list[Mutation], n: int) -> list[Mutation]:
+    """До `n` мутантов поровну по файлам: очередь файла — по `rank`, файлы — по пути."""
+    by_file: dict[pathlib.Path, list[Mutation]] = {}
+    for m in sorted(muts, key=lambda m: (str(m.path), m.rank)):
+        by_file.setdefault(m.path, []).append(m)
+    queues = [by_file[p] for p in sorted(by_file, key=str)]
+    picked: list[Mutation] = []
+    while len(picked) < n and any(queues):
+        for queue in queues:
+            if queue and len(picked) < n:
+                picked.append(queue.pop(0))
+    return picked
+
+
+def select(plan: list[Mutation], max_n: int | None) -> list[Mutation]:
+    """Выборка: критичные первыми, некритичным пол, внутри слоя — поровну по
+    файлам, внутри файла — по хешу личности (`rank`). Какие мутанты взяты, от
+    номеров строк не зависит; порядок результата — порядок плана."""
+    if max_n is None or len(plan) <= max_n:
+        return list(plan)
+    crit = [m for m in plan if m.critical]
+    rest = [m for m in plan if not m.critical]
+    floor = min(NONCRITICAL_FLOOR, max_n // 4, len(rest))
+    took = _round_robin(crit, max_n - floor)
+    took += _round_robin(rest, max_n - len(took))
+    picked = {id(m) for m in took}
+    return [m for m in plan if id(m) in picked]
+
+
+def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
+             max_n: int | None = None) -> tuple[list[Mutation], ScanTotals]:
+    """Выборка мутантов по диапазону и счётчики того, из чего она собрана.
+
+    Область — код продукта (`layout_map.mutation_area` по ревизии головы): `src/` и
+    скрипты, которые запускает продукт. Выборка (`select`, до `max_n`) — это план:
+    шард `(K, N)` берёт индексы `i % N == K-1` уже из неё, иначе доли одного
+    прогона судили бы разные выборки. `totals.planned` — размер выборки (P),
+    `totals.full` — полный план.
     """
-    targets = changed_lines(root, rng)
+    zones, digest, note = zones_for(root, rng)
+    changed = changed_lines(root, rng)
+    inv = None
+    if changed:
+        try:
+            inv = layout_map.inventory(root, rev=head_of(rng))
+        except layout_map.LayoutError as e:
+            raise PreparationError(f"область мутатора не собралась: {e}")
+    area = layout_map.mutation_area(inv) if inv is not None else set()
+
+    def ours(path: pathlib.Path) -> bool:
+        # Вне области — только то, что ревизия знает и разобрала: файл, которого
+        # в ревизии нет или который не разобрался, остаётся в плане и становится
+        # «не прочитан» — иначе «не прочитал» снова превратилось бы в «нечего» (№386)
+        rel = path.relative_to(root).as_posix()
+        info = inv.files.get(rel)
+        return rel in area or info is None or info.tree is None
+    targets = {p: ls for p, ls in changed.items() if ours(p)}
     totals = ScanTotals(files_in=len(targets),
                         lines_in=sum(len(ls) for ls in targets.values()))
 
@@ -418,7 +696,7 @@ def plan_for(root: pathlib.Path, rng: str,
             # выпавший файл, а не трассировка посреди плана (DS M1 круга 1 по #630)
             _unreadable(rel, "не utf-8")
             continue
-        report = scan(path, lines, source)
+        report = scan(path, lines, source, rel=rel.as_posix())
         if report.unparsed:
             # Третья нога той же неполноты: прочитали, а разобрать нельзя. Без
             # счётчика пустой план из такого файла выходил «мутировать нечего» —
@@ -427,8 +705,16 @@ def plan_for(root: pathlib.Path, rng: str,
             continue
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
+        for m in report.mutations:
+            m.critical = layout_map.in_zone(zones, rel.as_posix(), m.qualname)
         plan.extend(report.mutations)
+    totals.full = len(plan)
+    totals.critical_full = sum(m.critical for m in plan)
+    plan = select(plan, max_n)
     totals.planned = len(plan)
+    totals.critical_sampled = sum(m.critical for m in plan)
+    totals.zones, totals.zones_note = digest, note
+    totals.sample = hashlib.sha256("\n".join(sorted(m.key for m in plan)).encode("utf-8")).hexdigest()
     if shard is not None:
         k, n = shard
         totals.shard = (k, n)
@@ -713,36 +999,40 @@ def fits(budget_s: float | None, started: float, need: float) -> bool:
     return budget_s is None or budget_s - (clock() - started) >= need
 
 
-def render_report(tested: int, survivors: list, skipped: list, planned: int, dropped: int,
-                  aborted: str, totals: ScanTotals) -> str:
+def render_report(f: Facts, skipped: list | None = None,
+                  unreadable: list[str] | None = None) -> str:
     """Отчёт о проверенном к этому моменту. Пишется после каждого мутанта: job,
     оборванный раннером на потолке, прежде уносил с собой и отчёт — тот писался
-    один раз в конце (№395)."""
-    untried = planned - len(skipped) - tested
-    aborted = aborted or "сбой"
-    # «K из M» — из всего плана до среза: строка сама называет, куда делась разница
-    why = [f"срезано --max: {dropped}"] if dropped else []
+    один раз в конце (№395). Выборка названа своей строкой, а не «срезом»: не
+    взятое выборкой — политика (№469), не судившееся из доли — неполнота."""
+    skipped = skipped or []
+    untried = f.M - f.skipped - f.tested
+    aborted = f.aborted or "сбой"
+    head = f"Проверено мутантов: {f.tested} из {f.M}"
     if untried:
-        why.append(f"остановка: {aborted}")
-    lines = [f"Проверено мутантов: {tested} из {planned + dropped}"
-             + (f" ({'; '.join(why)})" if why else "") + f", выжило: {len(survivors)}"]
+        head += f" (остановка: {aborted})"
+    crit = f.critical_survivors
+    head += f", выжило: {len(f.survivors)}"
+    if f.survivors:
+        head += f" (в критичных зонах: {len(crit)})"
+    lines = [head,
+             f"Выборка: {f.P} из {f.full} мутантов плана; критичных в плане {f.critical_full}, "
+             f"в выборке {f.critical_sampled}"
+             + (f" — {f.zones_note}" if f.zones_note else "")]
     if untried:
         lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted}) — "
                      "это НЕ значит «там всё хорошо».")
-    if skipped:
-        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {len(skipped)} — результат неполон.")
-    if totals.files_unreadable:
-        lines.append(f"НЕ ПРОЧИТАНО файлов: {totals.files_unreadable} из {totals.files_in} "
-                     f"— их строки не судились.")
-        lines += [f"  НЕ ПРОЧИТАН {entry}" for entry in totals.unreadable]
-    if dropped:
-        lines.append(f"Не проверено из-за потолка: {dropped}. "
-                     f"Это НЕ значит «там всё хорошо».")
+    if f.skipped:
+        lines.append(f"НЕ ПРИМЕНИЛОСЬ: {f.skipped} — результат неполон.")
+    if f.unread:
+        lines.append(f"НЕ ПРОЧИТАНО файлов: {f.unread} — их строки не судились.")
+        lines += [f"  НЕ ПРОЧИТАН {entry}" for entry in unreadable or []]
     for m, why_not in skipped:
         lines.append(f"  НЕ ПРИМЕНИЛОСЬ {m} — {why_not}")
-    for s in survivors:
-        lines.append(f"  ВЫЖИЛ {s}")
-    if survivors:
+    for row in sorted(f.survivors, key=lambda r: (not r["critical"], r["path"], r["line"])):
+        zone = "критичная зона — держит мерж" if row["critical"] else "вне критичных зон"
+        lines.append(f"  ВЫЖИЛ {row['path']}:{row['line']}: {row['what']} — {zone}")
+    if f.survivors:
         lines.append("")
         lines.append("Выживший мутант — это изменение поведения, которого не "
                      "заметил ни один тест. Либо тест на это место есть, но "
@@ -762,8 +1052,10 @@ def _max_arg(value: str) -> int | None:
         n = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r}: целое число или all")
-    if n < 0:
-        raise argparse.ArgumentTypeError("потолок мутантов не бывает отрицательным")
+    if n < 1:
+        # Ноль при непустом плане давал пустую выборку и зелёное «нечего» (входной
+        # круг 2 по №469, Sonnet I2): выборка из ничего — не проверка
+        raise argparse.ArgumentTypeError("выборка — хотя бы один мутант (или all)")
     return n
 
 
@@ -807,7 +1099,7 @@ def _jobs_arg(value: str) -> int:
 #: родителя — доли им он чеканит сам. Каждый флаг парсера стоит ровно в одном списке,
 #: тест держит это: новый флаг без решения «пересылать ли» краснеет, а не теряется
 #: у долей молча.
-CHILD_FORWARDED = ("range", "timeout", "budget_s", "force", "max")
+CHILD_FORWARDED = ("range", "timeout", "budget_s", "force", "max", "resume")
 PARENT_ONLY = ("jobs", "shard", "report", "merge_shards")
 
 
@@ -816,18 +1108,15 @@ def check_pair(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     ошибки аргумента, и до любого раннего возврата (`--merge-shards`).
 
     `--jobs N > 1` режет план на доли сам: с `--shard` вышла бы доля доли, а её
-    грамматика `K/N` не выражает (круг 4 по №444 B); со слиянием сводить нечего; с
-    конечным `--max` потолок лёг бы на каждую долю после деления, и доли судили бы
-    не тот набор, что последовательный прогон с тем же `--max` (круг 8, C1)."""
+    грамматика `K/N` не выражает (круг 4 по №444 B); со слиянием сводить нечего.
+    Конечный `--max` с долями сочетается: выборка — это план, каждая доля строит
+    ту же выборку и берёт из неё свои индексы (№469)."""
     if args.jobs == 1:
         return
     if args.shard is not None:
         ap.error("--jobs N > 1 делит план на доли сам — --shard с ним не сочетается")
     if args.merge_shards is not None:
         ap.error("--jobs N > 1 гоняет доли, а --merge-shards сводит готовые — выбери одно")
-    if args.max is not None:
-        ap.error("--jobs N > 1 судит весь план — добавь --max all "
-                 "(потолок и деление на доли не коммутируют)")
 
 
 #: Отказ замка — нейтральный: другой мутатор больше не помеха (замок разделяемый);
@@ -855,80 +1144,76 @@ def shard_line_path(report: pathlib.Path) -> pathlib.Path:
     return report.with_name(report.name + SHARD_LINE_SUFFIX)
 
 
-def write_artifacts(report: pathlib.Path | None, text: str, shard_k: int, shard_n: int,
-                    m: int, p: int, rc: int) -> None:
+def write_artifacts(report: pathlib.Path | None, text: str, f: Facts, rc: int) -> None:
     """Отчёт и машинная строка шарда рядом с ним — одна точка записи.
 
     Отчёт пишется после каждого мутанта (job, оборванный на потолке, уносил
-    бы его с собой), и там же кладётся `<report>.json`: K, N шарда, M его
-    мутантов, P всего плана и слово исхода. Вердикт CI читает эти строки
-    слиянием, а не печать шага. Без `--report` класть некуда — молча выходим.
-    """
+    бы его с собой), и там же кладётся `<report>.json`: факты прогона (`Facts`),
+    версия формата и слово исхода — для чтения человеком; судья CI слово не
+    читает, он считает его заново по фактам (№469). Без `--report` класть некуда."""
     if not report:
         return
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(text + "\n", encoding="utf-8")
     machine = shard_line_path(report)
-    machine.write_text(json.dumps({"K": shard_k, "N": shard_n, "M": m, "P": p,
-                                   "word": exit_codes.outcome(rc)}) + "\n",
+    machine.write_text(json.dumps({"v": FACTS_VERSION, **dataclasses.asdict(f),
+                                   "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n",
                        encoding="utf-8")
 
 
-def _shard_rows(directory: pathlib.Path) -> tuple[list[tuple[int, int, int, int, str]], str]:
-    """Машинные строки шардов из каталога и причина, если какую-то не прочесть.
+def _shard_rows(directory: pathlib.Path) -> tuple[list[Facts], str]:
+    """Факты шардов из каталога и причина, если какой-то файл не прочесть.
 
-    Обходим рекурсивно: CI раскладывает артефакты шардов по своим подкаталогам,
-    и «все `*.json` шардов» — это они, а не только плоский уровень.
-
+    Обходим рекурсивно: CI раскладывает артефакты шардов по своим подкаталогам.
     Нечитаемый файл не стирает прочитанные: сводка показывает шарды, которые
-    отработали, рядом с причиной красного, а не «шардов 0» (выходной круг 2 по
-    №441, DS M2).
-    """
-    rows: list[tuple[int, int, int, int, str]] = []
+    отработали, рядом с причиной красного (выходной круг 2 по №441, DS M2). Файл
+    старого формата (без `v` или с другой версией) — нечитаемый: судить его по
+    новым правилам нельзя."""
+    rows: list[Facts] = []
     bad: list[str] = []
+    names = {f.name for f in dataclasses.fields(Facts)}
     for path in sorted(directory.rglob("*" + SHARD_LINE_SUFFIX)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            rows.append((int(data["K"]), int(data["N"]), int(data["M"]),
-                         int(data["P"]), str(data["word"])))
-        except (OSError, ValueError, KeyError, TypeError):
+            if data.get("v") != FACTS_VERSION:
+                raise ValueError("формат")
+            rows.append(Facts(**{k: v for k, v in data.items() if k in names}))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             bad.append(str(path))
     return rows, (f"нечитаемый файл шарда: {', '.join(bad)}" if bad else "")
 
 
-def _unclean_line(rows: list[tuple[int, int, int, int, str]]) -> str:
-    """Первая строка красного вердикта: каждый нечистый шард — номером и словом.
-    `fail` — своей фразой: это выжившие, красная база или сбой подготовки, а не
-    «проверено не всё»; `partial` и `unjudged` — неполный исход."""
-    failed = [r for r in rows if r[4] == "fail"]
-    rest = [r for r in rows if r[4] != "fail"]
-    parts = []
-    if failed:
-        parts.append("шарды нашли выживших, красную базу или сбой подготовки: "
-                     + ", ".join(f"шард {r[0]}: {r[4]}" for r in failed))
-    if rest:
-        parts.append("шарды дали неполный исход: "
-                     + ", ".join(f"шард {r[0]}: {r[4]}" for r in rest))
-    return "; ".join(parts)
+def fold(rows: list[Facts]) -> Facts:
+    """Сложить факты шардов одного прогона в факты всего прогона."""
+    first = rows[0]
+    return Facts(K=1, N=1, M=sum(r.M for r in rows), P=first.P, full=first.full,
+                 tested=sum(r.tested for r in rows), skipped=sum(r.skipped for r in rows),
+                 unread=max(r.unread for r in rows), nodes=first.nodes, lines_in=first.lines_in,
+                 broken="; ".join(f"шард {r.K}: {r.broken}" for r in rows if r.broken),
+                 broken_rc=max(r.broken_rc for r in rows),
+                 aborted="; ".join(f"шард {r.K}: {r.aborted}" for r in rows if r.aborted),
+                 critical_full=first.critical_full, critical_sampled=first.critical_sampled,
+                 zones=first.zones, zones_note=first.zones_note, base=first.base, head=first.head,
+                 run=first.run,
+                 survivors=[s for r in rows for s in r.survivors])
 
 
 def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) -> int:
-    """Свести машинные строки шардов в один вердикт — код возврата.
+    """Свести факты шардов в один вердикт — код возврата CI (0/1).
 
     Таблица вердикта — здесь одна; CONTRIBUTING на неё ссылается:
 
     | состояние | исход | код |
     |---|---|---|
-    | нечитаемый файл, файлов не N, разные N, повтор или пропуск K, ΣM ≠ P | «шарды не покрыли план» | 1 |
-    | P = 0, все шарды `nothing` | заметка «мутировать нечего» | 0 |
-    | P = 0, шарды `nothing` или `unmutable` | предупреждение «слепое пятно мутатора» | 0 |
-    | P > 0, каждый шард `ok` или `nothing` при своём M = 0 | «шарды чисты» | 0 |
-    | иначе (`partial`, `unjudged`, `fail`) | «неполный исход» | 1 |
+    | нечитаемый файл или старый формат, файлов не N, разные N, повтор или пропуск K, ΣM ≠ P, разные выборка, зоны или ревизии | «шарды не покрыли план» | 1 |
+    | выжил мутант в критичной зоне, красная база или сбой подготовки | «держит мерж» | 1 |
+    | выборка судилась не вся (бюджет, встреча, не применилось, не прочитан файл) | «неполный исход» | 1 |
+    | выборка пуста, в строках нет кода | заметка «мутировать нечего» | 0 |
+    | выборка пуста, код есть, операторов нет | предупреждение «слепое пятно мутатора» | 0 |
+    | выборка судилась вся, критичных выживших нет | «шарды чисты» + список выживших вне критичных зон | 0 |
 
-    `unmutable` бывает только при P = 0: шард с непустой долей судит её, а
-    пустая доля непустого плана пишет `nothing`. В CI «судили часть» — красный,
-    а не жёлтая заметка.
-    """
+    Слово шарда не читается: исход считает `verdict_code` на сложенных фактах —
+    тот же судья, что у одиночного прогона (№455, №469)."""
     directory = pathlib.Path(directory)
     rows, why = _shard_rows(directory)
     lines: list[str] = []
@@ -936,55 +1221,61 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
     if not problem and not rows:
         problem = "ни одного файла шарда"
     if not problem:
-        ns = {r[1] for r in rows}
-        ps = {r[3] for r in rows}
+        ns = {r.N for r in rows}
         if len(ns) != 1:
             problem = "разные N"
         else:
             n = ns.pop()
+            same = {(r.P, r.full, r.zones, r.base, r.head, r.run) for r in rows}
             if len(rows) != n:
                 problem = f"файлов {len(rows)}, а шардов {n}"
-            elif sorted(r[0] for r in rows) != list(range(1, n + 1)):
+            elif sorted(r.K for r in rows) != list(range(1, n + 1)):
                 problem = "повтор или пропуск K"
-            elif len(ps) != 1 or sum(r[2] for r in rows) != ps.pop():
+            elif len(same) != 1:
+                problem = "шарды судили разные выборки (P, план, зоны или ревизии разошлись)"
+            elif sum(r.M for r in rows) != rows[0].P:
                 problem = "ΣM ≠ P"
-    for r in sorted(rows):
-        lines.append(f"  шард {r[0]} из {r[1]}: M={r[2]} — {r[4]}")
-    total_m = sum(r[2] for r in rows)
-    lines.append(f"итог: шардов {len(rows)}, M={total_m}, P={rows[0][3] if rows else 0}")
+    for r in sorted(rows, key=lambda r: r.K):
+        lines.append(f"  шард {r.K} из {r.N}: M={r.M}, судилось {r.tested} — "
+                     f"{exit_codes.outcome(verdict_code(r))}")
+    lines.append(f"итог: шардов {len(rows)}, M={sum(r.M for r in rows)}, "
+                 f"P={rows[0].P if rows else 0}")
     if problem:
         lines.insert(0, f"шарды не покрыли план: {problem}")
         code = 1
     else:
-        p = rows[0][3]
-        clean = [r for r in rows if not (r[4] == "ok" or (r[4] == "nothing" and r[2] == 0))]
-        if p == 0:
-            # План пуст у всего диапазона — слово у всех шардов одно и то же.
-            # «Нечего» и «строки есть, мутировать нечего» (слепое пятно, №386) —
-            # не отказ гейта: до шардов CI отвечал на них заметкой и
-            # предупреждением, и красный вердикт на каждом PR без python-строк
-            # приучил бы не смотреть на него вовсе (выходной круг 1 по №441, DS C1).
-            # «Не прочитан файл» (`partial`) — красный: план неполон.
-            words = {r[4] for r in rows}
-            if words <= {"nothing"}:
-                lines.insert(0, "мутировать нечего")
-                code = 0
-            elif words <= {"nothing", "unmutable"}:
-                lines.insert(0, "строки в диапазоне есть, а мутировать в них нечего — "
-                                "слепое пятно мутатора, см. отчёты шардов")
-                code = 0
-            else:
-                lines.insert(0, _unclean_line(clean))
-                code = 1
-        elif not clean:
-            # Обещание строки — ровно то, что проверено: все P мутантов плана
-            # судились. Строки без операторов в план не входят вовсе, и «покрыто
-            # мутацией» про них не сказано (критика DS круга 3 по №441)
-            lines.insert(0, f"мутация: шарды чисты — судились все {p} мутантов плана, выживших нет")
+        f = fold(rows)
+        rc = verdict_code(f)
+        noncrit = len(f.survivors) - len(f.critical_survivors)
+        if rc == 0:
+            head = f"мутация: шарды чисты — судилась вся выборка ({f.P} из {f.full}), " \
+                   "критичных выживших нет"
+            if noncrit:
+                head += f"; выжили вне критичных зон: {noncrit} — списком ниже, мерж не держат"
             code = 0
+        elif rc == EXIT_NOTHING_TO_CHECK:
+            head, code = "мутировать нечего", 0
+        elif rc == EXIT_UNMUTABLE:
+            head, code = ("строки в диапазоне есть, а мутировать в них нечего — "
+                          "слепое пятно мутатора, см. отчёты шардов"), 0
+        elif f.broken:
+            head, code = f"сломалась сама проверка: {f.broken}", 1
+        elif f.critical_survivors:
+            head, code = (f"держит мерж: выжили мутанты в критичных зонах — "
+                          f"{len(f.critical_survivors)}"), 1
         else:
-            lines.insert(0, _unclean_line(clean))
+            unfinished = [r for r in rows if verdict_code(r) not in
+                          (0, EXIT_NOTHING_TO_CHECK, EXIT_UNMUTABLE)]
+            head = "шарды дали неполный исход: " + ", ".join(
+                f"шард {r.K}: {exit_codes.outcome(verdict_code(r))}" for r in unfinished)
             code = 1
+        lines.insert(0, head)
+        lines.append(f"выборка {f.P} из {f.full}, судилось {f.tested}; "
+                     f"критичных в плане {f.critical_full}, в выборке {f.critical_sampled}; "
+                     f"зоны {f.zones or '—'}" + (f" ({f.zones_note})" if f.zones_note else ""))
+        for row in sorted(f.survivors, key=lambda r: (not r["critical"], r["path"], r["line"])):
+            zone = "критичная зона — держит мерж" if row["critical"] else "вне критичных зон"
+            lines.append(f"  ВЫЖИЛ {row['path']}:{row['line']}: {row['what']} — {zone}")
     text = "\n".join(lines)
     print(text)
     if report:
@@ -1030,31 +1321,78 @@ def child_argv(args: argparse.Namespace, k: int, n: int, logs: pathlib.Path,
         argv += ["--budget-s", str(args.budget_s)]
     if args.force:
         argv.append("--force")
-    return argv + ["--max", "all", "--shard", f"{k}/{n}", "--report", str(logs / f"{k}.txt")]
+    if args.resume:
+        argv += ["--resume", args.resume]
+    # Тот же `--max`, что у родителя: выборка — это план, доли берут индексы из неё
+    # (№469); `all` у доли при конечном потолке судил бы полный план вместо выборки
+    return argv + ["--max", "all" if args.max is None else str(args.max),
+                   "--shard", f"{k}/{n}", "--report", str(logs / f"{k}.txt")]
 
 
-def stop_children(procs: list[subprocess.Popen], grace: float = CHILD_STOP_GRACE_S) -> None:
+def signal_group(p: subprocess.Popen, sig: int) -> bool:
+    """Сигнал группе доли; False — группу, где остался живой процесс, достать не
+    удалось.
+
+    Замер 30.09 (macOS, python 3.12): `killpg` группы, в которой остался только
+    непожатый зомби-лидер, отвечает `PermissionError`; после `poll()` тот же вызов —
+    `ProcessLookupError`. Так 30.09 родитель упал на SIGTERM: одна доля закончила,
+    родитель ждал соседнюю, и остановка застала первую зомби. Лечение — пожать и
+    повторить. Проверки «лидер жив» перед сигналом нет: лидер доли может выйти, а
+    pytest его группы — жить (входной круг 2 по №469, Sonnet I6)."""
+    for attempt in range(2):
+        try:
+            os.killpg(p.pid, sig)
+            return True
+        except ProcessLookupError:
+            return True                   # группы нет — останавливать некого
+        except PermissionError:
+            if attempt:
+                return False
+            p.poll()                      # пожать зомби-лидера и повторить
+    return False
+
+
+def stop_children(procs: list[subprocess.Popen], grace: float = CHILD_STOP_GRACE_S) -> list[int]:
     """Остановить доли: каждой группе SIGINT — у доли это KeyboardInterrupt и её
     `finally` (замок, копия), — ждать всех до `grace` секунд, оставшимся — SIGKILL
-    всей группе: pytest внутри доли живёт в той же группе."""
-    for p in procs:
-        if p.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(p.pid, signal.SIGINT)
+    всей группе: pytest внутри доли живёт в той же группе. Возвращает номера долей
+    (с 1), чью группу не удалось достать, — их называет строка вердикта."""
+    failed: set[int] = set()
+    for k, p in enumerate(procs, 1):
+        if not signal_group(p, signal.SIGINT):
+            failed.add(k)
     deadline = time.monotonic() + grace
     for p in procs:
         with contextlib.suppress(subprocess.TimeoutExpired):
             p.wait(timeout=max(0.0, deadline - time.monotonic()))
-    for p in procs:
-        if p.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(p.pid, signal.SIGKILL)
-            p.wait()
+    for k, p in enumerate(procs, 1):
+        if signal_group(p, signal.SIGKILL):
+            failed.discard(k)
+        else:
+            failed.add(k)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            p.wait(timeout=grace)
+    return sorted(failed)
+
+
+def stopped_line(logs: pathlib.Path, signum: int, failed: list[int]) -> str:
+    """Строка вердикта остановленного родителя: «прервано: N из M» по фактам долей
+    (они пишутся после каждого мутанта) и как продолжить."""
+    rows, _ = _shard_rows(logs)
+    tested = sum(r.tested for r in rows)
+    total = rows[0].P if rows else 0
+    run = rows[0].run if rows else ""
+    line = f"прервано сигналом {signum}: {tested} из {total}"
+    if run:
+        line += f" — продолжить: --resume {run}"
+    if failed:
+        line += "; не добиты доли: " + ", ".join(map(str, failed))
+    return line
 
 
 def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int:
-    """Родитель `--jobs N`: N обычных мутаторов-долей `--shard k/N --max all`
-    параллельно; исход — только `merge_shards` по их машинным строкам, код —
+    """Родитель `--jobs N`: N обычных мутаторов-долей `--shard k/N` с тем же
+    `--max` параллельно; исход — только `merge_shards` по их машинным строкам, код —
     политика CI 0/1 (канон слов долей — №455).
 
     Родитель держит свой разделяемый замок мутатора всю жизнь: ночь и сторож видят
@@ -1094,8 +1432,12 @@ def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int
         except _Stopped as stop:
             print(f"⏹ сигнал {stop.signum} — останавливаю доли: SIGINT, через "
                   f"{CHILD_STOP_GRACE_S} с — SIGKILL")
-            stop_children(procs)
+            failed = stop_children(procs)
             print(f"доли остановлены, журналы — {logs}")
+            # Итог не теряется: доли пишут факты после каждого мутанта, журнал
+            # рассуждённых — в корне данных. Код — сигнальный (128+signum): его
+            # читают фоновые обёртки; «сколько успели» — строкой (№469)
+            print(stopped_line(logs, stop.signum, failed))
             return 128 + stop.signum
         except BaseException:
             stop_children(procs)
@@ -1116,14 +1458,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", default="origin/main...HEAD",
                     help="диапазон git, чьи строки мутируем")
-    ap.add_argument("--max", type=_max_arg, default=60,
-                    help="потолок мутантов (срезанное объявляется вслух); "
-                         "«all» — без среза")
+    ap.add_argument("--max", type=_max_arg, default=SAMPLE_MAX,
+                    help="выборка: до N мутантов на диапазон — критичные зоны первыми, "
+                         "поровну по файлам, по хешу личности мутанта; «all» — весь план")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
     ap.add_argument("--shard", type=_shard_arg, default=None,
-                    help="доля плана K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
-                         "i %% N == K-1 ДО среза --max")
+                    help="доля выборки K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
+                         "i %% N == K-1 из выборки --max")
     ap.add_argument("--merge-shards", type=pathlib.Path, default=None,
                     help="каталог с машинными строками шардов (*.json): свести их "
                          "вердиктом вместо прогона")
@@ -1134,11 +1476,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="секунд на весь прогон от старта; не хватает на следующий "
                          "набор — остановка с отчётом о проверенном (--force не снимает)")
     ap.add_argument("--jobs", type=_jobs_arg, default=1,
-                    help=f"гнать план N долями параллельно (1 ≤ N ≤ {JOBS_MAX}), только "
-                         "с --max all: родитель запускает N обычных мутаторов с --shard "
-                         "k/N и сводит их --merge-shards. Параллельные прогоны разрешены: "
+                    help=f"гнать выборку N долями параллельно (1 ≤ N ≤ {JOBS_MAX}): "
+                         "родитель запускает N обычных мутаторов с --shard k/N и тем же "
+                         "--max и сводит их --merge-shards. Параллельные прогоны разрешены: "
                          "замок мутатора разделяемый, а четыре доли на одном .git нашли "
                          "тех же выживших втрое быстрее (замер №444 B)")
+    ap.add_argument("--resume", default=None, metavar="КЛЮЧ",
+                    help="продолжить прерванный прогон: судить только мутантов, которых "
+                         "нет в журнале рассуждённых logs/mutation_run-<КЛЮЧ>-*.jsonl; "
+                         "ключ печатает каждый прогон")
     return ap
 
 
@@ -1203,30 +1549,36 @@ def main(argv: list[str]) -> int:
             return 3
     if args.jobs > 1:
         return run_jobs(args, rng, data_root)
-    plan, totals = plan_for(root, rng, shard)
-    m_total = len(plan)
-    p_total = totals.planned
+    try:
+        plan, totals = plan_for(root, rng, shard, args.max)
+    except PreparationError as e:
+        print(f"подготовка не удалась: {e}")
+        return 1
+    totals.run = run_key(rng, args.max, args.timeout, totals.sample)
     k, n = totals.shard or (1, 1)
+    left, _, right = split_range(rng)
+    facts = Facts(K=k, N=n, M=len(plan), P=totals.planned, full=totals.full,
+                  unread=totals.files_unreadable, nodes=totals.nodes, lines_in=totals.lines_in,
+                  critical_full=totals.critical_full, critical_sampled=totals.critical_sampled,
+                  zones=totals.zones, zones_note=totals.zones_note, base=left, head=right,
+                  run=totals.run)
+    if totals.zones_note:
+        print(f"зоны мутатора: {totals.zones_note}")
     if not plan:
-        code = verdict_code([], 0, 0, 0, 0, totals)
-        # Первый разбор пустого плана: шард назван, и полный план был (P > 0),
-        # а этой доле мутантов не досталось. Это не «в диапазоне нечего» —
-        # соседние шарды судят свою часть; отчёт и машинная строка (word
-        # `nothing`, M = 0) нужны слиянию, иначе ΣM ≠ P.
+        code = verdict_code(facts)
         # Машинная строка — на ЛЮБОМ выходе прогона с шардом: без неё вердикт
         # видит «ни одного файла шарда» и краснеет на каждом PR без python-строк
         # (выходной круг 1 по №441, DS C1). P = 0 — диагноз всего диапазона,
         # одинаковый у всех шардов; P > 0 при пустой доле — «нечего» ЭТОГО
         # шарда: его мутантов нет, соседи судят свою часть.
         if shard is not None:
-            word = EXIT_NOTHING_TO_CHECK if p_total else code
-            write_artifacts(args.report, render_report(0, [], [], 0, 0, "", totals),
-                            k, n, m_total, p_total, word)
-            if p_total:
-                print(f"шард {k} из {n}: 0 из {p_total} — нечего")
-                return EXIT_NOTHING_TO_CHECK
+            write_artifacts(args.report, render_report(facts, unreadable=totals.unreadable),
+                            facts, code)
+            if totals.planned:
+                print(f"шард {k} из {n}: 0 из {totals.planned} — нечего")
+                return code
         if code == EXIT_NOTHING_TO_CHECK and not totals.lines_in:
-            print(f"В {args.range} нет изменённых строк в {' '.join(MUTATION_AREAS)} — ломать нечего.")
+            print(f"В {args.range} нет изменённых строк в коде продукта — ломать нечего.")
         elif code == EXIT_NOTHING_TO_CHECK:
             print(f"В изменённых строках нет кода — ломать нечего: файлов {totals.files_in}, "
                   f"строк {totals.lines_in}, из них констант модуля {totals.lines_constant}, "
@@ -1242,23 +1594,19 @@ def main(argv: list[str]) -> int:
                 print(f"  НЕ ПРОЧИТАН {entry}")
         return code
 
-    dropped = 0
-    if args.max is not None and len(plan) > args.max:
-        # По кругу между файлами: срез подряд забирал всех мутантов одного
-        # файла, а остальные не проверялись вовсе (ревью 20.08, локальная).
-        by_file: dict[pathlib.Path, list[Mutation]] = {}
-        for m in plan:
-            by_file.setdefault(m.path, []).append(m)
-        picked: list[Mutation] = []
-        while len(picked) < args.max and any(by_file.values()):
-            for queue in by_file.values():
-                if queue and len(picked) < args.max:
-                    picked.append(queue.pop(0))
-        dropped = len(plan) - len(picked)
-        plan = picked
-
-    print(f"Мутантов к проверке: {len(plan)}"
-          + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
+    print(f"Мутантов к проверке: {len(plan)} (выборка {totals.planned} из {totals.full}; "
+          f"критичных в плане {totals.critical_full}, в выборке {totals.critical_sampled})")
+    print(f"ключ прогона: {totals.run} — продолжить прерванный: --resume {totals.run}")
+    # Журнал рассуждённых — в корне данных, до лока и копии: `--resume` с чужим
+    # ключом или без журнала — отказ до любой работы
+    try:
+        done = journal_open(data_root, totals, k, rng, args)
+    except PreparationError as e:
+        print(f"подготовка не удалась: {e}")
+        return 1
+    import charoite_paths  # noqa: E402
+    journal = charoite_paths.log_path(data_root, RUN_LOG_KIND, part=f"{totals.run}-{k}",
+                                      suffix=".jsonl")
 
     # Лок — ДО подготовки копии: отказ не должен оставлять за собой каталог
     # копии (круг-2 по PR #399, DS Minor).
@@ -1267,19 +1615,37 @@ def main(argv: list[str]) -> int:
         print(LOCK_REFUSED)
         return 3
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutate-"))
-    survivors: list[Mutation] = []
     skipped: list[tuple[Mutation, str]] = []
-    tested = 0
-    aborted = ""
     durations: dict[tuple[str, ...], float] = {}
+    # Рассуждённые прежним прогоном того же ключа — исходы из журнала, не заново
+    todo: list[Mutation] = []
+    for mut in plan:
+        row = done.get(mut.key)
+        if row is None:
+            todo.append(mut)
+        elif row["outcome"] == "skipped":
+            skipped.append((mut, row.get("why", "не применилось в прежнем прогоне")))
+            facts.skipped += 1
+        else:
+            facts.tested += 1
+            if row["outcome"] == "survived":
+                facts.survivors.append(survivor_row(mut, root))
+    if len(todo) < len(plan):
+        print(f"из журнала прогона: {len(plan) - len(todo)} рассуждены, судим {len(todo)}")
 
     def save(reason: str, rc: int | None = None) -> None:
-        if rc is None:
-            rc = verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
-        write_artifacts(args.report,
-                        render_report(tested, survivors, skipped, len(plan), dropped,
-                                      reason, totals),
-                        k, n, m_total, p_total, rc)
+        facts.aborted = reason
+        write_artifacts(args.report, render_report(facts, skipped, totals.unreadable),
+                        facts, verdict_code(facts) if rc is None else rc)
+
+    def note(mut: Mutation, outcome: str, seconds: float = 0.0, why: str = "") -> None:
+        journal_add(journal, {"key": mut.key, "outcome": outcome, "s": round(seconds, 1),
+                              **({"why": why} if why else {})})
+
+    aborted = ""
+    # Факты — на диск до копии и базы: остановка в первые минуты (база бывает
+    # самым длинным этапом) иначе не оставляла бы ни счёта, ни ключа прогона
+    save(BASE_RUNNING)
     try:
         # Копия — внутри `try`: провал клона или checkout отпускает лок и убирает
         # каталог в `finally`, а отчёт и машинная строка ложатся, как у красной
@@ -1288,7 +1654,8 @@ def main(argv: list[str]) -> int:
             work = copy_tree(root, head_of(rng), tmp)
         except PreparationError as e:
             print(f"подготовка не удалась: {e}")
-            save(COPY_FAILED, 1)
+            facts.broken, facts.broken_rc = COPY_FAILED, 1
+            save(COPY_FAILED)
             return 1
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
@@ -1299,7 +1666,7 @@ def main(argv: list[str]) -> int:
         # не только их объединение: тест, зелёный в общей куче, в одиночку
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
-        subsets = {suite_key(work, m.path) for m in plan}
+        subsets = {suite_key(work, m.path) for m in todo}
         # Свежая копия байткода не содержит, но запрет записи не мешает
         # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
         for cache in work.rglob("__pycache__"):
@@ -1325,9 +1692,10 @@ def main(argv: list[str]) -> int:
             print("В отдельном дереве нет того, что лежит в .gitignore "
                   "(модели, конфиг, данные).\nМутанты этих модулей "
                   "засчитались бы убитыми — считать их бессмысленно.")
-            save(BASE_RED, 2)
+            facts.broken, facts.broken_rc = BASE_RED, 2
+            save(BASE_RED)
             return 2
-        for i, mut in enumerate([] if aborted else plan, 1):
+        for i, mut in enumerate([] if aborted else todo, 1):
             suite = suite_key(work, mut.path)
             # Бюджет — вне гварда занятости: `--force` идёт поверх встречи, но
             # не поверх потолка job. Оценка — замер этого набора в базе; таймаут
@@ -1344,7 +1712,7 @@ def main(argv: list[str]) -> int:
                 elif busy_signals.night_running(data_root):
                     aborted = "ночной цикл"
             if aborted:
-                print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
+                print(f"⏹ {aborted} — прерываюсь ({facts.tested}/{len(plan)} "
                       "проверено, остальное не судилось)")
                 break
             rel = mut.path.relative_to(root)
@@ -1357,19 +1725,23 @@ def main(argv: list[str]) -> int:
                 # ничего не ломали, читается как «всё проверено»; а битый
                 # текст в дереве дал бы «убит» без участия мутации.
                 skipped.append((mut, why))
-                print(f"  [{i}/{len(plan)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
+                facts.skipped += 1
+                note(mut, "skipped", why=why)
+                print(f"  [{i}/{len(todo)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
                 save(RUNNING)
                 continue
             target.write_text(mutated, encoding="utf-8")
             try:
-                alive, _ = timed_run(work, suite, args.timeout)
+                alive, spent = timed_run(work, suite, args.timeout)
             finally:
                 target.write_text(original, encoding="utf-8")
-            tested += 1
+            facts.tested += 1
             mark = "ВЫЖИЛ" if alive else "убит"
-            print(f"  [{i}/{len(plan)}] {mark}: {mut}")
+            zone = " (критичная зона)" if alive and mut.critical else ""
+            print(f"  [{i}/{len(todo)}] {mark}: {mut}{zone}")
             if alive:
-                survivors.append(mut)
+                facts.survivors.append(survivor_row(mut, root))
+            note(mut, "survived" if alive else "killed", spent)
             # На диске всегда проверенное к этому моменту: оборвёт раннер —
             # отчёт скажет, сколько успели, а не пропадёт целиком
             save(RUNNING)
@@ -1377,10 +1749,9 @@ def main(argv: list[str]) -> int:
         lock.release()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    report = render_report(tested, survivors, skipped, len(plan), dropped, aborted, totals)
-    print("\n" + report)
     save(aborted)
-    return verdict_code(survivors, tested, len(plan), dropped, len(skipped), totals)
+    print("\n" + render_report(facts, skipped, totals.unreadable))
+    return verdict_code(facts)
 
 
 if __name__ == "__main__":

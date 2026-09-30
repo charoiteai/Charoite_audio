@@ -414,6 +414,15 @@ _SCHEMA: dict[str, Field] = {
     # Сверяется в обе стороны, как `root_exemptions`: прощённого попадания нет —
     # строкой «снять».
     "folder_literal_exemptions": Field(dict, "decision"),
+    # Зоны мутатора (№469): выживший мутант в `mutation_critical` держит мерж, в прочих —
+    # строкой отчёта. Ключ — модуль продукта (`audio`, `charoite_graph.net`) или путь
+    # скрипта (`scripts/forget_meeting.py`), с `::qualname` — одна функция или класс.
+    # Критерий двери — необратимое для владельца: звук пишется на диск или теряется,
+    # данные уходят за машину, данные владельца пишутся или удаляются. Модуль целиком —
+    # только если это его главная работа. `mutation_not_critical` — решение «не дверь» с
+    # обоснованием для модуля, который сторож (`zone_problems`) иначе потребовал бы решить.
+    "mutation_critical": Field(dict, "decision"),
+    "mutation_not_critical": Field(dict, "decision"),
 }
 
 
@@ -837,6 +846,40 @@ def _pruned(rel_dir: str) -> bool:
     return i is not None and KINDS[i][1] == "out"
 
 
+def _files_at(repo: pathlib.Path, rev: str) -> dict[str, str]:
+    """Файлы ревизии `rev` и их текст — одним `git ls-tree` и одним `git cat-file
+    --batch`. Мутатор строит область по той ревизии, чей код он ломает, а не по
+    рабочему дереву: локальный прогон из другой ветки иначе брал бы область одного
+    дерева, а файлы другого (входной круг 2 по №469, Sonnet I3). Отказ git —
+    `LayoutError`: пустая область молча дала бы «мутировать нечего»."""
+    ls = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "-z", rev],
+                        capture_output=True)
+    if ls.returncode:
+        raise LayoutError(f"ревизия {rev!r} не читается: "
+                          f"{ls.stderr.decode('utf-8', 'replace').strip()}")
+    blobs: list[tuple[str, str]] = []
+    for entry in ls.stdout.decode("utf-8", "replace").split("\0"):
+        if not entry:
+            continue
+        meta, rel = entry.split("\t", 1)
+        mode, kind, sha = meta.split()
+        if kind == "blob" and mode != "120000":
+            blobs.append((rel, sha))
+    batch = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch"],
+                           input="".join(f"{sha}\n" for _, sha in blobs).encode(),
+                           capture_output=True)
+    if batch.returncode:
+        raise LayoutError(f"ревизия {rev!r}: git cat-file — "
+                          f"{batch.stderr.decode('utf-8', 'replace').strip()}")
+    out, data, pos = {}, batch.stdout, 0
+    for rel, _ in blobs:
+        eol = data.index(b"\n", pos)
+        size = int(data[pos:eol].split()[2])
+        out[rel] = data[eol + 1:eol + 1 + size].decode("utf-8", "replace")
+        pos = eol + 1 + size + 1
+    return out
+
+
 def _files(repo: pathlib.Path) -> list[str]:
     """Файлы под git (`git ls-files`): данные владельца (бэкапы графа,
     стенограммы, боевой конфиг) не в репозитории и не читаются; скрытые
@@ -983,14 +1026,15 @@ def _owner(rel: str) -> str:
     return form(rel).provider
 
 
-def inventory(repo: pathlib.Path | None = None) -> Inventory:
+def inventory(repo: pathlib.Path | None = None, rev: str | None = None) -> Inventory:
     """Один обход, одна классификация, одно чтение и один разбор на файл.
     Всё дальнейшее (`import_graph`, `executables`, `scan`) — чистые функции
-    от инвентаря."""
+    от инвентаря. `rev` — читать не рабочее дерево, а ревизию git (`_files_at`)."""
     repo = repo or REPO
     files: dict[str, FileInfo] = {}
     problems: list[Problem] = []
-    for rel in _files(repo):
+    at_rev = _files_at(repo, rev) if rev is not None else None
+    for rel in (sorted(at_rev) if at_rev is not None else _files(repo)):
         d = decide(rel)
         kind = d.kind
         if d.conflict:
@@ -1000,7 +1044,8 @@ def inventory(repo: pathlib.Path | None = None) -> Inventory:
             files[rel] = FileInfo(kind, (), None, None)
             continue
         try:
-            text = (repo / rel).read_text(encoding="utf-8", errors="replace")
+            text = at_rev[rel] if at_rev is not None else \
+                (repo / rel).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             problems.append(Problem("read", f"{rel} не читается ({e.strerror or e}) — упоминания из него не собраны"))
             files[rel] = FileInfo(kind, (), None, None)
@@ -1073,6 +1118,134 @@ def executables(inv: Inventory) -> dict[str, str]:
     (библиотека в `src/` или хелпер в `scripts/`) исполняемым не является, что бы
     про него ни говорили подсказки; shell-скрипт исполняем по расположению."""
     return {rel: info.executable for rel, info in sorted(inv.files.items()) if info.executable}
+
+
+def scoped_nodes(tree: ast.AST, scope: str = ""):
+    """Узлы дерева в порядке исходника (обход в глубину) с qualname области, в
+    которой узел лежит: `f`, `C.m`, пусто — уровень модуля. Сам `def`/`class`
+    лежит в объемлющей области, его тело — в своей. Один обход на мутатор (ключ
+    мутанта) и на сторож зон (qualname записи обязан существовать) — №469."""
+    for child in ast.iter_child_nodes(tree):
+        yield child, scope
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield from scoped_nodes(child, f"{scope}.{child.name}" if scope else child.name)
+        else:
+            yield from scoped_nodes(child, scope)
+
+
+def qualnames(tree: ast.AST) -> set[str]:
+    """Все qualname функций и классов дерева (`f`, `C`, `C.m`, `f.inner`)."""
+    return {f"{scope}.{n.name}" if scope else n.name for n, scope in scoped_nodes(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+
+
+#: Корни области мутатора: файлы, чьи упоминания делают скрипт «запускаемым
+#: продуктом». Не `.github/`: CI называет мутатор, линтер и сторожа, и они втянули
+#: бы в область весь служебный слой (входной круг 2 по №469, Sonnet I3).
+PRODUCT_ROOTS = (f"{FLAT_DIR}/", "app/")
+
+
+def product_scripts(inv: Inventory, scanned: Scan | None = None) -> set[str]:
+    """Скрипты, которые запускает продукт: исполняемый файл вне `src/`, который
+    называет код `src/` или `app/`, и дальше по цепочке (ночь → её шаги).
+    Упоминание — строковый литерал в коде (`scan`), не вызов: верхняя оценка,
+    перебор безопасен — лишний скрипт только мутируется."""
+    scanned = scanned or scan(inv)
+    execs = set(executables(inv))
+    area: set[str] = set()
+    grow = True
+    while grow:
+        grow = False
+        for path in sorted(execs - area):
+            if path.startswith(PRODUCT_ROOTS):
+                continue
+            if any(who.startswith(PRODUCT_ROOTS) or who in area
+                   for who in scanned.mentions.get(path, ())):
+                area.add(path)
+                grow = True
+    return area
+
+
+def mutation_area(inv: Inventory, scanned: Scan | None = None) -> set[str]:
+    """Python, который мутатор ломает (№469): модули продукта под `src/` и
+    запускаемые продуктом скрипты. Замеры, бенчи, служебное, `tests/` — вне."""
+    mods = {rel for rel in inv.files
+            if rel.startswith(f"{FLAT_DIR}/") and module_of(rel) is not None}
+    return mods | {p for p in product_scripts(inv, scanned) if p.endswith(".py")}
+
+
+ZONE_KEYS = ("mutation_critical", "mutation_not_critical")
+#: Первичные признаки двери, которые сторож зон меряет импортом: данные уходят за
+#: машину (сетевая библиотека) или пишутся дверью записи. Сырые писцы и удалители
+#: (`os.replace`, `unlink`, `rmtree` — 32 файла) — только списком: узкого признака нет.
+NET_LIBS = ("requests", "urllib.request", "http.client", "socket", "websockets", "httpx")
+WRITE_DOOR = "charoite_graph.safe_write"
+
+
+def zone_split(entry: str) -> tuple[str, str | None]:
+    """Запись зоны → (модуль или путь, qualname или None)."""
+    target, sep, qual = entry.partition("::")
+    return target, (qual if sep else None)
+
+
+def zone_rel(target: str, rels) -> str | None:
+    """Модуль (`audio`, `charoite_graph.net`) или путь (`scripts/x.py`) → путь файла."""
+    if target.endswith(".py"):
+        return target if target in rels else None
+    return next((rel for rel in rels if module_of(rel) == target), None)
+
+
+def in_zone(entries, rel: str, qualname: str) -> bool:
+    """Лежит ли узел области `qualname` файла `rel` в одной из записей зоны."""
+    for entry in entries:
+        target, qual = zone_split(entry)
+        if target != rel and target != module_of(rel):
+            continue
+        if qual is None or qualname == qual or qualname.startswith(qual + "."):
+            return True
+    return False
+
+
+def zone_signal(rel: str, tree: ast.AST) -> str | None:
+    """Первичный признак двери у модуля области или None."""
+    for name in sorted(imports_of(rel, tree)):
+        for lib in NET_LIBS:
+            if name == lib or name.startswith(lib + "."):
+                return f"импорт {lib}"
+        if name == WRITE_DOOR or name.startswith(WRITE_DOOR + "."):
+            return f"импорт {WRITE_DOOR}"
+    return None
+
+
+def zone_problems(inv: Inventory, layout: dict, scanned: Scan | None = None) -> list[str]:
+    """Сторож зон мутатора (№469), двусторонний, как `manual_entry_points`:
+    каждая запись называет файл области и существующий qualname; одна запись не
+    стоит в обоих списках; модуль области с первичным признаком двери решён —
+    стоит в одном из списков (целиком или своей функцией)."""
+    area = mutation_area(inv, scanned)
+    problems: list[str] = []
+    decided: set[str] = set()
+    for key in ZONE_KEYS:
+        for entry in sorted(layout[key]):
+            target, qual = zone_split(entry)
+            rel = zone_rel(target, area)
+            if rel is None:
+                problems.append(f"{key}: {entry} — нет такого модуля или скрипта в области мутатора "
+                                f"(src/ и скрипты, которые запускает продукт) — снять или поправить имя")
+                continue
+            decided.add(rel)
+            tree = inv.files[rel].tree
+            if qual is not None and (tree is None or qual not in qualnames(tree)):
+                problems.append(f"{key}: {entry} — в {rel} нет функции или класса {qual}")
+    for entry in sorted(set(layout[ZONE_KEYS[0]]) & set(layout[ZONE_KEYS[1]])):
+        problems.append(f"{entry} стоит и в {ZONE_KEYS[0]}, и в {ZONE_KEYS[1]} — оставить одно")
+    for rel in sorted(area - decided):
+        tree = inv.files[rel].tree
+        why = zone_signal(rel, tree) if tree is not None else None
+        if why:
+            problems.append(f"{rel}: {why} — дверь мутатора не решена: внести в {ZONE_KEYS[0]} "
+                            f"(целиком или ::функцию) или в {ZONE_KEYS[1]} с обоснованием")
+    return problems
 
 
 def derive_run_contract(rel: str, info: FileInfo) -> dict | None:
@@ -3096,6 +3269,10 @@ def check(layout: dict, graph: dict[str, set[str]], scanned: Scan, execs: dict[s
     if literals is not None:
         problems += literals.problems
         problems += folder_literal(literals, layout)
+    # зоны мутатора: каждая запись называет живой файл области, модуль с сетью или
+    # дверью записи решён (№469)
+    if inv is not None:
+        problems += zone_problems(inv, layout, scanned)
     # три состояния карты, а не перегруженный None: свежая / отстала / её нет
     # (Minor GLM круга 7: при пропавшей карте `--check` выходил зелёным)
     if map_state == "missing":
