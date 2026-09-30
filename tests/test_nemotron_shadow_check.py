@@ -412,25 +412,28 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     (data / "config").mkdir(parents=True)
     (data / "config" / "config.yaml").write_text(
         "audio: {samplerate: 16000, chunk_seconds: 3.0, overlap_seconds: 0.5, vad_energy_db: -200,"
-        " record: false, device: auto}\nsufler: {user_name: Владелец, nemotron_python: ''}\n", encoding="utf-8")
-    (data / "recordings").mkdir()
+        " record: true, device: auto}\nsufler: {user_name: Владелец, nemotron_python: ''}\n"
+        "log: {recordings_dir: rec}\n", encoding="utf-8")
+    (data / "rec").mkdir()
     stamp = "2026-01-01_100000"
     rng = np.random.default_rng(3)
-    _wav(data / "recordings" / f"{stamp}_blackhole.wav", rng.uniform(-0.3, 0.3, SR * 20).astype(np.float32))
-    _wav(data / "recordings" / f"{stamp}_mic.wav", rng.uniform(-0.3, 0.3, SR * 19).astype(np.float32))
+    _wav(data / "rec" / f"{stamp}_blackhole.wav", rng.uniform(-0.3, 0.3, SR * 20).astype(np.float32))
+    _wav(data / "rec" / f"{stamp}_mic.wav", rng.uniform(-0.3, 0.3, SR * 19).astype(np.float32))
     (data / "models" / "diar" / "nemotron").mkdir(parents=True)
     for name in ("segmentation.onnx", "embedding.onnx"):
         (data / "models" / "diar" / name).write_bytes(b"")
     py = data / "engines" / "nemotron" / "python" / "bin" / "python3"
     py.parent.mkdir(parents=True)
     py.write_text("")
+    made = []
     monkeypatch.setattr(diarize_live, "SegmentTracker",
-                        lambda *a, **k: _Tracker(diarize_live.SplitResult(None, 1)))
+                        lambda *a, **k: made.append(k) or _Tracker(diarize_live.SplitResult(None, 1)))
     ready = {"type": "ready", "proto": dn.STREAM_PROTO, "sr": SR, "preset": "low",
              "frame_s": HOP / SR, "step": STEP}
 
     def door(python, script, args, *, on_message, on_eof, **kw):
         assert "--stream" in args and str(data / "models") not in args[args.index("--model") + 1]
+        assert "--cache-limit-mb" not in args, "без лимита ребёнок идёт как в бою"
         return _Child(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
 
     monkeypatch.setattr(fp, "spawn_stream", door)
@@ -438,6 +441,10 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
     assert meta["cuts_per_channel"] == rp.expected_cuts(SR * 20, SR, 3.0, 0.5)
     assert (out / "models").is_symlink() and not (data / "logs").exists()
+    assert made == [{"sample_rate": SR, "step_s": 2.5}], "трекер — той же фабрикой, что у демона"
+    assert sorted(p.name for p in (data / "rec").iterdir()) == [f"{stamp}_blackhole.wav", f"{stamp}_mic.wav"], (
+        "прогон не пишет записей: запись хаба выключена даже при record: true в конфиге владельца")
+    assert meta["chunks"]["placed"] >= meta["chunks"]["tracker_lines"] == meta["cuts_per_channel"]
 
     j = chk.read_journal((out / meta["journal"]).read_text(encoding="utf-8").splitlines())
     assert chk.validity(j, fed_expected=meta["fed_to_shadow"]) == []
@@ -448,6 +455,7 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     assert all(LAG / SR <= x <= (LAG + STEP) / SR + 1e-9 for x in lag["_values"])
     tracker = [json.loads(x) for x in (out / "tracker.jsonl").read_text().splitlines()]
     assert {t["path"] for t in tracker} == {"whole"}
+    assert all(t["end"] - t["start"] == 3 * SR for t in tracker)
     timing = [json.loads(x) for x in (out / "timing.jsonl").read_text().splitlines()]
     assert {r["k"] for r in timing} == {"write", "front"}
     final = {"duration_s": 20.0, "segments": [[0.0, 20.0, "Собеседник 1"]]}
@@ -512,3 +520,159 @@ def test_the_witness_door_adds_the_cache_limit_to_the_child_arguments(tmp_path):
     rp.witness_spawn(w, door, ["--cache-limit-mb", "512"])("py", pathlib.Path("s"), ["--stream"],
                                                            on_message=lambda m: None)
     assert seen == [["--stream", "--cache-limit-mb", "512"]]
+
+
+# ------------------------------------------------------------------ сверка: границы (мутатор диапазона)
+
+
+def test_quantiles_are_nearest_rank_and_empty_is_only_a_count():
+    assert chk.quantiles([]) == {"n": 0}
+    assert chk.quantiles([float(x) for x in range(10, 0, -1)]) == {"n": 10, "p50": 5.0, "p90": 9.0,
+                                                                   "p95": 10.0, "max": 10.0}
+
+
+def test_share_over_is_strictly_greater_than_the_threshold():
+    assert chk.share_over([0.5, 1.0, 1.5, 3.0], (1.0,)) == {">1s": 0.5}
+    assert chk.share_over([], (1.0,)) == {">1s": None}
+
+
+def test_a_chunk_starting_exactly_at_start0_is_in_the_stream():
+    j = chk.read_journal(journal_lines(chunk_ends=[START0 + 3 * SR]))
+    assert chk.label_lag(j)["before_stream"] == 0
+
+
+def test_live_waits_take_labelled_chunks_and_skip_a_missing_behind():
+    lines = journal_lines(chunk_ends=[START0 + 64000, START0 + 72000])
+    objs = [json.loads(x) for x in lines]
+    chunks = [o for o in objs if o["type"] == "chunk"]
+    chunks[0].update(wait_s=0.3, behind_s=None)
+    chunks[1].update(wait_s=0.9, behind_s=1.1, outcome=ln.DEAD_STREAM)
+    got = chk.live_waits(chk.read_journal([json.dumps(o) for o in objs]))
+    assert got["wait_s"] == {"n": 1, "p50": 0.3, "p90": 0.3, "p95": 0.3, "max": 0.3}
+    assert got["behind_s"] == {"n": 0}
+
+
+def test_step_cost_names_the_step_in_seconds():
+    rows = [{"k": "write", "t": 0.0, "sent": 20 * STEP}] + [{"k": "front", "t": 0.3 * k, "fed": k * STEP}
+                                                           for k in range(1, 21)]
+    assert chk.step_cost(rows, STEP, SR)["step_s"] == 0.5
+
+
+def test_a_tracker_interval_cut_to_nothing_by_the_next_chunk_is_dropped():
+    lines = [{"start": 0, "intervals": [[SR, 2 * SR, 1]]}, {"start": SR, "intervals": [[SR, 2 * SR, 2]]}]
+    assert chk.tracker_intervals(lines, SR) == [(1.0, 2.0, "v2")]
+
+
+def test_silence_on_both_sides_is_not_in_the_matrix():
+    m = chk.overlap_matrix([(0.0, 1.0, "s"), (5.0, 6.0, "s")], [(0.0, 1.0, "A"), (5.0, 6.0, "A")])
+    assert m == {("s", "A"): pytest.approx(2.0)}
+
+
+def test_coverage_and_fragmentation_take_their_boundaries_inclusively():
+    m = {("s0", "A"): 27.0, ("s1", "A"): 3.0}                   # ровно 30 с, у s1 ровно 10 %
+    assert chk.coverage(m) == {"A": 0.9}
+    assert chk.fragmentation(m) == {"A": 2}
+
+
+def test_the_prefix_oracle_ignores_seconds_without_a_voice_when_it_names_a_slot():
+    w = 10.0
+    a = [(0.0, 2 * w, "slot0")]
+    b = [(0.0, 3.0, "A"), (w, 2 * w, "A")]                      # в окне 0 слот больше звучит без голоса
+    got = chk.prefix_mapping(a, b, total=2 * w, window=w)
+    assert got["oracle_upper_bound"] == 1.0 and got["seconds"] == 10.0
+
+
+def test_windowed_purity_weights_windows_by_the_slot_seconds():
+    w = 10.0
+    a = [(0.0, w, "s"), (w, 2 * w, "s")]
+    b = [(0.0, w, "A"), (w, 15.0, "A"), (15.0, 2 * w, "B")]
+    assert chk.windowed_purity(a, b, total=2 * w, window=w) == {"weighted_purity": 0.75}
+
+
+def test_report_rounds_the_matrix_and_the_der_and_carries_the_run(monkeypatch):
+    j = journal(chunk_ends=[START0 + 64000], segs=[(START0, START0 + int(1.25 * SR), 0)])
+    final = {"duration_s": 20.0, "segments": [[START0 / SR, START0 / SR + 1.0, "A"]]}
+    out = chk.report(j, final, meta={"wall_s": 12.5, "audio_s": 20.0, "fed_to_shadow": SR * 20})
+    assert out["b_slots"]["matrix_s"]["slot0|A"] == 1.0
+    assert out["b_slots"]["matrix_s"][f"slot0|{chk.NONE}"] == 0.2
+    assert out["run"] == {"wall_s": 12.5, "audio_s": 20.0}
+    assert out["c_agreement_with_final"]["stream"]["false_alarm"] == pytest.approx(0.25, abs=0.01)
+
+
+def test_the_check_cli_prints_the_report_and_refuses_without_the_final(tmp_path, capsys):
+    path = tmp_path / "j.jsonl"
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000])), encoding="utf-8")
+    final = tmp_path / "final.json"
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[0.3, 1.0, "Собеседник 1"]]}),
+                     encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 0
+    out = capsys.readouterr().out
+    assert "Собеседник 1" in out and out.startswith("{\n")
+    assert json.loads(out)["outcomes"] == {ln.LABELED: 1}
+    with pytest.raises(SystemExit):
+        chk.main([str(path)])
+    path.write_text("\n".join(journal_lines()[:-1]), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 2
+
+
+# ------------------------------------------------------------------ прогон: части (мутатор диапазона)
+
+
+def test_default_out_is_the_stamp_folder_in_the_user_cache(monkeypatch):
+    got = rp.default_out("2026-01-01_100000")
+    assert got.parent.name == "2026-01-01_100000" and got.parent.parent.name == "charoite-478b"
+    assert "Caches" in got.parts
+
+
+@pytest.mark.parametrize("rate, channels, width", [(8000, 1, 2), (SR, 2, 2), (SR, 1, 4)])
+def test_read_channel_refuses_anything_but_mono_s16_at_the_rate(tmp_path, rate, channels, width):
+    p = tmp_path / "x.wav"
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        w.writeframes(b"\0" * width * channels * 10)
+    with pytest.raises(rp.Refused):
+        rp.read_channel(p, SR)
+
+
+def test_read_channel_scales_s16_to_unit_float(tmp_path):
+    p = tmp_path / "x.wav"
+    _wav(p, np.array([0.5, -0.5], dtype=np.float32))
+    assert list(rp.read_channel(p, SR)) == pytest.approx([16383 / 32768, -16383 / 32768])
+
+
+def test_the_witness_counts_samples_returns_the_write_result_and_waits_for_the_front(tmp_path):
+    w = rp.Witness(tmp_path / "t.jsonl")
+
+    class Pipe:
+        def write(self, data):
+            return len(data)
+
+    proxy = rp._StreamProxy(Pipe(), w)
+    assert proxy.write(b"\0\0" * 800) == 1600 and w.sent == 800
+    assert w.wait_fed(1, timeout=0.01) is False
+    w.front({"type": "front", "fed": 8000})
+    assert w.wait_fed(8000, timeout=0.01) is True
+    w.front({"type": "seg", "fed": 1})                      # не фронт — мимо
+    assert w.fed == 8000
+    w.close()
+    rows = [json.loads(x) for x in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert [r["k"] for r in rows] == ["write", "front"] and rows[0]["sent"] == 800
+
+
+def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(rp, "replay", lambda stamp, **kw: seen.update(kw) or {"stamp": stamp, "ключ": 1})
+    assert rp.main(["2026-01-01_100000", "--cache-limit-mb", "512"]) == 0
+    out = capsys.readouterr().out
+    assert '"ключ": 1' in out and out.startswith("{\n") and seen["cache_limit_mb"] == 512
+    assert seen["out"].parent.name == "2026-01-01_100000"
+    assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
+    assert seen["out"] == tmp_path / "o"
+
+    def refuse(stamp, **kw):
+        raise rp.Refused("нет")
+    monkeypatch.setattr(rp, "replay", refuse)
+    assert rp.main(["2026-01-01_100000"]) == 2

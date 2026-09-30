@@ -298,3 +298,22 @@ def test_the_stream_dies_when_the_final_front_does_not_cover_the_audio():
     with pytest.raises(RuntimeError, match=r"не покрыл поданный звук"):
         dn.run_stream(stream, frame_s=0.08, read=lambda n: next(reads), emit=out.append, step=2 * FRAME)
     assert not [m for m in out if m.get("final")], "финального фронта без покрытия нет"
+
+
+def test_the_mlx_peak_is_reset_only_in_a_process_that_loaded_mlx(monkeypatch):
+    """Пик MLX после загрузки модели — пик потока; без mlx или без функции — ничего."""
+    calls = []
+    monkeypatch.setitem(sys.modules, "mlx.core", types.SimpleNamespace(reset_peak_memory=lambda: calls.append(1)))
+    dn._reset_mlx_peak()
+    assert calls == [1]
+    monkeypatch.setitem(sys.modules, "mlx.core", types.SimpleNamespace())
+    dn._reset_mlx_peak()                          # нет функции — не падает
+    monkeypatch.delitem(sys.modules, "mlx.core")
+    dn._reset_mlx_peak()
+    assert calls == [1] and "mlx.core" not in sys.modules
+
+
+def test_a_zero_cache_limit_is_a_limit_and_a_negative_one_is_refused():
+    assert dn._non_negative_int("0") == 0
+    with pytest.raises(ValueError):
+        dn._non_negative_int("-1")
