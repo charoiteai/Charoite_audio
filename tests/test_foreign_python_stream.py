@@ -354,12 +354,18 @@ def test_a_child_started_after_the_exit_hook_is_killed_by_the_door(tmp_path):
 
 
 def test_the_door_refuses_new_children_once_the_process_is_leaving(tmp_path, monkeypatch):
+    import subprocess
     monkeypatch.setattr(fp, "_exiting", True)
-    child = _child(tmp_path, 'open(sys.argv[0] + ".pid", "w").write(str(os.getpid()))\n' + HUNG)
-    stream, out = _spawn(child, tmp_path)
+    started = []
+    real_popen = subprocess.Popen
+
+    def popen(*a, **k):
+        started.append(a)
+        return real_popen(*a, **k)
+    monkeypatch.setattr(fp.subprocess, "Popen", popen)
+    stream, out = _spawn(_child(tmp_path, HUNG), tmp_path)
     assert stream is None and out.kind == fp.FAILED and "выходит" in out.reason
-    time.sleep(1.0)                          # запущенный ребёнок успел бы записать свой pid
-    assert not pathlib.Path(str(child) + ".pid").exists(), "на выходе дверь всё-таки подняла ребёнка"
+    assert started == [], "на выходе дверь всё-таки подняла ребёнка (модель грузилась бы зря)"
 
 
 def test_adoption_is_refused_once_the_process_is_leaving(monkeypatch):
