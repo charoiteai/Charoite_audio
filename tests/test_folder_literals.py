@@ -47,6 +47,7 @@ def _layout(**over) -> dict:
             "generated": "2026-09-19T00:00Z", "run_contracts": {},
             "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
             "folder_literals": [], "folder_literal_exemptions": {},
+            "mutation_critical": {}, "mutation_not_critical": {},
             "package": "pkg", "package_entries": {"pkg.entry": "вход"}}
     base.update(over)
     return base
@@ -425,6 +426,7 @@ def test_the_literal_guard_is_asked_by_the_main_path(tmp_path, monkeypatch, caps
         "run_contracts": {}, "package": "pkg", "package_entries": {"pkg.entry": "вход"},
         "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
         "folder_literals": [], "folder_literal_exemptions": {},
+            "mutation_critical": {}, "mutation_not_critical": {},
     }
     monkeypatch.setattr(lm, "REPO", repo)
     monkeypatch.setattr(lm, "LAYOUT", layout_path)

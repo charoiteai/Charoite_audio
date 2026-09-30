@@ -548,6 +548,10 @@ LOG_KINDS: dict[str, LogKind] = {
                               whole=True),
     # вывод уборки папки импорта: имя — папка владельца
     "import_prune": LogKind("import_prune-", "shared", None, (".log",), sweep=True),
+    # журнал рассуждённых мутантов (№469): файл на долю прогона, строка на мутанта;
+    # по нему `mutate_check --resume <ключ>` судит только несуждённых. Ретеншн по
+    # сроку записей — окно возобновления, дальше журнал «истёк» и прогон с нуля
+    "mutation_run": LogKind("mutation_run-", "shared", None, (".jsonl",), sweep=True),
     # отметка «пересборка идёт» под flock: unlink по имени снял бы замок прогона,
     # стартовавшего следом (mark_running); подметание под замком — №528
     "rebuild_pid": LogKind("rebuild-", "lock", None, (".pid",), sweep=False),
