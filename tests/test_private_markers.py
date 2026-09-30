@@ -76,8 +76,7 @@ def test_the_tree_of_this_repository_is_clean():
     if not path.exists():
         import pytest
         pytest.skip(f"список маркеров недоступен ({path}) — проверять нечем")
-    markers = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
-               if ln.strip() and not ln.strip().startswith("#")]
+    markers = guard.load_markers(path)
     hits = guard.scan_files(guard.build_pattern(markers), guard.tracked_files())
     assert not hits, ("приватные маркеры в опубликованном дереве: "
                       + ", ".join(hits))

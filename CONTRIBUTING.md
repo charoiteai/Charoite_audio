@@ -332,6 +332,26 @@ piece of config, log or path from a work machine.
 A colleague's name in a comment is caught **only by the local hook**. Install
 it — `pre-commit install`, once per clone.
 
+**Every pushed commit is checked, not only the final state.** An intermediate
+commit of a public repository is published for good, even if the next commit
+removes the leak. `pre-commit install` also sets up a pre-push stage
+(`private-markers-push`, run it again after this file changes): it checks each
+outgoing commit — added lines, file names, commit message, author — against the
+public formats, and against the private list where it exists. pre-commit hands
+the hook one pair of refs, so in a push of several branches only the first one
+is checked. `SKIP=private-markers-push` lets a push through; CI still runs.
+The maintainer's clone uses its own hook instead
+(`check_private_markers.py --install-hooks`, run in the main checkout on
+`main`): it judges every branch of the push, also requires the maintainer's
+address on every commit, and runs the guard from the main checkout, so a branch
+cannot weaken the gate it is pushed through. `--range BASE..HEAD` runs the same
+per-commit check by hand. Media files (images, audio, PDF) are judged by name
+only: text inside their metadata (EXIF, PDF author, audio tags) is not checked.
+Any other file git treats as binary (archives, office documents, icons, a text
+file with a NUL byte) cannot be checked and is refused; the maintainer lets a
+specific version through by adding its blob hash, which the refusal prints, to
+`~/.config/charoite/blob_allow.txt`.
+
 The hook checks **two** things: the lines a commit adds, and the whole tracked
 tree. The second one matters because a marker added to the list *later* leaves
 its earlier occurrences untouched forever — the diff of every following commit

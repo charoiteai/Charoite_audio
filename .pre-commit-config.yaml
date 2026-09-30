@@ -1,4 +1,9 @@
-# Локальные проверки до коммита: pre-commit install
+# Локальные проверки до коммита и до push: pre-commit install (ставит оба типа
+# хуков; после обновления этого файла — ещё раз). Хуки без stages — только на
+# коммите: ruff и прочие на push не едут.
+minimum_pre_commit_version: "3.2.0"
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.3
@@ -37,3 +42,14 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-commit]
+      # Каждый уходящий коммит (№541): промежуточный коммит публикуется навсегда.
+      # Без списка маркеров — только публичные форматы. pre-commit отдаёт одну
+      # пару FROM/TO: в push нескольких веток судится только первая.
+      - id: private-markers-push
+        name: приватные маркеры в уходящих коммитах
+        entry: python3 scripts/check_private_markers.py --range-from-env
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
