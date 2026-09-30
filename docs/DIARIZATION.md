@@ -581,11 +581,12 @@ system channel when the live session gave no usable hint.
 In a room one bridge is not enough. Single linkage joins two groups through
 one pair above the threshold, and on Sep 29 a meeting of six chained through
 such bridges into one label with pairs of 0.13 inside it. On the microphone of
-an in-room meeting the merge goes pair by pair from the most similar and
-refuses to join two groups while any pair between them is below 0.46 — the top
-of the "different people" range. On that recording: one label became four. On
+an in-room meeting the first merge pass goes pair by pair from the most
+similar and refuses to join two groups while any pair between them is below
+0.46 — the top of the "different people" range; groups under 30 s are still
+attached to the nearest voice by the second pass, as before. On that recording: one label became four. On
 calls the veto is off: there it split the owner into several labels (measured
-on six calls).
+on eight calls: four of them).
 
 On Aug 14 the threshold was measured on a real recording: 65 minutes, one
 microphone, three speakers. Pairwise similarity split cleanly:

@@ -105,10 +105,15 @@ def test_the_veto_is_checked_against_every_member_of_both_groups():
         frozenset({0, 1}), frozenset({2})}
 
 
-def test_the_veto_sits_at_the_top_of_the_measured_strangers():
-    """Замер 14.08: чужие 0.11–0.46, свои 0.68–0.89. Запрет выше 0.46 резал бы своих,
-    ниже — пропускал чужих."""
-    assert D.VETO_BELOW == 0.46 and D.VETO_BELOW < D.WEAK_THRESHOLD
+@pytest.mark.parametrize("worst,groups", [
+    (D.VETO_BELOW - 0.001, {frozenset({0, 1}), frozenset({2})}),
+    (D.VETO_BELOW + 0.001, {frozenset({0, 1, 2})}),
+])
+def test_the_veto_boundary_is_the_worst_pair_between_groups(worst, groups):
+    """Граница запрета — по худшей паре: чуть ниже VETO_BELOW мост 0.65 не сливает,
+    чуть выше — сливает."""
+    sim = {(0, 1): 0.9, (1, 2): 0.65, (0, 2): worst}
+    assert _groups(D.link_clusters([0, 1, 2], sim, 0.60, D.VETO_BELOW)) == groups
 
 
 # --------------------------------------------- боевой путь: diarize() → _merge_shards
@@ -184,11 +189,12 @@ def test_the_room_door_splits_the_chain_the_default_merges_it(room):
     assert len({k for *_, k in split}) == 6
 
 
-def test_the_hinted_path_never_sees_the_veto(room, monkeypatch):
-    """Подсказка числом и запрет не смешиваются: diarize с числом голосов склейку
-    внутри не зовёт вовсе."""
-    monkeypatch.setattr(D, "_merge_shards", lambda *a, **k: (_ for _ in ()).throw(AssertionError("склейка")))
-    assert len({k for *_, k in D.diarize(room, SR, num_speakers=6, veto=D.VETO_BELOW)}) == 12
+def test_a_veto_with_a_hint_is_refused_not_dropped(room):
+    """Подсказка числом и запрет не смешиваются: после числа склейки нет, и запрет
+    был бы молча выброшен — вызов с обоими отвергается (выход №565, r1)."""
+    with pytest.raises(ValueError):
+        D.diarize(room, SR, num_speakers=6, veto=D.VETO_BELOW)
+    assert len({k for *_, k in D.diarize(room, SR, num_speakers=6)}) == 12
 
 
 # --------------------------------------------------------------------- mic_plan

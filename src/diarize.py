@@ -107,6 +107,10 @@ def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
 
 def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float = 0.8,
             veto: float | None = None):
+    if veto is not None and num_speakers > 0:
+        # число кластеров sherpa решает сам, склейки после него здесь нет — запрет
+        # был бы молча выброшен (выход №565, r1, Sonnet M3)
+        raise ValueError("запрет склейки действует только в авто-режиме (num_speakers <= 0)")
     import sherpa_onnx
     # threshold=0.55 на моно-миксе дал 119 «голосов» (каждый сегмент — новый).
     # Выше порог = агрессивнее слияние. Если знаешь число людей — задай num_speakers.
