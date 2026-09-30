@@ -611,3 +611,15 @@ def test_the_gate_never_calls_local_what_a_transport_sends_elsewhere(url):
     assert hosts, f"гейт назвал {url} своим, а транспорты его не принимают"
     for h in hosts:
         assert net.is_loopback_host(h), f"{url}: гейт — своя машина, транспорт идёт на {h}"
+
+
+def test_the_package_command_reaches_the_model_directly(stand, tmp_path):
+    """`charoite-graph index --model-url` идёт дверью пакета: прокси окружения адрес на этой машине не видит."""
+    from charoite_graph import cli
+    proxy, server = stand
+    folder = tmp_path / "заметки"
+    folder.mkdir()
+    (folder / "а.md").write_text("# Заметка\n\nтекст про прокси и модель\n", encoding="utf-8")
+    cli.main(["index", str(folder), "--model-url", server.url, "--model", "тест-модель",
+              "--data-dir", str(tmp_path / "кэш")])
+    assert any(path == "/api/embed" for _, path in server.requests) and proxy.hits == 0
