@@ -579,6 +579,8 @@ APPROVED_FIELDS = {
                                              "literal": ("str", "measured", True),
                                              "ticket": ("str", "decision", True)}),
     "folder_literal_exemptions": ("dict", "decision", None),
+    "mutation_critical": ("dict", "decision", None),
+    "mutation_not_critical": ("dict", "decision", None),
 }
 APPROVED_PYTHON_AREAS = ("src/", "scripts/")
 
@@ -1118,6 +1120,7 @@ def _layout(**over) -> dict:
          "generated": "2026-09-19T00:00Z", "run_contracts": {},
          "schema_module": "src/schema.py", "schema_values": "src/schema_values.py",
          "folder_literals": [], "folder_literal_exemptions": {},
+         "mutation_critical": {}, "mutation_not_critical": {},
          "package": "charoite_graph", "package_entries": {"core_mod": "вход"}}
     d.update(over)
     return d
