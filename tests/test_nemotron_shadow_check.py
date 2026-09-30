@@ -447,6 +447,7 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
     assert meta["cuts_per_channel"] == rp.expected_cuts(SR * 20, SR, 3.0, 0.5)
     assert (out / "models").is_symlink() and not (data / "logs").exists()
+    assert {(out / x).stat().st_mode & 0o777 for x in ("", "logs")} == {0o700}, "выход прогона — только владельцу"
     assert made == [{"sample_rate": SR, "step_s": 2.5}], "трекер — той же фабрикой, что у демона"
     assert sorted(p.name for p in (data / "rec").iterdir()) == [f"{stamp}_blackhole.wav", f"{stamp}_mic.wav"], (
         "прогон не пишет записей: запись хаба выключена даже при record: true в конфиге владельца")

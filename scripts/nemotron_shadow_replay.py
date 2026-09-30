@@ -200,8 +200,8 @@ def run_root(out: pathlib.Path, data_root: pathlib.Path) -> pathlib.Path:
     """Корень прогона: свежий каталог, `logs/` свой, веса и окружение движка — ссылками."""
     if out.exists():
         raise Refused(f"каталог выхода уже есть: {out} — журнал открыт на дозапись, прогоны смешались бы")
-    (out / "logs").mkdir(parents=True, mode=0o700)
-    os.chmod(out, 0o700)
+    charoite_paths.secure_dir(out)                # каталоги данных — дверью канона, 0700 (класс №409)
+    charoite_paths.secure_dir(out / "logs")
     for name in ("models", "engines"):
         target = data_root / name
         if target.exists():
