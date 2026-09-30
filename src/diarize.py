@@ -277,7 +277,8 @@ def link_clusters(nodes, sim: dict[tuple[int, int], float], threshold: float,
         ra, rb = find(a), find(b)
         if ra == rb:
             continue
-        if any(sim.get((x, y), sim.get((y, x), 1.0)) < veto
+        # у каждого члена группы есть эмбеддинг, значит и пара с каждым другим
+        if any((sim[(x, y)] if (x, y) in sim else sim[(y, x)]) < veto
                for x in members[ra] for y in members[rb]):
             banned += 1
             continue
@@ -334,12 +335,7 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60,
             v = np.mean(vecs, axis=0)
             embs[k] = v / np.linalg.norm(v)
 
-    ks = sorted(embs)
-    sim: dict[tuple[int, int], float] = {}
-    for i, a in enumerate(ks):
-        for b in ks[i + 1:]:
-            sim[(a, b)] = float(np.dot(embs[a], embs[b]))
-    parent = link_clusters(list(by), sim, threshold, veto)
+    parent = {k: k for k in by}
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -347,6 +343,14 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60,
             x = parent[x]
         return x
 
+    ks = sorted(embs)
+    sim: dict[tuple[int, int], float] = {}
+    for i, a in enumerate(ks):
+        for b in ks[i + 1:]:
+            v = float(np.dot(embs[a], embs[b]))
+            sim[(a, b)] = v
+    # первый проход — link_clusters; find выше читает уже его ответ
+    parent = link_clusters(list(by), sim, threshold, veto)
     # канон группы — кластер с наибольшей суммарной речью (стабильные метки)
     talk = {k: sum(d for d, _s, _e in items) for k, items in by.items()}
 
