@@ -95,6 +95,17 @@ def test_chunks_before_the_stream_and_after_the_last_front_are_counted_apart():
     assert lag["before_stream"] == 1 and lag["final_only"] == 1 and lag["_values"] == []
 
 
+def test_chunks_without_a_label_are_left_to_the_outcome_count():
+    lines = journal_lines(chunk_ends=[START0 + 64000])
+    dead = json.dumps({"type": "chunk", "t": 1.0, "chunk": 7, "start": START0 + SR * 30,
+                       "end": START0 + SR * 33, "state": "pieces", "outcome": ln.DEAD_STREAM,
+                       "wait_s": 0.0, "behind_s": None})
+    j = chk.read_journal(lines[:-1] + [dead, lines[-1]])
+    lag = chk.label_lag(j)
+    assert len(lag["_values"]) == 1 and lag["final_only"] == 0
+    assert chk.outcomes(j)[ln.DEAD_STREAM] == 1
+
+
 def test_frame_unit_eight_times_too_long_is_refused_not_counted():
     """Опровергающий опыт части 1: единица кадра 80 мс вместо 10 — фронт уходит вперёд
     поданного звука, сверка отказывает той же проверкой, что у ребёнка."""

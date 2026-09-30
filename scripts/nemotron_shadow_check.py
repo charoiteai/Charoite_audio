@@ -192,8 +192,9 @@ def share_over(xs: typing.Sequence[float], thresholds=THRESHOLDS_S) -> dict:
 
 def label_lag(j: Journal) -> dict:
     """(а1) задержка метки в секундах звука: `start0 + fed` первой нефинальной строки
-    `front`, чей фронт ≥ конца чанка, минус конец чанка. Чанки до потока и закрытые
-    только финальным фронтом — отдельным счётом."""
+    `front`, чей фронт ≥ конца чанка, минус конец чанка. Только чанки с меткой; до потока
+    и закрытые лишь финальным фронтом — отдельным счётом (журнал живого звонка 30.09:
+    тень умерла на пятой минуте, 632 чанка `dead` иначе числились бы «финальными»)."""
     fronts = [f for f in j.fronts if not f.get("final")]
     lags, final_only, before = [], 0, 0
     i = 0
@@ -201,6 +202,8 @@ def label_lag(j: Journal) -> dict:
         if c["start"] < j.start0:
             before += 1
             continue
+        if c["outcome"] != live_nemotron.LABELED:
+            continue                    # мёртвые, по потолку, поздние — в счёте исходов, не здесь
         while i < len(fronts) and int(fronts[i]["front"]) < c["end"]:
             i += 1
         if i == len(fronts):
