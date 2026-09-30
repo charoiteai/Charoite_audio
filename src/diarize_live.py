@@ -335,15 +335,51 @@ def with_recon(jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | No
     return [(piece, n, raw, own_share(n)) for piece, n, raw in jobs]
 
 
-def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, int, int]]:
-    """Где в чанке какой голос трекера (сэмплы от начала чанка) — для номера сверки куска
-    потока. Раскладка упала или всё исключено — ничего; куски без голоса — не голос;
-    чанк целиком (`pieces is None`) — голос `main` на весь чанк, если он есть."""
-    if res is None or res.pieces == []:
-        return []
+def tracker_speech(res: SplitResult | None, chunk_len: int, *,
+                   neutral: bool) -> list[tuple[int, int, int | None]]:
+    """Речь чанка, которую распознал бы трекер (режим `off`), — (начало, конец, голос|None)
+    в сэмплах от начала чанка, по тому же правилу, что `jobs_for`, для всех трёх состояний
+    `SplitResult`: раскладка упала — весь чанк без голоса; чанк целиком — весь чанк под
+    `main` (или без голоса); `[]` — ничего (всё снято политикой: придержка, микро-куски);
+    окна — их сырые границы, куски без голоса — только там, где метка канала никого не
+    называет (`heard_pieces`, №571). Одна функция на всех потребителей: покрытие речи и
+    доли сверки не выводятся из остатков раскладки каждый по-своему (финальный Opus по
+    №478 B, C1)."""
+    if res is None:
+        return [(0, chunk_len, None)]
     if res.pieces is None:
-        return [] if res.main is None else [(0, chunk_len, res.main)]
-    return [(p.raw_start, p.raw_end, p.voice) for p in res.pieces if p.voice is not None]
+        return [(0, chunk_len, res.main)]
+    return [(p.raw_start, p.raw_end, p.voice) for p in heard_pieces(res, channel_label_neutral=neutral)]
+
+
+def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, int, int]]:
+    """Где в чанке какой голос трекера — для долей сверки: речь трекера с голосом."""
+    return [(s, e, v) for s, e, v in tracker_speech(res, chunk_len, neutral=True) if v is not None]
+
+
+def uncovered(speech: list[tuple[int, int, int | None]], covered: list[tuple[int, int]],
+              min_len: int) -> tuple[list[tuple[int, int, int | None]], int]:
+    """Речь вне покрытия: части отрезков `speech` вне объединения `covered` — (части не
+    короче `min_len`, сэмплы в частях короче). Короткий остаток распознавать нечем (окно STT
+    от секунды, а отрезок меньше порога — край чужого окна), он идёт в счёт `lost_s`."""
+    cover = sorted(covered)
+    parts: list[tuple[int, int, int | None]] = []
+    lost = 0
+    for start, end, voice in speech:
+        pos = start
+        for s, e in cover + [(end, end)]:
+            if e <= pos:
+                continue
+            gap_end = min(max(s, pos), end)
+            if gap_end > pos:
+                if gap_end - pos >= min_len:
+                    parts.append((pos, gap_end, voice))
+                else:
+                    lost += gap_end - pos
+            pos = max(pos, min(e, end))
+            if pos >= end:
+                break
+    return parts, lost
 
 
 #: Доля звука куска, с которой голос трекера входит в сверку: касание в несколько сэмплов
@@ -365,36 +401,41 @@ def recon_shares(spans: list[tuple[int, int, int]], start: int, end: int) -> tup
                  for v in sorted(got, key=lambda v: -got[v]) if got[v] / length >= MIN_SHARE)
 
 
-#: Речь трекера, не покрытая сегментами потока дольше этого (секунды), — речь без метки:
-#: чанк не распознаётся целиком под главной меткой потока (выходной круг 1 №478 B, I2).
-#: Порог — минимальный сегмент трекера: короче трекер речь и не заводит.
+#: Речь трекера вне окон потока короче этого (секунды) — не отдельное задание, а `lost_s`:
+#: край соседнего окна, распознавать нечем. Порог — минимальный сегмент трекера.
 UNLABELLED_S = 0.4
 
 
-def unlabelled_speech(tracker: SplitResult | None, segs: list[tuple[int, int]],
-                      sr: int) -> list[tuple[int, int, int | None]]:
-    """Речь, которую трекер слышит кусками, а поток не разметил: части кусков трекера (и с
-    голосом, и без) вне объединения сегментов потока, длиннее `UNLABELLED_S`, — (начало,
-    конец, голос трекера) в сэмплах от начала чанка. Чанк трекера целиком (`pieces is None`)
-    границ речи не даёт — не судим. Такая речь и запрещает чанк целиком под меткой потока,
-    и распознаётся сама, под меткой трекера: иначе неверная подпись сменилась бы потерей
-    слов (выходной круг 2 №478 B, I1)."""
-    if tracker is None or not tracker.pieces:
-        return []
-    cover = sorted(segs)
-    out: list[tuple[int, int, int | None]] = []
-    for p in tracker.pieces:
-        pos = p.raw_start
-        for s, e in cover + [(p.raw_end, p.raw_end)]:
-            if e <= pos:
-                continue
-            gap_end = min(max(s, pos), p.raw_end)
-            if gap_end - pos > UNLABELLED_S * sr:
-                out.append((pos, gap_end, p.voice))
-            pos = max(pos, min(e, p.raw_end))
-            if pos >= p.raw_end:
-                break
-    return out
+def stream_layout(raw: list[tuple[float, float, int]], speech: list[tuple[int, int, int | None]],
+                  chunk_len: int, sr: int, *, step_s: float,
+                  min_stt: float = 1.0) -> tuple[SplitResult, list[tuple[int, int, int | None]], int]:
+    """Раскладка чанка режима `on` с сохранением речи (финальный Opus по №478 B, C1): поток
+    говорит, КТО, но не решает, ЧТО распознавать, — каждый сэмпл речи трекера (`speech`,
+    то, что распознал бы `off`) лежит ровно в одном задании.
+
+    1. Окна потока (`plan_pieces`) и их сырые границы — покрытие: микросегмент без окна и
+       придержанный хвост не покрывают ничего.
+    2. Речь трекера вне покрытия, не короче `UNLABELLED_S`, — отдельными заданиями трекера;
+       короче — счёт потерянных сэмплов (`lost_s` строки журнала).
+    3. Если такие задания есть, окна потока строятся заново с ними как барьерами: запас окна
+       не заходит в звук, который распознаёт трекер, и чанк не идёт целиком под одной
+       меткой. Сырые границы окон при этом не меняются: барьер лежит вне них.
+
+    Возвращает (раскладка потока, задания трекера (начало, конец, голос), потерянные сэмплы)."""
+    raw = sorted(raw, key=lambda r: r[0])
+    windows, _deferred, _kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s)
+    covered = [(int(rs * sr), int(re_ * sr)) for _a, _b, _v, rs, re_ in windows]
+    min_len = round(UNLABELLED_S * sr)
+    extra, _short = uncovered(speech, covered, min_len)
+    res = stream_split(raw, chunk_len, sr, step_s=step_s, min_stt=min_stt,
+                       unknown_speech=bool(extra),
+                       barriers=[(a / sr, b / sr, None) for a, b, _v in extra])
+    # потери — по тому, что уйдёт в STT на самом деле: чанк целиком (один голос, ничего не
+    # исключено) покрывает и края, которых окна не касались
+    final = ([] if res.pieces == [] else [(0, chunk_len)] if res.pieces is None
+             else [(p.raw_start, p.raw_end) for p in res.pieces])
+    _rest, lost = uncovered(speech, final + [(a, b) for a, b, _v in extra], min_len)
+    return res, extra, lost
 
 
 class StreamVoices:
@@ -417,8 +458,6 @@ class StreamVoices:
         self._slots: dict[int, list[int]] = {}      # слот → [метка, конец речи на оси хаба]
         self._generation = 0
         self._link: dict[int, int] = {}             # голос трекера → последняя метка потока
-        self._first: dict[int, int] = {}            # метка потока → голос трекера при первой связи
-        self._inherited: set[int] = set()           # голоса трекера, чьё имя уже отдано метке
 
     def _label(self, slot: int, start: int, end: int) -> int:
         cur = self._slots.get(slot)
@@ -427,18 +466,6 @@ class StreamVoices:
             self._generation += 1
         cur[1] = max(cur[1], end)
         return cur[0]
-
-    def inherit(self, label: int) -> int | None:
-        """Голос трекера, чьё имя метка потока берёт себе, — один раз на голос: человек,
-        подписанный до потока номером трекера, после рукопожатия остаётся тем же
-        «Собеседником K», а не становится новым (выходной круг GLM по №478 B, M1). Второй
-        метке, связанной с тем же голосом, имя не достаётся: трекер склеивает разных людей
-        (DER 0,26–0,97), и одно имя на двоих хуже лишнего номера."""
-        voice = self._first.get(label)
-        if voice is None or voice in self._inherited:
-            return None
-        self._inherited.add(voice)
-        return voice
 
     def fallback(self, jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) \
             -> list[Job] | None:
@@ -460,18 +487,17 @@ class StreamVoices:
         if not segs:
             return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
         n = len(chunk)
-        inside = [(max(s, origin) - origin, min(e, origin + n) - origin, slot)
-                  for s, e, slot in sorted(segs) if min(e, origin + n) > max(s, origin)]
-        raw = [(a / self._sr, b / self._sr, self._label(slot, a + origin, b + origin))
-               for a, b, slot in inside]
-        unlabelled = unlabelled_speech(tracker, [(a, b) for a, b, _ in inside], self._sr)
-        res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt,
-                           unknown_speech=bool(unlabelled),
-                           barriers=[(a / self._sr, b / self._sr, None) for a, b, _v in unlabelled])
+        raw = [((max(s, origin) - origin) / self._sr, (min(e, origin + n) - origin) / self._sr,
+                self._label(slot, max(s, origin), min(e, origin + n)))
+               for s, e, slot in sorted(segs) if min(e, origin + n) > max(s, origin)]
+        if not raw:                                  # сегменты лишь касаются чанка — речи в нём нет
+            return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
+        speech = tracker_speech(tracker, n, neutral=neutral)
+        res, extra_spans, lost = stream_layout(raw, speech, n, self._sr, step_s=step_s, min_stt=min_stt)
         jobs = jobs_for(res, chunk, channel_label_neutral=neutral) or []
         bounds = ([(p.raw_start, p.raw_end) for p in heard_pieces(res, channel_label_neutral=neutral)]
                   if res.pieces else [(0, n)])
-        spans = tracker_spans(tracker, n)
+        spans = [(s, e, v) for s, e, v in speech if v is not None]
         placed: list[tuple[int, Job]] = []
         no_recon = agree = 0
         for (piece, label, raw_piece), (a, b) in zip(jobs, bounds):
@@ -482,21 +508,16 @@ class StreamVoices:
                 lead = shares[0][0]
                 agree += self._link.get(lead) == label
                 self._link[lead] = label
-                self._first.setdefault(label, lead)
             placed.append((a, (piece, label, raw_piece, shares)))
-        # речь мимо потока — трекеру, под меткой связи его голоса; без голоса — меткой канала,
-        # и только там, где она никого не называет (правило `heard_pieces`, №571)
-        extra = 0
-        for a, b, voice in unlabelled:
-            if voice is None and not neutral:
-                continue
+        # речь мимо окон потока — трекеру, под меткой связи его голоса; без голоса — меткой
+        # канала (в `speech` она есть только там, где никого не называет, №571)
+        for a, b, voice in extra_spans:
             label = CHANNEL_LABEL_ONLY if voice is None else self._link.get(voice, voice)
             placed.append((a, (chunk[a:b], label, chunk[a:b], own_share(voice))))
-            extra += 1
-        fields = {"source": "stream", "pieces": len(placed) - extra, "no_recon": no_recon,
-                  "recon_agree": agree}
-        if extra:
-            fields["tracker_pieces"] = extra
+        fields = {"source": "stream", "pieces": len(placed) - len(extra_spans), "no_recon": no_recon,
+                  "recon_agree": agree, "lost_s": round(lost / self._sr, 3)}
+        if extra_spans:
+            fields["tracker_pieces"] = len(extra_spans)
         if not placed:
             return None, fields
         return [job for _a, job in sorted(placed, key=lambda t: t[0])], fields

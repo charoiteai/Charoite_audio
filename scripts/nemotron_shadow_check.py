@@ -296,7 +296,11 @@ def sources(j: Journal) -> dict:
             "wait_labeled_s": quantiles(waits),
             "stream_pieces": pieces,
             "no_recon_share": round(no_recon / pieces, 4) if pieces else None,
-            "recon_agree_share": round(agree / (pieces - no_recon), 4) if pieces > no_recon else None}
+            "recon_agree_share": round(agree / (pieces - no_recon), 4) if pieces > no_recon else None,
+            # речь трекера, не ушедшая в STT ни окном потока, ни заданием трекера (края короче
+            # порога) — сохранение речи режима `on` (финальный Opus по №478 B, C1)
+            "lost_s": round(sum(float(c.get("lost_s", 0.0)) for c in waited), 3),
+            "tracker_pieces": sum(int(c.get("tracker_pieces", 0)) for c in waited)}
 
 
 def step_cost(timing: typing.Iterable[dict], step: int, sr: int) -> dict:

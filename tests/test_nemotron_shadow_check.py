@@ -1185,7 +1185,8 @@ def _on_chunk(n, outcome, source, wait_s, **extra):
 def test_sources_count_fallbacks_apart_and_the_wait_only_of_labelled_chunks():
     j = journal()
     j.v, j.mode = 2, ln.ON
-    j.chunks = [_on_chunk(0, ln.LABELED, "stream", 0.8, pieces=2, no_recon=1, recon_agree=1),
+    j.chunks = [_on_chunk(0, ln.LABELED, "stream", 0.8, pieces=2, no_recon=1, recon_agree=1, lost_s=0.25,
+                          tracker_pieces=1),
                 _on_chunk(1, ln.LABELED, "stream", 1.2, pieces=1, no_recon=0, recon_agree=0),
                 _on_chunk(2, ln.FALLBACK, "tracker", 2.0, fallback=ln.FALLBACK),
                 _on_chunk(3, ln.LABELED, "tracker", 0.5, fallback="no_speech"),
@@ -1197,6 +1198,7 @@ def test_sources_count_fallbacks_apart_and_the_wait_only_of_labelled_chunks():
         "ожидание — только у дождавшихся: время до «сдался» не время метки (r2 GLM M1)")
     assert got["stream_pieces"] == 3 and got["no_recon_share"] == round(1 / 3, 4)
     assert got["recon_agree_share"] == 0.5
+    assert (got["lost_s"], got["tracker_pieces"]) == (0.25, 1)
 
 
 def test_sources_of_a_shadow_journal_are_empty():

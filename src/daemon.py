@@ -916,15 +916,10 @@ def main():
             del vals[:-40]      # держим последние — голос за встречу не меняется
 
     def _voice_name(n: int) -> str:
-        """Имя нейтрального голоса по номеру трекера или метке потока (с заведением нового).
-        Метка потока в режиме `on` сперва берёт имя связанного голоса трекера, если его уже
-        назвали до потока (`StreamVoices.inherit`, один раз на голос)."""
+        """Имя нейтрального голоса по номеру трекера или метке потока (с заведением нового)."""
         name = voice_names.get(n)
         if name is None:
-            heir = stream_voices.inherit(n) if stream_voices is not None else None
-            name = voice_names.get(heir) if heir is not None else None
-            if name is None:
-                name = f"Собеседник {len(voice_names) + 1}"
+            name = f"Собеседник {len(voice_names) + 1}"
             voice_names[n] = name
         return name
 
@@ -1374,7 +1369,12 @@ def main():
                     except Exception as e:  # noqa: BLE001 — раскладка по потоку и её запас упали: чанк — трекеру
                         # строку журнала label_chunk уже записал (fallback build_failed);
                         # нить STT не умирает молча (выходной круг GLM по №478 B, I1)
-                        jobs = with_recon(tracker_jobs)
+                        # куски трекера на канале потока — только через метки связей
+                        # (финальный Opus по №478 B, M2); упал и он — голые номера
+                        try:
+                            jobs = stream_voices.fallback(tracker_jobs)
+                        except Exception:  # noqa: BLE001 — запас запаса: чанк всё равно распознаётся
+                            jobs = with_recon(tracker_jobs)
                         if not stream_fault["said"]:
                             stream_fault["said"] = True
                             emit({"type": "status", "text":
