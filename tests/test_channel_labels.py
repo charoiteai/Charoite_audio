@@ -80,3 +80,20 @@ def test_daemon_labels_come_from_the_capture_itself():
     assert lb.mic_signed == "Я" and not lb.collision
     src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
     assert "ChannelLabels.from_capture(" in src and "from_config(cfg, other=hub" not in src
+
+
+def test_only_a_label_that_names_nobody_may_carry_an_unknown_voice():
+    """№571: речь кандидата без места идёт под меткой канала только там, где метка
+    никого не называет. Метка микрофона — владелец: подписать ею чужую речь в комнате
+    значило бы подменить автора (входной круг 1 по №571)."""
+    for name in ("", "Иван", "Собеседник 2"):
+        lb = ChannelLabels.from_capture(_cfg(name), mic_raw="Я", other="Собеседник")
+        assert lb.label_names_nobody("Собеседник") is True
+        assert lb.label_names_nobody("Я") is False
+
+
+def test_daemon_asks_the_labels_whether_an_unknown_voice_may_be_heard():
+    """Демон берёт признак канала для jobs_for у ChannelLabels, а не собирает его сам:
+    инверсия на месте вызова подписывала бы владельцем чужую речь (мутатор, №571)."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "channel_label_neutral=chan.label_names_nobody(speaker)" in src

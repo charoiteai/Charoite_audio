@@ -17,6 +17,7 @@ import pathlib
 import numpy as np
 
 import sherpa_config
+from stt_runtime import CHANNEL_LABEL_ONLY
 
 
 @dataclasses.dataclass(frozen=True)
@@ -25,11 +26,14 @@ class Piece:
 
     start/end — pad-окно для STT (сэмплы), raw_start/raw_end — сырые границы
     речи без запаса: по ним считается высота голоса, чтобы в оценку не попал
-    сосед из padding (ревью 15.08). voice — номер голоса (1..N).
+    сосед из padding (ревью 15.08). voice — номер голоса (1..N) или None:
+    речь есть, а голоса нет — кандидату не хватило места среди max_speakers
+    (№571). Номер для STT берётся из заданий jobs_for, не отсюда: там None уже
+    решён по каналу.
     """
     start: int
     end: int
-    voice: int
+    voice: int | None
     raw_start: int
     raw_end: int
 
@@ -46,7 +50,9 @@ class SplitResult:
     (придержанный хвост, микро-куски): чанк НЕ распознавать, иначе STT целого
     чанка вернёт слова исключённых и подпишет их меткой main — ровно та
     подмена автора, от которой раскладку заводили.
-    pieces == [..] — распознавать окна, даже если голос в них один.
+    pieces == [..] — распознавать окна, даже если голос в них один. Окно с
+    voice None — речь кандидата без места: трекер говорит, что голос чужой и
+    неизвестный, а распознавать ли его, решает jobs_for по каналу (№571).
     """
     pieces: list[Piece] | None
     main: int | None
@@ -62,27 +68,49 @@ def tracker_step_s(chunk_s: float, overlap_s: float) -> float:
     return max(MIN_STEP_S, chunk_s - overlap_s)
 
 
-def jobs_for(res: "SplitResult | None", chunk: np.ndarray) \
+def heard_pieces(res: "SplitResult", *, channel_label_neutral: bool) -> list[Piece]:
+    """Куски раскладки, которые пойдут в STT: все с голосом и куски без голоса
+    (кандидат без места, №571) там, где метка канала никого не называет. Одно
+    правило для демона (через jobs_for) и прогона тени по записи — зеркала
+    отбора в потребителях расходились бы с демоном молча."""
+    return [p for p in res.pieces or ()
+            if p.voice is not None or channel_label_neutral]
+
+
+def jobs_for(res: "SplitResult | None", chunk: np.ndarray, *,
+             channel_label_neutral: bool) \
         -> list[tuple[np.ndarray, int, np.ndarray | None]] | None:
     """План распознавания чанка по трёхсостоянному контракту SplitResult.
 
     Чистая функция — стык «раскладка → демон» дважды ловил дыры на ревью
     15.08, поэтому тестируется без потоков и настоящего STT. None — чанк не
     распознавать вовсе (вся речь исключена политикой). Иначе список заданий
-    (кусок для STT, голос, сырой кусок для оценки высоты): голос -1 — метка
-    канала (раскладка упала или молчит — повторный вызов трекера учил бы
-    центроиды тем же звуком дважды), положительный — номер голоса трекера.
+    (кусок для STT, голос, сырой кусок для оценки высоты): голос
+    CHANNEL_LABEL_ONLY — метка канала (раскладка упала или молчит — повторный
+    вызов трекера учил бы центроиды тем же звуком дважды), положительный —
+    номер голоса трекера. Голоса None в заданиях не бывает: демон читает None
+    как «спроси трекер ещё раз».
+
+    channel_label_neutral — метка канала никого не называет (канал
+    собеседников). Тогда окно без голоса (кандидат без места, №571)
+    распознаётся под меткой канала: трекер решает, ЧЬЯ речь, но не то,
+    распознавать ли её. На микрофоне метка канала — подпись владельца, и такое
+    окно выпадает: подписать владельцем чужую речь в комнате — подмена автора
+    (круг 1 по №571).
     """
     if res is None:  # split бросил исключение: канальная метка, не voice_label
-        return [(chunk, -1, None)]
+        return [(chunk, CHANNEL_LABEL_ONLY, None)]
     if res.pieces is not None and not res.pieces:
         return None
     if res.pieces:
-        return [(chunk[p.start:p.end], p.voice, chunk[p.raw_start:p.raw_end])
-                for p in res.pieces]
+        jobs = [(chunk[p.start:p.end],
+                 CHANNEL_LABEL_ONLY if p.voice is None else p.voice,
+                 chunk[p.raw_start:p.raw_end])
+                for p in heard_pieces(res, channel_label_neutral=channel_label_neutral)]
+        return jobs or None
     if res.main is not None:
         return [(chunk, res.main, chunk)]
-    return [(chunk, -1, None)]
+    return [(chunk, CHANNEL_LABEL_ONLY, None)]
 
 
 def plan_pieces(raw: list[tuple[float, float, int | None]], chunk_len: int,
@@ -530,19 +558,24 @@ class SegmentTracker:
             if got > 1e-6:
                 talk[idx] = talk.get(idx, 0.0) + got
 
+        # Окно кандидата, не получившего слот, остаётся куском без голоса
+        # (voice None), а не выбрасывается: речь чужая, но это речь (№571 —
+        # на встрече из восьми голосов так терялось 85 % слов собеседников).
+        # Номер собирается мимо «+1»: -1 + 1 = 0, а 0 — валидный голос.
         pieces = [Piece(int(a * self.sr), int(b * self.sr),
-                        renum.get(v, v) + 1,
+                        renum.get(v, v) + 1 if renum.get(v, v) >= 0 else None,
                         int(rs * self.sr), int(re_ * self.sr))
-                  for a, b, v, rs, re_ in windows if renum.get(v, v) >= 0]
-        # Исключённая НАЗНАЧЕННАЯ речь: придержка, микро-кусок известного или
-        # окно кандидата, не получившего слот (ревью 15.08 ×2 — отвергнутый
-        # лимитом кандидат тоже чужая речь, а не «ничего»). Такая речь
+                  for a, b, v, rs, re_ in windows]
+        # Исключённая НАЗНАЧЕННАЯ речь: придержка или микро-кусок. Такая речь
         # запрещает фолбэк на STT целого чанка и, без окон, требует пропуска.
         assigned_excluded = deferred or any(
             v is not None and ((s, e, v) not in kept_keys
                                or not in_window(s, e, v))
-            for s, e, _sec, _emb, v in entries) or any(
-            renum.get(v, v) < 0 for _a, _b, v, _rs, _re in windows)
+            for s, e, _sec, _emb, v in entries)
+        # Кусок без голоса тоже запрещает фолбэк (ревью 15.08 ×2 —
+        # отвергнутый лимитом кандидат — чужая речь, подписать её main —
+        # подмена автора), но пропуска не требует: его судьбу решает jobs_for.
+        voiceless = any(p.voice is None for p in pieces)
         # Кусок без назначения (короткий незнакомец): при наличии окон он
         # тоже запрещает фолбэк — его слова уехали бы главному; но чанк из
         # одних таких кусков остаётся честным fail-open, а не пропуском.
@@ -553,7 +586,7 @@ class SegmentTracker:
             if main is not None:
                 self._last_by_channel[channel] = main
             if (len({p.voice for p in pieces}) >= 2 or assigned_excluded
-                    or unknown_speech):
+                    or unknown_speech or voiceless):
                 return SplitResult(pieces, main)
             return SplitResult(None, main)  # один голос, всё покрыто: чанк целиком
         if assigned_excluded:
