@@ -14,6 +14,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from charoite_graph.own_network import is_own_host
+
 # localhost — не IP, ip_address() его не разбирает, а это самый частый адрес в конфиге.
 _LOCAL_NAMES = ("localhost",)
 
@@ -72,12 +74,42 @@ def loopback_url(url: str) -> bool:
         return False
 
 
+def direct_url(url: str) -> bool:
+    """Идти ли к адресу напрямую, мимо прокси окружения и системы.
+
+    Да — адрес на этой машине и открытый http в свою сеть (`own_network`): политика
+    пустила его ровно потому, что текст остаётся в локальной сети, и прокси увёл бы
+    его наружу открытым текстом (финальный круг Opus по №522, I1). https во внешний
+    мир и в свою сеть идёт по правилам прокси, как раньше; неоднозначный адрес — нет.
+    """
+    try:
+        host = url_host(url)
+    except (AmbiguousAddress, ValueError):
+        return False
+    if is_loopback_host(host):
+        return True
+    return urllib.parse.urlsplit(url).scheme.lower() == "http" and is_own_host(host)
+
+
+def _same_host(a: str, b: str) -> bool:
+    try:
+        return url_host(a) == url_host(b)
+    except (AmbiguousAddress, ValueError):
+        return False
+
+
 class _NoRedirectOffHost(urllib.request.HTTPRedirectHandler):
-    """Редирект с loopback на нелокальную цель — отказ, а не переход."""
+    """Редирект с прямого адреса наружу — отказ, а не переход.
+
+    С этой машины — только на эту машину; с открытого http в свою сеть — только на тот
+    же хост тем же прямым путём: иначе редирект увёл бы запрос мимо проверки политики.
+    """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = urllib.parse.urljoin(req.full_url, newurl)
-        if not loopback_url(target):
+        allowed = (loopback_url(target) if loopback_url(req.full_url)
+                   else direct_url(target) and _same_host(target, req.full_url))
+        if not allowed:
             raise urllib.error.HTTPError(
                 req.full_url, code, f"редирект с этой машины на {urllib.parse.urlsplit(target).hostname!r} отклонён",
                 headers, fp)
@@ -90,12 +122,12 @@ def _direct_opener() -> urllib.request.OpenerDirector:
 
 
 def open_url(request: urllib.request.Request | str, timeout: float):
-    """`urlopen`, который для адреса на этой машине не знает прокси.
+    """`urlopen`, который для прямого адреса (`direct_url`) не знает прокси.
 
-    Нелокальный адрес идёт обычным `urllib.request.urlopen` (прокси по правилам
+    Остальные адреса идут обычным `urllib.request.urlopen` (прокси по правилам
     окружения — как было).
     """
     url = request if isinstance(request, str) else request.full_url
-    if loopback_url(url):
+    if direct_url(url):
         return _direct_opener().open(request, timeout=timeout)
     return urllib.request.urlopen(request, timeout=timeout)  # nosemgrep — вызывающий проверил схему

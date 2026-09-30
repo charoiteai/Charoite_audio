@@ -205,6 +205,10 @@
       "layer": "base",
       "why": "транспорт к адресу на этой машине мимо прокси (№525): is_loopback_host и open_url, только stdlib; читают privacy (слой runtime, правило proxies_for для requests) и дверь векторов пакета"
     },
+    "charoite_graph.own_network": {
+      "layer": "base",
+      "why": "предикат «своя сеть» явным списком сетей (№522): один на политику адреса (открытый http можно?) и транспорт net/privacy (мимо прокси?), только stdlib"
+    },
     "charoite_graph.notices": {
       "layer": "base",
       "why": "реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524"

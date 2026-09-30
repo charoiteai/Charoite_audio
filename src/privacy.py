@@ -43,7 +43,7 @@ import os
 import urllib.parse
 
 import charoite_graph.address_policy as address_policy   # без ребра на узел пакета (слой graph)
-from charoite_graph.net import AmbiguousAddress, is_loopback_host, loopback_url, url_host
+from charoite_graph.net import AmbiguousAddress, direct_url, is_loopback_host, loopback_url, url_host
 
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
@@ -179,16 +179,18 @@ def _is_loopback(host: str | None) -> bool:
 
 
 def proxies_for(url: str) -> dict:
-    """Аргументы `requests` для адреса: на этой машине — без прокси и без редиректов.
+    """Аргументы `requests` для адреса: прямой адрес (`net.direct_url`: эта машина или
+    открытый http в свою сеть, №522) — без прокси и без редиректов.
 
     `proxies` с `None` отключает и переменные окружения, и системные настройки
     (requests берёт их через urllib.getproxies). Ключ `all` обязателен: `ALL_PROXY`
     окружения ложится в него, и без `None` там прокси обходил бы `http`/`https`
     (опыт с подставным прокси: ProxyError на loopback). Редирект с loopback
-    уводил бы запрос на другую цель. Для остальных адресов — `{}`: их прокси
-    решает окружение, как раньше (№525).
+    уводил бы запрос на другую цель. Открытый http в свою сеть политика пустила,
+    потому что текст остаётся в локальной сети, — прокси увёл бы его наружу. Для
+    остальных адресов — `{}`: их прокси решает окружение, как раньше (№525).
     """
-    if loopback_url(url):
+    if direct_url(url):
         return {"proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
     return {}
 

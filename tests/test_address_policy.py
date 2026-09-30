@@ -20,8 +20,13 @@ sys.path.insert(0, str(REPO / "src"))
 
 import privacy  # noqa: E402
 import charoite_graph.address_policy as address_policy  # noqa: E402
+import charoite_graph.own_network as own_network  # noqa: E402
 from charoite_graph import cli, embed_door  # noqa: E402
 from charoite_graph.address_policy import AddressRefused, guard_model_url  # noqa: E402
+
+
+#: Настоящий резолвер — до подмен: сокет соединения зовёт getaddrinfo и для IP-литерала.
+_REAL_GETADDRINFO = own_network.socket.getaddrinfo
 
 
 @pytest.fixture(autouse=True)
@@ -29,10 +34,10 @@ def _no_dns(monkeypatch):
     """Резолв имён — только подменой: имя не резолвится, пока тест не скажет иначе."""
     def getaddrinfo(host, *a, **k):
         raise OSError("нет такого имени")
-    monkeypatch.setattr(address_policy.socket, "getaddrinfo", getaddrinfo)
-    address_policy._resolves_private.cache_clear()
+    monkeypatch.setattr(own_network.socket, "getaddrinfo", getaddrinfo)
+    own_network._resolves_own.cache_clear()
     yield
-    address_policy._resolves_private.cache_clear()
+    own_network._resolves_own.cache_clear()
 
 
 # (адрес, allow_remote, offline) → вид отказа или None (адрес проходит)
@@ -49,8 +54,16 @@ TABLE = [
     ("file:///etc/passwd", True, False, "scheme"),
     ("ftp://127.0.0.1:1", True, False, "scheme"),           # схема — и для loopback
     ("127.0.0.1:11434", False, False, "scheme"),
-    ("http://0.0.0.0:11434", False, False, "remote"),        # 0.0.0.0 — не loopback
-    ("http://0.0.0.0:11434", True, False, None),             # но «частный» по ipaddress: http своей сети
+    ("http://0.0.0.0:11434", False, False, "cleartext"),     # 0.0.0.0 — не loopback и не своя сеть
+    ("http://0.0.0.0:11434", True, False, "cleartext"),
+    # туннели в интернет, которые ipaddress.is_private считает «частными» (финальный Opus, I2)
+    ("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]:11434", True, False, "cleartext"),   # Teredo
+    ("http://[2002:c000:204::1]:11434", True, False, "cleartext"),                       # 6to4
+    ("http://[64:ff9b::808:808]:11434", True, False, "cleartext"),                       # NAT64
+    ("http://[64:ff9b:1::1]:11434", True, False, "cleartext"),                           # локальный NAT64
+    ("http://[fd12:3456::1]:11434", True, False, None),                                  # ULA — своя
+    ("http://[fe80::1]:11434", True, False, None),                                       # link-local
+    ("http://172.32.0.1:11434", True, False, "cleartext"),                               # за краем 172.16/12
     ("https://api.example.com", False, False, "remote"),
     ("https://api.example.com", True, False, None),
     ("https://api.example.com", "true", False, "remote"),     # строка — не разрешение
@@ -80,8 +93,8 @@ def test_verdicts(url, allow, offline, kind):
 def test_a_home_name_is_own_network_only_when_it_resolves_there(monkeypatch):
     """Тот же резолвящий предикат, что был у приложения: пакет не держит второй политики."""
     for ip, ok in (("192.168.1.7", True), ("8.8.8.8", False)):
-        monkeypatch.setattr(address_policy.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (ip, 0))])
-        address_policy._resolves_private.cache_clear()
+        monkeypatch.setattr(own_network.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (ip, 0))])
+        own_network._resolves_own.cache_clear()
         for url in ("http://ollama.local:11434", "http://studio:11434"):
             if ok:
                 assert guard_model_url(url, allow_remote=True) == url
@@ -93,7 +106,7 @@ def test_a_home_name_is_own_network_only_when_it_resolves_there(monkeypatch):
 def test_dns_is_asked_only_for_cleartext_to_a_name(monkeypatch):
     """https, отказ по рубильнику и «нет разрешения» по IP резолва не делают."""
     asked = []
-    monkeypatch.setattr(address_policy.socket, "getaddrinfo", lambda host, *a, **k: asked.append(host) or [])
+    monkeypatch.setattr(own_network.socket, "getaddrinfo", lambda host, *a, **k: asked.append(host) or [])
     for url, allow, offline in (("https://studio", True, False), ("http://studio", True, True),
                                 ("http://192.168.1.2", False, False)):
         try:
@@ -110,7 +123,7 @@ def test_a_mapped_public_address_is_not_own_network_on_any_python():
     class OldStdlibMapped:          # так ::ffff:8.8.8.8 видел Python без делегирования (опыт: 3.9)
         ipv4_mapped = ipaddress.IPv4Address("8.8.8.8")
         is_private, is_link_local, is_loopback = True, False, False
-    assert address_policy._ip_private(OldStdlibMapped()) is False
+    assert own_network.ip_is_own(OldStdlibMapped()) is False
 
 
 def test_remote_is_refused_by_default():
@@ -121,9 +134,26 @@ def test_remote_is_refused_by_default():
         assert e.value.kind == "remote"
 
 
+def test_a_name_resolving_to_a_tunnel_is_not_own_network(monkeypatch):
+    """AAAA на имя без точки из search domain — туннель Teredo: не своя сеть."""
+    monkeypatch.setattr(own_network.socket, "getaddrinfo",
+                        lambda *a, **k: [(30, 1, 6, "", ("2001:0:4136:e378:8000:63bf:3fff:fdd2", 0, 0, 0))])
+    own_network._resolves_own.cache_clear()
+    with pytest.raises(AddressRefused) as e:
+        guard_model_url("http://studio:11434", allow_remote=True)
+    assert e.value.kind == "cleartext"
+
+
+def test_ambiguous_names_the_address_once():
+    for url in ("http://x\\@127.0.0.1:1", "http://[::1"):
+        with pytest.raises(AddressRefused) as e:
+            guard_model_url(url)
+        assert str(e.value).count("адрес") == 1, str(e.value)
+
+
 def test_no_host_is_not_own_network():
     for host in (None, ""):
-        assert address_policy.is_private_host(host) is False
+        assert own_network.is_own_host(host) is False
     with pytest.raises(AddressRefused):        # «http:///x» — authority пуста: не своя сеть
         guard_model_url("http:///api", allow_remote=True)
 
@@ -131,16 +161,16 @@ def test_no_host_is_not_own_network():
 def test_own_network_answers_are_strict_booleans(monkeypatch):
     """Предикат отвечает `True`/`False`, а не «что-то ложное»: ответ уходит в условия
     потребителей, и `None` там однажды станет «не проверено»."""
-    assert address_policy.is_private_host("llm.example.com") is False       # имя с точкой вне домашних
-    assert address_policy.is_private_host("studio") is False                # не резолвится (autouse)
-    assert address_policy._resolves_private("studio") is False
+    assert own_network.is_own_host("llm.example.com") is False       # имя с точкой вне домашних
+    assert own_network.is_own_host("studio") is False                # не резолвится (autouse)
+    assert own_network._resolves_own("studio") is False
 
 
 def test_a_resolver_answer_that_is_not_an_address_is_not_own_network(monkeypatch):
-    monkeypatch.setattr(address_policy.socket, "getaddrinfo",
+    monkeypatch.setattr(own_network.socket, "getaddrinfo",
                         lambda *a, **k: [(2, 1, 6, "", ("не-адрес", 0))])
-    address_policy._resolves_private.cache_clear()
-    assert address_policy._resolves_private("studio") is False
+    own_network._resolves_own.cache_clear()
+    assert own_network._resolves_own("studio") is False
     with pytest.raises(AddressRefused) as e:
         guard_model_url("http://studio:11434", allow_remote=True)
     assert e.value.kind == "cleartext"
@@ -153,8 +183,8 @@ def test_a_name_is_resolved_once_per_process(monkeypatch):
     def getaddrinfo(host, *a, **k):
         asked.append(host)
         return [(2, 1, 6, "", ("192.168.1.7", 0))]
-    monkeypatch.setattr(address_policy.socket, "getaddrinfo", getaddrinfo)
-    address_policy._resolves_private.cache_clear()
+    monkeypatch.setattr(own_network.socket, "getaddrinfo", getaddrinfo)
+    own_network._resolves_own.cache_clear()
     for _ in range(3):
         guard_model_url("http://studio:11434", allow_remote=True)
     assert asked == ["studio"]
@@ -381,6 +411,10 @@ def _builds_embedder(source: str, rel: str) -> list[int]:
             bad = door_expr(node.value)
         elif isinstance(node, ast.Constant) and node.value == "ollama_embedder":
             bad = True
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+              and len(node.args) >= 2 and door_expr(node.args[0])
+              and isinstance(node.args[1], ast.Constant) and node.args[1].value in _BUILDERS):
+            bad = True          # getattr(ed, "embedder"): голая строка «embedder» слишком частая, судим по двери
         if bad and node.lineno not in allowed:
             hits.append(node.lineno)
     return hits
@@ -395,13 +429,16 @@ def _builds_embedder(source: str, rel: str) -> list[int]:
     "from charoite_graph import embed_door as door\ndoor.ollama_embedder('m')",
     "import charoite_graph.embed_door\ncharoite_graph.embed_door.embedder(u, 'm')",
     "import charoite_graph.embed_door as ed\ngetattr(ed, 'ollama_embedder')('m')",
+    "import charoite_graph.embed_door as ed\ngetattr(ed, 'embedder')(u, 'm')",
+    "from charoite_graph import embed_door\ngetattr(embed_door, 'embedder')(u, 'm')",
 ])
 def test_the_guard_sees_every_way_to_reach_a_builder(source):
     assert _builds_embedder(source, "src/daemon.py"), source
 
 
 def test_the_guard_lets_the_door_helpers_and_llm_embedder_through():
-    helpers = "import charoite_graph.embed_door as ed\nn = ed.EMBED_BATCH_TEXTS\ned.refusal_line('x')"
+    helpers = ("import charoite_graph.embed_door as ed\nn = ed.EMBED_BATCH_TEXTS\ned.refusal_line('x')\n"
+               "getattr(other, 'embedder')")
     assert _builds_embedder(helpers, "src/daemon.py") == []
     llm = ("import charoite_graph.embed_door as embed_door\n"
            "def embedder(cfg):\n    return embed_door.embedder(u, 'm')\n"
@@ -423,3 +460,95 @@ def test_the_app_builds_embedders_only_through_llm():
             offenders += [f"{rel}:{n}" for n in _builds_embedder(path.read_text(encoding="utf-8"), rel)]
     assert scanned > 10, "сторож не нашёл файлов — обход сломан"
     assert not offenders, "векторизатор собран мимо llm.embedder:\n" + "\n".join(offenders)
+
+
+# ── Транспорт: открытый http в свою сеть не уходит на прокси ─────────────
+
+import socketserver  # noqa: E402
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+from charoite_graph import net  # noqa: E402
+
+_OWN_UNREACHABLE = "http://10.255.255.1:11434/api/embed"      # своя сеть, никто не слушает
+_FAR = "http://203.0.113.5:11434/api/embed"                    # TEST-NET-3 — не своя сеть
+
+
+@pytest.fixture
+def recording_proxy(monkeypatch):
+    """Подставной прокси на loopback: пишет первую строку каждого запроса и отвечает 502."""
+    seen: list[str] = []
+    monkeypatch.setattr(own_network.socket, "getaddrinfo", _REAL_GETADDRINFO)   # autouse _no_dns ломает и connect
+    # urlopen кэширует opener с прокси из окружения первого вызова: свой — на время теста, потом прежний
+    monkeypatch.setattr(urllib.request, "_opener", None)
+    own_network._resolves_own.cache_clear()
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            seen.append(self.rfile.readline().decode("latin-1").strip())
+            self.wfile.write(b"HTTP/1.0 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    proxy = f"http://127.0.0.1:{server.server_address[1]}"
+    for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.setenv(name, proxy)
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    yield seen
+    server.shutdown()
+    server.server_close()
+
+
+def _try(call):
+    try:
+        call()
+    except (OSError, urllib.error.URLError):
+        pass
+
+
+@pytest.mark.сеть_разрешена   # настоящий сокет: прокси на loopback, своя сеть — никто не слушает
+def test_urllib_goes_to_own_network_past_the_proxy(recording_proxy):
+    _try(lambda: net.open_url(_OWN_UNREACHABLE, timeout=0.3))
+    assert recording_proxy == [], "открытый http в свою сеть ушёл на прокси"
+    _try(lambda: net.open_url(_FAR, timeout=2))          # положительный контроль: прокси виден
+    assert recording_proxy and "203.0.113.5" in recording_proxy[0]
+
+
+@pytest.mark.сеть_разрешена   # настоящий сокет: прокси на loopback, своя сеть — никто не слушает
+def test_requests_goes_to_own_network_past_the_proxy(recording_proxy):
+    requests = pytest.importorskip("requests")
+    _try(lambda: requests.get(_OWN_UNREACHABLE, timeout=0.3, **privacy.proxies_for(_OWN_UNREACHABLE)))
+    assert recording_proxy == [], "открытый http в свою сеть ушёл на прокси"
+    _try(lambda: requests.get(_FAR, timeout=2, **privacy.proxies_for(_FAR)))
+    assert recording_proxy and "203.0.113.5" in recording_proxy[0]
+
+
+def test_direct_route_is_loopback_or_cleartext_to_own_network():
+    assert net.direct_url("http://127.0.0.1:1") is True
+    assert net.direct_url("https://[::1]:1") is True
+    assert net.direct_url("http://192.168.1.5:1") is True
+    assert net.direct_url("https://192.168.1.5:1") is False       # TLS в своей сети — по правилам прокси, как было
+    assert net.direct_url("http://8.8.8.8:1") is False
+    assert net.direct_url("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]:1") is False
+    assert net.direct_url("http://x\\@127.0.0.1:1") is False
+
+
+@pytest.mark.parametrize("origin, target, allowed", [
+    ("http://192.168.1.5:11434/a", "http://192.168.1.5:11434/b", True),
+    ("http://192.168.1.5:11434/a", "http://192.168.1.6:11434/b", False),   # другой хост своей сети
+    ("http://192.168.1.5:11434/a", "http://8.8.8.8/b", False),
+    ("http://192.168.1.5:11434/a", "https://192.168.1.5/b", False),       # уже не прямой путь
+    ("http://127.0.0.1:11434/a", "http://localhost:11434/b", True),       # как было: loopback → loopback
+    ("http://127.0.0.1:11434/a", "http://192.168.1.5:11434/b", False),    # с этой машины — только на эту
+])
+def test_redirect_from_a_direct_route_stays_on_it(origin, target, allowed):
+    handler = net._NoRedirectOffHost()
+    req = urllib.request.Request(origin)
+    if allowed:
+        assert handler.redirect_request(req, None, 302, "Found", {}, target) is not None
+    else:
+        with pytest.raises(urllib.error.HTTPError):
+            handler.redirect_request(req, None, 302, "Found", {}, target)

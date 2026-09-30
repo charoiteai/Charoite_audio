@@ -1,12 +1,12 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 83.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 84.
 
 ## Слои и направление стрелок
 
 Таблица брифа владельца 19.09, слой core расколот на base и runtime (№365); правка слоя — только поправкой с обоснованием ниже: перенос слоя одной строкой без причины легализовал бы ребро молча.
 
-- **base** (зависит от: —; модулей 15): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
+- **base** (зависит от: —; модулей 16): `charoite_graph.address_policy`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `exit_codes`, `file_locks`, `media_meta`, `once`, `task_line`, `threads`, `vocabulary`
 - **runtime** (зависит от: base; модулей 6): `charoite_paths`, `config_loader`, `deps`, `foreign_python`, `live_gate`, `privacy`
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
@@ -26,7 +26,7 @@
 
 Ставится без приложения: модули ниже и только они; проба — `tests/test_entry_points_contract.py`.
 
-Модулей 16: `charoite_graph`, `charoite_graph.address_policy`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `charoite_graph.text_norm`
+Модулей 17: `charoite_graph`, `charoite_graph.address_policy`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.embed_door`, `charoite_graph.frontmatter`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.model_seam`, `charoite_graph.net`, `charoite_graph.notices`, `charoite_graph.own_network`, `charoite_graph.redirects`, `charoite_graph.safe_write`, `charoite_graph.text_norm`
 
 ## Поправки к таблице брифа (с обоснованием)
 
@@ -35,6 +35,7 @@
 - `charoite_graph.model_seam` → base: шов способности: тип векторизатора нужен обоим берегам — и слою моделей, который его строит, и графу, который его получает. В llm он дал бы графу импорт ради аннотации, то есть ровно то ребро, которое шов снимает (гейт считает импорты обходом всего дерева, включая TYPE_CHECKING). Зависимостей нет: модуль читает и doctor.py, обязанный работать до установки пакетов (№321, кусок 2а)
 - `charoite_graph.net` → base: транспорт к адресу на этой машине мимо прокси (№525): is_loopback_host и open_url, только stdlib; читают privacy (слой runtime, правило proxies_for для requests) и дверь векторов пакета
 - `charoite_graph.notices` → base: реестр «сказать один раз» на экземпляре для двери пакета, только stdlib; вторая реализация рядом с once до №524
+- `charoite_graph.own_network` → base: предикат «своя сеть» явным списком сетей (№522): один на политику адреса (открытый http можно?) и транспорт net/privacy (мимо прокси?), только stdlib
 - `charoite_paths` → runtime: корни данных и кода; машинный замер: на импорте из репозитория не тянет ничего (коды выхода дверь точки входа берёт лениво, на отказе — №340), а импортируют его модули всех слоёв. Слой app достался от брифа и делал нарушением каждый импорт в него; перенос вниз снимает все такие рёбра allowlist и не создаёт ни одного нового (№321, фаза 3)
 - `charoite_schema` → graph: значение схемы хранилища (№422): имена папок и разделов читают модули графа, модуль тянет только stdlib и класс схемы из пакета графа; окружения не знает
 - `decision_gate` → llm: ONNX-гейт «будить ли модель»: NLI zero-shot или обученная голова; читают daemon (тень ⚡) и scripts/gate_bench.py

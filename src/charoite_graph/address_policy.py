@@ -8,8 +8,8 @@
 Порядок решений: адрес разбирается строго (`net.url_host`, неоднозначный — отказ)
 → схема только http(s), и для этой машины тоже → адрес на этой машине — да →
 `offline` — отказ любому другому адресу → открытый http только в своей сети
-(частный, link-local IP; имя без точки или из домашних доменов — если DNS
-резолвит его целиком в свою сеть) → иначе только при `allow_remote is True`.
+(`own_network`: RFC 1918, link-local, ULA — явным списком; имя без точки или
+из домашних доменов — если DNS резолвит его целиком в свою сеть) → иначе только при `allow_remote is True`.
 
 Окружения модуль не читает: «взведён ли рубильник» вызывающий передаёт значением
 (`offline`), имён переменных пакет не знает. DNS спрашивается только в ветке
@@ -17,18 +17,13 @@
 """
 from __future__ import annotations
 
-import functools
-import ipaddress
-import socket
 import urllib.parse
 
 from charoite_graph.net import AmbiguousAddress, is_loopback_host, url_host
+from charoite_graph.own_network import is_own_host
 
 #: Адрес Ollama по умолчанию — сервер на этой машине.
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
-
-#: Домашние домены: имя из них — кандидат в свою сеть (решает резолв). RFC 8375 — .home.arpa.
-HOME_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa")
 
 #: Виды отказа: вызывающий строит по ним свой текст (ключ конфига, флаг командной строки).
 KINDS = ("ambiguous", "scheme", "offline", "cleartext", "remote")
@@ -53,7 +48,8 @@ class AddressRefused(ValueError):
 
 
 _TEXT = {
-    "ambiguous": lambda e: f"адрес {e.url}: {e.detail}",
+    # AmbiguousAddress уже называет адрес («адрес 'x': …»), ValueError разборщика — нет
+    "ambiguous": lambda e: e.detail if e.detail.startswith("адрес ") else f"адрес {e.url}: {e.detail}",
     "scheme": lambda e: f"адрес {e.url}: схема «{e.scheme or '—'}» не поддерживается, нужен http(s)",
     "offline": lambda e: f"адрес {e.url} указывает не на эту машину, а выход наружу запрещён",
     "cleartext": lambda e: (f"адрес {e.url} — вне своей сети по открытому http: текст ушёл бы по сети "
@@ -62,47 +58,6 @@ _TEXT = {
     "remote": lambda e: (f"адрес {e.url} указывает не на эту машину: чтобы слать туда тексты, нужно явное "
                          "разрешение на удалённый адрес"),
 }
-
-
-def _ip_private(ip) -> bool:
-    # «::ffff:8.8.8.8» — IPv4 в одежде IPv6: Python до 3.11.x/3.12.x без делегирования
-    # считал весь ::ffff:0:0/96 частным, и публичный адрес проходил бы как своя сеть
-    # (выходной круг 1 по №522, Sonnet M3; опыт: 3.9 — is_private True, 3.12.13 — False).
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:
-        ip = mapped
-    return ip.is_private or ip.is_link_local or ip.is_loopback
-
-
-@functools.lru_cache(maxsize=64)
-def _resolves_private(host: str) -> bool:
-    """Имя своей сети обязано и резолвиться в свою сеть: имя без точки на macOS
-    дополняется search domain, и «ollama» в корпоративной сети — чужой хост
-    (круг-1 по #562, GLM I1). Не резолвится или публичный адрес — отказ."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
-    ips = {str(info[4][0]).split("%")[0] for info in infos}
-    try:
-        return bool(ips) and all(_ip_private(ipaddress.ip_address(ip)) for ip in ips)
-    except ValueError:
-        return False
-
-
-def is_private_host(host: str | None) -> bool:
-    """Адрес своей сети: частный, link-local или loopback IP; имя из домашних
-    доменов (.local, .home.arpa и подобные) или без точек — если резолвится в
-    такой же адрес. Для него http допустим."""
-    if not host:
-        return False
-    try:
-        return _ip_private(ipaddress.ip_address(host))
-    except ValueError:
-        h = host.lower().rstrip(".")       # FQDN с корневой точкой — то же имя (DS I2)
-        if "." not in h or h.endswith(HOME_SUFFIXES):
-            return _resolves_private(h)
-        return False
 
 
 def guard_model_url(url: str, *, allow_remote: object = False, offline: bool = False) -> str:
@@ -128,7 +83,7 @@ def guard_model_url(url: str, *, allow_remote: object = False, offline: bool = F
     # чужую машину, и текст шёл бы по сети открытым текстом (аудит 13.09,
     # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
     # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
-    if scheme == "http" and not is_private_host(host):
+    if scheme == "http" and not is_own_host(host):
         raise AddressRefused("cleartext", url, scheme=scheme)
     if allow_remote is True:
         return url
