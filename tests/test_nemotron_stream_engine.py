@@ -158,7 +158,45 @@ def test_the_price_of_the_process_is_cpu_seconds_and_peak_megabytes(monkeypatch)
     import time
     monkeypatch.setattr(resource, "getrusage", lambda who: types.SimpleNamespace(ru_maxrss=300 * 2**20 + 7))
     monkeypatch.setattr(time, "process_time", lambda: 12.3456)
-    assert dn._load() == {"cpu_s": 12.35, "rss_mb": 300}
+    monkeypatch.setattr(dn, "_phys_footprint", lambda: 1541 * 2**20)
+    monkeypatch.delitem(sys.modules, "mlx.core", raising=False)
+    assert dn._load() == {"cpu_s": 12.35, "rss_mb": 300, "phys_mb": 1541}
+
+
+def test_the_price_carries_mlx_counters_only_when_the_engine_loaded_mlx(monkeypatch):
+    """Счётчики MLX — из уже загруженного модуля: цена процесса mlx не импортирует."""
+    fake = types.SimpleNamespace(get_active_memory=lambda: 700 * 2**20, get_cache_memory=lambda: 300 * 2**20,
+                                 get_peak_memory=lambda: 1200 * 2**20)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    got = dn._load()
+    assert (got["mlx_active_mb"], got["mlx_cache_mb"], got["mlx_peak_mb"]) == (700, 300, 1200)
+    monkeypatch.setitem(sys.modules, "mlx.core", types.SimpleNamespace(get_active_memory=lambda: 2**20))
+    assert dn._mlx_memory() == {"mlx_active_mb": 1}          # нет функции — нет ключа
+    monkeypatch.delitem(sys.modules, "mlx.core")
+    assert dn._mlx_memory() == {} and "mlx.core" not in sys.modules
+
+
+def test_phys_footprint_is_the_current_footprint_of_this_process():
+    """Настоящий `proc_pid_rusage` на этой машине: след растёт с выделенной памятью и
+    не является пиком — после освобождения не обязан держаться (смещение поля — V2)."""
+    if sys.platform != "darwin":
+        pytest.skip("proc_pid_rusage — только macOS")
+    before = dn._phys_footprint()
+    block = bytearray(200 * 2**20)
+    for i in range(0, len(block), 4096):
+        block[i] = 1
+    during = dn._phys_footprint()
+    assert before and during and during - before >= 150 * 2**20, (before, during)
+
+
+def test_the_cache_limit_is_set_before_the_model_and_announced_in_the_handshake(monkeypatch):
+    calls = []
+    fake = types.SimpleNamespace(set_cache_limit=lambda n: calls.append(("limit", n)) or 62259 * 2**20)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core=fake))
+    assert dn._set_cache_limit(512) == {"cache_limit_mb": 512, "cache_limit_prev_mb": 62259}
+    assert calls == [("limit", 512 * 2**20)]
+    assert dn._set_cache_limit(None) == {}
 
 
 def test_an_unavailable_model_is_the_engine_code_and_no_handshake(monkeypatch, capsys):
@@ -260,3 +298,80 @@ def test_the_stream_dies_when_the_final_front_does_not_cover_the_audio():
     with pytest.raises(RuntimeError, match=r"не покрыл поданный звук"):
         dn.run_stream(stream, frame_s=0.08, read=lambda n: next(reads), emit=out.append, step=2 * FRAME)
     assert not [m for m in out if m.get("final")], "финального фронта без покрытия нет"
+
+
+def test_the_mlx_peak_is_reset_only_in_a_process_that_loaded_mlx(monkeypatch):
+    """Пик MLX после загрузки модели — пик потока; без mlx или без функции — ничего."""
+    calls = []
+    monkeypatch.setitem(sys.modules, "mlx.core", types.SimpleNamespace(reset_peak_memory=lambda: calls.append(1)))
+    dn._reset_mlx_peak()
+    assert calls == [1]
+    monkeypatch.setitem(sys.modules, "mlx.core", types.SimpleNamespace())
+    dn._reset_mlx_peak()                          # нет функции — не падает
+    monkeypatch.delitem(sys.modules, "mlx.core")
+    dn._reset_mlx_peak()
+    assert calls == [1] and "mlx.core" not in sys.modules
+
+
+def test_a_zero_cache_limit_is_a_limit_and_a_negative_one_is_refused():
+    assert dn._non_negative_int("0") == 0
+    with pytest.raises(ValueError):
+        dn._non_negative_int("-1")
+
+
+def test_the_cache_limit_goes_before_the_model_and_the_peak_is_reset_after_it(monkeypatch):
+    """Связка `serve_stream` с лимитом: лимит → модель → сброс пика, рукопожатие объявляет
+    заданный и прежний лимит (выходной круг 1 по №478 B, Sonnet I2)."""
+    order = []
+    fake = types.SimpleNamespace(set_cache_limit=lambda n: order.append(("limit", n)) or 62259 * 2**20,
+                                 reset_peak_memory=lambda: order.append(("reset",)))
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core=fake))
+    proto = io.StringIO()
+    monkeypatch.setattr(dn, "_protocol_channel", lambda: proto)
+    monkeypatch.setattr(dn, "load_model", lambda path, preset: order.append(("load",)) or _Model())
+    monkeypatch.setattr(dn, "_mlx_memory", lambda: {})
+    reads = iter([b""])
+    assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: next(reads), cache_limit_mb=512) == 0
+    assert order == [("limit", 512 * 2**20), ("load",), ("reset",)]
+    ready = json.loads(proto.getvalue().splitlines()[0])
+    assert (ready["cache_limit_mb"], ready["cache_limit_prev_mb"]) == (512, 62259)
+
+
+def test_a_cache_limit_without_mlx_is_the_engine_unavailable_code(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "mlx.core", None)          # import mlx.core → ImportError
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    proto = io.StringIO()
+    monkeypatch.setattr(dn, "_protocol_channel", lambda: proto)
+    monkeypatch.setattr(dn, "load_model", lambda path, preset: pytest.fail("модель после отказа лимита"))
+    assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: b"", cache_limit_mb=512) == \
+        EXIT_ENGINE_UNAVAILABLE
+    assert proto.getvalue() == "" and "лимит кэша" in capsys.readouterr().err
+
+
+def test_phys_footprint_reads_the_v0_struct_at_its_offset_through_libc(monkeypatch):
+    """Вердикт мутаций CI на #706: на Linux настоящего `proc_pid_rusage` нет — подставная
+    libc пишет след на смещение поля в 96-байтовой структуре V0 (16 байт uuid + 7 × uint64)."""
+    import ctypes
+    import ctypes.util
+    seen = {}
+
+    class Libc:
+        rc = 0
+
+        def proc_pid_rusage(self, pid, flavor, ref):
+            info = ref._obj
+            seen.update(size=ctypes.sizeof(info), flavor=flavor)
+            value = ctypes.c_uint64(1541 * 2**20)
+            ctypes.memmove(ctypes.addressof(info) + 16 + 7 * 8, ctypes.addressof(value), 8)
+            return self.rc
+
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: "libc-fake")
+    monkeypatch.setattr(ctypes, "CDLL", lambda path: Libc())
+    assert dn._phys_footprint() == 1541 * 2**20
+    assert seen == {"size": 96, "flavor": 0}
+    Libc.rc = -1
+    assert dn._phys_footprint() is None, "ядро отказало — следа нет"
+    Libc.rc = 0
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    assert dn._phys_footprint() is None, "libc не нашлась — следа нет"

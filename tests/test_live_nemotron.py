@@ -128,10 +128,14 @@ def test_stream_without_the_engine_is_unavailable_and_loads_nothing(tmp_path, mo
 def test_stream_mode_serves_the_stream_with_the_preset(tmp_path, monkeypatch):
     monkeypatch.setattr(dn, "availability", lambda path: None)
     calls = []
-    monkeypatch.setattr(dn, "serve_stream", lambda model, preset: calls.append((model, preset)) or 0)
+    monkeypatch.setattr(dn, "serve_stream", lambda model, preset, cache_limit_mb=None:
+                        calls.append((model, preset, cache_limit_mb)) or 0)
     assert dn.main(["--stream", "--model", str(tmp_path)]) == 0
     assert dn.main(["--stream", "--model", str(tmp_path), "--preset", "very_low"]) == 0
-    assert calls == [(tmp_path, "low"), (tmp_path, "very_low")]
+    assert dn.main(["--stream", "--model", str(tmp_path), "--cache-limit-mb", "512"]) == 0
+    assert calls == [(tmp_path, "low", None), (tmp_path, "very_low", None), (tmp_path, "low", 512)]
+    with pytest.raises(SystemExit):
+        dn.main(["--stream", "--model", str(tmp_path), "--cache-limit-mb", "-1"])
 
 
 # ------------------------------------------------ дверь долгого процесса
@@ -418,6 +422,25 @@ def test_a_chunk_is_labelled_when_the_front_passes_its_end(tmp_path):
     assert lines[2]["start0"] == 5 * SR
     front = next(x for x in lines if x["type"] == "front")
     assert front["front"] == 5 * SR + 2 * SR and front["cpu_s"] == 1.5
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_price_of_the_child_and_its_cache_limit_reach_the_journal(tmp_path):
+    """Замер памяти тени (№478 B): след процесса и счётчики MLX из фронта, лимит кэша из
+    рукопожатия — в журнал; не числа — мимо (тот же фильтр `_num`)."""
+    ready = {**READY_OK, "cache_limit_mb": 512, "cache_limit_prev_mb": 62259}
+    sh, door, _ = _live(tmp_path, door=_Door(ready=ready))
+    sh.on_frame("blackhole", 0, np.full(SR, 0.25, dtype=np.float32))
+    price = {"cpu_s": 1.5, "rss_mb": 900, "phys_mb": 2100, "mlx_active_mb": 700, "mlx_cache_mb": 300,
+             "mlx_peak_mb": 1200}
+    door.on_message({"type": "front", "fed": SR, "frames": 5, **price, "mlx_cache_mb": "много"})
+    _wait(lambda: any(x["type"] == "front" for x in _journal(tmp_path / "live.jsonl")), what="фронт в журнале")
+    lines = _journal(tmp_path / "live.jsonl")
+    got = next(x for x in lines if x["type"] == "ready")
+    assert (got["cache_limit_mb"], got["cache_limit_prev_mb"]) == (512, 62259)
+    front = next(x for x in lines if x["type"] == "front")
+    assert {k: front.get(k) for k in price} == {**price, "mlx_cache_mb": None}
     sh.stop()
     door.on_eof()
 
