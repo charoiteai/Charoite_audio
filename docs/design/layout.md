@@ -108,6 +108,8 @@
 - `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; проба help
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
 - `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh; проба help+refuse
+- `scripts/nemotron_shadow_check.py` ← ручной запуск: сверка журнала тени Nemotron с финальной разметкой, ручной прогон (№478 B); проба help
+- `scripts/nemotron_shadow_replay.py` ← ручной запуск: прогон записи через тень Nemotron без звонка, ручной прогон (№478 B); проба help+refuse
 - `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier.py` ← scripts/nightly.sh; проба help

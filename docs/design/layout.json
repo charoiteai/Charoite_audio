@@ -245,12 +245,14 @@
     "scripts/gate_bench.py": "замер решающего гейта, ручной прогон",
     "scripts/merge_graphs.py": "слияние графов руками",
     "scripts/migrate_placeholders.py": "разовая миграция заглушек руками",
+    "scripts/nemotron_shadow_check.py": "сверка журнала тени Nemotron с финальной разметкой, ручной прогон (№478 B)",
+    "scripts/nemotron_shadow_replay.py": "прогон записи через тень Nemotron без звонка, ручной прогон (№478 B)",
+    "scripts/preflight.sh": "приёмка перед кругом голов и чужой работы — ручной запуск (№339)",
     "scripts/stt_bench.py": "бенчмарк STT, ручной прогон",
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
-    "scripts/preflight.sh": "приёмка перед кругом голов и чужой работы — ручной запуск (№339)"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -382,6 +384,14 @@
     "scripts/mutate_check.py": {
       "mode": "help+refuse",
       "why": "по коду: argparse, затем дверь корня name_data_root_or_exit — лок демона и лок мутации в названном корне, без CHAROITE_ROOT код 5 и рецепт; --merge-shards корня не спрашивает; №440"
+    },
+    "scripts/nemotron_shadow_check.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/nemotron_shadow_replay.py": {
+      "mode": "help+refuse",
+      "why": "по коду: argparse, дверь корня"
     },
     "scripts/nightly.sh": {
       "mode": "none",
