@@ -1048,8 +1048,10 @@ def test_memory_reports_how_long_the_shadow_lived_to_a_tenth():
 
 def test_overlap_matrix_skips_empty_intervals_refuses_inverted_ones_and_empty_windows():
     assert chk.overlap_matrix([(1.0, 1.0, "s"), (0.0, 2.0, "t")], [(0.0, 2.0, "A")]) == {("t", "A"): 2.0}
-    with pytest.raises(chk.Refused, match="наоборот"):
+    with pytest.raises(chk.Refused, match=r"наоборот \(слот s\)"):
         chk.overlap_matrix([(2.0, 1.0, "s")], [])
+    with pytest.raises(chk.Refused, match=r"наоборот \(голос f3\)"):
+        chk.overlap_matrix([], [(2.0, 1.0, "f3")])
     assert chk.overlap_matrix([(0.0, 10.0, "s")], [(0.0, 10.0, "A")], lo=10.0, hi=20.0) == {}
 
 

@@ -510,7 +510,8 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     if ended.get("exit") != "ok":
         raise Refused(f"тень кончилась не штатно: {ended.get('reason')!r}, exit={ended.get('exit')!r}")
     meta = {"stamp": stamp, "sr": sr, **run_numbers(n, start0, sr, handshake_s, feed_wall),
-            "cuts_per_channel": expect, "chunks": counts, "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
+            "cuts_per_channel": expect, "chunks": counts,
+            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
             "journal": str(journal.relative_to(root))}
     (root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta

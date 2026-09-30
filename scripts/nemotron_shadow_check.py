@@ -322,7 +322,7 @@ def overlap_matrix(a: list[Interval], b: list[Interval], *,
     for side, xs in ((0, a), (1, b)):
         for s, e, lab in xs:
             if e < s:
-                raise Refused(f"отрезок наоборот: {s}..{e}")
+                raise Refused(f"отрезок наоборот ({('слот', 'голос')[side]} {lab}): {s}..{e}")
             if e == s:
                 continue                            # пустой отрезок: секунд нет
             events[s].append((side, lab, 1))
