@@ -344,9 +344,14 @@ class _Tracker:
         return self.result
 
 
+_CHAN = __import__("channel_labels").ChannelLabels.from_capture(
+    {"sufler": {"user_name": ""}}, mic_raw="Я", other="Собеседник")
+
+
 def _decide(tracker, start=1000, label="blackhole"):
-    placed = audio.Placed("Собеседник", np.zeros(3 * SR, dtype=np.float32), start, (label, 0))
-    return rp.chunk_decision(tracker, placed, stt_runtime=__import__("stt_runtime"),
+    speaker = {"blackhole": "Собеседник", "mic": "Я"}[label]
+    placed = audio.Placed(speaker, np.zeros(3 * SR, dtype=np.float32), start, (label, 0))
+    return rp.chunk_decision(tracker, placed, chan=_CHAN, stt_runtime=__import__("stt_runtime"),
                              jobs_for=diarize_live.jobs_for, heard_pieces=diarize_live.heard_pieces,
                              diarized_state=ln.diarized_state)
 

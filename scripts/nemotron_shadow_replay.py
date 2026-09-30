@@ -346,7 +346,7 @@ def unlink_links(root: pathlib.Path) -> None:
         (root / name).unlink(missing_ok=True)
 
 
-def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, heard_pieces, diarized_state):
+def chunk_decision(tracker, placed, *, chan, stt_runtime, jobs_for, heard_pieces, diarized_state):
     """Зеркало ветки чанка демона без STT: (состояние для тени, путь, интервалы на оси).
 
     Путь: `split_failed` — раскладка упала (канальная метка); `excluded` — заданий STT
@@ -354,14 +354,15 @@ def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, heard_pieces, diar
     голоса); `pieces` — окна; `whole` — чанк целиком одним голосом (`pieces is None`, голос
     `main`, может быть None). Какие куски стали заданиями, решает то же правило, что у
     демона (`heard_pieces`, №571); кусок без голоса идёт в интервалы с голосом None —
-    метка канала, как у сбоя раскладки. Признак канала — метка захвата: на микрофоне метка
-    канала подписывает владельца."""
+    метка канала, как у сбоя раскладки. Признак канала спрашивается у `chan`
+    (`ChannelLabels`, собранный как у демона): на микрофоне метка канала подписывает
+    владельца."""
     plan = stt_runtime.diarization_plan(lagging=False,
                                         has_split=stt_runtime.has_split_tracker(tracker))
     if plan != "diarize":
         raise Refused(f"план чанка {plan!r}: в прогоне ждали раскладку трекером")
     res, split_failed = stt_runtime.guarded_split(tracker, placed.chunk, placed.speaker)
-    neutral = placed.seq[0] != "mic"
+    neutral = chan.label_names_nobody(placed.speaker)
     jobs = jobs_for(res, placed.chunk, channel_label_neutral=neutral)
     state = diarized_state(split_failed, jobs)
     start = int(placed.start)
@@ -383,6 +384,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
            memory=None, cache_limit_mb: int | None = None) -> dict:
     """Прогнать запись встречи `stamp`; вернуть сводку (`meta.json`)."""
     import audio
+    import channel_labels
     import config_loader
     import diarize_live
     import foreign_python
@@ -415,6 +417,10 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     hub = audio.AudioHub(cfg, stamp=stamp, captures=[])
     captures = [types.SimpleNamespace(label=label) for label in LABELS]
     hub._register_captures(captures)
+    # метки каналов — тем же входом, что у демона: признак «метка никого не называет»
+    # для кусков без голоса (№571) не собирается здесь своим правилом
+    chan = channel_labels.ChannelLabels.from_capture(
+        cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])
     tracker = diarize_live.SegmentTracker(seg_model, emb_model, sample_rate=hub.sr,
                                           step_s=diarize_live.tracker_step_s(hub.chunk_s, hub.overlap_s))
 
@@ -454,7 +460,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         for placed in hub.pull_placed():
             counts["placed"] += 1
             state, path, intervals = chunk_decision(
-                tracker, placed, stt_runtime=stt_runtime, jobs_for=diarize_live.jobs_for,
+                tracker, placed, chan=chan, stt_runtime=stt_runtime, jobs_for=diarize_live.jobs_for,
                 heard_pieces=diarize_live.heard_pieces,
                 diarized_state=live_nemotron.diarized_state)
             shadow.note_chunk(placed, state)
