@@ -1323,7 +1323,7 @@ def main():
                     # канала только там, где она никого не называет: на
                     # микрофоне метка канала — подпись владельца
                     jobs = jobs_for(res, chunk,
-                                    channel_label_neutral=not chan.is_mic(speaker))
+                                    channel_label_neutral=chan.label_names_nobody(speaker))
                     tracker_state = live_nemotron.diarized_state(split_failed, jobs)
                 else:
                     jobs = [(chunk, None, None)]  # None: метку решит voice_label
