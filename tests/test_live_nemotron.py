@@ -1465,29 +1465,46 @@ def test_stop_does_not_wait_for_the_journal(tmp_path):
 
 # ------------------------------------------------ выход демона: журнал тени с концом (№533)
 
-def test_close_waits_for_the_end_of_a_child_killed_after_the_grace(tmp_path, monkeypatch):
+def test_close_kills_a_hung_child_inside_the_watchdog_window(tmp_path):
     """Настоящий ребёнок через дверь: рукопожатие, потом сон без чтения входа (модель
-    повисла). `close` возвращается, когда отсрочка убила ребёнка и журнал получил `end`."""
-    monkeypatch.setattr(ln, "STOP_GRACE_S", 0.3)
+    повисла). Сторож приложения добивает демона SIGKILL через 5 с после SIGTERM, и
+    уборку при выходе SIGKILL не пускает — поэтому `close` не ждёт таймер отсрочки
+    (штатные 5 с), а убивает ребёнка сам и возвращается с `end` в журнале (выходной
+    круг 1 по №533, C1)."""
     script = tmp_path / "engine.py"
     script.write_text(
         "import json, sys, time\n"
         f"print(json.dumps({json.dumps(READY_OK)}), flush=True)\n"
         "time.sleep(60)\n", encoding="utf-8")
-    says = []
-    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-30_120000", say=says.append,
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-30_120000", say=lambda t: None,
                    memory=lambda: None)
     sh.begin(python=sys.executable, script=script, args=[], errlog=tmp_path / "live.err")
     _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
     pid = sh._stream.pid
-    sh.stop()
     t0 = time.monotonic()
-    sh.close(10.0)
-    assert time.monotonic() - t0 < 5.0
+    sh.close(ln.STOP_GRACE_S)
+    took = time.monotonic() - t0
+    assert took < ln.CLOSE_WAIT_S + ln.CLOSE_MARGIN_S + 1.0, f"close ждал {took:.2f} с"
+    _wait(lambda: not _alive(pid), timeout=2.0, what="ребёнок убит закрытием")
     assert sh.state == ln.DEAD
-    assert not _alive(pid), "повисший ребёнок пережил закрытие тени"
     (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
-    assert end["counts"]["killed_after_grace"] == 1
+    assert end["counts"]["killed_at_close"] == 1
+
+
+def test_the_end_is_queued_before_anyone_is_woken(tmp_path):
+    """`_dead` и сентинель писателя поднимаются после строки `end`: проснувшийся `close`
+    дописывает журнал с концом, а не без него (выходной круг 1 по №533, I1)."""
+    sh, door, _ = _live(tmp_path)
+    seen = []
+
+    class Watch(threading.Event):
+        def set(self):
+            seen.append(any(o.get("type") == "end" for o in sh._out))
+            super().set()
+    sh._dead = Watch()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.on_frame("blackhole", 1601, np.zeros(1600, dtype=np.float32))     # разрыв оси — смерть
+    assert seen == [True]
 
 
 def test_close_does_not_wait_past_the_grace_for_an_end_that_never_comes(tmp_path, monkeypatch):
@@ -1497,7 +1514,7 @@ def test_close_does_not_wait_past_the_grace_for_an_end_that_never_comes(tmp_path
     t0 = time.monotonic()
     sh.close(10.0)                          # stop изнутри; EOF поддельный ребёнок не шлёт
     assert 0.15 <= time.monotonic() - t0 < 2.0
-    assert sh.state == ln.STOPPING
+    assert sh.state == ln.STOPPING and door.child.killed.is_set()
 
 
 def test_close_counts_the_grace_from_the_stop_not_anew(tmp_path, monkeypatch):

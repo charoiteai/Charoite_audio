@@ -209,9 +209,15 @@ def _adopt(proc: subprocess.Popen) -> None:
 
 
 def _kill_children() -> None:
-    """Выход процесса: живым детям — SIGKILL без ожидания. Снимок реестра без замка:
-    главная нить могла выйти, держа его (Ctrl-C внутри `_adopt`)."""
-    for proc in list(_children.values()):
+    """Выход процесса: живым детям — SIGKILL без ожидания. Снимок реестра — под его
+    замком, но с потолком: нить-демон, застрявшая в `_adopt` на выходе, не держит выход."""
+    locked = _children_lock.acquire(timeout=1.0)
+    try:
+        children = list(_children.values())
+    finally:
+        if locked:
+            _children_lock.release()
+    for proc in children:
         try:
             proc.kill()
         except OSError:
@@ -381,9 +387,9 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
         return None, Outcome(FAILED, reason=f"не запустился: {e}")
     finally:
         os.close(err_fd)
-    _adopt(proc)
     stream = StreamProcess(proc, stderr_path)
     try:
+        _adopt(proc)                       # владение ребёнком — внутри границы: сбой здесь его убивает
         return _await_handshake(proc, stream, stderr_path=stderr_path,
                                 handshake_timeout=handshake_timeout, role=role,
                                 on_message=on_message, on_eof=on_eof, cancel=cancel, clock=clock)

@@ -78,9 +78,12 @@ SEG_KEEP_S = 900.0
 HANDSHAKE_S = 120.0
 #: Остановка: ребёнку на хвост, потом убийство.
 STOP_GRACE_S = 5.0
-#: Выход демона ждёт строку `end` до конца отсрочки и ещё столько: убитый по отсрочке
-#: ребёнок закрывает вывод, читатель пишет конец.
-CLOSE_MARGIN_S = 1.0
+#: Выход демона: сколько ждать штатного конца тени, прежде чем убить ребёнка самому, и
+#: сколько потом ждать строку `end` убитого. Сторож приложения добивает демона SIGKILL
+#: через 5 с после SIGTERM, а уборку двери при выходе SIGKILL не пускает: ждать таймер
+#: отсрочки здесь нельзя (выходной круг 1 по №533, C1).
+CLOSE_WAIT_S = 1.0
+CLOSE_MARGIN_S = 0.5
 #: Давление памяти: как часто смотреть и с какого уровня macOS тень уступает
 #: (1 — норма, 2 — предупреждение, 4 — критично; `kern.memorystatus_vm_pressure_level`).
 PRESSURE_CHECK_S = 5.0
@@ -414,7 +417,7 @@ class Shadow:
                 return
             if state is None:
                 return
-            self._line({"type": "mem", "t": self._t(now), **state})
+            self._line({"type": "mem", "t": self._t(), **state})   # метка — в момент постановки: t в журнале монотонно
             self._mem_high = self._mem_high + 1 if state["pressure"] >= PRESSURE_STOP else 0
             if self._mem_high >= 2:
                 self._die_locked(f"давление памяти (уровень {state['pressure']}) — тень уступает встрече")
@@ -558,10 +561,8 @@ class Shadow:
         на любом пути (смерть, штатный конец, сбой нити в остановке), без нити и без ожидания
         (выходной круг 2 по №478 A2, I1)."""
         self._state, self._reason = DEAD, reason
-        self._dead.set()
         self._reap_locked()
         self._cancel.set()
-        self._queue.put(None)
         self._finish_pending_locked(outcome, reason)
         line = {"type": "end", "t": self._t(), "reason": reason, "counts": dict(self._counts)}
         if exit_ is not None:
@@ -569,6 +570,10 @@ class Shadow:
             if exit_.reason:
                 line["exit_reason"] = exit_.reason
         self._line(line)
+        # Будить ждущих — последним: проснувшийся писатель и `close` дописывают журнал, и
+        # строки конца к этому моменту уже в очереди (выходной круг 1 по №533, I1).
+        self._queue.put(None)
+        self._dead.set()
 
     def _reap_locked(self) -> None:
         """Живой ребёнок — SIGKILL без ожидания. Вход не закрывается: им владеет писатель, и
@@ -593,17 +598,28 @@ class Shadow:
         self._drain()
 
     def close(self, timeout: float) -> None:
-        """Выход демона: остановить, если не остановлен, и дождаться конца тени — строки
-        `end` — не дольше остатка отсрочки от `stop()` плюс `CLOSE_MARGIN_S` и не дольше
-        `timeout`; затем дописать журнал. Ребёнка не убивает: это делают отсрочка и уборка
-        двери при выходе процесса (`foreign_python._kill_children`) — здесь только полнота
-        журнала (№533)."""
+        """Выход демона: остановить, если не остановлен; дать тени кончиться штатно не
+        дольше `CLOSE_WAIT_S` (и не дольше остатка отсрочки от `stop()`); не кончилась —
+        убить ребёнка сейчас, не дожидаясь таймера отсрочки, и ждать строку `end` ещё
+        `CLOSE_MARGIN_S`; затем дописать журнал. Ожидания ограничены `timeout`, запись
+        журнала — нет: на повисшем диске демона добьёт сторож приложения, ребёнок к этому
+        моменту уже убит (№533)."""
         try:
             self.stop()
             with self._lock:
                 since = self._stopped_at if self._stopped_at is not None else self._clock()
-            left = since + STOP_GRACE_S + CLOSE_MARGIN_S - self._clock()
-            self._dead.wait(max(0.0, min(timeout, left)))
+            deadline = time.monotonic() + max(0.0, timeout)
+            left = min(CLOSE_WAIT_S, since + STOP_GRACE_S - self._clock())
+            if not self._dead.wait(max(0.0, min(left, deadline - time.monotonic()))):
+                with self._lock:
+                    stream = self._stream
+                    if stream is not None and stream.alive():
+                        self._counts["killed_at_close"] += 1
+                    else:
+                        stream = None
+                if stream is not None:
+                    stream.kill_nowait()
+                self._dead.wait(max(0.0, min(CLOSE_MARGIN_S, deadline - time.monotonic())))
         finally:
             self._drain()
 
