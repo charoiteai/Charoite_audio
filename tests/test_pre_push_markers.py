@@ -716,12 +716,25 @@ def test_url_refusal_names_the_known_remotes(repo):
     assert "(origin)" in p.stderr, p.stderr
 
 
-def test_push_to_an_empty_remote(repo):
+def test_mirror_push_does_not_rejudge_what_origin_already_published(repo):
+    """Push в пустое зеркало: история, уже опубликованная на origin (в ней
+    веб-слияния с коммитером GitHub), не судится заново; новое — судится
+    (финальный круг №541, Opus I2)."""
+    repo.write("web.md", "слияние\n")
+    git(repo.work, "add", "-A", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "-c", "user.name=GitHub",
+        "-c", "user.email=noreply@github.com", "commit", "-q", "-m", "web merge", env=repo.env)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "push", "-q", "origin",
+        "main", env=repo.env)
     empty = repo.tmp / "empty.git"
     git(repo.tmp, "init", "-q", "--bare", str(empty), env=repo.env)
-    git(repo.work, "remote", "add", "empty", str(empty), env=repo.env)
+    git(repo.work, "remote", "add", "mirror", str(empty), env=repo.env)
     repo.install()
-    p = git(repo.work, "push", "empty", "main", env=repo.env, check=False)
+    p = git(repo.work, "push", "mirror", "main", env=repo.env, check=False)
+    assert p.returncode == 0 and "коммитов проверено: 0" in p.stdout, p.stdout + p.stderr
+    repo.write("new.md", "своё\n")
+    repo.commit("new")
+    p = git(repo.work, "push", "mirror", "main", env=repo.env, check=False)
     assert p.returncode == 0 and "коммитов проверено: 1" in p.stdout, p.stdout + p.stderr
 
 
@@ -835,3 +848,149 @@ def test_file_name_starting_with_the_record_mark(repo):
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     hits = [ln.strip() for ln in p.stderr.splitlines() if "имя файла" in ln]
     assert hits == [f"{sha[:9]} имя файла я***.md: приватный маркер"], p.stdout + p.stderr
+
+
+# ── финальный круг Opus (№541) ──────────────────────────────────────────────
+
+def test_utf16_text_without_bom_is_read(repo):
+    (repo.work / "u16.txt").write_bytes(f"запуск на {MARKER}\n".encode("utf-16-le"))
+    sha = repo.commit("u16")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{sha[:9]} u16.txt (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_office_zip_with_a_word_split_by_tags_is_read(repo):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    half = len(MARKER) // 2
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml",
+                   f"<w:t>{MARKER[:half]}</w:t><w:t>{MARKER[half:]}</w:t>")
+    (repo.work / "отчёт.docx").write_bytes(buf.getvalue())
+    sha = repo.commit("docx")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{sha[:9]} отчёт.docx (двоичный): приватный маркер" in p.stderr, p.stderr
+
+
+def test_gzip_is_unpacked_and_unknown_containers_refuse(repo):
+    import gzip
+    (repo.work / "log.gz").write_bytes(gzip.compress(f"{MARKER}\n".encode()))
+    repo.commit("gz")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert "log.gz (двоичный): приватный маркер" in p.stderr, p.stderr
+    base = repo.head()
+    (repo.work / "arch.xz").write_bytes(b"\xfd7zXZ\x00" + b"\x00" * 64)
+    repo.commit("xz")
+    p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "контейнер xz" in p.stderr, p.stderr
+
+
+def test_nfd_text_matches_an_nfc_marker(repo):
+    import unicodedata
+    (repo.tmp / "markers.txt").write_text("Андрейка\n", encoding="utf-8")
+    repo.write("nfd.md", unicodedata.normalize("NFD", "привет, Андрейка\n"))
+    repo.commit("nfd")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert "nfd.md:1: приватный маркер" in p.stderr, p.stderr
+    base = repo.head()
+    repo.write("n2.md", unicodedata.normalize("NFD", "Семёнов " + "И. И.\n"))
+    repo.commit("nfd2")
+    p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
+    assert "n2.md:1: фамилия с инициалами" in p.stderr, p.stderr
+
+
+def test_refusals_do_not_quote_names_or_url_secrets(repo, monkeypatch):
+    (repo.work / f"{MARKER}.bin").write_bytes(b"\x00" * 4096)
+    repo.commit("big")
+    monkeypatch.chdir(repo.work)
+    monkeypatch.setenv("CHAROITE_MARKERS", str(repo.tmp / "markers.txt"))
+    monkeypatch.setenv("HOME", str(repo.tmp / "home"))
+    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
+    private = guard.build_pattern([MARKER])
+    with pytest.raises(guard.GitError) as e:
+        guard.scan_commits([f"{repo.base}..HEAD"], private, identity=False)
+    assert MARKER not in str(e.value) and "***.bin" in str(e.value)
+    with pytest.raises(guard.GitError) as e:
+        guard.push_revs("https://" + "user:" + "tok" + "@example.com/r.git", [])
+    assert "tok" not in str(e.value) and "example.com" in str(e.value)
+
+
+def test_pre_commit_names_the_place_not_the_line(repo):
+    """Маркер только в индексе (рабочий файл чист): судит дифф коммита, а не
+    проход по дереву, — и называет место, а не строку."""
+    repo.write("leak.md", f"раз\n{MARKER}\n")
+    git(repo.work, "add", "-A", env=repo.env)
+    repo.write("leak.md", "раз\nчисто\n")
+    p = guard_run(repo.work, env=repo.env)
+    assert p.returncode == 1 and "leak.md:2" in p.stderr and MARKER not in p.stderr, p.stderr
+
+
+def test_push_url_decides_what_is_published(repo):
+    """pushurl ведёт в другой репозиторий, чем fetch: опубликованное — там, куда
+    пушат (финальный круг №541, Opus M3)."""
+    git(repo.work, "checkout", "-q", "-b", "leak", env=repo.env)
+    repo.write("n.md", f"{MARKER}\n")
+    repo.commit("leak")
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "push", "-q", "origin",
+        "leak", env=repo.env)
+    git(repo.work, "checkout", "-q", "main", env=repo.env)
+    public = repo.tmp / "public.git"
+    git(repo.tmp, "init", "-q", "--bare", str(public), env=repo.env)
+    git(repo.work, "config", "remote.origin.pushurl", str(public), env=repo.env)
+    repo.install()
+    p = git(repo.work, "push", "origin", "leak", env=repo.env, check=False)
+    assert p.returncode != 0 and "n.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_mergetag_header_is_judged(repo):
+    """Слияние подписанного тега хранит его текст в заголовке mergetag вне %B."""
+    tree = git(repo.work, "rev-parse", "HEAD^{tree}", env=repo.env).stdout.strip()
+    raw = (f"tree {tree}\nparent {repo.base}\n"
+           f"author A <{OWNER}> 1700000000 +0000\ncommitter A <{OWNER}> 1700000000 +0000\n"
+           f"mergetag object {repo.base}\n type commit\n tag v9\n"
+           f" tagger A <{OWNER}> 1700000000 +0000\n \n релиз {MARKER}\n"
+           f"\nчистое сообщение\n")
+    sha = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo.work,
+                         env=repo.env, input=raw, capture_output=True, text=True).stdout.strip()
+    git(repo.work, "update-ref", "refs/heads/main", sha, env=repo.env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{sha[:9]} заголовок mergetag: приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_signature_headers_are_not_judged():
+    raw = ("tree a\nparent b\nauthor x\ncommitter y\ngpgsig -----BEGIN-----\n " + SURNAME_INITIALS + "\n"
+           " -----END-----\nmergetag object c\n tag v\n\nmsg\n")
+    assert guard.extra_headers(raw) == [("mergetag", "object c\ntag v")]
+
+
+def test_tag_on_a_tag_is_judged_whole(repo):
+    repo.install()
+    git(repo.work, "tag", "-a", "inner", "-m", f"внутри {MARKER}", env=repo.env)
+    git(repo.work, "tag", "-a", "outer", "-m", "снаружи", "inner", env=repo.env)
+    p = git(repo.work, "push", "origin", "outer", env=repo.env, check=False)
+    assert p.returncode != 0 and "тег refs/tags/outer: приватный маркер" in p.stderr, p.stderr
+
+
+def test_unknown_patch_header_is_a_refusal():
+    with pytest.raises(guard.GitError, match="заголовок"):
+        list(guard.parse_patch("diff --git a/x c/x\n+++ c/x\n@@ -0,0 +1 @@\n+y\n", "s"))
+
+
+def test_binary_whose_name_git_cannot_hand_back_is_a_refusal(repo):
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo.work, env=repo.env,
+                          input=b"\x00bin", capture_output=True).stdout.decode().strip()
+    subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                    f"100644,{blob},".encode() + b"\xff.dat"], cwd=repo.work, env=repo.env,
+                   check=True)
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-q", "-m", "ff",
+        env=repo.env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "не найден" in p.stderr, p.stdout + p.stderr
+
+
+def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
+    import unicodedata
+    f = tmp_path / "t.md"
+    f.write_text(unicodedata.normalize("NFD", "Семёнов " + "И. И.\n"), encoding="utf-8")
+    assert guard.scan_public([f]) == [f"{f}:1: фамилия с инициалами"]
