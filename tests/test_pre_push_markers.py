@@ -630,3 +630,191 @@ def test_pre_commit_config_wires_the_push_stage():
     push = hooks["private-markers-push"]
     assert push["stages"] == ["pre-push"]
     assert push["entry"].endswith("check_private_markers.py --range-from-env")
+
+
+# ── мутации CI (выход 2 №541): каждое правило ниже пинит выжившего мутанта ──
+
+def test_clip_keeps_sixty_characters():
+    assert guard._clip("я" * 100) == "я" * 60
+
+
+def test_git_error_names_what_git_said(repo):
+    p = guard_run(repo.work, "--range", "deadbeef..HEAD", env=repo.env)
+    assert p.returncode == 1 and "deadbeef" in p.stderr, p.stderr
+
+
+def test_git_ok_stays_quiet(repo, capfd, monkeypatch):
+    monkeypatch.chdir(repo.work)
+    assert guard.git_ok("cat-file", "-e", "a" * 40) is False
+    assert capfd.readouterr().err == ""
+
+
+def test_every_escape_of_a_quoted_path_is_undone(repo):
+    names = ["таб\tа.md", "слэш\\а.md", "воз\rврат.md", "звон\aок.md", "за\bбой.md",
+             "пере\fвод.md", "верт\vикаль.md", "код\x01.md"]
+    for n in names:
+        (repo.work / n).write_text(f"{MARKER}\n", encoding="utf-8")
+    repo.commit("esc")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    for n in names:   # text=True переводит \r вывода в \n
+        assert f"{n.replace(chr(13), chr(10))}:1: приватный маркер" in p.stderr, (repr(n), p.stderr)
+
+
+def test_second_hunk_of_one_file_is_read(repo):
+    repo.write("long.md", "".join(f"строка {i}\n" for i in range(40)))
+    repo.commit("base")
+    lines = [f"строка {i}\n" for i in range(40)]
+    lines[2] = "правка\n"
+    lines[30] = f"{MARKER}\n"
+    repo.write("long.md", "".join(lines))
+    bad = repo.commit("two hunks")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{bad[:9]} long.md:31: приватный маркер" in p.stderr, p.stderr
+
+
+def test_line_number_after_a_last_line_without_newline(repo):
+    (repo.work / "tail.md").write_text("раз\nдва", encoding="utf-8")
+    repo.commit("tail")
+    (repo.work / "tail.md").write_text(f"раз\n{MARKER}\nтри", encoding="utf-8")
+    repo.commit("edit")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert "tail.md:2: приватный маркер" in p.stderr and "tail.md:3:" not in p.stderr, p.stderr
+
+
+def test_deleting_a_published_file_is_not_a_finding(repo):
+    """Удаление не публикует имя: имена удалённых файлов не судятся."""
+    repo.write(f"{MARKER}.md", "старое\n")
+    repo.commit("было до списка")
+    base = repo.head()
+    (repo.work / f"{MARKER}.md").unlink()
+    repo.commit("удалил")
+    p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+
+
+def test_binary_exactly_at_the_ceiling_is_read(repo, monkeypatch):
+    (repo.work / "edge.bin").write_bytes(b"\x00" * 1024)
+    repo.commit("edge")
+    monkeypatch.chdir(repo.work)
+    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
+    assert guard.scan_commits([f"{repo.base}..HEAD"], None, identity=False)[1] == []
+
+
+def test_binary_finding_names_its_commit(repo):
+    (repo.work / "d.dat").write_bytes(f"запуск на {MARKER}".encode() + b"\x00")
+    sha = repo.commit("bin")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{sha[:9]} d.dat (двоичный): приватный маркер" in p.stderr, p.stderr
+
+
+def test_url_refusal_names_the_known_remotes(repo):
+    repo.install()
+    wt = repo.worktree("feat")
+    repo.write("n.md", "чисто\n", wt)
+    repo.commit("ok", wt)
+    p = git(wt, "push", str(repo.remote), "feat", env=repo.env, check=False)
+    assert "(origin)" in p.stderr, p.stderr
+
+
+def test_push_to_an_empty_remote(repo):
+    empty = repo.tmp / "empty.git"
+    git(repo.tmp, "init", "-q", "--bare", str(empty), env=repo.env)
+    git(repo.work, "remote", "add", "empty", str(empty), env=repo.env)
+    repo.install()
+    p = git(repo.work, "push", "empty", "main", env=repo.env, check=False)
+    assert p.returncode == 0 and "коммитов проверено: 1" in p.stdout, p.stdout + p.stderr
+
+
+def test_owner_signed_annotated_tag_pushes(repo):
+    repo.install()
+    git(repo.work, "tag", "-a", "v2", "-m", "релиз", env=repo.env)
+    p = git(repo.work, "push", "origin", "v2", env=repo.env, check=False)
+    assert p.returncode == 0, p.stderr
+
+
+@pytest.mark.parametrize("have", ["remote", "to"])
+def test_range_from_env_needs_both_remote_and_ref(repo, tmp_path, have):
+    extra = ({"PRE_COMMIT_REMOTE_NAME": "origin"} if have == "remote"
+             else {"PRE_COMMIT_TO_REF": repo.head()})
+    p = guard_run(repo.work, "--range-from-env", env=_env(tmp_path, markers=False, **extra))
+    assert p.returncode == 1 and "PRE_COMMIT_REMOTE_NAME" in p.stderr
+
+
+@pytest.mark.parametrize("which", ["pre-push", "pre-push.legacy"])
+def test_non_executable_hook_is_a_problem(repo, which):
+    repo.install()
+    hooks = repo.work / ".git" / "hooks"
+    if which == "pre-push.legacy":
+        (hooks / "pre-push").rename(hooks / "pre-push.legacy")
+        (hooks / "pre-push").write_text("#!/bin/sh\n# hook-impl\n", encoding="utf-8")
+        (hooks / "pre-push").chmod(0o755)
+    (hooks / which).chmod(0o644)
+    env = _owner_env(repo)
+    repo.write("a.md", "раз\n")
+    git(repo.work, "add", "-A", env=env)
+    p = git(repo.work, "commit", "-q", "-m", "a", env=env, check=False)
+    assert p.returncode != 0 and "не исполняемый" in p.stderr, p.stderr
+
+
+def test_install_refuses_from_the_main_checkout_on_another_branch(repo):
+    git(repo.work, "checkout", "-q", "-b", "other", env=repo.env)
+    p = guard_run(repo.work, "--install-hooks", env=repo.env)
+    assert p.returncode == 1 and "на other" in p.stderr, p.stderr
+
+
+@pytest.mark.parametrize("count,tail", [(50, False), (51, True)])
+def test_report_lists_fifty_and_counts_the_rest(repo, count, tail):
+    repo.write("many.md", f"{MARKER}\n" * count)
+    repo.commit("many")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert ("… ещё 1" in p.stderr) is tail and "… ещё 0" not in p.stderr, p.stderr
+
+
+def test_empty_marker_list_is_a_refusal(repo):
+    (repo.tmp / "markers.txt").write_text("# только комментарий\n", encoding="utf-8")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "пуст" in p.stderr, p.stderr
+
+
+def test_run_commits_returns_zero_explicitly(repo, monkeypatch):
+    monkeypatch.chdir(repo.work)
+    monkeypatch.setenv("CHAROITE_MARKERS", str(repo.tmp / "markers.txt"))
+    monkeypatch.setenv("HOME", str(repo.tmp / "home"))
+    assert guard.run_commits(None, need_list=True, identity=True, notes=[]) == 0
+    repo.write("a.md", "раз\n")
+    repo.commit("a")
+    assert guard.run_commits([f"{repo.base}..HEAD"], need_list=True, identity=True,
+                             notes=[]) == 0
+
+
+def test_range_does_not_require_the_owner_address(repo):
+    repo.write("a.md", "раз\n")
+    repo.commit("чужой", None, "--author", "Someone <someone@example.com>")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+
+
+def test_pre_push_without_the_list_is_refused(repo, tmp_path):
+    repo.install()
+    wt = repo.worktree("feat")
+    repo.write("n.md", "чисто\n", wt)
+    repo.commit("ok", wt)
+    env = _env(tmp_path, CHAROITE_MARKERS=str(tmp_path / "нет.txt"))
+    p = git(wt, "push", "origin", "feat", env=env, check=False)
+    assert p.returncode != 0 and "fail-closed" in p.stderr, p.stderr
+
+
+def test_contributor_address_is_not_judged(repo, tmp_path):
+    repo.write("a.md", "раз\n")
+    head = repo.commit("чужой", None, "--author", "Someone <someone@example.com>")
+    env = _env(tmp_path, markers=False, PRE_COMMIT_REMOTE_NAME="origin", PRE_COMMIT_TO_REF=head)
+    p = guard_run(repo.work, "--range-from-env", env=env)
+    assert p.returncode == 0, p.stderr
+
+
+@pytest.mark.parametrize("ci", ["", "1"])
+def test_pre_commit_author_check_is_skipped_only_in_ci(repo, ci):
+    git(repo.work, "config", "user.email", "someone@example.com", env=repo.env)
+    env = dict(repo.env, **({"CI": ci} if ci else {}))
+    p = guard_run(repo.work, env=env)
+    assert (p.returncode == 0) is bool(ci), p.stderr

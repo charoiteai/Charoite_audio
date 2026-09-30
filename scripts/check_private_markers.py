@@ -73,11 +73,16 @@ _GIT = ("git", "--no-replace-objects", "-c", "core.quotepath=false", "-c", "colo
         "-c", "log.showRoot=true")
 
 
+def _clip(text: str, limit: int = 60) -> str:
+    """Кусок чужого текста для сообщения об ошибке: не больше `limit` знаков."""
+    return text[:limit]
+
+
 def git(*args: str, stdin: bytes | None = None) -> bytes:
     p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
-        raise GitError(f"git {' '.join(args[:2])}: {err[:300] or f'код {p.returncode}'}")
+        raise GitError(f"git {' '.join(args[:2])}: {_clip(err, 300) or f'код {p.returncode}'}")
     return p.stdout
 
 
@@ -181,31 +186,23 @@ _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _HUNK = re.compile(r"^(@+) .*?\+(\d+)(?:,\d+)? @+")
 
 
+_ESCAPES = {b"n": b"\n", b"t": b"\t", b'"': b'"', b"\\": b"\\", b"a": b"\a", b"b": b"\b",
+            b"f": b"\f", b"r": b"\r", b"v": b"\v"}
+
+
+def _unescape(m: re.Match[bytes]) -> bytes:
+    code = m.group(1)
+    return bytes([int(code, 8)]) if code[:1].isdigit() else _ESCAPES[code]
+
+
 def _unquote_path(raw: str) -> str:
-    """Путь из заголовка `+++ b/…`: git берёт в C-кавычки имена со спецсимволами."""
+    """Путь из заголовка `+++ b/…`: git берёт в C-кавычки имена со спецсимволами
+    (кавычки всегда парные); хвост `\t` git ставит после имени с пробелом."""
     raw = raw.rstrip("\t")
-    if not (raw.startswith('"') and raw.endswith('"')):
+    if not raw.startswith('"'):
         return raw
-    body = raw[1:-1].encode("utf-8")
-    out = bytearray()
-    i = 0
-    simple = {ord("n"): 10, ord("t"): 9, ord('"'): 34, ord("\\"): 92, ord("a"): 7,
-              ord("b"): 8, ord("f"): 12, ord("r"): 13, ord("v"): 11}
-    while i < len(body):
-        c = body[i]
-        if c == 92 and i + 1 < len(body):
-            n = body[i + 1]
-            if n in simple:
-                out.append(simple[n])
-                i += 2
-                continue
-            if 48 <= n <= 55 and i + 4 <= len(body):
-                out.append(int(body[i + 1:i + 4], 8))
-                i += 4
-                continue
-        out.append(c)
-        i += 1
-    return out.decode("utf-8", "replace")
+    body = re.sub(rb"\\([0-7]{3}|.)", _unescape, raw[1:-1].encode("utf-8"), flags=re.S)
+    return body.decode("utf-8", "replace")
 
 
 def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
@@ -226,12 +223,12 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
               "--no-show-signature", *revs, "--")
     sha = path = None
     mode = ""
-    parents = 1
-    lineno = 0
+    parents: int      # заданы заголовком хунка до первого чтения
+    lineno: int
     for line in out.decode("utf-8", "replace").split("\n"):
         if line.startswith("\x01"):
             if not _SHA.fullmatch(line[1:]):
-                raise GitError(f"разбор журнала: не коммит — {line[1:60]!r}")
+                raise GitError(f"разбор журнала: не коммит — {_clip(line[1:])!r}")
             sha, path, mode = line[1:], None, ""
             continue
         if line.startswith("diff "):
@@ -262,28 +259,42 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
                 lineno += 1          # строка результата, взятая из родителя
 
 
+def _z_records(out: bytes) -> Iterator[tuple[str, list[str]]]:
+    """Вывод `git log -z --format=%x01%H …` → (коммит, его поля).
+
+    Режется сначала по NUL, коммит — поле `\x01<sha>`: имя файла может
+    содержать и `\x01`, и перевод строки, но не NUL."""
+    sha, fields = None, []
+    for token in out.decode("utf-8", "replace").split("\0"):
+        token = token.lstrip("\n")
+        if token.startswith("\x01") and _SHA.fullmatch(token[1:]):
+            if sha:
+                yield sha, fields
+            sha, fields = token[1:], []
+        elif token:
+            if sha is None:
+                raise GitError(f"разбор журнала: поле до коммита — {_clip(token)!r}")
+            fields.append(token)
+    if sha:
+        yield sha, fields
+
+
 def added_paths(revs: list[str]) -> list[tuple[str, str]]:
     """Имена файлов, которые коммит добавляет или меняет — включая двоичные и
     пустые, у которых в патче нет `+++` (круг 2 №541, Sonnet C1)."""
     out = git("log", "-z", "--raw", "--no-renames", "--no-abbrev",
               "--diff-merges=first-parent", "--format=%x01%H", *revs, "--")
     found: list[tuple[str, str]] = []
-    for chunk in out.decode("utf-8", "replace").split("\x01")[1:]:
-        tokens = chunk.split("\0")
-        sha = tokens[0].strip()
-        if not _SHA.fullmatch(sha):
-            raise GitError(f"разбор путей: не коммит — {sha[:60]!r}")
-        rest = tokens[1:]
-        for meta, name in zip(rest[0::2], rest[1::2]):
-            meta = meta.strip()
+    for sha, fields in _z_records(out):
+        for meta, name in zip(fields[0::2], fields[1::2]):
             if not meta.startswith(":"):
-                raise GitError(f"разбор путей: неожиданная запись {meta[:60]!r}")
+                raise GitError(f"разбор путей: неожиданная запись {_clip(meta)!r}")
             if not meta.split()[-1].startswith("D"):
                 found.append((sha, name))
     return found
 
 
-@dataclass(frozen=True)
+@dataclass
 class CommitMeta:
     sha: str
     author: str
@@ -297,7 +308,7 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
     out = git("log", "-z", "--encoding=UTF-8", "--no-show-signature",
               "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B", *revs, "--")
     tokens = out.decode("utf-8", "replace").split("\0")
-    if tokens and tokens[-1] == "":
+    if tokens[-1] == "":           # split всегда даёт хотя бы один элемент
         tokens.pop()
     if len(tokens) % 6:
         raise GitError("разбор сообщений коммитов: поля не сошлись")
@@ -305,7 +316,7 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
     for i in range(0, len(tokens), 6):
         sha = tokens[i].strip()
         if not _SHA.fullmatch(sha):
-            raise GitError(f"разбор сообщений коммитов: не коммит — {sha[:60]!r}")
+            raise GitError(f"разбор сообщений коммитов: не коммит — {_clip(sha)!r}")
         metas.append(CommitMeta(sha, *tokens[i + 1:i + 6]))
     return metas
 
@@ -321,30 +332,26 @@ def binary_files(revs: list[str]) -> list[tuple[str, str]]:
     out = git("log", "-z", "--numstat", "--no-renames", "--diff-merges=first-parent",
               "--format=%x01%H", *revs, "--")
     found: list[tuple[str, str]] = []
-    for chunk in out.decode("utf-8", "replace").split("\x01")[1:]:
-        tokens = chunk.split("\0")
-        sha = tokens[0].strip()
-        if not _SHA.fullmatch(sha):
-            raise GitError(f"разбор numstat: не коммит — {sha[:60]!r}")
-        for entry in tokens[1:]:
-            parts = entry.lstrip("\n").split("\t", 2)
-            if len(parts) == 3 and parts[0] == "-" and parts[1] == "-":
+    for sha, fields in _z_records(out):
+        for entry in fields:
+            parts = entry.split("\t", 2)
+            if parts[:2] == ["-", "-"] and len(parts) == 3:
                 found.append((sha, parts[2]))
     return found
 
 
 def binary_runs(sha: str, path: str) -> Iterator[str] | None:
-    """Печатные отрезки блоба; None — файла в коммите нет (удалён)."""
+    """Печатные отрезки блоба; None — судить нечего (удалён или медиа-суффикс)."""
     if pathlib.PurePosixPath(path).suffix.lower() in SKIP_SUFFIX:
-        return iter(())
+        return None
     obj = f"{sha}:{path}"
     if not git_ok("cat-file", "-e", obj):
         return None
     size = int(git("cat-file", "-s", obj).strip() or 0)
     if size > BLOB_LIMIT:
-        raise GitError(f"{sha[:9]} {path}: двоичный файл {size // 1048576} МБ больше потолка "
-                       f"{BLOB_LIMIT // 1048576} МБ — содержимое не проверить, такой файл не "
-                       "должен уходить в публичный репозиторий без решения")
+        raise GitError(f"{sha[:9]} {path}: двоичный файл {size} Б больше потолка {BLOB_LIMIT} Б "
+                       "— содержимое не проверить, такой файл не должен уходить в публичный "
+                       "репозиторий без решения")
     return iter(_PRINTABLE_RUN.findall(git("cat-file", "blob", obj).decode("utf-8", "replace")))
 
 
@@ -442,21 +449,23 @@ def server_tips(remote: str) -> list[str]:
     shas = sorted({ln.split()[0] for ln in out.splitlines() if ln.strip()})
     if not shas:
         return []
+    # batch-check отвечает «<sha> <тип> <размер>» или «<sha> missing»
     known = git("cat-file", "--batch-check", stdin="\n".join(shas).encode() + b"\n")
     return [ln.split()[0] for ln in known.decode().splitlines()
-            if ln.split()[1:2] and ln.split()[1] in ("commit", "tag")]
+            if ln.split()[1] in ("commit", "tag")]
 
 
 def push_revs(remote: str, lines: list[str]) -> PushSet:
     """Набор для stdin хука pre-push — все строки, не только первая.
 
-    `L… --not <вершины сервера> R…`: уже опубликованное не судится повторно;
+    `L… --not <вершины сервера>`: уже опубликованное не судится повторно;
     force-push после ребейза не тащит коммиты main. Удаление ветки (нулевой
-    local sha) — пропуск; нулевой или неизвестный локально remote sha просто не
-    исключается. Имя ветки на сервере и аннотация тега тоже публикуются.
+    local sha) — пропуск. Remote sha из stdin отдельно не нужен: git берёт его
+    у сервера при согласовании push, он и так среди вершин `ls-remote`. Имя
+    ветки на сервере и аннотация тега тоже публикуются.
     """
     _known_remote(remote)
-    local, published, notes = [], [], []
+    local, notes = [], []
     texts: list[tuple[str, str]] = []
     emails: list[tuple[str, str]] = []
     for raw in lines:
@@ -464,8 +473,8 @@ def push_revs(remote: str, lines: list[str]) -> PushSet:
             continue
         parts = raw.split()
         if len(parts) != 4:
-            raise GitError(f"строка хука pre-push не разобрана: {raw[:120]!r}")
-        local_ref, lsha, remote_ref, rsha = parts
+            raise GitError(f"строка хука pre-push не разобрана: {_clip(raw)!r}")
+        _local_ref, lsha, remote_ref, _rsha = parts
         if _zero(lsha):
             continue
         local.append(lsha)
@@ -475,11 +484,9 @@ def push_revs(remote: str, lines: list[str]) -> PushSet:
             texts.append((f"тег {remote_ref}", body))
             tagger = re.search(r"^tagger .*<([^>]*)>", body, re.M)
             emails.append((f"тег {remote_ref}", tagger.group(1) if tagger else ""))
-        if not _zero(rsha) and git_ok("cat-file", "-e", f"{rsha}^{{commit}}"):
-            published.append(rsha)
     if not local:
         return PushSet(None, notes, texts, emails)
-    return PushSet([*local, "--not", *server_tips(remote), *published], notes, texts, emails)
+    return PushSet([*local, "--not", *server_tips(remote)], notes, texts, emails)
 
 
 def env_revs() -> list[str]:
@@ -494,11 +501,9 @@ def env_revs() -> list[str]:
         raise GitError("нет PRE_COMMIT_REMOTE_NAME или PRE_COMMIT_TO_REF/LOCAL_BRANCH — "
                        "режим только для стадии pre-push pre-commit")
     _known_remote(remote)
-    revs = [to, "--not", f"--remotes={remote}"]
-    frm = os.environ.get("PRE_COMMIT_FROM_REF", "")
-    if frm and not _zero(frm) and git_ok("cat-file", "-e", f"{frm}^{{commit}}"):
-        revs.append(frm)
-    return revs
+    # FROM_REF у pre-commit — вершина remote или предок, опубликованный на нём:
+    # `--remotes` покрывает оба случая.
+    return [to, "--not", f"--remotes={remote}"]
 
 
 # ── Хуки владельца ──────────────────────────────────────────────────────────
@@ -586,13 +591,13 @@ def install_hooks(force: bool) -> int:
               f"а здесь {top} на {branch or 'detached HEAD'}", file=sys.stderr)
         return 1
     hooks_path = subprocess.run([*_GIT, "config", "core.hooksPath"],
-                                capture_output=True, text=True).stdout.strip()
+                                capture_output=True).stdout.decode("utf-8", "replace").strip()
     if hooks_path:
         print(f"❌ задан core.hooksPath ({hooks_path}): хуки легли бы туда, возможно во все "
               "репозитории машины — снимите его или поставьте хуки руками", file=sys.stderr)
         return 1
     target = hooks_dir()
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(exist_ok=True)
     rc = 0
     for name, text in HOOKS.items():
         path = target / name
