@@ -62,3 +62,67 @@ def test_an_unhinted_channel_asks_the_diarizer_for_auto_mode(monkeypatch):
     monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=None: seen.append(num_speakers) or [])
     rt.diarize_channel(AUDIO, 16000)
     assert seen == [-1]
+
+
+def test_auto_mode_is_not_merged_twice(monkeypatch):
+    """В авто diarize() склеивает сам — флаг вторую склейку не добавляет (выход r2, GLM M1)."""
+    monkeypatch.setattr(rt, "diarize", lambda a, sr, num_speakers=-1: list(SEGS))
+    monkeypatch.setattr(rt, "merge_voice_shards", lambda *a: (_ for _ in ()).throw(AssertionError("вторая склейка")))
+    assert len(rt.diarize_channel(AUDIO, 16000, merge_shards=True)) == 3
+
+
+# ------------------------------------------------ контракт diarize() (выход r2, GLM I1)
+
+import types  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def fake_sherpa(monkeypatch):
+    """sherpa без моделей: процесс отдаёт три отрезка, кластеризацию и склейку запоминаем."""
+    seen = {}
+
+    class _Seg:
+        def __init__(self, s, e, k):
+            self.start, self.end, self.speaker = s, e, k
+
+    class _Result(list):
+        def sort_by_start_time(self):
+            return self
+
+    class _Diar:
+        sample_rate = 16000
+
+        def __init__(self, cfg):
+            pass
+
+        def process(self, audio):
+            return _Result([_Seg(*t) for t in SEGS])
+
+    def clustering(**kw):
+        seen["clustering"] = kw
+        return kw
+
+    fake = types.SimpleNamespace(FastClusteringConfig=clustering,
+                                 OfflineSpeakerDiarizationConfig=lambda **kw: kw,
+                                 OfflineSpeakerDiarization=_Diar)
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    monkeypatch.setattr(D.sherpa_config, "segmentation_config", lambda *a, **k: None)
+    monkeypatch.setattr(D.sherpa_config, "embedding_config", lambda *a, **k: None)
+
+    def merged(audio, sr, segs):
+        seen["merged"] = True
+        return [(s, e, 0) for s, e, _ in segs]
+    monkeypatch.setattr(D, "_merge_shards", merged)
+    return seen
+
+
+def test_diarize_auto_mode_merges_with_the_threshold(fake_sherpa):
+    assert {k for *_, k in D.diarize(AUDIO, 16000)} == {0}
+    assert fake_sherpa["clustering"] == {"num_clusters": -1, "threshold": 0.8}
+
+
+def test_diarize_with_a_hint_keeps_the_forced_clusters(fake_sherpa):
+    assert {k for *_, k in D.diarize(AUDIO, 16000, num_speakers=3)} == {0, 1, 2}
+    assert fake_sherpa["clustering"] == {"num_clusters": 3} and "merged" not in fake_sherpa

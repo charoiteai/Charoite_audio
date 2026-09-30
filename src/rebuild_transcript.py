@@ -309,7 +309,7 @@ def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
     """
     try:
         segs = diarize(audio, sr, num_speakers=num_speakers)
-        if merge_shards:
+        if merge_shards and num_speakers > 0:     # в авто diarize() уже склеил сам
             segs = merge_voice_shards(audio, sr, segs)
         return [(s, e, k) for s, e, k in segs if e - s >= min_len]
     except Exception as e:  # noqa: BLE001
