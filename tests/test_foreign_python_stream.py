@@ -229,11 +229,12 @@ def test_a_hung_child_dies_with_its_parent_however_the_parent_leaves(tmp_path, h
             os.kill(pid, 9)
 
 
-def test_the_registry_keeps_a_child_whose_owner_dropped_it(tmp_path):
+def test_the_registry_keeps_a_child_whose_owner_dropped_it(tmp_path, monkeypatch):
     """Реестр держит `Popen` сильной ссылкой: хозяин бросил ребёнка, сборка мусора
     прошла — уборка при выходе его всё равно видит."""
     import gc
     import subprocess
+    monkeypatch.setattr(fp, "_exiting", False)      # уборка ниже взводит «выходим» — вернуть после теста
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     pid = proc.pid
     try:
@@ -279,9 +280,10 @@ def test_a_failed_adoption_kills_the_child_and_fails_the_door(tmp_path, monkeypa
     assert _gone(pid)
 
 
-def test_the_exit_hook_does_not_wait_for_a_held_registry(tmp_path):
+def test_the_exit_hook_does_not_wait_for_a_held_registry(tmp_path, monkeypatch):
     """Нить, застрявшая с замком реестра на выходе, не держит уборку: потолок — секунда."""
     import subprocess
+    monkeypatch.setattr(fp, "_exiting", False)
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     release = threading.Event()
     holder = threading.Thread(target=lambda: (fp._children_lock.acquire(), release.wait(10),
@@ -301,3 +303,63 @@ def test_the_exit_hook_does_not_wait_for_a_held_registry(tmp_path):
         if proc.poll() is None:
             proc.kill()
         fp._children.pop(proc.pid, None)
+
+
+#: Родитель, чей долгий ребёнок заводится нитью-демоном уже после уборки при выходе:
+#: хук, зарегистрированный ДО импорта двери, выполняется после её уборки (atexit — LIFO)
+#: и держит процесс, пока нить доходит до `spawn_stream`.
+LATE_PARENT = """
+import atexit, pathlib, sys, threading, time
+atexit.register(lambda: time.sleep(1.0))
+sys.path.insert(0, {src!r})
+import foreign_python as fp
+child, err = sys.argv[1], sys.argv[2]
+
+def late():
+    time.sleep(0.2)
+    stream, out = fp.spawn_stream(sys.executable, pathlib.Path(child), [], stderr_path=pathlib.Path(err),
+                                  handshake_timeout=20.0, role="audio",
+                                  on_message=lambda m: None, on_eof=lambda: None)
+    pathlib.Path(child + ".out").write_text(out.kind + " " + out.reason)
+threading.Thread(target=late, daemon=True).start()
+raise RuntimeError("слой не завёлся")
+"""
+
+
+def test_a_child_started_after_the_exit_hook_is_killed_by_the_door(tmp_path):
+    """После уборки при выходе дверь новых детей не выдаёт: ребёнок, запущенный нитью-демоном
+    позже снимка реестра, убит своей же границей, а не забыт (финальный Opus по №533, M1)."""
+    import subprocess
+    parent = tmp_path / "parent.py"
+    parent.write_text(LATE_PARENT.format(src=str(SRC)), encoding="utf-8")
+    child = _child(tmp_path, 'open(sys.argv[0] + ".pid", "w").write(str(os.getpid()))\n' + HUNG)
+    pid_file = pathlib.Path(str(child) + ".pid")
+    proc = subprocess.run([sys.executable, str(parent), str(child), str(tmp_path / "child.err")],
+                          capture_output=True, timeout=30)
+    assert proc.returncode != 0
+    out_file = pathlib.Path(str(child) + ".out")
+    assert out_file.exists(), "нить не дошла до конца запуска ребёнка — опыт не состоялся"
+    outcome = out_file.read_text()
+    time.sleep(0.3)
+    if pid_file.exists():
+        pid = int(pid_file.read_text())
+        deadline = time.monotonic() + 3.0
+        while not _gone(pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not _gone(pid):
+            os.kill(pid, 9)
+            raise AssertionError(f"ребёнок пережил родителя; исход двери: {outcome}")
+    assert "выходит" in outcome, f"дверь выдала ребёнка на выходе: {outcome}"
+
+
+def test_the_door_refuses_new_children_once_the_process_is_leaving(tmp_path, monkeypatch):
+    monkeypatch.setattr(fp, "_exiting", True)
+    child = _child(tmp_path, 'open(sys.argv[0] + ".pid", "w").write(str(os.getpid()))\n' + HUNG)
+    stream, out = _spawn(child, tmp_path)
+    assert stream is None and out.kind == fp.FAILED and "выходит" in out.reason
+    pid_file = pathlib.Path(str(child) + ".pid")
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    pid = int(pid_file.read_text()) if pid_file.exists() else None
+    assert pid is None or _gone(pid)

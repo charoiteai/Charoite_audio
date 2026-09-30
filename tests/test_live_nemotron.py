@@ -1558,8 +1558,14 @@ def test_close_writes_what_the_audio_thread_left_in_the_queue(tmp_path, monkeypa
     assert "start" in [x["type"] for x in _journal(tmp_path / "live.jsonl")]
 
 
-def test_no_shadow_closes_quietly():
-    ln.NO_SHADOW.close(1.0)
+def test_no_shadow_closes_and_stops_quietly_without_threads():
+    """Без тени выход демона не ждёт и не заводит нитей: `close` и `stop(grace=…)` пустые."""
+    before = {t.ident for t in threading.enumerate()}
+    t0 = time.monotonic()
+    assert ln.NO_SHADOW.stop(grace=ln.EXIT_GRACE_S) is None
+    assert ln.NO_SHADOW.close(ln.STOP_GRACE_S) is None
+    assert time.monotonic() - t0 < 0.05
+    assert {t.ident for t in threading.enumerate()} <= before
 
 
 def _hung_engine(tmp_path):
