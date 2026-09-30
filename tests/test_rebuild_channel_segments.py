@@ -204,7 +204,7 @@ def meeting(tmp_path, monkeypatch):
     for label in ("mic", "blackhole"):
         paths[label] = tmp_path / "recordings" / f"2026-08-20_143000_{label}.wav"
         paths[label].write_bytes(b"")
-    state = {"len": {"mic": 60, "blackhole": 60}, "meta": {}, "calls": [], "merge": [],
+    state = {"len": {"mic": 60, "blackhole": 60}, "meta": {}, "calls": [], "merge": [], "veto": [],
              "raw": {"mic": [(0.0, 40.0, 3), (45.0, 57.0, 4)],
                      "blackhole": [(100.0, 130.0, 0), (140.0, 170.0, 1)]}}
 
@@ -218,6 +218,7 @@ def meeting(tmp_path, monkeypatch):
         label = "blackhole" if audio[0] == 1.0 else "mic"
         state["calls"].append((label, num_speakers))
         state["merge"].append((label, kw.get("merge_shards")))
+        state["veto"].append((label, kw.get("veto")))
         raw = state["raw"][label]
         if callable(raw):
             return raw(num_speakers)
@@ -594,25 +595,76 @@ ROOM = {"speakers": 7, "names": {"Собеседник 2": "Анна"}}
 LIVE_ROOM = "# Встреча\n\n**Анна** [14:30]:\nпривет\n\n**Собеседник 5** [14:30]:\nага\n"
 
 
-def _room(meeting, speakers=7):
+def _room(meeting, speakers=7, call="silent"):
+    """Канал собеседников молчит. call="silent" — запись есть и размечена пустой
+    (комната, №565); "absent" — записи нет вовсе (подсказка, №559)."""
     meeting["meta"] = dict(ROOM, speakers=speakers)
     meeting["raw"]["blackhole"] = []                       # канал собеседников размечен пустым
+    if call == "absent":
+        del meeting["paths"]["blackhole"]
     meeting["live"].write_text(LIVE_ROOM, encoding="utf-8")
 
 
 def test_a_silent_call_channel_hints_the_mic_with_the_live_count_and_merges_after(meeting):
-    """Очная встреча: число живой сессии идёт микрофону верхней границей — со склейкой
-    осколков после (иначе монолог, раздробленный живым трекером, нарезался бы)."""
-    _room(meeting)
+    """Канала собеседников не записано: число живой сессии идёт микрофону верхней
+    границей — со склейкой осколков после (иначе монолог, раздробленный живым
+    трекером, нарезался бы; №559)."""
+    _room(meeting, call="absent")
     rt.rebuild(meeting["live"], CFG)
     assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
 
 
 def test_no_call_recording_at_all_also_hints_the_mic(meeting):
-    _room(meeting)
-    del meeting["paths"]["blackhole"]
+    _room(meeting, call="absent")
     rt.rebuild(meeting["live"], CFG)
-    assert meeting["calls"] == [("mic", 7)]
+    assert meeting["calls"] == [("mic", 7)] and meeting["veto"] == [("mic", None)]
+
+
+def test_a_recorded_silent_call_channel_is_a_room_the_mic_goes_auto_under_the_veto(meeting):
+    """№565: запись канала собеседников есть и размечена пустой — комната. Микрофон
+    идёт в авто со склейкой под запретом, без подсказки живого трекера (она сливала
+    разделимые голоса: 3 метки против 4 на очной 29.09)."""
+    _room(meeting)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", -1) in meeting["calls"] and ("mic", 7) not in meeting["calls"]
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"] and ("mic", True) not in meeting["merge"]
+
+
+def test_the_room_keeps_the_collapse_verdict(meeting):
+    """Вердикт слитой метки — тот же, что на пути подсказки: одна метка при семи живых."""
+    _room(meeting)
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert rt.MIC_COLLAPSED_NOTE.format(live=7) in text
+
+
+@pytest.mark.parametrize("call_len,room", [(48, True), (47, False)])
+def test_a_call_recording_cut_short_is_not_a_room(meeting, call_len, room):
+    """Канал собеседников, умерший посреди встречи, оставляет короткий пустой файл:
+    его тишина о комнате не говорит — подсказка, как было (вход №565, r3, Sonnet I2)."""
+    _room(meeting)
+    meeting["len"]["blackhole"] = call_len                     # микрофон — 60 с, порог 0,8
+    rt.rebuild(meeting["live"], CFG)
+    assert (("mic", rt.VETO_BELOW) in meeting["veto"]) is room
+    assert (("mic", 7) in meeting["calls"]) is not room
+
+
+@pytest.mark.parametrize("speakers", [None, 2, 13])
+def test_the_veto_replaces_only_the_hint(meeting, speakers):
+    """Вне ячейки подсказки (живых < 3, > 12 или счёта нет) — авто без запрета, как
+    было: монолог при раздробленном трекере запрет раскалывал бы (вход №565, r3)."""
+    _room(meeting, speakers or 7)
+    if speakers is None:
+        del meeting["meta"]["speakers"]
+    rt.rebuild(meeting["live"], CFG)
+    assert [v for v in meeting["veto"] if v[0] == "mic"] == [("mic", None)]
+    assert ("mic", -1) in meeting["calls"]
+
+
+def test_a_call_that_speaks_gets_no_veto(meeting):
+    meeting["meta"] = {"speakers": 7}
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", None) in meeting["veto"] and ("mic", rt.VETO_BELOW) not in meeting["veto"]
 
 
 def test_a_failed_call_channel_is_not_silence(meeting):
@@ -634,7 +686,7 @@ def test_a_short_call_recording_is_not_silence(meeting):
 
 
 def test_the_mic_hint_goes_up_to_twelve(meeting):
-    _room(meeting, 12)
+    _room(meeting, 12, call="absent")
     rt.rebuild(meeting["live"], CFG)
     assert ("mic", 12) in meeting["calls"]
 
@@ -658,7 +710,7 @@ def test_the_mic_gets_no_hint_below_three_or_out_of_range(meeting, speakers):
 
 
 def test_the_mic_hint_needs_exactly_three_voices_not_more(meeting):
-    _room(meeting, 3)
+    _room(meeting, 3, call="absent")
     rt.rebuild(meeting["live"], CFG)
     assert ("mic", 3) in meeting["calls"]
 
@@ -671,7 +723,7 @@ def test_a_call_that_speaks_keeps_the_mic_on_auto(meeting):
 
 def test_an_empty_hinted_mic_falls_back_to_auto(meeting, monkeypatch):
     """Подсказка ничего не дала — повтор без неё, а не потеря канала (вход r3, Sonnet I2)."""
-    _room(meeting)
+    _room(meeting, call="absent")
     auto = [(0.0, 40.0, 3), (45.0, 57.0, 4)]
     meeting["raw"]["mic"] = lambda n: [] if n > 0 else list(auto)
     yields = []

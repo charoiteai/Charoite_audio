@@ -105,7 +105,8 @@ def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
     return audio, sr
 
 
-def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float = 0.8):
+def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float = 0.8,
+            veto: float | None = None):
     import sherpa_onnx
     # threshold=0.55 на моно-миксе дал 119 «голосов» (каждый сегмент — новый).
     # Выше порог = агрессивнее слияние. Если знаешь число людей — задай num_speakers.
@@ -129,7 +130,10 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     result = sd.process(audio).sort_by_start_time()
     segs = [(s.start, s.end, s.speaker) for s in result]
     if num_speakers <= 0:
-        segs = _merge_shards(audio, sr, segs)
+        # запрет — только когда его просили: умолчание зовут запасной sherpa
+        # канала собеседников и CLI, им склейка нужна прежняя (№565)
+        segs = (_merge_shards(audio, sr, segs) if veto is None
+                else _merge_shards(audio, sr, segs, veto=veto))
     return segs
 
 
@@ -149,6 +153,10 @@ def merge_shards(audio: np.ndarray, sr: int, segs):
 MIN_SPEAKER_S = 30.0   # меньше этого суммарной речи — не участник, а осколок
 WEAK_THRESHOLD = 0.50  # планка для приписывания осколка к ближайшему голосу
 EMB_MIN_SEG_S = 1.0    # короче — эмбеддинг не снять, кластер слеп для склейки
+#: Запрет склейки для микрофона комнаты (№565): пара кластеров ниже этой
+#: похожести — разные люди по замеру 14.08 (чужие 0.11-0.46), и группы с такой
+#: парой не сливаются, сколько бы мостов выше порога между ними ни было.
+VETO_BELOW = 0.46
 
 
 def pool_voiceless(segs, min_seg: float = EMB_MIN_SEG_S) -> dict[int, int]:
@@ -226,7 +234,57 @@ def assign_shards(talk: dict[int, float], sim: dict[tuple[int, int], float],
     return out
 
 
-def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
+def link_clusters(nodes, sim: dict[tuple[int, int], float], threshold: float,
+                  veto: float | None = None) -> dict[int, int]:
+    """Первый проход склейки: какие кластеры — один голос. Возвращает {кластер:
+    родитель} для union-find (корни — сами на себя).
+
+    Без запрета (`veto=None`) — одиночная связь: пара ≥ threshold сливает группы
+    целиком, одной пары хватает. На звонке это то, что нужно: осколки владельца
+    на его микрофоне сводятся в один голос. В комнате — нет: мостик 0.6 между
+    двумя людьми сцеплял в цепочку всех, и 29.09 шестеро ушли в одну метку, где
+    внутри были пары 0.13 (№565).
+
+    С запретом пары идут по убыванию похожести, и две группы сливаются, только
+    если между ними нет ни одной пары ниже `veto`: по замеру 14.08 такая пара —
+    уже разные люди. Слияние запрещается навсегда — группы только растут, и
+    худшая пара между ними лучше не станет. Без пар ниже запрета разбиение то же,
+    что у одиночной связи: компоненты по парам ≥ threshold от порядка не зависят.
+    """
+    parent = {k: k for k in nodes}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    if veto is None:
+        for (a, b), v in sim.items():
+            if v >= threshold:
+                parent[find(b)] = find(a)
+        return parent
+    members = {k: {k} for k in nodes}
+    banned = 0
+    for (a, b), v in sorted(sim.items(), key=lambda kv: (-kv[1], kv[0])):
+        if v < threshold:
+            break
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        if any(sim.get((x, y), sim.get((y, x), 1.0)) < veto
+               for x in members[ra] for y in members[rb]):
+            banned += 1
+            continue
+        parent[rb] = ra
+        members[ra] |= members.pop(rb)
+    if banned:
+        print(f"склейка осколков: запрещено слияний {banned} (пара ниже {veto})", flush=True)
+    return parent
+
+
+def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60,
+                  veto: float | None = None):
     """Осколки одного голоса → один кластер (очная встреча в один микрофон
     давала 30 «голосов» на четверых, 27.07). Средние эмбеддинги кластеров
     сравниваются по косинусу; ≥ threshold — это один человек.
@@ -240,6 +298,10 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
 
     Биометрию НЕ храним (решение владельца 27.07): эмбеддинги живут только
     внутри этого вызова и выбрасываются.
+
+    `veto` — запрет склейки для микрофона комнаты (см. link_clusters). Действует
+    только в первом проходе: второй (тихие группы < MIN_SPEAKER_S к ближайшей)
+    остаётся как был, он ловит осколки, а не людей (вход №565, r2).
     """
     import sherpa_onnx
     by: dict[int, list[tuple[float, float, float]]] = {}
@@ -267,7 +329,12 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
             v = np.mean(vecs, axis=0)
             embs[k] = v / np.linalg.norm(v)
 
-    parent = {k: k for k in by}
+    ks = sorted(embs)
+    sim: dict[tuple[int, int], float] = {}
+    for i, a in enumerate(ks):
+        for b in ks[i + 1:]:
+            sim[(a, b)] = float(np.dot(embs[a], embs[b]))
+    parent = link_clusters(list(by), sim, threshold, veto)
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -275,14 +342,6 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
             x = parent[x]
         return x
 
-    ks = sorted(embs)
-    sim: dict[tuple[int, int], float] = {}
-    for i, a in enumerate(ks):
-        for b in ks[i + 1:]:
-            v = float(np.dot(embs[a], embs[b]))
-            sim[(a, b)] = v
-            if v >= threshold:
-                parent[find(b)] = find(a)
     # канон группы — кластер с наибольшей суммарной речью (стабильные метки)
     talk = {k: sum(d for d, _s, _e in items) for k, items in by.items()}
 
