@@ -30,6 +30,7 @@ import subprocess
 import sys
 import unicodedata
 import zipfile
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -364,8 +365,10 @@ def binary_files(revs: list[str]) -> list[tuple[str, str]]:
 # Сжатые контейнеры, которые страж не распаковывает: такой файл — отказ, а не
 # «чисто» (финальный круг №541, Opus I1). zip (в том числе .docx/.xlsx) и gzip
 # распаковываются.
-_UNREADABLE = {b"7z\xbc\xaf\x27\x1c": "7z", b"\xfd7zXZ\x00": "xz", b"BZh": "bzip2",
-               b"Rar!\x1a\x07": "rar", b"\x28\xb5\x2f\xfd": "zstd"}
+_UNREADABLE = {b"7z\xbc\xaf\x27\x1c": "7z", b"\xfd7zXZ\x00": "xz",
+               b"Rar!\x1a\x07": "rar", b"\x28\xb5\x2f\xfd": "zstd",
+               b"\xff\xfe\x00\x00": "UTF-32", b"\x00\x00\xfe\xff": "UTF-32"}
+_BZIP2 = re.compile(rb"BZh[1-9]1AY&SY")
 _TAG = re.compile(rb"<[^<>]{0,2000}>")
 
 
@@ -376,39 +379,56 @@ def _utf16(data: bytes) -> str | None:
         return data.decode("utf-16", "replace")
     head = data[:4096]
     for enc, high in (("utf-16-le", head[1::2]), ("utf-16-be", head[0::2])):
-        if len(high) > 8 and sum(b <= 4 for b in high) > len(high) * 0.9:
+        if high and sum(b <= 4 for b in high) > len(high) * 0.9:
             return data.decode(enc, "replace")
     return None
 
 
-def blob_texts(data: bytes, depth: int = 0) -> list[str]:
-    """Текстовые представления двоичного блоба; непроверяемое — отказ."""
+def blob_texts(data: bytes, depth: int = 0, budget: list[int] | None = None) -> list[str]:
+    """Текстовые представления двоичного блоба; непроверяемое — отказ.
+
+    Судятся все кандидаты сразу (печатные отрезки UTF-8 и декодированный
+    UTF-16), а не один по эвристике. `budget` — общий остаток распаковки на
+    весь блоб: потолок на член не спасает от тысячи членов."""
+    budget = [BLOB_LIMIT] if budget is None else budget
     if depth > 3:
         raise GitError("вложенность контейнеров глубже 3 — содержимое не проверить")
     if data.startswith(b"PK\x03\x04"):
         texts: list[str] = []
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             for info in z.infolist():
-                if info.file_size > BLOB_LIMIT:
-                    raise GitError(f"член архива {info.filename} больше потолка {BLOB_LIMIT} Б")
+                budget[0] -= info.file_size
+                if budget[0] < 0:
+                    raise GitError(f"распакованный архив больше потолка {BLOB_LIMIT} Б")
                 member = z.read(info)
                 if info.filename.endswith((".xml", ".rels")):
-                    member = _TAG.sub(b"", member)   # слово в .docx бывает разрезано тегами
-                texts += blob_texts(member, depth + 1) + [info.filename]
+                    # слово в .docx бывает разрезано тегами (склеить), а соседние
+                    # ячейки .xlsx разделены только тегами (разделить) — судим оба вида
+                    texts += blob_texts(_TAG.sub(b"", member), depth + 1, budget)
+                    member = _TAG.sub(b" ", member)
+                texts += blob_texts(member, depth + 1, budget) + [info.filename]
         return texts
     if data.startswith(b"\x1f\x8b"):
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as g:
-            inner = g.read(BLOB_LIMIT + 1)
-        if len(inner) > BLOB_LIMIT:
+            inner = g.read(budget[0] + 1)
+        budget[0] -= len(inner)
+        if budget[0] < 0:
             raise GitError(f"распакованный gzip больше потолка {BLOB_LIMIT} Б")
-        return blob_texts(inner, depth + 1)
+        return blob_texts(inner, depth + 1, budget)
     for sig, kind in _UNREADABLE.items():
         if data.startswith(sig):
-            raise GitError(f"сжатый контейнер {kind} — содержимое не проверить")
+            raise GitError(f"контейнер {kind} — содержимое не проверить")
+    if _BZIP2.match(data):
+        raise GitError("контейнер bzip2 — содержимое не проверить")
+    runs = _PRINTABLE_RUN.findall(data.decode("utf-8", "replace"))
     wide = _utf16(data)
-    if wide is not None:
-        return [wide]
-    return _PRINTABLE_RUN.findall(data.decode("utf-8", "replace"))
+    return runs if wide is None else [wide, *runs]
+
+
+# Чем падает разбор повреждённого или зашифрованного контейнера. Текст
+# исключения (имя члена архива) наружу не идёт — только тип.
+_CONTAINER_ERRORS = (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
+                     NotImplementedError, zlib.error, EOFError, OSError, ValueError)
 
 
 def binary_texts(sha: str, path: str) -> list[str] | None:
@@ -422,7 +442,12 @@ def binary_texts(sha: str, path: str) -> list[str] | None:
     if size > BLOB_LIMIT:
         raise GitError(f"двоичный файл {size} Б больше потолка {BLOB_LIMIT} Б — содержимое не "
                        "проверить, такой файл не должен уходить в публичный репозиторий без решения")
-    return blob_texts(git("cat-file", "blob", obj))
+    data = git("cat-file", "blob", obj)
+    try:
+        return blob_texts(data)
+    except _CONTAINER_ERRORS as e:
+        raise GitError(f"повреждённый или зашифрованный контейнер ({type(e).__name__}) — "
+                       "содержимое не проверить") from None
 
 
 def raw_objects(shas: list[str]) -> dict[str, str]:
@@ -612,7 +637,9 @@ def push_revs(remote: str, lines: list[str], url: str | None = None) -> PushSet:
         return PushSet(None, notes, texts, emails)
     tips = server_tips(url or remote)
     if remote != "origin" and "origin" in names:
-        tips += server_tips("origin")
+        # публичный — тот, куда origin пушит (pushurl), а не откуда тянет
+        origin_push = git("remote", "get-url", "--push", "origin").decode().strip()
+        tips += server_tips(origin_push)
     return PushSet([*local, "--not", *tips], notes, texts, emails)
 
 

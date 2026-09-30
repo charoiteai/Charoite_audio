@@ -994,3 +994,81 @@ def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
     f = tmp_path / "t.md"
     f.write_text(unicodedata.normalize("NFD", "Семёнов " + "И. И.\n"), encoding="utf-8")
     assert guard.scan_public([f]) == [f"{f}:1: фамилия с инициалами"]
+
+
+# ── узкий круг Sonnet по правкам Opus (№541) ────────────────────────────────
+
+def _zip(members: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in members.items():
+            z.writestr(name, body)
+    return buf.getvalue()
+
+
+def test_short_marker_in_the_next_cell_of_a_spreadsheet(repo):
+    """Соседние ячейки разделены только тегами: склейка без пробела съела бы
+    границу слова у короткого маркера."""
+    (repo.tmp / "markers.txt").write_text("ЗАО\n", encoding="utf-8")
+    (repo.work / "t.xlsx").write_bytes(_zip({
+        "xl/sharedStrings.xml": "<si><t>отчёт</t></si><si><t>ЗАО</t></si>".encode()}))
+    repo.commit("xlsx")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert "t.xlsx (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_nul_padding_does_not_hide_utf8_text(repo):
+    (repo.work / "img.bin").write_bytes(b"\x00" * 4096 + f"запуск на {MARKER}\n".encode())
+    repo.commit("pad")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert "img.bin (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_broken_container_is_a_clean_refusal(repo):
+    (repo.work / "x.docx").write_bytes(_zip({"word/document.xml": b"<w:t>x</w:t>" * 50})[:60])
+    repo.commit("bad zip")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "повреждённый или зашифрованный" in p.stderr, p.stderr
+    assert "Traceback" not in p.stderr
+
+
+def test_mirror_push_takes_origin_by_its_push_url(repo):
+    """origin тянет из одного репозитория, а пушит в публичный: для push в
+    третий remote «опубликованное» — вершины публичного."""
+    git(repo.work, "checkout", "-q", "-b", "leak", env=repo.env)
+    repo.write("n.md", f"{MARKER}\n")
+    repo.commit("leak")
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "push", "-q", "origin",
+        "leak", env=repo.env)
+    git(repo.work, "checkout", "-q", "main", env=repo.env)
+    public = repo.tmp / "public.git"
+    git(repo.tmp, "init", "-q", "--bare", str(public), env=repo.env)
+    git(repo.work, "config", "remote.origin.pushurl", str(public), env=repo.env)
+    mirror = repo.tmp / "mirror.git"
+    git(repo.tmp, "init", "-q", "--bare", str(mirror), env=repo.env)
+    git(repo.work, "remote", "add", "mirror", str(mirror), env=repo.env)
+    repo.install()
+    p = git(repo.work, "push", "mirror", "leak", env=repo.env, check=False)
+    assert p.returncode != 0 and "n.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_unpack_budget_is_shared_by_all_members(monkeypatch):
+    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
+    data = _zip({f"m{i}.txt": b"a" * 600 for i in range(3)})
+    with pytest.raises(guard.GitError, match="больше потолка"):
+        guard.blob_texts(data)
+    assert guard.blob_texts(_zip({"m.txt": b"a" * 600}))
+
+
+def test_bzip2_signature_is_exact_and_utf32_refuses():
+    assert guard.blob_texts(b"BZhello, world " * 3)
+    with pytest.raises(guard.GitError, match="bzip2"):
+        guard.blob_texts(b"BZh91AY&SY" + b"\x00" * 32)
+    with pytest.raises(guard.GitError, match="UTF-32"):
+        guard.blob_texts("текст".encode("utf-32"))
+
+
+def test_short_utf16_without_bom_is_decoded():
+    assert "ЗАО\n" in guard.blob_texts("ЗАО\n".encode("utf-16-le"))
