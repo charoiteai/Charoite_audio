@@ -340,6 +340,11 @@ def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, in
     return [(p.raw_start, p.raw_end, p.voice) for p in res.pieces if p.voice is not None]
 
 
+#: Доля звука куска, с которой голос трекера входит в сверку: касание в несколько сэмплов
+#: — не голос этого куска, в счёт голосов сайдкара он не идёт (выходной круг 2 №478 B, M1).
+MIN_SHARE = 0.1
+
+
 def recon_shares(spans: list[tuple[int, int, int]], start: int, end: int) -> tuple[Share, ...]:
     """Доли сверки куска [start, end): голоса трекера, пересёкшиеся с ним, и доля звука куска
     у каждого — от большей к меньшей (при равенстве — в порядке раскладки). Касание —
@@ -351,7 +356,7 @@ def recon_shares(spans: list[tuple[int, int, int]], start: int, end: int) -> tup
             got[v] = got.get(v, 0) + overlap
     length = max(1, end - start)
     return tuple((v, min(1.0, got[v] / length))
-                 for v in sorted(got, key=lambda v: -got[v]))
+                 for v in sorted(got, key=lambda v: -got[v]) if got[v] / length >= MIN_SHARE)
 
 
 #: Речь трекера, не покрытая сегментами потока дольше этого (секунды), — речь без метки:
@@ -360,17 +365,30 @@ def recon_shares(spans: list[tuple[int, int, int]], start: int, end: int) -> tup
 UNLABELLED_S = 0.4
 
 
-def unlabelled_speech(tracker: SplitResult | None, segs: list[tuple[int, int]], sr: int) -> bool:
-    """Есть ли в чанке речь, которую трекер слышит кусками, а поток не разметил. Куски
-    трекера (и с голосом, и без) против объединения сегментов потока, сэмплы от начала
-    чанка. Чанк трекера целиком (`pieces is None`) границ речи не даёт — не судим."""
+def unlabelled_speech(tracker: SplitResult | None, segs: list[tuple[int, int]],
+                      sr: int) -> list[tuple[int, int, int | None]]:
+    """Речь, которую трекер слышит кусками, а поток не разметил: части кусков трекера (и с
+    голосом, и без) вне объединения сегментов потока, длиннее `UNLABELLED_S`, — (начало,
+    конец, голос трекера) в сэмплах от начала чанка. Чанк трекера целиком (`pieces is None`)
+    границ речи не даёт — не судим. Такая речь и запрещает чанк целиком под меткой потока,
+    и распознаётся сама, под меткой трекера: иначе неверная подпись сменилась бы потерей
+    слов (выходной круг 2 №478 B, I1)."""
     if tracker is None or not tracker.pieces:
-        return False
+        return []
+    cover = sorted(segs)
+    out: list[tuple[int, int, int | None]] = []
     for p in tracker.pieces:
-        covered = sum(max(0, min(e, p.raw_end) - max(s, p.raw_start)) for s, e in segs)
-        if (p.raw_end - p.raw_start) - covered > UNLABELLED_S * sr:
-            return True
-    return False
+        pos = p.raw_start
+        for s, e in cover + [(p.raw_end, p.raw_end)]:
+            if e <= pos:
+                continue
+            gap_end = min(max(s, pos), p.raw_end)
+            if gap_end - pos > UNLABELLED_S * sr:
+                out.append((pos, gap_end, p.voice))
+            pos = max(pos, min(e, p.raw_end))
+            if pos >= p.raw_end:
+                break
+    return out
 
 
 class StreamVoices:
@@ -426,16 +444,14 @@ class StreamVoices:
                   for s, e, slot in sorted(segs) if min(e, origin + n) > max(s, origin)]
         raw = [(a / self._sr, b / self._sr, self._label(slot, a + origin, b + origin))
                for a, b, slot in inside]
+        unlabelled = unlabelled_speech(tracker, [(a, b) for a, b, _ in inside], self._sr)
         res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt,
-                           unknown_speech=unlabelled_speech(tracker, [(a, b) for a, b, _ in inside],
-                                                            self._sr))
-        jobs = jobs_for(res, chunk, channel_label_neutral=neutral)
-        if jobs is None:
-            return None, {"source": "stream", "pieces": 0, "no_recon": 0, "recon_agree": 0}
+                           unknown_speech=bool(unlabelled))
+        jobs = jobs_for(res, chunk, channel_label_neutral=neutral) or []
         bounds = ([(p.raw_start, p.raw_end) for p in heard_pieces(res, channel_label_neutral=neutral)]
                   if res.pieces else [(0, n)])
         spans = tracker_spans(tracker, n)
-        out: list[Job] = []
+        placed: list[tuple[int, Job]] = []
         no_recon = agree = 0
         for (piece, label, raw_piece), (a, b) in zip(jobs, bounds):
             shares = recon_shares(spans, a, b)
@@ -445,9 +461,23 @@ class StreamVoices:
                 lead = shares[0][0]
                 agree += self._link.get(lead) == label
                 self._link[lead] = label
-            out.append((piece, label, raw_piece, shares))
-        return out, {"source": "stream", "pieces": len(out), "no_recon": no_recon,
-                     "recon_agree": agree}
+            placed.append((a, (piece, label, raw_piece, shares)))
+        # речь мимо потока — трекеру, под меткой связи его голоса; без голоса — меткой канала,
+        # и только там, где она никого не называет (правило `heard_pieces`, №571)
+        extra = 0
+        for a, b, voice in unlabelled:
+            if voice is None and not neutral:
+                continue
+            label = CHANNEL_LABEL_ONLY if voice is None else self._link.get(voice, voice)
+            placed.append((a, (chunk[a:b], label, chunk[a:b], own_share(voice))))
+            extra += 1
+        fields = {"source": "stream", "pieces": len(placed) - extra, "no_recon": no_recon,
+                  "recon_agree": agree}
+        if extra:
+            fields["tracker_pieces"] = extra
+        if not placed:
+            return None, fields
+        return [job for _a, job in sorted(placed, key=lambda t: t[0])], fields
 
 
 def tracker_kind(seg_model: pathlib.Path, emb_model: pathlib.Path) -> str | None:

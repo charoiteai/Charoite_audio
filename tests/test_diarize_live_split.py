@@ -610,13 +610,13 @@ def test_a_gap_of_exactly_the_threshold_keeps_the_label():
 def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_echo_check():
     sv = _sv()
     tracker = SplitResult([Piece(0, SR, 4, 0, SR), Piece(SR, 3 * SR, 2, SR, 3 * SR)], 2)
-    jobs, fields = _plan(sv, [(0, int(2.2 * SR), 5)], tracker=tracker)
+    jobs, fields = _plan(sv, [(0, int(2.9 * SR), 5)], tracker=tracker)
     ((piece, label, _raw, shares),) = jobs
     assert label == STREAM_VOICE_BASE
     assert [v for v, _ in shares] == [2, 4], "каждый голос трекера в куске получает свою долю (I3)"
-    assert shares[0][1] == pytest.approx(1.2 / 2.2, abs=1e-3) and shares[1][1] == pytest.approx(1.0 / 2.2, abs=1e-3)
+    assert shares[0][1] == pytest.approx(2 / 3, abs=1e-3) and shares[1][1] == pytest.approx(1 / 3, abs=1e-3), "чанк целиком: доли от чанка"
     assert fields == {"source": "stream", "pieces": 1, "no_recon": 0, "recon_agree": 0}
-    jobs, fields = _plan(sv, [(0, int(2.2 * SR), 5)], tracker=tracker)
+    jobs, fields = _plan(sv, [(0, int(2.9 * SR), 5)], tracker=tracker)
     assert fields["recon_agree"] == 1, "тот же голос трекера уже связан с той же меткой"
 
 
@@ -689,21 +689,39 @@ def test_speech_the_tracker_left_without_a_voice_gets_a_stream_label_not_the_cha
     assert all(j[3] == () for j in jobs), "голоса трекера нет — сверку не кормит"
 
 
-def test_speech_the_stream_did_not_label_forbids_the_whole_chunk_under_the_stream_label():
+def test_speech_the_stream_did_not_label_goes_to_the_tracker_not_under_the_stream_label():
     """Поток разметил одну реплику, а трекер слышит ещё одну: чанк не распознаётся целиком под
-    меткой первого — слова второго ушли бы ему (выходной круг 1 №478 B, I2)."""
+    меткой первого — слова второго ушли бы ему (выходной круг 1 №478 B, I2), — и вторая
+    реплика не теряется, а идёт своим заданием трекера (выходной круг 2, I1)."""
     tracker = SplitResult([Piece(0, int(1.4 * SR), 1, 0, int(1.4 * SR)),
                            Piece(int(1.6 * SR), int(2.8 * SR), None, int(1.6 * SR), int(2.8 * SR))], 1)
-    jobs, _ = _plan(_sv(), [(0, int(1.4 * SR), 0)], tracker=tracker)
-    ((piece, label, _raw, _shares),) = jobs
-    assert label == STREAM_VOICE_BASE and len(piece) < CHUNK, "окно реплики, а не чанк целиком"
+    jobs, fields = _plan(_sv(), [(0, int(1.4 * SR), 0)], tracker=tracker)
+    (first, second) = jobs
+    assert first[1] == STREAM_VOICE_BASE and len(first[0]) < CHUNK, "окно реплики, а не чанк целиком"
+    assert second[1] == CHANNEL_LABEL_ONLY and len(second[0]) == int(1.2 * SR) and second[3] == ()
+    assert fields["pieces"] == 1 and fields["tracker_pieces"] == 1
     whole = stream_split([(0.0, 1.4, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5)
     assert whole.pieces is None, "без речи мимо потока тот же вход — чанк целиком"
 
 
 def test_unlabelled_speech_is_tracker_speech_the_stream_segments_do_not_cover():
     piece = Piece(0, 2 * SR, 1, 0, 2 * SR)
-    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.6 * SR))], SR) is False   # 0,4 с — порог
-    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.5 * SR))], SR) is True
-    assert unlabelled_speech(SplitResult(None, 1), [], SR) is False, "чанк целиком границ речи не даёт"
-    assert unlabelled_speech(None, [], SR) is False and unlabelled_speech(SplitResult([], 1), [], SR) is False
+    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.6 * SR))], SR) == []   # 0,4 с — порог
+    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.5 * SR))], SR) == [(int(1.5 * SR), 2 * SR, 1)]
+    assert unlabelled_speech(SplitResult([piece], 1), [(int(0.5 * SR), int(1.0 * SR))], SR) == [
+        (0, int(0.5 * SR), 1), (SR, 2 * SR, 1)], "дыры с обеих сторон сегмента"
+    assert unlabelled_speech(SplitResult([piece], 1), [(0, SR), (int(0.8 * SR), int(1.9 * SR))], SR) == [], (
+        "перекрытые сегменты потока покрывают вместе")
+    assert unlabelled_speech(SplitResult(None, 1), [], SR) == [], "чанк целиком границ речи не даёт"
+    assert unlabelled_speech(None, [], SR) == [] and unlabelled_speech(SplitResult([], 1), [], SR) == []
+
+
+def test_a_tracker_voice_touching_a_stream_piece_is_not_its_share():
+    assert recon_shares([(0, 5, 1), (5, 100, 2)], 0, 100) == ((2, 0.95),), "5 % куска — касание, не голос"
+
+
+def test_a_stream_segment_wider_than_the_chunk_keeps_its_label_in_the_next_chunk():
+    sv = _sv()
+    a, _ = _plan(sv, [(-SR, 4 * SR, 0)])                               # шире чанка с обеих сторон
+    b, _ = _plan(sv, [(-SR, 7 * SR, 0)], origin=int(2.5 * SR))        # тот же человек дальше
+    assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
