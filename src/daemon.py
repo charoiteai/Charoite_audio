@@ -865,6 +865,7 @@ def main():
     # голосов пересборке — по-прежнему счёт трекера.
     tracker_voices: set[int] = set()
     stream_voices = None           # метки потока Nemotron в режиме `on` (diarize_live.StreamVoices)
+    stream_fault = {"said": False}  # сбой раскладки по потоку сказан человеку (раз за встречу)
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
     emb_model = _root() / MODELS_DIR / "diar" / "embedding.onnx"
     seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
@@ -915,10 +916,15 @@ def main():
             del vals[:-40]      # держим последние — голос за встречу не меняется
 
     def _voice_name(n: int) -> str:
-        """Имя нейтрального голоса по номеру трекера (с заведением нового)."""
+        """Имя нейтрального голоса по номеру трекера или метке потока (с заведением нового).
+        Метка потока в режиме `on` сперва берёт имя связанного голоса трекера, если его уже
+        назвали до потока (`StreamVoices.inherit`, один раз на голос)."""
         name = voice_names.get(n)
         if name is None:
-            name = f"Собеседник {len(voice_names) + 1}"
+            heir = stream_voices.inherit(n) if stream_voices is not None else None
+            name = voice_names.get(heir) if heir is not None else None
+            if name is None:
+                name = f"Собеседник {len(voice_names) + 1}"
             voice_names[n] = name
         return name
 
@@ -1365,6 +1371,15 @@ def main():
                                                    tracker=res, tracker_jobs=tracker_jobs,
                                                    neutral=chan.label_names_nobody(speaker),
                                                    step_s=spk_tracker.step_s))
+                    except Exception as e:  # noqa: BLE001 — раскладка по потоку и её запас упали: чанк — трекеру
+                        # строку журнала label_chunk уже записал (fallback build_failed);
+                        # нить STT не умирает молча (выходной круг GLM по №478 B, I1)
+                        jobs = with_recon(tracker_jobs)
+                        if not stream_fault["said"]:
+                            stream_fault["said"] = True
+                            emit({"type": "status", "text":
+                                  f"поток Nemotron: раскладка упала ({type(e).__name__}: {e}) — "
+                                  "метки собеседников от трекера"})
                     finally:
                         cycle_diarization_ms += (time.monotonic() - stream_started) * 1000
                         mark_stt_stage("planning")

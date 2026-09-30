@@ -116,7 +116,8 @@ def jobs_for(res: "SplitResult | None", chunk: np.ndarray, *,
 def plan_pieces(raw: list[tuple[float, float, int | None]], chunk_len: int,
                 sr: int, *, min_stt: float = 1.0, pad: float = 0.25,
                 gap: float = 0.4, edge_eps: float = 0.05,
-                step_s: float = 2.5) -> tuple[
+                step_s: float = 2.5,
+                barriers: list[tuple[float, float, int | None]] = ()) -> tuple[
                     list[tuple[float, float, int, float, float]],
                     bool,
                     list[tuple[float, float, int]]]:
@@ -167,7 +168,10 @@ def plan_pieces(raw: list[tuple[float, float, int | None]], chunk_len: int,
     # накрыть (ревью 15.08 ×3). Вложенный чужак (короткое «угу» внутри
     # монолога) режет кусок монолога на части ДО оконной логики — иначе два
     # midpoint-обрезания схлопывали всё окно монолога.
-    barriers = list(raw)
+    # `barriers` — чужая речь, которую распознаёт другое задание (куски трекера вне
+    # сегментов потока, №478 B): pad окна в неё не заходит, иначе участок распознаётся
+    # дважды под разными людьми (выходной круг GLM по №478 B, I2).
+    barriers = list(raw) + list(barriers)
 
     def cut_out_nested(start: float, end: float, voice: int) -> list[tuple[float, float]]:
         parts = [(start, end)]
@@ -276,7 +280,8 @@ def settle(pieces: list[Piece], *, talk: dict[int, float], last: int | None,
 
 
 def stream_split(raw: list[tuple[float, float, int]], chunk_len: int, sr: int, *,
-                 step_s: float, min_stt: float = 1.0, unknown_speech: bool = False) -> SplitResult:
+                 step_s: float, min_stt: float = 1.0, unknown_speech: bool = False,
+                 barriers: list[tuple[float, float, int | None]] = ()) -> SplitResult:
     """Раскладка чанка по сегментам потока Nemotron (№478 B): те же окна (`plan_pieces`), тот
     же учёт окон и тот же итог (`settle`), что у трекера, — меняется только источник голоса.
 
@@ -285,7 +290,8 @@ def stream_split(raw: list[tuple[float, float, int]], chunk_len: int, sr: int, *
     она запрещает распознавать чанк целиком под главной меткой. Порядок — по началу, как у
     сегментов трекера: от него зависит, кто главный при равенстве секунд."""
     raw = sorted(raw, key=lambda r: r[0])
-    windows, deferred, kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s)
+    windows, deferred, kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s,
+                                          barriers=barriers)
     overlap = window_overlap_of(windows)
     kept_keys = set(kept)
     talk: dict[int, float] = {}
@@ -411,6 +417,8 @@ class StreamVoices:
         self._slots: dict[int, list[int]] = {}      # слот → [метка, конец речи на оси хаба]
         self._generation = 0
         self._link: dict[int, int] = {}             # голос трекера → последняя метка потока
+        self._first: dict[int, int] = {}            # метка потока → голос трекера при первой связи
+        self._inherited: set[int] = set()           # голоса трекера, чьё имя уже отдано метке
 
     def _label(self, slot: int, start: int, end: int) -> int:
         cur = self._slots.get(slot)
@@ -419,6 +427,18 @@ class StreamVoices:
             self._generation += 1
         cur[1] = max(cur[1], end)
         return cur[0]
+
+    def inherit(self, label: int) -> int | None:
+        """Голос трекера, чьё имя метка потока берёт себе, — один раз на голос: человек,
+        подписанный до потока номером трекера, после рукопожатия остаётся тем же
+        «Собеседником K», а не становится новым (выходной круг GLM по №478 B, M1). Второй
+        метке, связанной с тем же голосом, имя не достаётся: трекер склеивает разных людей
+        (DER 0,26–0,97), и одно имя на двоих хуже лишнего номера."""
+        voice = self._first.get(label)
+        if voice is None or voice in self._inherited:
+            return None
+        self._inherited.add(voice)
+        return voice
 
     def fallback(self, jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) \
             -> list[Job] | None:
@@ -446,7 +466,8 @@ class StreamVoices:
                for a, b, slot in inside]
         unlabelled = unlabelled_speech(tracker, [(a, b) for a, b, _ in inside], self._sr)
         res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt,
-                           unknown_speech=bool(unlabelled))
+                           unknown_speech=bool(unlabelled),
+                           barriers=[(a / self._sr, b / self._sr, None) for a, b, _v in unlabelled])
         jobs = jobs_for(res, chunk, channel_label_neutral=neutral) or []
         bounds = ([(p.raw_start, p.raw_end) for p in heard_pieces(res, channel_label_neutral=neutral)]
                   if res.pieces else [(0, n)])
@@ -461,6 +482,7 @@ class StreamVoices:
                 lead = shares[0][0]
                 agree += self._link.get(lead) == label
                 self._link[lead] = label
+                self._first.setdefault(label, lead)
             placed.append((a, (piece, label, raw_piece, shares)))
         # речь мимо потока — трекеру, под меткой связи его голоса; без голоса — меткой канала,
         # и только там, где она никого не называет (правило `heard_pieces`, №571)

@@ -725,3 +725,30 @@ def test_a_stream_segment_wider_than_the_chunk_keeps_its_label_in_the_next_chunk
     a, _ = _plan(sv, [(-SR, 4 * SR, 0)])                               # шире чанка с обеих сторон
     b, _ = _plan(sv, [(-SR, 7 * SR, 0)], origin=int(2.5 * SR))        # тот же человек дальше
     assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
+
+
+def test_a_stream_window_does_not_pad_into_speech_a_tracker_job_transcribes():
+    """Трекер слышит [0; 2,0], поток разметил [0; 1,0]: звук 1,0–2,0 уходит заданием трекера,
+    и окно потока не расширяется в него запасом — иначе 1,0–1,25 с распознавалось бы дважды
+    под разными людьми (выходной круг GLM по №478 B, I2)."""
+    tracker = SplitResult([Piece(0, 2 * SR, 1, 0, 2 * SR)], 1)
+    jobs, _ = _plan(_sv(), [(0, SR, 0)], tracker=tracker)
+    (stream_job, tracker_job) = jobs
+    assert stream_job[1] == STREAM_VOICE_BASE and len(stream_job[0]) == SR, "запас окна потока — не дальше 1,0 с"
+    assert tracker_job[1] == STREAM_VOICE_BASE and len(tracker_job[0]) == SR, (
+        "голос трекера уже связан с меткой потока этого же куска — та же подпись")
+    alone = stream_split([(0.0, 1.0, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5, unknown_speech=True)
+    assert alone.pieces[0].end > SR, "без барьера тот же вход падит окно за 1,0 с"
+
+
+def test_a_stream_label_inherits_the_name_of_its_tracker_voice_once():
+    """Человек, подписанный до потока голосом трекера, после рукопожатия остаётся тем же
+    именем; второй метке того же голоса имя не достаётся (выходной круг GLM по №478 B, M1)."""
+    sv = _sv()
+    tracker = SplitResult(None, 3)
+    _plan(sv, [(0, int(2.2 * SR), 0)], tracker=tracker)
+    assert sv.inherit(STREAM_VOICE_BASE) == 3
+    assert sv.inherit(STREAM_VOICE_BASE) is None, "имя голоса отдаётся один раз"
+    _plan(sv, [(70 * SR, int(72.2 * SR), 0)], tracker=tracker, origin=70 * SR)   # слот замолчал — новая метка
+    assert sv.inherit(STREAM_VOICE_BASE + 1) is None, "вторая метка того же голоса трекера — без его имени"
+    assert sv.inherit(STREAM_VOICE_BASE + 7) is None, "метка без связи — без имени"
