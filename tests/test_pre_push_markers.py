@@ -901,8 +901,10 @@ def test_binary_whose_name_git_cannot_hand_back_is_a_refusal(repo):
                    check=True)
     git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "commit", "-q", "-m", "ff",
         env=repo.env)
+    sha = repo.head()
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert p.returncode == 1 and "не найден" in p.stderr, p.stdout + p.stderr
+    assert p.returncode == 1 and f"{sha[:9]} " in p.stderr and "не найден" in p.stderr, \
+        p.stdout + p.stderr
 
 
 def test_tree_scan_normalizes_nfd(tmp_path, monkeypatch):
@@ -1049,3 +1051,15 @@ def test_allow_list_with_bom_and_upper_case(repo, monkeypatch):
     path.write_bytes(b"\xff\xfe\x00")
     with pytest.raises(guard.GitError, match="blob_allow.txt не читается"):
         guard.allowed_blobs()
+
+
+def test_raw_objects_returns_each_object_whole(repo, monkeypatch):
+    repo.write("a.md", "раз\n")
+    first = repo.commit("первый")
+    repo.write("b.md", "два\n")
+    second = repo.commit("второй, подлиннее: " + "x" * 300)
+    monkeypatch.chdir(repo.work)
+    got = guard.raw_objects([first, second, repo.base])
+    for sha in (first, second, repo.base):
+        want = git(repo.work, "cat-file", "commit", sha, env=repo.env).stdout
+        assert got[sha] == want, sha
