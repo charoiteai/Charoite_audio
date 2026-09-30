@@ -407,7 +407,8 @@ def _wav(path, samples):
         w.writeframes((samples * 32767).astype("<i2").tobytes())
 
 
-def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path, monkeypatch):
+def _replay_data(tmp_path):
+    """Корень данных прогона на синтетике: конфиг, две записи, пустые модели и интерпретатор."""
     data = tmp_path / "data"
     (data / "config").mkdir(parents=True)
     (data / "config" / "config.yaml").write_text(
@@ -425,6 +426,11 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     py = data / "engines" / "nemotron" / "python" / "bin" / "python3"
     py.parent.mkdir(parents=True)
     py.write_text("")
+    return data, stamp
+
+
+def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path, monkeypatch):
+    data, stamp = _replay_data(tmp_path)
     made = []
     monkeypatch.setattr(diarize_live, "SegmentTracker",
                         lambda *a, **k: made.append(k) or _Tracker(diarize_live.SplitResult(None, 1)))
@@ -662,15 +668,19 @@ def test_the_witness_counts_samples_returns_the_write_result_and_waits_for_the_f
 
 
 def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    monkeypatch.setattr(rp.charoite_paths, "name_data_root_or_exit", lambda module_file: tmp_path)
     seen = {}
     monkeypatch.setattr(rp, "replay", lambda stamp, **kw: seen.update(kw) or {"stamp": stamp, "ключ": 1})
     assert rp.main(["2026-01-01_100000", "--cache-limit-mb", "512"]) == 0
     out = capsys.readouterr().out
     assert '"ключ": 1' in out and out.startswith("{\n") and seen["cache_limit_mb"] == 512
     assert seen["out"].parent.name == "2026-01-01_100000"
-    assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
-    assert seen["out"] == tmp_path / "o"
+    outside = tmp_path.parent / (tmp_path.name + "-out")
+    assert rp.main(["2026-01-01_100000", "--out", str(outside / "o")]) == 0
+    assert seen["out"] == outside / "o"
+    assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 2, "внутри корня данных — отказ"
+    code_root = pathlib.Path(rp.__file__).resolve().parent.parent
+    assert rp.main(["2026-01-01_100000", "--out", str(code_root / "o")]) == 2, "внутри кода — отказ"
 
     def refuse(stamp, **kw):
         raise rp.Refused("нет")
@@ -703,3 +713,86 @@ def test_the_check_cli_reads_the_tracker_timing_and_meta_files(tmp_path, capsys)
     assert out["c_tracker_vs_stream"]["paths"] == {"whole": 1}
     assert out["a2_step_cost_wall"]["step_cost_s"]["max"] == pytest.approx(0.3)
     assert out["run"] == {"wall_s": 3.0}
+
+
+# ------------------------------------------------------------------ выходной круг 1
+
+
+def test_step_cost_leaves_out_the_final_front_even_on_a_step_boundary():
+    """Финал — close() модели по всей встрече: его время — не цена шага (GLM I1)."""
+    rows = [{"k": "write", "t": 0.0, "sent": 20 * STEP}]
+    rows += [{"k": "front", "t": 0.3 * k, "fed": k * STEP} for k in range(1, 21)]
+    rows.append({"k": "front", "t": 90.0, "fed": 20 * STEP, "final": True})
+    assert chk.step_cost(rows, STEP, SR)["step_cost_s"]["max"] == pytest.approx(0.3)
+
+
+def test_the_witness_marks_the_final_front(tmp_path):
+    w = rp.Witness(tmp_path / "t.jsonl")
+    w.front({"type": "front", "fed": 8000})
+    w.front({"type": "front", "fed": 8000, "final": True})
+    w.close()
+    rows = [json.loads(x) for x in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert ["final" in r for r in rows] == [False, True]
+
+
+def test_a_child_killed_at_close_makes_the_run_invalid():
+    j = journal(chunk_ends=[START0 + 64000], counts={"killed_at_close": 1})
+    assert any("счётчики" in p for p in chk.validity(j))
+
+
+def test_the_report_says_when_the_fed_coverage_was_not_checked():
+    j = journal(chunk_ends=[START0 + 64000])
+    final = {"duration_s": 20.0, "segments": [[0.3, 1.0, "A"]]}
+    assert chk.report(j, final)["unchecked"] == ["fed_coverage"]
+    assert chk.report(j, final, meta={"fed_to_shadow": SR * 20})["unchecked"] == []
+
+
+def test_a_broken_line_and_a_final_without_speech_are_refusals_not_tracebacks(tmp_path, capsys):
+    path = tmp_path / "j.jsonl"
+    final = tmp_path / "final.json"
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[0.3, 1.0, "A"]]}), encoding="utf-8")
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000])) + '\n{"type": "chu',
+                    encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 2
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000])), encoding="utf-8")
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[5.0, 5.001, "A"]]}), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 2
+
+
+def test_pad_equal_keeps_the_long_channel_itself():
+    a = np.ones(5, dtype=np.float32)
+    got, _ = rp.pad_equal(a, np.ones(3, dtype=np.float32))
+    assert got is a
+
+
+def test_end_line_is_the_last_end_of_the_journal(tmp_path):
+    p = tmp_path / "j.jsonl"
+    p.write_text("\n".join(journal_lines(exit_="failed")), encoding="utf-8")
+    assert rp.end_line(p)["exit"] == "failed"
+    p.write_text('{"type": "header"}\n', encoding="utf-8")
+    assert rp.end_line(p) == {}
+
+
+def test_a_child_that_stops_answering_fails_the_run_and_the_shadow_is_stopped(tmp_path, monkeypatch):
+    """Зависший ребёнок: темп держит очередь ниже потолка тени, фронтов нет — прогон
+    отказывает по простою и в `finally` останавливает тень (журнал с `end`)."""
+    data, stamp = _replay_data(tmp_path)
+    monkeypatch.setattr(diarize_live, "SegmentTracker", lambda *a, **k: _Tracker(diarize_live.SplitResult(None, 1)))
+    monkeypatch.setattr(rp, "STALL_S", 0.5)
+    ready = {"type": "ready", "proto": dn.STREAM_PROTO, "sr": SR, "preset": "low",
+             "frame_s": HOP / SR, "step": STEP}
+
+    class Mute(_Child):
+        def write(self, data):
+            pass
+
+    def door(python, script, args, *, on_message, on_eof, **kw):
+        return Mute(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
+
+    monkeypatch.setattr(fp, "spawn_stream", door)
+    out = tmp_path / "out"
+    with pytest.raises(rp.Refused, match="не выдал фронт"):
+        rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
+    journal = next((out / "logs").glob("nemotron_live_*.jsonl"))
+    assert rp.end_line(journal), "тень остановлена в finally: строка end есть"
+    assert not (out / "meta.json").exists()

@@ -62,8 +62,8 @@ FRAGMENT_SHARE = 0.10
 #: Сколько первых фронтов — прогрев модели, вне стоимости шага.
 WARMUP_FRONTS = 5
 #: Счётчики строки `end`, которые у годного прогона равны нулю.
-ZERO_COUNTS = ("killed_after_grace", "front_malformed", "seg_malformed", "message_unknown",
-               "message_out_of_state", "nonjson", "callback_errors")
+ZERO_COUNTS = ("killed_after_grace", "killed_at_close", "front_malformed", "seg_malformed",
+               "message_unknown", "message_out_of_state", "nonjson", "callback_errors")
 #: Метка «нет голоса / нет слота» в матрице.
 NONE = "—"
 
@@ -258,23 +258,27 @@ def step_cost(timing: typing.Iterable[dict], step: int, sr: int) -> dict:
     Строки: `{"k": "write", "t", "sent"}` — блок ушёл в трубу (сэмплов всего), и
     `{"k": "front", "t", "fed"}` — фронт пришёл. Шаг, закрытый фронтом с `fed`, мог
     начаться, когда (1) его звук ушёл в трубу и (2) пришёл предыдущий фронт; стоимость —
-    от позднего из двух до фронта. Первые `WARMUP_FRONTS` — прогрев, вне выборки. Каждый
-    фронт после прогрева обязан закрывать ровно один шаг — иначе отказ."""
+    от позднего из двух до фронта. Первые `WARMUP_FRONTS` — прогрев, в выборку не идут;
+    не идут и фронты не на границе шага (хвост) и финальный (`final`: это `close()` модели
+    по всей встрече, а не шаг, — даже когда звук кратен шагу). Фронт раньше своего звука —
+    отказ."""
     writes: list[tuple[float, int]] = []
-    fronts: list[tuple[float, int]] = []
+    fronts: list[tuple[float, int, bool]] = []
     for row in timing:
-        (writes if row["k"] == "write" else fronts).append((float(row["t"]), int(row[
-            "sent" if row["k"] == "write" else "fed"])))
+        if row["k"] == "write":
+            writes.append((float(row["t"]), int(row["sent"])))
+        else:
+            fronts.append((float(row["t"]), int(row["fed"]), bool(row.get("final"))))
     costs = []
     wi = 0
     prev_t = None
-    for n, (t, fed) in enumerate(fronts):
+    for n, (t, fed, final) in enumerate(fronts):
         while wi < len(writes) and writes[wi][1] < fed:
             wi += 1
         if wi == len(writes):
             raise Refused(f"фронт с fed={fed} раньше, чем звук ушёл в трубу")
         ready_t = writes[wi][0] if prev_t is None else max(writes[wi][0], prev_t)
-        if n >= WARMUP_FRONTS and fed % step == 0:
+        if n >= WARMUP_FRONTS and fed % step == 0 and not final:
             costs.append(t - ready_t)
         prev_t = t
     q = quantiles(costs)
@@ -448,7 +452,8 @@ def der(truth: list[Interval], hyp: list[Interval], total: float) -> dict:
 def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
            timing: list[dict] | None = None, meta: dict | None = None) -> dict:
     """Всё, что считает сверка, — одним словарём; негодный журнал — `Refused`."""
-    problems = validity(j, fed_expected=(meta or {}).get("fed_to_shadow"))
+    fed_expected = (meta or {}).get("fed_to_shadow")
+    problems = validity(j, fed_expected=fed_expected)
     if problems:
         raise Refused("; ".join(problems))
     total = float(final["duration_s"])
@@ -460,6 +465,8 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
     lag = label_lag(j)
     lag.pop("_values")
     out = {
+        # без сводки прогона покрытие поданного звука не проверено — так и сказано (живой журнал)
+        "unchecked": [] if fed_expected is not None else ["fed_coverage"],
         "memory": memory(j),
         "outcomes": outcomes(j),
         "a1_label_lag_audio": lag,
@@ -506,6 +513,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         j = read_journal(args.journal.read_text(encoding="utf-8").splitlines())
+    except json.JSONDecodeError as e:
+        print(f"журнал негоден: строка не JSON ({e})", file=sys.stderr)
+        return 2
     except Refused as e:
         print(f"журнал негоден: {e}", file=sys.stderr)
         return 2
@@ -514,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                      tracker=_jsonl(args.tracker) if args.tracker else None,
                      timing=_jsonl(args.timing) if args.timing else None,
                      meta=json.loads(args.meta.read_text(encoding="utf-8")) if args.meta else None)
-    except Refused as e:
+    except (Refused, ValueError) as e:        # ValueError — финал без речи у DER, битые файлы
         # память — и у негодного журнала: смерть тени от давления и есть её предмет
         print(json.dumps({"refused": str(e), "memory": memory(j)}, ensure_ascii=False, indent=1))
         print(f"журнал негоден: {e}", file=sys.stderr)

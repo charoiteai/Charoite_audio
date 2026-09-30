@@ -317,3 +317,33 @@ def test_a_zero_cache_limit_is_a_limit_and_a_negative_one_is_refused():
     assert dn._non_negative_int("0") == 0
     with pytest.raises(ValueError):
         dn._non_negative_int("-1")
+
+
+def test_the_cache_limit_goes_before_the_model_and_the_peak_is_reset_after_it(monkeypatch):
+    """Связка `serve_stream` с лимитом: лимит → модель → сброс пика, рукопожатие объявляет
+    заданный и прежний лимит (выходной круг 1 по №478 B, Sonnet I2)."""
+    order = []
+    fake = types.SimpleNamespace(set_cache_limit=lambda n: order.append(("limit", n)) or 62259 * 2**20,
+                                 reset_peak_memory=lambda: order.append(("reset",)))
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core=fake))
+    proto = io.StringIO()
+    monkeypatch.setattr(dn, "_protocol_channel", lambda: proto)
+    monkeypatch.setattr(dn, "load_model", lambda path, preset: order.append(("load",)) or _Model())
+    monkeypatch.setattr(dn, "_mlx_memory", lambda: {})
+    reads = iter([b""])
+    assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: next(reads), cache_limit_mb=512) == 0
+    assert order == [("limit", 512 * 2**20), ("load",), ("reset",)]
+    ready = json.loads(proto.getvalue().splitlines()[0])
+    assert (ready["cache_limit_mb"], ready["cache_limit_prev_mb"]) == (512, 62259)
+
+
+def test_a_cache_limit_without_mlx_is_the_engine_unavailable_code(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "mlx.core", None)          # import mlx.core → ImportError
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    proto = io.StringIO()
+    monkeypatch.setattr(dn, "_protocol_channel", lambda: proto)
+    monkeypatch.setattr(dn, "load_model", lambda path, preset: pytest.fail("модель после отказа лимита"))
+    assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: b"", cache_limit_mb=512) == \
+        EXIT_ENGINE_UNAVAILABLE
+    assert proto.getvalue() == "" and "лимит кэша" in capsys.readouterr().err

@@ -589,7 +589,10 @@ def _set_cache_limit(limit_mb: int | None) -> dict:
     (`set_cache_limit` возвращает прежний). Без лимита — только прежний не узнать, пусто."""
     if limit_mb is None:
         return {}
-    import mlx.core as mx
+    try:
+        import mlx.core as mx
+    except ImportError as e:          # окружение без mlx — тот же отказ «движка нет», что у модели
+        raise ModelUnavailable(f"лимит кэша: mlx не импортируется ({e})") from e
     prev = mx.set_cache_limit(limit_mb * 2**20)
     return {"cache_limit_mb": limit_mb, "cache_limit_prev_mb": round(prev / 2**20)}
 
