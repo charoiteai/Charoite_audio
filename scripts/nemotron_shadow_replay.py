@@ -39,6 +39,7 @@ import copy
 import json
 import os
 import pathlib
+import shutil
 import sys
 import threading
 import time
@@ -72,9 +73,30 @@ class Refused(Exception):
     """Прогон невозможен или негоден — с причиной."""
 
 
+#: Единственное место выходов прогона: кэш пользователя, вне данных владельца и кода.
+CACHE_BASE = pathlib.Path(os.path.expanduser("~/Library/Caches/charoite-478b"))
+
+
 def default_out(stamp: str) -> pathlib.Path:
-    base = pathlib.Path(os.path.expanduser("~/Library/Caches/charoite-478b"))
-    return base / stamp / time.strftime("%Y%m%d-%H%M%S")
+    return CACHE_BASE / stamp / time.strftime("%Y%m%d-%H%M%S")
+
+
+def sweep_orphans(rec_dir: pathlib.Path) -> list[str]:
+    """Производные встречи живут не дольше её записи: каталог штампа в кэше, у которого
+    записи уже нет (ретеншн, «Забыть»), удаляется целиком. `rmtree` по ссылкам не ходит."""
+    import meeting_stamp
+    gone: list[str] = []
+    if not CACHE_BASE.is_dir():
+        return gone
+    for entry in sorted(CACHE_BASE.iterdir()):
+        if meeting_stamp.recording_path(rec_dir, entry.name, LABELS[0], "wav").exists():
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry)
+        gone.append(entry.name)
+    return gone
 
 
 def read_channel(path: pathlib.Path, sr: int):
@@ -104,14 +126,26 @@ def end_line(journal: pathlib.Path) -> dict:
     return ended
 
 
-def refuse_inside(out: pathlib.Path, *roots: pathlib.Path) -> None:
-    """Выход прогона — только вне корня данных и корня кода: журналы встреч в репозиторий
-    и в данные владельца не ложатся (граница приватности)."""
+def allowed_out(out: pathlib.Path) -> None:
+    """Выход прогона — только `<CACHE_BASE>/<штамп>/<каталог>`: белый список, а не перечень
+    запретных корней (синхронизируемые каталоги, соседние клоны). Путь сравнивается после
+    раскрытия ссылок: ссылка из кэша наружу раскрывается мимо базы и получает отказ."""
+    base = CACHE_BASE.resolve()
     target = out.resolve()
+    if base not in target.parents or target.parent == base:
+        raise Refused("каталог выхода — только внутри кэша прогона (<кэш>/<штамп>/<каталог>)")
+
+
+def refuse_inside(out: pathlib.Path, *roots: pathlib.Path) -> None:
+    """Созданный каталог выхода не лежит внутри корня данных и корня кода — по идентичности
+    файлов, а не по строкам: APFS не различает регистр, и другой регистр пути строковую
+    проверку проходит (граница приватности)."""
     for root in roots:
-        base = root.resolve()
-        if target == base or base in target.parents:
-            raise Refused(f"каталог выхода внутри {base}: только вне данных и кода")
+        if not root.exists():
+            continue
+        for p in (out, *out.parents):
+            if os.path.samefile(p, root):
+                raise Refused("каталог выхода внутри данных владельца или кода")
 
 
 def expected_cuts(n: int, sr: int, chunk_s: float, overlap_s: float) -> int:
@@ -196,17 +230,34 @@ def witness_spawn(witness: Witness, spawn, extra_args: typing.Sequence[str] = ()
     return wrapped
 
 
+LINKS = ("models", "engines")
+
+
 def run_root(out: pathlib.Path, data_root: pathlib.Path) -> pathlib.Path:
-    """Корень прогона: свежий каталог, `logs/` свой, веса и окружение движка — ссылками."""
+    """Корень прогона: свежий каталог в кэше, `logs/` свой, веса и окружение движка — ссылками.
+    Место проверяется здесь, где каталог создаётся, а не у вызывающего."""
+    allowed_out(out)
     if out.exists():
-        raise Refused(f"каталог выхода уже есть: {out} — журнал открыт на дозапись, прогоны смешались бы")
+        raise Refused("каталог выхода уже есть — журнал открыт на дозапись, прогоны смешались бы")
     charoite_paths.secure_dir(out)                # каталоги данных — дверью канона, 0700 (класс №409)
+    try:
+        refuse_inside(out, data_root, charoite_paths.CODE_ROOT)
+    except Refused:
+        shutil.rmtree(out)
+        raise
     charoite_paths.secure_dir(out / "logs")
-    for name in ("models", "engines"):
+    for name in LINKS:
         target = data_root / name
         if target.exists():
             (out / name).symlink_to(target, target_is_directory=True)
     return out
+
+
+def unlink_links(root: pathlib.Path) -> None:
+    """Ссылки на веса и окружение нужны только живому ребёнку: оставленные в сохраняемом
+    каталоге, они довели бы уборку по ссылкам до данных владельца."""
+    for name in LINKS:
+        (root / name).unlink(missing_ok=True)
 
 
 def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, diarized_state):
@@ -244,7 +295,11 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     import meeting_stamp
     import stt_runtime
 
-    say = say or (lambda s: print(s, file=sys.stderr, flush=True))
+    # штамп встречи в строках тени — только маской: вывод прогона вставляют в отчёты
+    tell = say or (lambda s: print(s, file=sys.stderr, flush=True))
+
+    def say(s: str) -> None:
+        tell(s.replace(stamp, "<штамп>"))
     cfg = copy.deepcopy(config_loader.load_user_or_example(data_root))
     cfg.setdefault("sufler", {})["live_nemotron"] = live_nemotron.SHADOW
     cfg.setdefault("audio", {})["record"] = False
@@ -254,6 +309,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     missing = [p.name for p in paths if not p.exists()]
     if missing:
         raise Refused(f"нет записей: {', '.join(missing)}")
+    sweep_orphans(rec_dir)
     bh, mic = pad_equal(*(read_channel(p, sr) for p in paths))
 
     models = data_root / charoite_paths.MODELS_DIR / "diar"
@@ -276,17 +332,25 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         kw.setdefault("spawn", witness_spawn(witness, foreign_python.spawn_stream, extra))
         return original_begin(self, **kw)
 
+    trk = open(root / "tracker.jsonl", "w", buffering=1, encoding="utf-8")
     live_nemotron.Shadow.begin = begin
     try:
         shadow = live_nemotron.start(cfg, root=root, stamp=stamp, sr=hub.sr, labels=LABELS, say=say,
                                      **({"memory": memory} if memory is not None else {}))
+    except BaseException:
+        trk.close()
+        witness.close()
+        unlink_links(root)
+        raise
     finally:
         live_nemotron.Shadow.begin = original_begin
     if not isinstance(shadow, live_nemotron.Shadow):
+        trk.close()
+        witness.close()
+        unlink_links(root)
         raise Refused("тень не поднялась (причина — строкой выше)")
     t_begin = time.monotonic()
 
-    trk = open(root / "tracker.jsonl", "w", buffering=1, encoding="utf-8")
     block = int(sr * block_s)
     counts = {"placed": 0, "tracker_lines": 0}
 
@@ -358,6 +422,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
             shadow.close(timeout=CLOSE_WAIT_S)
         trk.close()
         witness.close()
+        unlink_links(root)
     cuts = {label: hub.chunk_no.get(label, -1) + 1 for label in LABELS}
     expect = expected_cuts(n, sr, hub.chunk_s, hub.overlap_s)
     if len(set(cuts.values())) != 1 or cuts[LABELS[0]] != expect:
@@ -378,6 +443,11 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     return meta
 
 
+#: Ключи сводки, которые печатаются: агрегаты, без штампа и путей.
+PRINTED = ("sr", "audio_s", "start0", "fed_to_shadow", "cuts_per_channel", "chunks", "handshake_s",
+           "wall_s", "speed_x", "lead_s", "block_s", "preroll_s", "cache_limit_mb")
+
+
 def main(argv: list[str] | None = None) -> int:
     charoite_paths.harden_umask()      # журналы прогона — только владельцу
     # корень — до разбора аргументов: без названного корня вход отказывает своим кодом
@@ -392,13 +462,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     out = args.out or default_out(args.stamp)
     try:
-        refuse_inside(out, data_root, charoite_paths.CODE_ROOT)
         meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll,
                       cache_limit_mb=args.cache_limit_mb)
     except Refused as e:
         print(f"прогон не состоялся: {e}", file=sys.stderr)
         return 2
-    print(json.dumps({**meta, "out": str(out)}, ensure_ascii=False, indent=1))
+    # в сводку — только агрегаты: штамп встречи и домашний путь сюда не попадают (её вставляют в отчёт)
+    print(json.dumps({k: v for k, v in meta.items() if k in PRINTED}, ensure_ascii=False, indent=1))
     return 0
 
 

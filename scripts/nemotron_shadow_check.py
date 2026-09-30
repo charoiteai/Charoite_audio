@@ -463,6 +463,13 @@ def der(truth: list[Interval], hyp: list[Interval], total: float) -> dict:
 # ------------------------------------------------------------------ отчёт
 
 
+def anonymous(segments) -> list[tuple[float, float, str]]:
+    """Отрезки финала с метками `f0..fN` по порядку первого появления: сверка обезличивает
+    на входе, что бы ей ни дали, — метка из стенограммы с именами в отчёт не уходит."""
+    names: dict[str, str] = {}
+    return [(float(s), float(e), names.setdefault(str(lab), f"f{len(names)}")) for s, e, lab in segments]
+
+
 def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
            timing: list[dict] | None = None, meta: dict | None = None) -> dict:
     """Всё, что считает сверка, — одним словарём; негодный журнал — `Refused`."""
@@ -472,7 +479,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
     if problems:
         raise Refused("; ".join(problems))
     total = float(final["duration_s"])
-    fin = [(float(s), float(e), str(lab)) for s, e, lab in final["segments"]]
+    fin = anonymous(final["segments"])
     if not fin:
         raise Refused("в финале нет отрезков")
     stream = stream_segments(j)

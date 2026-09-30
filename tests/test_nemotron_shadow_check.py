@@ -31,6 +31,14 @@ import live_nemotron as ln  # noqa: E402
 import nemotron_shadow_check as chk  # noqa: E402
 import nemotron_shadow_replay as rp  # noqa: E402
 
+REAL_CACHE = rp.CACHE_BASE
+
+
+@pytest.fixture(autouse=True)
+def _cache(tmp_path, monkeypatch):
+    """Кэш прогона — во временном каталоге теста: настоящий кэш пользователя тесты не трогают."""
+    monkeypatch.setattr(rp, "CACHE_BASE", tmp_path / "cache")
+
 SR = 16000
 HOP = 160                      # кадр модели 10 мс
 STEP = dn.STREAM_STEP          # шаг ребёнка 0,5 с
@@ -350,9 +358,66 @@ def test_chunk_decision_names_every_tracker_path_on_the_hub_axis():
 
 
 def test_run_root_refuses_an_existing_output(tmp_path):
-    (tmp_path / "out").mkdir()
+    out = rp.CACHE_BASE / "s" / "run"
+    out.mkdir(parents=True)
     with pytest.raises(rp.Refused, match="уже есть"):
-        rp.run_root(tmp_path / "out", tmp_path)
+        rp.run_root(out, tmp_path / "data")
+
+
+def test_run_root_takes_only_a_run_folder_inside_the_cache(tmp_path):
+    """Финальный Opus, I1 и M2: белый список в точке создания — синхронизируемый каталог,
+    соседний клон, сам кэш или папка штампа получают отказ, и каталог не создаётся."""
+    data = tmp_path / "data"
+    for out in (tmp_path / "icloud" / "s" / "run", rp.CACHE_BASE, rp.CACHE_BASE / "s"):
+        with pytest.raises(rp.Refused, match="только внутри кэша"):
+            rp.run_root(out, data)
+        assert not out.exists()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    rp.CACHE_BASE.mkdir()
+    (rp.CACHE_BASE / "s").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(rp.Refused, match="только внутри кэша"):
+        rp.run_root(rp.CACHE_BASE / "s" / "run", data)
+    assert list(elsewhere.iterdir()) == [], "ссылка из кэша наружу не ведёт выход за её цель"
+
+
+def test_run_root_refuses_the_data_root_by_file_identity_and_removes_what_it_made(tmp_path, monkeypatch):
+    """Финальный Opus, I2: проверка идентичностью файлов, а не строк — кэш внутри корня
+    данных под другим регистром (APFS регистр не различает) тоже получает отказ."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    upper = pathlib.Path(str(data).upper())
+    for base in (data / "logs", *((upper / "logs",) if upper.exists() else ())):
+        monkeypatch.setattr(rp, "CACHE_BASE", base)
+        with pytest.raises(rp.Refused, match="внутри данных"):
+            rp.run_root(base / "s" / "run", data)
+        assert not (base / "s" / "run").exists(), "созданный каталог убран"
+    code = tmp_path / "code"
+    monkeypatch.setattr(rp.charoite_paths, "CODE_ROOT", code)
+    monkeypatch.setattr(rp, "CACHE_BASE", code / "cache")
+    code.mkdir()
+    with pytest.raises(rp.Refused, match="или кода"):
+        rp.run_root(code / "cache" / "s" / "run", data)
+
+
+def test_sweep_removes_the_derivatives_of_a_meeting_whose_recording_is_gone(tmp_path):
+    """Финальный Opus, C1: производные прогона живут не дольше записи (ретеншн, «Забыть»);
+    ссылка-вход удаляется сама, её цель остаётся."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "kept_blackhole.wav").write_bytes(b"")
+    for name in ("kept", "gone"):
+        (rp.CACHE_BASE / name / "run" / "logs").mkdir(parents=True)
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "w.bin").write_bytes(b"1")
+    (rp.CACHE_BASE / "gone" / "run" / "models").symlink_to(target, target_is_directory=True)
+    (rp.CACHE_BASE / "link").symlink_to(target, target_is_directory=True)
+    assert rp.sweep_orphans(rec) == ["gone", "link"]
+    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == ["kept"]
+    assert (target / "w.bin").exists(), "по ссылкам уборка не ходит"
+    rp.CACHE_BASE.rename(tmp_path / "moved")
+    assert rp.sweep_orphans(rec) == [], "нет кэша — нечего убирать"
 
 
 # ------------------------------------------------------------------ прогон целиком
@@ -443,10 +508,15 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
         return _Child(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
 
     monkeypatch.setattr(fp, "spawn_stream", door)
-    out = tmp_path / "out"
-    meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
+    out = rp.CACHE_BASE / stamp / "run"
+    (rp.CACHE_BASE / "2025-01-01_100000" / "run").mkdir(parents=True)     # запись забыта
+    said = []
+    meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=said.append)
     assert meta["cuts_per_channel"] == rp.expected_cuts(SR * 20, SR, 3.0, 0.5)
-    assert (out / "models").is_symlink() and not (data / "logs").exists()
+    assert sorted(p.name for p in rp.CACHE_BASE.iterdir()) == [stamp], "производные без записи убраны"
+    assert not any((out / x).is_symlink() for x in rp.LINKS), "ссылки на веса после прогона сняты"
+    assert not (data / "logs").exists()
+    assert said and not any(stamp in s for s in said), "штамп встречи в строках тени — маской"
     assert {(out / x).stat().st_mode & 0o777 for x in ("", "logs")} == {0o700}, "выход прогона — только владельцу"
     assert made == [{"sample_rate": SR, "step_s": 2.5}], "трекер — той же фабрикой, что у демона"
     assert sorted(p.name for p in (data / "rec").iterdir()) == [f"{stamp}_blackhole.wav", f"{stamp}_mic.wav"], (
@@ -600,7 +670,7 @@ def test_report_rounds_the_matrix_and_the_der_and_carries_the_run(monkeypatch):
     j = journal(chunk_ends=[START0 + 64000], segs=[(START0, START0 + int(1.25 * SR), 0)])
     final = {"duration_s": 20.0, "segments": [[START0 / SR, START0 / SR + 1.0, "A"]]}
     out = chk.report(j, final, meta={"wall_s": 12.5, "audio_s": 20.0, "fed_to_shadow": SR * 20})
-    assert out["b_slots"]["matrix_s"]["slot0|A"] == 1.0
+    assert out["b_slots"]["matrix_s"]["slot0|f0"] == 1.0
     assert out["b_slots"]["matrix_s"][f"slot0|{chk.NONE}"] == 0.2
     assert out["run"] == {"wall_s": 12.5, "audio_s": 20.0}
     assert out["c_agreement_with_final"]["stream"]["false_alarm"] == pytest.approx(0.25, abs=0.01)
@@ -614,7 +684,8 @@ def test_the_check_cli_prints_the_report_and_refuses_without_the_final(tmp_path,
                      encoding="utf-8")
     assert chk.main([str(path), "--final", str(final)]) == 0
     out = capsys.readouterr().out
-    assert "Собеседник 1" in out and out.startswith("{\n")
+    assert "Собеседник 1" not in out and "|f0\"" in out and out.startswith("{\n"), (
+        "финальный Opus, I3: метки финала — обезличенными")
     assert json.loads(out)["outcomes"] == {ln.LABELED: 1}
     with pytest.raises(SystemExit):
         chk.main([str(path)])
@@ -627,8 +698,8 @@ def test_the_check_cli_prints_the_report_and_refuses_without_the_final(tmp_path,
 
 def test_default_out_is_the_stamp_folder_in_the_user_cache(monkeypatch):
     got = rp.default_out("2026-01-01_100000")
-    assert got.parent.name == "2026-01-01_100000" and got.parent.parent.name == "charoite-478b"
-    assert "Caches" in got.parts
+    assert got.parent == rp.CACHE_BASE / "2026-01-01_100000"
+    assert REAL_CACHE.name == "charoite-478b" and REAL_CACHE.parent.name == "Caches"
 
 
 @pytest.mark.parametrize("rate, channels, width", [(8000, 1, 2), (SR, 2, 2), (SR, 1, 4)])
@@ -671,17 +742,15 @@ def test_the_witness_counts_samples_returns_the_write_result_and_waits_for_the_f
 def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(rp.charoite_paths, "name_data_root_or_exit", lambda module_file: tmp_path)
     seen = {}
-    monkeypatch.setattr(rp, "replay", lambda stamp, **kw: seen.update(kw) or {"stamp": stamp, "ключ": 1})
+    monkeypatch.setattr(rp, "replay", lambda stamp, **kw: seen.update(kw) or {
+        "stamp": stamp, "journal": f"logs/nemotron_live_{stamp}.jsonl", "sr": 16000})
     assert rp.main(["2026-01-01_100000", "--cache-limit-mb", "512"]) == 0
     out = capsys.readouterr().out
-    assert '"ключ": 1' in out and out.startswith("{\n") and seen["cache_limit_mb"] == 512
+    assert json.loads(out) == {"sr": 16000} and seen["cache_limit_mb"] == 512, (
+        "финальный Opus, M4: сводка — агрегаты, без штампа и путей")
     assert seen["out"].parent.name == "2026-01-01_100000"
-    outside = tmp_path.parent / (tmp_path.name + "-out")
-    assert rp.main(["2026-01-01_100000", "--out", str(outside / "o")]) == 0
-    assert seen["out"] == outside / "o"
-    assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 2, "внутри корня данных — отказ"
-    code_root = pathlib.Path(rp.__file__).resolve().parent.parent
-    assert rp.main(["2026-01-01_100000", "--out", str(code_root / "o")]) == 2, "внутри кода — отказ"
+    assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
+    assert seen["out"] == tmp_path / "o", "место проверяет run_root, а не разбор аргументов"
 
     def refuse(stamp, **kw):
         raise rp.Refused("нет")
@@ -792,12 +861,13 @@ def test_a_child_that_stops_answering_fails_the_run_and_the_shadow_is_stopped(tm
         return Mute(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
 
     monkeypatch.setattr(fp, "spawn_stream", door)
-    out = tmp_path / "out"
+    out = rp.CACHE_BASE / stamp / "run"
     with pytest.raises(rp.Refused, match="не выдал фронт"):
         rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
     journal = next((out / "logs").glob("nemotron_live_*.jsonl"))
     assert rp.end_line(journal), "тень остановлена в finally: строка end есть"
     assert not (out / "meta.json").exists()
+    assert not any((out / x).is_symlink() for x in rp.LINKS), "ссылки сняты и на отказе"
 
 
 def test_a_replay_that_lost_chunks_or_their_lines_is_invalid():
