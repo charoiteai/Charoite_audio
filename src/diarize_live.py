@@ -407,8 +407,8 @@ UNLABELLED_S = 0.4
 
 
 def stream_layout(raw: list[tuple[float, float, int]], speech: list[tuple[int, int, int | None]],
-                  chunk_len: int, sr: int, *, step_s: float,
-                  min_stt: float = 1.0) -> tuple[SplitResult, list[tuple[int, int, int | None]], int]:
+                  chunk_len: int, sr: int, *, step_s: float, min_stt: float = 1.0,
+                  bounded: bool = True) -> tuple[SplitResult, list[tuple[int, int, int | None]], int]:
     """Раскладка чанка режима `on` с сохранением речи (финальный Opus по №478 B, C1): поток
     говорит, КТО, но не решает, ЧТО распознавать, — каждый сэмпл речи трекера (`speech`,
     то, что распознал бы `off`) лежит ровно в одном задании.
@@ -421,21 +421,30 @@ def stream_layout(raw: list[tuple[float, float, int]], speech: list[tuple[int, i
        не заходит в звук, который распознаёт трекер, и чанк не идёт целиком под одной
        меткой. Сырые границы окон при этом не меняются: барьер лежит вне них.
 
+    `bounded` — у речи трекера есть границы (окна). Чанк целиком и упавшая раскладка границ
+    не несут, только запрет потерять чанк: есть окна потока — они и решают, что распознавать,
+    нет ни одного — чанк целиком уходит заданием трекера. Иначе тишина и хвост чанка шли бы
+    отдельными заданиями короче секунды почти на каждом чанке (круг проверки правок Opus,
+    Sonnet I1, GLM M2).
+
     Возвращает (раскладка потока, задания трекера (начало, конец, голос), потерянные сэмплы)."""
     raw = sorted(raw, key=lambda r: r[0])
     windows, _deferred, _kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s)
     covered = [(int(rs * sr), int(re_ * sr)) for _a, _b, _v, rs, re_ in windows]
     min_len = round(UNLABELLED_S * sr)
+    if not bounded and covered:
+        speech = []                            # границ нет — окна потока решают сами
     extra, _short = uncovered(speech, covered, min_len)
     res = stream_split(raw, chunk_len, sr, step_s=step_s, min_stt=min_stt,
                        unknown_speech=bool(extra),
                        barriers=[(a / sr, b / sr, None) for a, b, _v in extra])
-    # потери — по тому, что уйдёт в STT на самом деле: чанк целиком (один голос, ничего не
-    # исключено) покрывает и края, которых окна не касались
+    # потери — всё, что из речи трекера не попало в звук STT на самом деле (окна с запасом,
+    # чанк целиком, задания трекера), любой длины: и край короче порога, и то, что не
+    # должно было остаться (круг проверки правок Opus, Sonnet I2)
     final = ([] if res.pieces == [] else [(0, chunk_len)] if res.pieces is None
-             else [(p.raw_start, p.raw_end) for p in res.pieces])
-    _rest, lost = uncovered(speech, final + [(a, b) for a, b, _v in extra], min_len)
-    return res, extra, lost
+             else [(p.start, p.end) for p in res.pieces])
+    rest, _none = uncovered(speech, final + [(a, b) for a, b, _v in extra], 1)
+    return res, extra, sum(e - s for s, e, _v in rest)
 
 
 class StreamVoices:
@@ -493,11 +502,12 @@ class StreamVoices:
         if not raw:                                  # сегменты лишь касаются чанка — речи в нём нет
             return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
         speech = tracker_speech(tracker, n, neutral=neutral)
-        res, extra_spans, lost = stream_layout(raw, speech, n, self._sr, step_s=step_s, min_stt=min_stt)
+        res, extra_spans, lost = stream_layout(raw, speech, n, self._sr, step_s=step_s, min_stt=min_stt,
+                                               bounded=tracker is not None and tracker.pieces is not None)
         jobs = jobs_for(res, chunk, channel_label_neutral=neutral) or []
         bounds = ([(p.raw_start, p.raw_end) for p in heard_pieces(res, channel_label_neutral=neutral)]
                   if res.pieces else [(0, n)])
-        spans = [(s, e, v) for s, e, v in speech if v is not None]
+        spans = tracker_spans(tracker, n)
         placed: list[tuple[int, Job]] = []
         no_recon = agree = 0
         for (piece, label, raw_piece), (a, b) in zip(jobs, bounds):
