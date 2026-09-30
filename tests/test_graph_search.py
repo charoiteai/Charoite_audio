@@ -727,7 +727,7 @@ def test_the_factory_carries_the_name_the_residency_and_the_silence(tmp_path, mo
         status_code = 200
         content = json.dumps({"embeddings": [[1.0, 0.0]]}).encode("utf-8")
 
-    def post(url, json=None, timeout=None):
+    def post(url, json=None, timeout=None, **kw):
         seen.update(json)
         return Reply()
 

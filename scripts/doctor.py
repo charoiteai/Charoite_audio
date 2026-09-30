@@ -26,7 +26,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 
 # Байткод — до первого импорта своих модулей: доктор обещан любому Python, в том
 # числе python бандла из Терминала, мимо PYTHONPYCACHEPREFIX приложения, — и
@@ -166,6 +165,7 @@ def check_ollama(cfg: dict) -> None:
     # облачный режим и должен был избавить (круг-2: GLM I5, DS M1).
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
+    from charoite_graph.net import open_url
     cloud = _privacy.cloud_engine_active(cfg)
     base = _privacy.llm_base_url(cfg) if cloud else llm_url(cfg)
     if base is None:
@@ -174,7 +174,7 @@ def check_ollama(cfg: dict) -> None:
         # base выдан privacy.llm_base_url: либо loopback, либо явно
         # разрешённый владельцем адрес; не пользовательский ввод.
         # nosemgrep
-        with urllib.request.urlopen(f"{base}/api/tags", timeout=4) as r:
+        with open_url(f"{base}/api/tags", timeout=4) as r:
             models = [m.get("name", "") for m in json.load(r).get("models", [])]
     except OSError:
         line(FAIL, f"Ollama не отвечает ({base})",

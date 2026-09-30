@@ -1,7 +1,7 @@
 """Командная строка пакета графа (`charoite_graph.cli`, №323 PR 2).
 
 Вход зовётся функцией `main(argv)` в процессе теста; транспорт двери векторов
-подменяется на том же шве, что у сторожа сети, — `urllib.request.urlopen`.
+подменяется на шве двери — `embed_door.open_url` (адрес на этой машине urllib.request.urlopen не зовёт, №525).
 Поведение колеса целиком (точка входа из `entry_points.txt`, ловушка окружения,
 режимы кэша) держит проба пакета в `tests/test_entry_points_contract.py`.
 """
@@ -12,14 +12,13 @@ import os
 import pathlib
 import stat
 import sys
-import urllib.request
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from charoite_graph import cli, graph_search, safe_write  # noqa: E402
+from charoite_graph import cli, embed_door, graph_search, safe_write  # noqa: E402
 from charoite_graph.model_seam import Embedder  # noqa: E402
 
 
@@ -91,7 +90,7 @@ def test_index_then_search_is_confident_and_the_cache_is_private(tmp_path, capsy
     """`index` собирает векторы в `--data-dir`, `search` их читает — статус `confident`.
     Кэш — только владельцу: процесс ставит маску 0o077 на время работы и возвращает
     прежнюю; манифест пишется с режимом при создании."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    monkeypatch.setattr(embed_door, "open_url", _ollama())
     graph, data = _graph(tmp_path), tmp_path / "кэш"
     old = os.umask(0o022)
     try:
@@ -111,7 +110,7 @@ def test_index_then_search_is_confident_and_the_cache_is_private(tmp_path, capsy
 def test_index_with_a_dead_server_exits_one(tmp_path, capsys, monkeypatch):
     """Сервер не ответил — векторы собраны не все: код 1 и причина в stderr, а не
     «успех» с нулём файлов (входной круг 1 по №323 PR 2, I4)."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama(dead=True))
+    monkeypatch.setattr(embed_door, "open_url", _ollama(dead=True))
     graph = _graph(tmp_path)
 
     assert cli.main(["index", str(graph), *_model(tmp_path / "кэш")]) == cli.EXIT_LEFT
@@ -124,7 +123,7 @@ def test_index_with_a_dead_server_exits_one(tmp_path, capsys, monkeypatch):
 def test_a_folder_without_notes_is_empty_not_nothing_found(tmp_path, capsys, monkeypatch, command):
     """Папка без заметок — «индекс пуст», код 3, у обеих команд: непрогретый `Result`
     несёт статус `empty`, и без этой ветки ответ читался бы «ничего не найдено»."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    monkeypatch.setattr(embed_door, "open_url", _ollama())
     empty = tmp_path / "пусто"
     empty.mkdir()
     (empty / "картинка.png").write_bytes(b"\x89PNG")
@@ -241,7 +240,7 @@ def test_reindex_after_a_note_change_tightens_an_old_manifest(tmp_path, capsys, 
     """Пересборка после правки заметки переписывает манифест, и старый 0644 становится
     0600: режим задаётся при создании, а не переносится со старого файла. Без записи
     (заметки не менялись) старый файл не перекрашивается — это №535."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    monkeypatch.setattr(embed_door, "open_url", _ollama())
     graph, data = _graph(tmp_path), tmp_path / "кэш"
     assert cli.main(["index", str(graph), *_model(data)]) == cli.EXIT_OK
     manifest = next((data / "graph_search").glob("*.json"))
@@ -271,7 +270,7 @@ def test_the_mask_window_is_held_under_the_lock(tmp_path, monkeypatch):
     """Маска — состояние процесса: всё окно от `umask` до возврата прежней идёт под
     замком модуля, иначе два `main` из потоков вернули бы друг другу чужую прежнюю
     маску (I2 выхода 1). Судим по замку внутри окна — порядок потоков не случаен."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    monkeypatch.setattr(embed_door, "open_url", _ollama())
     graph = _graph(tmp_path)
     seen = {}
     real_open = cli._open
@@ -293,7 +292,7 @@ def test_the_mask_window_is_held_under_the_lock(tmp_path, monkeypatch):
 def test_an_empty_note_does_not_keep_index_pending(tmp_path, capsys, monkeypatch):
     """Пустая заметка не свидетель: `index` не ждёт для неё вектора вечно (M1 выхода 1),
     даже если сервер пустой вход отвергает и валит этим всю пачку."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama(no_empty=True))
+    monkeypatch.setattr(embed_door, "open_url", _ollama(no_empty=True))
     graph = _graph(tmp_path)
     (graph / "Без названия.md").write_text("", encoding="utf-8")
 
@@ -303,7 +302,7 @@ def test_an_empty_note_does_not_keep_index_pending(tmp_path, capsys, monkeypatch
 
 def test_index_names_what_it_did_not_read(tmp_path, capsys, monkeypatch):
     """Охват в выводе `index`: нечитаемая заметка названа, а не спрятана за «ожидают 0» (M3)."""
-    monkeypatch.setattr(urllib.request, "urlopen", _ollama())
+    monkeypatch.setattr(embed_door, "open_url", _ollama())
     graph = _graph(tmp_path)
     (graph / "битая.md").symlink_to(tmp_path / "нет-такого")
 

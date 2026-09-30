@@ -40,7 +40,7 @@ def test_probe_asks_for_generation_not_tags(monkeypatch):
     """
     seen: dict = {}
 
-    def fake_post(url, json, timeout):  # noqa: A002 — имя параметра из requests
+    def fake_post(url, json, timeout, **kw):  # noqa: A002 — имя параметра из requests
         seen["url"] = url
         seen["json"] = json
         return _Resp()

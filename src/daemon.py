@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import functools
 import hashlib
 import json
 import math
@@ -56,6 +57,7 @@ import live_nemotron  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import privacy  # noqa: E402
+
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
 import stt_runtime  # noqa: E402
@@ -625,6 +627,36 @@ def fresh_question(pending: dict, now: float, ttl: float = PENDING_Q_TTL) -> str
     нет. `at` = 0.0 (вопросов не было) — пусто при любом monotonic."""
     text = pending.get("text", "")
     return text if text and now - pending.get("at", 0.0) < ttl else ""
+
+
+GIGASTT_HEALTH = "http://127.0.0.1:9876/health"
+GIGASTT_WS = "ws://127.0.0.1:9876/v1/ws"
+
+
+def gigastt_alive() -> bool:
+    """Отвечает ли gigastt на этой машине: `/health` напрямую, мимо прокси (№525)."""
+    import requests
+    try:
+        requests.get(GIGASTT_HEALTH, timeout=2, **privacy.proxies_for(GIGASTT_HEALTH)).raise_for_status()
+    except requests.RequestException:
+        return False
+    return True
+
+
+class GigasttUnavailable(Exception):
+    """Быстрого триггера нет: нет библиотеки websockets или gigastt не отвечает."""
+
+
+def gigastt_stream_client():
+    """`connect` websocket-клиента с `proxy=None`; нет библиотеки или сервера — `GigasttUnavailable`."""
+    try:
+        from websockets.sync.client import connect
+    except ImportError as exc:
+        raise GigasttUnavailable("нет библиотеки websockets") from exc
+    if not gigastt_alive():
+        raise GigasttUnavailable("gigastt не отвечает")
+    # proxy=None: звук встречи к loopback мимо прокси окружения (№525)
+    return functools.partial(connect, proxy=None)
 
 
 def main():
@@ -2365,11 +2397,9 @@ def main():
         if not (instant_on or cloud_live) or not bool(cfg["sufler"].get("fast_trigger", True)):
             return
         try:
-            import requests as _rq
-            _rq.get("http://127.0.0.1:9876/health", timeout=2).raise_for_status()
-            from websockets.sync.client import connect as ws_connect
-        except (ImportError, OSError):   # requests.RequestException — подкласс OSError
-            return  # сервера/библиотеки нет — обычный путь через чанки
+            ws_connect = gigastt_stream_client()
+        except GigasttUnavailable:
+            return  # сервера или библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
         drops = frame_drops.DropMeter()
@@ -2405,7 +2435,7 @@ def main():
                         frame_q.get_nowait()
                     except _q.Empty:
                         break
-                with ws_connect("ws://127.0.0.1:9876/v1/ws", max_size=None) as ws:
+                with ws_connect(GIGASTT_WS, max_size=None) as ws:
                     ws.recv()  # {"type":"ready"}
                     ws.send(json.dumps({"type": "configure", "sample_rate": hub.sr}))
 

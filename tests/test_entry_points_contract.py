@@ -484,6 +484,10 @@ if PKG_ROOT.joinpath("charoite_graph", "cli.py").is_file():
     CLI.update(search_code=code, search=json.loads(text) if code == 0 else text,
                search_created=sorted(set(tree()) - set(before)))
     urllib.request.urlopen = fake_urlopen
+    import importlib.util      # тот же вопрос «есть ли дверь в копии», что у DOOR выше (там — по файлу); по наличию файла, а не по ImportError: сломанная дверь упала бы, а не выпала из проверки
+    if importlib.util.find_spec("charoite_graph.embed_door") is not None:
+        import charoite_graph.embed_door as _door      # в копии пробы двери может не быть
+        _door.open_url = fake_urlopen      # шов двери: адрес на этой машине идёт через net.open_url (№525)
     model = ["--model-url", "http://127.0.0.1:9", "--model", "проба-cli", "--data-dir", str(CLI_DATA)]
     CLI["index_code"], CLI["index_out"] = cli_run(["index", GRAPH, *model])
     code, text = cli_run(["search", GRAPH, QUERY, "--json", *model])
