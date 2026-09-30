@@ -610,7 +610,10 @@ built, what was skipped and why.
    with the previous versions in `.prev/` — only in edit mode with a
    verified transfer, where the cloud also moves the meeting out of the
    wrong person's node; in read-only mode nothing is renamed and the log
-   points to the review's section for a human.
+   points to the review's section for a human. The section's lines apply
+   in one pass: a swap of two labels or a chain never merges tracks, and
+   the review task tells the model so with a swap example
+   (`name_fixes.PROMPT_PARAGRAPH`).
 
 Each phase is published atomically under `logs/meeting-status/`: the macOS
 app shows real progress, the cloud review stage (running, retrying, ok,
