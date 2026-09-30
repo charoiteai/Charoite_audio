@@ -177,9 +177,6 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
 
 _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _HUNK = re.compile(r"^(@+) .*?\+(\d+)(?:,\d+)? @+")
-# Содержимое медиа не читается (двоичное, большое); их ИМЕНА проверяются.
-# Pathspec — от корня репозитория (`top`), а не от текущего каталога.
-_MEDIA_EXCLUDE = tuple(f":(top,exclude,glob,icase)**/*{s}" for s in sorted(SKIP_SUFFIX))
 
 
 def _unquote_path(raw: str) -> str:
@@ -216,11 +213,14 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
     которой нет ни в одном родителе (все N колонок префикса — `+`); строки
     родителей проверены их собственными коммитами или уже опубликованы.
     Разбор — автомат: `+++ b/…` читается только в заголовке файла, в хунке это
-    обычная добавленная строка.
+    обычная добавленная строка. Pathspec нет намеренно: с ним git упрощает
+    историю, и слияние, равное родителю, прятало коммиты влитой ветки (выход 1
+    №541, Sonnet C1). Содержимое медиа-суффиксов отсекается по пути в разборе,
+    их имена проверяет `added_paths`.
     """
     out = git("log", "--format=%x01%H", "-p", "-U0", "--cc", "--text", "--no-renames",
               "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
-              "--no-show-signature", *revs, "--", ":(top)", *_MEDIA_EXCLUDE)
+              "--no-show-signature", *revs, "--")
     sha = path = None
     mode = ""
     parents = 1
@@ -251,7 +251,8 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
             if len(prefix) < parents or line.startswith("\\"):
                 continue
             if prefix == "+" * parents:
-                if sha and path is not None:
+                if sha and path is not None and \
+                        pathlib.PurePosixPath(path).suffix.lower() not in SKIP_SUFFIX:
                     yield sha, path, lineno, line[parents:]
                 lineno += 1
             elif "-" not in prefix:
@@ -314,8 +315,11 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None,
     Находка — место без цитаты: вывод уходит в журналы фоновых сессий.
     """
     def kinds(text: str) -> list[str]:
+        # По строкам: пометка PUBLIC_ALLOW гасит только свою строку сообщения.
         found = ["приватный маркер"] if private and private.search(text) else []
-        return found + public_hits(text)
+        for line in text.splitlines() or [text]:
+            found += [k for k in public_hits(line) if k not in found]
+        return found
 
     metas = commit_meta(revs)
     hits: list[str] = []
@@ -476,6 +480,12 @@ def install_hooks(force: bool) -> int:
         print(f"❌ хуки ставятся из основного checkout на main ({common.parent}), "
               f"а здесь {top} на {branch or 'detached HEAD'}", file=sys.stderr)
         return 1
+    hooks_path = subprocess.run([*_GIT, "config", "core.hooksPath"],
+                                capture_output=True, text=True).stdout.strip()
+    if hooks_path:
+        print(f"❌ задан core.hooksPath ({hooks_path}): хуки легли бы туда, возможно во все "
+              "репозитории машины — снимите его или поставьте хуки руками", file=sys.stderr)
+        return 1
     target = hooks_dir()
     target.mkdir(parents=True, exist_ok=True)
     rc = 0
@@ -490,6 +500,9 @@ def install_hooks(force: bool) -> int:
             print(path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
             rc = 1
             continue
+        if path.exists():
+            path.with_name(f"{name}.bak").write_bytes(path.read_bytes())
+            print(f"{name}: прежний сохранён в {name}.bak")
         tmp = path.with_name(f".{name}.tmp{os.getpid()}")
         tmp.write_text(text, encoding="utf-8")
         tmp.chmod(0o755)
@@ -508,8 +521,10 @@ def _report(title: str, hits: list[str]) -> None:
 
 def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
                 notes: list[str]) -> int:
-    """Общий ход трёх режимов по коммитам. `need_list` — нет списка маркеров вне
-    CI значит отказ (владелец); иначе без списка — только публичные форматы."""
+    """Общий ход трёх режимов по коммитам. `need_list` — нет списка маркеров
+    значит отказ, и `CI` этого не меняет: режимы владельца в CI не зовутся, а
+    переменная из окружения сессии не должна выключать гейт (выход 1 №541,
+    Sonnet I1). Без `need_list` (контрибьютор) — только публичные форматы."""
     for n in notes:
         print(f"  {n}")
     path = markers_path()
@@ -524,7 +539,7 @@ def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
         print("нечего проверять: push только удаляет ветки")
         return 0
     count, hits = scan_commits(revs, private, identity)
-    missing = private is None and need_list and not os.environ.get("CI")
+    missing = private is None and need_list
     if hits:
         _report("PUSH ЗАБЛОКИРОВАН — уходящие коммиты публикуют приватное", hits)
         print("Обезличь и перепиши эти коммиты (rebase), не поверх: промежуточный "

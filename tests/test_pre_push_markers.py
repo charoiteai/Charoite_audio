@@ -206,14 +206,58 @@ def test_range_from_a_subdirectory_still_sees_the_whole_commit(repo):
     assert p.returncode == 1 and "top.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
 
 
+def test_side_branch_hidden_behind_a_treesame_merge_is_still_judged(repo):
+    """Ветка с маркером, убранным следом, влита слиянием, равным первому родителю:
+    pathspec без --full-history пропускал бы её коммиты (выход 1 №541, Sonnet C1)."""
+    git(repo.work, "checkout", "-q", "-b", "side", env=repo.env)
+    repo.write("leak.md", f"{MARKER}\n")
+    bad = repo.commit("leak")
+    (repo.work / "leak.md").unlink()
+    repo.commit("убрал")
+    git(repo.work, "checkout", "-q", "main", env=repo.env)
+    repo.write("feat.md", "своё\n")
+    repo.commit("feat")
+    git(repo.work, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "merge", "-q", "--no-ff",
+        "-m", "merge side", "side", env=repo.env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and f"{bad[:9]} leak.md:1: приватный маркер" in p.stderr, \
+        p.stdout + p.stderr
+
+
+def test_odd_file_names_and_a_last_line_without_newline(repo):
+    """Кавычки, пробел, перевод строки в имени — git берёт путь в C-кавычки;
+    последняя строка без перевода строки — хвост `\\ No newline`."""
+    names = ['кав"ычка.md', "с пробелом.md", "пере\nнос.md"]
+    for n in names:
+        (repo.work / n).write_text(f"x\n{MARKER}", encoding="utf-8")
+    (repo.work / "СНИМОК.PNG").write_text(f"{MARKER}\n", encoding="utf-8")
+    repo.commit("odd")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1
+    for n in names:
+        assert f"{n}:2: приватный маркер" in p.stderr, (n, p.stderr)
+    assert "СНИМОК.PNG:" not in p.stderr, "содержимое медиа-суффикса читать не должен"
+
+
+def test_allow_mark_silences_only_its_own_message_line(repo):
+    repo.write("a.md", "раз\n")
+    sha = repo.commit(f"пример {guard.PUBLIC_ALLOW}\n\nпуть {LEAK_PATH}")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and f"{sha[:9]} сообщение: личный путь" in p.stderr, p.stderr
+
+
 def test_git_error_is_a_refusal_not_a_clean_pass(repo):
     p = guard_run(repo.work, "--range", "deadbeef..HEAD", env=repo.env)
     assert p.returncode == 1
     assert "не смог проверить" in p.stderr
 
 
-def test_range_without_marker_list_refuses_outside_ci(repo, tmp_path):
-    env = _env(tmp_path, CHAROITE_MARKERS=str(tmp_path / "нет-списка.txt"))
+@pytest.mark.parametrize("ci", ["", "1"])
+def test_range_without_marker_list_refuses_even_with_ci_set(repo, tmp_path, ci):
+    """Режимы владельца не читают CI: переменная из окружения сессии не должна
+    превращать гейт в «только публичные форматы»."""
+    env = _env(tmp_path, CHAROITE_MARKERS=str(tmp_path / "нет-списка.txt"),
+               **({"CI": ci} if ci else {}))
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=env)
     assert p.returncode == 1 and "fail-closed" in p.stderr
 
@@ -430,9 +474,17 @@ def test_install_hooks_only_from_the_main_checkout_and_never_clobbers(repo):
     p = guard_run(repo.work, "--install-hooks", "--force", env=repo.env)
     assert p.returncode == 0
     assert (hooks / "pre-push").read_text(encoding="utf-8") == guard.PRE_PUSH_HOOK
+    assert (hooks / "pre-push.bak").read_text(encoding="utf-8") == "#!/bin/bash\n# свой\n"
     assert os.access(hooks / "pre-push", os.X_OK)
     p = guard_run(repo.work, "--install-hooks", env=repo.env)
     assert p.returncode == 0 and p.stdout.count("уже стоит") == 2
+
+
+def test_install_refuses_when_core_hooks_path_is_set(repo):
+    git(repo.work, "config", "core.hooksPath", str(repo.tmp / "global-hooks"), env=repo.env)
+    p = guard_run(repo.work, "--install-hooks", env=repo.env)
+    assert p.returncode == 1 and "core.hooksPath" in p.stderr
+    assert not (repo.tmp / "global-hooks").exists()
 
 
 # ── контрибьюторы: стадия pre-push pre-commit ───────────────────────────────
