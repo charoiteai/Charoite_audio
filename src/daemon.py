@@ -1319,7 +1319,11 @@ def main():
                         cycle_diarization_ms += (
                             time.monotonic() - diarization_started) * 1000
                         mark_stt_stage("planning")
-                    jobs = jobs_for(res, chunk)
+                    # окно без голоса (кандидат без места, №571) — под меткой
+                    # канала только там, где она никого не называет: на
+                    # микрофоне метка канала — подпись владельца
+                    jobs = jobs_for(res, chunk,
+                                    channel_label_neutral=not chan.is_mic(speaker))
                     tracker_state = live_nemotron.diarized_state(split_failed, jobs)
                 else:
                     jobs = [(chunk, None, None)]  # None: метку решит voice_label

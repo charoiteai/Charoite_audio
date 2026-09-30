@@ -370,9 +370,12 @@ def run_live(wav: pathlib.Path, cfg_threshold: float = 0.45,
                 continue
             if res.pieces:
                 for p in res.pieces:
+                    # кусок без голоса (кандидат без места, №571) — метка
+                    # канала, как у демона, а не фантомный «voiceNone»
                     out.append({"start": (i + p.start) / sr,
                                 "end": (i + p.end) / sr,
-                                "speaker": f"voice{p.voice}"})
+                                "speaker": ("channel" if p.voice is None
+                                            else f"voice{p.voice}")})
                 continue
             if res.main is None:
                 # как в демоне: fail-open с канальной меткой, а не пропуск
