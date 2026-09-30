@@ -12,7 +12,6 @@ import os
 import pathlib
 import stat
 import sys
-import urllib.request
 
 import pytest
 
