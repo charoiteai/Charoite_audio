@@ -529,3 +529,352 @@ def test_nested_noise_does_not_collapse_monologue():
     assert len(windows) == 1
     a, b, voice, *_ = windows[0]
     assert voice == 1 and b - a > 2.0
+
+
+# ---------- поток Nemotron (№478 B): тот же итог раскладки, другой источник голоса ----------
+
+from diarize_live import (STREAM_VOICE_BASE, SplitResult, StreamVoices,  # noqa: E402
+                          recon_shares, stream_layout, stream_split, tracker_spans,
+                          tracker_speech, uncovered, with_recon)
+from diarize_live import jobs_for  # noqa: E402
+from stt_runtime import CHANNEL_LABEL_ONLY  # noqa: E402
+
+KNOWN = {1: V_A, 2: V_B, 3: V_C}
+
+#: Одна таблица случаев для трекера и потока: (сегменты (начало, конец, голос) в секундах).
+#: Все голоса известны трекеру, все куски не короче min_segment — вход обоих одинаков.
+TWIN_CASES = [
+    [(0.1, 1.3, 1), (1.5, 2.7, 2)],              # два голоса — окна
+    [(0.2, 2.2, 1)],                             # один голос на весь чанк — целиком
+    [(2.55, 2.99, 1)],                           # придержанный хвост — не распознавать
+    [(0.1, 1.6, 1), (1.9, 2.4, 2)],              # микро-кусок второго — окна, не целиком
+    [(0.1, 0.8, 1)],                             # короче min_stt — исключено
+    [(0.1, 1.4, 1), (1.5, 2.4, 1), (2.55, 2.99, 2)],  # один голос + придержка другого
+    [(0.1, 1.2, 2), (1.3, 2.4, 1)],              # равные доли: главный — кто раньше
+    [(0.1, 2.4, 1), (0.9, 1.4, 3)],              # вложенный чужак
+]
+
+
+@pytest.mark.parametrize("raw", TWIN_CASES)
+def test_the_stream_split_settles_like_the_tracker_on_one_table(raw):
+    """Близнец: хвост `split` и `stream_split` — один контракт `settle`; на одном входе итог
+    совпадает (окна, голоса, главный), расхождение копий ловится здесь, а не на встрече."""
+    t = _tracker()
+    t._centroids = [KNOWN[v] / np.linalg.norm(KNOWN[v]) for v in (1, 2, 3)]
+    t._counts = [10.0, 10.0, 10.0]
+    _wire(t, {(s, e): KNOWN[v] for s, e, v in raw})
+    got_tracker = t.split(_chunk(), channel="bh")
+    got_stream = stream_split([(int(s * SR) / SR, int(e * SR) / SR, v) for s, e, v in raw],
+                              CHUNK, SR, step_s=2.5)
+    assert got_stream == got_tracker
+
+
+def test_the_stream_split_of_one_covering_voice_is_the_whole_chunk_under_it():
+    res = stream_split([(0.2, 2.2, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5)
+    assert res == SplitResult(None, STREAM_VOICE_BASE)
+
+
+def _sv():
+    return StreamVoices(sr=SR, gap_s=60.0)
+
+
+def _plan(sv, segs, *, tracker=SplitResult(None, 1), tracker_jobs=None, origin=0):
+    chunk = _chunk()
+    jobs = tracker_jobs if tracker_jobs is not None else [(chunk, 1, chunk)]
+    return sv.plan(segs, origin=origin, chunk=chunk, tracker=tracker, tracker_jobs=jobs,
+                   neutral=True, step_s=2.5)
+
+
+def test_a_stream_slot_keeps_its_label_while_it_keeps_talking():
+    sv = _sv()
+    a, _ = _plan(sv, [(0, int(2.2 * SR), 0)])
+    b, _ = _plan(sv, [(10 * SR, int(12.2 * SR), 0)], origin=10 * SR)
+    assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
+
+
+def test_a_slot_silent_longer_than_the_gap_gets_a_new_label():
+    """Движок отдал слот другому человеку: имя прежнего не наследуется (r2 Sonnet I1)."""
+    sv = _sv()
+    a, _ = _plan(sv, [(0, int(2.2 * SR), 0)])
+    b, _ = _plan(sv, [(int(62.3 * SR), int(64.5 * SR), 0)], origin=int(62.3 * SR))
+    c, _ = _plan(sv, [(int(66 * SR), int(68.2 * SR), 0)], origin=int(66 * SR))
+    assert (a[0][1], b[0][1], c[0][1]) == (STREAM_VOICE_BASE, STREAM_VOICE_BASE + 1, STREAM_VOICE_BASE + 1)
+
+
+def test_a_gap_of_exactly_the_threshold_keeps_the_label():
+    sv = _sv()
+    _plan(sv, [(0, 2 * SR, 0)])
+    b, _ = _plan(sv, [(62 * SR, 64 * SR, 0)], origin=62 * SR)
+    assert b[0][1] == STREAM_VOICE_BASE
+
+
+def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_echo_check():
+    sv = _sv()
+    tracker = SplitResult([Piece(0, SR, 4, 0, SR), Piece(SR, 3 * SR, 2, SR, 3 * SR)], 2)
+    jobs, fields = _plan(sv, [(0, int(2.9 * SR), 5)], tracker=tracker)
+    ((piece, label, _raw, shares),) = jobs
+    assert label == STREAM_VOICE_BASE
+    assert [v for v, _ in shares] == [2, 4], "каждый голос трекера в куске получает свою долю (I3)"
+    assert shares[0][1] == pytest.approx(2 / 3, abs=1e-3) and shares[1][1] == pytest.approx(1 / 3, abs=1e-3), "чанк целиком: доли от чанка"
+    assert {k: fields[k] for k in ("source", "pieces", "no_recon", "recon_agree")} == {
+        "source": "stream", "pieces": 1, "no_recon": 0, "recon_agree": 0}
+    assert fields["lost_s"] == 0, "чанк целиком покрывает и 0,1 с за окном потока"
+    jobs, fields = _plan(sv, [(0, int(2.9 * SR), 5)], tracker=tracker)
+    assert fields["recon_agree"] == 1, "тот же голос трекера уже связан с той же меткой"
+
+
+@pytest.mark.parametrize("tracker", [None, SplitResult([], 1), SplitResult(None, None),
+                                     SplitResult([Piece(0, SR, None, 0, SR)], None)])
+def test_a_stream_piece_without_a_tracker_voice_does_not_feed_the_echo_check(tracker):
+    sv = _sv()
+    jobs, fields = _plan(sv, [(0, int(2.2 * SR), 0)], tracker=tracker)
+    assert jobs[0][3] == () and fields["no_recon"] == 1
+
+
+def test_a_whole_chunk_tracker_result_gives_its_main_voice_as_the_recon_number():
+    assert tracker_spans(SplitResult(None, 3), CHUNK) == [(0, CHUNK, 3)]
+    assert recon_shares([(0, 10, 1), (5, 30, 2)], 0, 20) == ((2, 0.75), (1, 0.5))
+    assert recon_shares([(0, 10, 1), (10, 20, 2)], 0, 20) == ((1, 0.5), (2, 0.5)), "при равенстве — первый"
+    assert recon_shares([(0, 10, 1)], 10, 20) == (), "касание — не пересечение"
+
+
+def test_a_tracker_fallback_names_pieces_by_the_linked_stream_label():
+    """Поток не успел: кусок трекера подписывается меткой потока, связанной с его голосом, —
+    иначе тот же человек на соседнем куске получил бы второе имя (r2 Sonnet I5)."""
+    sv = _sv()
+    _plan(sv, [(0, int(2.2 * SR), 0)], tracker=SplitResult(None, 2))
+    chunk = _chunk()
+    jobs, fields = sv.plan(None, origin=0, chunk=chunk, tracker=None,
+                           tracker_jobs=[(chunk, 2, chunk), (chunk, 5, chunk),
+                                         (chunk, CHANNEL_LABEL_ONLY, None)],
+                           neutral=True, step_s=2.5)
+    assert [(j[1], j[3]) for j in jobs] == [(STREAM_VOICE_BASE, ((2, 1.0),)), (5, ((5, 1.0),)),
+                                           (CHANNEL_LABEL_ONLY, ())]
+    assert fields == {"source": "tracker"}
+
+
+def test_a_labelled_chunk_where_the_stream_hears_nothing_goes_to_the_tracker():
+    jobs, fields = _plan(_sv(), [])
+    assert [(j[1], j[3]) for j in jobs] == [(1, ((1, 1.0),))], "задания трекера, один голос на подпись и сверку"
+    assert fields == {"source": "tracker", "fallback": "no_speech"}
+
+
+def test_a_stream_chunk_with_all_speech_held_back_is_skipped_only_if_the_tracker_held_it_too():
+    """Придержанный хвост потока принесёт следующий чанк; но если трекер тот же звук
+    распознал бы сейчас, он и распознаётся — покрытие `on` не уже покрытия `off`."""
+    jobs, fields = _plan(_sv(), [(int(2.55 * SR), int(2.99 * SR), 0)], tracker=SplitResult([], 1))
+    assert jobs is None and fields["source"] == "stream" and fields["pieces"] == 0
+    jobs, fields = _plan(_sv(), [(int(2.55 * SR), int(2.99 * SR), 0)], tracker=SplitResult(None, 1))
+    ((piece, label, _raw, _shares),) = jobs
+    assert len(piece) == CHUNK and label == 1 and fields["tracker_pieces"] == 1
+
+
+def test_stream_segments_are_clipped_to_the_chunk():
+    sv = _sv()
+    jobs, _ = _plan(sv, [(5 * SR, 12 * SR, 0), (20 * SR, 21 * SR, 1)], origin=10 * SR,
+                    tracker=SplitResult([Piece(0, 2 * SR, 1, 0, 2 * SR)], 1))
+    ((piece, label, raw, _recon),) = jobs
+    assert len(piece) == CHUNK and label == STREAM_VOICE_BASE, "сегмент за чанком не заводит метку"
+
+
+def test_tracker_jobs_keep_one_number_for_label_and_recon():
+    chunk = _chunk()
+    assert with_recon(None) is None
+    assert with_recon([(chunk, 3, None), (chunk, CHANNEL_LABEL_ONLY, None)]) == [
+        (chunk, 3, None, ((3, 1.0),)), (chunk, CHANNEL_LABEL_ONLY, None, ())]
+
+
+def test_speech_the_tracker_left_without_a_voice_gets_a_stream_label_not_the_channel_label():
+    """Кусок кандидата без места (№571) в режиме `on` подписывается меткой потока: под голой
+    меткой канала подряд идущие такие куски склеились бы в абзац одного «Собеседника», хотя
+    говорили разные люди (advisory выходного круга №571)."""
+    sv = _sv()
+    chunk = _chunk()
+    tracker = SplitResult([Piece(0, CHUNK, None, 0, CHUNK)], None)
+    tracker_jobs = [(chunk, CHANNEL_LABEL_ONLY, chunk)]
+    jobs, _ = sv.plan([(0, int(1.4 * SR), 0), (int(1.5 * SR), int(2.7 * SR), 1)], origin=0, chunk=chunk,
+                      tracker=tracker, tracker_jobs=tracker_jobs, neutral=True, step_s=2.5)
+    assert [j[1] for j in jobs] == [STREAM_VOICE_BASE, STREAM_VOICE_BASE + 1]
+    assert all(j[3] == () for j in jobs), "голоса трекера нет — сверку не кормит"
+
+
+def test_speech_the_stream_did_not_label_goes_to_the_tracker_not_under_the_stream_label():
+    """Поток разметил одну реплику, а трекер слышит ещё одну: чанк не распознаётся целиком под
+    меткой первого — слова второго ушли бы ему (выходной круг 1 №478 B, I2), — и вторая
+    реплика не теряется, а идёт своим заданием трекера (выходной круг 2, I1)."""
+    tracker = SplitResult([Piece(0, int(1.4 * SR), 1, 0, int(1.4 * SR)),
+                           Piece(int(1.6 * SR), int(2.8 * SR), None, int(1.6 * SR), int(2.8 * SR))], 1)
+    jobs, fields = _plan(_sv(), [(0, int(1.4 * SR), 0)], tracker=tracker)
+    (first, second) = jobs
+    assert first[1] == STREAM_VOICE_BASE and len(first[0]) < CHUNK, "окно реплики, а не чанк целиком"
+    assert second[1] == CHANNEL_LABEL_ONLY and len(second[0]) == int(1.2 * SR) and second[3] == ()
+    assert fields["pieces"] == 1 and fields["tracker_pieces"] == 1
+    whole = stream_split([(0.0, 1.4, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5)
+    assert whole.pieces is None, "без речи мимо потока тот же вход — чанк целиком"
+
+
+def test_tracker_speech_is_what_the_tracker_alone_would_transcribe_in_every_state():
+    chunk = _chunk()
+    for res, neutral in [(None, True), (SplitResult(None, 3), True), (SplitResult(None, None), True),
+                         (SplitResult([], 1), True),
+                         (SplitResult([Piece(0, SR, 2, 100, SR - 100), Piece(SR, 2 * SR, None, SR, 2 * SR)], 2), True),
+                         (SplitResult([Piece(0, SR, 2, 100, SR - 100), Piece(SR, 2 * SR, None, SR, 2 * SR)], 2), False)]:
+        jobs = jobs_for(res, chunk, channel_label_neutral=neutral) or []
+        speech = tracker_speech(res, CHUNK, neutral=neutral)
+        assert len(speech) == len(jobs), "одно правило с jobs_for: столько же отрезков, сколько заданий"
+        for (start, end, voice), (_piece, n, _raw) in zip(speech, jobs):
+            assert (voice if voice is not None else CHANNEL_LABEL_ONLY) == n
+    assert tracker_speech(SplitResult(None, 3), CHUNK, neutral=True) == [(0, CHUNK, 3)]
+    assert tracker_speech(SplitResult([], 1), CHUNK, neutral=True) == []
+
+
+def test_uncovered_speech_splits_into_parts_and_lost_samples():
+    speech = [(0, 2 * SR, 1)]
+    half = SR // 2
+    assert uncovered(speech, [(0, int(1.6 * SR))], half) == ([], int(0.4 * SR))
+    assert uncovered(speech, [(0, int(1.5 * SR))], half) == ([(int(1.5 * SR), 2 * SR, 1)], 0)
+    assert uncovered(speech, [(int(0.5 * SR), SR)], half) == ([(0, half, 1), (SR, 2 * SR, 1)], 0)
+    assert uncovered(speech, [(0, SR), (int(0.8 * SR), int(1.9 * SR))], half) == ([], int(0.1 * SR)), (
+        "перекрытые покрытия покрывают вместе")
+    assert uncovered([], [(0, SR)], half) == ([], 0)
+
+
+def test_a_tracker_voice_touching_a_stream_piece_is_not_its_share():
+    assert recon_shares([(0, 5, 1), (5, 100, 2)], 0, 100) == ((2, 0.95),), "5 % куска — касание, не голос"
+
+
+def test_a_stream_segment_wider_than_the_chunk_keeps_its_label_in_the_next_chunk():
+    sv = _sv()
+    a, _ = _plan(sv, [(-SR, 4 * SR, 0)])                               # шире чанка с обеих сторон
+    b, _ = _plan(sv, [(-SR, 7 * SR, 0)], origin=int(2.5 * SR))        # тот же человек дальше
+    assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
+
+
+def test_a_stream_window_does_not_pad_into_speech_a_tracker_job_transcribes():
+    """Трекер слышит [0; 2,0], поток разметил [0; 1,0]: звук 1,0–2,0 уходит заданием трекера,
+    и окно потока не расширяется в него запасом — иначе 1,0–1,25 с распознавалось бы дважды
+    под разными людьми (выходной круг GLM по №478 B, I2)."""
+    tracker = SplitResult([Piece(0, 2 * SR, 1, 0, 2 * SR)], 1)
+    jobs, _ = _plan(_sv(), [(0, SR, 0)], tracker=tracker)
+    (stream_job, tracker_job) = jobs
+    assert stream_job[1] == STREAM_VOICE_BASE and len(stream_job[0]) == SR, "запас окна потока — не дальше 1,0 с"
+    assert tracker_job[1] == STREAM_VOICE_BASE and len(tracker_job[0]) == SR, (
+        "голос трекера уже связан с меткой потока этого же куска — та же подпись")
+    alone = stream_split([(0.0, 1.0, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5, unknown_speech=True)
+    assert alone.pieces[0].end > SR, "без барьера тот же вход падит окно за 1,0 с"
+
+
+# ---------- сохранение речи режима `on` (финальный Opus по №478 B, C1) ----------
+
+def _covered_by_jobs(res, extra, n):
+    """Звук всего, что уйдёт в STT: окна потока с запасом (или чанк целиком) и задания трекера."""
+    stream = ([(0, n)] if res.pieces is None else [(p.start, p.end) for p in res.pieces]) \
+        if (jobs_for(res, np.zeros(n, dtype=np.float32), channel_label_neutral=True) is not None) else []
+    return stream + [(a, b) for a, b, _v in extra]
+
+
+@pytest.mark.parametrize("tracker", [
+    SplitResult(None, 1),                                                           # (а) чанк целиком
+    SplitResult([Piece(int(0.2 * SR), int(1.5 * SR), 1, int(0.2 * SR), int(1.5 * SR))], 1),  # (б)
+])
+def test_a_micro_stream_segment_does_not_swallow_speech_the_tracker_would_transcribe(tracker):
+    """Воспроизведения финального Opus: поток разметил 0,2–0,9 с (короче окна STT) — звук
+    0,2–0,9 с обязан попасть в задание, как попал бы в режиме `off`."""
+    jobs, fields = _plan(_sv(), [(int(0.2 * SR), int(0.9 * SR), 0)], tracker=tracker)
+    assert jobs is not None, "чанк не пропадает целиком"
+    speech = tracker_speech(tracker, CHUNK, neutral=True)
+    total = sum(e - s for s, e, _v in speech)
+    assert sum(len(j[2]) for j in jobs if j[2] is not None) >= total - int(UNLABELLED * SR)
+    assert fields["tracker_pieces"] >= 1 and fields["lost_s"] == 0
+
+
+UNLABELLED = 0.4
+
+
+def _random_case(rng):
+    n = CHUNK
+    kind = rng.integers(0, 5)
+    if kind == 0:
+        tracker = SplitResult(None, int(rng.integers(1, 4)))
+    elif kind == 1:
+        tracker = None
+    elif kind == 2:
+        tracker = SplitResult([], 1)
+    else:
+        pieces, t = [], int(rng.integers(0, SR // 2))
+        while t < n - SR // 4:
+            length = int(rng.integers(SR // 4, SR * 2))
+            end = min(n, t + length)
+            voice = None if rng.random() < 0.2 else int(rng.integers(1, 4))
+            pieces.append(Piece(t, end, voice, t, end))
+            t = end + int(rng.integers(0, SR // 2))
+        tracker = SplitResult(pieces, 1)
+    segs, t = [], int(rng.integers(0, SR))
+    while t < n:
+        length = int(rng.integers(SR // 5, SR * 2))
+        segs.append((t, min(n + SR, t + length), int(rng.integers(0, 3))))
+        t += length + int(rng.integers(0, SR))
+    return tracker, segs
+
+
+def test_stream_layout_keeps_every_sample_of_tracker_speech_in_exactly_one_job():
+    """Свойство на сгенерированных раскладках трекера и потока: речь трекера (что распознал
+    бы `off`) целиком лежит в заданиях, кроме остатков короче порога — они и есть `lost_s`;
+    звук задания трекера не распознаётся ещё и окном потока (ни потери, ни дубля)."""
+    rng = np.random.default_rng(478)
+    for _ in range(400):
+        tracker, segs = _random_case(rng)
+        neutral = bool(rng.random() < 0.7)
+        sv = _sv()
+        speech = tracker_speech(tracker, CHUNK, neutral=neutral)
+        bounded = tracker is not None and tracker.pieces is not None
+        raw = [(s / SR, min(e, CHUNK) / SR, sv._label(slot, s, min(e, CHUNK))) for s, e, slot in segs
+               if min(e, CHUNK) > s]
+        res, extra, lost = stream_layout(raw, speech, CHUNK, SR, step_s=2.5, bounded=bounded)
+        windows = plan_pieces(sorted(raw), CHUNK, SR, step_s=2.5)[0]
+        if not bounded:
+            if windows:
+                assert extra == [] and lost == 0, "без границ речи трекера окна потока решают сами"
+            else:
+                assert [(a, b) for a, b, _v in extra] == [(0, CHUNK)], "окон нет — чанк целиком трекеру"
+            continue
+        covered = _covered_by_jobs(res, extra, CHUNK)
+        rest, _ = uncovered(speech, covered, 1)
+        assert all(e - st < UNLABELLED * SR for st, e, _v in rest), "речь трекера длиннее порога вне заданий"
+        assert sum(e - st for st, e, _v in rest) == lost, "всё непокрытое — ровно lost_s"
+        if extra:
+            assert res.pieces is not None, "рядом с заданием трекера чанк не идёт целиком под меткой потока"
+        stt = [] if not res.pieces else [(pc.start, pc.end) for pc in res.pieces]
+        for a2, b2, _v in extra:
+            for s2, e2 in stt:
+                assert min(b2, e2) - max(a2, s2) <= 0, "звук задания трекера распознаётся ещё и окном потока"
+
+
+def test_a_tracker_edge_shorter_than_the_threshold_is_counted_as_lost():
+    """Два голоса потока — чанк идёт окнами; край речи трекера за окнами короче порога
+    не распознаётся отдельно и виден полем lost_s."""
+    tracker = SplitResult([Piece(0, 3 * SR, 1, 0, 3 * SR)], 1)
+    jobs, fields = _plan(_sv(), [(int(0.35 * SR), int(1.4 * SR), 0), (int(1.6 * SR), int(2.7 * SR), 1)],
+                         tracker=tracker)
+    assert [j[1] for j in jobs] == [STREAM_VOICE_BASE, STREAM_VOICE_BASE + 1]
+    assert fields["lost_s"] == pytest.approx(0.1 + 0.05, abs=0.002), "за запасом окон: 0–0,1 с и 2,95–3,0 с"
+    assert "tracker_pieces" not in fields
+
+
+def test_a_whole_chunk_tracker_result_does_not_split_off_the_tail_of_a_stream_window():
+    """Чанк трекера целиком границ речи не несёт: окно потока распознаёт чанк одним заданием,
+    а хвост и тишина не уходят отдельными кусками короче секунды (круг проверки правок Opus,
+    Sonnet I1)."""
+    jobs, fields = _plan(_sv(), [(0, int(2.2 * SR), 0)], tracker=SplitResult(None, 1))
+    ((piece, label, _raw, _shares),) = jobs
+    assert len(piece) == CHUNK and label == STREAM_VOICE_BASE and "tracker_pieces" not in fields
+    jobs, fields = _plan(_sv(), [(0, int(1.2 * SR), 0), (int(1.8 * SR), int(3.0 * SR), 0)], tracker=None)
+    assert "tracker_pieces" not in fields, "пауза в речи одного голоса — не задание трекера (GLM M2)"
+
+
+def test_lost_speech_is_measured_against_the_padded_windows_that_reach_stt():
+    """Запас окна несёт звук: речь трекера под запасом не потеряна (Sonnet I2)."""
+    tracker = SplitResult([Piece(0, 3 * SR, 1, 0, 3 * SR)], 1)
+    _jobs, fields = _plan(_sv(), [(int(0.1 * SR), int(1.3 * SR), 0), (int(1.5 * SR), int(2.7 * SR), 1)],
+                          tracker=tracker)
+    assert fields["lost_s"] <= 0.3 + 1e-3, "0,1 с до первого окна — под его запасом"

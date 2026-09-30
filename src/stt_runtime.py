@@ -114,13 +114,25 @@ def guarded_split(tracker: object, chunk: object, channel: str) -> tuple[object,
         return None, True
 
 
-def diarization_plan(*, lagging: bool, has_split: bool) -> str:
+def diarization_plan(*, lagging: bool, has_split: bool, channel: str = "",
+                     stream_channel: str | None = None, stream_live: bool = False) -> str:
     """Какой веткой идёт чанк: 'plain' — без трекера, 'shed' — трекер есть,
     но очередь растёт (одна STT-задача с канальной меткой), 'diarize' —
-    позиционная раскладка."""
+    позиционная раскладка, 'stream' — раскладка трекером и метки потока
+    Nemotron (№478 B, режим `on`).
+
+    'stream' — только из 'diarize' (трекер нужен: на его номерах держится
+    сверка эха, он же — запасная раскладка), только на канале потока
+    (`stream_channel` — канал собеседников в `on`, иначе None: микрофонный
+    чанк ждал бы метку, которой нет) и только пока поток идёт (до
+    рукопожатия и после смерти ждать нечего)."""
     if not has_split:
         return "plain"
-    return "diarize" if use_positional_split(lagging=lagging, has_split=has_split) else "shed"
+    if not use_positional_split(lagging=lagging, has_split=has_split):
+        return "shed"
+    if stream_live and stream_channel is not None and channel == stream_channel:
+        return "stream"
+    return "diarize"
 
 
 def heartbeat_due(*, now: float, last: float, every: float = 30.0) -> bool:

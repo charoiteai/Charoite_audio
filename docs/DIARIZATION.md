@@ -539,6 +539,36 @@ nothing in the transcript (default `off`).
   memory probe run outside it, so a slow disk under `logs/` delays the journal,
   not the recording.
 
+### Live labels (`on`)
+
+`sufler.live_nemotron: on` puts the stream's labels into the live transcript for
+the call channel. The rollout is `off` → `shadow` on a live call → `on`.
+
+- **The tracker stays.** `on` requires the segment tracker (`models/diar`): its
+  voice numbers feed the echo check between the microphone and the call
+  channel, and its layout is the fallback. Without it `on` is refused with the
+  reason and no child starts.
+- **The wait.** A call-channel chunk waits for its stream label at most 2 s
+  (`WAIT_CAP_S`) — not under the shadow's lock, on its own journal entry. The
+  label is usually ready 0.8 s of audio after the chunk end (p50, max 1.3 s).
+  A stream that has not started, is dead, is further behind than the cap, or
+  hears no speech in the chunk leaves the chunk to the tracker; the journal line
+  says why (`fallback`).
+- **The layout.** Stream segments go through the same windows and rules as the
+  tracker's (`plan_pieces`, `settle`). Speech the tracker hears and the stream
+  did not label is transcribed as its own tracker piece; stream windows do not
+  pad into it.
+- **Labels.** A stream slot gets a new label after 60 s of silence
+  (`SLOT_GAP_S`): the engine reuses slots for other people, and a name given to a
+  slot must not pass to someone else. Tracker pieces take the stream label linked
+  to their voice; a person named before the stream started keeps that name.
+- **Memory.** Every child — shadow or `on` — runs with the MLX cache capped at
+  512 MB: replaying two recordings, the child's footprint stayed at 0.8–0.9 GB
+  with the same labels (without the cap a live shadow grew to 8.5 GB and was
+  stopped by memory pressure).
+- **The journal** is version 2: every chunk line names its layout source and the
+  fallback reason; `scripts/nemotron_shadow_check.py` reads versions 1 and 2.
+
 ### Your own recording
 
 The synthetic fixture is a floor. A real verdict needs a real meeting — which

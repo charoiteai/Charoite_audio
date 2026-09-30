@@ -62,10 +62,14 @@ def test_daemon_measures_and_sheds_before_positional_split():
     plan_call = loop[loop.index("stt_runtime.diarization_plan("):]
     plan_call = plan_call[:plan_call.index("))") + 2]
     assert "lagging=lagging," in plan_call
-    assert "has_split=stt_runtime.has_split_tracker(spk_tracker))" in plan_call
+    assert "has_split=stt_runtime.has_split_tracker(spk_tracker)," in plan_call
+    # метка захвата, а не подпись канала: `speaker` — «Собеседник», канал потока — «blackhole»
+    # (выходной круг 1 №478 B, C1; поведение — тест на чанке настоящего хаба в test_live_nemotron)
+    assert "channel=placed.seq[0], stream_channel=nemotron_shadow.stream_channel," in plan_call
+    assert "stream_live=nemotron_shadow.live)" in plan_call
     assert 'if plan == "shed":' in loop[policy:split]
-    assert "jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]" in loop[policy:split]
-    assert 'elif plan == "diarize":' in loop[policy:split]
+    assert "jobs = with_recon([(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)])" in loop[policy:split]
+    assert 'elif plan in ("diarize", "stream"):' in loop[policy:split]
     assert "emit(stt_runtime.progress_event(" in loop, "событие прогресса собирается одной функцией (№311)"
     runtime_src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "stt_runtime.py").read_text(encoding="utf-8")
     event = runtime_src[runtime_src.index("def progress_event("):]
@@ -173,6 +177,20 @@ def test_план_диаризации_по_четырём_случаям():
     assert stt_runtime.diarization_plan(lagging=False, has_split=True) == "diarize"
     assert stt_runtime.diarization_plan(lagging=True, has_split=True) == "shed"
     assert stt_runtime.CHANNEL_LABEL_ONLY == -1, "0 — валидный индекс голоса"
+
+
+@pytest.mark.parametrize("lagging, has_split, channel, stream_channel, live, plan", [
+    (False, True, "blackhole", "blackhole", True, "stream"),
+    (False, True, "mic", "blackhole", True, "diarize"),       # микрофон метку потока не ждёт (r2 GLM C1)
+    (False, True, "blackhole", None, True, "diarize"),        # тень: поток не подписывает
+    (False, True, "blackhole", "blackhole", False, "diarize"),  # до рукопожатия и после смерти
+    (True, True, "blackhole", "blackhole", True, "shed"),     # очередь растёт — разгрузка важнее
+    (False, False, "blackhole", "blackhole", True, "plain"),  # без трекера нет ни сверки, ни запаса
+])
+def test_план_stream_только_на_канале_потока_из_раскладки_и_при_живом_потоке(
+        lagging, has_split, channel, stream_channel, live, plan):
+    assert stt_runtime.diarization_plan(lagging=lagging, has_split=has_split, channel=channel,
+                                        stream_channel=stream_channel, stream_live=live) == plan
 
 
 def test_пульс_и_stalled_по_порогам():
