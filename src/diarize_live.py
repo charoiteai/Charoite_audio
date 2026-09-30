@@ -229,6 +229,177 @@ def plan_pieces(raw: list[tuple[float, float, int | None]], chunk_len: int,
              for a, b, v, rs, re in windows], deferred, kept)
 
 
+def settle(pieces: list[Piece], *, talk: dict[int, float], last: int | None,
+           assigned_excluded: bool, unknown_speech: bool) -> SplitResult:
+    """Итог раскладки по окнам — трёхсостоянный контракт `SplitResult`, одно правило для
+    трекера (`SegmentTracker.split`) и потока Nemotron (`stream_split`, №478 B): две копии
+    одного контракта расходились бы молча.
+
+    talk — секунды речи в окнах по номеру голоса: главный голос чанка — больше всех
+    говоривший (при равенстве — раньше попавший в словарь), без окон — `last`. Чанк
+    целиком (`pieces is None`) — только когда голос один, ничего не исключено и нет ни
+    куска без голоса, ни речи без назначения: иначе их слова ушли бы главному."""
+    voiceless = any(p.voice is None for p in pieces)
+    if pieces:
+        main = max(talk, key=lambda k: talk[k]) if talk else last
+        if (len({p.voice for p in pieces}) >= 2 or assigned_excluded
+                or unknown_speech or voiceless):
+            return SplitResult(pieces, main)
+        return SplitResult(None, main)  # один голос, всё покрыто: чанк целиком
+    if assigned_excluded:
+        return SplitResult([], last)    # всё исключено политикой: не распознавать
+    return SplitResult(None, last)      # назначений нет вовсе: честный fail-open
+
+
+def stream_split(raw: list[tuple[float, float, int]], chunk_len: int, sr: int, *,
+                 step_s: float, min_stt: float = 1.0) -> SplitResult:
+    """Раскладка чанка по сегментам потока Nemotron (№478 B): те же окна (`plan_pieces`) и
+    тот же итог (`settle`), что у трекера, — меняется только источник голоса.
+
+    raw — (start_s, end_s, метка) в секундах от начала чанка; у каждого сегмента потока
+    метка есть, поэтому ни кандидатов без места, ни речи без назначения здесь не бывает.
+    Порядок — по началу, как у сегментов трекера: от него зависит, кто главный при
+    равенстве секунд."""
+    raw = sorted(raw, key=lambda r: r[0])
+    windows, deferred, kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s)
+    kept_keys = set(kept)
+    spans: dict[int, list[tuple[float, float]]] = {}
+    for _a, _b, v, rs, re_ in windows:
+        spans.setdefault(v, []).append((rs, re_))
+
+    def window_overlap(s: float, e: float, v: int) -> float:
+        return sum(max(0.0, min(e, re_) - max(s, rs)) for rs, re_ in spans.get(v, ()))
+
+    talk: dict[int, float] = {}
+    for s, e, v in raw:
+        if (s, e, v) not in kept_keys:
+            continue
+        got = window_overlap(s, e, v)
+        if got > 1e-6:
+            talk[v] = talk.get(v, 0.0) + got
+    assigned_excluded = deferred or any(
+        (s, e, v) not in kept_keys or window_overlap(s, e, v) <= 1e-6 for s, e, v in raw)
+    pieces = [Piece(int(a * sr), int(b * sr), v, int(rs * sr), int(re_ * sr))
+              for a, b, v, rs, re_ in windows]
+    return settle(pieces, talk=talk, last=None, assigned_excluded=assigned_excluded,
+                  unknown_speech=False)
+
+
+#: Номера меток потока среди номеров голосов демона: выше любого номера трекера
+#: (1..max_speakers), чтобы имя голоса (`voice_names` демона) не спутало одно с другим.
+STREAM_VOICE_BASE = 1000
+
+#: Задание распознавания в режиме `on`: (кусок для STT, номер подписи, сырой кусок для
+#: высоты голоса, номер сверки каналов). Номер подписи называет голос в стенограмме
+#: (метка потока или голос трекера); номер сверки — всегда голос трекера: на нём держится
+#: эхо-фильтр `owner_voice.Heard` (номер микрофона даёт только трекер). Отрицательный номер
+#: сверки — сверку этот кусок не кормит.
+Job = tuple[np.ndarray, "int | None", "np.ndarray | None", "int | None"]
+
+
+def with_recon(jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) -> list[Job] | None:
+    """Задания трекера (или канала) в форме `Job`: подпись и сверка — один номер, как до
+    потока."""
+    if jobs is None:
+        return None
+    return [(piece, n, raw, n) for piece, n, raw in jobs]
+
+
+def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, int, int]]:
+    """Где в чанке какой голос трекера (сэмплы от начала чанка) — для номера сверки куска
+    потока. Раскладка упала или всё исключено — ничего; куски без голоса — не голос;
+    чанк целиком (`pieces is None`) — голос `main` на весь чанк, если он есть."""
+    if res is None or res.pieces == []:
+        return []
+    if res.pieces is None:
+        return [] if res.main is None else [(0, chunk_len, res.main)]
+    return [(p.raw_start, p.raw_end, p.voice) for p in res.pieces if p.voice is not None]
+
+
+def recon_voice(spans: list[tuple[int, int, int]], start: int, end: int) -> int:
+    """Номер сверки куска [start, end): голос трекера, больше всех пересёкшийся с ним по
+    времени (при равенстве — первый); пересечения нет — `CHANNEL_LABEL_ONLY`."""
+    got: dict[int, int] = {}
+    for s, e, v in spans:
+        overlap = min(e, end) - max(s, start)
+        if overlap > 0:
+            got[v] = got.get(v, 0) + overlap
+    return max(got, key=lambda v: got[v]) if got else CHANNEL_LABEL_ONLY
+
+
+class StreamVoices:
+    """Метки потока Nemotron одной встречи (№478 B, режим `on`) — живут в нити STT.
+
+    Метка — `STREAM_VOICE_BASE + поколение`, а не номер слота: движок отдаёт слот другому
+    человеку, когда прежний замолчал, и имя, данное слоту (`name_loop`), уверенно подписало
+    бы чужую речь. Слот, молчавший дольше `gap_s`, получает новую метку: лишнее дробление
+    дешевле чужого имени, итог всё равно даёт пересборка. Молчанием считается и время, пока
+    куски шли мимо потока (фолбэк): реестр видит только разложенные потоком чанки.
+
+    Таблица «голос трекера → последняя метка потока»: кусок, разложенный трекером (поток не
+    успел, умер или молчит), берёт метку из неё — иначе тот же человек на соседнем куске
+    назывался бы вторым именем; связи нет — номер трекера. Заполняет её тот же расчёт, что
+    даёт номер сверки."""
+
+    def __init__(self, *, sr: int, gap_s: float):
+        self._sr = sr
+        self._gap = round(gap_s * sr)
+        self._slots: dict[int, list[int]] = {}      # слот → [метка, конец речи на оси хаба]
+        self._generation = 0
+        self._link: dict[int, int] = {}             # голос трекера → последняя метка потока
+
+    def _label(self, slot: int, start: int, end: int) -> int:
+        cur = self._slots.get(slot)
+        if cur is None or start - cur[1] > self._gap:
+            cur = self._slots[slot] = [STREAM_VOICE_BASE + self._generation, end]
+            self._generation += 1
+        cur[1] = max(cur[1], end)
+        return cur[0]
+
+    def fallback(self, jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) \
+            -> list[Job] | None:
+        """Задания трекера, подписанные через таблицу связей; номер сверки — голос трекера."""
+        if jobs is None:
+            return None
+        return [(piece, self._link.get(n, n) if n is not None and n >= 0 else n, raw, n)
+                for piece, n, raw in jobs]
+
+    def plan(self, segs: list[tuple[int, int, int]] | None, *, origin: int, chunk: np.ndarray,
+             tracker: SplitResult | None,
+             tracker_jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None,
+             neutral: bool, step_s: float, min_stt: float = 1.0) -> tuple[list[Job] | None, dict]:
+        """Задания чанка и поля строки журнала. segs — сегменты потока (начало, конец, слот)
+        на оси хаба, задевающие чанк с началом `origin`; None — метки нет (решила тень).
+        Пусто — поток в чанке речи не слышит: подписывать нечем, куски — трекеру."""
+        if segs is None:
+            return self.fallback(tracker_jobs), {"source": "tracker"}
+        if not segs:
+            return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
+        n = len(chunk)
+        raw = [((max(s, origin) - origin) / self._sr, (min(e, origin + n) - origin) / self._sr,
+                self._label(slot, s, e)) for s, e, slot in sorted(segs)
+               if min(e, origin + n) > max(s, origin)]
+        res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt)
+        jobs = jobs_for(res, chunk, channel_label_neutral=neutral)
+        if jobs is None:
+            return None, {"source": "stream", "pieces": 0, "no_recon": 0, "recon_agree": 0}
+        bounds = ([(p.raw_start, p.raw_end) for p in heard_pieces(res, channel_label_neutral=neutral)]
+                  if res.pieces else [(0, n)])
+        spans = tracker_spans(tracker, n)
+        out: list[Job] = []
+        no_recon = agree = 0
+        for (piece, label, raw_piece), (a, b) in zip(jobs, bounds):
+            recon = recon_voice(spans, a, b)
+            if recon < 0:
+                no_recon += 1
+            elif label is not None and label >= STREAM_VOICE_BASE:
+                agree += self._link.get(recon) == label
+                self._link[recon] = label
+            out.append((piece, label, raw_piece, recon))
+        return out, {"source": "stream", "pieces": len(out), "no_recon": no_recon,
+                     "recon_agree": agree}
+
+
 def tracker_kind(seg_model: pathlib.Path, emb_model: pathlib.Path) -> str | None:
     """Каким трекером работать: «segments», «chunks» или никаким.
 
@@ -545,7 +716,7 @@ class SegmentTracker:
         # Существующие голоса: kept-куски дообучают центроид (вес — секунды),
         # но в talk идут только куски из окон — иначе одинокий микро-кусок
         # выбирал бы метку целому чанку в обход min_stt (ревью 15.08).
-        talk: dict[int, float] = {}
+        talk: dict[int, float] = {}          # номер голоса (1..N) → секунды в окнах
         for start, end, seconds, emb, voice in entries:
             if voice is None or (start, end, voice) not in kept_keys:
                 continue
@@ -556,7 +727,7 @@ class SegmentTracker:
                 self._learn(idx, emb, weight=seconds)
             got = window_overlap(start, end, voice)
             if got > 1e-6:
-                talk[idx] = talk.get(idx, 0.0) + got
+                talk[idx + 1] = talk.get(idx + 1, 0.0) + got
 
         # Окно кандидата, не получившего слот, остаётся куском без голоса
         # (voice None), а не выбрасывается: речь чужая, но это речь (№571 —
@@ -572,26 +743,15 @@ class SegmentTracker:
             v is not None and ((s, e, v) not in kept_keys
                                or not in_window(s, e, v))
             for s, e, _sec, _emb, v in entries)
-        # Кусок без голоса тоже запрещает фолбэк (ревью 15.08 ×2 —
-        # отвергнутый лимитом кандидат — чужая речь, подписать её main —
-        # подмена автора), но пропуска не требует: его судьбу решает jobs_for.
-        voiceless = any(p.voice is None for p in pieces)
         # Кусок без назначения (короткий незнакомец): при наличии окон он
         # тоже запрещает фолбэк — его слова уехали бы главному; но чанк из
         # одних таких кусков остаётся честным fail-open, а не пропуском.
         unknown_speech = any(v is None for _s, _e, _sec, _emb, v in entries)
-
-        if pieces:
-            main = (max(talk, key=lambda k: talk[k]) + 1) if talk else last
-            if main is not None:
-                self._last_by_channel[channel] = main
-            if (len({p.voice for p in pieces}) >= 2 or assigned_excluded
-                    or unknown_speech or voiceless):
-                return SplitResult(pieces, main)
-            return SplitResult(None, main)  # один голос, всё покрыто: чанк целиком
-        if assigned_excluded:
-            return SplitResult([], last)    # всё исключено политикой: не распознавать
-        return SplitResult(None, last)      # назначений нет вовсе: честный fail-open
+        res = settle(pieces, talk=talk, last=last, assigned_excluded=assigned_excluded,
+                     unknown_speech=unknown_speech)
+        if pieces and res.main is not None:
+            self._last_by_channel[channel] = res.main
+        return res
 
     def label(self, chunk: np.ndarray, channel: str = "_default") -> int | None:
         """Номер голоса (1..N) для чанка; None — пока сказать нечего.

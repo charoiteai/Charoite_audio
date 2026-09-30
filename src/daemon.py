@@ -860,13 +860,19 @@ def main():
     # «первый голос mic» ловил лектора из видео).
     spk_tracker = None
     voice_names: dict[int, str] = {}
+    # Голоса трекера, чья речь дошла до стенограммы, — счёт `speakers` сайдкара. Отдельно от
+    # `voice_names`: в режиме `on` (№478 B) имена получают метки потока, а подсказка числа
+    # голосов пересборке — по-прежнему счёт трекера.
+    tracker_voices: set[int] = set()
+    stream_voices = None           # метки потока Nemotron в режиме `on` (diarize_live.StreamVoices)
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
     emb_model = _root() / MODELS_DIR / "diar" / "embedding.onnx"
     seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
-        from diarize_live import (SegmentTracker, SpeakerTracker,
+        from diarize_live import (SegmentTracker, SpeakerTracker, StreamVoices,
                                   availability_note, jobs_for, tracker_kind,
-                                  tracker_step_s)
+                                  tracker_step_s, with_recon)
+        stream_voices = StreamVoices(sr=hub.sr, gap_s=live_nemotron.SLOT_GAP_S)
         # сначала честный ответ: почему диаризации не будет или почему она
         # будет хуже обещанной. Модели в поставку не входят, и раньше этот
         # случай проходил вообще без сообщения
@@ -947,6 +953,7 @@ def main():
                               is_mic=chan.is_mic(channel_speaker), now=time.monotonic())
         if n is None:
             return channel_speaker
+        tracker_voices.add(n)
         name = _owner_label(n, channel_speaker, _voice_name(n))
         _note_pitch(name, chunk)
         return name
@@ -1294,21 +1301,27 @@ def main():
                 # распознавать по окнам. Голос в jobs — номером: имя
                 # заводится только после непустого текста, чтобы пустое
                 # распознавание не плодило «Собеседника-призрака».
-                jobs: list[tuple[object, int | None, object | None]] | None
+                # Задание — (кусок, номер подписи, сырой кусок, номер сверки): подпись
+                # называет голос в стенограмме, сверка кормит эхо-фильтр каналов
+                # (owner_voice.Heard). Без потока это один номер трекера; в режиме `on`
+                # подпись — метка потока, сверка — голос трекера (№478 B).
+                jobs: list[tuple[object, int | None, object | None, int | None]] | None
                 # выбор ветки — чистой функцией: инлайновое условие мутатор
                 # ломал в «диаризация выключена навсегда» без единого красного
                 # теста (ревью 21.08, GLM)
                 plan = stt_runtime.diarization_plan(
                     lagging=lagging,
-                    has_split=stt_runtime.has_split_tracker(spk_tracker))
+                    has_split=stt_runtime.has_split_tracker(spk_tracker),
+                    channel=speaker, stream_channel=nemotron_shadow.stream_channel,
+                    stream_live=nemotron_shadow.live)
                 if plan == "shed":
                     # Позиционная раскладка может породить несколько STT-задач
                     # из одного чанка. Когда очередь уже растёт, важнее один
                     # непрерывный текст с честной канальной меткой; финальный
                     # offline rebuild вернёт точных говорящих по записи.
-                    jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]
+                    jobs = with_recon([(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)])
                     tracker_state = "shed"
-                elif plan == "diarize":
+                elif plan in ("diarize", "stream"):
                     mark_stt_stage("diarization")
                     diarization_started = time.monotonic()
                     try:
@@ -1322,16 +1335,35 @@ def main():
                     # окно без голоса (кандидат без места, №571) — под меткой
                     # канала только там, где она никого не называет: на
                     # микрофоне метка канала — подпись владельца
-                    jobs = jobs_for(res, chunk,
-                                    channel_label_neutral=chan.label_names_nobody(speaker))
-                    tracker_state = live_nemotron.diarized_state(split_failed, jobs)
+                    tracker_jobs = jobs_for(res, chunk,
+                                            channel_label_neutral=chan.label_names_nobody(speaker))
+                    tracker_state = live_nemotron.diarized_state(split_failed, tracker_jobs)
+                    jobs = with_recon(tracker_jobs)
                 else:
-                    jobs = [(chunk, None, None)]  # None: метку решит voice_label
+                    jobs = [(chunk, None, None, None)]  # None: метку решит voice_label
                     tracker_state = "off"
                 # строка тени — на КАЖДЫЙ принятый чанк: после выбора плана и
-                # раскладки, до пропуска (вход 2 по №478, I2); не ждёт и не бросает;
-                # тени нет — NO_SHADOW, проверок на None в цикле нет
-                nemotron_shadow.note_chunk(placed, tracker_state)
+                # раскладки, до пропуска (вход 2 по №478, I2); тени нет — NO_SHADOW,
+                # проверок на None в цикле нет. Режим `on` (план stream): трекер уже
+                # разложил чанк (его номера — сверка эха и запасная раскладка), кусок
+                # ждёт метку потока не дольше WAIT_CAP_S; не дождался — задания трекера
+                # под метками связей. Строку пишет label_chunk — одну, после раскладки.
+                if plan == "stream":
+                    mark_stt_stage("diarization")      # этап, который знает приложение
+                    stream_started = time.monotonic()
+                    try:
+                        jobs = nemotron_shadow.label_chunk(
+                            placed, tracker_state,
+                            lambda segs, res=res, tracker_jobs=tracker_jobs:
+                                stream_voices.plan(segs, origin=int(placed.start), chunk=chunk,
+                                                   tracker=res, tracker_jobs=tracker_jobs,
+                                                   neutral=chan.label_names_nobody(speaker),
+                                                   step_s=spk_tracker.step_s))
+                    finally:
+                        cycle_diarization_ms += (time.monotonic() - stream_started) * 1000
+                        mark_stt_stage("planning")
+                else:
+                    nemotron_shadow.note_chunk(placed, tracker_state)   # не ждёт и не бросает
                 if jobs is None:
                     continue  # вся речь чанка исключена — пропуск
 
@@ -1340,7 +1372,7 @@ def main():
                 # при откате (замечание ревью 15.08)
                 rows: list[tuple[str, str, bool]] = []   # (метка, текст, из головы чанка?)
                 pitch_best: dict[str, tuple[int, object]] = {}
-                for job_index, (piece, n, raw_piece) in enumerate(jobs):
+                for job_index, (piece, n, raw_piece, recon) in enumerate(jobs):
                     mark_stt_stage("transcription")
                     transcription_started = time.monotonic()
                     try:
@@ -1368,7 +1400,7 @@ def main():
                     # голоса, а в чанковом режиме учёт и так шёл после
                     # фильтра — две ветки считали по-разному (ревью 19.08).
                     # Границы — сырые, без pad-запаса: в запас попадает сосед.
-                    if n is not None and n >= 0:
+                    if recon is not None and recon >= 0:
                         # НЕ `heard`: этим именем выше по функции назван словарь
                         # автостопа, и локальная переменная его затеняла. Питон
                         # делает `heard` локальной для всего stt_loop — отметка
@@ -1379,15 +1411,18 @@ def main():
                         voiced = raw_piece if raw_piece is not None else piece
                         # канал — по СЫРОЙ метке захвата: обнулённый при коллизии
                         # имени (обнулённая подпись) травил счётчики (хвост 20.08, DS 5d)
-                        heard_by_channel.note(n, len(voiced) / hub.sr,
+                        # номер СВЕРКИ: эхо собеседника в микрофоне узнаётся по
+                        # голосу трекера, метка потока его не знает (№478 B)
+                        heard_by_channel.note(recon, len(voiced) / hub.sr,
                                               is_mic=chan.is_mic(speaker),
                                               now=time.monotonic())
+                        tracker_voices.add(recon)
                     # Текстовые пары (№93): фраза, совпавшая с недавней
                     # фразой другого канала, считается в ТЕЛЕМЕТРИЮ
                     # owner-pulse; на подпись не влияет — включение пометки
                     # отдельным решением по полевым данным.
                     heard_by_channel.note_text(
-                        n if n is not None and n >= 0 else None, text,
+                        recon if recon is not None and recon >= 0 else None, text,
                         is_mic=chan.is_mic(speaker), now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
@@ -1469,7 +1504,7 @@ def main():
                     # закрывает первые секунды, когда своя реплика ещё
                     # нейтральна (DS r1/r2 по #459).
                     if instant_on and toggles["hints"] \
-                            and (not chan.is_mic(speaker) or _mic_voice_is_stranger(n)) \
+                            and (not chan.is_mic(speaker) or _mic_voice_is_stranger(recon)) \
                             and not _is_owner_line(name) \
                             and question_filter.looks_question(added):
                         fire_question(added)
@@ -3340,15 +3375,18 @@ def main():
             emit_error("автостоп: приложение не ответило (старая версия?) — "
                        "запись продолжается, остановите её кнопкой «Стоп»")
 
-    # Тень потока Nemotron (№478, `sufler.live_nemotron: shadow`): свой процесс
-    # движка слушает канал собеседников и пишет метки в журнал рядом с тем, что
-    # сделал живой трекер; стенограмма не меняется. До слоёв: распознавание видит
-    # тень с первого чанка (пока модель грузится — строка «до старта потока»).
+    # Поток Nemotron (№478, `sufler.live_nemotron`): свой процесс движка слушает
+    # канал собеседников и пишет метки в журнал рядом с тем, что сделал живой
+    # трекер; в тени (`shadow`) стенограмма не меняется, в `on` куски канала
+    # собеседников подписываются метками потока (план `stream`). До слоёв:
+    # распознавание видит поток с первого чанка (пока модель грузится — строка
+    # «до старта потока»).
     nemotron_shadow = live_nemotron.NO_SHADOW
     try:
         nemotron_shadow = live_nemotron.start(
             cfg, root=_root(), stamp=tr.stamp, sr=hub.sr,
             labels={c.label for c in hub.captures},
+            split_tracker=stt_runtime.has_split_tracker(spk_tracker),
             say=lambda text: emit({"type": "status", "text": text}))
         nemotron_shadow.attach(hub)
     except Exception as e:  # noqa: BLE001 — тень вспомогательна: встреча идёт без неё
@@ -3531,7 +3569,7 @@ def main():
             # СЛИЯНИЕ, не дамп: во время встречи сайдкар уже пишет след канала,
             # и дамп одной строкой стирал бы его (Critical DS и GLM по №234)
             live_sidecar.merge(pathlib.Path(tr.path),
-                               {"speakers": len(voice_names), "names": tr.names(),
+                               {"speakers": len(tracker_voices), "names": tr.names(),
                                 "minutes_sha256": minutes_sha["v"],
                                 # посекундный штамп встречи: после наката темы имя
                                 # файла его теряет, а пересборке он нужен точно —

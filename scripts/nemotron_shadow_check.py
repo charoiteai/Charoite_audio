@@ -66,6 +66,8 @@ ZERO_COUNTS = ("killed_after_grace", "killed_at_close", "front_malformed", "seg_
                "message_unknown", "message_out_of_state", "nonjson", "callback_errors")
 #: Метка «нет голоса / нет слота» в матрице.
 NONE = "—"
+#: Версии журнала, которые сверка читает: 1 — тень PR A, 2 — источник раскладки и фолбэк (PR B).
+ACCEPTED_V = (1, 2)
 
 
 class Refused(Exception):
@@ -82,6 +84,8 @@ class Journal:
     end: dict
     sr: int
     mems: list[dict] = dataclasses.field(default_factory=list)
+    v: int = 1
+    mode: str = live_nemotron.SHADOW
 
     @property
     def frame_s(self) -> float:
@@ -132,8 +136,11 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
         raise Refused(f"в журнале нет строк: {', '.join(missing)}")
     if last_type != "end":
         raise Refused(f"после end идут строки {last_type!r}: журнал не закончен")
+    if header.get("v") not in ACCEPTED_V:
+        raise Refused(f"версия журнала {header.get('v')!r}, сверка читает {ACCEPTED_V}")
     return Journal(ready=ready, start0=int(start["start0"]), fronts=fronts, segs=segs,
-                   chunks=chunks, end=end, sr=int(header["sr"]), mems=mems)
+                   chunks=chunks, end=end, sr=int(header["sr"]), mems=mems, v=int(header["v"]),
+                   mode=str(header.get("mode", live_nemotron.SHADOW)))
 
 
 # ------------------------------------------------------------------ годность
@@ -151,8 +158,10 @@ def check_frames(j: Journal) -> None:
 
 
 #: Исходы, которых в годном прогоне записи нет: чанк не дождался метки (у живого звонка —
-#: законны, там тень умирает от давления; сверка прогона их не прощает).
-LOST_OUTCOMES = (live_nemotron.TIMEOUT, live_nemotron.LATE, live_nemotron.DEAD_STREAM)
+#: законны, там тень умирает от давления, а в `on` чанк сдаётся по потолку; сверка прогона
+#: их не прощает).
+LOST_OUTCOMES = (live_nemotron.TIMEOUT, live_nemotron.LATE, live_nemotron.DEAD_STREAM,
+                 live_nemotron.FALLBACK)
 
 
 def validity(j: Journal, *, fed_expected: int | None = None, noted_expected: int | None = None) -> list[str]:
@@ -264,6 +273,30 @@ def live_waits(j: Journal) -> dict:
     behind = [float(c["behind_s"]) for c in labeled if c.get("behind_s") is not None]
     return {"wait_s": quantiles(waits), "wait_share": share_over(waits),
             "behind_s": quantiles(behind)}
+
+
+def sources(j: Journal) -> dict:
+    """Режим `on` (журнал v2): чем разложены чанки. Доля фолбэков — чанки, разложенные
+    трекером, с причинами; ожидание метки — только у дождавшихся (`labeled`), фолбэки —
+    отдельной долей: время до «сдался» не время метки. Сверка каналов — доля кусков потока
+    без номера сверки (их эхо фильтр не видит) и доля, чей голос трекера уже был связан с
+    той же меткой потока (устойчивость номера сверки)."""
+    waited = [c for c in j.chunks if c.get("source") == live_nemotron.SOURCE_STREAM
+              or "fallback" in c]
+    if not waited:
+        return {"n": 0}
+    tracker = [c for c in waited if c.get("source") == live_nemotron.SOURCE_TRACKER]
+    pieces = sum(int(c.get("pieces", 0)) for c in waited)
+    no_recon = sum(int(c.get("no_recon", 0)) for c in waited)
+    agree = sum(int(c.get("recon_agree", 0)) for c in waited)
+    waits = [float(c["wait_s"]) for c in waited if c["outcome"] == live_nemotron.LABELED]
+    return {"n": len(waited),
+            "fallback_share": round(len(tracker) / len(waited), 4),
+            "fallback_reasons": dict(collections.Counter(c.get("fallback", "?") for c in tracker)),
+            "wait_labeled_s": quantiles(waits),
+            "stream_pieces": pieces,
+            "no_recon_share": round(no_recon / pieces, 4) if pieces else None,
+            "recon_agree_share": round(agree / (pieces - no_recon), 4) if pieces > no_recon else None}
 
 
 def step_cost(timing: typing.Iterable[dict], step: int, sr: int) -> dict:
@@ -500,6 +533,8 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         "outcomes": outcomes(j),
         "a1_label_lag_audio": lag,
         "a4_live_waits": live_waits(j),
+        "journal": {"v": j.v, "mode": j.mode},
+        "sources": sources(j),
         "b_slots": {
             "slots": sorted({lab for _, _, lab in stream}),
             "voices_final": len({lab for _, _, lab in fin}),

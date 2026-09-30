@@ -59,7 +59,7 @@ def test_daemon_asks_the_labels_instead_of_comparing_strings():
     assert src.count("chan.is_mic(") >= 6 and "chan.is_owner_line(" in src and "chan.signed_for(" in src
     i = src.index("fire_question(added)")          # единственный вызов; якорь — код, не комментарий
     gate = src[max(0, i - 1500):i]
-    assert "not chan.is_mic(speaker) or _mic_voice_is_stranger(n)" in gate, \
+    assert "not chan.is_mic(speaker) or _mic_voice_is_stranger(recon)" in gate, \
         "микрофон стреляет только по голосу, который положительно не владелец (DS r1/r2)"
 
 
