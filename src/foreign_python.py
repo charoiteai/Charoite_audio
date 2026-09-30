@@ -22,10 +22,12 @@ pip ребёнка запускает только `run_pip` (№484): ему `-
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import pathlib
 import subprocess
+import threading
 import time
 import typing
 
@@ -180,6 +182,40 @@ KILL_WAIT_S = 5.0
 EXIT_WAIT_S = 5.0
 #: Шаг опроса рукопожатия: отмена и потолок видны не позже чем через него.
 HANDSHAKE_POLL_S = 0.2
+
+#: Живые долгие дети процесса: pid → `Popen`. Ссылка сильная — хозяин, потерявший
+#: `StreamProcess`, не прячет ребёнка от уборки при выходе (`Popen` при сборке
+#: мусора ребёнка не убивает). Вышедшие вычищаются при следующей регистрации.
+_children: dict[int, subprocess.Popen] = {}
+_children_lock = threading.Lock()
+_at_exit_armed = False
+
+
+def _adopt(proc: subprocess.Popen) -> None:
+    """Ребёнок `spawn_stream` — в реестр процесса; первый ребёнок взводит уборку при выходе.
+
+    Смерть долгого ребёнка при выходе родителя держится здесь, а не у хозяина: выход
+    мимо его `finally` (исключение до `try`, `sys.exit`, SIGTERM с обработчиком) проходит
+    через `atexit` (выход по №533). SIGKILL родителя `atexit` не видит — №540."""
+    global _at_exit_armed
+    with _children_lock:
+        for pid, known in list(_children.items()):
+            if known.poll() is not None:
+                del _children[pid]
+        _children[proc.pid] = proc
+        if not _at_exit_armed:
+            atexit.register(_kill_children)
+            _at_exit_armed = True
+
+
+def _kill_children() -> None:
+    """Выход процесса: живым детям — SIGKILL без ожидания. Снимок реестра без замка:
+    главная нить могла выйти, держа его (Ctrl-C внутри `_adopt`)."""
+    for proc in list(_children.values()):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 class StreamProcess:
@@ -345,6 +381,7 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
         return None, Outcome(FAILED, reason=f"не запустился: {e}")
     finally:
         os.close(err_fd)
+    _adopt(proc)
     stream = StreamProcess(proc, stderr_path)
     try:
         return _await_handshake(proc, stream, stderr_path=stderr_path,

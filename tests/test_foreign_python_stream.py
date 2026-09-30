@@ -164,3 +164,101 @@ def test_kill_nowait_kills_without_reaping(tmp_path):
     got = stream.finish(10)
     assert got.kind == fp.FAILED and got.reason == f"код {-9}: без вывода"
     assert stream.alive() is False
+
+
+# ------------------------------------------------ ребёнок не переживает родителя (№533)
+
+#: Родитель — настоящий процесс: заводит ребёнка через дверь, печатает его pid и выходит
+#: названным способом. Ребёнок держит рукопожатие и спит, не читая вход, — как модель,
+#: повисшая в `feed`: EOF его не будит, уйти он может только убитым.
+PARENT = '''
+import gc, json, os, pathlib, signal, sys, threading, time
+sys.path.insert(0, {src!r})
+import foreign_python as fp
+how, child, err = sys.argv[1], sys.argv[2], sys.argv[3]
+stop = threading.Event()
+signal.signal(signal.SIGTERM, lambda *_: stop.set())    # как у демона: SIGTERM — штатный стоп
+stream, out = fp.spawn_stream(sys.executable, pathlib.Path(child), [], stderr_path=pathlib.Path(err),
+                              handshake_timeout=20.0, role="audio",
+                              on_message=lambda m: None, on_eof=lambda: None)
+print(stream.pid, flush=True)
+if how == "raise":
+    raise RuntimeError("слой не завёлся")
+if how == "sigterm":
+    stop.wait(30)
+if how == "dropped":
+    del stream
+    gc.collect()
+sys.exit(0)
+'''
+
+HUNG = READY + 'time.sleep(60)\n'
+
+
+def _gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("how", ["exit", "raise", "sigterm", "dropped"])
+def test_a_hung_child_dies_with_its_parent_however_the_parent_leaves(tmp_path, how):
+    """Выход родителя мимо `finally` хозяина (исключение до `try`, `sys.exit`, SIGTERM с
+    обработчиком, хозяин бросил ссылку) — уборка двери при выходе убивает ребёнка."""
+    import subprocess
+    parent = tmp_path / "parent.py"
+    parent.write_text(PARENT.format(src=str(SRC)), encoding="utf-8")
+    child = _child(tmp_path, HUNG)
+    proc = subprocess.Popen([sys.executable, str(parent), how, str(child), str(tmp_path / "child.err")],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    pid = None
+    try:
+        pid = int(proc.stdout.readline())
+        if how == "sigterm":
+            proc.send_signal(15)
+        proc.wait(20)
+        deadline = time.monotonic() + 2.0
+        while not _gone(pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert _gone(pid), f"ребёнок пережил родителя ({how})"
+    finally:
+        proc.kill()
+        if pid is not None and not _gone(pid):
+            os.kill(pid, 9)
+
+
+def test_the_registry_keeps_a_child_whose_owner_dropped_it(tmp_path):
+    """Реестр держит `Popen` сильной ссылкой: хозяин бросил ребёнка, сборка мусора
+    прошла — уборка при выходе его всё равно видит."""
+    import gc
+    import subprocess
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    pid = proc.pid
+    try:
+        fp._adopt(proc)
+        del proc
+        gc.collect()
+        assert pid in fp._children
+        fp._kill_children()
+        fp._children[pid].wait(10)
+    finally:
+        if not _gone(pid):
+            os.kill(pid, 9)
+        fp._children.pop(pid, None)
+
+
+def test_the_registry_forgets_children_that_left(tmp_path):
+    import subprocess
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait(10)
+    fp._adopt(gone)
+    stays = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fp._adopt(stays)
+        assert gone.pid not in fp._children and stays.pid in fp._children
+    finally:
+        stays.kill()
+        stays.wait(10)
+        fp._children.pop(stays.pid, None)

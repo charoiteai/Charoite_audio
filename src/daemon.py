@@ -3535,8 +3535,13 @@ def main():
                 MeetingStatusStore(_root()).failed(tr.path, f"не удалось запустить обработку: {e}")
             except Exception as e2:  # noqa: BLE001 — статус отказа вспомогателен; запись финализируем всё равно
                 print(f"статус отказа фона не записан: {e2}", file=sys.stderr)
-        hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
-        emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
+        try:
+            hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
+            emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
+        finally:
+            # тень — последней и даже если хаб упал: строка end журнала тени ждёт конца
+            # отсрочки, отсчёт шёл с stop() выше; ребёнка при выходе добивает дверь (№533)
+            nemotron_shadow.close(live_nemotron.STOP_GRACE_S)
 
 
 if __name__ == "__main__":
