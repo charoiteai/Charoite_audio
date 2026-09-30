@@ -67,12 +67,14 @@ class GitError(Exception):
 
 # Настройки владельца не должны менять то, что страж читает: кавычки в
 # кириллических путях, цвет, скрытый дифф корневого коммита.
-_GIT = ("git", "-c", "core.quotepath=false", "-c", "color.ui=never",
+# `--no-replace-objects`: refs/replace меняет то, что показывает log, но не то,
+# что уходит push-ем — страж обязан видеть настоящие объекты.
+_GIT = ("git", "--no-replace-objects", "-c", "core.quotepath=false", "-c", "color.ui=never",
         "-c", "log.showRoot=true")
 
 
-def git(*args: str) -> bytes:
-    p = subprocess.run([*_GIT, *args], capture_output=True)
+def git(*args: str, stdin: bytes | None = None) -> bytes:
+    p = subprocess.run([*_GIT, *args], capture_output=True, input=stdin)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
         raise GitError(f"git {' '.join(args[:2])}: {err[:300] or f'код {p.returncode}'}")
@@ -213,12 +215,13 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
     которой нет ни в одном родителе (все N колонок префикса — `+`); строки
     родителей проверены их собственными коммитами или уже опубликованы.
     Разбор — автомат: `+++ b/…` читается только в заголовке файла, в хунке это
-    обычная добавленная строка. Pathspec нет намеренно: с ним git упрощает
+    обычная добавленная строка. Двоичные по мнению git файлы судит
+    `binary_hits` — по содержимому блоба, а не по диффу. Pathspec нет намеренно: с ним git упрощает
     историю, и слияние, равное родителю, прятало коммиты влитой ветки (выход 1
     №541, Sonnet C1). Содержимое медиа-суффиксов отсекается по пути в разборе,
     их имена проверяет `added_paths`.
     """
-    out = git("log", "--format=%x01%H", "-p", "-U0", "--cc", "--text", "--no-renames",
+    out = git("log", "--format=%x01%H", "-p", "-U0", "--cc", "--no-renames",
               "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
               "--no-show-signature", *revs, "--")
     sha = path = None
@@ -307,12 +310,54 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
     return metas
 
 
-def scan_commits(revs: list[str], private: re.Pattern[str] | None,
-                 identity: bool) -> tuple[int, list[str]]:
-    """Что публикует каждый коммит набора — строки, имена файлов, сообщение,
-    имена и почты — против обоих наборов. Возвращает (число коммитов, находки).
+# Двоичный файл (по мнению git: NUL в начале) судится по содержимому блоба —
+# печатные отрезки от 8 символов; больше потолка — отказ, а не тихий пропуск.
+BLOB_LIMIT = 20 * 1024 * 1024
+_PRINTABLE_RUN = re.compile(r"[^\x00-\x08\x0b-\x1f\x7f\ufffd]{8,}")
 
-    Находка — место без цитаты: вывод уходит в журналы фоновых сессий.
+
+def binary_files(revs: list[str]) -> list[tuple[str, str]]:
+    """(коммит, путь) двоичных файлов, которые коммит добавляет или меняет."""
+    out = git("log", "-z", "--numstat", "--no-renames", "--diff-merges=first-parent",
+              "--format=%x01%H", *revs, "--")
+    found: list[tuple[str, str]] = []
+    for chunk in out.decode("utf-8", "replace").split("\x01")[1:]:
+        tokens = chunk.split("\0")
+        sha = tokens[0].strip()
+        if not _SHA.fullmatch(sha):
+            raise GitError(f"разбор numstat: не коммит — {sha[:60]!r}")
+        for entry in tokens[1:]:
+            parts = entry.lstrip("\n").split("\t", 2)
+            if len(parts) == 3 and parts[0] == "-" and parts[1] == "-":
+                found.append((sha, parts[2]))
+    return found
+
+
+def binary_runs(sha: str, path: str) -> Iterator[str] | None:
+    """Печатные отрезки блоба; None — файла в коммите нет (удалён)."""
+    if pathlib.PurePosixPath(path).suffix.lower() in SKIP_SUFFIX:
+        return iter(())
+    obj = f"{sha}:{path}"
+    if not git_ok("cat-file", "-e", obj):
+        return None
+    size = int(git("cat-file", "-s", obj).strip() or 0)
+    if size > BLOB_LIMIT:
+        raise GitError(f"{sha[:9]} {path}: двоичный файл {size // 1048576} МБ больше потолка "
+                       f"{BLOB_LIMIT // 1048576} МБ — содержимое не проверить, такой файл не "
+                       "должен уходить в публичный репозиторий без решения")
+    return iter(_PRINTABLE_RUN.findall(git("cat-file", "blob", obj).decode("utf-8", "replace")))
+
+
+def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: bool,
+                 extra: list[tuple[str, str]] = (),
+                 extra_emails: list[tuple[str, str]] = ()) -> tuple[int, list[str]]:
+    """Что публикует каждый коммит набора — строки, имена файлов (и содержимое
+    двоичных), сообщение, имена и почты — против обоих наборов; плюс `extra`
+    (имена ссылок, аннотации тегов) и почты тегеров. Возвращает (число
+    коммитов, находки).
+
+    Находка — место без цитаты: вывод уходит в журналы фоновых сессий; путь,
+    в котором сработал формат или маркер, печатается с маской.
     """
     def kinds(text: str) -> list[str]:
         # По строкам: пометка PUBLIC_ALLOW гасит только свою строку сообщения.
@@ -321,8 +366,22 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None,
             found += [k for k in public_hits(line) if k not in found]
         return found
 
-    metas = commit_meta(revs)
+    def mask(name: str) -> str:
+        if private:
+            name = private.sub("***", name)
+        for raw in PUBLIC_PATTERNS.values():
+            name = re.sub(raw, "***", name)
+        return name
+
     hits: list[str] = []
+    for field, text in extra:
+        for k in kinds(text):
+            hits.append(f"{mask(field)}: {k}")
+    if identity:
+        for field, email in extra_emails:
+            if email != MAINTAINER_EMAIL:
+                hits.append(f"{mask(field)}: почта не {MAINTAINER_EMAIL}")
+    metas = commit_meta(revs) if revs else []
     for m in metas:
         short = m.sha[:9]
         for field, text in (("сообщение", m.message), ("автор", f"{m.author} <{m.author_email}>"),
@@ -337,10 +396,19 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None,
         return 0, hits
     for sha, name in added_paths(revs):
         for k in kinds(name):
-            hits.append(f"{sha[:9]} имя файла {name}: {k}")
+            hits.append(f"{sha[:9]} имя файла {mask(name)}: {k}")
     for sha, name, lineno, text in added_lines(revs):
         for k in kinds(text):
-            hits.append(f"{sha[:9]} {name}:{lineno}: {k}")
+            hits.append(f"{sha[:9]} {mask(name)}:{lineno}: {k}")
+    for sha, name in binary_files(revs):
+        runs = binary_runs(sha, name)
+        if runs is None:
+            continue
+        found: list[str] = []
+        for run in runs:
+            found += [k for k in kinds(run) if k not in found]
+        for k in found:
+            hits.append(f"{sha[:9]} {mask(name)} (двоичный): {k}")
     return len(metas), hits
 
 
@@ -355,33 +423,63 @@ def _known_remote(remote: str) -> None:
                        f"сравнить — пушьте в remote из `git remote` ({', '.join(names) or 'нет'})")
 
 
-def push_revs(remote: str, lines: list[str]) -> tuple[list[str] | None, list[str]]:
-    """Набор ревизий для stdin хука pre-push — все строки, не только первая.
+@dataclass
+class PushSet:
+    revs: list[str] | None
+    notes: list[str]
+    texts: list[tuple[str, str]]       # (что, текст): имена ссылок, аннотации тегов
+    emails: list[tuple[str, str]]      # (что, почта): тегеры
 
-    `L… --not --remotes=<remote> R…`: уже опубликованное (любая ветка remote,
-    прежние вершины обновляемых веток) не судится повторно; force-push после
-    ребейза не тащит коммиты main. Удаление ветки (нулевой local sha) — пропуск;
-    нулевой или неизвестный локально remote sha просто не исключается.
+
+def server_tips(remote: str) -> list[str]:
+    """Вершины веток и тегов на сервере сейчас, известные локально.
+
+    Опубликованное берётся у сервера, а не из remote-tracking ссылок: ветку,
+    удалённую на сервере (например, после утечки), кэш считал бы опубликованной
+    и повторный push вернул бы её мимо стража (выход 2 №541, Sonnet I3).
+    """
+    out = git("ls-remote", "--heads", "--tags", remote).decode("utf-8", "replace")
+    shas = sorted({ln.split()[0] for ln in out.splitlines() if ln.strip()})
+    if not shas:
+        return []
+    known = git("cat-file", "--batch-check", stdin="\n".join(shas).encode() + b"\n")
+    return [ln.split()[0] for ln in known.decode().splitlines()
+            if ln.split()[1:2] and ln.split()[1] in ("commit", "tag")]
+
+
+def push_revs(remote: str, lines: list[str]) -> PushSet:
+    """Набор для stdin хука pre-push — все строки, не только первая.
+
+    `L… --not <вершины сервера> R…`: уже опубликованное не судится повторно;
+    force-push после ребейза не тащит коммиты main. Удаление ветки (нулевой
+    local sha) — пропуск; нулевой или неизвестный локально remote sha просто не
+    исключается. Имя ветки на сервере и аннотация тега тоже публикуются.
     """
     _known_remote(remote)
     local, published, notes = [], [], []
+    texts: list[tuple[str, str]] = []
+    emails: list[tuple[str, str]] = []
     for raw in lines:
         if not raw.strip():
             continue
         parts = raw.split()
         if len(parts) != 4:
             raise GitError(f"строка хука pre-push не разобрана: {raw[:120]!r}")
-        local_ref, lsha, _remote_ref, rsha = parts
+        local_ref, lsha, remote_ref, rsha = parts
         if _zero(lsha):
             continue
         local.append(lsha)
+        texts.append((f"имя ссылки {remote_ref}", remote_ref))
         if git("cat-file", "-t", lsha).strip() == b"tag":
-            notes.append(f"{local_ref}: аннотация тега не проверяется, проверяются коммиты под ним")
+            body = git("cat-file", "tag", lsha).decode("utf-8", "replace")
+            texts.append((f"тег {remote_ref}", body))
+            tagger = re.search(r"^tagger .*<([^>]*)>", body, re.M)
+            emails.append((f"тег {remote_ref}", tagger.group(1) if tagger else ""))
         if not _zero(rsha) and git_ok("cat-file", "-e", f"{rsha}^{{commit}}"):
             published.append(rsha)
     if not local:
-        return None, notes
-    return [*local, "--not", f"--remotes={remote}", *published], notes
+        return PushSet(None, notes, texts, emails)
+    return PushSet([*local, "--not", *server_tips(remote), *published], notes, texts, emails)
 
 
 def env_revs() -> list[str]:
@@ -429,7 +527,7 @@ fi
 if ! grep -q -- '--pre-push' "$S"; then
   echo "pre-push: страж основного checkout старый — git -C \\"$C\\" pull --ff-only" >&2; exit 1
 fi
-exec python3 "$S" --pre-push "$1"
+exec python3 -I "$S" --pre-push "$1"
 """
 HOOKS = {"pre-commit": PRE_COMMIT_HOOK, "pre-push": PRE_PUSH_HOOK}
 # По этим строкам проверка установки узнаёт хук, не сверяя текст целиком:
@@ -465,6 +563,13 @@ def pre_push_problem() -> str | None:
     if not os.access(hook, os.X_OK):
         return f"хук pre-push не исполняемый ({hook})"
     text = hook.read_text(encoding="utf-8", errors="replace")
+    legacy = hook.with_name("pre-push.legacy")
+    if "hook-impl" in text and legacy.is_file():
+        # `pre-commit install` переносит чужой хук в .legacy и зовёт его сам
+        # (выход 2 №541, Sonnet I2): судим то, что будет исполнено.
+        text = legacy.read_text(encoding="utf-8", errors="replace")
+        if not os.access(legacy, os.X_OK):
+            return f"хук pre-push.legacy не исполняемый ({legacy})"
     if not all(m in text for m in PRE_PUSH_MARKS):
         return f"хук pre-push не зовёт страж ({hook})"
     return None
@@ -519,15 +624,23 @@ def _report(title: str, hits: list[str]) -> None:
         print(f"  … ещё {len(hits) - 50}", file=sys.stderr)
 
 
+def owner_markers_path() -> pathlib.Path:
+    """Режимы владельца: на машине владельца — только список по умолчанию;
+    CHAROITE_MARKERS его не подменяет (выход 2 №541, Sonnet M1)."""
+    default = default_markers_path()
+    return default if default.exists() else markers_path()
+
+
 def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
-                notes: list[str]) -> int:
+                notes: list[str], extra: list[tuple[str, str]] = (),
+                extra_emails: list[tuple[str, str]] = ()) -> int:
     """Общий ход трёх режимов по коммитам. `need_list` — нет списка маркеров
     значит отказ, и `CI` этого не меняет: режимы владельца в CI не зовутся, а
     переменная из окружения сессии не должна выключать гейт (выход 1 №541,
     Sonnet I1). Без `need_list` (контрибьютор) — только публичные форматы."""
     for n in notes:
         print(f"  {n}")
-    path = markers_path()
+    path = owner_markers_path() if need_list else markers_path()
     private = None
     if path.exists():
         markers = load_markers(path)
@@ -538,7 +651,7 @@ def run_commits(revs: list[str] | None, need_list: bool, identity: bool,
     if revs is None:
         print("нечего проверять: push только удаляет ветки")
         return 0
-    count, hits = scan_commits(revs, private, identity)
+    count, hits = scan_commits(revs, private, identity, extra, extra_emails)
     missing = private is None and need_list
     if hits:
         _report("PUSH ЗАБЛОКИРОВАН — уходящие коммиты публикуют приватное", hits)
@@ -581,11 +694,17 @@ def main() -> int:
 def _run(a: argparse.Namespace) -> int:
     if a.install_hooks:
         return install_hooks(a.force)
-    if a.range:
+    # `is not None`: пустой аргумент — не повод молча уйти в режим pre-commit.
+    for flag, value in (("--range", a.range), ("--pre-push", a.pre_push)):
+        if value is not None and not value.strip():
+            print(f"❌ {flag} с пустым значением — проверять нечего, отказ", file=sys.stderr)
+            return 1
+    if a.range is not None:
         return run_commits(a.range.split(), need_list=True, identity=False, notes=[])
-    if a.pre_push:
-        revs, notes = push_revs(a.pre_push, sys.stdin.read().splitlines())
-        return run_commits(revs, need_list=True, identity=True, notes=notes)
+    if a.pre_push is not None:
+        push = push_revs(a.pre_push, sys.stdin.read().splitlines())
+        return run_commits(push.revs, need_list=True, identity=True, notes=push.notes,
+                           extra=push.texts, extra_emails=push.emails)
     if a.range_from_env:
         return run_commits(env_revs(), need_list=False, identity=False, notes=[])
     full_only = a.all

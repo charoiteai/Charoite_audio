@@ -170,13 +170,32 @@ def test_file_names_of_binary_and_empty_files_are_checked(repo):
 
 
 def test_nul_byte_does_not_hide_a_line(repo):
-    """Один нулевой байт делает файл «двоичным» для git: патч идёт с --text."""
-    repo.write("data.txt", f"{MARKER}\n")
-    (repo.work / "data.txt").write_bytes(f"{MARKER}\n".encode() + b"\x00tail\n")
+    """Один нулевой байт делает файл «двоичным» для git — такой файл судится по
+    печатным отрезкам блоба, а не по диффу."""
+    (repo.work / "data.txt").write_bytes(f"запуск на {MARKER}\n".encode() + b"\x00tail\n")
     repo.commit("nul")
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
     assert p.returncode == 1
-    assert "data.txt:1: приватный маркер" in p.stderr, p.stderr
+    assert "data.txt (двоичный): приватный маркер" in p.stderr, p.stderr
+
+
+def test_binary_noise_is_not_read_as_text(repo):
+    """Случайные байты с коротким совпадением внутри — не находка: судятся
+    только печатные отрезки от 8 символов (выход 2 №541, Sonnet I1)."""
+    (repo.tmp / "markers.txt").write_text("QZX\n", encoding="utf-8")
+    (repo.work / "m.bin").write_bytes(b"\x00\x01QZX\x02\x00" * 50)
+    repo.commit("bin")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+
+
+def test_oversized_binary_is_a_refusal_not_a_silent_skip(repo, monkeypatch):
+    (repo.work / "big.bin").write_bytes(b"\x00" * 4096)
+    repo.commit("big")
+    monkeypatch.chdir(repo.work)
+    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
+    with pytest.raises(guard.GitError, match="больше потолка"):
+        guard.scan_commits([f"{repo.base}..HEAD"], None, identity=False)
 
 
 def test_evil_merge_line_is_caught_but_parent_lines_are_not_repeated(repo):
@@ -338,6 +357,73 @@ def test_force_push_after_rebase_judges_only_new_commits(repo):
     assert "коммитов проверено: 1" in p.stdout, p.stdout
 
 
+def test_branch_deleted_on_the_server_is_judged_again(repo):
+    """Ветку с утечкой удалили на сервере, а remote-tracking ссылка осталась:
+    повторный push обязан судить её коммиты заново (выход 2 №541, Sonnet I3)."""
+    wt = repo.worktree("feat")
+    repo.write("n.md", f"{MARKER}\n", wt)
+    repo.commit("leak", wt)
+    git(wt, "-c", f"core.hooksPath={repo.tmp / 'no-hooks'}", "push", "-q", "origin", "feat",
+        env=repo.env)
+    git(repo.remote, "branch", "-D", "feat", env=repo.env)
+    assert git(wt, "rev-parse", "--verify", "-q", "refs/remotes/origin/feat",
+               env=repo.env).returncode == 0      # кэш о сервере устарел
+    repo.install()
+    p = git(wt, "push", "origin", "feat", env=repo.env, check=False)
+    assert p.returncode != 0 and "n.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
+def test_ref_name_and_annotated_tag_are_published_too(repo):
+    repo.install()
+    wt = repo.worktree("feat")
+    repo.write("n.md", "чисто\n", wt)
+    repo.commit("ok", wt)
+    p = git(wt, "push", "origin", f"feat:refs/heads/{MARKER}", env=repo.env, check=False)
+    assert p.returncode != 0 and "приватный маркер" in p.stderr, p.stderr
+    assert MARKER not in p.stderr, "имя ссылки процитировано"
+    git(wt, "-c", "user.email=someone@example.com", "tag", "-a", "v1", "-m",
+        f"релиз {MARKER}", env=repo.env)
+    p = git(wt, "push", "origin", "v1", env=repo.env, check=False)
+    assert p.returncode != 0, p.stderr
+    assert "тег refs/tags/v1: приватный маркер" in p.stderr, p.stderr
+    assert f"тег refs/tags/v1: почта не {OWNER}" in p.stderr, p.stderr
+
+
+def test_owner_modes_read_the_default_list_not_the_env(repo):
+    """На машине владельца CHAROITE_MARKERS не подменяет список (Sonnet M1)."""
+    repo.write("n.md", f"{MARKER}\n")
+    repo.commit("leak")
+    (repo.tmp / "other.txt").write_text("совсемдругое\n", encoding="utf-8")
+    env = _owner_env(repo, CHAROITE_MARKERS=str(repo.tmp / "other.txt"))
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=env)
+    assert p.returncode == 1 and "n.md:1: приватный маркер" in p.stderr, p.stderr
+
+
+def test_replace_refs_do_not_hide_the_real_commit(repo):
+    repo.write("n.md", f"{MARKER}\n")
+    bad = repo.commit("leak")
+    tree = git(repo.work, "rev-parse", f"{repo.base}^{{tree}}", env=repo.env).stdout.strip()
+    fake = git(repo.work, "commit-tree", tree, "-p", repo.base, "-m", "чисто",
+               env=repo.env).stdout.strip()
+    git(repo.work, "replace", bad, fake, env=repo.env)
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and f"{bad[:9]} n.md:1" in p.stderr, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("flag", ["--range", "--pre-push"])
+def test_empty_mode_argument_is_refused(repo, flag):
+    p = guard_run(repo.work, flag, "", env=repo.env)
+    assert p.returncode == 1 and "пустым значением" in p.stderr
+
+
+def test_marker_in_a_file_name_is_masked_in_the_report(repo):
+    repo.write(f"docs/{MARKER}.md", "чисто\n")
+    repo.commit("name")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "имя файла docs/***.md" in p.stderr, p.stderr
+    assert MARKER not in p.stderr
+
+
 def test_push_by_url_is_refused(repo):
     repo.install()
     wt = repo.worktree("feat")
@@ -394,9 +480,10 @@ def test_push_revs_skips_deletions_and_unknown_published_tips(repo):
     cwd = os.getcwd()
     os.chdir(repo.work)
     try:
-        revs, _ = guard.push_revs("origin", lines)
-        assert revs == [head, head, "--not", "--remotes=origin"]
-        assert guard.push_revs("origin", [lines[0]])[0] is None
+        push = guard.push_revs("origin", lines)
+        # исключается то, что сервер показывает сейчас (вершина main = base)
+        assert push.revs == [head, head, "--not", repo.base]
+        assert guard.push_revs("origin", [lines[0]]).revs is None
     finally:
         os.chdir(cwd)
 
@@ -459,6 +546,28 @@ def test_no_install_check_before_the_canonical_guard_knows_pre_push(repo):
     p = subprocess.run([sys.executable, str(SCRIPT)], cwd=repo.work, env=env,
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
+
+
+def test_pre_commit_framework_hook_with_our_legacy_counts_as_installed(repo):
+    """`pre-commit install` переносит наш хук в pre-push.legacy и зовёт его сам:
+    коммиты владельца не должны отказываться (выход 2 №541, Sonnet I2)."""
+    repo.install()
+    hooks = repo.work / ".git" / "hooks"
+    (hooks / "pre-push").rename(hooks / "pre-push.legacy")
+    (hooks / "pre-push").write_text("#!/usr/bin/env bash\n# pre-commit\n"
+                                    "exec python3 -mpre_commit hook-impl --hook-type=pre-push\n",
+                                    encoding="utf-8")
+    (hooks / "pre-push").chmod(0o755)
+    env = _owner_env(repo)
+    repo.write("a.md", "раз\n")
+    git(repo.work, "add", "-A", env=env)
+    p = git(repo.work, "commit", "-q", "-m", "a", env=env, check=False)
+    assert p.returncode == 0, p.stderr
+    (hooks / "pre-push.legacy").unlink()
+    repo.write("b.md", "два\n")
+    git(repo.work, "add", "-A", env=env)
+    p = git(repo.work, "commit", "-q", "-m", "b", env=env, check=False)
+    assert p.returncode != 0 and "не зовёт страж" in p.stderr, p.stderr
 
 
 def test_install_hooks_only_from_the_main_checkout_and_never_clobbers(repo):
