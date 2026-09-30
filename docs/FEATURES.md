@@ -149,6 +149,12 @@
    words are never touched — they go to `logs/lexicon_candidates.md`
    with a ✔ mark when the surrounding words match the node's `отдел:`
    field or body, so confirming a new alias is one edit in the node.
+   An in-person meeting (the system channel recorded and silent) is
+   labelled so that one microphone does not merge the room into one voice:
+   two groups of voice pieces never merge while any pair between them is
+   clearly different people. Limitation: a call where the other side stays
+   silent the whole meeting is labelled as a room too, and the owner's
+   speech may spread over several neutral labels.
 2. **Graph update** — entities (People/Systems), decisions, action items,
    Cores with status + chronicle; a meeting note with wiki-links. A
    person's or system's description is a dated fact too: a substantially

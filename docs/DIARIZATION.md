@@ -60,9 +60,17 @@ Charoite uses two diarization passes:
 2. **Offline re-pass** (after Stop): the full recording is re-diarized per
    channel with sherpa-onnx (the same two models). The system channel is
    clustered with the number of voices the live session heard as a hint.
-   When the system channel is silent (an in-room meeting: no recording or no
-   speech found in it), the same hint from three voices goes to the
-   microphone as an upper bound, with the shard merge after it. A single
+   When the system channel was recorded for most of the meeting and no speech
+   was found in it (an in-room meeting) and the live session heard 3–12
+   voices, the microphone is clustered without a hint and the shard merge
+   runs under a veto: two groups never merge while any pair between them is
+   below 0.46 (see "The merge threshold" below). With no system-channel
+   recording at all (a machine without system audio, a stream that never
+   opened) a room cannot be told from a call in headphones, so the live count
+   from three voices goes to the microphone as an upper bound, with the shard
+   merge after it. Limitation: a call where the other side stays silent the
+   whole meeting is labelled as a room, and the owner's speech may spread over
+   several neutral labels. A single
    microphone label with no call and 3–12 live voices gets no name (its speech
    cannot go to one person), and the transcript header says why. A failed
    system-channel diarization or a recording under 20 s is not silence.
@@ -596,9 +604,19 @@ Segmentation often splits one person's speech across several clusters —
 especially in a room recorded by a single microphone: someone turns away,
 leans back, drops their voice. The merge step compares average cluster
 embeddings by cosine and joins the close ones. It runs when clustering picks
-the number of voices itself: on the microphone channel (in an in-room meeting
-also after the hint, which is then only an upper bound), and on the system
-channel when the live session gave no usable hint.
+the number of voices itself: on the microphone channel (with no system-channel
+recording also after the hint, which is then only an upper bound), and on the
+system channel when the live session gave no usable hint.
+
+In a room one bridge is not enough. Single linkage joins two groups through
+one pair above the threshold, and on Sep 29 a meeting of six chained through
+such bridges into one label with pairs of 0.13 inside it. On the microphone of
+an in-room meeting the first merge pass goes pair by pair from the most
+similar and refuses to join two groups while any pair between them is below
+0.46 — the top of the "different people" range; groups under 30 s are still
+attached to the nearest voice by the second pass, as before. On that recording: one label became four. On
+calls the veto is off: there it split the owner into several labels (measured
+on eight calls: four of them).
 
 On Aug 14 the threshold was measured on a real recording: 65 minutes, one
 microphone, three speakers. Pairwise similarity split cleanly:

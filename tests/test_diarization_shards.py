@@ -42,6 +42,14 @@ def test_merge_threshold_sits_between_measured_ranges():
     assert 0.46 < threshold < 0.68, f"порог {threshold} вне измеренной пустой зоны"
 
 
+def test_the_room_veto_sits_at_the_top_of_strangers_and_below_the_merge():
+    """Запрет склейки комнаты (№565) — верх диапазона чужих по замеру 14.08: ниже 0.46
+    пропустил бы чужих, у порога склейки и выше запрещал бы любое слияние."""
+    import inspect
+    threshold = inspect.signature(diarize._merge_shards).parameters["threshold"].default
+    assert 0.46 <= diarize.VETO_BELOW < threshold
+
+
 def test_weak_threshold_is_above_strangers():
     # Планка для осколков не должна опускаться до уровня чужих голосов
     # (максимум 0.46 по замеру), иначе чужая реплика уедет к своему.
