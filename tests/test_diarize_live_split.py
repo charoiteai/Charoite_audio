@@ -316,7 +316,8 @@ def test_unknown_short_stranger_blocks_fullchunk():
 
 def test_candidate_rejected_by_limit_blocks_fullchunk():
     """Крупный кандидат, отвергнутый лимитом слотов, — всё ещё чужая речь:
-    наружу окно известного голоса, не фолбэк целого чанка."""
+    не фолбэк целого чанка, а своё окно без голоса (№571: раньше окно
+    выбрасывалось вместе со словами)."""
     t = _tracker(max_speakers=1)
     _wire(t, {(0.1, 1.3): V_A})
     t.split(_chunk(), channel="mic")           # A занял единственный слот
@@ -324,7 +325,7 @@ def test_candidate_rejected_by_limit_blocks_fullchunk():
     res = t.split(_chunk(), channel="mic")
     assert t.voices == 1
     assert res.pieces is not None
-    assert [p.voice for p in res.pieces] == [1]
+    assert [p.voice for p in res.pieces] == [1, None]
 
 
 def test_overlapping_raw_segments_split_disputed_zone():
@@ -355,17 +356,116 @@ def test_jobs_for_tristate():
     """Стык «раскладка → демон»: пропуск, окна, полный чанк, канальная метка."""
     from diarize_live import SplitResult, jobs_for
     chunk = _chunk()
-    assert jobs_for(SplitResult([], 1), chunk) is None          # skip
-    assert jobs_for(SplitResult(None, None), chunk) == [(chunk, -1, None)] \
-        or jobs_for(SplitResult(None, None), chunk)[0][1] == -1  # канал
-    full = jobs_for(SplitResult(None, 2), chunk)
-    assert len(full) == 1 and full[0][1] == 2                    # полный чанк
-    crash = jobs_for(None, chunk)
-    assert crash[0][1] == -1                                     # упавший split
-    p = Piece(SR, 2 * SR, 3, SR + 100, 2 * SR - 100)
-    win = jobs_for(SplitResult([p], 3), chunk)
-    assert win[0][1] == 3 and len(win[0][0]) == SR               # окно
-    assert len(win[0][2]) == SR - 200                            # raw для питча
+    for neutral in (True, False):   # ветки без куска без голоса канал не различают
+        kw = {"channel_label_neutral": neutral}
+        assert jobs_for(SplitResult([], 1), chunk, **kw) is None     # skip
+        channel = jobs_for(SplitResult(None, None), chunk, **kw)
+        assert len(channel) == 1 and channel[0][1] == -1             # канал
+        full = jobs_for(SplitResult(None, 2), chunk, **kw)
+        assert len(full) == 1 and full[0][1] == 2                    # полный чанк
+        crash = jobs_for(None, chunk, **kw)
+        assert crash[0][1] == -1                                     # упавший split
+        p = Piece(SR, 2 * SR, 3, SR + 100, 2 * SR - 100)
+        win = jobs_for(SplitResult([p], 3), chunk, **kw)
+        assert win[0][1] == 3 and len(win[0][0]) == SR               # окно
+        assert len(win[0][2]) == SR - 200                            # raw для питча
+
+
+def test_jobs_for_voiceless_piece_follows_channel():
+    """№571: кусок без голоса (кандидат без места) распознаётся под меткой
+    канала там, где она нейтральна, и выпадает на микрофоне — там метка
+    канала есть подпись владельца (круг 1 по №571)."""
+    from diarize_live import SplitResult, jobs_for
+    from stt_runtime import CHANNEL_LABEL_ONLY
+    chunk = _chunk()
+    known = Piece(0, SR, 2, 0, SR)
+    stranger = Piece(SR + SR // 2, 3 * SR, None, SR + SR // 2, 3 * SR)
+    both = SplitResult([known, stranger], 2)
+    heard = jobs_for(both, chunk, channel_label_neutral=True)
+    assert [n for _p, n, _r in heard] == [2, CHANNEL_LABEL_ONLY]
+    assert len(heard[1][0]) == 3 * SR - (SR + SR // 2)
+    mic = jobs_for(both, chunk, channel_label_neutral=False)
+    assert [n for _p, n, _r in mic] == [2]
+    alone = SplitResult([stranger], None)
+    assert jobs_for(alone, chunk, channel_label_neutral=False) is None
+    only = jobs_for(alone, chunk, channel_label_neutral=True)
+    assert [n for _p, n, _r in only] == [CHANNEL_LABEL_ONLY]
+    assert len(only[0][0]) < CHUNK          # окно, не целый чанк
+
+
+def _voices(res):
+    return [p.voice for p in res.pieces] if res.pieces else res.pieces
+
+
+def test_third_voice_words_reach_stt_when_slots_are_full():
+    """Опровергающий опыт №571 на синтетике: два места, три голоса. Слова
+    третьего обязаны попасть в задания STT канала собеседников — раньше чанк
+    уходил в пропуск целиком."""
+    from diarize_live import jobs_for
+    from stt_runtime import CHANNEL_LABEL_ONLY
+    t = _tracker(max_speakers=2)
+    _wire(t, {(0.1, 1.3): V_A, (1.5, 2.7): V_B})
+    t.split(_chunk(), channel="blackhole")          # A и B заняли оба места
+    assert t.voices == 2
+    _wire(t, {(0.2, 2.2): V_C})                     # говорит только третий
+    res = t.split(_chunk(), channel="blackhole")
+    assert t.voices == 2                            # места не прибавилось
+    assert res.pieces is not None and res.pieces != []
+    assert _voices(res) == [None]
+    jobs = jobs_for(res, _chunk(), channel_label_neutral=True)
+    assert jobs is not None
+    assert [n for _p, n, _r in jobs] == [CHANNEL_LABEL_ONLY]
+    piece, _n, _raw = jobs[0]
+    # окно накрывает речь третьего голоса, а не весь чанк
+    assert piece[0] <= 0.2 * SR and piece[-1] >= 2.2 * SR - 1
+    assert len(piece) < CHUNK
+    # на микрофоне тот же чанк — пропуск, как до №571
+    assert jobs_for(res, _chunk(), channel_label_neutral=False) is None
+
+
+def test_voiceless_chunk_is_never_whole_chunk_under_main():
+    """Чанк из одного окна без места не уходит целиком под прошлый голос
+    канала (запрещённый фолбэк 15.08): кусок, а не pieces is None."""
+    t = _tracker(max_speakers=1)
+    _wire(t, {(0.1, 2.9): V_A})
+    t.split(_chunk(), channel="blackhole")          # last канала = 1
+    _wire(t, {(0.3, 2.0): V_B})
+    res = t.split(_chunk(), channel="blackhole")
+    assert res.pieces is not None and _voices(res) == [None]
+    assert res.main == 1                            # метка канала не менялась
+
+
+def test_no_diarize_job_carries_none_or_zero_voice():
+    """Голос задания — CHANNEL_LABEL_ONLY или 1..N: None демон читает как
+    «спроси трекер ещё раз» (учит центроиды тем же звуком дважды), 0 —
+    валидный голос, в который упирается ловушка -1 + 1."""
+    from diarize_live import jobs_for
+    t = _tracker(max_speakers=1)
+    _wire(t, {(0.1, 1.3): V_A})
+    t.split(_chunk(), channel="blackhole")
+    _wire(t, {(0.1, 1.3): V_A, (1.5, 2.7): V_B})
+    res = t.split(_chunk(), channel="blackhole")
+    for neutral in (True, False):
+        for _piece, n, _raw in jobs_for(res, _chunk(), channel_label_neutral=neutral) or []:
+            assert n is not None and n != 0
+
+
+def test_empty_plan_only_for_hold_or_micro_never_for_missing_slot():
+    """Пустой план (пропуск чанка) — только когда вся речь придержана или
+    микро-куски; кандидат без места на канале собеседников пустого плана не
+    даёт никогда (решение по кругу 2 №571 вместо поля причины)."""
+    from diarize_live import jobs_for
+    t = _tracker(max_speakers=1)
+    _wire(t, {(0.1, 2.9): V_A})
+    t.split(_chunk(), channel="blackhole")
+    _wire(t, {(0.3, 2.0): V_B})                     # кандидат без места
+    res = t.split(_chunk(), channel="blackhole")
+    assert res.pieces != []
+    assert jobs_for(res, _chunk(), channel_label_neutral=True) is not None
+    _wire(t, {(2.5, 2.98): V_A})                    # только придержка
+    assert t.split(_chunk(), channel="blackhole").pieces == []
+    _wire(t, {(0.5, 1.2): V_A})                     # только микро-кусок (< min_stt)
+    assert t.split(_chunk(), channel="blackhole").pieces == []
 
 
 # ---------- находки третьего раунда ревью 15.08 ----------
