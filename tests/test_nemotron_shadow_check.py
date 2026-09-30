@@ -676,3 +676,30 @@ def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monke
         raise rp.Refused("нет")
     monkeypatch.setattr(rp, "replay", refuse)
     assert rp.main(["2026-01-01_100000"]) == 2
+
+
+def test_coverage_and_fragmentation_skip_the_no_voice_column_and_short_voices():
+    m = {("s0", chk.NONE): 50.0, ("s0", "A"): 40.0, ("s1", "B"): 5.0}
+    assert chk.coverage(m) == {"A": 1.0}
+    assert chk.fragmentation(m) == {"A": 1}
+
+
+def test_the_check_cli_reads_the_tracker_timing_and_meta_files(tmp_path, capsys):
+    path = tmp_path / "j.jsonl"
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000],
+                                            segs=[(START0, START0 + SR, 0)])), encoding="utf-8")
+    final = tmp_path / "final.json"
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[0.3, 1.3, "A"]]}), encoding="utf-8")
+    (tmp_path / "t.jsonl").write_text("\n".join(json.dumps(x) for x in
+                                                 [{"start": START0, "intervals": [[START0, START0 + SR, 1]],
+                                                   "path": "whole"}]), encoding="utf-8")
+    rows = [{"k": "write", "t": 0.0, "sent": 40 * STEP}] + [{"k": "front", "t": 0.3 * k, "fed": k * STEP}
+                                                           for k in range(1, 41)]
+    (tmp_path / "w.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    (tmp_path / "m.json").write_text(json.dumps({"wall_s": 3.0}), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final), "--tracker", str(tmp_path / "t.jsonl"),
+                     "--timing", str(tmp_path / "w.jsonl"), "--meta", str(tmp_path / "m.json")]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["c_tracker_vs_stream"]["paths"] == {"whole": 1}
+    assert out["a2_step_cost_wall"]["step_cost_s"]["max"] == pytest.approx(0.3)
+    assert out["run"] == {"wall_s": 3.0}
