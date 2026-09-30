@@ -593,7 +593,7 @@ def test_есть_изменённые_строки_но_ломать_нечег
     _quiet_machine(monkeypatch)
     _range_as_given(monkeypatch)
     totals = mc.ScanTotals(files_in=2, lines_in=7, lines_constant=3, nodes=11)
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None, max_n=None: ([], totals))
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None, max_n=None, only_critical=False: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_UNMUTABLE
     out = capsys.readouterr().out
     assert "ничего мутируемого" in out
@@ -609,7 +609,7 @@ def test_строки_без_кода_это_nothing_со_счётчиками(m
     _quiet_machine(monkeypatch)
     _range_as_given(monkeypatch)
     totals = mc.ScanTotals(files_in=1, lines_in=2, lines_constant=1, nodes=0)
-    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None, max_n=None: ([], totals))
+    monkeypatch.setattr(mc, "plan_for", lambda root, rng, shard=None, max_n=None, only_critical=False: ([], totals))
     assert mc.main(["mutate_check.py", "--range", "A...B"]) == exit_codes.EXIT_NOTHING_TO_CHECK
     out = capsys.readouterr().out
     assert "нет кода" in out and "нет изменённых строк" not in out, out
@@ -924,7 +924,7 @@ def test_main_не_засчитывает_битого_мутанта_убиты
     mut = next(m for m in mc.scan(REPO / rel, set(range(1, 400)), head).mutations
                if m.bare() == "not X → X")
     monkeypatch.setattr(mc, "plan_for",
-                        lambda root, rng, shard=None, max_n=None: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
+                        lambda root, rng, shard=None, max_n=None, only_critical=False: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
                                                                             planned=1)))
     monkeypatch.setattr(mc, "tests_for", lambda root, module: ["tests"])
 
@@ -1070,9 +1070,9 @@ def test_лок_мутатора_и_гвард_берут_названный_к�
         def acquire(self):
             return False                   # отказ замка — прогон кончается сразу, копии нет
     monkeypatch.setattr(busy_signals, "MutationLock", Лок)
-    mut = object()                         # до мутанта дело не доходит: замок отказал раньше
+    mut = _М("src/mod.py", "k", False)      # до мутанта дело не доходит: замок отказал раньше
     monkeypatch.setattr(mc, "plan_for",
-                        lambda root, rng, shard=None, max_n=None: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
+                        lambda root, rng, shard=None, max_n=None, only_critical=False: ([mut], mc.ScanTotals(files_in=1, lines_in=1,
                                                                             planned=1)))
     _range_as_given(monkeypatch)
     assert mc.main(["mutate_check.py", "--range", "HEAD"]) == 3
@@ -1111,7 +1111,7 @@ def _прогон(tmp_path, monkeypatch, plan, *, секунды, падать_�
     _quiet_machine(monkeypatch)
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
     if plan is not None:
-        def plan_for(root, rng, shard=None, max_n=None):
+        def plan_for(root, rng, shard=None, max_n=None, only_critical=False):
             взяли = mc.select(list(plan), max_n)
             return взяли, mc.ScanTotals(files_in=1, lines_in=1, planned=len(взяли), full=len(plan))
         monkeypatch.setattr(mc, "plan_for", plan_for)
@@ -1237,8 +1237,8 @@ def test_сдвиг_head_после_разрешения_не_меняет_ко�
     monkeypatch.chdir(repo)
     настоящий = mc.plan_for
 
-    def plan_for(root, rng, shard=None, max_n=None):
-        план = настоящий(root, rng, shard, max_n)
+    def plan_for(root, rng, shard=None, max_n=None, only_critical=False):
+        план = настоящий(root, rng, shard, max_n, only_critical)
         (repo / "src" / "mod.py").write_text("def f(x):\n    return x or 1\n", encoding="utf-8")
         subprocess.run([*_GIT, "commit", "-qam", "сдвиг"], cwd=repo, check=True)
         return план
@@ -2242,16 +2242,22 @@ class _М:
         return mc.Mutation.rank.fget(self)
 
 
-def test_выборка_критичные_первыми_некритичным_пол():
-    """Критичные берутся первыми, некритичным — пол 15 из 60; неиспользованный
-    пол возвращается критичным; внутри слоя — поровну по файлам (решение главной
-    30.09 по входу №469)."""
+def test_выборка_критичные_все_некритичным_пол():
+    """Критичные судятся все — потолок их не режет (решение главной по выходному
+    кругу 1 №469: иначе большая правка критичной зоны судилась бы частью при
+    зелёном вердикте); некритичные добивают до 60, но не меньше пола 15."""
     крит = [_М("src/privacy.py", f"k{i}", True) for i in range(50)]
     прочие = [_М(f"src/x{j}.py", f"n{j}-{i}", False) for j in range(2) for i in range(10)]
     взяли = mc.select(крит + прочие, 60)
-    assert len(взяли) == 60
-    assert sum(m.critical for m in взяли) == 45 and sum(not m.critical for m in взяли) == 15
-    # некритичных меньше пола — остаток пола уходит критичным
+    assert sum(m.critical for m in взяли) == 50 and sum(not m.critical for m in взяли) == 15
+    # большая критичная правка: все сто критичных и пол некритичным
+    много = [_М("src/audio.py", f"a{i}", True) for i in range(100)]
+    взяли = mc.select(много + прочие, 60)
+    assert sum(m.critical for m in взяли) == 100 and sum(not m.critical for m in взяли) == 15
+    # мало критичных — некритичные добивают до 60
+    взяли = mc.select(крит[:10] + прочие * 1 + [_М("src/y.py", f"y{i}", False) for i in range(60)], 60)
+    assert len(взяли) == 60 and sum(m.critical for m in взяли) == 10
+    # некритичных меньше пола — берутся все
     взяли = mc.select(крит + прочие[:5], 60)
     assert sum(m.critical for m in взяли) == 50 and sum(not m.critical for m in взяли) == 5
     # поровну по файлам внутри слоя
@@ -2595,3 +2601,32 @@ def test_родитель_jobs_называет_причину_отказа_пр
     assert mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--jobs", "2", "--force",
                     "--resume", "0123456789abcdef"]) == 1
     assert "журнал прогона 0123456789abcdef не найден или истёк" in capsys.readouterr().out
+
+
+def test_критичные_не_рассуждённые_бюджетом_держат_мерж(tmp_path, capsys):
+    """CI срезал бюджетом часть критичных — вердикт не зелёный и называет, сколько
+    критичных не рассуждено и как догнать (решение главной по выходному кругу 1)."""
+    for k, (m, t, cm, ct) in enumerate([(5, 5, 2, 2), (5, 3, 3, 1)], 1):
+        (tmp_path / f"r{k}.json").write_text(json.dumps(
+            _факт(k, 2, m, 10, "ok", tested=t, critical_M=cm, critical_tested=ct)), encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    head = capsys.readouterr().out.splitlines()[0]
+    assert head.startswith("держит мерж: критичных не рассуждено 2 из 5"), head
+    assert "--only-critical" in head
+
+
+def test_догон_только_критичных_судит_критичных_выборки(tmp_path):
+    """`--only-critical` берёт из выборки ровно критичных — тот же набор, что у CI."""
+    repo = _git_repo(tmp_path, {"src/mod.py": _БАЗА})
+    база = _rev(repo, "HEAD")
+    (repo / "src" / "mod.py").write_text(_ПРАВКА, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+    _зоны(repo, {"mod::f": "дверь"}, "зона — функция f")
+    (repo / "src" / "other.py").write_text("def g(a):\n    return a > 1\n", encoding="utf-8")
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "некритичный модуль"], cwd=repo, check=True)
+    все, _ = mc.plan_for(repo, f"{база}...HEAD", max_n=60)
+    крит, totals = mc.plan_for(repo, f"{база}...HEAD", max_n=60, only_critical=True)
+    assert крит and all(m.critical for m in крит)
+    assert {m.key for m in крит} == {m.key for m in все if m.critical}
+    assert any(not m.critical for m in все) and totals.planned == len(крит)

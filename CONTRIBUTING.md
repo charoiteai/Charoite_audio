@@ -80,8 +80,8 @@ review gates, and who answers for what — is documented in
   Only product code is mutated: `src/` and the scripts the product launches
   (`layout_map.mutation_area` over the head revision); benchmarks, tooling and
   `tests/` are not. The plan is sampled with `--max` (default 60, `all` — the
-  whole plan): mutants in critical zones first, a floor of 15 for the rest,
-  round-robin across files within a layer, and within a file by the hash of the
+  whole plan): every mutant in a critical zone, the rest filling the sample up
+  to `--max` but never below 15, round-robin across files within a layer, and within a file by the hash of the
   mutant's identity (path, function, description, canonical node text — no line
   number). Editing a test or shifting lines does not change the sample; CI and a
   local run judge the same set. The sample is the plan: what it leaves out is
@@ -103,7 +103,8 @@ review gates, and who answers for what — is documented in
   short: red when the files do not cover the sample (one per shard, keys 1..N,
   ΣM = P, one sample, zones and revisions, readable format), when a mutant in a
   critical zone survived or the check itself broke, or when the sample was not
-  judged in full; at `P = 0` the note "nothing to mutate" or the blind-spot
+  judged in full (unjudged critical mutants are named separately and are caught
+  up before the merge with `--only-critical`); at `P = 0` the note "nothing to mutate" or the blind-spot
   warning, both green.
   Every run writes a journal of judged mutants `logs/mutation_run-<key>-<k>.jsonl`
   under the data root and prints the key; `--resume <key>` judges only those not

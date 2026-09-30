@@ -274,6 +274,11 @@ class Facts:
     aborted: str = ""
     critical_full: int = 0
     critical_sampled: int = 0
+    #: Критичных в доле и сколько из них рассуждено: не рассуждённый критичный
+    #: мутант (бюджет, встреча) называется в вердикте отдельно — его догоняют
+    #: до мержа `--only-critical`
+    critical_M: int = 0
+    critical_tested: int = 0
     zones: str = ""
     zones_note: str = ""
     base: str = ""
@@ -598,9 +603,10 @@ def _scan_tree(tree: ast.Module, path: pathlib.Path, lines: set[int], rel: str) 
     return report
 
 
-#: Потолок выборки на задачу (решение владельца 30.09, №469) и пол некритичным:
-#: критичные мутанты берутся первыми, но PR-рефакторинг критичной зоны не оставляет
-#: остальные файлы с нулём навсегда; неиспользованный пол возвращается критичным.
+#: Выборка на задачу (решение владельца 30.09, №469; уточнение главной по выходному
+#: кругу 1): критичные мутанты судятся ВСЕ — потолок их не режет, иначе при большой
+#: правке критичной зоны часть её не судилась бы никогда при зелёном вердикте;
+#: некритичные добивают выборку до `--max`, но не меньше пола.
 SAMPLE_MAX = 60
 NONCRITICAL_FLOOR = 15
 #: Где лежит список зон в ревизии — то же имя, что у сторожа раскладки
@@ -650,22 +656,23 @@ def _round_robin(muts: list[Mutation], n: int) -> list[Mutation]:
 
 
 def select(plan: list[Mutation], max_n: int | None) -> list[Mutation]:
-    """Выборка: критичные первыми, некритичным пол, внутри слоя — поровну по
-    файлам, внутри файла — по хешу личности (`rank`). Какие мутанты взяты, от
-    номеров строк не зависит; порядок результата — порядок плана."""
+    """Выборка: все критичные, некритичные — до `max_n` всего, но не меньше пола;
+    внутри слоя — поровну по файлам, внутри файла — по хешу личности (`rank`).
+    Какие мутанты взяты, от номеров строк не зависит; порядок результата —
+    порядок плана."""
     if max_n is None or len(plan) <= max_n:
         return list(plan)
     crit = [m for m in plan if m.critical]
     rest = [m for m in plan if not m.critical]
-    floor = min(NONCRITICAL_FLOOR, max_n // 4, len(rest))
-    took = _round_robin(crit, max_n - floor)
-    took += _round_robin(rest, max_n - len(took))
+    floor = min(NONCRITICAL_FLOOR, max_n // 4)
+    took = crit + _round_robin(rest, max(max_n - len(crit), floor))
     picked = {id(m) for m in took}
     return [m for m in plan if id(m) in picked]
 
 
 def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
-             max_n: int | None = None) -> tuple[list[Mutation], ScanTotals]:
+             max_n: int | None = None,
+             only_critical: bool = False) -> tuple[list[Mutation], ScanTotals]:
     """Выборка мутантов по диапазону и счётчики того, из чего она собрана.
 
     Область — код продукта (`layout_map.mutation_area` по ревизии головы): `src/` и
@@ -734,6 +741,10 @@ def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
     totals.full = len(plan)
     totals.critical_full = sum(m.critical for m in plan)
     plan = select(plan, max_n)
+    if only_critical:
+        # Догон критичных до мержа: CI срезал их бюджетом — судим ровно их; выборка
+        # берёт критичных всех, поэтому набор тот же, что у CI
+        plan = [m for m in plan if m.critical]
     totals.planned = len(plan)
     totals.critical_sampled = sum(m.critical for m in plan)
     totals.zones, totals.zones_note = digest, note
@@ -1040,7 +1051,7 @@ def render_report(f: Facts, skipped: list | None = None,
         head += f" (в критичных зонах: {len(crit)})"
     lines = [head,
              f"Выборка: {f.P} из {f.full} мутантов плана; критичных в плане {f.critical_full}, "
-             f"в выборке {f.critical_sampled}"
+             f"в выборке {f.critical_sampled}, в доле {f.critical_M}, рассуждено {f.critical_tested}"
              + (f" — {f.zones_note}" if f.zones_note else "")]
     if untried:
         lines.append(f"НЕ СУДИЛОСЬ: {untried} (прервано: {aborted}) — "
@@ -1130,7 +1141,7 @@ def _jobs_arg(value: str) -> int:
 #: родителя — доли им он чеканит сам. Каждый флаг парсера стоит ровно в одном списке,
 #: тест держит это: новый флаг без решения «пересылать ли» краснеет, а не теряется
 #: у долей молча.
-CHILD_FORWARDED = ("range", "timeout", "budget_s", "force", "max", "resume")
+CHILD_FORWARDED = ("range", "timeout", "budget_s", "force", "max", "resume", "only_critical")
 PARENT_ONLY = ("jobs", "shard", "report", "merge_shards")
 
 
@@ -1234,6 +1245,8 @@ def fold(rows: list[Facts]) -> Facts:
                  broken_rc=max(r.broken_rc for r in rows),
                  aborted="; ".join(f"шард {r.K}: {r.aborted}" for r in rows if r.aborted),
                  critical_full=first.critical_full, critical_sampled=first.critical_sampled,
+                 critical_M=sum(r.critical_M for r in rows),
+                 critical_tested=sum(r.critical_tested for r in rows),
                  zones=first.zones, zones_note=first.zones_note, base=first.base, head=first.head,
                  run=first.run,
                  survivors=[s for r in rows for s in r.survivors])
@@ -1304,6 +1317,11 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
         elif f.critical_survivors:
             head, code = (f"держит мерж: выжили мутанты в критичных зонах — "
                           f"{len(f.critical_survivors)}"), 1
+        elif f.critical_tested < f.critical_M:
+            head = (f"держит мерж: критичных не рассуждено {f.critical_M - f.critical_tested} "
+                    f"из {f.critical_M} — догнать до мержа: mutate_check.py --range <тот же> "
+                    f"--only-critical")
+            code = 1
         else:
             unfinished = [r for r in rows if verdict_code(r) not in
                           (0, EXIT_NOTHING_TO_CHECK, EXIT_UNMUTABLE)]
@@ -1364,6 +1382,8 @@ def child_argv(args: argparse.Namespace, k: int, n: int, logs: pathlib.Path,
         argv.append("--force")
     if args.resume:
         argv += ["--resume", args.resume]
+    if args.only_critical:
+        argv.append("--only-critical")
     # Тот же `--max`, что у родителя: выборка — это план, доли берут индексы из неё
     # (№469); `all` у доли при конечном потолке судил бы полный план вместо выборки
     return argv + ["--max", "all" if args.max is None else str(args.max),
@@ -1536,6 +1556,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "--max и сводит их --merge-shards. Параллельные прогоны разрешены: "
                          "замок мутатора разделяемый, а четыре доли на одном .git нашли "
                          "тех же выживших втрое быстрее (замер №444 B)")
+    ap.add_argument("--only-critical", action="store_true",
+                    help="судить только мутантов критичных зон выборки — догон до мержа, "
+                         "когда CI не рассудил их по бюджету")
     ap.add_argument("--resume", type=_resume_arg, default=None, metavar="КЛЮЧ",
                     help="продолжить прерванный прогон: судить только мутантов, которых "
                          "нет в журнале рассуждённых logs/mutation_run-<КЛЮЧ>-*.jsonl; "
@@ -1605,16 +1628,18 @@ def main(argv: list[str]) -> int:
     if args.jobs > 1:
         return run_jobs(args, rng, data_root)
     try:
-        plan, totals = plan_for(root, rng, shard, args.max)
+        plan, totals = plan_for(root, rng, shard, args.max, args.only_critical)
     except PreparationError as e:
         print(f"подготовка не удалась: {e}")
         return 1
     totals.run = run_key(rng, args.max, args.timeout, totals.sample)
+    critical_share = sum(m.critical for m in plan)
     k, n = totals.shard or (1, 1)
     left, _, right = split_range(rng)
     facts = Facts(K=k, N=n, M=len(plan), P=totals.planned, full=totals.full,
                   unread=totals.files_unreadable, nodes=totals.nodes, lines_in=totals.lines_in,
                   critical_full=totals.critical_full, critical_sampled=totals.critical_sampled,
+                  critical_M=critical_share,
                   zones=totals.zones, zones_note=totals.zones_note, base=left, head=right,
                   run=totals.run)
     if totals.zones_note:
@@ -1683,6 +1708,7 @@ def main(argv: list[str]) -> int:
             facts.skipped += 1
         else:
             facts.tested += 1
+            facts.critical_tested += mut.critical
             if row["outcome"] == "survived":
                 facts.survivors.append(survivor_row(mut, root))
     if len(todo) < len(plan):
@@ -1791,6 +1817,7 @@ def main(argv: list[str]) -> int:
             finally:
                 target.write_text(original, encoding="utf-8")
             facts.tested += 1
+            facts.critical_tested += mut.critical
             mark = "ВЫЖИЛ" if alive else "убит"
             zone = " (критичная зона)" if alive and mut.critical else ""
             print(f"  [{i}/{len(todo)}] {mark}: {mut}{zone}")
