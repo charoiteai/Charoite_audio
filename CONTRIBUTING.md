@@ -345,9 +345,12 @@ The maintainer's clone uses its own hook instead
 `main`): it judges every branch of the push, also requires the maintainer's
 address on every commit, and runs the guard from the main checkout, so a branch
 cannot weaken the gate it is pushed through. `--range BASE..HEAD` runs the same
-per-commit check by hand. Media files (images, audio, PDF, archives) are judged
-by name only: text inside their metadata (EXIF, PDF author, audio tags) is not
-checked.
+per-commit check by hand. Media files (images, audio, PDF) are judged by name
+only: text inside their metadata (EXIF, PDF author, audio tags) is not checked.
+Any other file git treats as binary (archives, office documents, icons, a text
+file with a NUL byte) cannot be checked and is refused; the maintainer lets a
+specific version through by adding its blob hash, which the refusal prints, to
+`~/.config/charoite/blob_allow.txt`.
 
 The hook checks **two** things: the lines a commit adds, and the whole tracked
 tree. The second one matters because a marker added to the list *later* leaves

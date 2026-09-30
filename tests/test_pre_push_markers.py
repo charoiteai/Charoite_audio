@@ -169,35 +169,6 @@ def test_file_names_of_binary_and_empty_files_are_checked(repo):
     assert p.stderr.count(f"{sha[:9]} имя файла") == 2, p.stderr
 
 
-def test_nul_byte_does_not_hide_a_line(repo):
-    """Один нулевой байт делает файл «двоичным» для git — такой файл судится по
-    печатным отрезкам блоба, а не по диффу."""
-    (repo.work / "data.txt").write_bytes(f"запуск на {MARKER}\n".encode() + b"\x00tail\n")
-    repo.commit("nul")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert p.returncode == 1
-    assert "data.txt (двоичный): приватный маркер" in p.stderr, p.stderr
-
-
-def test_binary_noise_is_not_read_as_text(repo):
-    """Случайные байты с коротким совпадением внутри — не находка: судятся
-    только печатные отрезки от 8 символов (выход 2 №541, Sonnet I1)."""
-    (repo.tmp / "markers.txt").write_text("QZX\n", encoding="utf-8")
-    (repo.work / "m.bin").write_bytes(b"\x00\x01QZX\x02\x00" * 50)
-    repo.commit("bin")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert p.returncode == 0, p.stderr
-
-
-def test_oversized_binary_is_a_refusal_not_a_silent_skip(repo, monkeypatch):
-    (repo.work / "big.bin").write_bytes(b"\x00" * 4096)
-    sha = repo.commit("big")
-    monkeypatch.chdir(repo.work)
-    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
-    with pytest.raises(guard.GitError, match=f"^{sha[:9]} big.bin: .*больше потолка"):
-        guard.scan_commits([f"{repo.base}..HEAD"], None, identity=False)
-
-
 def test_evil_merge_line_is_caught_but_parent_lines_are_not_repeated(repo):
     """Строка, которой нет ни в одном родителе, — новая; строки родителей судятся
     их коммитами. `+++ b/…` внутри хунка — содержимое, не заголовок."""
@@ -692,21 +663,6 @@ def test_deleting_a_published_file_is_not_a_finding(repo):
     assert p.returncode == 0, p.stderr
 
 
-def test_binary_exactly_at_the_ceiling_is_read(repo, monkeypatch):
-    (repo.work / "edge.bin").write_bytes(b"\x00" * 1024)
-    repo.commit("edge")
-    monkeypatch.chdir(repo.work)
-    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
-    assert guard.scan_commits([f"{repo.base}..HEAD"], None, identity=False)[1] == []
-
-
-def test_binary_finding_names_its_commit(repo):
-    (repo.work / "d.dat").write_bytes(f"запуск на {MARKER}".encode() + b"\x00")
-    sha = repo.commit("bin")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert f"{sha[:9]} d.dat (двоичный): приватный маркер" in p.stderr, p.stderr
-
-
 def test_url_refusal_names_the_known_remotes(repo):
     repo.install()
     wt = repo.worktree("feat")
@@ -850,42 +806,6 @@ def test_file_name_starting_with_the_record_mark(repo):
     assert hits == [f"{sha[:9]} имя файла я***.md: приватный маркер"], p.stdout + p.stderr
 
 
-# ── финальный круг Opus (№541) ──────────────────────────────────────────────
-
-def test_utf16_text_without_bom_is_read(repo):
-    (repo.work / "u16.txt").write_bytes(f"запуск на {MARKER}\n".encode("utf-16-le"))
-    sha = repo.commit("u16")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert f"{sha[:9]} u16.txt (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
-
-
-def test_office_zip_with_a_word_split_by_tags_is_read(repo):
-    import io
-    import zipfile
-    buf = io.BytesIO()
-    half = len(MARKER) // 2
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("word/document.xml",
-                   f"<w:t>{MARKER[:half]}</w:t><w:t>{MARKER[half:]}</w:t>")
-    (repo.work / "отчёт.docx").write_bytes(buf.getvalue())
-    sha = repo.commit("docx")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert f"{sha[:9]} отчёт.docx (двоичный): приватный маркер" in p.stderr, p.stderr
-
-
-def test_gzip_is_unpacked_and_unknown_containers_refuse(repo):
-    import gzip
-    (repo.work / "log.gz").write_bytes(gzip.compress(f"{MARKER}\n".encode()))
-    repo.commit("gz")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert "log.gz (двоичный): приватный маркер" in p.stderr, p.stderr
-    base = repo.head()
-    (repo.work / "arch.xz").write_bytes(b"\xfd7zXZ\x00" + b"\x00" * 64)
-    repo.commit("xz")
-    p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
-    assert p.returncode == 1 and "контейнер xz" in p.stderr, p.stderr
-
-
 def test_nfd_text_matches_an_nfc_marker(repo):
     import unicodedata
     (repo.tmp / "markers.txt").write_text("Андрейка\n", encoding="utf-8")
@@ -901,19 +821,15 @@ def test_nfd_text_matches_an_nfc_marker(repo):
 
 
 def test_refusals_do_not_quote_names_or_url_secrets(repo, monkeypatch):
-    (repo.work / f"{MARKER}.bin").write_bytes(b"\x00" * 4096)
-    repo.commit("big")
+    (repo.work / f"{MARKER}.bin").write_bytes(b"\x00" * 64)
+    repo.commit("bin")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and MARKER not in p.stderr and "***.bin (двоичный)" in p.stderr
     monkeypatch.chdir(repo.work)
-    monkeypatch.setenv("CHAROITE_MARKERS", str(repo.tmp / "markers.txt"))
-    monkeypatch.setenv("HOME", str(repo.tmp / "home"))
-    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
-    private = guard.build_pattern([MARKER])
-    with pytest.raises(guard.GitError) as e:
-        guard.scan_commits([f"{repo.base}..HEAD"], private, identity=False)
-    assert MARKER not in str(e.value) and "***.bin" in str(e.value)
     with pytest.raises(guard.GitError) as e:
         guard.push_revs("https://" + "user:" + "tok" + "@example.com/r.git", [])
-    assert "tok" not in str(e.value) and "example.com" in str(e.value)
+    shown = str(e.value).split("'")[1]
+    assert shown == "https://example.com/r.git", str(e.value)
 
 
 def test_pre_commit_names_the_place_not_the_line(repo):
@@ -1008,32 +924,6 @@ def _zip(members: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
-def test_short_marker_in_the_next_cell_of_a_spreadsheet(repo):
-    """Соседние ячейки разделены только тегами: склейка без пробела съела бы
-    границу слова у короткого маркера."""
-    (repo.tmp / "markers.txt").write_text("ЗАО\n", encoding="utf-8")
-    (repo.work / "t.xlsx").write_bytes(_zip({
-        "xl/sharedStrings.xml": "<si><t>отчёт</t></si><si><t>ЗАО</t></si>".encode()}))
-    repo.commit("xlsx")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert "t.xlsx (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
-
-
-def test_nul_padding_does_not_hide_utf8_text(repo):
-    (repo.work / "img.bin").write_bytes(b"\x00" * 4096 + f"запуск на {MARKER}\n".encode())
-    repo.commit("pad")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert "img.bin (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
-
-
-def test_broken_container_is_a_clean_refusal(repo):
-    (repo.work / "x.docx").write_bytes(_zip({"word/document.xml": b"<w:t>x</w:t>" * 50})[:60])
-    repo.commit("bad zip")
-    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert p.returncode == 1 and "повреждённый или зашифрованный" in p.stderr, p.stderr
-    assert "Traceback" not in p.stderr
-
-
 def test_mirror_push_takes_origin_by_its_push_url(repo):
     """origin тянет из одного репозитория, а пушит в публичный: для push в
     третий remote «опубликованное» — вершины публичного."""
@@ -1054,60 +944,67 @@ def test_mirror_push_takes_origin_by_its_push_url(repo):
     assert p.returncode != 0 and "n.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
 
 
-def test_unpack_budget_is_shared_by_all_members(monkeypatch):
-    monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
-    data = _zip({f"m{i}.txt": b"a" * 600 for i in range(3)})
-    with pytest.raises(guard.GitError, match="больше потолка"):
-        guard.blob_texts(data)
-    assert guard.blob_texts(_zip({"m.txt": b"a" * 600}))
 
 
-def test_bzip2_signature_is_exact_and_utf32_refuses():
-    assert guard.blob_texts(b"BZhello, world " * 3)
-    with pytest.raises(guard.GitError, match="bzip2"):
-        guard.blob_texts(b"BZh91AY&SY" + b"\x00" * 32)
-    with pytest.raises(guard.GitError, match="UTF-32"):
-        guard.blob_texts("текст".encode("utf-32"))
+# ── двоичное содержимое: отказ или решение владельца (выход №541, круг 3) ──
+
+def _allow(repo, *blobs: str) -> None:
+    path = repo.tmp / "home" / ".config" / "charoite" / "blob_allow.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# решено публиковать\n" + "".join(f"{b}  иконка\n" for b in blobs),
+                    encoding="utf-8")
 
 
-def test_short_utf16_without_bom_is_decoded():
-    assert "ЗАО\n" in guard.blob_texts("ЗАО\n".encode("utf-16-le"))
-
-
-# ── узкий круг 2: один генератор всех текстовых видов (№541) ────────────────
-
-def test_attribute_values_of_xml_members_are_judged():
-    texts = guard.blob_texts(_zip({"xl/workbook.xml": '<sheets><sheet name="ЗАО-отчёт"/></sheets>'
-                                   .encode()}))
-    assert any("ЗАО-отчёт" in t for t in texts), texts
-
-
-def test_utf16_fragment_in_the_middle_of_a_binary():
-    import random
-    rnd = random.Random(7)
-    for size in (5000, 5001):         # строка UTF-16 на чётном и нечётном смещении
-        noise = bytes(rnd.randrange(256) for _ in range(size))
-        texts = guard.blob_texts(noise + "запуск на ЗАО-отчёт".encode("utf-16-le") + noise)
-        assert any("ЗАО-отчёт" in t for t in texts), size
-
-
-def test_short_crlf_line_of_a_text_member_survives():
-    texts = guard.blob_texts(_zip({"a.csv": "ЗАО\r\nx;1\r\n".encode(), "b.txt": "ЗАО".encode()}))
-    assert any("ЗАО" in t.splitlines() for t in texts[:2]), texts
-    assert "ЗАО" in texts, texts               # короткий текстовый член — целиком
-
-
-def test_crlf_does_not_split_printable_runs():
-    assert "ЗАО-отчёт\r\nи ещё" in "".join(guard.blob_texts(b"\x00" + "ЗАО-отчёт\r\nи ещё".encode()))
-
-
-def test_split_word_in_any_markup_member(repo):
-    texts = guard.blob_texts(_zip({"x/comments.vml": "<v><b>Внутр</b>енняя</v>".encode()}))
-    assert any("Внутренняя" in t for t in texts), texts
-
-
-def test_zip_suffix_content_is_judged(repo):
-    (repo.work / "data.zip").write_bytes(_zip({"notes.txt": f"{MARKER}\n".encode()}))
-    sha = repo.commit("zip")
+def test_binary_outside_media_is_refused_with_its_blob_hash(repo):
+    """Один NUL делает файл двоичным для git — и страж не пытается угадать, что
+    внутри: отказ с хешем блоба (так закрыт и обход «добавь NUL — и строки не
+    видны»)."""
+    (repo.work / "data.txt").write_bytes(f"запуск на {MARKER}\n".encode() + b"\x00tail\n")
+    sha = repo.commit("nul")
+    blob = git(repo.work, "rev-parse", f"{sha}:data.txt", env=repo.env).stdout.strip()
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert f"{sha[:9]} data.zip (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr
+    assert p.returncode == 1, p.stderr
+    assert f"{sha[:9]} data.txt (двоичный): содержимое не проверить" in p.stderr, p.stderr
+    assert blob in p.stderr and "blob_allow.txt" in p.stderr
+
+
+def test_allowed_blob_passes_and_only_that_blob(repo):
+    (repo.work / "AppIcon.icns").write_bytes(b"icns\x00\x01\x02")
+    first = repo.commit("icon")
+    _allow(repo, git(repo.work, "rev-parse", f"{first}:AppIcon.icns", env=repo.env).stdout.strip())
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+    (repo.work / "AppIcon.icns").write_bytes(b"icns\x00\x01\x03")
+    repo.commit("icon v2")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "AppIcon.icns (двоичный)" in p.stderr, p.stderr
+
+
+def test_media_binary_is_judged_by_name_only(repo):
+    (repo.work / "shot.png").write_bytes(b"\x89PNG\x00" + MARKER.encode())
+    repo.commit("png")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr
+
+
+def test_zip_is_not_media_for_the_per_commit_guard(repo):
+    (repo.work / "data.zip").write_bytes(_zip({"notes.txt": b"x"}))
+    repo.commit("zip")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "data.zip (двоичный)" in p.stderr, p.stderr
+
+
+def test_allow_list_comments_and_blank_lines_are_not_hashes(repo, monkeypatch):
+    _allow(repo, "a" * 40)
+    monkeypatch.setenv("HOME", str(repo.tmp / "home"))
+    assert guard.allowed_blobs() == {"a" * 40}
+
+
+def test_deleting_a_published_binary_is_not_a_refusal(repo):
+    (repo.work / "old.bin").write_bytes(b"\x00\x01")
+    repo.commit("было")
+    base = repo.head()
+    (repo.work / "old.bin").unlink()
+    repo.commit("удалил")
+    p = guard_run(repo.work, "--range", f"{base}..HEAD", env=repo.env)
+    assert p.returncode == 0, p.stderr

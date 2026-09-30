@@ -21,16 +21,12 @@ macOS; `[[:<:]]` — наоборот. Страж, который врёт, бы
 from __future__ import annotations
 
 import argparse
-import gzip
-import io
 import os
 import pathlib
 import re
 import subprocess
 import sys
 import unicodedata
-import zipfile
-import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -225,8 +221,8 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
     Слияние — комбинированным диффом (`--cc`): добавленной считается строка,
     которой нет ни в одном родителе (все N колонок префикса — `+`); строки
     родителей проверены их собственными коммитами или уже опубликованы.
-    Двоичные по мнению git файлы судит `blob_texts` — по содержимому блоба, а не
-    по диффу. Pathspec нет намеренно: с ним git упрощает историю, и слияние,
+    Двоичные по мнению git файлы здесь не видны: для них — отказ или хеш в
+    списке разрешённых (`allowed_blobs`). Pathspec нет намеренно: с ним git упрощает историю, и слияние,
     равное родителю, прятало коммиты влитой ветки (выход 1 №541, Sonnet C1).
     Содержимое медиа-суффиксов отсекается по пути в разборе, их имена проверяет
     `added_paths`.
@@ -345,10 +341,24 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
     return metas
 
 
-# Двоичный файл (по мнению git: NUL в начале) судится по содержимому блоба —
-# печатные отрезки от 8 символов; больше потолка — отказ, а не тихий пропуск.
-BLOB_LIMIT = 20 * 1024 * 1024
-_PRINTABLE_RUN = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]{8,}")
+# Двоичный файл (по мнению git: NUL в первых 8 КБ) вне медиа-суффиксов не
+# судится по содержимому — отказ, выход один: хеш блоба в списке разрешённых у
+# владельца. Три круга подряд (выход №541) находили новый вид содержимого,
+# который разбор не видел (теги, атрибуты, UTF-16, cp1251, контейнеры); класс
+# открыт, поэтому постановка сужена до «непроверяемое не публикуется без решения».
+
+
+def blob_allow_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".config" / "charoite" / "blob_allow.txt"
+
+
+def allowed_blobs() -> set[str]:
+    """Хеши блобов, которые владелец решил публиковать непроверенными."""
+    path = blob_allow_path()
+    if not path.exists():
+        return set()
+    return {ln.split()[0] for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")}
 
 
 def binary_files(revs: list[str]) -> list[tuple[str, str]]:
@@ -362,101 +372,6 @@ def binary_files(revs: list[str]) -> list[tuple[str, str]]:
             if parts[:2] == ["-", "-"] and len(parts) == 3:
                 found.append((sha, parts[2]))
     return found
-
-
-# Сжатые контейнеры, которые страж не распаковывает: такой файл — отказ, а не
-# «чисто» (финальный круг №541, Opus I1). zip (в том числе .docx/.xlsx) и gzip
-# распаковываются.
-_UNREADABLE = {b"7z\xbc\xaf\x27\x1c": "7z", b"\xfd7zXZ\x00": "xz",
-               b"Rar!\x1a\x07": "rar", b"\x28\xb5\x2f\xfd": "zstd",
-               b"\xff\xfe\x00\x00": "UTF-32", b"\x00\x00\xfe\xff": "UTF-32"}
-_BZIP2 = re.compile(rb"BZh[1-9]1AY&SY")
-_TAG = re.compile(rb"<[^<>]{0,2000}>")
-
-
-_WIDE_RUN = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]{4,}")
-
-
-def text_views(data: bytes) -> list[str]:
-    """Все текстовые виды байтов — без выбора одного по эвристике (выход №541:
-    два Critical подряд за «угаданную» кодировку и снятые теги).
-
-    Строгий UTF-8 без NUL — весь текст целиком. Иначе — печатные отрезки UTF-8
-    от 8 знаков (короче — шум случайных байтов) и отрезки UTF-16 le и be на
-    обоих смещениях от 4 знаков (строки старого Office лежат кусками посреди
-    двоичного). XML-подобный текст — ещё два вида: теги сняты вплотную (слово,
-    разрезанное тегами) и заменены пробелом (соседние ячейки); сырой вид
-    оставляет значения атрибутов."""
-    if b"\x00" not in data:
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            if text.lstrip("\ufeff \t\r\n").startswith("<"):
-                return [text, _TAG.sub(b"", data).decode("utf-8", "replace"),
-                        _TAG.sub(b" ", data).decode("utf-8", "replace")]
-            return [text]
-    views = _PRINTABLE_RUN.findall(data.decode("utf-8", "replace"))
-    for enc in ("utf-16-le", "utf-16-be"):
-        for start in (0, 1):
-            views += _WIDE_RUN.findall(data[start:].decode(enc, "replace"))
-    return views
-
-
-def blob_texts(data: bytes, depth: int = 0, budget: list[int] | None = None) -> list[str]:
-    """Текстовые виды двоичного блоба с распаковкой контейнеров; непроверяемое —
-    отказ. `budget` — общий остаток распаковки на весь блоб."""
-    budget = [BLOB_LIMIT] if budget is None else budget
-    if depth > 3:
-        raise GitError("вложенность контейнеров глубже 3 — содержимое не проверить")
-    if data.startswith(b"PK\x03\x04"):
-        texts: list[str] = []
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            for info in z.infolist():
-                budget[0] -= info.file_size
-                if budget[0] < 0:
-                    raise GitError(f"распакованный архив больше потолка {BLOB_LIMIT} Б")
-                texts += blob_texts(z.read(info), depth + 1, budget) + [info.filename]
-        return texts
-    if data.startswith(b"\x1f\x8b"):
-        with gzip.GzipFile(fileobj=io.BytesIO(data)) as g:
-            inner = g.read(budget[0] + 1)
-        budget[0] -= len(inner)
-        if budget[0] < 0:
-            raise GitError(f"распакованный gzip больше потолка {BLOB_LIMIT} Б")
-        return blob_texts(inner, depth + 1, budget)
-    for sig, kind in _UNREADABLE.items():
-        if data.startswith(sig):
-            raise GitError(f"контейнер {kind} — содержимое не проверить")
-    if _BZIP2.match(data):
-        raise GitError("контейнер bzip2 — содержимое не проверить")
-    return text_views(data)
-
-
-# Чем падает разбор повреждённого или зашифрованного контейнера. Текст
-# исключения (имя члена архива) наружу не идёт — только тип.
-_CONTAINER_ERRORS = (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
-                     NotImplementedError, zlib.error, EOFError, OSError, ValueError)
-
-
-def binary_texts(sha: str, path: str) -> list[str] | None:
-    """Текст двоичного файла коммита; None — медиа-суффикс (судится только имя)."""
-    if pathlib.PurePosixPath(path).suffix.lower() in _COMMIT_SKIP:
-        return None
-    obj = f"{sha}:{path}"
-    if not git_ok("cat-file", "-e", obj):
-        raise GitError("объект файла не найден — имя не разобрать, содержимое не проверить")
-    size = int(git("cat-file", "-s", obj).strip() or 0)
-    if size > BLOB_LIMIT:
-        raise GitError(f"двоичный файл {size} Б больше потолка {BLOB_LIMIT} Б — содержимое не "
-                       "проверить, такой файл не должен уходить в публичный репозиторий без решения")
-    data = git("cat-file", "blob", obj)
-    try:
-        return blob_texts(data)
-    except _CONTAINER_ERRORS as e:
-        raise GitError(f"повреждённый или зашифрованный контейнер ({type(e).__name__}) — "
-                       "содержимое не проверить") from None
 
 
 def raw_objects(shas: list[str]) -> dict[str, str]:
@@ -552,18 +467,17 @@ def scan_commits(revs: list[str], private: re.Pattern[str] | None, identity: boo
         for k in kinds(text):
             hits.append(f"{sha[:9]} {mask(name)}:{lineno}: {k}")
     kept = set(present)
+    allowed = allowed_blobs()
     for sha, name in binary_files(revs):
-        if (sha, name) not in kept:
-            continue                     # удалён: numstat показывает и удалённые
-        try:
-            texts = binary_texts(sha, name)
-        except GitError as e:
-            raise GitError(f"{sha[:9]} {mask(name)}: {e}") from None
-        found: list[str] = []
-        for run in texts or ():
-            found += [k for k in kinds(run) if k not in found]
-        for k in found:
-            hits.append(f"{sha[:9]} {mask(name)} (двоичный): {k}")
+        if (sha, name) not in kept or \
+                pathlib.PurePosixPath(name).suffix.lower() in _COMMIT_SKIP:
+            continue                     # удалён (numstat показывает и их) или медиа
+        if not git_ok("cat-file", "-e", f"{sha}:{name}"):
+            raise GitError(f"{sha[:9]} {mask(name)}: объект файла не найден — имя не разобрать")
+        blob = git("rev-parse", f"{sha}:{name}").decode().strip()
+        if blob not in allowed:
+            hits.append(f"{sha[:9]} {mask(name)} (двоичный): содержимое не проверить — если "
+                        f"файл можно публиковать, впишите {blob} в {blob_allow_path()}")
     return len(metas), hits
 
 
