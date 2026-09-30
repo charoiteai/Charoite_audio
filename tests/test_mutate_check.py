@@ -2608,11 +2608,31 @@ def test_критичные_не_рассуждённые_бюджетом_де�
     критичных не рассуждено и как догнать (решение главной по выходному кругу 1)."""
     for k, (m, t, cm, ct) in enumerate([(5, 5, 2, 2), (5, 3, 3, 1)], 1):
         (tmp_path / f"r{k}.json").write_text(json.dumps(
-            _факт(k, 2, m, 10, "ok", tested=t, critical_M=cm, critical_tested=ct)), encoding="utf-8")
+            _факт(k, 2, m, 10, "ok", tested=t, critical_M=cm, critical_tested=ct,
+                  critical_sampled=5)), encoding="utf-8")
     assert mc.merge_shards(tmp_path) == 1
     head = capsys.readouterr().out.splitlines()[0]
     assert head.startswith("держит мерж: критичных не рассуждено 2 из 5"), head
     assert "--only-critical" in head
+
+
+def test_не_применившийся_критичный_не_отправляют_на_догон(tmp_path, capsys):
+    """Критичный мутант, который не применился, при догоне не применится снова:
+    вердикт называет его отдельно (выходной круг 2 по №469, Sonnet M1)."""
+    (tmp_path / "r.json").write_text(json.dumps(
+        _факт(1, 1, 3, 3, "ok", tested=2, skipped=1, critical_M=1, critical_skipped=1,
+              critical_sampled=1)), encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    head = capsys.readouterr().out.splitlines()[0]
+    assert "не применилось 1 — дефект мутатора" in head and "--only-critical" not in head, head
+
+
+def test_сумма_критичных_долей_сверяется_с_выборкой(tmp_path, capsys):
+    """Σ критичных в долях ≠ критичных в выборке — шарды не покрыли план (Sonnet M2)."""
+    (tmp_path / "r.json").write_text(json.dumps(
+        _факт(1, 1, 3, 3, "ok", critical_M=1, critical_tested=1, critical_sampled=2)), encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    assert "Σ критичных в долях ≠ критичных в выборке" in capsys.readouterr().out
 
 
 def test_догон_только_критичных_судит_критичных_выборки(tmp_path):

@@ -279,6 +279,8 @@ class Facts:
     #: до мержа `--only-critical`
     critical_M: int = 0
     critical_tested: int = 0
+    #: Из них не применилось: догон их не рассудит — это дефект мутатора, не бюджета
+    critical_skipped: int = 0
     zones: str = ""
     zones_note: str = ""
     base: str = ""
@@ -1247,6 +1249,7 @@ def fold(rows: list[Facts]) -> Facts:
                  critical_full=first.critical_full, critical_sampled=first.critical_sampled,
                  critical_M=sum(r.critical_M for r in rows),
                  critical_tested=sum(r.critical_tested for r in rows),
+                 critical_skipped=sum(r.critical_skipped for r in rows),
                  zones=first.zones, zones_note=first.zones_note, base=first.base, head=first.head,
                  run=first.run,
                  survivors=[s for r in rows for s in r.survivors])
@@ -1289,6 +1292,9 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
                 problem = "шарды судили разные выборки (P, план, зоны или ревизии разошлись)"
             elif sum(r.M for r in rows) != rows[0].P:
                 problem = "ΣM ≠ P"
+            elif sum(r.critical_M for r in rows) != rows[0].critical_sampled:
+                # иначе счёт «критичных не рассуждено N из M» в вердикте врал бы
+                problem = "Σ критичных в долях ≠ критичных в выборке"
     for r in sorted(rows, key=lambda r: r.K):
         lines.append(f"  шард {r.K} из {r.N}: M={r.M}, судилось {r.tested} — "
                      f"{exit_codes.outcome(verdict_code(r))}")
@@ -1318,9 +1324,15 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
             head, code = (f"держит мерж: выжили мутанты в критичных зонах — "
                           f"{len(f.critical_survivors)}"), 1
         elif f.critical_tested < f.critical_M:
-            head = (f"держит мерж: критичных не рассуждено {f.critical_M - f.critical_tested} "
-                    f"из {f.critical_M} — догнать до мержа: mutate_check.py --range <тот же> "
-                    f"--only-critical")
+            head = f"держит мерж: критичных не рассуждено {f.critical_M - f.critical_tested} из {f.critical_M}"
+            unjudged = f.critical_M - f.critical_tested - f.critical_skipped
+            if unjudged:
+                head += (f" — {unjudged} догнать до мержа: mutate_check.py --range <тот же> "
+                         f"--only-critical")
+            if f.critical_skipped:
+                # не применившийся мутант не применится и при догоне (выходной круг 2, Sonnet M1)
+                head += (f"; не применилось {f.critical_skipped} — дефект мутатора, догон не поможет, "
+                         f"см. НЕ ПРИМЕНИЛОСЬ в отчётах шардов")
             code = 1
         else:
             unfinished = [r for r in rows if verdict_code(r) not in
@@ -1706,6 +1718,7 @@ def main(argv: list[str]) -> int:
         elif row["outcome"] == "skipped":
             skipped.append((mut, row.get("why", "не применилось в прежнем прогоне")))
             facts.skipped += 1
+            facts.critical_skipped += mut.critical
         else:
             facts.tested += 1
             facts.critical_tested += mut.critical
@@ -1807,6 +1820,7 @@ def main(argv: list[str]) -> int:
                 # текст в дереве дал бы «убит» без участия мутации.
                 skipped.append((mut, why))
                 facts.skipped += 1
+                facts.critical_skipped += mut.critical
                 note(mut, "skipped", why=why)
                 print(f"  [{i}/{len(todo)}] НЕ ПРИМЕНИЛОСЬ: {mut} — {why}")
                 save(RUNNING)
