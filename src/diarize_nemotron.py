@@ -508,13 +508,100 @@ def run_stream(stream: Any, *, frame_s: float, read, emit, step: int = STREAM_ST
 
 
 def _load() -> dict:
-    """Цена потока для журнала тени: CPU-секунды процесса движка (все нити) и пик его
-    памяти. Время GPU сюда не входит — его меряет лабораторный опыт (выходной круг
-    входа 2, критика 1)."""
+    """Цена потока для журнала тени: CPU-секунды процесса движка (все нити), пик RSS
+    (справка), текущий след памяти процесса и счётчики MLX. Время GPU сюда не входит —
+    его меряет лабораторный опыт (выходной круг входа 2, критика 1).
+
+    Давление macOS судит `phys_footprint`, а не RSS: буферы MLX в RSS не видны вовсе
+    (опыт 30.09: 1 ГБ в MLX — RSS 530 МБ, след 1541 МБ), и пик `ru_maxrss` не убывает,
+    поэтому доля кэша считается по `phys_mb` и `mlx_*_mb` (входной круг №478 B, память).
+    Чего нет на этой машине — ключа нет: строка фронта не ломается."""
     import resource
     import time
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss      # macOS — байты
-    return {"cpu_s": round(time.process_time(), 2), "rss_mb": round(peak / 2**20)}
+    out = {"cpu_s": round(time.process_time(), 2), "rss_mb": round(peak / 2**20)}
+    phys = _phys_footprint()
+    if phys is not None:
+        out["phys_mb"] = round(phys / 2**20)
+    out.update(_mlx_memory())
+    return out
+
+
+#: `proc_pid_rusage`, `RUSAGE_INFO_V0` — ровно эта структура: 16 байт uuid и десять uint64
+#: (время пользователя и ядра, пробуждения, прерывания, pageins, wired, resident,
+#: phys_footprint, начало и конец процесса), 96 байт. Старшие версии длиннее: с V2 при
+#: буфере V0 ядро писало за его конец, и тесты падали сегфолтом в сборке мусора.
+_RUSAGE_INFO_V0 = 0
+_RUSAGE_FIELDS = ("user", "system", "pkg_idle", "interrupt", "pageins", "wired", "resident",
+                  "phys_footprint", "start", "exit")
+
+
+def _phys_footprint() -> int | None:
+    """Текущий след памяти процесса в байтах (`ri_phys_footprint`); не macOS — None."""
+    import ctypes
+    import ctypes.util
+    import os
+
+    class _Info(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in _RUSAGE_FIELDS]
+
+    path = ctypes.util.find_library("c")
+    if not path:
+        return None
+    info = _Info()
+    try:
+        rc = ctypes.CDLL(path).proc_pid_rusage(os.getpid(), _RUSAGE_INFO_V0, ctypes.byref(info))
+    except (OSError, AttributeError):
+        return None
+    return int(info.phys_footprint) if rc == 0 else None
+
+
+def _mlx_memory() -> dict:
+    """Счётчики аллокатора MLX в МБ: занято, кэш, пик (после загрузки модели пик
+    сброшен — `serve_stream`). Только уже загруженный mlx: в процессе движка его подняла
+    модель, а цена процесса не вправе тянуть mlx туда, где его нет (вызывающий, тесты).
+    Нет mlx или функции — пустой словарь."""
+    import sys
+    mx = sys.modules.get("mlx.core")
+    if mx is None:
+        return {}
+    out = {}
+    for key, name in (("mlx_active_mb", "get_active_memory"), ("mlx_cache_mb", "get_cache_memory"),
+                      ("mlx_peak_mb", "get_peak_memory")):
+        fn = getattr(mx, name, None)
+        if fn is not None:
+            out[key] = round(fn() / 2**20)
+    return out
+
+
+def _reset_mlx_peak() -> None:
+    import sys
+    mx = sys.modules.get("mlx.core")
+    if mx is None:
+        return
+    reset = getattr(mx, "reset_peak_memory", None)
+    if reset is not None:
+        reset()
+
+
+def _set_cache_limit(limit_mb: int | None) -> dict:
+    """Лимит кэша MLX до загрузки модели; поля для рукопожатия — заданный и прежний
+    (`set_cache_limit` возвращает прежний). Без лимита — только прежний не узнать, пусто."""
+    if limit_mb is None:
+        return {}
+    try:
+        import mlx.core as mx
+    except ImportError as e:          # окружение без mlx — тот же отказ «движка нет», что у модели
+        raise ModelUnavailable(f"лимит кэша: mlx не импортируется ({e})") from e
+    prev = mx.set_cache_limit(limit_mb * 2**20)
+    return {"cache_limit_mb": limit_mb, "cache_limit_prev_mb": round(prev / 2**20)}
+
+
+def _non_negative_int(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise ValueError(text)
+    return value
 
 
 def _protocol_channel():
@@ -534,22 +621,26 @@ def _read_stdin(n: int) -> bytes:
     return os.read(0, n)
 
 
-def serve_stream(model_dir: pathlib.Path, preset: str, read: Callable[[int], bytes] = _read_stdin) -> int:
+def serve_stream(model_dir: pathlib.Path, preset: str, read: Callable[[int], bytes] = _read_stdin,
+                 cache_limit_mb: int | None = None) -> int:
     """Сторона движка живого потока: модель, рукопожатие, цикл до EOF stdin. Протокол —
-    ASCII: числа, слоты и имя пресета."""
+    ASCII: числа, слоты и имя пресета. `cache_limit_mb` — лимит кэша MLX до загрузки
+    модели; рукопожатие объявляет его (замер памяти тени, №478 B)."""
     proto = _protocol_channel()
 
     def emit(message: dict) -> None:
         proto.write(json.dumps(message) + "\n")
 
     try:
+        limit = _set_cache_limit(cache_limit_mb)
         model = load_model(model_dir, preset)
         frame_s = frame_seconds(model)
     except ModelUnavailable as e:
         _stderr(str(e).replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
+    _reset_mlx_peak()                  # пик MLX — потока, а не загрузки весов
     emit({"type": "ready", "proto": STREAM_PROTO, "sr": SAMPLE_RATE, "preset": preset,
-          "frame_s": frame_s, "step": STREAM_STEP})
+          "frame_s": frame_s, "step": STREAM_STEP, **limit})
     return run_stream(NemotronStream(model), frame_s=frame_s, read=read, emit=emit)
 
 
@@ -595,6 +686,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="живой поток: s16le 16 кГц со stdin, JSON-строки протокола в stdout до EOF")
     ap.add_argument("--preset", choices=PRESETS, default="low",
                     help="задержка живого потока (--stream): low — 1.04 с")
+    ap.add_argument("--cache-limit-mb", type=_non_negative_int, default=None,
+                    help="лимит кэша MLX живого потока (--stream), МБ; без флага — как у mlx")
     args = ap.parse_args(argv)
     if not (args.probe or args.stream) and args.wav is None:
         ap.error("нужна запись (или --probe, или --stream)")
@@ -603,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
         _stderr(problem.replace("\n", "; "))
         return EXIT_ENGINE_UNAVAILABLE
     if args.stream:
-        return serve_stream(args.model, args.preset)
+        return serve_stream(args.model, args.preset, cache_limit_mb=args.cache_limit_mb)
     if args.probe:
         print(json.dumps({"mlx_audio": importlib.metadata.version("mlx-audio")}))
         return 0

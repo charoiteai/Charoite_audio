@@ -451,7 +451,8 @@ def test_the_product_reaches_the_engine_only_from_the_rebuild():
     # граф раскладки видит только src/: точки входа из scripts/ — отдельным обходом, и
     # законные импортёры названы явно (круг 2 по #648, DS I1): бенч гоняет движок в
     # своём процессе, установщик и доктор — только через двери движка (№474), живых
-    # путей среди них нет
+    # путей среди них нет; сверка журнала тени (№478 B) берёт только чистую проверку кадра
+    # `_check_front` — ту же, что у ребёнка, — и процесса движка не запускает
     import ast
     callers = set()
     for f in sorted((REPO / "scripts").glob("*.py")):
@@ -460,8 +461,9 @@ def test_the_product_reaches_the_engine_only_from_the_rebuild():
                      else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
             if any(n.split(".")[0] == "diarize_nemotron" for n in names):
                 callers.add(f"scripts/{f.name}")
-    assert callers == {"scripts/diar_bench.py", "scripts/install_engine.py", "scripts/doctor.py"}, (
-        f"движок зовут не только бенч, установщик и доктор: {callers}")
+    assert callers == {"scripts/diar_bench.py", "scripts/install_engine.py", "scripts/doctor.py",
+                       "scripts/nemotron_shadow_check.py"}, (
+        f"движок зовут не только бенч, установщик, доктор и сверка тени: {callers}")
 
 
 def test_the_wrapper_writes_nothing_to_disk(tmp_path, monkeypatch):

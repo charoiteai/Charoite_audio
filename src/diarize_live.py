@@ -52,6 +52,16 @@ class SplitResult:
     main: int | None
 
 
+#: Нижняя граница шага нарезки для трекера, секунды.
+MIN_STEP_S = 0.5
+
+
+def tracker_step_s(chunk_s: float, overlap_s: float) -> float:
+    """Шаг нарезки чанков хаба для правила придержки трекера — один на демон и прогон
+    по записи (№478 B): от него зависит, какой хвост чанка придерживается."""
+    return max(MIN_STEP_S, chunk_s - overlap_s)
+
+
 def jobs_for(res: "SplitResult | None", chunk: np.ndarray) \
         -> list[tuple[np.ndarray, int, np.ndarray | None]] | None:
     """План распознавания чанка по трёхсостоянному контракту SplitResult.

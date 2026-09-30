@@ -865,7 +865,8 @@ def main():
     seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
         from diarize_live import (SegmentTracker, SpeakerTracker,
-                                  availability_note, jobs_for, tracker_kind)
+                                  availability_note, jobs_for, tracker_kind,
+                                  tracker_step_s)
         # сначала честный ответ: почему диаризации не будет или почему она
         # будет хуже обещанной. Модели в поставку не входят, и раньше этот
         # случай проходил вообще без сообщения
@@ -881,7 +882,7 @@ def main():
                 seg_model, emb_model, sample_rate=hub.sr,
                 # шаг нарезки чанков берётся из конфига хаба, а не константой:
                 # от него зависит правило придержки на правой границе
-                step_s=max(0.5, hub.chunk_s - hub.overlap_s))
+                step_s=tracker_step_s(hub.chunk_s, hub.overlap_s))
             emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
         elif kind == "chunks":
             spk_tracker = SpeakerTracker(
