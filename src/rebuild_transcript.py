@@ -65,7 +65,7 @@ import lexicon  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
-from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
+from diarize import diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
@@ -296,21 +296,22 @@ MIN_SEGMENT_S = 1.0
 
 def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
                     num_speakers: int = -1,
-                    merge_shards: bool | None = None) -> list[tuple[float, float, int]] | None:
+                    merge_shards: bool = False) -> list[tuple[float, float, int]] | None:
     """Сегменты (start, end, cluster) канала; короче min_len — отброшены.
 
     num_speakers > 0 — число кластеров из живой сессии: авто-режим на моно-миксе
     плодит осколки (21.07: 14 «голосов» на встрече, где живьём их было 8).
     merge_shards=True — после подсказки ещё склейка осколков: число становится
-    верхней границей (см. diarize.diarize; микрофон очной встречи, №559).
+    верхней границей (diarize.merge_shards; микрофон очной встречи, №559).
     Сбой разметки — None, как «канал не размечали» (контракт None/[] — в
     докстринге resolve_channel_segments): пустой список значил бы «речи нет»,
     а канал собеседников, размеченный пустым, — это молчание (№559).
     """
-    kw = {} if merge_shards is None else {"merge_shards": merge_shards}
     try:
-        return [(s, e, k) for s, e, k in diarize(audio, sr, num_speakers=num_speakers, **kw)
-                if e - s >= min_len]
+        segs = diarize(audio, sr, num_speakers=num_speakers)
+        if merge_shards:
+            segs = merge_voice_shards(audio, sr, segs)
+        return [(s, e, k) for s, e, k in segs if e - s >= min_len]
     except Exception as e:  # noqa: BLE001
         log(f"диаризация канала не удалась: {e}")
         return None

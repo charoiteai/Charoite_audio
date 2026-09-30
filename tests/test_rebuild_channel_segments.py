@@ -675,9 +675,9 @@ def test_an_empty_hinted_mic_falls_back_to_auto(meeting, monkeypatch):
     auto = [(0.0, 40.0, 3), (45.0, 57.0, 4)]
     meeting["raw"]["mic"] = lambda n: [] if n > 0 else list(auto)
     yields = []
-    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: yields.append(what))
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: yields.append((what, cap)))
     out = rt.rebuild(meeting["live"], CFG)
-    assert yields.count("разметка голосов микрофона") == 2, "повтор — тоже тяжёлая разметка, уступка перед ним"
+    assert yields.count(("разметка голосов микрофона", 600)) == 2, "повтор — тоже тяжёлая разметка, уступка перед ним"
     assert [c for c in meeting["calls"] if c[0] == "mic"] == [("mic", 7), ("mic", -1)]
     assert out is not None
 
@@ -748,9 +748,27 @@ def test_a_failing_diarization_is_none_not_an_empty_channel(monkeypatch):
     assert rt.diarize_channel(np.zeros(16000), 16000) is None
 
 
-def test_diarize_channel_forwards_merge_shards_only_when_asked(monkeypatch):
-    seen = []
-    monkeypatch.setattr(rt, "diarize", lambda a, sr, **kw: seen.append(kw) or [(0.0, 2.0, 0)])
-    rt.diarize_channel(np.zeros(16000), 16000, num_speakers=5, merge_shards=True)
-    rt.diarize_channel(np.zeros(16000), 16000)
-    assert seen == [{"num_speakers": 5, "merge_shards": True}, {"num_speakers": -1}]
+def test_the_log_names_why_the_call_channel_is_silent(meeting, monkeypatch):
+    """Журнал различает «канала нет» и «размечен пустым» (выход r1, GLM M4)."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    _room(meeting)
+    rt.rebuild(meeting["live"], CFG)
+    assert any("канал собеседников размечен пустым" in m for m in said)
+    said.clear()
+    meeting["calls"].clear()
+    del meeting["paths"]["blackhole"]
+    rt.rebuild(meeting["live"], CFG)
+    assert any("канала собеседников нет" in m for m in said)
+
+
+@pytest.mark.parametrize("chan,expected", [
+    ({"Собеседник 1": "mic"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", "Собеседник 2": "bh"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", OWNER: "mic"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", "Собеседник 2": "mic"}, set()),
+    ({OWNER: "mic"}, set()),
+])
+def test_the_collapse_counts_only_neutral_mic_labels(chan, expected):
+    assert rt.collapsed_mic_labels(chan, 7, call_silent=True) == expected
+    assert rt.collapsed_mic_labels(chan, 7, call_silent=False) == set()
