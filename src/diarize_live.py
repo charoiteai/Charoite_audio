@@ -68,6 +68,15 @@ def tracker_step_s(chunk_s: float, overlap_s: float) -> float:
     return max(MIN_STEP_S, chunk_s - overlap_s)
 
 
+def heard_pieces(res: "SplitResult", *, channel_label_neutral: bool) -> list[Piece]:
+    """Куски раскладки, которые пойдут в STT: все с голосом и куски без голоса
+    (кандидат без места, №571) там, где метка канала никого не называет. Одно
+    правило для демона (через jobs_for) и прогона тени по записи — зеркала
+    отбора в потребителях расходились бы с демоном молча."""
+    return [p for p in res.pieces or ()
+            if p.voice is not None or channel_label_neutral]
+
+
 def jobs_for(res: "SplitResult | None", chunk: np.ndarray, *,
              channel_label_neutral: bool) \
         -> list[tuple[np.ndarray, int, np.ndarray | None]] | None:
@@ -97,8 +106,7 @@ def jobs_for(res: "SplitResult | None", chunk: np.ndarray, *,
         jobs = [(chunk[p.start:p.end],
                  CHANNEL_LABEL_ONLY if p.voice is None else p.voice,
                  chunk[p.raw_start:p.raw_end])
-                for p in res.pieces
-                if p.voice is not None or channel_label_neutral]
+                for p in heard_pieces(res, channel_label_neutral=channel_label_neutral)]
         return jobs or None
     if res.main is not None:
         return [(chunk, res.main, chunk)]
