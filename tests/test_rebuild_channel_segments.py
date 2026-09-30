@@ -204,7 +204,7 @@ def meeting(tmp_path, monkeypatch):
     for label in ("mic", "blackhole"):
         paths[label] = tmp_path / "recordings" / f"2026-08-20_143000_{label}.wav"
         paths[label].write_bytes(b"")
-    state = {"len": {"mic": 60, "blackhole": 60}, "meta": {}, "calls": [],
+    state = {"len": {"mic": 60, "blackhole": 60}, "meta": {}, "calls": [], "merge": [],
              "raw": {"mic": [(0.0, 40.0, 3), (45.0, 57.0, 4)],
                      "blackhole": [(100.0, 130.0, 0), (140.0, 170.0, 1)]}}
 
@@ -214,12 +214,17 @@ def meeting(tmp_path, monkeypatch):
         audio[:1] = 1.0 if label == "blackhole" else 0.0       # метка канала для заглушки
         return audio, SR
 
-    def diarize_channel(audio, sr, min_len=1.0, num_speakers=-1):
+    def diarize_channel(audio, sr, min_len=1.0, num_speakers=-1, **kw):
         label = "blackhole" if audio[0] == 1.0 else "mic"
         state["calls"].append((label, num_speakers))
-        return list(state["raw"][label])
+        state["merge"].append((label, kw.get("merge_shards")))
+        raw = state["raw"][label]
+        if callable(raw):
+            return raw(num_speakers)
+        return None if raw is None else list(raw)
 
     monkeypatch.setattr(rt, "wait_recording", lambda rec, stamp, label, sr: paths.get(label))
+    state["paths"] = paths
     monkeypatch.setattr(rt, "load_wav", load_wav)
     monkeypatch.setattr(rt, "diarize_channel", diarize_channel)
     monkeypatch.setattr(rt, "live_meta", lambda live: state["meta"])
@@ -581,3 +586,189 @@ def test_the_nemotron_ceiling_grows_with_the_recording(meeting, monkeypatch):
     meeting["len"]["blackhole"] = 600
     rt.rebuild(meeting["live"], _nemotron_cfg())
     assert seen == [rt.NEMOTRON_TIMEOUT_S + 60.0]
+
+
+# ---------------------------------------------- очная встреча: микрофон без звонка (№559)
+
+ROOM = {"speakers": 7, "names": {"Собеседник 2": "Анна"}}
+LIVE_ROOM = "# Встреча\n\n**Анна** [14:30]:\nпривет\n\n**Собеседник 5** [14:30]:\nага\n"
+
+
+def _room(meeting, speakers=7):
+    meeting["meta"] = dict(ROOM, speakers=speakers)
+    meeting["raw"]["blackhole"] = []                       # канал собеседников размечен пустым
+    meeting["live"].write_text(LIVE_ROOM, encoding="utf-8")
+
+
+def test_a_silent_call_channel_hints_the_mic_with_the_live_count_and_merges_after(meeting):
+    """Очная встреча: число живой сессии идёт микрофону верхней границей — со склейкой
+    осколков после (иначе монолог, раздробленный живым трекером, нарезался бы)."""
+    _room(meeting)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
+
+
+def test_no_call_recording_at_all_also_hints_the_mic(meeting):
+    _room(meeting)
+    del meeting["paths"]["blackhole"]
+    rt.rebuild(meeting["live"], CFG)
+    assert meeting["calls"] == [("mic", 7)]
+
+
+def test_a_failed_call_channel_is_not_silence(meeting):
+    """Сбой разметки канала собеседников (None) — не тишина: звонок мог быть, живой
+    счёт включает его собеседников. Микрофон — в авто, вердикта нет (выход r1)."""
+    _room(meeting)
+    meeting["raw"]["blackhole"] = None
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert ("mic", -1) in meeting["calls"] and ("mic", 7) not in meeting["calls"]
+    assert "дала одну метку" not in text
+
+
+def test_a_short_call_recording_is_not_silence(meeting):
+    _room(meeting)
+    meeting["len"]["blackhole"] = 20
+    rt.rebuild(meeting["live"], CFG)
+    assert meeting["calls"] == [("mic", -1)]
+
+
+def test_the_mic_hint_goes_up_to_twelve(meeting):
+    _room(meeting, 12)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", 12) in meeting["calls"]
+
+
+@pytest.mark.parametrize("speakers,verdict", [(12, True), (13, False)])
+def test_the_collapse_verdict_trusts_the_live_count_only_in_the_hint_range(meeting, speakers, verdict):
+    """Выше диапазона подсказки живому счёту не верим — и вердикт по нему не выносим
+    (выход r1, Sonnet I2)."""
+    _room(meeting, speakers)
+    meeting["raw"]["mic"] = lambda n: [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert ("дала одну метку" in text) is verdict
+    assert ("**Анна**" in text) is not verdict
+
+
+@pytest.mark.parametrize("speakers", [2, 13])
+def test_the_mic_gets_no_hint_below_three_or_out_of_range(meeting, speakers):
+    _room(meeting, speakers)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", -1) in meeting["calls"] and ("mic", True) not in meeting["merge"]
+
+
+def test_the_mic_hint_needs_exactly_three_voices_not_more(meeting):
+    _room(meeting, 3)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", 3) in meeting["calls"]
+
+
+def test_a_call_that_speaks_keeps_the_mic_on_auto(meeting):
+    meeting["meta"] = {"speakers": 7}
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", -1) in meeting["calls"] and ("mic", True) not in meeting["merge"]
+
+
+def test_an_empty_hinted_mic_falls_back_to_auto(meeting, monkeypatch):
+    """Подсказка ничего не дала — повтор без неё, а не потеря канала (вход r3, Sonnet I2)."""
+    _room(meeting)
+    auto = [(0.0, 40.0, 3), (45.0, 57.0, 4)]
+    meeting["raw"]["mic"] = lambda n: [] if n > 0 else list(auto)
+    yields = []
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: yields.append((what, cap)))
+    out = rt.rebuild(meeting["live"], CFG)
+    assert yields.count(("разметка голосов микрофона", 600)) == 2, "повтор — тоже тяжёлая разметка, уступка перед ним"
+    assert [c for c in meeting["calls"] if c[0] == "mic"] == [("mic", 7), ("mic", -1)]
+    assert out is not None
+
+
+def test_a_mic_collapsed_into_one_label_gets_no_live_name_and_no_model_name(meeting, monkeypatch):
+    """29.09: шестеро под одной меткой, перенос по времени отдал ей имя единственного
+    названного живого блока. Слитая метка не получает имени ни от переноса, ни от
+    модели; в шапке — строка причины (№559)."""
+    _room(meeting)
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    asked = []
+    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines, **kw: asked.append(lines)
+                        or rt.NamesOutcome({lbl: "Борис" for lbl, _ in lines}, rt.NamesOutcome.ANSWERED))
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "**Анна**" not in text and "**Борис**" not in text and "**Собеседник 1**" in text
+    assert not any(lines for lines in asked)
+    assert rt.MIC_COLLAPSED_NOTE.format(live=7) in text
+    assert "слышала голосов: 7." in text
+
+
+def test_two_mic_labels_are_not_a_collapse_and_keep_the_live_name(meeting):
+    """Очная на двоих, живой трекер насчитал больше — две метки остаются с именами
+    (вход r3, Sonnet I1: порог «≤ живых/3» снял бы верные имена)."""
+    _room(meeting)
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "**Анна**" in text and "дала одну метку" not in text
+
+
+def test_one_mic_label_with_few_live_voices_is_not_a_collapse(meeting):
+    _room(meeting, 2)
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "**Анна**" in text
+
+
+def test_the_collapse_verdict_holds_at_exactly_three_live_voices(meeting):
+    _room(meeting, 3)
+    meeting["raw"]["mic"] = lambda n: [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "**Анна**" not in text
+
+
+def test_a_call_with_one_mic_voice_is_not_a_collapse(meeting):
+    meeting["meta"] = {"speakers": 7, "names": {"Собеседник 2": "Анна"}}
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert "дала одну метку" not in text
+
+
+@pytest.mark.parametrize("value,count,hint", [
+    (7, 7, 7), (7.0, 7, 7), (1, 1, None), (2, 2, 2), (12, 12, 12), (13, 13, None),
+    (60, 60, None), (61, None, None), (0, None, None), (True, None, None),
+    ("7", None, None), ([7], None, None), (7.5, None, None), (None, None, None),
+])
+def test_live_speakers_are_read_with_their_form_checked(value, count, hint):
+    """Число из live.json — целое в своих границах; мусор не роняет пересборку."""
+    assert rt.speakers_count({"speakers": value}) == count
+    assert rt.speakers_hint({"speakers": value}) == hint
+    assert rt.speakers_count({}) is None and rt.speakers_count("битый") is None
+
+
+def test_a_failing_diarization_is_none_not_an_empty_channel(monkeypatch):
+    """Сбой разметки — «не размечали», а не «речи нет»: пустой канал собеседников
+    значит очную встречу, сбой так читаться не должен... и не читается как речь."""
+    def boom(*a, **k):
+        raise RuntimeError("модель не загрузилась")
+    monkeypatch.setattr(rt, "diarize", boom)
+    assert rt.diarize_channel(np.zeros(16000), 16000) is None
+
+
+def test_the_log_names_why_the_call_channel_is_silent(meeting, monkeypatch):
+    """Журнал различает «канала нет» и «размечен пустым» (выход r1, GLM M4)."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    _room(meeting)
+    rt.rebuild(meeting["live"], CFG)
+    assert any("канал собеседников размечен пустым" in m for m in said)
+    said.clear()
+    meeting["calls"].clear()
+    del meeting["paths"]["blackhole"]
+    rt.rebuild(meeting["live"], CFG)
+    assert any("канала собеседников нет" in m for m in said)
+
+
+@pytest.mark.parametrize("chan,expected", [
+    ({"Собеседник 1": "mic"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", "Собеседник 2": "bh"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", OWNER: "mic"}, {"Собеседник 1"}),
+    ({"Собеседник 1": "mic", "Собеседник 2": "mic"}, set()),
+    ({OWNER: "mic"}, set()),
+])
+def test_the_collapse_counts_only_neutral_mic_labels(chan, expected):
+    assert rt.collapsed_mic_labels(chan, 7, call_silent=True) == expected
+    assert rt.collapsed_mic_labels(chan, 7, call_silent=False) == set()
