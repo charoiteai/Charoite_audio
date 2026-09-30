@@ -91,13 +91,6 @@ def direct_url(url: str) -> bool:
     return urllib.parse.urlsplit(url).scheme.lower() == "http" and is_own_host(host)
 
 
-def _same_host(a: str, b: str) -> bool:
-    try:
-        return url_host(a) == url_host(b)
-    except (AmbiguousAddress, ValueError):
-        return False
-
-
 class _NoRedirectOffHost(urllib.request.HTTPRedirectHandler):
     """Редирект с прямого адреса наружу — отказ, а не переход.
 
@@ -107,8 +100,9 @@ class _NoRedirectOffHost(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = urllib.parse.urljoin(req.full_url, newurl)
+        # url_host обеих сторон уже разобран: цель — в direct_url, исходный адрес — при выборе прямого пути
         allowed = (loopback_url(target) if loopback_url(req.full_url)
-                   else direct_url(target) and _same_host(target, req.full_url))
+                   else direct_url(target) and url_host(target) == url_host(req.full_url))
         if not allowed:
             raise urllib.error.HTTPError(
                 req.full_url, code, f"редирект с этой машины на {urllib.parse.urlsplit(target).hostname!r} отклонён",
