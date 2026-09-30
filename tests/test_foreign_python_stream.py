@@ -358,12 +358,8 @@ def test_the_door_refuses_new_children_once_the_process_is_leaving(tmp_path, mon
     child = _child(tmp_path, 'open(sys.argv[0] + ".pid", "w").write(str(os.getpid()))\n' + HUNG)
     stream, out = _spawn(child, tmp_path)
     assert stream is None and out.kind == fp.FAILED and "выходит" in out.reason
-    pid_file = pathlib.Path(str(child) + ".pid")
-    deadline = time.monotonic() + 5
-    while not pid_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    pid = int(pid_file.read_text()) if pid_file.exists() else None
-    assert pid is None or _gone(pid)
+    time.sleep(1.0)                          # запущенный ребёнок успел бы записать свой pid
+    assert not pathlib.Path(str(child) + ".pid").exists(), "на выходе дверь всё-таки подняла ребёнка"
 
 
 def test_adoption_is_refused_once_the_process_is_leaving(monkeypatch):
