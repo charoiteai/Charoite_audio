@@ -454,3 +454,61 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     report = chk.report(j, final, tracker=tracker, timing=timing, meta=meta)
     assert report["b_slots"]["purity"]["slot0"] == 1.0
     assert not math.isnan(report["c_agreement_with_final"]["tracker"]["der"])
+
+
+# ------------------------------------------------------------------ память
+
+
+def _with_memory(lines, *, exit_="ok"):
+    """Журнал с ценой ребёнка во фронтах, лимитом кэша в рукопожатии и строками `mem`
+    (одна — после `end`: так пишет нить читателя)."""
+    out = []
+    for raw in lines:
+        obj = json.loads(raw)
+        if obj["type"] == "ready":
+            obj.update(cache_limit_mb=512, cache_limit_prev_mb=62259)
+        if obj["type"] == "front":
+            obj.update(phys_mb=2000 + obj["fed"] // STEP, rss_mb=600, mlx_active_mb=700, mlx_cache_mb=300,
+                       mlx_peak_mb=1200)
+        if obj["type"] == "end":
+            obj["exit"] = exit_
+            out.append(json.dumps({"type": "mem", "t": 5.0, "pressure": 1, "swap_used_mb": 2800}))
+            out.append(json.dumps({"type": "mem", "t": 10.0, "pressure": 2, "swap_used_mb": 3100}))
+        out.append(json.dumps(obj))
+    out.append(json.dumps({"type": "mem", "t": 99.5, "pressure": 2, "swap_used_mb": 3000}))
+    return out
+
+
+def test_memory_reads_the_current_footprint_mlx_counters_limit_and_pressure():
+    j = chk.read_journal(_with_memory(journal_lines(chunk_ends=[START0 + 64000])))
+    mem = chk.memory(j)
+    assert mem["phys_mb"]["max"] == 2000 + 20 * SR // STEP and mem["mlx_cache_mb"]["p50"] == 300
+    assert mem["rss_peak_mb"] == 600 and mem["cache_limit_mb"] == 512 and mem["cache_limit_prev_mb"] == 62259
+    assert mem["pressure_checks"] == {1: 1, 2: 2}
+    assert mem["swap_used_mb"] == {"first": 2800.0, "max": 3100.0}
+    assert "memory" in chk.report(j, {"duration_s": 20.0, "segments": [[0, 1, "a"]]})
+
+
+def test_memory_is_reported_even_when_the_journal_is_refused(tmp_path, capsys):
+    """Тень, умершая от давления, — предмет замера памяти: отказ сверки её не прячет."""
+    path = tmp_path / "j.jsonl"
+    path.write_text("\n".join(_with_memory(journal_lines(chunk_ends=[START0 + 64000]), exit_="failed")),
+                    encoding="utf-8")
+    final = tmp_path / "final.json"
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[0, 1, "a"]]}), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 2
+    got = json.loads(capsys.readouterr().out)
+    assert "вышел не сам" in got["refused"] and got["memory"]["pressure_checks"] == {"1": 1, "2": 2}
+
+
+def test_the_witness_door_adds_the_cache_limit_to_the_child_arguments(tmp_path):
+    w = rp.Witness(tmp_path / "t.jsonl")
+    seen = []
+
+    def door(python, script, args, *, on_message, **kw):
+        seen.append(list(args))
+        return None, fp.Outcome(fp.FAILED, reason="нет")
+
+    rp.witness_spawn(w, door, ["--cache-limit-mb", "512"])("py", pathlib.Path("s"), ["--stream"],
+                                                           on_message=lambda m: None)
+    assert seen == [["--stream", "--cache-limit-mb", "512"]]

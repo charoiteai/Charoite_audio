@@ -67,6 +67,11 @@ JOURNAL_V = 1
 CHANNEL = "blackhole"
 #: Пресет задержки потока: 1,04 с входного буфера.
 PRESET = "low"
+#: Цена процесса ребёнка в строке `front`, которую тень переносит в журнал (`diarize_nemotron._load`):
+#: CPU, пик RSS (справка), текущий след памяти и счётчики MLX (замер памяти тени, №478 B).
+FRONT_PRICE_KEYS = ("cpu_s", "rss_mb", "phys_mb", "mlx_active_mb", "mlx_cache_mb", "mlx_peak_mb")
+#: Лимит кэша MLX, объявленный ребёнком в рукопожатии (`--cache-limit-mb`): заданный и прежний.
+READY_LIMIT_KEYS = ("cache_limit_mb", "cache_limit_prev_mb")
 #: Звука в очереди к ребёнку, секунды: больше — ребёнок не успевает, тень останавливается.
 QUEUE_CAP_S = 10.0
 #: Сколько чанк ждёт метку, секунды; и сколько чанков ждут разом.
@@ -240,8 +245,12 @@ class Shadow:
                 return
             self._stream = stream
             self._frame_s = float(out.payload["frame_s"])
-            self._line({"type": "ready", "t": self._t(), "proto": out.payload["proto"],
-                        "frame_s": self._frame_s, "step": out.payload["step"], "pid": stream.pid})
+            ready = {"type": "ready", "t": self._t(), "proto": out.payload["proto"],
+                     "frame_s": self._frame_s, "step": out.payload["step"], "pid": stream.pid}
+            for key in READY_LIMIT_KEYS:          # лимит кэша MLX, если ребёнку его задали
+                if _num(out.payload.get(key)):
+                    ready[key] = out.payload[key]
+            self._line(ready)
             self._state = LIVE
         try:
             threads.spawn(self._write_loop, name="nemotron-live-writer", role="audio")
@@ -386,7 +395,7 @@ class Shadow:
         front = self._axis(m["frames"] * self._frame_s)
         self._front = front
         line = {"type": "front", "t": self._t(), "fed": m["fed"], "frames": m["frames"], "front": front}
-        for key in ("cpu_s", "rss_mb"):
+        for key in FRONT_PRICE_KEYS:
             if _num(m.get(key)):
                 line[key] = m[key]
         if m.get("final"):

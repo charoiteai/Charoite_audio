@@ -81,6 +81,7 @@ class Journal:
     chunks: list[dict]
     end: dict
     sr: int
+    mems: list[dict] = dataclasses.field(default_factory=list)
 
     @property
     def frame_s(self) -> float:
@@ -94,7 +95,7 @@ class Journal:
 def read_journal(lines: typing.Iterable[str]) -> Journal:
     """Строки журнала → `Journal`; без `header`, `ready`, `start` или `end` — отказ."""
     header = ready = start = end = None
-    fronts, segs, chunks = [], [], []
+    fronts, segs, chunks, mems = [], [], [], []
     last_type = None
     for raw in lines:
         raw = raw.strip()
@@ -116,11 +117,15 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
             segs.append(obj)
         elif kind == "chunk":
             chunks.append(obj)
+        elif kind == "mem":
+            mems.append(obj)
         elif kind == "end":
             if end is not None:
                 raise Refused("две строки end в журнале")
             end = obj
-        last_type = kind if kind != "chunk" else last_type
+        # строки чанков и памяти пишутся и после `end` (чанк, принятый после конца потока;
+        # проверка давления из нити читателя) — «журнал не закончен» они не значат
+        last_type = kind if kind not in ("chunk", "mem") else last_type
     missing = [n for n, v in (("header", header), ("ready", ready), ("start", start), ("end", end))
                if v is None]
     if missing:
@@ -128,7 +133,7 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
     if last_type != "end":
         raise Refused(f"после end идут строки {last_type!r}: журнал не закончен")
     return Journal(ready=ready, start0=int(start["start0"]), fronts=fronts, segs=segs,
-                   chunks=chunks, end=end, sr=int(header["sr"]))
+                   chunks=chunks, end=end, sr=int(header["sr"]), mems=mems)
 
 
 # ------------------------------------------------------------------ годность
@@ -212,6 +217,26 @@ def label_lag(j: Journal) -> dict:
         lags.append((j.start0 + int(fronts[i]["fed"]) - c["end"]) / j.sr)
     return {"lag_s": quantiles(lags), "share": share_over(lags), "final_only": final_only,
             "before_stream": before, "_values": lags}
+
+
+def memory(j: Journal) -> dict:
+    """Цена ребёнка по памяти и давление машины — независимо от годности журнала: тень,
+    умершая от давления, и есть предмет этого замера. `phys_mb` — текущий след процесса
+    (его судит macOS), `rss_mb` — пик RSS, справка: буферов MLX в нём нет."""
+    def col(key: str) -> list[float]:
+        return [float(f[key]) for f in j.fronts if isinstance(f.get(key), (int, float))]
+    out: dict[str, typing.Any] = {k: quantiles(col(k)) for k in
+                                  ("phys_mb", "mlx_active_mb", "mlx_cache_mb", "mlx_peak_mb")}
+    rss = col("rss_mb")
+    out["rss_peak_mb"] = max(rss) if rss else None
+    out["cache_limit_mb"] = j.ready.get("cache_limit_mb")
+    out["cache_limit_prev_mb"] = j.ready.get("cache_limit_prev_mb")
+    out["pressure_checks"] = dict(collections.Counter(int(m["pressure"]) for m in j.mems if "pressure" in m))
+    swap = [float(m["swap_used_mb"]) for m in j.mems if isinstance(m.get("swap_used_mb"), (int, float))]
+    out["swap_used_mb"] = {"first": swap[0], "max": max(swap)} if swap else None
+    out["lived_s"] = round(float(j.end.get("t", 0.0)), 1)
+    out["end_reason"] = j.end.get("reason")
+    return out
 
 
 def outcomes(j: Journal) -> dict:
@@ -435,6 +460,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
     lag = label_lag(j)
     lag.pop("_values")
     out = {
+        "memory": memory(j),
         "outcomes": outcomes(j),
         "a1_label_lag_audio": lag,
         "a4_live_waits": live_waits(j),
@@ -480,11 +506,17 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         j = read_journal(args.journal.read_text(encoding="utf-8").splitlines())
+    except Refused as e:
+        print(f"журнал негоден: {e}", file=sys.stderr)
+        return 2
+    try:
         out = report(j, json.loads(args.final.read_text(encoding="utf-8")),
                      tracker=_jsonl(args.tracker) if args.tracker else None,
                      timing=_jsonl(args.timing) if args.timing else None,
                      meta=json.loads(args.meta.read_text(encoding="utf-8")) if args.meta else None)
     except Refused as e:
+        # память — и у негодного журнала: смерть тени от давления и есть её предмет
+        print(json.dumps({"refused": str(e), "memory": memory(j)}, ensure_ascii=False, indent=1))
         print(f"журнал негоден: {e}", file=sys.stderr)
         return 2
     print(json.dumps(out, ensure_ascii=False, indent=1))

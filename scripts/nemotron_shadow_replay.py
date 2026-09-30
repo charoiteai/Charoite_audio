@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import types
+import typing
 import wave
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
@@ -151,10 +152,12 @@ class _StreamProxy:
         return getattr(self._stream, name)
 
 
-def witness_spawn(witness: Witness, spawn):
+def witness_spawn(witness: Witness, spawn, extra_args: typing.Sequence[str] = ()):
     """Дверь `spawn_stream` со свидетелем: сообщения — сначала свидетелю, потом тени;
-    процесс — в обёртке записи."""
+    процесс — в обёртке записи; `extra_args` — к аргументам ребёнка (лимит кэша MLX
+    замера памяти: `start()` его не знает и не должен)."""
     def wrapped(python, script, args, **kw):
+        args = [*args, *extra_args]
         on_message = kw["on_message"]
 
         def tapped(message: dict) -> None:
@@ -204,7 +207,7 @@ def chunk_decision(tracker, placed, *, stt_runtime, jobs_for, diarized_state):
 
 def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: float = LEAD_S,
            preroll_s: float = PREROLL_S, block_s: float = BLOCK_S, say=None,
-           memory=None) -> dict:
+           memory=None, cache_limit_mb: int | None = None) -> dict:
     """Прогнать запись встречи `stamp`; вернуть сводку (`meta.json`)."""
     import audio
     import config_loader
@@ -242,7 +245,8 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     original_begin = live_nemotron.Shadow.begin
 
     def begin(self, **kw):
-        kw.setdefault("spawn", witness_spawn(witness, foreign_python.spawn_stream))
+        extra = ["--cache-limit-mb", str(cache_limit_mb)] if cache_limit_mb is not None else []
+        kw.setdefault("spawn", witness_spawn(witness, foreign_python.spawn_stream, extra))
         return original_begin(self, **kw)
 
     live_nemotron.Shadow.begin = begin
@@ -320,7 +324,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
             "fed_to_shadow": n - start0, "cuts_per_channel": expect, "chunks": counts,
             "handshake_s": handshake_s, "wall_s": round(feed_wall, 1),
             "speed_x": round((n - start0) / sr / feed_wall, 1) if feed_wall > 0 else None,
-            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s,
+            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
             "journal": str(charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
                            .relative_to(root))}
     (root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -336,10 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=pathlib.Path, help="свежий каталог выхода (по умолчанию — кэш пользователя)")
     ap.add_argument("--lead", type=float, default=LEAD_S, help="секунд звука впереди ребёнка")
     ap.add_argument("--preroll", type=float, default=PREROLL_S, help="секунд звука до рукопожатия")
+    ap.add_argument("--cache-limit-mb", type=int, default=None,
+                    help="лимит кэша MLX ребёнка (замер памяти тени); без флага — как у mlx")
     args = ap.parse_args(argv)
     out = args.out or default_out(args.stamp)
     try:
-        meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll)
+        meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll,
+                      cache_limit_mb=args.cache_limit_mb)
     except Refused as e:
         print(f"прогон не состоялся: {e}", file=sys.stderr)
         return 2
