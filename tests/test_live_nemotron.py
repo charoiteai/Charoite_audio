@@ -1949,6 +1949,7 @@ def test_the_line_of_a_waited_chunk_is_stamped_when_it_is_queued(tmp_path):
 
     def build(segs):
         clock.now += 5.0                     # раскладка шла, пока в журнал ложились другие строки
+        box["door"].on_message({"type": "front", "fed": 3 * SR, "frames": 37})
         return "x", {"source": ln.SOURCE_STREAM}
     sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", build)
     ts = [x["t"] for x in _journal(tmp_path / "live.jsonl") if "t" in x]
