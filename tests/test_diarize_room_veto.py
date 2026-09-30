@@ -107,6 +107,31 @@ def test_a_nan_similarity_merges_nothing_under_the_veto():
     assert _groups(D.link_clusters([0, 1, 2], sim, 0.60)) == singles
 
 
+@pytest.mark.parametrize("veto", [None, D.VETO_BELOW])
+def test_a_pair_exactly_at_the_threshold_merges(veto):
+    """Порог склейки включительный в обоих режимах: пара ровно 0.60 — один голос."""
+    assert _groups(D.link_clusters([0, 1], {(0, 1): 0.60}, 0.60, veto)) == {frozenset({0, 1})}
+
+
+def test_a_worst_pair_exactly_at_the_veto_does_not_ban():
+    """Запрет — строго ниже VETO_BELOW: худшая пара ровно на границе слияние не запрещает."""
+    sim = {(0, 1): 0.9, (1, 2): 0.65, (0, 2): D.VETO_BELOW}
+    assert _groups(D.link_clusters([0, 1, 2], sim, 0.60, D.VETO_BELOW)) == {frozenset({0, 1, 2})}
+
+
+def test_the_bans_are_counted_in_the_log(capsys):
+    """Счёт запретов — в журнал пересборки: по нему калибруют порог на поле (выход №565, r1)."""
+    vecs = _chain_of_six()
+    D.link_clusters(list(vecs), _sim(vecs), 0.60, D.VETO_BELOW)
+    assert "запрещено слияний 5 " in capsys.readouterr().out
+
+
+def test_no_bans_no_log_line(capsys):
+    vecs = _one_voice()
+    D.link_clusters(list(vecs), _sim(vecs), 0.60, D.VETO_BELOW)
+    assert "запрещено" not in capsys.readouterr().out
+
+
 def test_the_veto_is_checked_against_every_member_of_both_groups():
     """Запрет по худшей паре между группами, а не по мосту: мост 0.9, а третий член
     группы с чужаком — 0.2."""
@@ -204,6 +229,8 @@ def test_a_veto_with_a_hint_is_refused_not_dropped(room):
     был бы молча выброшен — вызов с обоими отвергается (выход №565, r1)."""
     with pytest.raises(ValueError):
         D.diarize(room, SR, num_speakers=6, veto=D.VETO_BELOW)
+    with pytest.raises(ValueError):
+        D.diarize(room, SR, num_speakers=1, veto=D.VETO_BELOW)
     assert len({k for *_, k in D.diarize(room, SR, num_speakers=6)}) == 12
 
 
@@ -225,3 +252,9 @@ MIC_S = 600.0
 ])
 def test_mic_plan_cells(meta, silent, call_s, plan):
     assert rt.mic_plan(meta, silent, call_s, MIC_S) == plan
+
+
+@pytest.mark.parametrize("n", [0, -1])
+def test_auto_mode_takes_the_veto_whatever_the_auto_number(room, n):
+    """0 и -1 — авто: запрет принимается и доходит до склейки (граница отказа — > 0)."""
+    assert len({k for *_, k in D.diarize(room, SR, num_speakers=n, veto=D.VETO_BELOW)}) == 6
