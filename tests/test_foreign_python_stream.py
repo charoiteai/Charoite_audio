@@ -310,13 +310,14 @@ def test_the_exit_hook_does_not_wait_for_a_held_registry(tmp_path, monkeypatch):
 #: и держит процесс, пока нить доходит до `spawn_stream`.
 LATE_PARENT = """
 import atexit, pathlib, sys, threading, time
-atexit.register(lambda: time.sleep(1.0))
+exit_began = threading.Event()
+atexit.register(lambda: (exit_began.set(), time.sleep(1.0)))
 sys.path.insert(0, {src!r})
 import foreign_python as fp
 child, err = sys.argv[1], sys.argv[2]
 
 def late():
-    time.sleep(0.2)
+    exit_began.wait(10)
     stream, out = fp.spawn_stream(sys.executable, pathlib.Path(child), [], stderr_path=pathlib.Path(err),
                                   handshake_timeout=20.0, role="audio",
                                   on_message=lambda m: None, on_eof=lambda: None)
@@ -363,3 +364,18 @@ def test_the_door_refuses_new_children_once_the_process_is_leaving(tmp_path, mon
         time.sleep(0.02)
     pid = int(pid_file.read_text()) if pid_file.exists() else None
     assert pid is None or _gone(pid)
+
+
+def test_adoption_is_refused_once_the_process_is_leaving(monkeypatch):
+    """Вторая линия: ребёнок, проскочивший проверку до `Popen` (нить шла параллельно уборке),
+    не ложится в снятый реестр — `_adopt` бросает, и граница двери его убивает."""
+    import subprocess
+    monkeypatch.setattr(fp, "_exiting", True)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        with pytest.raises(RuntimeError, match="выходит"):
+            fp._adopt(proc)
+        assert proc.pid not in fp._children
+    finally:
+        proc.kill()
+        proc.wait(10)

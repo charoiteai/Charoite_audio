@@ -385,6 +385,8 @@ def spawn_stream(python: str | os.PathLike, script: pathlib.Path, args: typing.S
     рукопожатия: хозяин остановился, пока ребёнок грузил модель, — убит, FAILED.
     Исключение после запуска ребёнка — тоже FAILED, ребёнок убит. `clock` — часы
     потолка рукопожатия (тестам — свои)."""
+    if _exiting:                             # уборка при выходе уже прошла — модель не поднимать зря
+        return None, Outcome(FAILED, reason="процесс выходит — долгих детей не заводим")
     try:
         err_fd = open_private(stderr_path)
     except OSError as e:
