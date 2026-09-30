@@ -1,0 +1,291 @@
+"""Политика адреса модели — одна функция на пакет и приложение (№522).
+
+`charoite_graph.address_policy.guard_model_url` решает, можно ли слать тексты на
+адрес; `privacy._guarded_url` переводит конфиг и рубильник в её аргументы, а
+отказ — в свой текст; фабрика пакета `embed_door.ollama_embedder` зовёт её же.
+Здесь закреплены: таблица вердиктов, тексты приложения байт в байт (как до
+переезда), сторож «вердикт политики проходит через privacy как есть» и запрет
+приложению звать фабрику пакета — у неё нет рубильника.
+"""
+from __future__ import annotations
+
+import pathlib
+import re
+import sys
+
+import pytest
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+
+import privacy  # noqa: E402
+import charoite_graph.address_policy as address_policy  # noqa: E402
+from charoite_graph import cli, embed_door  # noqa: E402
+from charoite_graph.address_policy import AddressRefused, guard_model_url  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_dns(monkeypatch):
+    """Резолв имён — только подменой: имя не резолвится, пока тест не скажет иначе."""
+    def getaddrinfo(host, *a, **k):
+        raise OSError("нет такого имени")
+    monkeypatch.setattr(address_policy.socket, "getaddrinfo", getaddrinfo)
+    address_policy._resolves_private.cache_clear()
+    yield
+    address_policy._resolves_private.cache_clear()
+
+
+# (адрес, allow_remote, offline) → вид отказа или None (адрес проходит)
+TABLE = [
+    ("http://127.0.0.1:11434", False, False, None),
+    ("https://127.0.0.1:11434", False, False, None),
+    ("http://localhost:11434/", False, False, None),
+    ("http://LOCALHOST.:11434", False, False, None),
+    ("http://[::1]:11434", False, False, None),
+    ("http://127.0.0.1:11434", False, True, None),           # рубильник не трогает эту машину
+    ("http://127.0.0.1@evil.example:11434", False, False, "ambiguous"),
+    ("http://evil.example\\@127.0.0.1:11434", True, False, "ambiguous"),
+    ("http://[::1", False, False, "ambiguous"),
+    ("file:///etc/passwd", True, False, "scheme"),
+    ("ftp://127.0.0.1:1", True, False, "scheme"),           # схема — и для loopback
+    ("127.0.0.1:11434", False, False, "scheme"),
+    ("http://0.0.0.0:11434", False, False, "remote"),        # 0.0.0.0 — не loopback
+    ("http://0.0.0.0:11434", True, False, None),             # но «частный» по ipaddress: http своей сети
+    ("https://api.example.com", False, False, "remote"),
+    ("https://api.example.com", True, False, None),
+    ("https://api.example.com", "true", False, "remote"),     # строка — не разрешение
+    ("https://api.example.com", 1, False, "remote"),
+    ("https://api.example.com", True, True, "offline"),       # рубильник сильнее разрешения
+    ("http://8.8.8.8:11434", True, False, "cleartext"),       # открытый http наружу
+    ("http://llm.example.com:11434", True, False, "cleartext"),
+    ("http://192.168.1.20:11434", False, False, "remote"),
+    ("http://192.168.1.20:11434", True, False, None),
+    ("http://ollama.local:11434", True, False, "cleartext"),  # имя не резолвится — не своя сеть
+    ("http://чужой-хост:11434", False, False, "cleartext"),
+]
+
+
+@pytest.mark.parametrize("url, allow, offline, kind", TABLE)
+def test_verdicts(url, allow, offline, kind):
+    if kind is None:
+        assert guard_model_url(url, allow_remote=allow, offline=offline) == url.rstrip("/")
+    else:
+        with pytest.raises(AddressRefused) as e:
+            guard_model_url(url, allow_remote=allow, offline=offline)
+        assert e.value.kind == kind and isinstance(e.value, ValueError)
+
+
+def test_a_home_name_is_own_network_only_when_it_resolves_there(monkeypatch):
+    """Тот же резолвящий предикат, что был у приложения: пакет не держит второй политики."""
+    for ip, ok in (("192.168.1.7", True), ("8.8.8.8", False)):
+        monkeypatch.setattr(address_policy.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (ip, 0))])
+        address_policy._resolves_private.cache_clear()
+        for url in ("http://ollama.local:11434", "http://studio:11434"):
+            if ok:
+                assert guard_model_url(url, allow_remote=True) == url
+            else:
+                with pytest.raises(AddressRefused, match="https"):
+                    guard_model_url(url, allow_remote=True)
+
+
+def test_dns_is_asked_only_for_cleartext_to_a_name(monkeypatch):
+    """https, отказ по рубильнику и «нет разрешения» по IP резолва не делают."""
+    asked = []
+    monkeypatch.setattr(address_policy.socket, "getaddrinfo", lambda host, *a, **k: asked.append(host) or [])
+    for url, allow, offline in (("https://studio", True, False), ("http://studio", True, True),
+                                ("http://192.168.1.2", False, False)):
+        try:
+            guard_model_url(url, allow_remote=allow, offline=offline)
+        except AddressRefused:
+            pass
+    assert asked == []
+
+
+def test_unknown_kind_is_a_wiring_error():
+    with pytest.raises(ValueError, match="неизвестный вид"):
+        AddressRefused("другое", "http://x")
+
+
+# ── Приложение: тексты владельца — как до переезда, байт в байт ─────────
+
+TEXTS = [
+    ({"base_url": "http://[::1"}, {}, "llm.base_url = http://[::1: Invalid IPv6 URL"),
+    ({"base_url": "http://evil.example\\@127.0.0.1:11434"}, {},
+     "llm.base_url = http://evil.example\\@127.0.0.1:11434: адрес 'http://evil.example\\\\@127.0.0.1:11434': "
+     "authority вне белой грамматики (имя или IPv6 в скобках, порт цифрами)"),
+    ({"base_url": "ftp://127.0.0.1:1"}, {}, "llm.base_url = ftp://127.0.0.1:1: схема «ftp» не поддерживается, нужен http(s)"),
+    ({"base_url": "127.0.0.1:11434"}, {}, "llm.base_url = 127.0.0.1:11434: схема «—» не поддерживается, нужен http(s)"),
+    ({"base_url": "http://192.168.1.2:11434", "allow_remote": True}, {"CHAROITE_NO_CLOUD": "1", "SUFLER_NO_CLOUD": "1"},
+     "llm.base_url = http://192.168.1.2:11434 указывает не на эту машину, а рубильник "
+     "CHAROITE_NO_CLOUD/SUFLER_NO_CLOUD запрещает любой выход наружу"),
+    ({"base_url": "http://192.168.1.2:11434", "allow_remote": True}, {"SUFLER_NO_CLOUD": "1"},
+     "llm.base_url = http://192.168.1.2:11434 указывает не на эту машину, а рубильник "
+     "SUFLER_NO_CLOUD запрещает любой выход наружу"),
+    ({"base_url": "http://8.8.8.8:11434", "allow_remote": True}, {},
+     "llm.base_url = http://8.8.8.8:11434 — адрес вне своей сети по открытому http: стенограмма ушла бы по сети "
+     "открытым текстом. Для удалённого адреса нужен https (llm.allow_remote этого не снимает)"),
+    ({"base_url": "https://api.example.com/"}, {},
+     "llm.base_url = https://api.example.com/ указывает не на эту машину. Чароит локальный по умолчанию: чтобы слать "
+     "запросы на другой адрес, поставьте в config.yaml явное llm.allow_remote: true"),
+    ({"mlx_base_url": "https://api.example.com"}, {},
+     "llm.mlx_base_url = https://api.example.com указывает не на эту машину. Чароит локальный по умолчанию: чтобы "
+     "слать запросы на другой адрес, поставьте в config.yaml явное llm.allow_remote: true"),
+]
+
+
+@pytest.mark.parametrize("llm, env, text", TEXTS)
+def test_app_refusals_keep_their_words(llm, env, text):
+    read = privacy.mlx_base_url if "mlx_base_url" in llm else privacy.llm_base_url
+    with pytest.raises(privacy.PrivacyRefused) as e:
+        read({"llm": llm}, env)
+    assert str(e.value) == text
+
+
+# ── Сторож: решает только политика пакета ───────────────────────────────
+
+APP_CASES = [
+    ({"base_url": "ftp://127.0.0.1:1"}, {}),
+    ({"base_url": "http://8.8.8.8:11434", "allow_remote": True}, {}),
+    ({"base_url": "http://192.168.1.2:11434"}, {"CHAROITE_NO_CLOUD": "1"}),
+    ({"base_url": "https://api.example.com", "allow_remote": "true"}, {}),
+    ({"base_url": "http://[::1"}, {}),
+    ({"mlx_base_url": "file:///x", "allow_remote": True}, {"SUFLER_NO_CLOUD": "1"}),
+    ({}, {}),
+]
+
+
+@pytest.mark.parametrize("llm, env", APP_CASES)
+def test_privacy_passes_the_policy_verdict_through_as_is(monkeypatch, llm, env):
+    """Подменённая политика пропускает всё — privacy обязана вернуть её ответ как есть.
+
+    Своя ветка решения в `_guarded_url` (копия проверки схемы, рубильника,
+    открытого http) превратила бы хоть один из этих случаев в отказ.
+    """
+    seen = []
+
+    def fake(url, *, allow_remote=False, offline=False):
+        seen.append((url, allow_remote, offline))
+        return "http://решила-политика"
+    monkeypatch.setattr(address_policy, "guard_model_url", fake)
+    read = privacy.mlx_base_url if "mlx_base_url" in llm else privacy.llm_base_url
+    default = privacy.DEFAULT_MLX_URL if read is privacy.mlx_base_url else privacy.DEFAULT_LLM_URL
+
+    assert read({"llm": llm}, env) == "http://решила-политика"
+    key = "mlx_base_url" if read is privacy.mlx_base_url else "base_url"
+    assert seen == [(llm.get(key) or default, llm.get("allow_remote"), bool(env))]
+
+
+@pytest.mark.parametrize("kind", address_policy.KINDS)
+def test_every_policy_refusal_becomes_privacy_refused(monkeypatch, kind):
+    def fake(url, **k):
+        raise AddressRefused(kind, url, scheme="gopher", detail="разбор")
+    monkeypatch.setattr(address_policy, "guard_model_url", fake)
+    with pytest.raises(privacy.PrivacyRefused) as e:
+        privacy.llm_base_url({"llm": {"base_url": "http://x:1"}}, {"CHAROITE_NO_CLOUD": "1"})
+    assert str(e.value).startswith("llm.base_url = http://x:1")
+
+
+def test_one_default_address():
+    assert privacy.DEFAULT_LLM_URL is address_policy.DEFAULT_OLLAMA_URL
+
+
+# ── Фабрика пакета ──────────────────────────────────────────────────────
+
+def _post(seen):
+    def post(url, payload, timeout):
+        seen.append((url, payload))
+        return 200, '{"embeddings": [[1.0, 2.0]]}'
+    return post
+
+
+def test_factory_builds_on_this_machine_without_keep_alive_by_default():
+    seen = []
+    e = embed_door.ollama_embedder("bge-m3", post=_post(seen))
+    assert e.model == "bge-m3" and e.run(["т"], 5) == [[1.0, 2.0]]
+    url, payload = seen[0]
+    assert url == address_policy.DEFAULT_OLLAMA_URL + "/api/embed" and "keep_alive" not in payload
+
+
+@pytest.mark.parametrize("url", ["http://чужой-хост:11434", "https://api.example.com", "http://192.168.1.2:11434"])
+def test_factory_refuses_another_machine_without_permission(url):
+    seen = []
+    with pytest.raises(AddressRefused):
+        embed_door.ollama_embedder("m", url=url, post=_post(seen))
+    assert seen == []
+
+
+def test_factory_goes_to_another_machine_only_when_allowed():
+    seen = []
+    e = embed_door.ollama_embedder("m", url="https://api.example.com/", allow_remote=True,
+                                   keep_alive="10m", post=_post(seen))
+    e.run(["т"], 5)
+    assert seen[0][0] == "https://api.example.com/api/embed" and seen[0][1]["keep_alive"] == "10m"
+
+
+def test_factory_asks_the_one_policy(monkeypatch):
+    monkeypatch.setattr(address_policy, "guard_model_url", lambda url, **k: "http://решила-политика")
+    seen = []
+    embed_door.ollama_embedder("m", url="ftp://куда-угодно", post=_post(seen)).run(["т"], 5)
+    assert seen[0][0] == "http://решила-политика/api/embed"
+
+
+# ── Командная строка ────────────────────────────────────────────────────
+
+def _search(tmp_path, *flags):
+    graph = tmp_path / "граф"
+    graph.mkdir(exist_ok=True)
+    (graph / "a.md").write_text("текст\n", encoding="utf-8")
+    return cli.main(["search", str(graph), "q", "--model", "м", "--data-dir", str(tmp_path / "к"), *flags])
+
+
+def test_cli_refuses_another_machine_and_names_the_flag(tmp_path, capsys):
+    code = _search(tmp_path, "--model-url", "https://api.example.com")
+    err = capsys.readouterr().err
+    assert code == cli.EXIT_USAGE and "--allow-remote" in err and "api.example.com" in err
+    assert not (tmp_path / "к").exists()
+
+
+def test_cli_cleartext_is_refused_even_with_the_flag(tmp_path, capsys):
+    code = _search(tmp_path, "--model-url", "http://чужой-хост:11434", "--allow-remote")
+    err = capsys.readouterr().err
+    assert code == cli.EXIT_USAGE and "https" in err and "--allow-remote" not in err
+
+
+def test_cli_flag_lets_the_factory_through(tmp_path, monkeypatch):
+    got = {}
+
+    def factory(model, *, url, allow_remote):
+        got.update(model=model, url=url, allow_remote=allow_remote)
+        raise AddressRefused("remote", url)      # дальше сборки не идём: проверяем, что флаг дошёл
+    monkeypatch.setattr(embed_door, "ollama_embedder", factory)
+    assert _search(tmp_path, "--model-url", "https://api.example.com", "--allow-remote") == cli.EXIT_USAGE
+    assert got == {"model": "м", "url": "https://api.example.com", "allow_remote": True}
+
+
+def test_cli_allow_remote_needs_a_model_url(tmp_path, capsys):
+    graph = tmp_path / "г"
+    graph.mkdir()
+    assert cli.main(["search", str(graph), "q", "--allow-remote"]) == cli.EXIT_USAGE
+    assert "--allow-remote" in capsys.readouterr().err
+
+
+# ── Приложение не зовёт фабрику пакета ──────────────────────────────────
+
+def test_the_app_builds_embedders_only_through_llm():
+    """У фабрики нет рубильника: код приложения, позвавший её, обошёл бы
+    CHAROITE_NO_CLOUD и llm.allow_remote. Приложение собирает векторизатор
+    только в `llm.embedder` (через privacy), фабрику не зовёт вовсе."""
+    factory = re.compile(r"\bollama_embedder\b")
+    door = re.compile(r"\bembed_door\.embedder\s*\(")
+    offenders, scanned = [], 0
+    for root in ("src", "scripts"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            if rel.startswith("src/charoite_graph/"):
+                continue
+            scanned += 1
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if factory.search(line) or (door.search(line) and rel != "src/llm.py"):
+                    offenders.append(f"{rel}:{n}: {line.strip()}")
+    assert scanned > 10, "сторож не нашёл файлов — обход сломан"
+    assert not offenders, "векторизатор собран мимо llm.embedder:\n" + "\n".join(offenders)
