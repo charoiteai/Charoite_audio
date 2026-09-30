@@ -5,7 +5,10 @@
 окружения вход не берёт: путь папки — `resolve()` (`~` раскрывает оболочка), каталог
 кэша — только флагом `--data-dir`, ширина справки — константой, а не `COLUMNS`
 (входные круги 1–3 по №323). Из окружения берутся только язык сообщений argparse
-(`LANGUAGE`/`LC_*`/`LANG` через gettext) и прокси `urllib` для адреса вне этой машины (адрес на этой машине дверь открывает напрямую, №525); проба, которая
+(`LANGUAGE`/`LC_*`/`LANG` через gettext), прокси `urllib` для адреса вне этой машины и своей сети,
+а на Linux — резолвер glibc для имени без точки или из домашних доменов (`HOSTALIASES`, `LOCALDOMAIN`,
+`RES_OPTIONS`); адрес на этой машине и открытый http в свою сеть дверь открывает напрямую
+(№525, №522). Проба, которая
 меряет сам факт чтения окружения, — №378 (финальный круг Opus по №323 PR 2, C1). Индекс здесь строится мимо двери приложения
 `graphs.open_search` законно: это второй владелец шва `GraphSearch` в
 `ENV_SEAMS`, и схема у пакета своя — `PLAIN`.
@@ -15,7 +18,7 @@
 
 * 0 — ответ дан (статус поиска — в выводе, а не в коде);
 * 1 — `index`: векторы собраны не для всех заметок (причина — в stderr);
-* 2 — аргументы: не каталог, не хватает флага;
+* 2 — аргументы: не каталог, не хватает флага, адрес модели отклонён политикой (`address_policy`);
 * 3 — индекс пуст: в папке нет прочитанных заметок.
 
 Кэш векторов хранит пути и векторы заметок: вход ставит процессу маску 0o077 на
@@ -33,7 +36,7 @@ import pathlib
 import sys
 import threading
 
-from charoite_graph import embed_door
+from charoite_graph import address_policy, embed_door
 from charoite_graph.graph_search import GraphSearch
 
 EXIT_OK = 0
@@ -82,6 +85,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model-url", help="адрес сервера эмбеддингов Ollama (/api/embed), например http://127.0.0.1:11434")
     p.add_argument("--model", help="имя модели эмбеддингов; подписывает кэш векторов")
     p.add_argument("--data-dir", help="каталог кэша векторов; нужен вместе с --model-url")
+    p.add_argument("--allow-remote", action="store_true",
+                   help="разрешить адрес модели не на этой машине (открытый http — только в своей сети)")
 
 
 def _parse(argv: list[str] | None) -> tuple[argparse.Namespace | None, int]:
@@ -94,8 +99,8 @@ def _parse(argv: list[str] | None) -> tuple[argparse.Namespace | None, int]:
     problem = None
     if args.model_url and not (args.model and args.data_dir):
         problem = "--model-url требует --model и --data-dir"
-    elif (args.model or args.data_dir) and not args.model_url:
-        problem = "--model и --data-dir имеют смысл только вместе с --model-url"
+    elif (args.model or args.data_dir or args.allow_remote) and not args.model_url:
+        problem = "--model, --data-dir и --allow-remote имеют смысл только вместе с --model-url"
     elif args.command == "index" and not args.model_url:
         problem = "index собирает векторы — нужен --model-url"
     if problem:
@@ -105,9 +110,13 @@ def _parse(argv: list[str] | None) -> tuple[argparse.Namespace | None, int]:
 
 
 def embedder_from_args(args: argparse.Namespace):
-    """Векторизатор из флагов: дверь пакета по адресу или дверь-отказ без него."""
+    """Векторизатор из флагов: фабрика пакета по адресу или дверь-отказ без него.
+
+    Адрес судит политика пакета (`address_policy`): не эта машина — только с
+    `--allow-remote`; отказ — `AddressRefused`, а `main` превращает его в код 2.
+    """
     if args.model_url:
-        return embed_door.embedder(args.model_url, args.model)
+        return embed_door.ollama_embedder(args.model, url=args.model_url, allow_remote=args.allow_remote)
     return embed_door.embedder("", NO_MODEL, refused=REFUSED)
 
 
@@ -152,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
         # адрес и имя модели проверяет дверь при сборке: кривой адрес — ошибка аргументов,
         # код 2, а не трассировка с кодом 1, который у index значит «собрано не всё» (I1 выхода 1)
         embedder = embedder_from_args(args)
+    except address_policy.AddressRefused as e:      # совет — флагом этого входа, а не словом библиотеки
+        hint = {"remote": " — разрешите флагом --allow-remote",
+                "cleartext": " (флаг --allow-remote этого не снимает)"}.get(e.kind, "")
+        print(f"charoite-graph: {e}{hint}", file=sys.stderr)
+        return EXIT_USAGE
     except ValueError as e:
         print(f"charoite-graph: {e}", file=sys.stderr)
         return EXIT_USAGE
