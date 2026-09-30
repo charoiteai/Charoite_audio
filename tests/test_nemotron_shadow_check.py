@@ -744,8 +744,9 @@ def test_a_child_killed_at_close_makes_the_run_invalid():
 def test_the_report_says_when_the_fed_coverage_was_not_checked():
     j = journal(chunk_ends=[START0 + 64000])
     final = {"duration_s": 20.0, "segments": [[0.3, 1.0, "A"]]}
-    assert chk.report(j, final)["unchecked"] == ["fed_coverage"]
-    assert chk.report(j, final, meta={"fed_to_shadow": SR * 20})["unchecked"] == []
+    assert chk.report(j, final)["unchecked"] == ["fed_coverage", "chunk_count"]
+    meta = {"fed_to_shadow": SR * 20, "chunks": {"tracker_lines": 1}}
+    assert chk.report(j, final, meta=meta)["unchecked"] == []
 
 
 def test_a_broken_line_and_a_final_without_speech_are_refusals_not_tracebacks(tmp_path, capsys):
@@ -797,3 +798,16 @@ def test_a_child_that_stops_answering_fails_the_run_and_the_shadow_is_stopped(tm
     journal = next((out / "logs").glob("nemotron_live_*.jsonl"))
     assert rp.end_line(journal), "тень остановлена в finally: строка end есть"
     assert not (out / "meta.json").exists()
+
+
+def test_a_replay_that_lost_chunks_or_their_lines_is_invalid():
+    """Круг 4 по постановке, Sonnet I1: годность прогона — все отданные тени чанки со
+    строкой и ни одного не дождавшегося метки."""
+    lines = journal_lines(chunk_ends=[START0 + 64000, START0 + 72000])
+    objs = [json.loads(x) for x in lines]
+    [o for o in objs if o["type"] == "chunk"][1]["outcome"] = ln.TIMEOUT
+    j = chk.read_journal([json.dumps(o) for o in objs])
+    assert any("потерянные" in p for p in chk.validity(j, noted_expected=2))
+    assert any("строк chunk 2" in p for p in chk.validity(journal(chunk_ends=[START0 + 64000, START0 + 72000]),
+                                                           noted_expected=3))
+    assert chk.validity(journal(chunk_ends=[START0 + 64000]), noted_expected=1) == []

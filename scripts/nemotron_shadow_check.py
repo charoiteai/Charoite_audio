@@ -150,10 +150,24 @@ def check_frames(j: Journal) -> None:
             raise Refused(f"кадр не сходится со звуком: {e}") from None
 
 
-def validity(j: Journal, *, fed_expected: int | None = None) -> list[str]:
+#: Исходы, которых в годном прогоне записи нет: чанк не дождался метки (у живого звонка —
+#: законны, там тень умирает от давления; сверка прогона их не прощает).
+LOST_OUTCOMES = (live_nemotron.TIMEOUT, live_nemotron.LATE, live_nemotron.DEAD_STREAM)
+
+
+def validity(j: Journal, *, fed_expected: int | None = None, noted_expected: int | None = None) -> list[str]:
     """Почему журнал негоден (пусто — годен). `fed_expected` — сколько сэмплов прогон
-    подал тени; фронт обязан их покрыть (ранний стоп иначе проходил бы как годный)."""
+    подал тени; фронт обязан их покрыть (ранний стоп иначе проходил бы как годный).
+    `noted_expected` — сколько чанков канала собеседников прогон отдал тени: у каждого
+    своя строка, и ни один не потерян (не дождался, опоздал, застал смерть потока)."""
     problems = []
+    if noted_expected is not None:
+        if len(j.chunks) != noted_expected:
+            problems.append(f"строк chunk {len(j.chunks)}, прогон отдал тени {noted_expected}")
+        lost = {o: n for o, n in collections.Counter(c["outcome"] for c in j.chunks).items()
+                if o in LOST_OUTCOMES}
+        if lost:
+            problems.append(f"потерянные чанки: {lost}")
     if j.end.get("exit") != "ok":
         problems.append(f"ребёнок вышел не сам: exit={j.end.get('exit')!r} ({j.end.get('exit_reason', '')})")
     finals = [f for f in j.fronts if f.get("final")]
@@ -453,7 +467,8 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
            timing: list[dict] | None = None, meta: dict | None = None) -> dict:
     """Всё, что считает сверка, — одним словарём; негодный журнал — `Refused`."""
     fed_expected = (meta or {}).get("fed_to_shadow")
-    problems = validity(j, fed_expected=fed_expected)
+    noted = ((meta or {}).get("chunks") or {}).get("tracker_lines")
+    problems = validity(j, fed_expected=fed_expected, noted_expected=noted)
     if problems:
         raise Refused("; ".join(problems))
     total = float(final["duration_s"])
@@ -466,7 +481,8 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
     lag.pop("_values")
     out = {
         # без сводки прогона покрытие поданного звука не проверено — так и сказано (живой журнал)
-        "unchecked": [] if fed_expected is not None else ["fed_coverage"],
+        "unchecked": [name for name, v in (("fed_coverage", fed_expected), ("chunk_count", noted))
+                      if v is None],
         "memory": memory(j),
         "outcomes": outcomes(j),
         "a1_label_lag_audio": lag,
