@@ -1072,3 +1072,42 @@ def test_bzip2_signature_is_exact_and_utf32_refuses():
 
 def test_short_utf16_without_bom_is_decoded():
     assert "ЗАО\n" in guard.blob_texts("ЗАО\n".encode("utf-16-le"))
+
+
+# ── узкий круг 2: один генератор всех текстовых видов (№541) ────────────────
+
+def test_attribute_values_of_xml_members_are_judged():
+    texts = guard.blob_texts(_zip({"xl/workbook.xml": '<sheets><sheet name="ЗАО-отчёт"/></sheets>'
+                                   .encode()}))
+    assert any("ЗАО-отчёт" in t for t in texts), texts
+
+
+def test_utf16_fragment_in_the_middle_of_a_binary():
+    import random
+    rnd = random.Random(7)
+    for size in (5000, 5001):         # строка UTF-16 на чётном и нечётном смещении
+        noise = bytes(rnd.randrange(256) for _ in range(size))
+        texts = guard.blob_texts(noise + "запуск на ЗАО-отчёт".encode("utf-16-le") + noise)
+        assert any("ЗАО-отчёт" in t for t in texts), size
+
+
+def test_short_crlf_line_of_a_text_member_survives():
+    texts = guard.blob_texts(_zip({"a.csv": "ЗАО\r\nx;1\r\n".encode(), "b.txt": "ЗАО".encode()}))
+    assert any("ЗАО" in t.splitlines() for t in texts[:2]), texts
+    assert "ЗАО" in texts, texts               # короткий текстовый член — целиком
+
+
+def test_crlf_does_not_split_printable_runs():
+    assert "ЗАО-отчёт\r\nи ещё" in "".join(guard.blob_texts(b"\x00" + "ЗАО-отчёт\r\nи ещё".encode()))
+
+
+def test_split_word_in_any_markup_member(repo):
+    texts = guard.blob_texts(_zip({"x/comments.vml": "<v><b>Внутр</b>енняя</v>".encode()}))
+    assert any("Внутренняя" in t for t in texts), texts
+
+
+def test_zip_suffix_content_is_judged(repo):
+    (repo.work / "data.zip").write_bytes(_zip({"notes.txt": f"{MARKER}\n".encode()}))
+    sha = repo.commit("zip")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert f"{sha[:9]} data.zip (двоичный): приватный маркер" in p.stderr, p.stdout + p.stderr

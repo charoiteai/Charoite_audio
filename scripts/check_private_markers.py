@@ -110,6 +110,8 @@ def tracked_files() -> list[pathlib.Path]:
 
 SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf",
                ".zip", ".onnx", ".wav", ".m4a", ".mp3"}
+# Покоммитный страж распаковывает zip сам: у него .zip — не медиа (выход №541).
+_COMMIT_SKIP = SKIP_SUFFIX - {".zip"}
 
 
 def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]:
@@ -274,7 +276,7 @@ def parse_patch(text: str, sha: str | None) -> Iterator[tuple[str, str, int, str
                 continue
             if prefix == "+" * parents:
                 if sha and path is not None and \
-                        pathlib.PurePosixPath(path).suffix.lower() not in SKIP_SUFFIX:
+                        pathlib.PurePosixPath(path).suffix.lower() not in _COMMIT_SKIP:
                     yield sha, path, lineno, line[parents:]
                 lineno += 1
             elif "-" not in prefix:
@@ -346,7 +348,7 @@ def commit_meta(revs: list[str]) -> list[CommitMeta]:
 # Двоичный файл (по мнению git: NUL в начале) судится по содержимому блоба —
 # печатные отрезки от 8 символов; больше потолка — отказ, а не тихий пропуск.
 BLOB_LIMIT = 20 * 1024 * 1024
-_PRINTABLE_RUN = re.compile(r"[^\x00-\x08\x0b-\x1f\x7f\ufffd]{8,}")
+_PRINTABLE_RUN = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]{8,}")
 
 
 def binary_files(revs: list[str]) -> list[tuple[str, str]]:
@@ -372,24 +374,39 @@ _BZIP2 = re.compile(rb"BZh[1-9]1AY&SY")
 _TAG = re.compile(rb"<[^<>]{0,2000}>")
 
 
-def _utf16(data: bytes) -> str | None:
-    """Текст в UTF-16 (с BOM или без): у латиницы старший байт 0, у кириллицы 4 —
-    печатных отрезков в нём нет, судить надо декодированный текст."""
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return data.decode("utf-16", "replace")
-    head = data[:4096]
-    for enc, high in (("utf-16-le", head[1::2]), ("utf-16-be", head[0::2])):
-        if high and sum(b <= 4 for b in high) > len(high) * 0.9:
-            return data.decode(enc, "replace")
-    return None
+_WIDE_RUN = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]{4,}")
+
+
+def text_views(data: bytes) -> list[str]:
+    """Все текстовые виды байтов — без выбора одного по эвристике (выход №541:
+    два Critical подряд за «угаданную» кодировку и снятые теги).
+
+    Строгий UTF-8 без NUL — весь текст целиком. Иначе — печатные отрезки UTF-8
+    от 8 знаков (короче — шум случайных байтов) и отрезки UTF-16 le и be на
+    обоих смещениях от 4 знаков (строки старого Office лежат кусками посреди
+    двоичного). XML-подобный текст — ещё два вида: теги сняты вплотную (слово,
+    разрезанное тегами) и заменены пробелом (соседние ячейки); сырой вид
+    оставляет значения атрибутов."""
+    if b"\x00" not in data:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            if text.lstrip("\ufeff \t\r\n").startswith("<"):
+                return [text, _TAG.sub(b"", data).decode("utf-8", "replace"),
+                        _TAG.sub(b" ", data).decode("utf-8", "replace")]
+            return [text]
+    views = _PRINTABLE_RUN.findall(data.decode("utf-8", "replace"))
+    for enc in ("utf-16-le", "utf-16-be"):
+        for start in (0, 1):
+            views += _WIDE_RUN.findall(data[start:].decode(enc, "replace"))
+    return views
 
 
 def blob_texts(data: bytes, depth: int = 0, budget: list[int] | None = None) -> list[str]:
-    """Текстовые представления двоичного блоба; непроверяемое — отказ.
-
-    Судятся все кандидаты сразу (печатные отрезки UTF-8 и декодированный
-    UTF-16), а не один по эвристике. `budget` — общий остаток распаковки на
-    весь блоб: потолок на член не спасает от тысячи членов."""
+    """Текстовые виды двоичного блоба с распаковкой контейнеров; непроверяемое —
+    отказ. `budget` — общий остаток распаковки на весь блоб."""
     budget = [BLOB_LIMIT] if budget is None else budget
     if depth > 3:
         raise GitError("вложенность контейнеров глубже 3 — содержимое не проверить")
@@ -400,13 +417,7 @@ def blob_texts(data: bytes, depth: int = 0, budget: list[int] | None = None) -> 
                 budget[0] -= info.file_size
                 if budget[0] < 0:
                     raise GitError(f"распакованный архив больше потолка {BLOB_LIMIT} Б")
-                member = z.read(info)
-                if info.filename.endswith((".xml", ".rels")):
-                    # слово в .docx бывает разрезано тегами (склеить), а соседние
-                    # ячейки .xlsx разделены только тегами (разделить) — судим оба вида
-                    texts += blob_texts(_TAG.sub(b"", member), depth + 1, budget)
-                    member = _TAG.sub(b" ", member)
-                texts += blob_texts(member, depth + 1, budget) + [info.filename]
+                texts += blob_texts(z.read(info), depth + 1, budget) + [info.filename]
         return texts
     if data.startswith(b"\x1f\x8b"):
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as g:
@@ -420,9 +431,7 @@ def blob_texts(data: bytes, depth: int = 0, budget: list[int] | None = None) -> 
             raise GitError(f"контейнер {kind} — содержимое не проверить")
     if _BZIP2.match(data):
         raise GitError("контейнер bzip2 — содержимое не проверить")
-    runs = _PRINTABLE_RUN.findall(data.decode("utf-8", "replace"))
-    wide = _utf16(data)
-    return runs if wide is None else [wide, *runs]
+    return text_views(data)
 
 
 # Чем падает разбор повреждённого или зашифрованного контейнера. Текст
@@ -433,7 +442,7 @@ _CONTAINER_ERRORS = (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
 
 def binary_texts(sha: str, path: str) -> list[str] | None:
     """Текст двоичного файла коммита; None — медиа-суффикс (судится только имя)."""
-    if pathlib.PurePosixPath(path).suffix.lower() in SKIP_SUFFIX:
+    if pathlib.PurePosixPath(path).suffix.lower() in _COMMIT_SKIP:
         return None
     obj = f"{sha}:{path}"
     if not git_ok("cat-file", "-e", obj):
