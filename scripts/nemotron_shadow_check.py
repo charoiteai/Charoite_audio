@@ -47,6 +47,7 @@ import typing
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import charoite_paths  # noqa: E402
 import diarize_nemotron  # noqa: E402  — только чистая проверка кадра, mlx не трогается
 import live_nemotron  # noqa: E402
 
@@ -465,6 +466,7 @@ def _jsonl(path: pathlib.Path) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    charoite_paths.harden_umask()      # сверка ничего не пишет, но точка входа закрывает маску, как все
     ap = argparse.ArgumentParser(description="Сверка журнала тени Nemotron с финальной разметкой (№478 B)")
     ap.add_argument("journal", type=pathlib.Path, help="журнал тени nemotron_live_<штамп>.jsonl")
     ap.add_argument("--final", type=pathlib.Path, required=True,

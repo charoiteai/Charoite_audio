@@ -328,13 +328,15 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
 
 
 def main(argv: list[str] | None = None) -> int:
+    charoite_paths.harden_umask()      # журналы прогона — только владельцу
+    # корень — до разбора аргументов: без названного корня вход отказывает своим кодом
+    data_root = charoite_paths.name_data_root_or_exit(__file__)
     ap = argparse.ArgumentParser(description="Прогон записи через тень потокового Nemotron (№478 B)")
     ap.add_argument("stamp", help="штамп записи: <штамп>_blackhole.wav и <штамп>_mic.wav в recordings/")
     ap.add_argument("--out", type=pathlib.Path, help="свежий каталог выхода (по умолчанию — кэш пользователя)")
     ap.add_argument("--lead", type=float, default=LEAD_S, help="секунд звука впереди ребёнка")
     ap.add_argument("--preroll", type=float, default=PREROLL_S, help="секунд звука до рукопожатия")
     args = ap.parse_args(argv)
-    data_root = charoite_paths.name_data_root_or_exit(__file__)
     out = args.out or default_out(args.stamp)
     try:
         meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll)
