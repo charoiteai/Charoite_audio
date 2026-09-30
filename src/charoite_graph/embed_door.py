@@ -35,7 +35,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-import charoite_graph.address_policy as address_policy   # без ребра на узел пакета (слой graph)
+import charoite_graph.address_policy as address_policy   # атрибутом модуля: сторож подменяет guard_model_url
 from charoite_graph.model_seam import Embedder, SeamTransportError
 from charoite_graph.net import open_url
 from charoite_graph.notices import Notices

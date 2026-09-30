@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import pathlib
-import re
+import ast
 import sys
 
 import pytest
@@ -62,6 +62,8 @@ TABLE = [
     ("http://192.168.1.20:11434", True, False, None),
     ("http://ollama.local:11434", True, False, "cleartext"),  # имя не резолвится — не своя сеть
     ("http://чужой-хост:11434", False, False, "cleartext"),
+    ("http://[::ffff:8.8.8.8]:11434", True, False, "cleartext"),     # IPv4 в одежде IPv6 — не своя сеть
+    ("http://[::ffff:192.168.1.2]:11434", True, False, None),
 ]
 
 
@@ -99,6 +101,16 @@ def test_dns_is_asked_only_for_cleartext_to_a_name(monkeypatch):
         except AddressRefused:
             pass
     assert asked == []
+
+
+def test_a_mapped_public_address_is_not_own_network_on_any_python():
+    """Старый stdlib считал весь ::ffff:0:0/96 частным; предикат разворачивает адрес сам."""
+    import ipaddress
+
+    class OldStdlibMapped:          # так ::ffff:8.8.8.8 видел Python без делегирования (опыт: 3.9)
+        ipv4_mapped = ipaddress.IPv4Address("8.8.8.8")
+        is_private, is_link_local, is_loopback = True, False, False
+    assert address_policy._ip_private(OldStdlibMapped()) is False
 
 
 def test_unknown_kind_is_a_wiring_error():
@@ -151,6 +163,7 @@ APP_CASES = [
     ({"base_url": "http://[::1"}, {}),
     ({"mlx_base_url": "file:///x", "allow_remote": True}, {"SUFLER_NO_CLOUD": "1"}),
     ({}, {}),
+    ({"base_url": "http://192.168.1.2:11434"}, {"CHAROITE_NO_CLOUD": ""}),     # пустая — не взведён
 ]
 
 
@@ -172,7 +185,8 @@ def test_privacy_passes_the_policy_verdict_through_as_is(monkeypatch, llm, env):
 
     assert read({"llm": llm}, env) == "http://решила-политика"
     key = "mlx_base_url" if read is privacy.mlx_base_url else "base_url"
-    assert seen == [(llm.get(key) or default, llm.get("allow_remote"), bool(env))]
+    armed = any(env.get(k) for k in privacy.KILL_SWITCHES)
+    assert seen == [(llm.get(key) or default, llm.get("allow_remote"), armed)]
 
 
 @pytest.mark.parametrize("kind", address_policy.KINDS)
@@ -242,13 +256,15 @@ def test_cli_refuses_another_machine_and_names_the_flag(tmp_path, capsys):
     code = _search(tmp_path, "--model-url", "https://api.example.com")
     err = capsys.readouterr().err
     assert code == cli.EXIT_USAGE and "--allow-remote" in err and "api.example.com" in err
+    assert "allow_remote" not in err.replace("--allow-remote", ""), "слово библиотеки вместо флага команды"
     assert not (tmp_path / "к").exists()
 
 
 def test_cli_cleartext_is_refused_even_with_the_flag(tmp_path, capsys):
     code = _search(tmp_path, "--model-url", "http://чужой-хост:11434", "--allow-remote")
     err = capsys.readouterr().err
-    assert code == cli.EXIT_USAGE and "https" in err and "--allow-remote" not in err
+    assert code == cli.EXIT_USAGE and "https" in err and "--allow-remote этого не снимает" in err
+    assert "allow_remote" not in err.replace("--allow-remote", ""), "слово библиотеки вместо флага команды"
 
 
 def test_cli_flag_lets_the_factory_through(tmp_path, monkeypatch):
@@ -271,12 +287,84 @@ def test_cli_allow_remote_needs_a_model_url(tmp_path, capsys):
 
 # ── Приложение не зовёт фабрику пакета ──────────────────────────────────
 
+_DOOR = "charoite_graph.embed_door"
+_BUILDERS = {"embedder", "ollama_embedder"}
+
+
+def _builds_embedder(source: str, rel: str) -> list[int]:
+    """Строки, где код собирает векторизатор мимо `llm.embedder`, — по AST, а не по написанию.
+
+    Ловит любую форму доступа к сборщикам двери (`embedder`, `ollama_embedder`):
+    `from charoite_graph.embed_door import embedder` (и `*`), атрибут на имени,
+    которое связано с модулем двери (`import charoite_graph.embed_door as ed`,
+    `from charoite_graph import embed_door`), цепочку `charoite_graph.embed_door.x`
+    и строку-имя сборщика (`getattr(ed, "ollama_embedder")`). В `src/llm.py`
+    доступ законен только внутри `def embedder` — там адрес выдаёт privacy.
+    """
+    tree = ast.parse(source)
+    door_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == _DOOR:
+                    door_names.add(a.asname or "charoite_graph")
+        elif isinstance(node, ast.ImportFrom) and node.module == "charoite_graph":
+            for a in node.names:
+                if a.name == "embed_door":
+                    door_names.add(a.asname or "embed_door")
+    allowed: set[int] = set()
+    if rel == "src/llm.py":
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "embedder":
+                allowed.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+
+    def door_expr(e) -> bool:
+        if isinstance(e, ast.Name):
+            return e.id in door_names and e.id != "charoite_graph"
+        return (isinstance(e, ast.Attribute) and e.attr == "embed_door"
+                and isinstance(e.value, ast.Name) and e.value.id == "charoite_graph")
+
+    hits = []
+    for node in ast.walk(tree):
+        bad = False
+        if isinstance(node, ast.ImportFrom) and node.module == _DOOR:
+            bad = any(a.name in _BUILDERS | {"*"} for a in node.names)
+        elif isinstance(node, ast.Attribute) and node.attr in _BUILDERS:
+            bad = door_expr(node.value)
+        elif isinstance(node, ast.Constant) and node.value == "ollama_embedder":
+            bad = True
+        if bad and node.lineno not in allowed:
+            hits.append(node.lineno)
+    return hits
+
+
+@pytest.mark.parametrize("source", [
+    "from charoite_graph.embed_door import embedder\nembedder(u, 'm')",
+    "from charoite_graph.embed_door import ollama_embedder as f",
+    "from charoite_graph.embed_door import *",
+    "import charoite_graph.embed_door as ed\ned.embedder(u, 'm')",
+    "from charoite_graph import embed_door\nembed_door.embedder(u, 'm')",
+    "from charoite_graph import embed_door as door\ndoor.ollama_embedder('m')",
+    "import charoite_graph.embed_door\ncharoite_graph.embed_door.embedder(u, 'm')",
+    "import charoite_graph.embed_door as ed\ngetattr(ed, 'ollama_embedder')('m')",
+])
+def test_the_guard_sees_every_way_to_reach_a_builder(source):
+    assert _builds_embedder(source, "src/daemon.py"), source
+
+
+def test_the_guard_lets_the_door_helpers_and_llm_embedder_through():
+    helpers = "import charoite_graph.embed_door as ed\nn = ed.EMBED_BATCH_TEXTS\ned.refusal_line('x')"
+    assert _builds_embedder(helpers, "src/daemon.py") == []
+    llm = ("import charoite_graph.embed_door as embed_door\n"
+           "def embedder(cfg):\n    return embed_door.embedder(u, 'm')\n"
+           "def other(cfg):\n    return embed_door.embedder(cfg['x'], 'm')\n")
+    assert _builds_embedder(llm, "src/llm.py") == [5]
+
+
 def test_the_app_builds_embedders_only_through_llm():
-    """У фабрики нет рубильника: код приложения, позвавший её, обошёл бы
-    CHAROITE_NO_CLOUD и llm.allow_remote. Приложение собирает векторизатор
-    только в `llm.embedder` (через privacy), фабрику не зовёт вовсе."""
-    factory = re.compile(r"\bollama_embedder\b")
-    door = re.compile(r"\bembed_door\.embedder\s*\(")
+    """У фабрики нет рубильника, у двери — политики: код приложения, собравший
+    векторизатор сам, обошёл бы CHAROITE_NO_CLOUD и llm.allow_remote.
+    Приложение собирает его только в `llm.embedder` (адрес — privacy)."""
     offenders, scanned = [], 0
     for root in ("src", "scripts"):
         for path in sorted((REPO / root).rglob("*.py")):
@@ -284,8 +372,6 @@ def test_the_app_builds_embedders_only_through_llm():
             if rel.startswith("src/charoite_graph/"):
                 continue
             scanned += 1
-            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                if factory.search(line) or (door.search(line) and rel != "src/llm.py"):
-                    offenders.append(f"{rel}:{n}: {line.strip()}")
+            offenders += [f"{rel}:{n}" for n in _builds_embedder(path.read_text(encoding="utf-8"), rel)]
     assert scanned > 10, "сторож не нашёл файлов — обход сломан"
     assert not offenders, "векторизатор собран мимо llm.embedder:\n" + "\n".join(offenders)

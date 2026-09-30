@@ -40,7 +40,9 @@ class AddressRefused(ValueError):
     `kind` — вид из `KINDS`, `url` — адрес как передан, `scheme` — его схема
     (для `scheme`), `detail` — причина разбора (для `ambiguous`: текст
     `AmbiguousAddress` или `ValueError` разборщика). Текст исключения — общий,
-    без ключей конфига: приложение и командная строка говорят своё.
+    без имён параметров, ключей конфига и флагов: как разрешить удалённый адрес
+    (`allow_remote=True`, `llm.allow_remote`, `--allow-remote`), называет
+    потребитель по `kind`.
     """
 
     def __init__(self, kind: str, url: str, *, scheme: str = "", detail: str = ""):
@@ -55,13 +57,20 @@ _TEXT = {
     "scheme": lambda e: f"адрес {e.url}: схема «{e.scheme or '—'}» не поддерживается, нужен http(s)",
     "offline": lambda e: f"адрес {e.url} указывает не на эту машину, а выход наружу запрещён",
     "cleartext": lambda e: (f"адрес {e.url} — вне своей сети по открытому http: текст ушёл бы по сети "
-                            "открытым текстом. Для удалённого адреса нужен https (allow_remote этого не снимает)"),
+                            "открытым текстом. Для удалённого адреса нужен https (разрешение на удалённый "
+                            "адрес этого не снимает)"),
     "remote": lambda e: (f"адрес {e.url} указывает не на эту машину: чтобы слать туда тексты, нужно явное "
-                         "разрешение allow_remote"),
+                         "разрешение на удалённый адрес"),
 }
 
 
 def _ip_private(ip) -> bool:
+    # «::ffff:8.8.8.8» — IPv4 в одежде IPv6: Python до 3.11.x/3.12.x без делегирования
+    # считал весь ::ffff:0:0/96 частным, и публичный адрес проходил бы как своя сеть
+    # (выходной круг 1 по №522, Sonnet M3; опыт: 3.9 — is_private True, 3.12.13 — False).
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
     return ip.is_private or ip.is_link_local or ip.is_loopback
 
 
@@ -74,7 +83,7 @@ def _resolves_private(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except OSError:
         return False
-    ips = {info[4][0].split("%")[0] for info in infos}
+    ips = {str(info[4][0]).split("%")[0] for info in infos}
     try:
         return bool(ips) and all(_ip_private(ipaddress.ip_address(ip)) for ip in ips)
     except ValueError:

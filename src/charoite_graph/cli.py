@@ -159,7 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         # код 2, а не трассировка с кодом 1, который у index значит «собрано не всё» (I1 выхода 1)
         embedder = embedder_from_args(args)
     except address_policy.AddressRefused as e:      # совет — флагом этого входа, а не словом библиотеки
-        hint = " — разрешите флагом --allow-remote" if e.kind == "remote" else ""
+        hint = {"remote": " — разрешите флагом --allow-remote",
+                "cleartext": " (флаг --allow-remote этого не снимает)"}.get(e.kind, "")
         print(f"charoite-graph: {e}{hint}", file=sys.stderr)
         return EXIT_USAGE
     except ValueError as e:
