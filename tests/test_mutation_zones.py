@@ -48,6 +48,11 @@ def test_сторож_зон_краснеет_на_каждом_нарушени
     del без_llm["mutation_not_critical"]["llm"]
     problems = lm.zone_problems(inv, без_llm, scanned)
     assert any(p.startswith("src/llm.py: импорт requests — дверь мутатора не решена") for p in problems), problems
+    # потребитель своего транспорта наружу без решения (выходной круг 1 по №469, GLM I2)
+    без_доктора = copy.deepcopy(layout)
+    del без_доктора["mutation_not_critical"]["scripts/doctor.py"]
+    assert any(p.startswith("scripts/doctor.py: импорт charoite_graph.net") for p in
+               lm.zone_problems(inv, без_доктора, scanned))
     # имя, которого нет в области
     чужое = copy.deepcopy(layout)
     чужое["mutation_critical"]["scripts/mutate_check.py"] = "служебное"

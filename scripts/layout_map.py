@@ -1180,6 +1180,9 @@ ZONE_KEYS = ("mutation_critical", "mutation_not_critical")
 #: (`os.replace`, `unlink`, `rmtree` — 32 файла) — только списком: узкого признака нет.
 NET_LIBS = ("requests", "urllib.request", "http.client", "socket", "websockets", "httpx")
 WRITE_DOOR = "charoite_graph.safe_write"
+#: Свой транспорт наружу: после №522 новый сетевой код идёт через него, а не через
+#: сырую библиотеку — сигнал обязан видеть и его (выходной круг 1 по №469, GLM I2)
+NET_DOORS = ("charoite_graph.net",)
 
 
 def zone_split(entry: str) -> tuple[str, str | None]:
@@ -1212,8 +1215,9 @@ def zone_signal(rel: str, tree: ast.AST) -> str | None:
         for lib in NET_LIBS:
             if name == lib or name.startswith(lib + "."):
                 return f"импорт {lib}"
-        if name == WRITE_DOOR or name.startswith(WRITE_DOOR + "."):
-            return f"импорт {WRITE_DOOR}"
+        for door in (WRITE_DOOR, *NET_DOORS):
+            if name == door or name.startswith(door + "."):
+                return f"импорт {door}"
     return None
 
 

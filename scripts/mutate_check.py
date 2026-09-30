@@ -147,7 +147,20 @@ def resolve_range(root: pathlib.Path, rng: str) -> str:
             raise PreparationError(f"ревизия {end!r} не разрешилась — {r.stderr.strip()}")
         return r.stdout.strip()
 
-    return f"{sha(left)}{sep}{sha(right)}" if sep else sha(right)
+    if not sep:
+        return sha(right)
+    if sep == "...":
+        # Дифф `A...B` зависит только от общего предка: он и уходит в ключ прогона,
+        # факты и зоны базы. Кончик A сдвигается от `git fetch` и между стартами
+        # шардов CI — ключ и факты расходились бы при той же выборке (выходной
+        # круг 1 по №469, Sonnet I1)
+        base = subprocess.run(["git", "-C", str(root), "merge-base", sha(left), sha(right)],
+                              capture_output=True, text=True)
+        if base.returncode:
+            raise PreparationError(f"у {left!r} и {right!r} нет общего предка — "
+                                   f"{base.stderr.strip()}")
+        return f"{base.stdout.strip()}{sep}{sha(right)}"
+    return f"{sha(left)}{sep}{sha(right)}"
 
 
 def copy_tree(root: pathlib.Path, sha: str, tmp: pathlib.Path) -> pathlib.Path:
@@ -554,6 +567,16 @@ def scan(path: pathlib.Path, lines: set[int], source: str | None = None,
     if tree is None:
         return ScanReport([], unparsed=why)
     rel = rel if rel is not None else path.name
+    try:
+        return _scan_tree(tree, path, lines, rel)
+    except PARSE_ERRORS as e:
+        # Обход и канон рекурсивны: разобравшийся, но слишком глубокий файл —
+        # «не прочитан», а не трассировка до первой записи фактов (выходной круг 1
+        # по №469, Sonnet M1)
+        return ScanReport([], unparsed=f"{type(e).__name__}: {e}")
+
+
+def _scan_tree(tree: ast.Module, path: pathlib.Path, lines: set[int], rel: str) -> ScanReport:
     consts = _module_constants(tree)
     report = ScanReport([], lines_constant=len(lines & consts))
     lines = lines - consts
@@ -1076,6 +1099,14 @@ def _shard_arg(value: str) -> tuple[int, int]:
     return (k, n)
 
 
+def _resume_arg(value: str) -> str:
+    """`--resume КЛЮЧ` — 16 шестнадцатеричных знаков, как печатает прогон: ключ идёт
+    в имя файла и в глоб журнала, `*` или `../` читали бы чужое (Sonnet M4)."""
+    if not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise argparse.ArgumentTypeError(f"{value!r}: ключ прогона — 16 знаков 0-9a-f")
+    return value
+
+
 #: Потолок `--jobs`. Замер №444 B (27.09, машина владельца): четыре доли разом на
 #: одном `.git` — 59 с против 193 с последовательно (3,3×), выживших 0 = 0; четыре
 #: полных pytest разом — 266–274 с против 253 с у одного. Потолок прогона мутанта —
@@ -1154,11 +1185,19 @@ def write_artifacts(report: pathlib.Path | None, text: str, f: Facts, rc: int) -
     if not report:
         return
     report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(text + "\n", encoding="utf-8")
-    machine = shard_line_path(report)
-    machine.write_text(json.dumps({"v": FACTS_VERSION, **dataclasses.asdict(f),
-                                   "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n",
-                       encoding="utf-8")
+    _replace_text(report, text + "\n")
+    _replace_text(shard_line_path(report),
+                  json.dumps({"v": FACTS_VERSION, **dataclasses.asdict(f),
+                              "word": exit_codes.outcome(rc)}, ensure_ascii=False) + "\n")
+
+
+def _replace_text(path: pathlib.Path, text: str) -> None:
+    """Запись целиком или никак: остановка между усечением и записью оставляла
+    пустой файл фактов, и судья читал его как нечитаемый (выходной круг 1 по №469,
+    Sonnet M2)."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _shard_rows(directory: pathlib.Path) -> tuple[list[Facts], str]:
@@ -1175,7 +1214,9 @@ def _shard_rows(directory: pathlib.Path) -> tuple[list[Facts], str]:
     for path in sorted(directory.rglob("*" + SHARD_LINE_SUFFIX)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("v") != FACTS_VERSION:
+            # Версия и ПОЛНЫЙ набор полей: у `Facts` все поля с умолчаниями, и строка
+            # без `survivors` читалась бы как чистая (выходной круг 1 по №469, Sonnet M3)
+            if data.get("v") != FACTS_VERSION or not names <= set(data):
                 raise ValueError("формат")
             rows.append(Facts(**{k: v for k, v in data.items() if k in names}))
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -1404,6 +1445,13 @@ def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int
     if args.shard is not None:
         print(SHARE_REFUSED)
         return 2
+    # Журнал продолжения — до долей: иначе каждая доля отказывала бы в своём
+    # журнале, а родитель печатал «ни одного файла шарда» вместо причины (выходной
+    # круг 1 по №469, Sonnet I4). Ключ выборки сверяют сами доли; их отказ — ниже.
+    if args.resume and not journal_read(data_root, args.resume)[0]:
+        print(f"подготовка не удалась: журнал прогона {args.resume} не найден или истёк "
+              f"(ретеншн logs/) — запусти прогон без --resume")
+        return 1
     import busy_signals  # noqa: E402
     lock = busy_signals.MutationLock(data_root)
     if not lock.acquire():
@@ -1448,6 +1496,13 @@ def run_jobs(args: argparse.Namespace, rng: str, data_root: pathlib.Path) -> int
     finally:
         lock.release()
     code = merge_shards(logs, args.report)
+    # Отказ подготовки доли (чужой ключ, копия не собралась) живёт в её журнале —
+    # поднять его в вывод родителя, а не оставить только «шарды не покрыли план»
+    for k in range(1, len(procs) + 1):
+        with contextlib.suppress(OSError):
+            for line in (logs / f"{k}.log").read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("подготовка не удалась"):
+                    print(f"  доля {k}: {line}")
     for k, p in enumerate(procs, 1):
         print(f"  доля {k}: код {p.returncode}, журнал {logs / f'{k}.log'}, "
               f"отчёт {logs / f'{k}.txt'}")
@@ -1481,7 +1536,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "--max и сводит их --merge-shards. Параллельные прогоны разрешены: "
                          "замок мутатора разделяемый, а четыре доли на одном .git нашли "
                          "тех же выживших втрое быстрее (замер №444 B)")
-    ap.add_argument("--resume", default=None, metavar="КЛЮЧ",
+    ap.add_argument("--resume", type=_resume_arg, default=None, metavar="КЛЮЧ",
                     help="продолжить прерванный прогон: судить только мутантов, которых "
                          "нет в журнале рассуждённых logs/mutation_run-<КЛЮЧ>-*.jsonl; "
                          "ключ печатает каждый прогон")

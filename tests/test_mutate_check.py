@@ -2515,3 +2515,83 @@ def test_шарды_разных_выборок_не_сводятся(tmp_path, 
     (tmp_path / "b.json").write_text(json.dumps(_факт(2, 2, 3, 6, "ok", zones="bbb")), encoding="utf-8")
     assert mc.merge_shards(tmp_path) == 1
     assert "разные выборки" in capsys.readouterr().out
+
+
+
+# --- №469, выходной круг 1 -----------------------------------------------------
+
+
+def test_диапазон_с_тремя_точками_берёт_общего_предка(tmp_path):
+    """`A...B` разрешается в merge-base: сдвиг кончика A (новый коммит в main после
+    fetch или между стартами шардов CI) не меняет ни ключа прогона, ни фактов
+    (выходной круг 1 по №469, Sonnet I1)."""
+    repo = _git_repo(tmp_path, {"src/mod.py": "X = 0\n"})
+    предок = _rev(repo, "HEAD")
+    subprocess.run(["git", "checkout", "-qb", "ветка"], cwd=repo, check=True)
+    (repo / "src" / "mod.py").write_text("def f(a):\n    return a > 1\n", encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "правка"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "-"], cwd=repo, check=True)
+    главная = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    было = mc.resolve_range(repo, f"{главная}...ветка")
+    (repo / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run([*_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*_GIT, "commit", "-qm", "main ушла вперёд"], cwd=repo, check=True)
+    стало = mc.resolve_range(repo, f"{главная}...ветка")
+    assert было == стало and было.startswith(предок + "...")
+    # две точки — как написано: там левый конец и есть база диффа
+    assert mc.resolve_range(repo, f"{главная}..ветка").split("..")[0] == _rev(repo, главная)
+
+
+def test_слишком_глубокий_файл_не_прочитан_а_не_трассировка(tmp_path, monkeypatch):
+    """Обход и канон рекурсивны: `RecursionError` на разобравшемся файле — «не
+    прочитан» с причиной (выходной круг 1 по №469, Sonnet M1)."""
+    def глубоко(node):
+        raise RecursionError("maximum recursion depth exceeded")
+    monkeypatch.setattr(mc, "canon", глубоко)
+    f = tmp_path / "m.py"
+    report = mc.scan(f, {2}, "def f(a):\n    return a > 1\n", rel="src/m.py")
+    assert report.mutations == [] and report.unparsed.startswith("RecursionError"), report
+
+
+def test_факты_без_поля_не_читаются_как_чистые(tmp_path, capsys):
+    """Строка версии 2 без `survivors` — нечитаемая, а не «шарды чисты» (Sonnet M3)."""
+    строка = _факт(1, 1, 3, 3, "ok")
+    del строка["survivors"]
+    (tmp_path / "r.json").write_text(json.dumps(строка), encoding="utf-8")
+    assert mc.merge_shards(tmp_path) == 1
+    assert "нечитаемый файл шарда" in capsys.readouterr().out
+
+
+def test_факты_пишутся_целиком_без_хвостов(tmp_path):
+    """Запись через временный файл и `os.replace`: рядом с отчётом не остаётся
+    ничего, кроме отчёта и фактов (Sonnet M2)."""
+    отчёт = tmp_path / "артефакты" / "отчёт.txt"
+    mc.write_artifacts(отчёт, "текст", mc.Facts(M=1, P=1, tested=1), 0)
+    mc.write_artifacts(отчёт, "текст 2", mc.Facts(M=1, P=1, tested=1), 0)
+    assert sorted(p.name for p in отчёт.parent.iterdir()) == ["отчёт.txt", "отчёт.txt.json"]
+    assert отчёт.read_text(encoding="utf-8") == "текст 2\n"
+
+
+def test_ключ_продолжения_проверяется_разбором():
+    """`--resume` — ровно 16 знаков 0-9a-f: `*` и `../` читали бы чужие журналы (Sonnet M4)."""
+    import argparse
+    assert mc._resume_arg("0123456789abcdef") == "0123456789abcdef"
+    for bad in ("*", "../x", "0123456789ABCDEF", "0123456789abcde"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc._resume_arg(bad)
+
+
+def test_родитель_jobs_называет_причину_отказа_продолжения(tmp_path, monkeypatch, capsys):
+    """`--jobs 2 --resume <ключ без журнала>` — отказ родителя с причиной до долей,
+    а не «ни одного файла шарда» (выходной круг 1 по №469, Sonnet I4)."""
+    repo = _репо_с_правкой(tmp_path)
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    _quiet_machine(monkeypatch)
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(mc, "child_argv", lambda *a, **kw: pytest.fail("доли не запускаются"))
+    assert mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--jobs", "2", "--force",
+                    "--resume", "0123456789abcdef"]) == 1
+    assert "журнал прогона 0123456789abcdef не найден или истёк" in capsys.readouterr().out
