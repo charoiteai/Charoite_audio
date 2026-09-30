@@ -35,11 +35,15 @@ SHORT_MARKER = 4
 MAINTAINER_EMAIL = "charoiteai@gmail.com"
 
 
+def default_markers_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".config" / "charoite" / "private_markers.txt"
+
+
 def markers_path() -> pathlib.Path:
     env = os.environ.get("CHAROITE_MARKERS")
     if env:
         return pathlib.Path(env)
-    return pathlib.Path.home() / ".config" / "charoite" / "private_markers.txt"
+    return default_markers_path()
 
 
 def load_markers(path: pathlib.Path) -> list[str]:
@@ -174,7 +178,8 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
 _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _HUNK = re.compile(r"^(@+) .*?\+(\d+)(?:,\d+)? @+")
 # Содержимое медиа не читается (двоичное, большое); их ИМЕНА проверяются.
-_MEDIA_EXCLUDE = tuple(f":(exclude,glob,icase)**/*{s}" for s in sorted(SKIP_SUFFIX))
+# Pathspec — от корня репозитория (`top`), а не от текущего каталога.
+_MEDIA_EXCLUDE = tuple(f":(top,exclude,glob,icase)**/*{s}" for s in sorted(SKIP_SUFFIX))
 
 
 def _unquote_path(raw: str) -> str:
@@ -215,7 +220,7 @@ def added_lines(revs: list[str]) -> Iterator[tuple[str, str, int, str]]:
     """
     out = git("log", "--format=%x01%H", "-p", "-U0", "--cc", "--text", "--no-renames",
               "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
-              "--no-show-signature", *revs, "--", ".", *_MEDIA_EXCLUDE)
+              "--no-show-signature", *revs, "--", ":(top)", *_MEDIA_EXCLUDE)
     sha = path = None
     mode = ""
     parents = 1
@@ -433,7 +438,23 @@ def hooks_dir() -> pathlib.Path:
                         .decode().strip())
 
 
+def canonical_guard() -> pathlib.Path:
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
+    return pathlib.Path(common).parent / "scripts" / "check_private_markers.py"
+
+
 def pre_push_problem() -> str | None:
+    """Почему push уйдёт мимо стража; None — хук на месте или ставить его рано.
+
+    Рано — пока страж основного checkout не знает `--pre-push` (до мержа и pull):
+    такой хук отказал бы каждому push. После pull проверка включается сама.
+    """
+    try:
+        canon = canonical_guard().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        canon = ""
+    if "--pre-push" not in canon:
+        return None
     hook = hooks_dir() / "pre-push"
     if not hook.is_file():
         return f"нет хука pre-push ({hook})"
@@ -617,11 +638,11 @@ def _run(a: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
-    # Проверка установки pre-push — только на машине владельца со списком по
-    # умолчанию: тесты с подставным списком её не будят, а CI списка не имеет.
-    # Push без хука публикует мимо стража молча; коммит — место, где владелец
-    # точно проходит (№541).
-    if not os.environ.get("CHAROITE_MARKERS"):
+    # Проверка установки pre-push — на машине владельца, то есть там, где лежит
+    # список по умолчанию; ни CHAROITE_MARKERS, ни CI её не выключают (тесты
+    # изолируют HOME). Push без хука публикует мимо стража молча; коммит —
+    # место, где владелец точно проходит (№541).
+    if default_markers_path().exists():
         problem = pre_push_problem()
         if problem:
             print(f"❌ {problem}: push уйдёт мимо стража. В основном checkout на main: "

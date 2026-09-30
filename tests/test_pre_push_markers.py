@@ -197,6 +197,15 @@ def test_evil_merge_line_is_caught_but_parent_lines_are_not_repeated(repo):
     assert lines == [f"{merge[:9]} main.md:3: приватный маркер"], p.stderr
 
 
+def test_range_from_a_subdirectory_still_sees_the_whole_commit(repo):
+    """Pathspec стража — от корня репозитория, не от текущего каталога."""
+    repo.write("docs/x.md", "чисто\n")
+    repo.write("top.md", f"{MARKER}\n")
+    repo.commit("sub")
+    p = guard_run(repo.work / "docs", "--range", f"{repo.base}..HEAD", env=repo.env)
+    assert p.returncode == 1 and "top.md:1: приватный маркер" in p.stderr, p.stdout + p.stderr
+
+
 def test_git_error_is_a_refusal_not_a_clean_pass(repo):
     p = guard_run(repo.work, "--range", "deadbeef..HEAD", env=repo.env)
     assert p.returncode == 1
@@ -380,6 +389,31 @@ def test_commit_is_refused_while_the_pre_push_hook_is_missing(repo, ci):
     assert p.returncode != 0 and "не зовёт страж" in p.stderr, p.stderr
     assert guard_run(repo.work, "--install-hooks", "--force", env=env).returncode == 0
     p = git(repo.work, "commit", "-q", "-m", "a", env=env, check=False)
+    assert p.returncode == 0, p.stderr
+
+
+def test_markers_env_does_not_switch_the_install_check_off(repo):
+    """CHAROITE_MARKERS — путь к списку, а не выключатель сверки установки."""
+    repo.install()
+    hooks = repo.work / ".git" / "hooks"
+    (hooks / "pre-push").unlink()
+    env = _owner_env(repo, CHAROITE_MARKERS=str(repo.tmp / "markers.txt"))
+    repo.write("a.md", "раз\n")
+    git(repo.work, "add", "-A", env=env)
+    p = git(repo.work, "commit", "-q", "-m", "a", env=env, check=False)
+    assert p.returncode != 0 and "нет хука pre-push" in p.stderr, p.stdout + p.stderr
+
+
+def test_no_install_check_before_the_canonical_guard_knows_pre_push(repo):
+    """До мержа и pull основного checkout хук ставить рано — коммиты не отказываются."""
+    repo.install()
+    (repo.work / ".git" / "hooks" / "pre-push").unlink()
+    canon = repo.work / "scripts" / "check_private_markers.py"
+    canon.write_text(canon.read_text(encoding="utf-8").replace("--pre-push", "--pre-pusk"),
+                     encoding="utf-8")
+    env = _owner_env(repo)
+    p = subprocess.run([sys.executable, str(SCRIPT)], cwd=repo.work, env=env,
+                       capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
 
 
