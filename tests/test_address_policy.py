@@ -113,6 +113,53 @@ def test_a_mapped_public_address_is_not_own_network_on_any_python():
     assert address_policy._ip_private(OldStdlibMapped()) is False
 
 
+def test_remote_is_refused_by_default():
+    """Умолчание `allow_remote` — «нет»: вызов без аргумента не разрешает чужой адрес."""
+    for url in ("https://api.example.com", "http://192.168.1.20:11434"):
+        with pytest.raises(AddressRefused) as e:
+            guard_model_url(url)
+        assert e.value.kind == "remote"
+
+
+def test_no_host_is_not_own_network():
+    for host in (None, ""):
+        assert address_policy.is_private_host(host) is False
+    with pytest.raises(AddressRefused):        # «http:///x» — authority пуста: не своя сеть
+        guard_model_url("http:///api", allow_remote=True)
+
+
+def test_own_network_answers_are_strict_booleans(monkeypatch):
+    """Предикат отвечает `True`/`False`, а не «что-то ложное»: ответ уходит в условия
+    потребителей, и `None` там однажды станет «не проверено»."""
+    assert address_policy.is_private_host("llm.example.com") is False       # имя с точкой вне домашних
+    assert address_policy.is_private_host("studio") is False                # не резолвится (autouse)
+    assert address_policy._resolves_private("studio") is False
+
+
+def test_a_resolver_answer_that_is_not_an_address_is_not_own_network(monkeypatch):
+    monkeypatch.setattr(address_policy.socket, "getaddrinfo",
+                        lambda *a, **k: [(2, 1, 6, "", ("не-адрес", 0))])
+    address_policy._resolves_private.cache_clear()
+    assert address_policy._resolves_private("studio") is False
+    with pytest.raises(AddressRefused) as e:
+        guard_model_url("http://studio:11434", allow_remote=True)
+    assert e.value.kind == "cleartext"
+
+
+def test_a_name_is_resolved_once_per_process(monkeypatch):
+    """Кэш резолва: сборка векторизатора не ходит в DNS заново на каждый вызов."""
+    asked = []
+
+    def getaddrinfo(host, *a, **k):
+        asked.append(host)
+        return [(2, 1, 6, "", ("192.168.1.7", 0))]
+    monkeypatch.setattr(address_policy.socket, "getaddrinfo", getaddrinfo)
+    address_policy._resolves_private.cache_clear()
+    for _ in range(3):
+        guard_model_url("http://studio:11434", allow_remote=True)
+    assert asked == ["studio"]
+
+
 def test_unknown_kind_is_a_wiring_error():
     with pytest.raises(ValueError, match="неизвестный вид"):
         AddressRefused("другое", "http://x")
@@ -255,7 +302,8 @@ def _search(tmp_path, *flags):
 def test_cli_refuses_another_machine_and_names_the_flag(tmp_path, capsys):
     code = _search(tmp_path, "--model-url", "https://api.example.com")
     err = capsys.readouterr().err
-    assert code == cli.EXIT_USAGE and "--allow-remote" in err and "api.example.com" in err
+    expected = f"charoite-graph: {AddressRefused('remote', 'https://api.example.com')} — разрешите флагом --allow-remote"
+    assert code == cli.EXIT_USAGE and err.strip() == expected
     assert "allow_remote" not in err.replace("--allow-remote", ""), "слово библиотеки вместо флага команды"
     assert not (tmp_path / "к").exists()
 
