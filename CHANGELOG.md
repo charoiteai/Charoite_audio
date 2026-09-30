@@ -5,6 +5,23 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.0](https://github.com/charoiteai/Charoite_audio/compare/v0.90.0...v0.91.0) (2026-09-30)
+
+
+### Features
+
+* **diarize:** replay recordings through the Nemotron shadow, check its journal and measure the child's memory ([#478](https://github.com/charoiteai/Charoite_audio/issues/478)) ([#706](https://github.com/charoiteai/Charoite_audio/issues/706)) ([e53ec04](https://github.com/charoiteai/Charoite_audio/commit/e53ec040ae003a5ecfb7a7a0c846361695353b09))
+* **graph:** one model-address policy for the package factory and the app ([#522](https://github.com/charoiteai/Charoite_audio/issues/522)) ([#700](https://github.com/charoiteai/Charoite_audio/issues/700)) ([4c1de58](https://github.com/charoiteai/Charoite_audio/commit/4c1de580a51c2c12766109129ac355f04ce013b3))
+* **markers:** pre-push gate judges every outgoing commit ([#541](https://github.com/charoiteai/Charoite_audio/issues/541)) ([#702](https://github.com/charoiteai/Charoite_audio/issues/702)) ([734f4af](https://github.com/charoiteai/Charoite_audio/commit/734f4afa9c799dec779b4efb65784a4af9693fb0))
+
+
+### Bug Fixes
+
+* **diarize:** speech of a voice candidate with no free slot reaches live STT ([#571](https://github.com/charoiteai/Charoite_audio/issues/571)) ([#707](https://github.com/charoiteai/Charoite_audio/issues/707)) ([893d177](https://github.com/charoiteai/Charoite_audio/commit/893d1771647bf25ea4830541ccf5671a1c34130d))
+* **nemotron:** the audio thread never waits on shadow I/O and its child dies with the daemon ([#533](https://github.com/charoiteai/Charoite_audio/issues/533)) ([#701](https://github.com/charoiteai/Charoite_audio/issues/701)) ([441fbee](https://github.com/charoiteai/Charoite_audio/commit/441fbee2b1b09419610b96042a97ad413931647f))
+* **rebuild:** an in-room meeting hints the mic as an upper bound and never names a collapsed label ([#705](https://github.com/charoiteai/Charoite_audio/issues/705)) ([ff208b3](https://github.com/charoiteai/Charoite_audio/commit/ff208b3ab9d706ece26a5bee10f8350a248cb672))
+* **review:** the name-fix section tells the model its lines apply in one pass ([#704](https://github.com/charoiteai/Charoite_audio/issues/704)) ([fde3a6e](https://github.com/charoiteai/Charoite_audio/commit/fde3a6ee61a181a291a542cf7c270c211df5df1d))
+
 ## [0.90.0](https://github.com/charoiteai/Charoite_audio/compare/v0.89.0...v0.90.0) (2026-09-30)
 
 
