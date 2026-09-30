@@ -13,6 +13,7 @@ import math
 import pathlib
 import sys
 import threading
+import time
 import types
 import wave
 
@@ -520,6 +521,9 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
         return _Child(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
 
     monkeypatch.setattr(fp, "spawn_stream", door)
+    stops = []
+    real_stop = ln.Shadow.stop
+    monkeypatch.setattr(ln.Shadow, "stop", lambda self, grace=None: stops.append(grace) or real_stop(self, grace))
     out = rp.CACHE_BASE / stamp / "run"
     (rp.CACHE_BASE / "2025-01-01_100000" / "run").mkdir(parents=True)     # запись забыта
     rp.mark_owner(rp.CACHE_BASE / "2025-01-01_100000", data / "rec")
@@ -545,6 +549,10 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     # фронт отстаёт от поданного на буфер 1,04 с, чанк ждёт до шага сверху
     assert all(LAG / SR <= x <= (LAG + STEP) / SR + 1e-9 for x in lag["_values"])
     tracker = [json.loads(x) for x in (out / "tracker.jsonl").read_text().splitlines()]
+    assert [t["chunk"] for t in tracker] == list(range(len(tracker))), "номер среза канала, не метка"
+    assert (out / "meta.json").read_text(encoding="utf-8").startswith('{\n "')
+    assert meta["handshake_s"] < 60 and meta["wall_s"] < 60 and meta["speed_x"] > 1
+    assert [g for g in stops if g is not None] == [rp.END_WAIT_S], "штатный конец — одна остановка с отсрочкой на хвост"
     assert {t["path"] for t in tracker} == {"whole"}
     assert all(t["end"] - t["start"] == 3 * SR for t in tracker)
     timing = [json.loads(x) for x in (out / "timing.jsonl").read_text().splitlines()]
@@ -760,7 +768,7 @@ def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monke
         "stamp": stamp, "journal": f"logs/nemotron_live_{stamp}.jsonl", "sr": 16000})
     assert rp.main(["2026-01-01_100000", "--cache-limit-mb", "512"]) == 0
     out = capsys.readouterr().out
-    assert json.loads(out) == {"sr": 16000} and seen["cache_limit_mb"] == 512, (
+    assert out.startswith('{\n "') and json.loads(out) == {"sr": 16000} and seen["cache_limit_mb"] == 512, (
         "финальный Opus, M4: сводка — агрегаты, без штампа и путей")
     assert seen["out"].parent.name == "2026-01-01_100000"
     assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
@@ -917,3 +925,205 @@ def test_a_missing_channel_is_named_by_its_label_not_by_the_meeting_file(tmp_pat
     with pytest.raises(rp.Refused) as e:
         rp.replay(stamp, data_root=data, out=rp.CACHE_BASE / stamp / "run", say=lambda s: None)
     assert str(e.value) == "нет записей каналов: mic"
+
+
+# ------------------------------------------------------------------ вердикт мутаций CI на #706
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 100.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
+def test_wait_for_polls_until_done_or_the_deadline_by_the_given_clock():
+    c = _Clock()
+    assert rp.wait_for(lambda: True, 5.0, poll=1.0, clock=c, sleep=c.sleep) is True and c.sleeps == []
+    c = _Clock()
+    assert rp.wait_for(lambda: False, 3.0, poll=1.0, clock=c, sleep=c.sleep) is False
+    assert c.sleeps == [1.0, 1.0, 1.0], "дедлайн включительно: на 3-й секунде — сдались"
+    c = _Clock()
+    calls = iter([False, False, True])
+    assert rp.wait_for(lambda: next(calls), 10.0, poll=0.5, clock=c, sleep=c.sleep) is True
+    assert c.sleeps == [0.5, 0.5]
+
+
+def test_the_replay_waits_are_longer_than_what_the_shadow_itself_allows():
+    assert rp.HANDSHAKE_WAIT_S > ln.HANDSHAKE_S, "тень бросает рукопожатие сама, прогон её переждёт"
+    assert rp.ABORT_WAIT_S > rp.ABORT_GRACE_S
+
+
+def test_pacing_feeds_within_the_lead_waits_beyond_it_and_calls_a_silent_child_stalled():
+    assert rp.pacing(130, 30, 60, 40, now=0.0, front_at=0.0) == (rp.FEED, 0), "ровно запас — подаём"
+    assert rp.pacing(131, 30, 60, 40, now=0.0, front_at=0.0) == (rp.WAIT, 61)
+    assert rp.pacing(131, 30, 60, 40, now=rp.STALL_S, front_at=0.0) == (rp.WAIT, 61), "ровно предел — ещё ждём"
+    assert rp.pacing(131, 30, 60, 40, now=rp.STALL_S + 1, front_at=1.0) == (rp.WAIT, 61)
+    assert rp.pacing(131, 30, 60, 40, now=rp.STALL_S + 2, front_at=1.0) == (rp.STALL, 0)
+    assert rp.pacing(40, 30, 0, 40, now=1e9, front_at=0.0) == (rp.FEED, 0), "в запасе простой не судится"
+
+
+def test_run_numbers_are_rounded_to_a_tenth_and_speed_is_audio_over_wall():
+    got = rp.run_numbers(SR * 25 + 800, 4800, SR, handshake_s=3.26, feed_wall=2.44)
+    assert got == {"audio_s": 25.1, "start0": 4800, "fed_to_shadow": SR * 25 + 800 - 4800,
+                   "handshake_s": 3.3, "wall_s": 2.4, "speed_x": 10.1}
+    assert rp.run_numbers(SR, 0, SR, 0.0, 0.0)["speed_x"] is None
+
+
+def test_check_cuts_refuses_channels_out_of_step_or_off_the_hub_formula():
+    rp.check_cuts({"blackhole": 5, "mic": 5}, 5)
+    for cuts, expect in (({"blackhole": 5, "mic": 4}, 5), ({"blackhole": 4, "mic": 5}, 4),
+                         ({"blackhole": 4, "mic": 4}, 5)):
+        with pytest.raises(rp.Refused, match="разошлись"):
+            rp.check_cuts(cuts, expect)
+
+
+def test_replay_config_turns_the_shadow_on_and_the_hub_recording_off_on_a_copy():
+    owner = {"audio": {"record": True, "samplerate": SR}, "sufler": {"live_nemotron": "off"}}
+    got = rp.replay_config(owner, ln.SHADOW)
+    assert got["audio"] == {"record": False, "samplerate": SR} and got["sufler"]["live_nemotron"] == ln.SHADOW
+    assert owner["audio"]["record"] is True, "конфиг владельца не меняется"
+    assert rp.replay_config({}, ln.SHADOW) == {"sufler": {"live_nemotron": ln.SHADOW}, "audio": {"record": False}}
+
+
+def test_the_witness_stamps_rows_by_its_clock_to_the_microsecond_and_marks_the_final(tmp_path):
+    w = rp.Witness(tmp_path / "t.jsonl", clock=lambda: 12.34567891)
+    w.wrote(10)
+    w.front({"type": "front", "fed": 5, "final": True})
+    w.close()
+    rows = [json.loads(x) for x in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert [r["t"] for r in rows] == [12.345679, 12.345679]
+    assert rows[1]["final"] is True
+
+
+def test_unlink_links_is_quiet_when_there_are_no_links(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    rp.unlink_links(run)
+    assert list(run.iterdir()) == []
+
+
+def test_the_default_voice_of_the_replay_is_stderr_flushed(monkeypatch):
+    seen = []
+    monkeypatch.setattr(rp, "print", lambda *a, **kw: seen.append((a, kw)), raising=False)
+    rp._stderr("x")
+    assert seen == [(("x",), {"file": sys.stderr, "flush": True})]
+
+
+def test_a_refused_channel_is_named_by_the_label_after_the_last_underscore(tmp_path):
+    p = tmp_path / "2026-01-01_100000_mic.wav"
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(b"\0" * 40)
+    with pytest.raises(rp.Refused, match=r"^канал mic: "):
+        rp.read_channel(p, SR)
+
+
+def test_the_tracker_step_is_the_hub_step_with_a_floor():
+    assert diarize_live.tracker_step_s(3.0, 0.5) == 2.5
+    assert diarize_live.tracker_step_s(0.6, 0.3) == diarize_live.MIN_STEP_S
+
+
+def test_quantiles_take_the_nearest_rank():
+    q = chk.quantiles([4.0, 1.0, 3.0, 2.0])
+    assert q == {"n": 4, "p50": 2.0, "p90": 4.0, "p95": 4.0, "max": 4.0}
+    assert chk.quantiles([float(x) for x in range(1, 11)])["p50"] == 5.0
+    assert chk.quantiles([0.12345]) == {"n": 1, "p50": 0.123, "p90": 0.123, "p95": 0.123, "max": 0.123}
+
+
+def test_memory_reports_how_long_the_shadow_lived_to_a_tenth():
+    lines = journal_lines(chunk_ends=[START0 + 64000])
+    objs = [json.loads(x) for x in lines]
+    objs[-1]["t"] = 12.34
+    assert chk.memory(chk.read_journal([json.dumps(o) for o in objs]))["lived_s"] == 12.3
+
+
+def test_overlap_matrix_skips_empty_intervals_refuses_inverted_ones_and_empty_windows():
+    assert chk.overlap_matrix([(1.0, 1.0, "s"), (0.0, 2.0, "t")], [(0.0, 2.0, "A")]) == {("t", "A"): 2.0}
+    with pytest.raises(chk.Refused, match="наоборот"):
+        chk.overlap_matrix([(2.0, 1.0, "s")], [])
+    assert chk.overlap_matrix([(0.0, 10.0, "s")], [(0.0, 10.0, "A")], lo=10.0, hi=20.0) == {}
+
+
+def test_windows_cover_the_meeting_with_a_trimmed_last_window():
+    assert list(chk.windows(125.0, 60.0)) == [(0.0, 60.0), (60.0, 120.0), (120.0, 125.0)]
+    assert list(chk.windows(120.0, 60.0)) == [(0.0, 60.0), (60.0, 120.0)]
+    assert list(chk.windows(0.0, 60.0)) == []
+
+
+def test_prefix_mapping_reports_the_judged_seconds_to_a_tenth():
+    a = [(0.0, 60.0, "s"), (60.0, 90.25, "s")]
+    b = [(0.0, 60.0, "A"), (60.0, 90.25, "A")]
+    got = chk.prefix_mapping(a, b, total=90.25, window=60.0)
+    assert got == {"oracle_upper_bound": 1.0, "seconds": 30.2}
+
+
+def test_the_check_cli_prints_readable_cyrillic_with_a_one_space_indent(tmp_path, capsys):
+    path = tmp_path / "j.jsonl"
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000])), encoding="utf-8")
+    final = tmp_path / "final.json"
+    final.write_text(json.dumps({"duration_s": 20.0, "segments": [[0.3, 1.0, "x"]]}), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith('{\n "') and chk.NONE in out, "не \\u2014, а сам знак"
+    path.write_text("\n".join(journal_lines(chunk_ends=[START0 + 64000], exit_="failed")), encoding="utf-8")
+    assert chk.main([str(path), "--final", str(final)]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith('{\n "') and "\\u" not in out and any("а" <= ch <= "я" for ch in out), (
+        "причина отказа — кириллицей, не \\u-кодами")
+
+
+class _SlowTail(_Child):
+    """Ребёнок, дорабатывающий хвост очереди полторы секунды после закрытия входа — дольше,
+    чем `close` тени ждёт до убийства."""
+
+    killed = False
+
+    closing = False
+
+    def close_input(self):
+        if self.closing:
+            return
+        self.closing = True
+
+        def later():
+            time.sleep(1.5)
+            self._alive = False
+            if not self.killed:
+                self.fed += self.buf
+                self.buf = 0
+                self.on_message({"type": "front", "fed": self.fed, "frames": self.fed // HOP, "final": True})
+            self.on_eof()
+        threading.Thread(target=later, daemon=True).start()
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+
+    kill_nowait = kill
+
+
+def test_the_replay_waits_for_the_tail_of_the_queue_before_closing_the_shadow(tmp_path, monkeypatch):
+    """Вердикт мутаций CI на #706: `close` тени ждёт секунду и убивает; хвост очереди
+    ребёнок дорабатывает дольше — прогон ждёт конца тени до `close`, иначе журнал брак."""
+    data, stamp = _replay_data(tmp_path)
+    monkeypatch.setattr(diarize_live, "SegmentTracker", lambda *a, **k: _Tracker(diarize_live.SplitResult(None, 1)))
+    ready = {"type": "ready", "proto": dn.STREAM_PROTO, "sr": SR, "preset": "low",
+             "frame_s": HOP / SR, "step": STEP}
+
+    def door(python, script, args, *, on_message, on_eof, **kw):
+        return _SlowTail(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
+
+    monkeypatch.setattr(fp, "spawn_stream", door)
+    out = rp.CACHE_BASE / stamp / "run"
+    meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
+    j = chk.read_journal((out / meta["journal"]).read_text(encoding="utf-8").splitlines())
+    assert j.end["exit"] == "ok" and "killed_at_close" not in j.end["counts"], j.end

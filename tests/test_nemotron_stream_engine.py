@@ -347,3 +347,31 @@ def test_a_cache_limit_without_mlx_is_the_engine_unavailable_code(monkeypatch, c
     assert dn.serve_stream(pathlib.Path("/m"), "low", read=lambda n: b"", cache_limit_mb=512) == \
         EXIT_ENGINE_UNAVAILABLE
     assert proto.getvalue() == "" and "лимит кэша" in capsys.readouterr().err
+
+
+def test_phys_footprint_reads_the_v0_struct_at_its_offset_through_libc(monkeypatch):
+    """Вердикт мутаций CI на #706: на Linux настоящего `proc_pid_rusage` нет — подставная
+    libc пишет след на смещение поля в 96-байтовой структуре V0 (16 байт uuid + 7 × uint64)."""
+    import ctypes
+    import ctypes.util
+    seen = {}
+
+    class Libc:
+        rc = 0
+
+        def proc_pid_rusage(self, pid, flavor, ref):
+            info = ref._obj
+            seen.update(size=ctypes.sizeof(info), flavor=flavor)
+            value = ctypes.c_uint64(1541 * 2**20)
+            ctypes.memmove(ctypes.addressof(info) + 16 + 7 * 8, ctypes.addressof(value), 8)
+            return self.rc
+
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: "libc-fake")
+    monkeypatch.setattr(ctypes, "CDLL", lambda path: Libc())
+    assert dn._phys_footprint() == 1541 * 2**20
+    assert seen == {"size": 96, "flavor": 0}
+    Libc.rc = -1
+    assert dn._phys_footprint() is None, "ядро отказало — следа нет"
+    Libc.rc = 0
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    assert dn._phys_footprint() is None, "libc не нашлась — следа нет"

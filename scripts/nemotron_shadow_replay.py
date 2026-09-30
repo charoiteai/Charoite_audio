@@ -67,6 +67,19 @@ CLOSE_WAIT_S = 30.0
 ABORT_GRACE_S = 5.0
 #: Ребёнок без фронта дольше этого при исчерпанном запасе подачи — завис, прогон — брак.
 STALL_S = 60.0
+#: Опрос состояния тени, секунды.
+POLL_S = 0.1
+#: Рукопожатие тень бросает сама через `live_nemotron.HANDSHAKE_S` (120 с); прогон ждёт с запасом.
+HANDSHAKE_WAIT_S = 130.0
+#: Отказ посреди прогона: отсрочка ребёнку и запас на строку `end`.
+ABORT_WAIT_S = ABORT_GRACE_S + 5.0
+#: Один заход ожидания фронта при исчерпанном запасе подачи, секунды.
+FED_WAIT_S = 1.0
+#: Знаки после запятой: часы свидетеля и секунды сводки.
+CLOCK_DIGITS = 6
+META_DIGITS = 1
+#: Решение темпа: подавать, ждать фронт, ребёнок завис.
+FEED, WAIT, STALL = "feed", "wait", "stall"
 
 
 class Refused(Exception):
@@ -75,6 +88,56 @@ class Refused(Exception):
 
 #: Единственное место выходов прогона: кэш пользователя, вне данных владельца и кода.
 CACHE_BASE = pathlib.Path(os.path.expanduser("~/Library/Caches/charoite-478b"))
+
+
+def _stderr(s: str) -> None:
+    print(s, file=sys.stderr, flush=True)
+
+
+def wait_for(done, timeout: float, *, poll: float = POLL_S, clock=time.monotonic, sleep=time.sleep) -> bool:
+    """Ждать `done()` не дольше `timeout` секунд с опросом раз в `poll`; дождались ли."""
+    deadline = clock() + timeout
+    while not done():
+        if clock() >= deadline:
+            return False
+        sleep(poll)
+    return True
+
+
+def pacing(pos: int, start0: int, fed: int, lead: int, now: float, front_at: float) -> tuple[str, int]:
+    """Темп подачи: звук подан до `pos`, поток начат с `start0` — ребёнку подано `pos − start0`
+    сэмплов, `fed` он съел, `lead` — запас впереди него.
+    Запас есть — `FEED`; нет — `WAIT` до `fed >= цель`; фронта нет дольше `STALL_S` при
+    исчерпанном запасе — `STALL` (сторож тени зависшего ребёнка не увидит: фронтов нет —
+    нет и проверок)."""
+    ahead = pos - start0
+    if ahead - fed <= lead:
+        return FEED, 0
+    if now - front_at > STALL_S:
+        return STALL, 0
+    return WAIT, ahead - lead
+
+
+def run_numbers(n: int, start0: int, sr: int, handshake_s: float, feed_wall: float) -> dict:
+    """Производные цифры сводки прогона."""
+    return {"audio_s": round(n / sr, META_DIGITS), "start0": start0, "fed_to_shadow": n - start0,
+            "handshake_s": round(handshake_s, META_DIGITS), "wall_s": round(feed_wall, META_DIGITS),
+            "speed_x": round((n - start0) / sr / feed_wall, META_DIGITS) if feed_wall > 0 else None}
+
+
+def check_cuts(cuts: dict[str, int], expect: int) -> None:
+    """Каналы разрезаны в ногу и ровно по формуле хаба — иначе прогон брак."""
+    if len(set(cuts.values())) != 1 or next(iter(cuts.values())) != expect:
+        raise Refused(f"срезов каналов {cuts}, ожидали по {expect}: каналы разошлись")
+
+
+def replay_config(cfg: dict, shadow_mode: str) -> dict:
+    """Копия конфига владельца для прогона: тень включена, запись хаба выключена
+    (прогон записей не пишет, даже при `record: true` у владельца)."""
+    out = copy.deepcopy(cfg)
+    out.setdefault("sufler", {})["live_nemotron"] = shadow_mode
+    out.setdefault("audio", {})["record"] = False
+    return out
 
 
 def default_out(stamp: str) -> pathlib.Path:
@@ -198,14 +261,14 @@ class Witness:
     def wrote(self, samples: int) -> None:
         with self._lock:
             self.sent += samples
-            self._row({"k": "write", "t": round(self._clock(), 6), "sent": self.sent})
+            self._row({"k": "write", "t": round(self._clock(), CLOCK_DIGITS), "sent": self.sent})
 
     def front(self, message: dict) -> None:
         if message.get("type") != "front":
             return
         with self._lock:
             self.fed = int(message.get("fed", self.fed))
-            row = {"k": "front", "t": round(self._clock(), 6), "fed": self.fed}
+            row = {"k": "front", "t": round(self._clock(), CLOCK_DIGITS), "fed": self.fed}
             if message.get("final"):
                 row["final"] = True           # финал — close() модели, не шаг: сверка его не считает
             self._row(row)
@@ -317,13 +380,11 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     import stt_runtime
 
     # штамп встречи в строках тени — только маской: вывод прогона вставляют в отчёты
-    tell = say or (lambda s: print(s, file=sys.stderr, flush=True))
+    tell = say or _stderr
 
     def say(s: str) -> None:
         tell(redact(s, stamp))
-    cfg = copy.deepcopy(config_loader.load_user_or_example(data_root))
-    cfg.setdefault("sufler", {})["live_nemotron"] = live_nemotron.SHADOW
-    cfg.setdefault("audio", {})["record"] = False
+    cfg = replay_config(config_loader.load_user_or_example(data_root), live_nemotron.SHADOW)
     sr = int(cfg["audio"]["samplerate"])
     rec_dir = data_root / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     paths = [meeting_stamp.recording_path(rec_dir, stamp, label, "wav") for label in LABELS]
@@ -344,7 +405,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     captures = [types.SimpleNamespace(label=label) for label in LABELS]
     hub._register_captures(captures)
     tracker = diarize_live.SegmentTracker(seg_model, emb_model, sample_rate=hub.sr,
-                                          step_s=max(0.5, hub.chunk_s - hub.overlap_s))
+                                          step_s=diarize_live.tracker_step_s(hub.chunk_s, hub.overlap_s))
 
     witness = Witness(root / "timing.jsonl")
     original_begin = live_nemotron.Shadow.begin
@@ -391,6 +452,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
                                       "end": int(placed.start) + len(placed.chunk), "state": state,
                                       "path": path, "intervals": intervals}) + "\n")
 
+    dead = lambda: shadow.state == live_nemotron.DEAD  # noqa: E731
     stopped = False
     try:
         pos = 0
@@ -398,31 +460,29 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         while pos < pre:                                  # до рукопожатия: тень ещё не слушает
             feed(pos, min(pre, pos + block))
             pos = min(pre, pos + block)
-        deadline = time.monotonic() + live_nemotron.HANDSHAKE_S + 10
-        while shadow.state == live_nemotron.STARTING and time.monotonic() < deadline:
-            time.sleep(0.1)
+        wait_for(lambda: shadow.state != live_nemotron.STARTING, HANDSHAKE_WAIT_S)
         if shadow.state != live_nemotron.LIVE:
             raise Refused(f"тень не вышла в поток: {shadow.state} ({shadow.reason})")
         # слушатель — после предзвука и рукопожатия: поток начинается ровно с `pre`, как бы
         # быстро ни поднялся ребёнок (в бою начало потока — первый блок после рукопожатия)
         shadow.attach(hub)
-        handshake_s = round(time.monotonic() - t_begin, 1)
+        handshake_s = time.monotonic() - t_begin
         start0 = pos
         lead = int(sr * lead_s)
         n = len(bh)
         t_feed = time.monotonic()
-        last_front = (witness.fed, time.monotonic())
+        last_fed, front_at = witness.fed, t_feed
         while pos < n:
             if shadow.state != live_nemotron.LIVE:
                 raise Refused(f"тень умерла посреди прогона: {shadow.reason}")
-            if witness.fed != last_front[0]:
-                last_front = (witness.fed, time.monotonic())
-            if (pos - start0) - witness.fed > lead:
-                # темп держит очередь ниже её потолка, и сторож тени зависшего ребёнка не
-                # увидит: фронтов нет — нет и проверок; прогон судит простой сам
-                if time.monotonic() - last_front[1] > STALL_S:
-                    raise Refused(f"ребёнок не выдал фронт за {STALL_S:.0f} с при поданном звуке")
-                witness.wait_fed(pos - start0 - lead, timeout=1.0)
+            now = time.monotonic()
+            if witness.fed != last_fed:
+                last_fed, front_at = witness.fed, now
+            step, target = pacing(pos, start0, witness.fed, lead, now, front_at)
+            if step == STALL:
+                raise Refused(f"ребёнок не выдал фронт за {STALL_S:.0f} с при поданном звуке")
+            if step == WAIT:
+                witness.wait_fed(target, timeout=FED_WAIT_S)
                 continue
             feed(pos, min(n, pos + block))
             pos = min(n, pos + block)
@@ -430,36 +490,27 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         # отсрочка убийства — с запасом на хвост очереди: ребёнок, убитый по таймеру, — брак
         # прогона, а не цифры; `close` дописывает журнал (с №533 его пишет своя нить)
         shadow.stop(grace=END_WAIT_S)
-        deadline = time.monotonic() + END_WAIT_S
-        while shadow.state != live_nemotron.DEAD and time.monotonic() < deadline:
-            time.sleep(0.2)
+        wait_for(dead, END_WAIT_S)
         shadow.close(timeout=CLOSE_WAIT_S)
         stopped = True
     finally:
         if not stopped:                  # отказ посреди прогона: ребёнка — остановить, журнал — дописать
             shadow.stop(grace=ABORT_GRACE_S)
-            deadline = time.monotonic() + ABORT_GRACE_S + 5
-            while shadow.state != live_nemotron.DEAD and time.monotonic() < deadline:
-                time.sleep(0.1)
+            wait_for(dead, ABORT_WAIT_S)
             shadow.close(timeout=CLOSE_WAIT_S)
         trk.close()
         witness.close()
         unlink_links(root)
-    cuts = {label: hub.chunk_no.get(label, -1) + 1 for label in LABELS}
     expect = expected_cuts(n, sr, hub.chunk_s, hub.overlap_s)
-    if len(set(cuts.values())) != 1 or cuts[LABELS[0]] != expect:
-        raise Refused(f"срезов каналов {cuts}, ожидали по {expect}: каналы разошлись")
-    if shadow.state != live_nemotron.DEAD:
+    check_cuts({label: hub.chunk_no.get(label, -1) + 1 for label in LABELS}, expect)
+    if not dead():
         raise Refused(f"тень не закончилась за {END_WAIT_S:.0f} с после стопа")
     journal = charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
     ended = end_line(journal)
     if ended.get("exit") != "ok":
         raise Refused(f"тень кончилась не штатно: {ended.get('reason')!r}, exit={ended.get('exit')!r}")
-    meta = {"stamp": stamp, "sr": sr, "audio_s": round(n / sr, 1), "start0": start0,
-            "fed_to_shadow": n - start0, "cuts_per_channel": expect, "chunks": counts,
-            "handshake_s": handshake_s, "wall_s": round(feed_wall, 1),
-            "speed_x": round((n - start0) / sr / feed_wall, 1) if feed_wall > 0 else None,
-            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
+    meta = {"stamp": stamp, "sr": sr, **run_numbers(n, start0, sr, handshake_s, feed_wall),
+            "cuts_per_channel": expect, "chunks": counts, "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
             "journal": str(journal.relative_to(root))}
     (root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta
@@ -493,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"прогон упал: {type(e).__name__}: {redact(str(e), args.stamp)}", file=sys.stderr)
         return 1
     # в сводку — только агрегаты: штамп встречи и домашний путь сюда не попадают (её вставляют в отчёт)
-    print(json.dumps({k: v for k, v in meta.items() if k in PRINTED}, ensure_ascii=False, indent=1))
+    print(json.dumps({k: v for k, v in meta.items() if k in PRINTED}, indent=1))   # только числа
     return 0
 
 

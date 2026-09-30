@@ -321,9 +321,12 @@ def overlap_matrix(a: list[Interval], b: list[Interval], *,
     events: dict[float, list[tuple[int, str, int]]] = collections.defaultdict(list)
     for side, xs in ((0, a), (1, b)):
         for s, e, lab in xs:
-            if e > s:
-                events[s].append((side, lab, 1))
-                events[e].append((side, lab, -1))
+            if e < s:
+                raise Refused(f"отрезок наоборот: {s}..{e}")
+            if e == s:
+                continue                            # пустой отрезок: секунд нет
+            events[s].append((side, lab, 1))
+            events[e].append((side, lab, -1))
     active: tuple[collections.Counter, collections.Counter] = (collections.Counter(), collections.Counter())
     out: dict[tuple[str, str], float] = collections.defaultdict(float)
     xs = sorted(events)
@@ -388,6 +391,14 @@ def fragmentation(m: dict, *, min_s: float = MIN_VOICE_S, share: float = FRAGMEN
             for q, ps in cols.items() if q != NONE and sum(ps.values()) >= min_s}
 
 
+def windows(total: float, window: float):
+    """Окна `[lo, hi)` длиной `window` по встрече длиной `total`; последнее — обрезанное."""
+    k = 0
+    while k * window < total:
+        yield k * window, min(total, (k + 1) * window)
+        k += 1
+
+
 def prefix_mapping(a: list[Interval], b: list[Interval], *, total: float,
                    window: float = WINDOW_S) -> dict:
     """Оракульная верхняя граница соответствия слот → голос: для окна k слот получает голос,
@@ -395,9 +406,7 @@ def prefix_mapping(a: list[Interval], b: list[Interval], *, total: float,
     где слот звучал с назначенным голосом. Вживую финала прошлых окон нет — это потолок."""
     acc = collections.defaultdict(lambda: collections.defaultdict(float))
     hit = seen = 0.0
-    k = 0
-    while k * window < total:
-        lo, hi = k * window, min(total, (k + 1) * window)
+    for lo, hi in windows(total, window):
         m = overlap_matrix(a, b, lo=lo, hi=hi)
         mapping = {p: max(qs, key=qs.get) for p, qs in acc.items() if qs}
         for (p, q), v in m.items():
@@ -408,7 +417,6 @@ def prefix_mapping(a: list[Interval], b: list[Interval], *, total: float,
         for (p, q), v in m.items():
             if p != NONE and q != NONE:
                 acc[p][q] += v
-        k += 1
     return {"oracle_upper_bound": round(hit / seen, 4) if seen else None, "seconds": round(seen, 1)}
 
 
@@ -416,16 +424,14 @@ def windowed_purity(a: list[Interval], b: list[Interval], *, total: float,
                     window: float = WINDOW_S) -> dict:
     """Чистота слотов по окнам — взвешенная секундами слотов в окне."""
     vals = []
-    k = 0
-    while k * window < total:
-        m = overlap_matrix(a, b, lo=k * window, hi=min(total, (k + 1) * window))
+    for lo, hi in windows(total, window):
+        m = overlap_matrix(a, b, lo=lo, hi=hi)
         for p, cols in rows(m).items():
             if p == NONE:
                 continue
             tot = sum(cols.values())
             best = max((v for q, v in cols.items() if q != NONE), default=0.0)
             vals.append((best, tot))
-        k += 1
     tot = sum(t for _, t in vals)
     return {"weighted_purity": round(sum(b for b, _ in vals) / tot, 4) if tot else None}
 
