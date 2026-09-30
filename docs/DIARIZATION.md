@@ -515,8 +515,16 @@ nothing in the transcript (default `off`).
   `seg`, `front`, `mem`, `chunk`, `end` (reason and counters). A reconciliation cuts the
   recording at `start0` into the same blocks.
 - **Stop.** At the end of the meeting, before the post-meeting pass starts,
-  the child gets EOF, flushes its tail and exits; after 5 s it is killed. A
-  shadow that died on the call says so once in the status line.
+  the child gets EOF, flushes its tail and exits; a child still alive after 1 s
+  is killed, well inside the app's 5 s grace before it kills the daemon. The
+  daemon waits for the `end` line last, after the recordings are finalized, and
+  any child still alive when the daemon exits by any path except SIGKILL is
+  killed on the way out. A shadow that died on the call says so once in the
+  status line.
+- **Capture never waits for the shadow.** The shadow's frame listener only
+  updates state under its lock; journal lines, the child-log size check and the
+  memory probe run outside it, so a slow disk under `logs/` delays the journal,
+  not the recording.
 
 ### Your own recording
 

@@ -215,6 +215,20 @@ def nemotron_wiring_problems(source: str) -> list[str]:
             ok_stop = True
     if not ok_stop:
         problems.append("финал main не гасит тень до запуска пересборки (стоп)")
+    # №533: на выходе повисшего ребёнка убивает таймер с отсрочкой выхода, а не штатной 5 с
+    exit_grace = any(_call_name(n) == "nemotron_shadow.stop"
+                     and any(k.arg == "grace" and isinstance(k.value, ast.Attribute)
+                             and k.value.attr == "EXIT_GRACE_S" for k in n.keywords)
+                     for t in final for s in t.finalbody for n in ast.walk(s))
+    if not exit_grace:
+        problems.append("финал main гасит тень без отсрочки выхода EXIT_GRACE_S (отсрочка)")
+    # №533: журнал тени дописывается даже если хаб упал — close в finally вокруг hub.stop
+    closes = any(isinstance(t, ast.Try)
+                 and any(_call_name(n) == "hub.stop" for s in t.body for n in ast.walk(s))
+                 and any(_call_name(n) == "nemotron_shadow.close" for s in t.finalbody for n in ast.walk(s))
+                 for t in ast.walk(main))
+    if not closes:
+        problems.append("финал main не закрывает тень в finally вокруг hub.stop (закрытие)")
     return problems
 
 
@@ -232,7 +246,13 @@ def test_the_daemon_wires_the_nemotron_shadow():
     ('                    tracker_state = "off"', '                    tracker_state = "plain"', "вне набора"),
     ("tracker_state = live_nemotron.diarized_state(split_failed, jobs)", 'tracker_state = "split"', "вне набора"),
     ("        nemotron_shadow.attach(hub)", "        pass", "слушателем"),
-    ("        nemotron_shadow.stop()\n        # Пересборка", "        pass\n        # Пересборка", "стоп"),
+    ("        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n        # Пересборка",
+     "        pass\n        # Пересборка", "стоп"),
+    ("        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n        # Пересборка",
+     "        nemotron_shadow.stop()\n        # Пересборка", "отсрочка"),
+    ("            nemotron_shadow.close(live_nemotron.STOP_GRACE_S)", "            pass", "закрытие"),
+    ("        try:\n            hub.stop()  # финализирует", "        hub.stop()\n        try:\n            pass  # финализирует",
+     "закрытие"),
 ])
 def test_the_nemotron_guard_turns_red_on_a_broken_wiring(old, new, says):
     problems = nemotron_wiring_problems(_broken(old, new))

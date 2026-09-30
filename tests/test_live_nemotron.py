@@ -364,9 +364,21 @@ def _shadow(tmp_path, door=None, clock=None, memory=lambda: None):
 
 
 def _live(tmp_path, **kw):
+    """Тень живёт и её нить запуска закончилась: та дописывает журнал в своём finally уже
+    после LIVE, и без ожидания её `_drain` гоняется с проверками теста (№533)."""
     sh, door, says = _shadow(tmp_path, **kw)
     _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
+    for t in threading.enumerate():
+        if t.name == "nemotron-live-start":
+            t.join(5)
     return sh, door, says
+
+
+def _over(sh, tmp_path):
+    """Тень кончилась и её строка `end` уже на диске: журнал дописывает `_drain` вне замка,
+    чуть позже перехода в DEAD (№533)."""
+    path = tmp_path / "live.jsonl"
+    return sh.state == ln.DEAD and path.exists() and '"type": "end"' in path.read_text(encoding="utf-8")
 
 
 def _placed(number, start, n, label="blackhole"):
@@ -483,7 +495,7 @@ def test_stop_while_the_model_loads_cancels_the_handshake(tmp_path):
     _wait(lambda: door.on_eof is not None, what="дверь зовётся")
     sh.note_chunk(_placed(0, 0, SR), "off")
     sh.stop()
-    _wait(lambda: sh.state == ln.DEAD, what="тень закончилась")
+    _wait(lambda: _over(sh, tmp_path), what="тень закончилась")
     assert sh.reason == "остановлен до старта потока" and says == []
     assert [c["outcome"] for c in _chunks(tmp_path / "live.jsonl")] == [ln.BEFORE_STREAM]
 
@@ -534,7 +546,7 @@ def test_a_door_that_raises_kills_the_shadow_with_an_end_line(tmp_path):
     """Исключение вне перечня двери не оставляет тень в «стартует» навсегда: смерть со
     строкой end и строкой человеку (выходной круг 1 по №478 A2, I1)."""
     sh, door, says = _shadow(tmp_path, door=_BrokenDoor())
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "не стартовал" in sh.reason and "дверь сломалась" in sh.reason
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
     _wait(lambda: says, what="строка человеку")
@@ -571,7 +583,8 @@ def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, 
     (мутатор диапазона, 29.09)."""
     monkeypatch.setattr(ln, "ERRLOG_CAP_BYTES", 2**20)
     clock = _Clock()
-    sh, door, _ = _live(tmp_path, clock=clock)
+    probed = []
+    sh, door, _ = _live(tmp_path, clock=clock, memory=lambda: probed.append(1) or None)
     with open(tmp_path / "live.err", "wb") as fh:
         fh.truncate(size)                  # разреженный файл: размер без записи мегабайта
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
@@ -581,6 +594,7 @@ def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, 
         assert sh.state == ln.DEAD and sh.reason == "журнал ребёнка вырос сверх 1 МБ"
     else:
         assert sh.state != ln.DEAD, sh.reason
+        assert probed == [1], "журнал ровно по потолку — память всё равно спрашивается"
         sh.stop()
         door.on_eof()
 
@@ -793,7 +807,7 @@ def test_a_child_with_the_wrong_frame_unit_dies_and_the_journal_names_why(tmp_pa
             break
         hub._consume(cap, voice[pos:pos + 1600])
         hub.pull_placed()
-    _wait(lambda: sh.state == ln.DEAD, timeout=30, what="ребёнок умер на сверке")
+    _wait(lambda: _over(sh, tmp_path), timeout=30, what="ребёнок умер на сверке")
     end = _journal(tmp_path / "live.jsonl")[-1]
     assert end["type"] == "end" and end["exit"] == fp.FAILED
     assert "впереди поданного звука" in end["exit_reason"] and "единица кадра не та" in end["exit_reason"]
@@ -847,7 +861,7 @@ def test_hub_to_child_to_journal_keeps_one_axis(tmp_path, monkeypatch):
         pos += block
         _wait(lambda: sh._queued < 2 * SR, what="ребёнок успевает")
     sh.stop()
-    _wait(lambda: sh.state == ln.DEAD, timeout=30, what="поток закрыт")
+    _wait(lambda: _over(sh, tmp_path), timeout=30, what="поток закрыт")
     assert sh.reason == "остановлен" and says == []
     lines = _journal(tmp_path / "live.jsonl")
     start0 = next(x["start0"] for x in lines if x["type"] == "start")
@@ -971,7 +985,7 @@ def test_a_closed_input_of_the_child_stops_the_shadow_with_the_child_exit(tmp_pa
     door.child.exit = exit_
     sh, door, _ = _live(tmp_path, door=door)
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert sh.reason == f"вход ребёнка закрыт (труба закрыта); ребёнок: {said}"
     end = _end(tmp_path)
     assert end["exit"] == exit_.kind and end.get("exit_reason", "") == exit_.reason
@@ -1181,12 +1195,14 @@ def test_the_journal_keeps_its_text_readable(tmp_path):
 
 def test_a_journal_that_cannot_be_written_stops_the_shadow(tmp_path):
     sh, door, _ = _live(tmp_path)
+    _start_thread_done()                     # иначе её finally может взять строку start и умереть позже проверки
 
     class Full:
         def write(self, text):
             raise OSError("диск полон")
     real, sh._journal = sh._journal, Full()
-    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))          # строка start
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))          # строка start — в очередь
+    sh.note_chunk(_placed(1, 0, 1600), "off")          # аудиопоток не пишет: пишет следующий вход (№533)
     real.close()
     assert sh.state == ln.DEAD and sh.reason.startswith("журнал тени не пишется")
 
@@ -1301,7 +1317,7 @@ def test_no_thread_for_the_writer_or_the_death_still_kills_the_child(tmp_path, m
         return real(target, name=name, role=role, **kw)
     monkeypatch.setattr(threads, "spawn", exhausted)
     sh, door, _ = _shadow(tmp_path)
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "писатель не завёлся" in sh.reason
     assert door.child.killed.is_set(), "ребёнок с моделью остался без хозяина"
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
@@ -1333,4 +1349,327 @@ def test_a_stop_without_a_timer_kills_at_once_without_waiting(tmp_path, monkeypa
     sh, door, _ = _live(tmp_path)
     sh.stop()
     assert door.child.killed.is_set() and door.child.nowait_kills == 1
+    door.on_eof()
+
+
+# ------------------------------------------------ аудиопоток не ждёт ввода-вывода тени (№533)
+
+#: Потолок возврата `on_frame`, пока другая нить тени стоит на диске или опросе памяти:
+#: блок хаба — 0,25 с звука; без правки `on_frame` ждал все 0,5 с сна.
+FRAME_BUDGET_S = 0.05
+
+
+def _start_thread_done():
+    """Нить запуска дописывает журнал в своём finally уже после LIVE — дождаться её, чтобы
+    очередь журнала принадлежала тесту."""
+    for t in threading.enumerate():
+        if t.name == "nemotron-live-start":
+            t.join(5)
+
+
+def _frame_time(sh, start, n=1600):
+    t0 = time.perf_counter()
+    sh.on_frame("blackhole", start, np.zeros(n, dtype=np.float32))
+    return time.perf_counter() - t0
+
+
+def test_the_audio_thread_does_not_wait_for_the_memory_probe(tmp_path):
+    """Читатель в проверке здоровья спит в опросе памяти — кадр хаба проходит сразу."""
+    inside, release = threading.Event(), threading.Event()
+
+    def slow_memory():
+        inside.set()
+        release.wait(0.5)
+        return {"pressure": 1, "swap_used_mb": 0}
+    sh, door, _ = _live(tmp_path, memory=slow_memory)
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    reader = threading.Thread(target=door.on_message, args=({"type": "front", "fed": 1600, "frames": 1},))
+    reader.start()
+    assert inside.wait(5), "проверка здоровья не пришла"
+    took = _frame_time(sh, 1600)
+    release.set()
+    reader.join(5)
+    assert took < FRAME_BUDGET_S, f"on_frame ждал {took:.3f} с"
+    assert sh.state == ln.LIVE
+    sh.stop()
+    door.on_eof()
+    assert [x["type"] for x in _journal(tmp_path / "live.jsonl")].count("mem") == 1
+
+
+class _SlowJournal:
+    """Журнал, чья запись встаёт, пока открыт шлюз: диск под logs/ задумался."""
+
+    def __init__(self, real):
+        self.real = real
+        self.gate = threading.Event()
+        self.gate.set()
+        self.inside = threading.Event()
+
+    def write(self, text):
+        if not self.gate.is_set():
+            self.inside.set()
+            self.gate.wait(0.5)
+        return self.real.write(text)
+
+
+def test_the_audio_thread_does_not_wait_for_the_journal(tmp_path):
+    sh, door, _ = _live(tmp_path)
+    _start_thread_done()
+    slow = sh._journal = _SlowJournal(sh._journal)
+    slow.gate.clear()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))     # строка start — в очередь
+    stt = threading.Thread(target=sh.note_chunk, args=(_placed(1, 0, 1600), "off"))
+    stt.start()
+    assert slow.inside.wait(5), "распознавание не дошло до записи"
+    took = _frame_time(sh, 1600)
+    slow.gate.set()
+    stt.join(5)
+    assert took < FRAME_BUDGET_S, f"on_frame ждал {took:.3f} с"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_audio_thread_leaves_its_lines_to_the_next_writer_in_order(tmp_path):
+    """`on_frame` на диск не пишет: строка `start` ждёт в очереди и ложится раньше
+    строк, изменивших состояние после неё."""
+    sh, door, _ = _live(tmp_path)
+    _start_thread_done()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    assert "start" not in [x["type"] for x in _journal(tmp_path / "live.jsonl")]
+    door.on_message({"type": "front", "fed": 1600, "frames": 1})
+    kinds = [x["type"] for x in _journal(tmp_path / "live.jsonl")]
+    assert kinds[:4] == ["header", "ready", "start", "front"]
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_death_in_the_audio_thread_reaches_the_journal_and_the_human_without_it(tmp_path):
+    """Разрыв оси в аудиопотоке: строки смерти и строку человеку доводит писатель тени,
+    которого будит сентинель смерти, — аудиопоток сам нити не заводит."""
+    sh, door, says = _live(tmp_path)
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.on_frame("blackhole", 1601, np.zeros(1600, dtype=np.float32))
+    assert sh.state == ln.DEAD
+    _wait(lambda: says, what="строка человеку")
+    _wait(lambda: any(x["type"] == "end" for x in _journal(tmp_path / "live.jsonl")), what="строка end")
+
+
+def test_a_journal_that_breaks_with_any_error_stops_the_shadow_and_stops_queueing(tmp_path):
+    class Broken:
+        def write(self, text):
+            raise TypeError("не строка")
+    sh, door, says = _live(tmp_path)
+    sh._journal = Broken()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.note_chunk(_placed(1, 0, 1600), "off")
+    assert sh.state == ln.DEAD and "журнал тени не пишется" in sh.reason
+    sh.note_chunk(_placed(2, 1600, 1600), "off")
+    assert len(sh._out) == 0, "мёртвый журнал строк не копит"
+    _wait(lambda: says, what="строка человеку")
+
+
+def test_stop_does_not_wait_for_the_journal(tmp_path):
+    """`stop` зовёт главная нить демона перед запуском пересборки — диска она не ждёт."""
+    sh, door, _ = _live(tmp_path)
+    slow = sh._journal = _SlowJournal(sh._journal)
+    slow.gate.clear()
+    stt = threading.Thread(target=sh.note_chunk, args=(_placed(1, 0, 1600), "off"))
+    stt.start()
+    assert slow.inside.wait(5)
+    t0 = time.perf_counter()
+    sh.stop()
+    took = time.perf_counter() - t0
+    slow.gate.set()
+    stt.join(5)
+    assert took < FRAME_BUDGET_S, f"stop ждал {took:.3f} с"
+    door.on_eof()
+
+
+# ------------------------------------------------ выход демона: журнал тени с концом (№533)
+
+def test_close_kills_a_hung_child_inside_the_watchdog_window(tmp_path):
+    """Настоящий ребёнок через дверь: рукопожатие, потом сон без чтения входа (модель
+    повисла). Сторож приложения добивает демона SIGKILL через 5 с после SIGTERM, и
+    уборку при выходе SIGKILL не пускает — поэтому `close` не ждёт таймер отсрочки
+    (штатные 5 с), а убивает ребёнка сам и возвращается с `end` в журнале (выходной
+    круг 1 по №533, C1)."""
+    script = tmp_path / "engine.py"
+    script.write_text(
+        "import json, sys, time\n"
+        f"print(json.dumps({json.dumps(READY_OK)}), flush=True)\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-30_120000", say=lambda t: None,
+                   memory=lambda: None)
+    sh.begin(python=sys.executable, script=script, args=[], errlog=tmp_path / "live.err")
+    _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
+    pid = sh._stream.pid
+    t0 = time.monotonic()
+    sh.close(ln.STOP_GRACE_S)
+    took = time.monotonic() - t0
+    assert took < ln.CLOSE_WAIT_S + ln.CLOSE_MARGIN_S + 1.0, f"close ждал {took:.2f} с"
+    _wait(lambda: not _alive(pid) and sh.state == ln.DEAD, timeout=2.0, what="ребёнок убит закрытием")
+    (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+    assert end["counts"]["killed_at_close"] == 1
+
+
+def test_the_end_is_queued_before_anyone_is_woken(tmp_path):
+    """`_dead` и сентинель писателя поднимаются после строки `end`: проснувшийся `close`
+    дописывает журнал с концом, а не без него (выходной круг 1 по №533, I1)."""
+    sh, door, _ = _live(tmp_path)
+    seen = []
+
+    class Watch(threading.Event):
+        def set(self):
+            seen.append(any(o.get("type") == "end" for o in sh._out))
+            super().set()
+    sh._dead = Watch()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.on_frame("blackhole", 1601, np.zeros(1600, dtype=np.float32))     # разрыв оси — смерть
+    assert seen == [True]
+
+
+def test_close_does_not_wait_past_the_grace_for_an_end_that_never_comes(tmp_path, monkeypatch):
+    monkeypatch.setattr(ln, "STOP_GRACE_S", 0.1)
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 0.1)
+    sh, door, _ = _live(tmp_path)
+    t0 = time.monotonic()
+    sh.close(10.0)                          # stop изнутри; EOF поддельный ребёнок не шлёт
+    assert 0.15 <= time.monotonic() - t0 < 2.0
+    assert sh.state == ln.STOPPING and door.child.killed.is_set()
+
+
+def test_close_counts_the_grace_from_the_stop_not_anew(tmp_path, monkeypatch):
+    monkeypatch.setattr(ln, "STOP_GRACE_S", 0.3)
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 0.0)
+    sh, door, _ = _live(tmp_path)
+    sh.stop()
+    time.sleep(0.3)
+    t0 = time.monotonic()
+    sh.close(10.0)
+    assert time.monotonic() - t0 < 0.1
+
+
+def test_close_is_capped_by_its_timeout(tmp_path, monkeypatch):
+    """Потолок `timeout` держат оба ожидания `close` — и конца тени, и строки end после
+    убийства: ребёнок-заглушка EOF не шлёт, ждать больше потолка нечего."""
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 3.0)
+    sh, door, _ = _live(tmp_path)
+    t0 = time.monotonic()
+    sh.close(0.2)
+    assert time.monotonic() - t0 < 1.0
+    door.on_eof()
+
+
+def test_close_writes_what_the_audio_thread_left_in_the_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(ln, "STOP_GRACE_S", 0.0)
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 0.0)
+    sh, door, _ = _live(tmp_path)
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.close(1.0)
+    assert "start" in [x["type"] for x in _journal(tmp_path / "live.jsonl")]
+
+
+def test_no_shadow_closes_and_stops_quietly_without_threads():
+    """Без тени выход демона не ждёт и не заводит нитей: `close` и `stop(grace=…)` пустые."""
+    before = {t.ident for t in threading.enumerate()}
+    t0 = time.monotonic()
+    assert ln.NO_SHADOW.stop(grace=ln.EXIT_GRACE_S) is None
+    assert ln.NO_SHADOW.close(ln.STOP_GRACE_S) is None
+    assert time.monotonic() - t0 < 0.05
+    assert {t.ident for t in threading.enumerate()} <= before
+
+
+def _hung_engine(tmp_path):
+    script = tmp_path / "engine.py"
+    script.write_text(
+        "import json, sys, time\n"
+        f"print(json.dumps({json.dumps(READY_OK)}), flush=True)\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-30_120000", say=lambda t: None,
+                   memory=lambda: None)
+    sh.begin(python=sys.executable, script=script, args=[], errlog=tmp_path / "live.err")
+    _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
+    return sh
+
+
+def test_the_exit_grace_kills_a_hung_child_before_the_hub_is_done(tmp_path):
+    """Боевой порядок выхода: `stop` первым, потом `hub.stop()` (до 6 с), `close` последним.
+    Повисшего ребёнка убивает таймер отсрочки выхода, а не `close` — раньше SIGKILL сторожа
+    приложения через 5 с (выходной круг 2 по №533, I1)."""
+    sh = _hung_engine(tmp_path)
+    pid = sh._stream.pid
+    sh.stop(grace=ln.EXIT_GRACE_S)
+    _wait(lambda: not _alive(pid), timeout=ln.EXIT_GRACE_S + 2.0, what="ребёнок убит отсрочкой выхода")
+    sh.close(ln.STOP_GRACE_S)
+    (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+    assert end["counts"].get("killed_after_grace") == 1 and "killed_at_close" not in end["counts"]
+
+
+class _WatchedQueue:
+    """Очередь к писателю с наблюдателем `put`; писатель ждёт на той же настоящей очереди."""
+
+    def __init__(self, real, watch):
+        self.real, self.watch = real, watch
+
+    def put(self, item):
+        self.watch(item)
+        self.real.put(item)
+
+    def get(self, *a, **k):
+        return self.real.get(*a, **k)
+
+
+def test_the_writer_is_woken_after_the_end_is_queued(tmp_path):
+    sh, door, _ = _live(tmp_path)
+    seen = []
+    sh._queue = _WatchedQueue(sh._queue, lambda item: item is None and seen.append(
+        any(o.get("type") == "end" for o in sh._out)))
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
+    sh.on_frame("blackhole", 1601, np.zeros(1600, dtype=np.float32))     # разрыв оси — смерть
+    assert seen and all(seen)
+
+
+def test_a_finish_that_breaks_still_wakes_the_waiters(tmp_path, monkeypatch):
+    sh, door, _ = _live(tmp_path)
+
+    def boom(outcome, reason=""):
+        raise RuntimeError("сломался конец")
+    monkeypatch.setattr(sh, "_finish_pending_locked", boom)
+    woken = []
+    sh._queue = _WatchedQueue(sh._queue, woken.append)
+    with pytest.raises(RuntimeError), sh._lock:
+        sh._die_locked("проверка")
+    assert sh._dead.is_set() and None in woken
+
+
+def test_one_kill_is_counted_once_when_the_grace_and_close_race(tmp_path, monkeypatch):
+    sh, door, _ = _live(tmp_path)
+    door.child.alive = lambda: True           # ребёнок «не умирает» от сигнала — оба пути видят его живым
+    sh.stop(grace=0.01)
+    _wait(lambda: door.child.nowait_kills >= 1, what="таймер убил")
+    monkeypatch.setattr(ln, "CLOSE_MARGIN_S", 0.0)
+    sh.close(0.2)
+    assert door.child.nowait_kills == 1
+    assert sh._counts["killed_after_grace"] == 1 and sh._counts["killed_at_close"] == 0
+    door.on_eof()
+
+
+def test_only_a_well_formed_front_asks_for_the_health_check(tmp_path):
+    """Проверку здоровья (опрос памяти вне замка) заказывает только разобранный фронт —
+    не сегмент и не битый фронт."""
+    clock = _Clock()
+    probed = []
+    sh, door, _ = _live(tmp_path, clock=clock, memory=lambda: probed.append(1) or None)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    clock.now += ln.PRESSURE_CHECK_S
+    door.on_message({"type": "seg", "start": 0.0, "end": 0.5, "slot": 0})
+    door.on_message({"type": "front", "fed": "много", "frames": 1})
+    assert probed == []
+    with sh._lock:
+        assert sh._take_front_locked({"frames": "x", "fed": 1}, clock.now) is False
+    door.on_message({"type": "front", "fed": SR, "frames": 1})
+    assert probed == [1]
+    with sh._lock:
+        assert sh._take_front_locked({"frames": 2, "fed": SR}, clock.now) is False, "рано: интервал не прошёл"
+    sh.stop()
     door.on_eof()
