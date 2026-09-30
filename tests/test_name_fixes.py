@@ -244,3 +244,56 @@ def test_restamp_refuses_to_overwrite_files_changed_underneath(tmp_path, monkeyp
     assert (tmp_path / ".prev" / live.name).read_text(encoding="utf-8") == SPEECH, ".prev стенограммы — исходник, не чужая версия"
     assert not (tmp_path / ".prev" / mpath.name).exists(), "минутки не записаны — .prev минуток нет"
     assert any(d.startswith(review_bridge.LostRace.PREFIX) and "участники не тронуты" in d for d in dropped), dropped
+
+
+def _prompt_swap_lines(prompt: str) -> list[str]:
+    """Строки примера обмена — из ТЕКСТА промпта, а не из константы: тест держит
+    то, что прочтёт модель."""
+    lines = prompt.split("\n")
+    at = next(i for i, ln in enumerate(lines) if ln.endswith("Пример формы для обмена (метки условные):"))
+    out = []
+    for ln in lines[at + 1:]:
+        if not ln.startswith("- **"):
+            break
+        out.append(ln)
+    return out
+
+
+def test_prompt_swap_example_is_applied_whole_in_one_pass(tmp_path):
+    """Обещание промпта (№560) держит поведение: пример обмена из промпта обоих
+    режимов разбирается name_fixes(), plan() принимает его целиком, а apply()
+    меняет дорожки местами в заголовках реплик, шапке участников стенограммы и
+    строке участников минуток — без слияния в одно имя."""
+    for may_edit in (False, True):
+        prompt = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
+                                                   rev_name="r.md", stamp="2026-09-05_1413", may_edit=may_edit, context="")
+        assert "одновременно, одним проходом" in prompt
+        example = _prompt_swap_lines(prompt)
+        assert len(example) == 2, example
+        dropped: list[str] = []
+        fixes = nf.name_fixes("## Исправления имён\n" + "\n".join(example) + "\n", dropped=dropped)
+        assert not dropped and len(fixes) == 2
+        (a, b, _), (b2, a2, _) = fixes
+        assert (a, b) == (a2, b2) and a != b, "пример — обмен двух меток"
+
+        d = tmp_path / str(may_edit)
+        d.mkdir()
+        live = d / "2026-09-11_1533_Планёрка.md"
+        live.write_text(f"# Встреча\nУчастники (звучали в разговоре): {a}, {b}\n\n"
+                        f"**{a}** [15:33]:\nпервая\n\n**{b}** [15:34]:\nвторая\n", encoding="utf-8")
+        (d / "2026-09-11_1533_Планёрка_minutes.md").write_text(
+            f"# Минутки\n**Участники:** {a}, {b}\n", encoding="utf-8")
+        rev = d / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+        rev.write_text("# Ревизия\n## Исправления имён\n" + "\n".join(example) + "\n", encoding="utf-8")
+        mapping, heads, parts = nf.apply(rev, live, {"sufler": {}})
+        assert mapping == {a: b, b: a} and heads == 2 and parts
+        assert live.read_text(encoding="utf-8") == (
+            f"# Встреча\nУчастники (звучали в разговоре): {b}, {a}\n\n"
+            f"**{b}** [15:33]:\nпервая\n\n**{a}** [15:34]:\nвторая\n")
+        assert (d / "2026-09-11_1533_Планёрка_minutes.md").read_text(encoding="utf-8") == \
+            f"# Минутки\n**Участники:** {b}, {a}\n"
+
+        # скопированный на настоящую встречу пример не применяется: таких меток нет
+        dropped.clear()
+        assert nf.plan(fixes, headers={"Собеседник 1", "Собеседник 2"}, protected=set(), dropped=dropped) == {}
+        assert len(dropped) == 2 and all("такой метки в заголовках реплик нет" in x for x in dropped)
