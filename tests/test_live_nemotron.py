@@ -729,8 +729,9 @@ BOTH = {"blackhole", "mic"}
     ({"sufler": {}}, SR, BOTH, 1, None),
     ({"sufler": {"live_nemotron": "off"}}, SR, BOTH, 1, None),
     ({"sufler": {"live_nemotron": False}}, SR, BOTH, 1, None),           # голое off в YAML
-    ({"sufler": {"live_nemotron": "on"}}, SR, BOTH, 1, "неизвестен"),
-    ({"sufler": {"live_nemotron": True}}, SR, BOTH, 1, "неизвестен"),    # голое on в YAML
+    ({"sufler": {"live_nemotron": "maybe"}}, SR, BOTH, 1, "неизвестен"),
+    ({"sufler": {"live_nemotron": "on"}}, SR, BOTH, 1, "трекер голосов"),   # on без раскладочного трекера
+    ({"sufler": {"live_nemotron": True}}, SR, BOTH, 1, "трекер голосов"),   # голое on в YAML
     (SHADOW, 48000, BOTH, 1, "Гц"),
     (SHADOW, SR, {"mic"}, 1, "канала собеседников"),                      # захват только микрофона
     (SHADOW, SR, BOTH, 2, "давление памяти"),                             # машина уже в свопе
@@ -1246,7 +1247,7 @@ def test_bare_on_in_yaml_is_named_on(tmp_path):
     says = []
     assert ln.start({"sufler": {"live_nemotron": True}}, root=tmp_path, stamp="s", sr=SR, labels=BOTH,
                     say=says.append, memory=lambda: None) is ln.NO_SHADOW
-    assert "'on'" in says[0]
+    assert "режиму on" in says[0]
 
 
 def test_start_raises_the_shadow_with_its_journal_and_the_stream_args(tmp_path, monkeypatch):
@@ -1263,7 +1264,9 @@ def test_start_raises_the_shadow_with_its_journal_and_the_stream_args(tmp_path, 
     (kw,) = begun
     assert kw["python"] == "/py" and kw["script"] == ln.diarize_nemotron.SCRIPT
     assert kw["errlog"] == tmp_path / "logs" / f"nemotron_live_{stamp}.err"
-    assert kw["args"][:2] == ["--stream", "--model"] and kw["args"][-2:] == ["--preset", ln.PRESET]
+    assert kw["args"][:2] == ["--stream", "--model"]
+    assert kw["args"][-4:] == ["--preset", ln.PRESET, "--cache-limit-mb", str(ln.CACHE_LIMIT_MB)], (
+        "лимит кэша MLX — всегда: без него живая тень 30.09 заняла 8,5 ГБ и умерла")
     assert says == [f"поток Nemotron: тень включена, журнал nemotron_live_{stamp}.jsonl"]
 
 
@@ -1694,5 +1697,292 @@ def test_only_a_well_formed_front_asks_for_the_health_check(tmp_path):
     assert probed == [1]
     with sh._lock:
         assert sh._take_front_locked({"frames": 2, "fed": SR}, clock.now) is False, "рано: интервал не прошёл"
+    sh.stop()
+    door.on_eof()
+
+
+# ------------------------------------------------ режим on (№478 B): ожидание метки
+
+def _on(tmp_path, wait=None):
+    """Поток в режиме `on`; `wait` — подставное ожидание (по умолчанию настоящее)."""
+    says = []
+    kw = {"wait": wait} if wait is not None else {}
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-29_120000", say=says.append,
+                   memory=lambda: None, mode=ln.ON, **kw)
+    door = _Door()
+    sh.begin(python="python", script=tmp_path / "engine.py", args=[], errlog=tmp_path / "live.err", spawn=door)
+    _wait(lambda: sh.state == ln.LIVE, what="поток живёт")
+    for t in threading.enumerate():
+        if t.name == "nemotron-live-start":
+            t.join(5)
+    block = np.zeros(SR, dtype=np.float32)
+    for k in range(4):
+        sh.on_frame("blackhole", 5 * SR + k * SR, block)     # start0 = 5 с на оси хаба
+    return sh, door, says
+
+
+def _builder(calls):
+    def build(segs):
+        calls.append(segs)
+        if segs:
+            return "по потоку", {"source": ln.SOURCE_STREAM, "pieces": 1, "no_recon": 0, "recon_agree": 0}
+        return "по трекеру", {"source": ln.SOURCE_TRACKER}
+    return build
+
+
+SEG = {"type": "seg", "start": 0.0, "end": 2.0, "slot": 1, "open": False}
+FRONT = {"type": "front", "fed": 2 * SR, "frames": 25}          # фронт: start0 + 2 с
+
+
+def test_a_chunk_that_gets_its_label_in_time_is_laid_out_by_the_stream_with_one_line(tmp_path):
+    box, waits = {}, []
+
+    def wait(event, cap):
+        waits.append(cap)
+        box["door"].on_message(SEG)
+        box["door"].on_message(FRONT)
+        return event.is_set()
+    sh, door, _ = _on(tmp_path, wait)
+    box["door"] = door
+    calls = []
+    got = sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", _builder(calls))
+    assert got == "по потоку" and waits == [ln.WAIT_CAP_S]
+    assert calls == [[(5 * SR, 7 * SR, 1)]], "сегменты на оси хаба, задевающие чанк"
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["source"], line["pieces"]) == (ln.LABELED, ln.SOURCE_STREAM, 1)
+    assert "fallback" not in line and line["slots"] == {"1": 1.0}
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_chunk_that_waits_past_the_cap_goes_to_the_tracker_and_the_late_front_adds_nothing(tmp_path):
+    sh, door, _ = _on(tmp_path, lambda event, cap: False)
+    calls = []
+    assert sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", _builder(calls)) == "по трекеру"
+    assert calls == [None]
+    door.on_message(SEG)
+    door.on_message(FRONT)                   # метка пришла после потолка: вторую строку не пишет
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["source"], line["fallback"]) == (ln.FALLBACK, ln.SOURCE_TRACKER, ln.FALLBACK)
+    assert "2" in line["reason"]
+    sh.stop()
+    door.on_eof()
+    _wait(lambda: _over(sh, tmp_path), what="конец потока")
+    end = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"][0]
+    assert end["counts"].get("chunk_fallback") == 1 and "chunk_stopped" not in end["counts"]
+
+
+def test_a_stream_that_dies_while_the_chunk_waits_wakes_it_with_the_reason(tmp_path):
+    box = {}
+
+    def wait(event, cap):
+        box["sh"].on_frame("blackhole", 0, np.zeros(10, dtype=np.float32))    # разрыв оси — смерть
+        return event.is_set()
+    sh, door, says = _on(tmp_path, wait)
+    box["sh"] = sh
+    calls = []
+    assert sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", _builder(calls)) == "по трекеру"
+    assert calls == [None] and sh.state == ln.DEAD
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["fallback"]) == (ln.DEAD_STREAM, ln.DEAD_STREAM) and "разрыв" in line["reason"]
+    _wait(lambda: says, what="строка человеку")
+    assert says[0].startswith("поток Nemotron остановлен: ") and "снова от трекера" in says[0]
+
+
+def test_a_chunk_before_the_stream_does_not_wait(tmp_path):
+    sh, door, _ = _on(tmp_path, lambda event, cap: pytest.fail("чанк до потока не ждёт"))
+    calls = []
+    assert sh.label_chunk(_placed(0, 0, SR), "pieces", _builder(calls)) == "по трекеру"
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["fallback"]) == (ln.BEFORE_STREAM, ln.BEFORE_STREAM)
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_labelled_chunk_where_the_layout_breaks_falls_back_with_one_line(tmp_path):
+    box = {}
+
+    def wait(event, cap):
+        box["door"].on_message(SEG)
+        box["door"].on_message(FRONT)
+        return event.is_set()
+    sh, door, says = _on(tmp_path, wait)
+    box["door"] = door
+    calls = []
+
+    def build(segs):
+        calls.append(segs)
+        if segs:
+            raise ValueError("раскладка упала")
+        return "по трекеру", {"source": ln.SOURCE_TRACKER}
+    assert sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", build) == "по трекеру"
+    assert len(calls) == 2 and calls[1] is None
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["source"], line["fallback"]) == (ln.LABELED, ln.SOURCE_TRACKER, "build_failed")
+    _wait(lambda: says, what="сбой сказан")
+    assert "раскладка" in says[0]
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_tracker_fallback_that_breaks_too_still_leaves_its_line_and_raises(tmp_path):
+    sh, door, _ = _on(tmp_path, lambda event, cap: False)
+
+    def build(segs):
+        raise RuntimeError("и трекер упал")
+    with pytest.raises(RuntimeError):
+        sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", build)
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["source"], line["fallback"]) == (ln.FALLBACK, ln.SOURCE_TRACKER, "build_failed")
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_real_wait_wakes_on_the_front_from_the_reader_thread(tmp_path):
+    sh, door, _ = _on(tmp_path)
+
+    def reader():
+        time.sleep(0.05)
+        door.on_message(SEG)
+        door.on_message(FRONT)
+    threading.Thread(target=reader).start()
+    calls = []
+    t0 = time.monotonic()
+    assert sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", _builder(calls)) == "по потоку"
+    assert time.monotonic() - t0 < ln.WAIT_CAP_S, "проснулся по фронту, а не по потолку"
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_chunk_of_another_channel_is_laid_out_by_the_tracker_without_a_line(tmp_path):
+    sh, door, _ = _on(tmp_path, lambda event, cap: pytest.fail("чужой канал не ждёт"))
+    calls = []
+    assert sh.label_chunk(_placed(3, 5 * SR, SR, label="mic"), "pieces", _builder(calls)) == "по трекеру"
+    assert calls == [None] and _chunks(tmp_path / "live.jsonl") == []
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_shadow_line_names_the_tracker_as_its_source(tmp_path):
+    sh, door, _ = _live(tmp_path)
+    sh.note_chunk(_placed(0, 0, SR), "off")
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert line["source"] == ln.SOURCE_TRACKER and "fallback" not in line
+    assert sh.stream_channel is None, "тень ничего не подписывает"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_on_journal_header_names_the_mode_the_cap_and_the_slot_gap(tmp_path):
+    sh, door, _ = _on(tmp_path, lambda event, cap: False)
+    head = _journal(tmp_path / "live.jsonl")[0]
+    assert (head["v"], head["mode"], head["wait_cap_s"], head["slot_gap_s"]) == (
+        2, ln.ON, ln.WAIT_CAP_S, ln.SLOT_GAP_S)
+    assert sh.stream_channel == ln.CHANNEL and sh.live is True
+    sh.stop()
+    door.on_eof()
+    _wait(lambda: sh.state == ln.DEAD, what="конец")
+    assert sh.live is False
+
+
+def test_start_raises_the_on_mode_only_with_a_split_tracker(tmp_path, monkeypatch):
+    monkeypatch.setattr(ln.diarize_nemotron, "engine_interpreter", lambda setting, root: ("/py", None))
+    monkeypatch.setattr(ln.Shadow, "begin", lambda self, **kw: None)
+    (tmp_path / "logs").mkdir()
+    says = []
+    sh = ln.start({"sufler": {"live_nemotron": "on"}}, root=tmp_path, stamp="s", sr=SR, labels=BOTH,
+                  say=says.append, split_tracker=True, memory=lambda: None)
+    assert isinstance(sh, ln.Shadow) and sh.stream_channel == ln.CHANNEL
+    assert says == ["поток Nemotron: метки собеседников из потока, журнал nemotron_live_s.jsonl"]
+
+
+def test_no_shadow_lays_out_by_the_tracker_and_never_streams():
+    assert ln.NO_SHADOW.stream_channel is None and ln.NO_SHADOW.live is False
+    assert ln.NO_SHADOW.label_chunk(_placed(0, 0, 10), "pieces", lambda segs: (segs, {})) is None
+
+
+def test_a_stream_far_behind_the_chunk_is_not_waited_for(tmp_path):
+    """Фронт отстал от конца чанка больше потолка: поток идёт со скоростью звука и не догонит,
+    чанк сразу уходит трекеру (выходной круг 1 №478 B, I4)."""
+    sh, door, _ = _on(tmp_path, lambda event, cap: pytest.fail("отстающий поток не ждут"))
+    door.on_message({"type": "front", "fed": SR // 2, "frames": 6})          # фронт: start0 + 0,48 с
+    calls = []
+    assert sh.label_chunk(_placed(7, 8 * SR, SR), "pieces", _builder(calls)) == "по трекеру"   # конец: + 4 с
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["fallback"]) == (ln.FALLBACK, ln.FALLBACK) and "отстаёт" in line["reason"]
+    assert line["behind_s"] > ln.WAIT_CAP_S
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_stream_just_behind_the_chunk_is_waited_for(tmp_path):
+    box = {}
+
+    def wait(event, cap):
+        box["waited"] = cap
+        return False
+    sh, door, _ = _on(tmp_path, wait)
+    door.on_message({"type": "front", "fed": 2 * SR, "frames": 25})          # фронт: start0 + 2 с
+    sh.label_chunk(_placed(7, 5 * SR + SR, 2 * SR), "pieces", _builder([]))  # конец: start0 + 3 с
+    assert box["waited"] == ln.WAIT_CAP_S, "отставание 1 с — метка успеет"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_line_of_a_waited_chunk_is_stamped_when_it_is_queued(tmp_path):
+    clock = _Clock()
+    box = {}
+
+    def wait(event, cap):
+        box["door"].on_message(SEG)
+        box["door"].on_message(FRONT)
+        return event.is_set()
+    says = []
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="s", say=says.append, clock=clock,
+                   memory=lambda: None, mode=ln.ON, wait=wait)
+    door = _Door()
+    box["door"] = door
+    sh.begin(python="python", script=tmp_path / "e.py", args=[], errlog=tmp_path / "e.err", spawn=door)
+    _wait(lambda: sh.state == ln.LIVE)
+    for k in range(4):
+        sh.on_frame("blackhole", 5 * SR + k * SR, np.zeros(SR, dtype=np.float32))
+
+    def build(segs):
+        clock.now += 5.0                     # раскладка шла, пока в журнал ложились другие строки
+        box["door"].on_message({"type": "front", "fed": 3 * SR, "frames": 37})
+        return "x", {"source": ln.SOURCE_STREAM}
+    sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", build)
+    ts = [x["t"] for x in _journal(tmp_path / "live.jsonl") if "t" in x]
+    assert ts == sorted(ts), "t строк журнала монотонно"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_stream_plan_takes_the_capture_label_of_a_real_hub_chunk_not_its_signature(tmp_path):
+    """Чанк настоящего хаба несёт подпись канала («Собеседник») в `speaker` и метку захвата в
+    `seq[0]`: план `stream` сравнивает с каналом потока метку захвата. По подписи он не
+    выбирался бы никогда, и `on` работал бы тенью (выходной круг 1 №478 B, C1)."""
+    import stt_runtime
+    cfg = {"audio": {"samplerate": SR, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                     "vad_energy_db": -60.0, "record": False, "device": "auto"},
+           "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}
+    sh, door, _ = _on(tmp_path, lambda event, cap: False)
+    loud = np.full(SR // 10, 0.3, dtype=np.float32)
+    quiet = np.zeros(SR // 10, dtype=np.float32)
+    placed = {}
+    for talking in ("blackhole", "mic"):             # говорит одна сторона: другую хаб не глушит эхом
+        hub = audio.AudioHub(cfg, captures=[])
+        caps = [types.SimpleNamespace(label="blackhole"), types.SimpleNamespace(label="mic")]
+        hub._register_captures(caps)
+        for _ in range(40):
+            for cap in caps:
+                hub._consume(cap, loud if cap.label == talking else quiet)
+        placed.update({p.seq[0]: p for p in hub.pull_placed()})
+    assert set(placed) == {"blackhole", "mic"}
+    assert placed["blackhole"].speaker != ln.CHANNEL, "подпись канала — не метка захвата"
+    plans = {label: stt_runtime.diarization_plan(lagging=False, has_split=True, channel=p.seq[0],
+                                                 stream_channel=sh.stream_channel, stream_live=sh.live)
+             for label, p in placed.items()}
+    assert plans == {"blackhole": "stream", "mic": "diarize"}
     sh.stop()
     door.on_eof()

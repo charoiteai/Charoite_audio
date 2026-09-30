@@ -187,6 +187,23 @@ def nemotron_wiring_problems(source: str) -> list[str]:
     if len(args) != 2 or not all(isinstance(a, ast.Name) for a in args) \
             or [a.id for a in args] != ["placed", "tracker_state"]:
         problems.append("note_chunk зовётся не с (placed, tracker_state)")
+    # Режим `on` (№478 B): строку чанка плана stream пишет label_chunk. Оба вызова — в одном
+    # операторе-развилке, по одному в каждой ветке: каждый путь пишет ровно одну строку.
+    labels = [n for n in ast.walk(stt) if _call_name(n) == "nemotron_shadow.label_chunk"]
+    fork = loop.body[k]
+    if len(labels) != 1 or not isinstance(fork, ast.If) or fork.orelse == [] \
+            or not any(n is labels[0] for s in fork.body for n in ast.walk(s)) \
+            or not any(n is calls[0] for s in fork.orelse for n in ast.walk(s)):
+        problems.append("label_chunk и note_chunk — не две ветки одной развилки (строка тени на каждый путь)")
+    elif [a.id for a in labels[0].args[:2] if isinstance(a, ast.Name)] != ["placed", "tracker_state"]:
+        problems.append("label_chunk зовётся не с (placed, tracker_state, …)")
+    elif not any(isinstance(t, ast.Try)
+                 and any(isinstance(h.type, ast.Name) and h.type.id == "Exception" for h in t.handlers)
+                 and any(n is labels[0] for b in t.body for n in ast.walk(b))
+                 for t in ast.walk(fork)):
+        # исключение label_chunk роняло бы нить STT молча до конца встречи (выходной круг
+        # GLM по №478 B, I1): вызов — под перехватом, чанк уходит трекеру
+        problems.append("label_chunk не под перехватом — сбой раскладки убьёт нить STT")
     for stmt in loop.body[:k]:
         for n in _in_loop_body(stmt):
             if isinstance(n, (ast.Continue, ast.Break, ast.Return)):
@@ -244,7 +261,17 @@ def test_the_daemon_wires_the_nemotron_shadow():
      "выход из цикла"),
     ('                    tracker_state = "off"', "                    pass", "без состояния"),
     ('                    tracker_state = "off"', '                    tracker_state = "plain"', "вне набора"),
-    ("tracker_state = live_nemotron.diarized_state(split_failed, jobs)", 'tracker_state = "split"', "вне набора"),
+    ("tracker_state = live_nemotron.diarized_state(split_failed, tracker_jobs)", 'tracker_state = "split"',
+     "вне набора"),
+    ("                        jobs = nemotron_shadow.label_chunk(\n                            placed, tracker_state,",
+     "                        jobs = nemotron_shadow.label_chunk(\n                            placed, 'pieces',",
+     "label_chunk зовётся не с"),
+    ("                else:\n                    nemotron_shadow.note_chunk(placed, tracker_state)",
+     "                nemotron_shadow.note_chunk(placed, tracker_state)\n                if False:\n                    pass",
+     "не две ветки"),
+    ("                    except Exception as e:  # noqa: BLE001 — раскладка по потоку и её запас упали: чанк — трекеру",
+     "                    except KeyboardInterrupt as e:",
+     "не под перехватом"),
     ("        nemotron_shadow.attach(hub)", "        pass", "слушателем"),
     ("        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n        # Пересборка",
      "        pass\n        # Пересборка", "стоп"),

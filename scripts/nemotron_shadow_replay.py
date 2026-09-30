@@ -299,12 +299,11 @@ class _StreamProxy:
         return getattr(self._stream, name)
 
 
-def witness_spawn(witness: Witness, spawn, extra_args: typing.Sequence[str] = ()):
+def witness_spawn(witness: Witness, spawn):
     """Дверь `spawn_stream` со свидетелем: сообщения — сначала свидетелю, потом тени;
-    процесс — в обёртке записи; `extra_args` — к аргументам ребёнка (лимит кэша MLX
-    замера памяти: `start()` его не знает и не должен)."""
+    процесс — в обёртке записи. Аргументы ребёнка — как у `start()`, лимит кэша MLX
+    тоже: прогон меряет память в том же режиме, что в бою."""
     def wrapped(python, script, args, **kw):
-        args = [*args, *extra_args]
         on_message = kw["on_message"]
 
         def tapped(message: dict) -> None:
@@ -381,7 +380,7 @@ def chunk_decision(tracker, placed, *, chan, stt_runtime, jobs_for, heard_pieces
 
 def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: float = LEAD_S,
            preroll_s: float = PREROLL_S, block_s: float = BLOCK_S, say=None,
-           memory=None, cache_limit_mb: int | None = None) -> dict:
+           memory=None) -> dict:
     """Прогнать запись встречи `stamp`; вернуть сводку (`meta.json`)."""
     import audio
     import channel_labels
@@ -428,8 +427,7 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     original_begin = live_nemotron.Shadow.begin
 
     def begin(self, **kw):
-        extra = ["--cache-limit-mb", str(cache_limit_mb)] if cache_limit_mb is not None else []
-        kw.setdefault("spawn", witness_spawn(witness, foreign_python.spawn_stream, extra))
+        kw.setdefault("spawn", witness_spawn(witness, foreign_python.spawn_stream))
         return original_begin(self, **kw)
 
     trk = open(root / "tracker.jsonl", "w", buffering=1, encoding="utf-8")
@@ -529,7 +527,8 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         raise Refused(f"тень кончилась не штатно: {ended.get('reason')!r}, exit={ended.get('exit')!r}")
     meta = {"stamp": stamp, "sr": sr, **run_numbers(n, start0, sr, handshake_s, feed_wall),
             "cuts_per_channel": expect, "chunks": counts,
-            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s, "cache_limit_mb": cache_limit_mb,
+            "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s,
+            "cache_limit_mb": live_nemotron.CACHE_LIMIT_MB,
             "journal": str(journal.relative_to(root))}
     (root / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta
@@ -549,13 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=pathlib.Path, help="свежий каталог выхода (по умолчанию — кэш пользователя)")
     ap.add_argument("--lead", type=float, default=LEAD_S, help="секунд звука впереди ребёнка")
     ap.add_argument("--preroll", type=float, default=PREROLL_S, help="секунд звука до рукопожатия")
-    ap.add_argument("--cache-limit-mb", type=int, default=None,
-                    help="лимит кэша MLX ребёнка (замер памяти тени); без флага — как у mlx")
     args = ap.parse_args(argv)
     out = args.out or default_out(args.stamp)
     try:
-        meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll,
-                      cache_limit_mb=args.cache_limit_mb)
+        meta = replay(args.stamp, data_root=data_root, out=out, lead_s=args.lead, preroll_s=args.preroll)
     except Refused as e:
         print(f"прогон не состоялся: {redact(str(e), args.stamp)}", file=sys.stderr)
         return 2

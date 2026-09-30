@@ -1,6 +1,7 @@
-"""Живой поток Nemotron в тени (№478, PR A): канал собеседников — процессу движка,
-его метки — в журнал рядом с тем, что сделал с чанком живой трекер. Стенограмма не
-меняется.
+"""Живой поток Nemotron (№478): канал собеседников — процессу движка, его метки — в журнал
+рядом с тем, что сделал с чанком живой трекер (`shadow`, стенограмма не меняется), а в
+режиме `on` — и в стенограмму: кусок канала собеседников ждёт метку потока не дольше
+`WAIT_CAP_S` и подписывается ею; не дождался — метка трекера (PR B).
 
 Зачем тень. После встречи Nemotron размечает голоса лучше трекера ERes2Net (№473),
 и живой контур хочется перевести на него же: распознавание ждёт метку потока с
@@ -28,6 +29,15 @@
   ожидания в потоке STT: строка журнала ложится, когда метка готова. Строка — на
   КАЖДЫЙ принятый чанк: метка готова, чанк до старта потока, поток мёртв, не
   дождался за `PENDING_CAP_S`, остановка.
+- Режим `on` (`label_chunk`): нить STT ждёт метку чанка не дольше `WAIT_CAP_S` — не под
+  замком, на своём событии записи; его взводит та же единственная воронка исходов
+  `_chunk_line_locked`. Не дождался — запись снимается под замком с исходом `fallback`,
+  фронт её уже не найдёт. Строка журнала такого чанка одна и ложится после раскладки:
+  в ней источник раскладки (`source`: поток или трекер) и причина фолбэка отдельными
+  полями.
+- Ребёнку всегда задан лимит кэша MLX `CACHE_LIMIT_MB`: без него живая тень 30.09 заняла
+  8,5 ГБ (97 % — кэш MLX) и умерла от давления памяти на пятой минуте; с лимитом 512 МБ
+  след 0,8 ГБ при тех же метках (замер №478 B).
 
 Журнал — `logs/nemotron_live_<штамп>.jsonl`, только владельцу: числа (сэмплы, слоты,
 секунды) и причины остановки — ни звука, ни текста реплик. Строки: `header` (что известно до
@@ -58,11 +68,20 @@ import diarize_nemotron
 import foreign_python
 import threads
 
-#: Режимы `sufler.live_nemotron`: выключен (по умолчанию) и тень.
-OFF, SHADOW = "off", "shadow"
-MODES = (OFF, SHADOW)
-#: Версия журнала тени.
-JOURNAL_V = 1
+#: Режимы `sufler.live_nemotron`: выключен (по умолчанию), тень (метки только в журнал) и
+#: `on` (метки канала собеседников в живой стенограмме).
+OFF, SHADOW, ON = "off", "shadow", "on"
+MODES = (OFF, SHADOW, ON)
+#: Версия журнала: 2 — поля `source`/`fallback` строки `chunk`, исход `fallback`, режим в `header`.
+JOURNAL_V = 2
+#: Лимит кэша MLX ребёнка, МБ (`--cache-limit-mb`) — в любом режиме.
+CACHE_LIMIT_MB = 512
+#: Потолок ожидания метки потока одним чанком в режиме `on`, секунды (решение владельца):
+#: метка готова через 0,8 с звука после конца чанка (p50), max 1,3 с (замер №478 B).
+WAIT_CAP_S = 2.0
+#: Слот потока, молчавший дольше этого, получает новую метку (`diarize_live.StreamVoices`):
+#: порог консервативный — лишнее дробление дешевле чужого имени; пишется в `header`.
+SLOT_GAP_S = 60.0
 #: Канал потока — собеседники звонка (метка захвата хаба).
 CHANNEL = "blackhole"
 #: Пресет задержки потока: 1,04 с входного буфера.
@@ -109,9 +128,11 @@ CHUNK_STATES = ("shed", "pieces", "none", "split_failed", "off")
 #: круг 1 по №478 A2, M1): инвариант «строка на каждый чанк» не зависит от вызывающего.
 UNKNOWN_STATE = "unknown"
 
-#: Исходы чанка в журнале.
-LABELED, BEFORE_STREAM, DEAD_STREAM, TIMEOUT, STOPPED, LATE = (
-    "labeled", "before_stream", "dead", "timeout", "stopped", "late")
+#: Исходы чанка в журнале; `fallback` — чанк режима `on` не дождался метки за `WAIT_CAP_S`.
+LABELED, BEFORE_STREAM, DEAD_STREAM, TIMEOUT, STOPPED, LATE, FALLBACK = (
+    "labeled", "before_stream", "dead", "timeout", "stopped", "late", "fallback")
+#: Источник раскладки куска в строке `chunk`: поток или трекер.
+SOURCE_STREAM, SOURCE_TRACKER = "stream", "tracker"
 
 STARTING, LIVE, STOPPING, DEAD = "starting", "live", "stopping", "dead"
 
@@ -169,8 +190,13 @@ class Shadow:
     def __init__(self, *, journal: pathlib.Path, sr: int, stamp: str,
                  say: typing.Callable[[str], None],
                  clock: typing.Callable[[], float] = time.monotonic,
-                 memory: typing.Callable[[], dict | None] = memory_state):
+                 memory: typing.Callable[[], dict | None] = memory_state,
+                 mode: str = SHADOW,
+                 wait: typing.Callable[[threading.Event, float], bool] = threading.Event.wait):
         self._sr = sr
+        self._mode = mode
+        self._wait = wait                            # ожидание метки: подставляется тестами
+        self._who = "поток Nemotron" if mode == ON else "поток Nemotron (тень)"
         self._memory = memory
         self._mem_checked: float | None = None
         self._mem_high = 0
@@ -201,8 +227,11 @@ class Shadow:
         self._out: collections.deque = collections.deque()   # строки журнала к записи
         self._journal_lock = threading.Lock()                 # один писатель на диск, порядок очереди
         self._journal: typing.TextIO | None = _open_private(journal)
-        self._line({"type": "header", "v": JOURNAL_V, "sr": sr, "channel": CHANNEL,
-                    "preset": PRESET, "stamp": stamp})
+        header = {"type": "header", "v": JOURNAL_V, "sr": sr, "channel": CHANNEL,
+                  "preset": PRESET, "stamp": stamp, "mode": mode}
+        if mode == ON:
+            header.update(wait_cap_s=WAIT_CAP_S, slot_gap_s=SLOT_GAP_S)
+        self._line(header)
         self._drain()
 
     # ------------------------------------------------------------ запуск
@@ -449,29 +478,97 @@ class Shadow:
             label, number = placed.seq
             if label != CHANNEL:
                 return
-            if state not in CHUNK_STATES:
-                self._fault("чанк", ValueError(f"состояние чанка {state!r} вне {CHUNK_STATES}"))
-                state = UNKNOWN_STATE
-            now = self._clock()
-            start = int(placed.start)
-            entry = {"chunk": number, "start": start, "end": start + len(placed.chunk),
-                     "state": state, "noted": now}
+            entry = self._entry(placed, state, source=SOURCE_TRACKER)
             with self._lock:
-                entry["behind_s"] = (None if self._front is None
-                                     else round((entry["end"] - self._front) / self._sr, 3))
-                if self._state == DEAD:
-                    self._chunk_line_locked(entry, DEAD_STREAM, now, reason=self._reason)
-                elif self._start0 is None or start < self._start0:
-                    self._chunk_line_locked(entry, BEFORE_STREAM, now)
-                elif self._front is not None and entry["end"] <= self._front:
-                    self._resolve_locked(entry, now)
-                else:
-                    self._pending[(label, number)] = entry
-                    self._evict_locked(now)
+                self._place_locked(entry, (label, number), entry["noted"])
         except Exception as e:  # noqa: BLE001 — тень не смеет ронять распознавание; след — в журнале и строке
             self._fault("чанк", e)
         finally:
             self._drain()
+
+    def _entry(self, placed: typing.Any, state: str, *, source: str) -> dict:
+        if state not in CHUNK_STATES:
+            self._fault("чанк", ValueError(f"состояние чанка {state!r} вне {CHUNK_STATES}"))
+            state = UNKNOWN_STATE
+        start = int(placed.start)
+        return {"chunk": placed.seq[1], "start": start, "end": start + len(placed.chunk),
+                "state": state, "noted": self._clock(), "source": source}
+
+    def _place_locked(self, entry: dict, key: tuple[str, int], now: float) -> None:
+        """Строка сразу (поток мёртв, чанк до потока, фронт уже прошёл) или место в очереди."""
+        entry["behind_s"] = (None if self._front is None
+                             else round((entry["end"] - self._front) / self._sr, 3))
+        if self._state == DEAD:
+            self._chunk_line_locked(entry, DEAD_STREAM, now, reason=self._reason)
+        elif self._start0 is None or entry["start"] < self._start0:
+            self._chunk_line_locked(entry, BEFORE_STREAM, now)
+        elif self._front is not None and entry["end"] <= self._front:
+            self._resolve_locked(entry, now)
+        else:
+            self._pending[key] = entry
+            self._evict_locked(now)
+
+    def label_chunk(self, placed: typing.Any, state: str,
+                    build: typing.Callable[[list | None], tuple[typing.Any, dict]], *,
+                    cap: float = WAIT_CAP_S) -> typing.Any:
+        """Режим `on`: дождаться метки чанка канала собеседников не дольше `cap` и разложить.
+
+        Ждёт вне замка на событии своей записи: его взводит воронка исходов, куда сходятся
+        фронт, смерть, остановка и вытеснение. Не дождался — под замком снимает запись с
+        исходом `fallback`. `build(segs)` — раскладка демона: сегменты потока (начало, конец,
+        слот на оси хаба), задевающие чанк, или None, если метки нет; отдаёт (итог, поля
+        строки журнала). Строка чанка — ровно одна и после раскладки; раскладка по потоку
+        упала — повтор без него (`fallback: build_failed`)."""
+        if placed.seq[0] != CHANNEL:                  # чужой канал поток не подписывает
+            return build(None)[0]
+        entry = key = None
+        try:
+            key = placed.seq
+            entry = self._entry(placed, state, source=SOURCE_STREAM)
+            entry["event"] = threading.Event()
+            with self._lock:
+                self._place_locked(entry, key, entry["noted"])
+                behind = entry["behind_s"]
+                if "line" not in entry and behind is not None and behind > cap:
+                    # фронт отстал от конца чанка больше потолка: поток идёт со скоростью
+                    # звука и за потолок не догонит — ждать впустую 2 с на нити STT нельзя
+                    # (выходной круг 1 №478 B, I4)
+                    self._pending.pop(key, None)
+                    self._chunk_line_locked(entry, FALLBACK, entry["noted"],
+                                            reason=f"поток отстаёт на {behind:g} с")
+            if not entry["event"].is_set():
+                self._wait(entry["event"], max(0.0, cap))
+        except Exception as e:  # noqa: BLE001 — ожидание не смеет ронять распознавание: чанк уйдёт трекеру
+            self._fault("ожидание", e)
+        with self._lock:
+            if entry is None:                         # запись не собралась: строки нет, чанк — трекеру
+                line, segs = None, None
+            else:
+                if "line" not in entry:               # не дождался: запись снимается, фронт её не найдёт
+                    self._pending.pop(key, None)
+                    self._chunk_line_locked(entry, FALLBACK, self._clock(), reason=f"метки нет за {cap:g} с")
+                line = entry["line"]
+                segs = entry.get("segs") if line["outcome"] == LABELED else None
+        fields: dict = {"source": SOURCE_TRACKER, "fallback": "build_failed"}
+        try:
+            try:
+                result, fields = build(segs)
+            except Exception as e:  # noqa: BLE001 — раскладка по потоку упала: чанк уходит трекеру
+                if segs is None:
+                    raise
+                self._fault("раскладка", e)
+                result, fields = build(None)
+                fields = {**fields, "fallback": "build_failed"}
+        finally:
+            if line is not None:
+                row = {**line, **fields}
+                if row.get("source") == SOURCE_TRACKER and line["outcome"] != LABELED:
+                    row.setdefault("fallback", line["outcome"])
+                with self._lock:
+                    row["t"] = self._t()        # в момент постановки: t в журнале монотонно
+                    self._line(row)
+            self._drain()
+        return result
 
     def _resolve_locked(self, entry: dict, now: float) -> None:
         start, end = entry["start"], entry["end"]
@@ -479,11 +576,13 @@ class Shadow:
             self._chunk_line_locked(entry, LATE, now)
             return
         slots: dict[str, float] = {}
+        segs: list[tuple[int, int, int]] = []
         for s, e, slot in self._segs:
             overlap = min(e, end) - max(s, start)
             if overlap > 0:
                 slots[str(slot)] = round(slots.get(str(slot), 0.0) + overlap / self._sr, 3)
-        self._chunk_line_locked(entry, LABELED, now, slots=slots)
+                segs.append((s, e, slot))
+        self._chunk_line_locked(entry, LABELED, now, slots=slots, segs=segs)
 
     def _evict_locked(self, now: float) -> None:
         for key, entry in list(self._pending.items()):
@@ -500,16 +599,26 @@ class Shadow:
         self._pending.clear()
 
     def _chunk_line_locked(self, entry: dict, outcome: str, now: float, *,
-                           slots: dict | None = None, reason: str = "") -> None:
+                           slots: dict | None = None, reason: str = "",
+                           segs: list | None = None) -> None:
+        """Единственная воронка исходов чанка. Чанк, которого ждёт нить STT (`label_chunk`),
+        строку здесь не пишет: исход и сегменты ложатся в запись, событие ждущего взводится,
+        строку с раскладкой запишет он."""
         self._counts[f"chunk_{outcome}"] += 1
         line = {"type": "chunk", "t": self._t(now), "chunk": entry["chunk"], "start": entry["start"],
                 "end": entry["end"], "state": entry["state"], "outcome": outcome,
-                "wait_s": round(now - entry["noted"], 3), "behind_s": entry["behind_s"]}
+                "wait_s": round(now - entry["noted"], 3), "behind_s": entry["behind_s"],
+                "source": entry["source"]}
         if slots is not None:
             line["slots"] = slots
         if reason:
             line["reason"] = reason
-        self._line(line)
+        event = entry.get("event")
+        if event is None:
+            self._line(line)
+            return
+        entry["line"], entry["segs"] = line, segs if segs is not None else []
+        event.set()
 
     # ------------------------------------------------------------ конец
 
@@ -614,7 +723,8 @@ class Shadow:
         stream = self._stream
         if stream is not None and stream.alive():
             stream.kill()
-        self._say(f"поток Nemotron (тень) остановлен: {reason}")
+        tail = " — метки собеседников снова от трекера" if self._mode == ON else ""
+        self._say(f"{self._who} остановлен: {reason}{tail}")
 
     def _die_from_thread(self, reason: str) -> None:
         """Смерть из нити тени по сбою вне замка: под замком, один раз; строки — на диск."""
@@ -699,7 +809,7 @@ class Shadow:
             self._counts[f"fault_{where}"] += 1
             first = self._counts[f"fault_{where}"] == 1
         if first:
-            self._say_async(f"поток Nemotron (тень): сбой ({where}): {type(e).__name__}: {e}")
+            self._say_async(f"{self._who}: сбой ({where}): {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------ для тестов и сводки
 
@@ -712,6 +822,17 @@ class Shadow:
     def reason(self) -> str:
         with self._lock:
             return self._reason
+
+    @property
+    def stream_channel(self) -> str | None:
+        """Канал, куски которого подписывает поток (`on`); в тени — ничей."""
+        return CHANNEL if self._mode == ON else None
+
+    @property
+    def live(self) -> bool:
+        """Поток идёт: ждать метку имеет смысл (до рукопожатия и после смерти — нет)."""
+        with self._lock:
+            return self._state == LIVE
 
 
 def diarized_state(split_failed: bool, jobs: typing.Any) -> str:
@@ -734,8 +855,16 @@ class _NoShadow:
     def on_frame(self, label: str, start: int, part: typing.Any) -> None:
         pass
 
+    stream_channel = None
+    live = False
+
     def note_chunk(self, placed: typing.Any, state: str) -> None:
         pass
+
+    def label_chunk(self, placed: typing.Any, state: str,
+                    build: typing.Callable[[list | None], tuple[typing.Any, dict]], *,
+                    cap: float = WAIT_CAP_S) -> typing.Any:
+        return build(None)[0]
 
     def stop(self, grace: float | None = None) -> None:
         pass
@@ -748,9 +877,13 @@ NO_SHADOW = _NoShadow()
 
 
 def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.Collection[str],
-          say: typing.Callable[[str], None],
+          say: typing.Callable[[str], None], split_tracker: bool = False,
           memory: typing.Callable[[], dict | None] = memory_state) -> Shadow | _NoShadow:
-    """Поднять тень, если её просит `sufler.live_nemotron`; иначе — `NO_SHADOW` и строка, почему.
+    """Поднять поток, если его просит `sufler.live_nemotron`; иначе — `NO_SHADOW` и строка, почему.
+
+    `split_tracker` — у демона есть раскладочный трекер голосов. Режиму `on` он нужен: на его
+    номерах держится эхо-фильтр каналов, и он же — запасная раскладка; без него план
+    `stream` не выбирается никогда, и ребёнок держал бы модель впустую.
 
     `labels` — метки захватов хаба: без канала собеседников ребёнок держал бы модель
     весь звонок впустую. Давление памяти уже на уровне `PRESSURE_STOP` — тень не
@@ -766,8 +899,12 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
         mode = str(raw).strip().lower() or OFF
     if mode == OFF:
         return NO_SHADOW
-    if mode != SHADOW:
+    if mode not in MODES:
         say(f"sufler.live_nemotron: режим {mode!r} неизвестен ({', '.join(MODES)}) — поток Nemotron выключен")
+        return NO_SHADOW
+    if mode == ON and not split_tracker:
+        say("поток Nemotron выключен: режиму on нужен трекер голосов по кускам речи (models/diar) — "
+            "без него нет ни сверки эха, ни запасной раскладки")
         return NO_SHADOW
     if sr != diarize_nemotron.SAMPLE_RATE:
         say(f"поток Nemotron выключен: хаб пишет {sr} Гц, движку нужно {diarize_nemotron.SAMPLE_RATE}")
@@ -785,12 +922,14 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
         return NO_SHADOW
     journal = charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
     try:
-        shadow = Shadow(journal=journal, sr=sr, stamp=stamp, say=say, memory=memory)
+        shadow = Shadow(journal=journal, sr=sr, stamp=stamp, say=say, memory=memory, mode=mode)
     except OSError as e:
         say(f"поток Nemotron выключен: журнал не открылся ({e})")
         return NO_SHADOW
     shadow.begin(python=python, script=diarize_nemotron.SCRIPT,
-                 args=["--stream", "--model", str(diarize_nemotron.model_dir(root)), "--preset", PRESET],
+                 args=["--stream", "--model", str(diarize_nemotron.model_dir(root)), "--preset", PRESET,
+                       "--cache-limit-mb", str(CACHE_LIMIT_MB)],
                  errlog=charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".err"))
-    say(f"поток Nemotron: тень включена, журнал {journal.name}")
+    say(f"поток Nemotron: {'метки собеседников из потока' if mode == ON else 'тень включена'}, "
+        f"журнал {journal.name}")
     return shadow

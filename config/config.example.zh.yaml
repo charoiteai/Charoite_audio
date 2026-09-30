@@ -146,7 +146,9 @@ sufler:
   # 否则填写您自己的 bin/python 路径。失败时由 sherpa 标注，稿件开头注明原因。
   diarize_backend: sherpa
   nemotron_python: ""
-  # 通话方声道上的实时 Nemotron 流：off 或 shadow。影子模式下，一个独立的引擎
+  # 通话方声道上的实时 Nemotron 流：off、shadow 或 on（标签写入实时稿件；需要
+  # models/diar —— docs/DIARIZATION.md）。MLX 缓存上限 512 MB。上线顺序：off → shadow → on。
+  # 影子模式下，一个独立的引擎
   # 进程（同一环境）收听通话，把标签写入 logs/nemotron_live_<时间戳>.jsonl，
   # 与实时跟踪器的结果并列 —— 只有数字，没有音频和文字。稿件不变：这是在实时
   # 链路切换到 Nemotron 之前测量延迟、开销和标签一致性（docs/DIARIZATION.md）。

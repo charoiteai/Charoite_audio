@@ -543,7 +543,7 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
 
     def door(python, script, args, *, on_message, on_eof, **kw):
         assert "--stream" in args and str(data / "models") not in args[args.index("--model") + 1]
-        assert "--cache-limit-mb" not in args, "без лимита ребёнок идёт как в бою"
+        assert args[args.index("--cache-limit-mb") + 1] == str(ln.CACHE_LIMIT_MB), "лимит кэша — как в бою"
         return _Child(on_message, on_eof), fp.Outcome(fp.OK, payload=ready)
 
     monkeypatch.setattr(fp, "spawn_stream", door)
@@ -635,7 +635,7 @@ def test_memory_is_reported_even_when_the_journal_is_refused(tmp_path, capsys):
     assert "вышел не сам" in got["refused"] and got["memory"]["pressure_checks"] == {"1": 1, "2": 2}
 
 
-def test_the_witness_door_adds_the_cache_limit_to_the_child_arguments(tmp_path):
+def test_the_witness_door_passes_the_child_arguments_as_they_are(tmp_path):
     w = rp.Witness(tmp_path / "t.jsonl")
     seen = []
 
@@ -643,8 +643,8 @@ def test_the_witness_door_adds_the_cache_limit_to_the_child_arguments(tmp_path):
         seen.append(list(args))
         return None, fp.Outcome(fp.FAILED, reason="нет")
 
-    rp.witness_spawn(w, door, ["--cache-limit-mb", "512"])("py", pathlib.Path("s"), ["--stream"],
-                                                           on_message=lambda m: None)
+    rp.witness_spawn(w, door)("py", pathlib.Path("s"), ["--stream", "--cache-limit-mb", "512"],
+                              on_message=lambda m: None)
     assert seen == [["--stream", "--cache-limit-mb", "512"]]
 
 
@@ -793,9 +793,9 @@ def test_the_replay_cli_prints_the_run_and_refuses_with_code_two(tmp_path, monke
     seen = {}
     monkeypatch.setattr(rp, "replay", lambda stamp, **kw: seen.update(kw) or {
         "stamp": stamp, "journal": f"logs/nemotron_live_{stamp}.jsonl", "sr": 16000})
-    assert rp.main(["2026-01-01_100000", "--cache-limit-mb", "512"]) == 0
+    assert rp.main(["2026-01-01_100000"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith('{\n "') and json.loads(out) == {"sr": 16000} and seen["cache_limit_mb"] == 512, (
+    assert out.startswith('{\n "') and json.loads(out) == {"sr": 16000} and "cache_limit_mb" not in seen, (
         "финальный Opus, M4: сводка — агрегаты, без штампа и путей")
     assert seen["out"].parent.name == "2026-01-01_100000"
     assert rp.main(["2026-01-01_100000", "--out", str(tmp_path / "o")]) == 0
@@ -1158,3 +1158,54 @@ def test_the_replay_waits_for_the_tail_of_the_queue_before_closing_the_shadow(tm
     meta = rp.replay(stamp, data_root=data, out=out, memory=lambda: None, say=lambda s: None)
     j = chk.read_journal((out / meta["journal"]).read_text(encoding="utf-8").splitlines())
     assert j.end["exit"] == "ok" and "killed_at_close" not in j.end["counts"], j.end
+
+
+# ------------------------------------------------------------------ журнал v2 (№478 B, режим on)
+
+
+def test_the_check_reads_journals_of_both_versions_and_refuses_others():
+    lines = journal_lines(chunk_ends=[START0 + 64000])
+    head = json.loads(lines[0])
+    for v, ok in ((1, True), (2, True), (3, False), (None, False)):
+        head["v"] = v
+        got = [json.dumps(head), *lines[1:]]
+        if ok:
+            assert chk.read_journal(got).v == v
+        else:
+            with pytest.raises(chk.Refused, match="версия журнала"):
+                chk.read_journal(got)
+
+
+def _on_chunk(n, outcome, source, wait_s, **extra):
+    return {"type": "chunk", "t": 1.0, "chunk": n, "start": START0, "end": START0 + 3 * SR,
+            "state": "pieces", "outcome": outcome, "wait_s": wait_s, "behind_s": 1.0,
+            "source": source, **extra}
+
+
+def test_sources_count_fallbacks_apart_and_the_wait_only_of_labelled_chunks():
+    j = journal()
+    j.v, j.mode = 2, ln.ON
+    j.chunks = [_on_chunk(0, ln.LABELED, "stream", 0.8, pieces=2, no_recon=1, recon_agree=1, lost_s=0.25,
+                          tracker_pieces=1),
+                _on_chunk(1, ln.LABELED, "stream", 1.2, pieces=1, no_recon=0, recon_agree=0),
+                _on_chunk(2, ln.FALLBACK, "tracker", 2.0, fallback=ln.FALLBACK),
+                _on_chunk(3, ln.LABELED, "tracker", 0.5, fallback="no_speech"),
+                _on_chunk(4, ln.BEFORE_STREAM, "tracker", 0.0)]      # тень: без фолбэка — не ждал
+    got = chk.sources(j)
+    assert got["n"] == 4 and got["fallback_share"] == 0.5
+    assert got["fallback_reasons"] == {ln.FALLBACK: 1, "no_speech": 1}
+    assert got["wait_labeled_s"]["n"] == 3 and got["wait_labeled_s"]["max"] == 1.2, (
+        "ожидание — только у дождавшихся: время до «сдался» не время метки (r2 GLM M1)")
+    assert got["stream_pieces"] == 3 and got["no_recon_share"] == round(1 / 3, 4)
+    assert got["recon_agree_share"] == 0.5
+    assert (got["lost_s"], got["tracker_pieces"]) == (0.25, 1)
+
+
+def test_sources_of_a_shadow_journal_are_empty():
+    assert chk.sources(journal(chunk_ends=[START0 + 64000])) == {"n": 0}
+
+
+def test_a_replay_journal_with_a_fallback_is_not_valid():
+    j = journal(chunk_ends=[START0 + 64000])
+    j.chunks.append(_on_chunk(1, ln.FALLBACK, "tracker", 2.0, fallback=ln.FALLBACK))
+    assert any("потерянные" in p for p in chk.validity(j, noted_expected=2))

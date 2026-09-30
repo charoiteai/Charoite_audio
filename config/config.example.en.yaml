@@ -172,7 +172,9 @@ sufler:
   # labels the voices and the transcript header says why.
   diarize_backend: sherpa
   nemotron_python: ""
-  # Live Nemotron stream on the call channel: off or shadow. In shadow mode a
+  # Live Nemotron stream on the call channel: off, shadow or on (labels in the live
+  # transcript; needs models/diar — docs/DIARIZATION.md). MLX cache capped at 512 MB.
+  # Roll out off → shadow → on. In shadow mode a
   # separate engine process (same environment) listens to the call and writes
   # its labels to logs/nemotron_live_<stamp>.jsonl next to what the live tracker
   # did — numbers, no audio and no utterance text. The transcript does not change:
