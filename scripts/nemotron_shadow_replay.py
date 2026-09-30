@@ -59,6 +59,8 @@ BLOCK_S = 0.1
 LABELS = ("blackhole", "mic")
 #: Ожидание конца тени после стопа, секунды: хвост очереди плюс отсрочка убийства.
 END_WAIT_S = 180.0
+#: Сколько ждать, пока тень допишет журнал.
+CLOSE_WAIT_S = 30.0
 
 
 class Refused(Exception):
@@ -299,10 +301,13 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         feed(pos, min(n, pos + block))
         pos = min(n, pos + block)
     feed_wall = time.monotonic() - t_feed
-    shadow.stop()
+    # отсрочка убийства — с запасом на хвост очереди: ребёнок, убитый по таймеру, — брак
+    # прогона, а не цифры; `close` дописывает журнал (с №533 его пишет своя нить)
+    shadow.stop(grace=END_WAIT_S)
     deadline = time.monotonic() + END_WAIT_S
     while shadow.state != live_nemotron.DEAD and time.monotonic() < deadline:
         time.sleep(0.2)
+    shadow.close(timeout=CLOSE_WAIT_S)
     trk.close()
     witness.close()
     cuts = {label: hub.chunk_no.get(label, -1) + 1 for label in LABELS}
