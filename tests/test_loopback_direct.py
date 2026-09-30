@@ -59,7 +59,10 @@ def test_proxies_for_only_switches_the_proxy_off_for_loopback():
         "proxies": {"http": None, "https": None, "all": None}, "allow_redirects": False}
     assert privacy.proxies_for("http://[::1]:8100/x")["allow_redirects"] is False
     assert privacy.proxies_for("https://api.example.com/v1") == {}
-    assert privacy.proxies_for("http://192.168.0.7:11434") == {}
+    # открытый http в свою сеть — тоже напрямую: политика пустила его, потому что он не уходит наружу (№522)
+    assert privacy.proxies_for("http://192.168.0.7:11434")["proxies"]["all"] is None
+    assert privacy.proxies_for("https://192.168.0.7:11434") == {}
+    assert privacy.proxies_for("http://8.8.8.8:11434") == {}
 
 
 # --- слой 2: опыт с прокси и сервером ---------------------------------------
