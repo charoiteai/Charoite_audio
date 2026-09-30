@@ -364,8 +364,13 @@ def _shadow(tmp_path, door=None, clock=None, memory=lambda: None):
 
 
 def _live(tmp_path, **kw):
+    """Тень живёт и её нить запуска закончилась: та дописывает журнал в своём finally уже
+    после LIVE, и без ожидания её `_drain` гоняется с проверками теста (№533)."""
     sh, door, says = _shadow(tmp_path, **kw)
     _wait(lambda: sh.state == ln.LIVE, what="тень живёт")
+    for t in threading.enumerate():
+        if t.name == "nemotron-live-start":
+            t.join(5)
     return sh, door, says
 
 
@@ -1188,6 +1193,7 @@ def test_the_journal_keeps_its_text_readable(tmp_path):
 
 def test_a_journal_that_cannot_be_written_stops_the_shadow(tmp_path):
     sh, door, _ = _live(tmp_path)
+    _start_thread_done()                     # иначе её finally может взять строку start и умереть позже проверки
 
     class Full:
         def write(self, text):
