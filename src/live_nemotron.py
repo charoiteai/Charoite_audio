@@ -528,6 +528,14 @@ class Shadow:
             entry["event"] = threading.Event()
             with self._lock:
                 self._place_locked(entry, key, entry["noted"])
+                behind = entry["behind_s"]
+                if "line" not in entry and behind is not None and behind > cap:
+                    # фронт отстал от конца чанка больше потолка: поток идёт со скоростью
+                    # звука и за потолок не догонит — ждать впустую 2 с на нити STT нельзя
+                    # (выходной круг 1 №478 B, I4)
+                    self._pending.pop(key, None)
+                    self._chunk_line_locked(entry, FALLBACK, entry["noted"],
+                                            reason=f"поток отстаёт на {behind:g} с")
             if not entry["event"].is_set():
                 self._wait(entry["event"], max(0.0, cap))
         except Exception as e:  # noqa: BLE001 — ожидание не смеет ронять распознавание: чанк уйдёт трекеру
@@ -557,6 +565,7 @@ class Shadow:
                 if row.get("source") == SOURCE_TRACKER and line["outcome"] != LABELED:
                     row.setdefault("fallback", line["outcome"])
                 with self._lock:
+                    row["t"] = self._t()        # в момент постановки: t в журнале монотонно
                     self._line(row)
             self._drain()
         return result

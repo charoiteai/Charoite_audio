@@ -63,7 +63,9 @@ def test_daemon_measures_and_sheds_before_positional_split():
     plan_call = plan_call[:plan_call.index("))") + 2]
     assert "lagging=lagging," in plan_call
     assert "has_split=stt_runtime.has_split_tracker(spk_tracker)," in plan_call
-    assert "channel=speaker, stream_channel=nemotron_shadow.stream_channel," in plan_call
+    # метка захвата, а не подпись канала: `speaker` — «Собеседник», канал потока — «blackhole»
+    # (выходной круг 1 №478 B, C1; поведение — тест на чанке настоящего хаба в test_live_nemotron)
+    assert "channel=placed.seq[0], stream_channel=nemotron_shadow.stream_channel," in plan_call
     assert "stream_live=nemotron_shadow.live)" in plan_call
     assert 'if plan == "shed":' in loop[policy:split]
     assert "jobs = with_recon([(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)])" in loop[policy:split]

@@ -534,7 +534,8 @@ def test_nested_noise_does_not_collapse_monologue():
 # ---------- поток Nemotron (№478 B): тот же итог раскладки, другой источник голоса ----------
 
 from diarize_live import (STREAM_VOICE_BASE, SplitResult, StreamVoices,  # noqa: E402
-                          recon_voice, stream_split, tracker_spans, with_recon)
+                          recon_shares, stream_split, tracker_spans, unlabelled_speech,
+                          with_recon)
 from stt_runtime import CHANNEL_LABEL_ONLY  # noqa: E402
 
 KNOWN = {1: V_A, 2: V_B, 3: V_C}
@@ -610,8 +611,10 @@ def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_e
     sv = _sv()
     tracker = SplitResult([Piece(0, SR, 4, 0, SR), Piece(SR, 3 * SR, 2, SR, 3 * SR)], 2)
     jobs, fields = _plan(sv, [(0, int(2.2 * SR), 5)], tracker=tracker)
-    ((piece, label, _raw, recon),) = jobs
-    assert (label, recon) == (STREAM_VOICE_BASE, 2)
+    ((piece, label, _raw, shares),) = jobs
+    assert label == STREAM_VOICE_BASE
+    assert [v for v, _ in shares] == [2, 4], "каждый голос трекера в куске получает свою долю (I3)"
+    assert shares[0][1] == pytest.approx(1.2 / 2.2, abs=1e-3) and shares[1][1] == pytest.approx(1.0 / 2.2, abs=1e-3)
     assert fields == {"source": "stream", "pieces": 1, "no_recon": 0, "recon_agree": 0}
     jobs, fields = _plan(sv, [(0, int(2.2 * SR), 5)], tracker=tracker)
     assert fields["recon_agree"] == 1, "тот же голос трекера уже связан с той же меткой"
@@ -622,14 +625,14 @@ def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_e
 def test_a_stream_piece_without_a_tracker_voice_does_not_feed_the_echo_check(tracker):
     sv = _sv()
     jobs, fields = _plan(sv, [(0, int(2.2 * SR), 0)], tracker=tracker)
-    assert jobs[0][3] == CHANNEL_LABEL_ONLY and fields["no_recon"] == 1
+    assert jobs[0][3] == () and fields["no_recon"] == 1
 
 
 def test_a_whole_chunk_tracker_result_gives_its_main_voice_as_the_recon_number():
     assert tracker_spans(SplitResult(None, 3), CHUNK) == [(0, CHUNK, 3)]
-    assert recon_voice([(0, 10, 1), (5, 30, 2)], 0, 20) == 2
-    assert recon_voice([(0, 10, 1), (10, 20, 2)], 0, 20) == 1, "при равенстве — первый"
-    assert recon_voice([(0, 10, 1)], 10, 20) == CHANNEL_LABEL_ONLY, "касание — не пересечение"
+    assert recon_shares([(0, 10, 1), (5, 30, 2)], 0, 20) == ((2, 0.75), (1, 0.5))
+    assert recon_shares([(0, 10, 1), (10, 20, 2)], 0, 20) == ((1, 0.5), (2, 0.5)), "при равенстве — первый"
+    assert recon_shares([(0, 10, 1)], 10, 20) == (), "касание — не пересечение"
 
 
 def test_a_tracker_fallback_names_pieces_by_the_linked_stream_label():
@@ -642,14 +645,14 @@ def test_a_tracker_fallback_names_pieces_by_the_linked_stream_label():
                            tracker_jobs=[(chunk, 2, chunk), (chunk, 5, chunk),
                                          (chunk, CHANNEL_LABEL_ONLY, None)],
                            neutral=True, step_s=2.5)
-    assert [(j[1], j[3]) for j in jobs] == [(STREAM_VOICE_BASE, 2), (5, 5),
-                                           (CHANNEL_LABEL_ONLY, CHANNEL_LABEL_ONLY)]
+    assert [(j[1], j[3]) for j in jobs] == [(STREAM_VOICE_BASE, ((2, 1.0),)), (5, ((5, 1.0),)),
+                                           (CHANNEL_LABEL_ONLY, ())]
     assert fields == {"source": "tracker"}
 
 
 def test_a_labelled_chunk_where_the_stream_hears_nothing_goes_to_the_tracker():
     jobs, fields = _plan(_sv(), [])
-    assert [(j[1], j[3]) for j in jobs] == [(1, 1)], "задания трекера, номер один на подпись и сверку"
+    assert [(j[1], j[3]) for j in jobs] == [(1, ((1, 1.0),))], "задания трекера, один голос на подпись и сверку"
     assert fields == {"source": "tracker", "fallback": "no_speech"}
 
 
@@ -668,7 +671,8 @@ def test_stream_segments_are_clipped_to_the_chunk():
 def test_tracker_jobs_keep_one_number_for_label_and_recon():
     chunk = _chunk()
     assert with_recon(None) is None
-    assert with_recon([(chunk, 3, None)]) == [(chunk, 3, None, 3)]
+    assert with_recon([(chunk, 3, None), (chunk, CHANNEL_LABEL_ONLY, None)]) == [
+        (chunk, 3, None, ((3, 1.0),)), (chunk, CHANNEL_LABEL_ONLY, None, ())]
 
 
 def test_speech_the_tracker_left_without_a_voice_gets_a_stream_label_not_the_channel_label():
@@ -682,4 +686,24 @@ def test_speech_the_tracker_left_without_a_voice_gets_a_stream_label_not_the_cha
     jobs, _ = sv.plan([(0, int(1.4 * SR), 0), (int(1.5 * SR), int(2.7 * SR), 1)], origin=0, chunk=chunk,
                       tracker=tracker, tracker_jobs=tracker_jobs, neutral=True, step_s=2.5)
     assert [j[1] for j in jobs] == [STREAM_VOICE_BASE, STREAM_VOICE_BASE + 1]
-    assert all(j[3] == CHANNEL_LABEL_ONLY for j in jobs), "голоса трекера нет — сверку не кормит"
+    assert all(j[3] == () for j in jobs), "голоса трекера нет — сверку не кормит"
+
+
+def test_speech_the_stream_did_not_label_forbids_the_whole_chunk_under_the_stream_label():
+    """Поток разметил одну реплику, а трекер слышит ещё одну: чанк не распознаётся целиком под
+    меткой первого — слова второго ушли бы ему (выходной круг 1 №478 B, I2)."""
+    tracker = SplitResult([Piece(0, int(1.4 * SR), 1, 0, int(1.4 * SR)),
+                           Piece(int(1.6 * SR), int(2.8 * SR), None, int(1.6 * SR), int(2.8 * SR))], 1)
+    jobs, _ = _plan(_sv(), [(0, int(1.4 * SR), 0)], tracker=tracker)
+    ((piece, label, _raw, _shares),) = jobs
+    assert label == STREAM_VOICE_BASE and len(piece) < CHUNK, "окно реплики, а не чанк целиком"
+    whole = stream_split([(0.0, 1.4, STREAM_VOICE_BASE)], CHUNK, SR, step_s=2.5)
+    assert whole.pieces is None, "без речи мимо потока тот же вход — чанк целиком"
+
+
+def test_unlabelled_speech_is_tracker_speech_the_stream_segments_do_not_cover():
+    piece = Piece(0, 2 * SR, 1, 0, 2 * SR)
+    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.6 * SR))], SR) is False   # 0,4 с — порог
+    assert unlabelled_speech(SplitResult([piece], 1), [(0, int(1.5 * SR))], SR) is True
+    assert unlabelled_speech(SplitResult(None, 1), [], SR) is False, "чанк целиком границ речи не даёт"
+    assert unlabelled_speech(None, [], SR) is False and unlabelled_speech(SplitResult([], 1), [], SR) is False

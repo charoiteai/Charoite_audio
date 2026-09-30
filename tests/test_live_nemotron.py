@@ -1899,3 +1899,89 @@ def test_start_raises_the_on_mode_only_with_a_split_tracker(tmp_path, monkeypatc
 def test_no_shadow_lays_out_by_the_tracker_and_never_streams():
     assert ln.NO_SHADOW.stream_channel is None and ln.NO_SHADOW.live is False
     assert ln.NO_SHADOW.label_chunk(_placed(0, 0, 10), "pieces", lambda segs: (segs, {})) is None
+
+
+def test_a_stream_far_behind_the_chunk_is_not_waited_for(tmp_path):
+    """Фронт отстал от конца чанка больше потолка: поток идёт со скоростью звука и не догонит,
+    чанк сразу уходит трекеру (выходной круг 1 №478 B, I4)."""
+    sh, door, _ = _on(tmp_path, lambda event, cap: pytest.fail("отстающий поток не ждут"))
+    door.on_message({"type": "front", "fed": SR // 2, "frames": 6})          # фронт: start0 + 0,48 с
+    calls = []
+    assert sh.label_chunk(_placed(7, 8 * SR, SR), "pieces", _builder(calls)) == "по трекеру"   # конец: + 4 с
+    (line,) = _chunks(tmp_path / "live.jsonl")
+    assert (line["outcome"], line["fallback"]) == (ln.FALLBACK, ln.FALLBACK) and "отстаёт" in line["reason"]
+    assert line["behind_s"] > ln.WAIT_CAP_S
+    sh.stop()
+    door.on_eof()
+
+
+def test_a_stream_just_behind_the_chunk_is_waited_for(tmp_path):
+    box = {}
+
+    def wait(event, cap):
+        box["waited"] = cap
+        return False
+    sh, door, _ = _on(tmp_path, wait)
+    door.on_message({"type": "front", "fed": 2 * SR, "frames": 25})          # фронт: start0 + 2 с
+    sh.label_chunk(_placed(7, 5 * SR + SR, 2 * SR), "pieces", _builder([]))  # конец: start0 + 3 с
+    assert box["waited"] == ln.WAIT_CAP_S, "отставание 1 с — метка успеет"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_line_of_a_waited_chunk_is_stamped_when_it_is_queued(tmp_path):
+    clock = _Clock()
+    box = {}
+
+    def wait(event, cap):
+        box["door"].on_message(SEG)
+        box["door"].on_message(FRONT)
+        return event.is_set()
+    says = []
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="s", say=says.append, clock=clock,
+                   memory=lambda: None, mode=ln.ON, wait=wait)
+    door = _Door()
+    box["door"] = door
+    sh.begin(python="python", script=tmp_path / "e.py", args=[], errlog=tmp_path / "e.err", spawn=door)
+    _wait(lambda: sh.state == ln.LIVE)
+    for k in range(4):
+        sh.on_frame("blackhole", 5 * SR + k * SR, np.zeros(SR, dtype=np.float32))
+
+    def build(segs):
+        clock.now += 5.0                     # раскладка шла, пока в журнал ложились другие строки
+        return "x", {"source": ln.SOURCE_STREAM}
+    sh.label_chunk(_placed(7, 5 * SR + SR // 2, SR), "pieces", build)
+    ts = [x["t"] for x in _journal(tmp_path / "live.jsonl") if "t" in x]
+    assert ts == sorted(ts), "t строк журнала монотонно"
+    sh.stop()
+    door.on_eof()
+
+
+def test_the_stream_plan_takes_the_capture_label_of_a_real_hub_chunk_not_its_signature(tmp_path):
+    """Чанк настоящего хаба несёт подпись канала («Собеседник») в `speaker` и метку захвата в
+    `seq[0]`: план `stream` сравнивает с каналом потока метку захвата. По подписи он не
+    выбирался бы никогда, и `on` работал бы тенью (выходной круг 1 №478 B, C1)."""
+    import stt_runtime
+    cfg = {"audio": {"samplerate": SR, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                     "vad_energy_db": -60.0, "record": False, "device": "auto"},
+           "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}
+    sh, door, _ = _on(tmp_path, lambda event, cap: False)
+    loud = np.full(SR // 10, 0.3, dtype=np.float32)
+    quiet = np.zeros(SR // 10, dtype=np.float32)
+    placed = {}
+    for talking in ("blackhole", "mic"):             # говорит одна сторона: другую хаб не глушит эхом
+        hub = audio.AudioHub(cfg, captures=[])
+        caps = [types.SimpleNamespace(label="blackhole"), types.SimpleNamespace(label="mic")]
+        hub._register_captures(caps)
+        for _ in range(40):
+            for cap in caps:
+                hub._consume(cap, loud if cap.label == talking else quiet)
+        placed.update({p.seq[0]: p for p in hub.pull_placed()})
+    assert set(placed) == {"blackhole", "mic"}
+    assert placed["blackhole"].speaker != ln.CHANNEL, "подпись канала — не метка захвата"
+    plans = {label: stt_runtime.diarization_plan(lagging=False, has_split=True, channel=p.seq[0],
+                                                 stream_channel=sh.stream_channel, stream_live=sh.live)
+             for label, p in placed.items()}
+    assert plans == {"blackhole": "stream", "mic": "diarize"}
+    sh.stop()
+    door.on_eof()

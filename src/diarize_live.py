@@ -229,6 +229,30 @@ def plan_pieces(raw: list[tuple[float, float, int | None]], chunk_len: int,
              for a, b, v, rs, re in windows], deferred, kept)
 
 
+def window_overlap_of(windows: list[tuple[float, float, int, float, float]]):
+    """Сколько секунд куска дошло до окон СВОЕГО голоса — функция (начало, конец, голос).
+    По пересечению, не по вложению: вложенное чужое «угу» режет кусок монолога на части,
+    и целиком он не входит ни в одну — вложение хоронило живого кандидата вместе с
+    монологом (ревью 15.08 ×4). Одна на трекер и поток (№478 B)."""
+    spans: dict[int, list[tuple[float, float]]] = {}
+    for _a, _b, v, rs, re_ in windows:
+        spans.setdefault(v, []).append((rs, re_))
+
+    def overlap(s: float, e: float, v: int) -> float:
+        return sum(max(0.0, min(e, re_) - max(s, rs)) for rs, re_ in spans.get(v, ()))
+    return overlap
+
+
+def assigned_excluded_of(raw: list[tuple[float, float, int | None]],
+                         kept: list[tuple[float, float, int]], deferred: bool, overlap) -> bool:
+    """Исключённая НАЗНАЧЕННАЯ речь: придержка, или кусок с голосом не дошёл до окон своего
+    голоса (микро-кусок). Такая речь запрещает фолбэк на STT целого чанка и, без окон,
+    требует пропуска."""
+    kept_keys = set(kept)
+    return deferred or any(v is not None and ((s, e, v) not in kept_keys or overlap(s, e, v) <= 1e-6)
+                           for s, e, v in raw)
+
+
 def settle(pieces: list[Piece], *, talk: dict[int, float], last: int | None,
            assigned_excluded: bool, unknown_speech: bool) -> SplitResult:
     """Итог раскладки по окнам — трёхсостоянный контракт `SplitResult`, одно правило для
@@ -252,57 +276,57 @@ def settle(pieces: list[Piece], *, talk: dict[int, float], last: int | None,
 
 
 def stream_split(raw: list[tuple[float, float, int]], chunk_len: int, sr: int, *,
-                 step_s: float, min_stt: float = 1.0) -> SplitResult:
-    """Раскладка чанка по сегментам потока Nemotron (№478 B): те же окна (`plan_pieces`) и
-    тот же итог (`settle`), что у трекера, — меняется только источник голоса.
+                 step_s: float, min_stt: float = 1.0, unknown_speech: bool = False) -> SplitResult:
+    """Раскладка чанка по сегментам потока Nemotron (№478 B): те же окна (`plan_pieces`), тот
+    же учёт окон и тот же итог (`settle`), что у трекера, — меняется только источник голоса.
 
     raw — (start_s, end_s, метка) в секундах от начала чанка; у каждого сегмента потока
-    метка есть, поэтому ни кандидатов без места, ни речи без назначения здесь не бывает.
-    Порядок — по началу, как у сегментов трекера: от него зависит, кто главный при
-    равенстве секунд."""
+    метка есть. `unknown_speech` — речь, которой поток метки не дал (её слышит трекер):
+    она запрещает распознавать чанк целиком под главной меткой. Порядок — по началу, как у
+    сегментов трекера: от него зависит, кто главный при равенстве секунд."""
     raw = sorted(raw, key=lambda r: r[0])
     windows, deferred, kept = plan_pieces(raw, chunk_len, sr, min_stt=min_stt, step_s=step_s)
+    overlap = window_overlap_of(windows)
     kept_keys = set(kept)
-    spans: dict[int, list[tuple[float, float]]] = {}
-    for _a, _b, v, rs, re_ in windows:
-        spans.setdefault(v, []).append((rs, re_))
-
-    def window_overlap(s: float, e: float, v: int) -> float:
-        return sum(max(0.0, min(e, re_) - max(s, rs)) for rs, re_ in spans.get(v, ()))
-
     talk: dict[int, float] = {}
     for s, e, v in raw:
         if (s, e, v) not in kept_keys:
             continue
-        got = window_overlap(s, e, v)
+        got = overlap(s, e, v)
         if got > 1e-6:
             talk[v] = talk.get(v, 0.0) + got
-    assigned_excluded = deferred or any(
-        (s, e, v) not in kept_keys or window_overlap(s, e, v) <= 1e-6 for s, e, v in raw)
     pieces = [Piece(int(a * sr), int(b * sr), v, int(rs * sr), int(re_ * sr))
               for a, b, v, rs, re_ in windows]
-    return settle(pieces, talk=talk, last=None, assigned_excluded=assigned_excluded,
-                  unknown_speech=False)
+    return settle(pieces, talk=talk, last=None,
+                  assigned_excluded=assigned_excluded_of(raw, kept, deferred, overlap),
+                  unknown_speech=unknown_speech)
 
 
 #: Номера меток потока среди номеров голосов демона: выше любого номера трекера
 #: (1..max_speakers), чтобы имя голоса (`voice_names` демона) не спутало одно с другим.
 STREAM_VOICE_BASE = 1000
 
-#: Задание распознавания в режиме `on`: (кусок для STT, номер подписи, сырой кусок для
-#: высоты голоса, номер сверки каналов). Номер подписи называет голос в стенограмме
-#: (метка потока или голос трекера); номер сверки — всегда голос трекера: на нём держится
-#: эхо-фильтр `owner_voice.Heard` (номер микрофона даёт только трекер). Отрицательный номер
-#: сверки — сверку этот кусок не кормит.
-Job = tuple[np.ndarray, "int | None", "np.ndarray | None", "int | None"]
+#: Задание распознавания: (кусок для STT, номер подписи, сырой кусок для высоты голоса,
+#: доли сверки каналов). Номер подписи называет голос в стенограмме (метка потока или голос
+#: трекера); доли сверки — голоса трекера, звучавшие в куске, с долей звука куска, от
+#: большей к меньшей: на них держится эхо-фильтр `owner_voice.Heard` (номер микрофона даёт
+#: только трекер), и каждый голос получает свои секунды, а не один победитель все (выходной
+#: круг 1 №478 B, I3). Пусто — сверку этот кусок не кормит.
+Share = tuple[int, float]
+Job = tuple[np.ndarray, "int | None", "np.ndarray | None", tuple[Share, ...]]
+
+
+def own_share(n: int | None) -> tuple[Share, ...]:
+    """Доли сверки куска трекера: его голос целиком; метка канала — ничего."""
+    return ((n, 1.0),) if n is not None and n >= 0 else ()
 
 
 def with_recon(jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) -> list[Job] | None:
-    """Задания трекера (или канала) в форме `Job`: подпись и сверка — один номер, как до
+    """Задания трекера (или канала) в форме `Job`: подпись и сверка — один голос, как до
     потока."""
     if jobs is None:
         return None
-    return [(piece, n, raw, n) for piece, n, raw in jobs]
+    return [(piece, n, raw, own_share(n)) for piece, n, raw in jobs]
 
 
 def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, int, int]]:
@@ -316,15 +340,37 @@ def tracker_spans(res: SplitResult | None, chunk_len: int) -> list[tuple[int, in
     return [(p.raw_start, p.raw_end, p.voice) for p in res.pieces if p.voice is not None]
 
 
-def recon_voice(spans: list[tuple[int, int, int]], start: int, end: int) -> int:
-    """Номер сверки куска [start, end): голос трекера, больше всех пересёкшийся с ним по
-    времени (при равенстве — первый); пересечения нет — `CHANNEL_LABEL_ONLY`."""
+def recon_shares(spans: list[tuple[int, int, int]], start: int, end: int) -> tuple[Share, ...]:
+    """Доли сверки куска [start, end): голоса трекера, пересёкшиеся с ним, и доля звука куска
+    у каждого — от большей к меньшей (при равенстве — в порядке раскладки). Касание —
+    не пересечение."""
     got: dict[int, int] = {}
     for s, e, v in spans:
         overlap = min(e, end) - max(s, start)
         if overlap > 0:
             got[v] = got.get(v, 0) + overlap
-    return max(got, key=lambda v: got[v]) if got else CHANNEL_LABEL_ONLY
+    length = max(1, end - start)
+    return tuple((v, min(1.0, got[v] / length))
+                 for v in sorted(got, key=lambda v: -got[v]))
+
+
+#: Речь трекера, не покрытая сегментами потока дольше этого (секунды), — речь без метки:
+#: чанк не распознаётся целиком под главной меткой потока (выходной круг 1 №478 B, I2).
+#: Порог — минимальный сегмент трекера: короче трекер речь и не заводит.
+UNLABELLED_S = 0.4
+
+
+def unlabelled_speech(tracker: SplitResult | None, segs: list[tuple[int, int]], sr: int) -> bool:
+    """Есть ли в чанке речь, которую трекер слышит кусками, а поток не разметил. Куски
+    трекера (и с голосом, и без) против объединения сегментов потока, сэмплы от начала
+    чанка. Чанк трекера целиком (`pieces is None`) границ речи не даёт — не судим."""
+    if tracker is None or not tracker.pieces:
+        return False
+    for p in tracker.pieces:
+        covered = sum(max(0, min(e, p.raw_end) - max(s, p.raw_start)) for s, e in segs)
+        if (p.raw_end - p.raw_start) - covered > UNLABELLED_S * sr:
+            return True
+    return False
 
 
 class StreamVoices:
@@ -361,7 +407,7 @@ class StreamVoices:
         """Задания трекера, подписанные через таблицу связей; номер сверки — голос трекера."""
         if jobs is None:
             return None
-        return [(piece, self._link.get(n, n) if n is not None and n >= 0 else n, raw, n)
+        return [(piece, self._link.get(n, n) if n is not None and n >= 0 else n, raw, own_share(n))
                 for piece, n, raw in jobs]
 
     def plan(self, segs: list[tuple[int, int, int]] | None, *, origin: int, chunk: np.ndarray,
@@ -376,10 +422,13 @@ class StreamVoices:
         if not segs:
             return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
         n = len(chunk)
-        raw = [((max(s, origin) - origin) / self._sr, (min(e, origin + n) - origin) / self._sr,
-                self._label(slot, s, e)) for s, e, slot in sorted(segs)
-               if min(e, origin + n) > max(s, origin)]
-        res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt)
+        inside = [(max(s, origin) - origin, min(e, origin + n) - origin, slot)
+                  for s, e, slot in sorted(segs) if min(e, origin + n) > max(s, origin)]
+        raw = [(a / self._sr, b / self._sr, self._label(slot, a + origin, b + origin))
+               for a, b, slot in inside]
+        res = stream_split(raw, n, self._sr, step_s=step_s, min_stt=min_stt,
+                           unknown_speech=unlabelled_speech(tracker, [(a, b) for a, b, _ in inside],
+                                                            self._sr))
         jobs = jobs_for(res, chunk, channel_label_neutral=neutral)
         if jobs is None:
             return None, {"source": "stream", "pieces": 0, "no_recon": 0, "recon_agree": 0}
@@ -389,13 +438,14 @@ class StreamVoices:
         out: list[Job] = []
         no_recon = agree = 0
         for (piece, label, raw_piece), (a, b) in zip(jobs, bounds):
-            recon = recon_voice(spans, a, b)
-            if recon < 0:
+            shares = recon_shares(spans, a, b)
+            if not shares:
                 no_recon += 1
             elif label is not None and label >= STREAM_VOICE_BASE:
-                agree += self._link.get(recon) == label
-                self._link[recon] = label
-            out.append((piece, label, raw_piece, recon))
+                lead = shares[0][0]
+                agree += self._link.get(lead) == label
+                self._link[lead] = label
+            out.append((piece, label, raw_piece, shares))
         return out, {"source": "stream", "pieces": len(out), "no_recon": no_recon,
                      "recon_agree": agree}
 
@@ -673,17 +723,7 @@ class SegmentTracker:
                                               min_stt=self.min_stt,
                                               step_s=self.step_s)
         kept_keys = {(s, e, v) for s, e, v in kept}
-        spans: dict[int, list[tuple[float, float]]] = {}
-        for _a, _b, v, rs, re_ in windows:
-            spans.setdefault(v, []).append((rs, re_))
-
-        def window_overlap(s: float, e: float, v: int) -> float:
-            """Сколько секунд куска дошло до окон СВОЕГО голоса. По
-            пересечению, не по вложению: вложенное чужое «угу» режет кусок
-            монолога на части, и целиком он не входит ни в одну — вложение
-            хоронило живого кандидата вместе с монологом (ревью 15.08 ×4)."""
-            return sum(max(0.0, min(e, re_) - max(s, rs))
-                       for rs, re_ in spans.get(v, ()))
+        window_overlap = window_overlap_of(windows)
 
         def in_window(s: float, e: float, v: int) -> bool:
             return window_overlap(s, e, v) > 1e-6
@@ -737,12 +777,7 @@ class SegmentTracker:
                         renum.get(v, v) + 1 if renum.get(v, v) >= 0 else None,
                         int(rs * self.sr), int(re_ * self.sr))
                   for a, b, v, rs, re_ in windows]
-        # Исключённая НАЗНАЧЕННАЯ речь: придержка или микро-кусок. Такая речь
-        # запрещает фолбэк на STT целого чанка и, без окон, требует пропуска.
-        assigned_excluded = deferred or any(
-            v is not None and ((s, e, v) not in kept_keys
-                               or not in_window(s, e, v))
-            for s, e, _sec, _emb, v in entries)
+        assigned_excluded = assigned_excluded_of(raw, kept, deferred, window_overlap)
         # Кусок без назначения (короткий незнакомец): при наличии окон он
         # тоже запрещает фолбэк — его слова уехали бы главному; но чанк из
         # одних таких кусков остаётся честным fail-open, а не пропуском.
