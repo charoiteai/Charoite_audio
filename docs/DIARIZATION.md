@@ -52,7 +52,12 @@ Charoite uses two diarization passes:
    disk is not affected, and the after-meeting pass labels those minutes again.
 2. **Offline re-pass** (after Stop): the full recording is re-diarized per
    channel with sherpa-onnx (the same two models). The system channel is
-   clustered with the number of voices the live session heard as a hint;
+   clustered with the number of voices the live session heard as a hint.
+   When the system channel is silent (an in-room meeting: no recording or no
+   speech found in it), the same hint from three voices goes to the
+   microphone as an upper bound, with the shard merge after it. A single
+   microphone label with several live voices gets no name: it is people merged
+   together, and the transcript header says why;
    microphone segments that overlap system-channel speech by more than half are
    dropped as echo; clusters with too little speech (under 25 s on the system
    channel, under 10 s on the microphone) go to the large cluster nearest in
@@ -553,8 +558,9 @@ Segmentation often splits one person's speech across several clusters —
 especially in a room recorded by a single microphone: someone turns away,
 leans back, drops their voice. The merge step compares average cluster
 embeddings by cosine and joins the close ones. It runs when clustering picks
-the number of voices itself: always on the microphone channel, and on the
-system channel when the live session gave no usable hint.
+the number of voices itself: on the microphone channel (in an in-room meeting
+also after the hint, which is then only an upper bound), and on the system
+channel when the live session gave no usable hint.
 
 On Aug 14 the threshold was measured on a real recording: 65 minutes, one
 microphone, three speakers. Pairwise similarity split cleanly:
