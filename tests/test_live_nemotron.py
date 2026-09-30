@@ -369,6 +369,13 @@ def _live(tmp_path, **kw):
     return sh, door, says
 
 
+def _over(sh, tmp_path):
+    """Тень кончилась и её строка `end` уже на диске: журнал дописывает `_drain` вне замка,
+    чуть позже перехода в DEAD (№533)."""
+    path = tmp_path / "live.jsonl"
+    return sh.state == ln.DEAD and path.exists() and '"type": "end"' in path.read_text(encoding="utf-8")
+
+
 def _placed(number, start, n, label="blackhole"):
     return audio.Placed("Собеседник", np.zeros(n, dtype=np.float32), start, (label, number))
 
@@ -483,7 +490,7 @@ def test_stop_while_the_model_loads_cancels_the_handshake(tmp_path):
     _wait(lambda: door.on_eof is not None, what="дверь зовётся")
     sh.note_chunk(_placed(0, 0, SR), "off")
     sh.stop()
-    _wait(lambda: sh.state == ln.DEAD, what="тень закончилась")
+    _wait(lambda: _over(sh, tmp_path), what="тень закончилась")
     assert sh.reason == "остановлен до старта потока" and says == []
     assert [c["outcome"] for c in _chunks(tmp_path / "live.jsonl")] == [ln.BEFORE_STREAM]
 
@@ -534,7 +541,7 @@ def test_a_door_that_raises_kills_the_shadow_with_an_end_line(tmp_path):
     """Исключение вне перечня двери не оставляет тень в «стартует» навсегда: смерть со
     строкой end и строкой человеку (выходной круг 1 по №478 A2, I1)."""
     sh, door, says = _shadow(tmp_path, door=_BrokenDoor())
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "не стартовал" in sh.reason and "дверь сломалась" in sh.reason
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
     _wait(lambda: says, what="строка человеку")
@@ -793,7 +800,7 @@ def test_a_child_with_the_wrong_frame_unit_dies_and_the_journal_names_why(tmp_pa
             break
         hub._consume(cap, voice[pos:pos + 1600])
         hub.pull_placed()
-    _wait(lambda: sh.state == ln.DEAD, timeout=30, what="ребёнок умер на сверке")
+    _wait(lambda: _over(sh, tmp_path), timeout=30, what="ребёнок умер на сверке")
     end = _journal(tmp_path / "live.jsonl")[-1]
     assert end["type"] == "end" and end["exit"] == fp.FAILED
     assert "впереди поданного звука" in end["exit_reason"] and "единица кадра не та" in end["exit_reason"]
@@ -847,7 +854,7 @@ def test_hub_to_child_to_journal_keeps_one_axis(tmp_path, monkeypatch):
         pos += block
         _wait(lambda: sh._queued < 2 * SR, what="ребёнок успевает")
     sh.stop()
-    _wait(lambda: sh.state == ln.DEAD, timeout=30, what="поток закрыт")
+    _wait(lambda: _over(sh, tmp_path), timeout=30, what="поток закрыт")
     assert sh.reason == "остановлен" and says == []
     lines = _journal(tmp_path / "live.jsonl")
     start0 = next(x["start0"] for x in lines if x["type"] == "start")
@@ -971,7 +978,7 @@ def test_a_closed_input_of_the_child_stops_the_shadow_with_the_child_exit(tmp_pa
     door.child.exit = exit_
     sh, door, _ = _live(tmp_path, door=door)
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert sh.reason == f"вход ребёнка закрыт (труба закрыта); ребёнок: {said}"
     end = _end(tmp_path)
     assert end["exit"] == exit_.kind and end.get("exit_reason", "") == exit_.reason
@@ -1302,7 +1309,7 @@ def test_no_thread_for_the_writer_or_the_death_still_kills_the_child(tmp_path, m
         return real(target, name=name, role=role, **kw)
     monkeypatch.setattr(threads, "spawn", exhausted)
     sh, door, _ = _shadow(tmp_path)
-    _wait(lambda: sh.state == ln.DEAD, what="тень умерла")
+    _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "писатель не завёлся" in sh.reason
     assert door.child.killed.is_set(), "ребёнок с моделью остался без хозяина"
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
@@ -1342,6 +1349,14 @@ def test_a_stop_without_a_timer_kills_at_once_without_waiting(tmp_path, monkeypa
 #: Потолок возврата `on_frame`, пока другая нить тени стоит на диске или опросе памяти:
 #: блок хаба — 0,25 с звука; без правки `on_frame` ждал все 0,5 с сна.
 FRAME_BUDGET_S = 0.05
+
+
+def _start_thread_done():
+    """Нить запуска дописывает журнал в своём finally уже после LIVE — дождаться её, чтобы
+    очередь журнала принадлежала тесту."""
+    for t in threading.enumerate():
+        if t.name == "nemotron-live-start":
+            t.join(5)
 
 
 def _frame_time(sh, start, n=1600):
@@ -1391,9 +1406,10 @@ class _SlowJournal:
 
 def test_the_audio_thread_does_not_wait_for_the_journal(tmp_path):
     sh, door, _ = _live(tmp_path)
+    _start_thread_done()
     slow = sh._journal = _SlowJournal(sh._journal)
-    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
     slow.gate.clear()
+    sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))     # строка start — в очередь
     stt = threading.Thread(target=sh.note_chunk, args=(_placed(1, 0, 1600), "off"))
     stt.start()
     assert slow.inside.wait(5), "распознавание не дошло до записи"
@@ -1409,9 +1425,7 @@ def test_the_audio_thread_leaves_its_lines_to_the_next_writer_in_order(tmp_path)
     """`on_frame` на диск не пишет: строка `start` ждёт в очереди и ложится раньше
     строк, изменивших состояние после неё."""
     sh, door, _ = _live(tmp_path)
-    for t in threading.enumerate():         # нить запуска дописывает журнал в своём finally
-        if t.name == "nemotron-live-start":
-            t.join(5)
+    _start_thread_done()
     sh.on_frame("blackhole", 0, np.zeros(1600, dtype=np.float32))
     assert "start" not in [x["type"] for x in _journal(tmp_path / "live.jsonl")]
     door.on_message({"type": "front", "fed": 1600, "frames": 1})
