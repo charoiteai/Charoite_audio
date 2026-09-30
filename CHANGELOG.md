@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.90.0](https://github.com/charoiteai/Charoite_audio/compare/v0.89.0...v0.90.0) (2026-09-30)
+
+
+### Features
+
+* **graph:** charoite-graph command line searches a folder without the app ([#323](https://github.com/charoiteai/Charoite_audio/issues/323)) ([#698](https://github.com/charoiteai/Charoite_audio/issues/698)) ([c4bde51](https://github.com/charoiteai/Charoite_audio/commit/c4bde518a472d2a3a7e7d2371ebefdfce776055f))
+
+
+### Bug Fixes
+
+* **mutate:** the mutator names its data root through the canon door ([#440](https://github.com/charoiteai/Charoite_audio/issues/440)) ([#695](https://github.com/charoiteai/Charoite_audio/issues/695)) ([b17c188](https://github.com/charoiteai/Charoite_audio/commit/b17c1889db9a8a146db9a3a05cb5b0b3bdfe768d))
+* **net:** requests, urllib and the audio websocket reach 127.0.0.1 directly, not through a proxy ([#699](https://github.com/charoiteai/Charoite_audio/issues/699)) ([d4c7549](https://github.com/charoiteai/Charoite_audio/commit/d4c75496ecd013f635eb189698d669415a7fc98a))
+
 ## [0.89.0](https://github.com/charoiteai/Charoite_audio/compare/v0.88.1...v0.89.0) (2026-09-29)
 
 
