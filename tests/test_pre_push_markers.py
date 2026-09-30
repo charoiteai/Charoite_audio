@@ -191,10 +191,10 @@ def test_binary_noise_is_not_read_as_text(repo):
 
 def test_oversized_binary_is_a_refusal_not_a_silent_skip(repo, monkeypatch):
     (repo.work / "big.bin").write_bytes(b"\x00" * 4096)
-    repo.commit("big")
+    sha = repo.commit("big")
     monkeypatch.chdir(repo.work)
     monkeypatch.setattr(guard, "BLOB_LIMIT", 1024)
-    with pytest.raises(guard.GitError, match="больше потолка"):
+    with pytest.raises(guard.GitError, match=f"^{sha[:9]} big.bin: .*больше потолка"):
         guard.scan_commits([f"{repo.base}..HEAD"], None, identity=False)
 
 
@@ -640,12 +640,12 @@ def test_clip_keeps_sixty_characters():
 
 def test_git_error_names_what_git_said(repo):
     p = guard_run(repo.work, "--range", "deadbeef..HEAD", env=repo.env)
-    assert p.returncode == 1 and "deadbeef" in p.stderr, p.stderr
+    assert p.returncode == 1 and "deadbeef" in p.stderr and "git log -z:" in p.stderr, p.stderr
 
 
 def test_git_ok_stays_quiet(repo, capfd, monkeypatch):
     monkeypatch.chdir(repo.work)
-    assert guard.git_ok("cat-file", "-e", "a" * 40) is False
+    assert guard.git_ok("rev-parse", "--verify", "нет-такой-ревизии") is False
     assert capfd.readouterr().err == ""
 
 
@@ -767,7 +767,7 @@ def test_report_lists_fifty_and_counts_the_rest(repo, count, tail):
     repo.write("many.md", f"{MARKER}\n" * count)
     repo.commit("many")
     p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
-    assert ("… ещё 1" in p.stderr) is tail and "… ещё 0" not in p.stderr, p.stderr
+    assert ("  … ещё 1\n" in p.stderr) is tail and ("… ещё" in p.stderr) is tail, p.stderr
 
 
 def test_empty_marker_list_is_a_refusal(repo):
@@ -818,3 +818,20 @@ def test_pre_commit_author_check_is_skipped_only_in_ci(repo, ci):
     env = dict(repo.env, **({"CI": ci} if ci else {}))
     p = guard_run(repo.work, env=env)
     assert (p.returncode == 0) is bool(ci), p.stderr
+
+
+def test_journal_line_that_is_not_a_commit_is_named(monkeypatch):
+    monkeypatch.setattr(guard, "git", lambda *a, **k: b"\x01notasha\n")
+    with pytest.raises(guard.GitError, match="— 'notasha'"):
+        list(guard.added_lines(["x"]))
+
+
+def test_file_name_starting_with_the_record_mark(repo):
+    """Имя файла вправе начинаться с \x01 — это поле, а не граница коммита."""
+    (repo.work / "\x01лишнее.md").write_text("чисто\n", encoding="utf-8")
+    (repo.work / ("f" + "0" * 40)).write_text("чисто\n", encoding="utf-8")
+    (repo.work / f"я{MARKER}.md").write_text("чисто\n", encoding="utf-8")
+    sha = repo.commit("mark")
+    p = guard_run(repo.work, "--range", f"{repo.base}..HEAD", env=repo.env)
+    hits = [ln.strip() for ln in p.stderr.splitlines() if "имя файла" in ln]
+    assert hits == [f"{sha[:9]} имя файла я***.md: приватный маркер"], p.stdout + p.stderr
