@@ -56,9 +56,10 @@ Charoite uses two diarization passes:
    When the system channel is silent (an in-room meeting: no recording or no
    speech found in it), the same hint from three voices goes to the
    microphone as an upper bound, with the shard merge after it. A single
-   microphone label with several live voices gets no name: it is people merged
-   together, and the transcript header says why;
-   microphone segments that overlap system-channel speech by more than half are
+   microphone label with no call and 3–12 live voices gets no name (its speech
+   cannot go to one person), and the transcript header says why. A failed
+   system-channel diarization or a recording under 20 s is not silence.
+   Microphone segments that overlap system-channel speech by more than half are
    dropped as echo; clusters with too little speech (under 25 s on the system
    channel, under 10 s on the microphone) go to the large cluster nearest in
    time, so no text is lost; names heard in the conversation are assigned by

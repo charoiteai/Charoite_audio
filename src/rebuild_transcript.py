@@ -109,8 +109,9 @@ ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников разм�
 #: было бы ложью, поэтому метка остаётся нейтральной. Своя строка, не
 #: NAMES_PENDING_PREFIX: совет «пересобрать» тут не поможет — пересборка
 #: упрётся в ту же разметку.
-MIC_COLLAPSED_NOTE = ("> ⚠️ Голоса в микрофоне слились в одну метку, хотя живая стенограмма "
-                      "слышала {live} — имена не присвоены, впишите их вручную.")
+MIC_COLLAPSED_NOTE = ("> ⚠️ Разметка микрофона дала одну метку, а живая стенограмма слышала "
+                      "голосов: {live}. Имя метке не присвоено, чтобы не отдать одному человеку "
+                      "речь всех — впишите имена вручную.")
 #: Причина в шапке, когда Nemotron не разметил. Сырой отказ движка — путь
 #: интерпретатора, OSError, последняя строка stderr с путями весов и рецептом
 #: `hf download --local-dir …` — несёт имя учётки и уходит только в журнал
@@ -802,8 +803,13 @@ def collapsed_mic_labels(chan: dict[str, str], live_count: int | None,
     одного живого участника на такой метке — ложь о всех остальных (встреча
     29.09: 93 реплики шестерых под одним именем), поэтому ей не дают имени ни
     перенос по времени, ни модель. Две и больше меток — не слияние: очная
-    встреча на двоих с живым трекером, насчитавшим шесть, остаётся с именами."""
-    if not call_silent or live_count is None or live_count < MIC_HINT_MIN:
+    встреча на двоих с живым трекером, насчитавшим шесть, остаётся с именами.
+    Живой счёт выше HINT_RANGE — тот, которому не верит и подсказка: вердикт
+    по нему не выносим (выход r1, Sonnet I2). Монолог при раздробленном живом
+    трекере тоже даёт одну метку — цена ложного срабатывания: имя вписать
+    руками, плашка говорит факт, а не «слились»."""
+    if (not call_silent or live_count is None
+            or not MIC_HINT_MIN <= live_count <= HINT_RANGE[1]):
         return set()
     neutral = {lbl for lbl, c in chan.items()
                if c == "mic" and channel_labels.is_neutral_label(lbl)}
@@ -833,7 +839,7 @@ def minutes_names(meta: dict) -> dict[str, str]:
 
 
 def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]],
-                  allowed: set[str], exclude: set[str] = frozenset()) -> dict[str, str]:
+                  allowed: set[str], exclude: typing.AbstractSet[str] = frozenset()) -> dict[str, str]:
     """Переносит имена из живой стенограммы на метки пересборки ПО ВРЕМЕНИ.
 
     Метки живой сессии и пересборки — разные кластеризации, поэтому переносить
@@ -1005,13 +1011,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
                 bh_raw = diarize_channel(bh, sr, num_speakers=speakers_hint(meta) or -1)
-    # Канал собеседников молчит: записи нет, она не размечалась (короче 20 с,
-    # сбой) или размечена пустой. Одно значение на подсказку микрофону и на
-    # вердикт слияния ниже — два места не расходятся (№559, вход r3 GLM I2).
-    call_silent = not bh_raw
-    silence = ("канала собеседников нет" if bh_p is None else
-               "канал собеседников не размечен" if bh_raw is None else
-               "канал собеседников размечен пустым")
+    # Канал собеседников молчит: записи нет или она размечена пустой. Сбой
+    # разметки и запись короче 20 с (None) — не тишина: звонок мог быть, число
+    # живых голосов считает его собеседников, а эхо-фильтру микрофона не по чему
+    # резать (выход r1 №559, обе головы). Одно значение на подсказку микрофону
+    # и на вердикт слияния ниже — два места не расходятся.
+    call_silent = bh_p is None or bh_raw == []
+    silence = "канала собеседников нет" if bh_p is None else "канал собеседников размечен пустым"
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
@@ -1026,6 +1032,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
                 mic_raw = diarize_channel(mic, sr, num_speakers=hint, merge_shards=True)
                 if not mic_raw:
                     log("mic: разметка с подсказкой ничего не дала — повторяю без подсказки")
+                    _yield_to_live("разметка голосов микрофона", cap=600)
                     mic_raw = diarize_channel(mic, sr)
             else:
                 mic_raw = diarize_channel(mic, sr)

@@ -615,13 +615,39 @@ def test_no_call_recording_at_all_also_hints_the_mic(meeting):
     assert meeting["calls"] == [("mic", 7)]
 
 
-def test_a_failed_call_channel_counts_as_silent(meeting):
-    """Сбой разметки канала собеседников (None) — тот же «канал молчит»: подсказка со
-    склейкой — верхняя граница, вреда не больше, чем от авто (вход r3, GLM I2)."""
+def test_a_failed_call_channel_is_not_silence(meeting):
+    """Сбой разметки канала собеседников (None) — не тишина: звонок мог быть, живой
+    счёт включает его собеседников. Микрофон — в авто, вердикта нет (выход r1)."""
     _room(meeting)
     meeting["raw"]["blackhole"] = None
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert ("mic", -1) in meeting["calls"] and ("mic", 7) not in meeting["calls"]
+    assert "дала одну метку" not in text
+
+
+def test_a_short_call_recording_is_not_silence(meeting):
+    _room(meeting)
+    meeting["len"]["blackhole"] = 20
     rt.rebuild(meeting["live"], CFG)
-    assert ("mic", 7) in meeting["calls"]
+    assert meeting["calls"] == [("mic", -1)]
+
+
+def test_the_mic_hint_goes_up_to_twelve(meeting):
+    _room(meeting, 12)
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", 12) in meeting["calls"]
+
+
+@pytest.mark.parametrize("speakers,verdict", [(12, True), (13, False)])
+def test_the_collapse_verdict_trusts_the_live_count_only_in_the_hint_range(meeting, speakers, verdict):
+    """Выше диапазона подсказки живому счёту не верим — и вердикт по нему не выносим
+    (выход r1, Sonnet I2)."""
+    _room(meeting, speakers)
+    meeting["raw"]["mic"] = lambda n: [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert ("дала одну метку" in text) is verdict
+    assert ("**Анна**" in text) is not verdict
 
 
 @pytest.mark.parametrize("speakers", [2, 13])
@@ -643,12 +669,15 @@ def test_a_call_that_speaks_keeps_the_mic_on_auto(meeting):
     assert ("mic", -1) in meeting["calls"] and ("mic", True) not in meeting["merge"]
 
 
-def test_an_empty_hinted_mic_falls_back_to_auto(meeting):
+def test_an_empty_hinted_mic_falls_back_to_auto(meeting, monkeypatch):
     """Подсказка ничего не дала — повтор без неё, а не потеря канала (вход r3, Sonnet I2)."""
     _room(meeting)
     auto = [(0.0, 40.0, 3), (45.0, 57.0, 4)]
     meeting["raw"]["mic"] = lambda n: [] if n > 0 else list(auto)
+    yields = []
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: yields.append(what))
     out = rt.rebuild(meeting["live"], CFG)
+    assert yields.count("разметка голосов микрофона") == 2, "повтор — тоже тяжёлая разметка, уступка перед ним"
     assert [c for c in meeting["calls"] if c[0] == "mic"] == [("mic", 7), ("mic", -1)]
     assert out is not None
 
@@ -666,6 +695,7 @@ def test_a_mic_collapsed_into_one_label_gets_no_live_name_and_no_model_name(meet
     assert "**Анна**" not in text and "**Борис**" not in text and "**Собеседник 1**" in text
     assert not any(lines for lines in asked)
     assert rt.MIC_COLLAPSED_NOTE.format(live=7) in text
+    assert "слышала голосов: 7." in text
 
 
 def test_two_mic_labels_are_not_a_collapse_and_keep_the_live_name(meeting):
@@ -673,7 +703,7 @@ def test_two_mic_labels_are_not_a_collapse_and_keep_the_live_name(meeting):
     (вход r3, Sonnet I1: порог «≤ живых/3» снял бы верные имена)."""
     _room(meeting)
     text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
-    assert "**Анна**" in text and "слились в одну метку" not in text
+    assert "**Анна**" in text and "дала одну метку" not in text
 
 
 def test_one_mic_label_with_few_live_voices_is_not_a_collapse(meeting):
@@ -694,7 +724,7 @@ def test_a_call_with_one_mic_voice_is_not_a_collapse(meeting):
     meeting["meta"] = {"speakers": 7, "names": {"Собеседник 2": "Анна"}}
     meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
     text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
-    assert "слились в одну метку" not in text
+    assert "дала одну метку" not in text
 
 
 @pytest.mark.parametrize("value,count,hint", [
