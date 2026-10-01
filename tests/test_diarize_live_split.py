@@ -734,6 +734,18 @@ def test_overlapping_chunks_do_not_count_the_same_speech_twice():
     assert _shown(labels, 0, 4.5, 5.0) == STREAM_VOICE_BASE
 
 
+def test_plan_counts_speech_on_overlapping_chunks_once():
+    """Демон кормит порог обрезками перекрывающихся чанков (шаг 2,5 с при чанке 3 с): 4,9 с
+    речи — не 5,4 с суммы, метки ещё нет (выходной круг №580, GLM M2)."""
+    sv = StreamVoices(sr=SR, show_s=5.0)
+    seg = [(0, int(4.9 * SR), 0)]
+    first, _ = _plan(sv, seg, origin=0, tracker=None)
+    second, _ = _plan(sv, seg, origin=int(2.5 * SR), tracker=None)
+    assert [j[1] for j in first + second] == [CHANNEL_LABEL_ONLY, CHANNEL_LABEL_ONLY]
+    third, _ = _plan(sv, [(int(4.9 * SR), 7 * SR, 0)], origin=5 * SR, tracker=None)
+    assert third[0][1] == STREAM_VOICE_BASE
+
+
 def test_speech_of_an_unshown_slot_goes_under_the_channel_label_and_links_nobody():
     """До порога кусок слота — под меткой канала, не под меткой связи трекера: трекер мог
     связать нового человека с чужой меткой (Sonnet I3)."""

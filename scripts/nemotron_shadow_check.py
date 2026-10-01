@@ -87,6 +87,7 @@ class Journal:
     mems: list[dict] = dataclasses.field(default_factory=list)
     v: int = 1
     mode: str = live_nemotron.SHADOW
+    show_s: float | None = None         # порог показа из заголовка `on` (`slot_show_s`); нет — None
 
     @property
     def frame_s(self) -> float:
@@ -141,7 +142,8 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
         raise Refused(f"версия журнала {header.get('v')!r}, сверка читает {ACCEPTED_V}")
     return Journal(ready=ready, start0=int(start["start0"]), fronts=fronts, segs=segs,
                    chunks=chunks, end=end, sr=int(header["sr"]), mems=mems, v=int(header["v"]),
-                   mode=str(header.get("mode", live_nemotron.SHADOW)))
+                   mode=str(header.get("mode", live_nemotron.SHADOW)),
+                   show_s=header.get("slot_show_s"))
 
 
 # ------------------------------------------------------------------ годность
@@ -353,12 +355,36 @@ def stream_segments(j: Journal) -> list[Interval]:
 CHANNEL = "channel"
 
 
-def shown_segments(j: Journal, *, show_s: float = live_nemotron.SLOT_SHOW_S) -> list[Interval]:
-    """Сегменты потока под метками, которые увидит лента режима `on`: `diarize_live.SlotLabels`
-    — тот же класс, что у демона (сырые слоты включили `on` по чужой цифре, №580)."""
-    segs = [(s["start"], s["end"], s["slot"]) for s in j.segs]
-    return [(s / j.sr, e / j.sr, CHANNEL if label is None else f"L{label}")
-            for s, e, label in diarize_live.shown_segments(segs, sr=j.sr, show_s=show_s)]
+def shown_segments(j: Journal, *, show_s: float | None = None) -> tuple[list[Interval], float]:
+    """Сегменты потока под метками, которые увидит лента режима `on`, и секунды речи потока,
+    не дошедшей до раскладки по потоку.
+
+    Демон кормит `diarize_live.SlotLabels` только обрезками сегментов по чанкам, которые
+    поток разметил (`outcome: labeled`), в порядке чанков (выходной круг №580, обе головы).
+    Сверка кормит тот же класс теми же обрезками: иначе порог показа в сверке наступал бы
+    раньше, чем в ленте. Речь вне размеченных чанков в ленте идёт запасом трекера; связи
+    трекера сверка не знает и считает её под меткой канала — оценка снизу. Порог — из
+    заголовка журнала, без него — нынешняя константа."""
+    show_s = show_s if show_s is not None else (j.show_s if j.show_s is not None else live_nemotron.SLOT_SHOW_S)
+    labels = diarize_live.SlotLabels(sr=j.sr, show_s=show_s)
+    spans = sorted((int(c["start"]), int(c["end"])) for c in j.chunks
+                   if c.get("outcome") == live_nemotron.LABELED)
+    segs = sorted((int(s["start"]), int(s["end"]), int(s["slot"])) for s in j.segs)
+    out: list[Interval] = []
+    fed: list[tuple[int, int]] = []
+    for cs, ce in spans:
+        for s, e, slot in segs:
+            a, b = max(s, cs), min(e, ce)
+            if b > a:
+                label = labels.label(slot, a, b)
+                out.append((a / j.sr, b / j.sr, CHANNEL if label is None else f"L{label}"))
+                fed.append((a, b))
+    for s, e, _slot in segs:                     # речь вне размеченных чанков — метка канала
+        rest, _none = diarize_live.uncovered([(s, e, None)], fed, 1)
+        out.extend((a / j.sr, b / j.sr, CHANNEL) for a, b, _v in rest)
+    unfed = sum(b - a for s, e, _slot in segs
+                for a, b, _v in diarize_live.uncovered([(s, e, None)], fed, 1)[0])
+    return sorted(out), round(unfed / j.sr, 1)
 
 
 def foreign(m: dict) -> dict:
@@ -579,11 +605,12 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         },
         "c_agreement_with_final": {"stream": der(fin, stream, total)},
     }
-    shown = shown_segments(j)
+    shown, unfed_s = shown_segments(j)
     sm = overlap_matrix(shown, fin)
     out["d_shown"] = {
         "labels": len({lab for _, _, lab in shown if lab != CHANNEL}),
-        "channel_s": round(sum(e - s for s, e, lab in shown if lab == CHANNEL), 1),
+        "channel_s": round(sum(cnt for (p, _q), cnt in sm.items() if p == CHANNEL), 1),
+        "unfed_s": unfed_s,
         "voices_final": len({lab for _, _, lab in fin}),
         **foreign(sm),
         "der": der(fin, shown, total),

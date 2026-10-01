@@ -583,8 +583,9 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   channel label while the stream has not died. A tracker number would start one
   "Speaker N", and the stream label of the same person a second one. The stream
   label does not inherit the tracker's name: the tracker merges people, and the
-  name would go to the wrong one. So the first seconds of a meeting, before the
-  handshake, run under the channel label. Once the stream has died, the tracker's
+  name would go to the wrong one. So the start of a meeting, before the
+  handshake (usually 1–3 s, at most `HANDSHAKE_S` = 120 s), and every chunk the
+  stream did not label run under the channel label. Once the stream has died, the tracker's
   own numbers come back, as in `off`.
 - **Memory.** Every child — shadow or `on` — runs with the MLX cache capped at
   512 MB: replaying two recordings, the child's footprint stayed at 0.8–0.9 GB

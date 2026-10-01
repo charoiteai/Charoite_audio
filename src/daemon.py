@@ -1345,9 +1345,11 @@ def main():
                     # канал потока в `on` вне ожидания (поток ещё не LIVE или уже мёртв):
                     # куски трекера — под метками связей, иначе названный потоком человек
                     # на краях потока получал бы второе имя
-                    jobs = tracker_jobs_on(stream_voices, tracker_jobs,
-                                           stream_channel=placed.seq[0] == nemotron_shadow.stream_channel,
-                                           stream_dead=nemotron_shadow.dead)
+                    # план stream подписывает чанк ниже (label_chunk): здесь — только diarize
+                    jobs = (tracker_jobs_on(stream_voices, tracker_jobs,
+                                            stream_channel=placed.seq[0] == nemotron_shadow.stream_channel,
+                                            stream_dead=nemotron_shadow.dead)
+                            if plan == "diarize" else None)
                 else:
                     jobs = [(chunk, None, None, ())]  # None: метку решит voice_label
                     tracker_state = "off"
