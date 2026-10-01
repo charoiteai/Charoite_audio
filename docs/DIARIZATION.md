@@ -51,15 +51,20 @@ Charoite uses two diarization passes:
    channel label until the queue drops below half a chunk. The recording on
    disk is not affected, and the after-meeting pass labels those minutes again.
 
-   The live tracker holds up to eight voices across both channels. Once they
-   are taken, speech of a new voice on the remote channel is still
-   transcribed — under the channel label, without a voice number; the
-   after-meeting pass assigns the voices. On the microphone such speech is not
-   transcribed live: the microphone label signs the owner, and a stranger in
-   the room must not be signed with it.
+   The live tracker holds up to eight voices on the remote channel and up to
+   eight more on the microphone: with one shared limit, a call with seven or
+   more remote speakers took every slot and left the owner's voice without a
+   number. Once a channel's slots are taken, speech of a new voice on the
+   remote channel is still transcribed — under the channel label, without a
+   voice number; the after-meeting pass assigns the voices. On the microphone
+   such speech is not transcribed live: the microphone label signs the owner,
+   and a stranger in the room must not be signed with it. The simplified
+   tracker mode (no segmentation model) keeps one shared limit for both
+   channels.
 2. **Offline re-pass** (after Stop): the full recording is re-diarized per
    channel with sherpa-onnx (the same two models). The system channel is
-   clustered with the number of voices the live session heard as a hint.
+   clustered with the number of voices the live session heard as a hint,
+   capped at eight (one channel's slots in the live tracker).
    When the system channel was recorded for most of the meeting and no speech
    was found in it (an in-room meeting) and the live session heard 3–12
    voices, the microphone is clustered without a hint and the shard merge

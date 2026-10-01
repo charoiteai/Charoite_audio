@@ -10,7 +10,7 @@
   дополнены тишиной до равной длины: срез собеседников есть в каждом `pull_placed`, где
   есть срез микрофона, и правило эха по стенным часам (`_sys_speech_until`) не
   срабатывает при любом темпе.
-- Трекер — `SegmentTracker` той же фабрикой, что у демона, общий на оба канала. Ветка
+- Трекер — `SegmentTracker` той же фабрикой `live_tracker`, что у демона (шаг нарезки, квота мест микрофона), общий на оба канала. Ветка
   чанка — зеркало цикла STT демона (`daemon.py`, выбор плана → `guarded_split` →
   `jobs_for` → `diarized_state` → `note_chunk`), без распознавания: STT в прогоне нет,
   очередь не растёт, план всегда «раскладка».
@@ -420,8 +420,8 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
     # для кусков без голоса (№571) не собирается здесь своим правилом
     chan = channel_labels.ChannelLabels.from_capture(
         cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])
-    tracker = diarize_live.SegmentTracker(seg_model, emb_model, sample_rate=hub.sr,
-                                          step_s=diarize_live.tracker_step_s(hub.chunk_s, hub.overlap_s))
+    tracker = diarize_live.live_tracker(seg_model, emb_model, sample_rate=hub.sr, chunk_s=hub.chunk_s,
+                                        overlap_s=hub.overlap_s, mic_channel=chan.mic_raw)
 
     witness = Witness(root / "timing.jsonl")
     original_begin = live_nemotron.Shadow.begin

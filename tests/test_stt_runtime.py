@@ -52,7 +52,10 @@ def test_daemon_measures_and_sheds_before_positional_split():
     loop = source[source.index("    def stt_loop():"):
                   source.index("    # Промпт и фильтр тезисов")]
     policy = loop.index("stt_runtime.should_shed_diarization")
-    split = loop.index("res, split_failed = stt_runtime.guarded_split(spk_tracker")
+    # вызов целиком: третий аргумент — подпись канала (`speaker`), а не метка захвата
+    # `placed.seq[0]`; с ней квота мест микрофона (№573) молча вернулась бы к общему
+    # лимиту (финальный Opus по №573, I2)
+    split = loop.index("res, split_failed = stt_runtime.guarded_split(spk_tracker, chunk, speaker)")
     assert policy < split
     # Ветка разгрузки: план целиком из чистой функции, метка — константа, а
     # не литерал -1 (n=0 — валидный индекс голоса; ревью 21.08, DeepSeek).
