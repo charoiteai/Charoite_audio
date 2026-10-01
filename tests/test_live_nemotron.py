@@ -669,32 +669,84 @@ def _pressure(levels):
     return lambda: {"pressure": next(it), "swap_used_mb": 1000}
 
 
-def _fronts(sh, door, clock, n):
+def _fronts(sh, door, clock, n, phys=None):
+    """`n` фронтов через `PRESSURE_CHECK_S`; `phys` — след ребёнка в каждом (список или число)."""
     for k in range(n):
         clock.now += ln.PRESSURE_CHECK_S
-        door.on_message({"type": "front", "fed": SR, "frames": 1 + k})
+        msg = {"type": "front", "fed": SR, "frames": 1 + k}
+        value = phys[k] if isinstance(phys, list) else phys
+        if value is not None:
+            msg["phys_mb"] = value
+        door.on_message(msg)
 
 
-def test_memory_pressure_twice_in_a_row_stops_the_shadow(tmp_path):
-    """Опыт 29.09: с потоком своп рос на 2,7–6,9 ГБ за фазу и давление доходило до 2 —
-    тень обязана уступить встрече, а не копить своп."""
+def test_critical_pressure_stops_the_stream_at_the_first_check(tmp_path):
+    """Уровень 4: macOS уже выбирает, кого завершить, — выбор делает поток, а не ядро
+    (вход №579, GLM C1): с первой проверки, без второй."""
     clock = _Clock()
-    sh, door, says = _live(tmp_path, clock=clock, memory=_pressure([1, 2, 2]))
+    sh, door, says = _live(tmp_path, clock=clock, memory=_pressure([1, 4]))
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
-    _fronts(sh, door, clock, 3)
-    assert sh.state == ln.DEAD and "давление памяти" in sh.reason
+    _fronts(sh, door, clock, 1, phys=800)
+    assert sh.state == ln.LIVE
+    _fronts(sh, door, clock, 1, phys=800)
+    assert sh.state == ln.DEAD and sh.reason == "давление памяти критичное (уровень 4) — запись важнее потока"
     mem = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
-    assert [m["pressure"] for m in mem] == [1, 2, 2] and mem[0]["swap_used_mb"] == 1000
+    assert [m["pressure"] for m in mem] == [1, 4] and mem[0]["swap_used_mb"] == 1000
+    assert [m["phys_mb"] for m in mem] == [800, 800], "в строке mem — след, по которому решали"
     _wait(lambda: door.child.killed.is_set(), what="ребёнок убит")
     _wait(lambda: says, what="строка человеку")
 
 
-def test_a_single_spike_of_pressure_does_not_stop_it(tmp_path):
+@pytest.mark.parametrize("level", [2, 3])
+def test_pressure_below_critical_does_not_stop_the_stream(tmp_path, level):
+    """№579: уровень 2 держится и без потока (A/B 01.10: 70 % проб в фазе без ребёнка) —
+    поток с нормальным следом живёт под ним сколько угодно."""
     clock = _Clock()
-    sh, door, _ = _live(tmp_path, clock=clock, memory=_pressure([2, 1, 2, 1]))
+    sh, door, _ = _live(tmp_path, clock=clock, memory=_pressure([level] * 6))
     sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
-    _fronts(sh, door, clock, 4)
-    assert sh.state == ln.LIVE
+    _fronts(sh, door, clock, 6, phys=1040)
+    assert sh.state == ln.LIVE, sh.reason
+    sh.stop()
+    door.on_eof()
+
+
+def test_own_footprint_over_budget_twice_in_a_row_stops_the_stream(tmp_path):
+    """Свой след — своя вина: регрессия лимита кэша (30.09 — 8,5 ГБ) останавливает поток и
+    при нормальном давлении. Ровно бюджет — не сверх; одиночный выброс — не режим."""
+    clock = _Clock()
+    sh, door, _ = _live(tmp_path, clock=clock, memory=_pressure([1] * 5))
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    budget = ln.FOOTPRINT_STOP_MB
+    _fronts(sh, door, clock, 3, phys=[budget + 1, budget, budget + 1])
+    assert sh.state == ln.LIVE, "выброс, потом ровно бюджет — счётчик сброшен"
+    _fronts(sh, door, clock, 1, phys=budget + 1)
+    assert sh.state == ln.DEAD and sh.reason == f"след ребёнка {budget + 1} МБ сверх бюджета {budget} МБ"
+
+
+def test_footprint_budget_works_without_a_pressure_reading(tmp_path):
+    """Давление не читается (не macOS, sysctl отказал) — бюджет следа всё равно судит
+    (вход №579, Sonnet I1); строк mem нет."""
+    clock = _Clock()
+    sh, door, _ = _live(tmp_path, clock=clock, memory=lambda: None)
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    _fronts(sh, door, clock, 2, phys=3000)
+    assert sh.state == ln.DEAD and "сверх бюджета" in sh.reason
+    assert not [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
+
+
+def test_a_front_without_footprint_resets_the_budget_and_says_so_once(tmp_path):
+    """Фронт без `phys_mb` не судит по старому значению: счётчик сброшен, и одна строка
+    `budget` за встречу говорит, что бюджет не виден (вход №579, GLM I3 / Sonnet I1)."""
+    clock = _Clock()
+    sh, door, _ = _live(tmp_path, clock=clock, memory=_pressure([1] * 6))
+    sh.on_frame("blackhole", 0, np.zeros(SR, dtype=np.float32))
+    _fronts(sh, door, clock, 6, phys=[3000, None, 3000, None, None, 3000])
+    assert sh.state == ln.LIVE, sh.reason
+    rows = _journal(tmp_path / "live.jsonl")
+    budget = [x for x in rows if x["type"] == "budget"]
+    assert len(budget) == 1 and "phys_mb" in budget[0]["reason"]
+    mem = [x for x in rows if x["type"] == "mem"]
+    assert [m.get("phys_mb") for m in mem] == [3000, None, 3000, None, None, 3000]
     sh.stop()
     door.on_eof()
 
@@ -734,7 +786,7 @@ BOTH = {"blackhole", "mic"}
     ({"sufler": {"live_nemotron": True}}, SR, BOTH, 1, "трекер голосов"),   # голое on в YAML
     (SHADOW, 48000, BOTH, 1, "Гц"),
     (SHADOW, SR, {"mic"}, 1, "канала собеседников"),                      # захват только микрофона
-    (SHADOW, SR, BOTH, 2, "давление памяти"),                             # машина уже в свопе
+    (SHADOW, SR, BOTH, 4, "давление памяти"),                             # критичное: запись важнее
     (SHADOW, SR, BOTH, 1, "не установлено"),
 ])
 def test_start_refuses_with_a_reason_and_leaves_nothing_behind(tmp_path, cfg, sr, labels, pressure,

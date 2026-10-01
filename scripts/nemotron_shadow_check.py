@@ -127,9 +127,9 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
             if end is not None:
                 raise Refused("две строки end в журнале")
             end = obj
-        # строки чанков и памяти пишутся и после `end` (чанк, принятый после конца потока;
-        # проверка давления из нити читателя) — «журнал не закончен» они не значат
-        last_type = kind if kind not in ("chunk", "mem") else last_type
+        # строки чанков и здоровья пишутся и после `end` (чанк, принятый после конца потока;
+        # проверка здоровья из нити читателя) — «журнал не закончен» они не значат
+        last_type = kind if kind not in ("chunk", "mem", "budget") else last_type
     missing = [n for n, v in (("header", header), ("ready", ready), ("start", start), ("end", end))
                if v is None]
     if missing:
@@ -158,7 +158,7 @@ def check_frames(j: Journal) -> None:
 
 
 #: Исходы, которых в годном прогоне записи нет: чанк не дождался метки (у живого звонка —
-#: законны, там тень умирает от давления, а в `on` чанк сдаётся по потолку; сверка прогона
+#: законны, там поток умирает от критичного давления или своего следа, а в `on` чанк сдаётся по потолку; сверка прогона
 #: их не прощает).
 LOST_OUTCOMES = (live_nemotron.TIMEOUT, live_nemotron.LATE, live_nemotron.DEAD_STREAM,
                  live_nemotron.FALLBACK)

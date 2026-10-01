@@ -655,6 +655,14 @@ def test_memory_reads_the_current_footprint_mlx_counters_limit_and_pressure():
     assert "memory" in chk.report(j, {"duration_s": 20.0, "segments": [[0, 1, "a"]]})
 
 
+def test_a_budget_line_after_end_does_not_unfinish_the_journal():
+    """Строка `budget` (бюджет следа не виден, №579) пишется проверкой здоровья из нити
+    читателя, как `mem`, — и может лечь после `end`; журнал от неё не «не закончен»."""
+    lines = _with_memory(journal_lines(chunk_ends=[START0 + 64000]))
+    lines.append(json.dumps({"type": "budget", "t": 99.6, "reason": "бюджет следа не виден"}))
+    assert chk.read_journal(lines).end is not None
+
+
 def test_memory_is_reported_even_when_the_journal_is_refused(tmp_path, capsys):
     """Тень, умершая от давления, — предмет замера памяти: отказ сверки её не прячет."""
     path = tmp_path / "j.jsonl"

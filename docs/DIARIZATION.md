@@ -517,18 +517,23 @@ nothing in the transcript (default `off`).
   start where the previous one ended stops the shadow — labels are never
   shifted silently. More than 10 s of audio queued for the child stops it too:
   that is the answer "it does not keep up", not a reason to buffer.
-- **Memory.** The shadow does not start if the macOS memory pressure level is
-  already 2 (warning), or if the hub has no call channel. Every 5 s it reads
-  the pressure level and the swap in use (`sysctlbyname`, no process) into a
-  `mem` line; level 2 on two checks in a row stops it — the meeting wins. So
-  does the child's own log growing past 20 MB. A lab A/B run on 29.09 (ABBAAB
-  on an idle M1 Max, 64 GB, the 35b and 4b chat models loaded, the stream fed
-  at 1× from a recording): the stream kept up (block lag p95 0.2 s, every block
-  processed), the hint model's first token came about 0.5 s later (3.6 → 4.1 s)
-  and generation about 4 % slower, but 2.1–8.3 GB went out to swap during each
-  4-minute phase with the stream (0–0.5 GB without it), swap in use grew by 2.7
-  and 6.9 GB in two of the three phases, and the pressure reached level 2 once.
-  The swap storm of 31.08 made a hint take 19.7 s.
+- **Memory.** The stream yields for its own footprint, not for the machine's
+  pressure (#579). Every 5 s, on a child's `front`, it writes the pressure level,
+  the swap in use (`sysctlbyname`, no process) and the child's footprint
+  (`phys_mb` from that `front`) into a `mem` line. The child's footprint above
+  2048 MB on two checks in a row stops the stream (a leak, or the MLX cache cap
+  gone); the critical pressure level 4 stops it at the first check and keeps it
+  from starting — the recording wins. So does the child's own log growing past
+  20 MB. A child that sends no `phys_mb` gets one `budget` line per meeting: the
+  footprint budget is not watched. Level 2 (warning) no longer stops anything:
+  on 01.10, on a 64 GB M1 Max with the 35b and 4b chat models loaded, it held
+  without the stream (an A/B phase without the child: 70 % of the samples) and
+  without swap (a live call), stopping the stream freed under 1 GB, and in the
+  `on` mode it handed the labels to the tracker for the rest of the call — the
+  stream lived 2–5 minutes on three calls in a row. At 1× the stream cost the
+  hint model about 0.2–0.3 s on a 4.4 s answer (median). History: a lab A/B on
+  29.09, before the MLX cache cap, sent 2.1–8.3 GB to swap per 4-minute phase
+  with the stream; the swap storm of 31.08 made a hint take 19.7 s.
 - **Chunks.** Every chunk the recognizer accepts gets exactly one journal line,
   written without waiting: when the child's front passes the chunk's end (the
   line holds the seconds per slot inside the chunk, how long it waited, how far
@@ -577,8 +582,8 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   to their voice; a person named before the stream started keeps that name.
 - **Memory.** Every child — shadow or `on` — runs with the MLX cache capped at
   512 MB: replaying two recordings, the child's footprint stayed at 0.8–0.9 GB
-  with the same labels (without the cap a live shadow grew to 8.5 GB and was
-  stopped by memory pressure).
+  with the same labels, 0.8–1.0 GB at 1× next to the 35b and 4b models (without
+  the cap a live shadow grew to 8.5 GB and was stopped by memory pressure).
 - **The journal** is version 2: every chunk line names its layout source and the
   fallback reason; `scripts/nemotron_shadow_check.py` reads versions 1 and 2.
 
