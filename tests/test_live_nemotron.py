@@ -378,6 +378,28 @@ def _live(tmp_path, **kw):
     return sh, door, says
 
 
+def test_the_stream_is_dead_only_after_death_not_before_the_handshake_or_while_stopping(tmp_path):
+    """№580: запас трекера до рукопожатия подписывает голос без связи меткой канала, после
+    смерти — номером трекера; различает их состояние потока, а не эвристика."""
+    sh, door, _says = _live(tmp_path)
+    assert (sh.live, sh.dead) == (True, False)
+    sh.stop()
+    assert (sh.state, sh.dead) == (ln.STOPPING, False)
+    _wait(lambda: door.child.closed.is_set(), what="вход ребёнка закрыт")
+    door.on_message({"type": "front", "fed": 0, "frames": 0, "final": True})
+    door.on_eof()
+    assert (sh.state, sh.live, sh.dead) == (ln.DEAD, False, True)
+    assert (ln.NO_SHADOW.live, ln.NO_SHADOW.dead) == (False, False)
+
+
+def test_a_starting_stream_is_not_dead(tmp_path):
+    says = []
+    sh = ln.Shadow(journal=tmp_path / "live.jsonl", sr=SR, stamp="2026-09-29_120000", say=says.append,
+                   clock=time.monotonic, memory=lambda: None)
+    assert (sh.state, sh.dead) == (ln.STARTING, False)
+    sh.close(1.0)
+
+
 def _over(sh, tmp_path):
     """Тень кончилась и её строка `end` уже на диске: журнал дописывает `_drain` вне замка,
     чуть позже перехода в DEAD (№533)."""
@@ -1928,11 +1950,11 @@ def test_a_shadow_line_names_the_tracker_as_its_source(tmp_path):
     door.on_eof()
 
 
-def test_the_on_journal_header_names_the_mode_the_cap_and_the_slot_gap(tmp_path):
+def test_the_on_journal_header_names_the_mode_the_cap_and_the_show_threshold(tmp_path):
     sh, door, _ = _on(tmp_path, lambda event, cap: False)
     head = _journal(tmp_path / "live.jsonl")[0]
-    assert (head["v"], head["mode"], head["wait_cap_s"], head["slot_gap_s"]) == (
-        2, ln.ON, ln.WAIT_CAP_S, ln.SLOT_GAP_S)
+    assert (head["v"], head["mode"], head["wait_cap_s"], head["slot_show_s"]) == (
+        2, ln.ON, ln.WAIT_CAP_S, ln.SLOT_SHOW_S)
     assert sh.stream_channel == ln.CHANNEL and sh.live is True
     sh.stop()
     door.on_eof()

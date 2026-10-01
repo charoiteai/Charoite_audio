@@ -577,10 +577,22 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   tracker's (`plan_pieces`, `settle`). Speech the tracker hears and the stream
   did not label is transcribed as its own tracker piece; stream windows do not
   pad into it.
-- **Labels.** A stream slot gets a new label after 60 s of silence
-  (`SLOT_GAP_S`): the engine reuses slots for other people, and a name given to a
-  slot must not pass to someone else. Tracker pieces take the stream label linked
-  to their voice; a person named before the stream started keeps that name.
+- **Labels.** One label per stream slot for the whole meeting, shown in the feed
+  only after 5 s of that slot's speech (`SLOT_SHOW_S`); before that the piece goes
+  under the channel label. The engine opens ghost slots with 0–9 s of speech per
+  meeting, and each became a "Speaker N". New labels after 60 s of silence were
+  dropped: on two recordings the labels were exactly as pure without them, and
+  69 minutes with six people gave 33 labels instead of 7. The model has 8 slots: on
+  a call with more than 8 people, two people share a label.
+- **Tracker pieces** (the stream is not up yet, timed out or heard nothing) take
+  the stream label linked to their voice. A voice with no link goes under the
+  channel label while the stream has not died. A tracker number would start one
+  "Speaker N", and the stream label of the same person a second one. The stream
+  label does not inherit the tracker's name: the tracker merges people, and the
+  name would go to the wrong one. So the start of a meeting, before the
+  handshake (usually 1–3 s, at most `HANDSHAKE_S` = 120 s), and every chunk the
+  stream did not label run under the channel label. Once the stream has died, the tracker's
+  own numbers come back, as in `off`.
 - **Memory.** Every child — shadow or `on` — runs with the MLX cache capped at
   512 MB: replaying two recordings, the child's footprint stayed at 0.8–0.9 GB
   with the same labels, 0.8–1.0 GB at 1× next to the 35b and 4b models (without
