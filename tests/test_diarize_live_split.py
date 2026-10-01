@@ -987,5 +987,5 @@ def test_the_daemon_builds_its_tracker_with_the_mic_label():
     mic = {k.arg: ast.unparse(k.value) for k in made[0].keywords}.get("mic_channel")
     assert mic == "chan.mic_raw"
     chan_at = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                  and any(getattr(t, "id", None) == "chan" for t in n.targets))
+                  and "ChannelLabels.from_capture" in ast.unparse(n.value))
     assert chan_at < made[0].lineno, "ChannelLabels собираются раньше трекера"
