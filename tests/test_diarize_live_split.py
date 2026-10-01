@@ -635,8 +635,8 @@ def test_nested_noise_does_not_collapse_monologue():
 
 # ---------- поток Nemotron (№478 B): тот же итог раскладки, другой источник голоса ----------
 
-from diarize_live import (STREAM_VOICE_BASE, SplitResult, StreamVoices,  # noqa: E402
-                          recon_shares, stream_layout, stream_split, tracker_spans,
+from diarize_live import (STREAM_VOICE_BASE, SlotLabels, SplitResult, StreamVoices,  # noqa: E402
+                          recon_shares, shown_segments, tracker_jobs_on, stream_layout, stream_split, tracker_spans,
                           tracker_speech, uncovered, with_recon)
 from diarize_live import jobs_for  # noqa: E402
 from stt_runtime import CHANNEL_LABEL_ONLY  # noqa: E402
@@ -677,7 +677,7 @@ def test_the_stream_split_of_one_covering_voice_is_the_whole_chunk_under_it():
 
 
 def _sv():
-    return StreamVoices(sr=SR, gap_s=60.0)
+    return StreamVoices(sr=SR, show_s=0.0)
 
 
 def _plan(sv, segs, *, tracker=SplitResult(None, 1), tracker_jobs=None, origin=0):
@@ -694,20 +694,66 @@ def test_a_stream_slot_keeps_its_label_while_it_keeps_talking():
     assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
 
 
-def test_a_slot_silent_longer_than_the_gap_gets_a_new_label():
-    """Движок отдал слот другому человеку: имя прежнего не наследуется (r2 Sonnet I1)."""
+@pytest.mark.parametrize("pause_s", [59, 61, 599, 601, 3600])
+def test_a_slot_keeps_its_label_after_any_pause(pause_s):
+    """Метка = слот на всю встречу (№580): поколения после 60 с молчания дробили человека
+    на 33 метки за 69 минут, а чистоты не прибавляли (0,987 с ними и без них)."""
     sv = _sv()
     a, _ = _plan(sv, [(0, int(2.2 * SR), 0)])
-    b, _ = _plan(sv, [(int(62.3 * SR), int(64.5 * SR), 0)], origin=int(62.3 * SR))
-    c, _ = _plan(sv, [(int(66 * SR), int(68.2 * SR), 0)], origin=int(66 * SR))
-    assert (a[0][1], b[0][1], c[0][1]) == (STREAM_VOICE_BASE, STREAM_VOICE_BASE + 1, STREAM_VOICE_BASE + 1)
+    t = int((2.2 + pause_s) * SR)
+    b, _ = _plan(sv, [(t, t + int(2.2 * SR), 0)], origin=t)
+    assert a[0][1] == b[0][1] == STREAM_VOICE_BASE
 
 
-def test_a_gap_of_exactly_the_threshold_keeps_the_label():
+def test_two_slots_get_two_labels_by_slot_not_by_order_of_appearance():
     sv = _sv()
-    _plan(sv, [(0, 2 * SR, 0)])
-    b, _ = _plan(sv, [(62 * SR, 64 * SR, 0)], origin=62 * SR)
-    assert b[0][1] == STREAM_VOICE_BASE
+    a, _ = _plan(sv, [(0, int(2.2 * SR), 3)])
+    b, _ = _plan(sv, [(10 * SR, int(12.2 * SR), 1)], origin=10 * SR)
+    assert (a[0][1], b[0][1]) == (STREAM_VOICE_BASE + 3, STREAM_VOICE_BASE + 1)
+
+
+def _shown(sv, slot, start_s, end_s):
+    return sv.label(slot, int(start_s * SR), int(end_s * SR))
+
+
+@pytest.mark.parametrize("heard_s, shown", [(4.9, False), (5.0, True)])
+def test_a_slot_is_shown_only_after_five_seconds_of_its_speech(heard_s, shown):
+    """Слоты-призраки движка (0–9 с речи за встречу) не становятся «Собеседниками»."""
+    labels = SlotLabels(sr=SR, show_s=5.0)
+    assert _shown(labels, 0, 0, 2.0) is None
+    got = _shown(labels, 0, 10.0, 10.0 + heard_s - 2.0)
+    assert got == (STREAM_VOICE_BASE if shown else None)
+
+
+def test_overlapping_chunks_do_not_count_the_same_speech_twice():
+    """Чанки перекрываются: один звук, пришедший двумя чанками, — одни секунды (Sonnet I3)."""
+    labels = SlotLabels(sr=SR, show_s=5.0)
+    assert _shown(labels, 0, 0, 3.0) is None
+    assert _shown(labels, 0, 2.5, 3.0) is None, "перекрытие чанков — тот же звук"
+    assert _shown(labels, 0, 2.5, 4.9) is None, "4,9 с речи, а не 7,4"
+    assert _shown(labels, 0, 4.5, 5.0) == STREAM_VOICE_BASE
+
+
+def test_speech_of_an_unshown_slot_goes_under_the_channel_label_and_links_nobody():
+    """До порога кусок слота — под меткой канала, не под меткой связи трекера: трекер мог
+    связать нового человека с чужой меткой (Sonnet I3)."""
+    sv = StreamVoices(sr=SR, show_s=5.0)
+    jobs, fields = _plan(sv, [(0, int(2.2 * SR), 0)], tracker=SplitResult(None, 2))
+    assert [(j[1], j[3]) for j in jobs] == [(CHANNEL_LABEL_ONLY, ((2, 1.0),))]
+    assert sv.fallback([(_chunk(), 2, None)], stream_dead=True)[0][1] == 2, "непоказанная метка в связи не пишется"
+
+
+def test_shown_segments_are_the_labels_the_daemon_gives():
+    """Сверка и демон — один класс: метки `shown_segments` совпадают с подписью `plan`."""
+    segs = [(0, 2 * SR, 0), (2 * SR, 3 * SR, 1), (3 * SR, 6 * SR, 0), (6 * SR, 9 * SR, 1), (9 * SR, 10 * SR, 1)]
+    want = [None, None, STREAM_VOICE_BASE, None, STREAM_VOICE_BASE + 1]
+    assert shown_segments(segs, sr=SR, show_s=5.0) == [(s, e, w) for (s, e, _slot), w in zip(segs, want)]
+    sv = StreamVoices(sr=SR, show_s=5.0)
+    got = []
+    for s, e, slot in segs:
+        jobs, _ = _plan(sv, [(s, e, slot)], origin=s, tracker=None)
+        got.append(jobs[0][1])
+    assert got == [CHANNEL_LABEL_ONLY if w is None else w for w in want]
 
 
 def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_echo_check():
@@ -715,7 +761,7 @@ def test_stream_pieces_carry_the_tracker_voice_that_overlaps_them_most_for_the_e
     tracker = SplitResult([Piece(0, SR, 4, 0, SR), Piece(SR, 3 * SR, 2, SR, 3 * SR)], 2)
     jobs, fields = _plan(sv, [(0, int(2.9 * SR), 5)], tracker=tracker)
     ((piece, label, _raw, shares),) = jobs
-    assert label == STREAM_VOICE_BASE
+    assert label == STREAM_VOICE_BASE + 5
     assert [v for v, _ in shares] == [2, 4], "каждый голос трекера в куске получает свою долю (I3)"
     assert shares[0][1] == pytest.approx(2 / 3, abs=1e-3) and shares[1][1] == pytest.approx(1 / 3, abs=1e-3), "чанк целиком: доли от чанка"
     assert {k: fields[k] for k in ("source", "pieces", "no_recon", "recon_agree")} == {
@@ -750,14 +796,70 @@ def test_a_tracker_fallback_names_pieces_by_the_linked_stream_label():
                            tracker_jobs=[(chunk, 2, chunk), (chunk, 5, chunk),
                                          (chunk, CHANNEL_LABEL_ONLY, None)],
                            neutral=True, step_s=2.5)
-    assert [(j[1], j[3]) for j in jobs] == [(STREAM_VOICE_BASE, ((2, 1.0),)), (5, ((5, 1.0),)),
+    assert [(j[1], j[3]) for j in jobs] == [(STREAM_VOICE_BASE, ((2, 1.0),)), (CHANNEL_LABEL_ONLY, ((5, 1.0),)),
                                            (CHANNEL_LABEL_ONLY, ())]
     assert fields == {"source": "tracker"}
 
 
+def _first_speaker_names(*, stream_dead):
+    """Демон в миниатюре: начало встречи — запас трекера до рукопожатия, потом поток;
+    имена — тем же правилом, что `_voice_name` (новый ключ — новый «Собеседник»)."""
+    sv = StreamVoices(sr=SR, show_s=0.0)
+    names: dict[int, str] = {}
+    chunk = _chunk()
+    labels = [j[1] for j in sv.fallback([(chunk, 2, chunk)], stream_dead=stream_dead)]
+    jobs, _ = _plan(sv, [(10 * SR, int(12.2 * SR), 0)], origin=10 * SR, tracker=SplitResult(None, 2))
+    labels += [j[1] for j in jobs]
+    labels += [j[1] for j in sv.fallback([(chunk, 2, chunk)], stream_dead=stream_dead)]
+    for n in labels:
+        if n >= 0:
+            names.setdefault(n, f"Собеседник {len(names) + 1}")
+    return labels, names
+
+
+def test_the_first_speaker_before_the_handshake_gets_no_second_name():
+    """I1 предрелизного Opus: до рукопожатия номер трекера заводил «Собеседника 1», метка
+    потока того же человека — «Собеседника 2». Голос без связи до смерти потока — меткой
+    канала; имени не наследует никто (откат c5ef5490: трекер склеивает людей)."""
+    labels, names = _first_speaker_names(stream_dead=False)
+    assert labels == [CHANNEL_LABEL_ONLY, STREAM_VOICE_BASE, STREAM_VOICE_BASE]
+    assert list(names.values()) == ["Собеседник 1"]
+
+
+def test_after_the_stream_died_an_unlinked_tracker_voice_keeps_its_own_number():
+    """Мёртвый поток не обезличивает ленту до конца встречи: голос без связи — номером
+    трекера, как в `off`; связанный — меткой потока."""
+    sv = StreamVoices(sr=SR, show_s=0.0)
+    _plan(sv, [(0, int(2.2 * SR), 0)], tracker=SplitResult(None, 2))
+    chunk = _chunk()
+    got = sv.fallback([(chunk, 2, chunk), (chunk, 5, chunk), (chunk, CHANNEL_LABEL_ONLY, None)],
+                      stream_dead=True)
+    assert [(j[1], j[3]) for j in got] == [(STREAM_VOICE_BASE, ((2, 1.0),)), (5, ((5, 1.0),)),
+                                          (CHANNEL_LABEL_ONLY, ())]
+
+
+@pytest.mark.parametrize("stream_channel, stream_dead, want", [
+    (True, False, CHANNEL_LABEL_ONLY),    # канал потока, поток не умер — голос без связи безымянный
+    (True, True, 5),                      # поток умер — номер трекера
+    (False, False, 5),                    # чужой канал — номер трекера всегда
+    (False, True, 5),
+])
+def test_tracker_jobs_on_picks_the_rule_by_channel_and_stream_state(stream_channel, stream_dead, want):
+    """M1 предрелизного Opus: развилка «метки связей или голые номера» — функцией, не инлайном."""
+    chunk = _chunk()
+    got = tracker_jobs_on(StreamVoices(sr=SR, show_s=0.0), [(chunk, 5, chunk)],
+                          stream_channel=stream_channel, stream_dead=stream_dead)
+    assert [(j[1], j[3]) for j in got] == [(want, ((5, 1.0),))]
+    assert tracker_jobs_on(None, [(chunk, 5, chunk)], stream_channel=True, stream_dead=False) == [
+        (chunk, 5, chunk, ((5, 1.0),))], "реестра нет (диаризация не поднялась) — голые номера"
+    assert tracker_jobs_on(StreamVoices(sr=SR, show_s=0.0), None, stream_channel=True,
+                           stream_dead=False) is None
+
+
 def test_a_labelled_chunk_where_the_stream_hears_nothing_goes_to_the_tracker():
     jobs, fields = _plan(_sv(), [])
-    assert [(j[1], j[3]) for j in jobs] == [(1, ((1, 1.0),))], "задания трекера, один голос на подпись и сверку"
+    assert [(j[1], j[3]) for j in jobs] == [(CHANNEL_LABEL_ONLY, ((1, 1.0),))], (
+        "задания трекера: голос без связи с меткой потока — меткой канала, сверка — его номером")
     assert fields == {"source": "tracker", "fallback": "no_speech"}
 
 
@@ -768,7 +870,7 @@ def test_a_stream_chunk_with_all_speech_held_back_is_skipped_only_if_the_tracker
     assert jobs is None and fields["source"] == "stream" and fields["pieces"] == 0
     jobs, fields = _plan(_sv(), [(int(2.55 * SR), int(2.99 * SR), 0)], tracker=SplitResult(None, 1))
     ((piece, label, _raw, _shares),) = jobs
-    assert len(piece) == CHUNK and label == 1 and fields["tracker_pieces"] == 1
+    assert len(piece) == CHUNK and label == CHANNEL_LABEL_ONLY and fields["tracker_pieces"] == 1
 
 
 def test_stream_segments_are_clipped_to_the_chunk():
@@ -927,10 +1029,9 @@ def test_stream_layout_keeps_every_sample_of_tracker_speech_in_exactly_one_job()
     for _ in range(400):
         tracker, segs = _random_case(rng)
         neutral = bool(rng.random() < 0.7)
-        sv = _sv()
         speech = tracker_speech(tracker, CHUNK, neutral=neutral)
         bounded = tracker is not None and tracker.pieces is not None
-        raw = [(s / SR, min(e, CHUNK) / SR, sv._label(slot, s, min(e, CHUNK))) for s, e, slot in segs
+        raw = [(s / SR, min(e, CHUNK) / SR, STREAM_VOICE_BASE + slot) for s, e, slot in segs
                if min(e, CHUNK) > s]
         res, extra, lost = stream_layout(raw, speech, CHUNK, SR, step_s=2.5, bounded=bounded)
         windows = plan_pieces(sorted(raw), CHUNK, SR, step_s=2.5)[0]

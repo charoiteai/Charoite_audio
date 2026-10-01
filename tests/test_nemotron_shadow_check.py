@@ -266,6 +266,34 @@ def test_report_runs_end_to_end_on_a_synthetic_journal():
     assert out["c_agreement_with_final"]["stream"]["der"] == pytest.approx(0.0, abs=0.01)
 
 
+def test_report_counts_the_labels_the_feed_shows_not_the_raw_slots():
+    """№580: сверка включила `on` по сырым слотам, а лента показывала поколения. Метки ленты
+    считает тот же класс, что демон: призрак (слот 2, 2 с речи) под меткой канала, слот,
+    вернувшийся после 10 минут молчания, — та же метка; чужая речь под меткой видна рядом с DER."""
+    m = 60 * SR
+    segs = [(START0, START0 + 6 * SR, 0), (START0 + 6 * SR, START0 + 12 * SR, 1),
+            (START0 + 12 * SR, START0 + 14 * SR, 2), (START0 + 11 * m, START0 + 11 * m + 6 * SR, 0)]
+    j = journal(chunk_ends=[START0 + 64000], segs=segs, total=12 * m)
+    a, b = "Собеседник 1", "Собеседник 2"
+    final = {"duration_s": 12 * 60.0, "segments": [
+        [START0 / SR, START0 / SR + 6, a], [START0 / SR + 6, START0 / SR + 14, b],
+        [START0 / SR + 660, START0 / SR + 666, a]]}
+    out = chk.report(j, final)
+    assert len(out["b_slots"]["slots"]) == 3
+    shown = out["d_shown"]
+    assert (shown["labels"], shown["channel_s"], shown["voices_final"]) == (2, 2.0, 2)
+    assert (shown["foreign_s"], shown["weighted_purity"]) == (0.0, 1.0)
+    assert out["b_slots"]["foreign_s"] == 0.0, "призрак-слот 2 целиком внутри речи голоса b"
+
+
+def test_shown_labels_count_never_exceeds_raw_slots_on_a_long_synthetic_meeting():
+    """Потолок: меток ленты не больше сырых слотов при любых паузах — поколений нет."""
+    m = 60 * SR
+    segs = [(START0 + k * m, START0 + k * m + 8 * SR, k % 3) for k in range(30)]
+    shown = chk.shown_segments(journal(chunk_ends=[START0 + 64000], segs=segs, total=31 * m))
+    assert len({lab for *_, lab in shown}) == 3
+
+
 def test_report_refuses_an_invalid_journal():
     with pytest.raises(chk.Refused):
         chk.report(journal(chunk_ends=[START0 + 64000], exit_="failed"),

@@ -48,6 +48,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import charoite_paths  # noqa: E402
+import diarize_live  # noqa: E402  — метки ленты тем же классом, что демон (№580)
 import diarize_nemotron  # noqa: E402  — только чистая проверка кадра, mlx не трогается
 import live_nemotron  # noqa: E402
 
@@ -348,6 +349,33 @@ def stream_segments(j: Journal) -> list[Interval]:
     return [(s["start"] / j.sr, s["end"] / j.sr, f"slot{s['slot']}") for s in j.segs]
 
 
+#: Метка ленты до порога показа слота: речь идёт под меткой канала (№580).
+CHANNEL = "channel"
+
+
+def shown_segments(j: Journal, *, show_s: float = live_nemotron.SLOT_SHOW_S) -> list[Interval]:
+    """Сегменты потока под метками, которые увидит лента режима `on`: `diarize_live.SlotLabels`
+    — тот же класс, что у демона (сырые слоты включили `on` по чужой цифре, №580)."""
+    segs = [(s["start"], s["end"], s["slot"]) for s in j.segs]
+    return [(s / j.sr, e / j.sr, CHANNEL if label is None else f"L{label}")
+            for s, e, label in diarize_live.shown_segments(segs, sr=j.sr, show_s=show_s)]
+
+
+def foreign(m: dict) -> dict:
+    """Чужая речь под метками: секунды не лучшего голоса строки и взвешенная чистота —
+    DER штрафует дробление, чужое имя видно только здесь. Метка канала — вне (никого не
+    называет)."""
+    best = total = 0.0
+    for p, cols in rows(m).items():
+        if p in (NONE, CHANNEL):
+            continue
+        voiced = {q: v for q, v in cols.items() if q != NONE}
+        total += sum(voiced.values())
+        best += max(voiced.values(), default=0.0)
+    return {"foreign_s": round(total - best, 1),
+            "weighted_purity": round(best / total, 4) if total else None}
+
+
 def overlap_matrix(a: list[Interval], b: list[Interval], *,
                    lo: float = -math.inf, hi: float = math.inf) -> dict[tuple[str, str], float]:
     """Секунды совместного звучания меток `a` (строки) и `b` (столбцы) на [lo, hi).
@@ -551,6 +579,16 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         },
         "c_agreement_with_final": {"stream": der(fin, stream, total)},
     }
+    shown = shown_segments(j)
+    sm = overlap_matrix(shown, fin)
+    out["d_shown"] = {
+        "labels": len({lab for _, _, lab in shown if lab != CHANNEL}),
+        "channel_s": round(sum(e - s for s, e, lab in shown if lab == CHANNEL), 1),
+        "voices_final": len({lab for _, _, lab in fin}),
+        **foreign(sm),
+        "der": der(fin, shown, total),
+    }
+    out["b_slots"].update(foreign(m))
     if timing is not None:
         out["a2_step_cost_wall"] = step_cost(timing, j.step, j.sr)
     if tracker is not None:
