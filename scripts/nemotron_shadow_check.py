@@ -48,6 +48,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import charoite_paths  # noqa: E402
+import diarize_live  # noqa: E402  — метки ленты тем же классом, что демон (№580)
 import diarize_nemotron  # noqa: E402  — только чистая проверка кадра, mlx не трогается
 import live_nemotron  # noqa: E402
 
@@ -86,6 +87,7 @@ class Journal:
     mems: list[dict] = dataclasses.field(default_factory=list)
     v: int = 1
     mode: str = live_nemotron.SHADOW
+    show_s: float | None = None         # порог показа из заголовка `on` (`slot_show_s`); нет — None
 
     @property
     def frame_s(self) -> float:
@@ -140,7 +142,8 @@ def read_journal(lines: typing.Iterable[str]) -> Journal:
         raise Refused(f"версия журнала {header.get('v')!r}, сверка читает {ACCEPTED_V}")
     return Journal(ready=ready, start0=int(start["start0"]), fronts=fronts, segs=segs,
                    chunks=chunks, end=end, sr=int(header["sr"]), mems=mems, v=int(header["v"]),
-                   mode=str(header.get("mode", live_nemotron.SHADOW)))
+                   mode=str(header.get("mode", live_nemotron.SHADOW)),
+                   show_s=header.get("slot_show_s"))
 
 
 # ------------------------------------------------------------------ годность
@@ -348,6 +351,57 @@ def stream_segments(j: Journal) -> list[Interval]:
     return [(s["start"] / j.sr, s["end"] / j.sr, f"slot{s['slot']}") for s in j.segs]
 
 
+#: Метка ленты до порога показа слота: речь идёт под меткой канала (№580).
+CHANNEL = "channel"
+
+
+def shown_segments(j: Journal, *, show_s: float | None = None) -> tuple[list[Interval], float]:
+    """Сегменты потока под метками, которые увидит лента режима `on`, и секунды речи потока,
+    не дошедшей до раскладки по потоку.
+
+    Демон кормит `diarize_live.SlotLabels` только обрезками сегментов по чанкам, которые
+    поток разметил (`outcome: labeled`), в порядке чанков (выходной круг №580, обе головы).
+    Сверка кормит тот же класс теми же обрезками: иначе порог показа в сверке наступал бы
+    раньше, чем в ленте. Речь вне размеченных чанков в ленте идёт запасом трекера; связи
+    трекера сверка не знает и считает её под меткой канала — оценка снизу. Порог — из
+    заголовка журнала, без него — нынешняя константа."""
+    show_s = show_s if show_s is not None else (j.show_s if j.show_s is not None else live_nemotron.SLOT_SHOW_S)
+    labels = diarize_live.SlotLabels(sr=j.sr, show_s=show_s)
+    spans = sorted((int(c["start"]), int(c["end"])) for c in j.chunks
+                   if c.get("outcome") == live_nemotron.LABELED)
+    segs = sorted((int(s["start"]), int(s["end"]), int(s["slot"])) for s in j.segs)
+    out: list[Interval] = []
+    fed: list[tuple[int, int]] = []
+    for cs, ce in spans:
+        for s, e, slot in segs:
+            a, b = max(s, cs), min(e, ce)
+            if b > a:
+                label = labels.label(slot, a, b)
+                out.append((a / j.sr, b / j.sr, CHANNEL if label is None else f"L{label}"))
+                fed.append((a, b))
+    for s, e, _slot in segs:                     # речь вне размеченных чанков — метка канала
+        rest, _none = diarize_live.uncovered([(s, e, None)], fed, 1)
+        out.extend((a / j.sr, b / j.sr, CHANNEL) for a, b, _v in rest)
+    unfed = sum(b - a for s, e, _slot in segs
+                for a, b, _v in diarize_live.uncovered([(s, e, None)], fed, 1)[0])
+    return sorted(out), round(unfed / j.sr, 1)
+
+
+def foreign(m: dict) -> dict:
+    """Чужая речь под метками: секунды не лучшего голоса строки и взвешенная чистота —
+    DER штрафует дробление, чужое имя видно только здесь. Метка канала — вне (никого не
+    называет)."""
+    best = total = 0.0
+    for p, cols in rows(m).items():
+        if p in (NONE, CHANNEL):
+            continue
+        voiced = {q: v for q, v in cols.items() if q != NONE}
+        total += sum(voiced.values())
+        best += max(voiced.values(), default=0.0)
+    return {"foreign_s": round(total - best, 1),
+            "weighted_purity": round(best / total, 4) if total else None}
+
+
 def overlap_matrix(a: list[Interval], b: list[Interval], *,
                    lo: float = -math.inf, hi: float = math.inf) -> dict[tuple[str, str], float]:
     """Секунды совместного звучания меток `a` (строки) и `b` (столбцы) на [lo, hi).
@@ -551,6 +605,17 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         },
         "c_agreement_with_final": {"stream": der(fin, stream, total)},
     }
+    shown, unfed_s = shown_segments(j)
+    sm = overlap_matrix(shown, fin)
+    out["d_shown"] = {
+        "labels": len({lab for _, _, lab in shown if lab != CHANNEL}),
+        "channel_s": round(sum(cnt for (p, _q), cnt in sm.items() if p == CHANNEL), 1),
+        "unfed_s": unfed_s,
+        "voices_final": len({lab for _, _, lab in fin}),
+        **foreign(sm),
+        "der": der(fin, shown, total),
+    }
+    out["b_slots"].update(foreign(m))
     if timing is not None:
         out["a2_step_cost_wall"] = step_cost(timing, j.step, j.sr)
     if tracker is not None:

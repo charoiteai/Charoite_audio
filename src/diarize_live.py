@@ -336,6 +336,18 @@ def with_recon(jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | No
     return [(piece, n, raw, own_share(n)) for piece, n, raw in jobs]
 
 
+def tracker_jobs_on(stream_voices: "StreamVoices | None",
+                    jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None, *,
+                    stream_channel: bool, stream_dead: bool) -> list[Job] | None:
+    """Задания трекера на чанке без метки потока: на канале потока (режим `on`, поток вне
+    ожидания) — правилом `StreamVoices.fallback`, иначе названный потоком человек на краях
+    потока получал бы второе имя; на прочих каналах и без реестра — голые номера трекера
+    (M1 предрелизного Opus: развилка стояла инлайном в `daemon.main()`)."""
+    if stream_channel and stream_voices is not None:
+        return stream_voices.fallback(jobs, stream_dead=stream_dead)
+    return with_recon(jobs)
+
+
 def tracker_speech(res: SplitResult | None, chunk_len: int, *,
                    neutral: bool) -> list[tuple[int, int, int | None]]:
     """Речь чанка, которую распознал бы трекер (режим `off`), — (начало, конец, голос|None)
@@ -448,60 +460,104 @@ def stream_layout(raw: list[tuple[float, float, int]], speech: list[tuple[int, i
     return res, extra, sum(e - s for s, e, _v in rest)
 
 
+class SlotLabels:
+    """Метки, которые увидит лента, по сегментам потока (№580) — одно правило для демона
+    (`StreamVoices`) и сверки (`scripts/nemotron_shadow_check.py`): сверка, считавшая сырые
+    слоты своей функцией, включила `on` по чужой цифре.
+
+    Метка — `STREAM_VOICE_BASE + слот`, одна на слот всю встречу. Поколения после молчания
+    (было до №580: новая метка через 60 с) сняты замером: чистота меток против финала на
+    двух записях та же с ними и без них (0,984 и 0,987), а меток на 69 минутах 33 против 7 —
+    передачи слота другому человеку в данных нет, есть только дробление. Слотов у модели 8
+    (`num_speakers`): на звонке больше чем с 8 собеседниками двое делят метку.
+
+    Метка слота показывается после `show_s` его речи: движок открывает слоты-призраки на
+    0–9 с речи за встречу, и каждый становился «Собеседником» в ленте. До порога — `None`:
+    подпись решает потребитель (демон — меткой канала). Речь считается по водоразделу на
+    оси хаба, а не суммой: чанки перекрываются, и один звук пришёл бы дважды."""
+
+    def __init__(self, *, sr: int, show_s: float):
+        self._show = round(show_s * sr)
+        self._heard: dict[int, list[int]] = {}      # слот → [сэмплов речи, водораздел]
+
+    def label(self, slot: int, start: int, end: int) -> int | None:
+        """Учесть речь слота [start, end) на оси хаба; метка, если слот уже показан."""
+        heard = self._heard.setdefault(slot, [0, start])
+        fresh = max(start, heard[1])
+        if end > fresh:
+            heard[0] += end - fresh
+            heard[1] = end
+        return STREAM_VOICE_BASE + slot if heard[0] >= self._show else None
+
+
+def shown_segments(segs: list[tuple[int, int, int]], *, sr: int, show_s: float) \
+        -> list[tuple[int, int, int | None]]:
+    """Сегменты потока (начало, конец, слот) по порядку начала → (начало, конец, метка ленты
+    или None до порога) тем же правилом, что в демоне."""
+    labels = SlotLabels(sr=sr, show_s=show_s)
+    return [(s, e, labels.label(slot, s, e)) for s, e, slot in sorted(segs)]
+
+
 class StreamVoices:
     """Метки потока Nemotron одной встречи (№478 B, режим `on`) — живут в нити STT.
 
-    Метка — `STREAM_VOICE_BASE + поколение`, а не номер слота: движок отдаёт слот другому
-    человеку, когда прежний замолчал, и имя, данное слоту (`name_loop`), уверенно подписало
-    бы чужую речь. Слот, молчавший дольше `gap_s`, получает новую метку: лишнее дробление
-    дешевле чужого имени, итог всё равно даёт пересборка. Молчанием считается и время, пока
-    куски шли мимо потока (фолбэк): реестр видит только разложенные потоком чанки.
+    Метку слоту даёт `SlotLabels`; речь слота до порога показа идёт под меткой канала
+    (`CHANNEL_LABEL_ONLY`), а не меткой связи трекера: трекер мог связать нового человека
+    с чужой меткой (входной круг №580, Sonnet I3).
 
     Таблица «голос трекера → последняя метка потока»: кусок, разложенный трекером (поток не
     успел, умер или молчит), берёт метку из неё — иначе тот же человек на соседнем куске
-    назывался бы вторым именем; связи нет — номер трекера. Заполняет её тот же расчёт, что
-    даёт номер сверки."""
+    назывался бы вторым именем. Голос без связи, пока поток не умер (до рукопожатия и пока
+    идёт), — меткой канала: номер трекера завёл бы «Собеседника», а метка потока того же
+    человека — второго (I1 предрелизного Opus, №580). Наследовать имя трекера метка потока
+    не может: трекер склеивает людей, и имя ушло бы не тому (откат c5ef5490, финальный Opus
+    #707+#708, C2). Номер в ленте даёт только показанный слот или связанный с ним голос
+    трекера; после смерти потока — голые номера трекера, иначе мёртвый поток обезличил бы
+    ленту до конца встречи. Заполняет таблицу тот же расчёт, что даёт номер сверки."""
 
-    def __init__(self, *, sr: int, gap_s: float):
+    def __init__(self, *, sr: int, show_s: float):
         self._sr = sr
-        self._gap = round(gap_s * sr)
-        self._slots: dict[int, list[int]] = {}      # слот → [метка, конец речи на оси хаба]
-        self._generation = 0
+        self._labels = SlotLabels(sr=sr, show_s=show_s)
         self._link: dict[int, int] = {}             # голос трекера → последняя метка потока
 
-    def _label(self, slot: int, start: int, end: int) -> int:
-        cur = self._slots.get(slot)
-        if cur is None or start - cur[1] > self._gap:
-            cur = self._slots[slot] = [STREAM_VOICE_BASE + self._generation, end]
-            self._generation += 1
-        cur[1] = max(cur[1], end)
-        return cur[0]
+    def _linked(self, n: int | None, *, stream_dead: bool) -> int | None:
+        if n is None or n < 0:
+            return n
+        label = self._link.get(n)
+        if label is not None:
+            return label
+        return n if stream_dead else CHANNEL_LABEL_ONLY
 
-    def fallback(self, jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None) \
-            -> list[Job] | None:
+    def fallback(self, jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None, *,
+                 stream_dead: bool = False) -> list[Job] | None:
         """Задания трекера, подписанные через таблицу связей; номер сверки — голос трекера."""
         if jobs is None:
             return None
-        return [(piece, self._link.get(n, n) if n is not None and n >= 0 else n, raw, own_share(n))
+        return [(piece, self._linked(n, stream_dead=stream_dead), raw, own_share(n))
                 for piece, n, raw in jobs]
 
     def plan(self, segs: list[tuple[int, int, int]] | None, *, origin: int, chunk: np.ndarray,
              tracker: SplitResult | None,
              tracker_jobs: list[tuple[np.ndarray, int | None, np.ndarray | None]] | None,
-             neutral: bool, step_s: float, min_stt: float = 1.0) -> tuple[list[Job] | None, dict]:
+             neutral: bool, step_s: float, min_stt: float = 1.0,
+             stream_dead: bool = False) -> tuple[list[Job] | None, dict]:
         """Задания чанка и поля строки журнала. segs — сегменты потока (начало, конец, слот)
         на оси хаба, задевающие чанк с началом `origin`; None — метки нет (решила тень).
         Пусто — поток в чанке речи не слышит: подписывать нечем, куски — трекеру."""
         if segs is None:
-            return self.fallback(tracker_jobs), {"source": "tracker"}
+            return self.fallback(tracker_jobs, stream_dead=stream_dead), {"source": "tracker"}
         if not segs:
-            return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
+            return self.fallback(tracker_jobs, stream_dead=stream_dead), {"source": "tracker", "fallback": "no_speech"}
         n = len(chunk)
-        raw = [((max(s, origin) - origin) / self._sr, (min(e, origin + n) - origin) / self._sr,
-                self._label(slot, max(s, origin), min(e, origin + n)))
-               for s, e, slot in sorted(segs) if min(e, origin + n) > max(s, origin)]
+        raw = []
+        for s, e, slot in sorted(segs):
+            a, b = max(s, origin), min(e, origin + n)
+            if b > a:
+                label = self._labels.label(slot, a, b)
+                raw.append(((a - origin) / self._sr, (b - origin) / self._sr,
+                            CHANNEL_LABEL_ONLY if label is None else label))
         if not raw:                                  # сегменты лишь касаются чанка — речи в нём нет
-            return self.fallback(tracker_jobs), {"source": "tracker", "fallback": "no_speech"}
+            return self.fallback(tracker_jobs, stream_dead=stream_dead), {"source": "tracker", "fallback": "no_speech"}
         speech = tracker_speech(tracker, n, neutral=neutral)
         res, extra_spans, lost = stream_layout(raw, speech, n, self._sr, step_s=step_s, min_stt=min_stt,
                                                bounded=tracker is not None and tracker.pieces is not None)
@@ -523,7 +579,7 @@ class StreamVoices:
         # речь мимо окон потока — трекеру, под меткой связи его голоса; без голоса — меткой
         # канала (в `speech` она есть только там, где никого не называет, №571)
         for a, b, voice in extra_spans:
-            label = CHANNEL_LABEL_ONLY if voice is None else self._link.get(voice, voice)
+            label = CHANNEL_LABEL_ONLY if voice is None else self._linked(voice, stream_dead=stream_dead)
             placed.append((a, (chunk[a:b], label, chunk[a:b], own_share(voice))))
         fields = {"source": "stream", "pieces": len(placed) - len(extra_spans), "no_recon": no_recon,
                   "recon_agree": agree, "lost_s": round(lost / self._sr, 3)}

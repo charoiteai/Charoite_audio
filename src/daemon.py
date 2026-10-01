@@ -878,8 +878,8 @@ def main():
     seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
         from diarize_live import (SpeakerTracker, StreamVoices, availability_note,
-                                  jobs_for, live_tracker, tracker_kind, with_recon)
-        stream_voices = StreamVoices(sr=hub.sr, gap_s=live_nemotron.SLOT_GAP_S)
+                                  jobs_for, live_tracker, tracker_jobs_on, tracker_kind, with_recon)
+        stream_voices = StreamVoices(sr=hub.sr, show_s=live_nemotron.SLOT_SHOW_S)
         # сначала честный ответ: почему диаризации не будет или почему она
         # будет хуже обещанной. Модели в поставку не входят, и раньше этот
         # случай проходил вообще без сообщения
@@ -1345,9 +1345,11 @@ def main():
                     # канал потока в `on` вне ожидания (поток ещё не LIVE или уже мёртв):
                     # куски трекера — под метками связей, иначе названный потоком человек
                     # на краях потока получал бы второе имя
-                    jobs = (stream_voices.fallback(tracker_jobs)
-                            if placed.seq[0] == nemotron_shadow.stream_channel
-                            else with_recon(tracker_jobs))
+                    # план stream подписывает чанк ниже (label_chunk): здесь — только diarize
+                    jobs = (tracker_jobs_on(stream_voices, tracker_jobs,
+                                            stream_channel=placed.seq[0] == nemotron_shadow.stream_channel,
+                                            stream_dead=nemotron_shadow.dead)
+                            if plan == "diarize" else None)
                 else:
                     jobs = [(chunk, None, None, ())]  # None: метку решит voice_label
                     tracker_state = "off"
@@ -1366,6 +1368,7 @@ def main():
                             lambda segs, res=res, tracker_jobs=tracker_jobs:
                                 stream_voices.plan(segs, origin=int(placed.start), chunk=chunk,
                                                    tracker=res, tracker_jobs=tracker_jobs,
+                                                   stream_dead=nemotron_shadow.dead,
                                                    neutral=chan.label_names_nobody(speaker),
                                                    step_s=spk_tracker.step_s))
                     except Exception as e:  # noqa: BLE001 — раскладка по потоку и её запас упали: чанк — трекеру
@@ -1374,7 +1377,7 @@ def main():
                         # куски трекера на канале потока — только через метки связей
                         # (финальный Opus по №478 B, M2); упал и он — голые номера
                         try:
-                            jobs = stream_voices.fallback(tracker_jobs)
+                            jobs = stream_voices.fallback(tracker_jobs, stream_dead=nemotron_shadow.dead)
                         except Exception:  # noqa: BLE001 — запас запаса: чанк всё равно распознаётся
                             jobs = with_recon(tracker_jobs)
                         if not stream_fault["said"]:

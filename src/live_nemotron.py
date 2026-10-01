@@ -79,9 +79,11 @@ CACHE_LIMIT_MB = 512
 #: Потолок ожидания метки потока одним чанком в режиме `on`, секунды (решение владельца):
 #: метка готова через 0,8 с звука после конца чанка (p50), max 1,3 с (замер №478 B).
 WAIT_CAP_S = 2.0
-#: Слот потока, молчавший дольше этого, получает новую метку (`diarize_live.StreamVoices`):
-#: порог консервативный — лишнее дробление дешевле чужого имени; пишется в `header`.
-SLOT_GAP_S = 60.0
+#: Секунд речи слота потока до показа его метки в ленте (`diarize_live.SlotLabels`, №580):
+#: слоты-призраки движка (0–9 с речи за встречу) не становятся «Собеседниками». Тот же
+#: порог, что у карликов пересборки (`NEMOTRON_BH_DWARF_S`); 10 с на 69-минутной записи
+#: прятал настоящего участника. Пишется в `header`.
+SLOT_SHOW_S = 5.0
 #: Канал потока — собеседники звонка (метка захвата хаба).
 CHANNEL = "blackhole"
 #: Пресет задержки потока: 1,04 с входного буфера.
@@ -230,7 +232,7 @@ class Shadow:
         header = {"type": "header", "v": JOURNAL_V, "sr": sr, "channel": CHANNEL,
                   "preset": PRESET, "stamp": stamp, "mode": mode}
         if mode == ON:
-            header.update(wait_cap_s=WAIT_CAP_S, slot_gap_s=SLOT_GAP_S)
+            header.update(wait_cap_s=WAIT_CAP_S, slot_show_s=SLOT_SHOW_S)
         self._line(header)
         self._drain()
 
@@ -834,6 +836,13 @@ class Shadow:
         with self._lock:
             return self._state == LIVE
 
+    @property
+    def dead(self) -> bool:
+        """Поток умер и не вернётся: запас трекера подписывает голым номером голос, не
+        связанный с меткой потока (до рукопожатия — меткой канала, №580)."""
+        with self._lock:
+            return self._state == DEAD
+
 
 def diarized_state(split_failed: bool, jobs: typing.Any) -> str:
     """Что живой трекер сделал с чанком на ветке раскладки: раскладка упала, вся речь
@@ -857,6 +866,7 @@ class _NoShadow:
 
     stream_channel = None
     live = False
+    dead = False
 
     def note_chunk(self, placed: typing.Any, state: str) -> None:
         pass

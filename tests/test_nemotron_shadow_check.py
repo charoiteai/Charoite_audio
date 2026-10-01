@@ -266,6 +266,61 @@ def test_report_runs_end_to_end_on_a_synthetic_journal():
     assert out["c_agreement_with_final"]["stream"]["der"] == pytest.approx(0.0, abs=0.01)
 
 
+def test_report_counts_the_labels_the_feed_shows_not_the_raw_slots():
+    """№580: сверка включила `on` по сырым слотам, а лента показывала поколения. Метки ленты
+    считает тот же класс, что демон: призрак (слот 2, 2 с речи) под меткой канала, слот,
+    вернувшийся после 10 минут молчания, — та же метка; чужая речь под меткой видна рядом с DER."""
+    m = 60 * SR
+    segs = [(START0, START0 + 6 * SR, 0), (START0 + 6 * SR, START0 + 12 * SR, 1),
+            (START0 + 12 * SR, START0 + 14 * SR, 2), (START0 + 11 * m, START0 + 11 * m + 6 * SR, 0)]
+    ends = [START0 + k * 3 * SR for k in range(1, 6)] + [START0 + 11 * m + 3 * SR, START0 + 11 * m + 6 * SR]
+    j = journal(chunk_ends=ends, segs=segs, total=12 * m)
+    a, b = "Собеседник 1", "Собеседник 2"
+    final = {"duration_s": 12 * 60.0, "segments": [
+        [START0 / SR, START0 / SR + 6, a], [START0 / SR + 6, START0 / SR + 14, b],
+        [START0 / SR + 660, START0 / SR + 666, a]]}
+    out = chk.report(j, final)
+    assert len(out["b_slots"]["slots"]) == 3
+    shown = out["d_shown"]
+    # канал: первые чанки слотов 0 и 1 до порога (по 3 с, как в ленте — чанки по 3 с) + призрак 2 с
+    assert (shown["labels"], shown["channel_s"], shown["unfed_s"], shown["voices_final"]) == (2, 8.0, 0.0, 2)
+    assert (shown["foreign_s"], shown["weighted_purity"]) == (0.0, 1.0)
+    assert out["b_slots"]["foreign_s"] == 0.0, "призрак-слот 2 целиком внутри речи голоса b"
+
+
+def test_shown_labels_count_never_exceeds_raw_slots_on_a_long_synthetic_meeting():
+    """Потолок: меток ленты не больше сырых слотов при любых паузах — поколений нет."""
+    m = 60 * SR
+    segs = [(START0 + k * m, START0 + k * m + 8 * SR, k % 3) for k in range(30)]
+    ends = [START0 + k * 60 * SR + d * SR for k in range(30) for d in (3, 6, 9)]
+    shown, unfed = chk.shown_segments(journal(chunk_ends=ends, segs=segs, total=31 * m))
+    assert len({lab for *_, lab in shown} - {chk.CHANNEL}) == 3 and unfed == 0.0
+
+
+def test_speech_of_a_chunk_the_stream_did_not_label_does_not_count_toward_showing():
+    """Демон копит речь слота только с размеченных потоком чанков (выходной круг №580, обе
+    головы): 3 с слота на чанке с фолбэком + 2 с на размеченном — порог 5 с не пройден, а
+    сверка по всем сегментам показала бы метку."""
+    segs = [(START0, START0 + 3 * SR, 0), (START0 + 3 * SR, START0 + 5 * SR, 0)]
+    lines = [json.loads(x) for x in journal_lines(chunk_ends=[START0 + 3 * SR, START0 + 6 * SR], segs=segs)]
+    for x in lines:
+        if x["type"] == "chunk" and x["end"] == START0 + 3 * SR:
+            x["outcome"] = ln.FALLBACK
+    j = chk.read_journal([json.dumps(x) for x in lines])
+    shown, unfed = chk.shown_segments(j)
+    assert {lab for *_, lab in shown} == {chk.CHANNEL}, "метки нет: размеченной речи 2 с из 5"
+    assert unfed == 3.0
+    assert {lab for *_, lab in chk.shown_segments(j, show_s=2.0)[0]} == {chk.CHANNEL, "L1000"}
+
+
+def test_the_show_threshold_comes_from_the_journal_header():
+    lines = [json.loads(x) for x in journal_lines(chunk_ends=[START0 + 3 * SR], segs=[(START0, START0 + 3 * SR, 0)])]
+    lines[0]["slot_show_s"] = 2.0
+    j = chk.read_journal([json.dumps(x) for x in lines])
+    assert j.show_s == 2.0
+    assert {lab for *_, lab in chk.shown_segments(j)[0]} == {"L1000"}
+
+
 def test_report_refuses_an_invalid_journal():
     with pytest.raises(chk.Refused):
         chk.report(journal(chunk_ends=[START0 + 64000], exit_="failed"),
