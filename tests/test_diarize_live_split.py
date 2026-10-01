@@ -355,6 +355,16 @@ def test_the_call_does_not_grow_past_its_quota():
     assert [p.voice for p in res.pieces] == [1, None]
 
 
+def test_mic_voices_do_not_eat_the_call_quota():
+    """Голоса, заведённые микрофоном, не считаются в квоту собеседников: микрофон
+    первым завёл голос — собеседники всё равно получают все свои места."""
+    t = _tracker(max_speakers=2, mic_channel="mic")
+    _wire(t, {(0.1, 1.3): V_C})
+    t.split(_chunk(), channel="mic")
+    _fill_call(t, (V_A, V_B))
+    assert t.voices == 3 and t._mic_founded == {0}
+
+
 def test_the_mic_does_not_grow_past_its_quota():
     t = _tracker(max_speakers=1, mic_channel="mic")
     _wire(t, {(0.1, 1.3): V_A})
