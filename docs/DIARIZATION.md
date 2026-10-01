@@ -543,7 +543,8 @@ nothing in the transcript (default `off`).
   `off`.
 - **The journal.** `logs/nemotron_live_<stamp>.jsonl`, owner-only: numbers and
   stop reasons — no audio, no utterance text. Lines: `header`, `ready`, `start` (`start0`),
-  `seg`, `front`, `mem`, `chunk`, `end` (reason and counters). A reconciliation cuts the
+  `seg`, `front`, `mem`, `budget` (no footprint from the child), `chunk`, `end` (reason
+  and counters). A reconciliation cuts the
   recording at `start0` into the same blocks.
 - **Stop.** At the end of the meeting, before the post-meeting pass starts,
   the child gets EOF, flushes its tail and exits; a child still alive after 1 s

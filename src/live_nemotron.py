@@ -478,6 +478,11 @@ class Shadow:
                 self._die_locked(f"журнал ребёнка вырос сверх {ERRLOG_CAP_BYTES // 2**20} МБ")
                 return
             phys = self._phys_mb
+            if state is not None:                   # свидетельство — до любого суда (выход r1, GLM M2)
+                row = {"type": "mem", "t": self._t(), **state}   # метка — в момент постановки: t монотонно
+                if phys is not None:
+                    row["phys_mb"] = phys
+                self._line(row)
             if phys is None:
                 self._foot_high = 0
                 if not self._foot_unseen_said:
@@ -491,10 +496,6 @@ class Shadow:
                     return
             if state is None:
                 return
-            row = {"type": "mem", "t": self._t(), **state}     # метка — в момент постановки: t в журнале монотонно
-            if phys is not None:
-                row["phys_mb"] = phys
-            self._line(row)
             if state["pressure"] >= PRESSURE_STOP:
                 self._die_locked(f"давление памяти критичное (уровень {state['pressure']}) — запись важнее потока")
 

@@ -721,6 +721,9 @@ def test_own_footprint_over_budget_twice_in_a_row_stops_the_stream(tmp_path):
     assert sh.state == ln.LIVE, "выброс, потом ровно бюджет — счётчик сброшен"
     _fronts(sh, door, clock, 1, phys=budget + 1)
     assert sh.state == ln.DEAD and sh.reason == f"след ребёнка {budget + 1} МБ сверх бюджета {budget} МБ"
+    mem = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
+    assert [m["phys_mb"] for m in mem] == [budget + 1, budget, budget + 1, budget + 1], \
+        "проба памяти ложится и на проверке, которая убила поток (выход r1, GLM M2)"
 
 
 def test_footprint_budget_works_without_a_pressure_reading(tmp_path):
