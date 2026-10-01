@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.92.0](https://github.com/charoiteai/Charoite_audio/compare/v0.91.0...v0.92.0) (2026-10-01)
+
+
+### Features
+
+* **diarize:** live Nemotron labels the other side in on mode, MLX cache capped always ([#478](https://github.com/charoiteai/Charoite_audio/issues/478)) ([#708](https://github.com/charoiteai/Charoite_audio/issues/708)) ([576f377](https://github.com/charoiteai/Charoite_audio/commit/576f3775547560baeae8eb6c2fa5a7a3229d06f4))
+* **mutation:** sample of 60 over product code, critical zones hold the merge, resumable runs ([#469](https://github.com/charoiteai/Charoite_audio/issues/469)) ([#709](https://github.com/charoiteai/Charoite_audio/issues/709)) ([f4aebf9](https://github.com/charoiteai/Charoite_audio/commit/f4aebf9a5a0346323872ae449f98d2ad783ea90a))
+
+
+### Bug Fixes
+
+* **diarize:** an in-room microphone merges voice shards under a veto, not through a single bridge ([#711](https://github.com/charoiteai/Charoite_audio/issues/711)) ([b13c19e](https://github.com/charoiteai/Charoite_audio/commit/b13c19e6584b0719877c6f970b14860245449f46))
+* **diarize:** one person, one label in the live feed of the stream mode ([#580](https://github.com/charoiteai/Charoite_audio/issues/580)) ([#715](https://github.com/charoiteai/Charoite_audio/issues/715)) ([a189f7c](https://github.com/charoiteai/Charoite_audio/commit/a189f7cef72827fc386f9a92fdecb0c9eee1ed70))
+* **diarize:** the microphone keeps its own tracker slots on a big call ([#573](https://github.com/charoiteai/Charoite_audio/issues/573)) ([#714](https://github.com/charoiteai/Charoite_audio/issues/714)) ([bfd12ce](https://github.com/charoiteai/Charoite_audio/commit/bfd12ce47c8c325528b02d531ce9617c1a3e0a4c))
+* **nemotron:** the live stream yields for its own footprint, not for machine pressure ([#579](https://github.com/charoiteai/Charoite_audio/issues/579)) ([#716](https://github.com/charoiteai/Charoite_audio/issues/716)) ([a017507](https://github.com/charoiteai/Charoite_audio/commit/a017507cb661aef9b00674dbd8a6b96eaeeeccee))
+
 ## [0.91.0](https://github.com/charoiteai/Charoite_audio/compare/v0.90.0...v0.91.0) (2026-09-30)
 
 
