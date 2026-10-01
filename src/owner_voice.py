@@ -132,6 +132,11 @@ class Heard:
     #: «владельцем», и его реплики уходили под именем хозяина встречи
     #: (ревью 20.08, локальная голова).
     echoed: set[int] = dataclasses.field(default_factory=set)
+    #: Голоса, чья речь хоть раз дошла до стенограммы из системного канала. Липкое,
+    #: как `echoed`, но без порога: это счёт голосов собеседников для сайдкара
+    #: (`speakers_call` — подсказка числа голосов пересборке канала собеседников,
+    #: №573). Затухающий `bh` не годится — к «Стоп» он теряет затихших.
+    bh_voices: set[int] = dataclasses.field(default_factory=set)
     #: Момент последнего затухания. Именно None, а не 0.0: нулевая отметка
     #: времени — законное значение (тесты, монотонные часы с нуля), и
     #: `if not self._last` съедал бы первое затухание молча.
@@ -159,6 +164,8 @@ class Heard:
             self._decay(now)
         acc = self.mic if is_mic else self.bh
         acc[voice] = acc.get(voice, 0.0) + seconds
+        if not is_mic:
+            self.bh_voices.add(voice)
         if not is_mic and acc[voice] > ECHO_SECONDS:
             self.echoed.add(voice)      # раз собеседник — навсегда собеседник
 

@@ -27,8 +27,8 @@ class Piece:
     start/end — pad-окно для STT (сэмплы), raw_start/raw_end — сырые границы
     речи без запаса: по ним считается высота голоса, чтобы в оценку не попал
     сосед из padding (ревью 15.08). voice — номер голоса (1..N) или None:
-    речь есть, а голоса нет — кандидату не хватило места среди max_speakers
-    (№571). Номер для STT берётся из заданий jobs_for, не отсюда: там None уже
+    речь есть, а голоса нет — кандидату не хватило места в квоте своего канала
+    (№571, №573). Номер для STT берётся из заданий jobs_for, не отсюда: там None уже
     решён по каналу.
     """
     start: int
@@ -309,7 +309,8 @@ def stream_split(raw: list[tuple[float, float, int]], chunk_len: int, sr: int, *
 
 
 #: Номера меток потока среди номеров голосов демона: выше любого номера трекера
-#: (1..max_speakers), чтобы имя голоса (`voice_names` демона) не спутало одно с другим.
+#: (1..2·max_speakers при квоте микрофона, №573), чтобы имя голоса (`voice_names`
+#: демона) не спутало одно с другим. Конструктор трекера сверяет это неравенство.
 STREAM_VOICE_BASE = 1000
 
 #: Задание распознавания: (кусок для STT, номер подписи, сырой кусок для высоты голоса,
@@ -533,6 +534,16 @@ class StreamVoices:
         return [job for _a, job in sorted(placed, key=lambda t: t[0])], fields
 
 
+def live_tracker(seg_model: pathlib.Path, emb_model: pathlib.Path, *, sample_rate: int,
+                 chunk_s: float, overlap_s: float, mic_channel: str) -> "SegmentTracker":
+    """Трекер живой встречи — одна сборка на демон и прогон тени по записи: шаг
+    нарезки хаба (правило придержки) и метка канала микрофона (квота мест, №573).
+    Собранный дважды руками, прогон по записи мерил бы трекер без квоты, и
+    опровергающий опыт молча проверял бы старое поведение (вход r3 по №573)."""
+    return SegmentTracker(seg_model, emb_model, sample_rate=sample_rate,
+                          step_s=tracker_step_s(chunk_s, overlap_s), mic_channel=mic_channel)
+
+
 def tracker_kind(seg_model: pathlib.Path, emb_model: pathlib.Path) -> str | None:
     """Каким трекером работать: «segments», «chunks» или никаким.
 
@@ -573,6 +584,13 @@ def availability_note(enabled: bool, model_path: pathlib.Path,
 
 
 class SpeakerTracker:
+    """Упрощённый трекер (эмбеддинг по чанку целиком, без модели сегментации).
+
+    Лимит голосов здесь общий на оба канала: квоты микрофона (№573) у него нет —
+    `label(chunk)` не знает канала. На большом звонке голос микрофона без места
+    остаётся канальной меткой, как до №573.
+    """
+
     def __init__(self, model_path: pathlib.Path, sample_rate: int = 16000,
                  threshold: float = 0.45, min_sec: float = 1.2, max_speakers: int = 8,
                  sticky: float = 0.15):
@@ -691,7 +709,7 @@ class SegmentTracker:
                  sample_rate: int = 16000, threshold: float = 0.62,
                  min_segment: float = 0.4, min_new: float = 0.8,
                  max_speakers: int = 8, min_stt: float = 1.0,
-                 step_s: float = 2.5):
+                 step_s: float = 2.5, mic_channel: str | None = None):
         import sherpa_onnx
 
         self.sr = sample_rate
@@ -703,6 +721,14 @@ class SegmentTracker:
         # «угу» эмбеддинг слишком шумный, чтобы объявлять нового человека.
         self.min_new = min_new
         self.max_speakers = max_speakers
+        # Квота мест по каналам (№573): метка канала микрофона — у него свои
+        # max_speakers мест, у остальных каналов вместе — свои. Сопоставление
+        # идёт по всему списку, как без квоты: эхо в микрофоне садится на номер
+        # собеседника, и эхо-сверка owner_voice по номерам не меняется. Без
+        # метки (бенч, label()) — один общий лимит, как до №573.
+        self.mic_channel = mic_channel
+        if 2 * max_speakers >= STREAM_VOICE_BASE:
+            raise ValueError("номера трекера не должны доходить до меток потока")
         # Окно отдельного распознавания — от секунды: короче GigaAM теряет
         # края фраз, а стенограмма рассыпается на однословные «микро-метки».
         self.min_stt = min_stt
@@ -726,6 +752,29 @@ class SegmentTracker:
         self._centroids: list[np.ndarray] = []
         self._counts: list[int] = []
         self._last_by_channel: dict[str, int | None] = {}
+
+    #: Без метки микрофона квоты нет (бенч, тесты через object.__new__).
+    mic_channel: str | None = None
+    #: Индексы голосов, заведённых каналом микрофона. Неизменяемое множество,
+    #: заменяется целиком: значение по умолчанию на уровне класса не делится
+    #: между экземплярами.
+    _mic_founded: frozenset[int] = frozenset()
+
+    def _room(self, channel: str) -> bool:
+        """Может ли канал завести ещё один голос.
+
+        Без метки микрофона — общий лимит на весь список. С меткой — у
+        микрофона свои max_speakers мест, у остальных каналов вместе свои: на
+        звонке с семью и больше собеседниками их канал занимал все места, и
+        голос владельца на микрофоне оставался без номера (№573: 2,7 % речи
+        микрофона до живого STT на записи с 7 голосами собеседников).
+        """
+        if self.mic_channel is None:
+            return len(self._centroids) < self.max_speakers
+        mine = len(self._mic_founded)
+        if channel != self.mic_channel:
+            mine = len(self._centroids) - mine
+        return mine < self.max_speakers
 
     def _embed(self, piece: np.ndarray) -> np.ndarray | None:
         stream = self._ex.create_stream()
@@ -828,10 +877,14 @@ class SegmentTracker:
         # кто станет «Собеседником 1»; при равных весах — кто заговорил раньше
         for _dur, k, used in sorted(alive,
                                     key=lambda t: (-round(t[0], 3), t[1])):
-            if len(self._centroids) >= self.max_speakers:
+            # все кандидаты чанка — одного канала, поэтому квота кончается
+            # для всех сразу: break, а не continue
+            if not self._room(channel):
                 break
             c = np.sum([e * s for e, s in used], axis=0)
             c /= float(np.linalg.norm(c))
+            if channel == self.mic_channel:
+                self._mic_founded = self._mic_founded | {len(self._centroids)}
             self._centroids.append(c)
             self._counts.append(float(sum(s for _e, s in used)))
             renum[-(k + 1)] = len(self._centroids) - 1

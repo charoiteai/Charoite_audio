@@ -485,6 +485,7 @@ def test_демон_пишет_посекундный_штамп_в_сайдка
     start = src.index('live_sidecar.merge(pathlib.Path(tr.path),')
     block = src[start:src.index("bare=tr.stamp)", start)]
     assert '"stamp": tr.stamp' in block and '"speakers": len(tracker_voices)' in block
+    assert '"speakers_call": len(heard_by_channel.bh_voices)' in block, "счёт канала собеседников (№573)"
 
 
 def test_посекундный_штамп_находит_свою_запись(tmp_path):

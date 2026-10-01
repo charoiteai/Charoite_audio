@@ -297,6 +297,19 @@ def test_rebuild_hints_the_call_channel_with_the_live_count_in_range(meeting, sp
     assert ("mic", -1) in meeting["calls"]
 
 
+@pytest.mark.parametrize("meta,expected", [
+    ({"speakers": 16, "speakers_call": 8}, 8),    # квота микрофона (№573): общий счёт вне диапазона
+    ({"speakers": 9, "speakers_call": 5}, 5),
+    ({"speakers": 7}, 7),                         # старый сайдкар — общий счёт, как было
+    ({"speakers": 7, "speakers_call": 0}, -1),    # ключ есть: решает он, а не общий счёт
+    ({"speakers": 7, "speakers_call": "x"}, -1),
+])
+def test_the_call_channel_is_hinted_with_its_own_count(meeting, meta, expected):
+    meeting["meta"] = meta
+    rt.rebuild(meeting["live"], CFG)
+    assert ("blackhole", expected) in meeting["calls"]
+
+
 @pytest.mark.parametrize("short", ["mic", "blackhole"])
 def test_a_channel_of_twenty_seconds_or_less_is_not_diarized(meeting, short):
     meeting["len"][short] = 20

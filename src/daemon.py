@@ -858,6 +858,13 @@ def main():
     # между собой; ЧЕЙ голос владельца, решает не трекер, а канал захвата —
     # см. src/owner_voice.py (угадывать голос внутри канала пробовали 20.07,
     # «первый голос mic» ловил лектора из видео).
+    # Метки каналов и владелец — одна точка правды (D-П2): сырая метка канала,
+    # подпись владельца и имя для сверки по словам собраны один раз и не
+    # расходятся между захватом, счётчиками и подписью (аудит 30.08, DS).
+    # Собираются до трекера: квоту мест микрофона трекер берёт отсюда (№573),
+    # а сбор позже ушёл бы в NameError внутри широкого except диаризации.
+    chan = channel_labels.ChannelLabels.from_capture(
+        cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])   # из факта захвата — без расхождений
     spk_tracker = None
     voice_names: dict[int, str] = {}
     # Голоса трекера, чья речь дошла до стенограммы, — счёт `speakers` сайдкара. Отдельно от
@@ -870,9 +877,8 @@ def main():
     emb_model = _root() / MODELS_DIR / "diar" / "embedding.onnx"
     seg_model = _root() / MODELS_DIR / "diar" / "segmentation.onnx"
     try:
-        from diarize_live import (SegmentTracker, SpeakerTracker, StreamVoices,
-                                  availability_note, jobs_for, tracker_kind,
-                                  tracker_step_s, with_recon)
+        from diarize_live import (SpeakerTracker, StreamVoices, availability_note,
+                                  jobs_for, live_tracker, tracker_kind, with_recon)
         stream_voices = StreamVoices(sr=hub.sr, gap_s=live_nemotron.SLOT_GAP_S)
         # сначала честный ответ: почему диаризации не будет или почему она
         # будет хуже обещанной. Модели в поставку не входят, и раньше этот
@@ -885,11 +891,12 @@ def main():
             # эмбеддинг по кускам речи, а не по трёхсекундному чанку: на
             # границе реплик чанк смешивает голоса, и трекер залипал на первом
             # (замер: DER 0.725 и один голос из четырёх против 0.246 и всех)
-            spk_tracker = SegmentTracker(
-                seg_model, emb_model, sample_rate=hub.sr,
-                # шаг нарезки чанков берётся из конфига хаба, а не константой:
-                # от него зависит правило придержки на правой границе
-                step_s=tracker_step_s(hub.chunk_s, hub.overlap_s))
+            # шаг нарезки чанков — из конфига хаба, а не константой (от него
+            # зависит правило придержки на правой границе); у микрофона свои
+            # места (№573) — сборка одна с прогоном тени по записи
+            spk_tracker = live_tracker(
+                seg_model, emb_model, sample_rate=hub.sr, chunk_s=hub.chunk_s,
+                overlap_s=hub.overlap_s, mic_channel=chan.mic_raw)
             emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
         elif kind == "chunks":
             spk_tracker = SpeakerTracker(
@@ -964,11 +971,6 @@ def main():
     # Имя не задано — сверяем с меткой своего канала («Я»): иначе гейт
     # открыт на собственные вопросы у всех, кто не заполнил настройку
     # (ревью 19.08, DeepSeek).
-    # Метки каналов и владелец — одна точка правды (D-П2): сырая метка канала,
-    # подпись владельца и имя для сверки по словам собраны один раз и не
-    # расходятся между захватом, счётчиками и подписью (аудит 30.08, DS).
-    chan = channel_labels.ChannelLabels.from_capture(
-        cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])   # из факта захвата — без расхождений
     owner_name = chan.owner_name
 
     # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
@@ -3593,7 +3595,12 @@ def main():
             # СЛИЯНИЕ, не дамп: во время встречи сайдкар уже пишет след канала,
             # и дамп одной строкой стирал бы его (Critical DS и GLM по №234)
             live_sidecar.merge(pathlib.Path(tr.path),
-                               {"speakers": len(tracker_voices), "names": tr.names(),
+                               {"speakers": len(tracker_voices),
+                                # голоса канала собеседников — подсказка его разметке:
+                                # с квотой микрофона (№573) общий счёт на звонке
+                                # доходит до 16 и выпадает из диапазона подсказки
+                                "speakers_call": len(heard_by_channel.bh_voices),
+                                "names": tr.names(),
                                 "minutes_sha256": minutes_sha["v"],
                                 # посекундный штамп встречи: после наката темы имя
                                 # файла его теряет, а пересборке он нужен точно —

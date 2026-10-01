@@ -563,7 +563,8 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     assert not (data / "logs").exists()
     assert said and not any(stamp in s for s in said), "штамп встречи в строках тени — маской"
     assert {(out / x).stat().st_mode & 0o777 for x in ("", "logs")} == {0o700}, "выход прогона — только владельцу"
-    assert made == [{"sample_rate": SR, "step_s": 2.5}], "трекер — той же фабрикой, что у демона"
+    assert made == [{"sample_rate": SR, "step_s": 2.5, "mic_channel": "Владелец"}], \
+        "трекер — той же фабрикой, что у демона: шаг нарезки и квота мест микрофона (№573)"
     assert sorted(p.name for p in (data / "rec").iterdir()) == [f"{stamp}_blackhole.wav", f"{stamp}_mic.wav"], (
         "прогон не пишет записей: запись хаба выключена даже при record: true в конфиге владельца")
     assert meta["chunks"]["placed"] >= meta["chunks"]["tracker_lines"] == meta["cuts_per_channel"]
