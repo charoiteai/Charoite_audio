@@ -478,3 +478,18 @@ def test_human_seconds_excludes_echoed_voices():
     h.echoed.add(2)                    # id-путь пометил (текстовый — нет)
     # статус «в микрофоне несколько человек» не должен считать эхо (Codex)
     assert ov.human_seconds(h) == 20.0
+
+
+def test_call_voices_are_counted_sticky_and_only_from_the_call_channel():
+    """№573: счёт голосов канала собеседников для сайдкара (`speakers_call`) —
+    липкий, затухание `bh` его не съедает; микрофон и кусок без голоса не в счёт."""
+    h = ov.Heard()
+    h.note(3, 0.4, is_mic=False, now=0.0)
+    h.note(5, 2.0, is_mic=True, now=0.0)
+    h.note(None, 2.0, is_mic=False, now=0.0)
+    h.note(7, 0.0, is_mic=False, now=0.0)
+    h.note(9, 1.0, is_mic=False, now=10 * ov.WINDOW_S)   # затухание стёрло 3 из bh
+    h.note(4, 1.0, is_mic=True, now=10 * ov.WINDOW_S)    # и 5 из mic
+    assert 3 not in h.bh and 5 not in h.mic
+    assert h.bh_voices == {3, 9}
+    assert h.mic_voices == {5, 4}

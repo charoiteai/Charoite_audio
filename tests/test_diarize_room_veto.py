@@ -249,6 +249,11 @@ MIC_S = 600.0
     ({"speakers": 2}, True, MIC_S, (None, None)),                 # живых мало — авто, как было
     ({"speakers": 13}, True, MIC_S, (None, None)),                # живых сверх диапазона
     ({}, True, MIC_S, (None, None)),                              # счёта нет
+    # №573: на звонке без записи канала собеседников общий счёт с квотой микрофона
+    # доходит до 16 — микрофону свой счёт, а не выпадение из диапазона
+    ({"speakers": 16, "speakers_mic": 7}, True, None, (7, None)),
+    ({"speakers": 16}, True, None, (None, None)),                 # старый сайдкар — общий, как было
+    ({"speakers": 7, "speakers_mic": 0}, True, None, (None, None)),
 ])
 def test_mic_plan_cells(meta, silent, call_s, plan):
     assert rt.mic_plan(meta, silent, call_s, MIC_S) == plan

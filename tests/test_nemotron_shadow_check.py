@@ -337,8 +337,10 @@ class _Tracker:
 
     def __init__(self, result=None, raises=False):
         self.result, self.raises = result, raises
+        self.channels: list[str] = []
 
     def split(self, chunk, channel="_default"):
+        self.channels.append(channel)
         if self.raises:
             raise RuntimeError("упал")
         return self.result
@@ -533,6 +535,34 @@ def _replay_data(tmp_path):
     return data, stamp
 
 
+def test_a_mic_chunk_of_the_real_hub_reaches_the_tracker_under_the_mic_label():
+    """Квота мест микрофона (№573) держится на равенстве двух строк: метки, с которой
+    собран трекер (`ChannelLabels.mic_raw`), и канала, с которым его зовут на чанке
+    микрофона (`Placed.speaker`). Метка захвата `seq[0]` («mic») с ней не совпадает —
+    поданная вместо подписи, она молча вернула бы общий лимит (финальный Opus, I2)."""
+    import channel_labels
+    import stt_runtime
+    cfg = {"audio": {"samplerate": SR, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                     "vad_energy_db": -60.0, "record": False, "device": "auto"},
+           "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}
+    hub = audio.AudioHub(cfg, captures=[])
+    caps = [types.SimpleNamespace(label="blackhole"), types.SimpleNamespace(label="mic")]
+    hub._register_captures(caps)
+    loud, quiet = np.full(SR // 10, 0.3, dtype=np.float32), np.zeros(SR // 10, dtype=np.float32)
+    for _ in range(40):                      # говорит только микрофон: эхом его хаб не глушит
+        for cap in caps:
+            hub._consume(cap, loud if cap.label == "mic" else quiet)
+    mic = [p for p in hub.pull_placed() if p.seq[0] == "mic"]
+    assert mic
+    chan = channel_labels.ChannelLabels.from_capture(
+        cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])
+    assert mic[0].speaker == chan.mic_raw != mic[0].seq[0]
+    tracker = _Tracker(diarize_live.SplitResult(None, 1))
+    rp.chunk_decision(tracker, mic[0], chan=chan, stt_runtime=stt_runtime, jobs_for=diarize_live.jobs_for,
+                      heard_pieces=diarize_live.heard_pieces, diarized_state=ln.diarized_state)
+    assert tracker.channels == [chan.mic_raw], "прогон по записи зовёт трекер подписью канала, как демон"
+
+
 def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path, monkeypatch):
     data, stamp = _replay_data(tmp_path)
     made = []
@@ -563,7 +593,9 @@ def test_replay_drives_the_real_hub_and_shadow_and_the_check_accepts_it(tmp_path
     assert not (data / "logs").exists()
     assert said and not any(stamp in s for s in said), "штамп встречи в строках тени — маской"
     assert {(out / x).stat().st_mode & 0o777 for x in ("", "logs")} == {0o700}, "выход прогона — только владельцу"
-    assert made == [{"sample_rate": SR, "step_s": 2.5}], "трекер — той же фабрикой, что у демона"
+    assert made == [{"sample_rate": SR, "max_speakers": diarize_live.LIVE_MAX_SPEAKERS, "step_s": 2.5,
+                     "mic_channel": "Владелец"}], \
+        "трекер — той же фабрикой, что у демона: шаг нарезки и квота мест микрофона (№573)"
     assert sorted(p.name for p in (data / "rec").iterdir()) == [f"{stamp}_blackhole.wav", f"{stamp}_mic.wav"], (
         "прогон не пишет записей: запись хаба выключена даже при record: true в конфиге владельца")
     assert meta["chunks"]["placed"] >= meta["chunks"]["tracker_lines"] == meta["cuts_per_channel"]

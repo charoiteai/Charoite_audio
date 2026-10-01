@@ -66,6 +66,7 @@ import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
+from diarize_live import LIVE_MAX_SPEAKERS  # noqa: E402 — потолок мест канала живого трекера
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
@@ -769,12 +770,13 @@ HINT_RANGE = (2, 12)
 MIC_HINT_MIN = 3
 
 
-def speakers_count(meta: dict) -> int | None:
+def speakers_count(meta: dict, key: str = "speakers") -> int | None:
     """Сколько голосов слышала живая сессия (`speakers` в live.json) — с санитайзом
     формы, как у live_session_names: целое (bool — нет, float — только целый) от
     1 до MAX_LIVE_SPEAKERS, иначе None. Строка из правленого руками сайдкара —
-    тоже None: `int(...)` на мусоре ронял бы всю пересборку (№559)."""
-    v = meta.get("speakers") if isinstance(meta, dict) else None
+    тоже None: `int(...)` на мусоре ронял бы всю пересборку (№559). `key` —
+    какой счёт: все голоса или только микрофона (`speakers_mic`)."""
+    v = meta.get(key) if isinstance(meta, dict) else None
     if isinstance(v, bool):
         return None
     if isinstance(v, float) and v.is_integer():
@@ -784,18 +786,47 @@ def speakers_count(meta: dict) -> int | None:
     return v
 
 
-def speakers_hint(meta: dict) -> int | None:
+def speakers_hint(meta: dict, key: str = "speakers") -> int | None:
     """Число голосов для кластеризатора: speakers_count в HINT_RANGE, иначе None."""
-    n = speakers_count(meta)
+    n = speakers_count(meta, key)
     return n if n is not None and HINT_RANGE[0] <= n <= HINT_RANGE[1] else None
+
+
+def channel_count_key(meta: dict, key: str) -> str:
+    """Какой счёт голосов читать для канала: свой (`speakers_mic`), если сайдкар его
+    несёт, иначе общий `speakers` (сайдкары до №573). С квотой мест
+    микрофона общий счёт на звонке доходит до 16 и выпадает из HINT_RANGE, поэтому
+    у каждого канала свой. Решает присутствие ключа, а не его истинность: ключ с
+    нулём или мусором — счёта канала нет, авто-режим."""
+    return key if isinstance(meta, dict) and key in meta else "speakers"
+
+
+def call_hint(meta: dict) -> int | None:
+    """Подсказка числа голосов каналу собеседников — как до №573: общий счёт живой
+    сессии, но не выше мест одного канала трекера. До квоты микрофона общий счёт сам
+    не превышал LIVE_MAX_SPEAKERS; теперь доходит до двух таких, и без потолка
+    большой звонок выпадал бы из HINT_RANGE. На сумме ≤ LIVE_MAX_SPEAKERS — бит в бит
+    прежнее число. Подсказка счётом `speakers_call` меняла бы итог каждого звонка
+    (один на один: 1 вместо 2, авто-режим) — только с замером DER пересборки (№572,
+    финальный Opus по №573)."""
+    n = speakers_count(meta)
+    if n is None:
+        return None
+    return speakers_hint({"speakers": min(n, LIVE_MAX_SPEAKERS)})
+
+
+def mic_count(meta: dict) -> int | None:
+    """Сколько голосов живая сессия слышала в микрофоне (`speakers_mic`) — для
+    подсказки микрофону и вердикта слитой метки."""
+    return speakers_count(meta, channel_count_key(meta, "speakers_mic"))
 
 
 def mic_hint(meta: dict, call_silent: bool) -> int | None:
     """Подсказка числа голосов микрофону: только когда канал собеседников молчит
     (очная встреча, машина без системного звука) и живых голосов не меньше
-    MIC_HINT_MIN. Со звонком `speakers` считает оба канала — число для
-    микрофона неизвестно, там авто, как было."""
-    n = speakers_hint(meta)
+    MIC_HINT_MIN. Счёт — голоса микрофона (`speakers_mic`); сайдкар без него —
+    общий, как было."""
+    n = speakers_hint(meta, channel_count_key(meta, "speakers_mic"))
     return n if call_silent and n is not None and n >= MIC_HINT_MIN else None
 
 
@@ -1044,7 +1075,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             else:
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
-                bh_raw = diarize_channel(bh, sr, num_speakers=speakers_hint(meta) or -1)
+                bh_raw = diarize_channel(bh, sr, num_speakers=call_hint(meta) or -1)
     # Канал собеседников молчит: записи нет или она размечена пустой. Сбой
     # разметки и запись короче 20 с (None) — не тишина: звонок мог быть, число
     # живых голосов считает его собеседников, а эхо-фильтру микрофона не по чему
@@ -1083,7 +1114,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
-    live_count = speakers_count(meta)
+    live_count = mic_count(meta)
     collapsed = collapsed_mic_labels(chan, live_count, call_silent)
     if collapsed:
         log(f"⚠️ разметка микрофона свела всех в одну метку при живых голосах {live_count} "

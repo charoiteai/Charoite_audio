@@ -131,8 +131,10 @@ class _FakeDiar:
         return list(self.plan)
 
 
-def _tracker(max_speakers: int = 8) -> SegmentTracker:
+def _tracker(max_speakers: int = 8, mic_channel: str | None = None) -> SegmentTracker:
     t = object.__new__(SegmentTracker)
+    if mic_channel is not None:
+        t.mic_channel = mic_channel
     t.sr = SR
     t.threshold = 0.62
     t.min_segment = 0.4
@@ -312,6 +314,106 @@ def test_unknown_short_stranger_blocks_fullchunk():
     assert res.pieces is not None and len(res.pieces) == 1
     assert res.pieces[0].voice == 1
     assert t.voices == 1  # незнакомец голос не завёл
+
+
+# ---------- №573: у микрофона свои места ----------
+
+V_D = np.array([0.0, 0.0, -1.0])
+
+
+def _fill_call(t: SegmentTracker, vectors) -> None:
+    """Канал собеседников заводит по голосу на чанк, пока квота пускает."""
+    for v in vectors:
+        _wire(t, {(0.1, 1.3): v})
+        t.split(_chunk(), channel="blackhole")
+
+
+def test_the_mic_keeps_its_own_slots_after_the_call_took_all_of_theirs():
+    """Звонок занял все места собеседников — голос микрофона всё равно получает
+    номер, и его окно доходит до заданий STT (на микрофоне окно без голоса
+    выпадает: №571). Без квоты — 2,7 % речи владельца на записи 10:32."""
+    from diarize_live import jobs_for
+    t = _tracker(max_speakers=2, mic_channel="mic")
+    _fill_call(t, (V_A, V_B))
+    assert t.voices == 2
+    _wire(t, {(0.1, 1.3): V_C})
+    res = t.split(_chunk(), channel="mic")
+    assert t.voices == 3
+    jobs = jobs_for(res, _chunk(), channel_label_neutral=False)
+    assert jobs and [n for _piece, n, _raw in jobs] == [3]
+
+
+def test_the_call_does_not_grow_past_its_quota():
+    """Квота микрофона не расширяет места собеседников: третий голос звонка при
+    квоте 2 — кандидат без места, даже когда у микрофона места свободны."""
+    t = _tracker(max_speakers=2, mic_channel="mic")
+    _fill_call(t, (V_A, V_B, V_C))
+    assert t.voices == 2
+    _wire(t, {(0.1, 1.3): V_A, (1.5, 2.7): V_D})
+    res = t.split(_chunk(), channel="blackhole")
+    assert t.voices == 2
+    assert [p.voice for p in res.pieces] == [1, None]
+
+
+def test_mic_voices_do_not_eat_the_call_quota():
+    """Голоса, заведённые микрофоном, не считаются в квоту собеседников: микрофон
+    первым завёл голос — собеседники всё равно получают все свои места."""
+    t = _tracker(max_speakers=2, mic_channel="mic")
+    _wire(t, {(0.1, 1.3): V_C})
+    t.split(_chunk(), channel="mic")
+    _fill_call(t, (V_A, V_B))
+    assert t.voices == 3 and t._mic_founded == {0}
+
+
+def test_the_mic_does_not_grow_past_its_quota():
+    t = _tracker(max_speakers=1, mic_channel="mic")
+    _wire(t, {(0.1, 1.3): V_A})
+    t.split(_chunk(), channel="mic")
+    _wire(t, {(0.1, 1.3): V_A, (1.5, 2.7): V_B})
+    res = t.split(_chunk(), channel="mic")
+    assert t.voices == 1
+    assert [p.voice for p in res.pieces] == [1, None]
+
+
+def test_echo_in_the_mic_still_lands_on_the_call_voice():
+    """Сопоставление идёт по всему списку и с квотой: эхо собеседника в микрофоне
+    получает его номер, а не заводит голос микрофона — на этом держится
+    эхо-сверка owner_voice по номерам."""
+    t = _tracker(max_speakers=2, mic_channel="mic")
+    _fill_call(t, (V_A,))
+    _wire(t, {(0.1, 1.3): V_A})
+    res = t.split(_chunk(), channel="mic")
+    assert t.voices == 1 and res.main == 1
+
+
+def test_without_the_mic_label_the_limit_is_shared_as_before():
+    """Без метки микрофона (бенч, label()) — один общий лимит."""
+    t = _tracker(max_speakers=2)
+    _fill_call(t, (V_A, V_B))
+    _wire(t, {(0.1, 1.3): V_C})
+    res = t.split(_chunk(), channel="mic")
+    assert t.voices == 2
+    assert res.pieces is not None and [p.voice for p in res.pieces] == [None]
+
+
+def test_mic_founded_voices_are_per_tracker():
+    """Множество голосов микрофона — своё у каждого трекера (значение по умолчанию
+    на классе неизменяемое)."""
+    a, b = _tracker(max_speakers=2, mic_channel="mic"), _tracker(max_speakers=2, mic_channel="mic")
+    _wire(a, {(0.1, 1.3): V_A})
+    a.split(_chunk(), channel="mic")
+    assert a._mic_founded == {0} and b._mic_founded == frozenset()
+
+
+def test_tracker_numbers_stay_below_stream_labels(monkeypatch):
+    """Номера трекера с квотой — до 2·max_speakers; метки потока начинаются с
+    STREAM_VOICE_BASE, и встреча номеров спутала бы имена голосов."""
+    import diarize_live
+    import types
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", types.SimpleNamespace())
+    with pytest.raises(ValueError):
+        diarize_live.SegmentTracker(pathlib.Path("seg"), pathlib.Path("emb"),
+                                    max_speakers=diarize_live.STREAM_VOICE_BASE // 2)
 
 
 def test_candidate_rejected_by_limit_blocks_fullchunk():
@@ -878,3 +980,24 @@ def test_lost_speech_is_measured_against_the_padded_windows_that_reach_stt():
     _jobs, fields = _plan(_sv(), [(int(0.1 * SR), int(1.3 * SR), 0), (int(1.5 * SR), int(2.7 * SR), 1)],
                           tracker=tracker)
     assert fields["lost_s"] <= 0.3 + 1e-3, "0,1 с до первого окна — под его запасом"
+
+
+def test_the_daemon_builds_its_tracker_with_the_mic_label():
+    """Квота мест микрофона держится на сборке трекера в демоне: фабрика live_tracker
+    с меткой микрофона из ChannelLabels, собранных раньше трекера (иначе NameError
+    уйдёт в широкий except диаризации и выключит её целиком). Демон — одна функция
+    main() на тысячи строк, поэтому проверка по AST его текста (выход r1 по №573)."""
+    import ast
+    module = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    tree = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [n for n in ast.walk(module) if isinstance(n, ast.Call)]
+    names = [getattr(c.func, "id", getattr(c.func, "attr", None)) for c in calls]
+    assert "SegmentTracker" not in names, "трекер живой встречи — только фабрикой live_tracker"
+    made = [c for c, name in zip(calls, names) if name == "live_tracker"]
+    assert len(made) == 1
+    assert made[0] in list(ast.walk(tree)), "трекер собирает main()"
+    mic = {k.arg: ast.unparse(k.value) for k in made[0].keywords}.get("mic_channel")
+    assert mic == "chan.mic_raw"
+    chan_at = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                  and isinstance(n.targets[0], ast.Name) and n.targets[0].id == "chan")
+    assert chan_at < made[0].lineno, "ChannelLabels собираются раньше трекера"

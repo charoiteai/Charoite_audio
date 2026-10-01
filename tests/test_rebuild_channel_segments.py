@@ -289,12 +289,34 @@ def test_a_usable_answer_leaves_no_note(meeting):
     assert rt.names_pending(out) is False
 
 
-@pytest.mark.parametrize("speakers,expected", [(0, -1), (1, -1), (2, 2), (12, 12), (13, -1)])
+# потолок — места одного канала трекера (№573): до квоты микрофона счёт сам не превышал 8
+@pytest.mark.parametrize("speakers,expected", [(0, -1), (1, -1), (2, 2), (8, 8), (12, 8), (13, 8), (61, -1)])
 def test_rebuild_hints_the_call_channel_with_the_live_count_in_range(meeting, speakers, expected):
     meeting["meta"] = {"speakers": speakers}
     rt.rebuild(meeting["live"], CFG)
     assert ("blackhole", expected) in meeting["calls"]
     assert ("mic", -1) in meeting["calls"]
+
+
+@pytest.mark.parametrize("meta,expected", [
+    ({"speakers": 2, "speakers_call": 1}, 2),     # один на один: как до №573, не авто-режим
+    ({"speakers": 13, "speakers_call": 8}, 8),    # квота микрофона: общий счёт — до потолка мест канала
+    ({"speakers": 16, "speakers_call": 3}, 8),
+    ({"speakers": 5}, 5),                         # старый сайдкар
+    ({"speakers": 5, "speakers_call": 0}, 5),     # счёт канала подсказку не задаёт (финальный Opus по №573)
+])
+def test_the_call_channel_hint_is_the_live_count_capped_at_one_channels_slots(meeting, meta, expected):
+    """Подсказка каналу собеседников — как до №573 (общий счёт живой сессии), с
+    потолком мест одного канала трекера: квота микрофона не меняет её на сумме ≤ 8
+    и не выбрасывает большой звонок из HINT_RANGE."""
+    meeting["meta"] = meta
+    rt.rebuild(meeting["live"], CFG)
+    assert ("blackhole", expected) in meeting["calls"]
+
+
+def test_the_call_hint_cap_is_the_live_tracker_slots():
+    import diarize_live
+    assert rt.LIVE_MAX_SPEAKERS is diarize_live.LIVE_MAX_SPEAKERS
 
 
 @pytest.mark.parametrize("short", ["mic", "blackhole"])
@@ -628,6 +650,16 @@ def test_a_recorded_silent_call_channel_is_a_room_the_mic_goes_auto_under_the_ve
     rt.rebuild(meeting["live"], CFG)
     assert ("mic", -1) in meeting["calls"] and ("mic", 7) not in meeting["calls"]
     assert ("mic", rt.VETO_BELOW) in meeting["veto"] and ("mic", True) not in meeting["merge"]
+
+
+def test_the_collapse_verdict_counts_the_mic_voices(meeting):
+    """№573: вердикт слитой метки — по голосам микрофона, а не по общему счёту, который
+    с квотой микрофона на звонке доходит до 16 и выпадает из диапазона."""
+    _room(meeting, speakers=16)
+    meeting["meta"]["speakers_mic"] = 7
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert rt.MIC_COLLAPSED_NOTE.format(live=7) in text
 
 
 def test_the_room_keeps_the_collapse_verdict(meeting):
