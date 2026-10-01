@@ -63,8 +63,7 @@ Charoite uses two diarization passes:
    channels.
 2. **Offline re-pass** (after Stop): the full recording is re-diarized per
    channel with sherpa-onnx (the same two models). The system channel is
-   clustered with the number of voices the live session heard on the remote
-   channel as a hint.
+   clustered with the number of voices the live session heard as a hint.
    When the system channel was recorded for most of the meeting and no speech
    was found in it (an in-room meeting) and the live session heard 3–12
    voices, the microphone is clustered without a hint and the shard merge

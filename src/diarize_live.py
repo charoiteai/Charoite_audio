@@ -534,6 +534,12 @@ class StreamVoices:
         return [job for _a, job in sorted(placed, key=lambda t: t[0])], fields
 
 
+#: Мест голосов у канала живого трекера. Тот же потолок — у подсказки числа голосов
+#: каналу собеседников в пересборке (call_hint): общий счёт сайдкара с квотой
+#: микрофона доходит до 2·LIVE_MAX_SPEAKERS, а подсказка обязана остаться базовой.
+LIVE_MAX_SPEAKERS = 8
+
+
 def live_tracker(seg_model: pathlib.Path, emb_model: pathlib.Path, *, sample_rate: int,
                  chunk_s: float, overlap_s: float, mic_channel: str) -> "SegmentTracker":
     """Трекер живой встречи — одна сборка на демон и прогон тени по записи: шаг
@@ -541,6 +547,7 @@ def live_tracker(seg_model: pathlib.Path, emb_model: pathlib.Path, *, sample_rat
     Собранный дважды руками, прогон по записи мерил бы трекер без квоты, и
     опровергающий опыт молча проверял бы старое поведение (вход r3 по №573)."""
     return SegmentTracker(seg_model, emb_model, sample_rate=sample_rate,
+                          max_speakers=LIVE_MAX_SPEAKERS,
                           step_s=tracker_step_s(chunk_s, overlap_s), mic_channel=mic_channel)
 
 

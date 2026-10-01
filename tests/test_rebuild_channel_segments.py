@@ -289,7 +289,8 @@ def test_a_usable_answer_leaves_no_note(meeting):
     assert rt.names_pending(out) is False
 
 
-@pytest.mark.parametrize("speakers,expected", [(0, -1), (1, -1), (2, 2), (12, 12), (13, -1)])
+# потолок — места одного канала трекера (№573): до квоты микрофона счёт сам не превышал 8
+@pytest.mark.parametrize("speakers,expected", [(0, -1), (1, -1), (2, 2), (8, 8), (12, 8), (13, 8), (61, -1)])
 def test_rebuild_hints_the_call_channel_with_the_live_count_in_range(meeting, speakers, expected):
     meeting["meta"] = {"speakers": speakers}
     rt.rebuild(meeting["live"], CFG)
@@ -298,16 +299,24 @@ def test_rebuild_hints_the_call_channel_with_the_live_count_in_range(meeting, sp
 
 
 @pytest.mark.parametrize("meta,expected", [
-    ({"speakers": 16, "speakers_call": 8}, 8),    # квота микрофона (№573): общий счёт вне диапазона
-    ({"speakers": 9, "speakers_call": 5}, 5),
-    ({"speakers": 7}, 7),                         # старый сайдкар — общий счёт, как было
-    ({"speakers": 7, "speakers_call": 0}, -1),    # ключ есть: решает он, а не общий счёт
-    ({"speakers": 7, "speakers_call": "x"}, -1),
+    ({"speakers": 2, "speakers_call": 1}, 2),     # один на один: как до №573, не авто-режим
+    ({"speakers": 13, "speakers_call": 8}, 8),    # квота микрофона: общий счёт — до потолка мест канала
+    ({"speakers": 16, "speakers_call": 3}, 8),
+    ({"speakers": 5}, 5),                         # старый сайдкар
+    ({"speakers": 5, "speakers_call": 0}, 5),     # счёт канала подсказку не задаёт (финальный Opus по №573)
 ])
-def test_the_call_channel_is_hinted_with_its_own_count(meeting, meta, expected):
+def test_the_call_channel_hint_is_the_live_count_capped_at_one_channels_slots(meeting, meta, expected):
+    """Подсказка каналу собеседников — как до №573 (общий счёт живой сессии), с
+    потолком мест одного канала трекера: квота микрофона не меняет её на сумме ≤ 8
+    и не выбрасывает большой звонок из HINT_RANGE."""
     meeting["meta"] = meta
     rt.rebuild(meeting["live"], CFG)
     assert ("blackhole", expected) in meeting["calls"]
+
+
+def test_the_call_hint_cap_is_the_live_tracker_slots():
+    import diarize_live
+    assert rt.LIVE_MAX_SPEAKERS is diarize_live.LIVE_MAX_SPEAKERS
 
 
 @pytest.mark.parametrize("short", ["mic", "blackhole"])

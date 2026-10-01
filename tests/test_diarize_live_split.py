@@ -988,14 +988,16 @@ def test_the_daemon_builds_its_tracker_with_the_mic_label():
     уйдёт в широкий except диаризации и выключит её целиком). Демон — одна функция
     main() на тысячи строк, поэтому проверка по AST его текста (выход r1 по №573)."""
     import ast
-    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
-    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    module = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    tree = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [n for n in ast.walk(module) if isinstance(n, ast.Call)]
     names = [getattr(c.func, "id", getattr(c.func, "attr", None)) for c in calls]
     assert "SegmentTracker" not in names, "трекер живой встречи — только фабрикой live_tracker"
     made = [c for c, name in zip(calls, names) if name == "live_tracker"]
     assert len(made) == 1
+    assert made[0] in list(ast.walk(tree)), "трекер собирает main()"
     mic = {k.arg: ast.unparse(k.value) for k in made[0].keywords}.get("mic_channel")
     assert mic == "chan.mic_raw"
     chan_at = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                  and "ChannelLabels.from_capture" in ast.unparse(n.value))
+                  and isinstance(n.targets[0], ast.Name) and n.targets[0].id == "chan")
     assert chan_at < made[0].lineno, "ChannelLabels собираются раньше трекера"

@@ -490,8 +490,7 @@ def test_демон_пишет_посекундный_штамп_в_сайдка
     # читатель зовёт ключи тем же именем, что писатель: переименование в демоне без
     # пересборки молча вернуло бы подсказки к общему счёту (выход r2 по №573)
     reader = (pathlib.Path(__file__).resolve().parents[1] / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
-    for key in ("speakers_call", "speakers_mic"):
-        assert f'"{key}"' in reader, f"пересборка не читает {key}"
+    assert '"speakers_mic"' in reader, "пересборка не читает speakers_mic"
 
 
 def test_посекундный_штамп_находит_свою_запись(tmp_path):

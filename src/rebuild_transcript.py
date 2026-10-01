@@ -66,6 +66,7 @@ import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
+from diarize_live import LIVE_MAX_SPEAKERS  # noqa: E402 — потолок мест канала живого трекера
 import diarize_nemotron  # noqa: E402 — Nemotron процессом чужого интерпретатора (№473)
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
@@ -774,7 +775,7 @@ def speakers_count(meta: dict, key: str = "speakers") -> int | None:
     формы, как у live_session_names: целое (bool — нет, float — только целый) от
     1 до MAX_LIVE_SPEAKERS, иначе None. Строка из правленого руками сайдкара —
     тоже None: `int(...)` на мусоре ронял бы всю пересборку (№559). `key` —
-    какой счёт: все голоса или только канала собеседников (`speakers_call`)."""
+    какой счёт: все голоса или только микрофона (`speakers_mic`)."""
     v = meta.get(key) if isinstance(meta, dict) else None
     if isinstance(v, bool):
         return None
@@ -792,8 +793,8 @@ def speakers_hint(meta: dict, key: str = "speakers") -> int | None:
 
 
 def channel_count_key(meta: dict, key: str) -> str:
-    """Какой счёт голосов читать для канала: `speakers_call` / `speakers_mic`, если
-    сайдкар его несёт, иначе общий `speakers` (сайдкары до №573). С квотой мест
+    """Какой счёт голосов читать для канала: свой (`speakers_mic`), если сайдкар его
+    несёт, иначе общий `speakers` (сайдкары до №573). С квотой мест
     микрофона общий счёт на звонке доходит до 16 и выпадает из HINT_RANGE, поэтому
     у каждого канала свой. Решает присутствие ключа, а не его истинность: ключ с
     нулём или мусором — счёта канала нет, авто-режим."""
@@ -801,8 +802,17 @@ def channel_count_key(meta: dict, key: str) -> str:
 
 
 def call_hint(meta: dict) -> int | None:
-    """Подсказка числа голосов каналу собеседников — его счёт (`speakers_call`)."""
-    return speakers_hint(meta, channel_count_key(meta, "speakers_call"))
+    """Подсказка числа голосов каналу собеседников — как до №573: общий счёт живой
+    сессии, но не выше мест одного канала трекера. До квоты микрофона общий счёт сам
+    не превышал LIVE_MAX_SPEAKERS; теперь доходит до двух таких, и без потолка
+    большой звонок выпадал бы из HINT_RANGE. На сумме ≤ LIVE_MAX_SPEAKERS — бит в бит
+    прежнее число. Подсказка счётом `speakers_call` меняла бы итог каждого звонка
+    (один на один: 1 вместо 2, авто-режим) — только с замером DER пересборки (№572,
+    финальный Opus по №573)."""
+    n = speakers_count(meta)
+    if n is None:
+        return None
+    return speakers_hint({"speakers": min(n, LIVE_MAX_SPEAKERS)})
 
 
 def mic_count(meta: dict) -> int | None:
