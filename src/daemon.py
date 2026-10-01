@@ -3596,10 +3596,11 @@ def main():
             # и дамп одной строкой стирал бы его (Critical DS и GLM по №234)
             live_sidecar.merge(pathlib.Path(tr.path),
                                {"speakers": len(tracker_voices),
-                                # голоса канала собеседников — подсказка его разметке:
-                                # с квотой микрофона (№573) общий счёт на звонке
-                                # доходит до 16 и выпадает из диапазона подсказки
+                                # голоса по каналам — подсказки их разметке: с квотой
+                                # микрофона (№573) общий счёт на звонке доходит до 16
+                                # и выпадает из диапазона подсказки
                                 "speakers_call": len(heard_by_channel.bh_voices),
+                                "speakers_mic": len(heard_by_channel.mic_voices),
                                 "names": tr.names(),
                                 "minutes_sha256": minutes_sha["v"],
                                 # посекундный штамп встречи: после наката темы имя

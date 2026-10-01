@@ -791,22 +791,32 @@ def speakers_hint(meta: dict, key: str = "speakers") -> int | None:
     return n if n is not None and HINT_RANGE[0] <= n <= HINT_RANGE[1] else None
 
 
+def channel_count_key(meta: dict, key: str) -> str:
+    """Какой счёт голосов читать для канала: `speakers_call` / `speakers_mic`, если
+    сайдкар его несёт, иначе общий `speakers` (сайдкары до №573). С квотой мест
+    микрофона общий счёт на звонке доходит до 16 и выпадает из HINT_RANGE, поэтому
+    у каждого канала свой. Решает присутствие ключа, а не его истинность: ключ с
+    нулём или мусором — счёта канала нет, авто-режим."""
+    return key if isinstance(meta, dict) and key in meta else "speakers"
+
+
 def call_hint(meta: dict) -> int | None:
-    """Подсказка числа голосов каналу собеседников. С квотой мест микрофона (№573)
-    общий `speakers` на звонке считает и осколки владельца — до 16, — поэтому
-    сайдкар несёт свой счёт канала собеседников `speakers_call`. Решает
-    присутствие ключа, а не его истинность: старый сайдкар без ключа — общий
-    счёт, как было; ключ с нулём или мусором — счёта канала нет, авто-режим."""
-    key = "speakers_call" if isinstance(meta, dict) and "speakers_call" in meta else "speakers"
-    return speakers_hint(meta, key)
+    """Подсказка числа голосов каналу собеседников — его счёт (`speakers_call`)."""
+    return speakers_hint(meta, channel_count_key(meta, "speakers_call"))
+
+
+def mic_count(meta: dict) -> int | None:
+    """Сколько голосов живая сессия слышала в микрофоне (`speakers_mic`) — для
+    подсказки микрофону и вердикта слитой метки."""
+    return speakers_count(meta, channel_count_key(meta, "speakers_mic"))
 
 
 def mic_hint(meta: dict, call_silent: bool) -> int | None:
     """Подсказка числа голосов микрофону: только когда канал собеседников молчит
     (очная встреча, машина без системного звука) и живых голосов не меньше
-    MIC_HINT_MIN. Со звонком `speakers` считает оба канала — число для
-    микрофона неизвестно, там авто, как было."""
-    n = speakers_hint(meta)
+    MIC_HINT_MIN. Счёт — голоса микрофона (`speakers_mic`); сайдкар без него —
+    общий, как было."""
+    n = speakers_hint(meta, channel_count_key(meta, "speakers_mic"))
     return n if call_silent and n is not None and n >= MIC_HINT_MIN else None
 
 
@@ -1094,7 +1104,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
-    live_count = speakers_count(meta)
+    live_count = mic_count(meta)
     collapsed = collapsed_mic_labels(chan, live_count, call_silent)
     if collapsed:
         log(f"⚠️ разметка микрофона свела всех в одну метку при живых голосах {live_count} "

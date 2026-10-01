@@ -970,3 +970,22 @@ def test_lost_speech_is_measured_against_the_padded_windows_that_reach_stt():
     _jobs, fields = _plan(_sv(), [(int(0.1 * SR), int(1.3 * SR), 0), (int(1.5 * SR), int(2.7 * SR), 1)],
                           tracker=tracker)
     assert fields["lost_s"] <= 0.3 + 1e-3, "0,1 с до первого окна — под его запасом"
+
+
+def test_the_daemon_builds_its_tracker_with_the_mic_label():
+    """Квота мест микрофона держится на сборке трекера в демоне: фабрика live_tracker
+    с меткой микрофона из ChannelLabels, собранных раньше трекера (иначе NameError
+    уйдёт в широкий except диаризации и выключит её целиком). Демон — одна функция
+    main() на тысячи строк, поэтому проверка по AST его текста (выход r1 по №573)."""
+    import ast
+    tree = ast.parse((REPO / "src" / "daemon.py").read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    names = [getattr(c.func, "id", getattr(c.func, "attr", None)) for c in calls]
+    assert "SegmentTracker" not in names, "трекер живой встречи — только фабрикой live_tracker"
+    made = [c for c, name in zip(calls, names) if name == "live_tracker"]
+    assert len(made) == 1
+    mic = {k.arg: ast.unparse(k.value) for k in made[0].keywords}.get("mic_channel")
+    assert mic == "chan.mic_raw"
+    chan_at = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                  and any(getattr(t, "id", None) == "chan" for t in n.targets))
+    assert chan_at < made[0].lineno, "ChannelLabels собираются раньше трекера"

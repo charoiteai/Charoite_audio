@@ -489,5 +489,7 @@ def test_call_voices_are_counted_sticky_and_only_from_the_call_channel():
     h.note(None, 2.0, is_mic=False, now=0.0)
     h.note(7, 0.0, is_mic=False, now=0.0)
     h.note(9, 1.0, is_mic=False, now=10 * ov.WINDOW_S)   # затухание стёрло 3 из bh
-    assert 3 not in h.bh
+    h.note(4, 1.0, is_mic=True, now=10 * ov.WINDOW_S)    # и 5 из mic
+    assert 3 not in h.bh and 5 not in h.mic
     assert h.bh_voices == {3, 9}
+    assert h.mic_voices == {5, 4}

@@ -643,6 +643,16 @@ def test_a_recorded_silent_call_channel_is_a_room_the_mic_goes_auto_under_the_ve
     assert ("mic", rt.VETO_BELOW) in meeting["veto"] and ("mic", True) not in meeting["merge"]
 
 
+def test_the_collapse_verdict_counts_the_mic_voices(meeting):
+    """№573: вердикт слитой метки — по голосам микрофона, а не по общему счёту, который
+    с квотой микрофона на звонке доходит до 16 и выпадает из диапазона."""
+    _room(meeting, speakers=16)
+    meeting["meta"]["speakers_mic"] = 7
+    meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert rt.MIC_COLLAPSED_NOTE.format(live=7) in text
+
+
 def test_the_room_keeps_the_collapse_verdict(meeting):
     """Вердикт слитой метки — тот же, что на пути подсказки: одна метка при семи живых."""
     _room(meeting)
