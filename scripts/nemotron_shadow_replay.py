@@ -204,11 +204,17 @@ def pad_equal(*channels):
 
 
 def end_line(journal: pathlib.Path) -> dict:
-    """Последняя строка `end` журнала тени; нет — пустой словарь."""
+    """Последняя строка `end` журнала тени; нет — пустой словарь. Тип — разбором строки:
+    подстрока `"type": "end"` бывает и у вложенного объекта чужой строки. Битая строка
+    (оборванный хвост при смерти демона) пропускается: о конце она не говорит."""
     ended: dict = {}
     for raw in journal.read_text(encoding="utf-8").splitlines():
-        if '"type": "end"' in raw:
-            ended = json.loads(raw)
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "end":
+            ended = obj
     return ended
 
 
@@ -523,8 +529,9 @@ def replay(stamp: str, *, data_root: pathlib.Path, out: pathlib.Path, lead_s: fl
         raise Refused(f"тень не закончилась за {END_WAIT_S:.0f} с после стопа")
     journal = charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".jsonl")
     ended = end_line(journal)
-    if ended.get("exit") != "ok":
-        raise Refused(f"тень кончилась не штатно: {ended.get('reason')!r}, exit={ended.get('exit')!r}")
+    if ended.get("ending") != live_nemotron.END_STOPPED or ended.get("exit") != "ok":
+        raise Refused(f"тень кончилась не штатно: {ended.get('reason')!r}, ending={ended.get('ending')!r}, "
+                      f"exit={ended.get('exit')!r}")
     meta = {"stamp": stamp, "sr": sr, **run_numbers(n, start0, sr, handshake_s, feed_wall),
             "cuts_per_channel": expect, "chunks": counts,
             "lead_s": lead_s, "block_s": block_s, "preroll_s": preroll_s,

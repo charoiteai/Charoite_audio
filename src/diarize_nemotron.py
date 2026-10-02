@@ -438,6 +438,54 @@ def frame_seconds(model: Any) -> float:
 STREAM_PROTO = 1
 #: Блок, которым движок кормит поток, — в сэмплах (0,5 с, как бенч `nemotron-live`).
 STREAM_STEP = SAMPLE_RATE // 2
+#: Шаг опроса родителя сторожем потока, секунды (№540).
+PARENT_POLL_S = 0.5
+
+
+def parent_gone(parent_pid: int) -> bool:
+    """Родителя нет. Прямой родитель — свой ответ; между ними обёртка без `exec` (скрипт в
+    `sufler.nemotron_python`) — `getppid()` даёт её pid при живом демоне, и тогда жизнь
+    демона проверяется сигналом 0 (финальный Opus, M1). Переподчинение launchd — ушёл."""
+    ppid = os.getppid()
+    if ppid == parent_pid:
+        return False
+    if ppid == 1:
+        return True
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:          # pid занят чужим процессом — демона нет
+        return True
+    return False
+
+
+def watch_parent(parent_pid: int, poll_s: float = PARENT_POLL_S) -> None:
+    """Сторож родителя (№540): родителя нет (`parent_gone`) — процесс выходит сам, `os._exit`.
+
+    Демон, убитый SIGKILL (приложение добивает повисший через 12 с), не даёт ни `finally`,
+    ни `atexit`; на macOS нет PDEATHSIG. Читающий вход ребёнок умрёт и так — EOF, затем
+    BrokenPipe на записи; сторож — для того, кто в этот момент вход не читает (загрузка
+    модели, долгий `feed`). Нить берёт GIL раз в шаг: MLX отпускает его на время
+    вычисления, чистый Python отдаёт каждые `sys.getswitchinterval()` (замер №540).
+    Родитель передаётся явно: умри он до старта нити, `getppid()` уже 1, и сравнение
+    «с тем, что было при старте» смерти бы не увидело."""
+    import time
+
+    import threads
+
+    def run() -> None:
+        # Ни строки перед выходом (финальный Opus, I1): stderr — файл в `logs/`, а диск,
+        # из-за которого демона добили, повис бы и здесь; читать её всё равно некому.
+        # Сбой самой проверки — тоже выход: молча упавший сторож и есть сирота (Sonnet, M1).
+        try:
+            while not parent_gone(parent_pid):
+                time.sleep(poll_s)
+        finally:
+            os._exit(1)
+
+    threads.spawn(run, name="nemotron-parent-watch", role="process",
+                  detached="сторож родителя живёт, пока жив процесс движка")
 
 
 def _emit_segments(segments: list[dict], frames: int, frame_s: float, emit, *, final: bool) -> None:
@@ -604,6 +652,15 @@ def _non_negative_int(text: str) -> int:
     return value
 
 
+def _parent_pid(text: str) -> int:
+    """pid родителя для сторожа: 0 и 1 — не родитель (у сироты `getppid()` равен 1, и
+    сторож с таким pid не увидел бы смерти демона)."""
+    value = int(text)
+    if value <= 1:
+        raise ValueError(text)
+    return value
+
+
 def _protocol_channel():
     """Протокол — в дубликат дескриптора 1, а сам дескриптор 1 — в stderr.
 
@@ -688,7 +745,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="задержка живого потока (--stream): low — 1.04 с")
     ap.add_argument("--cache-limit-mb", type=_non_negative_int, default=None,
                     help="лимит кэша MLX живого потока (--stream), МБ; без флага — как у mlx")
+    ap.add_argument("--parent-pid", type=_parent_pid, default=None,
+                    help="pid родителя живого потока (--stream): его не стало — процесс выходит сам")
     args = ap.parse_args(argv)
+    if args.stream and args.parent_pid is not None:
+        watch_parent(args.parent_pid)      # до проверки движка и загрузки модели
     if not (args.probe or args.stream) and args.wav is None:
         ap.error("нужна запись (или --probe, или --stream)")
     problem = availability(args.model)
