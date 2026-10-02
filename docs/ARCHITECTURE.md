@@ -515,12 +515,12 @@ code path is shared.
    system channel); speaker echo in the mic is cut by overlap with
    system-channel speech, mic voices shorter than 10 s and system voices
    shorter than 25 s merge into neighbours, segments are re-transcribed. The
-   owner is the voice that clearly dominates their own microphone in a call
-   (at least 60 % of the in-room speech and 15 points ahead of the next
-   voice, echo excluded) and is signed with the name from the settings
-   (`ChannelLabels`); when nobody wins, the labels stay neutral — signing
-   someone else's words with the owner's name is worse than leaving the
-   owner unsigned. Other names are assigned by the LLM from what was said,
+   owner rule is the live one (`owner_voice.owner_voices`): in a call every
+   microphone voice left after the echo filter is signed with the name from
+   the settings (`ChannelLabels`) once they hold 15 s of speech together; an
+   in-person meeting keeps neutral labels. The costs — a colleague at the
+   same microphone and echo the overlap filter missed get the owner's name —
+   are in docs/DIARIZATION.md. Other names are assigned by the LLM from what was said,
    through the full trust guard (`speaker_names`). The live version is kept
    as a draft.
 

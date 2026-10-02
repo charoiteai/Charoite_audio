@@ -96,38 +96,57 @@ def test_the_mic_threshold_does_not_follow_the_call_parameter():
 
 
 @pytest.mark.parametrize("bh", [None, []], ids=["канала нет", "канал молчал"])
-def test_without_call_speech_the_owner_is_not_signed_even_with_a_name(bh):
-    """Очная встреча: различать некого, `owner_voice` отвечает None."""
+def test_without_call_speech_the_owner_is_not_signed_even_with_a_name(bh, monkeypatch):
+    """Очная встреча: различать некого, `owner_voices` отвечает пустым множеством."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
     segs, chan = rt.resolve_channel_segments(bh, [(0.0, 60.0, 0)], owner_label=OWNER)
     assert segs == [(0.0, 60.0, "Собеседник 1")]
     assert chan == {"Собеседник 1": "mic"}
+    assert said[-1] == "mic: 1 сегментов, голосов 1, владелец: не назначен (не звонок)"
 
 
 def call_with_two_mic_voices(owner_label):
     bh = [(100.0, 130.0, 0), (140.0, 170.0, 1)]
-    mic = [(0.0, 40.0, 3), (45.0, 57.0, 4)]      # 40 против 12 с: доля 0.77, отрыв 0.54
+    mic = [(0.0, 40.0, 3), (45.0, 57.0, 4)]      # два голоса микрофона: 40 и 12 с
     return rt.resolve_channel_segments(bh, mic, owner_label=owner_label)
 
 
-def test_in_a_call_the_dominant_mic_voice_is_the_owner_and_numbering_continues(monkeypatch):
+def test_in_a_call_every_mic_voice_is_the_owner_and_call_numbering_holds(monkeypatch):
+    """№509: правило живой ленты — в звонке все голоса микрофона после эхо-фильтра
+    подписываются владельцем, и малый голос (12 с) тоже: цена гибрида, различение —
+    слепок голоса №136. Метка владельца номер «Собеседник N» не тратит."""
     said = []
     monkeypatch.setattr(rt, "log", said.append)
     segs, chan = call_with_two_mic_voices(OWNER)
-    assert said[-1] == "mic: 2 сегментов, голосов 2, владелец: по преобладанию"
+    assert said[-1] == ("mic: 2 сегментов, голосов 2, "
+                        "владелец: все голоса микрофона после эхо-фильтра")
     assert segs == [(100.0, 130.0, "Собеседник 1"), (140.0, 170.0, "Собеседник 2"),
-                    (0.0, 40.0, OWNER), (45.0, 57.0, "Собеседник 3")]
-    assert chan == {"Собеседник 1": "bh", "Собеседник 2": "bh", OWNER: "mic",
-                    "Собеседник 3": "mic"}
+                    (0.0, 40.0, OWNER), (45.0, 57.0, OWNER)]
+    assert chan == {"Собеседник 1": "bh", "Собеседник 2": "bh", OWNER: "mic"}
 
 
 def test_an_empty_owner_label_leaves_the_owner_unsigned(monkeypatch):
     said = []
     monkeypatch.setattr(rt, "log", said.append)
     segs, chan = call_with_two_mic_voices("")
-    assert said[-1].endswith("владелец: не назначен")
+    assert said[-1].endswith("владелец: не назначен (подпись пуста)")
     assert [lbl for *_, lbl in segs] == ["Собеседник 1", "Собеседник 2",
                                          "Собеседник 3", "Собеседник 4"]
     assert chan["Собеседник 3"] == chan["Собеседник 4"] == "mic"
+
+
+def test_a_call_with_little_mic_speech_stays_neutral_and_says_why(monkeypatch):
+    """Порог MIN_MIC_SECONDS — на сумму речи микрофона: 14 с — рано подписывать."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    segs, _ = rt.resolve_channel_segments([(100.0, 130.0, 0)],
+                                          [(0.0, 14.0, 3)], owner_label=OWNER)
+    assert segs == [(100.0, 130.0, "Собеседник 1"), (0.0, 14.0, "Собеседник 2")]
+    assert said[-1].endswith("владелец: не назначен (речи 14 с < 15)")
+    segs, _ = rt.resolve_channel_segments([(100.0, 130.0, 0)],
+                                          [(0.0, 15.0, 3)], owner_label=OWNER)
+    assert segs[-1] == (0.0, 15.0, OWNER)
 
 
 def test_a_mic_segment_covered_more_than_half_by_a_call_segment_is_echo():
@@ -242,7 +261,8 @@ CFG = {"audio": {"samplerate": SR}, "sufler": {"user_name": OWNER}}
 def test_rebuild_signs_the_owner_from_settings_in_a_call(meeting):
     out = rt.rebuild(meeting["live"], CFG)
     text = out.read_text(encoding="utf-8")
-    assert OWNER in text and "Собеседник 1" in text and "Собеседник 3" in text
+    assert OWNER in text and "Собеседник 1" in text and "Собеседник 2" in text
+    assert "Собеседник 3" not in text, "в звонке оба голоса микрофона — владелец (№509)"
 
 
 @pytest.mark.parametrize("naming,note,not_note", [
@@ -552,7 +572,7 @@ def test_rebuild_on_nemotron_does_not_run_sherpa_on_the_call_and_keeps_small_voi
     out = rt.rebuild(meeting["live"], _nemotron_cfg())
     assert [label for label, _ in meeting["calls"]] == ["mic"]
     text = out.read_text(encoding="utf-8")
-    assert "Собеседник 2" in text and "Собеседник 3" in text   # два собеседника, затем микрофон
+    assert "Собеседник 2" in text and OWNER in text   # два собеседника, микрофон — владелец (№509)
     assert "запасным движком" not in text
 
 
