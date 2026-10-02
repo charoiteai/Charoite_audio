@@ -177,6 +177,15 @@ def test_the_end_line_is_found_by_type_not_by_a_substring_of_a_reason(tmp_path):
     assert rp.end_line(path) == {}
 
 
+def test_a_torn_line_does_not_hide_the_end_line(tmp_path):
+    """Оборванный хвост (демон умер посреди записи) и не-объект — не строки конца, но и не
+    отказ разбора: строка `end` перед ними находится."""
+    path = tmp_path / "live.jsonl"
+    real = {"type": "end", "ending": ln.END_STOPPED, "exit": "ok"}
+    path.write_text("\n".join([json.dumps(real), "[1, 2]", '{"type": "chu', ""]), encoding="utf-8")
+    assert rp.end_line(path) == real
+
+
 def test_an_early_stop_that_did_not_cover_the_fed_audio_is_invalid():
     j = journal(chunk_ends=[START0 + 64000], total=SR * 10)
     assert any("покрыл" in p for p in chk.validity(j, fed_expected=SR * 20))

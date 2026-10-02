@@ -630,6 +630,15 @@ def _non_negative_int(text: str) -> int:
     return value
 
 
+def _parent_pid(text: str) -> int:
+    """pid родителя для сторожа: 0 и 1 — не родитель (у сироты `getppid()` равен 1, и
+    сторож с таким pid не увидел бы смерти демона)."""
+    value = int(text)
+    if value <= 1:
+        raise ValueError(text)
+    return value
+
+
 def _protocol_channel():
     """Протокол — в дубликат дескриптора 1, а сам дескриптор 1 — в stderr.
 
@@ -714,7 +723,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="задержка живого потока (--stream): low — 1.04 с")
     ap.add_argument("--cache-limit-mb", type=_non_negative_int, default=None,
                     help="лимит кэша MLX живого потока (--stream), МБ; без флага — как у mlx")
-    ap.add_argument("--parent-pid", type=int, default=None,
+    ap.add_argument("--parent-pid", type=_parent_pid, default=None,
                     help="pid родителя живого потока (--stream): его не стало — процесс выходит сам")
     args = ap.parse_args(argv)
     if args.stream and args.parent_pid is not None:

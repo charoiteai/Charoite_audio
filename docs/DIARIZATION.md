@@ -577,16 +577,19 @@ nothing in the transcript (default `off`).
   `off`.
 - **The journal.** `logs/nemotron_live_<stamp>.jsonl`, owner-only: numbers and
   stop reasons — no audio, no utterance text. Lines: `header`, `ready`, `start` (`start0`),
-  `seg`, `front`, `mem`, `budget` (no footprint from the child), `chunk`, `end` (reason
-  and counters). A reconciliation cuts the
+  `seg`, `front`, `mem`, `budget` (no footprint from the child), `chunk`, `end` (reason,
+  counters and `ending`: `stopped`, `not_started`, `child_exit`, `guard` or `fault`;
+  journal v3 — a check or replay accepts only `stopped`). A reconciliation cuts the
   recording at `start0` into the same blocks.
 - **Stop.** At the end of the meeting, before the post-meeting pass starts,
   the child gets EOF, flushes its tail and exits; a child still alive after 1 s
   is killed, well inside the app's 5 s grace before it kills the daemon. The
   daemon waits for the `end` line last, after the recordings are finalized, and
   any child still alive when the daemon exits by any path except SIGKILL is
-  killed on the way out. A shadow that died on the call says so once in the
-  status line.
+  killed on the way out. After SIGKILL the child leaves by itself: the daemon
+  passes its pid as `--parent-pid`, and a thread in the child checks the parent
+  every 0.5 s from before the model loads. A shadow that died on the call says
+  so once in the status line.
 - **Capture never waits for the shadow.** The shadow's frame listener only
   updates state under its lock; journal lines, the child-log size check and the
   memory probe run outside it, so a slow disk under `logs/` delays the journal,

@@ -994,6 +994,15 @@ def test_the_stream_watches_its_parent_before_checking_the_engine(monkeypatch, t
     assert calls == [("engine", model), ("engine", model)]
 
 
+@pytest.mark.parametrize("pid", ["0", "1", "-5", "x"])
+def test_a_parent_pid_that_is_no_parent_is_refused(pid, monkeypatch):
+    """pid 1 — то, что `getppid()` отдаёт сироте: сторож с ним не увидел бы смерти демона."""
+    monkeypatch.setattr(nem, "watch_parent", lambda pid: None)
+    monkeypatch.setattr(nem, "availability", lambda path: "нет движка")
+    with pytest.raises(SystemExit):
+        nem.main(["--stream", "--model", "m", "--parent-pid", pid])
+
+
 #: Промежуточный родитель — как демон: заводит ребёнка и живёт, пока его не убьют. Ребёнок
 #: не читает вход и спит — как модель, повисшая в MLX: уйти он может только сам.
 ORPHAN_PARENT = '''

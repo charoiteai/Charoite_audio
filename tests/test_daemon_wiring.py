@@ -240,8 +240,12 @@ def nemotron_wiring_problems(source: str) -> list[str]:
     if not exit_grace:
         problems.append("финал main гасит тень без отсрочки выхода EXIT_GRACE_S (отсрочка)")
     # №549: сбой остановки тени не отнимает у встречи пересборку — стоп под своим перехватом
+    # Перехват, который заново бросает или выходит из finally, пересборку не спасает (выходной
+    # круг Sonnet, M2): тело обработчика — без raise и return.
     guarded = any(isinstance(g, ast.Try)
-                  and any(isinstance(h.type, ast.Name) and h.type.id == "Exception" for h in g.handlers)
+                  and any(isinstance(h.type, ast.Name) and h.type.id == "Exception"
+                          and not any(isinstance(n, (ast.Raise, ast.Return)) for b in h.body for n in ast.walk(b))
+                          for h in g.handlers)
                   and any(_call_name(n) == "nemotron_shadow.stop" for b in g.body for n in ast.walk(b))
                   for t in final for s in t.finalbody for g in ast.walk(s))
     if not guarded:
@@ -254,6 +258,18 @@ def nemotron_wiring_problems(source: str) -> list[str]:
     if rise is None or owner is None or owner != rise + 1:
         problems.append("между подъёмом тени и try с финалом main есть операторы — их сбой уйдёт мимо "
                         "строки end (окно)")
+    # Сам подъём тени finally не прикрывает (выходной круг GLM, I1): он под своим перехватом,
+    # а до него тень уже связана заглушкой — finally и обработчик зовут stop у неё.
+    if rise is not None:
+        lifted = main.body[rise]
+        if not (isinstance(lifted, ast.Try) and any(
+                isinstance(h.type, ast.Name) and h.type.id == "Exception" for h in lifted.handlers)):
+            problems.append("подъём тени не под перехватом — его сбой уйдёт мимо finally (подъём)")
+        before = main.body[rise - 1] if rise > 0 else None
+        if not (isinstance(before, ast.Assign)
+                and [t.id for t in before.targets if isinstance(t, ast.Name)] == ["nemotron_shadow"]
+                and isinstance(before.value, ast.Attribute) and before.value.attr == "NO_SHADOW"):
+            problems.append("перед подъёмом тени она не связана заглушкой NO_SHADOW (заглушка)")
     # №533: журнал тени дописывается даже если хаб упал — close в finally вокруг hub.stop
     closes = any(isinstance(t, ast.Try)
                  and any(_call_name(n) == "hub.stop" for s in t.body for n in ast.walk(s))
@@ -296,6 +312,14 @@ def test_the_daemon_wires_the_nemotron_shadow():
      "        except Exception as e:",
      "        try:\n            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
      "        except KeyboardInterrupt as e:", "перехват"),
+    ("            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        except Exception as e:",
+     "            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        except Exception as e:\n            raise", "перехват"),
+    ("    except Exception as e:  # noqa: BLE001 — тень вспомогательна: встреча идёт без неё",
+     "    except KeyboardInterrupt as e:", "подъём"),
+    ("    nemotron_shadow = live_nemotron.NO_SHADOW\n    try:\n        nemotron_shadow = live_nemotron.start(",
+     "    try:\n        nemotron_shadow = live_nemotron.start(", "заглушка"),
     ("    # Всё после подъёма тени — под `finally`",
      "    threads.spawn(stdin_loop, name='x', role='meeting')\n    # Всё после подъёма тени — под `finally`",
      "окно"),

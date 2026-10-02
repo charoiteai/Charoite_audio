@@ -205,13 +205,16 @@ def pad_equal(*channels):
 
 def end_line(journal: pathlib.Path) -> dict:
     """Последняя строка `end` журнала тени; нет — пустой словарь. Тип — разбором строки:
-    подстрока `"type": "end"` бывает и у вложенного объекта чужой строки."""
+    подстрока `"type": "end"` бывает и у вложенного объекта чужой строки. Битая строка
+    (оборванный хвост при смерти демона) пропускается: о конце она не говорит."""
     ended: dict = {}
     for raw in journal.read_text(encoding="utf-8").splitlines():
-        if raw.strip():
+        try:
             obj = json.loads(raw)
-            if obj.get("type") == "end":
-                ended = obj
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "end":
+            ended = obj
     return ended
 
 
