@@ -239,6 +239,21 @@ def nemotron_wiring_problems(source: str) -> list[str]:
                      for t in final for s in t.finalbody for n in ast.walk(s))
     if not exit_grace:
         problems.append("финал main гасит тень без отсрочки выхода EXIT_GRACE_S (отсрочка)")
+    # №549: сбой остановки тени не отнимает у встречи пересборку — стоп под своим перехватом
+    guarded = any(isinstance(g, ast.Try)
+                  and any(isinstance(h.type, ast.Name) and h.type.id == "Exception" for h in g.handlers)
+                  and any(_call_name(n) == "nemotron_shadow.stop" for b in g.body for n in ast.walk(b))
+                  for t in final for s in t.finalbody for g in ast.walk(s))
+    if not guarded:
+        problems.append("стоп тени в финале main не под перехватом — его сбой отменит пересборку (перехват)")
+    # №549: от подъёма тени до try с финалом — ни одного оператора: любой из них может бросить
+    # мимо finally, и журнал тени останется без строки end
+    rise = next((k for k, s in enumerate(main.body)
+                 if any(_call_name(n) == "live_nemotron.start" for n in ast.walk(s))), None)
+    owner = next((k for k, s in enumerate(main.body) if any(s is t for t in final)), None)
+    if rise is None or owner is None or owner != rise + 1:
+        problems.append("между подъёмом тени и try с финалом main есть операторы — их сбой уйдёт мимо "
+                        "строки end (окно)")
     # №533: журнал тени дописывается даже если хаб упал — close в finally вокруг hub.stop
     closes = any(isinstance(t, ast.Try)
                  and any(_call_name(n) == "hub.stop" for s in t.body for n in ast.walk(s))
@@ -273,10 +288,17 @@ def test_the_daemon_wires_the_nemotron_shadow():
      "                    except KeyboardInterrupt as e:",
      "не под перехватом"),
     ("        nemotron_shadow.attach(hub)", "        pass", "слушателем"),
-    ("        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n        # Пересборка",
-     "        pass\n        # Пересборка", "стоп"),
-    ("        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n        # Пересборка",
-     "        nemotron_shadow.stop()\n        # Пересборка", "отсрочка"),
+    ("            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n",
+     "            pass\n", "стоп"),
+    ("            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n",
+     "            nemotron_shadow.stop()\n", "отсрочка"),
+    ("        try:\n            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        except Exception as e:",
+     "        try:\n            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        except KeyboardInterrupt as e:", "перехват"),
+    ("    # Всё после подъёма тени — под `finally`",
+     "    threads.spawn(stdin_loop, name='x', role='meeting')\n    # Всё после подъёма тени — под `finally`",
+     "окно"),
     ("            nemotron_shadow.close(live_nemotron.STOP_GRACE_S)", "            pass", "закрытие"),
     ("        try:\n            hub.stop()  # финализирует", "        hub.stop()\n        try:\n            pass  # финализирует",
      "закрытие"),

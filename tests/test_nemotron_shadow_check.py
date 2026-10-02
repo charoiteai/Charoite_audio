@@ -51,10 +51,10 @@ START0 = 4800                  # поток начался не на грани�
 
 
 def journal_lines(*, chunk_ends=(), frame_s=0.01, write_frame=HOP, total=SR * 20, segs=(),
-                  exit_="ok", counts=None, finals=1):
+                  exit_="ok", counts=None, finals=1, v=1, ending=None):
     """Журнал тени по правилам ребёнка: после каждого шага — фронт, кадров
     `(fed − LAG) // write_frame`; финал — все кадры поданного звука."""
-    out = [{"type": "header", "v": 1, "sr": SR, "channel": "blackhole", "preset": "low", "stamp": "x"},
+    out = [{"type": "header", "v": v, "sr": SR, "channel": "blackhole", "preset": "low", "stamp": "x"},
            {"type": "ready", "t": 0.0, "proto": 1, "frame_s": frame_s, "step": STEP, "pid": 1},
            {"type": "start", "t": 0.1, "start0": START0}]
     for s, e, slot in segs:
@@ -72,7 +72,10 @@ def journal_lines(*, chunk_ends=(), frame_s=0.01, write_frame=HOP, total=SR * 20
     for n, end in enumerate(chunk_ends):
         out.append({"type": "chunk", "t": 1.0, "chunk": n, "start": end - 3 * SR, "end": end,
                     "state": "pieces", "outcome": ln.LABELED, "wait_s": 0.4, "behind_s": 1.1, "slots": {}})
-    out.append({"type": "end", "t": 99.0, "reason": "остановлен", "counts": counts or {}, "exit": exit_})
+    end = {"type": "end", "t": 99.0, "reason": "остановлен", "counts": counts or {}, "exit": exit_}
+    if ending is not None:
+        end["ending"] = ending
+    out.append(end)
     return [json.dumps(x) for x in out]
 
 
@@ -146,10 +149,31 @@ def test_a_clean_journal_is_valid():
     ({"finals": 2}, "финальных фронтов 2"),
     ({"counts": {"killed_after_grace": 1}}, "счётчики"),
     ({"counts": {"fault_чанк": 2}}, "счётчики"),
+    ({"v": 3, "ending": ln.END_GUARD}, "не штатным стопом"),
+    ({"v": 3, "ending": ln.END_CHILD_EXIT}, "не штатным стопом"),
+    ({"v": 3}, "не штатным стопом"),
 ])
 def test_a_broken_run_is_invalid(kw, word):
     j = journal(chunk_ends=[START0 + 64000], **kw)
     assert any(word in p for p in chk.validity(j)), chk.validity(j)
+
+
+@pytest.mark.parametrize("v, ending", [(1, None), (2, None), (3, ln.END_STOPPED)])
+def test_a_clean_journal_of_every_accepted_version_is_valid(v, ending):
+    """№563: исход конца судится с v3; у старых журналов поля нет — по нему они не бракуются."""
+    j = journal(chunk_ends=[START0 + 64000], v=v, ending=ending)
+    assert chk.validity(j, fed_expected=SR * 20) == []
+
+
+def test_the_end_line_is_found_by_type_not_by_a_substring_of_a_reason(tmp_path):
+    """Подстрока `"type": "end"` в свободном тексте чужой строки — не строка конца."""
+    path = tmp_path / "live.jsonl"
+    fake = json.dumps({"type": "status", "reason": 'ребёнок сказал {"type": "end"}'})
+    real = {"type": "end", "ending": ln.END_STOPPED, "exit": "ok"}
+    path.write_text("\n".join([json.dumps(real), fake, ""]), encoding="utf-8")
+    assert rp.end_line(path) == real
+    path.write_text(fake + "\n", encoding="utf-8")
+    assert rp.end_line(path) == {}
 
 
 def test_an_early_stop_that_did_not_cover_the_fed_audio_is_invalid():
@@ -1261,7 +1285,7 @@ def test_the_replay_waits_for_the_tail_of_the_queue_before_closing_the_shadow(tm
 def test_the_check_reads_journals_of_both_versions_and_refuses_others():
     lines = journal_lines(chunk_ends=[START0 + 64000])
     head = json.loads(lines[0])
-    for v, ok in ((1, True), (2, True), (3, False), (None, False)):
+    for v, ok in ((1, True), (2, True), (3, True), (4, False), (None, False)):
         head["v"] = v
         got = [json.dumps(head), *lines[1:]]
         if ok:

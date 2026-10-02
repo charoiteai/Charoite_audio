@@ -78,8 +78,9 @@ import threads
 #: `on` (метки канала собеседников в живой стенограмме).
 OFF, SHADOW, ON = "off", "shadow", "on"
 MODES = (OFF, SHADOW, ON)
-#: Версия журнала: 2 — поля `source`/`fallback` строки `chunk`, исход `fallback`, режим в `header`.
-JOURNAL_V = 2
+#: Версия журнала: 2 — поля `source`/`fallback` строки `chunk`, исход `fallback`, режим в `header`;
+#: 3 — поле `ending` строки `end` (№563).
+JOURNAL_V = 3
 #: Лимит кэша MLX ребёнка, МБ (`--cache-limit-mb`) — в любом режиме.
 CACHE_LIMIT_MB = 512
 #: Потолок ожидания метки потока одним чанком в режиме `on`, секунды (решение владельца):
@@ -149,6 +150,15 @@ LABELED, BEFORE_STREAM, DEAD_STREAM, TIMEOUT, STOPPED, LATE, FALLBACK = (
 SOURCE_STREAM, SOURCE_TRACKER = "stream", "tracker"
 
 STARTING, LIVE, STOPPING, DEAD = "starting", "live", "stopping", "dead"
+
+#: Как кончилась тень — поле `ending` строки `end` (№563), закрытое множество: штатный стоп,
+#: поток не поднялся, ребёнок вышел сам, остановил предохранитель (отставание, след, давление,
+#: журнал ребёнка), сбой нашей стороны (нить, разрыв оси, журнал тени). Смерть демона строкой
+#: не пишется: её признак — журнал без `end`. Исход называет место вызова, а не состояние:
+#: сбой нити посреди стопа — `fault`, хотя чанки получают `stopped`.
+END_STOPPED, END_NOT_STARTED, END_CHILD_EXIT, END_GUARD, END_FAULT = (
+    "stopped", "not_started", "child_exit", "guard", "fault")
+ENDINGS = (END_STOPPED, END_NOT_STARTED, END_CHILD_EXIT, END_GUARD, END_FAULT)
 
 
 def _num(x: typing.Any) -> bool:
@@ -261,7 +271,7 @@ class Shadow:
             threads.spawn(self._start, name="nemotron-live-start", role="audio",
                           args=(python, script, list(args), errlog, spawn))
         except RuntimeError as e:          # нить не завелась — тень кончается строкой end, а не висит
-            self._die_from_thread(f"нить запуска не завелась: {e}")
+            self._die_from_thread(f"нить запуска не завелась: {e}", END_NOT_STARTED)
 
     def _start(self, python, script, args, errlog, spawn) -> None:
         """Граница нити запуска: любой сбой — смерть тени со строкой `end`, а не вечное
@@ -269,7 +279,7 @@ class Shadow:
         try:
             self._start_inner(python, script, args, errlog, spawn)
         except Exception as e:  # noqa: BLE001 — граница нити тени: сбой становится смертью со строкой end
-            self._die_from_thread(f"не стартовал: {type(e).__name__}: {e}")
+            self._die_from_thread(f"не стартовал: {type(e).__name__}: {e}", END_NOT_STARTED)
         finally:
             self._drain()
 
@@ -280,9 +290,9 @@ class Shadow:
         with self._lock:
             if stream is None:
                 if self._state == STOPPING:
-                    self._end_locked("остановлен до старта потока")
+                    self._end_locked("остановлен до старта потока", END_STOPPED)
                 else:
-                    self._die_locked(f"не стартовал ({out.kind}: {out.reason})")
+                    self._die_locked(f"не стартовал ({out.kind}: {out.reason})", END_NOT_STARTED)
                 return
             problem = self._ready_problem(out.payload)
             if self._state != STARTING or problem:
@@ -300,7 +310,7 @@ class Shadow:
         try:
             threads.spawn(self._write_loop, name="nemotron-live-writer", role="audio")
         except RuntimeError as e:          # нить не завелась — живой ребёнок без писателя не нужен
-            self._die_from_thread(f"писатель не завёлся: {e}")
+            self._die_from_thread(f"писатель не завёлся: {e}", END_FAULT)
 
     def _ready_problem(self, ready: typing.Any) -> str:
         if not isinstance(ready, dict):
@@ -319,9 +329,9 @@ class Shadow:
         stream.close_input()
         stream.kill_nowait()
         if self._state == STOPPING:
-            self._end_locked(reason)
+            self._end_locked(reason, END_STOPPED)
         else:
-            self._die_locked(reason)
+            self._die_locked(reason, END_NOT_STARTED)
 
     def attach(self, hub: typing.Any) -> None:
         """Слушать кадры хаба."""
@@ -344,11 +354,11 @@ class Shadow:
                     self._start0 = self._next = self._seg_floor = start
                     self._line({"type": "start", "t": self._t(), "start0": start})
                 if start != self._next:
-                    self._die_locked(f"разрыв оси: ждали сэмпл {self._next}, пришёл {start}")
+                    self._die_locked(f"разрыв оси: ждали сэмпл {self._next}, пришёл {start}", END_FAULT)
                     return
                 n = len(part)
                 if self._queued + n > QUEUE_CAP_S * self._sr:
-                    self._die_locked(f"ребёнок отстал больше чем на {QUEUE_CAP_S:.0f} с звука")
+                    self._die_locked(f"ребёнок отстал больше чем на {QUEUE_CAP_S:.0f} с звука", END_GUARD)
                     return
                 self._next = start + n
                 self._queued += n
@@ -362,7 +372,7 @@ class Shadow:
         try:
             self._write_loop_inner()
         except Exception as e:  # noqa: BLE001 — граница нити тени: сбой становится смертью со строкой end
-            self._die_from_thread(f"писатель упал: {type(e).__name__}: {e}")
+            self._die_from_thread(f"писатель упал: {type(e).__name__}: {e}", END_FAULT)
         finally:
             self._drain()                  # строки смерти из аудиопотока — на диск (№533)
 
@@ -385,7 +395,7 @@ class Shadow:
                 with self._lock:
                     if self._state == LIVE:
                         self._die_locked(f"вход ребёнка закрыт ({e}); ребёнок: {exit_.reason or 'вышел'}",
-                                         exit_)
+                                         END_CHILD_EXIT, exit_)
                 break
         stream.close_input()
 
@@ -397,7 +407,7 @@ class Shadow:
         try:
             self._on_message_inner(message)
         except Exception as e:  # noqa: BLE001 — граница обратного вызова тени: сбой становится смертью
-            self._die_from_thread(f"строка протокола не разобрана: {type(e).__name__}: {e}")
+            self._die_from_thread(f"строка протокола не разобрана: {type(e).__name__}: {e}", END_FAULT)
         finally:
             self._drain()
 
@@ -477,7 +487,7 @@ class Shadow:
             if self._state not in (LIVE, STOPPING):
                 return
             if size > ERRLOG_CAP_BYTES:
-                self._die_locked(f"журнал ребёнка вырос сверх {ERRLOG_CAP_BYTES // 2**20} МБ")
+                self._die_locked(f"журнал ребёнка вырос сверх {ERRLOG_CAP_BYTES // 2**20} МБ", END_GUARD)
                 return
             phys = self._phys_mb
             if state is not None:                   # свидетельство — до любого суда (выход r1, GLM M2)
@@ -494,12 +504,13 @@ class Shadow:
             else:
                 self._foot_high = self._foot_high + 1 if phys > FOOTPRINT_STOP_MB else 0
                 if self._foot_high >= FOOTPRINT_STREAK:
-                    self._die_locked(f"след ребёнка {phys:g} МБ сверх бюджета {FOOTPRINT_STOP_MB} МБ")
+                    self._die_locked(f"след ребёнка {phys:g} МБ сверх бюджета {FOOTPRINT_STOP_MB} МБ", END_GUARD)
                     return
             if state is None:
                 return
             if state["pressure"] >= PRESSURE_STOP:
-                self._die_locked(f"давление памяти критичное (уровень {state['pressure']}) — запись важнее потока")
+                self._die_locked(f"давление памяти критичное (уровень {state['pressure']}) — запись важнее потока",
+                                 END_GUARD)
 
     # ------------------------------------------------------------ чанки
 
@@ -697,7 +708,7 @@ class Shadow:
         try:
             self._on_eof_inner()
         except Exception as e:  # noqa: BLE001 — граница обратного вызова тени: сбой становится смертью
-            self._die_from_thread(f"конец потока не разобран: {type(e).__name__}: {e}")
+            self._die_from_thread(f"конец потока не разобран: {type(e).__name__}: {e}", END_FAULT)
         finally:
             self._drain()
 
@@ -709,39 +720,45 @@ class Shadow:
                 self._counts["nonjson"] = stream.nonjson
                 self._counts["callback_errors"] = stream.callback_errors
             if self._state == STOPPING:
-                self._end_locked("остановлен", exit_)
+                self._end_locked("остановлен", END_STOPPED, exit_)
             elif self._state != DEAD:
                 why = exit_.reason if exit_ is not None and exit_.reason else "вышел"
-                self._die_locked(f"ребёнок закрыл вывод ({why})", exit_)
+                self._die_locked(f"ребёнок закрыл вывод ({why})", END_CHILD_EXIT, exit_)
 
-    def _die_locked(self, reason: str, exit_: foreign_python.Outcome | None = None) -> None:
+    def _die_locked(self, reason: str, ending: str, exit_: foreign_python.Outcome | None = None) -> None:
         if self._state == DEAD:
             return
-        self._finish(DEAD_STREAM, reason, exit_)
+        self._finish(DEAD_STREAM, reason, ending, exit_)
         self._death_said = reason          # нить «после смерти» заведёт _drain — не под замком (№533)
 
-    def _end_locked(self, reason: str, exit_: foreign_python.Outcome | None = None) -> None:
-        self._finish(STOPPED, reason, exit_)
+    def _end_locked(self, reason: str, ending: str, exit_: foreign_python.Outcome | None = None) -> None:
+        self._finish(STOPPED, reason, ending, exit_)
 
-    def _finish_lines(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
+    def _finish_lines(self, outcome: str, reason: str, ending: str,
+                      exit_: foreign_python.Outcome | None) -> None:
         self._state, self._reason = DEAD, reason
         self._reap_locked()
         self._cancel.set()
         self._finish_pending_locked(outcome, reason)
-        line = {"type": "end", "t": self._t(), "reason": reason, "counts": dict(self._counts)}
+        line = {"type": "end", "t": self._t(), "ending": ending, "reason": reason,
+                "counts": dict(self._counts)}
         if exit_ is not None:
             line["exit"] = exit_.kind
             if exit_.reason:
                 line["exit_reason"] = exit_.reason
         self._line(line)
 
-    def _finish(self, outcome: str, reason: str, exit_: foreign_python.Outcome | None) -> None:
+    def _finish(self, outcome: str, reason: str, ending: str, exit_: foreign_python.Outcome | None) -> None:
         """Единственный переход в DEAD — и он же владеет ребёнком: живой получает SIGKILL здесь,
         на любом пути (смерть, штатный конец, сбой нити в остановке), без нити и без ожидания
         (выходной круг 2 по №478 A2, I1). Ждущих (писатель, `close`) будит последним и при
-        любом исходе: строки конца к этому моменту уже в очереди (выходной круги 1–2 по №533)."""
+        любом исходе: строки конца к этому моменту уже в очереди (выходной круги 1–2 по №533).
+        Исход `ending` вне `ENDINGS` — ошибка вызывающего, до любого перехода: журнал не
+        получает слова, которого не знает читатель (№563)."""
+        if ending not in ENDINGS:
+            raise ValueError(f"исход конца тени {ending!r} вне {ENDINGS}")
         try:
-            self._finish_lines(outcome, reason, exit_)
+            self._finish_lines(outcome, reason, ending, exit_)
         finally:
             self._queue.put(None)
             self._dead.set()
@@ -760,13 +777,13 @@ class Shadow:
         tail = " — метки собеседников снова от трекера" if self._mode == ON else ""
         self._say(f"{self._who} остановлен: {reason}{tail}")
 
-    def _die_from_thread(self, reason: str) -> None:
+    def _die_from_thread(self, reason: str, ending: str) -> None:
         """Смерть из нити тени по сбою вне замка: под замком, один раз; строки — на диск."""
         with self._lock:
             if self._state == STOPPING:
-                self._end_locked(reason)
+                self._end_locked(reason, ending)
             else:
-                self._die_locked(reason)
+                self._die_locked(reason, ending)
         self._drain()
 
     def close(self, timeout: float) -> None:
@@ -829,7 +846,7 @@ class Shadow:
                 self._out.clear()                        # журнал мёртв — очередь не копится
         with self._lock:
             if failure is not None and self._state != DEAD:
-                self._die_locked(f"журнал тени не пишется ({failure})")
+                self._die_locked(f"журнал тени не пишется ({failure})", END_FAULT)
             reason, self._death_said = self._death_said, None
         if reason is not None:
             try:
@@ -968,8 +985,10 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
         say(f"поток Nemotron выключен: журнал не открылся ({e})")
         return NO_SHADOW
     shadow.begin(python=python, script=diarize_nemotron.SCRIPT,
+                 # --parent-pid: ребёнок сам выходит, когда демона не стало (SIGKILL от приложения
+                 # не даёт ни `finally`, ни `atexit`; №540)
                  args=["--stream", "--model", str(diarize_nemotron.model_dir(root)), "--preset", PRESET,
-                       "--cache-limit-mb", str(CACHE_LIMIT_MB)],
+                       "--cache-limit-mb", str(CACHE_LIMIT_MB), "--parent-pid", str(os.getpid())],
                  errlog=charoite_paths.meeting_log(root, "nemotron_live", stem=stamp, suffix=".err"))
     say(f"поток Nemotron: {'метки собеседников из потока' if mode == ON else 'тень включена'}, "
         f"журнал {journal.name}")

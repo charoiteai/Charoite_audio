@@ -438,6 +438,32 @@ def frame_seconds(model: Any) -> float:
 STREAM_PROTO = 1
 #: Блок, которым движок кормит поток, — в сэмплах (0,5 с, как бенч `nemotron-live`).
 STREAM_STEP = SAMPLE_RATE // 2
+#: Шаг опроса родителя сторожем потока, секунды (№540).
+PARENT_POLL_S = 0.5
+
+
+def watch_parent(parent_pid: int, poll_s: float = PARENT_POLL_S) -> None:
+    """Сторож родителя (№540): родитель сменился — процесс выходит сам, `os._exit`.
+
+    Демон, убитый SIGKILL (приложение добивает повисший через 12 с), не даёт ни `finally`,
+    ни `atexit`; на macOS нет PDEATHSIG. Читающий вход ребёнок умрёт и так — EOF, затем
+    BrokenPipe на записи; сторож — для того, кто в этот момент вход не читает (загрузка
+    модели, долгий `feed`). Нить берёт GIL раз в шаг: MLX отпускает его на время
+    вычисления, чистый Python отдаёт каждые `sys.getswitchinterval()` (замер №540).
+    Родитель передаётся явно: умри он до старта нити, `getppid()` уже 1, и сравнение
+    «с тем, что было при старте» смерти бы не увидело."""
+    import time
+
+    import threads
+
+    def run() -> None:
+        while os.getppid() == parent_pid:
+            time.sleep(poll_s)
+        _stderr(f"родитель {parent_pid} ушёл — поток выходит")
+        os._exit(1)
+
+    threads.spawn(run, name="nemotron-parent-watch", role="process",
+                  detached="сторож родителя живёт, пока жив процесс движка")
 
 
 def _emit_segments(segments: list[dict], frames: int, frame_s: float, emit, *, final: bool) -> None:
@@ -688,7 +714,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="задержка живого потока (--stream): low — 1.04 с")
     ap.add_argument("--cache-limit-mb", type=_non_negative_int, default=None,
                     help="лимит кэша MLX живого потока (--stream), МБ; без флага — как у mlx")
+    ap.add_argument("--parent-pid", type=int, default=None,
+                    help="pid родителя живого потока (--stream): его не стало — процесс выходит сам")
     args = ap.parse_args(argv)
+    if args.stream and args.parent_pid is not None:
+        watch_parent(args.parent_pid)      # до проверки движка и загрузки модели
     if not (args.probe or args.stream) and args.wav is None:
         ap.error("нужна запись (или --probe, или --stream)")
     problem = availability(args.model)

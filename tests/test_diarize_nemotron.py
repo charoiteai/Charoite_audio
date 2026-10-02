@@ -12,10 +12,12 @@
       перекрытия разных голосов — то, ради чего модель берут, — сохраняются.
 """
 import json
+import os
 import pathlib
 import shlex
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -972,3 +974,71 @@ def test_main_probe_without_the_engine_exits_10_and_the_recording_stays_required
     with pytest.raises(SystemExit) as e:
         nem.main(["--model", str(tmp_path)])
     assert e.value.code == 2
+
+
+# ------------------------------------------------ сторож родителя живого потока (№540)
+
+
+def test_the_stream_watches_its_parent_before_checking_the_engine(monkeypatch, tmp_path):
+    """Сторож заводится первым: проверка движка и загрузка модели идут уже под ним, а без
+    `--stream` или без `--parent-pid` сторожа нет."""
+    calls = []
+    monkeypatch.setattr(nem, "watch_parent", lambda pid: calls.append(("watch", pid)))
+    monkeypatch.setattr(nem, "availability", lambda path: calls.append(("engine", path)) or "нет движка")
+    model = tmp_path / "m"
+    assert nem.main(["--stream", "--model", str(model), "--parent-pid", "4242"]) == nem.EXIT_ENGINE_UNAVAILABLE
+    assert calls == [("watch", 4242), ("engine", model)]
+    calls.clear()
+    nem.main(["--stream", "--model", str(model)])
+    nem.main(["--probe", "--model", str(model), "--parent-pid", "4242"])
+    assert calls == [("engine", model), ("engine", model)]
+
+
+#: Промежуточный родитель — как демон: заводит ребёнка и живёт, пока его не убьют. Ребёнок
+#: не читает вход и спит — как модель, повисшая в MLX: уйти он может только сам.
+ORPHAN_PARENT = '''
+import os, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2], str(os.getpid()), sys.argv[3]])
+time.sleep(60)
+'''
+ORPHAN_CHILD = '''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import diarize_nemotron
+if sys.argv[3] == "watch":
+    diarize_nemotron.watch_parent(int(sys.argv[2]))
+print(os.getpid(), flush=True)
+time.sleep(60)
+'''
+
+
+def _gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("guard, dies", [("watch", True), ("none", False)])
+def test_a_hung_stream_child_leaves_after_its_parent_is_killed(guard, dies):
+    """SIGKILL родителю (приложение добивает демона) — ни `finally`, ни `atexit` родителя не
+    идут; ребёнок уходит сам за потолок сторожа. Без сторожа тот же ребёнок живёт сиротой —
+    контроль того, что опыт меряет сторож, а не окружение."""
+    import signal
+    import subprocess
+    parent = subprocess.Popen([sys.executable, "-c", ORPHAN_PARENT, ORPHAN_CHILD, str(REPO / "src"), guard],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    child = None
+    try:
+        child = int(parent.stdout.readline())
+        parent.send_signal(signal.SIGKILL)
+        parent.wait(10)
+        deadline = time.monotonic() + 3.0
+        while not _gone(child) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert _gone(child) is dies, f"сторож {guard}: ребёнок {'жив' if not _gone(child) else 'ушёл'}"
+    finally:
+        parent.kill()
+        if child is not None and not _gone(child):
+            os.kill(child, signal.SIGKILL)

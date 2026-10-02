@@ -3423,34 +3423,36 @@ def main():
         nemotron_shadow = live_nemotron.NO_SHADOW
         emit({"type": "status", "text": f"поток Nemotron не поднялся: {e}"})
 
-    # Слои встречи: имя у каждого своё, роль — одна на всех. Кортеж пар, а не
-    # список потоков: имя нужно и реестру, и сторожу, а поток без имени
-    # неотличим от чужого (№415).
-    loops = (
-        ("stt-loop", stt_loop),
-        ("think-loop", think_loop),
-        ("thread-loop", thread_loop),
-        ("instant-loop", instant_loop),
-        ("cloud-loop", cloud_loop),
-        ("fast-trigger-loop", fast_trigger_loop),
-        ("deja-vu-loop", deja_vu_loop),
-        ("dialog-markup-loop", dialog_markup_loop),
-        ("name-loop", name_loop),
-        ("minutes-loop", minutes_loop),
-        ("live-context-loop", live_context_loop),
-        ("stdin-loop", stdin_loop),
-        ("autostop-loop", autostop_loop),
-    )
-    for имя, цикл in loops:
-        threads.spawn(цикл, name=имя, role="meeting",
-                      detached="поток слоя живёт до конца встречи")
-    # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
-    # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
-    # главном цикле перезапускает умершего и говорит об этом вслух.
-    hint_state["thread"] = threads.spawn(
-        auto_hint_loop, name="auto-hint", role="meeting",
-        detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
+    # Всё после подъёма тени — под `finally` (№549): сбой завода слоёв иначе уходил мимо
+    # строки `end` журнала тени, `hub.stop()` и пересборки.
     try:
+        # Слои встречи: имя у каждого своё, роль — одна на всех. Кортеж пар, а не
+        # список потоков: имя нужно и реестру, и сторожу, а поток без имени
+        # неотличим от чужого (№415).
+        loops = (
+            ("stt-loop", stt_loop),
+            ("think-loop", think_loop),
+            ("thread-loop", thread_loop),
+            ("instant-loop", instant_loop),
+            ("cloud-loop", cloud_loop),
+            ("fast-trigger-loop", fast_trigger_loop),
+            ("deja-vu-loop", deja_vu_loop),
+            ("dialog-markup-loop", dialog_markup_loop),
+            ("name-loop", name_loop),
+            ("minutes-loop", minutes_loop),
+            ("live-context-loop", live_context_loop),
+            ("stdin-loop", stdin_loop),
+            ("autostop-loop", autostop_loop),
+        )
+        for имя, цикл in loops:
+            threads.spawn(цикл, name=имя, role="meeting",
+                          detached="поток слоя живёт до конца встречи")
+        # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
+        # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
+        # главном цикле перезапускает умершего и говорит об этом вслух.
+        hint_state["thread"] = threads.spawn(
+            auto_hint_loop, name="auto-hint", role="meeting",
+            detached="слой авто-подсказок живёт до конца встречи, за ним следит сторож")
         last_hb = 0.0
         last_stt_stall_log = 0.0
         owner_pulse_at = [0.0]   # своя метка: пульс владельца — не слой подсказок
@@ -3575,7 +3577,10 @@ def main():
         # тень — сразу и без ожидания: её ребёнок держит модель, а пересборке
         # сейчас нужна машина; повисшего ребёнка таймер убьёт на первой секунде
         # выхода, раньше SIGKILL сторожа приложения (№533)
-        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)
+        try:
+            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)
+        except Exception as e:  # noqa: BLE001 — сбой тени не отнимает у встречи пересборку и hub.stop
+            print(f"[daemon] остановка потока Nemotron: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         # Пересборка финальной стенограммы + граф — ПЕРВЫМ делом (Popen мгновенен,
         # живёт в своей сессии и переживает terminate от Swift; часовая встреча
         # 17.07 потерялась именно на этом). rebuild сам ждёт финализацию записей

@@ -400,6 +400,12 @@ def test_a_starting_stream_is_not_dead(tmp_path):
     sh.close(1.0)
 
 
+def _ending(sh, tmp_path) -> str:
+    """Исход конца тени из строки `end` (№563) — когда строка уже на диске."""
+    _wait(lambda: _over(sh, tmp_path), what="строка end")
+    return _end(tmp_path)["ending"]
+
+
 def _over(sh, tmp_path):
     """Тень кончилась и её строка `end` уже на диске: журнал дописывает `_drain` вне замка,
     чуть позже перехода в DEAD (№533)."""
@@ -491,6 +497,7 @@ def test_a_gap_in_the_axis_stops_the_shadow_instead_of_shifting_labels(tmp_path)
     lines = _journal(tmp_path / "live.jsonl")
     (end,) = [x for x in lines if x["type"] == "end"]
     assert "разрыв оси" in end["reason"]
+    assert end["ending"] == ln.END_FAULT, "разрыв оси — сбой нашей стороны"
     assert lines[-1]["type"] == "chunk", "чанк после конца потока — строкой после end, журнал открыт"
 
 
@@ -529,9 +536,33 @@ def test_stop_resolves_what_the_final_front_covers_and_closes_the_rest(tmp_path)
     door.on_message({"type": "front", "fed": SR * 6, "frames": 50, "final": True})   # 4 с
     door.on_eof()
     assert sh.state == ln.DEAD and sh.reason == "остановлен"
+    assert _ending(sh, tmp_path) == ln.END_STOPPED
     got = {c["chunk"]: c["outcome"] for c in _chunks(tmp_path / "live.jsonl")}
     assert got == {0: ln.LABELED, 1: ln.STOPPED}
     assert says == [], "штатная остановка человеку не пишет"
+
+
+def test_an_ending_outside_the_set_is_refused_before_any_transition(tmp_path):
+    """№563: слово конца, которого не знает читатель журнала, — ошибка вызывающего, а не строка."""
+    sh, door, _ = _live(tmp_path)
+    with pytest.raises(ValueError, match="вне"):
+        sh._die_from_thread("проверка", "killed")
+    assert sh.state == ln.LIVE and not sh.dead
+    assert not (tmp_path / "live.jsonl").exists() or not any(
+        x["type"] == "end" for x in _journal(tmp_path / "live.jsonl"))
+    sh.close(1.0)
+
+
+def test_a_thread_fault_while_stopping_ends_as_fault_not_as_a_stop(tmp_path):
+    """Сбой нити в остановке: исход — сбой, чанки — «остановлен» (переход STOPPING → DEAD)."""
+    sh, door, _ = _live(tmp_path)
+    sh.on_frame("blackhole", 0, np.zeros(SR * 3, dtype=np.float32))
+    sh.note_chunk(_placed(0, 0, SR * 3), "pieces")
+    sh.stop()
+    assert sh.state == ln.STOPPING
+    sh._die_from_thread("писатель упал", ln.END_FAULT)
+    assert _ending(sh, tmp_path) == ln.END_FAULT
+    assert {c["outcome"] for c in _chunks(tmp_path / "live.jsonl")} == {ln.STOPPED}
 
 
 def test_stop_while_the_model_loads_cancels_the_handshake(tmp_path):
@@ -542,6 +573,7 @@ def test_stop_while_the_model_loads_cancels_the_handshake(tmp_path):
     sh.stop()
     _wait(lambda: _over(sh, tmp_path), what="тень закончилась")
     assert sh.reason == "остановлен до старта потока" and says == []
+    assert _ending(sh, tmp_path) == ln.END_STOPPED
     assert [c["outcome"] for c in _chunks(tmp_path / "live.jsonl")] == [ln.BEFORE_STREAM]
 
 
@@ -593,6 +625,7 @@ def test_a_door_that_raises_kills_the_shadow_with_an_end_line(tmp_path):
     sh, door, says = _shadow(tmp_path, door=_BrokenDoor())
     _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "не стартовал" in sh.reason and "дверь сломалась" in sh.reason
+    assert _ending(sh, tmp_path) == ln.END_NOT_STARTED
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
     _wait(lambda: says, what="строка человеку")
 
@@ -637,6 +670,7 @@ def test_a_child_log_over_the_cap_stops_the_shadow(tmp_path, monkeypatch, size, 
     door.on_message({"type": "front", "fed": SR, "frames": 5})
     if dies:
         assert sh.state == ln.DEAD and sh.reason == "журнал ребёнка вырос сверх 1 МБ"
+        assert _ending(sh, tmp_path) == ln.END_GUARD
     else:
         assert sh.state != ln.DEAD, sh.reason
         assert probed == [1], "журнал ровно по потолку — память всё равно спрашивается"
@@ -712,6 +746,7 @@ def test_critical_pressure_stops_the_stream_at_the_first_check(tmp_path):
     assert sh.state == ln.LIVE
     _fronts(sh, door, clock, 1, phys=800)
     assert sh.state == ln.DEAD and sh.reason == "давление памяти критичное (уровень 4) — запись важнее потока"
+    assert _ending(sh, tmp_path) == ln.END_GUARD
     mem = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
     assert [m["pressure"] for m in mem] == [1, 4] and mem[0]["swap_used_mb"] == 1000
     assert [m["phys_mb"] for m in mem] == [800, 800], "в строке mem — след, по которому решали"
@@ -743,6 +778,7 @@ def test_own_footprint_over_budget_twice_in_a_row_stops_the_stream(tmp_path):
     assert sh.state == ln.LIVE, "выброс, потом ровно бюджет — счётчик сброшен"
     _fronts(sh, door, clock, 1, phys=budget + 1)
     assert sh.state == ln.DEAD and sh.reason == f"след ребёнка {budget + 1} МБ сверх бюджета {budget} МБ"
+    assert _ending(sh, tmp_path) == ln.END_GUARD
     mem = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "mem"]
     assert [m["phys_mb"] for m in mem] == [budget + 1, budget, budget + 1, budget + 1], \
         "проба памяти ложится и на проверке, которая убила поток (выход r1, GLM M2)"
@@ -911,6 +947,7 @@ def test_a_child_with_the_wrong_frame_unit_dies_and_the_journal_names_why(tmp_pa
     _wait(lambda: _over(sh, tmp_path), timeout=30, what="ребёнок умер на сверке")
     end = _journal(tmp_path / "live.jsonl")[-1]
     assert end["type"] == "end" and end["exit"] == fp.FAILED
+    assert end["ending"] == ln.END_CHILD_EXIT
     assert "впереди поданного звука" in end["exit_reason"] and "единица кадра не та" in end["exit_reason"]
     assert "единица кадра не та" in sh.reason, sh.reason
 
@@ -1048,6 +1085,7 @@ def test_a_child_that_comes_up_after_the_stop_is_ended_quietly(tmp_path):
     sh.stop()
     _wait(lambda: sh.state == ln.DEAD, what="тень закончилась")
     assert sh.reason == "остановлен до старта потока"
+    assert _ending(sh, tmp_path) == ln.END_STOPPED
     _wait(lambda: door.child.killed.is_set(), what="неподобранный ребёнок убит")
     time.sleep(0.05)
     assert says == [], "штатная остановка человеку не пишет"
@@ -1067,6 +1105,7 @@ def test_the_queue_cap_is_exact_and_counts_what_the_writer_took(tmp_path):
         sh.on_frame("blackhole", k * SR, block)
     assert sh.state == ln.LIVE, "ровно потолок в очереди — ещё не отстал"
     sh.on_frame("blackhole", (cap + 1) * SR, np.zeros(1, dtype=np.float32))
+    assert _ending(sh, tmp_path) == ln.END_GUARD
     assert sh.state == ln.DEAD and "отстал" in sh.reason
 
 
@@ -1090,6 +1129,7 @@ def test_a_closed_input_of_the_child_stops_the_shadow_with_the_child_exit(tmp_pa
     assert sh.reason == f"вход ребёнка закрыт (труба закрыта); ребёнок: {said}"
     end = _end(tmp_path)
     assert end["exit"] == exit_.kind and end.get("exit_reason", "") == exit_.reason
+    assert end["ending"] == ln.END_CHILD_EXIT
 
 
 def _end(tmp_path):
@@ -1342,8 +1382,10 @@ def test_start_raises_the_shadow_with_its_journal_and_the_stream_args(tmp_path, 
     assert kw["python"] == "/py" and kw["script"] == ln.diarize_nemotron.SCRIPT
     assert kw["errlog"] == tmp_path / "logs" / f"nemotron_live_{stamp}.err"
     assert kw["args"][:2] == ["--stream", "--model"]
-    assert kw["args"][-4:] == ["--preset", ln.PRESET, "--cache-limit-mb", str(ln.CACHE_LIMIT_MB)], (
+    assert kw["args"][-6:-2] == ["--preset", ln.PRESET, "--cache-limit-mb", str(ln.CACHE_LIMIT_MB)], (
         "лимит кэша MLX — всегда: без него живая тень 30.09 заняла 8,5 ГБ и умерла")
+    assert kw["args"][-2:] == ["--parent-pid", str(os.getpid())], (
+        "ребёнок знает своего родителя — демона, а не того, кто есть при старте его нити (№540)")
     assert says == [f"поток Nemotron: тень включена, журнал nemotron_live_{stamp}.jsonl"]
 
 
@@ -1422,6 +1464,7 @@ def test_no_thread_for_the_writer_or_the_death_still_kills_the_child(tmp_path, m
     sh, door, _ = _shadow(tmp_path)
     _wait(lambda: _over(sh, tmp_path), what="тень умерла")
     assert "писатель не завёлся" in sh.reason
+    assert _ending(sh, tmp_path) == ln.END_FAULT
     assert door.child.killed.is_set(), "ребёнок с моделью остался без хозяина"
     assert [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
 
@@ -1438,6 +1481,7 @@ def test_a_start_thread_that_does_not_start_ends_the_shadow_with_a_line(tmp_path
     sh, door, _ = _shadow(tmp_path)
     assert sh.state == ln.DEAD and sh.reason.startswith("нить запуска не завелась")
     assert _end(tmp_path)["reason"] == sh.reason
+    assert _end(tmp_path)["ending"] == ln.END_NOT_STARTED
     assert door.on_eof is None, "дверь не звали — ребёнка нет"
 
 
@@ -1612,6 +1656,7 @@ def test_close_kills_a_hung_child_inside_the_watchdog_window(tmp_path):
     assert took < ln.CLOSE_WAIT_S + ln.CLOSE_MARGIN_S + 1.0, f"close ждал {took:.2f} с"
     _wait(lambda: not _alive(pid) and sh.state == ln.DEAD, timeout=2.0, what="ребёнок убит закрытием")
     (end,) = [x for x in _journal(tmp_path / "live.jsonl") if x["type"] == "end"]
+    assert end["ending"] == ln.END_STOPPED, "убит закрытием — всё равно штатный стоп; убийство считает счётчик"
     assert end["counts"]["killed_at_close"] == 1
 
 
@@ -1741,7 +1786,7 @@ def test_a_finish_that_breaks_still_wakes_the_waiters(tmp_path, monkeypatch):
     woken = []
     sh._queue = _WatchedQueue(sh._queue, woken.append)
     with pytest.raises(RuntimeError), sh._lock:
-        sh._die_locked("проверка")
+        sh._die_locked("проверка", ln.END_FAULT)
     assert sh._dead.is_set() and None in woken
 
 
@@ -1954,7 +1999,7 @@ def test_the_on_journal_header_names_the_mode_the_cap_and_the_show_threshold(tmp
     sh, door, _ = _on(tmp_path, lambda event, cap: False)
     head = _journal(tmp_path / "live.jsonl")[0]
     assert (head["v"], head["mode"], head["wait_cap_s"], head["slot_show_s"]) == (
-        2, ln.ON, ln.WAIT_CAP_S, ln.SLOT_SHOW_S)
+        ln.JOURNAL_V, ln.ON, ln.WAIT_CAP_S, ln.SLOT_SHOW_S)
     assert sh.stream_channel == ln.CHANNEL and sh.live is True
     sh.stop()
     door.on_eof()
