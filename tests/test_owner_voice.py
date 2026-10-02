@@ -19,8 +19,12 @@ OWNER, OTHER = "Игорь Ветров", "Собеседник"
 
 
 def _call(mic: dict[int, float], bh: dict[int, float] | None = None) -> ov.Heard:
-    """Звонок: в системном канале была речь."""
+    """Звонок: канал собеседников взял порог гейта (30 с в окне), и трекер
+    слышал там голоса."""
     heard = ov.Heard()
+    for i in range(int(ov.CALL_MIN_SPEECH_S / 2.5)):
+        heard.note_gate(i * 2.5, 2.5, is_mic=False)
+    assert heard.call
     for voice, seconds in (bh if bh is not None else {1: 30.0}).items():
         heard.note(voice, seconds, is_mic=False)
     for voice, seconds in mic.items():
@@ -395,9 +399,7 @@ def test_repeated_words_do_not_raise_the_bar():
 
 
 def test_text_path_never_touches_signature():
-    h = ov.Heard()
-    h.note(1, 20.0, is_mic=True)
-    h.note(7, 5.0, is_mic=False)
+    h = _call(mic={1: 20.0}, bh={7: 5.0})
     assert ov.owner_voices(h) == {1}
     for k in range(4):
         h.note_text(None, f"давайте зафиксируем решение по пункту номер {k} прямо сейчас",

@@ -164,7 +164,7 @@ questions do not get answered back.
 
 **An in-person meeting looks exactly like "no call"**: everyone sits in one
 room and lands in the microphone, the system channel stays silent. That is why
-the rule only engages when there is speech on the system channel.
+the rule only engages when the system channel carries a call.
 
 **The rebuild applies the same rule** (`owner_voice.owner_voices`) to the
 whole recording: in a call every microphone label left after the echo filter
@@ -174,13 +174,29 @@ speech and leading the next by 15 points; when the offline engine split the
 microphone into several labels nobody won, and the final transcript replaced
 the live name with «Собеседник N».
 
-The call flag is the same idea but not the same fact. The live path raises it
-on any chunk of the system channel; the rebuild raises it when the
-system-channel diarization returned speech. If that diarization fails, or the
-recording is shorter than 20 s, the final transcript treats the meeting as
-in-person and leaves the labels neutral.
+**The call flag is one threshold for both paths** (`owner_voice.call_from_gate`,
+since 2026-10-02). The capture gate is an energy threshold, not a speech
+model: a notification chime in an in-person meeting passes it for one to
+three chunks, while the background of a conference app passes it on 47–99% of
+a call's chunks. So a call is density: at least 30 s of system-channel chunks
+that passed the gate within some 120 s window. The live path counts chunks as
+they arrive; the rebuild cuts the recording the same way (`speech_gate`) and
+asks the same question. Once taken, the flag stays for the meeting. On eleven
+recorded calls the threshold was reached 30–83 s in, so for up to a minute and
+a half of a call the microphone labels in the live feed stay neutral. The
+final transcript also needs system-channel segments from diarization: without
+them the echo filter has nothing to cut by, and the labels stay neutral.
 
-One rule has two costs:
+The raw fact "the system channel passed the gate at least once" lives apart.
+Auto-stop and the "looks like an in-person meeting" status read it: one chunk
+of remote speech is enough to keep a call from being cut as a monologue.
+
+When the system channel is quiet by the same gate, an empty answer from
+Nemotron is accepted as an empty channel: sherpa does not run over it and the
+header carries no "fallback engine" line. An empty answer on a channel that
+passed the threshold is still treated as an engine refusal.
+
+One rule has three costs:
 
 - **A hybrid meeting.** A colleague at the same microphone gets the owner's
   name, live and in the final transcript. Telling voices apart inside the
@@ -189,6 +205,10 @@ One rule has two costs:
   when system-channel speech covers more than half of it. Bleed covered half
   or less stays: it used to be a neutral «Собеседник N», now it carries the
   owner's name.
+- **Sound that is not a call.** A video or music played through the speakers
+  for more than 30 s of a two-minute window raises the flag in an in-person
+  meeting, and the whole microphone is signed as the owner. Not seen in field
+  recordings so far.
 
 ## How to measure it
 

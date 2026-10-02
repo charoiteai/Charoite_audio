@@ -1,6 +1,6 @@
 # Раскладка кода Чароита (генерируется `scripts/layout_map.py`, руками не править)
 
-Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 84.
+Источник истины — `docs/design/layout.json`; гейт — `tests/test_import_boundaries.py`. Снимок allowlist: 2026-09-20T17:26Z (момент последнего `--regen`; версия файла — git). Модулей 85.
 
 ## Слои и направление стрелок
 
@@ -11,7 +11,7 @@
 - **llm** (зависит от: base, runtime; модулей 5): `decision_gate`, `llm`, `llm_health`, `model_lease`, `nli`
 - **graph** (зависит от: base; модулей 11): `charoite_graph`, `charoite_graph.cli`, `charoite_graph.dossier`, `charoite_graph.graph_names`, `charoite_graph.graph_nodes`, `charoite_graph.graph_schema`, `charoite_graph.graph_search`, `charoite_graph.text_norm`, `charoite_schema`, `graph_links`, `tier3`
 - **cloud** (зависит от: base, runtime; модулей 1): `cloud`
-- **audio** (зависит от: base, runtime; модулей 12): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `stt`, `stt_runtime`, `voice_pitch`
+- **audio** (зависит от: base, runtime; модулей 13): `audio`, `channel_labels`, `diarize`, `diarize_live`, `diarize_nemotron`, `frame_drops`, `live_nemotron`, `owner_voice`, `sherpa_config`, `speech_gate`, `stt`, `stt_runtime`, `voice_pitch`
 - **meeting** (зависит от: base, runtime, llm, graph, cloud, audio; модулей 25): `action_items`, `autostop`, `busy_signals`, `channel_trace`, `fact_check`, `graph_updater`, `graphs`, `hint_guard`, `install_profile`, `lexicon`, `live_sidecar`, `meeting_archive`, `meeting_processing`, `meeting_source`, `meeting_stamp`, `meeting_thread`, `name_fixes`, `question_filter`, `rebuild_transcript`, `retro_fill`, `review_bridge`, `speaker_names`, `thesis_rules`, `transcript`, `transcript_origin`
 - **app** (зависит от: base, runtime, llm, graph, cloud, audio, meeting; модулей 8): `brain`, `daemon`, `dictate`, `dictate_note`, `main`, `mcp_server`, `transcribe_file`, `voice_memos_bridge`
 

@@ -32,7 +32,15 @@ def test_mic_channel_is_recognised_by_the_raw_label_everywhere():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     bad = re.findall(r"is_mic=\w+ == mic_label", src)
     assert not bad, bad
-    assert src.count("is_mic=chan.is_mic(") >= 5, "признак канала — один объект ChannelLabels (D-П2)"
+    # Правило, а не счёт: каждый признак канала в демоне — через ChannelLabels.
+    # Счёт мест ломался от честного удаления вызова (№586 убрал `note` в voice_label).
+    # По AST, а не регэкспом: комментарии не в счёт, перенос строки не прячет.
+    import ast
+    sites = [ast.unparse(kw.value) for node in ast.walk(ast.parse(src))
+             if isinstance(node, ast.Call) for kw in node.keywords if kw.arg == "is_mic"]
+    assert sites, "признак канала в демоне не найден — сторож ослеп"
+    assert all(s.startswith("chan.is_mic(") for s in sites), (
+        "признак канала — один объект ChannelLabels (D-П2)", sites)
 
 
 def test_dialog_markup_takes_the_hint_lock_quietly_and_obeys_the_toggle():
