@@ -1004,17 +1004,27 @@ def test_a_parent_pid_that_is_no_parent_is_refused(pid, monkeypatch):
 
 
 #: Промежуточный родитель — как демон: заводит ребёнка и живёт, пока его не убьют. Ребёнок
-#: не читает вход и спит — как модель, повисшая в MLX: уйти он может только сам.
+#: не читает вход и спит — как модель, повисшая в MLX: уйти он может только сам. `wrapped` —
+#: между ними оболочка без `exec`, как скрипт-обёртка в `sufler.nemotron_python`.
 ORPHAN_PARENT = '''
 import os, subprocess, sys, time
-subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2], str(os.getpid()), sys.argv[3]])
+child = [sys.executable, "-c", sys.argv[1], sys.argv[2], str(os.getpid()), sys.argv[3]]
+if sys.argv[4] == "wrapped":
+    child = ["/bin/sh", "-c", '"$0" "$@"; exit $?', *child]
+subprocess.Popen(child)
 time.sleep(60)
 '''
 ORPHAN_CHILD = '''
 import os, sys, time
 sys.path.insert(0, sys.argv[1])
 import diarize_nemotron
-if sys.argv[3] == "watch":
+class Stuck:
+    def write(self, text):
+        time.sleep(60)
+    flush = write
+if sys.argv[3] == "watch-stuck-stderr":
+    sys.stderr = Stuck()
+if sys.argv[3].startswith("watch"):
     diarize_nemotron.watch_parent(int(sys.argv[2]))
 print(os.getpid(), flush=True)
 time.sleep(60)
@@ -1029,24 +1039,32 @@ def _gone(pid: int) -> bool:
     return False
 
 
-@pytest.mark.parametrize("guard, dies", [("watch", True), ("none", False)])
-def test_a_hung_stream_child_leaves_after_its_parent_is_killed(guard, dies):
+@pytest.mark.parametrize("guard, shape, dies", [
+    ("watch", "direct", True),
+    ("none", "direct", False),
+    ("watch", "wrapped", True),
+    ("watch-stuck-stderr", "direct", True),
+])
+def test_a_hung_stream_child_leaves_after_its_parent_is_killed(guard, shape, dies):
     """SIGKILL родителю (приложение добивает демона) — ни `finally`, ни `atexit` родителя не
     идут; ребёнок уходит сам за потолок сторожа. Без сторожа тот же ребёнок живёт сиротой —
-    контроль того, что опыт меряет сторож, а не окружение."""
+    контроль того, что опыт меряет сторож, а не окружение. Пока родитель жив, ребёнок жив и
+    за обёрткой; выход не ждёт stderr, повисший вместе с диском (финальный Opus, I1, M1)."""
     import signal
     import subprocess
-    parent = subprocess.Popen([sys.executable, "-c", ORPHAN_PARENT, ORPHAN_CHILD, str(REPO / "src"), guard],
+    parent = subprocess.Popen([sys.executable, "-c", ORPHAN_PARENT, ORPHAN_CHILD, str(REPO / "src"), guard, shape],
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     child = None
     try:
         child = int(parent.stdout.readline())
+        time.sleep(3 * nem.PARENT_POLL_S)
+        assert not _gone(child), f"сторож {guard}, {shape}: ребёнок ушёл при живом родителе"
         parent.send_signal(signal.SIGKILL)
         parent.wait(10)
         deadline = time.monotonic() + 3.0
         while not _gone(child) and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert _gone(child) is dies, f"сторож {guard}: ребёнок {'жив' if not _gone(child) else 'ушёл'}"
+        assert _gone(child) is dies, f"сторож {guard}, {shape}: ребёнок {'жив' if not _gone(child) else 'ушёл'}"
     finally:
         parent.kill()
         if child is not None and not _gone(child):

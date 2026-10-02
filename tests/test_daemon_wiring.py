@@ -242,12 +242,17 @@ def nemotron_wiring_problems(source: str) -> list[str]:
     # №549: сбой остановки тени не отнимает у встречи пересборку — стоп под своим перехватом
     # Перехват, который заново бросает или выходит из finally, пересборку не спасает (выходной
     # круг Sonnet, M2): тело обработчика — без raise и return.
+    # Под перехватом — тот самый стоп, что стоит первым до пересборки, а не любой другой в
+    # финале (финальный Opus, M3): первый оператор финала со стопом — сам Try.
+    def _first_stop(t):
+        return next((s for s in t.finalbody
+                     if any(_call_name(n) == "nemotron_shadow.stop" for n in ast.walk(s))), None)
     guarded = any(isinstance(g, ast.Try)
                   and any(isinstance(h.type, ast.Name) and h.type.id == "Exception"
                           and not any(isinstance(n, (ast.Raise, ast.Return)) for b in h.body for n in ast.walk(b))
                           for h in g.handlers)
                   and any(_call_name(n) == "nemotron_shadow.stop" for b in g.body for n in ast.walk(b))
-                  for t in final for s in t.finalbody for g in ast.walk(s))
+                  for t in final for g in [_first_stop(t)])
     if not guarded:
         problems.append("стоп тени в финале main не под перехватом — его сбой отменит пересборку (перехват)")
     # №549: от подъёма тени до try с финалом — ни одного оператора: любой из них может бросить
@@ -316,6 +321,11 @@ def test_the_daemon_wires_the_nemotron_shadow():
      "        except Exception as e:",
      "            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
      "        except Exception as e:\n            raise", "перехват"),
+    ("        try:\n            nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        except Exception as e:",
+     "        nemotron_shadow.stop(grace=live_nemotron.EXIT_GRACE_S)\n"
+     "        try:\n            nemotron_shadow.stop()\n"
+     "        except Exception as e:", "перехват"),
     ("    except Exception as e:  # noqa: BLE001 — тень вспомогательна: встреча идёт без неё",
      "    except KeyboardInterrupt as e:", "подъём"),
     ("    nemotron_shadow = live_nemotron.NO_SHADOW\n    try:\n        nemotron_shadow = live_nemotron.start(",

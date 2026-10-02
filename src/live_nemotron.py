@@ -296,7 +296,10 @@ class Shadow:
                 return
             problem = self._ready_problem(out.payload)
             if self._state != STARTING or problem:
-                self._abandon_locked(stream, problem or "остановлен до старта потока")
+                # исход — по причине (финальный Opus, M2): негодное рукопожатие не «стоп»,
+                # даже если стоп пришёл, пока ребёнок поднимался
+                self._abandon_locked(stream, problem or "остановлен до старта потока",
+                                     END_NOT_STARTED if problem else END_STOPPED)
                 return
             self._stream = stream
             self._frame_s = float(out.payload["frame_s"])
@@ -323,15 +326,16 @@ class Shadow:
             return "рукопожатие без кадра или шага"
         return ""
 
-    def _abandon_locked(self, stream: foreign_python.StreamProcess, reason: str) -> None:
+    def _abandon_locked(self, stream: foreign_python.StreamProcess, reason: str, ending: str) -> None:
         """Ребёнок поднялся, а брать его нельзя: вход закрыт и SIGKILL — сразу, без нити и
-        без ожидания (выход дождётся сборщик `subprocess`); потом конец тени."""
+        без ожидания (выход дождётся сборщик `subprocess`); потом конец тени. Исход выбирает
+        тот, кто знает причину; состояние решает только путь — стоп или смерть."""
         stream.close_input()
         stream.kill_nowait()
         if self._state == STOPPING:
-            self._end_locked(reason, END_STOPPED)
+            self._end_locked(reason, ending)
         else:
-            self._die_locked(reason, END_NOT_STARTED)
+            self._die_locked(reason, ending)
 
     def attach(self, hub: typing.Any) -> None:
         """Слушать кадры хаба."""

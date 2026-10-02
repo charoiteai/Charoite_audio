@@ -442,8 +442,26 @@ STREAM_STEP = SAMPLE_RATE // 2
 PARENT_POLL_S = 0.5
 
 
+def parent_gone(parent_pid: int) -> bool:
+    """Родителя нет. Прямой родитель — свой ответ; между ними обёртка без `exec` (скрипт в
+    `sufler.nemotron_python`) — `getppid()` даёт её pid при живом демоне, и тогда жизнь
+    демона проверяется сигналом 0 (финальный Opus, M1). Переподчинение launchd — ушёл."""
+    ppid = os.getppid()
+    if ppid == parent_pid:
+        return False
+    if ppid == 1:
+        return True
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:          # pid занят чужим процессом — демона нет
+        return True
+    return False
+
+
 def watch_parent(parent_pid: int, poll_s: float = PARENT_POLL_S) -> None:
-    """Сторож родителя (№540): родитель сменился — процесс выходит сам, `os._exit`.
+    """Сторож родителя (№540): родителя нет (`parent_gone`) — процесс выходит сам, `os._exit`.
 
     Демон, убитый SIGKILL (приложение добивает повисший через 12 с), не даёт ни `finally`,
     ни `atexit`; на macOS нет PDEATHSIG. Читающий вход ребёнок умрёт и так — EOF, затем
@@ -457,9 +475,10 @@ def watch_parent(parent_pid: int, poll_s: float = PARENT_POLL_S) -> None:
     import threads
 
     def run() -> None:
-        while os.getppid() == parent_pid:
+        # Ни строки перед выходом (финальный Opus, I1): stderr — файл в `logs/`, а диск,
+        # из-за которого демона добили, повис бы и здесь; читать её всё равно некому.
+        while not parent_gone(parent_pid):
             time.sleep(poll_s)
-        _stderr(f"родитель {parent_pid} ушёл — поток выходит")
         os._exit(1)
 
     threads.spawn(run, name="nemotron-parent-watch", role="process",

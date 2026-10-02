@@ -1091,6 +1091,19 @@ def test_a_child_that_comes_up_after_the_stop_is_ended_quietly(tmp_path):
     assert says == [], "штатная остановка человеку не пишет"
 
 
+def test_a_bad_handshake_after_the_stop_ends_as_not_started(tmp_path):
+    """Стоп пришёл, пока ребёнок поднимался, а рукопожатие негодно: исход — по причине
+    (не стартовал), а не по состоянию (финальный Opus, M2)."""
+    door = _Door(ready={**READY_OK, "proto": 2}, ok_after_cancel=True)
+    sh, door, says = _shadow(tmp_path, door=door)
+    _wait(lambda: door.on_eof is not None, what="дверь зовётся")
+    sh.stop()
+    _wait(lambda: _over(sh, tmp_path), what="тень закончилась")
+    assert "протокол" in sh.reason
+    assert _ending(sh, tmp_path) == ln.END_NOT_STARTED
+    _wait(lambda: door.child.killed.is_set(), what="неподобранный ребёнок убит")
+
+
 def test_the_queue_cap_is_exact_and_counts_what_the_writer_took(tmp_path):
     """Ровно QUEUE_CAP_S звука в очереди — ещё живёт, сэмпл сверх — «отстал»; блок, взятый
     писателем, из очереди вычтен в сэмплах, а не в байтах."""
