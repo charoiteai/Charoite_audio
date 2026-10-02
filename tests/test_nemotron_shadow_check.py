@@ -166,9 +166,10 @@ def test_a_clean_journal_of_every_accepted_version_is_valid(v, ending):
 
 
 def test_the_end_line_is_found_by_type_not_by_a_substring_of_a_reason(tmp_path):
-    """Подстрока `"type": "end"` в свободном тексте чужой строки — не строка конца."""
+    """Вложенный объект `{"type": "end"}` в чужой строке — не строка конца. (В строковом поле
+    кавычки экранированы и подстроку не дают — ложное совпадение даёт только вложенный объект.)"""
     path = tmp_path / "live.jsonl"
-    fake = json.dumps({"type": "status", "reason": 'ребёнок сказал {"type": "end"}'})
+    fake = json.dumps({"type": "proto", "message": {"type": "end"}})
     real = {"type": "end", "ending": ln.END_STOPPED, "exit": "ok"}
     path.write_text("\n".join([json.dumps(real), fake, ""]), encoding="utf-8")
     assert rp.end_line(path) == real

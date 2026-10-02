@@ -205,7 +205,7 @@ def pad_equal(*channels):
 
 def end_line(journal: pathlib.Path) -> dict:
     """Последняя строка `end` журнала тени; нет — пустой словарь. Тип — разбором строки:
-    подстрока `"type": "end"` бывает и внутри свободного текста `reason` чужой строки."""
+    подстрока `"type": "end"` бывает и у вложенного объекта чужой строки."""
     ended: dict = {}
     for raw in journal.read_text(encoding="utf-8").splitlines():
         if raw.strip():
