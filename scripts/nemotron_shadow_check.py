@@ -67,8 +67,9 @@ ZERO_COUNTS = ("killed_after_grace", "killed_at_close", "front_malformed", "seg_
                "message_unknown", "message_out_of_state", "nonjson", "callback_errors")
 #: Метка «нет голоса / нет слота» в матрице.
 NONE = "—"
-#: Версии журнала, которые сверка читает: 1 — тень PR A, 2 — источник раскладки и фолбэк (PR B).
-ACCEPTED_V = (1, 2)
+#: Версии журнала, которые сверка читает: 1 — тень PR A, 2 — источник раскладки и фолбэк (PR B),
+#: 3 — исход `ending` строки `end` (№563).
+ACCEPTED_V = (1, 2, 3)
 
 
 class Refused(Exception):
@@ -180,6 +181,9 @@ def validity(j: Journal, *, fed_expected: int | None = None, noted_expected: int
                 if o in LOST_OUTCOMES}
         if lost:
             problems.append(f"потерянные чанки: {lost}")
+    if j.v >= 3 and j.end.get("ending") != live_nemotron.END_STOPPED:
+        problems.append(f"поток кончился не штатным стопом: ending={j.end.get('ending')!r} "
+                        f"({j.end.get('reason', '')})")
     if j.end.get("exit") != "ok":
         problems.append(f"ребёнок вышел не сам: exit={j.end.get('exit')!r} ({j.end.get('exit_reason', '')})")
     finals = [f for f in j.fronts if f.get("final")]
@@ -262,6 +266,7 @@ def memory(j: Journal) -> dict:
     out["swap_used_mb"] = {"first": swap[0], "max": max(swap)} if swap else None
     out["lived_s"] = round(float(j.end.get("t", 0.0)), 1)
     out["end_reason"] = j.end.get("reason")
+    out["ending"] = j.end.get("ending")
     return out
 
 

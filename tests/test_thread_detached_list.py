@@ -51,6 +51,9 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("daemon.py", "auto-hint"),
     ("daemon.py", "auto-hint"),
     ("decision_gate.py", "gate-shadow"),
+    # сторож родителя в ребёнке потока Nemotron (№540): живёт, пока жив процесс движка,
+    # и кончает его сам — ждать его некому
+    ("diarize_nemotron.py", "nemotron-parent-watch"),
     # тень потока Nemotron (№478): отсрочка перед убийством, ожидание выхода ребёнка и
     # строка человеку не держат ни захват, ни выход демона — их никто не дожидается
     ("live_nemotron.py", "nemotron-live-kill"),
