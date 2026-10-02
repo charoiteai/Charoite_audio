@@ -125,7 +125,8 @@ audio track by it, so the other side's lines would be recognised from the
 microphone; the owner's signature is then switched off and the app says so at
 start. Before, three copies of this rule could disagree within one meeting.
 
-The live transcript and the final one answer this differently, on purpose.
+The live transcript and the final one answer this with the same rule
+(since 2026-10-02; before, the rebuild picked one dominant voice).
 
 **In a call the microphone belongs to the owner entirely.** The other side
 arrives on the system channel, so every non-echo microphone voice is the
@@ -165,10 +166,29 @@ questions do not get answered back.
 room and lands in the microphone, the system channel stays silent. That is why
 the rule only engages when there is speech on the system channel.
 
-**The rebuild decides independently**, over the whole recording at once,
-rather than repeating the live decision: it has all the audio, the live path
-has a sliding window and inertia. On a call both agree; on a meeting that
-changes format mid-way they may differ, and the one with more data is right.
+**The rebuild applies the same rule** (`owner_voice.owner_voices`) to the
+whole recording: in a call every microphone label left after the echo filter
+is signed as the owner once they hold at least 15 s of speech together.
+Before 2026-10-02 the rebuild picked one voice holding 60% of the microphone
+speech and leading the next by 15 points; when the offline engine split the
+microphone into several labels nobody won, and the final transcript replaced
+the live name with «Собеседник N».
+
+The call flag is the same idea but not the same fact. The live path raises it
+on any chunk of the system channel; the rebuild raises it when the
+system-channel diarization returned speech. If that diarization fails, or the
+recording is shorter than 20 s, the final transcript treats the meeting as
+in-person and leaves the labels neutral.
+
+One rule has two costs:
+
+- **A hybrid meeting.** A colleague at the same microphone gets the owner's
+  name, live and in the final transcript. Telling voices apart inside the
+  microphone needs a voice print of the owner, not a share of speech.
+- **Echo residue.** The rebuild drops a microphone segment as speaker bleed
+  when system-channel speech covers more than half of it. Bleed covered half
+  or less stays: it used to be a neutral «Собеседник N», now it carries the
+  owner's name.
 
 ## How to measure it
 
