@@ -1109,3 +1109,27 @@ def test_a_recording_shorter_than_twenty_seconds_with_sound_signs_nobody(meeting
     text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
     assert [label for label, _ in meeting["calls"]] == ["mic"]
     assert OWNER not in text and "запасным движком" not in text
+
+
+def test_a_short_beep_on_sherpa_keeps_the_room_mic_under_the_veto(meeting):
+    """Выход №586 (обе головы): отрезок от «дзынь» без порога гейта — комната и
+    для плана микрофона, не только для подписи: авто под запретом склейки."""
+    _room(meeting)
+    meeting["raw"]["blackhole"] = [(30.0, 35.0, 0)]
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+
+
+def test_a_short_beep_on_nemotron_keeps_the_mic_on_sherpa_in_the_room(meeting, monkeypatch):
+    """Выход №586 (обе головы): Nemotron дал отрезок по «дзынь» на очной — порога
+    гейта нет, значит не звонок: микрофон не уходит в Nemotron, идёт веткой
+    комнаты sherpa (№565)."""
+    _room(meeting)
+    asked: list = []
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[(30.0, 35.0, 0)]),
+        fp.Outcome(fp.OK, payload=[(0.0, 50.0, 0)]), asked))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [channel for channel, _ in asked] == ["blackhole"]
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+    assert OWNER not in text

@@ -1047,14 +1047,12 @@ def main():
         поломку — и не может знать, что это осознанный отказ: в микрофоне
         несколько голосов или встреча очная.
         """
-        state = owner_voice.call_state(heard_by_channel)
+        why = "" if signed else owner_voice.unsigned_reason(heard_by_channel)
         if signed:
             note = ""
-        elif owner_voice.human_seconds(heard_by_channel) < owner_voice.MIN_MIC_SECONDS:
-            return          # ещё копим речь: объяснять нечего и рано
-        elif state == owner_voice.CALL_PENDING:
-            return          # собеседников слышно, порог звонка копится (№586)
-        elif state == owner_voice.CALL_NONE:
+        elif why == owner_voice.SAY_NOTHING:
+            return          # речи мало или порог звонка копится (№586)
+        elif why == owner_voice.SAY_ROOM:
             note = ("собеседников в динамиках не слышно — похоже на очную "
                     "встречу, где микрофон один на всех: реплики остаются "
                     "нейтральными")
@@ -3376,7 +3374,7 @@ def main():
                            # Тихий собеседник и отсутствующий канал захвата
                            # дадут ложное «я один»: для таких случаев порог и
                            # вынесен в `alone_minutes` (по умолчанию 10, см. autostop.py).
-                           alone=owner_voice.call_state(heard_by_channel) == owner_voice.CALL_NONE,
+                           alone=owner_voice.alone(heard_by_channel),
                            farewells=int(heard["farewells"]))
             if not d:
                 continue

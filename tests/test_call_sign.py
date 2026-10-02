@@ -137,3 +137,58 @@ def test_a_call_cut_to_twenty_seconds_is_not_a_call_forty_is():
         return ov.call_from_gate(speech_gate.speech_starts(x, SR, 3.0, 0.5, -55.0), STEP)
     assert not call(20)
     assert call(40)
+
+
+# ------------------------------------------------------------ живой путь демона
+
+def _mic(heard: ov.Heard, seconds: float) -> ov.Heard:
+    heard.note(0, seconds, is_mic=True)
+    return heard
+
+
+def test_alone_reads_the_raw_sign_not_the_threshold():
+    """Автостоп: пока порог звонка копится, владелец не одинок (выход №586)."""
+    assert ov.alone(ov.Heard())
+    assert not ov.alone(_gate([0.0]))                        # звук был, порога нет
+    assert not ov.alone(_gate([i * STEP for i in range(12)]))
+
+
+def test_the_unsigned_reason_waits_for_speech_and_for_the_threshold():
+    """Статус демона: мало речи или порог копится — молчим; канал тих — «очная»;
+    звонок без подписи — «несколько человек» (выход №586, обе головы)."""
+    few = ov.MIN_MIC_SECONDS - 1
+    enough = ov.MIN_MIC_SECONDS + 1
+    assert ov.unsigned_reason(_mic(ov.Heard(), few)) == ov.SAY_NOTHING
+    assert ov.unsigned_reason(_mic(ov.Heard(), enough)) == ov.SAY_ROOM
+    assert ov.unsigned_reason(_mic(_gate([0.0]), enough)) == ov.SAY_NOTHING
+    assert ov.unsigned_reason(_mic(_gate([i * STEP for i in range(12)]), enough)) == ov.SAY_CROWD
+
+
+def _daemon_calls(attr: str) -> list:
+    import ast
+    tree = ast.parse((ROOT / "src" / "daemon.py").read_text(encoding="utf-8"))
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute) and n.func.attr == attr]
+
+
+def test_the_daemon_feeds_the_gate_from_the_batch_with_the_hub_step():
+    """Проводка живого признака: демон кормит `note_gate` ровно в одном месте —
+    моментом чанка на оси хаба в секундах и шагом разреза хаба. Юниты `Heard`
+    не видят, что вызов удалён или кормится нулём (выход №586, обе головы)."""
+    import ast
+    calls = _daemon_calls("note_gate")
+    assert len(calls) == 1
+    at, step = calls[0].args
+    assert ast.unparse(at) == "placed.start / hub.sr"
+    assert ast.unparse(step) == "gate_step_s"
+    steps = _daemon_calls("step_seconds")
+    assert [ast.unparse(c) for c in steps] == [
+        "speech_gate.step_seconds(hub.chunk_s, hub.overlap_s)"]
+
+
+def test_the_daemon_asks_owner_voice_who_is_alone_and_why_unsigned():
+    """Автостоп и статус читают решения `owner_voice`, а не собирают их сами."""
+    import ast
+    alone_kw = [kw for c in _daemon_calls("tick") for kw in c.keywords if kw.arg == "alone"]
+    assert [ast.unparse(kw.value) for kw in alone_kw] == ["owner_voice.alone(heard_by_channel)"]
+    assert len(_daemon_calls("unsigned_reason")) == 1

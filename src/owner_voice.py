@@ -48,7 +48,7 @@ MIN_MIC_SECONDS = 15.0
 #: именем владельца. Окно, а не сумма за встречу: на трёхчасовой очной
 #: разрозненные уведомления набрали бы 30 с суммой (вход №586, круг 1).
 #: Замер 02.10 (13 записей): очные — 0 с звука собеседников; 11 звонков берут
-#: порог на 30,5–83 с записи, медиана окна у них 62–120 с из 120 — фон
+#: порог на 30–83 с записи, медиана окна у них 62–120 с из 120 — фон
 #: конференц-приложения проходит гейт и при молчании собеседника.
 CALL_MIN_SPEECH_S = 30.0
 CALL_WINDOW_S = 120.0
@@ -311,6 +311,34 @@ def call_state(heard: Heard) -> str:
     if heard.call:
         return CALL_YES
     return CALL_PENDING if heard.bh_heard else CALL_NONE
+
+
+def alone(heard: Heard) -> bool:
+    """Собеседников не слышно ни разу — вход `alone` автостопа.
+
+    Сырой признак, не порог: первые полторы минуты звонка, пока порог копится,
+    автостоп не считает владельца одиноким (выход №586, обе головы).
+    """
+    return call_state(heard) == CALL_NONE
+
+
+SAY_NOTHING = "nothing"     # речи мало или порог звонка копится — объяснять рано
+SAY_ROOM = "room"           # собеседников не слышно — похоже на очную
+SAY_CROWD = "crowd"         # звонок, а в микрофоне не один человек
+
+
+def unsigned_reason(heard: Heard) -> str:
+    """Почему реплики владельца остались нейтральными — для статуса демона.
+
+    Решение живёт здесь, а демон только переводит его в текст: проводку
+    статуса судят тесты этой функции (выход №586, обе головы).
+    """
+    if human_seconds(heard) < MIN_MIC_SECONDS:
+        return SAY_NOTHING
+    state = call_state(heard)
+    if state == CALL_PENDING:
+        return SAY_NOTHING
+    return SAY_ROOM if state == CALL_NONE else SAY_CROWD
 
 
 def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
