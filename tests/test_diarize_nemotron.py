@@ -1039,6 +1039,17 @@ def _gone(pid: int) -> bool:
     return False
 
 
+def test_a_guard_whose_check_fails_takes_the_child_with_it():
+    """Проверка родителя бросила (pid вне диапазона — `OverflowError` в `os.kill`): сторож не
+    умирает молча, оставив сироту, а уводит процесс."""
+    import subprocess
+    code = ("import sys, time; sys.path.insert(0, sys.argv[1]); import diarize_nemotron; "
+            "diarize_nemotron.watch_parent(2 ** 70); time.sleep(30)")
+    done = subprocess.run([sys.executable, "-c", code, str(REPO / "src")],
+                          capture_output=True, text=True, timeout=20)
+    assert done.returncode == 1, done.stderr[-500:]
+
+
 @pytest.mark.parametrize("guard, shape, dies", [
     ("watch", "direct", True),
     ("none", "direct", False),

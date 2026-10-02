@@ -477,9 +477,12 @@ def watch_parent(parent_pid: int, poll_s: float = PARENT_POLL_S) -> None:
     def run() -> None:
         # Ни строки перед выходом (финальный Opus, I1): stderr — файл в `logs/`, а диск,
         # из-за которого демона добили, повис бы и здесь; читать её всё равно некому.
-        while not parent_gone(parent_pid):
-            time.sleep(poll_s)
-        os._exit(1)
+        # Сбой самой проверки — тоже выход: молча упавший сторож и есть сирота (Sonnet, M1).
+        try:
+            while not parent_gone(parent_pid):
+                time.sleep(poll_s)
+        finally:
+            os._exit(1)
 
     threads.spawn(run, name="nemotron-parent-watch", role="process",
                   detached="сторож родителя живёт, пока жив процесс движка")
