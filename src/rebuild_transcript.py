@@ -105,6 +105,10 @@ NAMES_REJECTED_NOTE = (
 #: logs/ (как у NAMES_PENDING_NOTE). В `{reason}` идут только закреплённые
 #: фразы без путей машины: стенограмму пересылают людям (№495).
 ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников размечены запасным движком (sherpa): {reason}."
+#: То же для микрофона звонка (№509): его размечает Nemotron, когда тот разметил
+#: канал собеседников; откат на sherpa стоит до двадцати минут разбора, и человек
+#: должен видеть причину. Своя строка: у каналов разные откаты.
+MIC_ENGINE_FALLBACK_NOTE = "> ⚠️ Речь микрофона размечена запасным движком (sherpa): {reason}."
 #: Строка в шапке, когда разметка микрофона без звонка свела всех в одну метку,
 #: а живая сессия слышала несколько голосов (№559): имя одного человека на всех
 #: было бы ложью, поэтому метка остаётся нейтральной. Своя строка, не
@@ -321,6 +325,31 @@ def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
         return None
 
 
+def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
+              what: str) -> tuple[list[tuple[float, float, int]] | None, str]:
+    """Вызов Nemotron по записи одного канала — общая часть обоих каналов.
+
+    `(сегменты, "")` — движок ответил; отрезки короче MIN_SEGMENT_S отброшены, как
+    у sherpa в `diarize_channel`. `(None, ENGINE_REFUSED_REASON)` — отказ: сырой
+    отказ с путями машины — только в журнал (№495). Годен ли ответ — политика
+    канала у вызывающего: пустой и «один на всю запись» значат у каналов разное.
+    """
+    sufler = cfg.get("sufler") or {}
+    t0 = time.time()
+    # Раскладку движка (веса, установленное окружение) знает его модуль: отсюда
+    # уходят только настройка и корень данных (№474).
+    out = diarize_nemotron.diarize_in_env(
+        str(sufler.get("nemotron_python") or ""), wav,
+        root=_root(), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
+    if not out.ok:
+        log(f"Nemotron не разметил {what} ({out.kind}: {out.reason}) — размечает sherpa")
+        return None, ENGINE_REFUSED_REASON
+    segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
+    log(f"Nemotron ({what}): {len(segs)} сегментов из {len(out.payload)} "
+        f"за {time.time() - t0:.0f} с")
+    return segs, ""
+
+
 def call_channel_engine(cfg: dict, wav: pathlib.Path,
                         duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str]:
     """Разметка канала собеседников выбранным движком, если это не sherpa.
@@ -330,8 +359,7 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
     отказе Nemotron — закреплённая фраза ENGINE_REFUSED_REASON (сырой отказ с
     путями машины — только в журнал, №495), в остальных случаях — своя фраза
     без путей;
-    `(None, "")` — выбран sherpa. Отрезки короче MIN_SEGMENT_S отбрасываются, как
-    у sherpa в `diarize_channel`.
+    `(None, "")` — выбран sherpa.
     """
     sufler = cfg.get("sufler") or {}
     backend = str(sufler.get("diarize_backend") or "sherpa").strip().lower()
@@ -341,17 +369,9 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
         reason = f"движок {backend!r} неизвестен (sufler.diarize_backend: {', '.join(DIARIZE_BACKENDS)})"
         log(reason)
         return None, reason
-    t0 = time.time()
-    # Раскладку движка (веса, установленное окружение) знает его модуль: отсюда
-    # уходят только настройка и корень данных (№474).
-    out = diarize_nemotron.diarize_in_env(
-        str(sufler.get("nemotron_python") or ""), wav,
-        root=_root(), timeout=NEMOTRON_TIMEOUT_S + 0.1 * duration_s)
-    if not out.ok:
-        log(f"Nemotron не разметил голоса ({out.kind}: {out.reason}) — размечает sherpa")
-        return None, ENGINE_REFUSED_REASON
-    segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
-    log(f"Nemotron: {len(segs)} сегментов из {len(out.payload)} за {time.time() - t0:.0f} с")
+    segs, reason = _nemotron(cfg, wav, duration_s, "голоса собеседников")
+    if segs is None:
+        return None, reason
     if not segs:
         # Успех без единого отрезка на записи длиннее 20 с — не «собеседники
         # молчали», а отказ движка в другой форме (не тот канал, частота,
@@ -363,6 +383,32 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
         # рвётся паузами, а склейка Nemotron паузы не заклеивает (MERGE_GAP_S = 0).
         # Звонок один на один — это много отрезков одного голоса, не один (круг 2, M1).
         return None, f"Nemotron — один отрезок на всю запись ({duration_s:.0f} с)"
+    return segs, ""
+
+
+def mic_channel_engine(cfg: dict, wav: pathlib.Path,
+                       duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str]:
+    """Разметка микрофона ЗВОНКА Nemotron (№509) — `(сегменты, "")` или
+    `(None, причина)`, и тогда микрофон размечает sherpa, как раньше.
+
+    Зовётся, только когда Nemotron разметил канал собеседников и в нём есть речь:
+    на звонке метки микрофона решает правило владельца (`owner_voices` — все
+    голоса после эхо-фильтра), и от движка нужны только отрезки речи. Nemotron
+    отдаёт их за секунды, sherpa на часе микрофона — минуты (замер 02.10, запись
+    57 минут: 8 с против 1109 с). Слоты Nemotron остаются номерами кластеров —
+    метки решает `resolve_channel_segments`, здесь не сворачиваются.
+
+    Политика канала своя: один отрезок на всю запись — годный ответ (монолог
+    владельца), а не вырожденный; пустой ответ на записи длиннее 20 с — отказ:
+    на звонке, где собеседники говорили, микрофон без единого отрезка правдой
+    быть не может чаще, чем сбоем, и молча пустой микрофон потерял бы владельца
+    целиком.
+    """
+    segs, reason = _nemotron(cfg, wav, duration_s, "речь микрофона")
+    if segs is None:
+        return None, reason
+    if not segs:
+        return None, f"Nemotron — ни одного отрезка на {duration_s:.0f} с записи микрофона"
     return segs, ""
 
 
@@ -864,6 +910,31 @@ def mic_plan(meta: dict, call_silent: bool, call_s: float | None,
     return hint, None
 
 
+def mic_sherpa(mic: np.ndarray, sr: int, plan: tuple[int | None, float | None],
+               silence: str) -> list[tuple[float, float, int]] | None:
+    """Разметка микрофона sherpa по плану `mic_plan` — (подсказка, запрет).
+
+    Очная встреча: в микрофоне вся комната, а одиночная связь авто-режима
+    сцепляет разных людей в один голос (29.09: 30 кластеров → 1). Запись канала
+    собеседников есть и молчит — комната: авто со склейкой под запретом (№565).
+    Записи нет — число живой сессии верхней границей, со склейкой осколков после
+    (№559). `silence` — словами, почему канал собеседников молчит, для журнала.
+    """
+    hint, veto = plan
+    if veto is not None:
+        log(f"mic: комната ({silence}), авто-разметка, склейка с запретом пар ниже {veto}")
+        return diarize_channel(mic, sr, veto=veto)
+    if hint is not None:
+        log(f"mic: подсказка голосов {hint} ({silence}), склейка осколков после")
+        segs = diarize_channel(mic, sr, num_speakers=hint, merge_shards=True)
+        if not segs:
+            log("mic: разметка с подсказкой ничего не дала — повторяю без подсказки")
+            _yield_to_live("разметка голосов микрофона", cap=600)
+            segs = diarize_channel(mic, sr)
+        return segs
+    return diarize_channel(mic, sr)
+
+
 def collapsed_mic_labels(chan: dict[str, str], live_count: int | None,
                          call_silent: bool) -> set[str]:
     """Нейтральная метка микрофона, в которую разметка свела всех, — когда её
@@ -1066,6 +1137,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     mic_raw: list[tuple[float, float, int]] | None = None
     bh_dwarf_s = BH_DWARF_S
     engine_note = ""               # почему голоса собеседников размечены запасным движком
+    mic_engine_note = ""           # почему микрофон звонка размечен запасным движком
+    bh_by_nemotron = False         # канал собеседников разметил Nemotron, а не откат
     call_s: float | None = None    # длина записи канала собеседников — для признака комнаты
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
@@ -1078,6 +1151,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             bh_raw, engine_note = call_channel_engine(cfg, bh_p, len(bh) / sr)
             if bh_raw is not None:
                 bh_dwarf_s = NEMOTRON_BH_DWARF_S
+                bh_by_nemotron = True
             else:
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
@@ -1093,24 +1167,19 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         mic, sr = load_wav(mic_p)
         if len(mic) > sr * 20:
             _yield_to_live("разметка голосов микрофона", cap=600)
-            # Очная встреча: в микрофоне вся комната, а одиночная связь авто-режима
-            # сцепляет разных людей в один голос (29.09: 30 кластеров → 1). Запись
-            # канала собеседников есть и молчит — комната: авто со склейкой под
-            # запретом (№565). Записи нет — число живой сессии верхней границей,
-            # со склейкой осколков после (№559). Выбор — mic_plan.
-            hint, veto = mic_plan(meta, call_silent, call_s, len(mic) / sr)
-            if veto is not None:
-                log(f"mic: комната ({silence}), авто-разметка, склейка с запретом пар ниже {veto}")
-                mic_raw = diarize_channel(mic, sr, veto=veto)
-            elif hint is not None:
-                log(f"mic: подсказка голосов {hint} ({silence}), склейка осколков после")
-                mic_raw = diarize_channel(mic, sr, num_speakers=hint, merge_shards=True)
-                if not mic_raw:
-                    log("mic: разметка с подсказкой ничего не дала — повторяю без подсказки")
+            # Звонок, канал собеседников разметил Nemotron: микрофон — тоже
+            # Nemotron (№509). Признак звонка тот же, что у правила владельца в
+            # resolve_channel_segments (речь в канале собеседников после
+            # разметки): там все метки микрофона станут владельцем, и нужны
+            # только отрезки. Откат канала собеседников, комната, записи канала
+            # нет — sherpa, как раньше.
+            if bh_by_nemotron and bh_raw:
+                mic_raw, mic_engine_note = mic_channel_engine(cfg, mic_p, len(mic) / sr)
+                if mic_raw is None:
                     _yield_to_live("разметка голосов микрофона", cap=600)
-                    mic_raw = diarize_channel(mic, sr)
-            else:
-                mic_raw = diarize_channel(mic, sr)
+            if mic_raw is None:
+                mic_raw = mic_sherpa(mic, sr, mic_plan(meta, call_silent, call_s, len(mic) / sr),
+                                     silence)
     # Подпись владельца читается из настроек, только когда микрофон размечен:
     # без микрофона пересборка конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
@@ -1202,6 +1271,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         body += [MIC_COLLAPSED_NOTE.format(live=live_count), ""]
     if engine_note:
         body += [ENGINE_FALLBACK_NOTE.format(reason=engine_note), ""]
+    if mic_engine_note:
+        body += [MIC_ENGINE_FALLBACK_NOTE.format(reason=mic_engine_note), ""]
     for s, e, spk, text in lines:
         spk = names.get(spk, spk)
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
