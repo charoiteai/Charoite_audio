@@ -748,14 +748,28 @@ def test_a_nemotron_refusal_on_the_call_yields_again_before_sherpa(meeting, monk
     """Отказ Nemotron мог съесть его потолок: перед sherpa канала собеседников —
     свежая уступка встрече (выход №509, I1 GLM)."""
     order = []
-    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: order.append(("yield", what)))
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: order.append(("yield", what, cap)))
     def fail(setting, wav, *, root, timeout):
         order.append(("nemotron", pathlib.Path(wav).name))
         return fp.Outcome(fp.FAILED, reason="не уложился")
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", fail)
     rt.rebuild(meeting["live"], _nemotron_cfg())
     at = order.index(("nemotron", "2026-08-20_143000_blackhole.wav"))
-    assert order[at + 1] == ("yield", "разметка голосов собеседников")
+    assert order[at + 1] == ("yield", "разметка голосов собеседников", 600)   # с потолком: очередь не паркуется
+
+
+@pytest.mark.parametrize("mic_answer, yields", [
+    (fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), 1),
+    (fp.Outcome(fp.FAILED, reason="не уложился"), 2),
+], ids=["ответил", "отказ"])
+def test_the_mic_yields_again_only_after_a_nemotron_refusal(mic_answer, yields, meeting, monkeypatch):
+    """Перед sherpa после отказа Nemotron микрофона — вторая уступка; ответ
+    Nemotron второй уступки не стоит (мутант CI по #718)."""
+    seen = []
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: seen.append(what))
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(CALL_BH, mic_answer))
+    rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert seen.count("разметка голосов микрофона") == yields
 
 
 @pytest.mark.parametrize("seed", range(40))
