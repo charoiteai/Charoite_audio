@@ -16,6 +16,7 @@ import sounddevice as sd
 
 import meeting_stamp
 import channel_labels
+import speech_gate
 import stt_runtime
 import threads
 
@@ -624,9 +625,7 @@ class AudioHub:
         self.SPEAKER = {**self.SPEAKER,
                         "mic": channel_labels.mic_label_for(cfg, self.SPEAKER["blackhole"])}
         self.sr = int(a["samplerate"])
-        self.chunk_s = float(a["chunk_seconds"])
-        self.overlap_s = float(a["overlap_seconds"])
-        self.vad_db = float(a["vad_energy_db"])
+        self.chunk_s, self.overlap_s, self.vad_db = speech_gate.settings(a)
         self.record_on = bool(a.get("record", True))
         self.record_keep_days = a.get("record_keep_days", 2)
         # Штампы встреч, которые прямо сейчас пересобираются: их записи ретеншн
@@ -2022,7 +2021,7 @@ class AudioHub:
         return None
 
     def is_speech(self, chunk: np.ndarray) -> bool:
-        """Энергетический гейт: RMS в дБFS выше порога = речь (v1)."""
-        rms = float(np.sqrt(np.mean(chunk**2)) + 1e-9)
-        db = 20 * np.log10(rms)
-        return db > self.vad_db
+        """Энергетический гейт: RMS в дБFS выше порога = речь (v1).
+
+        Формула — в speech_gate: пересборка гейтит запись ею же (№586)."""
+        return speech_gate.chunk_is_speech(chunk, self.vad_db)

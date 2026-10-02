@@ -63,6 +63,7 @@ import speaker_names  # noqa: E402
 import graphs  # noqa: E402
 import lexicon  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
+import speech_gate  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import VETO_BELOW, diarize, merge_shards as merge_voice_shards  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
@@ -350,11 +351,14 @@ def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
     return segs, ""
 
 
-def call_channel_engine(cfg: dict, wav: pathlib.Path,
-                        duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str]:
+def call_channel_engine(cfg: dict, wav: pathlib.Path, duration_s: float, *,
+                        gate_call: bool) -> tuple[list[tuple[float, float, int]] | None, str]:
     """Разметка канала собеседников выбранным движком, если это не sherpa.
 
-    `(сегменты, "")` — разметил Nemotron; `(None, причина)` — выбранный движок
+    `(сегменты, "")` — разметил Nemotron; `([], "")` — Nemotron не нашёл
+    отрезков, и гейт речи согласен: звонка в канале не было (`gate_call` —
+    признак звонка по тому же гейту, что у живой ленты, №586/№587);
+    `(None, причина)` — выбранный движок
     не разметил, размечает sherpa, а причина уходит в шапку стенограммы: при
     отказе Nemotron — закреплённая фраза ENGINE_REFUSED_REASON (сырой отказ с
     путями машины — только в журнал, №495), в остальных случаях — своя фраза
@@ -372,8 +376,13 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path,
     segs, reason = _nemotron(cfg, wav, duration_s, "голоса собеседников")
     if segs is None:
         return None, reason
+    if not segs and not gate_call:
+        # Пусто, и гейт речи порога звонка не взял: очная встреча, канал
+        # собеседников честно пуст. Откат на sherpa по нему и строка «движок не
+        # разметил» в шапке были ложью (№587, замер 02.10: обе очные).
+        return [], ""
     if not segs:
-        # Успех без единого отрезка на записи длиннее 20 с — не «собеседники
+        # Успех без единого отрезка, а гейт слышал звонок — не «собеседники
         # молчали», а отказ движка в другой форме (не тот канал, частота,
         # дрейф API): канал собеседников иначе молча пустел бы целиком
         # (выходной круг 1 по №473, C1). Размечает sherpa, шапка говорит почему.
@@ -517,6 +526,7 @@ def resolve_channel_segments(
         bh_raw: list[tuple[float, float, int]] | None,
         mic_raw: list[tuple[float, float, int]] | None, *,
         owner_label: str,
+        call: bool,
         bh_dwarf_s: float = BH_DWARF_S,
 ) -> tuple[list[tuple[float, float, str]], dict[str, str]]:
     """Сырые сегменты двух каналов → отрезки (start, end, метка) и канал-источник
@@ -530,9 +540,11 @@ def resolve_channel_segments(
     Владелец — правило `owner_voice.owner_voices`, одно с живой лентой: в
     звонке все метки микрофона после эхо-фильтра, если речи в них не меньше
     `MIN_MIC_SECONDS`; иначе метки микрофона нейтральные и продолжают
-    нумерацию «Собеседник N» системного канала. Звонок — канал собеседников
-    после разметки нёс речь; при `bh_raw=None` финал звонком встречу не
-    считает (живая лента считает по сырому звуку канала). `owner_label` —
+    нумерацию «Собеседник N» системного канала. Звонок — `call`, порог речи
+    гейта в окне по записи канала собеседников (`owner_voice.call_from_gate`,
+    то же правило, что у живой ленты, №586), И разметка канала дала отрезки:
+    без отрезков эхо-фильтру не по чему резать, и при `bh_raw=None` метки
+    микрофона остаются нейтральными. `owner_label` —
     подпись владельца из настроек (`ChannelLabels.mic_signed`); пустая —
     владельца не подписываем. Канал собеседников при любом движке сперва
     лишается перекрытий (`disjoint`), потом карликов (`bh_dwarf_s` — порог
@@ -544,7 +556,7 @@ def resolve_channel_segments(
 
     # Объявляем ДО ветки: на mic-only машине (нет BlackHole или не выдано
     # разрешение на системный звук) блок ниже не выполняется, а `bh_segs`
-    # читается дальше в `call=bool(bh_segs)`. Без объявления там NameError,
+    # читается дальше в `call and bool(bh_segs)`. Без объявления там NameError,
     # который `main()` глотает как «пересборка не удалась» — и встреча молча
     # остаётся без разбора по голосам, распознавания по абзацам и имён, а
     # через record_keep_days запись удаляется и вернуть качество уже нечем
@@ -586,7 +598,7 @@ def resolve_channel_segments(
         # Эхо здесь отсекает геометрия (пересечения с сегментами
         # системной дорожки убраны выше), а не совпадение номеров
         # голосов: нумерация двух дорожек независима.
-        heard = owner_voice_rules.Heard(mic=dict(durs), call=bool(bh_segs))
+        heard = owner_voice_rules.Heard(mic=dict(durs), call=call and bool(bh_segs))
         owners = owner_voice_rules.owner_voices(heard)
         # Имя — из настроек: живая лента подписывает владельца именем из
         # того же ключа, и финальная стенограмма обязана говорить то же
@@ -1143,15 +1155,21 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     mic_engine_note = ""           # почему микрофон звонка размечен запасным движком
     bh_by_nemotron = False         # канал собеседников разметил Nemotron, а не откат
     call_s: float | None = None    # длина записи канала собеседников — для признака комнаты
+    gate_call = False              # порог речи гейта в окне — признак звонка (№586)
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         call_s = len(bh) / sr
+        chunk_s, overlap_s, vad_db = speech_gate.settings(cfg["audio"])
+        gate_call = owner_voice_rules.call_from_gate(
+            speech_gate.speech_starts(bh, sr, chunk_s, overlap_s, vad_db),
+            speech_gate.step_seconds(chunk_s, overlap_s))
         if len(bh) > sr * 20:
             # Уступка встрече — перед каждой тяжёлой разметкой, а не только на
             # входе в очередь: пересборка, простоявшая за соседней, о начавшейся
             # встрече не знает, а разметка канала — минуты работы (№508).
             _yield_to_live("разметка голосов собеседников", cap=600)
-            bh_raw, engine_note = call_channel_engine(cfg, bh_p, len(bh) / sr)
+            bh_raw, engine_note = call_channel_engine(cfg, bh_p, len(bh) / sr,
+                                                      gate_call=gate_call)
             if bh_raw is not None:
                 bh_dwarf_s = NEMOTRON_BH_DWARF_S
                 bh_by_nemotron = True
@@ -1175,10 +1193,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         if len(mic) > sr * 20:
             _yield_to_live("разметка голосов микрофона", cap=600)
             # Звонок, канал собеседников разметил Nemotron: микрофон — тоже
-            # Nemotron (№509). Признак звонка тот же, что у правила владельца в
-            # resolve_channel_segments (речь в канале собеседников после
-            # разметки): там все метки микрофона станут владельцем, и нужны
-            # только отрезки. Откат канала собеседников, комната, записи канала
+            # Nemotron (№509). Признак — отрезки собеседников от Nemotron: без
+            # них правило владельца в resolve_channel_segments никого не
+            # подпишет (подпись = порог гейта И отрезки), а с ними на звонке все
+            # метки микрофона станут владельцем, и нужны только отрезки. Откат канала собеседников, комната, записи канала
             # нет — sherpa, как раньше.
             if bh_by_nemotron and bh_raw:
                 mic_raw, mic_engine_note = mic_channel_engine(cfg, mic_p, len(mic) / sr)
@@ -1194,7 +1212,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
                    if mic_raw is not None else "")
     segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label,
-                                              bh_dwarf_s=bh_dwarf_s)
+                                              call=gate_call, bh_dwarf_s=bh_dwarf_s)
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
