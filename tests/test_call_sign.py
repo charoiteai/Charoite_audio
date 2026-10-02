@@ -164,10 +164,17 @@ def test_the_unsigned_reason_waits_for_speech_and_for_the_threshold():
     assert ov.unsigned_reason(_mic(_gate([i * STEP for i in range(12)]), enough)) == ov.SAY_CROWD
 
 
+def _daemon_tree():
+    # Через импорт, а не путём к файлу: мутатор выбирает тесты модуля по
+    # импорту, и сторож проводки без него мутантов демона не видит (CI #721).
+    import ast
+    import daemon
+    return ast.parse(pathlib.Path(daemon.__file__).read_text(encoding="utf-8"))
+
+
 def _daemon_calls(attr: str) -> list:
     import ast
-    tree = ast.parse((ROOT / "src" / "daemon.py").read_text(encoding="utf-8"))
-    return [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+    return [n for n in ast.walk(_daemon_tree()) if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute) and n.func.attr == attr]
 
 
@@ -192,3 +199,21 @@ def test_the_daemon_asks_owner_voice_who_is_alone_and_why_unsigned():
     alone_kw = [kw for c in _daemon_calls("tick") for kw in c.keywords if kw.arg == "alone"]
     assert [ast.unparse(kw.value) for kw in alone_kw] == ["owner_voice.alone(heard_by_channel)"]
     assert len(_daemon_calls("unsigned_reason")) == 1
+
+
+def test_the_daemon_status_branches_follow_the_unsigned_reason():
+    """Ветки `_say_owner_state`: «рано» молчит, «комната» говорит про очную.
+    Решение судят тесты `unsigned_reason`; здесь — что демон читает его
+    равенством и не путает тексты веток (мутации CI #721)."""
+    import ast
+    fn = next(n for n in ast.walk(_daemon_tree())
+              if isinstance(n, ast.FunctionDef) and n.name == "_say_owner_state")
+    branches = {}
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and ast.unparse(node.test.left) == "why"):
+            assert [type(op) for op in node.test.ops] == [ast.Eq]
+            branches[ast.unparse(node.test.comparators[0])] = node.body
+    assert set(branches) == {"owner_voice.SAY_NOTHING", "owner_voice.SAY_ROOM"}
+    assert [type(n) for n in branches["owner_voice.SAY_NOTHING"]] == [ast.Return]
+    assert "очн" in ast.unparse(branches["owner_voice.SAY_ROOM"][0])
