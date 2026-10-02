@@ -477,8 +477,9 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   [Which voice is the owner](#which-voice-is-the-owner)), so the mic only needs
   speech segments, and Nemotron gives them in seconds where sherpa spends
   minutes (a 57-minute meeting of 01.10: 8 s against 1109 s). One segment over
-  the whole recording is a valid mic answer (the owner's monologue); an empty
-  one is a refusal. On a refusal sherpa labels the mic as before, and the header
+  the whole recording is a valid mic answer (the owner's monologue); less than
+  15 s of speech (`MIN_MIC_SECONDS`) is a refusal — the owner rule would not
+  sign it anyway, and silently accepting it would lose the owner. On a refusal sherpa labels the mic as before, and the header
   gets its own line: «Речь микрофона размечена запасным движком (sherpa): …».
   An in-person meeting (no call recording, or a silent one) and a call channel
   that fell back to sherpa keep sherpa on the mic: there its labels tell the

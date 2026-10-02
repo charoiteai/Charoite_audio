@@ -399,16 +399,19 @@ def mic_channel_engine(cfg: dict, wav: pathlib.Path,
     метки решает `resolve_channel_segments`, здесь не сворачиваются.
 
     Политика канала своя: один отрезок на всю запись — годный ответ (монолог
-    владельца), а не вырожденный; пустой ответ на записи длиннее 20 с — отказ:
-    на звонке, где собеседники говорили, микрофон без единого отрезка правдой
-    быть не может чаще, чем сбоем, и молча пустой микрофон потерял бы владельца
-    целиком.
+    владельца), а не вырожденный. Речи меньше `MIN_MIC_SECONDS` — отказ: на
+    звонке, где собеседники говорили, почти пустой микрофон чаще сбой, чем
+    правда, а правило владельца при такой речи имени всё равно не даст — молча
+    принятый ответ потерял бы владельца целиком. Откат стоит минут sherpa и
+    строки в шапке; владелец, который весь звонок молчал, платит ими зря.
     """
     segs, reason = _nemotron(cfg, wav, duration_s, "речь микрофона")
     if segs is None:
         return None, reason
-    if not segs:
-        return None, f"Nemotron — ни одного отрезка на {duration_s:.0f} с записи микрофона"
+    speech = sum(e - s for s, e, _ in segs)
+    if speech < owner_voice_rules.MIN_MIC_SECONDS:
+        return None, (f"Nemotron — {speech:.0f} с речи на {duration_s:.0f} с записи микрофона, "
+                      f"меньше {owner_voice_rules.MIN_MIC_SECONDS:.0f} с")
     return segs, ""
 
 
@@ -1153,6 +1156,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
                 bh_dwarf_s = NEMOTRON_BH_DWARF_S
                 bh_by_nemotron = True
             else:
+                if engine_note:
+                    # отказ Nemotron мог съесть его потолок — минуты, за которые
+                    # началась встреча: уступка перед sherpa свежая (выход №509)
+                    _yield_to_live("разметка голосов собеседников", cap=600)
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
                 bh_raw = diarize_channel(bh, sr, num_speakers=call_hint(meta) or -1)
@@ -1180,6 +1187,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             if mic_raw is None:
                 mic_raw = mic_sherpa(mic, sr, mic_plan(meta, call_silent, call_s, len(mic) / sr),
                                      silence)
+                if mic_raw is None:
+                    mic_engine_note = ""   # шапка не говорит «разметил sherpa», когда не разметил никто
     # Подпись владельца читается из настроек, только когда микрофон размечен:
     # без микрофона пересборка конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
