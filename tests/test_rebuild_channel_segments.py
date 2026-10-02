@@ -65,7 +65,7 @@ def test_when_every_voice_is_a_dwarf_nothing_is_merged():
 
 def test_call_voices_are_numbered_by_first_appearance_and_sound_from_the_call():
     bh = [(0.0, 30.0, 5), (40.0, 70.0, 3), (80.0, 110.0, 5)]
-    segments, chan = rt.resolve_channel_segments(bh, None, owner_label=OWNER)
+    segments, chan = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True)
     assert segments == [(0.0, 30.0, "Собеседник 1"), (40.0, 70.0, "Собеседник 2"),
                         (80.0, 110.0, "Собеседник 1")]
     assert chan == {"Собеседник 1": "bh", "Собеседник 2": "bh"}
@@ -74,16 +74,16 @@ def test_call_voices_are_numbered_by_first_appearance_and_sound_from_the_call():
 def test_the_call_dwarf_threshold_is_25_seconds_and_a_parameter():
     """25 с ровно — голос; 24.5 с — осколок. Параметр меняет только канал звонка."""
     bh = [(0.0, 30.0, 1), (31.0, 56.0, 2), (60.0, 84.5, 3)]
-    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER)
+    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True)
     assert [lbl for *_, lbl in segs] == ["Собеседник 1", "Собеседник 2", "Собеседник 2"]
-    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, bh_dwarf_s=5.0)
+    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True, bh_dwarf_s=5.0)
     assert [lbl for *_, lbl in segs] == ["Собеседник 1", "Собеседник 2", "Собеседник 3"]
 
 
 def test_the_mic_dwarf_threshold_is_10_seconds():
     """В микрофоне 10 с ровно — голос, 9.5 с — осколок ближайшего крупного."""
     mic = [(0.0, 40.0, 0), (50.0, 60.0, 1), (70.0, 79.5, 2)]
-    segs, chan = rt.resolve_channel_segments(None, mic, owner_label="")
+    segs, chan = rt.resolve_channel_segments(None, mic, owner_label="", call=True)
     assert segs == [(0.0, 40.0, "Собеседник 1"), (50.0, 60.0, "Собеседник 2"),
                     (70.0, 79.5, "Собеседник 2")]
     assert chan == {"Собеседник 1": "mic", "Собеседник 2": "mic"}
@@ -91,7 +91,7 @@ def test_the_mic_dwarf_threshold_is_10_seconds():
 
 def test_the_mic_threshold_does_not_follow_the_call_parameter():
     mic = [(0.0, 40.0, 0), (70.0, 79.5, 2)]
-    segs, _ = rt.resolve_channel_segments(None, mic, owner_label="", bh_dwarf_s=5.0)
+    segs, _ = rt.resolve_channel_segments(None, mic, owner_label="", call=True, bh_dwarf_s=5.0)
     assert [lbl for *_, lbl in segs] == ["Собеседник 1", "Собеседник 1"]
 
 
@@ -100,7 +100,7 @@ def test_without_call_speech_the_owner_is_not_signed_even_with_a_name(bh, monkey
     """Очная встреча: различать некого, `owner_voices` отвечает пустым множеством."""
     said = []
     monkeypatch.setattr(rt, "log", said.append)
-    segs, chan = rt.resolve_channel_segments(bh, [(0.0, 60.0, 0)], owner_label=OWNER)
+    segs, chan = rt.resolve_channel_segments(bh, [(0.0, 60.0, 0)], owner_label=OWNER, call=True)
     assert segs == [(0.0, 60.0, "Собеседник 1")]
     assert chan == {"Собеседник 1": "mic"}
     assert said[-1] == "mic: 1 сегментов, голосов 1, владелец: не назначен (не звонок)"
@@ -109,7 +109,7 @@ def test_without_call_speech_the_owner_is_not_signed_even_with_a_name(bh, monkey
 def call_with_two_mic_voices(owner_label):
     bh = [(100.0, 130.0, 0), (140.0, 170.0, 1)]
     mic = [(0.0, 40.0, 3), (45.0, 57.0, 4)]      # два голоса микрофона: 40 и 12 с
-    return rt.resolve_channel_segments(bh, mic, owner_label=owner_label)
+    return rt.resolve_channel_segments(bh, mic, owner_label=owner_label, call=True)
 
 
 def test_in_a_call_every_mic_voice_is_the_owner_and_call_numbering_holds(monkeypatch):
@@ -141,25 +141,25 @@ def test_a_call_with_little_mic_speech_stays_neutral_and_says_why(monkeypatch):
     said = []
     monkeypatch.setattr(rt, "log", said.append)
     segs, _ = rt.resolve_channel_segments([(100.0, 130.0, 0)],
-                                          [(0.0, 14.0, 3)], owner_label=OWNER)
+                                          [(0.0, 14.0, 3)], owner_label=OWNER, call=True)
     assert segs == [(100.0, 130.0, "Собеседник 1"), (0.0, 14.0, "Собеседник 2")]
     assert said[-1].endswith("владелец: не назначен (речи 14 с < 15)")
     segs, _ = rt.resolve_channel_segments([(100.0, 130.0, 0)],
-                                          [(0.0, 15.0, 3)], owner_label=OWNER)
+                                          [(0.0, 15.0, 3)], owner_label=OWNER, call=True)
     assert segs[-1] == (0.0, 15.0, OWNER)
 
 
 def test_a_mic_segment_covered_more_than_half_by_a_call_segment_is_echo():
     """Накрыт 10 с из 19 — эхо динамиков, выброшен; в микрофоне речи не осталось."""
     segs, chan = rt.resolve_channel_segments([(0.0, 30.0, 0)], [(20.0, 39.0, 1)],
-                                             owner_label=OWNER)
+                                             owner_label=OWNER, call=True)
     assert segs == [(0.0, 30.0, "Собеседник 1")]
     assert chan == {"Собеседник 1": "bh"}
 
 
 def test_a_mic_segment_covered_exactly_half_stays():
     segs, _ = rt.resolve_channel_segments([(0.0, 30.0, 0)], [(20.0, 40.0, 1)],
-                                          owner_label=OWNER)
+                                          owner_label=OWNER, call=True)
     assert segs == [(0.0, 30.0, "Собеседник 1"), (20.0, 40.0, OWNER)]
 
 
@@ -168,14 +168,14 @@ def test_echo_is_judged_against_the_union_of_call_segments():
     накрытый двумя соседними наполовину каждым, — эхо; до №473 он оставался, и с
     Nemotron (мелкие куски) эхо шло в канал владельца (замер 28.09: 69 % против 17.5 %)."""
     bh = [(0.0, 30.0, 0), (30.0, 60.0, 1)]
-    segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER)
+    segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER, call=True)
     assert all(lbl != OWNER for *_, lbl in segs)
 
 
 def test_the_union_threshold_is_still_more_than_half():
     """Два куска по 5 с на 20-секундном отрезке — ровно половина: остаётся."""
     bh = [(0.0, 25.0, 0), (35.0, 60.0, 1)]
-    segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER)
+    segs, _ = rt.resolve_channel_segments(bh, [(20.0, 40.0, 2)], owner_label=OWNER, call=True)
     assert (20.0, 40.0, OWNER) in segs
 
 
@@ -213,7 +213,9 @@ SR = 16000
 
 @pytest.fixture
 def meeting(tmp_path, monkeypatch):
-    """Встреча с двумя каналами; разметку отдают заглушки, звук — нули нужной длины."""
+    """Встреча с двумя каналами; разметку отдают заглушки, звук — нули нужной длины.
+    Канал собеседников звучит ровным фоном `bh_level` (−40 дБFS), чтобы гейт речи
+    видел звонок (№586); очная (`_room`) ставит его в ноль."""
     for d in ("logs", "transcripts", "recordings"):
         (tmp_path / d).mkdir()
     charoite_paths.use_data_root(tmp_path, replace=True)
@@ -224,12 +226,15 @@ def meeting(tmp_path, monkeypatch):
         paths[label] = tmp_path / "recordings" / f"2026-08-20_143000_{label}.wav"
         paths[label].write_bytes(b"")
     state = {"len": {"mic": 60, "blackhole": 60}, "meta": {}, "calls": [], "merge": [], "veto": [],
+             "bh_level": 0.01,
              "raw": {"mic": [(0.0, 40.0, 3), (45.0, 57.0, 4)],
                      "blackhole": [(100.0, 130.0, 0), (140.0, 170.0, 1)]}}
 
     def load_wav(p):
         label = "mic" if p.name.endswith("_mic.wav") else "blackhole"
         audio = np.zeros(int(state["len"][label] * SR), dtype=np.float32)
+        if label == "blackhole":
+            audio[:] = state["bh_level"]
         audio[:1] = 1.0 if label == "blackhole" else 0.0       # метка канала для заглушки
         return audio, SR
 
@@ -255,7 +260,8 @@ def meeting(tmp_path, monkeypatch):
     return state
 
 
-CFG = {"audio": {"samplerate": SR}, "sufler": {"user_name": OWNER}}
+AUDIO = {"samplerate": SR, "chunk_seconds": 3.0, "overlap_seconds": 0.5, "vad_energy_db": -55}
+CFG = {"audio": AUDIO, "sufler": {"user_name": OWNER}}
 
 
 def test_rebuild_signs_the_owner_from_settings_in_a_call(meeting):
@@ -462,14 +468,14 @@ def test_a_voice_whose_only_reply_is_absorbed_leaves_the_numbering():
     """Решение круга 5 (I4): короткая вложенная реплика отходит объемлющему голосу,
     как слитый карлик; её голос не получает номера, следующий идёт по порядку."""
     bh = [(0.0, 30.0, 7), (10.0, 10.8, 3), (40.0, 70.0, 5)]
-    segs, chan = rt.resolve_channel_segments(bh, None, owner_label=OWNER, bh_dwarf_s=5.0)
+    segs, chan = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True, bh_dwarf_s=5.0)
     assert segs == [(0.0, 30.0, "Собеседник 1"), (40.0, 70.0, "Собеседник 2")]
     assert set(chan) == {"Собеседник 1", "Собеседник 2"}
 
 
 def test_the_call_channel_has_no_overlaps_after_resolve():
     bh = [(0.0, 30.0, 1), (25.0, 60.0, 2)]
-    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER)
+    segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True)
     assert segs == [(0.0, 27.5, "Собеседник 1"), (27.5, 60.0, "Собеседник 2")]
 
 
@@ -480,15 +486,15 @@ def test_sherpa_is_the_default_and_calls_no_engine(backend, monkeypatch, tmp_pat
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: pytest.fail("движок позван при sherpa"))
     cfg = {"sufler": {} if backend is None else {"diarize_backend": backend}}
-    assert rt.call_channel_engine(cfg, tmp_path / "bh.wav", 600.0) == (None, "")
-    assert rt.call_channel_engine({}, tmp_path / "bh.wav", 600.0) == (None, "")
+    assert rt.call_channel_engine(cfg, tmp_path / "bh.wav", 600.0, gate_call=True) == (None, "")
+    assert rt.call_channel_engine({}, tmp_path / "bh.wav", 600.0, gate_call=True) == (None, "")
 
 
 def test_an_unknown_backend_falls_back_with_a_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: pytest.fail("движок позван при неизвестном имени"))
     segs, reason = rt.call_channel_engine({"sufler": {"diarize_backend": "nemotorn"}},
-                                          tmp_path / "bh.wav", 600.0)
+                                          tmp_path / "bh.wav", 600.0, gate_call=True)
     assert segs is None and "'nemotorn'" in reason and "sherpa, nemotron" in reason
 
 
@@ -505,7 +511,7 @@ def test_nemotron_gets_its_setting_the_data_root_and_a_ceiling(monkeypatch, tmp_
     said = []
     monkeypatch.setattr(rt, "log", said.append)
     cfg = {"sufler": {"diarize_backend": "Nemotron", "nemotron_python": " /env/bin/python "}}
-    segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0)
+    segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0, gate_call=True)
     assert (segs, reason) == ([(0.0, 5.0, 0), (6.0, 7.0, 1)], "")     # короче секунды — прочь
     assert said == ["Nemotron (голоса собеседников): 2 сегментов из 3 за 0 с"]
     assert seen == {"setting": " /env/bin/python ", "wav": tmp_path / "bh.wav",
@@ -521,7 +527,7 @@ def test_a_refusal_of_nemotron_gives_the_fixed_phrase_and_logs_the_raw_reason(ki
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(kind, reason="нет весов"))
     assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
-                                  tmp_path / "bh.wav", 60.0) == (None, rt.ENGINE_REFUSED_REASON)
+                                  tmp_path / "bh.wav", 60.0, gate_call=True) == (None, rt.ENGINE_REFUSED_REASON)
     assert any("нет весов" in line for line in said), said
 
 
@@ -534,7 +540,7 @@ def test_a_success_without_segments_is_a_refusal(payload, monkeypatch, tmp_path)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
     assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
-                                  tmp_path / "bh.wav", 1234.4) == (
+                                  tmp_path / "bh.wav", 1234.4, gate_call=True) == (
         None, "Nemotron — ни одного отрезка на 1234 с записи")
 
 
@@ -552,7 +558,7 @@ def test_one_segment_over_the_whole_recording_is_a_refusal(payload, degenerate, 
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
     segs, reason = rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
-                                          tmp_path / "bh.wav", 1200.0)
+                                          tmp_path / "bh.wav", 1200.0, gate_call=True)
     if degenerate:
         assert (segs, reason) == (None, "Nemotron — один отрезок на всю запись (1200 с)")
     else:
@@ -560,7 +566,7 @@ def test_one_segment_over_the_whole_recording_is_a_refusal(payload, degenerate, 
 
 
 def _nemotron_cfg():
-    return {"audio": {"samplerate": SR},
+    return {"audio": AUDIO,
             "sufler": {"user_name": OWNER, "diarize_backend": "nemotron", "nemotron_python": "/env/bin/python"}}
 
 
@@ -783,7 +789,7 @@ def test_resolve_keeps_a_non_empty_call_channel_non_empty(seed):
         s = rng.uniform(0, 100)
         bh.append((s, s + rng.uniform(1.0, 30.0), rng.randint(0, 4)))
     for dwarf in (rt.BH_DWARF_S, rt.NEMOTRON_BH_DWARF_S):
-        segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, bh_dwarf_s=dwarf)
+        segs, _ = rt.resolve_channel_segments(bh, None, owner_label=OWNER, call=True, bh_dwarf_s=dwarf)
         assert segs, (bh, dwarf)
 
 
@@ -798,6 +804,7 @@ def _room(meeting, speakers=7, call="silent"):
     (комната, №565); "absent" — записи нет вовсе (подсказка, №559)."""
     meeting["meta"] = dict(ROOM, speakers=speakers)
     meeting["raw"]["blackhole"] = []                       # канал собеседников размечен пустым
+    meeting["bh_level"] = 0.0                              # и гейт речи в нём ничего не слышит
     if call == "absent":
         del meeting["paths"]["blackhole"]
     meeting["live"].write_text(LIVE_ROOM, encoding="utf-8")
@@ -1032,3 +1039,97 @@ def test_the_log_names_why_the_call_channel_is_silent(meeting, monkeypatch):
 def test_the_collapse_counts_only_neutral_mic_labels(chan, expected):
     assert rt.collapsed_mic_labels(chan, 7, call_silent=True) == expected
     assert rt.collapsed_mic_labels(chan, 7, call_silent=False) == set()
+
+
+# ------------------------------------- признак звонка по гейту речи (№586, №587)
+
+def test_segments_of_the_call_channel_without_the_gate_call_do_not_sign_the_owner():
+    """Отрезки собеседников есть, а порога гейта нет («дзынь» на очной, ролик
+    короче порога) — метки микрофона нейтральные (№586)."""
+    segs, _ = rt.resolve_channel_segments([(100.0, 105.0, 0)], [(0.0, 40.0, 3)],
+                                          owner_label=OWNER, call=False)
+    assert segs == [(100.0, 105.0, "Собеседник 1"), (0.0, 40.0, "Собеседник 2")]
+
+
+def test_the_gate_call_without_segments_signs_nobody():
+    """Порог гейта взят, а разметки канала нет (bh_raw=None) — эхо-фильтру не по
+    чему резать: нейтральные, как до №586."""
+    segs, _ = rt.resolve_channel_segments(None, [(0.0, 40.0, 3)], owner_label=OWNER, call=True)
+    assert segs == [(0.0, 40.0, "Собеседник 1")]
+
+
+def test_an_empty_nemotron_answer_on_a_silent_channel_is_an_empty_channel(monkeypatch, tmp_path):
+    """№587: пусто, и гейт звонка не слышал — канал размечен пустым, без отката."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=[]))
+    assert rt.call_channel_engine({"sufler": {"diarize_backend": "nemotron"}},
+                                  tmp_path / "bh.wav", 1234.4, gate_call=False) == ([], "")
+
+
+def test_a_short_beep_in_the_call_channel_does_not_sign_the_room_mic(meeting):
+    """№586, главный случай в пересборке: на очной в канале собеседников 5 с
+    звука (уведомление), разметка дала по нему отрезок — звонком это не
+    становится, микрофон остаётся нейтральным."""
+    meeting["bh_level"] = 0.0
+    meeting["raw"]["blackhole"] = [(30.0, 35.0, 0)]
+    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
+    assert OWNER not in text
+    assert "Собеседник 2" in text and "Собеседник 3" in text
+
+
+def test_a_room_on_nemotron_runs_no_sherpa_on_the_call_channel_and_says_nothing(meeting, monkeypatch):
+    """№587: очная, движок Nemotron, канал собеседников тихий — пустой ответ
+    принимается: sherpa по каналу не зовётся, строки «запасным движком» нет."""
+    _room(meeting)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.FAILED, reason="нет весов")))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    assert "запасным движком" not in text
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]             # комната, как при sherpa (№565)
+
+
+def test_an_empty_nemotron_answer_on_a_loud_channel_is_still_a_refusal(meeting, monkeypatch):
+    """Гейт слышал звонок, а Nemotron — ни одного отрезка: отказ в другой форме,
+    размечает sherpa, шапка говорит почему (как до №587)."""
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.FAILED, reason="нет весов")))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert "blackhole" in [label for label, _ in meeting["calls"]]
+    assert "Nemotron — ни одного отрезка на 60 с записи" in text
+
+
+def test_a_recording_shorter_than_twenty_seconds_with_sound_signs_nobody(meeting, monkeypatch):
+    """Вход №586, круг 2 (M3): канал собеседников 15 с со звуком — движок не
+    зовётся, отрезков нет; метки микрофона нейтральные, шапка молчит."""
+    meeting["len"]["blackhole"] = 15
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0)]), fp.Outcome(fp.FAILED, reason="нет весов")))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    assert OWNER not in text and "запасным движком" not in text
+
+
+def test_a_short_beep_on_sherpa_keeps_the_room_mic_under_the_veto(meeting):
+    """Выход №586 (обе головы): отрезок от «дзынь» без порога гейта — комната и
+    для плана микрофона, не только для подписи: авто под запретом склейки."""
+    _room(meeting)
+    meeting["raw"]["blackhole"] = [(30.0, 35.0, 0)]
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+
+
+def test_a_short_beep_on_nemotron_keeps_the_mic_on_sherpa_in_the_room(meeting, monkeypatch):
+    """Выход №586 (обе головы): Nemotron дал отрезок по «дзынь» на очной — порога
+    гейта нет, значит не звонок: микрофон не уходит в Nemotron, идёт веткой
+    комнаты sherpa (№565)."""
+    _room(meeting)
+    asked: list = []
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[(30.0, 35.0, 0)]),
+        fp.Outcome(fp.OK, payload=[(0.0, 50.0, 0)]), asked))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [channel for channel, _ in asked] == ["blackhole"]
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+    assert OWNER not in text

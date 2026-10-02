@@ -55,7 +55,8 @@
       "channel_labels",
       "frame_drops",
       "sherpa_config",
-      "live_nemotron"
+      "live_nemotron",
+      "speech_gate"
     ],
     "meeting": [
       "meeting_stamp",
