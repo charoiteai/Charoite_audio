@@ -326,7 +326,7 @@ def candidates(text: str, lex: Lexicon, window: int = 30) -> list[str]:
         if st in lex.canon_stems:
             # слово — чьё-то каноническое имя (узел «Ольга Вавилина» при
             # узле «Вавила»): не «похожее на канон», а другой человек.
-            # Живой смоук: «Вавилина ~ вавила ✔» между реальными людьми.
+            # Живой смоук поймал такую пару с ложным ✔ (имена условные).
             continue
         for cl, (node, ctx) in lex.context.items():
             if len(cl) < 6 or abs(len(cl) - len(w)) > 2:
