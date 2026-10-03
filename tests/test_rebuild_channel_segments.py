@@ -857,7 +857,7 @@ def test_all_slots_with_a_live_count_above_the_sherpa_hint_still_go_to_sherpa(me
     ([], "Nemotron — 0 с речи на 60 с записи микрофона, меньше 15 с"),
     ([(0.0, 10.0, 0), (2.0, 10.0, 1)], "Nemotron — 10 с речи на 60 с записи микрофона, меньше 15 с"),
     ([(0.0, 59.0, 0)], "Nemotron — один отрезок на всю запись (60 с)"),
-    ([(6.0, 60.0, 0)], "Nemotron — один отрезок на всю запись (60 с)"),   # ровно DEGENERATE_SHARE
+    ([(0.0, rt.DEGENERATE_SHARE * 60.0, 0)], "Nemotron — один отрезок на всю запись (60 с)"),
 ], ids=["пусто", "перекрытия один раз", "один на всю", "один на долю ровно"])
 def test_a_room_answer_below_the_floor_or_degenerate_is_a_refusal(payload, reason, monkeypatch, tmp_path):
     """Пол речи — по объединению: перекрытие отрезков считается один раз (сырая
@@ -893,13 +893,16 @@ def test_the_room_mic_is_judged_against_the_length_of_its_recording(meeting, mon
 
 def test_a_call_mic_writes_no_room_line(meeting, monkeypatch):
     """Строка «mic комнаты» — только очной встрече; на звонке её нет (мутант CI
-    по #722)."""
-    said: list[str] = []
+    по #722). Ответ Nemotron по микрофону принят — иначе строки не было бы и у
+    мутанта; парный положительный тест — разметка комнаты Nemotron."""
+    asked, said = [], []
     monkeypatch.setattr(rt, "log", said.append)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
-        CALL_BH, fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)])))
-    rt.rebuild(meeting["live"], _nemotron_cfg())
-    assert said and not any(line.startswith("mic комнаты") for line in said)
+        CALL_BH, fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), asked))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [channel for channel, _ in asked] == ["blackhole", "mic"]
+    assert meeting["calls"] == [] and "запасным движком" not in text
+    assert not any(line.startswith("mic комнаты") for line in said)
 
 
 def test_the_call_mic_floor_counts_overlaps_once(monkeypatch, tmp_path):
