@@ -799,7 +799,7 @@ def _slots(n, fragment_last=False):
     return out
 
 
-@pytest.mark.parametrize("live", [3, 7, 12])
+@pytest.mark.parametrize("live", [3, 7, 12, 13, 60])
 @pytest.mark.parametrize("fragment_last", [False, True], ids=["целые", "осколки"])
 def test_all_eight_slots_with_a_live_count_is_a_refusal(live, fragment_last, monkeypatch, tmp_path):
     """Все слоты модели заняты, а живая сессия насчитала людей — людей могло быть
@@ -817,9 +817,10 @@ def test_all_eight_slots_with_a_live_count_is_a_refusal(live, fragment_last, mon
 
 
 @pytest.mark.parametrize("payload,live", [
-    (_slots(8), None),                 # вне ячейки живого счёта — ответ как есть
+    (_slots(8), None),                 # живого счёта нет — ответ как есть
+    (_slots(8), 2),                    # живых меньше MIC_HINT_MIN — монолог, не толпа
     (_slots(7), 7),                    # слоты не исчерпаны
-], ids=["без счёта", "7 слотов"])
+], ids=["без счёта", "живых 2", "7 слотов"])
 def test_slots_below_the_ceiling_or_without_a_live_count_are_an_answer(payload, live, monkeypatch, tmp_path):
     charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
@@ -838,6 +839,17 @@ def test_all_slots_in_a_room_send_the_mic_to_sherpa_by_its_plan(call_len, plan, 
     meeting["len"].update(mic=120, blackhole=call_len)
     text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
     assert ("mic", plan[1]) in meeting[plan[0]]
+    assert rt.MIC_ENGINE_FALLBACK_NOTE.format(reason="Nemotron — заняты все 8 слотов движка") in text
+
+
+def test_all_slots_with_a_live_count_above_the_sherpa_hint_still_go_to_sherpa(meeting, monkeypatch):
+    """Живых 15 — выше верхней границы подсказки sherpa (HINT_RANGE), а потолок
+    модели от неё не зависит: людей больше, чем слотов, — sherpa в авто
+    (выход №596, r1 GLM I2)."""
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.OK, payload=_slots(8))))
+    _room(meeting, speakers=15)
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
     assert rt.MIC_ENGINE_FALLBACK_NOTE.format(reason="Nemotron — заняты все 8 слотов движка") in text
 
 
@@ -889,6 +901,16 @@ def test_speech_seconds_matches_disjoint_on_random_layouts():
             segs.append((s, round(s + rng.uniform(0.1, 15), 2), rng.randint(0, 3)))
         assert rt.speech_seconds(segs) == pytest.approx(
             sum(e - s for s, e, _ in rt.disjoint(segs))), segs
+
+
+def test_a_dwarf_is_judged_after_overlaps_are_removed():
+    """Карлик судится по речи без перекрытий: два отрезка метки внахлёст — 12 с
+    сырой суммой, 8 с речи — это карлик, он сливается с соседом. Карлики до
+    `disjoint` оставили бы метку отдельным человеком (выход №596, r1 Sonnet M2)."""
+    raw = [(0.0, 6.0, 1), (2.0, 8.0, 1), (10.0, 60.0, 0)]
+    segs, chan = rt.resolve_channel_segments([], raw, owner_label="", call=False)
+    assert {lbl for *_, lbl in segs} == {"Собеседник 1"}
+    assert chan == {"Собеседник 1": "mic"}
 
 
 def test_overlapping_room_labels_reach_stt_once():

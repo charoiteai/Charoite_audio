@@ -460,9 +460,9 @@ def room_mic_engine(cfg: dict, wav: pathlib.Path, duration_s: float,
     Nemotron дал столько же меток, сколько sherpa (6 и 3), в 26–31 раз быстрее.
     Годность: отказ движка; речи меньше пола (`_mic_thin`); один отрезок на почти
     всю запись (как у канала собеседников); все `MAX_SLOTS` слотов заняты, когда
-    живая сессия насчитала людей (`live` — `mic_hint`, не None ровно в ячейках
-    `mic_plan` при живом счёте не меньше MIC_HINT_MIN): людей могло быть больше,
-    чем модель способна развести, а sherpa там режет склейку запретом. Слоты —
+    живая сессия насчитала не меньше MIC_HINT_MIN голосов (`live` — `mic_count`,
+    без верхней границы подсказки sherpa: при живых 13+ модель тем более упёрлась
+    в предел): людей могло быть больше, чем модель способна развести. Слоты —
     по сырому ответу движка. Слитую в одну метку комнату ловит
     `collapsed_mic_labels` по готовым меткам, здесь не дублируется.
     """
@@ -474,7 +474,7 @@ def room_mic_engine(cfg: dict, wav: pathlib.Path, duration_s: float,
         return None, thin
     if len(segs) == 1 and segs[0][1] - segs[0][0] >= DEGENERATE_SHARE * duration_s:
         return None, f"Nemotron — один отрезок на всю запись ({duration_s:.0f} с)"
-    if live is not None and slots >= diarize_nemotron.MAX_SLOTS:
+    if live is not None and live >= MIC_HINT_MIN and slots >= diarize_nemotron.MAX_SLOTS:
         log(f"Nemotron (голоса комнаты): заняты все {slots} слотов при живом счёте {live} "
             f"— размечает sherpa")
         return None, f"Nemotron — заняты все {diarize_nemotron.MAX_SLOTS} слотов движка"
@@ -1270,7 +1270,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             if bh_by_nemotron:
                 if call_silent:
                     mic_raw, mic_engine_note = room_mic_engine(
-                        cfg, mic_p, len(mic) / sr, mic_hint(meta, call_silent))
+                        cfg, mic_p, len(mic) / sr, mic_count(meta))
                 else:
                     mic_raw, mic_engine_note = mic_channel_engine(cfg, mic_p, len(mic) / sr)
                 if mic_raw is None:

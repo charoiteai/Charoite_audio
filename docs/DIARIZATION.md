@@ -512,8 +512,9 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   floor (in a room the mic segments are the whole transcript, a near-empty
   answer would lose the meeting), one segment over almost the whole recording,
   and the model ceiling: all 8 slots taken (`MAX_SLOTS`, the weights'
-  `num_speakers`) while the live session counted people — there could be more
-  people than the model can tell apart. On a refusal sherpa labels the mic by
+  `num_speakers`; weights with another number are refused by the engine) while
+  the live session counted three voices or more, with no upper bound — there
+  could be more people than the model can tell apart. On a refusal sherpa labels the mic by
   its room plan, and the header says «Речь микрофона размечена запасным
   движком (sherpa): …». A room merged into one label is still caught by the
   collapse verdict (no name); a merge into several labels is caught by nobody,

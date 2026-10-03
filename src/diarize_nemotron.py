@@ -83,7 +83,8 @@ MODEL_TYPE = "nemotron_diarization"
 SPEAKER_PREFIX = "nem"
 #: Слотов голосов у модели — `num_speakers` в config.json весов
 #: (mlx-community/Nemotron-3-Diarization: 8). Больше людей модель развести не
-#: может: все слоты заняты — значит, людей могло быть больше (№596).
+#: может: все слоты заняты — значит, людей могло быть больше (№596). Другое
+#: число в config.json — `check_model_dir` отказывает: потолок не тот.
 MAX_SLOTS = 8
 
 #: Пресеты задержки NVIDIA (входной буфер, без вычислений и окна STFT):
@@ -207,13 +208,19 @@ def check_model_dir(path: pathlib.Path) -> str | None:
     if not config.is_file():
         return f"в {path} нет config.json — скачать заново: {recipe}"
     try:
-        model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
+        conf = json.loads(config.read_text(encoding="utf-8"))
+        model_type = conf.get("model_type")
     except (OSError, ValueError, AttributeError) as e:
         # OSError — права, битый том: тоже рецепт, а не трассировка (DS I4)
         return f"{config} не читается как JSON-объект ({type(e).__name__}: {e}) — скачать заново: {recipe}"
     if model_type != MODEL_TYPE:
         return (f"в {path} не Nemotron Diarization: model_type={model_type!r}, "
                 f"ждали {MODEL_TYPE!r} — скачать: {recipe}")
+    slots = conf.get("num_speakers")
+    if slots is not None and slots != MAX_SLOTS:
+        # потолок голосов пересборки стоит на MAX_SLOTS: другие веса — другой предел (№596)
+        return (f"в {path} модель на {slots} голосов, код проверен на {MAX_SLOTS} — "
+                f"скачать: {recipe}")
     weights = sorted(path.glob("*.safetensors"))
     if not weights:
         return f"в {path} нет весов (*.safetensors) — скачать: {recipe}"
