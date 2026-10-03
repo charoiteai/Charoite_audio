@@ -145,14 +145,14 @@ def test_vocative_is_exact_and_narrow():
 
     «Мариш» при известной «Марине» не склеивается (Мариша ≠ Марина); имя на
     гласную — уже именительный; «Влад» + «а» — другой человек (стоп-лист);
-    длинное «Александр» и «Голенков» на фамилию не трогаем; «Игорь» даёт
+    длинное «Александр» и «Прохоров» на фамилию не трогаем; «Игорь» даёт
     форму «Игоря», которой среди людей не бывает, — значит, останется Игорем."""
     from speaker_names import nominative_candidates, resolve_vocative
     assert nominative_candidates("Коль") == ("Коля", "Колья")
     assert nominative_candidates("Иль") == ("Иля", "Илья")
     assert nominative_candidates("Саш") == ("Саша",)
     assert nominative_candidates("Зой") == ("Зоя",)
-    for nominative in ("Коля", "Аня", "Марина", "Ан", "Влад", "Александр", "Голенков",
+    for nominative in ("Коля", "Аня", "Марина", "Ан", "Влад", "Александр", "Прохоров",
                        "Ильин", "Полин", "Николай"):
         assert nominative_candidates(nominative) == (), nominative
     assert resolve_vocative("Мариш", ("Марина",)) is None
