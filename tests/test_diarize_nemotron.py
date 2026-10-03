@@ -31,10 +31,10 @@ import diarize_nemotron as nem  # noqa: E402
 
 
 def _model_dir(tmp_path: pathlib.Path, *, model_type="nemotron_diarization",
-               weights_bytes: int | None = None) -> pathlib.Path:
+               weights_bytes: int | None = None, **conf) -> pathlib.Path:
     d = tmp_path / "nemotron"
     d.mkdir()
-    (d / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
+    (d / "config.json").write_text(json.dumps({"model_type": model_type, **conf}), encoding="utf-8")
     w = d / "model.safetensors"
     with w.open("wb") as f:     # разреженный файл: размер есть, места на диске нет
         f.truncate(nem.MIN_WEIGHTS_BYTES if weights_bytes is None else weights_bytes)
@@ -100,6 +100,17 @@ def test_unreadable_config_is_refused(tmp_path, text):
     d = _model_dir(tmp_path)
     (d / "config.json").write_text(text, encoding="utf-8")
     assert "JSON" in nem.check_model_dir(d)
+
+
+def test_weights_with_another_slot_count_are_refused(tmp_path):
+    """Потолок голосов пересборки стоит на MAX_SLOTS: веса на другое число
+    голосов — отказ с рецептом, а не молча неверный потолок (№596)."""
+    problem = nem.check_model_dir(_model_dir(tmp_path, num_speakers=nem.MAX_SLOTS + 4))
+    assert problem is not None and f"на {nem.MAX_SLOTS + 4} голосов" in problem
+
+
+def test_weights_with_the_checked_slot_count_are_accepted(tmp_path):
+    assert nem.check_model_dir(_model_dir(tmp_path, num_speakers=nem.MAX_SLOTS)) is None
 
 
 def test_foreign_checkpoint_is_refused(tmp_path):
