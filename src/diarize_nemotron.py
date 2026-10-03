@@ -81,6 +81,10 @@ MODEL_TYPE = "nemotron_diarization"
 
 #: Метка голоса в ответе движка: «nem0», «nem1»… — номер слота модели, не человек.
 SPEAKER_PREFIX = "nem"
+#: Слотов голосов у модели — `num_speakers` в config.json весов
+#: (mlx-community/Nemotron-3-Diarization: 8). Больше людей модель развести не
+#: может: все слоты заняты — значит, людей могло быть больше (№596).
+MAX_SLOTS = 8
 
 #: Пресеты задержки NVIDIA (входной буфер, без вычислений и окна STFT):
 #: offline — 30.4 с, low — 1.04 с, very_low — 0.64 с, ultra_low — 0.32 с.

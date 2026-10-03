@@ -498,12 +498,31 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   speech segments, and Nemotron gives them in seconds where sherpa spends
   minutes (a 57-minute meeting of 01.10: 8 s against 1109 s). One segment over
   the whole recording is a valid mic answer (the owner's monologue); less than
-  15 s of speech (`MIN_MIC_SECONDS`) is a refusal — the owner rule would not
-  sign it anyway, and silently accepting it would lose the owner. On a refusal sherpa labels the mic as before, and the header
-  gets its own line: «Речь микрофона размечена запасным движком (sherpa): …».
-  An in-person meeting (no call recording, or a silent one) and a call channel
-  that fell back to sherpa keep sherpa on the mic: there its labels tell the
-  people in the room apart.
+  15 s of speech (`MIN_MIC_SECONDS`, over the union of segments: overlaps
+  count once) is a refusal — the owner rule would not sign it anyway, and
+  silently accepting it would lose the owner. On a refusal sherpa labels the
+  mic as before, and the header gets its own line: «Речь микрофона размечена
+  запасным движком (sherpa): …». A call channel that fell back to sherpa, and
+  no call recording at all, keep sherpa on the mic.
+- **The mic of an in-person meeting.** When Nemotron answered on the call
+  channel and there is no call in it (labelled empty, or below the gate
+  threshold), the mic goes to Nemotron too, and its slots are the people in
+  the room. On two in-person meetings of 02.10 Nemotron gave as many labels
+  as sherpa (6 and 3), 26–31 times faster. A refusal is the same 15 s speech
+  floor (in a room the mic segments are the whole transcript, a near-empty
+  answer would lose the meeting), one segment over almost the whole recording,
+  and the model ceiling: all 8 slots taken (`MAX_SLOTS`, the weights'
+  `num_speakers`) while the live session counted people — there could be more
+  people than the model can tell apart. On a refusal sherpa labels the mic by
+  its room plan, and the header says «Речь микрофона размечена запасным
+  движком (sherpa): …». A room merged into one label is still caught by the
+  collapse verdict (no name); a merge into several labels is caught by nobody,
+  as with sherpa.
+- **Mic overlaps.** After the echo filter the mic segments lose their overlaps
+  (`disjoint`), like the call channel, and only then their dwarfs: Nemotron's
+  segments of different labels overlap (in-person meetings of 02.10: 6.8 and
+  13.8 s), and one sound went to recognition twice. On a call with the owner
+  every label is the owner, and paragraphs join as before.
 - **Time.** The call channel of a 41-minute meeting: 5 s including the process
   start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
   sherpa pass on one thread runs at RTF 0.35 — about 7 minutes for 20 minutes

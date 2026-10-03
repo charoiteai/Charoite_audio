@@ -732,22 +732,192 @@ def test_when_the_call_channel_fell_back_the_mic_stays_on_sherpa(meeting, monkey
     assert "Речь микрофона размечена" not in text
 
 
-@pytest.mark.parametrize("call", ["нет записи", "тишина"])
-def test_without_a_call_the_mic_stays_on_sherpa(call, meeting, monkeypatch):
-    """Нет речи в канале собеседников — не звонок: метки микрофона различают
-    людей комнаты, это работа sherpa с её планом (№559, №565)."""
+def test_without_a_call_recording_the_mic_stays_on_sherpa(meeting, monkeypatch):
+    """Записи канала собеседников нет — Nemotron по нему не отвечал, комнату от
+    звонка в наушниках не отличить: микрофон на sherpa с подсказкой живой сессии
+    и склейкой после (№559), Nemotron не зовётся."""
     asked = []
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
         fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), asked))
-    _room(meeting, call="absent" if call == "нет записи" else "silent")
+    _room(meeting, call="absent")
     rt.rebuild(meeting["live"], _nemotron_cfg())
-    assert "mic" not in [channel for channel, _ in asked]
-    # план sherpa тот же, что при sherpa в настройке: комната — запрет склейки
-    # (№565), записи нет — подсказка живой сессии со склейкой после (№559)
-    if call == "тишина":
-        assert ("mic", rt.VETO_BELOW) in meeting["veto"]
-    else:
-        assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
+    assert asked == []
+    assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
+
+
+def test_a_room_mic_goes_to_nemotron_and_sherpa_is_not_run(meeting, monkeypatch):
+    """№596: канал собеседников размечен Nemotron пустым — очная: микрофон
+    размечает Nemotron, его слоты — люди комнаты; sherpa не зовётся ни по одному
+    каналу, шапка молчит, журнал называет движок, метки и живой счёт."""
+    asked, said = [], []
+    monkeypatch.setattr(rt, "log", said.append)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]),
+        fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0), (25.0, 40.0, 1), (42.0, 55.0, 2)]), asked))
+    _room(meeting)
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [channel for channel, _ in asked] == ["blackhole", "mic"]
+    assert meeting["calls"] == []
+    assert "запасным движком" not in text and OWNER not in text
+    assert "mic комнаты: разметил Nemotron, меток 3, живой счёт 7" in said
+
+
+def test_a_refused_call_channel_keeps_the_room_mic_off_nemotron(meeting, monkeypatch):
+    """Вход №596, r1 GLM C1: Nemotron отказал на канале собеседников — микрофон
+    комнаты его не спрашивает (второй отказ стоил бы второго потолка), sherpa
+    идёт веткой комнаты под запретом склейки."""
+    asked = []
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.FAILED, reason="нет весов"), fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), asked))
+    _room(meeting)
+    rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert [channel for channel, _ in asked] == ["blackhole"]
+    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+
+
+@pytest.mark.parametrize("mic_answer, yields", [
+    (fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), 1),
+    (fp.Outcome(fp.FAILED, reason="не уложился"), 2),
+], ids=["ответил", "отказ"])
+def test_the_room_mic_yields_again_only_after_a_nemotron_refusal(mic_answer, yields, meeting, monkeypatch):
+    """Вход №596, r2 GLM I1: уступка перед sherpa — после отказа любого из двух
+    движков микрофона, а не только звонкового."""
+    seen = []
+    monkeypatch.setattr(rt, "_yield_to_live", lambda what, cap=None: seen.append(what))
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]), mic_answer))
+    _room(meeting)
+    rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert seen.count("разметка голосов микрофона") == yields
+
+
+def _slots(n, fragment_last=False):
+    """Ответ движка с n слотами по 5 с; последний — одни осколки < 1 с."""
+    out = [(10.0 * k, 10.0 * k + 5.0, k) for k in range(n)]
+    if fragment_last:
+        out[-1] = (10.0 * (n - 1), 10.0 * (n - 1) + 0.5, n - 1)
+    return out
+
+
+@pytest.mark.parametrize("live", [3, 7, 12])
+@pytest.mark.parametrize("fragment_last", [False, True], ids=["целые", "осколки"])
+def test_all_eight_slots_with_a_live_count_is_a_refusal(live, fragment_last, monkeypatch, tmp_path):
+    """Все слоты модели заняты, а живая сессия насчитала людей — людей могло быть
+    больше, чем модель разводит: отказ на sherpa. Слоты — по сырому ответу:
+    слот из одних осколков < 1 с тоже занят (вход №596, r4 GLM I3)."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    said: list[str] = []
+    monkeypatch.setattr(rt, "log", said.append)
+    payload = _slots(rt.diarize_nemotron.MAX_SLOTS, fragment_last)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    assert rt.room_mic_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 120.0, live) == (
+        None, "Nemotron — заняты все 8 слотов движка")
+    assert any(f"заняты все 8 слотов при живом счёте {live}" in line for line in said), said
+
+
+@pytest.mark.parametrize("payload,live", [
+    (_slots(8), None),                 # вне ячейки живого счёта — ответ как есть
+    (_slots(7), 7),                    # слоты не исчерпаны
+], ids=["без счёта", "7 слотов"])
+def test_slots_below_the_ceiling_or_without_a_live_count_are_an_answer(payload, live, monkeypatch, tmp_path):
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    assert rt.room_mic_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 120.0, live) == (payload, "")
+
+
+@pytest.mark.parametrize("call_len,plan", [(120, ("veto", rt.VETO_BELOW)), (60, ("calls", 7))],
+                         ids=["комната", "канал умер посреди встречи"])
+def test_all_slots_in_a_room_send_the_mic_to_sherpa_by_its_plan(call_len, plan, meeting, monkeypatch):
+    """Потолок стоит в обеих ячейках живого счёта `mic_plan`: sherpa идёт по своему
+    плану — запрет склейки или подсказка (вход №596, r2 GLM C1)."""
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.OK, payload=_slots(8))))
+    _room(meeting)
+    meeting["len"].update(mic=120, blackhole=call_len)
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert ("mic", plan[1]) in meeting[plan[0]]
+    assert rt.MIC_ENGINE_FALLBACK_NOTE.format(reason="Nemotron — заняты все 8 слотов движка") in text
+
+
+@pytest.mark.parametrize("payload,reason", [
+    ([], "Nemotron — 0 с речи на 60 с записи микрофона, меньше 15 с"),
+    ([(0.0, 10.0, 0), (2.0, 10.0, 1)], "Nemotron — 10 с речи на 60 с записи микрофона, меньше 15 с"),
+    ([(0.0, 59.0, 0)], "Nemotron — один отрезок на всю запись (60 с)"),
+], ids=["пусто", "перекрытия один раз", "один на всю"])
+def test_a_room_answer_below_the_floor_or_degenerate_is_a_refusal(payload, reason, monkeypatch, tmp_path):
+    """Пол речи — по объединению: перекрытие отрезков считается один раз (сырая
+    сумма 18 с, речи 10 с). Пустой ответ — частный случай пола. Один отрезок на
+    почти всю запись — вырожденный ответ, как у канала собеседников."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    assert rt.room_mic_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 60.0, 7) == (None, reason)
+
+
+def test_the_call_mic_floor_counts_overlaps_once(monkeypatch, tmp_path):
+    """Вход №596, r4 Sonnet M1: сырая сумма 16 с ≥ 15, по объединению 14 с — отказ;
+    после `disjoint` правило владельца увидело бы те же 14 с."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=[(0.0, 8.0, 0), (6.0, 14.0, 0)]))
+    assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 3600.0) == (
+        None, "Nemotron — 14 с речи на 3600 с записи микрофона, меньше 15 с")
+
+
+@pytest.mark.parametrize("segs,expected", [
+    ([], 0.0),
+    ([(0.0, 10.0, 0)], 10.0),
+    ([(0.0, 10.0, 0), (5.0, 12.0, 1)], 12.0),
+    ([(5.0, 12.0, 1), (0.0, 10.0, 0)], 12.0),        # порядок не важен
+    ([(0.0, 10.0, 0), (2.0, 3.0, 1)], 10.0),         # вложенный
+    ([(0.0, 2.0, 0), (2.0, 4.0, 1), (6.0, 7.0, 0)], 5.0),   # стык и разрыв
+])
+def test_speech_seconds_is_the_union(segs, expected):
+    assert rt.speech_seconds(segs) == pytest.approx(expected)
+
+
+def test_speech_seconds_matches_disjoint_on_random_layouts():
+    """Объединение — та же речь, что после `disjoint`, по которой судит владельца
+    `owner_voices`: пол движка и порог владельца не расходятся на перекрытиях."""
+    rng = random.Random(596)
+    for _ in range(2000):
+        segs = []
+        for _ in range(rng.randint(0, 10)):
+            s = round(rng.uniform(0, 60), 2)
+            segs.append((s, round(s + rng.uniform(0.1, 15), 2), rng.randint(0, 3)))
+        assert rt.speech_seconds(segs) == pytest.approx(
+            sum(e - s for s, e, _ in rt.disjoint(segs))), segs
+
+
+def test_overlapping_room_labels_reach_stt_once():
+    """№584 / №596: в комнате перекрытие двух меток микрофона давало два STT
+    одного звука — после `disjoint` отрезки меток не перекрываются."""
+    mic = [(0.0, 30.0, 0), (20.0, 50.0, 1)]
+    segs, chan = rt.resolve_channel_segments([], mic, owner_label=OWNER, call=False)
+    assert segs == [(0.0, 25.0, "Собеседник 1"), (25.0, 50.0, "Собеседник 2")]
+    assert set(chan.values()) == {"mic"}
+
+
+def test_overlaps_of_the_owner_on_a_call_still_make_one_paragraph():
+    """На звонке все метки микрофона — владелец: `disjoint` режет перекрытие, а
+    `paragraphs` склеивает куски обратно — абзац тот же, что до №596."""
+    bh = [(100.0, 130.0, 0)]
+    mic = [(0.0, 30.0, 0), (20.0, 50.0, 1)]
+    segs, _ = rt.resolve_channel_segments(bh, mic, owner_label=OWNER, call=True)
+    assert [p[:3] for p in rt.paragraphs(segs) if p[2] == OWNER] == [[0.0, 50.0, OWNER]]
+
+
+def test_the_mic_note_is_dropped_when_sherpa_finds_no_speech(meeting, monkeypatch):
+    """Вход №596, r4 Sonnet M2: Nemotron отказал, sherpa вернула пустую разметку —
+    шапка не говорит «размечено запасным движком»."""
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        CALL_BH, fp.Outcome(fp.FAILED, reason="нет весов")))
+    meeting["raw"]["mic"] = []
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    assert "Речь микрофона размечена" not in text
 
 
 def test_a_nemotron_refusal_on_the_call_yields_again_before_sherpa(meeting, monkeypatch):
@@ -1078,15 +1248,17 @@ def test_a_short_beep_in_the_call_channel_does_not_sign_the_room_mic(meeting):
     assert "Собеседник 2" in text and "Собеседник 3" in text
 
 
-def test_a_room_on_nemotron_runs_no_sherpa_on_the_call_channel_and_says_nothing(meeting, monkeypatch):
+def test_a_room_on_nemotron_runs_no_sherpa_on_the_call_channel(meeting, monkeypatch):
     """№587: очная, движок Nemotron, канал собеседников тихий — пустой ответ
-    принимается: sherpa по каналу не зовётся, строки «запасным движком» нет."""
+    принимается: sherpa по каналу не зовётся, строки про канал собеседников нет.
+    Микрофон отказал — sherpa веткой комнаты (№565), и шапка говорит почему (№596)."""
     _room(meeting)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
         fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.FAILED, reason="нет весов")))
     text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
     assert [label for label, _ in meeting["calls"]] == ["mic"]
-    assert "запасным движком" not in text
+    assert "Голоса собеседников размечены" not in text
+    assert rt.MIC_ENGINE_FALLBACK_NOTE.format(reason=rt.ENGINE_REFUSED_REASON) in text
     assert ("mic", rt.VETO_BELOW) in meeting["veto"]             # комната, как при sherpa (№565)
 
 
@@ -1120,16 +1292,16 @@ def test_a_short_beep_on_sherpa_keeps_the_room_mic_under_the_veto(meeting):
     assert ("mic", rt.VETO_BELOW) in meeting["veto"]
 
 
-def test_a_short_beep_on_nemotron_keeps_the_mic_on_sherpa_in_the_room(meeting, monkeypatch):
+def test_a_short_beep_on_nemotron_is_a_room_for_the_mic(meeting, monkeypatch):
     """Выход №586 (обе головы): Nemotron дал отрезок по «дзынь» на очной — порога
-    гейта нет, значит не звонок: микрофон не уходит в Nemotron, идёт веткой
-    комнаты sherpa (№565)."""
+    гейта нет, значит не звонок: микрофон идёт веткой комнаты — Nemotron комнаты
+    (№596), а не звонковый, и владельца никто не подписывает."""
     _room(meeting)
     asked: list = []
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
         fp.Outcome(fp.OK, payload=[(30.0, 35.0, 0)]),
         fp.Outcome(fp.OK, payload=[(0.0, 50.0, 0)]), asked))
     text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
-    assert [channel for channel, _ in asked] == ["blackhole"]
-    assert ("mic", rt.VETO_BELOW) in meeting["veto"]
+    assert [channel for channel, _ in asked] == ["blackhole", "mic"]
+    assert meeting["calls"] == []
     assert OWNER not in text
