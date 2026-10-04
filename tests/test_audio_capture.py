@@ -26,16 +26,22 @@ import audio as a  # noqa: E402
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0, captures=(), device="auto"):
+def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0, captures=(), device="auto",
+         audio_extra=None):
     """AudioHub без устройств — НАСТОЯЩИМ конструктором: он больше не трогает
     PortAudio/ScreenCaptureKit (обнаружение — `discover_captures`, боевой путь —
     `for_meeting`). Оснастка со своим списком полей через `object.__new__`
     отставала от конструктора, и боевой код 14 местами страховался от неё
     `getattr` (входной круг DS и GLM по №311). `record: False` — файлы записи
-    в тестах не открываются."""
+    в тестах не открываются. `audio_extra` — ключи секции audio поверх
+    дефолтов: порог места читается в конструкторе, подмена поля после него
+    тест порога не сторожит."""
+    audio = {"samplerate": sr, "chunk_seconds": chunk_s, "overlap_seconds": overlap_s,
+             "vad_energy_db": vad_db, "record": False, "device": device}
+    if audio_extra:
+        audio.update(audio_extra)
     cfg = {
-        "audio": {"samplerate": sr, "chunk_seconds": chunk_s, "overlap_seconds": overlap_s,
-                  "vad_energy_db": vad_db, "record": False, "device": device},
+        "audio": audio,
         "log": {"recordings_dir": "recordings"},
         "sufler": {"user_name": "Владелец"},
     }
@@ -426,6 +432,187 @@ def test_частичный_отказ_open_sinks_не_оставляет_сир
     assert hub._sinks == {}
     assert not a.meeting_stamp.recording_path(tmp_path, hub.stamp, "mic", "pcm").exists()
     assert busy.exists() and any("ВЫКЛЮЧЕНА" in m for m in said)
+
+
+def _arm_sinks(hub, directory):
+    """Каталог записи ещё не создан: мера в `_open_sinks` идёт после mkdir."""
+    hub.record_dir = directory
+    hub.record_keep_days = 30
+    hub.stamp = "2026-07-15_1500"
+    hub.protect_stamps = frozenset()
+    hub.captures = [_QueueCapture("mic"), _QueueCapture("blackhole")]
+    said: list = []
+    hub.on_status = said.append
+    return said
+
+
+def _close_sinks(hub):
+    for handle in list(hub._sinks.values()):
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
+def _sinks_open(hub) -> bool:
+    return (set(hub._sinks) == {"mic", "blackhole"}
+            and all(not handle.closed and pathlib.Path(handle.name).is_file()
+                    for handle in hub._sinks.values()))
+
+
+def test_мало_места_даёт_один_липкий_статус_и_файлы_открыты(tmp_path, monkeypatch):
+    """500 МиБ до старта — один липкий отказ темы disk, запись при этом идёт.
+
+    Мера — по каталогу записи и только после mkdir: до него каталога нет.
+    """
+    record = tmp_path / "записи"
+    seen = []
+
+    def measure(path):
+        seen.append(pathlib.Path(path))
+        assert pathlib.Path(path).is_dir()
+        return 500 * 1024 * 1024
+
+    monkeypatch.setattr(a, "free_bytes", measure)
+    hub = _hub()
+    said = _arm_sinks(hub, record)
+    try:
+        hub._open_sinks()
+        assert seen == [record]
+        assert len(said) == 1
+        ev = a.stt_runtime.status_event(said[0])
+        assert ev["sticky"] is True and ev["topic"] == "disk" and ev["error"] is True
+        assert ev["type"] == "status" and "МАЛО МЕСТА НА ДИСКЕ" in ev["text"]
+        assert "500" in ev["text"]
+        assert _sinks_open(hub)
+    finally:
+        _close_sinks(hub)
+
+
+def test_места_хватает_статуса_нет(tmp_path, monkeypatch):
+    """2 ГиБ выше порога 880 МиБ — предупреждения нет, файлы открыты."""
+    monkeypatch.setattr(a, "free_bytes", lambda path: 2 * 1024 ** 3)
+    hub = _hub()
+    said = _arm_sinks(hub, tmp_path / "записи")
+    try:
+        hub._open_sinks()
+        assert said == []
+        assert _sinks_open(hub)
+    finally:
+        _close_sinks(hub)
+
+
+def test_сбой_меры_места_не_выключает_запись(tmp_path, monkeypatch, capsys):
+    """Исключение меры — строка в журнал, не статус и не отказ записи."""
+    def measure(path):
+        raise OSError("statvfs refused")
+
+    monkeypatch.setattr(a, "free_bytes", measure)
+    hub = _hub()
+    said = _arm_sinks(hub, tmp_path / "записи")
+    try:
+        hub._open_sinks()
+        assert said == []
+        assert _sinks_open(hub)
+        err = capsys.readouterr().err
+        assert "statvfs refused" in err and "место на диске не измерено" in err
+    finally:
+        _close_sinks(hub)
+
+
+def test_порог_места_берётся_из_конфига(tmp_path, monkeypatch):
+    """Ключ `audio.record_free_min_bytes` читает конструктор.
+
+    2 ГиБ при пороге 880 МиБ молчит, при пороге 3 ГиБ — предупреждает.
+    500 МиБ при пороге 100 МиБ молчит: ключ двигает границу в обе стороны.
+    """
+    free = {"n": 2 * 1024 ** 3}
+    monkeypatch.setattr(a, "free_bytes", lambda path: free["n"])
+    high = _hub(audio_extra={"record_free_min_bytes": 3 * 1024 ** 3})
+    said_high = _arm_sinks(high, tmp_path / "высоко")
+    low = _hub(audio_extra={"record_free_min_bytes": 100 * 1024 * 1024})
+    said_low = _arm_sinks(low, tmp_path / "низко")
+    try:
+        high._open_sinks()
+        assert len(said_high) == 1 and said_high[0].sticky is True
+        assert said_high[0].topic == "disk" and said_high[0].error is True
+        free["n"] = 500 * 1024 * 1024
+        low._open_sinks()
+        assert said_low == []
+        assert _sinks_open(high) and _sinks_open(low)
+    finally:
+        _close_sinks(high)
+        _close_sinks(low)
+
+
+def test_битый_порог_места_остаётся_880_миб(tmp_path, monkeypatch):
+    """Ноль, отрицательное, нечисло, bool и неконечное не выключают проверку.
+
+    `int(True) == 1`: без отказа от bool 500 МиБ оказались бы «выше порога».
+    `int(inf)` — OverflowError: без него конструктор ронял бы старт встречи.
+    """
+    monkeypatch.setattr(a, "free_bytes", lambda path: 500 * 1024 * 1024)
+    hubs = [
+        _hub(audio_extra={"record_free_min_bytes": raw})
+        for raw in (0, -5, "нет", True, False, float("inf"), float("-inf"), float("nan"))
+    ]
+    saids = [_arm_sinks(hub, tmp_path / f"порог-{i}") for i, hub in enumerate(hubs)]
+    try:
+        for hub, said in zip(hubs, saids):
+            hub._open_sinks()
+            assert len(said) == 1 and said[0].sticky is True and said[0].topic == "disk"
+            assert _sinks_open(hub)
+    finally:
+        for hub in hubs:
+            _close_sinks(hub)
+
+
+def test_граница_порога_ровно_880_миб(tmp_path, monkeypatch):
+    """Ровно 880 МиБ — тишина, на байт меньше — липкий слой.
+
+    Литерал, не имя константы: сдвиг 880 → 600 МиБ при проверках 500 МиБ
+    и 2 ГиБ остался бы зелёным.
+    """
+    boundary = 880 * 1024 * 1024
+    free = {"n": boundary}
+
+    def measure(path):
+        assert pathlib.Path(path).is_dir()
+        return free["n"]
+
+    monkeypatch.setattr(a, "free_bytes", measure)
+    exact = _hub()
+    under = _hub()
+    said_exact = _arm_sinks(exact, tmp_path / "ровно")
+    said_under = _arm_sinks(under, tmp_path / "минус-байт")
+    try:
+        exact._open_sinks()
+        assert said_exact == [] and _sinks_open(exact)
+        free["n"] = boundary - 1
+        under._open_sinks()
+        assert len(said_under) == 1 and said_under[0].sticky is True
+        assert said_under[0].error is True and said_under[0].topic == "disk"
+        assert _sinks_open(under)
+    finally:
+        _close_sinks(exact)
+        _close_sinks(under)
+
+
+def test_отказ_каталога_записи_не_мерит_место(tmp_path, monkeypatch):
+    """mkdir не удался — мера не зовётся, слой малого места не ставится."""
+    called = []
+    monkeypatch.setattr(a, "free_bytes", lambda path: called.append(path) or 0)
+    hub = _hub()
+    # Родитель — файл: каталога записи нет (prune молчит), mkdir падает.
+    parent = tmp_path / "файл"
+    parent.write_bytes(b"x")
+    said = _arm_sinks(hub, parent / "записи")
+    hub._open_sinks()
+    assert called == []
+    assert hub._sinks == {}
+    assert len(said) == 1 and "ВЫКЛЮЧЕНА" in said[0]
+    ev = a.stt_runtime.status_event(said[0])
+    assert ev["error"] is True and "sticky" not in ev and ev["topic"] == "disk"
 
 
 def test_зависший_перезапуск_не_останавливает_конвейер(monkeypatch, tmp_path):

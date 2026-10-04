@@ -523,3 +523,192 @@ def test_guarded_split_gives_the_result_or_none_with_the_failure():
     assert stt_runtime.guarded_split(Tracker(False), "чанк", "Собеседник") == (("разложил", "чанк", "Собеседник"), False)
     assert stt_runtime.guarded_split(Tracker(True), "чанк", "Собеседник") == (None, True)
     assert len(calls) == 2
+
+
+def _drive_memory(monkeypatch, states):
+    """Демонская дверь: мера — `memory_state`, провод — `emit`."""
+    import daemon
+    seq = iter(states)
+
+    def measure():
+        item = next(seq)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(daemon.live_nemotron, "memory_state", measure)
+    sent: list = []
+    monkeypatch.setattr(daemon, "emit", sent.append)
+    return daemon, stt_runtime.MemoryNotice(), sent
+
+
+def test_слой_памяти_на_проводе_несёт_липкость_и_тему():
+    """`status_event` нового слоя несёт sticky и topic, снятие — тоже."""
+    up = stt_runtime.status_event(stt_runtime.memory_layer(4))
+    assert up["type"] == "status" and up["sticky"] is True and up["topic"] == "memory"
+    assert up["error"] is True and "ПАМЯТЬ НА ИСХОДЕ" in up["text"]
+    down = stt_runtime.status_event(stt_runtime.memory_layer(1))
+    assert down["sticky"] is False and down["topic"] == "memory" and down["error"] is False
+    assert down["text"]
+    assert stt_runtime.memory_layer(2) is None
+
+
+def test_давление_памяти_шлётся_только_на_переходе(monkeypatch, capsys):
+    """1 → 2 → 4 → 4 → 1 → None → 4.
+
+    Слой один раз на первой четвёрке, снятие один раз на единице и с темой
+    memory, None ничего не шлёт, четвёрка после снятия ставит слой снова.
+    Двойка — одна строка журнала, не статус.
+    """
+    states = [
+        {"pressure": 1},
+        {"pressure": 2},
+        {"pressure": 4},
+        {"pressure": 4},
+        {"pressure": 1},
+        None,
+        {"pressure": 4},
+    ]
+    daemon, notice, sent = _drive_memory(monkeypatch, states)
+    for _ in states:
+        daemon._note_memory(notice)
+    err = capsys.readouterr().err
+    assert [e["sticky"] for e in sent] == [True, False, True]
+    assert [e["topic"] for e in sent] == ["memory", "memory", "memory"]
+    assert [e["error"] for e in sent] == [True, False, True]
+    assert err.count("уровень 2") == 1
+    assert "обычный фон" in err
+
+
+def test_уровень_2_не_снимает_слой_и_четвёрка_не_повторяется(monkeypatch, capsys):
+    """4 → 2 → 4: предупреждение не снимает слой, повторная четвёрка молчит.
+
+    Снятие на двойке вернуло бы второй липкий слой на следующей четвёрке.
+    """
+    states = [{"pressure": 4}, {"pressure": 2}, {"pressure": 4}]
+    daemon, notice, sent = _drive_memory(monkeypatch, states)
+    for _ in states:
+        daemon._note_memory(notice)
+    assert [e["sticky"] for e in sent] == [True]
+    assert sent[0]["topic"] == "memory"
+    assert capsys.readouterr().err.count("уровень 2") == 1
+
+
+def test_тихая_четвёрка_не_глотает_следующую_двойку(monkeypatch, capsys):
+    """4 → 2 → 4 → 2: вторая двойка — новый переход, строка журнала есть.
+
+    Четвёрка при уже поднятом слое ничего не шлёт, но запоминается. Если
+    её забыть, вторая двойка выглядит повтором первой и пропадает из журнала.
+    """
+    states = [{"pressure": n} for n in (4, 2, 4, 2)]
+    daemon, notice, sent = _drive_memory(monkeypatch, states)
+    for _ in states:
+        daemon._note_memory(notice)
+    assert [e["sticky"] for e in sent] == [True]
+    assert sent[0]["topic"] == "memory"
+    assert capsys.readouterr().err.count("уровень 2") == 2
+
+
+def test_пустое_давление_не_сбрасывает_слой(monkeypatch, capsys):
+    """4 → None → 4 не шлёт слой заново. 2 → None → 2 не повторяет журнал."""
+    daemon, notice, sent = _drive_memory(
+        monkeypatch, [{"pressure": 4}, None, {"pressure": 4}])
+    for _ in range(3):
+        daemon._note_memory(notice)
+    assert len(sent) == 1 and sent[0]["sticky"] is True and sent[0]["topic"] == "memory"
+
+    daemon, notice, sent = _drive_memory(
+        monkeypatch, [{"pressure": 2}, None, {"pressure": 2}])
+    for _ in range(3):
+        daemon._note_memory(notice)
+    err = capsys.readouterr().err
+    assert sent == []
+    assert err.count("уровень 2") == 1
+
+
+def test_сбой_меры_памяти_ничего_не_шлёт(monkeypatch, capsys):
+    """Исключение меры не трогает слой: четвёрка стоит, единица потом снимает."""
+    states = [{"pressure": 4}, OSError("sysctl refused"), {"pressure": 1}]
+    daemon, notice, sent = _drive_memory(monkeypatch, states)
+    daemon._note_memory(notice)
+    assert len(sent) == 1 and sent[0]["sticky"] is True
+    daemon._note_memory(notice)
+    assert len(sent) == 1
+    daemon._note_memory(notice)
+    err = capsys.readouterr().err
+    assert [e["sticky"] for e in sent] == [True, False]
+    assert sent[1]["topic"] == "memory" and sent[1]["error"] is False
+    assert "sysctl refused" in err and "давление памяти не измерено" in err
+
+
+def test_нечитаемое_давление_не_меняет_слой(monkeypatch, capsys):
+    """bool, дробное, нечисло и пустой ответ — не уровень.
+
+    `True` — подкласс int, и без отказа от bool четвёрка снялась бы как
+    единица. `2.5` без отказа от дроби стало бы журналом уровня 2.
+    """
+    states = [
+        {"pressure": 4},
+        {"pressure": True},
+        {"pressure": False},
+        {"pressure": 2.5},
+        {"pressure": float("nan")},
+        {"pressure": float("inf")},
+        {"swap_used_mb": 1},
+        "нет",
+        [],
+        {"pressure": 4},
+    ]
+    daemon, notice, sent = _drive_memory(monkeypatch, states)
+    for _ in states:
+        daemon._note_memory(notice)
+    err = capsys.readouterr().err
+    assert len(sent) == 1 and sent[0]["sticky"] is True and sent[0]["topic"] == "memory"
+    assert "уровень 2" not in err
+    assert "давление памяти:" not in err
+
+
+def test_недоставленный_слой_памяти_повторяется(monkeypatch, capsys):
+    """emit упал на постановке — следующий замер того же уровня 4 шлёт снова."""
+    import daemon
+    sent = []
+    left = {"n": 1}
+
+    def emit(obj):
+        if left["n"]:
+            left["n"] -= 1
+            raise RuntimeError("провод оборван")
+        sent.append(obj)
+
+    monkeypatch.setattr(daemon, "emit", emit)
+    monkeypatch.setattr(daemon.live_nemotron, "memory_state", lambda: {"pressure": 4})
+    notice = stt_runtime.MemoryNotice()
+    daemon._note_memory(notice)
+    daemon._note_memory(notice)
+    assert len(sent) == 1
+    assert sent[0]["sticky"] is True and sent[0]["topic"] == "memory" and sent[0]["error"] is True
+    assert "провод оборван" in capsys.readouterr().err
+
+
+def test_недоставленное_снятие_слоя_памяти_повторяется(monkeypatch, capsys):
+    """emit упал на снятии — следующий замер единицы шлёт снятие с темой memory."""
+    import daemon
+    sent = []
+    fail = {"on": True}
+    levels = iter([4, 1, 1])
+
+    def emit(obj):
+        if obj.get("sticky") is False and fail["on"]:
+            fail["on"] = False
+            raise RuntimeError("провод оборван")
+        sent.append(obj)
+
+    monkeypatch.setattr(daemon, "emit", emit)
+    monkeypatch.setattr(daemon.live_nemotron, "memory_state",
+                        lambda: {"pressure": next(levels)})
+    notice = stt_runtime.MemoryNotice()
+    for _ in range(3):
+        daemon._note_memory(notice)
+    assert [e["sticky"] for e in sent] == [True, False]
+    assert sent[1]["topic"] == "memory"
+    assert "провод оборван" in capsys.readouterr().err

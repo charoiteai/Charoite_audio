@@ -161,12 +161,65 @@ def test_missing_import_folder_is_a_failure(capsys, tmp_path, monkeypatch):
 
 
 def test_full_disk_is_a_failure(capsys, monkeypatch):
-    monkeypatch.setattr(doctor.shutil, "disk_usage",
-                        lambda p: type("U", (), {"free": 2e9})())
+    """2 ГБ — по-прежнему отказ: пороги доктора 5 и 20 ГБ не сдвинулись."""
+    monkeypatch.setattr(doctor, "free_bytes", lambda p: 2 * 10**9)
     doctor.check_disk()
 
     assert doctor.issues == 1
     assert "2.0 ГБ" in _lines(capsys)
+
+
+def test_четыре_гб_для_доктора_отказ(capsys, monkeypatch):
+    seen = []
+
+    def measure(path):
+        seen.append(path)
+        return 4 * 10**9
+
+    monkeypatch.setattr(doctor, "free_bytes", measure)
+    doctor.check_disk()
+    out = _lines(capsys)
+    assert doctor.issues == 1
+    assert f" {doctor.FAIL} на диске 4.0 ГБ" in out
+    assert "записи и модели не поместятся — освободите место" in out
+    assert seen == [doctor._root()]
+
+
+def test_десять_гб_для_доктора_предупреждение(capsys, monkeypatch):
+    monkeypatch.setattr(doctor, "free_bytes", lambda p: 10 * 10**9)
+    doctor.check_disk()
+    out = _lines(capsys)
+    assert doctor.issues == 0
+    assert f" {doctor.WARN} на диске 10.0 ГБ — хватит на несколько встреч" in out
+
+
+def test_тридцать_гб_для_доктора_норма(capsys, monkeypatch):
+    monkeypatch.setattr(doctor, "free_bytes", lambda p: 30 * 10**9)
+    doctor.check_disk()
+    out = _lines(capsys)
+    assert doctor.issues == 0
+    assert f" {doctor.OK} на диске 30 ГБ" in out
+    assert "30.0" not in out
+
+
+def test_free_bytes_общая_мера_свободных_байт(tmp_path, monkeypatch):
+    """Тело меры — свободные байты тома. Доктор зовёт ту же функцию."""
+    import shutil
+
+    assert charoite_paths.free_bytes(tmp_path) == shutil.disk_usage(tmp_path).free
+    with pytest.raises(FileNotFoundError):
+        charoite_paths.free_bytes(tmp_path / "нет-каталога")
+
+    class Usage:
+        total = 9
+        used = 4
+        free = 5
+
+    monkeypatch.setattr(charoite_paths.shutil, "disk_usage", lambda path: Usage())
+    assert charoite_paths.free_bytes(tmp_path) == 5
+    assert isinstance(charoite_paths.free_bytes(tmp_path), int)
+    assert doctor.free_bytes is charoite_paths.free_bytes
+    assert doctor.free_bytes(tmp_path) == 5
 
 
 # ── дверь строгого JSON у доктора ─────────────────────────────────────────

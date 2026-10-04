@@ -20,7 +20,7 @@ import speech_gate
 import stt_runtime
 import threads
 
-from charoite_paths import resolve_root
+from charoite_paths import free_bytes, resolve_root
 
 
 def _root() -> pathlib.Path:
@@ -578,6 +578,26 @@ def discover_captures(mode: str, sr: int) -> Discovery:
                      {"sck_missing": sck is None, "bh_missing": bh is None and sck is None})
 
 
+def resolve_record_free_min(audio_cfg: dict) -> int:
+    """Порог свободного места перед записью, в байтах.
+
+    Ключ `audio.record_free_min_bytes`. Нет ключа, нечисло, bool, неконечное
+    (inf/nan), ноль или отрицательное — `AudioHub.RECORD_FREE_MIN_BYTES`
+    (880 МиБ). Битый ключ не выключает проверку и не роняет конструктор:
+    иначе опечатка молча убирала бы предупреждение, а `int(inf)` —
+    OverflowError — обрывал бы старт встречи.
+    """
+    default = AudioHub.RECORD_FREE_MIN_BYTES
+    raw = audio_cfg.get("record_free_min_bytes", default)
+    if isinstance(raw, bool):
+        return default
+    try:
+        n = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if n > 0 else default
+
+
 class AudioHub:
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
@@ -628,6 +648,9 @@ class AudioHub:
         self.chunk_s, self.overlap_s, self.vad_db = speech_gate.settings(a)
         self.record_on = bool(a.get("record", True))
         self.record_keep_days = a.get("record_keep_days", 2)
+        # Порог места читается здесь, а не в момент проверки: битый ключ
+        # становится константой один раз, а не «сбоем меры» на каждой встрече.
+        self.record_free_min_bytes = resolve_record_free_min(a)
         # Штампы встреч, которые прямо сейчас пересобираются: их записи ретеншн
         # не трогает. Заполняет демон из _recover_orphans — он один знает, кого
         # догоняет; здесь по умолчанию пусто, чтобы AudioHub оставался
@@ -1221,6 +1244,29 @@ class AudioHub:
                 msg = stt_runtime.Status(msg, error=True, topic=stt_runtime.TOPIC_DISK)
             self._say(msg)
 
+    # 880 МиБ: ~220 МиБ/час × два канала × четыре часа (16 кГц, s16, два
+    # канала — 230e6 байт в час). Ниже — липкий слой до конца встречи.
+    # Запись не останавливаем: место может освободиться, а отказ записи —
+    # это потеря встречи. Ключ конфига `audio.record_free_min_bytes` (байты).
+    RECORD_FREE_MIN_BYTES = 880 * 1024 * 1024
+
+    def _warn_disk_headroom(self) -> None:
+        """Мало места до старта — липкий слой. Свой try: сбой меры не
+        выключает запись. Отказ по факту (TOPIC_DISK без липкости) остаётся
+        на пути записи и здесь не дублируется."""
+        try:
+            free = free_bytes(self.record_dir)
+        except Exception as e:  # noqa: BLE001 — мера не смеет выключать запись
+            _safe_stderr(f"место на диске не измерено: {e}")
+            return
+        if free < self.record_free_min_bytes:
+            mb = max(0, free) // (1024 * 1024)
+            self._say(stt_runtime.Status(
+                f"МАЛО МЕСТА НА ДИСКЕ: свободно {mb} МБ — на четыре часа встречи "
+                "может не хватить (около 220 МБ в час, два канала). Запись идёт; "
+                "освободите место, иначе хвост встречи потеряется",
+                error=True, sticky=True, topic=stt_runtime.TOPIC_DISK))
+
     def _open_sinks(self):
         """Сырое аудио каждого канала — на диск сразу: обрыв STT/демона больше не
         теряет встречу (20.07 потеряли 5+ минут безвозвратно). Пишем .pcm (s16le,
@@ -1239,6 +1285,15 @@ class AudioHub:
             self._say(f"чистка старых записей не удалась: {e}")
         try:
             self.record_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:  # noqa: BLE001 — захват важнее записи, но не молча
+            self._say(stt_runtime.Status(
+                f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить",
+                error=True, topic=stt_runtime.TOPIC_DISK))
+            return
+        # После mkdir: мера по каталогу записи. Не в том же try, что открытие
+        # файлов — исключение меры выключило бы запись на всю встречу.
+        self._warn_disk_headroom()
+        try:
             for c in self.captures:
                 path = meeting_stamp.recording_path(
                     self.record_dir, self.stamp, c.label, "pcm")
