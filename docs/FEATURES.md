@@ -1080,8 +1080,9 @@ it signals degradation, it does not break the loop.
   status on topic `disk` stays up for the whole meeting («МАЛО МЕСТА НА
   ДИСКЕ: …» — "low disk space"). Recording goes on: space may free up, and
   refusing to record would lose the meeting. The threshold is
-  `audio.record_free_min_bytes`, in bytes; a missing key, a non-number, a
-  boolean, a non-finite value, zero or a negative value falls back to 880 MiB. If the measure
+  `audio.record_free_min_bytes`, in bytes; a missing key, a string (it is not
+  read as a number), a non-number, a boolean, a non-finite value, zero or a
+  negative value falls back to 880 MiB. If the measure
   itself fails, a line goes to the daemon journal and recording still starts.
   A write that then hits the end of the disk stays the old non-sticky `disk`
   error, held by the heartbeat. Memory pressure (`live_nemotron.memory_state`)

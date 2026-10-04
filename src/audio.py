@@ -581,19 +581,21 @@ def discover_captures(mode: str, sr: int) -> Discovery:
 def resolve_record_free_min(audio_cfg: dict) -> int:
     """Порог свободного места перед записью, в байтах.
 
-    Ключ `audio.record_free_min_bytes`. Нет ключа, нечисло, bool, неконечное
-    (inf/nan), ноль или отрицательное — `AudioHub.RECORD_FREE_MIN_BYTES`
-    (880 МиБ). Битый ключ не выключает проверку и не роняет конструктор:
-    иначе опечатка молча убирала бы предупреждение, а `int(inf)` —
-    OverflowError — обрывал бы старт встречи.
+    Ключ `audio.record_free_min_bytes`. Нет ключа, строка не читается как
+    число (даже из одних цифр), нечисло, bool, неконечное (inf/nan), ноль
+    или отрицательное — `AudioHub.RECORD_FREE_MIN_BYTES` (880 МиБ). Битый
+    ключ не выключает проверку и не роняет конструктор: иначе опечатка
+    молча убирала бы предупреждение, `int("500")` ставил бы порог в 500
+    байт, а `int(inf)` — OverflowError — обрывал бы старт встречи.
     """
     default = AudioHub.RECORD_FREE_MIN_BYTES
     raw = audio_cfg.get("record_free_min_bytes", default)
-    if isinstance(raw, bool):
+    # bool — подкласс int, строка из цифр проходит `int()`: оба не порог.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return default
     try:
         n = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except (ValueError, OverflowError):
         return default
     return n if n > 0 else default
 

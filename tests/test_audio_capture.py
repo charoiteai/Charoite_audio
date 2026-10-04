@@ -567,6 +567,63 @@ def test_битый_порог_места_остаётся_880_миб(tmp_path, 
             _close_sinks(hub)
 
 
+_LOW_DISK = (
+    "МАЛО МЕСТА НА ДИСКЕ: свободно 500 МБ — на четыре часа встречи "
+    "может не хватить (около 220 МБ в час, два канала). Запись идёт; "
+    "освободите место, иначе хвост встречи потеряется"
+)
+
+
+@pytest.mark.parametrize("raw", ["500", "880", "2000000000"])
+def test_строка_порога_места_это_константа_880_миб(tmp_path, monkeypatch, raw):
+    """Строка не читается как число: 500 МиБ свободных дают слой 880 МиБ.
+
+    `int("500")` и `int("880")` оставили бы порог в сотнях байт — слоя нет.
+    `int("2000000000")` слой оставляет (500 МиБ меньше двух миллиардов байт),
+    поэтому сторожит точное значение порога, а не сам факт слоя.
+    """
+    def measure(path):
+        assert pathlib.Path(path).is_dir()
+        return 500 * 1024 * 1024
+
+    monkeypatch.setattr(a, "free_bytes", measure)
+    hub = _hub(audio_extra={"record_free_min_bytes": raw})
+    said = _arm_sinks(hub, tmp_path / "строка")
+    try:
+        assert hub.record_free_min_bytes == 880 * 1024 * 1024
+        hub._open_sinks()
+        assert said == [_LOW_DISK]
+        assert said[0].sticky is True and said[0].error is True and said[0].topic == "disk"
+        assert _sinks_open(hub)
+    finally:
+        _close_sinks(hub)
+
+
+def test_целое_и_дробное_порога_места_двигают_границу(tmp_path, monkeypatch):
+    """Целое и дробное из конфига — порог, не константа 880 МиБ.
+
+    700 МиБ свободных лежат между 600 МиБ и 880 МиБ: отказ от дробного
+    (и от целого) поставил бы слой. `int` обрезает дробную часть, как раньше.
+    """
+    def measure(path):
+        assert pathlib.Path(path).is_dir()
+        return 700 * 1024 * 1024
+
+    monkeypatch.setattr(a, "free_bytes", measure)
+    raws = (600 * 1024 * 1024, 600 * 1024 * 1024 + 0.9)
+    hubs = [_hub(audio_extra={"record_free_min_bytes": raw}) for raw in raws]
+    saids = [_arm_sinks(hub, tmp_path / f"число-{i}") for i, hub in enumerate(hubs)]
+    try:
+        for hub, said in zip(hubs, saids):
+            assert hub.record_free_min_bytes == 600 * 1024 * 1024
+            hub._open_sinks()
+            assert said == []
+            assert _sinks_open(hub)
+    finally:
+        for hub in hubs:
+            _close_sinks(hub)
+
+
 def test_граница_порога_ровно_880_миб(tmp_path, monkeypatch):
     """Ровно 880 МиБ — тишина, на байт меньше — липкий слой.
 
