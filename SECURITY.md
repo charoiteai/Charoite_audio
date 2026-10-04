@@ -62,7 +62,7 @@ destroy a recording locally. Each gets its own defenses below.
   resolve to them), anything farther requires https, and the kill-switch
   refuses every non-loopback address. The app's own "Ollama" field follows
   the loopback / `allow_remote` / kill-switch part of that rule; the
-  http-versus-https check is the daemon's (`src/privacy.py`). A refusal, including an address the grammar will not parse, is shown in the readiness check and as a daemon error status (`privacy_refused`, exit 11).
+  http-versus-https check is the daemon's (`src/privacy.py`). A refusal, including an address the grammar will not parse, is shown in the readiness check and as a daemon error status (`privacy_refused`, exit 11). If the readiness probe could not check the address (for example, the code root is older than the app), there is no line — the daemon checks the address at start.
 - **Deliberate downloads.** An update is downloaded only when you press the
   button (from the GitHub release, verified as described below); models are
   fetched on first use or by an install button — see

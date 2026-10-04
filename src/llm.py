@@ -579,7 +579,6 @@ class LLM:
         self.cloud_ready = False
         if self.engine == "cloud":
             if privacy.cloud_engine_enabled(cfg):
-                self.base = privacy.cloud_llm_url(cfg)
                 self.cloud_model = str(l.get("cloud_model") or "")
                 self._key = cloud_key(cfg)
                 if not self.cloud_model:

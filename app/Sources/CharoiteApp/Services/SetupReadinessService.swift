@@ -266,6 +266,7 @@ audio_error = None
 config_error = None
 address_error = None
 if "yaml" not in missing:
+    cfg = None
     try:
         import pathlib, yaml
         cfg = yaml.safe_load(pathlib.Path("config/config.yaml").read_text(encoding="utf-8")) or {}
@@ -280,19 +281,27 @@ if "yaml" not in missing:
                   if not isinstance(cfg.get(path[0]), dict) or cfg[path[0]].get(path[1]) in (None, "")]
         if absent:
             config_error = "missing: " + ", ".join(absent)
-        # Адрес модели — та же развилка, что демон спрашивает до весов.
-        # Отказ остаётся в address_error: широкий except ниже — про сломанный
-        # yaml, и смешивать их нельзя. Корень кода аргументом, не PYTHONPATH:
-        # путь данных в sys.path не кладём (проба и так под SAFEPATH), а privacy
-        # не установлен пакетом (py-modules пуст).
-        code = sys.argv[1] if len(sys.argv) > 1 else ""
-        src = pathlib.Path(code) / "src" if code else None
-        if src is not None and (src / "privacy.py").is_file():
-            sys.path.insert(0, str(src))
-            import privacy
-            address_error = privacy.model_address_error(cfg)
     except Exception as exc:
         config_error = f"{type(exc).__name__}: {exc}"
+    # Адрес — свой try после конфига. Спрашиваем только прочитанный словарь:
+    # сломанный yaml и верхний уровень не-словарь адрес не трогают, и уже
+    # найденный config_error не перетирается. Отказ политики — текст из
+    # privacy.model_address_error в address_error. Любой другой сбой (старый
+    # privacy.py без функции, сломанный импорт, форма, которую privacy не
+    # читает) оставляет address_error пустым: строки нет, адрес проверит
+    # демон при старте. Корень кода аргументом, не PYTHONPATH: путь данных
+    # в sys.path не кладём (проба и так под SAFEPATH), а privacy не
+    # установлен пакетом (py-modules пуст).
+    if isinstance(cfg, dict):
+        try:
+            code = sys.argv[1] if len(sys.argv) > 1 else ""
+            src = pathlib.Path(code) / "src" if code else None
+            if src is not None and (src / "privacy.py").is_file():
+                sys.path.insert(0, str(src))
+                import privacy
+                address_error = privacy.model_address_error(cfg)
+        except Exception:
+            address_error = None
 if "sounddevice" not in missing:
     try:
         import sounddevice as sd

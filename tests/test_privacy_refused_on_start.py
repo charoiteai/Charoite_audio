@@ -9,6 +9,10 @@
 Проба готовности спрашивает `privacy.model_address_error`: та же развилка,
 что демон, но текстом, а не исключением. Панель по этому тексту решает
 `SetupReadinessPolicy.refusedModelAddressCheck` — на данных, в Swift-тесте.
+
+Скрипт пробы исполняется из Swift-файла (сырая строка после `let script`):
+Swift здесь не собирается, а подстрока в исходнике ничего не сторожит.
+Сбой блока адреса не пишет `config_error`.
 """
 import json
 import os
@@ -28,6 +32,48 @@ import privacy  # noqa: E402
 ZONE = "http://[fe80::1%en0]:11434"
 LOGIN = "http://user:secret@127.0.0.1:11434"
 CLOUD = "https://gw.example/v1"
+LOOPBACK = "http://127.0.0.1:11434"
+
+# Полные фразы отказа — литералы, не `str` исключения из `chat_model_url`:
+# подмена тела той функции двигала бы обе стороны равенства.
+_ZONE_TEXT = (
+    "llm.base_url = http://[fe80::1%en0]:11434: "
+    "адрес 'http://[fe80::1%en0]:11434': authority вне белой грамматики "
+    "(имя или IPv6 в скобках, порт цифрами)"
+)
+_LOGIN_TEXT = (
+    "llm.base_url = http://user:secret@127.0.0.1:11434: "
+    "адрес 'http://user:secret@127.0.0.1:11434': authority вне белой грамматики "
+    "(имя или IPv6 в скобках, порт цифрами)"
+)
+_KILL_TEXT = (
+    "llm.base_url = https://gw.example/v1 указывает не на эту машину, "
+    "а рубильник CHAROITE_NO_CLOUD запрещает любой выход наружу"
+)
+_YAML_ERROR = (
+    "ParserError: while parsing a flow node\n"
+    "expected the node content, but found '<stream end>'\n"
+    "  in \"<unicode string>\", line 2, column 1:\n"
+    "    \n"
+    "    ^"
+)
+_LIST_ERROR = "AttributeError: 'list' object has no attribute 'get'"
+
+_OLD_PRIVACY = "# сборка без privacy.model_address_error\n"
+_BROKEN_IMPORT = "raise ImportError('старый контур без зависимости')\n"
+_EAGER_PRIVACY = (
+    "def model_address_error(cfg, env=None):\n"
+    "    return 'ОТКАЗ-АДРЕСА'\n"
+)
+
+_PROBE_DROP = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONPYCACHEPREFIX",
+    "CHAROITE_NO_CLOUD",
+    "SUFLER_NO_CLOUD",
+)
 
 _DROP = (
     "CHAROITE_ROOT",
@@ -148,6 +194,39 @@ def test_конструктор_llm_не_глотает_отказ_грамма�
     assert "llm.base_url" in str(caught.value)
 
 
+def test_конструктор_не_берёт_облачный_адрес_мимо_развилки(tmp_path, monkeypatch):
+    """Облачная ветка не зовёт `cloud_llm_url` сама: `self.base` ставит
+    только `chat_model_url`. Ранний вызов перезаписывался двадцатью строками
+    ниже, а его подмена не должна менять адрес."""
+    import llm
+
+    key = tmp_path / "key"
+    key.write_text("k\n", encoding="utf-8")
+    key.chmod(0o600)
+    cfg = {
+        "llm": {
+            "engine": "cloud",
+            "model": "local",
+            "cloud_base_url": CLOUD,
+            "cloud_model": "m",
+            "cloud_key_file": str(key),
+        },
+        "sufler": {"cloud_engine": True, "role": "роль"},
+    }
+    called = []
+
+    def early(cfg, env=None):
+        called.append(cfg)
+        return "https://early.example/v1"
+
+    monkeypatch.setattr(privacy, "cloud_llm_url", early)
+    monkeypatch.setattr(privacy, "chat_model_url", lambda cfg, env=None: "https://fork.example/v1")
+    client = llm.LLM(cfg)
+    assert client.base == "https://fork.example/v1"
+    assert client.cloud_ready is True
+    assert called == []
+
+
 @pytest.mark.parametrize("url", [ZONE, LOGIN])
 def test_демон_называет_отказ_адреса_и_не_грузит_веса(tmp_path, url):
     """Процесс с таким адресом в конфиге: код 11, статус-ошибка, без трейсбека.
@@ -190,13 +269,12 @@ def test_демон_называет_отказ_адреса_и_не_грузи�
     assert отказы[0].get("reason") == "privacy_refused"
 
 
-@pytest.mark.parametrize("url", [ZONE, LOGIN])
-def test_проба_адреса_возвращает_текст_отказа(url):
-    """Отказ — текст для панели, а не исключение и не чужая строка."""
-    cfg = {"llm": {"base_url": url}}
-    with pytest.raises(privacy.PrivacyRefused) as caught:
-        privacy.chat_model_url(cfg, {})
-    assert privacy.model_address_error(cfg, {}) == str(caught.value)
+@pytest.mark.parametrize("url,expected", [(ZONE, _ZONE_TEXT), (LOGIN, _LOGIN_TEXT)])
+def test_проба_адреса_возвращает_текст_отказа(url, expected):
+    """Отказ — текст для панели, литерал, а не `str` исключения из той же развилки."""
+    text = privacy.model_address_error({"llm": {"base_url": url}}, {})
+    assert text == expected
+    assert text is not None
 
 
 def test_проба_адреса_молчит_когда_адрес_принят():
@@ -216,9 +294,7 @@ def test_проба_адреса_передаёт_окружение():
     cfg = {"llm": {"base_url": "https://gw.example/v1", "allow_remote": True}}
     assert privacy.model_address_error(cfg, {}) is None
     env = {"CHAROITE_NO_CLOUD": "1"}
-    with pytest.raises(privacy.PrivacyRefused) as caught:
-        privacy.chat_model_url(cfg, env)
-    assert privacy.model_address_error(cfg, env) == str(caught.value)
+    assert privacy.model_address_error(cfg, env) == _KILL_TEXT
 
 
 def test_проба_адреса_без_аргумента_видит_процесс(monkeypatch):
@@ -229,9 +305,7 @@ def test_проба_адреса_без_аргумента_видит_проце
     monkeypatch.delenv("SUFLER_NO_CLOUD", raising=False)
     assert privacy.model_address_error(cfg) is None
     monkeypatch.setenv("CHAROITE_NO_CLOUD", "1")
-    with pytest.raises(privacy.PrivacyRefused) as caught:
-        privacy.chat_model_url(cfg)
-    assert privacy.model_address_error(cfg) == str(caught.value)
+    assert privacy.model_address_error(cfg) == _KILL_TEXT
 
 
 def test_проба_адреса_не_прячет_сломанный_конфиг():
@@ -239,3 +313,116 @@ def test_проба_адреса_не_прячет_сломанный_конфи
     бы её в текст панели «адрес отвергнут»."""
     with pytest.raises(AttributeError):
         privacy.model_address_error(["не словарь"], {})
+
+
+def _intact(base_url: str | None = None, *, model: str | None = "probe") -> str:
+    lines = [
+        "audio:",
+        "  device: auto",
+        "  samplerate: 16000",
+        "stt:",
+        "  backend: gigaam",
+        "llm:",
+    ]
+    if model is not None:
+        lines.append(f"  model: {json.dumps(model)}")
+    if base_url is not None:
+        lines.append(f"  base_url: {json.dumps(base_url)}")
+    return "\n".join(lines) + "\n"
+
+
+def _data(tmp_path: pathlib.Path, text: str) -> pathlib.Path:
+    root = tmp_path / "data"
+    (root / "config").mkdir(parents=True)
+    (root / "config" / "config.yaml").write_text(text, encoding="utf-8")
+    return root
+
+
+def _code(tmp_path: pathlib.Path, source: str) -> pathlib.Path:
+    code = tmp_path / "code"
+    (code / "src").mkdir(parents=True)
+    (code / "src" / "privacy.py").write_text(source, encoding="utf-8")
+    return code
+
+
+def _probe_script() -> str:
+    path = ROOT / "app/Sources/CharoiteApp/Services/SetupReadinessService.swift"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == 'let script = #"""')
+    end = next(i for i, line in enumerate(lines) if i > start and line.strip() == '"""#')
+    return "\n".join(lines[start + 1:end]) + "\n"
+
+
+def _probe(code_root: pathlib.Path, data_root: pathlib.Path) -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in _PROBE_DROP}
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-c", _probe_script(), str(code_root)],
+        cwd=data_root, env=env, capture_output=True, text=True, timeout=60,
+    )
+    lines = proc.stdout.splitlines()
+    if proc.returncode != 0 or not lines:
+        raise AssertionError(
+            f"код {proc.returncode}, stdout={proc.stdout[-400:]!r}, stderr={proc.stderr[-800:]!r}")
+    return json.loads(lines[-1])
+
+
+def test_проба_старого_privacy_не_портит_целый_конфиг(tmp_path):
+    """Нет `model_address_error` — не «исправьте config.yaml».
+
+    `AttributeError` старого корня кода раньше становился `config_error`
+    и блокировал старт, хотя yaml цел.
+    """
+    body = _probe(_code(tmp_path, _OLD_PRIVACY), _data(tmp_path, _intact()))
+    assert body["config_error"] is None
+    assert body["address_error"] is None
+
+
+def test_проба_сломанного_импорта_privacy_молчит(tmp_path):
+    """`ImportError` при импорте privacy не становится ошибкой конфига."""
+    body = _probe(_code(tmp_path, _BROKEN_IMPORT), _data(tmp_path, _intact()))
+    assert body["config_error"] is None
+    assert body["address_error"] is None
+
+
+def test_проба_старого_privacy_сохраняет_missing(tmp_path):
+    """Сбой адреса не перетирает уже найденное `missing: llm.model`."""
+    text = _intact(model=None)
+    body = _probe(_code(tmp_path, _OLD_PRIVACY), _data(tmp_path, text))
+    assert body["config_error"] == "missing: llm.model"
+    assert body["address_error"] is None
+
+
+def test_проба_репозитория_называет_отказ_зоны(tmp_path):
+    """Контроль стенда: живой privacy, зона — текст отказа, конфиг цел."""
+    body = _probe(ROOT, _data(tmp_path, _intact(ZONE)))
+    assert body["config_error"] is None
+    assert body["address_error"] == _ZONE_TEXT
+
+
+def test_проба_репозитория_принимает_loopback(tmp_path):
+    body = _probe(ROOT, _data(tmp_path, _intact(LOOPBACK)))
+    assert body["config_error"] is None
+    assert body["address_error"] is None
+
+
+def test_проба_репозитория_битый_yaml_не_адрес(tmp_path):
+    body = _probe(ROOT, _data(tmp_path, "llm: [\n"))
+    assert body["config_error"] == _YAML_ERROR
+    assert body["address_error"] is None
+
+
+def test_проба_верх_не_словарь_не_спрашивает_адрес(tmp_path):
+    """Список наверху — не отказ адреса, даже если privacy ответил бы текстом."""
+    body = _probe(_code(tmp_path, _EAGER_PRIVACY), _data(tmp_path, "- не словарь\n"))
+    assert body["config_error"] == _LIST_ERROR
+    assert body["address_error"] is None
+
+
+def test_проба_при_missing_ключе_называет_отказ(tmp_path):
+    """Прочитанный словарь с дыркой в ключе всё равно спрашивает адрес."""
+    body = _probe(ROOT, _data(tmp_path, _intact(ZONE, model=None)))
+    assert body["config_error"] == "missing: llm.model"
+    assert body["address_error"] == _ZONE_TEXT
