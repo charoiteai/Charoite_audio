@@ -89,10 +89,29 @@ review gates, and who answers for what — is documented in
   Critical zones are `mutation_critical` in `docs/design/layout.json` (a module,
   a script path or `module::function`): sound written to disk or lost, data
   leaving the machine, owner data written or deleted. The list is the union of
-  the range's base and head. A module in the area that imports a network library
-  or the `safe_write` door must be listed in `mutation_critical` or in
-  `mutation_not_critical` with a reason — `layout_map --check` guards it. A
-  survivor in a critical zone is red; outside them it is green and listed.
+  the range's base and head. A `module::function` entry also covers what that
+  function reaches by a name mention in the same module — a call, a value, a
+  decorator or a default, a class (defined in the function, in an enclosing
+  function, in the enclosing class or at module level) with all of its methods
+  and the methods of its bases named in the module, a module-level variable
+  (everything mentioned in the values assigned to it) — and the same again from
+  there. Shadowing is not resolved: an extra name in the zone is the price, a
+  missed one is a defect. Annotations (of parameters, of the return value,
+  `AnnAssign`) are not a mention. `self.X` pulls only the method `X` of the
+  nearest class and its bases, not all of its methods. A function defined more
+  than once under one name (`if`/`else`, `try`/`except ImportError`,
+  `@x.setter`) pulls in what every definition mentions. Nested definitions were
+  already covered. Extracting the body into a helper (the irreversible call, or
+  only the condition that decides it; private or not) does not leave the zone,
+  and the helper is not added to the list: the closure is read off the tree
+  being mutated. It does not follow another module, `getattr` on a string,
+  `globals()`, a registry filled at runtime, or an attribute of a value whose
+  class is unknown (`hub.drop(...)`). Moving the helper into another module is a
+  separate case and stays outside the zone.
+  A module in the area that imports a network library or the `safe_write` door
+  must be listed in `mutation_critical` or in `mutation_not_critical` with a
+  reason — `layout_map --check` guards it. A survivor in a critical zone is red;
+  outside them it is green and listed.
   In CI the sample is split across four shards: `--shard K/N` keeps every N-th
   mutant of the sample (`i % N == K-1`), and each shard writes its facts
   `<report>.json` beside the report (format version, `K`, `N`, `M` — its

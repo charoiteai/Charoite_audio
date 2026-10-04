@@ -2650,3 +2650,90 @@ def test_догон_только_критичных_судит_критичны�
     assert крит and all(m.critical for m in крит)
     assert {m.key for m in крит} == {m.key for m in все if m.critical}
     assert any(not m.critical for m in все) and totals.planned == len(крит)
+
+
+_ДВЕРЬ = (
+    "def sweep(path, limit):\n"
+    "    if path.stat().st_size > limit:\n"
+    "        path.unlink()\n"
+    "    return path.exists()\n")
+# Тот же смысл, но unlink и решение «удалять ли» живут в приватном хелпере,
+# которого в зоне нет. Дверь только зовёт его.
+# Строка порога написана заново, а не перенесена дословно: мутатор ломает только
+# добавленные строки, и git считает одинаковую строку неизменившейся.
+_ХЕЛПЕР = (
+    "def sweep(path, limit):\n"
+    "    return _drop_if_big(path, limit)\n"
+    "\n"
+    "def _drop_if_big(path, limit):\n"
+    "    too_big = path.stat().st_size > limit\n"
+    "    if too_big:\n"
+    "        path.unlink()\n"
+    "    return path.exists()\n")
+_ТЕСТ_ДВЕРИ = (
+    "import pathlib, sys\n"
+    "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'src'))\n"
+    "from mod import sweep\n"
+    "\n"
+    "def test_маленький_файл_остаётся(tmp_path):\n"
+    "    p = tmp_path / 'a.bin'\n"
+    "    p.write_bytes(b'x' * 10)\n"
+    "    assert sweep(p, 100) is True and p.exists()\n"
+    "\n"
+    "def test_большой_файл_удалён(tmp_path):\n"
+    "    p = tmp_path / 'b.bin'\n"
+    "    p.write_bytes(b'x' * 1000)\n"
+    "    assert sweep(p, 100) is False and not p.exists()\n")
+
+
+def test_выживший_мутант_хелпера_двери_критичен(tmp_path, monkeypatch):
+    """Необратимое действие двери вынесено в приватный хелпер — его выживший критичен.
+
+    `sweep` назван в зоне, `unlink` и порог живут в `_drop_if_big`, которого список
+    не называет. Тесты берут размеры далеко от порога, поэтому `>` → `>=` в хелпере
+    выживает. Этот выживший обязан держать мерж: иначе обычный вынос хелпера уносит
+    удаление файла из защиты, а сторож зон остаётся зелёным — имя двери на месте.
+    """
+    зоны = {"mod::sweep": "удаляет файл владельца"}
+    files = {"src/mod.py": _ДВЕРЬ, "tests/test_mod.py": _ТЕСТ_ДВЕРИ,
+             mc.ZONES_REL: json.dumps({"mutation_critical": зоны})}
+    repo = _git_repo(tmp_path, files)
+    (repo / "src" / "mod.py").write_text(_ХЕЛПЕР, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "вынос unlink в хелпер"], cwd=repo, check=True)
+    голова = (repo / "src" / "mod.py").read_text(encoding="utf-8")
+    тело_двери, _, хелпер = голова.partition("def _drop_if_big")
+    assert "unlink" in хелпер and "unlink" not in тело_двери.split("def sweep", 1)[1]
+
+    данные = tmp_path / "данные"
+    данные.mkdir()
+    monkeypatch.setenv("CHAROITE_ROOT", str(данные))
+    monkeypatch.chdir(repo)
+    отчёт = tmp_path / "отчёт.txt"
+    rc = mc.main(["mutate_check.py", "--range", _ДИАПАЗОН, "--max", "all", "--timeout", "60",
+                  "--report", str(отчёт)])
+    текст = отчёт.read_text(encoding="utf-8")
+    факты = json.loads(mc.shard_line_path(отчёт).read_text(encoding="utf-8"))
+    выжили = факты["survivors"]
+    assert len(выжили) == 1, текст
+    выживший = выжили[0]
+    assert "::_drop_if_big::" in выживший["key"] and "Gt → GtE" in выживший["key"], выживший
+    assert выживший["critical"] is True, текст
+    assert rc == 1, текст
+    assert "критичная зона — держит мерж" in текст, текст
+    assert "в критичных зонах: 1" in текст, текст
+
+
+def test_критичность_хелпера_считается_по_ревизии_а_не_по_диску(tmp_path):
+    """Рабочее дерево уже вернуло `unlink` в дверь. План головы всё равно
+    считает хелпер критичным: ломают ревизию `git show`, не диск."""
+    зоны = {"mod::sweep": "удаляет файл владельца"}
+    files = {"src/mod.py": _ДВЕРЬ, "tests/test_mod.py": _ТЕСТ_ДВЕРИ,
+             mc.ZONES_REL: json.dumps({"mutation_critical": зоны})}
+    repo = _git_repo(tmp_path, files)
+    (repo / "src" / "mod.py").write_text(_ХЕЛПЕР, encoding="utf-8")
+    subprocess.run([*_GIT, "commit", "-qam", "вынос"], cwd=repo, check=True)
+    (repo / "src" / "mod.py").write_text(_ДВЕРЬ, encoding="utf-8")
+    plan, _ = mc.plan_for(repo, _ДИАПАЗОН)
+    хелпер = [m for m in plan if m.qualname == "_drop_if_big" or m.qualname.startswith("_drop_if_big.")]
+    assert хелпер and all(m.critical for m in хелпер), [(m.qualname, m.critical) for m in plan]
+    assert any(m.qualname == "sweep" and m.critical for m in plan)
