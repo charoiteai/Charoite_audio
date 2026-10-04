@@ -5,6 +5,21 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.0](https://github.com/charoiteai/Charoite_audio/compare/v0.92.0...v0.93.0) (2026-10-03)
+
+
+### Features
+
+* **rebuild:** Nemotron labels the mic of a call, sherpa stays the fallback ([#509](https://github.com/charoiteai/Charoite_audio/issues/509)) ([#718](https://github.com/charoiteai/Charoite_audio/issues/718)) ([30f5dc9](https://github.com/charoiteai/Charoite_audio/commit/30f5dc9813190c12b1d79a6cbce3d6e817b8fb22))
+* **rebuild:** Nemotron labels the mic of an in-person meeting ([#596](https://github.com/charoiteai/Charoite_audio/issues/596)) ([#722](https://github.com/charoiteai/Charoite_audio/issues/722)) ([f3a51cd](https://github.com/charoiteai/Charoite_audio/commit/f3a51cd5bab887ce34f683a421b4cdc33a754b98))
+
+
+### Bug Fixes
+
+* **diarize:** one call threshold for the live feed and the rebuild ([#586](https://github.com/charoiteai/Charoite_audio/issues/586), [#587](https://github.com/charoiteai/Charoite_audio/issues/587)) ([#721](https://github.com/charoiteai/Charoite_audio/issues/721)) ([1e81358](https://github.com/charoiteai/Charoite_audio/commit/1e8135875e79d6f48d39839c0c8854260d5381c2))
+* **nemotron:** the stream child leaves with its parent, the journal says who ended it ([#720](https://github.com/charoiteai/Charoite_audio/issues/720)) ([648f826](https://github.com/charoiteai/Charoite_audio/commit/648f826c4e5ad5098be0686c3b11016d46777c67))
+* **rebuild:** one owner rule for the live feed and the final transcript ([#509](https://github.com/charoiteai/Charoite_audio/issues/509)) ([#717](https://github.com/charoiteai/Charoite_audio/issues/717)) ([1ba1b70](https://github.com/charoiteai/Charoite_audio/commit/1ba1b70417005545d9874f073ab38650b2afca42))
+
 ## [0.92.0](https://github.com/charoiteai/Charoite_audio/compare/v0.91.0...v0.92.0) (2026-10-01)
 
 
