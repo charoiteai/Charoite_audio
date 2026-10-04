@@ -112,6 +112,24 @@ enum SetupReadinessPolicy {
         if grantedInThisSession { return .grantedNeedsRestart }
         return preflight ? .granted : .denied
     }
+
+    /// Блокирующая строка по отказу адреса модели.
+    ///
+    /// Текст приходит из `privacy.model_address_error` — той же развилки
+    /// `chat_model_url`, что роняет демон на старте: зона IPv6, логин, чужая
+    /// машина. Пустая строка — не отказ, отдельной строки нет. Непустое
+    /// блокирует старт до правки конфига.
+    static func refusedModelAddressCheck(_ refusal: String?) -> SetupCheck? {
+        let text = refusal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return nil }
+        return SetupCheck(
+            id: "model-address",
+            state: .blocked,
+            title: L.t("Адрес модели отвергнут",
+                       "The model address was refused",
+                       "模型地址被拒绝"),
+            detail: text)
+    }
 }
 
 private struct LocalSetupProbe: Sendable {
@@ -123,6 +141,7 @@ private struct LocalSetupProbe: Sendable {
     let pythonError: String?
     let audioError: String?
     let configError: String?
+    let addressError: String?
 }
 
 private struct PythonSetupProbe: Decodable {
@@ -130,12 +149,14 @@ private struct PythonSetupProbe: Decodable {
     let inputs: [String]
     let audioError: String?
     let configError: String?
+    let addressError: String?
 
     enum CodingKeys: String, CodingKey {
         case missing
         case inputs
         case audioError = "audio_error"
         case configError = "config_error"
+        case addressError = "address_error"
     }
 }
 
@@ -225,14 +246,15 @@ final class SetupReadinessService: ObservableObject {
                 inputDevices: [],
                 pythonError: "venv",
                 audioError: nil,
-                configError: nil)
+                configError: nil,
+                addressError: nil)
         }
 
         // Один короткий запуск проверяет те же импорты и PortAudio, которыми
         // пользуется демон. Поиск системного устройства в Swift дал бы другую
         // картину, чем sounddevice внутри Python — проверяем рабочий путь.
         let script = #"""
-import importlib, json
+import importlib, json, sys
 missing = []
 for name in ("yaml", "requests", "numpy", "sounddevice", "onnx_asr"):
     try:
@@ -242,6 +264,7 @@ for name in ("yaml", "requests", "numpy", "sounddevice", "onnx_asr"):
 inputs = []
 audio_error = None
 config_error = None
+address_error = None
 if "yaml" not in missing:
     try:
         import pathlib, yaml
@@ -257,6 +280,17 @@ if "yaml" not in missing:
                   if not isinstance(cfg.get(path[0]), dict) or cfg[path[0]].get(path[1]) in (None, "")]
         if absent:
             config_error = "missing: " + ", ".join(absent)
+        # Адрес модели — та же развилка, что демон спрашивает до весов.
+        # Отказ остаётся в address_error: широкий except ниже — про сломанный
+        # yaml, и смешивать их нельзя. Корень кода аргументом, не PYTHONPATH:
+        # путь данных в sys.path не кладём (проба и так под SAFEPATH), а privacy
+        # не установлен пакетом (py-modules пуст).
+        code = sys.argv[1] if len(sys.argv) > 1 else ""
+        src = pathlib.Path(code) / "src" if code else None
+        if src is not None and (src / "privacy.py").is_file():
+            sys.path.insert(0, str(src))
+            import privacy
+            address_error = privacy.model_address_error(cfg)
     except Exception as exc:
         config_error = f"{type(exc).__name__}: {exc}"
 if "sounddevice" not in missing:
@@ -266,7 +300,8 @@ if "sounddevice" not in missing:
     except Exception as exc:
         audio_error = f"{type(exc).__name__}: {exc}"
 print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_error,
-                  "config_error": config_error}, ensure_ascii=False))
+                  "config_error": config_error, "address_error": address_error},
+                 ensure_ascii=False))
 """#
         let process = Process()
         process.executableURL = python
@@ -278,7 +313,10 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         // запечатанным, — проба на первом же экране писала бы .pyc в
         // подписанные Resources и ломала подпись, как в 0.52.0 (DS, круг-1
         // по PR #444; обе стороны проверены живым опытом 28.08).
-        process.arguments = ["-c", script]
+        // Корень кода — откуда читать src/privacy.py. PYTHONPATH не ставим:
+        // проба его как раз вычищает, папка данных не должна становиться
+        // путём импорта.
+        process.arguments = ["-c", script, AppSettings.codeRoot(dataRoot: root).path]
         var env = ProcessInfo.processInfo.environment
         env["PYTHONSAFEPATH"] = "1"          // cwd (папка данных) — не в sys.path
         env["PYTHONNOUSERSITE"] = "1"        // ~/.local/lib — тоже не наш путь
@@ -312,7 +350,8 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                 inputDevices: [],
                 pythonError: error.localizedDescription,
                 audioError: nil,
-                configError: nil)
+                configError: nil,
+                addressError: nil)
         }
         if done.wait(timeout: .now() + 15) == .timedOut {
             process.terminate()
@@ -324,7 +363,8 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                 inputDevices: [],
                 pythonError: "timeout",
                 audioError: nil,
-                configError: nil)
+                configError: nil,
+                addressError: nil)
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0,
@@ -337,7 +377,8 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                 inputDevices: [],
                 pythonError: "probe",
                 audioError: nil,
-                configError: nil)
+                configError: nil,
+                addressError: nil)
         }
         return LocalSetupProbe(
             rootExists: rootExists,
@@ -347,7 +388,8 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
             inputDevices: decoded.inputs,
             pythonError: nil,
             audioError: decoded.audioError,
-            configError: decoded.configError)
+            configError: decoded.configError,
+            addressError: decoded.addressError)
     }
 
     private static func inspectOllama(baseURL: String) async -> OllamaSetupProbe {
@@ -377,6 +419,9 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         checks.append(pythonCheck(local: local))
         if let configCheck = configCheck(local: local) {
             checks.append(configCheck)
+        }
+        if let address = SetupReadinessPolicy.refusedModelAddressCheck(local.addressError) {
+            checks.append(address)
         }
         checks.append(microphoneCheck(microphone))
         if let audioCheck = audioCheck(local: local) {

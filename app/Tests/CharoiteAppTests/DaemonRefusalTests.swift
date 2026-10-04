@@ -37,4 +37,18 @@ final class DaemonRefusalTests: XCTestCase {
         XCTAssertTrue(s.statusErrorFromDaemon, "fail() не звался: иначе рецепт стёрт и баннер вправе его скрыть")
         XCTAssertEqual(s.preservedFailure, recipe)
     }
+
+    func testGiveUpOnPrivacyRefusalKeepsTheDaemonTextUntouched() {
+        let s = SuflerService()
+        let recipe = "llm.base_url = http://[fe80::1%en0]:11434: authority вне белой грамматики"
+        s.consumeForTest(#"{"type":"status","text":"\#(recipe)","error":true,"reason":"privacy_refused"}"#)
+        XCTAssertEqual(s.status, recipe, "предпосылка: рецепт демона на экране")
+
+        s.giveUp(.giveUpFatal("privacy_refused"))
+
+        XCTAssertEqual(s.status, recipe, "текст отказа адреса несёт рецепт — свой поверх вреден")
+        XCTAssertTrue(s.statusIsError)
+        XCTAssertTrue(s.statusErrorFromDaemon, "fail() не звался: иначе рецепт стёрт")
+        XCTAssertEqual(s.preservedFailure, recipe)
+    }
 }

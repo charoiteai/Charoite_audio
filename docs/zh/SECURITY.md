@@ -24,7 +24,7 @@ issue。
 
 - **默认只有一个请求：版本检查。** 向 api.github.com 发一个公开 GET 查询最新版本号，应用运行期间最多每四小时一次（以及按下检查按钮时）—— 不带令牌，不带任何关于您或您会议的数据；`sufler.check_updates: false` 可关闭，`CHAROITE_NO_CLOUD` 总闸同样覆盖它。其余一切都跑在 localhost：STT、说话人分离、LLM 和向量嵌入。`src/privacy.py` 是所有可能携带会议数据的出口的唯一裁决者，只有配置里显式的 `true` 才算同意。
 - **云端层按能力逐项开启，且开关相互嵌套。** `cloud_live` 打开会议中的实时回答（`cloud_hints` 只能在它之上生效）。`cloud_enrich` 打开会后复查 — 夜间的图谱审阅也走同一个开关：核心审阅与档案审阅会在夜里把从图谱汇集的文本发送到 Anthropic。`cloud_edit_graph`（在 `cloud_enrich` 之上）是唯一授予写权限的开关；云端修改的是图谱的副本，只有通过边界检查的内容才会搬进真正的图谱。`cloud_engine` 与 `llm.engine: cloud` 一起把整个对话发送到 OpenAI 兼容网关 —— 仅限 https，密钥放在单独文件里，绝不写入配置。`CHAROITE_NO_CLOUD=1` 是总闸，在任何路径上覆盖任何配置。完整开关表：[PRIVACY](PRIVACY.md)。
-- **LLM 地址是一项隐私决定。** `llm.base_url` 与 `llm.mlx_base_url` 只有在回环地址上才自由放行；另一台机器需要显式的 `llm.allow_remote: true`，明文 http 只在你自己的网络内被接受（私有或链路本地地址、解析到它们的 `.local` 之类的名字），更远的地址必须 https，而总闸会拒绝任何非回环地址。应用自己的「Ollama」字段遵循该规则中关于回环 / `allow_remote` / 总闸的部分；http 与 https 的检查由守护进程完成（`src/privacy.py`）。
+- **LLM 地址是一项隐私决定。** `llm.base_url` 与 `llm.mlx_base_url` 只有在回环地址上才自由放行；另一台机器需要显式的 `llm.allow_remote: true`，明文 http 只在你自己的网络内被接受（私有或链路本地地址、解析到它们的 `.local` 之类的名字），更远的地址必须 https，而总闸会拒绝任何非回环地址。应用自己的「Ollama」字段遵循该规则中关于回环 / `allow_remote` / 总闸的部分；http 与 https 的检查由守护进程完成（`src/privacy.py`）。拒绝（包括语法无法解析的地址）会出现在就绪检查和守护进程的错误状态中（`privacy_refused`，退出码 11）。
 - **有意的下载。** 更新只在按下按钮时下载（来自 GitHub 发布，按下文所述校验）；模型在首次使用时或通过安装按钮获取 —— 各自访问哪里见 [PRIVACY](PRIVACY.md)。
 - 订阅 CLI 启动时会从环境中清除 `ANTHROPIC_API_KEY`。
 
