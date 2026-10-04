@@ -1073,6 +1073,27 @@ it signals degradation, it does not break the loop.
   Channel start-up is per-channel too: one failing source no longer leaves the
   meeting with no recording at all. Incident of Aug 6 — four recordings in a
   row, 31 seconds each.
+- **Low disk and tight memory are said before the meeting is lost** — before
+  the `.pcm` files open, free space on the recording volume is measured with
+  the same `free_bytes` that `scripts/doctor.py` uses for the model check.
+  Under 880 MiB (about 220 MiB an hour for two channels, four hours) a sticky
+  status on topic `disk` stays up for the whole meeting («МАЛО МЕСТА НА
+  ДИСКЕ: …» — "low disk space"). Recording goes on: space may free up, and
+  refusing to record would lose the meeting. The threshold is
+  `audio.record_free_min_bytes`, in bytes; a missing key, a string (it is not
+  read as a number), a non-number, a boolean, a non-finite value, zero or a
+  negative value falls back to 880 MiB. If the measure
+  itself fails, a line goes to the daemon journal and recording still starts.
+  A write that then hits the end of the disk stays the old non-sticky `disk`
+  error, held by the heartbeat. Memory pressure (`live_nemotron.memory_state`)
+  has its own topic, `memory`: level 4 sets a sticky layer («ПАМЯТЬ НА
+  ИСХОДЕ: …» — "memory is nearly gone"), level 1 clears that layer and the
+  clear carries the topic, level 2 is only a journal line (ordinary on a
+  machine that keeps a local model resident), and no reading (not macOS, or
+  the measure failed) leaves the layer as it is. The daemon sends on a
+  transition only, once when recording starts and then on the main-loop
+  heartbeat. The doctor's 5 GB and 20 GB lines are unchanged: they answer
+  whether the models fit, not whether this meeting does.
 - **The transcript says where the audio is missing** — a channel that drops
   out, comes back, leaves a gap or never returns is one structured event of
   the audio hub, and its trace lands in three places at once: the sidecar

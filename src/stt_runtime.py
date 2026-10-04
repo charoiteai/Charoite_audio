@@ -171,7 +171,19 @@ OWNER_MIC_BACK = "ВАШ МИКРОФОН СНОВА В ЗАПИСИ"
 # снимает ровно свою; `sticky: true/false` рядом с темой — совместимость с
 # приложением, читающим только бит (входной круг DS и GLM по №310).
 TOPIC_CHANNEL = "channel_loss"   # потеря/возврат канала записи (хаб)
-TOPIC_DISK = "disk"              # отказ записи на диск (error, не липкое: его держит heartbeat)
+# Место на диске. Липкий слой — предупреждение до записи, если свободно
+# меньше порога (№319): человек видит его до конца встречи. Отказ записи
+# по факту на той же теме остаётся error и не липким — его держит heartbeat.
+TOPIC_DISK = "disk"
+# Давление памяти. Уровень 4 ставит липкий слой, уровень 1 снимает его
+# явным sticky false с этой темой: снятие без темы приложение читает как
+# снятие потери канала (SuflerService.consume).
+TOPIC_MEMORY = "memory"
+# kern.memorystatus_vm_pressure_level: 1 — норма, 2 — предупреждение
+# (на машине с локальной моделью это фон), 4 — критично.
+MEMORY_NORMAL = 1
+MEMORY_WARN = 2
+MEMORY_CRITICAL = 4
 
 
 class Status(str):
@@ -214,6 +226,106 @@ def status_event(msg) -> dict:
         ev["topic"] = st.topic
     return ev
 
+
+def memory_layer(level: int) -> "Status | None":
+    """Слой давления памяти: текст, тема и липкость в одном месте.
+
+    4 — липкий слой до конца, пока давление не спадёт. 1 — снятие своего
+    слоя (тема обязательна). 2 и любой другой уровень — не слой: для двойки
+    есть только строка журнала, `memory_log_line`.
+    """
+    if level == MEMORY_CRITICAL:
+        return Status(
+            "ПАМЯТЬ НА ИСХОДЕ: машине тесно, ответ модели может задержаться "
+            "на десятки секунд. Закройте тяжёлые приложения — запись не останавливаю",
+            sticky=True, error=True, topic=TOPIC_MEMORY)
+    if level == MEMORY_NORMAL:
+        return Status("давление памяти спало", sticky=False, topic=TOPIC_MEMORY)
+    return None
+
+
+def memory_log_line(level: int) -> str | None:
+    """Уровень 2 — только журнал: на машине с локальной моделью это норма."""
+    if level == MEMORY_WARN:
+        return ("давление памяти: уровень 2 — на машине с локальной моделью "
+                "это обычный фон")
+    return None
+
+
+def _pressure_level(state: dict | None) -> int | None:
+    """Уровень из ответа `memory_state`, либо None — мера не читается.
+
+    None здесь — то же решение, что и у вызывающего: слой не трогать.
+    Дробное и нечисло — не уровень, а сбой меры.
+    """
+    if not isinstance(state, dict):
+        return None
+    raw = state.get("pressure")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+        return None
+    level = int(raw)
+    if level != raw:
+        return None
+    return level
+
+
+class MemoryNotice:
+    """Последнее прочитанное давление и дошёл ли слой до провода.
+
+    Посылка только на переходе. Повтор того же уровня — heartbeat раз в
+    30 с — ничего не шлёт: слой заново красил бы строку статуса. None и
+    нечитаемая мера слой не трогают и последнее состояние не сбрасывают,
+    иначе мигающий sysctl слал бы слой на каждом удачном чтении заново.
+    Снятие (уровень 1) уходит только если слой был поднят: на здоровой
+    машине единица — норма, и «давление спало» в начале каждой встречи
+    было бы ложью. Флаг слоя переворачивается в `ack` после успешного
+    `emit`: исключение провода демон глушит, и поставленный заранее флаг
+    оставил бы критичное давление невидимым до смены уровня.
+    """
+
+    def __init__(self) -> None:
+        self._level: int | None = None
+        self._known = False
+        self._layer = False
+
+    def consider(self, state: dict | None) -> tuple["Status | None", str | None]:
+        level = _pressure_level(state)
+        if level is None:
+            return None, None
+        # Уровень запоминаем даже когда слать нечего: иначе 4 → 2 → 4
+        # не записывал бы четвёрку (слой уже поднят) и следующая двойка
+        # выглядела бы повтором.
+        fresh = not (self._known and level == self._level)
+        self._known = True
+        self._level = level
+        status = None
+        if level == MEMORY_CRITICAL and not self._layer:
+            status = memory_layer(level)
+        elif level == MEMORY_NORMAL and self._layer:
+            status = memory_layer(level)
+        return status, memory_log_line(level) if fresh else None
+
+    def ack(self, status: "Status") -> None:
+        """Слой учтён только после того, как событие ушло на провод."""
+        if status.sticky is None:
+            return
+        self._layer = bool(status.sticky)
+
+
+def announce_memory(notice: MemoryNotice, state, *, emit, log) -> None:
+    """Один шаг проверки давления.
+
+    Статус на провод — через `status_event`, как все остальные. Строка
+    уровня 2 — в журнал, на провод не идёт. `ack` — после `emit`: упавшая
+    посылка не считается доставленной, следующий замер того же уровня
+    повторит её.
+    """
+    status, line = notice.consider(state)
+    if status is not None:
+        emit(status_event(status))
+        notice.ack(status)
+    if line:
+        log(line)
 
 def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:
     """Во сколько раз быстрее реального времени идёт распознавание.

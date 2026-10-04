@@ -22,7 +22,6 @@ import argparse
 import json
 import pathlib
 import shlex
-import shutil
 import subprocess
 import sys
 import time
@@ -35,7 +34,7 @@ sys.dont_write_bytecode = True
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-from charoite_paths import code_root, harden_umask, resolve_root  # noqa: E402
+from charoite_paths import code_root, free_bytes, harden_umask, resolve_root  # noqa: E402
 import diarize_nemotron  # noqa: E402 — только проба движка его интерпретатором, mlx сюда не попадает
 
 CODE = code_root(__file__)
@@ -461,8 +460,13 @@ def check_import_queue(cfg: dict) -> None:
 
 
 def check_disk() -> None:
-    """Место под записи: час встречи в двух каналах — это сотни мегабайт."""
-    free = shutil.disk_usage(_root()).free / 1e9
+    """Место под модели и записи.
+
+    Пороги 5 и 20 ГБ отвечают на вопрос «поместятся ли модели», не «хватит ли
+    этой встречи»: четырёхчасовой порог живёт у записи. Мера одна —
+    `free_bytes`, та же, что перед открытием `.pcm`.
+    """
+    free = free_bytes(_root()) / 1e9
     if free < 5:
         line(FAIL, f"на диске {free:.1f} ГБ",
              "записи и модели не поместятся — освободите место")
