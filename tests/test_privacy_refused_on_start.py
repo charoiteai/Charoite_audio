@@ -348,7 +348,7 @@ def _code(tmp_path: pathlib.Path, source: str) -> pathlib.Path:
 def _probe_script() -> str:
     path = ROOT / "app/Sources/CharoiteApp/Services/SetupReadinessService.swift"
     lines = path.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == 'let script = #"""')
+    start = next(i for i, line in enumerate(lines) if line.strip().endswith('let script = #"""'))
     end = next(i for i, line in enumerate(lines) if i > start and line.strip() == '"""#')
     return "\n".join(lines[start + 1:end]) + "\n"
 

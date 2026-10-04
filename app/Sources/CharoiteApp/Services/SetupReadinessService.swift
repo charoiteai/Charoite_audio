@@ -215,45 +215,12 @@ final class SetupReadinessService: ObservableObject {
         }
     }
 
-    private nonisolated static func inspectLocalRuntime(root: URL) -> LocalSetupProbe {
-        let fm = FileManager.default
-        var isDirectory: ObjCBool = false
-        let rootExists = fm.fileExists(atPath: root.path, isDirectory: &isDirectory)
-            && isDirectory.boolValue
-        // Интерпретатор ищем там же, где его запускает приложение: с
-        // вложенным контуром .venv рядом с репозиторием может не быть вовсе,
-        // и требовать его значило бы показывать красную ошибку на рабочей
-        // установке.
-        let python = AppSettings.pythonExecutable
-        let required = [
-            (AppSettings.pythonIsEmbedded
-                ? L.t("python в бандле", "python in the bundle", "捆绑包中的 python")
-                : ".venv/bin/python", python),
-            ("src/daemon.py", AppSettings.codeRoot(dataRoot: root).appendingPathComponent("src/daemon.py")),
-            ("config/config.yaml", root.appendingPathComponent("config/config.yaml")),
-        ]
-        let missing = required.compactMap { label, url in
-            fm.fileExists(atPath: url.path) ? nil : label
-        }
-        let configURL = root.appendingPathComponent("config/config.yaml")
-        let configText = try? String(contentsOf: configURL, encoding: .utf8)
-        guard fm.isExecutableFile(atPath: python.path) else {
-            return LocalSetupProbe(
-                rootExists: rootExists,
-                missingFiles: missing,
-                configText: configText,
-                pythonMissingModules: [],
-                inputDevices: [],
-                pythonError: "venv",
-                audioError: nil,
-                configError: nil,
-                addressError: nil)
-        }
-
-        // Один короткий запуск проверяет те же импорты и PortAudio, которыми
-        // пользуется демон. Поиск системного устройства в Swift дал бы другую
-        // картину, чем sounddevice внутри Python — проверяем рабочий путь.
-        let script = #"""
+    // Один короткий запуск проверяет те же импорты и PortAudio, которыми
+    // пользуется демон. Поиск системного устройства в Swift дал бы другую
+    // картину, чем sounddevice внутри Python — проверяем рабочий путь.
+    // Константа типа, а не локальная: сырая строка в теле функции шла в
+    // function_body_length SwiftLint.
+    private nonisolated static let script = #"""
 import importlib, json, sys
 missing = []
 for name in ("yaml", "requests", "numpy", "sounddevice", "onnx_asr"):
@@ -312,6 +279,42 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                   "config_error": config_error, "address_error": address_error},
                  ensure_ascii=False))
 """#
+
+    private nonisolated static func inspectLocalRuntime(root: URL) -> LocalSetupProbe {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        let rootExists = fm.fileExists(atPath: root.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+        // Интерпретатор ищем там же, где его запускает приложение: с
+        // вложенным контуром .venv рядом с репозиторием может не быть вовсе,
+        // и требовать его значило бы показывать красную ошибку на рабочей
+        // установке.
+        let python = AppSettings.pythonExecutable
+        let required = [
+            (AppSettings.pythonIsEmbedded
+                ? L.t("python в бандле", "python in the bundle", "捆绑包中的 python")
+                : ".venv/bin/python", python),
+            ("src/daemon.py", AppSettings.codeRoot(dataRoot: root).appendingPathComponent("src/daemon.py")),
+            ("config/config.yaml", root.appendingPathComponent("config/config.yaml")),
+        ]
+        let missing = required.compactMap { label, url in
+            fm.fileExists(atPath: url.path) ? nil : label
+        }
+        let configURL = root.appendingPathComponent("config/config.yaml")
+        let configText = try? String(contentsOf: configURL, encoding: .utf8)
+        guard fm.isExecutableFile(atPath: python.path) else {
+            return LocalSetupProbe(
+                rootExists: rootExists,
+                missingFiles: missing,
+                configText: configText,
+                pythonMissingModules: [],
+                inputDevices: [],
+                pythonError: "venv",
+                audioError: nil,
+                configError: nil,
+                addressError: nil)
+        }
+
         let process = Process()
         process.executableURL = python
         // PYTHONSAFEPATH, а не -I: cwd не попадает в sys.path — проба
@@ -325,7 +328,7 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         // Корень кода — откуда читать src/privacy.py. PYTHONPATH не ставим:
         // проба его как раз вычищает, папка данных не должна становиться
         // путём импорта.
-        process.arguments = ["-c", script, AppSettings.codeRoot(dataRoot: root).path]
+        process.arguments = ["-c", Self.script, AppSettings.codeRoot(dataRoot: root).path]
         var env = ProcessInfo.processInfo.environment
         env["PYTHONSAFEPATH"] = "1"          // cwd (папка данных) — не в sys.path
         env["PYTHONNOUSERSITE"] = "1"        // ~/.local/lib — тоже не наш путь
