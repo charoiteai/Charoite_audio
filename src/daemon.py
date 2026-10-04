@@ -660,6 +660,25 @@ def gigastt_stream_client():
     return functools.partial(connect, proxy=None)
 
 
+def _note_memory(notice: stt_runtime.MemoryNotice) -> None:
+    """Давление памяти — на старте записи и на heartbeat главного цикла.
+
+    Сбой меры (исключение или None) слой не трогает. Исключение отсюда не
+    выходит: главный цикл без этой обёртки закончил бы встречу.
+    """
+    try:
+        state = live_nemotron.memory_state()
+    except Exception as e:  # noqa: BLE001 — сбой меры не трогает слой
+        print(f"давление памяти не измерено: {e}", file=sys.stderr, flush=True)
+        return
+    try:
+        stt_runtime.announce_memory(
+            notice, state, emit=emit,
+            log=lambda line: print(line, file=sys.stderr, flush=True))
+    except Exception as e:  # noqa: BLE001 — статус не смеет ронять встречу
+        print(f"давление памяти: {e}", file=sys.stderr, flush=True)
+
+
 def main():
     # Маска — первой строкой: она состояние процесса и корня не касается, а
     # закрыть всё созданное позже обязана независимо от того, где данные
@@ -849,6 +868,9 @@ def main():
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    # Одно состояние на встречу: новый объект на каждом heartbeat слал бы
+    # слой заново и заново красил строку статуса.
+    mem_notice = stt_runtime.MemoryNotice()
     try:
         hub.start()
     except Exception as e:  # noqa: BLE001 — «ни один аудиоканал не открылся» и подобное
@@ -861,6 +883,9 @@ def main():
         except Exception:  # noqa: BLE001 — стоп недостартовавшего хаба не важнее причины
             pass
         raise
+    # Старт записи — до главного цикла: давление уже критичное человек видит
+    # сразу, а не через первый heartbeat.
+    _note_memory(mem_notice)
     # Возраст записи — по СТЕННЫМ часам (потолок длительности обязан быть
     # шестью часами, а не шестью часами бодрствования: монотонные часы macOS
     # во сне стоят), тишина — по монотонным (сон — не тишина в комнате).
@@ -3500,6 +3525,8 @@ def main():
                 except Exception:  # noqa: BLE001
                     pass
                 emit(hb_event)
+                # Давление — только на переходе уровня, не на каждом hb (№319).
+                _note_memory(mem_notice)
                 # Сторож слоя авто-подсказок: умерший поток — перезапуск и
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три

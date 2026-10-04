@@ -1088,7 +1088,8 @@ reworded line or a fourth marker changed stickiness silently, and the channel
 would have applied at all. Now a hub status is `stt_runtime.Status`, a `str`
 subclass with `sticky` (True sets a layer, False clears it, None is an
 ordinary status), `error` and `topic`; the fields are set where the line is
-born (`_announce_losses`, `_announce_back`, the four disk failures), a single
+born (`_announce_losses`, `_announce_back`, the factual disk failures, the
+low-disk warning before the files open, and `memory_layer`), a single
 door `_say` leads to `on_status`, and one function of the contract module,
 `status_event`, builds the JSON: `error` always, `sticky` and `topic` only when
 set. No substring classifiers remain in `src/`. In the app, instead of one
@@ -1099,7 +1100,15 @@ each writer clears only its own layer, the daemon's clear no longer wipes "no
 microphone permission", the on-screen line joins all live layers in priority
 order with " · ", and Start clears them all. On the wire the boolean `sticky`
 stays next to `topic`: app 0.82 reads only the boolean, and a new daemon
-without a topic lands in the channel-loss layer.
+without a topic lands in the channel-loss layer. A topic the app does not
+name is still a problem layer (№319): `disk` when free space is under the
+recording threshold before the files open (sticky for the rest of the
+meeting; a write that fails later on the same topic stays non-sticky and is
+held by the heartbeat) and `memory` when pressure is critical (level 4 sets
+the layer, level 1 clears it and the clear carries the topic, level 2 is a
+journal line only, no reading leaves the layer alone). Unknown topics rank
+after the named ones and are not informational, so the line stays on screen
+until that writer clears its own topic.
 
 **The incomplete-recording note is a fact about the recording, not speech; a
 derivative has one source.** Before №316/№317 a derivative (minutes, debrief,
@@ -1314,8 +1323,10 @@ next to "Recording" is the recording's health, not a REC light: a healthy
 recording used to be red, a degraded one yellow — the reflex "drop everything
 and look at the recording" was being trained on the wrong colour. No new
 daemon, watchdog, timer for Ollama or notification stream: the verdict №68
-stands — the rollup folds signals that already exist. Free-disk pre-flight is
-a new signal and a separate card (№319).
+stands — the rollup folds signals that already exist. The free-space warning
+before recording and the critical-memory layer (№319) are meeting-status
+layers, not inputs of this rollup: the icon turns red only when data is
+already being lost.
 
 ## Layer boundaries (docs/design/layout.json)
 

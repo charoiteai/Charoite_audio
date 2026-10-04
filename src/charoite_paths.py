@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import shutil
 import threading
 import typing
 
@@ -678,4 +679,14 @@ def trim_log(path: pathlib.Path, max_bytes: int = LOG_MAX_BYTES,
         return True
     except OSError:
         return False
+
+
+def free_bytes(path) -> int:
+    """Свободные байты тома, на котором лежит `path`.
+
+    Одна мера на проект. Доктор спрашивает её про модели (пороги 5 и 20 ГБ),
+    запись перед стартом — про эту встречу. Две независимые `disk_usage`
+    молча разъехались бы.
+    """
+    return int(shutil.disk_usage(path).free)
 

@@ -62,6 +62,15 @@ Check the first transcript lines as well as the timer:
   from the microphone alone;
 - a “disk recording disabled” warning means the live transcript continues,
   but there is no safety audio for an accurate rebuild;
+- if less than about 880 MB is free when recording starts, a warning stays
+  for the whole meeting («МАЛО МЕСТА НА ДИСКЕ: …» — "low disk space") while
+  recording continues. Free some space: what gets lost if the disk fills
+  later is the tail of the meeting. The threshold is
+  `audio.record_free_min_bytes` (bytes). A failed space check is a line in
+  the daemon log and does not stop recording;
+- critical memory pressure («ПАМЯТЬ НА ИСХОДЕ: …» — "memory is nearly gone")
+  stays on screen until the machine is comfortable again. A mild warning is
+  only in the daemon log: with a local model resident it is ordinary;
 - a “hints are falling behind: up to N s of live audio lost” line means
   recognition cannot keep up with the conversation and the live transcript
   missed part of the speech. While disk recording is on, the meeting itself is
