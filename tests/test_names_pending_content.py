@@ -182,14 +182,21 @@ def test_reader_keeps_a_listless_banner_beside_the_collapsed_mic_note():
     assert transcript.NAMES_PENDING_PREFIX not in transcript.names_banner_for(bare)
 
 
-def test_reader_does_not_count_the_bare_neutral_label():
+def test_listless_banner_counts_the_bare_neutral_label_as_rebuild_does():
+    """Плашка без списка: голый «Собеседник» — потеря, как у писателя
+    `rebuild()`. Плашка со списком считает его так же."""
     both = (
         f"# Встреча\n\n{rt.NAMES_PENDING_NOTE}\n\n"
         "**Собеседник** [12:00]:\nда\n\n**Собеседник 3** [12:01]:\nнет\n"
     )
-    assert transcript.read_names_pending(both).labels == ("Собеседник 3",)
+    assert transcript.read_names_pending(both).labels == ("Собеседник", "Собеседник 3")
     only = f"# Встреча\n\n{rt.NAMES_PENDING_NOTE}\n\n**Собеседник** [12:00]:\nда\n"
-    assert transcript.read_names_pending(only).pending is False
+    info = transcript.read_names_pending(only)
+    assert info.pending is True and info.reason == "silent" and info.labels == ("Собеседник",)
+    assert transcript.names_banner_for(only) == only
+    listed = transcript.names_pending_line(rt.NAMES_PENDING_NOTE, ["Собеседник"])
+    text = f"# Встреча\n\n{listed}\n\n**Собеседник** [12:00]:\nда\n"
+    assert transcript.read_names_pending(text).labels == ("Собеседник",)
 
 
 def test_listed_banner_drops_when_nothing_remains_even_beside_the_collapsed_note():
@@ -589,3 +596,74 @@ def test_expire_reviews_returns_nothing_when_the_lock_is_held(tmp_path, monkeypa
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+@pytest.mark.parametrize(("write", "state"), [
+    (lambda store, live: store.ready(live, None), "ready"),
+    (lambda store, live: store.failed(live, "упало"), "error"),
+    (lambda store, live: store.no_speech(live), "empty"),
+])
+def test_meeting_outcome_lands_when_the_lock_is_held(tmp_path, monkeypatch, capsys, write, state):
+    """Замок держит тест дольше срока: этап (`processing`) пропускается
+    TimeoutError, а исход встречи всё равно ложится поверх `processing`,
+    со строкой в stderr. Замок после этого по-прежнему у теста."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    path = store.processing(live, "updating_graph")
+    fd = _hold_status_lock(store.directory)
+    try:
+        with pytest.raises(TimeoutError):
+            store.processing(live, "rebuilding_transcript")
+        assert json.loads(path.read_text(encoding="utf-8"))["stage"] == "updating_graph"
+        started = time.monotonic()
+        assert write(store, live) == path
+        assert time.monotonic() - started >= 0.2
+        assert json.loads(path.read_text(encoding="utf-8"))["state"] == state
+        assert "без замка" in capsys.readouterr().err
+        probe = os.open(store.directory / meeting_processing._STATUS_LOCK_NAME, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_expire_reviews_returns_nothing_when_the_lock_file_fails(tmp_path, monkeypatch):
+    """Не только занятый замок: сбой файла замка (права, диск) — тоже [],
+    unfinished() идёт дальше."""
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: meeting_processing.REVIEW_STALE + 50)
+    path = store.ready(live, None)
+    assert store.review(live, "running", "идёт") == path
+
+    @contextlib.contextmanager
+    def denied(self):
+        raise PermissionError("status.lock: нет прав")
+        yield
+
+    monkeypatch.setattr(MeetingStatusStore, "_locked", denied)
+    assert store.expire_reviews() == []
+    assert store.unfinished() == []
+    assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "running"
+
+
+def test_status_writes_leave_no_open_descriptors(tmp_path):
+    """Каждая запись открывает описатель замка и обязана его закрыть: у
+    долгоживущего демона утечка кончается EMFILE."""
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.processing(live, "updating_graph")
+    before = len(os.listdir("/dev/fd"))
+    for _ in range(20):
+        store.processing(live, "updating_graph")
+        store.ready(live, None)
+        store.refresh_names(live)
+        store.expire_reviews()
+    assert len(os.listdir("/dev/fd")) == before

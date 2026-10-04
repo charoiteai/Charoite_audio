@@ -71,8 +71,9 @@
   still unnamed. The status is read from the transcript, not carried as a flag:
   `names_pending` is true only while the warning is present and a listed label
   is still a speech header (a warning written before the list counts every
-  numbered «Собеседник N» header, and stays when the microphone-collapse note
-  sits beside a warning that would otherwise have nothing left to name), and
+  «Собеседник» and «Собеседник N» header, and stays when the
+  microphone-collapse note sits beside a warning that would otherwise have
+  nothing left to name), and
   `names_reason` is `silent` or `rejected`. Neither key is stored when nothing
   is pending — `names_pending` stays a boolean. A cloud revision rewrites the
   warning only on a machine-owned transcript (drops it when no unnamed label

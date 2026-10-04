@@ -13,6 +13,7 @@ import math
 import os
 import pathlib
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -34,6 +35,8 @@ _STATUS_LOCK_NAME = "status.lock"
 # открывает — его держит _held_dirs, иначе LOCK_EX ждал бы сам себя.
 # Чужой держатель: LOCK_NB и опрос до STATUS_LOCK_WAIT_S от первой
 # попытки. Срок вышел — TimeoutError, документ не читается и не пишется.
+# Исход встречи (ready, failed, no_speech) так не теряется: `_update` с
+# terminal=True пишет его без замка, см. там.
 STATUS_LOCK_POLL_S = 0.05
 STATUS_LOCK_WAIT_S = 10.0
 _HELD = threading.local()
@@ -331,7 +334,7 @@ class MeetingStatusStore:
                 payload["review"] = current["review"]
             return payload
 
-        return _required(self._update(transcript, mutate))
+        return _required(self._update(transcript, mutate, terminal=True))
 
     def refresh_names(self, transcript: pathlib.Path) -> pathlib.Path | None:
         """Пересчитать признак имён у уже готовой встречи. Статуса нет —
@@ -442,7 +445,9 @@ class MeetingStatusStore:
                     except OSError:
                         continue
                     out.append(path)
-        except TimeoutError:
+        except (TimeoutError, OSError):
+            # Уборка побочная: и занятый замок, и сбой его файла (каталог
+            # без прав, диск) не роняют unfinished() и его вызывающих.
             return []
         return out
 
@@ -468,7 +473,7 @@ class MeetingStatusStore:
                 payload["review"] = current["review"]
             return payload
 
-        return _required(self._update(transcript, mutate))
+        return _required(self._update(transcript, mutate, terminal=True))
 
     def unfinished(self, *, stale_after: float = STALE_PROCESSING,
                    limit: int = RETRY_LIMIT) -> list[dict[str, Any]]:
@@ -624,7 +629,7 @@ class MeetingStatusStore:
                 "attempts": int(current.get("attempts", 0)),
             }
 
-        return _required(self._update(transcript, mutate))
+        return _required(self._update(transcript, mutate, terminal=True))
 
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
@@ -708,8 +713,21 @@ class MeetingStatusStore:
             return {}
 
     def _update(self, transcript: pathlib.Path,
-                mutate: Callable[[dict[str, Any]], dict[str, Any] | None]) -> pathlib.Path | None:
+                mutate: Callable[[dict[str, Any]], dict[str, Any] | None], *,
+                terminal: bool = False) -> pathlib.Path | None:
         """Дверь записи для писателей конвейера: замок, чтение, mutate, запись.
+
+        Два режима. Обычная запись (этап, ревизия, пересчёт имён) при замке,
+        не взятом за срок, бросает TimeoutError: её можно пропустить, следующая
+        запись того же писателя всё равно придёт. `terminal=True` — исход
+        встречи (ready, failed, no_speech): он обязан лечь, иначе документ
+        навсегда остаётся в `processing`, приложение через полчаса рисует
+        ошибку, а `unfinished()` через час заново гонит STT готовой встречи.
+        На базе эти записи шли без замка и ложились всегда. Поэтому при
+        таймауте терминальная запись идёт один раз без замка: та же
+        атомарная `_write_path`, читатели видят старый или новый документ
+        целиком; для исхода встречи последний писатель выигрывает. Строка
+        об этом — в stderr.
 
         Переименование и забывание встречи пока пишут мимо
         (`scripts/rename_meeting.py` переписывает `transcript_path`,
@@ -721,7 +739,14 @@ class MeetingStatusStore:
         второй раз.
         """
         transcript = pathlib.Path(transcript)
-        with self._locked():
+        lock = contextlib.ExitStack()
+        try:
+            lock.enter_context(self._locked())
+        except TimeoutError as e:
+            if not terminal:
+                raise
+            print(f"статус встречи: {e}; исход пишется без замка", file=sys.stderr)
+        with lock:
             return self._apply(transcript, mutate)
 
     @contextlib.contextmanager
