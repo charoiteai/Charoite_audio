@@ -420,8 +420,12 @@ _SCHEMA: dict[str, Field] = {
     # Критерий двери — необратимое для владельца: звук пишется на диск или теряется,
     # данные уходят за машину, данные владельца пишутся или удаляются. Модуль целиком —
     # только если это его главная работа. Запись `::функция` — сама функция, её
-    # лексическая вложенность и прямые вызовы в том же модуле (`in_zone` по дереву
-    # ревизии): хелпер в список не вписывают, формат ключа прежний.
+    # лексическая вложенность и упоминания по имени в том же модуле (`in_zone`
+    # по дереву ревизии: вызов, значение, декоратор, класс со всеми методами,
+    # в том числе вложенный в объемлющий класс, модульная переменная). Хелпер
+    # в список не вписывают, формат ключа прежний.
+    # Не следует в другой модуль, в `getattr` по строке, в `globals()`, в реестр
+    # времени работы и в `hub.drop`.
     # `mutation_not_critical` — решение «не дверь» с
     # обоснованием для модуля, который сторож (`zone_problems`) иначе потребовал бы решить.
     "mutation_critical": Field(dict, "decision"),
@@ -1212,177 +1216,283 @@ def _lexical_in_zone(entries, rel: str, qualname: str) -> bool:
     return False
 
 
-def _definitions(tree: ast.AST) -> tuple[dict[str, str], dict[str, ast.AST]]:
-    """qualname → `fn`/`cls` и узел. Область — та, в которой имя определено."""
-    defs: dict[str, str] = {}
-    nodes: dict[str, ast.AST] = {}
+def _definitions(tree: ast.AST) -> tuple[dict[str, set[str]], dict[str, ast.AST], dict[str, ast.AST]]:
+    """qualname → виды (`fn`/`cls`) и узлы функций и классов по отдельности.
+
+    Одно имя бывает и функцией, и классом (`def K` и `class K`). Позднее
+    определение не затирает раннее: упоминание даёт ребро к обоим. Два узла
+    одного вида с одним qualname — последний в тексте: в рантайме живёт он.
+    """
+    kinds: dict[str, set[str]] = {}
+    fns: dict[str, ast.AST] = {}
+    clss: dict[str, ast.AST] = {}
     for node, scope in scoped_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             qual = f"{scope}.{node.name}" if scope else node.name
-            defs[qual] = "cls" if isinstance(node, ast.ClassDef) else "fn"
-            nodes[qual] = node
-    return defs, nodes
+            kind = "cls" if isinstance(node, ast.ClassDef) else "fn"
+            kinds.setdefault(qual, set()).add(kind)
+            (clss if kind == "cls" else fns)[qual] = node
+    return kinds, fns, clss
 
 
-def _store_names(node: ast.AST) -> set[str]:
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-        return {node.id}
-    if isinstance(node, (ast.Tuple, ast.List)):
+def _assigned_names(target: ast.AST) -> set[str]:
+    """Имена, которым присваивается значение: голое имя и разбор кортежа."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
         out: set[str] = set()
-        for elt in node.elts:
-            out |= _store_names(elt)
+        for elt in target.elts:
+            out |= _assigned_names(elt)
         return out
-    if isinstance(node, ast.Starred):
-        return _store_names(node.value)
+    if isinstance(target, ast.Starred):
+        return _assigned_names(target.value)
     return set()
 
 
-def _bindings(fn: ast.AST) -> dict[str, str]:
-    """Имена тела функции (не вложенных областей): `fn`, `cls` или `val`.
+def _module_values(tree: ast.AST) -> dict[str, list[ast.AST]]:
+    """Имя модульной переменной → выражения, присвоенные ей на уровне модуля.
 
-    Присваивание делает имя локальным на всё тело — вызов с тем же именем уже
-    не глобальная функция модуля. Вложенный `def` важнее параметра: после него
-    зовут его.
+    Тело функции и тело класса — не уровень модуля. Присваивание внутри `if` /
+    `try` на уровне модуля — да. Аннотация `AnnAssign` не значение.
     """
-    bound: dict[str, str] = {}
-    args = fn.args
-    for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-        bound[arg.arg] = "val"
-    if args.vararg:
-        bound[args.vararg.arg] = "val"
-    if args.kwarg:
-        bound[args.kwarg.arg] = "val"
+    values: dict[str, list[ast.AST]] = {}
+    tries = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
 
-    def bind_store(target: ast.AST) -> None:
-        for name in _store_names(target):
-            bound.setdefault(name, "val")
-
-    def walk(node: ast.AST) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            bound[node.name] = "fn"
+    def add(target: ast.AST, value: ast.AST | None) -> None:
+        if value is None:
             return
-        if isinstance(node, ast.ClassDef):
-            bound[node.name] = "cls"
-            return
-        # Свои области: лямбда и включения не затеняют имена функции.
-        if isinstance(node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            return
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                bound.setdefault(alias.asname or alias.name.split(".")[0], "val")
-            return
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                bind_store(target)
-        elif isinstance(node, ast.AnnAssign):
-            bind_store(node.target)
-        elif isinstance(node, (ast.AugAssign, ast.NamedExpr)):
-            bind_store(node.target)
-        elif isinstance(node, ast.For):
-            bind_store(node.target)
-        elif isinstance(node, ast.With):
-            for item in node.items:
-                if item.optional_vars is not None:
-                    bind_store(item.optional_vars)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            bound.setdefault(node.name, "val")
-        for child in ast.iter_child_nodes(node):
-            walk(child)
+        for name in _assigned_names(target):
+            values.setdefault(name, []).append(value)
 
-    for stmt in fn.body:
-        walk(stmt)
-    return bound
+    def stmts(body: list) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add(target, node.value)
+            elif isinstance(node, ast.AnnAssign):
+                add(node.target, node.value)
+            elif isinstance(node, ast.AugAssign):
+                add(node.target, node.value)
+            elif isinstance(node, ast.If):
+                stmts(node.body)
+                stmts(node.orelse)
+            elif isinstance(node, (ast.For, ast.While, ast.With)):
+                stmts(node.body)
+                stmts(node.orelse)
+            elif isinstance(node, tries):
+                stmts(node.body)
+                for handler in node.handlers:
+                    stmts(handler.body)
+                stmts(node.orelse)
+                stmts(node.finalbody)
+            elif isinstance(node, ast.Match):
+                for case in node.cases:
+                    stmts(case.body)
+
+    stmts(getattr(tree, "body", []))
+    return values
 
 
-def _enclosing_functions(qual: str, defs: dict[str, str]):
+def _mention_scopes(scope_qual: str, kinds: dict[str, set[str]]):
+    """Функции, в которых имя может быть определено, от `scope_qual` вверх, затем модуль.
+
+    Класс пропускается: метод класса — не функция, которую зовут голым именем.
+    Пустой `scope_qual` — только модуль (значение модульной переменной).
+    """
+    cursor = scope_qual
+    while cursor:
+        if "fn" in kinds.get(cursor, ()):
+            yield cursor
+        cursor = cursor.rpartition(".")[0]
+    yield ""
+
+
+def _enclosing_classes(scope_qual: str, kinds: dict[str, set[str]]):
+    """Объемлющие классы функции. Метод их пропускает `_mention_scopes`, но
+    вложенный класс-хелпер (`class Door: class Cleaner`) иначе невидим голому
+    имени, и `with Cleaner()` снова выносит `__exit__` мимо зоны."""
+    cursor = scope_qual
+    while cursor:
+        if "cls" in kinds.get(cursor, ()):
+            yield cursor
+        cursor = cursor.rpartition(".")[0]
+
+
+def _named(name: str, kind: str, scope_qual: str, kinds: dict[str, set[str]]) -> list[str]:
+    """Все qualname вида `kind` с именем `name` в области и выше, без выбора ближайшего.
+
+    Функция — в самой функции, в объемлющих функциях и на модуле. Класс — там же
+    и ещё в объемлющих классах: пропуск вложенного класса прячет его методы.
+    """
+    found: list[str] = []
+    scopes = list(_mention_scopes(scope_qual, kinds))
+    if kind == "cls":
+        for scope in _enclosing_classes(scope_qual, kinds):
+            if scope not in scopes:
+                scopes.append(scope)
+    for scope in scopes:
+        qual = f"{scope}.{name}" if scope else name
+        if kind in kinds.get(qual, ()) and qual not in found:
+            found.append(qual)
+    return found
+
+
+def _base_scopes(class_qual: str, kinds: dict[str, set[str]]):
+    """Где вычисляется база класса: объемлющий класс (соседи), функции и модуль."""
+    cursor = class_qual.rpartition(".")[0]
+    while cursor:
+        if kinds.get(cursor):
+            yield cursor
+        cursor = cursor.rpartition(".")[0]
+    yield ""
+
+
+def _direct_bases(class_qual: str, kinds: dict[str, set[str]],
+                  clss: dict[str, ast.AST]) -> list[str]:
+    """Базы, заданные голым именем класса этого модуля. Чужой модуль и атрибут — мимо."""
+    node = clss.get(class_qual)
+    if not isinstance(node, ast.ClassDef):
+        return []
+    found: list[str] = []
+    for base in node.bases:
+        if not isinstance(base, ast.Name):
+            continue
+        for scope in _base_scopes(class_qual, kinds):
+            qual = f"{scope}.{base.id}" if scope else base.id
+            if "cls" in kinds.get(qual, ()) and qual not in found:
+                found.append(qual)
+    return found
+
+
+def _class_and_bases(class_qual: str, kinds: dict[str, set[str]],
+                     clss: dict[str, ast.AST]) -> list[str]:
+    """Класс и его базы из модуля, транзитивно. Цикл баз обход не зацикливает."""
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [class_qual]
+    while stack:
+        qual = stack.pop()
+        if qual in seen or "cls" not in kinds.get(qual, ()):
+            continue
+        seen.add(qual)
+        out.append(qual)
+        stack.extend(_direct_bases(qual, kinds, clss))
+    return out
+
+
+def _methods(class_qual: str, kinds: dict[str, set[str]], attr: str | None) -> set[str]:
+    """Прямые методы класса. `attr` None — все, иначе только этот. Вложенные функции методов — нет."""
+    prefix = class_qual + "."
+    found: set[str] = set()
+    for qual, ks in kinds.items():
+        if "fn" not in ks or not qual.startswith(prefix):
+            continue
+        rest = qual[len(prefix):]
+        if "." in rest:
+            continue
+        if attr is None or rest == attr:
+            found.add(qual)
+    return found
+
+
+def _nearest_class(qual: str, kinds: dict[str, set[str]]) -> str | None:
+    """Ближайший объемлющий класс или None, если функция не метод и не вложена в метод."""
     parent = qual.rpartition(".")[0]
     while parent:
-        if defs.get(parent) == "fn":
-            yield parent
+        if "cls" in kinds.get(parent, ()):
+            return parent
         parent = parent.rpartition(".")[0]
-
-
-def _visible(name: str, qual: str, defs: dict[str, str],
-             bound_cache: dict[str, dict[str, str]]) -> tuple[str | None, str | None]:
-    """Что имя значит в функции `qual`: (`fn`/`cls`/`val`, qualname) или (None, None)."""
-    scopes = [qual, *_enclosing_functions(qual, defs)]
-    for scope in scopes:
-        kind = bound_cache.get(scope, {}).get(name)
-        if kind is None:
-            continue
-        if kind == "val":
-            return "val", None
-        return kind, f"{scope}.{name}" if scope else name
-    kind = defs.get(name)
-    if kind in ("fn", "cls"):
-        return kind, name
-    return None, None
-
-
-def _method_class(qual: str, defs: dict[str, str]) -> str | None:
-    parent, _, _name = qual.rpartition(".")
-    if parent and defs.get(parent) == "cls":
-        return parent
     return None
 
 
-def _callee(func: ast.AST, qual: str, fn: ast.AST, defs: dict[str, str],
-            bound_cache: dict[str, dict[str, str]]) -> str | None:
-    """Qualname функции этого модуля, которую зовёт узел, или None.
+def _is_self_receiver(node: ast.AST) -> bool:
+    """Приёмник «сам объект»: `self`, `cls`, `type(self)`, `self.__class__`, `super()`."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in ("self", "cls"):
+        return True
+    if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr == "__class__"
+            and isinstance(node.value, ast.Name) and node.value.id == "self"):
+        return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.func.id == "super":
+            return True
+        if (node.func.id == "type" and len(node.args) == 1 and not node.keywords
+                and isinstance(node.args[0], ast.Name) and node.args[0].id == "self"):
+            return True
+    return False
 
-    Прямой вызов и только он: голое имя, метод своего класса (`self`/`cls`),
-    `Класс.метод` и `Класс(...).метод`. Вызов через переменную, аргумент
-    `spawn(fn)` и чужой модуль не резолвятся — у них нет статичного qualname.
+
+def _mention_roots(fn: ast.AST) -> list[ast.AST]:
+    """Где искать упоминания: декораторы, значения по умолчанию, тело.
+
+    Аннотации параметров и возврата сюда не входят. Вложенные `def`/`class`
+    лежат в теле, но обход их не раскрывает — у них свой узел.
     """
-    if isinstance(func, ast.Name):
-        kind, found = _visible(func.id, qual, defs, bound_cache)
-        return found if kind == "fn" else None
-    if not isinstance(func, ast.Attribute):
-        return None
-    attr = func.attr
-    value = func.value
-    class_name = _method_class(qual, defs)
-    if (class_name and isinstance(value, ast.Name) and fn.args.args
-            and value.id in ("self", "cls") and value.id == fn.args.args[0].arg):
-        cand = f"{class_name}.{attr}"
-        return cand if defs.get(cand) == "fn" else None
-    base = None
-    if isinstance(value, ast.Name):
-        base = value.id
-    elif isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
-        base = value.func.id
-    if base is None:
-        return None
-    kind, found = _visible(base, qual, defs, bound_cache)
-    if kind != "cls" or not found:
-        return None
-    cand = f"{found}.{attr}"
-    return cand if defs.get(cand) == "fn" else None
+    roots: list[ast.AST] = list(fn.decorator_list)
+    args = fn.args
+    roots.extend(args.defaults)
+    roots.extend(default for default in args.kw_defaults if default is not None)
+    roots.extend(fn.body)
+    return roots
 
 
-def _calls_of(fn: ast.AST, qual: str, defs: dict[str, str],
-              bound_cache: dict[str, dict[str, str]]) -> set[str]:
-    """Прямые вызовы из тела. Вложенная функция — свой узел, не тело родителя."""
+def _collect_mentions(roots, qual: str, kinds: dict[str, set[str]], clss: dict[str, ast.AST],
+                      mod_values: dict[str, list[ast.AST]], visiting: set[str]) -> set[str]:
+    """Функции модуля, упомянутые в `roots`.
+
+    Голое имя в загрузке — ко всем подходящим функциям и ко всем методам
+    подходящих классов (и их баз из модуля), без выбора ближайшего. Модульная
+    переменная раскрывается теми же правилами; цикл переменных обрывает `visiting`.
+    Цепочка переменных обходится очередью: глубина не упирается в стек. Значение
+    переменной живёт на уровне модуля — ни `self`, ни вложенных функций.
+    `self.X` в методе — метод `X` ближайшего класса и его баз, не все методы.
+    Аннотация не упоминание. Лямбда и включение обходятся как часть тела.
+    """
     found: set[str] = set()
+    seen_vars = set(visiting)
+    queued: list[ast.AST] = []
 
-    def walk(node: ast.AST) -> None:
+    def add_name(name: str, scope_qual: str) -> None:
+        found.update(_named(name, "fn", scope_qual, kinds))
+        for cls_qual in _named(name, "cls", scope_qual, kinds):
+            for base in _class_and_bases(cls_qual, kinds, clss):
+                found.update(_methods(base, kinds, None))
+        if name in mod_values and name not in seen_vars:
+            seen_vars.add(name)
+            queued.extend(mod_values[name])
+
+    def walk(node: ast.AST, scope_qual: str, class_qual: str | None) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             return
-        # Аннотация не исполняется (`from __future__ import annotations`).
+        if type(node).__name__ == "TypeAlias":
+            return
         if isinstance(node, ast.AnnAssign):
             if node.value is not None:
-                walk(node.value)
+                walk(node.value, scope_qual, class_qual)
             return
-        if isinstance(node, ast.Call):
-            callee = _callee(node.func, qual, fn, defs, bound_cache)
-            if callee:
-                found.add(callee)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            add_name(node.id, scope_qual)
+        elif (class_qual and isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+              and _is_self_receiver(node.value)):
+            for base in _class_and_bases(class_qual, kinds, clss):
+                found.update(_methods(base, kinds, node.attr))
         for child in ast.iter_child_nodes(node):
-            walk(child)
+            walk(child, scope_qual, class_qual)
 
-    for stmt in fn.body:
-        walk(stmt)
+    class_qual = _nearest_class(qual, kinds) if qual else None
+    for root in roots:
+        walk(root, qual, class_qual)
+    # Значения модульных переменных: область модуля, без приёмника метода.
+    while queued:
+        walk(queued.pop(), "", None)
     return found
+
+
+def _mentions_of(fn: ast.AST, qual: str, kinds: dict[str, set[str]], clss: dict[str, ast.AST],
+                 mod_values: dict[str, list[ast.AST]]) -> set[str]:
+    """Упоминания узла функции: декораторы, значения по умолчанию и тело."""
+    return _collect_mentions(_mention_roots(fn), qual, kinds, clss, mod_values, set())
 
 
 #: Кэш замыкания на дерево ревизии: план зовёт `in_zone` по каждому мутанту.
@@ -1390,20 +1500,22 @@ _ZONE_CALLS: dict[tuple, tuple[ast.AST, frozenset[str]]] = {}
 
 
 def _delegated(entries, rel: str, tree: ast.AST) -> frozenset[str]:
-    """Функции файла, до которых из критичной записи доходит прямой вызов.
+    """Функции файла, до которых из критичной записи доходит упоминание имени.
 
     Вниз и транзитивно, не вверх к тем, кто зовёт дверь. Семя — лексически
-    критичные функции, включая вложенные: вызов из `door.inner` тоже вызов двери.
+    критичные функции, включая вложенные: упоминание из `door.inner` тоже
+    упоминание двери. `mutation_not_critical` не вычитается — сюда приходят
+    только записи критичной зоны.
     """
     key = (id(tree), rel, tuple(sorted(entries)))
     cached = _ZONE_CALLS.get(key)
     if cached is not None and cached[0] is tree:
         return cached[1]
-    defs, nodes = _definitions(tree)
-    bound_cache = {qual: _bindings(node) for qual, node in nodes.items() if defs.get(qual) == "fn"}
-    edges = {qual: _calls_of(nodes[qual], qual, defs, bound_cache) for qual in bound_cache}
-    seeds = {qual for qual, kind in defs.items()
-             if kind == "fn" and _lexical_in_zone(entries, rel, qual)}
+    kinds, fns, clss = _definitions(tree)
+    mod_values = _module_values(tree)
+    edges = {qual: _mentions_of(fns[qual], qual, kinds, clss, mod_values) for qual in fns}
+    seeds = {qual for qual, ks in kinds.items()
+             if "fn" in ks and _lexical_in_zone(entries, rel, qual)}
     seen = set(seeds)
     extra: set[str] = set()
     stack = list(seeds)
@@ -1433,14 +1545,26 @@ def in_zone(entries, rel: str, qualname: str, tree: ast.AST | None = None) -> bo
     что вложено в неё лексически. Лексики мало: вынос тела в соседнюю функцию
     того же модуля оставляет имя двери на месте (сторож зон зелёный — имя
     живо), а действие уже в хелпере, чей qualname список не называет. С деревом
-    файла критичность идёт по прямому вызову внутри модуля, транзитивно вниз.
+    файла критичность идёт по упоминанию имени внутри модуля, транзитивно вниз:
+    вызов, значение, декоратор, значение по умолчанию, голое имя класса
+    (в самой функции, в объемлющей функции, в объемлющем классе или на модуле —
+    все его методы и методы баз, названных в модуле) и модульная переменная
+    (всё, что упомянуто в присвоенных ей значениях). Затенение не разбирается: лишнее
+    имя в зоне — цена, пропуск — дефект. `self`, `cls`, `type(self)`,
+    `self.__class__` и `super(...)` (в том числе без аргументов) в методе и во
+    вложенной в метод функции дают ребро к одноимённому методу ближайшего
+    класса и его баз, а не к классу из аргументов `super`.
     Дерево — то, которое ломают: читать файл с диска нельзя, рабочее дерево
     может стоять на другом коммите.
 
     Без дерева членство лексическое. Сторож зон так проверяет записанное имя
     и не требует вписывать хелперы в `layout.json`: список — решение человека,
-    замыкание — производная дерева.
+    замыкание — производная дерева. `mutation_not_critical` из замыкания не
+    вычитается.
 
+    Не следует: другой модуль, `getattr` по строке, `globals()`, реестр,
+    который заполняется во время работы, атрибут значения неизвестного класса
+    (`hub.drop(...)`). Вынос в другой модуль — отдельная карточка.
     Не каталог эффектов (`unlink`, `write_text`): узкого признака писца нет,
     и вынесенное условие («удалять ли») из каталога выпадает. Не весь модуль:
     `daemon` и `rebuild_transcript` решены функцией специально. Не только

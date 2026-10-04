@@ -90,13 +90,20 @@ review gates, and who answers for what — is documented in
   a script path or `module::function`): sound written to disk or lost, data
   leaving the machine, owner data written or deleted. The list is the union of
   the range's base and head. A `module::function` entry also covers what that
-  function reaches by a direct call in the same module — a bare name, a
-  `self`/`cls` method, `Class.method` or `Class().method` — and the same again
-  from there. Nested definitions were already covered. Extracting the body
+  function reaches by a name mention in the same module — a call, a value, a
+  decorator or a default, a class defined in the function, an enclosing
+  function, the enclosing class or the module — with all of its methods and the
+  methods of bases named in the module — or a module-level variable (everything mentioned
+  in the values assigned to it) — and the same again from there. Shadowing is
+  not resolved: an extra name in the zone is the price, a missed one is a
+  defect. Nested definitions were already covered. Extracting the body
   into a helper (the irreversible call, or only the condition that decides it;
   private or not) does not leave the zone, and the helper is not added to the
-  list: the closure is read off the tree being mutated. A call through a saved
-  variable, a callback or into another module does not follow. A module in the area that imports a network library
+  list: the closure is read off the tree being mutated. It does not follow
+  another module, `getattr` on a string, `globals()`, a registry filled at
+  runtime, or an attribute of a value whose class is unknown (`hub.drop(...)`).
+  Moving the helper into another module is a separate case and stays outside
+  the zone. A module in the area that imports a network library
   or the `safe_write` door must be listed in `mutation_critical` or in
   `mutation_not_critical` with a reason — `layout_map --check` guards it. A
   survivor in a critical zone is red; outside them it is green and listed.
