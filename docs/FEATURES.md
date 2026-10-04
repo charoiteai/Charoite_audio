@@ -719,7 +719,17 @@ it signals degradation, it does not break the loop.
   and the archive and Документация copies are refreshed — only when the
   cloud may edit the graph and its edits were verified (otherwise the
   transcript would drift from the person's node, and the section stays in
-  the review for a human); the owner's microphone label is never renamed
+  the review for a human). A refusal does not roll the person's node back:
+  the owner's bare first name asks for a surname, the owner's full name on
+  another track and the microphone label are refused for different reasons,
+  and a namesake with a surname is applied. When the machine applied the
+  section, refusals show up in the review under `## Не применено`
+  (`- label → name — reason`, not bold) — the next run replaces that
+  section, an empty list removes it, and the log line names the count;
+  read-only mode does not write it. The task does not promise the rename
+  up front: Charoite applies the section only when graph edit is on and
+  the transfer was verified, otherwise a human does, and it asks for the
+  name with the surname when one was heard; the owner's microphone label is never renamed
   nor used as a target, a fix that names no existing label is logged and
   skipped, merging a track into another live track is refused (two voices
   under one name with no way back), and action items under

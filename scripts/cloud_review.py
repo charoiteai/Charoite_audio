@@ -1696,15 +1696,21 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 dropped_n: list[str] = []
                 renamed: dict[str, str] = {}
                 names_failed = False
+                # Раздел «Не применено» пишет только машина, и только когда
+                # разбор раздела состоялся. Граф к карте plan() не привязываем:
+                # отказ виден человеку в файле ревизии, узлы Люди не трогаем.
+                names_machine = False
                 if may_edit and checked:
                     try:
                         renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
+                        names_machine = True
                     except review_bridge.LostRace as e:
                         # стенограмма сменилась под перештамповкой дважды — файлы не
                         # тронуты, но верные имена мосту всё равно нужны как участники:
                         # иначе восстановленный пункт с верным именем получал бы
                         # «⚠ не участник» по старой шапке (DS I1, круг 2 по #553)
                         names_failed = True
+                        names_machine = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
                         try:
                             # с dropped, как соседние вызовы: непонятые строки
@@ -1813,12 +1819,22 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 for note in [d for d in dropped_n if d.startswith(review_bridge.LostRace.PREFIX)]:
                     lines.append(f"[cloud-review] имена меток: {note}\n")
                 dropped_n = [d for d in dropped_n if not d.startswith(review_bridge.LostRace.PREFIX)]
+                n_unapplied: int | None = None
+                if names_machine:
+                    # До доставки в архив: человек читает ревизию уже с разделом.
+                    try:
+                        n_unapplied = name_fixes.record_unapplied(rev, dropped_n)
+                    except (review_bridge.LostRace, OSError) as e:
+                        n_unapplied = len(name_fixes.refusal_lines(dropped_n))
+                        lines.append(f"[cloud-review] раздел «Не применено» не записан: {e}\n")
                 for what, junk in (("восстановленных", dropped), ("снятых", dropped_w),
                                    ("исправлений имён", dropped_n)):
                     if junk:
                         shown = "; ".join(s[:80] for s in junk[:5])
                         more = "" if len(junk) <= 5 else f" (и ещё {len(junk) - 5})"
                         lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела {what} — {len(junk)}: {shown}{more}\n")
+                if n_unapplied is not None:
+                    lines.append(f"[cloud-review] неприменённых строк: {n_unapplied}\n")
             except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
                 lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
         if published and deliver and (not may_edit or checked):

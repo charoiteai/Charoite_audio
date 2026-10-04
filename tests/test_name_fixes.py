@@ -191,6 +191,10 @@ def test_l4_prompt_names_the_strict_section_in_both_modes():
         prompt = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
                                                    rev_name="r.md", stamp="2026-09-05_1413", may_edit=may_edit, context="")
         assert "## Исправления имён" in prompt and "**Метка** → **Имя** — основание: …" in prompt
+        assert "Раздел применит Чароит, если правка графа включена и перенос сверен" in prompt
+        assert "иначе его применяет человек" in prompt
+        assert "пиши ему имя с фамилией" in prompt
+        assert "переименует заголовки реплик" not in prompt
         assert ("из узла Люди с ошибочным именем убери строку" in prompt) is may_edit
 
 
@@ -314,6 +318,8 @@ PROMPT_RULES = [
     ("которую ты не переименовываешь", [("А", "Б", "")], {"А", "Б"}, set(), {}),
     ("метку владельца (его микрофон) не переименовывай", [("Я", "В", "")], {"Я", "А"}, {"Я"}, {}),
     ("его имя другой дорожке не давай", [("А", "Я", "")], {"Я", "А"}, {"Я"}, {}),
+    ("голое имя не применяется", [("Собеседник 1", "Имя", "")], {"Собеседник 1"},
+     nf.NameGuard(mic=frozenset({"Я"}), owner="Имя Фамилия", bare="Имя"), {}),
 ]
 
 
@@ -321,3 +327,96 @@ def test_every_prompt_rule_is_what_plan_does():
     for phrase, fixes, headers, protected, expected in PROMPT_RULES:
         assert phrase in nf.PROMPT_PARAGRAPH, phrase
         assert nf.plan(fixes, headers=headers, protected=protected) == expected, phrase
+
+
+def test_plan_separates_bare_owner_name_full_name_and_mic():
+    """Голое имя владельца, его полное имя на чужой дорожке и метка микрофона
+    отклоняются разными причинами. Тёзка с фамилией применяется. Защита
+    первого слова как метки остаётся."""
+    guard = nf.guard_for({"sufler": {"user_name": "Имя Фамилия"}})
+    headers = {"Собеседник 1", "Собеседник 2", "Я", "Имя"}
+    dropped: list[str] = []
+    assert nf.plan([("Собеседник 1", "Имя", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Собеседник 1 → Имя» — голое имя владельца: напишите имя с фамилией"]
+    dropped.clear()
+    assert nf.plan([("Собеседник 1", "Имя Фамилия", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Собеседник 1 → Имя Фамилия» — целевое имя — полное имя владельца"]
+    assert "микрофона" not in dropped[0]
+    dropped.clear()
+    assert nf.plan([("Собеседник 1", "Я", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Собеседник 1 → Я» — целевое имя — метка владельца (канал микрофона)"]
+    dropped.clear()
+    assert nf.plan([("Я", "Фамилия", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Я → Фамилия» — метка владельца (канал микрофона) не переименовывается"]
+    # канал владельца подписан его полным именем — это метка микрофона, не «голое имя»
+    dropped.clear()
+    assert nf.plan([("Имя Фамилия", "Фамилия", "")], headers | {"Имя Фамилия"}, guard, dropped) == {}
+    assert dropped == ["«Имя Фамилия → Фамилия» — метка владельца (канал микрофона) не переименовывается"]
+    # первое слово как метка дорожки по-прежнему не переименовывается, и причина не про микрофон
+    dropped.clear()
+    assert nf.plan([("Имя", "Фамилия", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Имя → Фамилия» — голое имя владельца не переименовывается"]
+    # тёзка с фамилией — не голое слово и не полное имя владельца
+    assert nf.plan([("Собеседник 1", "Фамилия Имя", "")], headers, guard) == {"Собеседник 1": "Фамилия Имя"}
+    # «Я» как первое слово полного имени остаётся причиной канала, не просьбой дописать фамилию
+    odd = nf.guard_for({"sufler": {"user_name": "Я Фамилия"}})
+    dropped.clear()
+    assert nf.plan([("Собеседник 1", "Я", "")], {"Собеседник 1"}, odd, dropped) == {}
+    assert "целевое имя — метка владельца (канал микрофона)" in dropped[0]
+    assert "голое имя" not in dropped[0]
+
+
+def test_unapplied_section_is_replaced_by_heading_and_stays_out_of_name_fixes(tmp_path):
+    """Отказы plan() — один раздел «## Не применено». Повтор заменяет его,
+    пустой список снимает. name_fixes() видит те же правки, что без раздела."""
+    rev = tmp_path / "ревизия.md"
+    original = ("# Ревизия\n## Исправления имён\n"
+                "- **Собеседник 1** → **Имя** — основание: звучало\n"
+                "- **Собеседник 2** → **Фамилия Имя** — основание: тёзка\n")
+    rev.write_text(original, encoding="utf-8")
+    dropped = ["«Собеседник 1 → Имя» — голое имя владельца: напишите имя с фамилией",
+               "(не уверен)"]
+    assert nf.record_unapplied(rev, dropped) == 2
+    text = rev.read_text(encoding="utf-8")
+    assert text.count("## Не применено") == 1
+    tail = text.split("## Не применено", 1)[1]
+    assert "- Собеседник 1 → Имя — голое имя владельца: напишите имя с фамилией" in tail
+    assert "- (не уверен)" in tail
+    assert "**" not in tail
+    assert nf.name_fixes(text) == nf.name_fixes(original)
+    again = ["«Собеседник 2 → Имя Фамилия» — целевое имя — полное имя владельца"]
+    assert nf.record_unapplied(rev, again) == 1
+    text = rev.read_text(encoding="utf-8")
+    assert text.count("## Не применено") == 1
+    tail = text.split("## Не применено", 1)[1]
+    assert "Собеседник 1 → Имя" not in tail
+    assert "- Собеседник 2 → Имя Фамилия — целевое имя — полное имя владельца" in tail
+    assert nf.name_fixes(text) == nf.name_fixes(original)
+    assert nf.record_unapplied(rev, []) == 0
+    text = rev.read_text(encoding="utf-8")
+    assert "## Не применено" not in text
+    assert nf.name_fixes(text) == nf.name_fixes(original)
+    # повтор с теми же строками не плодит второй раздел
+    nf.record_unapplied(rev, again)
+    assert nf.record_unapplied(rev, again) == 1
+    assert rev.read_text(encoding="utf-8").count("## Не применено") == 1
+
+
+def test_unread_transcript_does_not_wipe_the_unapplied_section(tmp_path):
+    """Стенограмма не читается — это не «отказов нет». Иначе повтор снял бы
+    «## Не применено», хотя строки раздела не разбирались."""
+    rev = tmp_path / "ревизия.md"
+    names = ("# Ревизия\n## Исправления имён\n"
+             "- **Собеседник 1** → **Имя** — основание: звучало\n")
+    rev.write_text(names + "\n## Не применено\n- Собеседник 1 → Имя — старая причина\n",
+                   encoding="utf-8")
+    missing = tmp_path / "нет.md"
+    dropped: list[str] = []
+    assert nf.planned(rev, missing, {"sufler": {"user_name": "Имя Фамилия"}}, dropped=dropped) == {}
+    assert len(dropped) == 1 and "не прочитана" in dropped[0]
+    assert nf.record_unapplied(rev, dropped) == 1
+    text = rev.read_text(encoding="utf-8")
+    assert text.count("## Не применено") == 1
+    assert "старая причина" not in text
+    assert "не прочитана" in text.split("## Не применено", 1)[1]
+    assert nf.name_fixes(text) == nf.name_fixes(names)
