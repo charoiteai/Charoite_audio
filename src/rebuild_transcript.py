@@ -76,29 +76,12 @@ from transcript import Transcript, is_noise  # noqa: E402
 
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
-# Строка в шапке стенограммы, когда имена не разобраны. Живёт в самом файле, а
-# не только в логе: человек открывает стенограмму, а не logs/, и «Собеседник
-# 1..5» без объяснения читается как «программа не умеет». Причин две, и у
-# каждой свой текст (№499): одна — общее начало, по нему names_pending узнаёт
-# обе плашки и стенограммы, записанные до разделения.
-NAMES_PENDING_PREFIX = "> ⚠️ Имена участников не определены"
-# Модель молчала (пустой ответ, не-JSON, исключение): повтор, когда модель
-# свободна, — честный совет.
-NAMES_PENDING_NOTE = (
-    f"{NAMES_PENDING_PREFIX}: модель не ответила на разборе. "
-    "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
-    "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py)."
-)
-# Модель ответила, но гварды доверия отвергли каждое имя: не звучало в
-# разговоре, обращение к другому, владелец. Пересборка на том же тексте
-# упрётся в те же гварды, поэтому совета «пересобрать» здесь нет (29.09: оба
-# отказа на боевой встрече были верными, а плашка звала пересобрать).
-NAMES_REJECTED_NOTE = (
-    f"{NAMES_PENDING_PREFIX}: модель ответила, но ни одно из предложенных "
-    "имён ({proposed}) не прошло проверку — не звучало в разговоре, "
-    "обращение к другому, имя владельца или не имя. Метки остались "
-    "«Собеседник N» — впишите имена вручную."
-)
+# Плашки имён и свёрнутого микрофона живут в transcript: читатель по тексту
+# и писатель строки. Прежние имена остаются здесь — их берут тесты и шапка.
+NAMES_PENDING_PREFIX = transcript.NAMES_PENDING_PREFIX
+NAMES_PENDING_NOTE = transcript.NAMES_PENDING_NOTE
+NAMES_REJECTED_NOTE = transcript.NAMES_REJECTED_NOTE
+MIC_COLLAPSED_NOTE = transcript.MIC_COLLAPSED_NOTE
 
 
 #: Строка в шапке стенограммы, когда голоса собеседников размечены не тем
@@ -110,14 +93,6 @@ ENGINE_FALLBACK_NOTE = "> ⚠️ Голоса собеседников разм�
 #: канал собеседников; откат на sherpa стоит до двадцати минут разбора, и человек
 #: должен видеть причину. Своя строка: у каналов разные откаты.
 MIC_ENGINE_FALLBACK_NOTE = "> ⚠️ Речь микрофона размечена запасным движком (sherpa): {reason}."
-#: Строка в шапке, когда разметка микрофона без звонка свела всех в одну метку,
-#: а живая сессия слышала несколько голосов (№559): имя одного человека на всех
-#: было бы ложью, поэтому метка остаётся нейтральной. Своя строка, не
-#: NAMES_PENDING_PREFIX: совет «пересобрать» тут не поможет — пересборка
-#: упрётся в ту же разметку.
-MIC_COLLAPSED_NOTE = ("> ⚠️ Разметка микрофона дала одну метку, а живая стенограмма слышала "
-                      "голосов: {live}. Имя метке не присвоено, чтобы не отдать одному человеку "
-                      "речь всех — впишите имена вручную.")
 #: Причина в шапке, когда Nemotron не разметил. Сырой отказ движка — путь
 #: интерпретатора, OSError, последняя строка stderr с путями весов и рецептом
 #: `hf download --local-dir …` — несёт имя учётки и уходит только в журнал
@@ -1364,10 +1339,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     unnamed = neutral - set(names) - collapsed
     pending_note = None
     if unnamed and naming.outcome == NamesOutcome.SILENT:
-        pending_note = NAMES_PENDING_NOTE
+        pending_note = transcript.names_pending_line(NAMES_PENDING_NOTE, unnamed)
         log(f"⚠️ имена не разобраны: модель молчала, безымянных меток {len(unnamed)}")
     elif unnamed and naming.outcome == NamesOutcome.REJECTED:
-        pending_note = NAMES_REJECTED_NOTE.format(proposed=naming.proposed)
+        pending_note = transcript.names_pending_line(
+            NAMES_REJECTED_NOTE.format(proposed=naming.proposed), unnamed)
         log(f"⚠️ имена не разобраны: модель предложила {naming.proposed}, гварды отвергли все, "
             f"безымянных меток {len(unnamed)}")
     fmt = lambda sec: (base + dt.timedelta(seconds=sec)).strftime("%H:%M")
@@ -1871,10 +1847,14 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
 
 
 def names_pending(live: pathlib.Path) -> bool:
-    """Осталась ли в стенограмме пометка «имена не определены» — любой из двух
-    причин: ищем общее начало плашки, его же несут стенограммы до №499."""
+    """Осталась ли потеря имён: плашка и ещё безымянные метки в заголовках речи.
+
+    Читатель — чистая функция над текстом (`transcript.read_names_pending`).
+    Плашка, под которой имена уже вписаны, потерей не считается. Файла нет
+    или он не читается — False: статус не должен ронять пайплайн.
+    """
     try:
-        return NAMES_PENDING_PREFIX in live.read_text(encoding="utf-8")
+        return transcript.read_names_pending(live.read_text(encoding="utf-8")).pending
     except Exception:  # noqa: BLE001 — статус не должен ломать пайплайн
         return False
 
@@ -2098,11 +2078,11 @@ def main():
             raise RuntimeError("заметка встречи не создана")
         if not status.has_transcript(live):
             raise RuntimeError("финальная стенограмма не найдена")
-        # Пометку читаем из готового файла, а не носим флагом через пайплайн:
-        # так она честна и после падения пересборки (граф пошёл по живой
-        # версии — пометки нет), и после повторного прогона, где стенограмма
-        # переписывается целиком и метка исчезает сама, если имена нашлись.
-        publish(status.ready, live, note, names_pending(live))
+        # Признак и причину считает ready() по тексту того файла, который
+        # найдёт find_final_transcript: после переименования шагом графа
+        # исходного пути уже нет, а плашка — в файле с темой. Флаг через
+        # пайплайн врал бы в обе стороны (№501).
+        publish(status.ready, live, note)
     except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")

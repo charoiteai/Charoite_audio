@@ -1,6 +1,7 @@
 """Dependency-light transcript state; runtime must not import legacy ``main.py``."""
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import difflib
 import pathlib
@@ -127,6 +128,195 @@ def notes_start(text: str) -> int:
     """Где кончается сказанное и начинаются заметки модели (или len(text))."""
     cut = text.find(NOTES_HEAD)
     return cut if cut != -1 else len(text)
+
+
+# Строка в шапке стенограммы, когда имена не разобраны. Живёт в самом файле, а
+# не только в логе: человек открывает стенограмму, а не logs/, и «Собеседник
+# 1..5» без объяснения читается как «программа не умеет». Причин две, и у
+# каждой свой текст (№499): одно начало, по нему читатель узнаёт обе плашки
+# и стенограммы, записанные до разделения. Хвост после префикса — список
+# меток, которые ещё безымянны (№501); старые файлы этого хвоста не имеют.
+NAMES_PENDING_PREFIX = "> ⚠️ Имена участников не определены"
+# Модель молчала (пустой ответ, не-JSON, исключение): повтор, когда модель
+# свободна, — честный совет.
+NAMES_PENDING_NOTE = (
+    f"{NAMES_PENDING_PREFIX}: модель не ответила на разборе. "
+    "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
+    "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py)."
+)
+# Модель ответила, но гварды доверия отвергли каждое имя: не звучало в
+# разговоре, обращение к другому, владелец. Пересборка на том же тексте
+# упрётся в те же гварды, поэтому совета «пересобрать» здесь нет (29.09: оба
+# отказа на боевой встрече были верными, а плашка звала пересобрать).
+NAMES_REJECTED_NOTE = (
+    f"{NAMES_PENDING_PREFIX}: модель ответила, но ни одно из предложенных "
+    "имён ({proposed}) не прошло проверку — не звучало в разговоре, "
+    "обращение к другому, имя владельца или не имя. Метки остались "
+    "«Собеседник N» — впишите имена вручную."
+)
+#: Строка в шапке, когда разметка микрофона без звонка свела всех в одну метку,
+#: а живая сессия слышала несколько голосов (№559). Своя строка, не плашка
+#: имён: совет «пересобрать» тут не поможет. Читателю нужен устойчивый префикс
+#: до числа голосов — «рядом» с плашкой без списка такую плашку не снимают.
+MIC_COLLAPSED_NOTE = ("> ⚠️ Разметка микрофона дала одну метку, а живая стенограмма слышала "
+                      "голосов: {live}. Имя метке не присвоено, чтобы не отдать одному человеку "
+                      "речь всех — впишите имена вручную.")
+MIC_COLLAPSED_MARK = MIC_COLLAPSED_NOTE.split("{live}", 1)[0]
+# Фраза есть только в плашке отказа гвардов; по ней отличаем причину, не
+# сравнивая весь текст (старая плашка молчания её не содержит).
+_REJECTED_MARK = "не прошло проверку"
+_UNNAMED_MARK = " | безымянные: "
+_TAIL_RE = re.compile(r" \| безымянные:.*$")
+
+
+@dataclasses.dataclass(frozen=True)
+class NamesPending:
+    """Потеря имён по тексту стенограммы: есть ли она, причина и метки.
+
+    `reason` — ``silent`` (модель молчала), ``rejected`` (гварды отвергли
+    все имена) или None, когда потери нет. `labels` — метки, которые ещё
+    стоят в заголовках речи; пустой кортеж при `pending` — плашка без списка
+    рядом с заметкой о свёрнутом микрофоне, снимать её нечем.
+    """
+
+    pending: bool
+    reason: str | None
+    labels: tuple[str, ...]
+
+
+def names_pending_line(note: str, unnamed) -> str:
+    """Строка плашки: прежний текст и хвост безымянных меток.
+
+    Хвост идёт после неизменного текста причины, поэтому старые проверки
+    «плашка целиком входит в файл» продолжают видеть note. Пустой набор —
+    строка без хвоста. Повторный вызов не удваивает хвост.
+    """
+    base = _TAIL_RE.sub("", note).rstrip()
+    labels = sorted({str(label).strip() for label in unnamed if str(label).strip()})
+    if not labels:
+        return base
+    return f"{base}{_UNNAMED_MARK}{', '.join(labels)}"
+
+
+def _banner_line(head: str) -> str | None:
+    """Первая плашка в шапке (до ко-мышления). В хвосте та же строка — цитата."""
+    for line in head.splitlines():
+        if line.startswith(NAMES_PENDING_PREFIX):
+            return line
+    return None
+
+
+def _listed_labels(line: str) -> tuple[str, ...] | None:
+    """Метки из хвоста плашки. None — плашка старого файла, списка нет."""
+    mark = line.rfind(_UNNAMED_MARK)
+    if mark < 0:
+        return None
+    body = line[mark + len(_UNNAMED_MARK):]
+    return tuple(part.strip() for part in body.split(",") if part.strip())
+
+
+def _speech_speakers(text: str) -> tuple[str, ...]:
+    """Метки заголовков речи, в порядке появления, без повторов.
+
+    `parse_blocks` сам останавливается на `notes_start`: заголовок в
+    ко-мышлении — цитата модели, не говорящий.
+    """
+    seen: list[str] = []
+    for block in parse_blocks(text):
+        speaker = block["speaker"]
+        if speaker not in seen:
+            seen.append(speaker)
+    return tuple(seen)
+
+
+def _neutral_remaining(speakers: tuple[str, ...]) -> tuple[str, ...]:
+    """Нейтральные метки тела, кроме голого «Собеседник».
+
+    Предикат — единственный, в `channel_labels`. Импорт ленивый: этот модуль
+    берёт демон при старте, а `channel_labels` тянет стек аудио.
+    """
+    import channel_labels
+    bare = channel_labels.NEUTRAL_OTHER
+    return tuple(
+        speaker for speaker in speakers
+        if speaker != bare and channel_labels.is_neutral_label(speaker)
+    )
+
+
+def read_names_pending(text: str) -> NamesPending:
+    """Есть ли потеря имён в тексте стенограммы. Файл не читает.
+
+    Плашки нет — потери нет: нейтральные метки без плашки законны (модель
+    честно ответила «имён не звучало»). Плашка со списком — оставшиеся метки
+    это пересечение списка с заголовками речи. Плашка без списка (файлы до
+    хвоста) — все нейтральные метки речи, кроме голого «Собеседник»; если
+    рядом, до ко-мышления, стоит заметка о свёрнутом микрофоне, такую плашку
+    не снимаем даже когда нумерованных меток не осталось.
+    """
+    cut = notes_start(text)
+    head = text[:cut]
+    line = _banner_line(head)
+    if line is None:
+        return NamesPending(False, None, ())
+    reason = "rejected" if _REJECTED_MARK in line else "silent"
+    listed = _listed_labels(line)
+    speakers = _speech_speakers(text)
+    if listed is None:
+        remaining = _neutral_remaining(speakers)
+        if remaining:
+            return NamesPending(True, reason, remaining)
+        if MIC_COLLAPSED_MARK in head:
+            return NamesPending(True, reason, ())
+        return NamesPending(False, None, ())
+    body = set(speakers)
+    remaining = tuple(label for label in listed if label in body)
+    if not remaining:
+        return NamesPending(False, None, ())
+    return NamesPending(True, reason, remaining)
+
+
+def _without_banner(head: str) -> str:
+    """Убрать первую плашку и одну пустую строку сразу за ней."""
+    lines = head.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith(NAMES_PENDING_PREFIX):
+            del lines[index]
+            if index < len(lines) and lines[index].strip() == "":
+                del lines[index]
+            break
+    return "".join(lines)
+
+
+def names_banner_for(text: str) -> str:
+    """Текст после переименования заголовков: снять плашку, оставить или
+    переписать список.
+
+    Оставшихся меток нет — строки плашки нет (плашка без списка рядом с
+    заметкой о свёрнутом микрофоне остаётся: читатель докладывает потерю).
+    Часть списка названа — хвост короче, порядок прежний. Список совпал с
+    заголовками — строка не переписывается. Плашка без списка не обрастает
+    списком задним числом: исходный набор меток уже неизвестен.
+    """
+    cut = notes_start(text)
+    head, tail = text[:cut], text[cut:]
+    line = _banner_line(head)
+    if line is None:
+        return text
+    info = read_names_pending(text)
+    if not info.pending:
+        return _without_banner(head) + tail
+    listed = _listed_labels(line)
+    if listed is None or set(info.labels) == set(listed):
+        return text
+    base = _TAIL_RE.sub("", line).rstrip()
+    rewritten = f"{base}{_UNNAMED_MARK}{', '.join(info.labels)}"
+    lines = head.splitlines(keepends=True)
+    for index, raw in enumerate(lines):
+        if raw.startswith(NAMES_PENDING_PREFIX):
+            newline = raw[len(raw.rstrip("\r\n")):]
+            lines[index] = rewritten + newline
+            break
+    return "".join(lines) + tail
 
 
 class Transcript:

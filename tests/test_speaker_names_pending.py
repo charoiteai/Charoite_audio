@@ -127,18 +127,23 @@ def test_missing_transcript_does_not_break_the_status(tmp_path):
 
 
 def test_ready_status_carries_names_pending(tmp_path):
+    """Поле появляется, только когда в файле ещё есть безымянные метки под плашкой."""
+    import transcript
     live = tmp_path / "transcripts" / "2026-08-12_153219.md"
     live.parent.mkdir()
-    live.write_text("# Встреча\nтекст\n", encoding="utf-8")
+    banner = transcript.names_pending_line(rt.NAMES_PENDING_NOTE, ["Собеседник 1"])
+    live.write_text(f"# Встреча 2026-08-12_153219\n\n{banner}\n\n**Собеседник 1** [15:32]:\nда\n",
+                    encoding="utf-8")
     note = tmp_path / "graph" / "Встречи" / "2026-08-12_1532.md"
     note.parent.mkdir(parents=True)
     note.write_text("готово", encoding="utf-8")
     store = MeetingStatusStore(tmp_path)
 
-    pending = json.loads(store.ready(live, note, names_pending=True)
-                         .read_text(encoding="utf-8"))
+    pending = json.loads(store.ready(live, note).read_text(encoding="utf-8"))
+    live.write_text("# Встреча 2026-08-12_153219\n\n**Сергей** [15:32]:\nда\n", encoding="utf-8")
     clean = json.loads(store.ready(live, note).read_text(encoding="utf-8"))
 
     assert pending["state"] == "ready", "встреча разобрана — повторять весь конвейер незачем"
-    assert pending["names_pending"] is True
-    assert "names_pending" not in clean, "поле появляется только когда есть что сказать"
+    assert pending["names_pending"] is True and pending["names_reason"] == "silent"
+    assert "names_pending" not in clean and "names_reason" not in clean, \
+        "поле появляется только когда есть что сказать"
