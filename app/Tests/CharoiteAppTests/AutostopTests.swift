@@ -37,6 +37,11 @@ final class AutostopTests: XCTestCase {
                                           attempts: 0, daemonReason: "root_unnamed"),
             .giveUpFatal("root_unnamed"),
             "детерминированный отказ не должен тратить попытки перезапуска")
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "privacy_refused"),
+            .giveUpFatal("privacy_refused"),
+            "отказ адреса модели повтор не лечит: конфиг от трёх попыток не изменится")
         // повод отказа — часть решения: ветка сервиса не может переспросить
         // другое поле и показать чужой текст (круг 3, DS C1)
         XCTAssertEqual(
@@ -58,6 +63,9 @@ final class AutostopTests: XCTestCase {
         XCTAssertNil(
             SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: nil),
             "демон назвал причину и прислал рецепт — свой текст поверх писать нельзя")
+        XCTAssertNil(
+            SuflerService.finalFailureText(for: .giveUpFatal("privacy_refused"), captureLoss: nil),
+            "текст отказа адреса уже на экране — «нажмите ещё раз» его затрёт")
         XCTAssertNil(
             SuflerService.finalFailureText(for: .giveUpFatal("root_unnamed"), captureLoss: "устройство"),
             "причина потери захвата к названному отказу не относится")

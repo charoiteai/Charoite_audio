@@ -49,7 +49,7 @@ import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
 from charoite_graph import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
-from exit_codes import EXIT_ROOT_UNNAMED  # noqa: E402
+from exit_codes import EXIT_PRIVACY_REFUSED, EXIT_ROOT_UNNAMED  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import channel_trace  # noqa: E402
@@ -710,9 +710,22 @@ def main():
     if graphs.env_override():
         print(f"граф перекрыт переменной окружения: {graphs.graph_dir(cfg)}",
               file=sys.stderr, flush=True)
-    emit({"type": "status", "text": "Загружаю модели…"})
-    stt = STT(cfg)
-    llm = LLM(cfg)
+    # Отказ политики по адресу модели — тот же канал, что «корень не назван».
+    # `type: fatal` приложение не знает и молча гасит (круг 1 по №332): статус
+    # с `error` и причиной значением, код выхода — не 1, чтобы это не читалось
+    # как сбой. До загрузки STT: иначе человек ждёт веса, а текст отказа
+    # остаётся трейсбеком в daemon.err.log. `LLM(cfg)` ниже бросает то же
+    # `PrivacyRefused`, если проверка адреса и конструктор разъедутся.
+    try:
+        privacy.chat_model_url(cfg)
+        emit({"type": "status", "text": "Загружаю модели…"})
+        stt = STT(cfg)
+        llm = LLM(cfg)
+    except privacy.PrivacyRefused as e:
+        emit_error(str(e), reason="privacy_refused")   # причина — значением, текст — человеку
+        print(e, file=sys.stderr)
+        sys.stderr.flush()
+        return EXIT_PRIVACY_REFUSED
     # Каталог аренд модели — в лог один раз: писатель и читатель аренд
     # (транспорт демона и llm_health любого процесса) обязаны смотреть в один
     # корень, а расхождение CHAROITE_ROOT между процессами иначе немо —

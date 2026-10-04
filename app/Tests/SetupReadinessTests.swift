@@ -42,6 +42,21 @@ final class SetupReadinessTests: XCTestCase {
         XCTAssertEqual(snapshot.problems, 0)
     }
 
+    func testRefusedModelAddressBlocksStartBeforeTheDaemon() {
+        XCTAssertNil(SetupReadinessPolicy.refusedModelAddressCheck(nil),
+                     "нет текста — нет строки: путать с отказом нельзя")
+        XCTAssertNil(SetupReadinessPolicy.refusedModelAddressCheck("   "),
+                     "пробелы — не отказ")
+        let text = "llm.base_url = http://[fe80::1%en0]:11434: authority вне белой грамматики"
+        let check = SetupReadinessPolicy.refusedModelAddressCheck(text)
+        XCTAssertEqual(check?.id, "model-address")
+        XCTAssertEqual(check?.state, .blocked)
+        XCTAssertEqual(check?.detail, text, "рецепт демона показывается как есть")
+        let snapshot = SetupReadinessSnapshot(checks: [check!])
+        XCTAssertFalse(snapshot.canStart, "отказ адреса блокирует старт до правки конфига")
+        XCTAssertEqual(snapshot.problems, 1)
+    }
+
     func testAnyBlockingProblemDisablesStart() {
         let snapshot = SetupReadinessSnapshot(checks: [
             SetupCheck(id: "python", state: .blocked, title: "python", detail: "missing"),

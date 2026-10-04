@@ -1840,7 +1840,7 @@ start — exit code `EXIT_ROOT_UNNAMED` (5, not 2: argparse returns 2 on a bad
 flag) and an error status carrying the recipe — because an
 entry point NAMES the root rather than asking for it; deriving it from the
 file location and publishing that guess to children is what the refusal
-exists to prevent. Entry points without the daemon's channel to the app take
+exists to prevent. A model address refused by the privacy policy takes that same channel: reason `privacy_refused`, exit code `EXIT_PRIVACY_REFUSED` (11), and the readiness panel shows the text before start. If the readiness probe could not check the address (for example, the code root is older than the app), there is no line — the daemon checks the address at start. Entry points without the daemon's channel to the app take
 the same door, `name_data_root_or_exit`: a recipe on stderr and the same
 exit code, which the app, launchd and the run-contract probe all read. A
 manual run from a checkout may take the guess, but only by saying so in the

@@ -139,6 +139,7 @@ version arbitrary hand edits.
 | Two archive folders for one meeting | Documents are usually intact in both | Dry-run `dedup_archive.py`, then use `--apply` |
 | Search misses a known fact | Markdown may be intact; the index is derived | Inspect the file and trigger a fresh search; do not treat the index as a source |
 | A command prints «корень данных не назван» and exits with code 5 | Everything — nothing was started | `rebuild_transcript.py`, `import_meeting.py` and other entry points do not guess where the data lives: pass `CHAROITE_ROOT`, as in the commands below |
+| Daemon exits at start with code 11, naming the model address | Meetings already on disk | Fix the address in config.yaml. Readiness shows the same line before the next start. If the readiness probe could not check the address (for example, the code root is older than the app), there is no line — the daemon checks the address at start. A zone id or a login in the URL stays refused |
 
 Baseline diagnosis:
 

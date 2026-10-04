@@ -225,6 +225,22 @@ def mlx_base_url(cfg: dict, env: dict | None = None) -> str:
     return _guarded_url(cfg, env, key="mlx_base_url", default=DEFAULT_MLX_URL)
 
 
+def chat_model_url(cfg: dict, env: dict | None = None) -> str:
+    """Адрес, который `LLM` спросит при сборке, — или `PrivacyRefused`.
+
+    Развилка одна на конструктор и на старт демона: облако, когда его тумблер
+    включён; mlx-server — его адрес; иначе Ollama. Демон зовёт это до загрузки
+    весов, чтобы отказ грамматики (зона IPv6, логин) и отказ «чужая машина»
+    были названы до `STT(cfg)`, а не трейсбеком после.
+    """
+    engine = llm_engine(cfg)
+    if engine == "cloud" and cloud_engine_enabled(cfg, env):
+        return cloud_llm_url(cfg, env)
+    if engine == "mlx-server":
+        return mlx_base_url(cfg, env)
+    return llm_base_url(cfg, env)
+
+
 class PrivacyRefused(RuntimeError):
     """Политика запретила адрес: чужая машина, открытый http наружу, рубильник.
 
@@ -233,6 +249,21 @@ class PrivacyRefused(RuntimeError):
     был общим, ловящий обязан был угадывать, что ещё бросает соседний код, —
     и либо ловил лишнее, либо пропускал своё (круг 2 по коду, GLM I1).
     """
+
+
+def model_address_error(cfg: dict, env: dict | None = None) -> str | None:
+    """Текст отказа адреса для пробы готовности, либо None, если адрес принят.
+
+    Та же развилка, что `chat_model_url` на старте демона. Проба кладёт текст
+    в своё поле и не смешивает его с ошибкой разбора конфига: человек чинит
+    адрес и сломанный yaml по-разному. Чужой сбой (конфиг не словарь) наружу
+    не прячем — иначе он выглядел бы отказом адреса.
+    """
+    try:
+        chat_model_url(cfg, env)
+    except PrivacyRefused as exc:
+        return str(exc)
+    return None
 
 
 def _switches_set(env: dict | None) -> list[str]:
