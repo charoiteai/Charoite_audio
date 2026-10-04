@@ -2128,6 +2128,47 @@ def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
     assert cloud_review.DISPLACED_DIR in cloud_review._verdict_line(v, qdir)
 
 
+def test_applied_names_clear_the_pending_keys_on_a_ready_meeting(tmp_path, monkeypatch):
+    """После успешного apply воркер пересчитывает признак: машинная плашка
+    снята, в готовом статусе ключей имён нет. LostRace сюда не доходит."""
+    import json
+    import live_sidecar
+    import meeting_processing
+    import transcript as tr_mod
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    banner = tr_mod.names_pending_line(tr_mod.NAMES_PENDING_NOTE, ["Собеседник 1"])
+    body = f"# Встреча {stamp}\n\n{banner}\n\n**Собеседник 1** [14:00]:\nя Анна\n"
+    transcript.write_text(body, encoding="utf-8")
+    transcript.with_name(transcript.name + ".live.json").write_text(
+        json.dumps({"transcript_sha256": live_sidecar.sha(body)}), encoding="utf-8")
+    store = meeting_processing.MeetingStatusStore(tmp_path / "данные")
+    status = store.ready(transcript, None)
+    assert json.loads(status.read_text(encoding="utf-8"))["names_pending"] is True
+    rev.unlink(missing_ok=True)
+    review = (_REPORT + "\n## Исправления имён\n"
+              "- **Собеседник 1** → **Анна** — основание: сам представился\n")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(review)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    assert cloud_review.run(stamp, transcript, graph, rev, log,
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+    text = transcript.read_text(encoding="utf-8")
+    assert tr_mod.NAMES_PENDING_PREFIX not in text and "**Анна** [14:00]:" in text
+    data = json.loads(status.read_text(encoding="utf-8"))
+    assert "names_pending" not in data and "names_reason" not in data
+    assert data["state"] == "ready"
+    assert "признак имён в статусе не пересчитан" not in log.read_text(encoding="utf-8")
+
+
 def test_a_stub_needs_its_canon_merged_or_holding_the_facts(tmp_path):
     """Канон, которого облако не трогало, годится для заглушки только если
     он уже удерживает факты дубля; иначе заглушка стёрла бы единственную

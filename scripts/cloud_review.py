@@ -1719,6 +1719,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     except Exception as e:  # noqa: BLE001
                         names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
+                    else:
+                        # Признак в статусе — по тексту после перештамповки.
+                        # Свой try: сбой статуса не есть провал перештамповки
+                        # и не должен глушить мост поручений. Статуса нет —
+                        # пересчёт молчит и файл не заводит.
+                        try:
+                            from meeting_processing import MeetingStatusStore
+                            MeetingStatusStore(_root()).refresh_names(transcript)
+                        except Exception as e:  # noqa: BLE001
+                            lines.append("[cloud-review] признак имён в статусе "
+                                         f"не пересчитан ({e})\n")
                     # карта после LostRace добрана для моста, но ничего не применено:
                     # строки «исправлены … заголовков N» быть не должно (GLM M5)
                     if renamed and not names_failed:

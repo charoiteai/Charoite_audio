@@ -66,8 +66,21 @@
   silent and unnamed labels remain, the transcript gets a warning line in its
   header and the meeting status gets a `names_pending` field. The state stays
   `ready` — the graph is updated, there is nothing to redo in the pipeline —
-  and the warning says the meeting is worth rebuilding once the model is free;
-  a repeat run rewrites the transcript in full, the warning included. If the
+  and the warning says the meeting is worth rebuilding once the model is free.
+  The warning line keeps that wording and ends with the list of labels that are
+  still unnamed. The status is read from the transcript, not carried as a flag:
+  `names_pending` is true only while the warning is present and a listed label
+  is still a speech header (a warning written before the list counts every
+  numbered «Собеседник N» header, and stays when the microphone-collapse note
+  sits beside a warning that would otherwise have nothing left to name), and
+  `names_reason` is `silent` or `rejected`. Neither key is stored when nothing
+  is pending — `names_pending` stays a boolean. A cloud revision rewrites the
+  warning only on a machine-owned transcript (drops it when no unnamed label
+  remains, or shortens the list) and the sidecar hash matches the bytes on
+  disk. A hand edit is not rewritten and its hash is not moved, so a stale
+  warning line can remain in the file while the status, recomputed from the
+  headers, no longer carries the keys; rebuilding that hand-edited file still
+  does not rewrite it. If the
   model did answer but the trust guards refused every name it proposed (not
   spoken in the meeting, an address to someone else, the owner's name, not a
   name at all), the warning names that cause instead and asks to type the names

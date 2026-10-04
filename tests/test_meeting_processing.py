@@ -298,7 +298,7 @@ def test_status_key_is_the_stamp_and_survives_retitle(tmp_path):
     live.rename(titled)
     assert store.failed(live, "модель не дала разбор") == first     # старым путём, как rebuild
     later = MeetingStatusStore(tmp_path, now=lambda: 20.0)           # другой процесс, новым путём
-    assert later.ready(titled, None, False) == first, "одна встреча — один файл статуса"
+    assert later.ready(titled, None) == first, "одна встреча — один файл статуса"
     assert json.loads(first.read_text(encoding="utf-8"))["key"] == "2026-07-31_141501"
     assert later.unfinished() == [], "после успешного повтора призрака нет"
     # файл прежней версии, названный по стему, без поля key — не перевешивает свежий «ready»
@@ -379,7 +379,7 @@ def test_meeting_id_stays_the_first_one_for_the_meeting(tmp_path):
     store.processing(live, "updating_graph")
     titled = live.with_name("2026-07-31_1415_Тема.md")
     live.rename(titled)
-    path = MeetingStatusStore(tmp_path, now=lambda: 20.0).ready(titled, None, False)
+    path = MeetingStatusStore(tmp_path, now=lambda: 20.0).ready(titled, None)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["meeting_id"] == "2026-07-31_141501" and data["transcript_path"] == str(titled.resolve())
 
@@ -426,7 +426,7 @@ def test_two_dead_paths_do_not_let_freshness_pick_the_key(tmp_path):
         "meeting_id": "2026-07-31_141512", "key": "2026-07-31_141512", "state": "error",
         "updated_at": 200.0, "attempts": 1,
         "transcript_path": str((tmp_path / "transcripts" / "2026-07-31_141512.md").resolve())}), encoding="utf-8")
-    path = MeetingStatusStore(tmp_path, now=lambda: 300.0).ready(titled, None, False)
+    path = MeetingStatusStore(tmp_path, now=lambda: 300.0).ready(titled, None)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["key"] == "2026-07-31_1415" and data["meeting_id"] != "2026-07-31_141512"
 

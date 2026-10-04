@@ -234,7 +234,14 @@ def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
     def transform(text: str) -> tuple[str, int]:
         fixed, n = rename_headers(text, mapping)
         if n:
-            state.update(owned=_machine_owned(live, "transcript_sha256", text), before=text, fixed=fixed)
+            # Плашку правим в той же записи и только у машинного текста.
+            # Хеш ручной правки трогать нельзя: следующая пересборка приняла
+            # бы файл за свой и затёрла вписанные имена. Устаревшая строка
+            # плашки в правом файле остаётся; признак статуса считает читатель.
+            owned = _machine_owned(live, "transcript_sha256", text)
+            if owned:
+                fixed = transcript.names_banner_for(fixed)
+            state.update(owned=owned, before=text, fixed=fixed)
         return fixed, n
 
     n = review_bridge.rewrite_file(live, transform, "заголовки реплик не тронуты")
