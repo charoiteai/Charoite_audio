@@ -11,8 +11,8 @@ understand post-processing, take the result and recover from a failure.
 1. Complete [Setup](SETUP.md). With the prebuilt app the first-run wizard
    asks for your name and graph folder — no need to edit `config/config.yaml`
    by hand. From source, fill in `sufler.user_name` and `sufler.graph_dir`.
-2. Check readiness there as well: python runtime, config, Ollama, models,
-   microphone and the graph folder. Working from source, set **Settings →
+2. Check readiness there as well: python runtime, config, the model address,
+   Ollama, models, microphone and the graph folder. Working from source, set **Settings →
    Connection → Data folder** to the repository; the switch "Run the daemon
    code from this folder (development)" under it decides whether the app runs
    the code from there or from its own signed bundle.

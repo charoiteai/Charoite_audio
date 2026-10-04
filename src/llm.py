@@ -579,7 +579,6 @@ class LLM:
         self.cloud_ready = False
         if self.engine == "cloud":
             if privacy.cloud_engine_enabled(cfg):
-                self.base = privacy.cloud_llm_url(cfg)
                 self.cloud_model = str(l.get("cloud_model") or "")
                 self._key = cloud_key(cfg)
                 if not self.cloud_model:
@@ -596,9 +595,10 @@ class LLM:
                       "(или взведён рубильник) — работаю на локальной модели",
                       file=sys.stderr, flush=True)
                 self.engine = "ollama"
-        self.base = (privacy.cloud_llm_url(cfg) if self.cloud_ready else
-                     privacy.mlx_base_url(cfg) if self.engine == "mlx-server"
-                     else privacy.llm_base_url(cfg))
+        # Та же функция, что демон спрашивает до загрузки весов: развилка
+        # адреса живёт в одном месте, иначе отказ на старте и отказ в
+        # конструкторе разъедутся.
+        self.base = privacy.chat_model_url(cfg)
         self.mlx_model = str(l.get("mlx_model") or DEFAULT_MLX_MODEL)
         self.model = l["model"]
         self.small = l.get("small_model", self.model)
