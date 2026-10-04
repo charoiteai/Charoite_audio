@@ -10,6 +10,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
@@ -76,6 +78,547 @@ def test_in_zone_модуль_путь_и_функция():
     assert lm.in_zone(записи, "src/daemon.py", "_prune_graph_logs.inner")
     assert not lm.in_zone(записи, "src/daemon.py", "_prune_graph_logs_other")
     assert not lm.in_zone(записи, "src/daemon.py", "main")
+
+
+def _в_зоне(src: str, qual: str, entries=("door::sweep",)) -> bool:
+    import ast
+    return lm.in_zone(entries, "src/door.py", qual, ast.parse(src))
+
+
+def test_критичность_двери_идёт_по_прямому_вызову_в_модуле():
+    """Вынос тела — в хелпер того же модуля, приватный или нет, с эффектом или
+    только с условием, на любую глубину. Список зон хелпер не называет.
+    Сосед, которого дверь не зовёт, и тот, кто зовёт дверь, критичными не становятся.
+    """
+    вынос = (
+        "def sweep(path, limit):\n"
+        "    return drop_if_big(path, limit)\n"
+        "def drop_if_big(path, limit):\n"
+        "    return _drop(path, limit)\n"
+        "def _drop(path, limit):\n"
+        "    if path.stat().st_size > limit:\n"
+        "        path.unlink()\n"
+        "    return path.exists()\n"
+        "def _untouched(path):\n"
+        "    return path.stat().st_size > 0\n"
+        "def main(path):\n"
+        "    return sweep(path, 1)\n")
+    assert _в_зоне(вынос, "sweep")
+    assert _в_зоне(вынос, "drop_if_big") and _в_зоне(вынос, "_drop")
+    # потомок вызванного хелпера критичен, потомок невызванного — нет
+    assert _в_зоне(вынос, "_drop.inner") and not _в_зоне(вынос, "_untouched.inner")
+    assert not _в_зоне(вынос, "_untouched")
+    assert not _в_зоне(вынос, "main")
+    # без дерева членство лексическое: хелпер снова невидим
+    assert not lm.in_zone(("door::sweep",), "src/door.py", "_drop")
+    # условие без unlink — тот же класс, не каталог эффектов
+    условие = (
+        "def sweep(path, limit):\n"
+        "    if _too_big(path, limit):\n"
+        "        path.unlink()\n"
+        "    return path.exists()\n"
+        "def _too_big(path, limit):\n"
+        "    return path.stat().st_size > limit\n")
+    assert _в_зоне(условие, "_too_big")
+    # общий хелпер, которого зовёт и некритичная функция, всё равно критичен
+    общий = (
+        "def sweep(path, limit):\n"
+        "    return _drop(path, limit)\n"
+        "def other(path):\n"
+        "    return _drop(path, 0)\n"
+        "def _drop(path, limit):\n"
+        "    return path.stat().st_size > limit\n")
+    assert _в_зоне(общий, "_drop")
+    # вложенный вызов и вложенная функция хелпера
+    вложенный = (
+        "def sweep(path, limit):\n"
+        "    def inner():\n"
+        "        return _drop(path, limit)\n"
+        "    return inner()\n"
+        "def _drop(path, limit):\n"
+        "    def gate():\n"
+        "        return path.stat().st_size > limit\n"
+        "    return gate()\n")
+    assert _в_зоне(вложенный, "_drop") and _в_зоне(вложенный, "_drop.gate")
+    # весь модуль по-прежнему критичен целиком, дерево этого не сужает
+    import ast
+    дерево = ast.parse(вынос)
+    assert lm.in_zone(("door",), "src/door.py", "main", дерево)
+    assert lm.in_zone(("door",), "src/door.py", "", дерево)
+
+
+def test_вызов_метода_и_класса_того_же_модуля_критичен():
+    """Вынос в метод своего класса — `self`/`cls`. Голое имя класса тянет все
+    его методы, и вызванный, и соседний. Чужой приёмник и одноимённая функция
+    модуля критичными не становятся: `self.X` — это метод `X`, не голое имя.
+    """
+    метод = (
+        "class Door:\n"
+        "    def sweep(self, path, limit):\n"
+        "        return self._drop(path, limit)\n"
+        "    def _drop(self, path, limit):\n"
+        "        if path.stat().st_size > limit:\n"
+        "            path.unlink()\n"
+        "        return True\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "    @classmethod\n"
+        "    def sweep_cls(cls, path, limit):\n"
+        "        return cls._drop(path, limit)\n"
+        "def drop(path):\n"
+        "    return path.stat().st_size > 1\n")
+    assert _в_зоне(метод, "Door._drop", ("door::Door.sweep",))
+    assert _в_зоне(метод, "Door._drop", ("door::Door.sweep_cls",))
+    # `self.X` — только метод X, не все методы класса и не функция модуля
+    assert not _в_зоне(метод, "Door.other", ("door::Door.sweep",))
+    assert not _в_зоне(метод, "drop", ("door::Door.sweep",))
+    класс = (
+        "class Cleaner:\n"
+        "    def drop(self, path, limit):\n"
+        "        return path.stat().st_size > limit\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "def sweep(path, limit):\n"
+        "    return Cleaner().drop(path, limit)\n"
+        "def sweep_bare(path, limit):\n"
+        "    return Cleaner.drop(path, limit)\n")
+    assert _в_зоне(класс, "Cleaner.drop")
+    assert _в_зоне(класс, "Cleaner.drop", ("door::sweep_bare",))
+    # голое имя класса — все методы, не только вызванный
+    assert _в_зоне(класс, "Cleaner.other")
+    # приёмник — не self: метод класса не подтягивается по атрибуту чужого значения
+    чужой = (
+        "class Door:\n"
+        "    def sweep(self, hub, path):\n"
+        "        return hub.drop(path)\n"
+        "    def drop(self, path):\n"
+        "        return path.stat().st_size > 1\n")
+    assert not _в_зоне(чужой, "Door.drop", ("door::Door.sweep",))
+
+
+def test_упоминание_имени_тянет_хелпер_затенение_не_спасает():
+    """Сверх-приближение: упоминание имени — ребро, затенение не разбирается.
+
+    Локальное присваивание и сохранение в переменную не прячут функцию модуля.
+    Ближайшее вложенное определение не отменяет одноимённую функцию модуля.
+    Импорт чужого писца по-прежнему не делает критичной одноимённую функцию.
+    """
+    тень = (
+        "def sweep(path):\n"
+        "    _drop = path.unlink\n"
+        "    _drop()\n"
+        "def _drop(path):\n"
+        "    return path.stat().st_size > 1\n")
+    assert _в_зоне(тень, "_drop")
+    косвенный = (
+        "def sweep(path, limit):\n"
+        "    op = _drop\n"
+        "    return op(path, limit)\n"
+        "def _drop(path, limit):\n"
+        "    if path.stat().st_size > limit:\n"
+        "        path.unlink()\n"
+        "    return True\n")
+    assert _в_зоне(косвенный, "_drop")
+    оба = (
+        "def _drop(path):\n"
+        "    path.unlink()\n"
+        "def sweep(path):\n"
+        "    def _drop(path):\n"
+        "        return path\n"
+        "    return _drop(path)\n")
+    assert _в_зоне(оба, "_drop")
+    чужой_модуль = (
+        "import safe_write\n"
+        "def sweep(path):\n"
+        "    safe_write.write_text(path, 'x')\n"
+        "def write_text(path, body):\n"
+        "    return len(body) > 1\n")
+    assert not _в_зоне(чужой_модуль, "write_text")
+    # путь скрипта, не импортируемое имя: та же запись `файл::функция`
+    import ast
+    скрипт = "def run(path):\n    return _drop(path)\ndef _drop(path):\n    path.unlink()\n"
+    assert lm.in_zone(("scripts/door.py::run",), "scripts/door.py", "_drop", ast.parse(скрипт))
+
+
+def test_хелпер_в_зоне_по_упоминанию_имени():
+    """Имя хелпера в аргументе, декораторе, умолчании, таблице, классе и приёмнике
+    «сам объект» тянет хелпер в зону. Сосед, которого не упомянули, — нет.
+    """
+    спавн = (
+        "def sweep(path):\n"
+        "    threads.spawn(_drop, args=(path,))\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n"
+        "def _untouched(path):\n"
+        "    return 1\n")
+    assert _в_зоне(спавн, "_drop") and not _в_зоне(спавн, "_untouched")
+    декоратор = (
+        "@_drop\n"
+        "def sweep(path):\n"
+        "    return path\n"
+        "def _drop(fn):\n"
+        "    return fn\n")
+    assert _в_зоне(декоратор, "_drop")
+    умолчание = (
+        "def sweep(path, op=_drop, *, gate=_too_big):\n"
+        "    return path\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n"
+        "def _too_big(path):\n"
+        "    return path.stat().st_size > 1\n")
+    assert _в_зоне(умолчание, "_drop") and _в_зоне(умолчание, "_too_big")
+    таблица = (
+        "HANDLERS = {'x': _drop}\n"
+        "def sweep(path):\n"
+        "    return HANDLERS['x'](path)\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n"
+        "def _untouched(path):\n"
+        "    return 1\n")
+    assert _в_зоне(таблица, "_drop") and not _в_зоне(таблица, "_untouched")
+    цикл = (
+        "A = B\n"
+        "B = A\n"
+        "OPS = {'x': _drop}\n"
+        "def sweep(path):\n"
+        "    return (A, OPS)\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(цикл, "_drop")
+    наследник = (
+        "class Base:\n"
+        "    def drop(self, path):\n"
+        "        path.unlink()\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "class Door(Base):\n"
+        "    def sweep(self, path):\n"
+        "        return self.drop(path)\n")
+    assert _в_зоне(наследник, "Base.drop", ("door::Door.sweep",))
+    assert not _в_зоне(наследник, "Base.other", ("door::Door.sweep",))
+    контекст = (
+        "class Cleaner:\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, *a):\n"
+        "        path.unlink()\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "def sweep(path):\n"
+        "    with Cleaner():\n"
+        "        return path\n")
+    assert _в_зоне(контекст, "Cleaner.__exit__")
+    assert _в_зоне(контекст, "Cleaner.__enter__") and _в_зоне(контекст, "Cleaner.other")
+    тип = (
+        "class Door:\n"
+        "    def sweep(self, path):\n"
+        "        return type(self)._drop(path)\n"
+        "    def _drop(self, path):\n"
+        "        path.unlink()\n"
+        "    def other(self):\n"
+        "        return 1\n")
+    assert _в_зоне(тип, "Door._drop", ("door::Door.sweep",))
+    assert not _в_зоне(тип, "Door.other", ("door::Door.sweep",))
+    через_класс = (
+        "class Door:\n"
+        "    def sweep(self, path):\n"
+        "        return self.__class__._drop(path)\n"
+        "    def _drop(self, path):\n"
+        "        path.unlink()\n")
+    assert _в_зоне(через_класс, "Door._drop", ("door::Door.sweep",))
+    супер = (
+        "class Base:\n"
+        "    def drop(self, path):\n"
+        "        path.unlink()\n"
+        "class Door(Base):\n"
+        "    def sweep(self, path):\n"
+        "        return super().drop(path)\n")
+    assert _в_зоне(супер, "Base.drop", ("door::Door.sweep",))
+    вложенный = (
+        "class Door:\n"
+        "    def sweep(self, path):\n"
+        "        def inner():\n"
+        "            return self._drop(path)\n"
+        "        return inner()\n"
+        "    def _drop(self, path):\n"
+        "        path.unlink()\n"
+        "    def other(self):\n"
+        "        return 1\n")
+    assert _в_зоне(вложенный, "Door._drop", ("door::Door.sweep",))
+    assert not _в_зоне(вложенный, "Door.other", ("door::Door.sweep",))
+    # лямбда и включение — часть тела, не отдельная область
+    лямбда = (
+        "def sweep(path):\n"
+        "    return (lambda: _drop(path))()\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(лямбда, "_drop")
+    включение = (
+        "def sweep(paths):\n"
+        "    return [_drop(p) for p in paths]\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(включение, "_drop")
+    # одно имя — и функция, и класс: ребро к обоим, позднее определение не затирает
+    оба_вида = (
+        "def _drop(path):\n"
+        "    path.unlink()\n"
+        "class _drop:\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "def sweep(path):\n"
+        "    return _drop(path)\n")
+    assert _в_зоне(оба_вида, "_drop") and _в_зоне(оба_вида, "_drop.other")
+    # класс и функция, определённые в объемлющей функции, видны без выбора ближайшего
+    объемлющий = (
+        "def outer(path):\n"
+        "    def _drop(path):\n"
+        "        path.unlink()\n"
+        "    class Cleaner:\n"
+        "        def __exit__(self, *a):\n"
+        "            path.unlink()\n"
+        "    def sweep(path):\n"
+        "        with Cleaner():\n"
+        "            return _drop(path)\n"
+        "    return sweep(path)\n")
+    assert _в_зоне(объемлющий, "outer._drop", ("door::outer.sweep",))
+    assert _в_зоне(объемлющий, "outer.Cleaner.__exit__", ("door::outer.sweep",))
+    # база базы: голое имя класса модуля, транзитивно
+    транзит = (
+        "class A:\n"
+        "    def drop(self, path):\n"
+        "        path.unlink()\n"
+        "class B(A):\n"
+        "    pass\n"
+        "class Door(B):\n"
+        "    def sweep(self, path):\n"
+        "        return self.drop(path)\n")
+    assert _в_зоне(транзит, "A.drop", ("door::Door.sweep",))
+    # `super(Door, self)` — тот же приёмник, что `super()`: аргументы не прячут метод базы
+    супер_арг = (
+        "class Base:\n"
+        "    def drop(self, path):\n"
+        "        path.unlink()\n"
+        "class Door(Base):\n"
+        "    def sweep(self, path):\n"
+        "        return super(self.__class__, self).drop(path)\n")
+    assert _в_зоне(супер_арг, "Base.drop", ("door::Door.sweep",))
+    # класс, вложенный в класс двери, виден голому имени метода; метод класса — нет
+    вложенный_класс = (
+        "class Door:\n"
+        "    class Cleaner:\n"
+        "        def __exit__(self, *a):\n"
+        "            path.unlink()\n"
+        "        def other(self):\n"
+        "            return 1\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "    def sweep(self, path):\n"
+        "        with Cleaner():\n"
+        "            return other\n")
+    assert _в_зоне(вложенный_класс, "Door.Cleaner.__exit__", ("door::Door.sweep",))
+    assert _в_зоне(вложенный_класс, "Door.Cleaner.other", ("door::Door.sweep",))
+    assert not _в_зоне(вложенный_класс, "Door.other", ("door::Door.sweep",))
+    # цепочка модульных переменных длиннее стека вызовов не зацикливается и не рвётся
+    глубина = 1200
+    цепочка = "\n".join(f"V{i} = V{i + 1}" for i in range(глубина))
+    цепочка += (
+        f"\nV{глубина} = _drop\n"
+        "def sweep(path):\n"
+        "    return V0\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(цепочка, "_drop")
+
+
+_ФОРМЫ_МОДУЛЯ = {
+    "with": "with open(__file__) as f:\n    {a}\n",
+    "for/else": "for _ in ():\n    pass\nelse:\n    {a}\n",
+    "while/else": "while False:\n    pass\nelse:\n    {a}\n",
+    "if/else": "if False:\n    pass\nelse:\n    {a}\n",
+    "try": "try:\n    {a}\nexcept OSError:\n    pass\n",
+    "except": "try:\n    pass\nexcept OSError:\n    {a}\n",
+    "try/else": "try:\n    pass\nexcept OSError:\n    pass\nelse:\n    {a}\n",
+    "finally": "try:\n    pass\nfinally:\n    {a}\n",
+    "except*": "try:\n    pass\nexcept* OSError:\n    {a}\n",
+    "match/case": "match 1:\n    case _:\n        {a}\n",
+    "with внутри if": "if True:\n    with open(__file__) as f:\n        {a}\n",
+}
+
+
+@pytest.mark.parametrize("форма", sorted(_ФОРМЫ_МОДУЛЯ))
+def test_модульная_переменная_внутри_любой_формы_уровня_модуля(форма):
+    """Присваивание внутри составной инструкции уровня модуля — тоже значение.
+
+    Обход форм не падает на поле, которого у формы нет (`orelse` у `with`), и
+    находит имя: дверь упоминает таблицу, хелпер из таблицы в зоне.
+    """
+    src = (_ФОРМЫ_МОДУЛЯ[форма].format(a='HANDLERS = {"x": _drop}')
+           + "def sweep(path):\n"
+           "    return HANDLERS[\"x\"](path)\n"
+           "def _drop(path):\n"
+           "    path.unlink()\n"
+           "def _keep(path):\n"
+           "    path.unlink()\n")
+    assert _в_зоне(src, "_drop")
+    assert not _в_зоне(src, "_keep")
+
+
+_НЕ_УРОВЕНЬ_МОДУЛЯ = {
+    "тело def": "def setup():\n    {a}\n",
+    "тело class": "class C:\n    {a}\n",
+    "class внутри if": "if True:\n    class C:\n        {a}\n",
+}
+
+
+@pytest.mark.parametrize("форма", sorted(_НЕ_УРОВЕНЬ_МОДУЛЯ))
+def test_присваивание_в_теле_функции_и_класса_не_значение_модуля(форма):
+    """Тело функции и тело класса — не уровень модуля, даже под `if`.
+
+    Одноимённая таблица там не добавляет значений модульной: дверь упоминает
+    `HANDLERS`, в зоне только хелпер из модульного присваивания.
+    """
+    src = ('HANDLERS = {"x": _drop}\n'
+           + _НЕ_УРОВЕНЬ_МОДУЛЯ[форма].format(a='HANDLERS = {"x": _keep}')
+           + "def sweep(path):\n"
+           "    return HANDLERS[\"x\"](path)\n"
+           "def _drop(path):\n"
+           "    path.unlink()\n"
+           "def _keep(path):\n"
+           "    path.unlink()\n")
+    assert _в_зоне(src, "_drop")
+    assert not _в_зоне(src, "_keep")
+
+
+def _цепочка_выражения(звеньев: int) -> str:
+    return ("TOTAL = " + " + ".join(["a"] * звеньев) + "\n"
+            "HANDLERS = {\"x\": _drop}\n"
+            "def sweep(path):\n"
+            "    return HANDLERS[\"x\"](path)\n"
+            "def _drop(path):\n"
+            "    path.unlink()\n")
+
+
+def test_длинное_выражение_уровня_модуля_не_роняет_зону():
+    """Цепочка `a + a + …` на 300 звеньев — глубокое дерево выражения, зона строится."""
+    assert _в_зоне(_цепочка_выражения(300), "_drop")
+
+
+def test_сбор_модульных_значений_не_тратит_стек_на_глубину_выражения():
+    """Сбор значений модульных переменных не рекурсивен по глубине дерева.
+
+    Лимит рекурсии — текущая глубина плюс 100 кадров, цепочка — 300 звеньев:
+    обход, который тратит хоть один кадр на уровень выражения, упадёт.
+    """
+    import ast
+    import inspect
+    tree = ast.parse(_цепочка_выражения(300))
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(len(inspect.stack(0)) + 100)
+    try:
+        values = lm._module_values(tree)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert set(values) == {"TOTAL", "HANDLERS"}
+
+
+def test_все_определения_одного_qualname_дают_рёбра():
+    """Функций с одним qualname несколько — какая живёт, из текста не видно.
+
+    Рёбра — объединение по всем определениям: хелпер, которого упоминает только
+    первое определение, в зоне.
+    """
+    если = (
+        "import os\n"
+        "if os.name == 'posix':\n"
+        "    def sweep(path):\n"
+        "        return _drop(path)\n"
+        "else:\n"
+        "    def sweep(path):\n"
+        "        return 1\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(если, "_drop")
+    импорт = (
+        "try:\n"
+        "    from fast import sweep\n"
+        "except ImportError:\n"
+        "    def sweep(path):\n"
+        "        return _drop(path)\n"
+        "    def sweep(path):\n"
+        "        return None\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(импорт, "_drop")
+    свойство = (
+        "class Door:\n"
+        "    @property\n"
+        "    def state(self):\n"
+        "        return _drop(self.path)\n"
+        "    @state.setter\n"
+        "    def state(self, value):\n"
+        "        self.value = value\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(свойство, "_drop", ("door::Door.state",))
+    # контроль: сосед, которого не упоминает ни одно определение, вне зоны
+    assert not _в_зоне(если + "def _keep(path):\n    path.unlink()\n", "_keep")
+
+
+def test_файл_без_записей_зоны_не_строит_рёбер(monkeypatch):
+    """Семя пустое — замыкание пустое без обхода тел: глубокое выражение в
+    файле, где нет ни одной записи зоны, не доходит до рекурсивного обхода.
+    """
+    import ast
+
+    def нельзя(*args, **kwargs):
+        raise AssertionError("рёбра построены для файла без записей зоны")
+
+    monkeypatch.setattr(lm, "_mentions_of", нельзя)
+    src = "def sweep(path):\n    return _drop(path)\ndef _drop(path):\n    path.unlink()\n"
+    assert not lm.in_zone(("other::sweep",), "src/door.py", "_drop", ast.parse(src))
+    # контроль: подмена стоит на боевом пути — с записью зоны она срабатывает
+    with pytest.raises(AssertionError, match="рёбра построены"):
+        lm.in_zone(("door::sweep",), "src/door.py", "_drop", ast.parse(src))
+
+
+def test_вне_зоны_аннотация_чужой_приёмник_и_строка():
+    """Не следует: аннотация, `getattr` по строке, `globals()`, `self` вне метода.
+    Значение `AnnAssign` — упоминание, сама аннотация — нет.
+    """
+    аннотация = (
+        "def sweep(path: _drop) -> _drop:\n"
+        "    x: _drop\n"
+        "    return path\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert not _в_зоне(аннотация, "_drop")
+    значение = (
+        "def sweep(path):\n"
+        "    x: int = _drop\n"
+        "    return x(path)\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(значение, "_drop")
+    гетатр = (
+        "def sweep(path):\n"
+        "    return getattr(path, '_drop')()\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert not _в_зоне(гетатр, "_drop")
+    глобал = (
+        "def sweep(path):\n"
+        "    return globals()['_drop'](path)\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert not _в_зоне(глобал, "_drop")
+    не_метод = (
+        "class Door:\n"
+        "    def drop(self, path):\n"
+        "        path.unlink()\n"
+        "def sweep(self, path):\n"
+        "    return self.drop(path)\n")
+    assert not _в_зоне(не_метод, "Door.drop")
 
 
 def test_qualnames_и_области_узлов():

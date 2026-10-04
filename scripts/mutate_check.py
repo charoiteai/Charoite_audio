@@ -206,6 +206,9 @@ class ScanReport:
     #: план о нём молчал бы — `plan_for` считает его непрочитанным (выходной круг 2
     #: по №441, DS C1).
     unparsed: str = ""
+    #: Дерево ревизии, с которого снят план. Критичность двери считается по нему,
+    #: а не по диску: рабочее дерево может уже не содержать вынесенный хелпер.
+    tree: ast.AST | None = None
 
 
 @dataclasses.dataclass
@@ -575,12 +578,14 @@ def scan(path: pathlib.Path, lines: set[int], source: str | None = None,
         return ScanReport([], unparsed=why)
     rel = rel if rel is not None else path.name
     try:
-        return _scan_tree(tree, path, lines, rel)
+        report = _scan_tree(tree, path, lines, rel)
     except PARSE_ERRORS as e:
         # Обход и канон рекурсивны: разобравшийся, но слишком глубокий файл —
         # «не прочитан», а не трассировка до первой записи фактов (выходной круг 1
         # по №469, Sonnet M1)
         return ScanReport([], unparsed=f"{type(e).__name__}: {e}")
+    report.tree = tree
+    return report
 
 
 def _scan_tree(tree: ast.Module, path: pathlib.Path, lines: set[int], rel: str) -> ScanReport:
@@ -738,7 +743,9 @@ def plan_for(root: pathlib.Path, rng: str, shard: tuple[int, int] | None = None,
         totals.lines_constant += report.lines_constant
         totals.nodes += report.nodes
         for m in report.mutations:
-            m.critical = layout_map.in_zone(zones, rel.as_posix(), m.qualname)
+            # Дерево `git show`, не рабочий диск: вынос тела двери в хелпер того
+            # же модуля остаётся критичным (layout_map.in_zone).
+            m.critical = layout_map.in_zone(zones, rel.as_posix(), m.qualname, report.tree)
         plan.extend(report.mutations)
     totals.full = len(plan)
     totals.critical_full = sum(m.critical for m in plan)
