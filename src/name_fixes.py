@@ -18,9 +18,10 @@
 настоящему Сергею, упомянутому в речи, — наугад это не переименовывается.
 Узлы графа правит облако в режиме правки (промпт); без права правки
 воркер пишет в лог, что перенести руками. Отказ plan() граф не откатывает:
-когда раздел применяла машина (правка графа включена и перенос сверен),
-строки отказа пишутся в файл ревизии разделом «## Не применено», а итоговая
-строка журнала называет их число. Голое имя владельца, его полное имя на
+когда раздел имён применила машина (правка графа включена и перенос сверен)
+и есть отказы, они дописываются в конец ответа модели разделом
+«## Не применено», и строка журнала называет число; при проигранной
+гонке записи раздела нет и строки счёта нет. Голое имя владельца, его полное имя на
 чужой дорожке и метка микрофона — три разные причины.
 """
 from __future__ import annotations
@@ -64,16 +65,15 @@ MAX_NAME = 60
 # записанный с фамилией, этим отказом не цепляется.
 REASON_MIC_LABEL = "метка владельца (канал микрофона) не переименовывается"
 REASON_MIC_TARGET = "целевое имя — метка владельца (канал микрофона)"
-REASON_BARE = "голое имя владельца: напишите имя с фамилией"
+REASON_BARE = "голое имя владельца: нужна фамилия"
 REASON_OWNER = "целевое имя — полное имя владельца"
 REASON_OWNER_LABEL = "полное имя владельца не переименовывается"
 REASON_BARE_LABEL = "голое имя владельца не переименовывается"
 
 # Заголовок ровно такой: слова «исправления имён» ловит NAMES_WORD, а жирная
 # форма «**метка** → **имя**» — это _FIX, и раздел снова разобрался бы как правки.
+# Свой блок только дописывается в конец: заголовок модели не ищем и не снимаем.
 UNAPPLIED_TITLE = "## Не применено"
-_UNAPPLIED_HEAD = re.compile(r"^\s*## Не применено\s*$")
-_ANY_HEAD = re.compile(r"^#{1,6} ")
 # plan() кладёт отказ так: «метка → имя» — причина. Причина сама может
 # содержать « — » (каскад слияния), поэтому режется только первый разделитель
 # после закрывающей скобки.
@@ -107,7 +107,8 @@ PROMPT_PARAGRAPH = (
     "с меткой другой дорожки, которую ты не переименовываешь (два голоса слились "
     "бы в одного человека), — такое опиши прозой; метку владельца (его микрофон) "
     "не переименовывай и его имя другой дорожке не давай. Если фамилия "
-    "участника звучала, пиши ему имя с фамилией — голое имя не применяется. "
+    "участника звучала, пиши ему имя с фамилией; не звучала — не выдумывай её. "
+    "Голое имя, совпавшее с именем владельца встречи, не применится. "
     "Раздел применит Чароит, если правка графа включена и перенос сверен; "
     "иначе его применяет человек. Поручения минуток под "
     "ошибочной меткой сними в «## Снятые поручения» и верни с верным именем в "
@@ -118,11 +119,19 @@ PROMPT_PARAGRAPH = (
 HUMAN_NOTE = "строки применять одновременно, не по очереди"
 
 
-def name_fixes(review: str, dropped: list[str] | None = None) -> list[tuple[str, str, str]]:
+def name_fixes(review: str, dropped: list[str] | None = None,
+               noise: list[str] | None = None) -> list[tuple[str, str, str]]:
     """(метка, имя, основание) из раздела «## Исправления имён» ревизии.
-    Строка не по форме — в `dropped`, не пункт. Раздела нет — пусто."""
+
+    Строка не по форме — в `dropped`, не пункт. Шум разбора (LINE_NOISE:
+    «нет», проза до первого пункта, примечание в скобках) — в `noise`,
+    если список передан; иначе в `dropped`, как у прямого вызова. По тексту
+    строки шум не фильтруем: от пункта его отличает классификатор раздела.
+    Раздела нет — пусто.
+    """
     out: list[tuple[str, str, str]] = []
-    for item in review_bridge._section_items(review, NAMES_HEAD, dropped):
+    sink = noise if noise is not None else dropped
+    for item in review_bridge._section_items(review, NAMES_HEAD, sink):
         m = _FIX.match(item)
         if not m:
             if dropped is not None:
@@ -263,17 +272,17 @@ def _plain(text: str) -> str:
 
 
 def refusal_lines(dropped: list[str] | None) -> list[str]:
-    """Строки раздела «## Не применено» из отказов plan() и прочего dropped_n.
+    """Строки раздела «## Не применено» из отказов plan(), строк не по форме
+    и событий. Шума разбора здесь нет: его отделяет вызывающий.
 
-    Проигранная гонка записи (LostRace) — своё событие журнала, не строка
-    раздела. Форма plan() «метка → имя» — причина становится
-    «- метка → имя — причина» без жирного. Остальное — той же строкой,
-    тоже без жирного: список dropped_n человек видит целиком.
+    Событий LostRace на входе нет, их отделяет вызывающий. Форма plan()
+    «метка → имя» — причина становится «- метка → имя — причина» без
+    жирного. Остальное — той же строкой, тоже без жирного.
     """
     out: list[str] = []
     for item in dropped or []:
         text = (item or "").strip()
-        if not text or text.startswith(review_bridge.LostRace.PREFIX):
+        if not text:
             continue
         m = _REFUSAL.match(text)
         if m:
@@ -285,57 +294,33 @@ def refusal_lines(dropped: list[str] | None) -> list[str]:
 
 
 def render_unapplied(text: str, rows: list[str]) -> str:
-    """Заменить раздел «## Не применено» по заголовку. Пустой список — снять.
+    """Дописать блок «## Не применено» в конец текста.
 
-    Второй такой заголовок не остаётся: повторная обработка не дописывает
-    раздел заново. Строки вне раздела не трогаются.
+    Пустой `rows` — `text` как есть. Иначе — текст без хвостовых переводов
+    строки, ровно одна пустая строка, заголовок, строки `rows` и перевод
+    строки в конце. Пустой текст — только блок. Заголовок, который написала
+    модель, не ищется и не снимается: своего раздела в файле к моменту
+    записи нет, ответ модели публикуется целиком.
     """
-    ending = text.endswith("\n")
-    body = text[:-1] if ending else text
-    lines = body.split("\n") if body else []
-    spans: list[tuple[int, int]] = []
-    i = 0
-    while i < len(lines):
-        if _UNAPPLIED_HEAD.match(lines[i]):
-            end = i + 1
-            while end < len(lines) and not _ANY_HEAD.match(lines[end]):
-                end += 1
-            spans.append((i, end))
-            i = end
-        else:
-            i += 1
     if not rows:
-        if not spans:
-            return text
-        for start, end in reversed(spans):
-            del lines[start:end]
-        while lines and lines[-1] == "":
-            lines.pop()
-        new = "\n".join(lines)
-        if new or ending:
-            return new + "\n"
-        return ""
-    block = [UNAPPLIED_TITLE, *rows]
-    if not spans:
-        if lines and lines[-1] != "":
-            lines.append("")
-        lines.extend(block)
-    else:
-        for start, end in reversed(spans[1:]):
-            del lines[start:end]
-        start, end = spans[0]
-        lines[start:end] = block
-    return "\n".join(lines) + "\n"
+        return text
+    body = text.rstrip("\n")
+    block = "\n".join([UNAPPLIED_TITLE, *rows])
+    if not body:
+        return block + "\n"
+    return body + "\n\n" + block + "\n"
 
 
 def record_unapplied(path: pathlib.Path, dropped: list[str] | None) -> int:
-    """Записать или снять «## Не применено» в файле ревизии. Число строк.
+    """Дописать «## Не применено» в конец файла ревизии. Число строк.
 
-    Запись — через safe_write (гейт по снимку, две попытки). Текст не
-    изменился — файл не трогаем, число всё равно возвращаем: журналу оно
-    нужно и на повторном прогоне с теми же отказами.
+    Пустой список файл не переписывает. Запись — через safe_write (гейт
+    по снимку, две попытки). Файл не в UTF-8 — MangledFile, байты на месте.
+    Событий LostRace на входе нет, их отделяет вызывающий.
     """
     rows = refusal_lines(dropped)
+    if not rows:
+        return 0
 
     def transform(text: str) -> tuple[str, int]:
         new = render_unapplied(text, rows)
@@ -343,7 +328,10 @@ def record_unapplied(path: pathlib.Path, dropped: list[str] | None) -> int:
             return text, 0
         return new, 1
 
-    safe_write.rewrite_file(path, transform, "раздел «Не применено» не записан")
+    try:
+        safe_write.rewrite_file(path, transform, "раздел «Не применено» не записан")
+    except UnicodeDecodeError as e:
+        raise review_bridge.MangledFile(path, "отказы остались в журнале", e.reason) from e
     return len(rows)
 
 
@@ -461,14 +449,18 @@ def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
 
 
 def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
-            dropped: list[str] | None = None) -> dict[str, str]:
+            dropped: list[str] | None = None,
+            noise: list[str] | None = None) -> dict[str, str]:
     """Карта «метка → имя», которую ревизия просит применить, без правки
     файлов. Нужна и без права правки графа: мост поручений считает
     участников по НЕпереименованной стенограмме, и восстановленный пункт с
     верным именем получал бы «⚠ не участник» (DS r2 I2 по #548) — верные
-    имена из этой карты мост добавляет к участникам. Файл не в UTF-8
-    или стенограмма не прочиталась — пусто со строкой в `dropped`, не
-    молчаливое «правок нет»: иначе повтор снял бы раздел отказов."""
+    имена из этой карты мост добавляет к участникам. Стенограмма не в
+    UTF-8 или не прочиталась — пусто со строкой в `dropped`, не
+    молчаливое «правок нет»: человек видит, что имена не перештампованы.
+    Ревизию не в UTF-8 читает read_review с заменой; строгую запись
+    отказов делает record_unapplied.
+    `noise` — шум разбора раздела, в отказы не входит (см. name_fixes)."""
     try:
         text, _lossy = review_bridge.read_review(review)
         speech = live.read_text(encoding="utf-8")
@@ -477,13 +469,13 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
             dropped.append(f"{live.name} не в UTF-8 — имена не перештампованы ({e.reason})")
         return {}
     except OSError as e:
-        # Молчаливое «правок нет» снимало бы «## Не применено» на повторном
-        # прогоне: раздел не разбирался, а журнал сказал бы «неприменённых: 0».
+        # На базе здесь было молчаливое «правок нет». Строка нужна, чтобы
+        # человек видел: стенограмма не прочитана, имена не перештампованы.
         if dropped is not None:
             dropped.append(f"{live.name}: стенограмма не прочитана — имена не "
                            f"перештампованы ({e.strerror or e})")
         return {}
-    fixes = name_fixes(text, dropped=dropped)
+    fixes = name_fixes(text, dropped=dropped, noise=noise)
     if not fixes:
         return {}
     headers = {b["speaker"] for b in transcript.parse_blocks(speech)}
@@ -491,7 +483,8 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
 
 
 def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
-          dropped: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
+          dropped: list[str] | None = None,
+          noise: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
     """Исправления имён из ревизии — в стенограмму и минутки этой встречи.
     Возвращает (применённая карта, заголовков реплик, тронута ли строка
     участников минуток). Нет ревизии, раздела или применимых строк — пусто;
@@ -500,7 +493,7 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     (DS r1 I2 по #548). Файлы независимы: битые или не записавшиеся минутки
     не отменяют уже перештампованную стенограмму — строка в `dropped`, а
     результат по факту (критика GLM r2, DS r2 M3)."""
-    mapping = planned(review, live, cfg, dropped=dropped)
+    mapping = planned(review, live, cfg, dropped=dropped, noise=noise)
     if not mapping:
         return {}, 0, False
     # стенограмма сменилась под рукой — ничего не применено, LostRace идёт

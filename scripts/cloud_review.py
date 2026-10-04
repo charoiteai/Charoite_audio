@@ -1694,23 +1694,30 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # нет (критика DS/GLM r1 по #548); раздел ревизии остаётся
                 # человеку. Свой try: сбой имён не должен глушить мост поручений.
                 dropped_n: list[str] = []
+                # Шум разбора («- нет», проза до первого пункта) в раздел и в
+                # счёт неприменённых не идёт, в журнал «отброшено» — идёт.
+                noise_n: list[str] = []
                 renamed: dict[str, str] = {}
                 names_failed = False
-                # Раздел «Не применено» пишет только машина, и только когда
-                # разбор раздела состоялся. Граф к карте plan() не привязываем:
-                # отказ виден человеку в файле ревизии, узлы Люди не трогаем.
+                # Раздел «Не применено» дописывается в конец ответа модели,
+                # только когда раздел имён применила машина и есть отказы.
+                # Проигранная гонка записи — не этот случай: файлы не тронуты,
+                # раздела нет, отказы остаются строкой журнала «отброшено».
+                # Граф к карте plan() не привязываем: отказ виден человеку
+                # в файле ревизии, узлы Люди не трогаем.
                 names_machine = False
                 if may_edit and checked:
                     try:
-                        renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
+                        renamed, heads, parts = name_fixes.apply(
+                            rev, transcript, cfg, dropped=dropped_n, noise=noise_n)
                         names_machine = True
                     except review_bridge.LostRace as e:
                         # стенограмма сменилась под перештамповкой дважды — файлы не
                         # тронуты, но верные имена мосту всё равно нужны как участники:
                         # иначе восстановленный пункт с верным именем получал бы
-                        # «⚠ не участник» по старой шапке (DS I1, круг 2 по #553)
+                        # «⚠ не участник» по старой шапке (DS I1, круг 2 по #553).
+                        # names_machine не поднимаем: гонка не «машина применила».
                         names_failed = True
-                        names_machine = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
                         try:
                             # с dropped, как соседние вызовы: непонятые строки
@@ -1718,8 +1725,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                             # apply() уже наполнил dropped_n до LostRace — второй разбор
                             # дописывает только новое (DS r1 M2 по #556)
                             again: list[str] = []
-                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=again)
+                            again_noise: list[str] = []
+                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=again,
+                                                         noise=again_noise)
                             dropped_n.extend(x for x in again if x not in dropped_n)
+                            noise_n.extend(x for x in again_noise if x not in noise_n)
                         except Exception as e2:  # noqa: BLE001
                             lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001
@@ -1740,7 +1750,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     # считает их участниками, иначе восстановленный пункт с
                     # верным именем получал бы «⚠ не участник» (DS r2 I2)
                     try:
-                        renamed = name_fixes.planned(rev, transcript, cfg, dropped=dropped_n)
+                        renamed = name_fixes.planned(rev, transcript, cfg, dropped=dropped_n,
+                                                     noise=noise_n)
                     except Exception as e:  # noqa: BLE001
                         lines.append(f"[cloud-review] имена меток: раздел не разобран ({e})\n")
                     if name_fixes.section_present(rev_text):
@@ -1821,14 +1832,16 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 dropped_n = [d for d in dropped_n if not d.startswith(review_bridge.LostRace.PREFIX)]
                 n_unapplied: int | None = None
                 if names_machine:
-                    # До доставки в архив: человек читает ревизию уже с разделом.
+                    # До доставки в архив: человек читает ревизию уже с разделом,
+                    # дописанным в конец ответа. Пустой список файл не трогает.
                     try:
                         n_unapplied = name_fixes.record_unapplied(rev, dropped_n)
-                    except (review_bridge.LostRace, OSError) as e:
+                    except (review_bridge.LostRace, review_bridge.MangledFile, OSError) as e:
                         n_unapplied = len(name_fixes.refusal_lines(dropped_n))
                         lines.append(f"[cloud-review] раздел «Не применено» не записан: {e}\n")
+                names_junk = [*noise_n, *dropped_n]
                 for what, junk in (("восстановленных", dropped), ("снятых", dropped_w),
-                                   ("исправлений имён", dropped_n)):
+                                   ("исправлений имён", names_junk)):
                     if junk:
                         shown = "; ".join(s[:80] for s in junk[:5])
                         more = "" if len(junk) <= 5 else f" (и ещё {len(junk) - 5})"

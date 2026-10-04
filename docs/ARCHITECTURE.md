@@ -611,19 +611,23 @@ built, what was skipped and why.
    verified transfer, where the cloud also moves the meeting out of the
    wrong person's node; in read-only mode nothing is renamed and the log
    points to the review's section for a human. A refusal does not roll the
-   graph back. The owner's bare first name ("write the name with the
-   surname"), the owner's full name on another track, and the microphone
-   label (its previous reason) are three different reasons; a namesake
-   written with a surname is applied. When the machine applied the section,
-   refusals are written into the same review under `## Не применено`
-   (`- label → name — reason`, not bold): the next run replaces that
-   section by its heading, no refusals removes it, and the final
-   `[cloud-review]` line names the count. Read-only mode does not write
+   graph back. A bare name is refused only when it matches the meeting
+   owner's name; if a surname was heard, the task asks for the name with
+   the surname, and if it was not, it must not be invented. The owner's
+   full name on another track and the microphone label (its previous
+   reason) are the other two reasons; a namesake written with a surname
+   is applied. When the machine applied the names section and there are
+   refusals, they are appended to the end of the model's answer under
+   `## Не применено` (`- label → name — reason`, not bold) on that run,
+   and the `[cloud-review]` line names the count. A lost write race
+   leaves no such section and no count line. Read-only mode does not write
    `Не применено`: the name-fix section stays for a human. The review task
    is one paragraph for both modes and does not promise the rename up
    front: Charoite applies the section only when graph edit is on and the
    transfer was verified, otherwise a human does; if a surname was heard,
-   it asks for the name with the surname. The section's lines apply
+   it asks for the name with the surname and does not invent one that was
+   not heard; a bare name that matches the meeting owner's name is not
+   applied. The section's lines apply
    in one pass: a swap of two labels or a chain never merges tracks, and
    the review task tells the model so with a swap example
    (`name_fixes.PROMPT_PARAGRAPH`).

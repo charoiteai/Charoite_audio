@@ -318,7 +318,8 @@ PROMPT_RULES = [
     ("которую ты не переименовываешь", [("А", "Б", "")], {"А", "Б"}, set(), {}),
     ("метку владельца (его микрофон) не переименовывай", [("Я", "В", "")], {"Я", "А"}, {"Я"}, {}),
     ("его имя другой дорожке не давай", [("А", "Я", "")], {"Я", "А"}, {"Я"}, {}),
-    ("голое имя не применяется", [("Собеседник 1", "Имя", "")], {"Собеседник 1"},
+    ("Голое имя, совпавшее с именем владельца встречи, не применится.",
+     [("Собеседник 1", "Имя", "")], {"Собеседник 1"},
      nf.NameGuard(mic=frozenset({"Я"}), owner="Имя Фамилия", bare="Имя"), {}),
 ]
 
@@ -337,7 +338,7 @@ def test_plan_separates_bare_owner_name_full_name_and_mic():
     headers = {"Собеседник 1", "Собеседник 2", "Я", "Имя"}
     dropped: list[str] = []
     assert nf.plan([("Собеседник 1", "Имя", "")], headers, guard, dropped) == {}
-    assert dropped == ["«Собеседник 1 → Имя» — голое имя владельца: напишите имя с фамилией"]
+    assert dropped == ["«Собеседник 1 → Имя» — голое имя владельца: нужна фамилия"]
     dropped.clear()
     assert nf.plan([("Собеседник 1", "Имя Фамилия", "")], headers, guard, dropped) == {}
     assert dropped == ["«Собеседник 1 → Имя Фамилия» — целевое имя — полное имя владельца"]
@@ -356,7 +357,8 @@ def test_plan_separates_bare_owner_name_full_name_and_mic():
     dropped.clear()
     assert nf.plan([("Имя", "Фамилия", "")], headers, guard, dropped) == {}
     assert dropped == ["«Имя → Фамилия» — голое имя владельца не переименовывается"]
-    # тёзка с фамилией — не голое слово и не полное имя владельца
+    # первое слово «Фамилия» с именем владельца не совпадает — это не тёзка,
+    # и строка всё равно применяется: не голое имя и не полное имя владельца
     assert nf.plan([("Собеседник 1", "Фамилия Имя", "")], headers, guard) == {"Собеседник 1": "Фамилия Имя"}
     # «Я» как первое слово полного имени остаётся причиной канала, не просьбой дописать фамилию
     odd = nf.guard_for({"sufler": {"user_name": "Я Фамилия"}})
@@ -366,57 +368,151 @@ def test_plan_separates_bare_owner_name_full_name_and_mic():
     assert "голое имя" not in dropped[0]
 
 
-def test_unapplied_section_is_replaced_by_heading_and_stays_out_of_name_fixes(tmp_path):
-    """Отказы plan() — один раздел «## Не применено». Повтор заменяет его,
-    пустой список снимает. name_fixes() видит те же правки, что без раздела."""
+_ROW = "- Собеседник 1 → Имя — голое имя владельца: нужна фамилия"
+
+
+def test_render_unapplied_appends_the_exact_block():
+    """Вход → точный текст. Пустой список текст не меняет. Заголовок модели
+    и жирная подпись под ним остаются, свой блок — в конце."""
+    row = _ROW
+    block = "## Не применено\n" + row + "\n"
+    cases = [
+        ("", [row], block),
+        ("# Ревизия\nстрока\n", [row], "# Ревизия\nстрока\n\n" + block),
+        ("# Ревизия\nстрока", [row], "# Ревизия\nстрока\n\n" + block),
+        ("# Ревизия\nстрока\n\n\n", [row], "# Ревизия\nстрока\n\n" + block),
+        ("# Ревизия\nстрока\n", [], "# Ревизия\nстрока\n"),
+        ("# Ревизия\nстрока", [], "# Ревизия\nстрока"),
+    ]
+    model = ("# Ревизия\n"
+             "## Исправления имён\n"
+             "- **Собеседник 1** → **Имя** — основание: звучало\n"
+             "\n"
+             "## Не применено\n"
+             "- пункт модели\n"
+             "\n"
+             "**Что сделано в графе:**\n"
+             "- пункт подписи\n")
+    cases.append((model, [row],
+                  "# Ревизия\n"
+                  "## Исправления имён\n"
+                  "- **Собеседник 1** → **Имя** — основание: звучало\n"
+                  "\n"
+                  "## Не применено\n"
+                  "- пункт модели\n"
+                  "\n"
+                  "**Что сделано в графе:**\n"
+                  "- пункт подписи\n"
+                  "\n" + block))
+    for text, rows, expected in cases:
+        assert nf.render_unapplied(text, rows) == expected
+    bare = ("# Ревизия\n## Исправления имён\n"
+            "- **Собеседник 1** → **Мария** — основание: звучало\n")
+    appended = nf.render_unapplied(bare, [row])
+    assert nf.name_fixes(appended) == nf.name_fixes(bare)
+    assert nf.name_fixes(nf.render_unapplied(model, [row])) == nf.name_fixes(model)
+
+
+def test_record_unapplied_appends_and_an_empty_list_does_not_rewrite(tmp_path):
     rev = tmp_path / "ревизия.md"
     original = ("# Ревизия\n## Исправления имён\n"
-                "- **Собеседник 1** → **Имя** — основание: звучало\n"
-                "- **Собеседник 2** → **Фамилия Имя** — основание: тёзка\n")
-    rev.write_text(original, encoding="utf-8")
-    dropped = ["«Собеседник 1 → Имя» — голое имя владельца: напишите имя с фамилией",
-               "(не уверен)"]
-    assert nf.record_unapplied(rev, dropped) == 2
-    text = rev.read_text(encoding="utf-8")
-    assert text.count("## Не применено") == 1
-    tail = text.split("## Не применено", 1)[1]
-    assert "- Собеседник 1 → Имя — голое имя владельца: напишите имя с фамилией" in tail
-    assert "- (не уверен)" in tail
-    assert "**" not in tail
-    assert nf.name_fixes(text) == nf.name_fixes(original)
-    again = ["«Собеседник 2 → Имя Фамилия» — целевое имя — полное имя владельца"]
-    assert nf.record_unapplied(rev, again) == 1
-    text = rev.read_text(encoding="utf-8")
-    assert text.count("## Не применено") == 1
-    tail = text.split("## Не применено", 1)[1]
-    assert "Собеседник 1 → Имя" not in tail
-    assert "- Собеседник 2 → Имя Фамилия — целевое имя — полное имя владельца" in tail
-    assert nf.name_fixes(text) == nf.name_fixes(original)
+                "- **Собеседник 1** → **Имя** — основание: звучало\n")
+    rev.write_bytes(original.encode("utf-8"))
+    dropped = ["«Собеседник 1 → Имя» — голое имя владельца: нужна фамилия", ""]
+    assert nf.record_unapplied(rev, dropped) == 1
+    assert rev.read_text(encoding="utf-8") == nf.render_unapplied(original, [_ROW])
+    stamp = rev.stat().st_mtime_ns
+    raw = rev.read_bytes()
     assert nf.record_unapplied(rev, []) == 0
-    text = rev.read_text(encoding="utf-8")
-    assert "## Не применено" not in text
-    assert nf.name_fixes(text) == nf.name_fixes(original)
-    # повтор с теми же строками не плодит второй раздел
-    nf.record_unapplied(rev, again)
-    assert nf.record_unapplied(rev, again) == 1
-    assert rev.read_text(encoding="utf-8").count("## Не применено") == 1
+    assert rev.read_bytes() == raw and rev.stat().st_mtime_ns == stamp
+    bad = tmp_path / "битая.md"
+    blob = b"\xff\xfe"
+    bad.write_bytes(blob)
+    bad_stamp = bad.stat().st_mtime_ns
+    assert nf.record_unapplied(bad, []) == 0
+    assert bad.read_bytes() == blob and bad.stat().st_mtime_ns == bad_stamp
 
 
-def test_unread_transcript_does_not_wipe_the_unapplied_section(tmp_path):
-    """Стенограмма не читается — это не «отказов нет». Иначе повтор снял бы
-    «## Не применено», хотя строки раздела не разбирались."""
+def test_record_unapplied_on_non_utf8_raises_mangled_and_keeps_bytes(tmp_path):
+    import pytest
+    import review_bridge
+    rev = tmp_path / "ревизия.md"
+    raw = "проза ".encode("utf-8") + b"\xff" + "\n## Исправления имён\n".encode("utf-8")
+    rev.write_bytes(raw)
+    with pytest.raises(review_bridge.MangledFile) as exc:
+        nf.record_unapplied(rev, ["«Собеседник 1 → Имя» — голое имя владельца: нужна фамилия"])
+    assert rev.read_bytes() == raw
+    assert "не в UTF-8" in str(exc.value) and "отказы остались в журнале" in str(exc.value)
+
+
+def test_refusal_lines_turn_a_plan_refusal_into_a_section_line_and_skip_blanks():
+    src = "«Собеседник 1 → Имя» — голое имя владельца: нужна фамилия"
+    assert nf.refusal_lines([src, "", "   "]) == [_ROW]
+    assert nf.refusal_lines(None) == []
+    assert nf.refusal_lines([]) == []
+
+
+def test_another_persons_bare_name_and_a_real_namesake_are_applied():
+    """Владелец «Имя Фамилия»: голое имя другого участника применяется,
+    тёзка с другой фамилией — тоже. Голое имя владельца — отказ."""
+    guard = nf.guard_for({"sufler": {"user_name": "Имя Фамилия"}})
+    headers = {"Собеседник 1", "Собеседник 2"}
+    assert nf.plan([("Собеседник 1", "Другой", "")], headers, guard) == {"Собеседник 1": "Другой"}
+    assert nf.plan([("Собеседник 2", "Имя Другаяфамилия", "")], headers, guard) == {
+        "Собеседник 2": "Имя Другаяфамилия"}
+    dropped: list[str] = []
+    assert nf.plan([("Собеседник 1", "Имя", "")], headers, guard, dropped) == {}
+    assert dropped == ["«Собеседник 1 → Имя» — голое имя владельца: нужна фамилия"]
+
+
+def test_one_word_owner_has_no_bare_name():
+    """user_name из одного слова: bare пустое. Цель «Имя» — полное имя
+    владельца. Метка «Имя» — канал микрофона: guard_for кладёт это слово
+    в mic, и причина канала раньше причины полного имени."""
+    guard = nf.guard_for({"sufler": {"user_name": "Имя"}})
+    assert guard.bare == ""
+    assert guard.owner == "Имя"
+    dropped: list[str] = []
+    assert nf.plan([("Собеседник 1", "Имя", "")], {"Собеседник 1"}, guard, dropped) == {}
+    assert dropped == ["«Собеседник 1 → Имя» — целевое имя — полное имя владельца"]
+    dropped.clear()
+    assert nf.plan([("Имя", "Фамилия", "")], {"Имя"}, guard, dropped) == {}
+    assert dropped == ["«Имя → Фамилия» — метка владельца (канал микрофона) не переименовывается"]
+
+
+def test_section_noise_is_not_a_malformed_line():
+    text = ("## Исправления имён\n"
+            "проза до пункта\n"
+            "- нет\n"
+            "- **Сергей** → **Мария** (из обращения)\n"
+            "- **Собеседник 1** → **Имя** — основание: голое\n")
+    dropped: list[str] = []
+    noise: list[str] = []
+    fixes = nf.name_fixes(text, dropped=dropped, noise=noise)
+    assert noise == ["проза до пункта", "- нет"]
+    assert dropped == ["**Сергей** → **Мария** (из обращения)"]
+    assert fixes == [("Собеседник 1", "Имя", "голое")]
+    assert nf.refusal_lines(dropped) == ["- Сергей → Мария (из обращения)"]
+
+
+def test_unread_transcript_is_an_event_appended_after_the_model_text(tmp_path):
+    """Стенограмма не читается — строка в dropped, чтобы человек видел это.
+    Раздел модели не снимается: свой блок дописывается в конец."""
     rev = tmp_path / "ревизия.md"
     names = ("# Ревизия\n## Исправления имён\n"
              "- **Собеседник 1** → **Имя** — основание: звучало\n")
-    rev.write_text(names + "\n## Не применено\n- Собеседник 1 → Имя — старая причина\n",
-                   encoding="utf-8")
+    original = names + "\n## Не применено\n- Собеседник 1 → Имя — старая причина\n"
+    rev.write_text(original, encoding="utf-8")
     missing = tmp_path / "нет.md"
     dropped: list[str] = []
     assert nf.planned(rev, missing, {"sufler": {"user_name": "Имя Фамилия"}}, dropped=dropped) == {}
-    assert len(dropped) == 1 and "не прочитана" in dropped[0]
+    assert len(dropped) == 1
+    assert dropped[0].startswith(f"{missing.name}: стенограмма не прочитана — имена не перештампованы (")
+    row = "- " + dropped[0]
+    assert nf.refusal_lines(dropped) == [row]
     assert nf.record_unapplied(rev, dropped) == 1
     text = rev.read_text(encoding="utf-8")
-    assert text.count("## Не применено") == 1
-    assert "старая причина" not in text
-    assert "не прочитана" in text.split("## Не применено", 1)[1]
+    assert text == nf.render_unapplied(original, [row])
+    assert "старая причина" in text and "не прочитана" in text
+    assert text.count("## Не применено") == 2
     assert nf.name_fixes(text) == nf.name_fixes(names)
