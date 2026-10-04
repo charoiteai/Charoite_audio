@@ -91,10 +91,11 @@ review gates, and who answers for what — is documented in
   leaving the machine, owner data written or deleted. The list is the union of
   the range's base and head. A `module::function` entry also covers what that
   function reaches by a name mention in the same module — a call, a value, a
-  decorator or a default, a class defined in the function, an enclosing
-  function, the enclosing class or the module — with all of its methods and the
-  methods of bases named in the module — or a module-level variable (everything mentioned
-  in the values assigned to it) — and the same again from there. Shadowing is
+  decorator or a default, a class (defined in the function, in an enclosing
+  function, in the enclosing class or at module level) with all of its methods
+  and the methods of its bases named in the module, a module-level variable
+  (everything mentioned in the values assigned to it) — and the same again from
+  there. Shadowing is
   not resolved: an extra name in the zone is the price, a missed one is a
   defect. Annotations (of parameters, of the return value, `AnnAssign`) are
   not a mention. `self.X` pulls only the method `X` of the nearest class and
