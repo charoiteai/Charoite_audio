@@ -238,16 +238,17 @@ def _speech_speakers(text: str) -> tuple[str, ...]:
 
 
 def _neutral_remaining(speakers: tuple[str, ...]) -> tuple[str, ...]:
-    """Нейтральные метки тела, голый «Собеседник» тоже.
+    """Нейтральные метки тела, кроме голого «Собеседник».
 
-    Тот же предикат, по которому `rebuild()` набирает безымянные метки
-    плашки: голую метку он считает потерей, и читатель старой плашки без
-    списка не может считать иначе. Предикат — единственный, в
-    `channel_labels`. Импорт ленивый: этот модуль берёт демон при старте,
-    а `channel_labels` тянет стек аудио.
+    Предикат — единственный, в `channel_labels`. Импорт ленивый: этот модуль
+    берёт демон при старте, а `channel_labels` тянет стек аудио.
     """
     import channel_labels
-    return tuple(speaker for speaker in speakers if channel_labels.is_neutral_label(speaker))
+    bare = channel_labels.NEUTRAL_OTHER
+    return tuple(
+        speaker for speaker in speakers
+        if speaker != bare and channel_labels.is_neutral_label(speaker)
+    )
 
 
 def read_names_pending(text: str) -> NamesPending:
@@ -256,7 +257,7 @@ def read_names_pending(text: str) -> NamesPending:
     Плашки нет — потери нет: нейтральные метки без плашки законны (модель
     честно ответила «имён не звучало»). Плашка со списком — оставшиеся метки
     это пересечение списка с заголовками речи. Плашка без списка (файлы до
-    хвоста) — все нейтральные метки речи, голый «Собеседник» тоже; если
+    хвоста) — все нейтральные метки речи, кроме голого «Собеседник»; если
     рядом, до ко-мышления, стоит заметка о свёрнутом микрофоне, такую плашку
     не снимаем даже когда нумерованных меток не осталось.
     """

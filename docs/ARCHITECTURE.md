@@ -619,8 +619,11 @@ Each phase is published atomically under `logs/meeting-status/`. Writers of
 the status document take one shared lock on that directory and wait up to
 10 seconds; after that the write is skipped with a line in the writer's log
 and the document stays as it was. The meeting outcome (ready, failed, no
-speech) is not skipped: it is written once without the lock, with the same
-atomic replace and a line on stderr. The macOS app shows real progress, the
+speech) and a delivered cloud review are not skipped: only when the lock is
+not taken in time or cannot be taken at all, they are written once without
+it, with the same atomic replace and a line on stderr, and a writer still
+holding the lock does not turn that outcome back into processing (the
+docstring of `MeetingStatusStore._update` is the source). The macOS app shows real progress, the
 cloud review stage (running, retrying, ok, failed) lives in the same status
 as the `review` field without moving readiness, keeps failures linked to the
 source transcript, and

@@ -182,18 +182,17 @@ def test_reader_keeps_a_listless_banner_beside_the_collapsed_mic_note():
     assert transcript.NAMES_PENDING_PREFIX not in transcript.names_banner_for(bare)
 
 
-def test_listless_banner_counts_the_bare_neutral_label_as_rebuild_does():
-    """Плашка без списка: голый «Собеседник» — потеря, как у писателя
-    `rebuild()`. Плашка со списком считает его так же."""
+def test_reader_does_not_count_the_bare_neutral_label():
+    """Плашка без списка: голый «Собеседник» не считается — им же бывает
+    слитая метка микрофона, а слитых меток текст не знает. Плашка со
+    списком считает его, если он в списке."""
     both = (
         f"# Встреча\n\n{rt.NAMES_PENDING_NOTE}\n\n"
         "**Собеседник** [12:00]:\nда\n\n**Собеседник 3** [12:01]:\nнет\n"
     )
-    assert transcript.read_names_pending(both).labels == ("Собеседник", "Собеседник 3")
+    assert transcript.read_names_pending(both).labels == ("Собеседник 3",)
     only = f"# Встреча\n\n{rt.NAMES_PENDING_NOTE}\n\n**Собеседник** [12:00]:\nда\n"
-    info = transcript.read_names_pending(only)
-    assert info.pending is True and info.reason == "silent" and info.labels == ("Собеседник",)
-    assert transcript.names_banner_for(only) == only
+    assert transcript.read_names_pending(only).pending is False
     listed = transcript.names_pending_line(rt.NAMES_PENDING_NOTE, ["Собеседник"])
     text = f"# Встреча\n\n{listed}\n\n**Собеседник** [12:00]:\nда\n"
     assert transcript.read_names_pending(text).labels == ("Собеседник",)
@@ -667,3 +666,146 @@ def test_status_writes_leave_no_open_descriptors(tmp_path):
         store.refresh_names(live)
         store.expire_reviews()
     assert len(os.listdir("/dev/fd")) == before
+
+
+def _live(tmp_path: pathlib.Path) -> pathlib.Path:
+    return _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+
+
+def test_delivered_review_lands_when_the_lock_is_held(tmp_path, monkeypatch, capsys):
+    """«ok» ревизии — доставка: ложится и при занятом замке. «running»
+    при том же замке пропускается TimeoutError."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    live = _live(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    path = store.ready(live, None)
+    assert store.review(live, "running", "идёт") == path
+    fd = _hold_status_lock(store.directory)
+    try:
+        with pytest.raises(TimeoutError):
+            store.review(live, "retrying", "повтор")
+        assert store.review(live, "ok", "доставлено") == path
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["state"] == "ready" and data["review"]["state"] == "ok"
+        assert "без замка" in capsys.readouterr().err
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_meeting_outcome_lands_when_flock_fails_not_busy(tmp_path, monkeypatch):
+    """flock отказал не занятостью (ENOLCK на томе без замков): исход
+    ложится без замка, обычная запись получает тот же OSError."""
+    live = _live(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    path = store.processing(live, "updating_graph")
+
+    def no_locks(_fd, _op):
+        raise OSError(77, "No locks available")
+
+    monkeypatch.setattr(meeting_processing.fcntl, "flock", no_locks)
+    with pytest.raises(OSError) as caught:
+        store.processing(live, "rebuilding_transcript")
+    assert caught.value.errno == 77
+    assert json.loads(path.read_text(encoding="utf-8"))["stage"] == "updating_graph"
+    assert store.failed(live, "упало") == path
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "error"
+
+
+def test_meeting_outcome_lands_when_the_lock_file_does_not_open(tmp_path, monkeypatch):
+    """Файл замка не открывается (права, чужой владелец): исход ложится,
+    обычная запись получает PermissionError."""
+    live = _live(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    path = store.processing(live, "updating_graph")
+    real_open = os.open
+
+    def deny_lock(name, *args, **kwargs):
+        if pathlib.Path(name).name == meeting_processing._STATUS_LOCK_NAME:
+            raise PermissionError(13, "Permission denied", str(name))
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr(meeting_processing.os, "open", deny_lock)
+    with pytest.raises(PermissionError):
+        store.processing(live, "rebuilding_transcript")
+    assert store.no_speech(live) == path
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "empty"
+
+
+def _race_against_the_outcome(tmp_path, monkeypatch, holder):
+    """Поток A держит замок в `_update` (mutate ждёт), исход `ready` ложится
+    без замка по сроку, затем A дописывает. Возвращает документ после A."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    live = _live(tmp_path)
+    store_a = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store_b = MeetingStatusStore(tmp_path, now=lambda: 20.0)
+    path = store_a.processing(live, "updating_graph")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def mutate(current):
+        calls.append(current.get("state"))
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+        return holder(current)
+
+    thread = threading.Thread(target=lambda: store_a._update(live, mutate))
+    thread.start()
+    try:
+        assert entered.wait(3)
+        assert store_b.ready(live, None) == path
+        assert json.loads(path.read_text(encoding="utf-8"))["state"] == "ready"
+    finally:
+        release.set()
+        thread.join(5)
+    assert calls == ["processing", "ready"]
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_stale_stage_under_the_lock_does_not_undo_the_outcome(tmp_path, monkeypatch):
+    def stage(current):
+        return {**current, "state": "processing", "stage": "rebuilding_transcript"}
+
+    data = _race_against_the_outcome(tmp_path, monkeypatch, stage)
+    assert data["state"] == "ready" and data["stage"] == "complete"
+
+
+def test_a_review_under_the_lock_lands_on_top_of_the_outcome(tmp_path, monkeypatch):
+    def review(current):
+        return {**current, "review": {"state": "running", "note": "", "updated_at": 1.0}}
+
+    data = _race_against_the_outcome(tmp_path, monkeypatch, review)
+    assert data["state"] == "ready" and data["review"]["state"] == "running"
+
+
+def test_status_update_after_the_outcome_still_reopens_the_meeting(tmp_path):
+    """Без гонки гейта нет: пересборка готовой встречи пишет processing."""
+    live = _live(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    path = store.ready(live, None)
+    assert store.processing(live, "rebuilding_transcript") == path
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "processing"
+
+
+def test_no_lockless_line_when_the_outcome_did_not_land(tmp_path, monkeypatch, capsys):
+    """Строка «записан без замка» — только после записи."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    live = _live(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.processing(live, "updating_graph")
+    capsys.readouterr()
+
+    def broken(_current):
+        raise ValueError("mutate упал")
+
+    fd = _hold_status_lock(store.directory)
+    try:
+        with pytest.raises(ValueError):
+            store._update(live, broken, terminal=True)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    assert "без замка" not in capsys.readouterr().err
