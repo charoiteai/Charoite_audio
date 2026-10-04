@@ -429,6 +429,67 @@ def test_хелпер_в_зоне_по_упоминанию_имени():
     assert _в_зоне(цепочка, "_drop")
 
 
+def test_все_определения_одного_qualname_дают_рёбра():
+    """Функций с одним qualname несколько — какая живёт, из текста не видно.
+
+    Рёбра — объединение по всем определениям: хелпер, которого упоминает только
+    первое определение, в зоне.
+    """
+    если = (
+        "import os\n"
+        "if os.name == 'posix':\n"
+        "    def sweep(path):\n"
+        "        return _drop(path)\n"
+        "else:\n"
+        "    def sweep(path):\n"
+        "        return 1\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(если, "_drop")
+    импорт = (
+        "try:\n"
+        "    from fast import sweep\n"
+        "except ImportError:\n"
+        "    def sweep(path):\n"
+        "        return _drop(path)\n"
+        "    def sweep(path):\n"
+        "        return None\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(импорт, "_drop")
+    свойство = (
+        "class Door:\n"
+        "    @property\n"
+        "    def state(self):\n"
+        "        return _drop(self.path)\n"
+        "    @state.setter\n"
+        "    def state(self, value):\n"
+        "        self.value = value\n"
+        "def _drop(path):\n"
+        "    path.unlink()\n")
+    assert _в_зоне(свойство, "_drop", ("door::Door.state",))
+    # контроль: сосед, которого не упоминает ни одно определение, вне зоны
+    assert not _в_зоне(если + "def _keep(path):\n    path.unlink()\n", "_keep")
+
+
+def test_файл_без_записей_зоны_не_строит_рёбер(monkeypatch):
+    """Семя пустое — замыкание пустое без обхода тел: глубокое выражение в
+    файле, где нет ни одной записи зоны, не доходит до рекурсивного обхода.
+    """
+    import ast
+    import pytest
+
+    def нельзя(*args, **kwargs):
+        raise AssertionError("рёбра построены для файла без записей зоны")
+
+    monkeypatch.setattr(lm, "_mentions_of", нельзя)
+    src = "def sweep(path):\n    return _drop(path)\ndef _drop(path):\n    path.unlink()\n"
+    assert not lm.in_zone(("other::sweep",), "src/door.py", "_drop", ast.parse(src))
+    # контроль: подмена стоит на боевом пути — с записью зоны она срабатывает
+    with pytest.raises(AssertionError, match="рёбра построены"):
+        lm.in_zone(("door::sweep",), "src/door.py", "_drop", ast.parse(src))
+
+
 def test_вне_зоны_аннотация_чужой_приёмник_и_строка():
     """Не следует: аннотация, `getattr` по строке, `globals()`, `self` вне метода.
     Значение `AnnAssign` — упоминание, сама аннотация — нет.

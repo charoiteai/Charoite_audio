@@ -96,7 +96,9 @@ review gates, and who answers for what — is documented in
   methods of bases named in the module — or a module-level variable (everything mentioned
   in the values assigned to it) — and the same again from there. Shadowing is
   not resolved: an extra name in the zone is the price, a missed one is a
-  defect. Nested definitions were already covered. Extracting the body
+  defect. Annotations (of parameters, of the return value, `AnnAssign`) are
+  not a mention. `self.X` pulls only the method `X` of the nearest class and
+  its bases, not all of its methods. Nested definitions were already covered. Extracting the body
   into a helper (the irreversible call, or only the condition that decides it;
   private or not) does not leave the zone, and the helper is not added to the
   list: the closure is read off the tree being mutated. It does not follow

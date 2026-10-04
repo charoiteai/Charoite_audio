@@ -1216,22 +1216,28 @@ def _lexical_in_zone(entries, rel: str, qualname: str) -> bool:
     return False
 
 
-def _definitions(tree: ast.AST) -> tuple[dict[str, set[str]], dict[str, ast.AST], dict[str, ast.AST]]:
-    """qualname → виды (`fn`/`cls`) и узлы функций и классов по отдельности.
+def _definitions(tree: ast.AST) -> tuple[dict[str, set[str]], dict[str, list[ast.AST]], dict[str, ast.AST]]:
+    """qualname → виды (`fn`/`cls`), все узлы функций и узел класса.
 
     Одно имя бывает и функцией, и классом (`def K` и `class K`). Позднее
-    определение не затирает раннее: упоминание даёт ребро к обоим. Два узла
-    одного вида с одним qualname — последний в тексте: в рантайме живёт он.
+    определение не затирает раннее: упоминание даёт ребро к обоим. Функций с
+    одним qualname бывает несколько (`if`/`else`, `try`/`except ImportError`,
+    `@property` и `@x.setter`) — какая живёт в рантайме, из текста не видно,
+    поэтому рёбра qualname — объединение по всем. Два класса с одним qualname —
+    последний в тексте.
     """
     kinds: dict[str, set[str]] = {}
-    fns: dict[str, ast.AST] = {}
+    fns: dict[str, list[ast.AST]] = {}
     clss: dict[str, ast.AST] = {}
     for node, scope in scoped_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             qual = f"{scope}.{node.name}" if scope else node.name
             kind = "cls" if isinstance(node, ast.ClassDef) else "fn"
             kinds.setdefault(qual, set()).add(kind)
-            (clss if kind == "cls" else fns)[qual] = node
+            if kind == "cls":
+                clss[qual] = node
+            else:
+                fns.setdefault(qual, []).append(node)
     return kinds, fns, clss
 
 
@@ -1512,10 +1518,17 @@ def _delegated(entries, rel: str, tree: ast.AST) -> frozenset[str]:
     if cached is not None and cached[0] is tree:
         return cached[1]
     kinds, fns, clss = _definitions(tree)
-    mod_values = _module_values(tree)
-    edges = {qual: _mentions_of(fns[qual], qual, kinds, clss, mod_values) for qual in fns}
     seeds = {qual for qual, ks in kinds.items()
              if "fn" in ks and _lexical_in_zone(entries, rel, qual)}
+    if not seeds:
+        # Файл без записей зоны: обходить тела ради рёбер незачем.
+        if len(_ZONE_CALLS) > 32:
+            _ZONE_CALLS.clear()
+        _ZONE_CALLS[key] = (tree, frozenset())
+        return frozenset()
+    mod_values = _module_values(tree)
+    edges = {qual: set().union(*(_mentions_of(node, qual, kinds, clss, mod_values) for node in nodes))
+             for qual, nodes in fns.items()}
     seen = set(seeds)
     extra: set[str] = set()
     stack = list(seeds)
@@ -1550,10 +1563,12 @@ def in_zone(entries, rel: str, qualname: str, tree: ast.AST | None = None) -> bo
     (в самой функции, в объемлющей функции, в объемлющем классе или на модуле —
     все его методы и методы баз, названных в модуле) и модульная переменная
     (всё, что упомянуто в присвоенных ей значениях). Затенение не разбирается: лишнее
-    имя в зоне — цена, пропуск — дефект. `self`, `cls`, `type(self)`,
+    имя в зоне — цена, пропуск — дефект. Аннотации (параметров, возврата,
+    `AnnAssign`) упоминанием не считаются. `self`, `cls`, `type(self)`,
     `self.__class__` и `super(...)` (в том числе без аргументов) в методе и во
-    вложенной в метод функции дают ребро к одноимённому методу ближайшего
-    класса и его баз, а не к классу из аргументов `super`.
+    вложенной в метод функции: `.X` даёт ребро только к методу `X` ближайшего
+    класса и его баз, а не ко всем методам и не к классу из аргументов `super`.
+    Функция с несколькими определениями одного qualname тянет рёбра всех.
     Дерево — то, которое ломают: читать файл с диска нельзя, рабочее дерево
     может стоять на другом коммите.
 
