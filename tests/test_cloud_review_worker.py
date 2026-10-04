@@ -2832,3 +2832,216 @@ def test_a_lost_race_on_the_second_write_is_named_once_and_honestly(tmp_path, mo
     assert line.count("2026-07-15_1400") == 1, line      # имя один раз, не дважды
     assert "сменились под рукой" in line, line
     assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
+
+
+def test_refused_name_lines_land_in_the_review_once_and_only_when_the_machine_applied(tmp_path, monkeypatch):
+    """Отказ plan() дописывается в конец ответа модели разделом «## Не применено»,
+    число — в итоговой строке журнала. Заголовок, который написала модель,
+    остаётся. Отказов нет — свой блок не пишется. Режим чтения и несверенный
+    перенос раздел не пишут."""
+    import name_fixes
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    speech = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n"
+              "**Собеседник 2** [14:01]:\nнет\n\n**Я** [14:02]:\nугу\n")
+    cfg_edit = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия"}}
+    cfg_read = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False, "user_name": "Имя Фамилия"}}
+    base = _REPORT + "\n## Исправления имён\n"
+    bare = base + "- **Собеседник 1** → **Имя** — основание: голое\n"
+    mic = base + "- **Собеседник 1** → **Я** — основание: канал\n"
+    namesake = (base + "- **Собеседник 1** → **Имя Другаяфамилия** — основание: тёзка с фамилией\n"
+                "\n## Не применено\n- Собеседник 1 → Имя — старая причина\n")
+
+    class Result:
+        returncode = 0
+
+    holder = {"text": "", "touch": False}
+
+    def fake_run(cmd, **kwargs):
+        # Правка защищённой копии стенограммы заставляет перенос звать quarantine.
+        # Пустая песочница quarantine не вызывает, и checked остаётся истинным.
+        if holder["touch"]:
+            doc = (pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
+                   / f"{stamp}.md")
+            doc.write_text("переписано", encoding="utf-8")
+        kwargs["stdout"].write(holder["text"])
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+
+    def run(cfg, model):
+        transcript.write_text(speech, encoding="utf-8")
+        log.write_text("", encoding="utf-8")
+        holder["text"] = model
+        return cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert run(cfg_read, bare) == 0
+    assert "## Не применено" not in rev.read_text(encoding="utf-8")
+    assert "**Собеседник 1** [14:00]:" in transcript.read_text(encoding="utf-8")
+    assert "неприменённых строк:" not in log.read_text(encoding="utf-8")
+
+    assert run(cfg_edit, bare) == 0
+    body = rev.read_text(encoding="utf-8")
+    bare_row = "- Собеседник 1 → Имя — голое имя владельца: нужна фамилия"
+    assert body == name_fixes.render_unapplied(bare, [bare_row])
+    assert name_fixes.name_fixes(body) == name_fixes.name_fixes(bare)
+    assert "**Собеседник 1** [14:00]:" in transcript.read_text(encoding="utf-8")
+    assert "неприменённых строк: 1" in log.read_text(encoding="utf-8")
+
+    echoed = mic + "\n## Не применено\n- Собеседник 1 → Имя — старая причина\n**Что сделано в графе:**\n- пункт подписи\n"
+    assert run(cfg_edit, echoed) == 0
+    body = rev.read_text(encoding="utf-8")
+    mic_row = "- Собеседник 1 → Я — целевое имя — метка владельца (канал микрофона)"
+    assert body == name_fixes.render_unapplied(echoed, [mic_row])
+    assert "старая причина" in body and "**Что сделано в графе:**" in body and "- пункт подписи" in body
+    assert name_fixes.name_fixes(body) == name_fixes.name_fixes(echoed)
+    assert "неприменённых строк: 1" in log.read_text(encoding="utf-8")
+
+    assert run(cfg_edit, namesake) == 0
+    body = rev.read_text(encoding="utf-8")
+    assert body == namesake
+    assert "**Имя Другаяфамилия** [14:00]:" in transcript.read_text(encoding="utf-8")
+    assert "неприменённых строк: 0" in log.read_text(encoding="utf-8")
+    assert name_fixes.name_fixes(body) == name_fixes.name_fixes(namesake)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(cloud_review, "quarantine",
+                   lambda *a, **k: (_ for _ in ()).throw(OSError(28, "ENOSPC")))
+        holder["touch"] = True
+        try:
+            assert run(cfg_edit, bare) == 1
+        finally:
+            holder["touch"] = False
+    written = rev.read_text(encoding="utf-8")
+    assert "## Не применено" not in written
+    assert "## Исправления имён" in written
+    assert "**Собеседник 1** [14:00]:" in transcript.read_text(encoding="utf-8")
+    assert "неприменённых строк:" not in log.read_text(encoding="utf-8")
+    assert "ПЕРЕНОС НЕ СМОГ" in log.read_text(encoding="utf-8")
+
+
+def _edit_run(tmp_path, monkeypatch, model, speech, *, raw=None):
+    """Прогон ревизии в режиме правки со сверенным переносом. Модель пишет
+    `model` (строка) или `raw` (байты) в stdout."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    transcript.write_text(speech, encoding="utf-8")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        if raw is None:
+            kwargs["stdout"].write(model)
+        else:
+            kwargs["stdout"].buffer.write(raw)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True, "user_name": "Имя Фамилия"}}
+    code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    return code, transcript, rev, log
+
+
+_SPEECH_TWO = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n"
+               "**Собеседник 2** [14:01]:\nнет\n\n**Я** [14:02]:\nугу\n")
+
+
+def test_lost_race_does_not_write_unapplied_and_logs_the_refusal(tmp_path, monkeypatch):
+    """Проигранная гонка записи — не «машина применила»: раздела нет,
+    строки счёта нет, отказ — в журнале «отброшено»."""
+    import review_bridge
+    review = (_REPORT + "\n## Исправления имён\n"
+              "- **Собеседник 1** → **Имя Другаяфамилия** — основание: тёзка\n"
+              "- **Собеседник 2** → **Имя** — основание: голое\n")
+
+    def lost(*_a, **_k):
+        raise review_bridge.LostRace(pathlib.Path("стенограмма.md"), "заголовки реплик не тронуты",
+                                     kind=review_bridge.LostRace.CHANGED)
+
+    monkeypatch.setattr(cloud_review.name_fixes, "restamp_transcript", lost)
+    code, transcript, rev, log = _edit_run(tmp_path, monkeypatch, review, _SPEECH_TWO)
+    assert code == 0
+    assert rev.read_text(encoding="utf-8") == review
+    assert "**Собеседник 1** [14:00]:" in transcript.read_text(encoding="utf-8")
+    journal = log.read_text(encoding="utf-8")
+    assert "неприменённых строк" not in journal
+    assert "имена меток не перештампованы" in journal
+    dropped = next(ln for ln in journal.splitlines()
+                   if "отброшено строк раздела исправлений имён" in ln)
+    assert "отброшено строк раздела исправлений имён — 1" in dropped
+    assert "«Собеседник 2 → Имя» — голое имя владельца: нужна фамилия" in dropped
+
+
+def test_lost_race_reparse_adds_section_noise_once(tmp_path, monkeypatch):
+    """После гонки раздел разбирается второй раз. Шум и отказы первого разбора
+    уже в списках — в журнал каждая строка попадает один раз."""
+    import review_bridge
+    review = (_REPORT + "\n## Исправления имён\n"
+              "- нет\n"
+              "- **Собеседник 1** → **Имя Другаяфамилия** — основание: тёзка\n"
+              "- **Собеседник 2** → **Имя** — основание: голое\n")
+
+    def lost(*_a, **_k):
+        raise review_bridge.LostRace(pathlib.Path("стенограмма.md"), "заголовки реплик не тронуты",
+                                     kind=review_bridge.LostRace.CHANGED)
+
+    monkeypatch.setattr(cloud_review.name_fixes, "restamp_transcript", lost)
+    code, _transcript, rev, log = _edit_run(tmp_path, monkeypatch, review, _SPEECH_TWO)
+    assert code == 0
+    assert rev.read_text(encoding="utf-8") == review
+    dropped = next(ln for ln in log.read_text(encoding="utf-8").splitlines()
+                   if "отброшено строк раздела исправлений имён" in ln)
+    assert "отброшено строк раздела исправлений имён — 2" in dropped
+    assert dropped.count("- нет") == 1
+    assert dropped.count("«Собеседник 2 → Имя»") == 1
+
+def test_non_utf8_review_keeps_its_bytes_and_the_journal_keeps_the_refusal(tmp_path, monkeypatch):
+    speech = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n**Я** [14:01]:\nугу\n")
+    raw = (_REPORT.encode("utf-8") + "проза обрыва ".encode("utf-8") + b"\xff"
+           + "\n## Исправления имён\n- **Собеседник 1** → **Имя** — основание: голое\n".encode("utf-8"))
+    code, _transcript, rev, log = _edit_run(tmp_path, monkeypatch, "", speech, raw=raw)
+    assert code == 0
+    assert rev.read_bytes() == raw
+    journal = log.read_text(encoding="utf-8")
+    failed = next(ln for ln in journal.splitlines() if "не записан" in ln)
+    assert "не в UTF-8" in failed
+    assert "отброшено строк раздела исправлений имён — 1" in journal
+    assert "неприменённых строк: 1" in journal
+    assert "мост ревизии не сработал" not in journal
+
+
+def test_name_section_noise_is_logged_and_not_counted_as_unapplied(tmp_path, monkeypatch):
+    speech = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n**Я** [14:01]:\nугу\n")
+    only = _REPORT + "\n## Исправления имён\n- нет\n"
+    code, _transcript, rev, log = _edit_run(tmp_path, monkeypatch, only, speech)
+    assert code == 0
+    assert rev.read_text(encoding="utf-8") == only
+    journal = log.read_text(encoding="utf-8")
+    assert "неприменённых строк: 0" in journal
+    dropped = next(ln for ln in journal.splitlines()
+                   if "отброшено строк раздела исправлений имён" in ln)
+    assert "отброшено строк раздела исправлений имён — 1" in dropped
+    assert "- нет" in dropped
+
+    mix = (_REPORT + "\n## Исправления имён\n"
+           "проза до первого пункта\n"
+           "- нет\n"
+           "- **Собеседник 1** → **Имя** — основание: голое\n")
+    code, _transcript, rev, log = _edit_run(tmp_path / "второй", monkeypatch, mix, speech)
+    assert code == 0
+    import name_fixes
+    row = "- Собеседник 1 → Имя — голое имя владельца: нужна фамилия"
+    body = rev.read_text(encoding="utf-8")
+    assert body == name_fixes.render_unapplied(mix, [row])
+    assert body.split("## Не применено")[-1].strip() == row
+    journal = log.read_text(encoding="utf-8")
+    assert "неприменённых строк: 1" in journal
+    dropped = next(ln for ln in journal.splitlines()
+                   if "отброшено строк раздела исправлений имён" in ln)
+    assert "отброшено строк раздела исправлений имён — 3" in dropped
+    assert "проза до первого пункта" in dropped and "- нет" in dropped
