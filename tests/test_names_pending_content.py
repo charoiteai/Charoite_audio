@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -809,3 +810,14 @@ def test_no_lockless_line_when_the_outcome_did_not_land(tmp_path, monkeypatch, c
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
     assert "без замка" not in capsys.readouterr().err
+
+
+def test_names_pending_result_is_immutable():
+    """Признак — значение, а не ящик: поле не переписать после чтения."""
+    banner = transcript.names_pending_line(rt.NAMES_PENDING_NOTE, ["Собеседник 1"])
+    info = transcript.read_names_pending(
+        f"# Встреча\n\n{banner}\n\n**Собеседник 1** [12:00]:\nда\n")
+    assert info.pending is True
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        info.pending = False
+    assert info.pending is True

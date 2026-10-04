@@ -217,7 +217,7 @@ def _banner_line(head: str) -> str | None:
 def _listed_labels(line: str) -> tuple[str, ...] | None:
     """Метки из хвоста плашки. None — плашка старого файла, списка нет."""
     mark = line.rfind(_UNNAMED_MARK)
-    if mark < 0:
+    if mark == -1:
         return None
     body = line[mark + len(_UNNAMED_MARK):]
     return tuple(part.strip() for part in body.split(",") if part.strip())
@@ -283,15 +283,6 @@ def read_names_pending(text: str) -> NamesPending:
     return NamesPending(True, reason, remaining)
 
 
-def _without_banner(head: str) -> str:
-    """Шапка без всего совпадения: строка плашки, её окончание и не больше
-    одной пустой строки за ней. Заголовок реплики сразу за плашкой остаётся."""
-    match = _BANNER_RE.search(head)
-    if match is None:
-        return head
-    return head[:match.start()] + head[match.end():]
-
-
 def names_banner_for(text: str) -> str:
     """Текст после переименования заголовков: снять плашку, оставить или
     переписать список.
@@ -312,7 +303,9 @@ def names_banner_for(text: str) -> str:
     line = match.group("line")
     info = read_names_pending(text)
     if not info.pending:
-        return _without_banner(head) + tail
+        # Снимается всё совпадение: строка плашки, её окончание и не больше
+        # одной пустой строки за ней. Заголовок реплики сразу за плашкой остаётся.
+        return head[:match.start()] + head[match.end():] + tail
     listed = _listed_labels(line)
     if listed is None or set(info.labels) == set(listed):
         return text
