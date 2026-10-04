@@ -78,6 +78,150 @@ def test_in_zone_модуль_путь_и_функция():
     assert not lm.in_zone(записи, "src/daemon.py", "main")
 
 
+def _в_зоне(src: str, qual: str, entries=("door::sweep",)) -> bool:
+    import ast
+    return lm.in_zone(entries, "src/door.py", qual, ast.parse(src))
+
+
+def test_критичность_двери_идёт_по_прямому_вызову_в_модуле():
+    """Вынос тела — в хелпер того же модуля, приватный или нет, с эффектом или
+    только с условием, на любую глубину. Список зон хелпер не называет.
+    Сосед, которого дверь не зовёт, и тот, кто зовёт дверь, критичными не становятся.
+    """
+    вынос = (
+        "def sweep(path, limit):\n"
+        "    return drop_if_big(path, limit)\n"
+        "def drop_if_big(path, limit):\n"
+        "    return _drop(path, limit)\n"
+        "def _drop(path, limit):\n"
+        "    if path.stat().st_size > limit:\n"
+        "        path.unlink()\n"
+        "    return path.exists()\n"
+        "def _untouched(path):\n"
+        "    return path.stat().st_size > 0\n"
+        "def main(path):\n"
+        "    return sweep(path, 1)\n")
+    assert _в_зоне(вынос, "sweep")
+    assert _в_зоне(вынос, "drop_if_big") and _в_зоне(вынос, "_drop")
+    # потомок вызванного хелпера критичен, потомок невызванного — нет
+    assert _в_зоне(вынос, "_drop.inner") and not _в_зоне(вынос, "_untouched.inner")
+    assert not _в_зоне(вынос, "_untouched")
+    assert not _в_зоне(вынос, "main")
+    # без дерева членство лексическое: хелпер снова невидим
+    assert not lm.in_zone(("door::sweep",), "src/door.py", "_drop")
+    # условие без unlink — тот же класс, не каталог эффектов
+    условие = (
+        "def sweep(path, limit):\n"
+        "    if _too_big(path, limit):\n"
+        "        path.unlink()\n"
+        "    return path.exists()\n"
+        "def _too_big(path, limit):\n"
+        "    return path.stat().st_size > limit\n")
+    assert _в_зоне(условие, "_too_big")
+    # общий хелпер, которого зовёт и некритичная функция, всё равно критичен
+    общий = (
+        "def sweep(path, limit):\n"
+        "    return _drop(path, limit)\n"
+        "def other(path):\n"
+        "    return _drop(path, 0)\n"
+        "def _drop(path, limit):\n"
+        "    return path.stat().st_size > limit\n")
+    assert _в_зоне(общий, "_drop")
+    # вложенный вызов и вложенная функция хелпера
+    вложенный = (
+        "def sweep(path, limit):\n"
+        "    def inner():\n"
+        "        return _drop(path, limit)\n"
+        "    return inner()\n"
+        "def _drop(path, limit):\n"
+        "    def gate():\n"
+        "        return path.stat().st_size > limit\n"
+        "    return gate()\n")
+    assert _в_зоне(вложенный, "_drop") and _в_зоне(вложенный, "_drop.gate")
+    # весь модуль по-прежнему критичен целиком, дерево этого не сужает
+    import ast
+    дерево = ast.parse(вынос)
+    assert lm.in_zone(("door",), "src/door.py", "main", дерево)
+    assert lm.in_zone(("door",), "src/door.py", "", дерево)
+
+
+def test_вызов_метода_и_класса_того_же_модуля_критичен():
+    """Вынос в метод своего класса, в `Класс.метод` и в `Класс().метод` — прямой
+    вызов. Чужой приёмник и одноимённая функция модуля критичными не становятся.
+    """
+    метод = (
+        "class Door:\n"
+        "    def sweep(self, path, limit):\n"
+        "        return self._drop(path, limit)\n"
+        "    def _drop(self, path, limit):\n"
+        "        if path.stat().st_size > limit:\n"
+        "            path.unlink()\n"
+        "        return True\n"
+        "    @classmethod\n"
+        "    def sweep_cls(cls, path, limit):\n"
+        "        return cls._drop(path, limit)\n"
+        "def drop(path):\n"
+        "    return path.stat().st_size > 1\n")
+    assert _в_зоне(метод, "Door._drop", ("door::Door.sweep",))
+    assert _в_зоне(метод, "Door._drop", ("door::Door.sweep_cls",))
+    assert not _в_зоне(метод, "drop", ("door::Door.sweep",))
+    класс = (
+        "class Cleaner:\n"
+        "    def drop(self, path, limit):\n"
+        "        return path.stat().st_size > limit\n"
+        "    def other(self):\n"
+        "        return 1\n"
+        "def sweep(path, limit):\n"
+        "    return Cleaner().drop(path, limit)\n"
+        "def sweep_bare(path, limit):\n"
+        "    return Cleaner.drop(path, limit)\n")
+    assert _в_зоне(класс, "Cleaner.drop")
+    assert _в_зоне(класс, "Cleaner.drop", ("door::sweep_bare",))
+    assert not _в_зоне(класс, "Cleaner.other")
+    # приёмник — не self: метод класса не подтягивается по одноимённому вызову
+    чужой = (
+        "class Door:\n"
+        "    def sweep(self, hub, path):\n"
+        "        return hub.drop(path)\n"
+        "    def drop(self, path):\n"
+        "        return path.stat().st_size > 1\n")
+    assert not _в_зоне(чужой, "Door.drop", ("door::Door.sweep",))
+
+
+def test_затенение_и_косвенный_вызов_хелпер_не_тянут():
+    """Локальное имя закрывает функцию модуля. Вызов через переменную не след:
+    иначе аргумент `spawn(fn)` втянул бы в зону цепочку пересборки сирот.
+    Импорт чужого писца не делает критичной одноимённую функцию модуля.
+    """
+    тень = (
+        "def sweep(path):\n"
+        "    _drop = path.unlink\n"
+        "    _drop()\n"
+        "def _drop(path):\n"
+        "    return path.stat().st_size > 1\n")
+    assert not _в_зоне(тень, "_drop")
+    косвенный = (
+        "def sweep(path, limit):\n"
+        "    op = _drop\n"
+        "    return op(path, limit)\n"
+        "def _drop(path, limit):\n"
+        "    if path.stat().st_size > limit:\n"
+        "        path.unlink()\n"
+        "    return True\n")
+    assert not _в_зоне(косвенный, "_drop")
+    чужой_модуль = (
+        "import safe_write\n"
+        "def sweep(path):\n"
+        "    safe_write.write_text(path, 'x')\n"
+        "def write_text(path, body):\n"
+        "    return len(body) > 1\n")
+    assert not _в_зоне(чужой_модуль, "write_text")
+    # путь скрипта, не импортируемое имя: та же запись `файл::функция`
+    import ast
+    скрипт = "def run(path):\n    return _drop(path)\ndef _drop(path):\n    path.unlink()\n"
+    assert lm.in_zone(("scripts/door.py::run",), "scripts/door.py", "_drop", ast.parse(скрипт))
+
+
 def test_qualnames_и_области_узлов():
     import ast
     tree = ast.parse("class C:\n    def m(self):\n        x = 1\n\ndef f():\n    def g():\n        pass\n")
