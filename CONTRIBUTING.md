@@ -98,7 +98,9 @@ review gates, and who answers for what — is documented in
   not resolved: an extra name in the zone is the price, a missed one is a
   defect. Annotations (of parameters, of the return value, `AnnAssign`) are
   not a mention. `self.X` pulls only the method `X` of the nearest class and
-  its bases, not all of its methods. Nested definitions were already covered. Extracting the body
+  its bases, not all of its methods. A function defined more than once under
+  one name (`if`/`else`, `try`/`except ImportError`, `@x.setter`) pulls in what
+  every definition mentions. Nested definitions were already covered. Extracting the body
   into a helper (the irreversible call, or only the condition that decides it;
   private or not) does not leave the zone, and the helper is not added to the
   list: the closure is read off the tree being mutated. It does not follow
