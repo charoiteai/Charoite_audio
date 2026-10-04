@@ -168,10 +168,10 @@ Qwen3.8 家族首个开放的 dense 模型 — 混合注意力（64 层中 48 �
 ## 说话人分离:ERes2Net(3D-Speaker)
 
 说话人嵌入 — [ERes2Net](https://github.com/modelscope/3D-Speaker)
-(ONNX,512 维)。不随包提供：由 `scripts/get_models.py --diar` 安装（默认
-`eres2net-base`，40 MB；可选 `eres2net-en` 27 MB 与 `eres2netv2` 71 MB；每个
-文件都会与内置的 sha256 核对）。实时分段跟踪器和会后处理还需要 pyannote 3.0
-分段模型（`--segmentation`，7 MB）。详见 [DIARIZATION.md](DIARIZATION.md)。
+(ONNX,512 维)。不随包提供：`scripts/get_models.py --diar` 先安装嵌入模型，
+再安装 pyannote 3.0 分段模型（默认嵌入 `eres2net-base`，40 MB；可选
+`eres2net-en` 27 MB 与 `eres2netv2` 71 MB；分段约 7 MB；每个文件都会与内置的
+sha256 核对）。`--segmentation` 仍只安装分段模型。详见 [DIARIZATION.md](DIARIZATION.md)。
 
 - **我们在真实会议录音上的基准测试**,对比 CAM++ 和 TitaNet:ERes2Net
   区分相同/不同说话人的能力最强 — 同一说话人余弦相似度 0.29–0.8,

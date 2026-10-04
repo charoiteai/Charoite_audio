@@ -24,10 +24,13 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 import get_models  # noqa: E402
+import charoite_paths  # noqa: E402 — src уже в пути: его вставил get_models
 
 
 def test_every_known_model_is_described_and_https():
@@ -192,3 +195,344 @@ def test_the_url_reaches_a_pipe_before_the_connection(tmp_path):
     url = next(i for i, line in enumerate(lines) if line.strip().startswith("https://"))
     assert url < lines.index("CONNECT"), lines
     assert "не скачалось: <urlopen error соединение подменено тестом>" in out.stderr
+
+
+# Набор `--diar` без своего адреса и пути: два файла, точный текст, один выход.
+# Суммы и адреса зашиты здесь, а не читаются из констант скрипта: смена пина
+# обязана покраснеть, а не переехать вместе с ожиданием.
+
+_EMB_URL = ("https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/main/"
+            "3dspeaker_speech_eres2net_base_200k_sv_zh-cn_16k-common.onnx")
+_EMB_SHA = "e2d2048292e055f7b61cdec3db010503f35369b245bf0b3bbad021c9a91e4053"
+_EN_URL = ("https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/main/"
+           "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx")
+_EN_SHA = "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
+_SEG_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+            "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2")
+_SEG_SHA = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+_LIVE = ("живая диаризация включится при следующем старте встречи "
+         "(sufler.live_diarize уже true по умолчанию)")
+_SEG_SKIPPED = "сегментация не ставилась — --segmentation"
+_SEG_UNCHECKED = "сегментация не проверялась — --check --segmentation"
+_RETRY = ".venv/bin/python scripts/get_models.py --diar"
+_REFUSAL = ("get_models.py: error: один --url или --dest нельзя делить между "
+            "несколькими моделями (--stt, --segmentation, --diar): "
+            "один файл лёг бы во все места")
+_EMB_BYTES = 5 * 1024 * 1024
+_SEG_BYTES = 1024 * 1024
+
+
+@pytest.fixture
+def data_root(tmp_path):
+    """Корень данных этого теста. Обвязка уже назвала свой — меняем его."""
+    return charoite_paths.use_data_root(tmp_path, replace=True)
+
+
+def _place_onnx(path: pathlib.Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as out:
+        out.write(b"\x08")
+        out.truncate(size)
+
+
+def _missing(path: pathlib.Path) -> str:
+    return (f"модели диаризации нет ({path}) — поставить: {_RETRY} "
+            "(модели: --list)")
+
+
+def _record(monkeypatch, fail=None):
+    """Сеть подменена: загрузки записываются, соединение не открывается.
+
+    `fail` — адрес, на котором загрузка бросает SystemExit, как настоящий download.
+    """
+    calls = []
+
+    def fake(url, dest, expect_mb, onnx=True, sha256=""):  # noqa: ANN001, ARG001
+        calls.append((url, pathlib.Path(dest), expect_mb, sha256))
+        if fail is not None and url == fail:
+            raise SystemExit("не скачалось: обрыв\nили укажите своё зеркало через --url")
+
+    def explode(*_a, **_k):
+        pytest.fail("проверка или отказ открыли соединение")
+
+    monkeypatch.setattr(get_models, "download", fake)
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", explode)
+    return calls
+
+
+def _run(monkeypatch, capsys, argv: list[str]):
+    monkeypatch.setattr(sys, "argv", ["get_models.py", *argv])
+    try:
+        code = get_models.main()
+    except SystemExit as exc:
+        code = exc.code
+    captured = capsys.readouterr()
+    if code is None:
+        code = 0
+    return code, captured.out, captured.err
+
+
+def _targets(root: pathlib.Path):
+    emb = root / "models" / "diar" / "embedding.onnx"
+    seg = root / "models" / "diar" / "segmentation.onnx"
+    assert get_models.diar_target() == emb
+    assert get_models.seg_target() == seg
+    return emb, seg
+
+
+def test_diar_with_embeddings_already_there_fetches_only_segmentation(data_root, monkeypatch, capsys):
+    """Стоят эмбеддинги, сегментации нет: качается только она, код 0."""
+    emb, seg = _targets(data_root)
+    _place_onnx(emb, _EMB_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == f"модели диаризации нет ({seg})\n"
+    assert "нечего делать" not in out
+
+
+def test_diar_installs_embeddings_before_segmentation(data_root, monkeypatch, capsys):
+    """Оба файла отсутствуют: сначала эмбеддинги, затем сегментация, по одному разу."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA), (_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n"
+                   f"модели диаризации нет ({seg})\n")
+
+
+def test_diar_with_segmentation_flag_still_fetches_segmentation_once(data_root, monkeypatch, capsys):
+    """`--segmentation --diar` без своего пути ставит сегментацию один раз, не два."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--segmentation", "--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA), (_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n"
+                   f"модели диаризации нет ({seg})\n")
+
+
+def test_diar_keeps_a_segmentation_file_that_is_already_in_place(data_root, monkeypatch, capsys):
+    """Сегментация уже стоит: ставится только эмбеддинг, второй загрузки нет."""
+    emb, seg = _targets(data_root)
+    _place_onnx(seg, _SEG_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--segmentation", "--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA)]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n"
+                   f"модель сегментации уже стоит: {seg}\n")
+
+
+def test_diar_model_flag_picks_that_embedding(data_root, monkeypatch, capsys):
+    """`--model` выбирает эмбеддинги, сегментация остаётся той же."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--model", "eres2net-en"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_EN_URL, emb, 27, _EN_SHA), (_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n"
+                   f"модели диаризации нет ({seg})\n")
+
+
+def test_a_short_segmentation_file_is_fetched_again(data_root, monkeypatch, capsys):
+    """Файл сегментации меньше порога — это не «уже стоит»."""
+    emb, seg = _targets(data_root)
+    _place_onnx(emb, _EMB_BYTES)
+    _place_onnx(seg, 100)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == "файл .onnx слишком мал: 100 байт (ждём хотя бы 1 МБ)\n"
+    assert "нечего делать" not in out
+
+
+def test_segmentation_download_failure_keeps_embeddings(data_root, monkeypatch, capsys):
+    """Отказ сегментации не откатывает эмбеддинги: код 1, последняя строка — состояние."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch, fail=_SEG_URL)
+
+    def writing(url, dest, expect_mb, onnx=True, sha256=""):  # noqa: ANN001, ARG001
+        calls.append((url, pathlib.Path(dest), expect_mb, sha256))
+        if url == _SEG_URL:
+            raise SystemExit("не скачалось: обрыв\nили укажите своё зеркало через --url")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with dest.open("wb") as out:
+            out.write(b"\x08")
+            out.truncate(_EMB_BYTES)
+
+    monkeypatch.setattr(get_models, "download", writing)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    status = ("эмбеддинги стоят, сегментации нет: не скачалось: обрыв "
+              f"или укажите своё зеркало через --url — повторить: {_RETRY}")
+    assert code == 1
+    assert err == ""
+    assert emb.is_file()
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA), (_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n"
+                   f"модели диаризации нет ({seg})\n{status}\n")
+    assert out.splitlines()[-1] == status
+    assert "сегментации нет" in out.splitlines()[-1]
+    assert _RETRY in out.splitlines()[-1]
+
+
+def test_diar_with_both_files_present_has_nothing_to_do(data_root, monkeypatch, capsys):
+    """Оба файла на месте: «нечего делать», загрузок нет, код 0."""
+    emb, seg = _targets(data_root)
+    _place_onnx(emb, _EMB_BYTES)
+    _place_onnx(seg, _SEG_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 0
+    assert err == ""
+    assert calls == []
+    assert out == f"модель уже стоит: {emb} и {seg} — нечего делать\n"
+
+
+def test_check_diar_needs_both_files(data_root, monkeypatch, capsys):
+    """`--check --diar`: 1 при одном файле, 0 только при обоих. Сети нет."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch)
+
+    _place_onnx(emb, _EMB_BYTES)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--check"])
+    assert code == 1
+    assert err == ""
+    assert calls == []
+    assert out == f"модель на месте: {emb}\n{_missing(seg)}\n"
+
+    seg.unlink(missing_ok=True)
+    emb.unlink()
+    _place_onnx(seg, _SEG_BYTES)
+    code, out, err = _run(monkeypatch, capsys, ["--check", "--diar"])
+    assert code == 1
+    assert err == ""
+    assert out == f"{_missing(emb)}\nмодель сегментации на месте: {seg}\n"
+
+    _place_onnx(emb, _EMB_BYTES)
+    code, out, err = _run(monkeypatch, capsys, ["--check", "--diar"])
+    assert code == 0
+    assert err == ""
+    assert out == f"модель на месте: {emb}\nмодель сегментации на месте: {seg}\n"
+
+    emb.unlink()
+    seg.unlink()
+    code, out, err = _run(monkeypatch, capsys, ["--check", "--diar"])
+    assert code == 1
+    assert err == ""
+    assert out == f"{_missing(emb)}\n{_missing(seg)}\n"
+    assert calls == []
+
+
+def test_check_segmentation_and_diar_fails_without_embeddings(data_root, monkeypatch, capsys):
+    """`--check --segmentation --diar` при одной сегментации: код 1, сегментация один раз."""
+    emb, seg = _targets(data_root)
+    _place_onnx(seg, _SEG_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--check", "--segmentation", "--diar"])
+    assert code == 1
+    assert err == ""
+    assert calls == []
+    assert out == f"{_missing(emb)}\nмодель сегментации на месте: {seg}\n"
+
+
+def test_check_stt_and_diar_fails_without_the_voice_set(data_root, monkeypatch, capsys):
+    """`--check --stt --diar`: распознавание на месте не отменяет нехватку голосов."""
+    emb, seg = _targets(data_root)
+    stt = data_root / "models" / "stt" / "sensevoice.onnx"
+    assert get_models.stt_target() == stt
+    _place_onnx(stt, 100 * 1024 * 1024)
+    stt.with_name("tokens.txt").write_text("токены", encoding="utf-8")
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--check", "--stt", "--diar"])
+    assert code == 1
+    assert err == ""
+    assert calls == []
+    assert out == (f"модель распознавания на месте: {stt}\n"
+                   f"{_missing(emb)}\n{_missing(seg)}\n")
+
+
+def test_diar_with_dest_is_embeddings_only(data_root, monkeypatch, capsys):
+    """`--diar --dest` — одна цель и строка, что сегментация не ставилась."""
+    dest = data_root / "свои" / "embedding.onnx"
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--dest", str(dest)])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_EMB_URL, dest, 40, _EMB_SHA)]
+    assert out == (f"модели диаризации нет ({dest})\n{_LIVE}\n{_SEG_SKIPPED}\n")
+
+
+def test_check_diar_with_dest_does_not_look_at_segmentation(data_root, monkeypatch, capsys):
+    """`--check --diar --dest`: эмбеддинги по указанному пути, сегментация не проверялась."""
+    dest = data_root / "свои" / "embedding.onnx"
+    _place_onnx(dest, _EMB_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--check", "--dest", str(dest)])
+    assert code == 0
+    assert err == ""
+    assert calls == []
+    assert out == f"модель на месте: {dest}\n{_SEG_UNCHECKED}\n"
+
+
+def test_diar_with_url_is_embeddings_only_and_skips_the_pin(data_root, monkeypatch, capsys):
+    """Свой `--url` у `--diar` — одна цель, без контрольной суммы и без сегментации."""
+    emb, _seg = _targets(data_root)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--url", "https://example.invalid/mine.onnx"])
+    assert code == 0
+    assert err == ""
+    assert calls == [("https://example.invalid/mine.onnx", emb, 40, "")]
+    assert out == (f"модели диаризации нет ({emb})\n{_LIVE}\n{_SEG_SKIPPED}\n")
+
+
+def test_custom_diar_already_present_still_names_the_skipped_segmentation(data_root, monkeypatch, capsys):
+    """Свой путь, файл уже стоит: «нечего делать» про этот файл и строка про сегментацию."""
+    dest = data_root / "свои" / "embedding.onnx"
+    _place_onnx(dest, _EMB_BYTES)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--diar", "--dest", str(dest)])
+    assert code == 0
+    assert err == ""
+    assert calls == []
+    assert out == f"модель уже стоит: {dest} — нечего делать\n{_SEG_SKIPPED}\n"
+
+
+def test_several_targets_with_one_url_are_refused_before_any_download(data_root, monkeypatch, capsys):
+    """`--stt --diar --url` — отказ до сети, код 2."""
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--stt", "--diar", "--url", "https://example.invalid/x.onnx"])
+    assert code == 2
+    assert calls == []
+    assert out == ""
+    assert err.splitlines()[-1] == _REFUSAL
+
+
+def test_several_targets_with_one_dest_are_refused_before_any_download(data_root, monkeypatch, capsys):
+    """`--segmentation --diar --dest` — отказ до сети, код 2."""
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--segmentation", "--diar", "--dest", str(data_root / "один.onnx")])
+    assert code == 2
+    assert calls == []
+    assert out == ""
+    assert err.splitlines()[-1] == _REFUSAL
+
+
+def test_segmentation_alone_does_not_fetch_embeddings(data_root, monkeypatch, capsys):
+    """`--segmentation` без `--diar` ставит только сегментацию."""
+    _emb, seg = _targets(data_root)
+    calls = _record(monkeypatch)
+    code, out, err = _run(monkeypatch, capsys, ["--segmentation"])
+    assert code == 0
+    assert err == ""
+    assert calls == [(_SEG_URL, seg, 7, _SEG_SHA)]
+    assert out == f"модели диаризации нет ({seg})\n"

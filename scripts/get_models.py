@@ -9,17 +9,19 @@ STT-модель тянется сама при первом запуске, а 
 работала, и починить это можно было только чтением документации.
 
     .venv/bin/python scripts/get_models.py --list             # что есть и откуда
-    .venv/bin/python scripts/get_models.py --diar             # поставить дефолтную
+    .venv/bin/python scripts/get_models.py --diar             # эмбеддинги, затем сегментация
     .venv/bin/python scripts/get_models.py --diar --model eres2net-en
-    .venv/bin/python scripts/get_models.py --diar --check     # проверить, что стоит
+    .venv/bin/python scripts/get_models.py --diar --check     # проверить оба файла
 
 О сети начистоту. Этот скрипт ходит наружу — и ходит:
 
     * только когда его запустили: руками из терминала или кнопкой установки
       модели голосов в приложении (`--diar`); демон его не зовёт;
     * на адрес, который печатается ДО скачивания — в терминале и в канале
-      (`| tee`, лог) одинаково: stdout буферизуется строкой (№481);
-    * один раз: дальше модель лежит файлом и работает офлайн.
+      (`| tee`, лог) одинаково: stdout буферизуется строкой (№481).
+      `--diar` без `--url` и `--dest` ходит дважды: эмбеддинги с Hugging Face,
+      затем сегментация со страницы релизов sherpa-onnx;
+    * один раз: дальше модели лежат файлами и работают офлайн.
 
 Он не единственный выход в сеть: веса выбранного бэкенда распознавания качает
 его библиотека при первом запуске, окружение движка Nemotron ставит
@@ -364,9 +366,144 @@ def list_models() -> None:
         print(f"  {key}{mark}\n    {m.size_mb} МБ · {m.note}\n    {m.url}")
     print(f"\nUpstream: {UPSTREAM}, {SEG_UPSTREAM} и {STT_UPSTREAM}. "
           "Лицензии моделей принимаете вы.")
-    print("Поставить: .venv/bin/python scripts/get_models.py --diar [--model КЛЮЧ]")
+    print("Поставить: .venv/bin/python scripts/get_models.py --diar [--model КЛЮЧ]"
+          "  (эмбеддинги и сегментация; с --url или --dest — только эмбеддинги)")
     print("           .venv/bin/python scripts/get_models.py --segmentation")
     print("           .venv/bin/python scripts/get_models.py --stt sensevoice")
+
+
+# Распакованная сегментация весит около шести мегабайт. Порог ниже, чем у
+# эмбеддингов: тот же `check`, другая планка.
+SEG_MIN_BYTES = 1024 * 1024
+_DIAR_RETRY = ".venv/bin/python scripts/get_models.py --diar"
+_SEG_NOT_INSTALLED = "сегментация не ставилась — --segmentation"
+_SEG_NOT_CHECKED = "сегментация не проверялась — --check --segmentation"
+_LIVE_ON = ("живая диаризация включится при следующем старте встречи "
+            "(sufler.live_diarize уже true по умолчанию)")
+
+
+def _exit_text(exc: SystemExit) -> str:
+    """Текст SystemExit одной строкой: приложение показывает только последнюю."""
+    code = exc.code
+    if code is None or isinstance(code, int):
+        text = "" if code is None else str(code)
+    else:
+        text = str(code)
+    return " ".join(text.split())
+
+
+def _custom_target(args: argparse.Namespace) -> bool:
+    """Свой адрес или свой путь — одна цель, не набор."""
+    return args.url is not None or args.dest is not None
+
+
+def _chosen_targets(args: argparse.Namespace) -> list[str]:
+    chosen = []
+    if args.stt:
+        chosen.append("--stt")
+    if args.segmentation:
+        chosen.append("--segmentation")
+    if args.diar:
+        chosen.append("--diar")
+    return chosen
+
+
+def _install_stt(args: argparse.Namespace) -> int:
+    """Модель распознавания. В `--check` — 1, если файла не хватает, и без выхода."""
+    stt_dest = args.dest or stt_target()
+    tokens = stt_dest.with_name("tokens.txt")
+    # Модель без словаря не работает, поэтому «на месте» — это оба файла.
+    stt_problem = check(stt_dest, min_bytes=100 * 1024 * 1024)
+    if not stt_problem and not tokens.exists():
+        stt_problem = f"нет словаря токенов рядом с моделью: {tokens}"
+    if args.check:
+        print(stt_problem or f"модель распознавания на месте: {stt_dest}")
+        return 1 if stt_problem else 0
+    if stt_problem:
+        print(stt_problem.split(" — ")[0])
+        stt = STT_MODELS[args.stt]
+        download(args.url or stt.url, stt_dest, stt.size_mb,
+                 sha256="" if args.url else stt.sha256)
+        download(f"{STT_MIRROR}/tokens.txt", tokens, 1, onnx=False,
+                 sha256=TOKENS_SHA256)
+        print("включить: stt.backend: sensevoice в config/config.yaml")
+    else:
+        print(f"модель распознавания уже стоит: {stt_dest}")
+    return 0
+
+
+def _install_segmentation(args: argparse.Namespace) -> int:
+    """Только `--segmentation`: свой `--url`/`--dest` или стандартное место."""
+    seg_dest = args.dest or seg_target()
+    seg_problem = check(seg_dest, min_bytes=SEG_MIN_BYTES)
+    if args.check:
+        print(seg_problem or f"модель сегментации на месте: {seg_dest}")
+        return 1 if seg_problem else 0
+    if seg_problem:
+        print(seg_problem.split(" — ")[0])
+        seg = SEGMENTATION[SEG_DEFAULT]
+        download(args.url or seg.url, seg_dest, seg.size_mb,
+                 sha256="" if args.url else seg.sha256)
+    else:
+        print(f"модель сегментации уже стоит: {seg_dest}")
+    return 0
+
+
+def _install_embeddings(args: argparse.Namespace) -> int:
+    """`--diar` с `--url` или `--dest`: одна цель, эмбеддинги, как раньше."""
+    dest = args.dest or diar_target()
+    problem = check(dest)
+    if args.check:
+        print(problem or f"модель на месте: {dest}")
+        print(_SEG_NOT_CHECKED)
+        return 1 if problem else 0
+    if not problem:
+        print(f"модель уже стоит: {dest} — нечего делать")
+    else:
+        print(problem.split(" — ")[0])
+        model = MODELS[args.model]
+        download(args.url or model.url, dest, model.size_mb,
+                 sha256="" if args.url else model.sha256)
+        print(_LIVE_ON)
+    print(_SEG_NOT_INSTALLED)
+    return 0
+
+
+def _install_diar_bundle(args: argparse.Namespace) -> int:
+    """`--diar` без своего адреса и пути: эмбеддинги, затем сегментация.
+
+    Сегментация одна, даже если рядом стоит `--segmentation`. Отказ её
+    загрузки эмбеддинги не откатывает: `SystemExit` ловится только здесь,
+    последняя строка — состояние, причина и рецепт, код 1.
+    """
+    emb = diar_target()
+    seg_dest = seg_target()
+    emb_problem = check(emb)
+    seg_problem = check(seg_dest, min_bytes=SEG_MIN_BYTES)
+    if args.check:
+        print(emb_problem or f"модель на месте: {emb}")
+        print(seg_problem or f"модель сегментации на месте: {seg_dest}")
+        return 1 if emb_problem or seg_problem else 0
+    if not emb_problem and not seg_problem:
+        print(f"модель уже стоит: {emb} и {seg_dest} — нечего делать")
+        return 0
+    if emb_problem:
+        print(emb_problem.split(" — ")[0])
+        model = MODELS[args.model]
+        download(model.url, emb, model.size_mb, sha256=model.sha256)
+        print(_LIVE_ON)
+    if seg_problem:
+        print(seg_problem.split(" — ")[0])
+        seg = SEGMENTATION[SEG_DEFAULT]
+        try:
+            download(seg.url, seg_dest, seg.size_mb, sha256=seg.sha256)
+        except SystemExit as exc:
+            reason = _exit_text(exc)
+            print(f"эмбеддинги стоят, сегментации нет: {reason} — повторить: {_DIAR_RETRY}")
+            return 1
+    else:
+        print(f"модель сегментации уже стоит: {seg_dest}")
+    return 0
 
 
 def main() -> int:
@@ -375,7 +512,8 @@ def main() -> int:
     # тот же довод, что у install_engine.main).
     sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--diar", action="store_true", help="модель живой диаризации")
+    ap.add_argument("--diar", action="store_true",
+                    help="эмбеддинги и сегментация (с --url или --dest — только эмбеддинги)")
     ap.add_argument("--segmentation", action="store_true",
                     help="модель сегментации речи (нужна полной диаризации sherpa-onnx)")
     ap.add_argument("--stt", nargs="?", const=STT_DEFAULT, choices=sorted(STT_MODELS),
@@ -386,7 +524,7 @@ def main() -> int:
     ap.add_argument("--dest", type=pathlib.Path, default=None,
                     help="куда положить (по умолчанию models/diar/embedding.onnx)")
     ap.add_argument("--check", action="store_true",
-                    help="только проверить, что модель на месте (без сети)")
+                    help="только проверить, что выбранные модели на месте (без сети)")
     ap.add_argument("--list", action="store_true", help="показать модели и выйти")
     args = ap.parse_args()
 
@@ -397,62 +535,26 @@ def main() -> int:
         ap.print_help()
         return 0
 
-    if args.stt:
-        stt_dest = args.dest or stt_target()
-        tokens = stt_dest.with_name("tokens.txt")
-        # Модель без словаря не работает, поэтому «на месте» — это оба файла.
-        stt_problem = check(stt_dest, min_bytes=100 * 1024 * 1024)
-        if not stt_problem and not tokens.exists():
-            stt_problem = f"нет словаря токенов рядом с моделью: {tokens}"
-        if args.check:
-            print(stt_problem or f"модель распознавания на месте: {stt_dest}")
-            return 1 if stt_problem else 0
-        if stt_problem:
-            print(stt_problem.split(" — ")[0])
-            stt = STT_MODELS[args.stt]
-            download(args.url or stt.url, stt_dest, stt.size_mb,
-                     sha256="" if args.url else stt.sha256)
-            download(f"{STT_MIRROR}/tokens.txt", tokens, 1, onnx=False,
-                     sha256=TOKENS_SHA256)
-            print("включить: stt.backend: sensevoice в config/config.yaml")
-        else:
-            print(f"модель распознавания уже стоит: {stt_dest}")
-        if not args.diar and not args.segmentation:
-            return 0
+    # Один адрес и один путь на несколько моделей положили бы один файл во все места.
+    chosen = _chosen_targets(args)
+    if _custom_target(args) and len(chosen) > 1:
+        ap.error("один --url или --dest нельзя делить между несколькими моделями "
+                 "(--stt, --segmentation, --diar): один файл лёг бы во все места")
 
-    if args.segmentation:
-        seg_dest = args.dest or seg_target()
-        seg_min = 1024 * 1024   # распакованная сегментация весит около шести
-        seg_problem = check(seg_dest, min_bytes=seg_min)
-        if args.check:
-            print(seg_problem or f"модель сегментации на месте: {seg_dest}")
-            return 1 if seg_problem else 0
-        if seg_problem:
-            print(seg_problem.split(" — ")[0])
-            seg = SEGMENTATION[SEG_DEFAULT]
-            download(args.url or seg.url, seg_dest, seg.size_mb,
-                     sha256="" if args.url else seg.sha256)
-        else:
-            print(f"модель сегментации уже стоит: {seg_dest}")
-        if not args.diar:
-            return 0
-
-    dest = args.dest or diar_target()
-    problem = check(dest)
+    # `--diar` без своего адреса и пути — набор из двух файлов. С `--segmentation`
+    # сегментация всё равно ставится и проверяется один раз.
+    bundle = bool(args.diar and not _custom_target(args))
+    rc_stt = _install_stt(args) if args.stt else 0
+    if bundle:
+        rc_diar = _install_diar_bundle(args)
+    elif args.diar:
+        rc_diar = _install_embeddings(args)
+    else:
+        rc_diar = 0
+    rc_seg = _install_segmentation(args) if args.segmentation and not bundle else 0
     if args.check:
-        print(problem or f"модель на месте: {dest}")
-        return 1 if problem else 0
-    if not problem:
-        print(f"модель уже стоит: {dest} — нечего делать")
-        return 0
-
-    print(problem.split(" — ")[0])
-    model = MODELS[args.model]
-    download(args.url or model.url, dest, model.size_mb,
-             sha256="" if args.url else model.sha256)
-    print("живая диаризация включится при следующем старте встречи "
-          "(sufler.live_diarize уже true по умолчанию)")
-    return 0
+        return 1 if rc_stt or rc_diar or rc_seg else 0
+    return 1 if rc_diar else 0
 
 
 if __name__ == "__main__":

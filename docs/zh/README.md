@@ -145,13 +145,13 @@ python3 scripts/doctor.py
 
 **还没有会议？** 把 `graph_dir` 指向内置的[中文演示图谱](demo/README.md)（`demo/graph_zh`；英文为 `demo/graph_en`，俄文为 `demo/graph`），问一句「支付服务商最后定了哪一家？」——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo-zh`（英文 `--demo-en`，俄文 `--demo`）。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或把文件拖到应用的「外部录音」标签页，或指定监视文件夹（设置 → 录音导入）——放进去的录音自动成为会议。iPhone 自带「语音备忘录」的录音也可以走同一条路（需主动开启，`audio.voice_memos_bridge`）。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
 
-STT 模型首次运行自动下载。实时说话人分离（按声音区分的「Собеседник 1/2/…」）只需一条命令（在应用中是首次运行向导里的一个按钮）：
+STT 模型首次运行自动下载。实时说话人分离（按声音区分的「Собеседник 1/2/…」）只需一条命令，它会安装两个模型——先是嵌入，然后是分段（在应用中是首次运行向导里的一个按钮）：
 
 ```bash
-.venv/bin/python scripts/get_models.py --diar    # 可选模型：--list
+.venv/bin/python scripts/get_models.py --diar    # 嵌入模型可选：--list
 ```
 
-没有它 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。详见 [docs/zh/DIARIZATION.md](DIARIZATION.md)。
+没有这两个文件 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。只有嵌入、没有分段时，实时标注停留在简化模式，会后也不会重新标注说话人。详见 [docs/zh/DIARIZATION.md](DIARIZATION.md)。
 
 ## iPhone 伴侣应用（app-ios/）
 
@@ -189,7 +189,7 @@ Siri、快捷指令或操作按钮做同样的事。录音途中来电是暂停�
 - [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
 - [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32/64 GB）与 iOS 的内存预设**
 - [安全](SECURITY.md) — 威胁模型：什么会离开本机、prompt injection 隔离、供应链
-- [说话人分离](DIARIZATION.md) — 声纹模型的安装与调优
+- [说话人分离](DIARIZATION.md) — 嵌入与分段模型的安装和调优
 - [设计](DESIGN.md) — macOS 与 iOS 共用的设计令牌和界面约定
 
 ## 隐私

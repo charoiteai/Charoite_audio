@@ -94,3 +94,67 @@ final class ReadinessFixActionsTests: XCTestCase {
                                                      completed: nil, total: nil), "verifying")
     }
 }
+
+/// Набор голосов: предупреждение только когда эмбеддинги есть, а сегментации нет.
+final class DiarizationReadinessTests: XCTestCase {
+    func testDiarizationCheckCoversFourCombinations() {
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: false, segmentation: false),
+                     "без эмбеддингов отдельной строки нет")
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: false, segmentation: true),
+                     "одна сегментация — не этот случай")
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: true, segmentation: true),
+                     "оба файла на месте — строки нет")
+
+        let check = SetupReadinessPolicy.diarizationCheck(embeddings: true, segmentation: false)
+        XCTAssertEqual(check?.id, "diarization")
+        XCTAssertEqual(check?.state, .warning)
+        let titles = [
+            "Голоса после встречи не размечаются заново",
+            "Voices are not labelled again after the meeting",
+            "会后不会重新标注说话人",
+        ]
+        let details = [
+            "На границах реплик голоса путаются; не хватает модели сегментации, около 7 МБ",
+            "Voices get mixed up at utterance boundaries; the segmentation model is missing, about 7 MB",
+            "在发言边界上声音会混淆；缺少分段模型，约 7 MB",
+        ]
+        XCTAssertTrue(titles.contains(check?.title ?? ""))
+        XCTAssertTrue(details.contains(check?.detail ?? ""))
+        let detail = check?.detail ?? ""
+        XCTAssertTrue(SetupReadinessPolicy.pullableModels(in: detail).isEmpty,
+                      "терминальный рецепт в тексте стал бы кнопкой pull")
+        XCTAssertNil(SetupReadinessPolicy.copyableCommand(in: detail),
+                     "терминальный рецепт в тексте стал бы командой для копирования")
+        let snapshot = SetupReadinessSnapshot(checks: [check!])
+        XCTAssertTrue(snapshot.canStart, "предупреждение не блокирует старт")
+        XCTAssertEqual(snapshot.warnings, 1)
+        XCTAssertEqual(snapshot.problems, 0)
+    }
+
+    func testInstallButtonFollowsTheWarningEvenWhenItIsNotFirst() {
+        let checks = [
+            SetupCheck(id: "graph", state: .warning, title: "граф", detail: "выключен"),
+            SetupCheck(id: "diarization", state: .warning, title: "голоса", detail: "нет сегментации"),
+        ]
+        XCTAssertTrue(SetupReadinessPolicy.showsDiarizationInstall(in: checks))
+        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: [
+            SetupCheck(id: "diarization", state: .blocked, title: "x", detail: "y"),
+        ]))
+        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: [
+            SetupCheck(id: "audio", state: .warning, title: "звук", detail: "только микрофон"),
+        ]))
+        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: []))
+    }
+
+    func testWizardCaptionNamesWhatIsMissing() {
+        let both = SetupReadinessPolicy.diarizationInstallCaption(embeddings: false, segmentation: false)
+        let seg = SetupReadinessPolicy.diarizationInstallCaption(embeddings: true, segmentation: false)
+        let emb = SetupReadinessPolicy.diarizationInstallCaption(embeddings: false, segmentation: true)
+        XCTAssertTrue(both.contains("50"))
+        XCTAssertFalse(both.contains("7"))
+        XCTAssertTrue(seg.contains("7"))
+        XCTAssertFalse(seg.contains("50"))
+        XCTAssertTrue(emb.contains("40"))
+        XCTAssertFalse(emb.contains("7"))
+    }
+}

@@ -173,8 +173,14 @@ struct TodayWorkspaceView: View {
                 // первый запуск: онбординг-sheet суфлёра сам предложит старт
                 if firstRunSeen { sufler.toggle() }
             }
-            ReadinessLine(snapshot: readiness.snapshot,
-                          isChecking: readiness.isChecking)
+            HStack(spacing: 8) {
+                if SetupReadinessPolicy.showsDiarizationInstall(
+                    in: readiness.snapshot?.checks ?? []) {
+                    DiarizationInstallButton(alignment: .trailing)
+                }
+                ReadinessLine(snapshot: readiness.snapshot,
+                              isChecking: readiness.isChecking)
+            }
         }
     }
 

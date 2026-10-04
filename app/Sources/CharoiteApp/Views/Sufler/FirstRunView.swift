@@ -307,26 +307,33 @@ struct FirstRunView: View {
 
             // Разделение голосов: единственный шаг установки, ради которого
             // раньше приходилось открывать терминал уже после того, как
-            // приложение заработало.
+            // приложение заработало. Кнопка видна, пока нет обоих файлов.
             if !ModelPullService.diarizationInstalled {
-                HStack(spacing: 8) {
-                    if let status = pulls.progress[ModelPullService.diarizationKey] {
-                        ProgressView().controlSize(.small)
-                        Text(status).font(.subheadline).foregroundStyle(.secondary)
-                    } else {
-                        Button(L.t("Различать голоса собеседников",
-                                   "Tell speakers apart",
-                                   "区分不同说话人")) { pulls.pullDiarization() }
-                            .charoite(.regular, .m)
-                        Text(L.t("модель ~80 МБ, ставится один раз",
-                                 "~80 MB model, installed once",
-                                 "约 80 MB 模型，仅需安装一次"))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                voiceInstallRow
+            }
+        }
+    }
+
+    /// Кнопка мастера и подпись по составу недостающего набора.
+    private var voiceInstallRow: some View {
+        let got = DiarizationModels.presence(root: AppSettings.charoiteRoot)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let status = pulls.progress[ModelPullService.diarizationKey] {
+                    ProgressView().controlSize(.small)
+                    Text(status).font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    Button(L.t("Различать голоса собеседников",
+                               "Tell speakers apart",
+                               "区分不同说话人")) { pulls.pullDiarization() }
+                        .charoite(.regular, .m)
+                    Text(SetupReadinessPolicy.diarizationInstallCaption(
+                        embeddings: got.embeddings, segmentation: got.segmentation))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                if let err = pulls.failed[ModelPullService.diarizationKey] {
-                    Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
-                }
+            }
+            if let err = pulls.failed[ModelPullService.diarizationKey] {
+                Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
         }
     }
@@ -463,6 +470,8 @@ struct FirstRunView: View {
                 if let err = runtime.failure {
                     Text(err).font(.caption).foregroundStyle(.red)
                 }
+            } else if check.id == "diarization" {
+                DiarizationInstallButton()
             } else if !models.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(models, id: \.self) { model in

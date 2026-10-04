@@ -130,6 +130,47 @@ enum SetupReadinessPolicy {
                        "模型地址被拒绝"),
             detail: text)
     }
+
+    /// Эмбеддинги без сегментации — предупреждение, не блок.
+    ///
+    /// Эмбеддингов нет — отдельной строки нет, как и когда стоят оба файла:
+    /// кнопку мастера в этих случаях показывает сам состав набора.
+    /// В тексте нет терминального рецепта: его подхватили бы кнопки pull и
+    /// «скопировать команду».
+    static func diarizationCheck(embeddings: Bool, segmentation: Bool) -> SetupCheck? {
+        guard embeddings, !segmentation else { return nil }
+        return SetupCheck(
+            id: "diarization",
+            state: .warning,
+            title: L.t("Голоса после встречи не размечаются заново",
+                       "Voices are not labelled again after the meeting",
+                       "会后不会重新标注说话人"),
+            detail: L.t("На границах реплик голоса путаются; не хватает модели сегментации, около 7 МБ",
+                        "Voices get mixed up at utterance boundaries; the segmentation model is missing, about 7 MB",
+                        "在发言边界上声音会混淆；缺少分段模型，约 7 MB"))
+    }
+
+    /// Кнопка постановки видна, даже если предупреждение не первое в снимке.
+    static func showsDiarizationInstall(in checks: [SetupCheck]) -> Bool {
+        checks.contains { $0.id == "diarization" && $0.state == .warning }
+    }
+
+    /// Подпись у кнопки мастера — по тому, какого файла не хватает.
+    static func diarizationInstallCaption(embeddings: Bool, segmentation: Bool) -> String {
+        if embeddings && !segmentation {
+            return L.t("модель сегментации около 7 МБ, ставится один раз",
+                       "about 7 MB segmentation model, installed once",
+                       "约 7 MB 分段模型，仅需安装一次")
+        }
+        if !embeddings && segmentation {
+            return L.t("модель эмбеддингов около 40 МБ, ставится один раз",
+                       "about 40 MB embedding model, installed once",
+                       "约 40 MB 嵌入模型，仅需安装一次")
+        }
+        return L.t("модели около 50 МБ, ставятся один раз",
+                   "about 50 MB of models, installed once",
+                   "约 50 MB 模型，仅需安装一次")
+    }
 }
 
 private struct LocalSetupProbe: Sendable {
@@ -442,6 +483,11 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         checks.append(screenCaptureCheck())
         checks.append(contentsOf: ollamaChecks(local: local, ollama: ollama))
         checks.append(graphCheck(root: root, local: local))
+        let voices = DiarizationModels.presence(root: root)
+        if let diarization = SetupReadinessPolicy.diarizationCheck(
+            embeddings: voices.embeddings, segmentation: voices.segmentation) {
+            checks.append(diarization)
+        }
         return SetupReadinessSnapshot(checks: checks)
     }
 
