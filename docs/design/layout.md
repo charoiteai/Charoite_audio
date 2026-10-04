@@ -133,7 +133,7 @@
 - `src/main.py` ← scripts/doctor.py; проба refuse
 - `src/mcp_server.py` ← ручной запуск: запускает конфиг настольного MCP-клиента вне репозитория; не запускается: stdio-сервер: проба не умеет закрыть ему ввод; без CHAROITE_ROOT отказ приходит ошибкой инструмента (isError) с рецептом, stderr клиент MCP не показывает; снимет №364 (проба вместо none)
 - `src/meeting_archive.py` ← ручной запуск: разовая миграция архива `--all` руками; проба refuse
-- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py; проба refuse
+- `src/rebuild_transcript.py` ← app/Sources/CharoiteApp/Services/MeetingProcessingService.swift, scripts/doctor.py, src/daemon.py, src/transcript.py; проба refuse
 - `src/retro_fill.py` ← scripts/import_meeting.py; проба help
 - `src/transcribe_file.py` ← scripts/import_meeting.py; проба refuse
 - `src/voice_memos_bridge.py` ← ручной запуск: мост Диктофона — отдельный процесс, поднимается руками до №210; проба refuse
