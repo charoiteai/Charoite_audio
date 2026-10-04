@@ -50,13 +50,6 @@ _KILL_TEXT = (
     "llm.base_url = https://gw.example/v1 указывает не на эту машину, "
     "а рубильник CHAROITE_NO_CLOUD запрещает любой выход наружу"
 )
-_YAML_ERROR = (
-    "ParserError: while parsing a flow node\n"
-    "expected the node content, but found '<stream end>'\n"
-    "  in \"<unicode string>\", line 2, column 1:\n"
-    "    \n"
-    "    ^"
-)
 _LIST_ERROR = "AttributeError: 'list' object has no attribute 'get'"
 
 _OLD_PRIVACY = "# сборка без privacy.model_address_error\n"
@@ -348,7 +341,9 @@ def _code(tmp_path: pathlib.Path, source: str) -> pathlib.Path:
 def _probe_script() -> str:
     path = ROOT / "app/Sources/CharoiteApp/Services/SetupReadinessService.swift"
     lines = path.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip().endswith('let script = #"""'))
+    matches = [i for i, line in enumerate(lines) if line.strip().endswith('let script = #"""')]
+    assert len(matches) == 1, f"строка-маркер скрипта пробы должна быть одна, найдено {len(matches)}"
+    start = matches[0]
     end = next(i for i, line in enumerate(lines) if i > start and line.strip() == '"""#')
     return "\n".join(lines[start + 1:end]) + "\n"
 
@@ -410,7 +405,8 @@ def test_проба_репозитория_принимает_loopback(tmp_path)
 
 def test_проба_репозитория_битый_yaml_не_адрес(tmp_path):
     body = _probe(ROOT, _data(tmp_path, "llm: [\n"))
-    assert body["config_error"] == _YAML_ERROR
+    # Текст ошибки — PyYAML, не наш: сверяем класс, а не формулировку версии.
+    assert body["config_error"].startswith("ParserError")
     assert body["address_error"] is None
 
 
