@@ -17,12 +17,18 @@
 Восстановленные поручения»): «**Сергей** — …» могло быть поручением и
 настоящему Сергею, упомянутому в речи, — наугад это не переименовывается.
 Узлы графа правит облако в режиме правки (промпт); без права правки
-воркер пишет в лог, что перенести руками.
+воркер пишет в лог, что перенести руками. Отказ plan() граф не откатывает:
+когда раздел имён применила машина (правка графа включена и перенос сверен)
+и есть отказы, они дописываются в конец ответа модели разделом
+«## Не применено», и строка журнала называет число; при проигранной
+гонке записи раздела нет и строки счёта нет. Голое имя владельца, его полное имя на
+чужой дорожке и метка микрофона — три разные причины.
 """
 from __future__ import annotations
 
 import pathlib
 import re
+import typing
 
 import channel_labels
 import live_sidecar
@@ -54,16 +60,38 @@ _MANGLED_NAME = "�"
 _PARTICIPANTS = re.compile(r"^(?P<head>[^\n]*?(?<!\w)(?:\*\*)?Участники[^:\n]*:(?:\*\*)?[ \t]*)(?P<rest>[^\n]*)$", re.M)
 MAX_NAME = 60
 
+# Три разные причины отказа по имени. Метка микрофона — прежние формулировки.
+# Голое имя — первое слово полного имени владельца, и только оно: тёзка,
+# записанный с фамилией, этим отказом не цепляется.
+REASON_MIC_LABEL = "метка владельца (канал микрофона) не переименовывается"
+REASON_MIC_TARGET = "целевое имя — метка владельца (канал микрофона)"
+REASON_BARE = "голое имя владельца: нужна фамилия"
+REASON_OWNER = "целевое имя — полное имя владельца"
+REASON_OWNER_LABEL = "полное имя владельца не переименовывается"
+REASON_BARE_LABEL = "голое имя владельца не переименовывается"
+
+# Заголовок ровно такой: слова «исправления имён» ловит NAMES_WORD, а жирная
+# форма «**метка** → **имя**» — это _FIX, и раздел снова разобрался бы как правки.
+# Свой блок только дописывается в конец: заголовок модели не ищем и не снимаем.
+UNAPPLIED_TITLE = "## Не применено"
+# plan() кладёт отказ так: «метка → имя» — причина. Причина сама может
+# содержать « — » (каскад слияния), поэтому режется только первый разделитель
+# после закрывающей скобки.
+_REFUSAL = re.compile(r"^«(?P<label>.*?) → (?P<name>.*?)» — (?P<why>.+)$")
+
 #: Пример обмена двух меток для модели — строгая форма раздела. Метки условные:
 #: скопированный на встречу без таких дорожек, пример отсеет plan() («такой
 #: метки в заголовках реплик нет»).
 SWAP_EXAMPLE = ("- **А** → **Б** — основание: на обращения к Б отвечает дорожка «А»\n"
                 "- **Б** → **А** — основание: на обращения к А отвечает дорожка «Б»")
 
-#: Абзац задания ревизии про «## Исправления имён» (оба режима). Живёт здесь, рядом
-#: с plan(): модель должна знать, что строки применяются одним проходом, иначе
-#: найденный обмен двух дорожек она не пишет из страха слить их (№560, встреча
-#: 29.09). Правила ниже — ровно отказы plan(), которые модель может нарушить честно.
+#: Абзац задания ревизии про «## Исправления имён» — один на оба режима.
+#: Живёт здесь, рядом с plan(): модель должна знать, что строки применяются
+#: одним проходом, иначе найденный обмен двух дорожек она не пишет из страха
+#: слить их (№560, встреча 29.09). Кто применит раздел, в момент промпта
+#: неизвестно: «перенос сверен» есть только после прогона, и то же обещание
+#: ложно в режиме правки без сверки. Правила ниже — отказы plan(), которые
+#: модель может нарушить честно.
 PROMPT_PARAGRAPH = (
     "Если дорожка стенограммы названа не тем человеком (обращения и ответы на "
     "них, роль, самоназвание показывают другого участника), вынеси это под "
@@ -78,8 +106,11 @@ PROMPT_PARAGRAPH = (
     "дорожки тоже пройдёт. Одна строка на метку. Не применится имя, совпадающее "
     "с меткой другой дорожки, которую ты не переименовываешь (два голоса слились "
     "бы в одного человека), — такое опиши прозой; метку владельца (его микрофон) "
-    "не переименовывай и его имя другой дорожке не давай. По этому разделу Чароит "
-    "переименует заголовки реплик и участников минуток; поручения минуток под "
+    "не переименовывай и его имя другой дорожке не давай. Если фамилия "
+    "участника звучала, пиши ему имя с фамилией; не звучала — не выдумывай её. "
+    "Голое имя, совпавшее с именем владельца встречи, не применится. "
+    "Раздел применит Чароит, если правка графа включена и перенос сверен; "
+    "иначе его применяет человек. Поручения минуток под "
     "ошибочной меткой сними в «## Снятые поручения» и верни с верным именем в "
     "«## Восстановленные поручения». Метки верны — раздел не пиши.\n")
 
@@ -88,11 +119,19 @@ PROMPT_PARAGRAPH = (
 HUMAN_NOTE = "строки применять одновременно, не по очереди"
 
 
-def name_fixes(review: str, dropped: list[str] | None = None) -> list[tuple[str, str, str]]:
+def name_fixes(review: str, dropped: list[str] | None = None,
+               noise: list[str] | None = None) -> list[tuple[str, str, str]]:
     """(метка, имя, основание) из раздела «## Исправления имён» ревизии.
-    Строка не по форме — в `dropped`, не пункт. Раздела нет — пусто."""
+
+    Строка не по форме — в `dropped`, не пункт. Шум разбора (LINE_NOISE:
+    «нет», проза до первого пункта, примечание в скобках) — в `noise`,
+    если список передан; иначе в `dropped`, как у прямого вызова. По тексту
+    строки шум не фильтруем: от пункта его отличает классификатор раздела.
+    Раздела нет — пусто.
+    """
     out: list[tuple[str, str, str]] = []
-    for item in review_bridge._section_items(review, NAMES_HEAD, dropped):
+    sink = noise if noise is not None else dropped
+    for item in review_bridge._section_items(review, NAMES_HEAD, sink):
         m = _FIX.match(item)
         if not m:
             if dropped is not None:
@@ -109,17 +148,83 @@ def section_present(review: str) -> bool:
     return bool(NAMES_WORD.search(review or ""))
 
 
-def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str],
+class NameGuard(typing.NamedTuple):
+    """Что plan() не отдаёт чужой дорожке и с какой дорожки не снимает.
+
+    `mic` — метки канала микрофона: прежние причины, и как метка, и как цель.
+    `owner` — полное имя владельца из конфига: другой дорожке не отдаём
+    (своя причина), и дорожку с этим именем не переименовываем, если это
+    не сам канал (канал уже в `mic`).
+    `bare` — первое слово полного имени, когда оно короче полного. Голое
+    имя просит фамилию; тёзка с другой фамилией сюда не попадает.
+    Множество строк — прежний контракт: всё это метки микрофона.
+    """
+    mic: frozenset[str] = frozenset()
+    owner: str = ""
+    bare: str = ""
+
+
+def guard_for(cfg: dict) -> NameGuard:
+    """Защита имён из конфига: канал микрофона, полное имя, голое первое слово."""
+    sufler = cfg.get("sufler") or {}
+    owner = str(sufler.get("user_name") or "").strip()
+    mic = frozenset({channel_labels.mic_label_for(cfg), channel_labels.NEUTRAL_MIC})
+    first = owner.split()[0] if owner else ""
+    bare = first if first and first != owner else ""
+    return NameGuard(mic=mic, owner=owner, bare=bare)
+
+
+def _as_guard(protected: set[str] | NameGuard) -> NameGuard:
+    if isinstance(protected, NameGuard):
+        return protected
+    return NameGuard(mic=frozenset(protected or ()))
+
+
+def _os_reason(e: OSError) -> str:
+    """Причина ОС для строки dropped: текст ошибки без пути. str(e) несёт
+    абсолютный путь файла (у rename — два), а dropped ложится в «## Не
+    применено» файла ревизии, который уходит в облако."""
+    return e.strerror or type(e).__name__
+
+
+def _label_reason(label: str, guard: NameGuard) -> str | None:
+    if label in guard.mic:
+        return REASON_MIC_LABEL
+    if guard.owner and label == guard.owner:
+        return REASON_OWNER_LABEL
+    if guard.bare and label == guard.bare:
+        return REASON_BARE_LABEL
+    return None
+
+
+def _target_reason(name: str, guard: NameGuard) -> str | None:
+    # «Я» как первое слово «Я Фамилия» — это метка микрофона, не просьба
+    # дописать фамилию. Полное имя владельца проверяем раньше метки канала:
+    # при имени из двух слов канал и есть это полное имя, а причина у цели
+    # всё равно про имя, не про железо.
+    if guard.bare and name == guard.bare and name not in guard.mic:
+        return REASON_BARE
+    if guard.owner and name == guard.owner:
+        return REASON_OWNER
+    if name in guard.mic:
+        return REASON_MIC_TARGET
+    return None
+
+
+def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str] | NameGuard,
          dropped: list[str] | None = None) -> dict[str, str]:
     """Метка → имя, что реально применимо. Не применяется: та же или пустая
     метка; метка микрофона владельца (канал — факт железа, не догадка
     модели) — ни как метка, ни как цель (иначе чужая дорожка стала бы
-    владельцем, DS r1 I4 / GLM r1 M5 по #548); имя-заглушка («Собеседник
-    3»), мусор или слишком длинное; метки нет в заголовках реплик; вторая
-    правка той же метки; имя — метка ДРУГОЙ живой дорожки, которую никто не
-    переименовывает (слияние двух голосов в одного человека без отката —
-    не делаем, критика DS r2; обмен A↔B при этом применим: обе дорожки
-    переименованы одним проходом). Причина — в `dropped`.
+    владельцем, DS r1 I4 / GLM r1 M5 по #548); голое первое слово имени
+    владельца и его полное имя на чужой дорожке — своими причинами, защита
+    та же; имя-заглушка («Собеседник 3»), мусор или слишком длинное; метки
+    нет в заголовках реплик; вторая правка той же метки; имя — метка ДРУГОЙ
+    живой дорожки, которую никто не переименовывает (слияние двух голосов
+    в одного человека без отката — не делаем, критика DS r2; обмен A↔B при
+    этом применим: обе дорожки переименованы одним проходом). Причина — в
+    `dropped`. `protected` — множество меток микрофона (прежний контракт)
+    или NameGuard.
 
     «�» в имени — всегда отказ, каким бы целым ни был файл ревизии: автором
     такой символ в имени не бывает, а приходит он из испорченного источника,
@@ -128,16 +233,17 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
     гейт по способу чтения был ошибкой круга 2)."""
     mapping: dict[str, str] = {}
     labels = {label for label, _, _ in fixes}
+    guard = _as_guard(protected)
     for label, name, _why in fixes:
         reason = ""
         if label == name:
             reason = "то же имя"
         elif not label:
             reason = "пустая метка"
-        elif label in protected:
-            reason = "метка владельца (канал микрофона) не переименовывается"
-        elif name in protected:
-            reason = "целевое имя — метка владельца (канал микрофона)"
+        elif (why := _label_reason(label, guard)):
+            reason = why
+        elif (why := _target_reason(name, guard)):
+            reason = why
         elif _MANGLED_NAME in name:
             reason = "в имени нечитаемый байт, ревизию читали с заменой"
         elif not name or channel_labels.is_neutral_label(name) or _BAD_NAME.search(name) or len(name) > MAX_NAME:
@@ -165,6 +271,73 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
             if dropped is not None:
                 dropped.append(f"«{label} → {mapping[label]}» — имя — метка другой дорожки «{mapping[label]}», её правка отклонена")
             del mapping[label]
+
+
+def _plain(text: str) -> str:
+    """Одна строка без жирного: `**метка** → **имя**` снова стала бы _FIX."""
+    return " ".join(text.replace("**", "").split())
+
+
+def refusal_lines(dropped: list[str] | None) -> list[str]:
+    """Строки раздела «## Не применено» из отказов plan(), строк не по форме
+    и событий. Шума разбора здесь нет: его отделяет вызывающий.
+
+    Событий LostRace на входе нет, их отделяет вызывающий. Форма plan()
+    «метка → имя» — причина становится «- метка → имя — причина» без
+    жирного. Остальное — той же строкой, тоже без жирного.
+    """
+    out: list[str] = []
+    for item in dropped or []:
+        text = (item or "").strip()
+        if not text:
+            continue
+        m = _REFUSAL.match(text)
+        if m:
+            label, name, why = (_plain(m.group(g)) for g in ("label", "name", "why"))
+            out.append(f"- {label} → {name} — {why}")
+        elif plain := _plain(text):
+            out.append("- " + plain)
+    return out
+
+
+def render_unapplied(text: str, rows: list[str]) -> str:
+    """Дописать блок «## Не применено» в конец текста.
+
+    Пустой `rows` — `text` как есть. Иначе — текст без хвостовых переводов
+    строки, ровно одна пустая строка, заголовок, строки `rows` и перевод
+    строки в конце. Пустой текст — только блок. Заголовок, который написала
+    модель, не ищется и не снимается: своего раздела в файле к моменту
+    записи нет, ответ модели публикуется целиком.
+    """
+    if not rows:
+        return text
+    body = text.rstrip("\n")
+    block = "\n".join([UNAPPLIED_TITLE, *rows])
+    if not body:
+        return block + "\n"
+    return body + "\n\n" + block + "\n"
+
+
+def record_unapplied(path: pathlib.Path, dropped: list[str] | None) -> int:
+    """Дописать «## Не применено» в конец файла ревизии. Число строк.
+
+    Пустой список файл не переписывает. Запись — через safe_write (гейт
+    по снимку, две попытки). Файл не в UTF-8 — MangledFile, байты на месте.
+    Событий LostRace на входе нет, их отделяет вызывающий.
+    """
+    rows = refusal_lines(dropped)
+    if not rows:
+        return 0
+
+    def transform(text: str) -> tuple[str, int]:
+        # rows не пуст — render_unapplied всегда дописывает блок
+        return render_unapplied(text, rows), 1
+
+    try:
+        safe_write.rewrite_file(path, transform, "раздел «Не применено» не записан")
+    except UnicodeDecodeError as e:
+        raise review_bridge.MangledFile(path, "отказы остались в журнале", e.reason) from e
+    return len(rows)
 
 
 def _word_map(text: str, mapping: dict[str, str]) -> str:
@@ -288,13 +461,18 @@ def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
 
 
 def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
-            dropped: list[str] | None = None) -> dict[str, str]:
+            dropped: list[str] | None = None,
+            noise: list[str] | None = None) -> dict[str, str]:
     """Карта «метка → имя», которую ревизия просит применить, без правки
     файлов. Нужна и без права правки графа: мост поручений считает
     участников по НЕпереименованной стенограмме, и восстановленный пункт с
     верным именем получал бы «⚠ не участник» (DS r2 I2 по #548) — верные
-    имена из этой карты мост добавляет к участникам. Файл не в UTF-8 —
-    пусто со строкой в `dropped`."""
+    имена из этой карты мост добавляет к участникам. Стенограмма не в
+    UTF-8 или не прочиталась — пусто со строкой в `dropped`, не
+    молчаливое «правок нет»: человек видит, что имена не перештампованы.
+    Ревизию не в UTF-8 читает read_review с заменой; строгую запись
+    отказов делает record_unapplied.
+    `noise` — шум разбора раздела, в отказы не входит (см. name_fixes)."""
     try:
         text, _lossy = review_bridge.read_review(review)
         speech = live.read_text(encoding="utf-8")
@@ -302,22 +480,23 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
         if dropped is not None:
             dropped.append(f"{live.name} не в UTF-8 — имена не перештампованы ({e.reason})")
         return {}
-    except OSError:
+    except OSError as e:
+        # На базе здесь было молчаливое «правок нет». Строка нужна, чтобы
+        # человек видел: стенограмма не прочитана, имена не перештампованы.
+        if dropped is not None:
+            dropped.append(f"{live.name}: стенограмма не прочитана — имена не "
+                           f"перештампованы ({_os_reason(e)})")
         return {}
-    fixes = name_fixes(text, dropped=dropped)
+    fixes = name_fixes(text, dropped=dropped, noise=noise)
     if not fixes:
         return {}
     headers = {b["speaker"] for b in transcript.parse_blocks(speech)}
-    sufler = cfg.get("sufler") or {}
-    owner = str(sufler.get("user_name") or "").strip()
-    protected = {channel_labels.mic_label_for(cfg), channel_labels.NEUTRAL_MIC}
-    if owner:
-        protected |= {owner, owner.split()[0]}
-    return plan(fixes, headers, protected, dropped=dropped)
+    return plan(fixes, headers, guard_for(cfg), dropped=dropped)
 
 
 def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
-          dropped: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
+          dropped: list[str] | None = None,
+          noise: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
     """Исправления имён из ревизии — в стенограмму и минутки этой встречи.
     Возвращает (применённая карта, заголовков реплик, тронута ли строка
     участников минуток). Нет ревизии, раздела или применимых строк — пусто;
@@ -326,7 +505,7 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     (DS r1 I2 по #548). Файлы независимы: битые или не записавшиеся минутки
     не отменяют уже перештампованную стенограмму — строка в `dropped`, а
     результат по факту (критика GLM r2, DS r2 M3)."""
-    mapping = planned(review, live, cfg, dropped=dropped)
+    mapping = planned(review, live, cfg, dropped=dropped, noise=noise)
     if not mapping:
         return {}, 0, False
     # стенограмма сменилась под рукой — ничего не применено, LostRace идёт
@@ -347,5 +526,5 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
             dropped.append(f"{mpath.name} не в UTF-8 — участники минуток не перештампованы ({e.reason})")
     except OSError as e:
         if dropped is not None:
-            dropped.append(f"{mpath.name}: участники минуток не перештампованы ({e})")
+            dropped.append(f"{mpath.name}: участники минуток не перештампованы ({_os_reason(e)})")
     return mapping, n, touched
