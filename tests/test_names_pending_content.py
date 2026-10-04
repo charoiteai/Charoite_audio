@@ -6,16 +6,23 @@
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import threading
+import time
+
+import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 import live_sidecar  # noqa: E402
+import meeting_processing  # noqa: E402
 import name_fixes as nf  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 import transcript  # noqa: E402
@@ -64,7 +71,7 @@ def test_hand_edited_names_clear_the_pending_flag_and_keep_the_file(tmp_path, mo
 
     assert live.read_bytes() == before
     assert rt.NAMES_PENDING_PREFIX in live.read_text(encoding="utf-8"), "устаревшая строка плашки остаётся"
-    assert rt.names_pending(live) is False
+    assert transcript.read_names_pending(live.read_text(encoding="utf-8")).pending is False
     data = json.loads(MeetingStatusStore(tmp_path).ready(live, None).read_text(encoding="utf-8"))
     assert "names_pending" not in data and "names_reason" not in data
 
@@ -343,3 +350,242 @@ def test_refresh_names_sets_both_fields_on_a_ready_meeting(tmp_path):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["names_pending"] is True and data["names_reason"] == "rejected"
     assert data["state"] == "ready" and data["updated_at"] == 10.0
+
+
+def test_names_pending_line_keeps_the_note_and_sorts_the_tail():
+    """Пустой набор — note без изменений. Повтор и пробелы схлопываются в
+    отсортированный хвост. Пробел в конце note не остаётся перед списком."""
+    note = transcript.NAMES_PENDING_NOTE
+    assert transcript.names_pending_line(note, []) == note
+    assert transcript.names_pending_line(
+        note, [" Собеседник 2 ", "Собеседник 1", "Собеседник 2", " "],
+    ) == note + " | безымянные: Собеседник 1, Собеседник 2"
+    assert transcript.names_pending_line(note + " ", ["Собеседник 1"]) == (
+        note + " | безымянные: Собеседник 1")
+
+
+def test_names_banner_for_rewrites_by_the_line_and_keeps_what_follows():
+    """Вход → весь текст. Плашка, пустая строка и заголовок; вплотную;
+    последняя строка без перевода; укороченный хвост; те же окончания \\r\\n;
+    список совпал с заголовками — байт в байт."""
+    note = transcript.NAMES_PENDING_NOTE
+    full = f"{note} | безымянные: Собеседник 1, Собеседник 2"
+    tail = f"{transcript.NOTES_HEAD}{transcript.NOTES_SUFFIX}\n> цитата\n"
+    both_named = (
+        f"# Встреча\n\n{full}\n\n"
+        "**Анна** [12:00]:\nда\n\n**Борис** [12:01]:\nнет\n"
+        + tail
+    )
+    assert transcript.names_banner_for(both_named) == (
+        "# Встреча\n\n"
+        "**Анна** [12:00]:\nда\n\n**Борис** [12:01]:\nнет\n"
+        + tail
+    )
+    two_blanks = (
+        f"# Встреча\n\n{full}\n\n\n"
+        "**Анна** [12:00]:\nда\n"
+    )
+    assert transcript.names_banner_for(two_blanks) == (
+        "# Встреча\n\n\n**Анна** [12:00]:\nда\n"
+    )
+    adjacent = f"# Встреча\n\n{full}\n**Анна** [12:00]:\nда\n"
+    assert transcript.names_banner_for(adjacent) == (
+        "# Встреча\n\n**Анна** [12:00]:\nда\n"
+    )
+    last = f"# Встреча\n\n{note} | безымянные: Собеседник 1"
+    assert transcript.names_banner_for(last) == "# Встреча\n\n"
+    partial = (
+        f"# Встреча\n\n{note} | безымянные: Собеседник 2, Собеседник 3, Собеседник 1\n\n"
+        "**Собеседник 2** [12:00]:\nа\n\n**Анна** [12:01]:\nб\n\n"
+        "**Собеседник 1** [12:02]:\nв\n"
+    )
+    assert transcript.names_banner_for(partial) == (
+        f"# Встреча\n\n{note} | безымянные: Собеседник 2, Собеседник 1\n\n"
+        "**Собеседник 2** [12:00]:\nа\n\n**Анна** [12:01]:\nб\n\n"
+        "**Собеседник 1** [12:02]:\nв\n"
+    )
+    crlf = partial.replace("\n", "\r\n")
+    assert transcript.names_banner_for(crlf) == (
+        f"# Встреча\r\n\r\n{note} | безымянные: Собеседник 2, Собеседник 1\r\n\r\n"
+        "**Собеседник 2** [12:00]:\r\nа\r\n\r\n**Анна** [12:01]:\r\nб\r\n\r\n"
+        "**Собеседник 1** [12:02]:\r\nв\r\n"
+    )
+    same = (
+        f"# Встреча\n\n{note} | безымянные: Собеседник 1,Собеседник 2\n\n"
+        "**Собеседник 1** [12:00]:\nа\n\n**Собеседник 2** [12:01]:\nб\n"
+    )
+    assert transcript.names_banner_for(same) == same
+    plain = "# Встреча\n\n**Анна** [12:00]:\nда\n"
+    assert transcript.names_banner_for(plain) == plain
+
+
+def _hold_status_lock(directory: pathlib.Path) -> int:
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory / meeting_processing._STATUS_LOCK_NAME, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _json_bytes(directory: pathlib.Path) -> dict[str, bytes]:
+    if not directory.is_dir():
+        return {}
+    return {path.name: path.read_bytes() for path in directory.glob("*.json")}
+
+
+def test_status_lock_times_out_and_then_the_write_lands(tmp_path, monkeypatch):
+    """Чужой описатель держит замок, срок 0,2 с: TimeoutError не раньше срока,
+    документа нет. Описатель отпущен — запись проходит."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    before = _json_bytes(store.directory)
+    fd = _hold_status_lock(store.directory)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError) as caught:
+            store.processing(live, "rebuilding_transcript")
+        elapsed = time.monotonic() - started
+        assert elapsed >= 0.2
+        message = str(caught.value)
+        assert meeting_processing._STATUS_LOCK_NAME in message
+        assert "0.2" in message
+        assert _json_bytes(store.directory) == before
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    written = store.processing(live, "rebuilding_transcript")
+    assert written.is_file()
+    assert json.loads(written.read_text(encoding="utf-8"))["stage"] == "rebuilding_transcript"
+
+
+def test_the_first_lock_poll_releases_the_holder_and_the_write_lands(tmp_path, monkeypatch):
+    """Первая пауза опроса отпускает замок теста: TimeoutError нет, запись есть."""
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    fd = _hold_status_lock(store.directory)
+    pauses = {"n": 0}
+
+    def pause(_seconds):
+        pauses["n"] += 1
+        if pauses["n"] == 1:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+    monkeypatch.setattr(meeting_processing.time, "sleep", pause)
+    try:
+        path = store.processing(live, "updating_graph")
+    finally:
+        os.close(fd)
+    assert pauses["n"] >= 1
+    assert path.is_file()
+    assert json.loads(path.read_text(encoding="utf-8"))["stage"] == "updating_graph"
+
+
+def test_review_without_a_document_creates_nothing(tmp_path):
+    """Без каталога статусов его нет и после вызова. Каталог есть, документа
+    нет — файла замка нет."""
+    live = _stamp_file(tmp_path / "transcripts", "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path)
+    assert store.review(live, "running", "рано") is None
+    assert not store.directory.exists()
+    store.directory.mkdir(parents=True)
+    assert store.review(live, "running", "ещё рано") is None
+    assert list(store.directory.iterdir()) == []
+
+
+def _stale_running(path: pathlib.Path, transcript_path: str) -> None:
+    path.write_text(json.dumps({
+        "review": {"note": "висит", "state": "running", "updated_at": 0},
+        "state": "ready",
+        "transcript_path": transcript_path,
+    }, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_expire_reviews_fails_the_file_it_read_and_leaves_the_canonical(tmp_path):
+    """Сирота running → failed, канонический ok не тронут. Пустой
+    transcript_path и два мёртвых пути тоже становятся failed."""
+    transcripts = tmp_path / "transcripts"
+    live = _stamp_file(transcripts, "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: meeting_processing.REVIEW_STALE + 50)
+    canonical = store.ready(live, None)
+    assert store.review(live, "ok", "доставлено") == canonical
+    canonical_bytes = canonical.read_bytes()
+    orphan = store.directory / "orphan-status.json"
+    _stale_running(orphan, str(live))
+    empty = store.directory / "empty-path.json"
+    _stale_running(empty, "")
+    missing = str(transcripts / "2026-01-01_000000.md")
+    dead_a = store.directory / "dead-a.json"
+    dead_b = store.directory / "dead-b.json"
+    _stale_running(dead_a, missing)
+    _stale_running(dead_b, missing)
+
+    written = store.expire_reviews()
+
+    assert canonical.read_bytes() == canonical_bytes
+    assert json.loads(canonical.read_text(encoding="utf-8"))["review"]["state"] == "ok"
+    assert set(written) == {orphan, empty, dead_a, dead_b}
+    for path in (orphan, empty, dead_a, dead_b):
+        review = json.loads(path.read_text(encoding="utf-8"))["review"]
+        assert review["state"] == "failed" and "не завершил" in review["note"]
+
+
+def test_ready_records_the_rejected_reason(tmp_path):
+    """ready пишет причину читателя: отказ гвардов остаётся rejected."""
+    banner = transcript.names_pending_line(
+        rt.NAMES_REJECTED_NOTE.format(proposed=1), ["Собеседник 2"])
+    live = _stamp_file(
+        tmp_path / "transcripts", "2026-08-12_153219.md",
+        f"# Встреча 2026-08-12_153219\n\n{banner}\n\n**Собеседник 2** [15:32]:\nда\n")
+    data = json.loads(
+        MeetingStatusStore(tmp_path, now=lambda: 10.0).ready(live, None).read_text(encoding="utf-8"))
+    assert data["names_pending"] is True and data["names_reason"] == "rejected"
+
+
+def test_expire_reviews_reads_inside_the_lock(tmp_path, monkeypatch):
+    """Документ уже просрочен. Подменённый замок на входе пишет ok:
+    проход видит уже ok и возвращает [], состояние ok."""
+    transcripts = tmp_path / "transcripts"
+    live = _stamp_file(transcripts, "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: meeting_processing.REVIEW_STALE + 50)
+    path = store.ready(live, None)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["review"] = {"note": "висит", "state": "running", "updated_at": 0}
+    path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+    @contextlib.contextmanager
+    def locked_writes_ok(self):
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["review"]["state"] = "ok"
+        path.write_text(
+            json.dumps(current, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        yield
+
+    monkeypatch.setattr(MeetingStatusStore, "_locked", locked_writes_ok)
+    assert store.expire_reviews() == []
+    assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "ok"
+
+
+def test_expire_reviews_returns_nothing_when_the_lock_is_held(tmp_path, monkeypatch):
+    """Замок держит тест, срок подменён: [], байты документов те же."""
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.2)
+    transcripts = tmp_path / "transcripts"
+    live = _stamp_file(transcripts, "2026-08-12_153219.md",
+                       "# Встреча 2026-08-12_153219\n\n**Анна** [15:32]:\nда\n")
+    store = MeetingStatusStore(tmp_path, now=lambda: meeting_processing.REVIEW_STALE + 50)
+    path = store.ready(live, None)
+    assert store.review(live, "running", "идёт") == path
+    before = _json_bytes(store.directory)
+    fd = _hold_status_lock(store.directory)
+    started = time.monotonic()
+    try:
+        assert store.expire_reviews() == []
+        assert time.monotonic() - started >= 0.2
+        assert _json_bytes(store.directory) == before
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

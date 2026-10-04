@@ -1846,19 +1846,6 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
     return True
 
 
-def names_pending(live: pathlib.Path) -> bool:
-    """Осталась ли потеря имён: плашка и ещё безымянные метки в заголовках речи.
-
-    Читатель — чистая функция над текстом (`transcript.read_names_pending`).
-    Плашка, под которой имена уже вписаны, потерей не считается. Файла нет
-    или он не читается — False: статус не должен ронять пайплайн.
-    """
-    try:
-        return transcript.read_names_pending(live.read_text(encoding="utf-8")).pending
-    except Exception:  # noqa: BLE001 — статус не должен ломать пайплайн
-        return False
-
-
 def retry_unfinished(status: MeetingStatusStore) -> None:
     """Догнать встречи, которые не доехали до готовности.
 

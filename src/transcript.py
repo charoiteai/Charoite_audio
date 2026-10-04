@@ -167,6 +167,14 @@ MIC_COLLAPSED_MARK = MIC_COLLAPSED_NOTE.split("{live}", 1)[0]
 _REJECTED_MARK = "не прошло проверку"
 _UNNAMED_MARK = " | безымянные: "
 _TAIL_RE = re.compile(r" \| безымянные:.*$")
+# Одна плашка в шапке: строка с префикса, без её окончания. Необязательный
+# хвост совпадения — окончание этой строки и не больше одной пустой строки
+# за ней (пробелы и табуляции до её окончания). Срезы правки — по группе
+# `line`, как `rename_participants` режет хвост «Участники».
+_BANNER_RE = re.compile(
+    r"^(?P<line>" + re.escape(NAMES_PENDING_PREFIX) + r"[^\r\n]*)"
+    r"(?:\r?\n(?:[ \t]*\r?\n)?)?",
+    re.M)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -189,9 +197,9 @@ def names_pending_line(note: str, unnamed) -> str:
 
     Хвост идёт после неизменного текста причины, поэтому старые проверки
     «плашка целиком входит в файл» продолжают видеть note. Пустой набор —
-    строка без хвоста. Повторный вызов не удваивает хвост.
+    строка без хвоста.
     """
-    base = _TAIL_RE.sub("", note).rstrip()
+    base = note.rstrip()
     labels = sorted({str(label).strip() for label in unnamed if str(label).strip()})
     if not labels:
         return base
@@ -199,11 +207,11 @@ def names_pending_line(note: str, unnamed) -> str:
 
 
 def _banner_line(head: str) -> str | None:
-    """Первая плашка в шапке (до ко-мышления). В хвосте та же строка — цитата."""
-    for line in head.splitlines():
-        if line.startswith(NAMES_PENDING_PREFIX):
-            return line
-    return None
+    """Группа `line` первой плашки в шапке или None. В хвосте та же строка — цитата."""
+    match = _BANNER_RE.search(head)
+    if match is None:
+        return None
+    return match.group("line")
 
 
 def _listed_labels(line: str) -> tuple[str, ...] | None:
@@ -276,15 +284,12 @@ def read_names_pending(text: str) -> NamesPending:
 
 
 def _without_banner(head: str) -> str:
-    """Убрать первую плашку и одну пустую строку сразу за ней."""
-    lines = head.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        if line.startswith(NAMES_PENDING_PREFIX):
-            del lines[index]
-            if index < len(lines) and lines[index].strip() == "":
-                del lines[index]
-            break
-    return "".join(lines)
+    """Шапка без всего совпадения: строка плашки, её окончание и не больше
+    одной пустой строки за ней. Заголовок реплики сразу за плашкой остаётся."""
+    match = _BANNER_RE.search(head)
+    if match is None:
+        return head
+    return head[:match.start()] + head[match.end():]
 
 
 def names_banner_for(text: str) -> str:
@@ -296,12 +301,15 @@ def names_banner_for(text: str) -> str:
     Часть списка названа — хвост короче, порядок прежний. Список совпал с
     заголовками — строка не переписывается. Плашка без списка не обрастает
     списком задним числом: исходный набор меток уже неизвестен.
+    Перепись режет по границам группы `line`: окончание строки и всё после
+    него не трогаются.
     """
     cut = notes_start(text)
     head, tail = text[:cut], text[cut:]
-    line = _banner_line(head)
-    if line is None:
+    match = _BANNER_RE.search(head)
+    if match is None:
         return text
+    line = match.group("line")
     info = read_names_pending(text)
     if not info.pending:
         return _without_banner(head) + tail
@@ -310,13 +318,7 @@ def names_banner_for(text: str) -> str:
         return text
     base = _TAIL_RE.sub("", line).rstrip()
     rewritten = f"{base}{_UNNAMED_MARK}{', '.join(info.labels)}"
-    lines = head.splitlines(keepends=True)
-    for index, raw in enumerate(lines):
-        if raw.startswith(NAMES_PENDING_PREFIX):
-            newline = raw[len(raw.rstrip("\r\n")):]
-            lines[index] = rewritten + newline
-            break
-    return "".join(lines) + tail
+    return head[:match.start("line")] + rewritten + head[match.end("line"):] + tail
 
 
 class Transcript:

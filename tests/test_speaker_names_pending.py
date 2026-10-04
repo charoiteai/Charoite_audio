@@ -30,7 +30,9 @@ SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 import llm as llm_mod  # noqa: E402
+import meeting_processing  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
+import transcript  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
 CFG = {"llm": {"model": "тест"}, "sufler": {"user_name": "Владелец"}}
@@ -82,7 +84,7 @@ def test_pending_note_is_found_in_the_transcript(tmp_path):
     live.write_text(f"# Встреча\n\n{rt.NAMES_PENDING_NOTE}\n\n**Собеседник 1** [15:32]:\nда\n",
                     encoding="utf-8")
 
-    assert rt.names_pending(live) is True
+    assert transcript.read_names_pending(live.read_text(encoding="utf-8")).pending is True
 
 
 def test_both_notes_share_the_prefix_the_flag_looks_for():
@@ -112,23 +114,23 @@ def test_flag_finds_the_rejected_note_and_the_note_written_before_the_split(tmp_
     for note in (rt.NAMES_REJECTED_NOTE.format(proposed=1), before_split):
         live = tmp_path / "2026-09-29_103224.md"
         live.write_text(f"# Встреча\n\n{note}\n\n**Собеседник 1** [10:32]:\nда\n", encoding="utf-8")
-        assert rt.names_pending(live) is True, note
+        assert transcript.read_names_pending(live.read_text(encoding="utf-8")).pending is True, note
 
 
 def test_clean_transcript_has_no_pending_flag(tmp_path):
     live = tmp_path / "2026-08-12_153219.md"
     live.write_text("# Встреча\n\n**Сергей** [15:32]:\nда\n", encoding="utf-8")
 
-    assert rt.names_pending(live) is False
+    assert transcript.read_names_pending(live.read_text(encoding="utf-8")).pending is False
 
 
 def test_missing_transcript_does_not_break_the_status(tmp_path):
-    assert rt.names_pending(tmp_path / "нет-файла.md") is False
+    """Файла нет — это не потеря: `_names_of` отдаёт None, пайплайн не падает."""
+    assert meeting_processing._names_of(tmp_path / "нет-файла.md") is None
 
 
 def test_ready_status_carries_names_pending(tmp_path):
     """Поле появляется, только когда в файле ещё есть безымянные метки под плашкой."""
-    import transcript
     live = tmp_path / "transcripts" / "2026-08-12_153219.md"
     live.parent.mkdir()
     banner = transcript.names_pending_line(rt.NAMES_PENDING_NOTE, ["Собеседник 1"])

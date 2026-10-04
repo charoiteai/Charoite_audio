@@ -18,6 +18,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import rebuild_transcript as rt  # noqa: E402
+import transcript  # noqa: E402
 
 OWNER = "Игорь Ветров"
 
@@ -284,7 +285,21 @@ def test_unnamed_labels_get_the_note_of_their_cause(meeting, monkeypatch, naming
     text = out.read_text(encoding="utf-8")
     assert note in text
     assert not_note not in text
-    assert rt.names_pending(out) is True
+    assert note + " | безымянные: Собеседник 1, Собеседник 2" in text.splitlines()
+    assert transcript.read_names_pending(text).pending is True
+
+
+def test_a_live_session_name_leaves_one_label_in_the_banner_tail(meeting, monkeypatch):
+    """Имя живой сессии забирает одну из двух нейтральных меток до разбора:
+    в хвосте плашки остаётся вторая, литералом."""
+    monkeypatch.setattr(rt, "name_speakers",
+                        lambda cfg, lines, **kw: rt.NamesOutcome({}, rt.NamesOutcome.SILENT))
+    meeting["meta"] = {"names": {"живой": "Анна"}}
+    meeting["live"].write_text("**Анна** [14:31]:\nпривет\n", encoding="utf-8")
+    out = rt.rebuild(meeting["live"], CFG)
+    text = out.read_text(encoding="utf-8")
+    assert rt.NAMES_PENDING_NOTE + " | безымянные: Собеседник 2" in text.splitlines()
+    assert "Собеседник 1" not in text
 
 
 
@@ -312,7 +327,7 @@ def test_a_usable_answer_leaves_no_note(meeting):
     """Годный ответ модели без имён («имён не звучало») плашки не даёт — даже с безымянными метками."""
     out = rt.rebuild(meeting["live"], CFG)
     assert rt.NAMES_PENDING_PREFIX not in out.read_text(encoding="utf-8")
-    assert rt.names_pending(out) is False
+    assert transcript.read_names_pending(out.read_text(encoding="utf-8")).pending is False
 
 
 # потолок — места одного канала трекера (№573): до квоты микрофона счёт сам не превышал 8

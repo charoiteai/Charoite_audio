@@ -6,6 +6,7 @@ without importing audio, STT, or diarization stacks.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import math
@@ -27,22 +28,15 @@ STATUS_KEEP_DAYS = 14
 # и `unfinished` читают каталог шаблоном `*.json` и не должны принимать замок
 # за документ встречи.
 _STATUS_LOCK_NAME = "status.lock"
-# flock на macOS и Linux не реентерабелен: второй LOCK_EX в том же процессе
-# на другом описателе ждёт первый вечно, в том числе из того же потока.
-# Потоки одного процесса сериализует RLock каталога; между процессами — flock.
-_DIR_LOCKS: dict[str, threading.RLock] = {}
-_DIR_LOCKS_GUARD = threading.Lock()
+# flock на файле замка сериализует писателей документов: конфликт между
+# открытыми описателями, поэтому и между процессами, и между потоками
+# одного процесса. Повторный вход того же потока второй описатель не
+# открывает — его держит _held_dirs, иначе LOCK_EX ждал бы сам себя.
+# Чужой держатель: LOCK_NB и опрос до STATUS_LOCK_WAIT_S от первой
+# попытки. Срок вышел — TimeoutError, документ не читается и не пишется.
+STATUS_LOCK_POLL_S = 0.05
+STATUS_LOCK_WAIT_S = 10.0
 _HELD = threading.local()
-
-
-def _dir_lock(directory: pathlib.Path) -> threading.RLock:
-    key = str(directory)
-    with _DIR_LOCKS_GUARD:
-        lock = _DIR_LOCKS.get(key)
-        if lock is None:
-            lock = threading.RLock()
-            _DIR_LOCKS[key] = lock
-        return lock
 
 
 def _held_dirs() -> set[str]:
@@ -326,12 +320,10 @@ class MeetingStatusStore:
             # Поля появляются только когда есть что сказать: старые читатели
             # статуса (и приложение до обновления) видят прежний документ.
             # Файл не прочитался — ключей нет: готовый документ без признака,
-            # пайплайн не падает. Причина вне silent|rejected не должна
-            # оставить names_pending без пары.
+            # пайплайн не падает. При pending читатель даёт silent или rejected.
             if info is not None and info.pending:
                 payload["names_pending"] = True
-                payload["names_reason"] = (
-                    info.reason if info.reason in ("silent", "rejected") else "silent")
+                payload["names_reason"] = info.reason
             # Этап ревизии переживает готовность: воркер запускается ДО ready()
             # конвейера и успевал записать «running» раньше, чем тот собрал
             # документ заново без поля (DS r1 I1, GLM r1 I1 по #546)
@@ -361,7 +353,7 @@ class MeetingStatusStore:
                 return None
             updated = dict(current)
             if info.pending:
-                reason = info.reason if info.reason in ("silent", "rejected") else "silent"
+                reason = info.reason
                 if updated.get("names_pending") is True and updated.get("names_reason") == reason:
                     return None
                 updated["names_pending"] = True
@@ -383,8 +375,11 @@ class MeetingStatusStore:
         последняя строка её лога. Статуса ещё нет (воркер запущен руками до
         разбора) — не заводим: запись без stage читалась бы как битая.
         `updated_at` самого статуса не сдвигается — по нему судят
-        `unfinished` и `busy`, а ревизия не обработка."""
+        `unfinished` и `busy`, а ревизия не обработка. Документа ещё нет —
+        не заводим ни его, ни каталог, ни файл замка."""
         transcript = pathlib.Path(transcript)
+        if not self.directory.is_dir() or not self._path(transcript).is_file():
+            return None
 
         def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
             if not current:
@@ -420,42 +415,35 @@ class MeetingStatusStore:
         бы в статусе навсегда (DS r1 I2, GLM r1 I3 по #546). Порог — дольше
         худшего честного пути (прогон 30 мин + пауза 10 + второй прогон
         + замок); живой воркер потом перепишет поле своим исходом.
-        Возвращает переписанные файлы; зовётся из unfinished()."""
+        Возвращает переписанные файлы; зовётся из unfinished(). Весь проход
+        под одним замком каталога: читается и пишется тот же файл. Замок не
+        взят за срок — пустой список, документы не тронуты, и unfinished()
+        идёт дальше без замка."""
         now = float(self._now())
         out: list[pathlib.Path] = []
         if not self.directory.is_dir():
             return out
-        for path in sorted(self.directory.glob("*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not _review_is_stale(data, now, stale_after):
-                continue
-            raw = str(data.get("transcript_path") or "") if isinstance(data, dict) else ""
-            if not raw:
-                continue
-
-            def mutate(current: dict[str, Any], _now: float = now,
-                       _after: float = stale_after) -> dict[str, Any] | None:
-                # Повторная проверка под замком: между обходом и записью
-                # воркер мог закрыть этап, а новый прогон — сменить документ.
-                if not _review_is_stale(current, _now, _after):
-                    return None
-                updated = dict(current)
-                updated["review"] = {
-                    "state": "failed",
-                    "note": "воркер ревизии не завершил работу (этап устарел)",
-                    "updated_at": _now,
-                }
-                return updated
-
-            try:
-                written = self._update(pathlib.Path(raw), mutate)
-            except OSError:
-                continue
-            if written is not None:
-                out.append(written)
+        try:
+            with self._locked():
+                for path in sorted(self.directory.glob("*.json")):
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        continue
+                    if not _review_is_stale(data, now, stale_after):
+                        continue
+                    data["review"] = {
+                        "state": "failed",
+                        "note": "воркер ревизии не завершил работу (этап устарел)",
+                        "updated_at": now,
+                    }
+                    try:
+                        self._write_path(path, data)
+                    except OSError:
+                        continue
+                    out.append(path)
+        except TimeoutError:
+            return []
         return out
 
     def failed(self, transcript: pathlib.Path, error: object) -> pathlib.Path:
@@ -721,38 +709,66 @@ class MeetingStatusStore:
 
     def _update(self, transcript: pathlib.Path,
                 mutate: Callable[[dict[str, Any]], dict[str, Any] | None]) -> pathlib.Path | None:
-        """Единственная дверь записи документа: замок, чтение, mutate, запись.
+        """Дверь записи для писателей конвейера: замок, чтение, mutate, запись.
 
-        `mutate` возвращает None — документ не пишем (ревизии нечего менять,
-        пересчёт имён не про эту встречу). Внутри mutate нет ожидания
-        пересборки и сети: только чтение стенограммы и сборка словаря.
-        Повторный _update в том же потоке замок не берёт второй раз.
+        Переименование и забывание встречи пока пишут мимо
+        (`scripts/rename_meeting.py` переписывает `transcript_path`,
+        `scripts/forget_meeting.py` удаляет документы); их перенос в стор
+        вне этой задачи. `mutate` возвращает None — документ не пишем
+        (ревизии нечего менять, пересчёт имён не про эту встречу). Внутри
+        mutate нет ожидания пересборки и сети: только чтение стенограммы
+        и сборка словаря. Повторный _update в том же потоке замок не берёт
+        второй раз.
         """
         transcript = pathlib.Path(transcript)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        with self._locked():
+            return self._apply(transcript, mutate)
+
+    @contextlib.contextmanager
+    def _locked(self):
+        """Общий замок каталога статусов.
+
+        flock сериализует писателей между процессами и между потоками:
+        конфликт идёт по открытым описателям файла замка. Повторный вход
+        того же потока проходит без второго flock, через `_held_dirs` —
+        новый описатель ждал бы уже взятый этим потоком. Иначе опрос
+        `LOCK_NB` каждые `STATUS_LOCK_POLL_S` до `STATUS_LOCK_WAIT_S`
+        с первой попытки (`time.monotonic`). Срок вышел — `TimeoutError`,
+        в тексте имя файла замка и срок; документ не читается и не пишется.
+        Описатель закрывается при любом исходе.
+        """
         try:
             key = str(self.directory.resolve())
         except OSError:
             key = str(self.directory)
-        rlock = _dir_lock(pathlib.Path(key))
-        with rlock:
-            if key in _held_dirs():
-                return self._apply(transcript, mutate)
-            lock_path = self.directory / _STATUS_LOCK_NAME
-            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-            locked = False
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                locked = True
-                _held_dirs().add(key)
+        if key in _held_dirs():
+            yield
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        lock_path = self.directory / _STATUS_LOCK_NAME
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        acquired = False
+        try:
+            deadline = time.monotonic() + STATUS_LOCK_WAIT_S
+            while True:
                 try:
-                    return self._apply(transcript, mutate)
-                finally:
-                    _held_dirs().discard(key)
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"замок {lock_path} не взят за {STATUS_LOCK_WAIT_S} с")
+                    time.sleep(STATUS_LOCK_POLL_S)
+            _held_dirs().add(key)
+            try:
+                yield
             finally:
-                if locked:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
+                _held_dirs().discard(key)
+        finally:
+            if acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def _apply(self, transcript: pathlib.Path,
                mutate: Callable[[dict[str, Any]], dict[str, Any] | None]) -> pathlib.Path | None:
@@ -763,9 +779,9 @@ class MeetingStatusStore:
         return self._write(transcript, updated)
 
     def _write(self, transcript: pathlib.Path, payload: dict[str, Any]) -> pathlib.Path:
-        """Запись без замка: зовётся только из `_apply`, уже под `_update`.
+        """Запись без замка: зовётся только из `_apply`, уже под `_locked`.
 
-        Второй flock в том же процессе на другом описателе повис бы навсегда,
+        Второй flock на новом описателе ждал бы держателя в этом же процессе,
         поэтому замок здесь не берётся.
         """
         self.directory.mkdir(parents=True, exist_ok=True)
