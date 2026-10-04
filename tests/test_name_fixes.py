@@ -154,6 +154,23 @@ def test_apply_restamps_headers_and_participants_keeps_prev_and_sha(tmp_path):
     assert again[1] == 0 and again[0] == {}, again
 
 
+def test_minutes_os_error_reason_carries_no_machine_path(tmp_path, monkeypatch):
+    """Минутки не записались — в dropped причина ОС без пути: эти строки
+    ложатся в «## Не применено» файла ревизии, а ревизия уходит в облако."""
+    live, mpath, rev = _world(tmp_path)
+
+    def denied(*_a, **_k):
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), str(mpath))
+
+    monkeypatch.setattr(nf, "restamp_minutes", denied)
+    dropped: list[str] = []
+    mapping, heads, parts = nf.apply(rev, live, {"sufler": {"user_name": "Владелец"}}, dropped=dropped)
+    assert mapping and heads == 3 and not parts
+    line = f"{mpath.name}: участники минуток не перештампованы ({os.strerror(errno.EACCES)})"
+    assert line in dropped
+    assert nf.record_unapplied(rev, dropped) > 0
+    assert str(tmp_path) not in rev.read_text(encoding="utf-8")
+
 def test_non_utf8_meeting_file_skips_names_without_raising(tmp_path):
     """DS r1 I2 по #548: стенограмма в cp1251 (правил чужой редактор) не
     должна ронять мост поручений — имена пропускаются со строкой в dropped."""
@@ -368,12 +385,13 @@ def test_plan_separates_bare_owner_name_full_name_and_mic():
     assert nf.plan([("Собеседник 1", "Я", "")], {"Собеседник 1"}, odd, dropped) == {}
     assert "целевое имя — метка владельца (канал микрофона)" in dropped[0]
     assert "голое имя" not in dropped[0]
-    # дорожка подписана полным именем владельца, а канал микрофона — «Я»:
-    # её не переименовываем, и причина — про имя, не про канал
-    apart = nf.NameGuard(mic=frozenset({"Я"}), owner="Имя Фамилия", bare="Имя")
+    # имя владельца совпало с нейтральной меткой — канал микрофона «Я», а
+    # дорожка «Собеседник 2» носит имя владельца: её не переименовываем, и
+    # причина — про имя, не про канал
+    apart = nf.guard_for({"sufler": {"user_name": "Собеседник 2"}})
     dropped.clear()
-    assert nf.plan([("Имя Фамилия", "Пётр Петров", "")], {"Имя Фамилия", "Я"}, apart, dropped) == {}
-    assert dropped == ["«Имя Фамилия → Пётр Петров» — полное имя владельца не переименовывается"]
+    assert nf.plan([("Собеседник 2", "Пётр Петров", "")], {"Собеседник 2", "Я"}, apart, dropped) == {}
+    assert dropped == ["«Собеседник 2 → Пётр Петров» — полное имя владельца не переименовывается"]
 
 
 _ROW = "- Собеседник 1 → Имя — голое имя владельца: нужна фамилия"

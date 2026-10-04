@@ -180,6 +180,13 @@ def _as_guard(protected: set[str] | NameGuard) -> NameGuard:
     return NameGuard(mic=frozenset(protected or ()))
 
 
+def _os_reason(e: OSError) -> str:
+    """Причина ОС для строки dropped: текст ошибки без пути. str(e) несёт
+    абсолютный путь файла (у rename — два), а dropped ложится в «## Не
+    применено» файла ревизии, который уходит в облако."""
+    return e.strerror or type(e).__name__
+
+
 def _label_reason(label: str, guard: NameGuard) -> str | None:
     if label in guard.mic:
         return REASON_MIC_LABEL
@@ -471,7 +478,7 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
         # человек видел: стенограмма не прочитана, имена не перештампованы.
         if dropped is not None:
             dropped.append(f"{live.name}: стенограмма не прочитана — имена не "
-                           f"перештампованы ({e.strerror or e})")
+                           f"перештампованы ({_os_reason(e)})")
         return {}
     fixes = name_fixes(text, dropped=dropped, noise=noise)
     if not fixes:
@@ -512,5 +519,5 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
             dropped.append(f"{mpath.name} не в UTF-8 — участники минуток не перештампованы ({e.reason})")
     except OSError as e:
         if dropped is not None:
-            dropped.append(f"{mpath.name}: участники минуток не перештампованы ({e})")
+            dropped.append(f"{mpath.name}: участники минуток не перештампованы ({_os_reason(e)})")
     return mapping, n, touched
