@@ -447,10 +447,12 @@ def _arm_sinks(hub, directory):
 
 
 def _close_sinks(hub):
+    # Приёмники — файлы из `path.open("xb")` (`BufferedWriter`); его `close()`
+    # бросает только `OSError` при сбросе буфера.
     for handle in list(hub._sinks.values()):
         try:
             handle.close()
-        except Exception:
+        except OSError:
             pass
 
 
