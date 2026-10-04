@@ -1258,11 +1258,11 @@ def _assigned_names(target: ast.AST) -> set[str]:
 def _module_values(tree: ast.AST) -> dict[str, list[ast.AST]]:
     """Имя модульной переменной → выражения, присвоенные ей на уровне модуля.
 
-    Тело функции и тело класса — не уровень модуля. Присваивание внутри `if` /
-    `try` на уровне модуля — да. Аннотация `AnnAssign` не значение.
+    Тело функции и тело класса — не уровень модуля. Присваивание внутри любой
+    инструкции уровня модуля (`if`, `try`, `with`, `for`, `while`, `match`) —
+    да. Аннотация `AnnAssign` без значения не значение.
     """
     values: dict[str, list[ast.AST]] = {}
-    tries = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
 
     def add(target: ast.AST, value: ast.AST | None) -> None:
         if value is None:
@@ -1270,34 +1270,23 @@ def _module_values(tree: ast.AST) -> dict[str, list[ast.AST]]:
         for name in _assigned_names(target):
             values.setdefault(name, []).append(value)
 
-    def stmts(body: list) -> None:
-        for node in body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    add(target, node.value)
-            elif isinstance(node, ast.AnnAssign):
-                add(node.target, node.value)
-            elif isinstance(node, ast.AugAssign):
-                add(node.target, node.value)
-            elif isinstance(node, ast.If):
-                stmts(node.body)
-                stmts(node.orelse)
-            elif isinstance(node, (ast.For, ast.While, ast.With)):
-                stmts(node.body)
-                stmts(node.orelse)
-            elif isinstance(node, tries):
-                stmts(node.body)
-                for handler in node.handlers:
-                    stmts(handler.body)
-                stmts(node.orelse)
-                stmts(node.finalbody)
-            elif isinstance(node, ast.Match):
-                for case in node.cases:
-                    stmts(case.body)
-
-    stmts(getattr(tree, "body", []))
+    # Дети — через обход самого ast, а не по списку полей: перечень «body,
+    # orelse, handlers» отстаёт на конструкцию языка и читал `orelse` у `with`,
+    # которого там нет (DeepSeek, выход r3 по №576; тот же урок — `_на_импорте`).
+    # Спуск только в инструкции: выражения значений не нужны, а длинная цепочка
+    # `x + x + …` в них не должна стоить глубины.
+    branches = (ast.stmt, ast.excepthandler, ast.match_case)
+    stack: list[ast.AST] = list(reversed(getattr(tree, "body", [])))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                add(target, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            add(node.target, node.value)
+        stack.extend(reversed([c for c in ast.iter_child_nodes(node) if isinstance(c, branches)]))
     return values
 
 

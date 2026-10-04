@@ -10,6 +10,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
@@ -429,6 +431,55 @@ def test_хелпер_в_зоне_по_упоминанию_имени():
     assert _в_зоне(цепочка, "_drop")
 
 
+_ФОРМЫ_МОДУЛЯ = {
+    "with": "with open(__file__) as f:\n    {a}\n",
+    "for/else": "for _ in ():\n    pass\nelse:\n    {a}\n",
+    "while/else": "while False:\n    pass\nelse:\n    {a}\n",
+    "if/else": "if False:\n    pass\nelse:\n    {a}\n",
+    "try": "try:\n    {a}\nexcept OSError:\n    pass\n",
+    "except": "try:\n    pass\nexcept OSError:\n    {a}\n",
+    "try/else": "try:\n    pass\nexcept OSError:\n    pass\nelse:\n    {a}\n",
+    "finally": "try:\n    pass\nfinally:\n    {a}\n",
+    "except*": "try:\n    pass\nexcept* OSError:\n    {a}\n",
+    "match/case": "match 1:\n    case _:\n        {a}\n",
+    "with внутри if": "if True:\n    with open(__file__) as f:\n        {a}\n",
+}
+
+
+@pytest.mark.parametrize("форма", sorted(_ФОРМЫ_МОДУЛЯ))
+def test_модульная_переменная_внутри_любой_формы_уровня_модуля(форма):
+    """Присваивание внутри составной инструкции уровня модуля — тоже значение.
+
+    Обход форм не падает на поле, которого у формы нет (`orelse` у `with`), и
+    находит имя: дверь упоминает таблицу, хелпер из таблицы в зоне.
+    """
+    src = (_ФОРМЫ_МОДУЛЯ[форма].format(a='HANDLERS = {"x": _drop}')
+           + "def sweep(path):\n"
+           "    return HANDLERS[\"x\"](path)\n"
+           "def _drop(path):\n"
+           "    path.unlink()\n"
+           "def _keep(path):\n"
+           "    path.unlink()\n")
+    assert _в_зоне(src, "_drop")
+    assert not _в_зоне(src, "_keep")
+
+
+def test_длинное_выражение_уровня_модуля_не_роняет_зону():
+    """Цепочка `a + a + …` на 900 звеньев — глубокое дерево выражения.
+
+    Потолок глубины зоны задаёт рекурсия `scoped_nodes`: на 1000 звеньях падает
+    уже она. Сбор значений модульных переменных этот потолок опускать не смеет —
+    в выражение он не спускается, а по инструкциям идёт без рекурсии.
+    """
+    src = ("TOTAL = " + " + ".join(["a"] * 900) + "\n"
+           "HANDLERS = {\"x\": _drop}\n"
+           "def sweep(path):\n"
+           "    return HANDLERS[\"x\"](path)\n"
+           "def _drop(path):\n"
+           "    path.unlink()\n")
+    assert _в_зоне(src, "_drop")
+
+
 def test_все_определения_одного_qualname_дают_рёбра():
     """Функций с одним qualname несколько — какая живёт, из текста не видно.
 
@@ -477,7 +528,6 @@ def test_файл_без_записей_зоны_не_строит_рёбер(mo
     файле, где нет ни одной записи зоны, не доходит до рекурсивного обхода.
     """
     import ast
-    import pytest
 
     def нельзя(*args, **kwargs):
         raise AssertionError("рёбра построены для файла без записей зоны")
