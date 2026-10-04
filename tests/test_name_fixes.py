@@ -1,5 +1,7 @@
 """Имена меток стенограммы после ревизии — строгий раздел и перештамповка (№239)."""
+import errno
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -366,6 +368,12 @@ def test_plan_separates_bare_owner_name_full_name_and_mic():
     assert nf.plan([("Собеседник 1", "Я", "")], {"Собеседник 1"}, odd, dropped) == {}
     assert "целевое имя — метка владельца (канал микрофона)" in dropped[0]
     assert "голое имя" not in dropped[0]
+    # дорожка подписана полным именем владельца, а канал микрофона — «Я»:
+    # её не переименовываем, и причина — про имя, не про канал
+    apart = nf.NameGuard(mic=frozenset({"Я"}), owner="Имя Фамилия", bare="Имя")
+    dropped.clear()
+    assert nf.plan([("Имя Фамилия", "Пётр Петров", "")], {"Имя Фамилия", "Я"}, apart, dropped) == {}
+    assert dropped == ["«Имя Фамилия → Пётр Петров» — полное имя владельца не переименовывается"]
 
 
 _ROW = "- Собеседник 1 → Имя — голое имя владельца: нужна фамилия"
@@ -507,7 +515,9 @@ def test_unread_transcript_is_an_event_appended_after_the_model_text(tmp_path):
     dropped: list[str] = []
     assert nf.planned(rev, missing, {"sufler": {"user_name": "Имя Фамилия"}}, dropped=dropped) == {}
     assert len(dropped) == 1
-    assert dropped[0].startswith(f"{missing.name}: стенограмма не прочитана — имена не перештампованы (")
+    # причина — текст ошибки ОС без пути: путь машины в ревизию не пишется
+    assert dropped[0] == (f"{missing.name}: стенограмма не прочитана — имена не перештампованы "
+                          f"({os.strerror(errno.ENOENT)})")
     row = "- " + dropped[0]
     assert nf.refusal_lines(dropped) == [row]
     assert nf.record_unapplied(rev, dropped) == 1

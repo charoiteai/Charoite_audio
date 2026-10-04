@@ -180,17 +180,17 @@ def _as_guard(protected: set[str] | NameGuard) -> NameGuard:
     return NameGuard(mic=frozenset(protected or ()))
 
 
-def _label_reason(label: str, guard: NameGuard) -> str:
+def _label_reason(label: str, guard: NameGuard) -> str | None:
     if label in guard.mic:
         return REASON_MIC_LABEL
     if guard.owner and label == guard.owner:
         return REASON_OWNER_LABEL
     if guard.bare and label == guard.bare:
         return REASON_BARE_LABEL
-    return ""
+    return None
 
 
-def _target_reason(name: str, guard: NameGuard) -> str:
+def _target_reason(name: str, guard: NameGuard) -> str | None:
     # «Я» как первое слово «Я Фамилия» — это метка микрофона, не просьба
     # дописать фамилию. Полное имя владельца проверяем раньше метки канала:
     # при имени из двух слов канал и есть это полное имя, а причина у цели
@@ -201,7 +201,7 @@ def _target_reason(name: str, guard: NameGuard) -> str:
         return REASON_OWNER
     if name in guard.mic:
         return REASON_MIC_TARGET
-    return ""
+    return None
 
 
 def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str] | NameGuard,
@@ -323,10 +323,8 @@ def record_unapplied(path: pathlib.Path, dropped: list[str] | None) -> int:
         return 0
 
     def transform(text: str) -> tuple[str, int]:
-        new = render_unapplied(text, rows)
-        if new == text:
-            return text, 0
-        return new, 1
+        # rows не пуст — render_unapplied всегда дописывает блок
+        return render_unapplied(text, rows), 1
 
     try:
         safe_write.rewrite_file(path, transform, "раздел «Не применено» не записан")

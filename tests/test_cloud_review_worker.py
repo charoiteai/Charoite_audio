@@ -2936,6 +2936,29 @@ def test_lost_race_does_not_write_unapplied_and_logs_the_refusal(tmp_path, monke
     assert "«Собеседник 2 → Имя» — голое имя владельца: нужна фамилия" in dropped
 
 
+def test_lost_race_reparse_adds_section_noise_once(tmp_path, monkeypatch):
+    """После гонки раздел разбирается второй раз. Шум и отказы первого разбора
+    уже в списках — в журнал каждая строка попадает один раз."""
+    import review_bridge
+    review = (_REPORT + "\n## Исправления имён\n"
+              "- нет\n"
+              "- **Собеседник 1** → **Имя Другаяфамилия** — основание: тёзка\n"
+              "- **Собеседник 2** → **Имя** — основание: голое\n")
+
+    def lost(*_a, **_k):
+        raise review_bridge.LostRace(pathlib.Path("стенограмма.md"), "заголовки реплик не тронуты",
+                                     kind=review_bridge.LostRace.CHANGED)
+
+    monkeypatch.setattr(cloud_review.name_fixes, "restamp_transcript", lost)
+    code, _transcript, rev, log = _edit_run(tmp_path, monkeypatch, review, _SPEECH_TWO)
+    assert code == 0
+    assert rev.read_text(encoding="utf-8") == review
+    dropped = next(ln for ln in log.read_text(encoding="utf-8").splitlines()
+                   if "отброшено строк раздела исправлений имён" in ln)
+    assert "отброшено строк раздела исправлений имён — 2" in dropped
+    assert dropped.count("- нет") == 1
+    assert dropped.count("«Собеседник 2 → Имя»") == 1
+
 def test_non_utf8_review_keeps_its_bytes_and_the_journal_keeps_the_refusal(tmp_path, monkeypatch):
     speech = ("# Встреча\n\n**Собеседник 1** [14:00]:\nда\n\n**Я** [14:01]:\nугу\n")
     raw = (_REPORT.encode("utf-8") + "проза обрыва ".encode("utf-8") + b"\xff"
