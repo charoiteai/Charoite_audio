@@ -20,7 +20,7 @@
    "engine.search",
    "что решили по релизу?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -103,7 +103,7 @@
    "engine.search",
    "кто ведёт?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -178,7 +178,7 @@
    "engine.search",
    "когда?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -253,7 +253,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -328,7 +328,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -468,7 +468,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -543,7 +543,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -597,7 +597,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -672,7 +672,7 @@
    "engine.search",
    "что?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -747,7 +747,7 @@
    "engine.search",
    "что решили?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -2765,7 +2765,7 @@
    "engine.search",
    "а что по релизу?",
    {
-    "dossiers": true,
+    "dossiers": false,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600

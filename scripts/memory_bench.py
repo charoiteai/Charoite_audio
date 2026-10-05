@@ -983,7 +983,9 @@ def main() -> None:
                          "raw — покрытие, косинус и вердикт гейта для калибровки порогов")
     ap.add_argument("--no-dossiers", action="store_true",
                     help="с --profile answer|live|expand: профиль без оси досье — сводки тем выключены "
-                         "(замер вклада досье; поле входит в ключ сравнения и тревоги)")
+                         "(замер вклада досье; поле входит в ключ сравнения и тревоги). "
+                         "У answer досье выключены самим профилем: на прогон answer флаг не влияет, "
+                         "но при --accept его итога обязателен — подсказка его печатает")
     ap.add_argument("--record", action="store_true",
                     help="с --profile answer|live|expand: дописать итог в logs/memory_bench_baseline.jsonl "
                          "и сверить с принятой базой (тревога — logs/memory_bench_alert.json)")

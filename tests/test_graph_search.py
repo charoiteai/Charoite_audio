@@ -308,6 +308,29 @@ def test_dossiers_axis_off_skips_dossier_blocks(tmp_path):
     assert "📁 Досье" not in gs.render(off, "что с платёжным шлюзом")
 
 
+def test_dossiers_axis_off_on_a_summary_only_question_is_empty(tmp_path):
+    """Вопрос, который ловится только сводкой темы (ключи темы в текстах не
+    встречаются): с выключенной осью досье он доказанно пуст — `EMPTY`, не `WEAK`
+    по свидетельству сводки, — и блок памяти профиля `ANSWER` пуст. Таков исход
+    ответа на вопросе, который держится одной сводкой (№641)."""
+    import brain
+    s = _search(tmp_path)
+    folder = s.graph / CHAROITE.dossier_dir
+    folder.mkdir()
+    (folder / "Платёжный шлюз.md").write_text(
+        "---\ntype: досье\n---\n# Платёжный шлюз\n## Состояние\nпилот до сентября, провайдер ЮPay\n",
+        encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["zzzключ", "qqqключ"],
+                                  "источников": 3, "собрано": "2026-08-02"}])
+    s.refresh(force=True)
+    both = s.search("zzzключ qqqключ", limit=2, dossiers=False)
+    assert both.status is gs.Verdict.EMPTY and both.empty, "оба ключа темы — но досье выключено"
+    one = s.search("zzzключ wwwслово", limit=2, dossiers=False)
+    assert one.status is gs.Verdict.EMPTY and one.empty
+    assert brain.pack(brain.ANSWER, both).text == ""
+    assert brain.pack(brain.ANSWER, one).text == ""
+
+
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
