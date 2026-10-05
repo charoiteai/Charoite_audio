@@ -125,6 +125,21 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         center.add(request)
     }
 
+    /// Текст баннера готовой встречи. Пересборка не завершилась — пометка:
+    /// «Стенограмма и граф обновлены» над живым черновиком был бы ложью (№500).
+    nonisolated static func readyBody(for snapshot: MeetingProcessingSnapshot) -> String {
+        if snapshot.rebuildSkipped != nil, let note = MeetingProcessingPolicy.readyNote(for: snapshot) {
+            return note
+        }
+        return snapshot.notePath == nil
+            ? L.t("Стенограмма и минутки собраны (граф выключен)",
+                  "Transcript and minutes are ready (the graph is off)",
+                  "逐字稿与纪要已就绪（图谱已关闭）")
+            : L.t("Стенограмма и граф обновлены",
+                  "The transcript and graph are updated",
+                  "逐字稿和图谱已更新")
+    }
+
     func presentReady(_ snapshot: MeetingProcessingSnapshot) {
         // Без заметки встреча тоже готова: на лёгком профиле граф выключен, а
         // стенограмма и минутки собраны — молчать об этом значит оставить
@@ -132,13 +147,7 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         let notePath = snapshot.notePath ?? snapshot.transcriptPath
         let content = UNMutableNotificationContent()
         content.title = L.t("Встреча готова", "Meeting ready", "会议已就绪")
-        content.body = snapshot.notePath == nil
-            ? L.t("Стенограмма и минутки собраны (граф выключен)",
-                  "Transcript and minutes are ready (the graph is off)",
-                  "逐字稿与纪要已就绪（图谱已关闭）")
-            : L.t("Стенограмма и граф обновлены",
-                  "The transcript and graph are updated",
-                  "逐字稿和图谱已更新")
+        content.body = Self.readyBody(for: snapshot)
         content.sound = .default
         content.categoryIdentifier = Self.readyCategoryID
         content.userInfo = [Self.meetingIDKey: snapshot.meetingID,

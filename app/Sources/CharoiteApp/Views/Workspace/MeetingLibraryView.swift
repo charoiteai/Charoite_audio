@@ -501,7 +501,7 @@ struct MeetingLibraryView: View {
             Image(systemName: record.state == .error ? "exclamationmark.triangle" : "gearshape.2")
                 .font(.largeTitle).foregroundStyle(stateColor(record.state))
             Text(record.title).font(.title3.weight(.semibold))
-            Text(stateText(record.state)).foregroundStyle(.secondary)
+            Text(stateText(record.snapshot)).foregroundStyle(.secondary)
             HStack {
                 Button(L.t("Стенограмма", "Transcript", "逐字稿")) {
                     processing.openTranscript(record.snapshot)
@@ -577,9 +577,9 @@ struct MeetingLibraryView: View {
         }
     }
 
-    func stateText(_ state: MeetingProcessingSnapshot.State) -> String {
-        switch state {
-        case .ready: return L.t("Готово", "Ready", "已完成")
+    func stateText(_ snapshot: MeetingProcessingSnapshot) -> String {
+        switch MeetingProcessingPolicy.resolvedState(snapshot) {
+        case .ready: return MeetingProcessingPolicy.readyText(for: snapshot)
         case .processing: return L.t("Обрабатывается…", "Processing…", "处理中…")
         case .error: return L.t("Ошибка — исходник сохранён", "Failed — source kept", "失败——原始文件已保留")
         case .empty: return L.t("В записи нет речи", "No speech in the recording", "录音中没有语音")

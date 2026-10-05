@@ -737,6 +737,27 @@ class NamesOutcome(typing.NamedTuple):
     REJECTED = "rejected"
 
 
+class RebuildSkipped(typing.NamedTuple):
+    """Устранимый отказ пересборки — значением с кодом, а не немым None (№500).
+
+    Пересборка не выполнилась по причине, которую снимает повтор: записи ещё
+    не готовы, канал записи потерян, сбой посреди прогона. `main()` переносит
+    код в статус встречи (`rebuild_skipped`), приложение показывает пометку и
+    кнопку «Пересобрать результат». Отказ ложен, как прежний None: `if
+    rebuild(...)` по-прежнему видит «не пересобрано». Детерминированный отказ
+    (повтор даст то же) остаётся None.
+    """
+    reason: str
+
+    # Без аннотации: в теле NamedTuple аннотированное имя — поле кортежа (№477).
+    RECORDING_NOT_READY = "recording_not_ready"
+    CHANNEL_LOST = "channel_lost"      # вернёт гейт потерянного канала (№622 B1)
+    FAILED = "failed"
+
+    def __bool__(self) -> bool:
+        return False
+
+
 def name_speakers(cfg: dict, lines: list[tuple[str, str]],
                   known: tuple[str, ...] = ()) -> NamesOutcome:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем.
@@ -1088,7 +1109,14 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
     return out
 
 
-def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
+def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | None:
+    """Пересобрать стенограмму встречи по записям каналов.
+
+    Исходы:
+    - `Path` — финал или правленая стенограмма;
+    - `RebuildSkipped` — устранимый отказ (записи не готовы), повтор его снимет;
+    - `None` — детерминированный отказ, повтор даст то же.
+    """
     # Штамп берём целиком: демон называет записи ИМЕНЕМ СТЕНОГРАММЫ (daemon
     # передаёт tr.stamp в AudioHub), поэтому любая обрезка здесь означает
     # поиск файла, которого не существует. Срез [:15] отбрасывал секунды и с
@@ -1166,21 +1194,30 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # тот же исход, что у P0-1, только через другой вход. Канала связи с
     # демоном у нас нет, а возраст файла — ровно тот язык, на котором ретеншн
     # принимает решения; touch честно продлевает жизнь на keep_days от старта
-    # пересборки.
+    # пересборки. Тот же обход отвечает, есть ли под СВОИМ штампом хоть
+    # один файл канала: под минутой бывают файлы соседки, а свои смёл ретеншн
+    # — тогда ждать нечего, повтор даст то же, и 2×45 с под rebuild.lock были
+    # бы пустыми (Sonnet M1, DS M3 выходных кругов №500). Ошибка листинга —
+    # «есть»: не знаем — ждём, как recordings_under_minute.
+    own = False
     for _label in meeting_stamp.RECORDING_LABELS:
         for _ext in meeting_stamp.RECORDING_EXTS:
             _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
             try:
                 if _p.exists():
+                    own = True
                     os.utime(_p)
             except OSError:
-                pass          # не продлили — ретеншн решит по старому mtime
+                own = True    # не продлили — ретеншн решит по старому mtime
+    if not own:
+        log("записей нет — оставляю живую стенограмму")
+        return None
 
     mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
     bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:
-        log("записей нет — оставляю живую стенограмму")
-        return None
+        log("записи не готовы — оставляю живую стенограмму")
+        return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)
 
     # Сырые сегменты каналов: None — канал не размечали (записи нет, она
     # короче 20 с или разметка не удалась), [] — размечали, речи не нашли. Разметку по голосам и
@@ -2029,9 +2066,16 @@ def main():
         cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
         publish(status.processing, live, "rebuilding_transcript")
         try:
-            rebuild(live, cfg)
+            outcome = rebuild(live, cfg)
         except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
             log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
+            outcome = RebuildSkipped(RebuildSkipped.FAILED)
+        # Код отказа — до шага графа: retitle переименует файл позже. Машинный
+        # финал этой стенограммы уже был (или сайдкар неизвестен) — пометки нет:
+        # человек видит готовый результат, а не живой черновик (№500).
+        skipped = (outcome.reason
+                   if isinstance(outcome, RebuildSkipped) and not live_sidecar.machine_final(live)
+                   else None)
         # Профиль мог выключить узлы графа (`sufler.graph: false`). Сам
         # graph_updater при этом всё равно нужен: архив встречи, копии в
         # vault и post_meeting_hook живут там же и от модели не зависят.
@@ -2068,8 +2112,9 @@ def main():
         # Признак и причину считает ready() по тексту того файла, который
         # найдёт find_final_transcript: после переименования шагом графа
         # исходного пути уже нет, а плашка — в файле с темой. Флаг через
-        # пайплайн врал бы в обе стороны (№501).
-        publish(status.ready, live, note)
+        # пайплайн врал бы в обе стороны (№501). Код отказа пересборки — иное:
+        # это факт прогона, а не содержимое файла, и знает его только конвейер.
+        publish(status.ready, live, note, skipped)
     except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")

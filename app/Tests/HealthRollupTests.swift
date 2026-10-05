@@ -102,24 +102,46 @@ final class HealthRollupTests: XCTestCase {
 
     func testMenuLineOrderWorkAboveProblemAboveReadyAboveIdle() {
         let problem = verdict(nightly: .slept(finished: now, minutes: 300, steps: ["досье"]))
+        let ready = readySnapshot()
         // идёт работа — живая строка владельца, жалоба не вытесняет её (Critical DS круга 1)
         XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: "Распознаю речь…",
-                                                   hasReadyMeeting: false), .activity("Распознаю речь…"))
+                                                   readyMeeting: nil), .activity("Распознаю речь…"))
         // владелец отдал nil (ошибка вместо работы) — слот активности не занят, показана проблема (Important DS круга 2)
-        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: nil, hasReadyMeeting: true),
+        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: nil, readyMeeting: ready),
                        .problem(problem.headline!, .degraded))
-        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: "", hasReadyMeeting: false),
+        XCTAssertEqual(HealthPresentation.menuLine(problem, isRecording: false, activityText: "", readyMeeting: nil),
                        .problem(problem.headline!, .degraded))
         // без проблем — готовность, потом покой
-        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, hasReadyMeeting: true), .ready)
-        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, hasReadyMeeting: false), .idle)
-        XCTAssertEqual(MenuLine.ready.text, L.t("Встреча готова", "Meeting ready", "会议已就绪"))
+        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, readyMeeting: ready), .ready(note: nil))
+        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil, readyMeeting: nil), .idle)
+        XCTAssertEqual(MenuLine.ready(note: nil).text, L.t("Встреча готова", "Meeting ready", "会议已就绪"))
         // запись — всегда «Запись ·», ярус только по записи
-        let rec = HealthPresentation.menuLine(problem, isRecording: true, activityText: nil, hasReadyMeeting: false)
+        let rec = HealthPresentation.menuLine(problem, isRecording: true, activityText: nil, readyMeeting: nil)
         XCTAssertEqual(rec, .recording(.ok))
         XCTAssertTrue(rec.text.hasSuffix("·"))
         XCTAssertEqual(HealthPresentation.menuLine(verdict(recording: .pumpDead, isRecording: true), isRecording: true,
-                                                   activityText: nil, hasReadyMeeting: false), .recording(.critical))
+                                                   activityText: nil, readyMeeting: nil), .recording(.critical))
+    }
+
+    private func readySnapshot(rebuildSkipped: String? = nil) -> MeetingProcessingSnapshot {
+        MeetingProcessingSnapshot(schemaVersion: 1, meetingID: "m", state: .ready, stage: "complete",
+                                  startedAt: 1, updatedAt: 2, transcriptPath: "/t/m.md",
+                                  notePath: nil, error: nil, rebuildSkipped: rebuildSkipped)
+    }
+
+    /// Пересборка не завершилась — строка меню несёт пометку словами (№500).
+    func testMenuLineCarriesTheReadyNote() {
+        let skipped = readySnapshot(rebuildSkipped: "failed")
+        let line = HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil,
+                                               readyMeeting: skipped)
+        let note = MeetingProcessingPolicy.readyNote(for: skipped)
+        XCTAssertNotNil(note)
+        XCTAssertEqual(line, .ready(note: note))
+        XCTAssertEqual(line.text, L.t("Встреча готова", "Meeting ready", "会议已就绪") + " — " + note!)
+        XCTAssertEqual(HealthPresentation.menuLine(.allClear, isRecording: false, activityText: nil,
+                                                   readyMeeting: readySnapshot()), .ready(note: nil))
+        XCTAssertEqual(MeetingProcessingPolicy.readyStatusText(for: skipped), line.text,
+                       "строка статуса сервиса и строка меню говорят одно")
     }
 
     /// Поведение, не подстрочник: проба «не состоялась» (nil) не трогает state, «порт

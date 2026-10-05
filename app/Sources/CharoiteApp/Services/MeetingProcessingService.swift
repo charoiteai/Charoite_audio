@@ -39,6 +39,10 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     /// «Собеседник N». Готовность и полнота это разные вещи: граф обновлён,
     /// повторять конвейер незачем, но встречу стоит пересобрать.
     let namesPending: Bool?
+    /// Пересборка не завершилась по устранимой причине — код отказа
+    /// (`recording_not_ready`, `channel_lost`, `failed`): граф построен по
+    /// живому черновику, результат можно пересобрать (№500).
+    let rebuildSkipped: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -53,6 +57,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         case part
         case parts
         case namesPending = "names_pending"
+        case rebuildSkipped = "rebuild_skipped"
     }
 
     /// Свой init с умолчаниями вместо memberwise: прогресс есть только у
@@ -61,7 +66,8 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     init(schemaVersion: Int, meetingID: String, state: State, stage: String,
          startedAt: TimeInterval, updatedAt: TimeInterval, transcriptPath: String,
          notePath: String?, error: String?,
-         part: Int? = nil, parts: Int? = nil, namesPending: Bool? = nil) {
+         part: Int? = nil, parts: Int? = nil, namesPending: Bool? = nil,
+         rebuildSkipped: String? = nil) {
         self.schemaVersion = schemaVersion
         self.meetingID = meetingID
         self.state = state
@@ -74,6 +80,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         self.part = part
         self.parts = parts
         self.namesPending = namesPending
+        self.rebuildSkipped = rebuildSkipped
     }
 }
 
@@ -146,21 +153,6 @@ enum MeetingProcessingPolicy {
         case .processing, .unknown:
             return nil
         }
-    }
-
-    /// «Готово» — или «готово, но не целиком».
-    ///
-    /// Отдельная функция, потому что разница видна только человеку: состояние
-    /// остаётся `ready`, и без строки встреча с метками «Собеседник N»
-    /// выглядит ровно так же, как разобранная до конца. Рядом в ленте живёт
-    /// кнопка «Повторить» — она и есть ответ на эту строку.
-    static func readyText(for snapshot: MeetingProcessingSnapshot) -> String {
-        guard snapshot.namesPending == true else {
-            return L.t("Готово", "Ready", "已完成")
-        }
-        return L.t("Готово, имена не определены",
-                   "Ready, speakers unnamed",
-                   "已完成，未识别出姓名")
     }
 
     /// Чем занят конвейер прямо сейчас — словами, а не кодом стадии.
@@ -788,7 +780,7 @@ final class MeetingProcessingService: ObservableObject {
         case .processing:
             return MeetingProcessingPolicy.stageText(for: snapshot)
         case .ready:
-            return L.t("Встреча готова", "Meeting ready", "会议已就绪")
+            return MeetingProcessingPolicy.readyStatusText(for: snapshot)
         case .error:
             let headline = snapshot.state == .processing
                 ? L.t("Обработка не завершилась — стенограмма сохранена",
@@ -823,6 +815,14 @@ final class MeetingProcessingService: ObservableObject {
     var isError: Bool {
         pipelineSilent || retryFailedToStart ||
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
+    }
+
+    /// Строка статуса сейчас — «Встреча готова — <пометка>» (№500): красится
+    /// предупреждением, как пометка в меню и карточках (DS M1 выходного круга).
+    var statusIsReadyNote: Bool {
+        guard !retryFailedToStart, !waitingForPipeline, !pipelineSilent, let snapshot,
+              MeetingProcessingPolicy.resolvedState(snapshot) == .ready else { return false }
+        return MeetingProcessingPolicy.readyNote(for: snapshot) != nil
     }
 
     /// Результат последней встречи готов — предикат владельца для строки меню.
