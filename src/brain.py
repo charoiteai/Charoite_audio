@@ -18,6 +18,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import threading
+from typing import NamedTuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -102,18 +103,38 @@ def absence_only(result: graph_search.Result) -> bool:
     return result.status is not Verdict.UNVERIFIED and not result.dossiers
 
 
-def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> str:
+class Packed(NamedTuple):
+    """Блок памяти как запись, а не строка. `text` — то, что уходит в промпт
+    (байт в байт прежний `memory_block`); остальные поля — его же части, чтобы
+    никто не разбирал строку шапки: `lead` — шапка с оговоркой, `nodes` — вошедший
+    текст узлов (без своей строки-заголовка), `body` — вошедшие фрагменты выдачи,
+    `cut` — фрагменты выдачи, которые бюджет срезал целиком или частью. Бенч ищет
+    факты в `body` и `nodes`: слова шапки фактом не засчитываются (DS C2 r3)."""
+    text: str
+    lead: str = ""
+    nodes: str = ""
+    body: str = ""
+    cut: tuple[str, ...] = ()
+
+
+NODES_HEAD = "Из узлов графа проекта:\n"
+
+
+def _memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> Packed:
     """Память в промпт одним блоком: узлы графа и фрагменты архива делят бюджет
     по долям (остаток одного уходит другому), шапка и оговорка — из таблицы по
     статусу; при EMPTY фрагментов нет, при непрогретой памяти (None) — только
     узлы. Раньше узлы шли первыми под общий кап и съедали архив целиком (DS I1
     r4). При уверенной выдаче главные — фрагменты: узлам достаётся остаток, не
-    доля (GLM M3 r5). Пусто — ''."""
+    доля (GLM M3 r5). Пусто — `Packed("")`.
+
+    Приватная: потребители зовут `pack(profile, …)`, бюджет — из профиля. Обход
+    стережёт `ENV_SEAMS` раскладки (№629 ч. 2)."""
     frags = "" if result is None or result.status is Verdict.EMPTY else result.fragments
-    nodes_part = f"Из узлов графа проекта:\n{nodes}" if nodes.strip() else ""
+    nodes_part = f"{NODES_HEAD}{nodes}" if nodes.strip() else ""
     # шапку и оговорку считаем ТОЛЬКО когда есть что подавать: при непрогретой
     # памяти result — None, и обращение к статусу здесь роняло бы блок узлов
-    frag_part = ""
+    frag_part, lead = "", ""
     if frags:
         lead, scope = LEAD[result.status], scope_note(result)
         if lead and scope:
@@ -124,8 +145,19 @@ def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget:
         f_budget = budget - n_budget
         n_take = min(len(nodes_part), n_budget + max(0, f_budget - len(frag_part)))
         f_take = min(len(frag_part), budget - n_take)
-        return nodes_part[:n_take] + "\n\n" + frag_part[:f_take]
-    return (nodes_part or frag_part)[:budget]
+        text = nodes_part[:n_take] + "\n\n" + frag_part[:f_take]
+    else:
+        n_take = min(len(nodes_part), budget) if nodes_part else 0
+        f_take = 0 if nodes_part else min(len(frag_part), budget)
+        text = (nodes_part or frag_part)[:budget]
+    body = frags[:max(0, f_take - len(lead) - 1)] if frag_part else ""
+    items = (result.dossiers + result.blocks) if frags else []
+    cut, at = [], 0
+    for item in items:
+        if at + len(item) > len(body):
+            cut.append(item)
+        at += len(item) + 2          # разделитель фрагментов — «\n\n» (Result.fragments)
+    return Packed(text, lead[:f_take], nodes_part[len(NODES_HEAD):n_take], body, tuple(cut))
 
 
 _shared: dict[str, graph_search.GraphSearch] = {}
@@ -160,11 +192,13 @@ def shared(cfg: dict, graph_dir: pathlib.Path | None = None, *,
         return gs
 
 
-def warm(cfg: dict) -> graph_search.GraphSearch | None:
+def warm(cfg: dict, *, graph: pathlib.Path | None = None,
+         embedder: graph_search.Embedder | None = None) -> graph_search.GraphSearch | None:
     """Прогрев на старте демона: обход графа и векторы блоков из кэша. None —
     граф не настроен. Вызывать из фонового потока: холодный обход рабочего
-    графа — секунды, первый вопрос владельца их ждать не должен."""
-    mem = shared(cfg, embedder=llm.embedder(cfg))
+    графа — секунды, первый вопрос владельца их ждать не должен. Бенч греет тот
+    же общий индекс, что потом спросит `search` (граф и векторизатор — те же)."""
+    mem = shared(cfg, graph, embedder=embedder if embedder is not None else llm.embedder(cfg))
     if mem is None:
         return None
     mem.refresh(force=True)
@@ -172,8 +206,9 @@ def warm(cfg: dict) -> graph_search.GraphSearch | None:
     return mem
 
 
-def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
-                 timeout: float) -> graph_search.Result:
+def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
+                  timeout: float, graph: pathlib.Path | None = None,
+                  embedder: graph_search.Embedder | None = None) -> graph_search.Result:
     """Выдача по ГРАФУ ПРОЕКТА как значение: `status` (Verdict) — уверенно /
     слабо / не проверено семантикой / пусто, `fragments` — досье и фрагменты без
     шапок и маркеров для промпта, `text` — тот же вид, что отдавал сервер памяти,
@@ -183,8 +218,11 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     ненастроенный граф — MemoryUnavailable (оба RuntimeError): вызывающий
     деградирует по-своему и различает «подождать» и «не будет» (GLM M8 по #577).
     `timeout` — потолок на вектор запроса: половина бюджета вызывающего, чтобы
-    лексика успела в любом случае."""
-    mem = shared(cfg, embedder=llm.embedder(cfg))
+    лексика успела в любом случае.
+
+    Приватная: потребители зовут `search(profile, …)`, числа — из профиля.
+    Граф и векторизатор параметрами — для бенча и демо (`cfg` пустой)."""
+    mem = shared(cfg, graph, embedder=embedder if embedder is not None else llm.embedder(cfg))
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars,
@@ -192,3 +230,112 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     if not result.ready:
         raise MemoryNotReady("память по графу ещё прогревается")
     return result
+
+
+# ----------------------------------------------------------------- профили
+#
+# Профиль потребителя — единственный источник чисел поиска, бюджета, модели и
+# промпта памяти (№629 ч. 2, входные круги r1–r3). До него числа жили копиями
+# в трёх местах демона и в бенче, и бенч мерил не тот путь, которым идёт
+# владелец. Демон и бенч ходят только через `search` + `pack` и сборщики ниже.
+
+
+class Synth(NamedTuple):
+    """Синтез профиля: роль модели у `LLM` (`small` или `model`), потолок ответа,
+    системный промпт (`None` — текущий `llm.system`, как зовёт демон) и маркер
+    воздержания, который промпт велит ставить при ответе не из памяти."""
+    role: str
+    num_predict: int | None = None
+    system: str | None = None
+    abstain: str = ""
+
+
+class Profile(NamedTuple):
+    """Потребитель памяти: сколько файлов и знаков фрагмента брать, сколько ждать
+    (половина — на вектор запроса), бюджет блока и необязательный синтез."""
+    name: str
+    limit: int
+    snippet_chars: int
+    timeout: float
+    budget: int
+    synth: Synth | None = None
+
+
+EXPAND_SYSTEM = ("Ты сжимаешь память прошлых встреч в короткие факты. "
+                 "Отвечай только строками фактов.")
+ANSWER = Profile("answer", limit=4, snippet_chars=600, timeout=2.5, budget=2000,
+                 synth=Synth("small", num_predict=220, abstain="(из общих знаний)"))
+EXPAND = Profile("expand", limit=3, snippet_chars=700, timeout=8, budget=3000,
+                 synth=Synth("small", system=EXPAND_SYSTEM))
+LIVE = Profile("live", limit=4, snippet_chars=500, timeout=6, budget=2600)
+PROFILES: dict[str, Profile] = {p.name: p for p in (ANSWER, LIVE, EXPAND)}
+
+
+def search(profile: Profile, query: str, *, cfg: dict | None = None,
+           graph: pathlib.Path | None = None,
+           embedder: graph_search.Embedder | None = None) -> graph_search.Result:
+    """Выдача по профилю потребителя. Бросает `MemoryNotReady` и
+    `MemoryUnavailable`, как раньше `vault_search`. Демон даёт `cfg`; бенч и
+    демо — `graph` и `embedder` (векторизатор — часть ключа общего индекса, без
+    него ключа нет)."""
+    if cfg is None and graph is None:
+        # Источник не задан — пустой конфиг дал бы «граф не настроен», и демон, который
+        # глотает ошибки памяти, молча ответил бы без неё (круг 629p2 r1, Sonnet I1)
+        raise ValueError("search: ни cfg (демон), ни graph (бенч, демо) — источника памяти нет")
+    if graph is not None and embedder is None:
+        raise ValueError("search: граф задан без векторизатора — у общего индекса "
+                         "нет ключа (модель — часть ключа, см. shared)")
+    return _vault_search(cfg or {}, query, limit=profile.limit,
+                         snippet_chars=profile.snippet_chars, timeout=profile.timeout,
+                         graph=graph, embedder=embedder)
+
+
+def pack(profile: Profile, result: graph_search.Result | None, *, nodes: str = "") -> Packed:
+    """Блок памяти с бюджетом профиля. `result=None` — память не прогрета,
+    в блоке только узлы."""
+    return _memory_block(result, nodes=nodes, budget=profile.budget)
+
+
+def stream_kwargs(profile: Profile, llm_obj) -> dict:
+    """kwargs `llm.stream` по синтезу профиля: модель всегда, потолок и системный
+    промпт — только заданные (демон их не передавал — `None` значит «как раньше»)."""
+    syn = profile.synth
+    if syn is None:
+        raise ValueError(f"у профиля {profile.name} нет синтеза")
+    out: dict = {"model": getattr(llm_obj, syn.role)}
+    if syn.num_predict is not None:
+        out["num_predict"] = syn.num_predict
+    if syn.system is not None:
+        out["system"] = syn.system
+    return out
+
+
+def answer_prompt(question: str, block: str, transcript_tail: str) -> str:
+    """Промпт ответа на вопрос посреди встречи: живая стенограмма — первый
+    источник, память — второй, общие знания — с маркером воздержания профиля."""
+    extra = "\n\n" + block if block else ""
+    return (f"=== ИСТОЧНИК 1: живая стенограмма ТЕКУЩЕЙ встречи (хвост) ===\n"
+            f"{transcript_tail}\n"
+            f"{'=== ИСТОЧНИК 2: память прошлых встреч и документы ===' + extra if extra else ''}\n\n"
+            f"Вопрос пользователя: {question}\n"
+            "Приоритет источников СТРОГО: 1) сначала ищи ответ в ТЕКУЩЕЙ "
+            "стенограмме — если он там есть, отвечай только по ней; 2) нет в "
+            "стенограмме — возьми из памяти и документов; 3) нет нигде — "
+            f"ответь из общих знаний с пометкой «{ANSWER.synth.abstain}». "
+            "Кратко, по-русски, не выдумывай.")
+
+
+def expand_prompt(title: str, block: str) -> str:
+    """Промпт раскрытия темы: выдержки памяти → 2–3 факта строками."""
+    return (f"Выдержки по теме «{title}» из памяти прошлых встреч:\n\n{block}\n\n"
+            "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
+            "решение, статус, кто ведёт — с датой, если она видна. "
+            "По строке на факт, без вступлений и нумерации.")
+
+
+def live_system(system_base: str, block: str) -> str:
+    """Системный промпт живого контекста: роль без памяти плюс блок по теме."""
+    return (system_base +
+            "\n\nПамять прошлых встреч (подобрано по теме идущей "
+            "встречи; договорённости и решения оттуда можно "
+            "упоминать как прошлые):\n" + block)

@@ -290,18 +290,22 @@ $PY scripts/graph_doctor.py --all-graphs || {
   echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"
   rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # как и первый: отчёт до слияний — не итог (аудит 30.08)
 }
-step "morning brief"
-$PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 step "memory bench"
-# не валит джобу: exit 1 бенча = сигнал деградации в логе, не авария
-# Бенч зовёт локальную модель — под потолок его, как и прочие тяжёлые шаги
-# (аудит ночи 26.08, DS Important 1: гейта не было, и после потолка бенч
-# всё равно поднимал модель).
+# Выдача трёх профилей демона без модели (№629 ч. 2) — ДО утреннего брифа: бриф
+# показывает тревогу logs/memory_bench_alert.json рядом с предупреждениями доктора.
+# Не валит джобу и FAILED не трогает: тревога — сигнал в брифе, не авария. Полного
+# синтез-бенча в ночи больше нет — он ручной. Под потолок, как прочие тяжёлые шаги
+# (аудит ночи 26.08, DS Important 1): векторы запросов считает модель эмбеддингов.
 if overdue; then
   skip_late "бенч памяти" "бенч(поздно)"
 else
-  $PY scripts/memory_bench.py || echo "⚠️ БЕНЧ ПАМЯТИ ПРОСЕЛ — смотри выше"
+  for profile in answer live expand; do
+    $PY scripts/memory_bench.py --stats --profile "$profile" --record \
+      || echo "⚠️ бенч памяти ($profile) не отработал — смотри выше"
+  done
 fi
+step "morning brief"
+$PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 echo "=== done $(date '+%F %T'), rc=$rc ==="
 FAILED="${FAILED# }"
 # «ok» — только когда не отвалилось НИЧЕГО. Код возврата мягче: им мы

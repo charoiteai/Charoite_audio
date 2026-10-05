@@ -28,7 +28,7 @@ import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
-from charoite_paths import harden_umask, resolve_root  # noqa: E402
+from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -71,6 +71,57 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
            f"меток диаризации среди Люди {rep.get('placeholders', 0)}, "
            f"дублей {rep.get('dup_real', 0)}, вне MOC {rep.get('moc_missing', 0)}"]
     out += [f"- ⚠️ {w}" for w in rep.get("warnings", [])]
+    return out
+
+
+def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
+    """Строки брифа из logs/memory_bench_alert.json — тревога ночного бенча памяти
+    (№629 ч. 2) про этот граф. Номера и категории вопросов, не тексты. Два состояния:
+    `alert` — просадка против базы; не стареет: снимает её только прогон, который
+    сравнил и просадки не нашёл, или `--accept`, а оборванные ночи `ts` не двигают —
+    тогда строка несёт время последнего замера. `unmeasured` — сторож не взведён
+    (база не принята или сравнимых вопросов мало), немым он быть не должен; старше
+    `max_age_h` не показывается."""
+    path = log_path(resolve_root(__file__), "memory_bench_alert")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        items = list(data.values())
+    except (OSError, ValueError, AttributeError):
+        return []
+
+    def yes_no(v) -> str:
+        return "неизвестно" if v is None else "да" if v else "нет"
+
+    out = []
+    now = dt.datetime.now()
+    for a in items:
+        try:
+            made = dt.datetime.fromisoformat(a["ts"])
+            if a.get("graph_dir") not in (str(graph), str(graph.resolve())):
+                continue
+            stale = now - made > dt.timedelta(hours=max_age_h)
+            who = f"{a['profile']}/{a['mode']}" if a.get("mode") else a["profile"]
+            if a.get("state") == "unmeasured":
+                if not stale:
+                    out.append(f"- ⚠️ бенч памяти ({who}): сторож не взведён — {a['why']}")
+                continue
+            qs = ", ".join(f"№{q['n']} {q['cat']}" + (f" ({q['why']})" if q.get("why") else "")
+                           for q in a["regressed"])
+            line = (f"- ⚠️ бенч памяти ({who}): было {a['was']}, стало {a['now']}; ✓→✗ {qs}; "
+                    f"HEAD изменился: {yes_no(a['head_changed'])}, "
+                    f"граф изменился: {yes_no(a['graph_changed'])}")
+            if a.get("dirty"):
+                line += "; прогон на незакоммиченном коде"
+            if a.get("unmeasured"):
+                line += f"; последний прогон не сравним: {a['unmeasured']}"
+            if stale:
+                hours = int((now - made).total_seconds() // 3600)
+                line += f"; последний замер {made:%d.%m %H:%M} — {hours} ч назад"
+            if a.get("run"):
+                line += f"; итог {a['run']}"
+            out.append(line)
+        except (KeyError, TypeError, ValueError):
+            continue
     return out
 
 
@@ -155,7 +206,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
 
     # здоровье графа — из ночного graph_doctor (детерминированный линт):
     # только свежий отчёт (до 36 часов) и только по этому графу.
-    health = _graph_health(graph)
+    health = _graph_health(graph) + _bench_alert(graph)
     if health:
         lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
 

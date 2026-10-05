@@ -699,6 +699,17 @@ class LLM:
                 return m
         return self.model  # пусть ollama сам скажет об ошибке
 
+    def effective_model(self, model: str) -> str:
+        """Кто на деле ответит на `stream(model=model)`: mlx-server игнорирует
+        `model=` и гонит свою `mlx_model`, облако — `cloud_model` по своему адресу,
+        иначе — сама `model`. Одно выражение на ключ кэша сводок (`_fit`) и запись
+        бенча памяти (№629 ч. 2): имя из конфига на mlx-server и в облаке — не та
+        модель, что отвечала. Уход облака на локальный запас здесь не виден — его
+        видит только сам стрим (`_fell_back_local`)."""
+        if self.engine == "mlx-server":
+            return self.mlx_model
+        return self.cloud_model if self.cloud_ready else model
+
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
@@ -1670,8 +1681,7 @@ class LLM:
         # адресу. Сменили движок или сервер — прежние сводки уже чужие.
         key: tuple = ()
         if cache:      # демону (cache=False) ни ключ, ни sha256 речи не нужны
-            answering = (self.mlx_model if self.engine == "mlx-server"
-                         else self.cloud_model if self.cloud_ready else self.small)
+            answering = self.effective_model(self.small)
             key = (_fit_speech_id(transcript), self.engine, self.base, answering,
                    self.small, self.lang, self.num_ctx, FIT_PROMPT_VERSION)
             cached = _fit_cache_get(key)
