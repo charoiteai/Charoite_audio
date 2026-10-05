@@ -1429,15 +1429,20 @@ def test_a_lost_call_channel_after_a_nemotron_refusal_names_the_fallback(meeting
                                  f"откат движка: {rt.ENGINE_REFUSED_REASON}"]
 
 
-def test_a_thin_call_mic_and_a_failed_sherpa_write_the_final_without_the_owner(meeting, monkeypatch):
+@pytest.mark.parametrize("sherpa,said_sherpa", [(None, "не разметила"), ([], "речи не нашла")],
+                         ids=["sherpa упала", "sherpa пусто"])
+def test_a_thin_call_mic_and_a_failed_sherpa_write_the_final_without_the_owner(
+        sherpa, said_sherpa, meeting, monkeypatch):
     """Путь 2: Nemotron ответил на микрофоне звонка, но почти тишиной, sherpa
     упала. Ответ движка есть — микрофон размечен пустым, финал по каналу
-    собеседников, как до гейта; шапка не говорит «размечено запасным движком»."""
+    собеседников, как до гейта; шапка не говорит «размечено запасным движком».
+    Sherpa без речи — тот же финал; журнал в обоих случаях говорит, почему
+    владельца нет (выход r1, DS Minor)."""
     said = []
     monkeypatch.setattr(rt, "log", said.append)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
         CALL_BH, fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0)])))
-    meeting["raw"]["mic"] = None
+    meeting["raw"]["mic"] = sherpa
     out = rt.rebuild(meeting["live"], _nemotron_cfg())
     assert isinstance(out, pathlib.Path)
     text = out.read_text(encoding="utf-8")
@@ -1446,6 +1451,7 @@ def test_a_thin_call_mic_and_a_failed_sherpa_write_the_final_without_the_owner(m
     assert "Речь микрофона размечена" not in text
     assert [label for label, _ in meeting["calls"]] == ["mic"]
     assert _lost_lines(said) == []
+    assert f"mic: Nemotron услышал почти тишину, sherpa {said_sherpa} — микрофон размечен пустым" in said
 
 
 def test_a_lost_room_mic_cancels_the_rebuild(meeting, monkeypatch):
