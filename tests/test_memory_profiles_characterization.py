@@ -275,6 +275,12 @@ WEAK_BARE = dict(result=_result(V.WEAK, blocks=()))
 UNVERIFIED = dict(result=_result(V.UNVERIFIED, reason="Ollama занята", sem_used=False))
 EMPTY = dict(result=_result(V.EMPTY, blocks=()))
 BOOM = dict(result=_result(V.CONFIDENT, cls=BoomResult))
+# Три фрагмента по ~1 600 знаков — больше любого бюджета блока (2 000 / 3 000 /
+# 2 600): иначе журнал не видит, где потребитель режет блок, и сдвиг бюджета на
+# единицу проходит зелёным (опровергающий опыт №629 ч. 2)
+LONG = tuple(f"фрагмент {i}: " + "длинный текст встречи " * 70 for i in (1, 2, 3))
+OVER = dict(result=_result(V.CONFIDENT, blocks=LONG))
+OVER_WEAK = dict(result=_result(V.WEAK, blocks=LONG))
 
 #: сценарий → (функция, аргументы, настройки подделок)
 SCENARIOS: dict[str, tuple[str, tuple, dict]] = {
@@ -289,6 +295,7 @@ SCENARIOS: dict[str, tuple[str, tuple, dict]] = {
     "answer.busy": ("gen_answer", ("что?",), dict(CONF, got=False)),
     "answer.stream_fails": ("gen_answer", ("что?",), dict(CONF, replies=[Boom("модель легла")])),
     "answer.pack_raises": ("gen_answer", ("что?",), BOOM),
+    "answer.over_budget": ("gen_answer", ("что решили?",), dict(OVER, replies=[["ок"]])),
     # раскрытие темы
     "expand.confident": ("expand_topic", ("Релиз",), dict(CONF, replies=[["- факт 1\n- факт 2"]])),
     "expand.confident_nothing_new": ("expand_topic", ("Релиз",), dict(CONF, thread_added=(0,))),
@@ -305,6 +312,7 @@ SCENARIOS: dict[str, tuple[str, tuple, dict]] = {
     "expand.slot_busy": ("expand_topic", ("Релиз",), dict(CONF, got=False)),
     "expand.stream_fails": ("expand_topic", ("Релиз",), dict(CONF, replies=[Boom("модель легла")])),
     "expand.pack_raises": ("expand_topic", ("Релиз",), BOOM),
+    "expand.over_budget": ("expand_topic", ("Релиз",), dict(OVER, replies=[["- факт"]])),
     # живой контекст
     "live.confident": ("live_context_loop", (), dict(CONF, replies=[["релиз, шлюз, Анна"]])),
     "live.weak_with_nodes": ("live_context_loop", (), dict(WEAK_SCOPE, replies=[["релиз"]])),
@@ -315,6 +323,8 @@ SCENARIOS: dict[str, tuple[str, tuple, dict]] = {
     "live.short_tail": ("live_context_loop", (), dict(CONF, tail_len=100)),
     "live.small_growth": ("live_context_loop", (), dict(CONF, size=1000)),
     "live.pack_raises": ("live_context_loop", (), dict(BOOM, replies=[["релиз"]])),
+    "live.over_budget": ("live_context_loop", (), dict(OVER, replies=[["релиз"]])),
+    "live.over_budget_nodes": ("live_context_loop", (), dict(OVER_WEAK, replies=[["релиз"]])),
 }
 
 
