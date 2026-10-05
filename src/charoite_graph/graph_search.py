@@ -868,6 +868,16 @@ class GraphSearch:
     def size(self) -> int:
         return len(self._gen.docs)
 
+    def fingerprint(self) -> str:
+        """Отпечаток снимка индекса: число файлов и sha256 по отсортированным
+        (путь, mtime). Бенч памяти пишет его рядом с итогом, чтобы тревога
+        отличала «изменился код» от «изменился граф» (№629 ч. 2, P6)."""
+        docs = self._gen.docs.values()
+        h = hashlib.sha256()
+        for rel, mtime in sorted((d.rel, d.mtime) for d in docs):
+            h.update(f"{rel}\0{mtime!r}\n".encode())
+        return f"{len(docs)}:{h.hexdigest()[:16]}"
+
     def vote_stats(self) -> dict[str, int]:
         """Статистика поколения для калибровки хаба: кто в индексе по ролям,
         сколько голосов и целей, сколько целей на потолке буста, и сколько

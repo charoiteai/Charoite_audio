@@ -2146,8 +2146,7 @@ def main():
                 return thread.add_archive(found[0].name, lines)
 
             try:
-                mem = brain.vault_search(cfg, title, limit=3,
-                                         snippet_chars=700, timeout=8)
+                mem = brain.search(brain.EXPAND, title, cfg=cfg)
             except Exception as exc:  # noqa: BLE001 — память не готова: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
@@ -2176,19 +2175,14 @@ def main():
                     # чего не читали — говорит сам фасад в absence_note (№295)
                     emit({"type": "status", "text": f"⏮ по «{title}»: {brain.absence_note(mem)}"})
                     return
-            v = brain.memory_block(mem, budget=3000)   # шапка с оговоркой — из таблицы фасада, как у остальных контуров (GLM r5)
+            v = brain.pack(brain.EXPAND, mem).text   # шапка с оговоркой — из таблицы фасада, как у остальных контуров (GLM r5)
             try:
                 with hint_slot("⏮ прошлые встречи") as got:  # не толкаться на одной модели
                     if not got:
                         return
-                    out = "".join(llm.stream(
-                        f"Выдержки по теме «{title}» из памяти прошлых встреч:\n\n{v}\n\n"
-                        "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
-                        "решение, статус, кто ведёт — с датой, если она видна. "
-                        "По строке на факт, без вступлений и нумерации.",
-                        model=llm.small,
-                        system="Ты сжимаешь память прошлых встреч в короткие факты. "
-                               "Отвечай только строками фактов."))
+                    # модель, системный промпт и промпт — из профиля (№629 ч. 2)
+                    out = "".join(llm.stream(brain.expand_prompt(title, v),
+                                             **brain.stream_kwargs(brain.EXPAND, llm)))
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
                 return
@@ -3090,17 +3084,14 @@ def main():
         manual_evt.set()  # авто-контуры уступают
         # vault ищем ДО лока: HTTP на 2.5с не смеет держать очередь подсказок
         # (⚡ и авто ждут тот же lock), а сам поиск в модели не нуждается
-        extra = ""
+        block = ""
         try:  # граф и документы — память по графу в процессе демона (№250)
-            mem = brain.vault_search(cfg, question, limit=4,
-                                     snippet_chars=600, timeout=2.5)
+            mem = brain.search(brain.ANSWER, question, cfg=cfg)
             # шапка и оговорка — из таблицы фасада по статусу (круги 3–4 по #577):
             # слабые совпадения — модель обязана честно сказать «почти ничего» по
             # прочитанной части, а не проверенные семантикой — подавать как
             # возможные, не как факт
-            block = brain.memory_block(mem, budget=2000)
-            if block:
-                extra = "\n\n" + block
+            block = brain.pack(brain.ANSWER, mem).text
         except Exception:  # noqa: BLE001
             pass
         with hint_slot("ответ на вопрос", timeout=45.0, clear_manual_on_busy=True) as got:
@@ -3111,19 +3102,10 @@ def main():
             manual_evt.clear()
             parts: list[str] = []
             try:
-                for tok in llm.stream(
-                    f"=== ИСТОЧНИК 1: живая стенограмма ТЕКУЩЕЙ встречи (хвост) ===\n"
-                    f"{tr.tail(3000)}\n"
-                    f"{'=== ИСТОЧНИК 2: память прошлых встреч и документы ===' + extra if extra else ''}\n\n"
-                    f"Вопрос пользователя: {question}\n"
-                    "Приоритет источников СТРОГО: 1) сначала ищи ответ в ТЕКУЩЕЙ "
-                    "стенограмме — если он там есть, отвечай только по ней; 2) нет в "
-                    "стенограмме — возьми из памяти и документов; 3) нет нигде — "
-                    "ответь из общих знаний с пометкой «(из общих знаний)». "
-                    "Кратко, по-русски, не выдумывай.",
-                    model=llm.small,
-                    num_predict=220,
-                ):
+                # модель, потолок ответа и промпт — из профиля (№629 ч. 2);
+                # system не задан — ответ видит текущий llm.system, как раньше
+                for tok in llm.stream(brain.answer_prompt(question, block, tr.tail(3000)),
+                                      **brain.stream_kwargs(brain.ANSWER, llm)):
                     emit({"type": "hint", "text": tok, "manual": True})
                     parts.append(tok)
             except Exception as e:  # noqa: BLE001
@@ -3255,7 +3237,7 @@ def main():
 
         Стартовый load_graph_context слеп: тема встречи проявляется в первые
         минуты разговора. Здесь: хвост стенограммы → small-модель выжимает
-        тему и термины → vault_search по графу → блок «Память прошлых
+        тему и термины → brain.search(LIVE) по графу → блок «Память прошлых
         встреч» в системном промпте пересобирается. Подсказки, instant и
         ответы на вопросы начинают видеть старые договорённости по теме.
         """
@@ -3342,8 +3324,7 @@ def main():
                     break   # одна вставка за такт: нить не заливается
 
             try:
-                mem = brain.vault_search(cfg, query, limit=4,
-                                         snippet_chars=500, timeout=6)
+                mem = brain.search(brain.LIVE, query, cfg=cfg)
             except Exception:  # noqa: BLE001
                 # память не прогрета — собирается из узлов графа (ревью
                 # 15.08): деградация мягкая, а не «архива нет вовсе»
@@ -3355,13 +3336,10 @@ def main():
             # занятой Ollama иначе глубокий контур системно терял фрагменты (DS критика 1 r3)
             fallback = "\n".join(
                 ln for n in (node_hits or []) for ln in node_index.digest(n))
-            v = brain.memory_block(mem, nodes=fallback, budget=2600)
+            v = brain.pack(brain.LIVE, mem, nodes=fallback).text
             if not v:
                 continue   # ни памяти, ни узлов — не портим то, что есть
-            llm.system = (system_base +
-                          "\n\nПамять прошлых встреч (подобрано по теме идущей "
-                          "встречи; договорённости и решения оттуда можно "
-                          "упоминать как прошлые):\n" + v)
+            llm.system = brain.live_system(system_base, v)
             topic = query.split(",")[0][:60]
             # не «архив подтянут»: индекс памяти архив встреч не читает (№295)
             emit({"type": "status", "text": f"🧠 Контекст по теме «{topic}»: память подтянута"})

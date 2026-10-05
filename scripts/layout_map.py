@@ -2714,6 +2714,12 @@ ENV_SEAMS: tuple[Seam, ...] = (
          "пакет поиска — отдельный дистрибутив, реестра приложения у пакета нет"),
     Seam("Timer", "threading", ("src/threads.py",), "threads.timer",
          "таймер продукта зовётся только реестром — имя и роль обязательны"),
+    Seam("_vault_search", "brain", ("src/brain.py",), "brain.search",
+         "числа поиска памяти живут в профиле потребителя — копия мимо профиля "
+         "разводит демон и бенч (№629 ч. 2)"),
+    Seam("_memory_block", "brain", ("src/brain.py",), "brain.pack",
+         "бюджет блока памяти живёт в профиле потребителя — копия мимо профиля "
+         "разводит демон и бенч (№629 ч. 2)"),
 )
 
 
@@ -2806,6 +2812,28 @@ def _seam_refs(tree: ast.Module, index: dict[str, Seam],
     return {seam: sorted(lines) for seam, lines in out.items()}
 
 
+def _own_refs(tree: ast.Module, rel: str, index: dict[str, Seam]) -> dict[str, list[int]]:
+    """Ссылки модуля-владельца на собственный шов — голым именем.
+
+    Шов, чей модуль сам и есть дверь (`brain._vault_search` за `brain.search`,
+    №629 ч. 2), зовётся внутри модуля без импорта: `_seam_refs` такого не видит,
+    и проверка живой ссылки считала бы шов мёртвым. Считается только у файла,
+    который записан владельцем этого шва: чужой модуль с тем же символом
+    (`graph_search` внутри себя зовёт `GraphSearch`) сюда не попадает."""
+    mod = module_of(rel)
+    tail = mod.rsplit(".", 1)[-1] if mod else None
+    out: dict[str, list[int]] = {}
+    for seam in index.values():
+        if seam.module != tail or rel not in seam.owners:
+            continue
+        lines = sorted({n.lineno for n in ast.walk(tree)
+                        if isinstance(n, ast.Name) and n.id == seam.symbol
+                        and isinstance(n.ctx, ast.Load)})
+        if lines:
+            out[seam.symbol] = lines
+    return out
+
+
 def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
     """Кто ссылается на швы — файл → символ → строки. Замер для гейта:
     считает инвентарь, судит `seam_problems`, как у правила корня."""
@@ -2814,7 +2842,7 @@ def seam_calls(inv: Inventory) -> dict[str, dict[str, list[int]]]:
     for rel, info in sorted(inv.files.items()):
         if not rel.endswith(".py") or info.tree is None or info.kind in ("out", "history"):
             continue
-        found = _seam_refs(info.tree, index, symbols)
+        found = {**_own_refs(info.tree, rel, index), **_seam_refs(info.tree, index, symbols)}
         if found:
             out[rel] = found
     return out

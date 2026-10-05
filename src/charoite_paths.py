@@ -556,6 +556,12 @@ LOG_KINDS: dict[str, LogKind] = {
     # отметка «пересборка идёт» под flock: unlink по имени снял бы замок прогона,
     # стартовавшего следом (mark_running); подметание под замком — №528
     "rebuild_pid": LogKind("rebuild-", "lock", None, (".pid",), sweep=False),
+    # итоги бенча памяти по профилям и принятые базы (№629 ч. 2): только дописывается,
+    # тревога ночи сравнивает с базой — ретеншн не трогает, иначе база пропала бы
+    "memory_bench_baseline": LogKind("memory_bench_baseline", "shared", None, (".jsonl",), sweep=False,
+                                     whole=True),
+    # тревога бенча памяти для утреннего брифа: переписывается ночью, ретеншн не трогает
+    "memory_bench_alert": LogKind("memory_bench_alert", "shared", None, (".json",), sweep=False, whole=True),
 }
 
 

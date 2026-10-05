@@ -215,7 +215,26 @@ def test_sagging_bench_is_a_warning_not_a_failure(tmp_path):
     """Так решено в самом скрипте — тест закрепляет решение, а не меняет его."""
     r = _run(tmp_path, FAIL_ONLY_BENCH)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "БЕНЧ" in r.stdout
+    assert "бенч памяти (answer) не отработал" in r.stdout
+    assert _status(tmp_path)["state"] == "ok", _status(tmp_path)
+
+
+# Заглушка, которая пишет, чем её звали: порядок шагов и флаги бенча.
+LOG_ARGV = '#!/bin/sh\necho "$@" >> logs/argv.log\nexit 0\n'
+
+
+def test_bench_runs_three_profiles_without_model_before_the_last_brief(tmp_path):
+    """№629 ч. 2: ночь мерит выдачу трёх профилей демона (`--stats`, без модели),
+    пишет итог в базу и делает это ДО последнего брифа — бриф показывает тревогу."""
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    r = _run(tmp_path, LOG_ARGV)
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = (tmp_path / "logs" / "argv.log").read_text(encoding="utf-8").splitlines()
+    bench = [i for i, c in enumerate(calls) if "memory_bench" in c]
+    assert [calls[i].split("memory_bench.py ", 1)[1] for i in bench] == [
+        f"--stats --profile {p} --record" for p in ("answer", "live", "expand")]
+    last_brief = max(i for i, c in enumerate(calls) if "morning_brief" in c)
+    assert max(bench) < last_brief, calls
 
 
 TIER3_STOPPED = (

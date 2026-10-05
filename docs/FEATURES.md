@@ -347,8 +347,8 @@ someone's notes. Transcript and recording only, leaving the graph alone:
 being processed to finish (up to an hour) → **graph doctor** → file dedup →
 **memory vectors** → **morning brief** (early) → Tier3 revision → **dossiers**
 → *(optional)* **cloud dossier review** → *(optional)* cloud core review →
-folder indexes → graph doctor again → **morning brief** again → **memory
-bench**. The brief is written
+folder indexes → graph doctor again → **memory bench** → **morning brief**
+again. The brief is written
 twice: it takes seconds and never calls the model, while the revision on a large
 graph runs for hours — and one night ended before it did, leaving yesterday's
 `_Сегодня.md` on screen in the morning. The early pass guarantees a brief; the
@@ -380,8 +380,12 @@ live Cores and merge notes; assembled from ready-made graph lines, no LLM —
 your morning context in one minute of reading BEFORE the first question.
 The memory bench (`scripts/memory_bench.py` + `config/memory_bench.yaml`,
 format in the example file) runs reference questions through the real RAG
-loop and checks that must-have facts appear in the answers — degradation
-after threshold/prompt tweaks shows up in the nightly log, not in a live
+loop and checks that must-have facts appear in the answers. At night it
+measures, without a model, what each daemon consumer (answer, live context,
+topic expansion) gets from memory, compares it with the accepted baseline
+and, when two or more questions regress, puts a ⚠️ line into the morning
+brief (until a baseline is accepted, a "watch not armed" line) —
+degradation after threshold tweaks shows up there, not in a live
 meeting. The steps are independent — a failed revision does not cancel the
 brief — but the run exits non-zero if any of them failed: the job used to
 end on an `echo`, so launchd reported green even on nights when nothing

@@ -1655,7 +1655,7 @@ half as many slots (34 → 17), primary nodes more (47 → 61), median age 10 �
 The hub boost needed no recalibration: 462 nodes sit at the cap against 467, the
 same set.
 
-**The verdict is a field, not a prefix.** `brain.vault_search` returns a
+**The verdict is a field, not a prefix.** `brain.search(profile, query)` returns a
 `Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,
 `fragments` is what goes into a prompt (dossiers and snippets, no headers, no
 markers), `text` is the human rendering. Without an embedding (Ollama busy
@@ -1666,13 +1666,26 @@ Dossiers count as evidence in the verdict (their key coverage of the query), so
 a summary without snippets is never "empty". What to *say* is one table in the
 facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
 "unverified" — embedder busy or cache incomplete — is a field of the result) and
-one builder, `memory_block`, that splits a prompt budget between graph nodes and
+one builder, `brain.pack(profile, result)`, that splits a prompt budget between graph nodes and
 archive snippets by share instead of letting the nodes eat the archive; on a
 confident verdict the snippets come first and nodes get only the remainder.
 Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
 "empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
 `startswith` in three places — a dossier printed before the marker silenced the
 gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
+
+**A profile per memory consumer.** The answer to a question, the live context
+and topic expansion each have a named profile in `brain.py` (`ANSWER`, `LIVE`,
+`EXPAND`): how many files and characters to take, how long to wait, the block
+budget and, for the two that call a model, the model role, the reply cap, the
+system prompt and the abstention marker. It is the only place these numbers
+live: the daemon and the memory bench both go through `search` + `pack`, and the
+raw primitives behind them are private — the layout gate (`ENV_SEAMS`) turns any
+call outside `brain.py` red. `pack` returns a record (`Packed`), not a string:
+`text` goes into the prompt, while `lead`, `nodes`, `body` and the snippets the
+budget cut are fields, so the bench never parses the header to score a fact.
+Before this, every number lived as a copy in three daemon sites and in the bench,
+and the bench measured a path the owner never took.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
@@ -1790,6 +1803,46 @@ regression.
 — what the owner sees during a meeting; `--brain` and `--legacy` keep the old
 contours for before/after comparisons. It still cannot answer questions about
 the app's search, which is a separate Swift implementation.
+
+`--profile answer|live|expand` measures each daemon consumer through its own
+profile in `src/brain.py` — the same `brain.search` + `brain.pack` call, the
+same limits and block budget, and for synthesis the same model arguments
+(`stream_kwargs`, the model recorded as `effective_model`). A fact counts only
+if it reached the block's fragments or nodes, never the header; a miss is
+named "cut by budget" when the search found it and the budget dropped it.
+`--stats` with a profile skips the model and is the nightly signal. `live`
+runs without graph nodes, so it is an upper bound for non-confident results.
+`--profile companion` measures the app chat's companion server (owner only,
+questions slower than the chat's 4 s deadline are out of comparison); the
+default `raw` keeps the old contour. Latency is printed per stage (search,
+packing, first token, full synthesis) as p50/p95, with the cold start apart.
+
+`--record` appends the profile's result to `logs/memory_bench_baseline.jsonl`
+(append-only, outside retention) and compares it with the accepted baseline of
+the same profile, mode, hash seed and graph (and model, for synthesis); the
+alert file is keyed the same way. Two or more questions going ✓→✗ with the same
+`sem_used` write `logs/memory_bench_alert.json` with the questions' numbers and
+categories and whether HEAD (with uncommitted edits) or the graph changed; a
+changed `sem_used` is reported separately and never compared. A clean comparison
+lifts the alert, on any commit — a fix lands on a new HEAD; a run with no
+baseline or with fewer than half the questions comparable lifts nothing, and is
+shown in the morning brief as "watch not armed". A run on uncommitted code
+(`+dirty`) against a baseline taken on other code may raise the alert — it
+measured what actually runs on this machine, and the alert says "run on
+uncommitted code" — but never lifts it: the code that will ship was not
+measured; without a drop it is shown as "watch not armed" with the
+`--accept --run` hint. A raised alert
+does not age out of the brief: nights that stop before the comparison leave it
+as it was, so an alert older than 36 h stays with the time of its last
+measurement and the id of the run that raised it. The journal and the alert file
+are written under one lock. Each recorded run prints its id; a baseline is
+accepted only by an explicit `--accept --run ID`, and the run must be of the
+same profile, mode, seed and graph; accepting a worse result needs `--reason`,
+a run that fell back to another model is refused; accepting lifts the alert of
+its key. The bench re-runs itself with `PYTHONHASHSEED=0` (keeping the
+interpreter flags) until retrieval is deterministic — the daemon still runs with
+a random hash order; the record stores the seed in effect, and `-E`/`-I`, which
+make the variable void, are refused.
 
 ## The readiness probe does not trust the data folder
 

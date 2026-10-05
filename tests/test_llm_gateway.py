@@ -1146,6 +1146,26 @@ def test_fit_is_recomputed_when_another_model_would_answer(monkeypatch, before, 
     assert len(calls) == 10, f"{before} → {after}: пересчёт"
 
 
+@pytest.mark.parametrize("over, answering", [
+    ({}, "small"),
+    ({"engine": "mlx-server", "mlx_model": "mlx/одна"}, "mlx/одна"),
+    ({"cloud_ready": True, "cloud_model": "облако-1"}, "облако-1"),
+])
+def test_fit_cache_key_names_who_answers_byte_for_byte(monkeypatch, over, answering):
+    """Ключ кэша сводок после выноса `effective_model` (№629 ч. 2) — тот же
+    кортеж, что строил `_fit` до него: кто на деле отвечает, плюс small, язык,
+    окно и версия промпта. Бенч памяти пишет в базу то же имя модели."""
+    keys: list = []
+    monkeypatch.setattr(llm_mod, "_fit_cache_get", lambda key: keys.append(key) or "сводка")
+    l = _short_llm(**over)
+    answering = l.small if answering == "small" else answering
+    assert l.fit(LONG) == "сводка"
+    assert keys == [(llm_mod._fit_speech_id(LONG), l.engine, l.base, answering, l.small,
+                     l.lang, 2000, llm_mod.FIT_PROMPT_VERSION)]
+    assert l.effective_model(l.small) == answering
+    assert l.effective_model("другая") == ("другая" if not over else answering)
+
+
 def test_daemon_minutes_do_not_leave_digests_in_memory(monkeypatch):
     """Кэш — для повтора MCP-минуток. Демон живёт днями, и сводки его встреч
     в памяти держать незачем: PRIVACY обещает только процесс MCP-сервера."""
