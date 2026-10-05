@@ -1739,3 +1739,26 @@ def test_приложение_отдаёт_поиску_свою_схему(tmp_
     monkeypatch.setattr(graphs, "search_cache_dir", lambda: tmp_path / "data")
     s = graphs.open_search(_graph(tmp_path), fake_embedder())
     assert s.exclude == ("Черновики",)
+
+
+def test_fingerprint_changes_with_the_graph_not_with_the_order(tmp_path):
+    """Отпечаток снимка для бенча памяти: тот же граф — тот же отпечаток, правка
+    файла (mtime) или новый файл — другой; число файлов — в начале строки."""
+    clock = {"t": 1_000_000.0}
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), now=lambda: clock["t"], schema=CHAROITE)
+    s.refresh(force=True)
+    first = s.fingerprint()
+    assert first.startswith(f"{s.size}:")
+    twin = gs.GraphSearch(s.graph, data_dir=tmp_path / "data2", embedder=fake_embedder(), now=lambda: clock["t"], schema=CHAROITE)
+    twin.refresh(force=True)
+    assert twin.fingerprint() == first
+    node = s.graph / "Системы" / "Новая.md"
+    node.write_text("# Новая\n", encoding="utf-8")
+    clock["t"] += gs.REFRESH_S + 1
+    s.refresh()
+    second = s.fingerprint()
+    assert second != first and second.startswith(f"{s.size}:")
+    os.utime(node, (node.stat().st_atime, node.stat().st_mtime + 10))
+    clock["t"] += gs.REFRESH_S + 1
+    s.refresh()
+    assert s.fingerprint() != second

@@ -20,6 +20,8 @@ exit code 1, если провалов больше трети — заметн�
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import json
 import math
 import os
 import pathlib
@@ -35,7 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import brain  # noqa: E402
 import graphs  # noqa: E402
 import deps  # noqa: E402
-from charoite_paths import harden_umask, resolve_root  # noqa: E402
+from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
 
 
 def _root() -> pathlib.Path:
@@ -389,7 +391,7 @@ def first_pos(needles: list[str], text: str) -> int | None:
     return min(found) if found else None
 
 
-def warm_profile(profile: brain.Profile, graph: pathlib.Path, emb) -> object:
+def warm_profile(profile: brain.Profile, graph: pathlib.Path, emb) -> str:
     """Прогрев до цикла: обход графа и векторы из кэша — тот же общий индекс, что
     потом спросит `brain.search`, — и один вектор запроса: холодная модель
     эмбеддингов иначе ложится задержкой на первый вопрос. Холодный старт —
@@ -404,7 +406,7 @@ def warm_profile(profile: brain.Profile, graph: pathlib.Path, emb) -> object:
     t2 = time.perf_counter()
     print(f"холодный старт: индекс {t1 - t0:.1f} с (файлов {mem.size}, с векторами {mem.vectors}), "
           f"первый вектор запроса {t2 - t1:.2f} с")
-    return mem
+    return mem.fingerprint()
 
 
 def retrieve(profile: brain.Profile, case: dict, n: int, graph: pathlib.Path, emb,
@@ -466,9 +468,10 @@ def describe(profile: brain.Profile) -> str:
 
 
 def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[dict], *,
-                stats: bool, cfg: dict) -> tuple[list[Q], str]:
+                stats: bool, cfg: dict) -> tuple[list[Q], str, str]:
     """Профиль потребителя демона: выдача без модели (`--stats`, и всегда у `live`)
-    или с синтезом моделью профиля. -> (итоги по вопросам, фактическая модель или '')."""
+    или с синтезом моделью профиля. -> (итоги по вопросам, фактическая модель или '',
+    отпечаток графа)."""
     print(f"профиль {profile.name}: {describe(profile)}")
     if profile.name == "live":
         print("  фрагменты без узлов (nodes=none) — верхняя оценка для не-CONFIDENT: в продукте "
@@ -482,7 +485,7 @@ def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[di
         model = llm.effective_model(brain.stream_kwargs(profile, llm)["model"])
         print(f"  синтез: модель {model} (роль {profile.synth.role}), хвост стенограммы пуст — "
               "доля памяти в ответе")
-    warm_profile(profile, graph, emb)
+    graph_fp = warm_profile(profile, graph, emb)
     timings = Timings()
     out: list[Q] = []
     fallback = 0
@@ -523,7 +526,7 @@ def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[di
         print(ln)
     if fallback:
         model = "fallback:?"
-    return out, model or ""
+    return out, model or "", graph_fp
 
 
 def run_companion(graph: pathlib.Path, cases: list[dict], demo: bool) -> list[Q]:
@@ -628,6 +631,194 @@ def run_raw(args, graph: pathlib.Path, cfg: dict, cases: list[dict], lang: str) 
         sys.exit(1)   # деградация больше трети — сигнал при ручном прогоне
 
 
+# --------------------------------------------------------------------- база и тревога ночи
+# Итог профиля дописывается строкой в logs/memory_bench_baseline.jsonl; принятая
+# база — отдельная строка `accept` со ссылкой на итог (принимается явной командой,
+# по последней записи). Тревога — два и больше вопросов ✓→✗ против принятой базы
+# того же профиля, режима и seed (у синтеза — и модели), только среди вопросов с
+# тем же sem_used: сменившийся векторизатор — другой опыт, не регресс поиска.
+
+ALERT_MIN = 2           # один вопрос — шум (сдвиг меньше 2–3 вопросов на 37)
+SEED = "0"              # до №631 выдача зависит от порядка хеша — бенч фиксирует его сам
+
+
+def code_head() -> str:
+    """HEAD кода бенча; не git-клон (установка из бандла) — «?»."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True,
+                             timeout=10, cwd=pathlib.Path(__file__).resolve().parent)
+    except OSError:
+        return "?"
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "?"
+
+
+def qid(case: dict) -> str:
+    """Ключ вопроса в записи — хеш текста, не сам текст: вопрос эталона мог
+    смениться под тем же номером, такой вопрос не сравнивается."""
+    import hashlib
+    return hashlib.sha256(str(case.get("q", "")).encode("utf-8")).hexdigest()[:12]
+
+
+def make_record(profile: str, mode: str, model: str, graph_fp: str, cases: list[dict],
+                out: list[Q]) -> dict:
+    import uuid
+    # id — ссылка принятия на итог: время с точностью до секунды у двух прогонов совпадает
+    return {"kind": "run", "id": uuid.uuid4().hex[:12], "ts": dt.datetime.now().isoformat(timespec="seconds"),
+            "profile": profile, "mode": mode, "head": code_head(), "seed": os.environ.get("PYTHONHASHSEED", "?"),
+            "model": model if mode == "synth" else None, "graph": graph_fp,
+            "questions": [{"id": qid(c), "n": q.n, "cat": q.cat, "ok": q.ok, "sem": q.sem_used,
+                           "status": q.status, "why": q.why, "new": q.new_pos, "old": q.old_pos,
+                           "cmp": q.comparable} for c, q in zip(cases, out)]}
+
+
+def run_key(rec: dict) -> tuple:
+    return (rec.get("profile"), rec.get("mode"), rec.get("seed"),
+            rec.get("model") if rec.get("mode") == "synth" else None)
+
+
+def read_records(path: pathlib.Path) -> list[dict]:
+    """Строки журнала; битая строка (оборванная запись) пропускается с предупреждением."""
+    if not path.exists():
+        return []
+    out = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            print(f"⚠ {path.name}:{i}: битая строка пропущена")
+    return out
+
+
+def append_record(path: pathlib.Path, rec: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def accepted_base(records: list[dict], key: tuple) -> dict | None:
+    """Итог, на который указывает последнее принятие с этим ключом."""
+    runs = {r.get("id"): r for r in records if r.get("kind") == "run" and run_key(r) == key}
+    for r in reversed(records):
+        if r.get("kind") == "accept" and run_key(r) == key and r.get("run") in runs:
+            return runs[r["run"]]
+    return None
+
+
+def passed(rec: dict) -> int:
+    return sum(1 for q in rec["questions"] if q["ok"] and q.get("cmp", True))
+
+
+class Diff(NamedTuple):
+    regressed: list[dict]   # ✓→✗ при том же sem_used, оба сравнимы
+    sem_diff: int           # sem_used ≠ базы
+    total: int              # вопросов, сопоставленных с базой по ключу
+
+
+def compare(base: dict, cur: dict) -> Diff:
+    prev = {q["id"]: q for q in base["questions"]}
+    regressed, sem_diff, total = [], 0, 0
+    for q in cur["questions"]:
+        b = prev.get(q["id"])
+        if b is None:
+            continue
+        total += 1
+        if b.get("sem") != q.get("sem"):
+            sem_diff += 1
+            continue
+        if b["ok"] and not q["ok"] and b.get("cmp", True) and q.get("cmp", True):
+            regressed.append(q)
+    return Diff(regressed, sem_diff, total)
+
+
+def update_alert(path: pathlib.Path, profile: str, payload: dict | None) -> None:
+    """Файл тревоги для утреннего брифа: ключ — профиль. Нет тревоги — ключ снят,
+    пустой файл удаляется: тревога не висит дольше прогона, который её снял."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if payload is None:
+        data.pop(profile, None)
+    else:
+        data[profile] = payload
+    if data:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    elif path.exists():
+        path.unlink()
+
+
+def judge(root: pathlib.Path, rec: dict) -> dict | None:
+    """Запись итога и сверка с принятой базой. -> тревога или None."""
+    base_path = log_path(root, "memory_bench_baseline")
+    records = read_records(base_path)
+    append_record(base_path, rec)
+    base = accepted_base(records, run_key(rec))
+    if base is None:
+        print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой "
+              f"--accept --profile {rec['profile']}{' --stats' if rec['mode'] == 'stats' else ''}")
+        update_alert(log_path(root, "memory_bench_alert"), rec["profile"], None)
+        return None
+    d = compare(base, rec)
+    print(f"против базы от {base['ts']}: было {passed(base)}, стало {passed(rec)}; ✓→✗ {len(d.regressed)}")
+    if d.sem_diff:
+        print(f"⚠ sem_used ≠ базы на {d.sem_diff} из {d.total} — эти вопросы не сравниваются "
+              "(векторизатор был в одном прогоне и не был в другом)")
+    alert = None
+    if len(d.regressed) >= ALERT_MIN:
+        head_changed = base.get("head") != rec["head"]
+        graph_changed = base.get("graph") != rec["graph"]
+        alert = {"ts": rec["ts"], "profile": rec["profile"], "mode": rec["mode"],
+                 "base_ts": base["ts"], "was": passed(base), "now": passed(rec),
+                 "regressed": [{"n": q["n"], "cat": q["cat"], "why": q["why"]} for q in d.regressed],
+                 "head_changed": head_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff}
+        print(f"ТРЕВОГА: {len(d.regressed)} вопросов ✓→✗ при том же sem_used")
+        for q in d.regressed:
+            print(f"  №{q['n']} {q['cat']}" + (f" — {q['why']}" if q["why"] else ""))
+        print(f"HEAD изменился: {'да' if head_changed else 'нет'}; граф изменился: {'да' if graph_changed else 'нет'}")
+        for q in d.regressed:
+            if q["cat"] == "latest":
+                print(f"  latest №{q['n']}: {q['why'] or 'не выдано'} (новое@{q['new']}, старое@{q['old']})")
+    update_alert(log_path(root, "memory_bench_alert"), rec["profile"], alert)
+    return alert
+
+
+def accept(root: pathlib.Path, profile: str, mode: str, reason: str) -> None:
+    """Принять последнюю запись профиля и режима базой. Итог хуже прежней базы —
+    только с причиной (`--reason`): молча опущенная планка — не база."""
+    path = log_path(root, "memory_bench_baseline")
+    records = read_records(path)
+    runs = [r for r in records if r.get("kind") == "run" and r.get("profile") == profile
+            and r.get("mode") == mode and r.get("seed") == SEED]
+    if not runs:
+        sys.exit(f"нечего принимать: записей {profile}/{mode} с seed {SEED} нет — сначала прогон с --record")
+    last = runs[-1]
+    prev = accepted_base(records, run_key(last))
+    if prev is not None and passed(last) < passed(prev) and not reason:
+        sys.exit(f"итог {passed(last)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
+    append_record(path, {"kind": "accept", "ts": dt.datetime.now().isoformat(timespec="seconds"),
+                         "run": last["id"], "profile": profile, "mode": mode, "seed": last["seed"],
+                         "model": last.get("model"), "reason": reason})
+    print(f"база {profile}/{mode} принята: итог от {last['ts']}, {passed(last)}/{len(last['questions'])}"
+          + (f" — причина: {reason}" if reason else ""))
+
+
+def pin_hash_seed(profile: str) -> None:
+    """До №631 выдача зависит от PYTHONHASHSEED: бенч профиля перезапускает себя с
+    seed 0, иначе два прогона одного кода расходятся сами по себе."""
+    if profile not in brain.PROFILES or os.environ.get("PYTHONHASHSEED") == SEED:
+        return
+    env = {**os.environ, "PYTHONHASHSEED": SEED}
+    os.execve(sys.executable, [sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
 def main() -> None:
     harden_umask()   # кэш векторов памяти хранит блоки текста графа — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -648,9 +839,26 @@ def main() -> None:
     ap.add_argument("--stats", action="store_true",
                     help="без синтеза: с --profile answer|live|expand — выдача профиля, ночной сигнал; "
                          "raw — покрытие, косинус и вердикт гейта для калибровки порогов")
+    ap.add_argument("--record", action="store_true",
+                    help="с --profile answer|live|expand: дописать итог в logs/memory_bench_baseline.jsonl "
+                         "и сверить с принятой базой (тревога — logs/memory_bench_alert.json)")
+    ap.add_argument("--accept", action="store_true",
+                    help="принять последнюю запись профиля и режима базой (без прогона)")
+    ap.add_argument("--reason", default="", help="с --accept: причина, если итог хуже прежней базы")
     args = ap.parse_args()
     if (args.brain or args.legacy) and args.profile != "raw":
         ap.error("--brain и --legacy — флаги режима raw")
+    if (args.record or args.accept) and args.profile not in brain.PROFILES:
+        ap.error("--record и --accept — для профилей демона: answer, live, expand")
+    if args.record and (args.limit or args.demo or args.demo_en or args.demo_zh):
+        ap.error("--record пишет базу по полному эталону владельца: без --limit и демо")
+    if args.reason and not args.accept:
+        ap.error("--reason — только вместе с --accept")
+    mode = "stats" if args.stats or args.profile == "live" else "synth"
+    if args.accept:
+        accept(_root(), args.profile, mode, args.reason)
+        return
+    pin_hash_seed(args.profile)
 
     cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
@@ -701,7 +909,12 @@ def main() -> None:
     if args.profile != "raw":
         # пустой конфиг фабрика читает как «моделей нет»: демо меряет лексику, не ходя в сеть
         emb = build_embedder(cfg if not args.demo else {})
-        run_profile(brain.PROFILES[args.profile], graph, emb, cases, stats=args.stats, cfg=cfg)
+        print(f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED', '?')}: выдача воспроизводима между прогонами; "
+              "демон идёт со случайным порядком хеша (№631)")
+        out, model, graph_fp = run_profile(brain.PROFILES[args.profile], graph, emb, cases,
+                                           stats=args.stats, cfg=cfg)
+        if args.record:
+            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out))
         return
     if args.brain:
         require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур

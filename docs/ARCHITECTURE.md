@@ -1817,6 +1817,17 @@ questions slower than the chat's 4 s deadline are out of comparison); the
 default `raw` keeps the old contour. Latency is printed per stage (search,
 packing, first token, full synthesis) as p50/p95, with the cold start apart.
 
+`--record` appends the profile's result to `logs/memory_bench_baseline.jsonl`
+(append-only, outside retention) and compares it with the accepted baseline of
+the same profile, mode and hash seed (and model, for synthesis). Two or more
+questions going ✓→✗ with the same `sem_used` write `logs/memory_bench_alert.json`
+with the questions' numbers and categories and whether HEAD or the graph
+changed; a changed `sem_used` is reported separately and never compared. A
+baseline is accepted only by an explicit `--accept`, from the latest record;
+accepting a worse result needs `--reason`. The bench re-runs itself with
+`PYTHONHASHSEED=0` until retrieval is deterministic (the daemon still runs
+with a random hash order).
+
 ## The readiness probe does not trust the data folder
 
 The first-run probe counts missing modules and microphones with a separate
