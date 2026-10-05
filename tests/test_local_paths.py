@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import pathlib
+import re
 import sys
 import unicodedata
 import urllib.parse
@@ -88,6 +90,48 @@ def test_percent_encoding_is_replaced_anywhere(tmp_path, monkeypatch):
     assert broken != encoded
     stayed, n_stay = privacy.scrub_local_paths(broken + "/c.md")
     assert stayed == broken + "/c.md" and n_stay == 0
+
+
+# Замер 05.10 (swift, macOS): `URL(fileURLWithPath:).absoluteString` не кодирует
+# «!$&'()*+,;=:@~». Строки замера — фикстура, живого Swift в тесте нет:
+# «/Volumes/Data (2)/charoite» → «file:///Volumes/Data%20(2)/charoite»,
+# «/Users/u 2/данные» → «file:///Users/u%202/%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D0%B5».
+# Корень данных теста обязан быть временным (сторож conftest), поэтому хвост
+# пути из замера ставится под tmp_path; сам tmp_path кодировать нечему.
+_SWIFT_TAILS = {
+    "Data (2)/charoite": "Data%20(2)/charoite",
+    "Data (2);x/charoite": "Data%20(2);x/charoite",
+    "u 2/данные": "u%202/%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D0%B5",
+}
+
+
+def _swift_root(tmp_path, monkeypatch, tail: str) -> tuple[pathlib.Path, str]:
+    _home(tmp_path, monkeypatch)
+    assert re.fullmatch(r"[A-Za-z0-9/_.\-]+", str(tmp_path)), tmp_path
+    root = tmp_path / tail
+    root.mkdir(parents=True)
+    charoite_paths.use_data_root(root, replace=True)
+    return root, f"file://{tmp_path}/{_SWIFT_TAILS[tail]}"
+
+
+@pytest.mark.parametrize("tail", ["Data (2)/charoite", "Data (2);x/charoite"])
+def test_file_url_from_swift_keeps_sub_delims_and_is_still_a_needle(tail, tmp_path, monkeypatch):
+    """Корень данных с «(», «)» и «;» в имени: процентная форма Swift их не
+    кодирует, а `quote(safe="/")` кодирует — нужна вторая форма иглы."""
+    root, url = _swift_root(tmp_path, monkeypatch, tail)
+    assert urllib.parse.quote(str(root), safe="/") not in url
+    out, n = privacy.scrub_local_paths(f"см. {url}/x.md")
+    assert out == f"см. file://{MARK}/x.md" and n == 1
+
+
+def test_swift_and_quote_forms_coincide_without_sub_delims(tmp_path, monkeypatch):
+    """«u 2/данные»: обе формы совпадают, процентная игла одна, путь снят."""
+    root, url = _swift_root(tmp_path, monkeypatch, "u 2/данные")
+    encoded = url.removeprefix("file://")
+    percent = [form for form, kind, _r in privacy._needles() if kind == "percent"]
+    assert percent.count(encoded) == 1
+    out, n = privacy.scrub_local_paths(f"{url}/a.md")
+    assert out == f"file://{MARK}/a.md" and n == 1
 
 
 def test_realpath_through_symlink_is_a_needle(tmp_path, monkeypatch):
@@ -301,12 +345,60 @@ def test_restamp_transcript_machine_file_path_only_leaves_the_banner(tmp_path, m
 
 
 def test_name_fixes_restamp_minutes_rewrites_when_only_the_path_changes(tmp_path, monkeypatch):
+    """Только путь: файл переписан, а .prev/ не сдвинут — прошлое поколение
+    байт в байт цело, как на базе, где .prev писался лишь при правке."""
     home = _home(tmp_path, monkeypatch)
     live, mpath = _minutes(tmp_path, home)
-    raw = mpath.read_text(encoding="utf-8")
+    prev = mpath.parent / ".prev" / mpath.name
     assert nf.restamp_minutes(live, {}) is False
     assert mpath.read_text(encoding="utf-8") == "# Минутки\nсмотри ~/a.md\n"
+    assert not prev.exists(), ".prev создан ради одного скраба пути"
+
+    previous = "# Минутки\r\nпрошлое поколение\n".encode("utf-8")
+    prev.parent.mkdir(exist_ok=True)
+    prev.write_bytes(previous)
+    mpath.write_text(f"# Минутки\nсмотри {home}/b.md\n", encoding="utf-8")
+    assert nf.restamp_minutes(live, {}) is False
+    assert mpath.read_text(encoding="utf-8") == "# Минутки\nсмотри ~/b.md\n"
+    assert prev.read_bytes() == previous
+
+
+def test_name_fixes_restamp_minutes_rename_still_keeps_prev(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    live, mpath = _minutes(tmp_path, home)
+    raw = "**Участники:** Сергей\n" + f"смотри {home}/a.md\n"
+    mpath.write_text(raw, encoding="utf-8")
+    assert nf.restamp_minutes(live, {"Сергей": "Мария"}) is True
+    text = mpath.read_text(encoding="utf-8")
+    assert "Мария" in text and _gone(text, str(home))
     assert (mpath.parent / ".prev" / mpath.name).read_text(encoding="utf-8") == raw
+
+
+def test_restamp_transcript_path_only_leaves_prev_untouched(tmp_path, monkeypatch):
+    """Стенограмма без переименований: путь снят, хеш машинного текста
+    обновлён по байтам на диске, а .prev/ прошлого поколения цел."""
+    home = _home(tmp_path, monkeypatch)
+    live, _mpath = _minutes(tmp_path, home)
+    raw = f"**Сергей** [15:33]:\nсмотри {home}/a.md\n"
+    live.write_text(raw, encoding="utf-8")
+    live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(raw))
+    prev = live.parent / ".prev" / live.name
+
+    assert nf.restamp_transcript(live, {"Борис": "Анна"}) == 0
+    assert not prev.exists(), ".prev создан ради одного скраба пути"
+
+    previous = "**Сергей** [15:33]:\nпрошлое поколение\n".encode("utf-8")
+    prev.parent.mkdir(exist_ok=True)
+    prev.write_bytes(previous)
+    again = f"**Сергей** [15:33]:\nсмотри {home}/b.md\n"
+    live.write_text(again, encoding="utf-8")
+    live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(again))
+
+    assert nf.restamp_transcript(live, {"Борис": "Анна"}) == 0
+    text = live.read_text(encoding="utf-8")
+    assert text == "**Сергей** [15:33]:\nсмотри ~/b.md\n"
+    assert live_sidecar.read(live)["transcript_sha256"] == hashlib.sha256(live.read_bytes()).hexdigest()
+    assert prev.read_bytes() == previous
 
 
 def test_rebuild_restamp_minutes_rewrites_when_only_the_path_changes(tmp_path, monkeypatch):
@@ -637,17 +729,93 @@ def test_mcp_minutes_scrub_before_write_and_passport(tmp_path, monkeypatch):
     assert live_sidecar.read(live)["minutes_sha256"] == hashlib.sha256(mpath.read_bytes()).hexdigest()
 
 
+def _is_name(node, name: str) -> bool:
+    return isinstance(node, ast.Name) and node.id == name
+
+
+def _protocol_order(src: str) -> str | None:
+    """Порядок в ``_do_summary`` демона по AST: ``doc = minutes_document(doc)``,
+    затем ``tmp.write_text(doc, …)``, и между ними имя ``doc`` не присваивается
+    ни в какой форме (``=``, кортеж, ``+=``, аннотация, ``:=``, цель ``for`` и
+    ``with``). Ответ — причина отказа или None."""
+    funcs = [node for node in ast.walk(ast.parse(src))
+             if isinstance(node, ast.FunctionDef) and node.name == "_do_summary"]
+    if len(funcs) != 1:
+        return f"функция _do_summary в daemon.py: найдено {len(funcs)}, ждали одну"
+    nodes = list(ast.walk(funcs[0]))
+    scrubs = [node for node in nodes
+              if isinstance(node, ast.Assign) and len(node.targets) == 1
+              and _is_name(node.targets[0], "doc")
+              and isinstance(node.value, ast.Call) and _is_name(node.value.func, "minutes_document")
+              and len(node.value.args) == 1 and _is_name(node.value.args[0], "doc")]
+    if len(scrubs) != 1:
+        return f"не найдено присваивание `doc = minutes_document(doc)` (найдено {len(scrubs)})"
+    writes = [node for node in nodes
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "write_text" and _is_name(node.func.value, "tmp")
+              and node.args and _is_name(node.args[0], "doc")]
+    if len(writes) != 1:
+        return f"не найден вызов `tmp.write_text(doc, …)` (найдено {len(writes)})"
+    scrub, write = scrubs[0], writes[0]
+    start = (scrub.end_lineno, scrub.end_col_offset)
+    stop = (write.lineno, write.col_offset)
+    if not start <= stop:
+        return f"запись минуток (строка {write.lineno}) стоит раньше скраба (строка {scrub.lineno})"
+    for node in nodes:
+        if (_is_name(node, "doc") and isinstance(node.ctx, ast.Store)
+                and start <= (node.lineno, node.col_offset) < stop):
+            return (f"между скрабом (строка {scrub.lineno}) и записью (строка {write.lineno}) "
+                    f"`doc` присваивается заново на строке {node.lineno}")
+    return None
+
+
 def test_daemon_minutes_document_scrubs_and_protocol_writes_it(tmp_path, monkeypatch):
     """Ручной «Протокол» демона пишет минутки через тот же скраб, что
     черновик. Протокол — замыкание цикла демона, поэтому порядок держится по
-    исходнику: скраб после последней правки текста и до записи."""
+    AST исходника: скраб после последней правки текста и до записи."""
     home = _home(tmp_path, monkeypatch)
     assert daemon.minutes_document(f"смотри {home}/a.md\n") == "смотри ~/a.md\n"
     src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
-    body = src[src.index("    def _do_summary():"):]
-    body = body[: body.index("\n    def ", 10)]
-    call = body.index("doc = minutes_document(doc)")
-    assert body.index("doc = meeting_source.with_note(doc") < call < body.index("tmp.write_text(doc")
+    problem = _protocol_order(src)
+    assert problem is None, problem
+
+
+_PROTOCOL_OK = """
+def outer():
+    def _do_summary():
+        doc = build()
+        doc = minutes_document(doc)
+        tmp = make()
+        with lock:
+            tmp.write_text(doc, encoding="utf-8")
+"""
+
+
+@pytest.mark.parametrize("insert, reason", [
+    ("doc = doc + ''", "присваивается заново"),
+    ("doc += ''", "присваивается заново"),
+    ("doc: str = doc", "присваивается заново"),
+    ("doc, other = doc, 1", "присваивается заново"),
+    ("[(doc := doc)]", "присваивается заново"),
+    ("for doc in [doc]: pass", "присваивается заново"),
+])
+def test_protocol_order_sees_every_rebinding_of_doc(insert, reason):
+    """Сторож порядка ловит любое присваивание `doc` между скрабом и записью."""
+    assert _protocol_order(_PROTOCOL_OK) is None
+    bad = _PROTOCOL_OK.replace("        tmp = make()\n", f"        tmp = make()\n        {insert}\n")
+    assert bad != _PROTOCOL_OK
+    assert reason in (_protocol_order(bad) or "")
+
+
+def test_protocol_order_refuses_loudly_when_the_names_change():
+    """Переименование переменной — понятный отказ, а не ложный зелёный."""
+    renamed = _PROTOCOL_OK.replace("doc", "text")
+    assert "не найдено присваивание `doc = minutes_document(doc)`" in (_protocol_order(renamed) or "")
+    swapped = _PROTOCOL_OK.replace("tmp.write_text(doc", "tmp.write_text(other")
+    assert "не найден вызов `tmp.write_text(doc, …)`" in (_protocol_order(swapped) or "")
+    late = _PROTOCOL_OK.replace("        doc = minutes_document(doc)\n", "") + \
+        "        doc = minutes_document(doc)\n"
+    assert "раньше скраба" in (_protocol_order(late) or "")
 
 
 def test_scrub_count_goes_to_stderr_not_the_daemon_stdout(tmp_path, monkeypatch, capsys):

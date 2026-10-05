@@ -359,11 +359,19 @@ def is_loopback_url(url: str) -> bool:
 DATA_ROOT_MARK = "‹данные Чароита›"
 
 
+#: Наборы незакодированных знаков процентной формы. Первый — ``quote`` по
+#: умолчанию. Второй — ``URL(fileURLWithPath:).absoluteString`` на macOS:
+#: «!$&'()*+,;=:@» он оставляет как есть (замер 05.10, swift):
+#: «/Volumes/Data (2)/charoite» → «/Volumes/Data%20(2)/charoite».
+_PERCENT_SAFE = ("/", "/!$&'()*+,;=:@")
+
+
 def _needles() -> list[tuple[str, str, str]]:
     """Иглы этого вызова: (форма, «plain»|«percent», замена). Длинные — первыми.
 
     Считаются заново: тесты подменяют домашний каталог и корень данных.
-    Процентная форма — только та, что отличается от обычной; ищем её в любом
+    Процентных форм две (``_PERCENT_SAFE``): ``quote`` и запись URL файла на
+    macOS. Заводим только ту, что отличается от обычной; ищем её в любом
     месте текста. Одинаковый текст иглы не заводим дважды.
 
     Корень данных и его ``realpath`` — игла, только когда путь не равен
@@ -406,12 +414,13 @@ def _needles() -> list[tuple[str, str, str]]:
             if key not in seen:
                 seen.add(key)
                 forms.append((norm, "plain", replacement))
-            encoded = urllib.parse.quote(norm, safe="/")
-            if encoded != norm:
-                key = ("percent", encoded)
-                if key not in seen:
-                    seen.add(key)
-                    forms.append((encoded, "percent", replacement))
+            for safe in _PERCENT_SAFE:
+                encoded = urllib.parse.quote(norm, safe=safe)
+                if encoded != norm:
+                    key = ("percent", encoded)
+                    if key not in seen:
+                        seen.add(key)
+                        forms.append((encoded, "percent", replacement))
     # Длинная игла раньше короткой: дом «…/u» иначе съедает начало корня
     # «…/u 2/данные» (пробел — граница) и оставляет «~ 2/данные».
     forms.sort(key=lambda item: len(item[0]), reverse=True)
