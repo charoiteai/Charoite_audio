@@ -4,13 +4,169 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import sys
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_graph import dossier  # noqa: E402
+from charoite_graph.graph_schema import name_date  # noqa: E402
 from charoite_schema import CHAROITE  # noqa: E402
+
+
+@pytest.mark.parametrize("путь,ждём", [
+    ("Встречи/2026-03-05/sync.md", "2026-03-05"),
+    ("Встречи/2026-03-05_sync.md", "2026-03-05"),
+    ("Встречи/2026-02-30_x/2026-03-01_y.md", "2026-03-01"),
+    ("Встречи/2025-01-01_x/2026-03-01_y.md", "2026-03-01"),
+    ("Встречи/2026-01-01/2026-02-30_встреча.md", "2026-01-01"),
+    ("Встречи/2026-02-30_встреча.md", None),
+    ("Встречи/12026-03-01_x.md", None),
+    ("Встречи/2026-03-011_x.md", None),
+    ("Встречи/２０２６-０３-０１_x.md", "2026-03-01"),
+    ("Встречи\\2026-03-05\\sync.md", "2026-03-05"),
+    ("", None),
+])
+def test_дата_в_имени_берётся_из_ближайшего_сегмента(путь, ждём):
+    """Валидная дата ближайшего к файлу сегмента; невалидный день пропущен."""
+    assert name_date(путь) == ждём
+
+
+def _граф_с_датами(tmp: pathlib.Path) -> pathlib.Path:
+    """Ядро, 20 датированных встреч (дата — в каталоге) и участник из другой
+    папки. Имена идут против дат: у новейшей встречи имя по алфавиту последнее,
+    остальные по алфавиту — от новой к старой. Так база берёт 13 встреч без
+    новейшей и подаёт их от новой к старой."""
+    g = tmp / "Граф"
+    (g / "Ядра").mkdir(parents=True)
+    (g / "Документация").mkdir()
+    (g / "Ядра" / "Тема.md").write_text("# Тема\nядро темы\n", encoding="utf-8")
+    for dd in range(1, 21):
+        d = f"2026-03-{dd:02d}"
+        name = "m20" if dd == 20 else f"m{20 - dd:02d}"
+        folder = g / "Встречи" / d
+        folder.mkdir(parents=True)
+        (folder / f"{name}.md").write_text(
+            f"# {name}\n[[Ядра/Тема]] встреча {d}\n", encoding="utf-8")
+    (g / "Документация" / "Итоги.md").write_text(
+        "# Итоги\n[[Ядра/Тема]] прочее\n", encoding="utf-8")
+    return g
+
+
+def test_кластер_ставит_новейшую_встречу_после_ядра(tmp_path):
+    """В кластере ядро первым, новейшая встреча второй, дальше встречи от
+    новой к старой, прочий участник — последним."""
+    g = _граф_с_датами(tmp_path)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Тема"]
+
+    assert members[0] == "Тема"
+    assert members[1] == "m20", "новейшая встреча (2026-03-20) должна идти второй"
+    dates = [dossier.meeting_date(files[m], schema=CHAROITE) for m in members[1:21]]
+    assert dates == sorted(dates, reverse=True), dates
+    assert dates[0] == "2026-03-20" and dates[-1] == "2026-03-01"
+    assert members[21] == "Итоги", "прочий участник — последним"
+
+
+def test_meeting_date_читает_место_и_дату():
+    """Дату даёт только папка встреч схемы; архив — тоже встреча, а участник
+    другой папки и мета без полей — нет, и это не KeyError."""
+    assert dossier.meeting_date(
+        {"kind": "Встречи", "rel": "Встречи/2026-03-05/sync.md"}, schema=CHAROITE) == "2026-03-05"
+    assert dossier.meeting_date(
+        {"kind": "Встречи-архив", "rel": "Встречи-архив/2026-01-01_старое.md"},
+        schema=CHAROITE) == "2026-01-01"
+    assert dossier.meeting_date(
+        {"kind": "Документация", "rel": "Документация/2026-03-05_итоги.md"},
+        schema=CHAROITE) is None
+    assert dossier.meeting_date({"kind": "Встречи"}, schema=CHAROITE) is None
+    assert dossier.meeting_date({}, schema=CHAROITE) is None
+
+
+def test_встреча_без_даты_идёт_после_датированных(tmp_path):
+    """Цифровое имя встречи без даты не должно обгонять датированные: она
+    попадает в отдельный список, а не в общую сортировку по имени."""
+    g = tmp_path / "Граф"
+    (g / "Ядра").mkdir(parents=True)
+    (g / "Ядра" / "Тема.md").write_text("# Тема\nядро\n", encoding="utf-8")
+    for dd in range(1, 15):
+        folder = g / "Встречи" / f"2026-05-{dd:02d}"
+        folder.mkdir(parents=True)
+        (folder / f"a{dd:02d}.md").write_text("[[Ядра/Тема]]\n", encoding="utf-8")
+    (g / "Встречи" / "0_без_даты.md").write_text("[[Ядра/Тема]]\n", encoding="utf-8")
+
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Тема"]
+    dated = [m for m in members if dossier.meeting_date(files[m], schema=CHAROITE)]
+    assert len(dated) == 14
+    assert members.index("0_без_даты") > max(members.index(m) for m in dated), \
+        "встреча без даты должна идти после всех датированных"
+
+
+def _блоки(prompt: str) -> list[str]:
+    return re.findall(r"^### \[\[(.+?)\]\]", prompt, re.M)
+
+
+def _эталон_отбора(members: list[str], files: dict[str, dict]) -> list[str]:
+    """Первые участники по порядку, прошедшие бюджет, — как в build_prompt."""
+    out, total = [], 0
+    for m in members[:dossier.MAX_SOURCES]:
+        meta = files.get(m)
+        if not meta:
+            continue
+        body = re.sub(r"^---.*?^---", "", meta["text"],
+                      flags=re.S | re.M).strip()[:dossier.SRC_CHARS]
+        block = f"### [[{m}]] ({meta['kind']})\n{body}\n"
+        if total + len(block) > dossier.PROMPT_CHARS:
+            break
+        out.append(m)
+        total += len(block)
+    return out
+
+
+def test_промпт_ставит_ядро_первым_а_встречи_по_возрастанию(tmp_path):
+    """Блок ядра — первым, новейшая встреча во входе, встречи — от старой к
+    новой. База брала 13 встреч без новейшей и подавала их от новой к старой."""
+    g = _граф_с_датами(tmp_path)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Тема"]
+    prompt = dossier.build_prompt("Тема", members, files, schema=CHAROITE)
+    names = _блоки(prompt)
+
+    assert names[0] == "Тема", "блок ядра должен идти первым"
+    assert "m20" in names, "новейшая встреча обязана попасть во вход"
+    dated = [dossier.meeting_date(files[n], schema=CHAROITE) for n in names[1:]]
+    assert all(dated) and dated == sorted(dated), dated
+
+
+def test_длинные_тексты_режут_бюджет_до_перестановки(tmp_path):
+    """Состав входа равен отбору по порядку members: перестановка его не меняет,
+    а длинные тексты держат блоков меньше MAX_SOURCES."""
+    g = _граф_с_датами(tmp_path)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Тема"]
+    for meta in files.values():
+        meta["text"] = meta["text"] + "x" * (dossier.SRC_CHARS * 2)
+
+    prompt = dossier.build_prompt("Тема", members, files, schema=CHAROITE)
+    names = _блоки(prompt)
+    assert 0 < len(names) < dossier.MAX_SOURCES
+    assert "m20" in names
+    assert set(names) == set(_эталон_отбора(members, files))
+
+
+def test_отбор_блоков_не_зависит_от_перестановки(tmp_path):
+    """Сторож отбора: при любом порядке members множество блоков совпадает с
+    эталоном отбора. Сам по себе доказательством не считается."""
+    g = _граф_с_датами(tmp_path)
+    files, backlinks = dossier.scan(g, schema=CHAROITE)
+    members = dossier.clusters(files, backlinks, schema=CHAROITE)["Тема"]
+    for order in (members, list(reversed(members))):
+        prompt = dossier.build_prompt("Тема", order, files, schema=CHAROITE)
+        names = _блоки(prompt)
+        assert len(names) == len(set(names))
+        assert set(names) == set(_эталон_отбора(order, files))
 
 
 def _граф(tmp: pathlib.Path) -> pathlib.Path:

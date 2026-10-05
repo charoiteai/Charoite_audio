@@ -254,7 +254,9 @@ who is involved, every point linked to its source node. A topic cluster is a
 core plus everything that links to it; boundaries come from the links a human
 already drew. Search consults `Досье/_index.json` **first** and only goes
 into the graph for details, so "where does this topic stand" is answered from
-one written summary instead of a dozen fragments. Rebuilds are incremental: a
+one written summary instead of a dozen fragments. For a large topic the dossier
+is built from its core and its newest meetings — the date comes from the
+meeting's path — and the model reads them oldest to newest. Rebuilds are incremental: a
 dossier carries a fingerprint of its sources (microsecond precision — an edit
 landing in the same second as the scan used to go unnoticed), and an unchanged
 fingerprint means the model is not called. Topics without a dossier yet come

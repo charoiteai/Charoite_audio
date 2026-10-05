@@ -30,6 +30,7 @@ import functools
 import re
 import types
 import typing
+from datetime import date
 
 from charoite_graph.text_norm import fold
 
@@ -60,6 +61,28 @@ _DISJOINT_PAIRS = (
 #: Дата встречи в цели ссылки — правило схемы, а не поле: у любой схемы ссылка
 #: на встречу узнаётся и по дате, и по префиксу папки встреч.
 _DATE_RX = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+#: Дата в сегменте пути: цифры окружены не-цифрами, поэтому «12026-03-01» и
+#: «2026-03-011» датой не притворяются. Отдельно от `_DATE_RX`: тот ищет дату
+#: в цели ссылки, где границы не нужны.
+_NAME_DATE_RX = re.compile(r"(?<![0-9])(20[0-9]{2})-([0-9]{2})-([0-9]{2})(?![0-9])")
+
+
+def name_date(rel: str) -> str | None:
+    """Дата встречи из пути: ближайший к файлу сегмент, где есть валидная дата.
+
+    Сегменты идут от имени файла к корню, поэтому дата файла сильнее даты
+    каталога: `2025-01-01_x/2026-03-01_y.md` — это март 2026. Невалидный день
+    (`2026-02-30`) пропускается, а не роняет разбор. `fold` приводит регистр
+    и полноширинные цифры к ASCII; `\\` считается разделителем, как `/`.
+    """
+    for segment in reversed(fold(rel).replace("\\", "/").split("/")):
+        for m in _NAME_DATE_RX.finditer(segment):
+            try:
+                return date.fromisoformat(m.group(0)).isoformat()
+            except ValueError:
+                continue
+    return None
 
 
 def _name_problem(value: str) -> str | None:
