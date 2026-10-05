@@ -214,13 +214,21 @@ class Harness:
                  tail_len=500, ticks=1, lock_free=True, node_found=("Узел А",)):
         self.log = log = Journal()
 
+        daemon_cfg = {"sufler": {"live_context": True, "live_context_interval": 600}, "llm": {}}
+
         def shared(cfg, graph_dir=None, *, embedder):
+            if cfg is not daemon_cfg:   # демон обязан отдать свой конфиг, иначе граф не найден (r1, I1)
+                log.add("brain.shared: не cfg демона", cfg)
             log.add("brain.shared", graph_dir, embedder.model)
             return None if result is UNAVAILABLE else FakeGS(log, result)
 
+        def embedder(cfg, **kw):
+            if cfg is not daemon_cfg:
+                log.add("llm.embedder: не cfg демона", cfg)
+            return types.SimpleNamespace(model="bge-test")
+
         monkeypatch.setattr(brain, "shared", shared)
-        monkeypatch.setattr(llm_module, "embedder",
-                            lambda cfg, **kw: types.SimpleNamespace(model="bge-test"))
+        monkeypatch.setattr(llm_module, "embedder", embedder)
 
         @contextlib.contextmanager
         def hint_slot(who, timeout=240.0, *, clear_manual_on_busy=False, quiet=False):
@@ -241,7 +249,7 @@ class Harness:
         self.llm = FakeLLM(log, replies)
         ns = dict(vars(daemon))
         ns.update(
-            cfg={"sufler": {"live_context": True, "live_context_interval": 600}, "llm": {}},
+            cfg=daemon_cfg,
             llm=self.llm,
             tr=FakeTranscript(log, size=size, tail_len=tail_len),
             thread=FakeThread(log, thread_added, last_topic_title),

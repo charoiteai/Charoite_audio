@@ -20,6 +20,7 @@ exit code 1, если провалов больше трети — заметн�
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import math
@@ -35,6 +36,7 @@ from typing import NamedTuple
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import brain  # noqa: E402
+import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import deps  # noqa: E402
 from charoite_paths import code_root, harden_umask, log_path, resolve_root  # noqa: E402
@@ -643,38 +645,70 @@ SEED = "0"              # до №631 выдача зависит от поря�
 
 
 def code_head() -> str:
-    """HEAD кода бенча; не git-клон (установка из бандла) — «?»."""
+    """Версия кода бенча: HEAD, с «+dirty» при правках отслеживаемых файлов (иначе
+    правка без коммита читалась бы как «HEAD не менялся»); не git-клон — «?»."""
     import subprocess
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True,
-                             timeout=10, cwd=code_root(__file__))
-    except OSError:
+
+    def git(*args: str) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10,
+                                  cwd=code_root(__file__))
+        except OSError:
+            return None
+    out = git("rev-parse", "--short=12", "HEAD")
+    if out is None or out.returncode != 0 or not out.stdout.strip():
         return "?"
-    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "?"
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    return out.stdout.strip() + ("+dirty" if dirty is None or dirty.stdout.strip() else "")
+
+
+def head_changed(base: dict, rec: dict) -> bool | None:
+    """None — судить не по чему: у одной из записей версия кода неизвестна."""
+    a, b = base.get("head", "?"), rec.get("head", "?")
+    return None if "?" in (a, b) else a != b
 
 
 def qid(case: dict) -> str:
-    """Ключ вопроса в записи — хеш текста, не сам текст: вопрос эталона мог
-    смениться под тем же номером, такой вопрос не сравнивается."""
+    """Ключ вопроса в записи — хеш вопроса вместе с эталоном, не сам текст: вопрос
+    или ожидаемые факты могли смениться под тем же номером, такой вопрос не сравнивается."""
     import hashlib
-    return hashlib.sha256(str(case.get("q", "")).encode("utf-8")).hexdigest()[:12]
+    key = json.dumps([case.get("q", ""), case.get("must") or [], case.get("stale") or []],
+                     ensure_ascii=False, default=str)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
 def make_record(profile: str, mode: str, model: str, graph_fp: str, cases: list[dict],
-                out: list[Q]) -> dict:
+                out: list[Q], graph_dir: str = "") -> dict:
     import uuid
     # id — ссылка принятия на итог: время с точностью до секунды у двух прогонов совпадает
     return {"kind": "run", "id": uuid.uuid4().hex[:12], "ts": dt.datetime.now().isoformat(timespec="seconds"),
             "profile": profile, "mode": mode, "head": code_head(), "seed": os.environ.get("PYTHONHASHSEED", "?"),
-            "model": model if mode == "synth" else None, "graph": graph_fp,
+            "model": model if mode == "synth" else None, "graph": graph_fp, "graph_dir": graph_dir,
             "questions": [{"id": qid(c), "n": q.n, "cat": q.cat, "ok": q.ok, "sem": q.sem_used,
                            "status": q.status, "why": q.why, "new": q.new_pos, "old": q.old_pos,
                            "cmp": q.comparable} for c, q in zip(cases, out)]}
 
 
 def run_key(rec: dict) -> tuple:
+    """Что обязано совпасть, чтобы сравнение имело смысл; им же ключуется тревога."""
     return (rec.get("profile"), rec.get("mode"), rec.get("seed"),
-            rec.get("model") if rec.get("mode") == "synth" else None)
+            rec.get("model") if rec.get("mode") == "synth" else None, rec.get("graph_dir", ""))
+
+
+def alert_key(rec: dict) -> str:
+    return "|".join("" if x is None else str(x) for x in run_key(rec))
+
+
+@contextlib.contextmanager
+def bench_lock(root: pathlib.Path):
+    """Журнал базы и файл тревоги — разделяемое состояние: ночной прогон и ручной
+    `--record`/`--accept` читают и пишут их под одним замком."""
+    path = log_path(root, "memory_bench_baseline").with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        if not file_locks.acquire_exclusive(f, attempts=50, pause=0.1):
+            sys.exit("журнал бенча памяти занят другим прогоном дольше 5 с — запись не сделана")
+        yield
 
 
 def read_records(path: pathlib.Path) -> list[dict]:
@@ -693,9 +727,16 @@ def read_records(path: pathlib.Path) -> list[dict]:
 
 
 def append_record(path: pathlib.Path, rec: dict) -> None:
+    """Оборванная прошлая запись (без перевода строки) не склеивается с новой:
+    иначе `read_records` выбросил бы обе."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    lead = ""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb") as f:
+            f.seek(-1, os.SEEK_END)
+            lead = "" if f.read(1) == b"\n" else "\n"
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.write(lead + json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def accepted_base(records: list[dict], key: tuple) -> dict | None:
@@ -733,81 +774,120 @@ def compare(base: dict, cur: dict) -> Diff:
     return Diff(regressed, sem_diff, total)
 
 
-def update_alert(path: pathlib.Path, profile: str, payload: dict | None) -> None:
-    """Файл тревоги для утреннего брифа: ключ — профиль. Нет тревоги — ключ снят,
-    пустой файл удаляется: тревога не висит дольше прогона, который её снял."""
+def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
+    """Файл тревоги для утреннего брифа: ключ — ключ сравнения (`alert_key`).
+    `None` — сравнили, просадки нет: ключ снят, пустой файл удаляется. Состояние
+    `unmeasured` (базы нет или сравнимых вопросов мало) стоявшую тревогу не снимает,
+    а помечает: прогон, который ничего не сравнил, не свидетельствует «чисто».
+    Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except ValueError:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if payload is None:
-        data.pop(profile, None)
+    prev = data.get(key)
+    if entry is None:
+        data.pop(key, None)
+    elif entry["state"] == "unmeasured" and isinstance(prev, dict) and prev.get("state") == "alert":
+        data[key] = {**prev, "ts": entry["ts"], "unmeasured": entry["why"]}
     else:
-        data[profile] = payload
+        data[key] = entry
     if data:
+        import tempfile
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, ensure_ascii=False, indent=1))
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
     elif path.exists():
         path.unlink()
 
 
 def judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None = None) -> dict | None:
     """Запись итога и сверка с принятой базой. `graph` — для утреннего брифа: тревога
-    видна в брифе того графа, по которому мерили. -> тревога или None."""
-    base_path = log_path(root, "memory_bench_baseline")
+    видна в брифе того графа, по которому мерили. Три исхода: тревога, чисто (ключ
+    снят), не измерено (базы нет или сравнимых вопросов меньше половины). -> тревога или None."""
+    with bench_lock(root):
+        return _judge(root, rec, graph)
+
+
+def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | None:
+    base_path, alert_path = log_path(root, "memory_bench_baseline"), log_path(root, "memory_bench_alert")
     records = read_records(base_path)
     append_record(base_path, rec)
     base = accepted_base(records, run_key(rec))
+    stamp = {"ts": rec["ts"], "profile": rec["profile"], "mode": rec["mode"],
+             "graph_dir": str(graph) if graph is not None else ""}
     if base is None:
-        print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой "
-              f"--accept --profile {rec['profile']}{' --stats' if rec['mode'] == 'stats' else ''}")
-        update_alert(log_path(root, "memory_bench_alert"), rec["profile"], None)
+        hint = f"--accept --profile {rec['profile']}{' --stats' if rec['mode'] == 'stats' else ''}"
+        print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой {hint}")
+        update_alert(alert_path, alert_key(rec),
+                     {**stamp, "state": "unmeasured", "why": f"база не принята ({hint})"})
         return None
     d = compare(base, rec)
     print(f"против базы от {base['ts']}: было {passed(base)}, стало {passed(rec)}; ✓→✗ {len(d.regressed)}")
     if d.sem_diff:
         print(f"⚠ sem_used ≠ базы на {d.sem_diff} из {d.total} — эти вопросы не сравниваются "
               "(векторизатор был в одном прогоне и не был в другом)")
+    comparable = d.total - d.sem_diff
     alert = None
     if len(d.regressed) >= ALERT_MIN:
-        head_changed = base.get("head") != rec["head"]
+        h_changed = head_changed(base, rec)
         graph_changed = base.get("graph") != rec["graph"]
-        alert = {"ts": rec["ts"], "profile": rec["profile"], "mode": rec["mode"],
-                 "graph_dir": str(graph) if graph is not None else "",
-                 "base_ts": base["ts"], "was": passed(base), "now": passed(rec),
+        alert = {**stamp, "state": "alert", "base_ts": base["ts"], "was": passed(base), "now": passed(rec),
                  "regressed": [{"n": q["n"], "cat": q["cat"], "why": q["why"]} for q in d.regressed],
-                 "head_changed": head_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff}
+                 "head_changed": h_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff}
         print(f"ТРЕВОГА: {len(d.regressed)} вопросов ✓→✗ при том же sem_used")
         for q in d.regressed:
             print(f"  №{q['n']} {q['cat']}" + (f" — {q['why']}" if q["why"] else ""))
-        print(f"HEAD изменился: {'да' if head_changed else 'нет'}; граф изменился: {'да' if graph_changed else 'нет'}")
+        print(f"HEAD изменился: {yes_no(h_changed)}; граф изменился: {yes_no(graph_changed)}")
         for q in d.regressed:
             if q["cat"] == "latest":
                 print(f"  latest №{q['n']}: {q['why'] or 'не выдано'} (новое@{q['new']}, старое@{q['old']})")
-    update_alert(log_path(root, "memory_bench_alert"), rec["profile"], alert)
+        update_alert(alert_path, alert_key(rec), alert)
+    elif comparable < max(ALERT_MIN, d.total // 2 + d.total % 2):
+        why = f"сравнимо {comparable} из {d.total} вопросов (sem_used ≠ базы)"
+        print(f"не измерено: {why} — тревога не снимается")
+        update_alert(alert_path, alert_key(rec), {**stamp, "state": "unmeasured", "why": why})
+    else:
+        update_alert(alert_path, alert_key(rec), None)
     return alert
 
 
-def accept(root: pathlib.Path, profile: str, mode: str, reason: str) -> None:
-    """Принять последнюю запись профиля и режима базой. Итог хуже прежней базы —
-    только с причиной (`--reason`): молча опущенная планка — не база."""
+def yes_no(v: bool | None) -> str:
+    return "неизвестно" if v is None else "да" if v else "нет"
+
+
+def accept(root: pathlib.Path, profile: str, mode: str, reason: str, graph_dir: str = "") -> None:
+    """Принять последнюю запись профиля и режима этого графа базой. Итог хуже прежней
+    базы — только с причиной (`--reason`): молча опущенная планка — не база. Итог,
+    прошедший через откат модели (`fallback:?`), базой не годится: модель неизвестна."""
+    with bench_lock(root):
+        _accept(root, profile, mode, reason, graph_dir)
+
+
+def _accept(root: pathlib.Path, profile: str, mode: str, reason: str, graph_dir: str) -> None:
     path = log_path(root, "memory_bench_baseline")
     records = read_records(path)
     runs = [r for r in records if r.get("kind") == "run" and r.get("profile") == profile
-            and r.get("mode") == mode and r.get("seed") == SEED]
+            and r.get("mode") == mode and r.get("seed") == SEED and r.get("graph_dir", "") == graph_dir]
     if not runs:
-        sys.exit(f"нечего принимать: записей {profile}/{mode} с seed {SEED} нет — сначала прогон с --record")
+        sys.exit(f"нечего принимать: записей {profile}/{mode} с seed {SEED} по этому графу нет — "
+                 "сначала прогон с --record")
     last = runs[-1]
+    if str(last.get("model") or "").startswith("fallback:"):
+        sys.exit("последний итог прошёл через откат модели (fallback:?) — базой не годится, повторите прогон")
     prev = accepted_base(records, run_key(last))
     if prev is not None and passed(last) < passed(prev) and not reason:
         sys.exit(f"итог {passed(last)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
     append_record(path, {"kind": "accept", "ts": dt.datetime.now().isoformat(timespec="seconds"),
                          "run": last["id"], "profile": profile, "mode": mode, "seed": last["seed"],
-                         "model": last.get("model"), "reason": reason})
+                         "model": last.get("model"), "graph_dir": graph_dir, "reason": reason})
     print(f"база {profile}/{mode} принята: итог от {last['ts']}, {passed(last)}/{len(last['questions'])}"
           + (f" — причина: {reason}" if reason else ""))
 
@@ -857,9 +937,6 @@ def main() -> None:
     if args.reason and not args.accept:
         ap.error("--reason — только вместе с --accept")
     mode = "stats" if args.stats or args.profile == "live" else "synth"
-    if args.accept:
-        accept(_root(), args.profile, mode, args.reason)
-        return
     pin_hash_seed(args.profile)
 
     cfg_path = _root() / "config" / "config.yaml"
@@ -892,6 +969,9 @@ def main() -> None:
     else:
         graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
         bench_file = _root() / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
+    if args.accept:
+        accept(_root(), args.profile, mode, args.reason, str(graph))
+        return
     if not bench_file.exists():
         # Не настроен — не то же самое, что провален. Раньше здесь был выход с
         # ошибкой, и ночная джоба каждую ночь печатала «БЕНЧ ПАМЯТИ ПРОСЕЛ» у
@@ -916,7 +996,7 @@ def main() -> None:
         out, model, graph_fp = run_profile(brain.PROFILES[args.profile], graph, emb, cases,
                                            stats=args.stats, cfg=cfg)
         if args.record:
-            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out), graph)
+            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out, str(graph)), graph)
         return
     if args.brain:
         require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур

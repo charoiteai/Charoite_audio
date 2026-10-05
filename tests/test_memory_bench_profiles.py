@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import types
 
 import pytest
 
@@ -171,15 +172,17 @@ def test_profiles_match_brain():
 CASES = [{"q": f"вопрос {i}", "must": ["x"]} for i in range(5)]
 
 
-def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=None, whys=None):
+def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=None, whys=None,
+         mode="stats", graph_dir=""):
     sems = sems or [True] * len(oks)
     out = [mb.Q(i + 1, (cats or ["fact"] * len(oks))[i], ok, sems[i], "confident",
                 (whys or [""] * len(oks))[i]) for i, ok in enumerate(oks)]
     monkey_head[0] = head
-    return mb.make_record(profile, "stats", "", graph, CASES[:len(oks)], out)
+    return mb.make_record(profile, mode, "", graph, CASES[:len(oks)], out, graph_dir)
 
 
 monkey_head = ["aaa"]
+REAL_CODE_HEAD = mb.code_head
 
 
 @pytest.fixture(autouse=True)
@@ -189,19 +192,25 @@ def _fixed_head(monkeypatch):
 
 
 def _alert(root):
+    """Файл тревоги по профилю записи (ключ файла — `alert_key`, в тестах профиль однозначен)."""
     p = root / "logs" / "memory_bench_alert.json"
-    return mb.json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+    if not p.exists():
+        return None
+    return {v["profile"] + ("" if v["mode"] == "stats" else "/" + v["mode"]): v
+            for v in mb.json.loads(p.read_text(encoding="utf-8")).values()}
 
 
 def _accept_first(root, oks, **kw):
     mb.judge(root, _rec(oks, **kw))
-    mb.accept(root, kw.get("profile", "answer"), "stats", "")
+    mb.accept(root, kw.get("profile", "answer"), kw.get("mode", "stats"), "", kw.get("graph_dir", ""))
 
 
-def test_no_baseline_says_so_and_raises_nothing(tmp_path, capsys):
+def test_no_baseline_says_so_and_marks_the_watch_unarmed(tmp_path, capsys):
+    """Без базы тревоги нет, но и молчания нет: бриф увидит «сторож не взведён» (DS I3 r1)."""
     assert mb.judge(tmp_path, _rec([True] * 5)) is None
     assert "база не принята" in capsys.readouterr().out
-    assert _alert(tmp_path) is None
+    entry = _alert(tmp_path)["answer"]
+    assert entry["state"] == "unmeasured" and "--accept --profile answer --stats" in entry["why"]
 
 
 def test_two_regressions_with_same_sem_used_raise_the_alert(tmp_path, capsys):
@@ -244,6 +253,104 @@ def test_clean_run_lifts_the_alert_of_its_profile_only(tmp_path):
     assert set(_alert(tmp_path)) == {"live"}
     mb.judge(tmp_path, _rec([True] * 5, profile="live"))
     assert _alert(tmp_path) is None
+
+
+def test_other_mode_does_not_lift_the_alert(tmp_path):
+    """Тревога ключуется тем же ключом, что и база: ручной прогон synth без базы
+    не снимает ночную тревогу stats (Sonnet I2 r1)."""
+    _accept_first(tmp_path, [True] * 5)
+    mb.judge(tmp_path, _rec([False, False, True, True, True]))
+    mb.judge(tmp_path, _rec([True] * 5, mode="synth"))
+    got = _alert(tmp_path)
+    assert got["answer"]["state"] == "alert" and got["answer/synth"]["state"] == "unmeasured"
+
+
+def test_run_that_compares_too_little_keeps_the_alert(tmp_path, capsys):
+    """Векторизатор лёг на всех вопросах — сравнивать нечего: тревога стоит и
+    помечена, а не снята как «чисто» (Sonnet I3, DS I1 r1)."""
+    _accept_first(tmp_path, [True] * 5)
+    mb.judge(tmp_path, _rec([False, False, True, True, True]))
+    capsys.readouterr()
+    assert mb.judge(tmp_path, _rec([False, False, True, True, True], sems=[False] * 5)) is None
+    assert "не измерено: сравнимо 0 из 5" in capsys.readouterr().out
+    entry = _alert(tmp_path)["answer"]
+    assert entry["state"] == "alert" and entry["unmeasured"].startswith("сравнимо 0 из 5")
+    mb.judge(tmp_path, _rec([True] * 5, sems=[True, True, False, False, False]))
+    assert _alert(tmp_path)["answer"]["state"] == "alert", "2 из 5 сравнимы — меньше половины"
+    mb.judge(tmp_path, _rec([True] * 5, sems=[True, True, True, False, False]))
+    assert _alert(tmp_path) is None, "3 из 5 — сравнили, просадки нет: снята"
+
+
+def test_baseline_is_per_graph(tmp_path, capsys):
+    """База графа «А» не судит прогон графа «Б» (DS M4 r1)."""
+    _accept_first(tmp_path, [True] * 5, graph_dir="/А")
+    mb.judge(tmp_path, _rec([True] * 5, graph_dir="/Б"))
+    with pytest.raises(SystemExit, match="по этому графу нет"):
+        mb.accept(tmp_path, "answer", "stats", "", "/В")
+    capsys.readouterr()
+    assert mb.judge(tmp_path, _rec([False] * 5, graph_dir="/Б")) is None
+    assert "база не принята" in capsys.readouterr().out
+    mb.accept(tmp_path, "answer", "stats", "", "/А")
+    assert mb.judge(tmp_path, _rec([False] * 5, graph_dir="/А")) is not None
+
+
+def test_question_key_covers_the_expected_facts():
+    """Правка эталона под тем же вопросом — другой вопрос, а не ложное ✓→✗ (Sonnet M1 r1)."""
+    base = {"q": "вопрос", "must": ["a"], "stale": ["b"]}
+    assert mb.qid(base) == mb.qid(dict(base))
+    assert mb.qid(base) != mb.qid({**base, "must": ["c"]})
+    assert mb.qid(base) != mb.qid({**base, "stale": []})
+
+
+def test_append_after_a_torn_line_keeps_the_new_record(tmp_path, capsys):
+    """Оборванная запись без перевода строки не склеивается с новой (Sonnet M2 r1)."""
+    _accept_first(tmp_path, [True] * 5)
+    path = tmp_path / "logs" / "memory_bench_baseline.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"kind": "run", "ts"')
+    mb.judge(tmp_path, _rec([True] * 5))
+    kinds = [r["kind"] for r in mb.read_records(path)]
+    assert kinds == ["run", "accept", "run"]
+
+
+def test_fallback_model_is_not_a_baseline(tmp_path):
+    rec = _rec([True] * 5, mode="synth")
+    rec["model"] = "fallback:?"
+    mb.judge(tmp_path, rec)
+    with pytest.raises(SystemExit, match="откат модели"):
+        mb.accept(tmp_path, "answer", "synth", "")
+
+
+def test_head_unknown_or_dirty_is_not_unchanged(monkeypatch):
+    """«?» с «?» — не «HEAD не менялся»; правка без коммита видна (Sonnet M3 r1)."""
+    assert mb.head_changed({"head": "?"}, {"head": "?"}) is None
+    assert mb.head_changed({"head": "abc"}, {"head": "abc+dirty"}) is True
+    assert mb.head_changed({"head": "abc"}, {"head": "abc"}) is False
+    import subprocess
+    answers = {"rev-parse": "abc123\n", "status": " M src/brain.py\n"}
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: types.SimpleNamespace(
+        returncode=0, stdout=answers[argv[1]]))
+    assert REAL_CODE_HEAD() == "abc123+dirty"
+    answers["status"] = ""
+    assert REAL_CODE_HEAD() == "abc123"
+
+
+def test_judge_holds_the_bench_lock(tmp_path, monkeypatch):
+    """Чтение и запись журнала и тревоги — под замком: ночной и ручной прогоны
+    не теряют ключи друг друга (DS I2 r1)."""
+    seen = []
+    real = mb.update_alert
+
+    def probe(path, key, entry):
+        lock = mb.log_path(tmp_path, "memory_bench_baseline").with_suffix(".lock")
+        with lock.open("a") as f:
+            seen.append(mb.file_locks.held_by_someone(f))
+        real(path, key, entry)
+
+    monkeypatch.setattr(mb, "update_alert", probe)
+    mb.judge(tmp_path, _rec([True] * 5))
+    assert seen == [True]
+    assert not list((tmp_path / "logs").glob("*.tmp")), "временный файл тревоги не остаётся"
 
 
 def test_baseline_is_per_profile_mode_and_seed(tmp_path, monkeypatch, capsys):

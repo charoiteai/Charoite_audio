@@ -66,6 +66,13 @@ def test_search_with_a_graph_requires_an_embedder(tmp_path):
         brain.search(brain.ANSWER, "вопрос", graph=tmp_path)
 
 
+def test_search_without_a_source_is_an_error():
+    """Без `cfg` и без `graph` памяти взяться неоткуда: ошибка вызова, а не
+    «граф не настроен», которое демон проглотил бы молча."""
+    with pytest.raises(ValueError, match="источника памяти нет"):
+        brain.search(brain.ANSWER, "вопрос")
+
+
 def test_search_passes_the_profile_numbers_to_the_engine(monkeypatch):
     seen = {}
 

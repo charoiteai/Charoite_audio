@@ -278,6 +278,10 @@ def search(profile: Profile, query: str, *, cfg: dict | None = None,
     `MemoryUnavailable`, как раньше `vault_search`. Демон даёт `cfg`; бенч и
     демо — `graph` и `embedder` (векторизатор — часть ключа общего индекса, без
     него ключа нет)."""
+    if cfg is None and graph is None:
+        # Источник не задан — пустой конфиг дал бы «граф не настроен», и демон, который
+        # глотает ошибки памяти, молча ответил бы без неё (круг 629p2 r1, Sonnet I1)
+        raise ValueError("search: ни cfg (демон), ни graph (бенч, демо) — источника памяти нет")
     if graph is not None and embedder is None:
         raise ValueError("search: граф задан без векторизатора — у общего индекса "
                          "нет ключа (модель — часть ключа, см. shared)")

@@ -66,3 +66,27 @@ def test_broken_alert_file_does_not_break_the_brief(tmp_path, monkeypatch):
 def test_no_alert_file_no_line(tmp_path, monkeypatch):
     graph = _setup(tmp_path, monkeypatch, None)
     assert "бенч памяти" not in morning_brief.build_brief(graph)
+
+
+def test_unarmed_watch_is_a_line_not_silence(tmp_path, monkeypatch):
+    """База не принята — бриф говорит, что сторож не взведён (DS I3 r1)."""
+    graph = tmp_path / "Работа"
+    entry = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "profile": "answer", "mode": "stats",
+             "graph_dir": str(graph), "state": "unmeasured",
+             "why": "база не принята (--accept --profile answer --stats)"}
+    graph = _setup(tmp_path, monkeypatch, {"k": entry})
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line == ("- ⚠️ бенч памяти (answer/stats): сторож не взведён — "
+                    "база не принята (--accept --profile answer --stats)")
+
+
+def test_alert_kept_by_an_uncomparable_run_says_so(tmp_path, monkeypatch):
+    graph = tmp_path / "Работа"
+    alert = _alert(graph)
+    alert["answer"].update(mode="stats", state="alert", head_changed=None,
+                           unmeasured="сравнимо 0 из 37 вопросов (sem_used ≠ базы)")
+    graph = _setup(tmp_path, monkeypatch, alert)
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.startswith("- ⚠️ бенч памяти (answer/stats): было 30, стало 27")
+    assert "HEAD изменился: неизвестно" in line
+    assert line.endswith("; последний прогон не сравним: сравнимо 0 из 37 вопросов (sem_used ≠ базы)")

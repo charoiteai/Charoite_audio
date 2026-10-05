@@ -76,13 +76,19 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
 
 def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
     """Строки брифа из logs/memory_bench_alert.json — тревога ночного бенча памяти
-    (№629 ч. 2): свежая и про этот граф. Номера и категории вопросов, не тексты."""
+    (№629 ч. 2): свежая и про этот граф. Номера и категории вопросов, не тексты.
+    Два состояния: `alert` — просадка против базы; `unmeasured` — сторож не взведён
+    (база не принята или сравнимых вопросов мало), немым он быть не должен."""
     path = log_path(resolve_root(__file__), "memory_bench_alert")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         items = list(data.values())
     except (OSError, ValueError, AttributeError):
         return []
+
+    def yes_no(v) -> str:
+        return "неизвестно" if v is None else "да" if v else "нет"
+
     out = []
     for a in items:
         try:
@@ -91,11 +97,18 @@ def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
             fresh = dt.datetime.now() - made <= dt.timedelta(hours=max_age_h)
             if not (mine and fresh):
                 continue
+            who = f"{a['profile']}/{a['mode']}" if a.get("mode") else a["profile"]
+            if a.get("state") == "unmeasured":
+                out.append(f"- ⚠️ бенч памяти ({who}): сторож не взведён — {a['why']}")
+                continue
             qs = ", ".join(f"№{q['n']} {q['cat']}" + (f" ({q['why']})" if q.get("why") else "")
                            for q in a["regressed"])
-            out.append(f"- ⚠️ бенч памяти ({a['profile']}): было {a['was']}, стало {a['now']}; ✓→✗ {qs}; "
-                       f"HEAD изменился: {'да' if a['head_changed'] else 'нет'}, "
-                       f"граф изменился: {'да' if a['graph_changed'] else 'нет'}")
+            line = (f"- ⚠️ бенч памяти ({who}): было {a['was']}, стало {a['now']}; ✓→✗ {qs}; "
+                    f"HEAD изменился: {yes_no(a['head_changed'])}, "
+                    f"граф изменился: {yes_no(a['graph_changed'])}")
+            if a.get("unmeasured"):
+                line += f"; последний прогон не сравним: {a['unmeasured']}"
+            out.append(line)
         except (KeyError, TypeError, ValueError):
             continue
     return out
