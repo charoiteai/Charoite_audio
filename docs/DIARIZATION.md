@@ -83,8 +83,8 @@ Charoite uses two diarization passes:
    whole meeting is labelled as a room, and the owner's speech may spread over
    several neutral labels. A single
    microphone label with no call and 3–12 live voices gets no name (its speech
-   cannot go to one person), and the transcript header says why. A failed
-   system-channel diarization or a recording under 20 s is not silence.
+   cannot go to one person), and the transcript header says why. A system
+   channel recording of 20 s or less is not diarized and is not silence.
    Microphone segments that overlap system-channel speech by more than half are
    dropped as echo; clusters with too little speech (under 25 s on the system
    channel, under 10 s on the microphone) go to the large cluster nearest in
@@ -92,7 +92,13 @@ Charoite uses two diarization passes:
    the local LLM behind trust guards (see "Names" below). The result replaces
    the live draft transcript.
    Without the recordings, or when neither channel yields segments, the live
-   transcript stays as it is.
+   transcript stays as it is. A channel longer than 20 s that the engine
+   failed to diarize (a failure, not silence) cancels the re-pass too: a
+   final built from the other channel alone would lose the owner or the other
+   side, so the live transcript stays and the meeting is marked as not
+   rebuilt. One exception: on a call, Nemotron heard next to no speech on the
+   microphone and sherpa then failed on it; the microphone counts as empty,
+   and the final is written without the owner's lines.
 
 Without `models/diar/embedding.onnx` Charoite still works: channel labels
 (you vs. the other side) are used instead of per-voice labels.

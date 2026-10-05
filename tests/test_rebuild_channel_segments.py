@@ -703,15 +703,22 @@ def test_an_empty_mic_answer_is_a_refusal_with_its_own_reason(meeting, monkeypat
     assert f"**{OWNER}**" in text
 
 
-def test_the_mic_note_is_dropped_when_sherpa_labels_nothing_either(meeting, monkeypatch):
-    """Шапка не говорит «размечено запасным движком», когда запасной не разметил
-    тоже (выход №509, M1 Sonnet)."""
+def test_a_call_mic_lost_by_both_engines_cancels_the_rebuild(meeting, monkeypatch):
+    """№622 B1, путь 3: звонок, Nemotron отказал на микрофоне, sherpa упала —
+    сбой, а не тишина: финал по одному каналу собеседников потерял бы владельца.
+    Пересборка отменена, живая стенограмма цела, причина отката — в журнале.
+    Был тестом «шапка молчит, когда запасной не разметил тоже» (выход №509, M1
+    Sonnet): до шапки этот случай больше не доходит, случай [] сторожит
+    `test_the_mic_note_is_dropped_when_sherpa_finds_no_speech`."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
         CALL_BH, fp.Outcome(fp.FAILED, reason="нет весов")))
     meeting["raw"]["mic"] = None
-    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    _assert_channel_lost(rt.rebuild(meeting["live"], _nemotron_cfg()), meeting)
     assert [label for label, _ in meeting["calls"]] == ["mic"]
-    assert "Речь микрофона размечена" not in text
+    assert _lost_lines(said) == [f"{rt.CHANNEL_LOST_REASON}: микрофон, 60 с записи; "
+                                 f"откат движка: {rt.ENGINE_REFUSED_REASON}"]
 
 
 @pytest.mark.parametrize("payload", [[(0.0, 59.0, 0)], [(0.0, 15.0, 2)]], ids=["монолог", "ровно порог"])
@@ -721,7 +728,7 @@ def test_one_mic_segment_is_a_valid_answer(payload, monkeypatch, tmp_path):
     charoite_paths.use_data_root(tmp_path, replace=True)
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
-    assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 60.0) == (payload, "")
+    assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 60.0) == (payload, "", False)
 
 
 def test_a_thin_mic_answer_is_a_refusal(monkeypatch, tmp_path):
@@ -732,7 +739,7 @@ def test_a_thin_mic_answer_is_a_refusal(monkeypatch, tmp_path):
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(fp.OK, payload=[(0.0, 7.0, 0), (100.0, 107.9, 1)]))
     assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 3600.0) == (
-        None, "Nemotron — 15 с речи на 3600 с записи микрофона, меньше 15 с")
+        None, "Nemotron — 15 с речи на 3600 с записи микрофона, меньше 15 с", True)
 
 
 def test_when_the_call_channel_fell_back_the_mic_stays_on_sherpa(meeting, monkeypatch):
@@ -927,7 +934,7 @@ def test_the_call_mic_floor_counts_overlaps_once(monkeypatch, tmp_path):
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
                         lambda *a, **k: fp.Outcome(fp.OK, payload=[(0.0, 8.0, 0), (6.0, 14.0, 0)]))
     assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 3600.0) == (
-        None, "Nemotron — 14 с речи на 3600 с записи микрофона, меньше 15 с")
+        None, "Nemotron — 14 с речи на 3600 с записи микрофона, меньше 15 с", True)
 
 
 @pytest.mark.parametrize("segs,expected", [
@@ -1127,14 +1134,15 @@ def test_a_call_that_speaks_gets_no_veto(meeting):
 
 
 def test_a_failed_call_channel_is_not_silence(meeting):
-    """Сбой разметки канала собеседников (None) — не тишина: звонок мог быть, живой
-    счёт включает его собеседников. Микрофон — в авто, вердикта нет (выход r1)."""
+    """Сбой разметки длинного канала собеседников (None) — не тишина и не комната:
+    пересборка отменена до микрофона (№622 B1, путь 1). Прежде здесь микрофон
+    уходил в авто без вердикта (выход r1 №559); «короткая запись — не тишина»
+    сторожит `test_a_short_call_recording_is_not_silence`."""
     _room(meeting)
     meeting["raw"]["blackhole"] = None
     meeting["raw"]["mic"] = [(0.0, 40.0, 3), (45.0, 57.0, 3)]
-    text = rt.rebuild(meeting["live"], CFG).read_text(encoding="utf-8")
-    assert ("mic", -1) in meeting["calls"] and ("mic", 7) not in meeting["calls"]
-    assert "дала одну метку" not in text
+    _assert_channel_lost(rt.rebuild(meeting["live"], CFG), meeting, LIVE_ROOM)
+    assert meeting["calls"] == [("blackhole", 7)]
 
 
 def test_a_short_call_recording_is_not_silence(meeting):
@@ -1379,3 +1387,168 @@ def test_a_short_beep_on_nemotron_is_a_room_for_the_mic(meeting, monkeypatch):
     assert [channel for channel, _ in asked] == ["blackhole", "mic"]
     assert meeting["calls"] == []
     assert OWNER not in text
+
+
+# ------------------------------------- гейт потерянного канала (№622 B1)
+
+def _assert_channel_lost(out, meeting, live_text="живая стенограмма"):
+    """Отмена: устранимый отказ с кодом потерянного канала, живая стенограмма цела."""
+    assert isinstance(out, rt.RebuildSkipped) and out.reason == rt.RebuildSkipped.CHANNEL_LOST
+    assert bool(out) is False
+    assert meeting["live"].read_text(encoding="utf-8") == live_text
+    assert sorted(p.name for p in meeting["live"].parent.iterdir()) == [meeting["live"].name]
+
+
+def _lost_lines(said):
+    return [line for line in said if line.startswith(rt.CHANNEL_LOST_REASON)]
+
+
+def test_a_lost_call_channel_cancels_the_rebuild_before_the_mic(meeting, monkeypatch):
+    """Путь 1: sherpa упала на длинном канале собеседников, микрофон размечался бы
+    — финал по одному микрофону потерял бы собеседников. Отмена до микрофона:
+    на часе записи это минуты sherpa впустую."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    meeting["raw"]["blackhole"] = None
+    _assert_channel_lost(rt.rebuild(meeting["live"], CFG), meeting)
+    assert [label for label, _ in meeting["calls"]] == ["blackhole"]
+    assert _lost_lines(said) == [f"{rt.CHANNEL_LOST_REASON}: канал собеседников, 60 с записи"]
+
+
+def test_a_lost_call_channel_after_a_nemotron_refusal_names_the_fallback(meeting, monkeypatch):
+    """Путь 1, второй вариант: отказ Nemotron, затем сбой sherpa — в строке
+    журнала причина отката движка, без сырого отказа с путями (№495)."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", lambda *a, **k: fp.Outcome(
+        fp.FAILED, reason="нет весов"))
+    meeting["raw"]["blackhole"] = None
+    _assert_channel_lost(rt.rebuild(meeting["live"], _nemotron_cfg()), meeting)
+    assert [label for label, _ in meeting["calls"]] == ["blackhole"]
+    assert _lost_lines(said) == [f"{rt.CHANNEL_LOST_REASON}: канал собеседников, 60 с записи; "
+                                 f"откат движка: {rt.ENGINE_REFUSED_REASON}"]
+
+
+@pytest.mark.parametrize("sherpa,said_sherpa", [(None, "не разметила"), ([], "речи не нашла")],
+                         ids=["sherpa упала", "sherpa пусто"])
+def test_a_thin_call_mic_and_a_failed_sherpa_write_the_final_without_the_owner(
+        sherpa, said_sherpa, meeting, monkeypatch):
+    """Путь 2: Nemotron ответил на микрофоне звонка, но почти тишиной, sherpa
+    упала. Ответ движка есть — микрофон размечен пустым, финал по каналу
+    собеседников, как до гейта; шапка не говорит «размечено запасным движком».
+    Sherpa без речи — тот же финал; журнал в обоих случаях говорит, почему
+    владельца нет (выход r1, DS Minor)."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        CALL_BH, fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0)])))
+    meeting["raw"]["mic"] = sherpa
+    out = rt.rebuild(meeting["live"], _nemotron_cfg())
+    assert isinstance(out, pathlib.Path)
+    text = out.read_text(encoding="utf-8")
+    assert "Собеседник 1" in text and "Собеседник 2" in text
+    assert f"**{OWNER}**" not in text
+    assert "Речь микрофона размечена" not in text
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    assert _lost_lines(said) == []
+    assert f"mic: Nemotron услышал почти тишину, sherpa {said_sherpa} — микрофон размечен пустым" in said
+
+
+def test_a_lost_room_mic_cancels_the_rebuild(meeting, monkeypatch):
+    """Путь 4: комната — Nemotron разметил канал собеседников, гейт звонка молчит.
+    Nemotron на микрофоне отвергнут тонким ответом, sherpa упала: отрезки
+    микрофона здесь — вся стенограмма, исключения пути 2 у комнаты нет."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
+        fp.Outcome(fp.OK, payload=[(100.0, 130.0, 0)]), fp.Outcome(fp.OK, payload=[(0.0, 5.0, 0)])))
+    _room(meeting)
+    meeting["raw"]["mic"] = None
+    _assert_channel_lost(rt.rebuild(meeting["live"], _nemotron_cfg()), meeting, LIVE_ROOM)
+    assert [label for label, _ in meeting["calls"]] == ["mic"]
+    assert _lost_lines(said) == [
+        f"{rt.CHANNEL_LOST_REASON}: микрофон, 60 с записи; откат движка: "
+        "Nemotron — 5 с речи на 60 с записи микрофона, меньше 15 с"]
+
+
+def test_a_lost_mic_on_sherpa_cancels_the_rebuild(meeting, monkeypatch):
+    """Путь 6: движок sherpa, канал собеседников размечен, микрофон упал —
+    финал по одним собеседникам потерял бы владельца."""
+    said = []
+    monkeypatch.setattr(rt, "log", said.append)
+    meeting["raw"]["mic"] = None
+    _assert_channel_lost(rt.rebuild(meeting["live"], CFG), meeting)
+    assert [label for label, _ in meeting["calls"]] == ["blackhole", "mic"]
+    assert _lost_lines(said) == [f"{rt.CHANNEL_LOST_REASON}: микрофон, 60 с записи"]
+
+
+@pytest.mark.parametrize("channel", ["mic", "blackhole"])
+def test_a_channel_of_exactly_the_threshold_is_not_lost(channel, meeting):
+    """Ровно MIN_DIARIZE_S — канал не размечается, его None — не сбой: пересборка
+    идёт по второму каналу, как на базе."""
+    meeting["len"][channel] = rt.MIN_DIARIZE_S
+    meeting["raw"][channel] = None
+    out = rt.rebuild(meeting["live"], CFG)
+    assert isinstance(out, pathlib.Path)
+    assert channel not in [label for label, _ in meeting["calls"]]
+
+
+@pytest.mark.parametrize("channel", ["mic", "blackhole"])
+def test_a_channel_one_second_over_the_threshold_is_lost(channel, meeting):
+    meeting["len"][channel] = rt.MIN_DIARIZE_S + 1
+    meeting["raw"][channel] = None
+    out = rt.rebuild(meeting["live"], CFG)
+    assert out == rt.RebuildSkipped(rt.RebuildSkipped.CHANNEL_LOST)
+    _assert_channel_lost(out, meeting)
+
+
+def test_a_nemotron_refusal_on_the_mic_is_not_thin(monkeypatch, tmp_path):
+    """Третье значение `mic_channel_engine` — True только на тонком ответе; отказ
+    движка — False (годный ответ — `test_one_mic_segment_is_a_valid_answer`)."""
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.FAILED, reason="нет весов"))
+    assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "x_mic.wav", 60.0) == (
+        None, rt.ENGINE_REFUSED_REASON, False)
+
+
+def test_main_marks_a_lost_channel_in_the_status(meeting, monkeypatch):
+    """Настоящий гейт до статуса: длинный канал собеседников не размечен — встреча
+    готова (`ready`) с кодом `RebuildSkipped.CHANNEL_LOST`, машинного финала нет.
+    Подмены `main()` — как у тестов №500 A (`test_rebuild_skipped.py`)."""
+    import subprocess
+    import yaml
+    root = meeting["live"].parent.parent
+    (root / "config").mkdir()
+    (root / "config" / "config.yaml").write_text(
+        yaml.safe_dump({"audio": AUDIO, "sufler": {"user_name": OWNER, "graph": False}},
+                       allow_unicode=True), encoding="utf-8")
+    meeting["raw"]["blackhole"] = None
+    calls = []
+
+    class Status:
+        def __init__(self, *a, **k):
+            pass
+
+        def processing(self, *a):
+            pass
+
+        def ready(self, *a):
+            calls.append(("ready", *a))
+
+        def failed(self, *a):
+            calls.append(("failed", *a))
+
+        def has_transcript(self, _live):
+            return True
+
+    monkeypatch.setattr(sys, "argv", ["rebuild_transcript.py", str(meeting["live"])])
+    monkeypatch.setattr(rt, "MeetingStatusStore", Status)
+    monkeypatch.setattr(rt, "_take_rebuild_queue", lambda: None)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "log", lambda m: None)
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: subprocess.CompletedProcess(argv, 0))
+    monkeypatch.setenv("CHAROITE_NO_RETRY", "1")
+    rt.main()
+    assert calls == [("ready", meeting["live"], None, rt.RebuildSkipped.CHANNEL_LOST)]
+    assert meeting["calls"] == [("blackhole", -1)]
