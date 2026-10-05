@@ -14,6 +14,7 @@ import unicodedata
 import urllib.parse
 
 import numpy as np
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -670,6 +671,14 @@ def test_text_without_a_slash_is_returned_as_is(tmp_path, monkeypatch):
     assert privacy.scrub_local_paths("без путей") == ("без путей", 0)
 
 
+@pytest.mark.parametrize("home", ["/", "//", "///"])
+def test_degenerate_home_is_not_a_needle(monkeypatch, home):
+    """Дом без имени каталога иглой не становится: «//» в тексте — не путь машины."""
+    monkeypatch.setenv("HOME", home)
+    text = "ссылка https://x, a // b, конец //"
+    assert privacy.scrub_local_paths(text) == (text, 0)
+
+
 def _rt_minutes(tmp_path, body: str):
     live = tmp_path / "2026-09-11_1533.md"
     live.write_text("# Встреча\n", encoding="utf-8")
@@ -708,6 +717,8 @@ def test_rebuild_restamp_minutes_refusals_answer_false(tmp_path, monkeypatch, ca
         monkeypatch.setattr(rt.name_fixes, "rewrite_meeting_text", boom)
         assert rt.restamp_minutes(live, {}) is False
         assert said in capsys.readouterr().out
+    # Без подмены: настоящий rewrite_file сам замечает, что файла нет.
+    monkeypatch.undo()
     mpath.unlink()
     assert rt.restamp_minutes(live, {}) is False
     assert capsys.readouterr().out == ""
