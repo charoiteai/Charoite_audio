@@ -76,6 +76,7 @@ import media_meta  # noqa: E402
 import voice_memos_bridge  # noqa: E402
 import channel_trace  # noqa: E402
 import live_sidecar  # noqa: E402
+import privacy  # noqa: E402
 import transcript_origin  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
@@ -1131,22 +1132,35 @@ def main() -> None:
     elif ext in SUBS:
         kind = transcript_origin.SUBS
         from vocabulary import apply as vapply, compile_rules
-        entries = parse_subs(vapply(src.read_text(encoding="utf-8", errors="ignore"),
-                                    compile_rules(cfg)))
+        # Скраб до словаря: правило с тем же словом, что имя каталога,
+        # переписало бы его между «/», и игла больше не совпала бы.
+        subs_raw, _scrub = privacy.scrub_local_paths(
+            src.read_text(encoding="utf-8", errors="ignore"))
+        entries = parse_subs(vapply(subs_raw, compile_rules(cfg)))
         if not entries:
             sys.exit("в субтитрах не нашлось реплик")
-        safe_write.write_text(tpath, subs_to_transcript(entries, stamp, source_mark(src.name, src.stat().st_size)))
+        # Второй скраб не нужен: source_mark — имя файла и размер, игла
+        # начинается с «/», тело уже без пути.
+        subs_text = subs_to_transcript(
+            entries, stamp, source_mark(src.name, src.stat().st_size))
+        safe_write.write_text(tpath, subs_text)
         speakers = sorted({sp for _, sp, _ in entries if sp})
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
     elif ext in TEXT:
         kind = transcript_origin.TEXT
         from vocabulary import apply as vapply, compile_rules
-        body = vapply(src.read_text(encoding="utf-8", errors="ignore").strip(),
-                      compile_rules(cfg))
+        raw_body = src.read_text(encoding="utf-8", errors="ignore").strip()
+        # Скраб до словаря — та же причина, что у субтитров выше.
+        scrubbed_body, _scrub = privacy.scrub_local_paths(raw_body)
+        body = vapply(scrubbed_body, compile_rules(cfg))
         if len(body) < 200:
             sys.exit("текст слишком короткий для встречи")
-        safe_write.write_text(tpath, f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n")
+        # Второй скраб не нужен: source_mark — имя файла и размер, игла
+        # начинается с «/», тело уже без пути.
+        imported = (
+            f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n")
+        safe_write.write_text(tpath, imported)
         print(f"стенограмма из текста: {tpath}")
     else:
         sys.exit(f"не понимаю формат {ext}: жду {sorted(AUDIO | TEXT | SUBS)}")

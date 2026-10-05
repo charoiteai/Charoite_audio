@@ -108,9 +108,9 @@ def test_live_draft_minutes_go_through_normalize():
     как месяц назад»). Проверяем ПОРЯДОК, а не наличие строки: перенос
     normalize после write_text давал бы ложный зелёный (DS I2 по #462)."""
     daemon = (SRC / "daemon.py").read_text(encoding="utf-8")
-    # Литерал маркера уехал в transcript.MINUTES_DRAFT_MARK (её же снимает
-    # пересборка) — якорь контракта теперь запись черновика через константу.
-    draft = daemon[: daemon.index('MINUTES_DRAFT_MARK + "\\n" + out')]
+    # Сборка черновика — minutes_draft: маркер и скраб живут в ней, а не
+    # литералом в цикле. Якорь — вызов, порядок normalize до записи тот же.
+    draft = daemon[: daemon.index("minutes_draft(out)")]
     tail = draft[draft.rindex("if out.strip():"):]
     assert "action_items.normalize(out)" in tail, (
         "черновиковая запись минуток должна прогонять текст через "

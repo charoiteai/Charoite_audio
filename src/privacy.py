@@ -40,9 +40,14 @@ True, то есть строка вместо булева давала обла
 from __future__ import annotations
 
 import os
+import pathlib
+import re
+import sys
+import unicodedata
 import urllib.parse
 
 import charoite_graph.address_policy as address_policy   # без ребра на узел пакета (слой graph)
+import charoite_paths
 from charoite_graph.net import AmbiguousAddress, direct_url, is_loopback_host, loopback_url, url_host
 
 # Два имени одного рубильника: проект переименовался в Charoite, демон
@@ -347,3 +352,168 @@ def is_loopback_url(url: str) -> bool:
     а на чужой машине это значит уронить её соседям.
     """
     return loopback_url(url)
+
+
+#: Корень данных, который не лежит в домашнем каталоге. Не путь: в стенограмме
+#: не должно остаться ни каталога, ни имени учётки.
+DATA_ROOT_MARK = "‹данные Чароита›"
+
+
+#: Наборы незакодированных знаков процентной формы. Первый — ``quote`` по
+#: умолчанию. Второй — ``URL(fileURLWithPath:).absoluteString`` на macOS:
+#: «!$&'()*+,;=:@» он оставляет как есть (замер 05.10, swift):
+#: «/Volumes/Data (2)/charoite» → «/Volumes/Data%20(2)/charoite».
+_PERCENT_SAFE = ("/", "/!$&'()*+,;=:@")
+
+
+def _needles() -> list[tuple[str, str, str]]:
+    """Иглы этого вызова: (форма, «plain»|«percent», замена). Длинные — первыми.
+
+    Считаются заново: тесты подменяют домашний каталог и корень данных.
+    Процентных форм две (``_PERCENT_SAFE``): ``quote`` и запись URL файла на
+    macOS. Заводим только ту, что отличается от обычной; ищем её в любом
+    месте текста. Одинаковый текст иглы не заводим дважды.
+
+    Корень данных и его ``realpath`` — игла, только когда путь не равен
+    домашнему и не лежит в нём (и то же для ``realpath`` домашнего). Вложенный
+    корень закрывает игла дома: замена та же, отдельная игла не нужна.
+    """
+    # pathlib и realpath отдают путь без «/» в конце; «/» отсеивает put.
+    home = pathlib.Path.home()
+    homes: list[str] = []
+    for text in (str(home), os.path.realpath(home)):
+        if text not in homes:
+            homes.append(text)
+    root = charoite_paths.resolve_root(__file__)
+    roots: list[str] = []
+    for text in (str(root), os.path.realpath(root)):
+        if text not in roots:
+            roots.append(text)
+
+    repl: dict[str, str] = {}
+
+    def put(path: str, replacement: str) -> None:
+        # Короче двух знаков: пусто зациклило бы поиск, «/» заменил бы
+        # каждый каталог. Прочий один знак иглой не бывает.
+        if len(path) < 2:
+            return
+        repl[path] = replacement
+
+    for path in homes:
+        put(path, "~")
+    for path in roots:
+        if any(path == home or path.startswith(home + "/") for home in homes):
+            continue
+        put(path, DATA_ROOT_MARK)
+
+    forms: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for path, replacement in repl.items():
+        for norm in (unicodedata.normalize("NFC", path), unicodedata.normalize("NFD", path)):
+            key = ("plain", norm)
+            if key not in seen:
+                seen.add(key)
+                forms.append((norm, "plain", replacement))
+            for safe in _PERCENT_SAFE:
+                encoded = urllib.parse.quote(norm, safe=safe)
+                if encoded != norm:
+                    key = ("percent", encoded)
+                    if key not in seen:
+                        seen.add(key)
+                        forms.append((encoded, "percent", replacement))
+    # Длинная игла раньше короткой: дом «…/u» иначе съедает начало корня
+    # «…/u 2/данные» (пробел — граница) и оставляет «~ 2/данные».
+    forms.sort(key=lambda item: len(item[0]), reverse=True)
+    return forms
+
+
+def _name_continues(char: str) -> bool:
+    """Буква, цифра, «_» или «-»: этим знаком имя каталога ещё не кончилось."""
+    return char.isalpha() or char.isdecimal() or char in "_-"
+
+
+def _boundary(text: str, end: int) -> bool:
+    """После иглы путь кончился, а не продолжилось имя каталога.
+
+    Конец текста, «/», NUL и любой знак, кроме буквы, цифры, «_», «-» и «.».
+    Точка — граница, только если за ней конец текста или знак, который имя
+    не продолжает: «…/u.» обрывается, «…/u.old» — нет.
+    """
+    if end >= len(text):
+        return True
+    char = text[end]
+    if char == ".":
+        nxt = end + 1
+        if nxt >= len(text):
+            return True
+        return not _name_continues(text[nxt])
+    return not _name_continues(char)
+
+
+_PERCENT_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
+
+
+def _percent_equal(segment: str, form: str) -> bool:
+    """Процентная запись: ``%XX`` сравнивается без учёта регистра шестнадцатеричных.
+
+    ``form`` — вывод ``urllib.parse.quote``: шестнадцатеричные заглавные, а «%»
+    в нём бывает только началом записи (сам знак «%» пути уходит в ``%25``).
+    """
+    return _PERCENT_ESCAPE.sub(lambda m: m.group().upper(), segment) == form
+
+
+def scrub_local_paths(text: str) -> tuple[str, int]:
+    """Убрать из текста встречи абсолютные пути этой машины.
+
+    Домашний каталог (и его ``realpath``) становится ``~``. Корень данных вне
+    домашнего — ``‹данные Чароита›``. Отказывать в записи из-за пути нельзя:
+    пропала бы стенограмма. Возвращает (текст, число замен). В журнал, если
+    замены были, уходит только это число.
+
+    Иглы — на каждый вызов. Совпадает путь целиком: следом конец текста,
+    «/», NUL или любой знак, кроме буквы, цифры, ``_``, ``-`` и точки внутри
+    имени. Формы: NFC, NFD и процентная запись в любом месте текста.
+    Длинная игла заменяется раньше короткой. Повторный вызов ничего не меняет.
+    """
+    if "/" not in text:
+        return text, 0
+    needles = _needles()
+    out: list[str] = []
+    index = 0
+    count = 0
+    size = len(text)
+    while index < size:
+        if text[index] != "/":
+            nxt = text.find("/", index)
+            if nxt == -1:
+                out.append(text[index:])
+                break
+            out.append(text[index:nxt])
+            index = nxt
+            continue
+        matched: tuple[int, str] | None = None
+        for form, kind, replacement in needles:
+            end = index + len(form)
+            if end > size or not _boundary(text, end):
+                continue
+            if kind == "percent":
+                if not _percent_equal(text[index:end], form):
+                    continue
+            elif not text.startswith(form, index):
+                continue
+            matched = (len(form), replacement)
+            break
+        if matched is None:
+            out.append("/")
+            index += 1
+            continue
+        length, replacement = matched
+        out.append(replacement)
+        index += length
+        count += 1
+    if not count:
+        return text, 0
+    # Только число: сам путь в журнал не пишем. В stderr: stdout демона —
+    # построчный JSON для приложения, а скраб зовут его нити мимо замка emit.
+    print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr)
+    return "".join(out), count

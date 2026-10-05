@@ -26,6 +26,7 @@ import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
+import privacy
 from config_loader import fingerprint, load_user_or_example
 from llm import LLM, LLMHTTPError, forget_fit
 
@@ -337,6 +338,9 @@ def sufler_make_minutes() -> str:
         out, action_items.participants_of(transcript, owner=user_name), user_name,
         lang=str(_sufler.get("language") or "ru"))
     out = meeting_source.with_note(out, source.recording_note)   # строка итога — механически
+    # Путь машины, повторённый моделью из речи или заметки, — до записи и
+    # паспорта: хеш снимается с тех же байтов, что лягут на диск (№504).
+    out, _scrub = privacy.scrub_local_paths(out)
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
     tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")

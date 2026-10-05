@@ -120,7 +120,12 @@ recording. Thresholds live in `config/config.yaml` under `sufler.autostop`.
 ## After Stop
 
 Processing is independent of the window. The app reads actual pipeline state;
-it does not invent a percentage.
+it does not invent a percentage. A transcript, the minutes, the meeting hints,
+the archive canon and an imported meeting are stored with this Mac's paths
+replaced: the home directory becomes `~`, and a data root that sits outside
+the home becomes `‹данные Чароита›`. A directory name continues only with a
+letter, a digit, `_`, `-`, or a dot inside the name. The hidden one-generation
+copy kept to restore a hand edit stays as it was. Logs are not rewritten.
 
 | State | What it means | What to do |
 |---|---|---|

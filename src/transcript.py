@@ -9,6 +9,7 @@ import re
 import threading
 
 import meeting_stamp
+import privacy
 
 # Легаси эпохи whisper: он галлюцинировал на тишине готовыми фразами из
 # субтитров («продолжение следует…»), и мы вырезали их списком. GigaAM (Сбер),
@@ -523,8 +524,13 @@ class Transcript:
         return text
 
     def note(self, line: str):
-        """Заметка ко-мышления (📌/💎/💭) — в конец файла, отдельным разделом."""
+        """Заметка ко-мышления (📌/💎/💭) — в конец файла, отдельным разделом.
+
+        Путь машины снимается до записи: пересборка может выйти раньше своего
+        скраба, и тогда живой файл и есть стенограмма встречи.
+        """
         with self._lock:
+            line, _n = privacy.scrub_local_paths(line)
             self._notes.append(f"{dt.datetime.now():%H:%M} {line}")
         self._save()
 
