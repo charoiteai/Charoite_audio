@@ -833,15 +833,10 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
         update_alert(alert_path, alert_key(rec),
                      {**stamp, "state": "unmeasured", "why": f"база не принята ({hint})"})
         return None
-    if rec["head"].endswith("+dirty") and rec["head"] != base.get("head"):
-        # правка без коммита против базы на другом коде: «чисто» здесь не говорит о
-        # коде, который пойдёт в работу, — тревогу не снимаем и не поднимаем
-        print(f"не сравниваю: прогон на незакоммиченном коде против базы на другом коде "
-              f"({rec['head']} против {base.get('head', '?')}); взвести сторож на этом коде — {hint}")
-        update_alert(alert_path, alert_key(rec),
-                     {**stamp, "state": "unmeasured",
-                      "why": f"прогон на незакоммиченном коде против базы на другом коде ({hint})"})
-        return None
+    # правка без коммита против базы на другом коде: поднять тревогу такой прогон может —
+    # измерено то, что работает на этой машине; снять — нет: код, который пойдёт в
+    # работу, им не проверен
+    dirty_other = rec["head"].endswith("+dirty") and rec["head"] != base.get("head")
     d = compare(base, rec)
     print(f"против базы от {base['ts']}: было {passed(base)}, стало {passed(rec)}; ✓→✗ {len(d.regressed)}")
     if d.sem_diff:
@@ -854,8 +849,10 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
         graph_changed = base.get("graph") != rec["graph"]
         alert = {**stamp, "state": "alert", "base_ts": base["ts"], "was": passed(base), "now": passed(rec),
                  "regressed": [{"n": q["n"], "cat": q["cat"], "why": q["why"]} for q in d.regressed],
-                 "head_changed": h_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff}
-        print(f"ТРЕВОГА: {len(d.regressed)} вопросов ✓→✗ при том же sem_used")
+                 "head_changed": h_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff,
+                 "dirty": dirty_other}
+        print(f"ТРЕВОГА: {len(d.regressed)} вопросов ✓→✗ при том же sem_used"
+              + ("; прогон на незакоммиченном коде" if dirty_other else ""))
         for q in d.regressed:
             print(f"  №{q['n']} {q['cat']}" + (f" — {q['why']}" if q["why"] else ""))
         print(f"HEAD изменился: {yes_no(h_changed)}; граф изменился: {yes_no(graph_changed)}")
@@ -867,6 +864,13 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
         why = f"сравнимо {comparable} из {d.total} вопросов (sem_used ≠ базы)"
         print(f"не измерено: {why} — тревога не снимается")
         update_alert(alert_path, alert_key(rec), {**stamp, "state": "unmeasured", "why": why})
+    elif dirty_other:
+        print(f"просадки нет, но прогон на незакоммиченном коде против базы на другом коде "
+              f"({rec['head']} против {base.get('head', '?')}) — тревога не снимается; "
+              f"взвести сторож на этом коде — {hint}")
+        update_alert(alert_path, alert_key(rec),
+                     {**stamp, "state": "unmeasured",
+                      "why": f"прогон на незакоммиченном коде против базы на другом коде ({hint})"})
     else:
         update_alert(alert_path, alert_key(rec), None)
     return alert

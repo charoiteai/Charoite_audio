@@ -75,6 +75,15 @@ def test_fresh_alert_has_no_age_tail(tmp_path, monkeypatch):
     assert "последний замер" not in line and line.endswith("граф изменился: нет; итог r1d")
 
 
+def test_alert_raised_on_uncommitted_code_says_so(tmp_path, monkeypatch):
+    graph = tmp_path / "Работа"
+    alert = _alert(graph)
+    alert["answer"].update(state="alert", dirty=True)
+    graph = _setup(tmp_path, monkeypatch, alert)
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.endswith("граф изменился: нет; прогон на незакоммиченном коде")
+
+
 def test_stale_unarmed_watch_is_not_shown(tmp_path, monkeypatch):
     graph = tmp_path / "Работа"
     entry = {"ts": (dt.datetime.now() - dt.timedelta(hours=48)).isoformat(timespec="seconds"),

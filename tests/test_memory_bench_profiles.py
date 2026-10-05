@@ -474,17 +474,22 @@ def test_dirty_run_without_regression_does_not_lift_the_alert(tmp_path, capsys):
     capsys.readouterr()
     assert mb.judge(tmp_path, _rec([True] * 5, head="xxx+dirty")) is None
     said = capsys.readouterr().out
-    assert "не сравниваю: прогон на незакоммиченном коде против базы на другом коде (xxx+dirty против aaa)" in said
+    assert "прогон на незакоммиченном коде против базы на другом коде (xxx+dirty против aaa)" in said
+    assert "тревога не снимается" in said
     entry = _alert(tmp_path)["answer"]
     assert entry["state"] == "alert" and entry["unmeasured"].startswith("прогон на незакоммиченном коде")
     assert "--accept --run " in entry["unmeasured"], "бриф говорит, чем взвести сторож"
 
 
-def test_dirty_run_with_regression_against_other_code_raises_nothing(tmp_path):
+def test_dirty_run_with_regression_against_other_code_raises_the_alert(tmp_path, capsys):
+    """Грязный прогон тревогу поднять может — измерено то, что работает на машине; пометка
+    говорит, что причину искать не в коммитах."""
     _accept_first(tmp_path, [True] * 5)
-    assert mb.judge(tmp_path, _rec([False] * 5, head="aaa+dirty")) is None
+    capsys.readouterr()
+    alert = mb.judge(tmp_path, _rec([False, False, True, True, True], head="aaa+dirty"))
+    assert alert is not None and "прогон на незакоммиченном коде" in capsys.readouterr().out
     entry = _alert(tmp_path)["answer"]
-    assert entry["state"] == "unmeasured" and "незакоммиченном" in entry["why"]
+    assert entry["state"] == "alert" and entry["dirty"] is True
 
 
 def test_dirty_run_on_the_base_code_is_judged(tmp_path):

@@ -110,6 +110,8 @@ def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
             line = (f"- ⚠️ бенч памяти ({who}): было {a['was']}, стало {a['now']}; ✓→✗ {qs}; "
                     f"HEAD изменился: {yes_no(a['head_changed'])}, "
                     f"граф изменился: {yes_no(a['graph_changed'])}")
+            if a.get("dirty"):
+                line += "; прогон на незакоммиченном коде"
             if a.get("unmeasured"):
                 line += f"; последний прогон не сравним: {a['unmeasured']}"
             if stale:
