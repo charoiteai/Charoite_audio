@@ -7,12 +7,18 @@ Mac с сетью (сверка в PR). Здесь держится то, что
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import os
 import pathlib
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import textwrap
+import time
+import urllib.parse
 import wave
 
 import pytest
@@ -24,6 +30,23 @@ sys.path.insert(0, str(ROOT / "src"))
 import install_engine as ie  # noqa: E402
 import diarize_nemotron as nem  # noqa: E402
 import foreign_python as fp  # noqa: E402
+import get_models  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_swap_flag():
+    """Признак фиксации — на процесс: тесты, зовущие `swap_in` напрямую, не должны
+    оставлять его взведённым следующему (иначе `_cancel` молчал бы до установки)."""
+    ie._SWAP_COMMITTED = False
+    yield
+    ie._SWAP_COMMITTED = False
+
+
+def _raise(exc):
+    """Шаг, который падает заданным исключением — подмена install/check в main."""
+    def step(*_a, **_k):
+        raise exc
+    return step
 
 
 def _lock(tmp_path: pathlib.Path, head: str) -> pathlib.Path:
@@ -156,19 +179,23 @@ def _spec(tmp_path, events, *, probe_ok=True):
         probe=lambda *a, **k: pytest.fail("установка не зовёт пробу --probe"), diarize=diarize)
 
 
-def test_install_copies_installs_fetches_probes_then_swaps(tmp_path, monkeypatch):
+def test_install_copies_installs_fetches_probes_then_swaps(tmp_path, monkeypatch, capsys):
     events = []
     copy, spec = _spec(tmp_path, events)
     monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
     monkeypatch.setattr(ie, "check_machine", lambda lock: events.append(("check", lock)))
     monkeypatch.setattr(ie, "copy_interpreter", copy)
     monkeypatch.setattr(ie, "pip_install", lambda python, lock: events.append(("pip", python.name, lock)))
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: events.append(("voice", root)))
     assert ie.install("nemotron", tmp_path) == 0
-    assert events == [("check", spec.lock), "copy", ("pip", "python3", spec.lock),
+    # порядок: набор голосов sherpa → окружение → веса → проба → замена
+    assert events == [("check", spec.lock), ("voice", tmp_path), "copy",
+                      ("pip", "python3", spec.lock),
                       ("weights", nem.model_dir(tmp_path)), ("probe", "python3", "probe.wav", tmp_path)]
     assert nem.engine_python(tmp_path).is_file()
     assert sorted(p.name for p in nem.engine_dir(tmp_path).iterdir()) == ["python"]   # проба не осталась
     assert sorted(p.name for p in nem.engine_dir(tmp_path).parent.iterdir()) == [".nemotron.install.lock", "nemotron"]
+    assert "sufler.diarize_backend: nemotron" in capsys.readouterr().out, "финал называет шаг включения"
 
 
 def test_a_failed_probe_keeps_the_old_env_and_cleans_the_staging(tmp_path, monkeypatch):
@@ -181,6 +208,7 @@ def test_a_failed_probe_keeps_the_old_env_and_cleans_the_staging(tmp_path, monke
     monkeypatch.setattr(ie, "check_machine", lambda lock: None)
     monkeypatch.setattr(ie, "copy_interpreter", copy)
     monkeypatch.setattr(ie, "pip_install", lambda python, lock: None)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: None)
     with pytest.raises(ie.Refused, match="проба не прошла"):
         ie.install("nemotron", tmp_path)
     assert [p.name for p in home.iterdir()] == ["прежнее"]
@@ -193,6 +221,7 @@ def _mocked_steps(tmp_path, monkeypatch, events):
     monkeypatch.setattr(ie, "check_machine", lambda lock: None)
     monkeypatch.setattr(ie, "copy_interpreter", copy)
     monkeypatch.setattr(ie, "pip_install", lambda python, lock: None)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: None)
 
 
 def test_leftovers_of_an_interrupted_install_are_swept(tmp_path, monkeypatch):
@@ -217,8 +246,9 @@ def test_the_old_env_comes_back_when_the_swap_was_cut_between_renames(tmp_path):
     assert [p.name for p in home.iterdir()] == ["прежнее"] and not old.exists()
 
 
-def test_a_second_install_is_refused_while_one_runs(tmp_path, monkeypatch):
-    """Замок установки занят — отказ до любой работы: временный каталог соседки цел."""
+def test_a_second_install_is_busy_not_a_plain_refusal(tmp_path, monkeypatch):
+    """Замок установки занят — «занято» до любой работы: временный каталог соседки цел,
+    а исход отличим снаружи своим кодом (`EXIT_INSTALL_BUSY`)."""
     events = []
     _mocked_steps(tmp_path, monkeypatch, events)
     home = nem.engine_dir(tmp_path)
@@ -226,7 +256,7 @@ def test_a_second_install_is_refused_while_one_runs(tmp_path, monkeypatch):
     neighbour = home.with_name(".nemotron.new-7")
     neighbour.mkdir()
     with ie.one_install(home):
-        with pytest.raises(ie.Refused, match="замок установки"):
+        with pytest.raises(ie.InstallBusy, match="другая установка"):
             ie.install("nemotron", tmp_path)
     assert events == [] and neighbour.is_dir()
 
@@ -365,6 +395,14 @@ def test_main_turns_a_refusal_into_code_one_and_a_reason(tmp_path, monkeypatch, 
     assert "не поставлено: машина не та" in capsys.readouterr().err
 
 
+def test_a_process_group_refusal_is_code_one_without_a_trace(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
+    monkeypatch.setattr(ie, "enter_process_group", _raise(ie.Refused("группа не далась")))
+    assert ie.main(["nemotron"]) == 1
+    assert "не поставлено: группа не далась" in capsys.readouterr().err
+
+
 def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
     """В канале (`| tee`, лог) строки «сеть: …» доходят до читателя раньше вывода pip, который
     пишет в тот же дескриптор мимо буфера Python. Без строчной буферизации stdout они приходили
@@ -382,6 +420,7 @@ def test_the_network_lines_reach_a_pipe_before_pip_writes(tmp_path):
 
         ie.check_machine = lambda lock: None
         ie.copy_interpreter = copy
+        ie.ensure_voice_set = lambda root: None
         ie.pip_install = lambda python, lock: os.write(1, b"PIP\\n")   # как pip: мимо буфера Python
         spec = ie.ENGINES["nemotron"]
         ie.ENGINES["nemotron"] = ie.EngineSpec(**{{**spec.__dict__, "fetch_weights": lambda dest: None,
@@ -478,3 +517,673 @@ def test_the_doctor_from_the_bundle_writes_no_bytecode_into_it(tmp_path):
                          capture_output=True, text=True, timeout=120, env=env)
     assert out.returncode == 0, out.stderr[-300:]
     assert _listing(app) == before, sorted(_listing(app) - before)
+
+
+# ---- Исход установщика: занято, отмена, отказ (№622 B2) ----------------------
+
+
+def _main_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "enter_process_group", lambda env=None: False)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
+
+
+def test_the_cancel_handler_raises_a_base_exception():
+    """Отмена — `BaseException`, не `SystemExit`: `get_models` ловит SystemExit вокруг
+    загрузки набора, и отмена на этом шаге прочиталась бы ошибкой загрузки (код 1)."""
+    with pytest.raises(ie.InstallCancelled):
+        ie._cancel(signal.SIGTERM, None)
+    assert issubclass(ie.InstallCancelled, BaseException)
+    assert not issubclass(ie.InstallCancelled, Exception)
+
+
+def test_main_translates_cancellation_into_its_code(tmp_path, monkeypatch, capsys):
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "install", _raise(ie.InstallCancelled("получен сигнал 15")))
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+    assert "отменено: получен сигнал 15" in capsys.readouterr().err
+
+
+def test_main_translates_a_keyboard_interrupt_into_cancellation(tmp_path, monkeypatch, capsys):
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "install", _raise(KeyboardInterrupt()))
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+    assert "отменено:" in capsys.readouterr().err
+
+
+def test_a_signal_during_the_voice_set_cancels_with_its_code(tmp_path, monkeypatch, capsys):
+    """Отмена на шаге набора голосов: обработчик бросает `InstallCancelled` мимо
+    `except SystemExit` загрузчика, и `main` отдаёт код отмены, а не 1."""
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: signal.raise_signal(signal.SIGTERM))
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+    assert "отменено:" in capsys.readouterr().err
+
+
+def test_install_does_not_start_while_the_machine_is_busy(tmp_path, monkeypatch):
+    """Непустой `busy_now` — «занято» до любой работы; каталог установки даже не создаётся."""
+    monkeypatch.setattr(ie, "busy_now", lambda root: ["живая запись"])
+    with pytest.raises(ie.InstallBusy, match="живая запись"):
+        ie.install("nemotron", tmp_path)
+    assert not nem.engine_dir(tmp_path).exists()
+
+
+def test_main_translates_busy_into_its_code(tmp_path, monkeypatch, capsys):
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "install", _raise(ie.InstallBusy("идёт разбор встречи")))
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_BUSY
+    assert "занято: идёт разбор встречи" in capsys.readouterr().err
+
+
+def test_a_running_night_makes_the_installer_busy(tmp_path, monkeypatch, capsys):
+    """Свежий logs/nightly.json со state=running: код 12 и «ночной цикл» в тексте —
+    установщик видит идущую ночь общим вердиктом `busy_signals.machine_busy`."""
+    _main_root(tmp_path, monkeypatch)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "nightly.json").write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_BUSY
+    err = capsys.readouterr().err
+    assert "ночной цикл" in err and "дождитесь конца и повторите установку" in err
+
+
+def test_a_processed_meeting_names_its_stage_words(tmp_path, monkeypatch, capsys):
+    """Стадия разбора встречи уходит читателю словами: «разбор встречи (<стадия>)»."""
+    _main_root(tmp_path, monkeypatch)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "встреча.json").write_text(
+        json.dumps({"state": "processing", "stage": "transcribe", "updated_at": time.time()}),
+        encoding="utf-8")
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_BUSY
+    err = capsys.readouterr().err
+    assert "разбор встречи (transcribe)" in err
+
+
+def test_a_free_machine_lets_the_install_proceed(tmp_path, monkeypatch):
+    """Свободная машина — занятости нет, установка идёт (общий вердикт её не выдумывает)."""
+    _mocked_steps(tmp_path, monkeypatch, [])
+    assert ie.busy_now(tmp_path) == []
+    assert ie.install("nemotron", tmp_path) == 0
+
+
+def test_a_volume_without_flock_is_a_refusal_with_code_one(tmp_path, monkeypatch):
+    """Том без flock — не «занято»: отказ со своим текстом и кодом 1."""
+    monkeypatch.setattr(ie.file_locks, "acquire_outcome", lambda f, *a, **k: ie.file_locks.NO_FLOCK)
+    home = nem.engine_dir(tmp_path)
+    home.parent.mkdir(parents=True)
+    with pytest.raises(ie.Refused, match="flock"):
+        with ie.one_install(home):
+            pass
+
+
+@pytest.mark.parametrize("code", [None, 0])
+def test_a_loader_exit_without_a_reason_is_code_one(tmp_path, monkeypatch, capsys, code):
+    """`SystemExit(0|None)` из шага внутри `try` — отказ кодом 1, а не «поставлено»:
+    argparse с `--help` стоит выше `try` и сюда не попадает."""
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "ensure_voice_set", _raise(SystemExit(code)))
+    assert ie.main(["nemotron"]) == 1
+    assert "загрузчик вышел без причины" in capsys.readouterr().err
+
+
+def test_a_get_models_refusal_becomes_code_one(tmp_path, monkeypatch, capsys):
+    """`SystemExit` с текстом из `get_models.download` — «не поставлено» кодом 1."""
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "install", _raise(SystemExit("не скачалось: сеть")))
+    assert ie.main(["nemotron"]) == 1
+    assert "не поставлено: не скачалось: сеть" in capsys.readouterr().err
+
+
+def test_the_voice_set_is_checked_and_fetched_in_process(tmp_path, monkeypatch):
+    """Набор голосов sherpa ставится функциями `get_models` в этом же процессе: годное
+    не трогаем, недостающее качаем."""
+    calls = []
+    monkeypatch.setattr(ie.get_models, "check",
+                        lambda dest, min_bytes: None if dest.name == "embedding.onnx" else "нет")
+    monkeypatch.setattr(ie.get_models, "download",
+                        lambda url, dest, size, sha256="": calls.append((dest.name, url)))
+    ie.ensure_voice_set(tmp_path)
+    assert calls == [("segmentation.onnx", get_models.SEGMENTATION[get_models.SEG_DEFAULT].url)]
+
+
+def test_a_cancel_inside_the_real_voice_set_download_is_code_13(tmp_path, monkeypatch, capsys):
+    """Отмена посреди настоящей загрузки набора голосов: подменённый `urlopen` бросает
+    `InstallCancelled`, загрузчик ловит только `URLError`/`OSError` — отмена доходит до
+    `main` кодом 13, а не читается отказом загрузки."""
+    events = []
+    copy, spec = _spec(tmp_path, events)
+    monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
+    monkeypatch.setattr(ie, "check_machine", lambda lock: None)
+    monkeypatch.setattr(ie, "copy_interpreter", copy)
+    monkeypatch.setattr(ie, "pip_install", lambda python, lock: None)
+    _main_root(tmp_path, monkeypatch)
+
+    def cancelled(req, timeout=None):
+        raise ie.InstallCancelled("получен сигнал 15")
+    monkeypatch.setattr(ie.get_models.urllib.request, "urlopen", cancelled)
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+    assert "отменено:" in capsys.readouterr().err
+
+
+def test_the_license_is_printed_in_the_network_block(tmp_path, monkeypatch, capsys):
+    """Лицензия весов — строка в блоке сети, до соединения (и до вывода pip)."""
+    _mocked_steps(tmp_path, monkeypatch, [])
+    ie.install("nemotron", tmp_path)
+    out = capsys.readouterr().out
+    assert get_models.NEMOTRON_LICENSE[0] in out and get_models.NEMOTRON_LICENSE[1] in out
+    assert out.index("сеть:") < out.index(get_models.NEMOTRON_LICENSE[0])
+
+
+# ---- Группа процессов (№622 B2) ---------------------------------------------
+
+
+def test_the_process_group_changes_only_on_the_app_signal(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ie.os, "setpgid", lambda *a: calls.append(a))
+    # не лидер группы: иначе проверка «уже лидер» увела бы вызов setpgid
+    monkeypatch.setattr(ie.os, "getpgrp", lambda: 0)
+    assert ie.enter_process_group({}) is False
+    assert calls == [], "группа сменилась без признака от приложения — Ctrl-C не дойдёт"
+    assert ie.enter_process_group({ie.NEW_PGROUP_ENV: "1"}) is True
+    assert calls == [(0, 0)]
+
+
+def test_an_already_group_leader_is_not_touched(monkeypatch):
+    """Лидер сессии всегда и лидер группы: `setpgid(0, 0)` на нём бросил бы EPERM."""
+    calls = []
+    monkeypatch.setattr(ie.os, "setpgid", lambda *a: calls.append(a))
+    monkeypatch.setattr(ie.os, "getpgrp", lambda: os.getpid())
+    assert ie.enter_process_group({ie.NEW_PGROUP_ENV: "1"}) is True
+    assert calls == []
+
+
+def test_a_failed_setpgid_is_a_refusal(monkeypatch):
+    monkeypatch.setattr(ie.os, "getpgrp", lambda: 0)
+
+    def deny(*_a):
+        raise OSError("EPERM")
+    monkeypatch.setattr(ie.os, "setpgid", deny)
+    with pytest.raises(ie.Refused, match="лидером группы"):
+        ie.enter_process_group({ie.NEW_PGROUP_ENV: "1"})
+
+
+_ENTER_DRIVER = textwrap.dedent(f"""
+    import os, sys
+    sys.path[:0] = [{str(ROOT / "scripts")!r}, {str(ROOT / "src")!r}]
+    import install_engine as ie
+    print(ie.enter_process_group())
+    print(os.getpgrp(), os.getpid())
+""")
+
+
+def _run_enter_driver(*, new_session=False, with_var=True):
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+    if with_var:
+        env[ie.NEW_PGROUP_ENV] = "1"
+    return subprocess.run([sys.executable, "-c", _ENTER_DRIVER], capture_output=True, text=True,
+                          timeout=60, env=env, start_new_session=new_session)
+
+
+def test_a_child_with_the_variable_gets_its_own_group():
+    out = _run_enter_driver()
+    assert out.returncode == 0, out.stderr
+    words = out.stdout.split()
+    assert words[0] == "True"
+    pgrp, pid = int(words[1]), int(words[2])
+    assert pgrp == pid and pgrp != os.getpgrp()
+
+
+def test_a_session_leader_with_the_variable_does_not_fail():
+    """Ребёнок — лидер сессии (и группы): `setpgid` на нём дал бы EPERM, а не 0 и «True»."""
+    out = _run_enter_driver(new_session=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[0] == "True"
+
+
+def test_without_the_variable_the_group_stays_the_parents():
+    out = _run_enter_driver(with_var=False)
+    assert out.returncode == 0, out.stderr
+    words = out.stdout.split()
+    assert words[0] == "False"
+    assert int(words[1]) == os.getpgrp()
+
+
+def test_check_enters_the_process_group_but_plan_does_not(tmp_path, monkeypatch):
+    """`--check` зовёт `spec.probe`, а та запускает интерпретатор движка дочерним
+    процессом: при признаке приложения он обязан войти в группу, чтобы SIGKILL
+    группе погасил и пробу. `--plan` ничего не запускает — группу не трогает
+    (№622 B2, часть 1)."""
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
+    monkeypatch.setenv(ie.NEW_PGROUP_ENV, "1")
+    monkeypatch.setattr(ie.os, "getpgrp", lambda: 0)   # не лидер группы
+    calls = []
+    monkeypatch.setattr(ie.os, "setpgid", lambda *a: calls.append(a))
+
+    # окружения нет — `check` отдаёт код 1, но группу уже сменил первой строкой
+    assert ie.main(["nemotron", "--check"]) == 1
+    assert calls == [(0, 0)], "--check запускает пробу дочерним процессом и обязан войти в группу"
+
+    calls.clear()
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert calls == [], "--plan обязан выдать одну строку JSON, не меняя группу"
+
+
+def test_a_process_group_refusal_in_check_is_code_one(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
+    monkeypatch.setattr(ie, "enter_process_group", _raise(ie.Refused("группа не далась")))
+    assert ie.main(["nemotron", "--check"]) == 1
+    assert "не поставлено: группа не далась" in capsys.readouterr().err
+
+
+# ---- --plan: одна строка JSON без сети (№622 B2) -----------------------------
+
+
+def test_plan_is_one_json_line_even_when_the_machine_is_refused(tmp_path, monkeypatch, capsys):
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "check_machine", _raise(ie.Refused("движок только на Apple Silicon")))
+    assert ie.main(["nemotron", "--plan"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, (lines, "отказ машины обязан не ломать JSON")
+    payload = json.loads(lines[0])
+    assert payload["machine"] == {"ok": False, "reason": "движок только на Apple Silicon"}
+    assert len(payload["network"]) == len(ie.NETWORK) >= 4
+    assert any("github.com" in line for line in payload["network"]), "сегментация названа"
+    assert payload["sizes_mb"]["environment"] > 0 and payload["sizes_mb"]["weights"] > 0
+    assert payload["sizes_mb"]["voice_set"] > 0
+    assert payload["license"]["name"] and payload["license"]["url"].startswith("https://")
+    assert payload["engine"]["backend"] in ("sherpa", "nemotron")
+
+
+def _user_config(root, text):
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "config.yaml").write_text(text, encoding="utf-8")
+
+
+def test_plan_survives_a_broken_user_config(tmp_path, monkeypatch, capsys):
+    """Битый YAML пользовательского конфига: не трасса, а поле `error` в единственной строке."""
+    _main_root(tmp_path, monkeypatch)
+    _user_config(tmp_path, "sufler: [битый\n")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["engine"]["error"].startswith("конфиг не прочитан")
+    assert payload["machine"]["ok"] in (True, False)
+
+
+def test_plan_treats_a_non_dict_sufler_as_empty(tmp_path, monkeypatch, capsys):
+    """`sufler: "текст"` читается как пустой словарь — `--plan` не падает на `.get`."""
+    _main_root(tmp_path, monkeypatch)
+    _user_config(tmp_path, 'sufler: "текст"\n')
+    assert ie.main(["nemotron", "--plan"]) == 0
+    payload = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert payload["engine"]["backend"] == "sherpa"
+
+
+def test_plan_treats_a_config_list_as_empty(tmp_path, monkeypatch, capsys):
+    """Конфиг-список (не словарь) тоже читается как пустой."""
+    _main_root(tmp_path, monkeypatch)
+    _user_config(tmp_path, "- раз\n- два\n")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    payload = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert "error" not in payload["engine"] and payload["engine"]["backend"] == "sherpa"
+
+
+def test_plan_reports_an_unreadable_lock_in_one_line(tmp_path, monkeypatch, capsys):
+    """Лок без прав на чтение — причина в `machine`, а не исключение мимо JSON."""
+    if os.geteuid() == 0:
+        pytest.skip("root читает любой файл")
+    _main_root(tmp_path, monkeypatch)
+    events = []
+    _, spec = _spec(tmp_path, events)
+    lock = tmp_path / "read-protected.lock"
+    lock.write_text(LOCK_HEAD, encoding="utf-8")
+    lock.chmod(0)
+    monkeypatch.setitem(ie.ENGINES, "nemotron", dataclasses.replace(spec, lock=lock))
+    try:
+        assert ie.main(["nemotron", "--plan"]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 1
+        payload = json.loads(lines[0])
+        assert payload["machine"]["ok"] is False and payload["machine"]["reason"]
+    finally:
+        lock.chmod(0o600)
+
+
+def test_plan_turns_an_engine_state_crash_into_one_line(tmp_path, monkeypatch, capsys):
+    """Последний рубеж вокруг `--plan`: непредвиденное исключение — одна строка и код 1."""
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie.diarize_nemotron, "engine_state", _raise(RuntimeError("бум")))
+    assert ie.main(["nemotron", "--plan"]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {"error": "RuntimeError: бум"}
+
+
+_CFG_BYTES = b'{"model_type": "nemotron_diarization", "num_speakers": 8}'
+# веса не меньше MIN_WEIGHTS_BYTES: каталог обязан быть годен и по форме, иначе
+# тест «сумма не та» не отличал бы проверку суммы от проверки структуры
+_MODEL_BYTES = b"\0" * nem.MIN_WEIGHTS_BYTES
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _nemotron_table(monkeypatch, config_sha: str, model_sha: str) -> None:
+    """Таблица весов с заданными суммами: тест решает, что «на месте» по сумме.
+
+    `nemotron_missing` читает таблицу модуля на каждом вызове, поэтому подмена
+    видна и плану, и `fetch_nemotron`."""
+    monkeypatch.setattr(get_models, "NEMOTRON_FILES", (
+        ("config.json", "https://example.test/config.json", 1, config_sha),
+        ("model.safetensors", "https://example.test/model.safetensors", 190, model_sha),
+    ))
+
+
+def _write_weights(weights: pathlib.Path, *names: str) -> None:
+    """Записать файлы весов с содержимым, суммы которого кладёт `_nemotron_table`."""
+    weights.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (weights / name).write_bytes(_CFG_BYTES if name == "config.json" else _MODEL_BYTES)
+
+
+def test_plan_sizes_count_only_what_is_missing(tmp_path, monkeypatch, capsys):
+    """Размеры в `--plan` — по машине: что уже стоит, в загрузку не идёт, но
+    окружение — всегда полный размер: установка пересобирает его всегда
+    (`copy_interpreter` и `pip_install` без проверки «уже стоит»), и ноль обещал
+    бы кнопке 0 МБ, а установка снова тянула бы ~600 МБ (№622 B2, часть 1)."""
+    _main_root(tmp_path, monkeypatch)
+    assert ie.main(["nemotron", "--plan"]) == 0
+    empty = json.loads(capsys.readouterr().out)["sizes_mb"]
+    assert empty == {
+        "environment": ie.ENVIRONMENT_MB,
+        "weights": sum(size for _n, _u, size, _s in get_models.NEMOTRON_FILES),
+        "voice_set": (get_models.MODELS[get_models.DEFAULT].size_mb
+                      + get_models.SEGMENTATION[get_models.SEG_DEFAULT].size_mb),
+    }
+    # набор голосов и веса на месте с верными суммами — они дают 0; окружение же
+    # всегда полное
+    for dest, min_bytes in ((get_models.diar_target(tmp_path), get_models.MIN_BYTES),
+                            (get_models.seg_target(tmp_path), get_models.SEG_MIN_BYTES)):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(get_models.ONNX_MAGIC + b"\0" * min_bytes)
+    _write_weights(nem.model_dir(tmp_path), "config.json", "model.safetensors")
+    _nemotron_table(monkeypatch, _sha(_CFG_BYTES), _sha(_MODEL_BYTES))
+    nem.engine_python(tmp_path).parent.mkdir(parents=True)
+    nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    present = json.loads(capsys.readouterr().out)["sizes_mb"]
+    assert present == {"environment": ie.ENVIRONMENT_MB, "weights": 0, "voice_set": 0}
+
+
+def test_plan_keeps_the_environment_full_when_it_is_in_place(tmp_path, monkeypatch, capsys):
+    """Интерпретатор окружения на месте — `environment` всё равно полный размер:
+    проверки «уже стоит», которой 0 означал бы «качать нечего», у установки нет
+    (№622 B2, часть 1)."""
+    _main_root(tmp_path, monkeypatch)
+    nem.engine_python(tmp_path).parent.mkdir(parents=True)
+    nem.engine_python(tmp_path).write_text("#", encoding="utf-8")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out)["sizes_mb"]["environment"] == ie.ENVIRONMENT_MB
+
+
+def test_plan_weighs_the_weights_by_digest_not_by_catalog_shape(tmp_path, monkeypatch, capsys):
+    """Структура каталога верна, но сумма `model.safetensors` не та: план считает
+    его размер, а `fetch_nemotron` его качает. `check_model_dir` смотрит только
+    форму и пропустила бы битый файл — тогда план обещал бы 0, а установка
+    тянула 190 МБ (№622 B2, часть 1)."""
+    _main_root(tmp_path, monkeypatch)
+    weights = nem.model_dir(tmp_path)
+    _write_weights(weights, "config.json", "model.safetensors")
+    _nemotron_table(monkeypatch, _sha(_CFG_BYTES), _sha(b"other weights"))
+
+    assert ie.main(["nemotron", "--plan"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sizes_mb"]["weights"] == 190, "битая сумма — файл идёт в план"
+
+    fetched = []
+    monkeypatch.setattr(get_models, "download",
+                        lambda url, dest, size, **kw: fetched.append(pathlib.Path(dest).name))
+    get_models.fetch_nemotron(weights)
+    assert fetched == ["model.safetensors"], "качаем ровно то, что план посчитал"
+
+
+def test_plan_weights_are_zero_and_fetch_downloads_nothing_when_digests_match(tmp_path, monkeypatch, capsys):
+    """Оба файла с верной суммой: план 0, `fetch_nemotron` не качает ничего."""
+    _main_root(tmp_path, monkeypatch)
+    weights = nem.model_dir(tmp_path)
+    _write_weights(weights, "config.json", "model.safetensors")
+    _nemotron_table(monkeypatch, _sha(_CFG_BYTES), _sha(_MODEL_BYTES))
+
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out)["sizes_mb"]["weights"] == 0
+
+    monkeypatch.setattr(get_models, "download", lambda *a, **k: pytest.fail("качать нечего"))
+    get_models.fetch_nemotron(weights)
+
+
+def test_plan_counts_only_a_missing_config(tmp_path, monkeypatch, capsys):
+    """Нет только `config.json` — в план идёт его размер (1 МБ)."""
+    _main_root(tmp_path, monkeypatch)
+    weights = nem.model_dir(tmp_path)
+    _write_weights(weights, "model.safetensors")
+    _nemotron_table(monkeypatch, _sha(_CFG_BYTES), _sha(_MODEL_BYTES))
+
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out)["sizes_mb"]["weights"] == 1
+
+
+def test_plan_survives_a_directory_where_a_voice_model_should_be(tmp_path, monkeypatch, capsys):
+    """Каталог на месте `embedding.onnx`: проверка набора голосов отдаёт причину,
+    а не `IsADirectoryError`, и `--plan` печатает полный план с ненулевым
+    `voice_set` и кодом 0, а не `{"error": …}` (№622 B2, часть 1)."""
+    _main_root(tmp_path, monkeypatch)
+    get_models.diar_target(tmp_path).mkdir(parents=True)   # каталог, а не файл
+    assert ie.main(["nemotron", "--plan"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, (lines, "нечитаемая модель не смеет ломать строку JSON")
+    payload = json.loads(lines[0])
+    assert payload["sizes_mb"]["voice_set"] > 0
+
+
+def test_every_host_the_install_downloads_is_named_in_the_block_and_plan(tmp_path, monkeypatch, capsys):
+    """Хосты скачанных адресов входят и в печатный блок «сеть:», и в `network` у --plan:
+    список — из адресов самого пути установки, а не из ручных строк."""
+    urls = []
+
+    def download(url, dest, size, **kw):
+        urls.append(url)
+        dest = pathlib.Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x")
+
+    monkeypatch.setattr(ie.get_models, "download", download)
+    monkeypatch.setattr(ie.get_models, "check", lambda dest, min_bytes=None: "нет")
+    events = []
+    copy, spec = _spec(tmp_path, events)
+    spec = ie.EngineSpec(**{**spec.__dict__, "fetch_weights": lambda dest:
+                            download(get_models.NEMOTRON.url, dest / "model.safetensors", 190)})
+    monkeypatch.setitem(ie.ENGINES, "nemotron", spec)
+    monkeypatch.setattr(ie, "check_machine", lambda lock: None)
+    monkeypatch.setattr(ie, "copy_interpreter", copy)
+    monkeypatch.setattr(ie, "pip_install", lambda python, lock: None)
+    _main_root(tmp_path, monkeypatch)
+
+    assert ie.main(["nemotron"]) == 0
+    install_out = capsys.readouterr().out
+    hosts = {urllib.parse.urlsplit(u).hostname for u in urls}
+    assert hosts == {"huggingface.co", "github.com"}, urls
+    for host in hosts:
+        assert any(host in line for line in install_out.splitlines()), (host, install_out)
+
+    assert ie.main(["nemotron", "--plan"]) == 0
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+    network = "\n".join(payload["network"])
+    for host in hosts:
+        assert host in network, (host, network)
+
+
+def test_plan_does_not_enter_a_process_group(tmp_path, monkeypatch, capsys):
+    """`--plan` ничего не запускает: отказ `setpgid` при признаке приложения не
+    смеет превращать план в «не поставлено» с пустым stdout — контракт «ровно одна
+    строка JSON» (№622 B2, часть 1)."""
+    monkeypatch.setattr(ie, "harden_umask", lambda: None)
+    monkeypatch.setattr(ie, "name_data_root_or_exit", lambda _file: tmp_path)
+    monkeypatch.setenv(ie.NEW_PGROUP_ENV, "1")
+    # не лидер группы: иначе проверка «уже лидер» увела бы вызов setpgid
+    monkeypatch.setattr(ie.os, "getpgrp", lambda: os.getpid() + 1)
+
+    def deny(*_a):
+        raise OSError("нет прав")
+    monkeypatch.setattr(ie.os, "setpgid", deny)
+    assert ie.main(["nemotron", "--plan"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, (lines, "отказ setpgid не смеет ломать единственную строку JSON")
+    assert json.loads(lines[0])["machine"]
+
+
+# ---- Откат замены на любом исключении (№622 B2) ------------------------------
+
+
+def test_a_signal_between_the_renames_brings_the_old_env_back(tmp_path, monkeypatch):
+    """Откат — на любом исключении, а не только OSError: Ctrl-C между двумя
+    переименованиями иначе оставил бы окружение в `.old`, а `home` пустым."""
+    home = tmp_path / "engines" / "nemotron"
+    home.mkdir(parents=True)
+    (home / "old").write_text("", encoding="utf-8")
+    new = tmp_path / "engines" / ".nemotron.new-1"
+    new.mkdir()
+    (new / "new").write_text("", encoding="utf-8")
+    real, calls = os.rename, []
+
+    def rename(src, dst):
+        calls.append(pathlib.Path(dst).name)
+        if len(calls) == 2:
+            raise KeyboardInterrupt()
+        real(src, dst)
+    monkeypatch.setattr(ie.os, "rename", rename)
+    with pytest.raises(KeyboardInterrupt):
+        ie.swap_in(new, home)
+    assert [p.name for p in home.iterdir()] == ["old"]
+
+
+# ---- Точка фиксации замены окружения (№622 B2, часть 1) ---------------------
+
+
+def _old_home(tmp_path):
+    """Каталог окружения с прежним содержимым — для установки поверх него."""
+    home = nem.engine_dir(tmp_path)
+    home.mkdir(parents=True)
+    (home / "прежнее").write_text("", encoding="utf-8")
+    return home
+
+
+def test_a_cancel_after_the_first_rename_finishes_the_swap(tmp_path, monkeypatch, capsys):
+    """Отмена сразу после настоящего первого переименования откладывается маской и
+    приходит уже после фиксации: замена доходит до конца, код 0, `.old-*` не остаётся."""
+    home = _old_home(tmp_path)
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    real, calls = os.rename, []
+
+    def rename(src, dst):
+        real(src, dst)
+        calls.append(pathlib.Path(dst).name)
+        if len(calls) == 1:
+            signal.raise_signal(signal.SIGTERM)
+    monkeypatch.setattr(ie.os, "rename", rename)
+    assert ie.main(["nemotron"]) == 0
+    assert sorted(p.name for p in home.iterdir()) == ["python"]
+    assert not list(home.parent.glob(".nemotron.old-*"))
+    assert "отменено" not in capsys.readouterr().err
+
+
+def test_a_cancel_during_the_old_env_cleanup_still_finishes_with_ready(tmp_path, monkeypatch, capsys):
+    """Отмена во время уборки прежнего окружения, когда замена уже удалась: движок
+    поставлен, уборка доходит до конца — код 0 и «готово», а не 13."""
+    home = _old_home(tmp_path)
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    real = shutil.rmtree
+
+    def rmtree(path, ignore_errors=False, **kw):
+        if ".old-" in pathlib.Path(path).name:
+            signal.raise_signal(signal.SIGTERM)
+        real(path, ignore_errors=ignore_errors, **kw)
+    monkeypatch.setattr(ie.shutil, "rmtree", rmtree)
+    assert ie.main(["nemotron"]) == 0
+    assert sorted(p.name for p in home.iterdir()) == ["python"]
+    out = capsys.readouterr()
+    assert "готово" in out.out
+    assert "после замены" in out.err
+
+
+def test_a_cancel_at_the_pip_step_keeps_the_old_env(tmp_path, monkeypatch, capsys):
+    """Отмена до фиксации: прежнее окружение цело, временного каталога нет, код 13."""
+    home = _old_home(tmp_path)
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "pip_install", lambda python, lock: signal.raise_signal(signal.SIGTERM))
+    assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+    assert [p.name for p in home.iterdir()] == ["прежнее"]
+    assert sorted(p.name for p in home.parent.iterdir()) == [".nemotron.install.lock", "nemotron"]
+    assert "отменено:" in capsys.readouterr().err
+
+
+class TestTheCommitFlagIsResetByMain:
+    """Без autouse-фикстуры сброса: проверяем именно то, что `main` сбрасывает
+    признак фиксации сам — иначе второй `main` в том же процессе унаследовал бы
+    «замена зафиксирована» и не бросил бы отмену (№622 B2, часть 1)."""
+
+    @pytest.fixture
+    def _reset_swap_flag(self):
+        # Та же фикстура модуля, выключенная для этого класса: сброс обязан
+        # случиться внутри `main`, а не в обвязке теста.
+        yield
+
+    def test_two_mains_in_one_process_do_not_inherit_the_commit(self, tmp_path, monkeypatch, capsys):
+        home = _old_home(tmp_path)
+        _mocked_steps(tmp_path, monkeypatch, [])
+        _main_root(tmp_path, monkeypatch)
+        real_restore = ie.restore_signals
+        seen: list[bool] = []
+
+        def restore(previous):
+            seen.append(ie._SWAP_COMMITTED)
+            real_restore(previous)
+        monkeypatch.setattr(ie, "restore_signals", restore)
+
+        # первый проход: замена доходит до фиксации и `main` обязан сбросить признак
+        assert ie.main(["nemotron"]) == 0
+        assert seen == [True], "признак сбрасывают уже после возврата обработчиков"
+        assert ie._SWAP_COMMITTED is False
+
+        # второй проход в том же процессе: отмена ДО замены обязана броситься
+        monkeypatch.setattr(ie, "pip_install",
+                            lambda python, lock: signal.raise_signal(signal.SIGTERM))
+        assert ie.main(["nemotron"]) == ie.EXIT_INSTALL_CANCELLED
+        assert [p.name for p in home.iterdir()] == ["python"], "прежнее окружение цело"
+        assert "отменено:" in capsys.readouterr().err
+
+    def test_the_reset_survives_a_raising_restore_signals(self, tmp_path, monkeypatch):
+        """`restore_signals`, бросающий исключение, не оставляет признак фиксации
+        взведённым: сброс стоит в `finally` вокруг возврата обработчиков, а не
+        следом за ним (№622 B2, часть 1)."""
+        ie._SWAP_COMMITTED = False   # чистый процесс, как у второго запуска main
+        _old_home(tmp_path)
+        _mocked_steps(tmp_path, monkeypatch, [])
+        _main_root(tmp_path, monkeypatch)
+
+        def boom(previous):
+            raise RuntimeError("обработчики не вернулись")
+        monkeypatch.setattr(ie, "restore_signals", boom)
+
+        with pytest.raises(RuntimeError, match="обработчики"):
+            ie.main(["nemotron"])
+        assert ie._SWAP_COMMITTED is False
