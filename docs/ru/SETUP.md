@@ -218,6 +218,20 @@ Parakeet (английский) и Whisper нужна установка из и
 Эмбеддинги без сегментации оставляют живые метки в упрощённом режиме и не
 дают переразметки после встречи.
 
+Опциональный движок Nemotron (Apple Silicon, разметка после встречи) ставится
+из терминала, с названной папкой данных — Python приложения, когда код лежит
+в бандле:
+
+```bash
+CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron          # поставить
+CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
+CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --plan   # план одной строкой JSON, без сети
+```
+
+Исход честный: 0 — поставлено и проба зелёная; 12 (`EXIT_INSTALL_BUSY`) —
+машина занята или идёт другая установка; 13 (`EXIT_INSTALL_CANCELLED`) —
+отменено; 1 — отказ. Подробности — [DIARIZATION.md](DIARIZATION.md).
+
 ## 6. Запуск
 
 ```bash

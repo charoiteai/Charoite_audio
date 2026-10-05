@@ -83,6 +83,31 @@ def test_check_mode_does_not_touch_the_network(monkeypatch, tmp_path):
     get_models.check(tmp_path / "нет.onnx")
 
 
+def test_a_directory_where_the_model_should_be_is_a_reason_not_a_trace(tmp_path):
+    """Каталог на месте `embedding.onnx`: `check` отдаёт строку и не бросает
+    `IsADirectoryError` — «модели нет в рабочем виде», а не исключение. `--plan`
+    зовёт `check` для набора голосов и обязан выдать одну строку JSON
+    (№622 B2, часть 1)."""
+    fake = tmp_path / "embedding.onnx"
+    fake.mkdir()
+    problem = get_models.check(fake)
+    assert problem and str(fake) in problem and "get_models.py" in problem
+
+
+def test_an_unreadable_model_file_is_a_reason_not_a_trace(tmp_path):
+    """Нечитаемый файл на месте модели — тоже причина, а не `PermissionError`."""
+    if os.geteuid() == 0:
+        pytest.skip("root читает любой файл")
+    fake = tmp_path / "embedding.onnx"
+    fake.write_bytes(get_models.ONNX_MAGIC + b"\0" * get_models.MIN_BYTES)
+    fake.chmod(0)
+    try:
+        problem = get_models.check(fake)
+        assert problem and str(fake) in problem, problem
+    finally:
+        fake.chmod(0o600)
+
+
 def test_cli_check_exits_nonzero_and_prints_the_recipe():
     """Запуск как пользователь: без модели — код 1 и внятный рецепт."""
     r = subprocess.run(
