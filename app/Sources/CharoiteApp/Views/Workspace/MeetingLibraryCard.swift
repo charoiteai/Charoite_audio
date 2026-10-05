@@ -65,16 +65,13 @@ extension MeetingLibraryView {
             let gist = record.card.gist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !gist.isEmpty {
                 Text(gist).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            } else if meta.isEmpty {
-                // Карточка без единого слова — одна точка: состояние обязано
-                // быть и словом, для глаз и для VoiceOver.
-                Text(stateText(.ready)).font(.caption).foregroundStyle(.secondary)
             }
+            readyNoteLine(record, emptyCard: meta.isEmpty && gist.isEmpty)
         case .processing:
             Text(MeetingProcessingPolicy.stageText(for: record.snapshot))
                 .font(.caption).foregroundStyle(Theme.accent)
         case .error:
-            Text(stateText(.error)).font(.caption).foregroundStyle(Theme.warning)
+            Text(stateText(record.snapshot)).font(.caption).foregroundStyle(Theme.warning)
             // Причина — как её записал конвейер, отдельной строкой: она
             // приходит на языке конвейера, а не интерфейса.
             if let reason = record.snapshot.error?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -83,7 +80,23 @@ extension MeetingLibraryView {
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .empty, .unknown:
-            Text(stateText(record.state)).font(.caption).foregroundStyle(.secondary)
+            Text(stateText(record.snapshot)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Пометка готовой встречи («имена не определены», «пересборка не
+    /// завершена…») — отдельной строкой цветом предупреждения, когда она есть
+    /// (№500). Карточка без единого слова — одна точка: состояние обязано быть
+    /// и словом, для глаз и для VoiceOver; `stateText` уже несёт пометку.
+    @ViewBuilder
+    func readyNoteLine(_ record: MeetingRecord, emptyCard: Bool) -> some View {
+        let note = MeetingProcessingPolicy.readyNote(for: record.snapshot)
+        if emptyCard {
+            Text(stateText(record.snapshot)).font(.caption)
+                .foregroundStyle(note == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.warning))
+        } else if let note {
+            Text(note).font(.caption).foregroundStyle(Theme.warning)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

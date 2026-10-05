@@ -88,8 +88,25 @@
   guard refused which name is in the rebuild log, one line per name (the live
   naming loop writes the same line to the daemon log, once per meeting); the
   header keeps the general wording — the transcript gets forwarded, and the
-  action is the same whatever the rule. The app
-  does not show this state yet — the warning lives in the transcript header.
+  action is the same whatever the rule. The app shows the state as a note on
+  the ready meeting — "Ready, speakers unnamed" in the library, on the Today
+  card and in the menu line, and under the title of the open meeting.
+- **An unfinished rebuild is visible.** When the final rebuild does not run for
+  a reason a retry can lift, the graph is still built from the live draft and
+  the meeting is `ready`, but the status gets a `rebuild_skipped` key with a
+  code: `recording_not_ready` (the recording channels were not ready within
+  the wait — a long meeting the daemon is still converting), `failed` (the
+  rebuild raised an error — the rebuild log says whether a retry can help)
+  and `channel_lost` (reserved for the lost-channel gate). The key is written
+  only while this transcript never had a machine final (no valid
+  `transcript_sha256` in its sidecar); an ambiguous or unreadable sidecar
+  counts as "had one", so no false note. A rebuild that
+  fails for a deterministic reason (nothing to wait for, a repeat gives the
+  same) writes no key. The app shows "rebuild not finished: …" next to
+  "Ready" in the library, on the Today card, in the menu line, the status line
+  and the ready notification (instead of "The transcript and graph are
+  updated"), and the open meeting offers "Rebuild result" next to the note.
+  Unfinished runs are left out of the typical processing time.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   the question is visible in the status line while ⚡ is answering, and in

@@ -103,6 +103,27 @@ struct MeetingCardView: View {
         .sheet(isPresented: $showForget) { forgetSheet }
     }
 
+    /// Пометка готовой встречи под заголовком (№500): «имена не определены»,
+    /// «пересборка не завершена…». При устранимом отказе пересборки рядом —
+    /// та же «Пересобрать результат», что в меню действий.
+    @ViewBuilder
+    private var readyNoteRow: some View {
+        if let note = MeetingProcessingPolicy.readyNote(for: meeting) {
+            HStack(spacing: 8) {
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(Theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                if MeetingProcessingPolicy.offersRebuild(for: meeting) {
+                    Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
+                        actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
+                    }
+                    .charoite(.quiet, .s)
+                    .disabled(processing.rebuildingID == meeting.meetingID)
+                }
+            }
+        }
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -168,6 +189,7 @@ struct MeetingCardView: View {
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
+            readyNoteRow
             if !card.participants.isEmpty {
                 Text(L.t("Участники: ", "Participants: ", "参会者：")
                      + card.participants.joined(separator: ", "))

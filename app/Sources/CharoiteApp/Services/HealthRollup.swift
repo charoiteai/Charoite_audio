@@ -135,8 +135,10 @@ enum HealthPresentation {
     /// Значение — перечисление, а не пара «текст + ярус?», где nil означал бы
     /// цвет активности: смешение «активность/здоровье» в одном необязательном
     /// поле — тот класс, из которого вырос Critical круга 1 (критика DS круга 2).
+    /// `readyMeeting` — снимок готовой встречи (`nil` — готовой нет): пометку
+    /// «пересборка не завершена» строка меню несёт словами (№500).
     static func menuLine(_ verdict: HealthVerdict, isRecording: Bool,
-                         activityText: String?, hasReadyMeeting: Bool) -> MenuLine {
+                         activityText: String?, readyMeeting: MeetingProcessingSnapshot?) -> MenuLine {
         if isRecording {
             return .recording(recordingDotTier(verdict))
         }
@@ -146,7 +148,8 @@ enum HealthPresentation {
         if let headline = verdict.headline {
             return .problem(headline, verdict.tier)
         }
-        return hasReadyMeeting ? .ready : .idle
+        guard let readyMeeting else { return .idle }
+        return .ready(note: MeetingProcessingPolicy.readyNote(for: readyMeeting))
     }
 }
 
@@ -155,7 +158,7 @@ enum MenuLine: Equatable {
     case recording(HealthTier)
     case activity(String)
     case problem(String, HealthTier)
-    case ready
+    case ready(note: String?)
     case idle
 
     var text: String {
@@ -163,7 +166,9 @@ enum MenuLine: Equatable {
         case .recording: return L.t("Запись", "Recording", "录音中") + " ·"
         case .activity(let text): return text
         case .problem(let text, _): return text
-        case .ready: return L.t("Встреча готова", "Meeting ready", "会议已就绪")
+        case .ready(let note):
+            let base = L.t("Встреча готова", "Meeting ready", "会议已就绪")
+            return note.map { base + " — " + $0 } ?? base
         case .idle: return L.t("Готов к записи", "Ready to record", "可以录音")
         }
     }

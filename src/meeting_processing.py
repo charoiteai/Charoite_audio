@@ -287,7 +287,8 @@ class MeetingStatusStore:
 
         return _required(self._update(transcript, mutate))
 
-    def ready(self, transcript: pathlib.Path, note: pathlib.Path | None) -> pathlib.Path:
+    def ready(self, transcript: pathlib.Path, note: pathlib.Path | None,
+              skipped: str | None = None) -> pathlib.Path:
         """Встреча разобрана. Полнота имён — отдельное поле, не аргумент.
 
         note=None — заметки нет и не будет: на лёгком профиле граф знаний
@@ -305,6 +306,11 @@ class MeetingStatusStore:
         `names_pending: true` и `names_reason` (`silent` или `rejected`);
         потери нет — ни одного из двух ключей. `names_pending` остаётся
         логическим: вышедшее приложение читает его как Bool?.
+
+        `skipped` — код устранимого отказа пересборки
+        (`rebuild_transcript.RebuildSkipped`): граф построен по живому
+        черновику, финал не пересобран. Пишется ключом `rebuild_skipped`;
+        диск ради него не читается — решение принял конвейер (№500).
         """
         transcript = pathlib.Path(transcript)
         note_path = str(pathlib.Path(note).resolve()) if note is not None else None
@@ -331,6 +337,8 @@ class MeetingStatusStore:
             if info is not None and info.pending:
                 payload["names_pending"] = True
                 payload["names_reason"] = info.reason
+            if skipped:
+                payload["rebuild_skipped"] = str(skipped)
             # Этап ревизии переживает готовность: воркер запускается ДО ready()
             # конвейера и успевал записать «running» раньше, чем тот собрал
             # документ заново без поля (DS r1 I1, GLM r1 I1 по #546)
@@ -604,6 +612,10 @@ class MeetingStatusStore:
             except (OSError, ValueError):
                 continue
             if not isinstance(data, dict) or data.get("state") != "ready":
+                continue
+            # Пересборка не завершилась — прогон короче обычного, обещание
+            # по нему врало бы вниз (№500).
+            if data.get("rebuild_skipped"):
                 continue
             span = float(data.get("updated_at", 0)) - float(data.get("started_at", 0))
             if span > 0:

@@ -493,6 +493,37 @@ def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
+def machine_final(live: pathlib.Path) -> bool:
+    """Был ли когда-то записан машинный финал этой стенограммы — по валидному
+    `transcript_sha256` в её сайдкаре. Ключ вводит только `write_final`;
+    ретитл и перештамповка имён лишь обновляют совпавший.
+
+    Тотальная: исключений не бросает. «Не знаем» — True: сайдкар неоднозначен
+    (две встречи в минуту), не читается (ввод-вывод, не UTF-8, не JSON-объект)
+    или чтение упало чем угодно (`sidecar_for` зовёт `exists()` и обход
+    каталога вне `try`). True снимает пометку «пересборка не завершена»
+    (№500): ложная пометка у готового финала хуже пропущенной (DS C1, I1
+    выходного круга). False — сайдкар однозначен и прочитан, а валидного хеша
+    в нём нет, или самого файла нет.
+    """
+    try:
+        p = sidecar_for(live)
+        if p is None:
+            return True
+        if not p.exists():
+            return False
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            return True
+        return valid_sha(meta.get("transcript_sha256")) is not None
+    except Exception as e:  # noqa: BLE001 — тотальная: битый сайдкар не роняет конвейер
+        # «не знаем» оставляет след: иначе пропавшая пометка не диагностируется
+        # (Sonnet M1, DS M2 круга 2)
+        print(f"сайдкар {live.name} не прочитан ({type(e).__name__}: {e}) — "
+              "машинный финал считаю записанным", file=sys.stderr)
+        return True
+
+
 def exact_stamp(live: pathlib.Path) -> str | None:
     """Посекундный штамп встречи с МИНУТНЫМ именем (после наката темы) —
     из ключа `stamp` её СОБСТВЕННОГО сайдкара, а не угадыванием по каталогу
