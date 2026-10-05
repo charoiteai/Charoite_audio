@@ -38,7 +38,7 @@ import shutil
 import unicodedata
 from collections import defaultdict
 from datetime import date
-from charoite_graph.graph_schema import GraphSchema
+from charoite_graph.graph_schema import GraphSchema, name_date
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
@@ -227,6 +227,18 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], 
     return files, dict(backlinks)
 
 
+def meeting_date(meta: dict, *, schema: GraphSchema) -> str | None:
+    """Дата встречи из её пути — только для папки встреч схемы, иначе None.
+
+    Единственное место, где досье решает «встреча и её дата»: `is_meeting_folder`
+    узнаёт и архивную папку, `name_date` достаёт дату из ближайшего сегмента.
+    Участник без `rel` или без `kind` — не встреча: поля берём через `.get`.
+    """
+    if not schema.is_meeting_folder(meta.get("kind", "")):
+        return None
+    return name_date(meta.get("rel", ""))
+
+
 def clusters(files: dict[str, dict], backlinks: dict[str, set[str]], *,
              schema: GraphSchema, min_size: int = MIN_CLUSTER) -> dict[str, list[str]]:
     """Тема → список источников. Хаб — ядро, на которое ссылаются больше всего.
@@ -249,10 +261,23 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]], *,
             # и в кластере из 14+ встреч само ядро темы (её «Статус» и «Суть»)
             # в промпт не попадало вовсе — сводка собиралась без главного
             # источника, и страдали ровно самые большие темы (аудит графа
-            # 26.08, GLM). Дальше встречи по дате, остальное по имени.
-            rest = sorted(members - {title},
-                          key=lambda m: (not schema.is_meeting_folder(files[m]["kind"]), m))
-            out[title] = [title] + rest
+            # 26.08, GLM). Дальше встречи с датой — от новой к старой, затем
+            # встречи без даты и прочие — по имени. Три списка, а не один ключ:
+            # у встречи без даты цифровое имя иначе встало бы впереди дат.
+            dated, undated, others = [], [], []
+            for m in members - {title}:
+                if schema.is_meeting_folder(files[m]["kind"]):
+                    d = meeting_date(files[m], schema=schema)
+                    if d:
+                        dated.append((d, m))
+                    else:
+                        undated.append(m)
+                else:
+                    others.append(m)
+            dated.sort(reverse=True)                  # дата и имя — от новой/большой
+            undated.sort()
+            others.sort()
+            out[title] = [title] + [m for _, m in dated] + undated + others
     return out
 
 
@@ -338,8 +363,17 @@ def trim_to_format(body: str) -> str:
     return body[m.start():].strip() if m else (body or "").strip()
 
 
-def build_prompt(theme: str, members: list[str], files: dict[str, dict]) -> str:
-    parts, total = [], 0
+def build_prompt(theme: str, members: list[str], files: dict[str, dict], *,
+                 schema: GraphSchema) -> str:
+    """Промпт темы: отбор по бюджету, подача — ядро и встречи от старой к новой.
+
+    Состав входа от перестановки не зависит: бюджет считается на исходном
+    порядке `members[:MAX_SOURCES]`, и только отобранное переупорядочивается.
+    Блок ядра (участник с именем темы) идёт первым, датированные встречи — по
+    дате от старой к новой, встречи без даты и прочие — в порядке отбора.
+    """
+    selected: list[tuple[str, dict, str]] = []
+    total = 0
     for m in members[:MAX_SOURCES]:
         meta = files.get(m)
         if not meta:
@@ -350,8 +384,28 @@ def build_prompt(theme: str, members: list[str], files: dict[str, dict]) -> str:
         block = f"### [[{m}]] ({meta['kind']})\n{body}\n"
         if total + len(block) > PROMPT_CHARS:
             break
-        parts.append(block)
+        selected.append((m, meta, block))
         total += len(block)
+
+    core: list[str] = []
+    dated: list[tuple[str, str, str]] = []
+    undated: list[str] = []
+    others: list[str] = []
+    for m, meta, block in selected:
+        if m == theme:
+            core.append(block)
+        elif schema.is_meeting_folder(meta["kind"]):
+            d = meeting_date(meta, schema=schema)
+            if d:
+                dated.append((d, m, block))
+            else:
+                undated.append(block)
+        else:
+            others.append(block)
+    # Подача датированных — точный обратный порядок отбора в clusters:
+    # там дата и имя идут по убыванию, здесь — по возрастанию.
+    dated.sort(key=lambda t: (t[0], t[1]))
+    parts = core + [t[2] for t in dated] + undated + others
     return PROMPT.format(theme=theme, sources="\n".join(parts))
 
 

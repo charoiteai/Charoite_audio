@@ -87,7 +87,7 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     from llm import LLM  # noqa: PLC0415
 
     llm = LLM(c)
-    prompt = dossier.build_prompt(theme, members, files)
+    prompt = dossier.build_prompt(theme, members, files, schema=CHAROITE)
     model = (c.get("llm") or {}).get("model")
     out = []
     for chunk in llm.stream(
