@@ -395,18 +395,73 @@ def test_main_передаёт_исход_пробы_в_строгую_двер�
     assert seen["alive"] == "МЕТКА"
 
 
-def test_the_engine_line_appears_only_when_nemotron_is_chosen(capsys, monkeypatch):
-    """Строка движка — только если выбран не sherpa (№474); проба — дверью движка."""
+def test_the_engine_line_appears_only_when_nemotron_is_chosen(capsys, monkeypatch, tmp_path):
+    """Строка движка — только если выбран не sherpa или мы не на Apple Silicon (№474);
+    проба — дверью движка."""
     import foreign_python as fp
     asked = []
-    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
-                        lambda setting, *, root: asked.append(setting) or fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"}))
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "x86_64")
     doctor.check_engine({"sufler": {"diarize_backend": "sherpa"}})
     doctor.check_engine({})
     assert capsys.readouterr().out == "" and asked == []
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: asked.append(setting) or fp.Outcome(fp.OK, payload={"mlx_audio": "0.5.6"}))
+    doctor.check_engine({"sufler": {"diarize_backend": "sherpa"}})
+    out = capsys.readouterr().out
+    assert "Nemotron-движок не стоит" in out and "install_engine.py" in out
     doctor.check_engine({"sufler": {"diarize_backend": "Nemotron", "nemotron_python": "/env/python"}})
     assert "✓ Nemotron: mlx-audio 0.5.6, веса на месте, интерпретатор /env/python" in capsys.readouterr().out
     assert asked == ["/env/python"]
+
+
+def test_sherpa_on_apple_silicon_says_installed_but_off(capsys, monkeypatch, tmp_path):
+    """Окружение и веса на месте, но ключ sherpa — информационная строка с шагом включения,
+    а не молчание и не тревога (пробы тут нет: она была бы сетью/MLX в докторе)."""
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "arm64")
+    installed = doctor.diarize_nemotron.engine_python(tmp_path)
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#", encoding="utf-8")
+    d = doctor.diarize_nemotron.model_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / "config.json").write_text('{"model_type": "nemotron_diarization", "num_speakers": 8}',
+                                   encoding="utf-8")
+    (d / "model.safetensors").write_bytes(b"x" * doctor.diarize_nemotron.MIN_WEIGHTS_BYTES)
+    issues = doctor.issues
+    doctor.check_engine({"sufler": {"diarize_backend": "sherpa"}})
+    out = capsys.readouterr().out
+    assert "стоит, но не включён" in out and "sufler.diarize_backend: nemotron" in out
+    assert doctor.issues == issues, "информационная строка не должна считаться проблемой"
+
+
+def test_an_unknown_backend_key_gets_its_own_line_without_install_advice(capsys, monkeypatch, tmp_path):
+    """Опечатка в `diarize_backend` — своя строка: не ветка sherpa и не совет ставить движок."""
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "arm64")
+    issues = doctor.issues
+    doctor.check_engine({"sufler": {"diarize_backend": "sherpaa"}})
+    out = capsys.readouterr().out
+    assert "ключ sufler.diarize_backend: 'sherpaa' неизвестен" in out
+    assert "допустимые: sherpa, nemotron" in out
+    assert "поставить" not in out and "включить" not in out
+    assert doctor.issues == issues
+
+
+def test_a_live_stream_without_a_working_engine_is_warned(capsys, monkeypatch, tmp_path):
+    """Живой поток не off, а движку нечем работать — предупреждение: тень молча не поднимется."""
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "x86_64")
+    doctor.check_engine({"sufler": {"diarize_backend": "sherpa", "live_nemotron": "shadow"}})
+    out = capsys.readouterr().out
+    assert "живой поток Nemotron включён (shadow), а движок не готов" in out
+    assert "install_engine.py" in out
 
 
 def test_the_engine_line_names_the_interpreter_the_door_chose(capsys, monkeypatch, tmp_path):

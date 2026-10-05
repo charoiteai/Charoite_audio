@@ -83,6 +83,16 @@ def test_mutator_guard_does_not_count_other_mutators(tmp_path):
         lock.release()
 
 
+def test_machine_busy_names_the_meeting_stage_in_words(tmp_path):
+    """Стадия разбора встречи — словами: сырое имя стадии читателю ничего не говорит."""
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "встреча.json").write_text(
+        json.dumps({"state": "processing", "stage": "transcribe", "updated_at": time.time()}),
+        encoding="utf-8")
+    assert busy_signals.machine_busy(tmp_path) == ["разбор встречи (transcribe)"]
+
+
 def test_lock_file_is_private(tmp_path):
     lock = busy_signals.MutationLock(tmp_path)
     assert lock.acquire()

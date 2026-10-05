@@ -153,6 +153,16 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 
 详情与调优见 [DIARIZATION.md](DIARIZATION.md)。没有它们时按声道标注（你/对方），两个都有时按声音标注（“Speaker 1/2/…”）。只有嵌入、没有分段时，实时标注处于简化模式，会后也不会重新标注说话人。
 
+可选的 Nemotron 引擎（Apple Silicon，会后说话人分离）从终端安装，并指明数据文件夹——当代码位于应用包内时，使用应用自带的 Python：
+
+```bash
+CHAROITE_ROOT=<数据文件夹> <应用 Python> scripts/install_engine.py nemotron          # 安装
+CHAROITE_ROOT=<数据文件夹> <应用 Python> scripts/install_engine.py nemotron --check  # 查看已装内容，不联网
+CHAROITE_ROOT=<数据文件夹> <应用 Python> scripts/install_engine.py nemotron --plan   # 以一行 JSON 输出计划，不联网
+```
+
+退出码如实反映结果：0 —— 已安装且探测通过；12（`EXIT_INSTALL_BUSY`）—— 机器正忙或另一次安装正在进行；13（`EXIT_INSTALL_CANCELLED`）—— 已取消；1 —— 拒绝。详情见 [DIARIZATION.md](DIARIZATION.md)。
+
 ## 6. 运行
 
 ```bash

@@ -105,8 +105,6 @@ ENGINE_REFUSED_REASON = ("Nemotron не разметил голоса — при
 #: или собеседников, которые были в живой стенограмме. Без путей машины. Код
 #: для статуса и приложения — `RebuildSkipped.CHANNEL_LOST`.
 CHANNEL_LOST_REASON = "канал не размечен — пересборка отменена, живая стенограмма остаётся"
-#: Движки разметки канала собеседников (`sufler.diarize_backend`).
-DIARIZE_BACKENDS = ("sherpa", "nemotron")
 #: Потолок Nemotron: запуск интерпретатора и загрузка весов плюс десятая доля
 #: длительности записи (замер 28.09 с запуском процесса и загрузкой модели:
 #: 41 минута — 5 с, 20 минут — 3 с, 8 минут — 2 с).
@@ -352,11 +350,12 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path, duration_s: float, *,
     `(None, "")` — выбран sherpa.
     """
     sufler = cfg.get("sufler") or {}
-    backend = str(sufler.get("diarize_backend") or "sherpa").strip().lower()
+    backend = diarize_nemotron.normalize_engine_key(sufler.get("diarize_backend"))
     if backend == "sherpa":
         return None, ""
-    if backend not in DIARIZE_BACKENDS:
-        reason = f"движок {backend!r} неизвестен (sufler.diarize_backend: {', '.join(DIARIZE_BACKENDS)})"
+    if backend not in diarize_nemotron.ENGINE_BACKENDS:
+        reason = (f"движок {backend!r} неизвестен "
+                  f"(sufler.diarize_backend: {', '.join(diarize_nemotron.ENGINE_BACKENDS)})")
         log(reason)
         return None, reason
     segs, reason, _ = _nemotron(cfg, wav, duration_s, "голоса собеседников")

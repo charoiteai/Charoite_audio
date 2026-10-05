@@ -79,7 +79,9 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True) -> list[str
     if live_recording(root):
         busy.append("живая запись")
     try:
-        busy += list(MeetingStatusStore(root).busy())
+        # Стадия разбора — словами: сырое имя стадии («transcribe») читателю
+        # ничего не говорит, а причина отказа установщика обязана быть понятной.
+        busy += [f"разбор встречи ({stage})" for stage in MeetingStatusStore(root).busy()]
     except Exception:  # noqa: BLE001
         pass
     if night_running(root):
