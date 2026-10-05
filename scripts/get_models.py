@@ -167,6 +167,12 @@ NEMOTRON = Model(
 #: sha256 спутника config.json (не LFS, сумма снята вручную 28.09 с файла ревизии выше)
 NEMOTRON_CONFIG_SHA256 = "f215091252bc54f8dcc7d682962a659e03a6bcb26d1c86e4728b8c6730130eb4"
 
+#: Лицензия весов Nemotron: имя и ссылка. Веса в репозиторий не кладутся — человек
+#: скачивает их сам и принимает условия; установщик печатает эту строку в блоке
+#: сети до соединения, а `--plan` кладёт её в JSON.
+NEMOTRON_LICENSE = ("NVIDIA OpenMDW 1.1",
+                    "https://huggingface.co/nvidia/Nemotron-3-Diarization/blob/main/LICENSE")
+
 
 def fetch_nemotron(dest: pathlib.Path) -> None:
     """Веса Nemotron в каталог `dest` — оба файла, каждый со своей суммой.

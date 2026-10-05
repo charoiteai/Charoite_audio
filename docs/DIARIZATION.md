@@ -438,14 +438,61 @@ the app's interpreter when it can find it, and with your data root):
 ```bash
 CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron          # install
 CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --check  # what is there, no network
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --plan   # plan as one JSON line, no network
 ```
+
+The installer also installs the missing sherpa voice set (embedding and
+segmentation, via `scripts/get_models.py`) before the environment: the fallback
+engine needs it, and both files are fetched by the same loader. It prints the
+weight licence (NVIDIA OpenMDW 1.1, with its link) in the network block, before
+connecting. The outcome is honest: **0** — installed and the probe is green;
+**`EXIT_INSTALL_BUSY` (12)** — the machine is busy (a meeting being processed, a
+live recording, the night cycle, a test mutation) or another install is running;
+the refusal names the reasons and asks to wait for them to finish — the
+night-cycle reason carries the status file and how many minutes ago it was
+updated, so an abandoned `running` is told from a night actually under way; **
+`EXIT_INSTALL_CANCELLED` (13)** — SIGTERM/SIGHUP/Ctrl-C; **1** — a refusal (wrong
+machine, volume without flock, the weight loader's refusal). A cancelled install
+before the swap leaves the previous environment untouched, removes its staging
+folder and keeps half-downloaded weights as `.part` to resume; the two renames
+are held under a signal mask, so a cancellation in between is deferred until the
+swap is fixed — after that the cleanup finishes and the install reports **0**,
+not 13. When the app starts the installer,
+it makes it its process-group leader (`CHAROITE_INSTALL_NEW_PGROUP=1`), so a
+SIGKILL to the group also kills pip; an installer that is already a group leader
+(a session leader always is) is left as is, and a failure to join the group is a
+plain refusal with code 1, not a traceback; without the variable the group is
+left alone and Ctrl-C from a terminal keeps working. The group is entered only
+when installing: `--plan` and `--check` start nothing, so a refused `setpgid`
+cannot turn their answer into a refusal with an empty stdout. `--plan` prints one
+line of JSON —
+machine fitness `{ok, reason}`, the network addresses, the sizes
+(environment, weights, voice set) counting only what is missing (an environment,
+weights or voice set already in place contribute 0), the weight licence, and
+`engine_state`: the normalised
+`diarize_backend`, the value of
+`nemotron_python` (empty when unset), which interpreter was chosen
+or why not, whether the environment and weights are there, and the live-stream
+mode — without touching the network. It never emits a traceback: a broken or
+unreadable user config puts an `error` into `engine`, and any other unexpected
+failure is one `{"error": …}` line with code 1. The doctor reads the same state: on Apple
+Silicon, with `sherpa` chosen, the engine's environment and weights being in
+place (there is no probe here) is «стоит, не включён» with the switch named
+(`sufler.diarize_backend: nemotron`); their absence is «не стоит»; an
+unrecognised `diarize_backend` is «ключ неизвестен» with the allowed values and
+no advice to install. The Nemotron branch takes `nemotron_python` and the chosen
+interpreter from that state instead of re-reading the config shape, so a string
+where `sufler` should be a mapping no longer crashes it. With a live mode other
+than `off` and a broken engine it warns.
 
 In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`,
 and the data folder is the one under Settings → Data folder
 (`~/Library/Application Support/Charoite` by default). Without `CHAROITE_ROOT` the
 installer refuses: guessing the root from its own location would put the environment
 inside the signed `.app`, and a data root inside an `.app` is refused as well.
-The installer prints where it goes on the network before connecting, checks the
+The installer prints where it goes on the network before connecting — and names
+the delivery CDN each model host redirects to, not just the originating host —
+checks the
 machine against the header of `requirements-nemotron.lock` (Apple Silicon, macOS
 14 or newer — mlx wheels start there — and the Python the lock was built for),
 copies the running interpreter without the app's packages into

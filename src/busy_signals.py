@@ -41,15 +41,27 @@ def live_recording(root: pathlib.Path) -> bool:
 
 def night_running(root: pathlib.Path) -> bool:
     """Идёт ли ночной цикл (logs/nightly.json, state=running, свежий)."""
+    return night_busy_reason(root) is not None
+
+
+def night_busy_reason(root: pathlib.Path) -> str | None:
+    """Слова занятости ночным циклом — или None, если ночь не идёт.
+
+    Несёт путь файла статуса и сколько минут назад он обновлялся: брошенный
+    `running` до `NIGHT_STALE_S` (ребут посреди ночи) иначе не отличить от
+    идущей ночи, и человек ждёт конца, которого не будет (№622 B2, часть 1)."""
     path = root / NIGHTLY_REL
     try:
         st = path.stat()
-        if time.time() - st.st_mtime > NIGHT_STALE_S:
-            return False
+        age_s = time.time() - st.st_mtime
+        if age_s > NIGHT_STALE_S:
+            return None
         state = json.loads(path.read_text(encoding="utf-8")).get("state")
     except (OSError, ValueError):
-        return False
-    return state == "running"
+        return None
+    if state != "running":
+        return None
+    return f"ночной цикл ({path}, обновлён {int(age_s // 60)} мин назад)"
 
 
 def mutation_running(root: pathlib.Path) -> bool:
@@ -79,11 +91,14 @@ def machine_busy(root: pathlib.Path, *, count_mutation: bool = True) -> list[str
     if live_recording(root):
         busy.append("живая запись")
     try:
-        busy += list(MeetingStatusStore(root).busy())
+        # Стадия разбора — словами: сырое имя стадии («transcribe») читателю
+        # ничего не говорит, а причина отказа установщика обязана быть понятной.
+        busy += [f"разбор встречи ({stage})" for stage in MeetingStatusStore(root).busy()]
     except Exception:  # noqa: BLE001
         pass
-    if night_running(root):
-        busy.append("ночной цикл")
+    night = night_busy_reason(root)
+    if night:
+        busy.append(night)
     if count_mutation and mutation_running(root):
         busy.append("мутация тестов")
     return busy

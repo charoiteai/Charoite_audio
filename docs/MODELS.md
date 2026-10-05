@@ -232,6 +232,26 @@ Details — [DIARIZATION.md](DIARIZATION.md).
   re-pass over the full recording (echo filter, micro-fragment merging,
   name assignment).
 
+## Nemotron diarization engine (optional, Apple Silicon)
+
+The after-meeting pass can label the call channel with [Nemotron 3
+Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) instead of
+sherpa (`sufler.diarize_backend: nemotron`). Its MLX port
+(`mlx-community/Nemotron-3-Diarization`) is fetched by `scripts/install_engine.py
+nemotron` from a pinned revision with sha256 checks into `models/diar/nemotron`;
+the installed environment goes into `engines/nemotron` under the data root.
+
+- **Licence:** the weights are NVIDIA OpenMDW 1.1, not Apache-2.0 — they are not
+  in this repository, you download them yourself and accept the terms
+  (<https://huggingface.co/nvidia/Nemotron-3-Diarization/blob/main/LICENSE>).
+- **Sizes:** the environment is about 601 MB (`du -sm` of the environment this
+  installer placed on Apple Silicon on 2026-09-29, measured 2026-10-05); the
+  weights are about 190 MB and the sherpa voice set (embedding + segmentation)
+  about 47 MB. `scripts/install_engine.py nemotron --plan` prints these numbers
+  (counting only what is missing — an environment, weights or voice set already
+  in place contribute 0), the network addresses and the licence as one JSON line
+  without connecting.
+
 ## Mandatory explicit num_ctx
 
 Some Ollama Modelfiles ship with a 262144 context default — without an
