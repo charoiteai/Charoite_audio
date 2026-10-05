@@ -107,7 +107,8 @@ _SWIFT_TAILS = {
 
 def _swift_root(tmp_path, monkeypatch, tail: str) -> tuple[pathlib.Path, str]:
     _home(tmp_path, monkeypatch)
-    assert re.fullmatch(r"[A-Za-z0-9/_.\-]+", str(tmp_path)), tmp_path
+    assert re.fullmatch(r"[A-Za-z0-9/_.\-]+", str(tmp_path)), (
+        f"tmp_path {tmp_path} сам требует процентной записи — хвост замера к нему не приставить")
     root = tmp_path / tail
     root.mkdir(parents=True)
     charoite_paths.use_data_root(root, replace=True)
@@ -733,16 +734,43 @@ def _is_name(node, name: str) -> bool:
     return isinstance(node, ast.Name) and node.id == name
 
 
+_WRITERS = ("write_text", "write_bytes")
+
+
+def _binds_doc(node) -> bool:
+    """Узел связывает или снимает имя ``doc``: присваивание любой формы
+    (``=``, кортеж, ``+=``, аннотация, ``:=``, цель ``for``/``with``), ``del``,
+    ``except … as doc``, ``case … as doc``, ``import … as doc``."""
+    if isinstance(node, ast.Name):
+        return node.id == "doc" and isinstance(node.ctx, (ast.Store, ast.Del))
+    if isinstance(node, ast.ExceptHandler):
+        return node.name == "doc"
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+        return node.name == "doc"
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.split(".")[0]) == "doc"
+    return False
+
+
 def _protocol_order(src: str) -> str | None:
-    """Порядок в ``_do_summary`` демона по AST: ``doc = minutes_document(doc)``,
-    затем ``tmp.write_text(doc, …)``, и между ними имя ``doc`` не присваивается
-    ни в какой форме (``=``, кортеж, ``+=``, аннотация, ``:=``, цель ``for`` и
-    ``with``). Ответ — причина отказа или None."""
+    """Порядок в ``_do_summary`` демона по AST. Ответ — причина отказа или None.
+
+    Скраб ``doc = minutes_document(doc)`` один; запись файла в функции одна —
+    ``tmp.write_text(doc, …)``. Скраб доминирует над записью: запись лежит в
+    операторе того же списка, что и скраб, и после него, поэтому условный
+    скраб (``if …: doc = minutes_document(doc)``) не проходит. Между ними имя
+    ``doc`` не связывается заново ни в какой форме (``_binds_doc``), а
+    ``nonlocal``/``global doc`` в функции нет вовсе: вложенная функция иначе
+    перепишет ``doc`` вызовом, которого в окне не видно."""
     funcs = [node for node in ast.walk(ast.parse(src))
              if isinstance(node, ast.FunctionDef) and node.name == "_do_summary"]
     if len(funcs) != 1:
         return f"функция _do_summary в daemon.py: найдено {len(funcs)}, ждали одну"
-    nodes = list(ast.walk(funcs[0]))
+    func = funcs[0]
+    nodes = list(ast.walk(func))
+    for node in nodes:
+        if isinstance(node, (ast.Nonlocal, ast.Global)) and "doc" in node.names:
+            return f"`{type(node).__name__.lower()} doc` на строке {node.lineno}: порядок по AST не доказать"
     scrubs = [node for node in nodes
               if isinstance(node, ast.Assign) and len(node.targets) == 1
               and _is_name(node.targets[0], "doc")
@@ -750,22 +778,34 @@ def _protocol_order(src: str) -> str | None:
               and len(node.value.args) == 1 and _is_name(node.value.args[0], "doc")]
     if len(scrubs) != 1:
         return f"не найдено присваивание `doc = minutes_document(doc)` (найдено {len(scrubs)})"
-    writes = [node for node in nodes
-              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-              and node.func.attr == "write_text" and _is_name(node.func.value, "tmp")
+    writers = [node for node in nodes
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr in _WRITERS]
+    writes = [node for node in writers
+              if node.func.attr == "write_text" and _is_name(node.func.value, "tmp")
               and node.args and _is_name(node.args[0], "doc")]
     if len(writes) != 1:
         return f"не найден вызов `tmp.write_text(doc, …)` (найдено {len(writes)})"
+    if len(writers) != 1:
+        lines = ", ".join(str(node.lineno) for node in writers)
+        return f"в _do_summary записей файла {len(writers)} (строки {lines}), ждали одну — `tmp.write_text(doc, …)`"
     scrub, write = scrubs[0], writes[0]
+    block = next((body for parent in nodes
+                  for field in ("body", "orelse", "finalbody")
+                  for body in [getattr(parent, field, None)]
+                  if isinstance(body, list) and any(stmt is scrub for stmt in body)), None)
+    assert block is not None, "скраб найден, а его список операторов — нет"
+    after = block[block.index(scrub) + 1:]
+    if not any(write is node for stmt in after for node in ast.walk(stmt)):
+        return (f"запись минуток (строка {write.lineno}) не идёт следом за скрабом (строка {scrub.lineno}) "
+                "в том же блоке: скраб условный, стоит позже записи или в другой ветке")
     start = (scrub.end_lineno, scrub.end_col_offset)
     stop = (write.lineno, write.col_offset)
-    if not start <= stop:
-        return f"запись минуток (строка {write.lineno}) стоит раньше скраба (строка {scrub.lineno})"
     for node in nodes:
-        if (_is_name(node, "doc") and isinstance(node.ctx, ast.Store)
-                and start <= (node.lineno, node.col_offset) < stop):
+        pos = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+        if _binds_doc(node) and start <= pos < stop:
             return (f"между скрабом (строка {scrub.lineno}) и записью (строка {write.lineno}) "
-                    f"`doc` присваивается заново на строке {node.lineno}")
+                    f"`doc` присваивается заново на строке {pos[0]}")
     return None
 
 
@@ -798,6 +838,10 @@ def outer():
     ("doc, other = doc, 1", "присваивается заново"),
     ("[(doc := doc)]", "присваивается заново"),
     ("for doc in [doc]: pass", "присваивается заново"),
+    ("del doc", "присваивается заново"),
+    ("try: pass\n        except OSError as doc: pass", "присваивается заново"),
+    ("import os as doc", "присваивается заново"),
+    ("match doc:\n            case str() as doc: pass", "присваивается заново"),
 ])
 def test_protocol_order_sees_every_rebinding_of_doc(insert, reason):
     """Сторож порядка ловит любое присваивание `doc` между скрабом и записью."""
@@ -815,7 +859,27 @@ def test_protocol_order_refuses_loudly_when_the_names_change():
     assert "не найден вызов `tmp.write_text(doc, …)`" in (_protocol_order(swapped) or "")
     late = _PROTOCOL_OK.replace("        doc = minutes_document(doc)\n", "") + \
         "        doc = minutes_document(doc)\n"
-    assert "раньше скраба" in (_protocol_order(late) or "")
+    assert "не идёт следом за скрабом" in (_protocol_order(late) or "")
+
+
+@pytest.mark.parametrize("before, after, reason", [
+    ("        doc = minutes_document(doc)\n",
+     "        if note:\n            doc = minutes_document(doc)\n", "не идёт следом за скрабом"),
+    ("        doc = minutes_document(doc)\n",
+     "        try:\n            doc = minutes_document(doc)\n        except ValueError:\n            pass\n",
+     "не идёт следом за скрабом"),
+    ("            tmp.write_text(doc, encoding=\"utf-8\")\n",
+     "            tmp.write_text(doc, encoding=\"utf-8\")\n            mpath.write_text(raw)\n",
+     "записей файла 2"),
+    ("    def _do_summary():\n",
+     "    def _do_summary():\n        nonlocal doc\n", "nonlocal doc"),
+])
+def test_protocol_order_refuses_a_write_the_scrub_does_not_dominate(before, after, reason):
+    """Условный скраб, второй писатель и `nonlocal doc` — отказ, а не зелёный:
+    позиции узлов про поток управления ничего не знают (DS C1, круг по Opus)."""
+    bad = _PROTOCOL_OK.replace(before, after)
+    assert bad != _PROTOCOL_OK
+    assert reason in (_protocol_order(bad) or "")
 
 
 def test_scrub_count_goes_to_stderr_not_the_daemon_stdout(tmp_path, monkeypatch, capsys):
