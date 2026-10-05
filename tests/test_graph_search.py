@@ -277,6 +277,37 @@ def test_dossier_comes_first(tmp_path):
     assert s.search("zzzключ", limit=2, semantic=False).status is gs.Verdict.UNVERIFIED
 
 
+def test_dossiers_axis_off_skips_dossier_blocks(tmp_path):
+    """Ось `dossiers=False` — аргумент вызова: сводка темы не ищется вовсе
+    (`_dossier_blocks` не зовётся), `Result.dossiers` пуст, файл досье слот
+    первичной выдачи не занимает. `True` (умолчание) — сводка на месте."""
+    s = _search(tmp_path)
+    folder = s.graph / CHAROITE.dossier_dir
+    folder.mkdir()
+    (folder / "Платёжный шлюз.md").write_text(
+        "---\ntype: досье\n---\n# Платёжный шлюз\n## Состояние\nпилот до сентября, провайдер ЮPay\n",
+        encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз", "провайдер"],
+                                  "источников": 3, "собрано": "2026-08-02"}])
+    s.refresh(force=True)
+    calls = []
+    real = s._dossier_blocks
+
+    def spy(*a, **kw):
+        calls.append(a)
+        return real(*a, **kw)
+
+    s._dossier_blocks = spy
+    on = s.search("что с платёжным шлюзом", limit=2)
+    assert on.dossiers and on.dossiers[0].startswith("📁 Досье «Платёжный шлюз»"), "с осью — сводка есть"
+    assert calls, "с осью `_dossier_blocks` зовётся"
+    calls.clear()
+    off = s.search("что с платёжным шлюзом", limit=2, dossiers=False)
+    assert off.dossiers == [] and calls == [], "ось выключена — `_dossier_blocks` не звался"
+    assert off.blocks and not any("Досье/" in b for b in off.blocks), "файл досье не занял слот выдачи"
+    assert "📁 Досье" not in gs.render(off, "что с платёжным шлюзом")
+
+
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)

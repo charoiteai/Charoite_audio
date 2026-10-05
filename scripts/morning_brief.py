@@ -101,6 +101,8 @@ def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
                 continue
             stale = now - made > dt.timedelta(hours=max_age_h)
             who = f"{a['profile']}/{a['mode']}" if a.get("mode") else a["profile"]
+            if a.get("dossiers") is False:
+                who += " без досье"     # тревога прогона без оси досье; старая запись без поля — как прежде
             if a.get("state") == "unmeasured":
                 if not stale:
                     out.append(f"- ⚠️ бенч памяти ({who}): сторож не взведён — {a['why']}")
