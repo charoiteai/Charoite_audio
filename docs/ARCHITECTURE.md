@@ -1819,12 +1819,17 @@ packing, first token, full synthesis) as p50/p95, with the cold start apart.
 
 `--record` appends the profile's result to `logs/memory_bench_baseline.jsonl`
 (append-only, outside retention) and compares it with the accepted baseline of
-the same profile, mode and hash seed (and model, for synthesis). Two or more
-questions going ✓→✗ with the same `sem_used` write `logs/memory_bench_alert.json`
-with the questions' numbers and categories and whether HEAD or the graph
-changed; a changed `sem_used` is reported separately and never compared. A
-baseline is accepted only by an explicit `--accept`, from the latest record;
-accepting a worse result needs `--reason`. The bench re-runs itself with
+the same profile, mode, hash seed and graph (and model, for synthesis); the
+alert file is keyed the same way. Two or more questions going ✓→✗ with the same
+`sem_used` write `logs/memory_bench_alert.json` with the questions' numbers and
+categories and whether HEAD (with uncommitted edits) or the graph changed; a
+changed `sem_used` is reported separately and never compared. A clean comparison
+lifts the alert; a run with no baseline, or with fewer than half the questions
+comparable, lifts nothing and is shown in the morning brief as "watch not armed".
+The journal and the alert file are written under one lock. A baseline is
+accepted only by an explicit `--accept`, from the latest record of that graph;
+accepting a worse result needs `--reason`, a run that fell back to another model
+is refused. The bench re-runs itself with
 `PYTHONHASHSEED=0` until retrieval is deterministic (the daemon still runs
 with a random hash order).
 

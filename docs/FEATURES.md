@@ -384,7 +384,8 @@ loop and checks that must-have facts appear in the answers. At night it
 measures, without a model, what each daemon consumer (answer, live context,
 topic expansion) gets from memory, compares it with the accepted baseline
 and, when two or more questions regress, puts a ⚠️ line into the morning
-brief — degradation after threshold tweaks shows up there, not in a live
+brief (until a baseline is accepted, a "watch not armed" line) —
+degradation after threshold tweaks shows up there, not in a live
 meeting. The steps are independent — a failed revision does not cancel the
 brief — but the run exits non-zero if any of them failed: the job used to
 end on an `echo`, so launchd reported green even on nights when nothing
