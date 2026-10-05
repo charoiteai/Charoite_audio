@@ -636,7 +636,7 @@ def run_raw(args, graph: pathlib.Path, cfg: dict, cases: list[dict], lang: str) 
 # --------------------------------------------------------------------- база и тревога ночи
 # Итог профиля дописывается строкой в logs/memory_bench_baseline.jsonl; принятая
 # база — отдельная строка `accept` со ссылкой на итог (принимается явной командой,
-# по последней записи). Тревога — два и больше вопросов ✓→✗ против принятой базы
+# по id итога). Тревога — два и больше вопросов ✓→✗ против принятой базы
 # того же профиля, режима и seed (у синтеза — и модели), только среди вопросов с
 # тем же sem_used: сменившийся векторизатор — другой опыт, не регресс поиска.
 
@@ -682,7 +682,7 @@ def make_record(profile: str, mode: str, model: str, graph_fp: str, cases: list[
     import uuid
     # id — ссылка принятия на итог: время с точностью до секунды у двух прогонов совпадает
     return {"kind": "run", "id": uuid.uuid4().hex[:12], "ts": dt.datetime.now().isoformat(timespec="seconds"),
-            "profile": profile, "mode": mode, "head": code_head(), "seed": os.environ.get("PYTHONHASHSEED", "?"),
+            "profile": profile, "mode": mode, "head": code_head(), "seed": hash_seed(),
             "model": model if mode == "synth" else None, "graph": graph_fp, "graph_dir": graph_dir,
             "questions": [{"id": qid(c), "n": q.n, "cat": q.cat, "ok": q.ok, "sem": q.sem_used,
                            "status": q.status, "why": q.why, "new": q.new_pos, "old": q.old_pos,
@@ -777,8 +777,9 @@ def compare(base: dict, cur: dict) -> Diff:
 def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     """Файл тревоги для утреннего брифа: ключ — ключ сравнения (`alert_key`).
     `None` — сравнили, просадки нет: ключ снят, пустой файл удаляется. Состояние
-    `unmeasured` (базы нет или сравнимых вопросов мало) стоявшую тревогу не снимает,
-    а помечает: прогон, который ничего не сравнил, не свидетельствует «чисто».
+    `unmeasured` (базы нет, сравнимых вопросов мало, грязный прогон против базы на
+    другом коде) стоявшую тревогу не снимает, а помечает: прогон, который ничего не
+    сравнил, не свидетельствует «чисто». `run` тревоги остаётся тем итогом, что её поднял.
     Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -821,13 +822,23 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
     records = read_records(base_path)
     append_record(base_path, rec)
     base = accepted_base(records, run_key(rec))
-    stamp = {"ts": rec["ts"], "profile": rec["profile"], "mode": rec["mode"],
+    stamp = {"ts": rec["ts"], "run": rec["id"], "profile": rec["profile"], "mode": rec["mode"],
              "graph_dir": str(graph) if graph is not None else ""}
+    print(f"итог {rec['id']} записан")
     if base is None:
-        hint = f"--accept --profile {rec['profile']}{' --stats' if rec['mode'] == 'stats' else ''}"
+        hint = (f"--accept --run {rec['id']} --profile {rec['profile']}"
+                f"{' --stats' if rec['mode'] == 'stats' else ''}")
         print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой {hint}")
         update_alert(alert_path, alert_key(rec),
                      {**stamp, "state": "unmeasured", "why": f"база не принята ({hint})"})
+        return None
+    if rec["head"].endswith("+dirty") and rec["head"] != base.get("head"):
+        # правка без коммита против базы на другом коде: «чисто» здесь не говорит о
+        # коде, который пойдёт в работу, — тревогу не снимаем и не поднимаем
+        print(f"не сравниваю: прогон на незакоммиченном коде против базы на другом коде "
+              f"({rec['head']} против {base.get('head', '?')})")
+        update_alert(alert_path, alert_key(rec),
+                     {**stamp, "state": "unmeasured", "why": "прогон на незакоммиченном коде против базы на другом коде"})
         return None
     d = compare(base, rec)
     print(f"против базы от {base['ts']}: было {passed(base)}, стало {passed(rec)}; ✓→✗ {len(d.regressed)}")
@@ -863,42 +874,62 @@ def yes_no(v: bool | None) -> str:
     return "неизвестно" if v is None else "да" if v else "нет"
 
 
-def accept(root: pathlib.Path, profile: str, mode: str, reason: str, graph_dir: str = "") -> None:
-    """Принять последнюю запись профиля и режима этого графа базой. Итог хуже прежней
-    базы — только с причиной (`--reason`): молча опущенная планка — не база. Итог,
-    прошедший через откат модели (`fallback:?`), базой не годится: модель неизвестна."""
+def accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: str,
+           graph_dir: str = "") -> None:
+    """Принять базой итог `run_id` — тот, что человек видел (`judge` печатает id), а не
+    последний в журнале. Итог хуже прежней базы — только с причиной (`--reason`): молча
+    опущенная планка — не база. Итог, прошедший через откат модели (`fallback:?`),
+    базой не годится: модель неизвестна. Тревога ключа снимается: следующий прогон
+    судит против новой базы, а ключ, который больше не гоняют, не висит вечно."""
     with bench_lock(root):
-        _accept(root, profile, mode, reason, graph_dir)
+        _accept(root, profile, mode, run_id, reason, graph_dir)
 
 
-def _accept(root: pathlib.Path, profile: str, mode: str, reason: str, graph_dir: str) -> None:
+def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: str, graph_dir: str) -> None:
     path = log_path(root, "memory_bench_baseline")
     records = read_records(path)
-    runs = [r for r in records if r.get("kind") == "run" and r.get("profile") == profile
-            and r.get("mode") == mode and r.get("seed") == SEED and r.get("graph_dir", "") == graph_dir]
-    if not runs:
-        sys.exit(f"нечего принимать: записей {profile}/{mode} с seed {SEED} по этому графу нет — "
-                 "сначала прогон с --record")
-    last = runs[-1]
-    if str(last.get("model") or "").startswith("fallback:"):
-        sys.exit("последний итог прошёл через откат модели (fallback:?) — базой не годится, повторите прогон")
-    prev = accepted_base(records, run_key(last))
-    if prev is not None and passed(last) < passed(prev) and not reason:
-        sys.exit(f"итог {passed(last)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
+    rec = next((r for r in records if r.get("kind") == "run" and r.get("id") == run_id), None)
+    if rec is None:
+        sys.exit(f"итога {run_id} в журнале нет — id печатает прогон с --record")
+    # значение пути графа в текст не идёт: только имя поля
+    for field, want in (("profile", profile), ("mode", mode), ("seed", SEED), ("graph_dir", graph_dir)):
+        if rec.get(field, "") != want:
+            sys.exit(f"итог {run_id} не того ключа: поле {field} не совпадает с командой — не принят")
+    if str(rec.get("model") or "").startswith("fallback:"):
+        sys.exit(f"итог {run_id} прошёл через откат модели (fallback:?) — базой не годится, повторите прогон")
+    prev = accepted_base(records, run_key(rec))
+    if prev is not None and passed(rec) < passed(prev) and not reason:
+        sys.exit(f"итог {passed(rec)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
     append_record(path, {"kind": "accept", "ts": dt.datetime.now().isoformat(timespec="seconds"),
-                         "run": last["id"], "profile": profile, "mode": mode, "seed": last["seed"],
-                         "model": last.get("model"), "graph_dir": graph_dir, "reason": reason})
-    print(f"база {profile}/{mode} принята: итог от {last['ts']}, {passed(last)}/{len(last['questions'])}"
+                         "run": rec["id"], "profile": profile, "mode": mode, "seed": rec["seed"],
+                         "model": rec.get("model"), "graph_dir": graph_dir, "reason": reason})
+    print(f"база {profile}/{mode} принята: итог {rec['id']} от {rec['ts']}, {passed(rec)}/{len(rec['questions'])}"
           + (f" — причина: {reason}" if reason else ""))
+    update_alert(log_path(root, "memory_bench_alert"), alert_key(rec), None)
+    print("тревога ключа снята, следующий прогон судит против новой базы")
+
+
+def hash_seed() -> str:
+    """Действующий seed порядка хеша — по факту интерпретатора, а не по переменной:
+    при `-E`/`-I` `PYTHONHASHSEED=0` в окружении есть, а хеш случайный."""
+    return SEED if sys.flags.hash_randomization == 0 else "random"
 
 
 def pin_hash_seed(profile: str) -> None:
-    """До №631 выдача зависит от PYTHONHASHSEED: бенч профиля перезапускает себя с
-    seed 0, иначе два прогона одного кода расходятся сами по себе."""
-    if profile not in brain.PROFILES or os.environ.get("PYTHONHASHSEED") == SEED:
+    """До №631 выдача зависит от порядка хеша: бенч профиля перезапускает себя с
+    seed 0, иначе два прогона одного кода расходятся сами по себе. Перезапуск —
+    с `sys.orig_argv`: флаги интерпретатора (`-u`, `-X`, `-W`) сохраняются."""
+    if profile not in brain.PROFILES or sys.flags.hash_randomization == 0:
         return
-    env = {**os.environ, "PYTHONHASHSEED": SEED}
-    os.execve(sys.executable, [sys.executable, *sys.argv], env)
+    if sys.flags.ignore_environment:
+        sys.exit("бенч профиля фиксирует порядок хеша через PYTHONHASHSEED, а интерпретатор "
+                 "окружение не читает — запустите без -E/-I")
+    if os.environ.get("PYTHONHASHSEED") == SEED:
+        # перезапуск уже был или окружение то же — новый execve дал бы цикл
+        sys.exit(f"PYTHONHASHSEED={SEED} в окружении, а порядок хеша случайный — перезапуск не поможет")
+    sys.stdout.flush()      # execve выбрасывает буфер: напечатанное до него пропало бы
+    sys.stderr.flush()
+    os.execve(sys.executable, sys.orig_argv, {**os.environ, "PYTHONHASHSEED": SEED})
 
 
 def main() -> None:
@@ -925,7 +956,8 @@ def main() -> None:
                     help="с --profile answer|live|expand: дописать итог в logs/memory_bench_baseline.jsonl "
                          "и сверить с принятой базой (тревога — logs/memory_bench_alert.json)")
     ap.add_argument("--accept", action="store_true",
-                    help="принять последнюю запись профиля и режима базой (без прогона)")
+                    help="с --run ID: принять итог базой (без прогона); id печатает прогон с --record")
+    ap.add_argument("--run", default="", metavar="ID", help="с --accept: id итога, который принимается")
     ap.add_argument("--reason", default="", help="с --accept: причина, если итог хуже прежней базы")
     args = ap.parse_args()
     if (args.brain or args.legacy) and args.profile != "raw":
@@ -936,6 +968,8 @@ def main() -> None:
         ap.error("--record пишет базу по полному эталону владельца: без --limit и демо")
     if args.reason and not args.accept:
         ap.error("--reason — только вместе с --accept")
+    if args.accept != bool(args.run):
+        ap.error("--accept и --run ID — только вместе: принимается итог, который вы видели")
     mode = "stats" if args.stats or args.profile == "live" else "synth"
     pin_hash_seed(args.profile)
 
@@ -970,7 +1004,7 @@ def main() -> None:
         graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
         bench_file = _root() / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if args.accept:
-        accept(_root(), args.profile, mode, args.reason, str(graph))
+        accept(_root(), args.profile, mode, args.run, args.reason, str(graph))
         return
     if not bench_file.exists():
         # Не настроен — не то же самое, что провален. Раньше здесь был выход с
@@ -991,7 +1025,7 @@ def main() -> None:
     if args.profile != "raw":
         # пустой конфиг фабрика читает как «моделей нет»: демо меряет лексику, не ходя в сеть
         emb = build_embedder(cfg if not args.demo else {})
-        print(f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED', '?')}: выдача воспроизводима между прогонами; "
+        print(f"порядок хеша: seed {hash_seed()} — выдача воспроизводима между прогонами; "
               "демон идёт со случайным порядком хеша (№631)")
         out, model, graph_fp = run_profile(brain.PROFILES[args.profile], graph, emb, cases,
                                            stats=args.stats, cfg=cfg)

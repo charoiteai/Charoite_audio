@@ -182,13 +182,18 @@ def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=Non
 
 
 monkey_head = ["aaa"]
+monkey_seed = ["0"]
 REAL_CODE_HEAD = mb.code_head
+REAL_HASH_SEED = mb.hash_seed
 
 
 @pytest.fixture(autouse=True)
 def _fixed_head(monkeypatch):
+    """Версия кода и seed — подменой: seed судится по факту интерпретатора, а pytest
+    идёт со случайным порядком хеша."""
     monkeypatch.setattr(mb, "code_head", lambda: monkey_head[0])
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkey_seed[0] = "0"
+    monkeypatch.setattr(mb, "hash_seed", lambda: monkey_seed[0])
 
 
 def _alert(root):
@@ -200,17 +205,28 @@ def _alert(root):
             for v in mb.json.loads(p.read_text(encoding="utf-8")).values()}
 
 
+def _accept(root, rec, reason="", graph_dir=None):
+    mb.accept(root, rec["profile"], rec["mode"], rec["id"], reason,
+              rec["graph_dir"] if graph_dir is None else graph_dir)
+
+
 def _accept_first(root, oks, **kw):
-    mb.judge(root, _rec(oks, **kw))
-    mb.accept(root, kw.get("profile", "answer"), kw.get("mode", "stats"), "", kw.get("graph_dir", ""))
+    rec = _rec(oks, **kw)
+    mb.judge(root, rec)
+    _accept(root, rec)
+    return rec
 
 
 def test_no_baseline_says_so_and_marks_the_watch_unarmed(tmp_path, capsys):
-    """Без базы тревоги нет, но и молчания нет: бриф увидит «сторож не взведён» (DS I3 r1)."""
-    assert mb.judge(tmp_path, _rec([True] * 5)) is None
-    assert "база не принята" in capsys.readouterr().out
+    """Без базы тревоги нет, но и молчания нет: бриф увидит «сторож не взведён» (DS I3 r1).
+    Подсказка несёт id итога — принимается тот, что человек видел (Opus M1)."""
+    rec = _rec([True] * 5)
+    assert mb.judge(tmp_path, rec) is None
+    said = capsys.readouterr().out
+    assert f"итог {rec['id']} записан" in said
+    assert f"--accept --run {rec['id']} --profile answer --stats" in said
     entry = _alert(tmp_path)["answer"]
-    assert entry["state"] == "unmeasured" and "--accept --profile answer --stats" in entry["why"]
+    assert entry["state"] == "unmeasured" and "--accept --run " in entry["why"]
 
 
 def test_two_regressions_with_same_sem_used_raise_the_alert(tmp_path, capsys):
@@ -283,14 +299,16 @@ def test_run_that_compares_too_little_keeps_the_alert(tmp_path, capsys):
 
 def test_baseline_is_per_graph(tmp_path, capsys):
     """База графа «А» не судит прогон графа «Б» (DS M4 r1)."""
-    _accept_first(tmp_path, [True] * 5, graph_dir="/А")
-    mb.judge(tmp_path, _rec([True] * 5, graph_dir="/Б"))
-    with pytest.raises(SystemExit, match="по этому графу нет"):
-        mb.accept(tmp_path, "answer", "stats", "", "/В")
+    base_a = _accept_first(tmp_path, [True] * 5, graph_dir="/А")
+    rec_b = _rec([True] * 5, graph_dir="/Б")
+    mb.judge(tmp_path, rec_b)
+    with pytest.raises(SystemExit, match="поле graph_dir не совпадает") as exc:
+        _accept(tmp_path, rec_b, graph_dir="/В")
+    assert "/Б" not in str(exc.value) and "/В" not in str(exc.value), "путь графа в текст отказа не идёт"
     capsys.readouterr()
     assert mb.judge(tmp_path, _rec([False] * 5, graph_dir="/Б")) is None
     assert "база не принята" in capsys.readouterr().out
-    mb.accept(tmp_path, "answer", "stats", "", "/А")
+    _accept(tmp_path, base_a)
     assert mb.judge(tmp_path, _rec([False] * 5, graph_dir="/А")) is not None
 
 
@@ -318,7 +336,7 @@ def test_fallback_model_is_not_a_baseline(tmp_path):
     rec["model"] = "fallback:?"
     mb.judge(tmp_path, rec)
     with pytest.raises(SystemExit, match="откат модели"):
-        mb.accept(tmp_path, "answer", "synth", "")
+        _accept(tmp_path, rec)
 
 
 def test_head_unknown_or_dirty_is_not_unchanged(monkeypatch):
@@ -355,7 +373,7 @@ def test_judge_holds_the_bench_lock(tmp_path, monkeypatch):
 
 def test_baseline_is_per_profile_mode_and_seed(tmp_path, monkeypatch, capsys):
     _accept_first(tmp_path, [True] * 5)
-    monkeypatch.setenv("PYTHONHASHSEED", "7")
+    monkey_seed[0] = "random"
     capsys.readouterr()
     assert mb.judge(tmp_path, _rec([False] * 5)) is None
     assert "база не принята" in capsys.readouterr().out
@@ -369,19 +387,116 @@ def test_changed_question_is_not_compared(tmp_path):
     assert mb.judge(tmp_path, rec) is None
 
 
-def test_accept_takes_the_last_run_and_worse_needs_a_reason(tmp_path, capsys):
-    with pytest.raises(SystemExit, match="нечего принимать"):
-        mb.accept(tmp_path, "answer", "stats", "")
+def test_accept_takes_the_named_run_and_worse_needs_a_reason(tmp_path, capsys):
+    with pytest.raises(SystemExit, match="в журнале нет"):
+        mb.accept(tmp_path, "answer", "stats", "нет-такого", "")
     _accept_first(tmp_path, [True] * 5)
-    mb.judge(tmp_path, _rec([True, True, True, True, False]))
+    worse = _rec([True, True, True, True, False])
+    mb.judge(tmp_path, worse)
     with pytest.raises(SystemExit, match="--reason"):
-        mb.accept(tmp_path, "answer", "stats", "")
-    mb.accept(tmp_path, "answer", "stats", "вопрос 5 устарел")
+        _accept(tmp_path, worse)
+    _accept(tmp_path, worse, reason="вопрос 5 устарел")
     capsys.readouterr()
     mb.judge(tmp_path, _rec([True, True, True, True, False]))
     assert "было 4, стало 4" in capsys.readouterr().out
     lines = (tmp_path / "logs" / "memory_bench_baseline.jsonl").read_text(encoding="utf-8").splitlines()
     assert [mb.json.loads(x)["kind"] for x in lines] == ["run", "accept", "run", "accept", "run"]
+
+
+def test_accept_takes_the_seen_run_not_the_latest(tmp_path, capsys):
+    """Ночь дописала итог того же ключа после ручного прогона — принимается тот,
+    чей id в команде, а не последний (Opus M1)."""
+    _accept_first(tmp_path, [True] * 5)
+    seen = _rec([True, True, True, False, False])
+    mb.judge(tmp_path, seen)
+    mb.judge(tmp_path, _rec([False, False, True, True, True]))     # ночь, тот же счёт 3/5
+    _accept(tmp_path, seen, reason="принято вручную")
+    accepted = [r for r in mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
+                if r["kind"] == "accept"][-1]
+    assert accepted["run"] == seen["id"]
+    capsys.readouterr()
+    assert mb.judge(tmp_path, _rec([True, True, True, False, False])) is None
+    assert "✓→✗ 0" in capsys.readouterr().out
+
+
+def test_accept_refuses_a_run_of_another_key(tmp_path):
+    """Профиль, режим, seed, граф итога — те, что в команде; иначе отказ с именем поля."""
+    rec = _rec([True] * 5, graph_dir="/А")
+    mb.judge(tmp_path, rec)
+    for args, field in (((rec["id"], "live", "stats"), "profile"), ((rec["id"], "answer", "synth"), "mode")):
+        with pytest.raises(SystemExit, match=f"поле {field} не совпадает"):
+            mb.accept(tmp_path, args[1], args[2], args[0], "", "/А")
+    monkey_seed[0] = "random"
+    rnd = _rec([True] * 5, graph_dir="/А")
+    mb.judge(tmp_path, rnd)
+    with pytest.raises(SystemExit, match="поле seed не совпадает"):
+        _accept(tmp_path, rnd)
+    assert not [r for r in mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
+                if r["kind"] == "accept"]
+
+
+def test_accept_lifts_the_alert_of_its_key(tmp_path, capsys):
+    """Принятие снимает тревогу своего ключа: тревога не стареет, а ключ, который
+    больше не гоняют, иначе висел бы вечно. Чужой ключ не трогается."""
+    _accept_first(tmp_path, [True] * 5)
+    _accept_first(tmp_path, [True] * 5, profile="live")
+    low = _rec([False, False, True, True, True])
+    mb.judge(tmp_path, low)
+    mb.judge(tmp_path, _rec([False, False, True, True, True], profile="live"))
+    assert set(_alert(tmp_path)) == {"answer", "live"}
+    capsys.readouterr()
+    _accept(tmp_path, low, reason="новая норма")
+    assert "тревога ключа снята" in capsys.readouterr().out
+    assert set(_alert(tmp_path)) == {"live"}
+
+
+def test_alert_carries_the_run_that_raised_it(tmp_path):
+    """Тревога несёт id итога, который её поднял; незамеренный прогон его не перетирает."""
+    _accept_first(tmp_path, [True] * 5)
+    low = _rec([False, False, True, True, True])
+    mb.judge(tmp_path, low)
+    assert _alert(tmp_path)["answer"]["run"] == low["id"]
+    mb.judge(tmp_path, _rec([True] * 5, sems=[False] * 5))
+    entry = _alert(tmp_path)["answer"]
+    assert entry["state"] == "alert" and entry["unmeasured"] and entry["run"] == low["id"]
+
+
+# ------------------------------------------------- грязный прогон против базы на другом коде (Opus M2)
+
+def test_dirty_run_without_regression_does_not_lift_the_alert(tmp_path, capsys):
+    _accept_first(tmp_path, [True] * 5)
+    mb.judge(tmp_path, _rec([False, False, True, True, True], head="xxx"))
+    capsys.readouterr()
+    assert mb.judge(tmp_path, _rec([True] * 5, head="xxx+dirty")) is None
+    said = capsys.readouterr().out
+    assert "не сравниваю: прогон на незакоммиченном коде против базы на другом коде (xxx+dirty против aaa)" in said
+    entry = _alert(tmp_path)["answer"]
+    assert entry["state"] == "alert" and entry["unmeasured"].startswith("прогон на незакоммиченном коде")
+
+
+def test_dirty_run_with_regression_against_other_code_raises_nothing(tmp_path):
+    _accept_first(tmp_path, [True] * 5)
+    assert mb.judge(tmp_path, _rec([False] * 5, head="aaa+dirty")) is None
+    entry = _alert(tmp_path)["answer"]
+    assert entry["state"] == "unmeasured" and "незакоммиченном" in entry["why"]
+
+
+def test_dirty_run_on_the_base_code_is_judged(tmp_path):
+    """База принята на той же грязной установке — обычный суд: тупика после обновления нет."""
+    _accept_first(tmp_path, [True] * 5, head="aaa+dirty")
+    assert mb.judge(tmp_path, _rec([False, False, True, True, True], head="aaa+dirty")) is not None
+    mb.judge(tmp_path, _rec([True] * 5, head="aaa+dirty"))
+    assert _alert(tmp_path) is None
+
+
+def test_clean_run_on_a_new_head_lifts_the_alert(tmp_path):
+    """Коммит исправления снимает тревогу: снимать только «на том же head» значило бы
+    никогда (сторож против правила «тот же head» из вердикта Opus)."""
+    _accept_first(tmp_path, [True] * 5)
+    mb.judge(tmp_path, _rec([False, False, True, True, True], head="bbb"))
+    assert _alert(tmp_path)["answer"]["state"] == "alert"
+    mb.judge(tmp_path, _rec([True] * 5, head="ccc"))
+    assert _alert(tmp_path) is None
 
 
 def test_broken_line_is_skipped_not_fatal(tmp_path, capsys):
@@ -395,24 +510,64 @@ def test_broken_line_is_skipped_not_fatal(tmp_path, capsys):
 
 def test_record_flags_are_validated(monkeypatch, capsys):
     for argv in (["--record"], ["--profile", "companion", "--record"],
-                 ["--profile", "answer", "--record", "--limit", "3"], ["--profile", "answer", "--reason", "x"]):
+                 ["--profile", "answer", "--record", "--limit", "3"], ["--profile", "answer", "--reason", "x"],
+                 ["--profile", "answer", "--accept"], ["--profile", "answer", "--run", "abc"]):
         monkeypatch.setattr(sys, "argv", ["memory_bench.py", *argv])
         with pytest.raises(SystemExit):
             mb.main()
-    capsys.readouterr()
+        assert "usage" in capsys.readouterr().err
 
 
-def test_hash_seed_is_pinned_by_reexec(monkeypatch):
+# ------------------------------------------------------------------ seed по факту (Opus M3)
+
+def _flags(monkeypatch, *, hr, ie=0):
+    monkeypatch.setattr(sys, "flags", types.SimpleNamespace(hash_randomization=hr, ignore_environment=ie))
+
+
+def test_hash_seed_is_pinned_by_reexec_with_interpreter_flags(monkeypatch):
     seen = {}
-    monkeypatch.setattr(mb.os, "execve", lambda exe, argv, env: seen.update(env=env, argv=argv))
-    monkeypatch.delenv("PYTHONHASHSEED")
+    monkeypatch.setattr(mb.os, "execve", lambda exe, argv, env: seen.update(exe=exe, env=env, argv=argv))
+    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
     monkeypatch.setattr(sys, "argv", ["scripts/memory_bench.py", "--profile", "answer", "--stats"])
+    orig = [sys.executable, "-X", "utf8", "-u", "scripts/memory_bench.py", "--profile", "answer", "--stats"]
+    monkeypatch.setattr(sys, "orig_argv", orig)
+    _flags(monkeypatch, hr=1)
     mb.pin_hash_seed("raw")
     assert seen == {}
     mb.pin_hash_seed("answer")
+    assert seen["exe"] == sys.executable and seen["argv"] == orig
     assert seen["env"]["PYTHONHASHSEED"] == "0"
-    assert seen["argv"] == [sys.executable, "scripts/memory_bench.py", "--profile", "answer", "--stats"]
     seen.clear()
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    _flags(monkeypatch, hr=0)
     mb.pin_hash_seed("answer")
-    assert seen == {}
+    assert seen == {}, "порядок хеша уже фиксирован — перезапуска нет"
+
+
+def test_hash_seed_loop_guard(monkeypatch):
+    """В окружении уже 0, а порядок случайный — выход, не второй execve."""
+    monkeypatch.setattr(mb.os, "execve", lambda *a: pytest.fail("execve в цикле"))
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    _flags(monkeypatch, hr=1)
+    with pytest.raises(SystemExit, match="перезапуск не поможет"):
+        mb.pin_hash_seed("answer")
+
+
+def test_record_seed_is_the_fact(monkeypatch):
+    monkeypatch.setattr(mb, "hash_seed", REAL_HASH_SEED)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    _flags(monkeypatch, hr=1, ie=1)
+    assert _rec([True])["seed"] == "random", "переменная 0, а хеш случайный — пишется факт"
+    _flags(monkeypatch, hr=0)
+    assert _rec([True])["seed"] == "0"
+
+
+def test_ignore_environment_refuses_without_reexec(tmp_path):
+    """Настоящий интерпретатор: `PYTHONHASHSEED=0 python -E` — хеш случайный, перезапуск
+    окружение не прочтёт; отказ с текстом, без execve."""
+    import subprocess
+    env = {**mb.os.environ, "PYTHONHASHSEED": "0", "CHAROITE_ROOT": str(tmp_path)}
+    r = subprocess.run([sys.executable, "-E", str(ROOT / "scripts" / "memory_bench.py"),
+                        "--profile", "answer", "--stats"],
+                       capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "запустите без -E/-I" in r.stderr
