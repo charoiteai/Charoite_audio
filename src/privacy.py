@@ -476,7 +476,7 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
     while index < size:
         if text[index] != "/":
             nxt = text.find("/", index)
-            if nxt < 0:
+            if nxt == -1:
                 out.append(text[index:])
                 break
             out.append(text[index:nxt])
