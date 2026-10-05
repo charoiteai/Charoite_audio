@@ -1,6 +1,34 @@
 import Foundation
+import SwiftUI
 
 #if os(macOS)
+
+/// Два файла набора голосов — в одном месте. Эмбеддинги без сегментации
+/// оставляют живую разметку в упрощённом режиме и не дают пересборки после встречи.
+enum DiarizationModels {
+    static func embeddingURL(_ root: URL) -> URL {
+        root.appendingPathComponent("models/diar/embedding.onnx")
+    }
+
+    static func segmentationURL(_ root: URL) -> URL {
+        root.appendingPathComponent("models/diar/segmentation.onnx")
+    }
+
+    /// Есть эмбеддинги / есть сегментация для корня данных.
+    static func presence(root: URL) -> (embeddings: Bool, segmentation: Bool) {
+        let files = FileManager.default
+        return (
+            files.fileExists(atPath: embeddingURL(root).path),
+            files.fileExists(atPath: segmentationURL(root).path))
+    }
+
+    /// Набор полон: оба файла на месте. Неполный набор — кнопка постановки и в
+    /// мастере, и на «Сегодня»; проверка готовности здесь не судья (№625).
+    static func isComplete(root: URL) -> Bool {
+        let got = presence(root: root)
+        return got.embeddings && got.segmentation
+    }
+}
 
 /// Скачивание модели Ollama из приложения — без терминала.
 ///
@@ -40,20 +68,20 @@ final class ModelPullService: ObservableObject {
     /// нашим скриптом, но человеку это различие не нужно.
     static let diarizationKey = "diarization"
 
-    /// Модель разделения голосов уже стоит?
+    /// Оба файла набора голосов уже стоят?
     static var diarizationInstalled: Bool {
-        FileManager.default.fileExists(
-            atPath: AppSettings.charoiteRoot
-                .appendingPathComponent("models/diar/embedding.onnx").path)
+        DiarizationModels.isComplete(root: AppSettings.charoiteRoot)
     }
 
-    /// Поставить модель разделения голосов.
+    /// Поставить набор разделения голосов: эмбеддинги, затем сегментацию.
     ///
     /// Инструкция просила выполнить `scripts/get_models.py --diar` в
     /// терминале — единственный шаг установки, ради которого приходилось
     /// открывать консоль после того, как приложение уже работает. Скрипт
     /// тот же: он печатает адрес перед соединением, проверяет, что пришёл
-    /// настоящий ONNX, и кладёт файл туда, где его ищет демон.
+    /// настоящий ONNX, и кладёт оба файла туда, где их ищет демон. Успех —
+    /// только когда на месте оба: последняя строка вывода при нехватке
+    /// сегментации и есть текст ошибки.
     func pullDiarization() {
         let key = Self.diarizationKey
         guard progress[key] == nil else { return }
@@ -85,9 +113,10 @@ final class ModelPullService: ObservableObject {
             await MainActor.run {
                 let service = ModelPullService.shared
                 service.progress[key] = nil
-                if ok, ModelPullService.diarizationInstalled {
-                    SetupReadinessService.shared.refresh(force: true)
-                } else {
+                // Снимок — после любого завершения скрипта: частичный сбой
+                // (эмбеддинги легли, сегментации нет) меняет и проверку, и кнопки.
+                SetupReadinessService.shared.refresh(force: true)
+                if !(ok && ModelPullService.diarizationInstalled) {
                     // Последняя строка вывода — то, на чём скрипт остановился;
                     // молчаливый отказ здесь читается как «кнопка не работает».
                     let tail = out.split(separator: "\n").last.map(String.init) ?? ""
@@ -142,6 +171,46 @@ final class ModelPullService: ObservableObject {
             return "\(Int(Double(completed) / Double(total) * 100)) %"
         }
         return status ?? "…"
+    }
+}
+
+/// Кнопка «Поставить разметку голосов». Ход и ошибка — из `ModelPullService`,
+/// лист мастера не открывается: там Enter начал бы запись.
+struct DiarizationInstallButton: View {
+    var alignment: HorizontalAlignment = .leading
+    @ObservedObject private var pulls = ModelPullService.shared
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 4) {
+            control
+            if let err = pulls.failed[ModelPullService.diarizationKey] {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        if let status = pulls.progress[ModelPullService.diarizationKey] {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Button(Self.title) { pulls.pullDiarization() }
+                .charoite(.regular, .s)
+        }
+    }
+
+    private static var title: String {
+        L.t("Поставить разметку голосов",
+           "Install voice labelling",
+           "安装声纹标注")
     }
 }
 #endif

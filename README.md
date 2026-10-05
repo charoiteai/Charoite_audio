@@ -166,13 +166,13 @@ payment provider?" — see the product working before recording anything.
 One command validates the whole retrieval loop: `.venv/bin/python scripts/memory_bench.py --demo` (`--demo-en`, `--demo-zh` for the other two).
 Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `CHAROITE_ROOT="$PWD" .venv/bin/python scripts/import_meeting.py file --date 2026-07-15`. Or drop the file on the app's External recording tab, or set a watched folder (Settings → Recording import) — recordings dropped there become meetings on their own. Recordings from the stock iPhone Voice Memos app can flow in the same way (opt-in, `audio.voice_memos_bridge`). A replacement dictionary (`sufler.vocabulary`) fixes terms the STT keeps mangling, everywhere at once.
 
-STT models download automatically on first run (GigaAM via `onnx_asr`). Live diarization ("Speaker 1/2/…" per voice) takes one command (in the app — a button in the first-run wizard):
+STT models download automatically on first run (GigaAM via `onnx_asr`). Live diarization ("Speaker 1/2/…" per voice) takes one command, which installs both models — embeddings, then segmentation (in the app — a button in the first-run wizard):
 
 ```bash
-.venv/bin/python scripts/get_models.py --diar    # model choices: --list
+.venv/bin/python scripts/get_models.py --diar    # embedding choices: --list
 ```
 
-Without it Charoite still works, but labels follow channels (you vs. the other side) and the daemon says so when the meeting starts. Details in [docs/DIARIZATION.md](docs/DIARIZATION.md).
+Without both files Charoite still works, but labels follow channels (you vs. the other side) and the daemon says so when the meeting starts. Embeddings without segmentation leave live labels in a simplified mode and skip re-labelling after the meeting. Details in [docs/DIARIZATION.md](docs/DIARIZATION.md).
 
 ## iPhone companion (app-ios/)
 
@@ -218,7 +218,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
 - [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32/64 GB) and iOS**
 - [Security](SECURITY.md) — the threat model: what leaves the machine, prompt-injection isolation, supply chain
-- [Diarization](docs/DIARIZATION.md) — embedding model setup and tuning
+- [Diarization](docs/DIARIZATION.md) — embeddings, segmentation and tuning
 - [Design](docs/DESIGN.md) — shared tokens and UI conventions for macOS and iOS
 
 ## Privacy

@@ -173,8 +173,15 @@ struct TodayWorkspaceView: View {
                 // первый запуск: онбординг-sheet суфлёра сам предложит старт
                 if firstRunSeen { sufler.toggle() }
             }
-            ReadinessLine(snapshot: readiness.snapshot,
-                          isChecking: readiness.isChecking)
+            HStack(spacing: 8) {
+                // Тот же предикат, что у мастера: набор неполон — кнопка видна,
+                // в том числе без эмбеддингов, когда проверки в снимке нет.
+                if !ModelPullService.diarizationInstalled {
+                    DiarizationInstallButton(alignment: .trailing)
+                }
+                ReadinessLine(snapshot: readiness.snapshot,
+                              isChecking: readiness.isChecking)
+            }
         }
     }
 

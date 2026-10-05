@@ -18,31 +18,37 @@ Charoite uses two diarization passes:
      status line says so and names the command; DER below).
 
    **Easiest: the "Tell speakers apart" button in the app's first-run
-   wizard** — it installs the embedding model. The segmentation model is one
-   more command:
+   wizard** — it installs both models, embeddings first, then segmentation.
+   Segmentation alone is still its own command. `--diar` together with
+   `--url` or `--dest` installs the embedding model only:
 
    ```bash
-   .venv/bin/python scripts/get_models.py --diar          # embedding model (default)
-   .venv/bin/python scripts/get_models.py --segmentation  # segmentation model
+   .venv/bin/python scripts/get_models.py --diar          # embeddings, then segmentation
+   .venv/bin/python scripts/get_models.py --segmentation  # segmentation model only
    .venv/bin/python scripts/get_models.py --list          # what else is available
-   .venv/bin/python scripts/get_models.py --diar --check  # verify what is installed
+   .venv/bin/python scripts/get_models.py --diar --check  # verify both files
    ```
 
    The default embedding model is `eres2net-base` (40 MB, trained on 200k
    speakers — the steadiest on mixed meetings); `--model eres2net-en`
    (27 MB, lighter, trained on English) and `--model eres2netv2` (71 MB, more
    accurate on similar voices, slower) are the alternatives. The script prints
-   the URL before connecting, checks the file against a sha256 pinned in the
+   each URL before connecting, checks the file against a sha256 pinned in the
    script, verifies that it is really ONNX and not truncated, resumes an
-   interrupted download on the next run, and puts the file where the daemon
-   looks for it. Embedding models come from the
+   interrupted download on the next run, and puts the files where the daemon
+   looks for them. Without `--url` and `--dest`, `--diar` downloads the
+   embedding model from Hugging Face and then the segmentation model from the
+   sherpa-onnx releases; if that second download fails, the embeddings stay
+   and the script exits 1, the last line naming the reason and the same
+   command. Embedding models come from the
    [3D-Speaker project](https://github.com/modelscope/3D-Speaker) (Apache-2.0;
    ERes2Net works well for Russian and English), segmentation from
    [pyannote](https://github.com/pyannote/pyannote-audio), with ONNX builds
    assembled for sherpa-onnx. Your own link: `--url` (no checksum then).
 
-   The script reaches the network only when you run it, once; the models work
-   offline afterwards, and `--check` opens no connections at all. Besides the
+   The script reaches the network only when you run it: at most two one-off
+   downloads (embeddings, then segmentation); the models work offline
+   afterwards, and `--check` opens no connections at all. Besides the
    optional cloud layer, the product's only other network traffic is the
    version check and the first-run STT download — see [PRIVACY.md](../PRIVACY.md).
 

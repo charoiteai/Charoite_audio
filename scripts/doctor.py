@@ -228,13 +228,32 @@ def check_stt(cfg: dict) -> None:
 
 
 def check_models() -> None:
-    diar = _root() / "models" / "diar" / "embedding.onnx"
-    if diar.exists():
-        line(OK, "диаризация: models/diar/embedding.onnx")
-    else:
-        line(WARN, "диаризации нет (метки «Собеседник N» будут по каналам)",
-             ".venv/bin/python scripts/get_models.py --diar — поставит модель "
-             "(варианты: --list, подробности: docs/DIARIZATION.md)")
+    """Набор голосов — два файла. Одних эмбеддингов мало.
+
+    Без сегментации живая разметка ещё работает в упрощённом режиме, а
+    пересборка после встречи не размечает голоса заново. Размер здесь не
+    смотрим: доктор, как и раньше, отвечает на «файл есть».
+    """
+    folder = _root() / "models" / "diar"
+    emb = folder / "embedding.onnx"
+    seg = folder / "segmentation.onnx"
+    recipe = ".venv/bin/python scripts/get_models.py --diar"
+    if emb.exists() and seg.exists():
+        line(OK, "диаризация: models/diar/embedding.onnx, models/diar/segmentation.onnx")
+        return
+    if emb.exists():
+        line(WARN,
+             "диаризация: нет models/diar/segmentation.onnx — "
+             "голоса после встречи не размечаются заново",
+             recipe)
+        return
+    if seg.exists():
+        line(WARN, "диаризация: нет models/diar/embedding.onnx", recipe)
+        return
+    line(WARN,
+         "диаризации нет (метки «Собеседник N» будут по каналам): "
+         "нет models/diar/embedding.onnx и models/diar/segmentation.onnx",
+         recipe)
 
 
 def check_engine(cfg: dict) -> None:

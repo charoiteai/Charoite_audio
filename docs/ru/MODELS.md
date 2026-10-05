@@ -209,11 +209,12 @@ Apache 2.0; тег `qwen3.8:27b-mlx` требует Ollama ≥ 0.32.12. Заме
 ## Диаризация: ERes2Net (3D-Speaker)
 
 Эмбеддинги голосов — [ERes2Net](https://github.com/modelscope/3D-Speaker)
-(ONNX, 512-dim). В поставку не входит: ставит `scripts/get_models.py --diar`
-(по умолчанию `eres2net-base`, 40 МБ; по выбору `eres2net-en` на 27 МБ и
-`eres2netv2` на 71 МБ; каждый файл сверяется с зашитым sha256). Живому
-трекеру по сегментам и проходу после встречи нужна ещё модель сегментации
-pyannote 3.0 (`--segmentation`, 7 МБ). Подробности — [DIARIZATION.md](DIARIZATION.md).
+(ONNX, 512-dim). В поставку не входит: `scripts/get_models.py --diar` ставит
+модель эмбеддингов и следом сегментацию pyannote 3.0 (по умолчанию
+`eres2net-base`, 40 МБ; по выбору `eres2net-en` на 27 МБ и `eres2netv2` на
+71 МБ; сегментация около 7 МБ; каждый файл сверяется с зашитым sha256).
+`--segmentation` по-прежнему ставит только сегментацию. Подробности —
+[DIARIZATION.md](DIARIZATION.md).
 
 - **Наш бенчмарк на реальных записях встреч** против CAM++ и TitaNet:
   у ERes2Net лучшее разделение «свой/чужой» голос — косинус одного голоса

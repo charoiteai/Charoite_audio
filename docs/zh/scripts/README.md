@@ -42,7 +42,7 @@
 
 ## 模型与测量
 
-- `get_models.py` — 一条命令装模型：`--diar`（说话人分离嵌入，没有它就无法按声音实时标注；`--model` 可选 `eres2net-base`、`eres2net-en` 或 `eres2netv2`）、`--segmentation`、`--stt sensevoice`（中文识别，228 MB）。另有 `--list`、`--check`（不联网）、`--url`、`--dest`。
+- `get_models.py` — 一条命令装模型：`--diar`（嵌入模型；若未给出 `--url` 或 `--dest`，随后再装分段模型；没有嵌入就无法按声音实时标注；`--model` 可选 `eres2net-base`、`eres2net-en` 或 `eres2netv2`）、`--segmentation`（仅分段）、`--stt sensevoice`（中文识别，228 MB）。另有 `--list`、`--check`（不联网；所选目标全部检查完才退出）、`--url` 与 `--dest`（只作用于一个模型——同一个地址和路径若分给多个模型，会把同一个文件写到每一处）。
 - `memory_bench.py` — 用 `config/memory_bench.yaml` 中的参考问题，或在演示图谱上（`--demo`、`--demo-en`、`--demo-zh`）对整个检索闭环做基准测试。`--stats` 跳过合成，逐条打印覆盖率与闸门判定。
 - `diar_bench.py` — 说话人分离的 DER：被错误标注的语音时间占比。`--make` 在本地生成合成测试样本——本仓库不可能存放会议录音；`--crosstalk` 加入重叠语音，`--wav`/`--truth` 测量你自己的录音，`--engine compare` 让当前引擎与实验性的 Nemotron 3 Diarization 对比（[详情，英文](../../DIARIZATION.md#crosstalk-and-the-nemotron-experiment)）。
 - `nemotron_shadow_replay.py` 与 `nemotron_shadow_check.py` —— 无需通话即可得到 Nemotron 实时流（#478 B）的数据：回放脚本把会议录音送入真实的音频中枢、声纹跟踪器和 Nemotron 影子，输出到新的缓存目录（日志、跟踪器决策、墙钟见证）；核对脚本将影子日志与最终分离结果比对——标签延迟、“槽位 × 说话人”矩阵、与最终标注的一致度。只有数字：没有音频、没有文本，不写入数据根目录；输出只进入回放缓存目录，会议录音不存在后（保留期、“遗忘”），下次回放会删除该会议的目录；核对脚本把最终标签改名为 `f0..fN`。

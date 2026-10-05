@@ -143,14 +143,15 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 
 ## 5. 声纹说话人分离（可选）
 
-一条命令把 ERes2Net 嵌入模型放到 `models/diar/embedding.onnx`（在应用中是首次运行
-向导里的「区分不同说话人」按钮）：
+一条命令放好两个声纹模型：ERes2Net 嵌入模型在 `models/diar/embedding.onnx`，
+分段模型在 `models/diar/segmentation.onnx`（在应用中是首次运行向导里的
+「区分不同说话人」按钮）：
 
 ```bash
-.venv/bin/python scripts/get_models.py --diar    # 可选模型：--list
+.venv/bin/python scripts/get_models.py --diar    # 嵌入模型可选：--list
 ```
 
-详情与调优见 [DIARIZATION.md](DIARIZATION.md)。没有它时按声道标注（你/对方），有它时按声音标注（“Speaker 1/2/…”）。
+详情与调优见 [DIARIZATION.md](DIARIZATION.md)。没有它们时按声道标注（你/对方），两个都有时按声音标注（“Speaker 1/2/…”）。只有嵌入、没有分段时，实时标注处于简化模式，会后也不会重新标注说话人。
 
 ## 6. 运行
 

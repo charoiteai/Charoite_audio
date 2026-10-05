@@ -215,15 +215,19 @@ the recording is incomplete — so a gap is not later mistaken for silence.
 
 ## 5. Voice diarization (optional)
 
-One command puts an ERes2Net embedding model at `models/diar/embedding.onnx`
-(in the app — the "Tell speakers apart" button of the first-run wizard):
+One command puts both voice models in place: the ERes2Net embedding model at
+`models/diar/embedding.onnx` and the segmentation model at
+`models/diar/segmentation.onnx` (in the app — the "Tell speakers apart"
+button of the first-run wizard):
 
 ```bash
-.venv/bin/python scripts/get_models.py --diar    # model choices: --list
+.venv/bin/python scripts/get_models.py --diar    # embedding choices: --list
 ```
 
-Details and tuning — [DIARIZATION.md](DIARIZATION.md). Without it labels are
-per-channel (you/them), with it — per voice ("Speaker 1/2/…").
+Details and tuning — [DIARIZATION.md](DIARIZATION.md). Without them labels are
+per-channel (you/them); with both — per voice ("Speaker 1/2/…"). Embeddings
+without segmentation leave live labels in a simplified mode and skip the
+after-meeting re-labelling.
 
 ## 6. Run
 

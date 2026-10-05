@@ -215,11 +215,12 @@ few seconds in parallel with the main model.
 ## Diarization: ERes2Net (3D-Speaker)
 
 Speaker embeddings — [ERes2Net](https://github.com/modelscope/3D-Speaker)
-(ONNX, 512-dim). Not bundled: `scripts/get_models.py --diar` installs it
-(default `eres2net-base`, 40 MB; `eres2net-en` 27 MB and `eres2netv2` 71 MB
-on request; every file is checked against a pinned sha256). The live
-segment tracker and the after-meeting pass also need the pyannote 3.0
-segmentation model (`--segmentation`, 7 MB). Details — [DIARIZATION.md](DIARIZATION.md).
+(ONNX, 512-dim). Not bundled: `scripts/get_models.py --diar` installs the
+embedding model and then the pyannote 3.0 segmentation model (default
+embedding `eres2net-base`, 40 MB; `eres2net-en` 27 MB and `eres2netv2` 71 MB
+on request; segmentation about 7 MB; every file is checked against a pinned
+sha256). `--segmentation` still installs the segmentation model alone.
+Details — [DIARIZATION.md](DIARIZATION.md).
 
 - **Our benchmark on real meeting recordings** against CAM++ and TitaNet:
   ERes2Net separates same/other voices best — same-speaker cosine 0.29–0.8
