@@ -62,6 +62,8 @@ import channel_labels  # noqa: E402
 import speaker_names  # noqa: E402
 import graphs  # noqa: E402
 import lexicon  # noqa: E402
+import name_fixes  # noqa: E402
+import privacy  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import speech_gate  # noqa: E402
 import live_gate  # noqa: E402
@@ -1460,6 +1462,9 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
 
     final_text = "\n".join(body).rstrip() + "\n"
     final_text = _with_recording_summary(live, final_text)
+    # Путь машины — до лексикона: алиас, равный имени каталога, переписал бы
+    # его внутри пути (слово между «/»), и игла больше не совпала бы.
+    final_text, _scrub = privacy.scrub_local_paths(final_text)
     # Канон написаний из графа (№149): «Гельского» → «Вельского»,
     # «крам» → «КРАМ» — только по подтверждённым алиасам узлов; похожие
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
@@ -1608,28 +1613,36 @@ def canonize_file(path: pathlib.Path, cfg: dict) -> None:
     Проигранная гонка (mcp-«Минутки», редактор) не молчит, а перечитывает
     и пробует ещё раз — та же схема, что у restamp_minutes (DS M1 по
     #469); после второй неудачи — громкая строка в лог, канон догонит
-    следующая пересборка.
+    следующая пересборка. Пустой лексикон не повод пропустить путь машины:
+    файл, где менять больше нечего, всё равно переписывается.
     """
     lex = _lexicon_for(cfg)
-    if lex is None or lex.empty():
+    replaced: list[str] = []
+
+    def edit(text: str) -> tuple[str, int]:
+        replaced.clear()
+        if lex is None or lex.empty():
+            return text, 0
+        fixed, found = lexicon.apply(text, lex)
+        replaced.extend(found)
+        return fixed, (1 if fixed != text else 0)
+
+    live = path.with_name(path.name[: -len("_minutes.md")] + ".md") \
+        if path.name.endswith("_minutes.md") else None
+    try:
+        # .prev/ уже держит прошлое поколение (finalize_minutes): помощник
+        # затёр бы его свежими минутками (№504).
+        _edit_n, wrote = name_fixes.rewrite_meeting_text(
+            path, edit, live=live or path, sha_key="minutes_sha256" if live is not None else None,
+            what="лексикон в минутках не тронут", keep_prev=False)
+    except safe_write.LostRace as e:
+        if e.kind == safe_write.LostRace.CHANGED:
+            log("лексикон в минутках: файл изменился под рукой")
         return
-    for attempt in (1, 2):
-        if not path.exists():
-            return
-        before = safe_write.stat_snapshot(path)
-        if before is None:
-            return
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return
-        fixed, replaced = lexicon.apply(text, lex)
-        if not replaced or fixed == text:
-            return
-        if safe_write.write_text(path, fixed, expect=before):
-            log(f"лексикон в минутках: замен {len(replaced)}")
-            return
-        log(f"лексикон в минутках: файл изменился под рукой (попытка {attempt})")
+    except (OSError, UnicodeDecodeError):
+        return
+    if wrote and replaced:
+        log(f"лексикон в минутках: замен {len(replaced)}")
 
 
 def _with_recording_summary(live: pathlib.Path, final_text: str) -> str:
@@ -1664,7 +1677,10 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     """
     live_copy = live.with_name(live.stem + "_live.md")
     if not live_copy.exists():
-        safe_write.write_text(live_copy, live_text)
+        # Живой писатель путь не чистит: копию чистит эта запись. .prev ниже —
+        # сырой текст, по нему восстанавливают правку человека.
+        scrubbed_live, _scrub = privacy.scrub_local_paths(live_text)
+        safe_write.write_text(live_copy, scrubbed_live)
     prev_dir = live.parent / ".prev"
     prev_dir.mkdir(exist_ok=True)
     safe_write.write_text(prev_dir / live.name, live_text)
@@ -1892,25 +1908,13 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
     это подстановка наугад (GLM Critical по #464).
     """
     mpath = live.with_name(live.stem + "_minutes.md")
-    # Гейт потери обновления + одна повторная попытка: пересборка — отдельный
-    # процесс, minutes_lock демона её не видит, и в окно read→write мог лечь
-    # чужой финал (mcp «Минутки», редактор). Fail-closed без ретрая возвращал
-    # бы №146 навсегда — файл оставался черновиком для UI (GLM r2 по #464).
-    for attempt in (1, 2):
-        before = safe_write.stat_snapshot(mpath)
-        if before is None:
-            # Нет минуток — штатная тишина; отказ по правам — вслух (GLM M6).
-            if mpath.exists():
-                log("минутки не перештампованы (stat не удался)")
-            return False
-        try:
-            text = mpath.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            log(f"минутки не перештампованы (не прочитались): {e}")
-            return False
+
+    def edit(text: str) -> tuple[str, int]:
+        # Счёт правки — снят ли маркер черновика (0 или 1): по нему строка лога.
         fixed = text
         for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
             fixed = fixed.replace(line, "", 1)
+        stripped = 0 if fixed == text else 1
         for label, name in live_names.items():
             # Только нейтральные метки — включая голый «Собеседник» канала
             # без диаризации (audio.SPEAKER; GLM r2 I1). Любой другой ключ
@@ -1923,18 +1927,45 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
                 continue
             fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\s*\d)(?!\w)",
                            lambda _m, n=name: n, fixed)
-        if fixed == text:
-            return True
-        if safe_write.write_text(mpath, fixed, expect=before):
-            break
-        if attempt == 1:
-            log("минутки сменились под пересборкой — повторный заход")
-            continue
+        return fixed, stripped
+
+    # Гейт потери обновления + одна повторная попытка — внутри помощника
+    # (safe_write.rewrite_file): пересборка — отдельный процесс, minutes_lock
+    # демона её не видит (GLM r2 по #464). Путь, где больше менять нечего,
+    # всё равно переписывается. Ошибка чтения не рвёт пересборку.
+    try:
+        # .prev/ — прошлое поколение минуток (его кладёт удачная регенерация).
+        # Отказ модели доходит сюда раньше этой записи и не должен его затереть.
+        stripped_marker, wrote = name_fixes.rewrite_meeting_text(
+            mpath, edit, live=live, sha_key="minutes_sha256",
+            what="минутки не перештампованы", keep_prev=False)
+    except safe_write.LostRace as e:
+        if e.gone:
+            # Нет минуток — штатная тишина; отказ по правам на существующем — вслух.
+            if mpath.exists():
+                log("минутки не перештампованы (stat не удался)")
+            return False
+        if e.unreachable:
+            log("минутки не перештампованы (не прочитались)")
+            return False
         log("минутки меняются под пересборкой — перештамповка пропущена")
         return False
-    log(f"минутки перештампованы: {mpath.name}"
-        + (f" (имена: {', '.join(f'{k}→{v}' for k, v in live_names.items())})"
-           if live_names else " (снят маркер черновика)"))
+    except UnicodeDecodeError as e:
+        log(f"минутки не перештампованы (не прочитались): {e.reason}")
+        return False
+    except OSError:
+        log("минутки не перештампованы (не прочитались)")
+        return False
+    if wrote:
+        # «снят маркер» — только когда маркер правда был: путь без маркера
+        # тоже переписывается, и прежняя фраза тогда была бы ложью.
+        if live_names:
+            extra = f" (имена: {', '.join(f'{k}→{v}' for k, v in live_names.items())})"
+        elif stripped_marker:
+            extra = " (снят маркер черновика)"
+        else:
+            extra = ""
+        log(f"минутки перештампованы: {mpath.name}{extra}")
     return True
 
 

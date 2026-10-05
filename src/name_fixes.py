@@ -32,6 +32,7 @@ import typing
 
 import channel_labels
 import live_sidecar
+import privacy
 import review_bridge
 from charoite_graph import safe_write
 import transcript
@@ -388,44 +389,82 @@ def rename_participants(text: str, mapping: dict[str, str]) -> str:
     return text[:m.start("rest")] + _word_map(m.group("rest"), mapping) + text[m.end("rest"):]
 
 
-def _machine_owned(live: pathlib.Path, key: str, text: str) -> bool:
+def _machine_owned(live: pathlib.Path, key: str | None, text: str) -> bool:
     meta = live_sidecar.read(live) or {}
     expected = live_sidecar.valid_sha(meta.get(key))
     return bool(expected) and expected == live_sidecar.sha(text)
 
 
+def rewrite_meeting_text(path: pathlib.Path, edit, *, live: pathlib.Path,
+                         sha_key: str | None, what: str,
+                         keep_prev: bool, machine_fixup=None) -> tuple[int, bool]:
+    """Уже записанный текст встречи: сырой текст → owned по сырому → скраб → правка.
+
+    Запись — только если итог отличается от сырого, тем же гейтом и повтором,
+    что у ``safe_write.rewrite_file``. ``owned`` считается до скраба: хеш в
+    сайдкаре снят с байтов на диске, и сравнение после замены пути сделало бы
+    машинный файл ручным. Хеш пишется по байтам, которые ушли на диск, и только
+    при owned. ``.prev/`` — сырой текст той попытки, что записалась, и только
+    при ``keep_prev`` и правке больше нуля: его пишут перештамповки имён, как
+    на базе. Запись ради одного скраба пути прошлое поколение не сдвигает.
+    Канон минуток и перештамповка пересборки не пишут — там уже лежит прошлое
+    поколение.
+    Возвращает (счёт правки, была ли запись). Счёт скраба в это число не входит.
+    ``machine_fixup`` — доправка текста после правки, только у машинного
+    текста и только когда правка что-то изменила (плашка имён, #501).
+    ``LostRace`` и ошибка чтения идут вызывающему как есть.
+    """
+    state: dict = {}
+
+    def transform(raw: str) -> tuple[str, int]:
+        # Имя `_machine_owned` резолвится здесь, на вызове: тест гонки
+        # подменяет его и ждёт, что подмена сработает внутри transform.
+        # Без ключа хеша (минутки без стенограммы) текст не машинный:
+        # `meta.get(None)` пуст.
+        owned = _machine_owned(live, sha_key, raw)
+        scrubbed, _scrub = privacy.scrub_local_paths(raw)
+        edited, n_edit = edit(scrubbed)
+        if machine_fixup is not None and owned and n_edit > 0:
+            # Только машинный текст: хеш ручной правки не трогаем (см.
+            # restamp_transcript). Доправка считается по тексту после правки.
+            edited = machine_fixup(edited)
+        state.update(owned=owned, before=raw, fixed=edited, edit=n_edit)
+        return edited, (1 if edited != raw else 0)
+
+    wrote = review_bridge.rewrite_file(path, transform, what)
+    if wrote:
+        if keep_prev and state.get("edit", 0) > 0:
+            # .prev — после удачной записи и текстом той попытки, что записалась
+            # (DS M1, круг 2 по #553): при проигранной гонке исходник не теряется.
+            _keep_prev(path.parent, path.name, state["before"])
+        if state.get("owned") and sha_key:
+            live_sidecar.remember(live, sha_key, live_sidecar.sha(state["fixed"]))
+    return state.get("edit", 0), bool(wrote)
+
+
 def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
     """Заголовки реплик стенограммы под верными именами. Версия до правки —
-    в .prev/ (одно поколение, как у пересборки); хеш машинного текста в
+    в .prev/ (одно поколение, как у пересборки), только когда заголовки
+    переименованы: запись ради одного скраба пути .prev/ не сдвигает (правило —
+    у rewrite_meeting_text). Хеш машинного текста в
     сайдкаре обновляется, только если он совпадал до правки: правленную
     руками стенограмму пересборка и дальше должна считать ручной. Файл,
     сменившийся между чтением и записью (пересборка, редактор), не
     затирается: вторая попытка, затем review_bridge.LostRace (аудит зон
-    12.09, зона 4; DS I3 по #553)."""
-    state: dict = {}
+    12.09, зона 4; DS I3 по #553).
 
-    def transform(text: str) -> tuple[str, int]:
-        fixed, n = rename_headers(text, mapping)
-        if n:
-            # Плашку правим в той же записи и только у машинного текста.
-            # Хеш ручной правки трогать нельзя: следующая пересборка приняла
-            # бы файл за свой и затёрла вписанные имена. Устаревшая строка
-            # плашки в правом файле остаётся; признак статуса считает читатель.
-            owned = _machine_owned(live, "transcript_sha256", text)
-            if owned:
-                fixed = transcript.names_banner_for(fixed)
-            state.update(owned=owned, before=text, fixed=fixed)
-        return fixed, n
-
-    n = review_bridge.rewrite_file(live, transform, "заголовки реплик не тронуты")
-    if n:
-        # .prev — ПОСЛЕ удачной записи и текстом той попытки, что записалась:
-        # внутри transform вторая попытка перезаписывала его чужой версией, а
-        # при проигранной гонке исходник терялся (DS M1, круг 2 по #553)
-        _keep_prev(live.parent, live.name, state["before"])
-        if state.get("owned"):
-            live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(state["fixed"]))
-    return n
+    Возвращает число переименованных заголовков, не число снятых путей.
+    Путь машины снимается и тогда, когда заголовки менять нечего.
+    """
+    # Плашку правим в той же записи и только у машинного текста.
+    # Хеш ручной правки трогать нельзя: следующая пересборка приняла
+    # бы файл за свой и затёрла вписанные имена. Устаревшая строка
+    # плашки в правом файле остаётся; признак статуса считает читатель.
+    edit_n, _wrote = rewrite_meeting_text(
+        live, lambda text: rename_headers(text, mapping),
+        live=live, sha_key="transcript_sha256", what="заголовки реплик не тронуты",
+        keep_prev=True, machine_fixup=transcript.names_banner_for)
+    return edit_n
 
 
 def _keep_prev(folder: pathlib.Path, name: str, text: str) -> None:
@@ -437,27 +476,26 @@ def _keep_prev(folder: pathlib.Path, name: str, text: str) -> None:
 
 def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
     """Строка участников минуток рядом со стенограммой; хеш машинных минуток
-    обновляется тем же правилом, что у стенограммы. Нет минуток или строки —
-    False; сменившийся под рукой файл не затирается — тот же гейт и повтор,
-    что у моста поручений, затем review_bridge.LostRace."""
+    обновляется тем же правилом, что у стенограммы.
+
+    Ответ — сменились ли участники, не «файл переписан»: замена одного пути
+    переписывает файл и отвечает False. Строка лога ревизии читает этот
+    ответ как «участники минуток переименованы». Нет минуток — False;
+    сменившийся под рукой файл не затирается — тот же гейт и повтор,
+    что у моста поручений, затем review_bridge.LostRace.
+    """
     mpath = review_bridge.minutes_path(live)
     if not mpath.is_file():
         return False
-    state: dict = {}
 
-    def transform(text: str) -> tuple[str, int]:
+    def edit(text: str) -> tuple[str, int]:
         fixed = rename_participants(text, mapping)
-        if fixed == text:
-            return text, 0
-        state.update(owned=_machine_owned(live, "minutes_sha256", text), before=text, fixed=fixed)
-        return fixed, 1
+        return fixed, (0 if fixed == text else 1)
 
-    if not review_bridge.rewrite_file(mpath, transform, "участники не тронуты"):
-        return False
-    _keep_prev(live.parent, mpath.name, state["before"])      # версия до правки — как у пересборки (DS r1 I3)
-    if state.get("owned"):
-        live_sidecar.remember(live, "minutes_sha256", live_sidecar.sha(state["fixed"]))
-    return True
+    edit_n, _wrote = rewrite_meeting_text(
+        mpath, edit, live=live, sha_key="minutes_sha256", what="участники не тронуты",
+        keep_prev=True)
+    return edit_n > 0
 
 
 def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,

@@ -228,13 +228,50 @@ _hint_file_lock = threading.Lock()   # шесть контуров пишут в
 
 def append_hint(tr_path: pathlib.Path, header: str, body: str):
     """Дозапись в _hints.md. Полный диск/недоступная папка не должны молча
-    убивать вечный тред (open стоял вне try в трёх контурах)."""
+    убивать вечный тред (open стоял вне try в трёх контурах).
+
+    Заголовок и тело — без пути машины: архив копирует файл байт в байт,
+    а инструмент подсказок отдаёт его клиенту.
+    """
     try:
+        header, _n = privacy.scrub_local_paths(header)
+        body, _n = privacy.scrub_local_paths(body)
         hpath = tr_path.with_name(tr_path.stem + "_hints.md")
         with _hint_file_lock, hpath.open("a", encoding="utf-8") as f:
             f.write(f"\n## {header}\n{body}\n")
     except Exception as e:  # noqa: BLE001
         emit({"type": "status", "text": f"запись подсказок: {e}"})
+
+
+def minutes_document(text: str) -> str:
+    """Минутки перед записью: путь машины снят. Оба писателя демона —
+    черновик и ручной «Протокол» — пишут эти байты и передают их же в
+    ``note_minutes_written``."""
+    scrubbed, _n = privacy.scrub_local_paths(text)
+    return scrubbed
+
+
+def write_minutes(mpath: pathlib.Path, text: str, note) -> str | None:
+    """Финальные минутки на диск: скраб пути машины, запись через tmp и
+    replace (общий ``safe_write.write_text``), затем ``note`` с теми же
+    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб живёт
+    здесь, у писателя, а не в порядке строк вызывающего: снять его, переставив
+    операторы ``_do_summary``, нельзя.
+
+    Возвращает записанный текст. Запись отклонена гейтом писателя — None и
+    без ``note``: хеш в live.json обязан описывать байты на диске, иначе
+    пересборка приняла бы чужой файл за свой автотекст. Ошибка записи идёт
+    вызывающему, ``note`` не зовётся."""
+    doc = minutes_document(text)
+    if not safe_write.write_text(mpath, doc):
+        return None
+    note(doc)
+    return doc
+
+
+def minutes_draft(text: str) -> str:
+    """Черновик минуток: путь машины снят, маркер черновика — первая строка."""
+    return MINUTES_DRAFT_MARK + "\n" + minutes_document(text)
 
 
 #: Фраза для человека по виду отказа двери модели (`llm.failure_kind`). Вида нет в
@@ -3065,7 +3102,7 @@ def main():
                         # пересборки (DS Minor-1 по #483).
                         if stop.is_set():
                             continue
-                        draft = MINUTES_DRAFT_MARK + "\n" + out
+                        draft = minutes_draft(out)
                         if not safe_write.write_text(mpath, draft, expect=before):
                             continue          # файл сменился под нами — не затираем чужой финал
                         note_minutes_written(draft)
@@ -3158,17 +3195,11 @@ def main():
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
                     owner_name, lang=llm.lang)
                 doc = meeting_source.with_note(doc, source.recording_note)
-                # Через временное имя: обрыв посреди write_text оставлял бы
-                # усечённые минутки поверх готовых (mcp_server это уже чинил,
-                # здесь оставался прямой write_text — аудит 14.08)
-                tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+                # Скраб, tmp и replace — в write_minutes: обрыв посреди записи
+                # не оставит усечённых минуток поверх готовых (аудит 14.08), а
+                # путь машины не уйдёт на диск при любом порядке строк здесь.
                 with minutes_lock:
-                    try:
-                        tmp.write_text(doc, encoding="utf-8")
-                        tmp.replace(mpath)
-                        note_minutes_written(doc)
-                    finally:
-                        tmp.unlink(missing_ok=True)
+                    write_minutes(mpath, doc, note_minutes_written)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():

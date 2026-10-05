@@ -31,6 +31,7 @@ from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph
 import channel_trace
 import live_sidecar
 import meeting_source
+import privacy
 from charoite_graph import safe_write
 import task_line
 import graphs
@@ -1032,7 +1033,10 @@ def lay_canon(src: pathlib.Path, canon: pathlib.Path, main: pathlib.Path) -> Can
         # переписывался бы на каждом проходе
         return out(CanonOutcome.UNCHANGED, None, "источник пуст")
     times = (st.st_atime_ns, st.st_mtime_ns)
+    # Паспорт источника — по сырым байтам. Дальше текст, сравнение с каноном
+    # и attest — уже без пути машины: иначе второй проход видит HUMAN.
     source_sha = live_sidecar.sha(text)
+    text, _scrub = privacy.scrub_local_paths(text)
 
     before = safe_write.stat_snapshot(canon)          # ДО любого чтения канона
     current = None
