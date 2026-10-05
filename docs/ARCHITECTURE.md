@@ -1825,9 +1825,13 @@ alert file is keyed the same way. Two or more questions going ✓→✗ with the
 categories and whether HEAD (with uncommitted edits) or the graph changed; a
 changed `sem_used` is reported separately and never compared. A clean comparison
 lifts the alert, on any commit — a fix lands on a new HEAD; a run with no
-baseline, with fewer than half the questions comparable, or on uncommitted code
-(`+dirty`) against a baseline taken on other code lifts nothing and raises
-nothing, and is shown in the morning brief as "watch not armed". A raised alert
+baseline or with fewer than half the questions comparable lifts nothing, and is
+shown in the morning brief as "watch not armed". A run on uncommitted code
+(`+dirty`) against a baseline taken on other code may raise the alert — it
+measured what actually runs on this machine, and the alert says "run on
+uncommitted code" — but never lifts it: the code that will ship was not
+measured; without a drop it is shown as "watch not armed" with the
+`--accept --run` hint. A raised alert
 does not age out of the brief: nights that stop before the comparison leave it
 as it was, so an alert older than 36 h stays with the time of its last
 measurement and the id of the run that raised it. The journal and the alert file
