@@ -543,6 +543,21 @@ def test_rebuild_restamp_minutes_keeps_previous_generation(tmp_path, monkeypatch
     assert mpath.read_text(encoding="utf-8") == "# Минутки\nсмотри ~/a.md\n"
 
 
+def test_rebuild_restamp_minutes_with_a_real_edit_keeps_previous_generation(tmp_path, monkeypatch):
+    """Перештамповка пересборки с правкой (снят маркер черновика): .prev/
+    всё равно не сдвигается — там прошлое поколение регенерации. Без правки
+    тот же вывод держит соседний тест; с правкой его различает только этот:
+    `.prev` пишется лишь при правке > 0."""
+    home = _home(tmp_path, monkeypatch)
+    live, mpath = _minutes(tmp_path, home)
+    mpath.write_text(f"{transcript.MINUTES_DRAFT_MARK}\n# Минутки\nсмотри {home}/a.md\n", encoding="utf-8")
+    previous = "# Минутки\nпрошлое поколение\n"
+    prev = _seed_prev(mpath, previous)
+    assert rt.restamp_minutes(live, {}) is True
+    assert mpath.read_text(encoding="utf-8") == "# Минутки\nсмотри ~/a.md\n"
+    assert prev.read_text(encoding="utf-8") == previous
+
+
 def test_name_fixes_restamp_minutes_true_when_participants_change(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     live, mpath = _minutes(tmp_path, home)
