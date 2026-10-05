@@ -207,7 +207,7 @@ def warm(cfg: dict, *, graph: pathlib.Path | None = None,
 
 
 def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
-                  timeout: float, graph: pathlib.Path | None = None,
+                  timeout: float, dossiers: bool = True, graph: pathlib.Path | None = None,
                   embedder: graph_search.Embedder | None = None) -> graph_search.Result:
     """Выдача по ГРАФУ ПРОЕКТА как значение: `status` (Verdict) — уверенно /
     слабо / не проверено семантикой / пусто, `fragments` — досье и фрагменты без
@@ -225,7 +225,7 @@ def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
     mem = shared(cfg, graph, embedder=embedder if embedder is not None else llm.embedder(cfg))
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
-    result = mem.search(query, limit=limit, snippet_chars=snippet_chars,
+    result = mem.search(query, limit=limit, snippet_chars=snippet_chars, dossiers=dossiers,
                         embed_timeout=max(0.5, min(6.0, timeout / 2)))
     if not result.ready:
         raise MemoryNotReady("память по графу ещё прогревается")
@@ -252,13 +252,16 @@ class Synth(NamedTuple):
 
 class Profile(NamedTuple):
     """Потребитель памяти: сколько файлов и знаков фрагмента брать, сколько ждать
-    (половина — на вектор запроса), бюджет блока и необязательный синтез."""
+    (половина — на вектор запроса), бюджет блока, необязательный синтез и ось
+    досье: `dossiers=False` выключает сводки тем из выдачи и вердикта (бенч меряет
+    их вклад). Ось — аргумент вызова, не состояние общего индекса."""
     name: str
     limit: int
     snippet_chars: int
     timeout: float
     budget: int
     synth: Synth | None = None
+    dossiers: bool = True
 
 
 EXPAND_SYSTEM = ("Ты сжимаешь память прошлых встреч в короткие факты. "
@@ -287,7 +290,7 @@ def search(profile: Profile, query: str, *, cfg: dict | None = None,
                          "нет ключа (модель — часть ключа, см. shared)")
     return _vault_search(cfg or {}, query, limit=profile.limit,
                          snippet_chars=profile.snippet_chars, timeout=profile.timeout,
-                         graph=graph, embedder=embedder)
+                         dossiers=profile.dossiers, graph=graph, embedder=embedder)
 
 
 def pack(profile: Profile, result: graph_search.Result | None, *, nodes: str = "") -> Packed:

@@ -129,3 +129,27 @@ def test_alert_kept_by_an_uncomparable_run_says_so(tmp_path, monkeypatch):
     assert line.startswith("- ⚠️ бенч памяти (answer/stats): было 30, стало 27")
     assert "HEAD изменился: неизвестно" in line
     assert line.endswith("; последний прогон не сравним: сравнимо 0 из 37 вопросов (sem_used ≠ базы)")
+
+
+def test_alert_of_a_run_without_dossiers_says_so(tmp_path, monkeypatch):
+    """Тревога прогона без оси досье помечена «без досье» — и в просадке, и в
+    «сторож не взведён»; старая запись без поля читается как прежде."""
+    graph = tmp_path / "Работа"
+    alert = _alert(graph)
+    alert["answer"].update(mode="stats", state="alert", dossiers=False, run="rd")
+    graph = _setup(tmp_path, monkeypatch, alert)
+    path = tmp_path / "root" / "logs" / "memory_bench_alert.json"
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.startswith("- ⚠️ бенч памяти (answer/stats без досье): было 30, стало 27")
+    # без поля — прежний текст
+    alert["answer"].pop("dossiers")
+    path.write_text(json.dumps(alert, ensure_ascii=False), encoding="utf-8")
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.startswith("- ⚠️ бенч памяти (answer/stats): было 30, стало 27") and "без досье" not in line
+    # «сторож не взведён» тоже несёт ось
+    entry = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "profile": "answer", "mode": "stats",
+             "graph_dir": str(graph), "state": "unmeasured", "dossiers": False,
+             "why": "база не принята (--accept --run 0a1b2c3d4e5f --profile answer --stats --no-dossiers)"}
+    path.write_text(json.dumps({"k": entry}, ensure_ascii=False), encoding="utf-8")
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.startswith("- ⚠️ бенч памяти (answer/stats без досье): сторож не взведён")
