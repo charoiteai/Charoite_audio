@@ -1824,14 +1824,21 @@ alert file is keyed the same way. Two or more questions going ✓→✗ with the
 `sem_used` write `logs/memory_bench_alert.json` with the questions' numbers and
 categories and whether HEAD (with uncommitted edits) or the graph changed; a
 changed `sem_used` is reported separately and never compared. A clean comparison
-lifts the alert; a run with no baseline, or with fewer than half the questions
-comparable, lifts nothing and is shown in the morning brief as "watch not armed".
-The journal and the alert file are written under one lock. A baseline is
-accepted only by an explicit `--accept`, from the latest record of that graph;
-accepting a worse result needs `--reason`, a run that fell back to another model
-is refused. The bench re-runs itself with
-`PYTHONHASHSEED=0` until retrieval is deterministic (the daemon still runs
-with a random hash order).
+lifts the alert, on any commit — a fix lands on a new HEAD; a run with no
+baseline, with fewer than half the questions comparable, or on uncommitted code
+(`+dirty`) against a baseline taken on other code lifts nothing and raises
+nothing, and is shown in the morning brief as "watch not armed". A raised alert
+does not age out of the brief: nights that stop before the comparison leave it
+as it was, so an alert older than 36 h stays with the time of its last
+measurement and the id of the run that raised it. The journal and the alert file
+are written under one lock. Each recorded run prints its id; a baseline is
+accepted only by an explicit `--accept --run ID`, and the run must be of the
+same profile, mode, seed and graph; accepting a worse result needs `--reason`,
+a run that fell back to another model is refused; accepting lifts the alert of
+its key. The bench re-runs itself with `PYTHONHASHSEED=0` (keeping the
+interpreter flags) until retrieval is deterministic — the daemon still runs with
+a random hash order; the record stores the seed in effect, and `-E`/`-I`, which
+make the variable void, are refused.
 
 ## The readiness probe does not trust the data folder
 
