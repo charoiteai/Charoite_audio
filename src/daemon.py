@@ -251,6 +251,18 @@ def minutes_document(text: str) -> str:
     return scrubbed
 
 
+def write_minutes(mpath: pathlib.Path, text: str, note) -> str:
+    """Финальные минутки на диск: скраб пути машины, запись через tmp и
+    replace (общий ``safe_write.write_text``), затем ``note`` с теми же
+    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб живёт
+    здесь, у писателя, а не в порядке строк вызывающего: снять его, переставив
+    операторы ``_do_summary``, нельзя. Возвращает записанный текст."""
+    doc = minutes_document(text)
+    safe_write.write_text(mpath, doc)
+    note(doc)
+    return doc
+
+
 def minutes_draft(text: str) -> str:
     """Черновик минуток: путь машины снят, маркер черновика — первая строка."""
     return MINUTES_DRAFT_MARK + "\n" + minutes_document(text)
@@ -3195,18 +3207,11 @@ def main():
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
                     owner_name, lang=llm.lang)
                 doc = meeting_source.with_note(doc, source.recording_note)
-                doc = minutes_document(doc)
-                # Через временное имя: обрыв посреди write_text оставлял бы
-                # усечённые минутки поверх готовых (mcp_server это уже чинил,
-                # здесь оставался прямой write_text — аудит 14.08)
-                tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+                # Скраб, tmp и replace — в write_minutes: обрыв посреди записи
+                # не оставит усечённых минуток поверх готовых (аудит 14.08), а
+                # путь машины не уйдёт на диск при любом порядке строк здесь.
                 with minutes_lock:
-                    try:
-                        tmp.write_text(doc, encoding="utf-8")
-                        tmp.replace(mpath)
-                        note_minutes_written(doc)
-                    finally:
-                        tmp.unlink(missing_ok=True)
+                    write_minutes(mpath, doc, note_minutes_written)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():
