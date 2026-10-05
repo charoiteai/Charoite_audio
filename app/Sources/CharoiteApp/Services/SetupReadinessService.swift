@@ -133,8 +133,9 @@ enum SetupReadinessPolicy {
 
     /// Эмбеддинги без сегментации — предупреждение, не блок.
     ///
-    /// Эмбеддингов нет — отдельной строки нет, как и когда стоят оба файла:
-    /// кнопку мастера в этих случаях показывает сам состав набора.
+    /// Эмбеддингов нет — отдельной строки нет, как и когда стоят оба файла.
+    /// Кнопку постановки и на «Сегодня», и в мастере показывает состав набора
+    /// на диске (`DiarizationModels.isComplete`), а не эта проверка.
     /// В тексте нет терминального рецепта: его подхватили бы кнопки pull и
     /// «скопировать команду».
     static func diarizationCheck(embeddings: Bool, segmentation: Bool) -> SetupCheck? {
@@ -148,11 +149,6 @@ enum SetupReadinessPolicy {
             detail: L.t("На границах реплик голоса путаются; не хватает модели сегментации, около 7 МБ",
                         "Voices get mixed up at utterance boundaries; the segmentation model is missing, about 7 MB",
                         "在发言边界上声音会混淆；缺少分段模型，约 7 MB"))
-    }
-
-    /// Кнопка постановки видна, даже если предупреждение не первое в снимке.
-    static func showsDiarizationInstall(in checks: [SetupCheck]) -> Bool {
-        checks.contains { $0.id == "diarization" && $0.state == .warning }
     }
 
     /// Подпись у кнопки мастера — по тому, какого файла не хватает.

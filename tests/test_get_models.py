@@ -194,7 +194,10 @@ def test_the_url_reaches_a_pipe_before_the_connection(tmp_path):
     lines = out.stdout.splitlines()
     url = next(i for i, line in enumerate(lines) if line.strip().startswith("https://"))
     assert url < lines.index("CONNECT"), lines
-    assert "не скачалось: <urlopen error соединение подменено тестом>" in out.stderr
+    # Отказ эмбеддингов набора ловится (№625): причина — в последней строке stdout, не в stderr.
+    assert "не скачалось: <urlopen error соединение подменено тестом>" in lines[-1], lines
+    assert lines[-1].startswith("эмбеддинги не поставлены: "), lines
+    assert out.returncode == 1
 
 
 # Набор `--diar` без своего адреса и пути: два файла, точный текст, один выход.
@@ -383,6 +386,36 @@ def test_segmentation_download_failure_keeps_embeddings(data_root, monkeypatch, 
     assert out.splitlines()[-1] == status
     assert "сегментации нет" in out.splitlines()[-1]
     assert _RETRY in out.splitlines()[-1]
+
+
+_EMB_FAILED = ("эмбеддинги не поставлены: не скачалось: обрыв "
+               f"или укажите своё зеркало через --url — повторить: {_RETRY}")
+
+
+def test_embeddings_download_failure_stops_before_segmentation(data_root, monkeypatch, capsys):
+    """Отказ эмбеддингов: код 1, сегментацию не качаем, последняя строка — состояние."""
+    emb, seg = _targets(data_root)
+    calls = _record(monkeypatch, fail=_EMB_URL)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 1
+    assert err == ""
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA)]
+    assert _LIVE not in out
+    assert out == f"модели диаризации нет ({emb})\n{_EMB_FAILED}\n"
+    assert out.splitlines()[-1] == _EMB_FAILED
+
+
+def test_embeddings_download_failure_with_segmentation_present(data_root, monkeypatch, capsys):
+    """Сегментация уже стоит, эмбеддинги не скачались: та же последняя строка, одна загрузка."""
+    emb, seg = _targets(data_root)
+    _place_onnx(seg, _SEG_BYTES)
+    calls = _record(monkeypatch, fail=_EMB_URL)
+    code, out, err = _run(monkeypatch, capsys, ["--diar"])
+    assert code == 1
+    assert err == ""
+    assert calls == [(_EMB_URL, emb, 40, _EMB_SHA)]
+    assert _LIVE not in out
+    assert out.splitlines()[-1] == _EMB_FAILED
 
 
 def test_diar_with_both_files_present_has_nothing_to_do(data_root, monkeypatch, capsys):

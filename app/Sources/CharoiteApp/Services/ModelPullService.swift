@@ -21,6 +21,13 @@ enum DiarizationModels {
             files.fileExists(atPath: embeddingURL(root).path),
             files.fileExists(atPath: segmentationURL(root).path))
     }
+
+    /// Набор полон: оба файла на месте. Неполный набор — кнопка постановки и в
+    /// мастере, и на «Сегодня»; проверка готовности здесь не судья (№625).
+    static func isComplete(root: URL) -> Bool {
+        let got = presence(root: root)
+        return got.embeddings && got.segmentation
+    }
 }
 
 /// Скачивание модели Ollama из приложения — без терминала.
@@ -63,8 +70,7 @@ final class ModelPullService: ObservableObject {
 
     /// Оба файла набора голосов уже стоят?
     static var diarizationInstalled: Bool {
-        let got = DiarizationModels.presence(root: AppSettings.charoiteRoot)
-        return got.embeddings && got.segmentation
+        DiarizationModels.isComplete(root: AppSettings.charoiteRoot)
     }
 
     /// Поставить набор разделения голосов: эмбеддинги, затем сегментацию.
@@ -107,9 +113,10 @@ final class ModelPullService: ObservableObject {
             await MainActor.run {
                 let service = ModelPullService.shared
                 service.progress[key] = nil
-                if ok, ModelPullService.diarizationInstalled {
-                    SetupReadinessService.shared.refresh(force: true)
-                } else {
+                // Снимок — после любого завершения скрипта: частичный сбой
+                // (эмбеддинги легли, сегментации нет) меняет и проверку, и кнопки.
+                SetupReadinessService.shared.refresh(force: true)
+                if !(ok && ModelPullService.diarizationInstalled) {
                     // Последняя строка вывода — то, на чём скрипт остановился;
                     // молчаливый отказ здесь читается как «кнопка не работает».
                     let tail = out.split(separator: "\n").last.map(String.init) ?? ""

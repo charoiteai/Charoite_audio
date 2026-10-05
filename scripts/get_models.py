@@ -472,9 +472,11 @@ def _install_embeddings(args: argparse.Namespace) -> int:
 def _install_diar_bundle(args: argparse.Namespace) -> int:
     """`--diar` без своего адреса и пути: эмбеддинги, затем сегментация.
 
-    Сегментация одна, даже если рядом стоит `--segmentation`. Отказ её
-    загрузки эмбеддинги не откатывает: `SystemExit` ловится только здесь,
-    последняя строка — состояние, причина и рецепт, код 1.
+    Сегментация одна, даже если рядом стоит `--segmentation`. `SystemExit`
+    загрузки ловится только здесь, дважды: отказ эмбеддингов — сегментацию не
+    качаем (без эмбеддингов она разбору не поможет, повтор поставит обе); отказ
+    сегментации эмбеддинги не откатывает. В обоих случаях последняя строка —
+    состояние, причина и рецепт, код 1.
     """
     emb = diar_target()
     seg_dest = seg_target()
@@ -490,7 +492,11 @@ def _install_diar_bundle(args: argparse.Namespace) -> int:
     if emb_problem:
         print(emb_problem.split(" — ")[0])
         model = MODELS[args.model]
-        download(model.url, emb, model.size_mb, sha256=model.sha256)
+        try:
+            download(model.url, emb, model.size_mb, sha256=model.sha256)
+        except SystemExit as exc:
+            print(f"эмбеддинги не поставлены: {_exit_text(exc)} — повторить: {_DIAR_RETRY}")
+            return 1
         print(_LIVE_ON)
     if seg_problem:
         print(seg_problem.split(" — ")[0])

@@ -46,8 +46,9 @@ Charoite uses two diarization passes:
    [pyannote](https://github.com/pyannote/pyannote-audio), with ONNX builds
    assembled for sherpa-onnx. Your own link: `--url` (no checksum then).
 
-   The script reaches the network only when you run it, once; the models work
-   offline afterwards, and `--check` opens no connections at all. Besides the
+   The script reaches the network only when you run it: at most two one-off
+   downloads (embeddings, then segmentation); the models work offline
+   afterwards, and `--check` opens no connections at all. Besides the
    optional cloud layer, the product's only other network traffic is the
    version check and the first-run STT download — see [PRIVACY.md](../PRIVACY.md).
 

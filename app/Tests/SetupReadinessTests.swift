@@ -131,19 +131,32 @@ final class DiarizationReadinessTests: XCTestCase {
         XCTAssertEqual(snapshot.problems, 0)
     }
 
-    func testInstallButtonFollowsTheWarningEvenWhenItIsNotFirst() {
-        let checks = [
-            SetupCheck(id: "graph", state: .warning, title: "граф", detail: "выключен"),
-            SetupCheck(id: "diarization", state: .warning, title: "голоса", detail: "нет сегментации"),
-        ]
-        XCTAssertTrue(SetupReadinessPolicy.showsDiarizationInstall(in: checks))
-        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: [
-            SetupCheck(id: "diarization", state: .blocked, title: "x", detail: "y"),
-        ]))
-        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: [
-            SetupCheck(id: "audio", state: .warning, title: "звук", detail: "только микрофон"),
-        ]))
-        XCTAssertFalse(SetupReadinessPolicy.showsDiarizationInstall(in: []))
+    /// Кнопка постановки (мастер и «Сегодня») — по составу набора на диске:
+    /// видна при любом из трёх неполных сочетаний, в том числе без эмбеддингов,
+    /// когда проверки «diarization» в снимке нет (№625).
+    func testVoiceSetIsCompleteOnlyWithBothFiles() throws {
+        let files = FileManager.default
+        for (embeddings, segmentation) in [(false, false), (true, false), (false, true), (true, true)] {
+            let root = files.temporaryDirectory
+                .appendingPathComponent("voice-set-\(UUID().uuidString)", isDirectory: true)
+            defer { try? files.removeItem(at: root) }
+            try files.createDirectory(at: root.appendingPathComponent("models/diar"),
+                                      withIntermediateDirectories: true)
+            if embeddings {
+                XCTAssertTrue(files.createFile(atPath: DiarizationModels.embeddingURL(root).path,
+                                               contents: Data([8])))
+            }
+            if segmentation {
+                XCTAssertTrue(files.createFile(atPath: DiarizationModels.segmentationURL(root).path,
+                                               contents: Data([8])))
+            }
+            XCTAssertEqual(DiarizationModels.isComplete(root: root), embeddings && segmentation,
+                           "эмбеддинги \(embeddings), сегментация \(segmentation)")
+            XCTAssertEqual(SetupReadinessPolicy.diarizationCheck(
+                embeddings: embeddings, segmentation: segmentation) != nil,
+                           embeddings && !segmentation,
+                           "проверка — только при «эмбеддинги есть, сегментации нет»")
+        }
     }
 
     func testWizardCaptionNamesWhatIsMissing() {

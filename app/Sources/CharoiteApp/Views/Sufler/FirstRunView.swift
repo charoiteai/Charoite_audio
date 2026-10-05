@@ -471,7 +471,10 @@ struct FirstRunView: View {
                     Text(err).font(.caption).foregroundStyle(.red)
                 }
             } else if check.id == "diarization" {
-                DiarizationInstallButton()
+                // Кнопка мастера — voiceInstallRow, она видна при любом неполном
+                // наборе; вторая здесь показала бы одну ошибку дважды. Ветка
+                // нужна: без неё текст проверки ушёл бы в pull и «скопировать команду».
+                EmptyView()
             } else if !models.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(models, id: \.self) { model in

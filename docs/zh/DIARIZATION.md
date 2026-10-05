@@ -37,7 +37,7 @@ Charoite 采用两遍说话人分离：
    [pyannote](https://github.com/pyannote/pyannote-audio)，ONNX 构建为 sherpa-onnx
    整理。自定义链接用 `--url`（此时不核对校验和）。
 
-   脚本只在你手动运行时联网，一次，之后模型完全离线工作；`--check` 完全不开连接。
+   脚本只在你手动运行时联网：最多两次一次性下载（先嵌入，后分段），之后模型完全离线工作；`--check` 完全不开连接。
    除可选云层之外，产品只在版本检查和首次运行时下载 STT 模型时联网——见
    [PRIVACY.md](PRIVACY.md)。
 

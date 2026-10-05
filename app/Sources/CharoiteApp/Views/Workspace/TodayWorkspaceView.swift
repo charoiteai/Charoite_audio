@@ -174,8 +174,9 @@ struct TodayWorkspaceView: View {
                 if firstRunSeen { sufler.toggle() }
             }
             HStack(spacing: 8) {
-                if SetupReadinessPolicy.showsDiarizationInstall(
-                    in: readiness.snapshot?.checks ?? []) {
+                // Тот же предикат, что у мастера: набор неполон — кнопка видна,
+                // в том числе без эмбеддингов, когда проверки в снимке нет.
+                if !ModelPullService.diarizationInstalled {
                     DiarizationInstallButton(alignment: .trailing)
                 }
                 ReadinessLine(snapshot: readiness.snapshot,
