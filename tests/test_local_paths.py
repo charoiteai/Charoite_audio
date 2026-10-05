@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import pathlib
@@ -729,9 +730,9 @@ def test_mcp_minutes_scrub_before_write_and_passport(tmp_path, monkeypatch):
     assert live_sidecar.read(live)["minutes_sha256"] == hashlib.sha256(mpath.read_bytes()).hexdigest()
 
 
-def test_write_minutes_scrubs_every_path_form_and_writes_atomically(tmp_path, monkeypatch):
-    """Писатель финальных минуток: дом, его realpath и корень данных снимаются
-    до диска, tmp не остаётся, ``note`` зовётся один раз байтами с диска."""
+def _minutes_target(tmp_path, monkeypatch):
+    """Дом через симлинк (дом и его realpath — две иглы), корень данных вне
+    дома, файл минуток с прежним текстом."""
     real_home = tmp_path / "настоящий дом"
     real_home.mkdir()
     home = tmp_path / "дом"
@@ -748,29 +749,100 @@ def test_write_minutes_scrubs_every_path_form_and_writes_atomically(tmp_path, mo
     mpath = folder / "2026-10-05_1700_minutes.md"
     mpath.write_text("прежние минутки\n", encoding="utf-8")
     raw = f"# Минутки\nсм. {home}/a.md, {root}/b.md и {real_text}/c.md\n"
+    return mpath, raw, (str(home), str(root), real_text)
+
+
+def _spy_safe_write(monkeypatch, result=None, error=None) -> list:
+    calls: list = []
+    real = daemon.safe_write.write_text
+
+    def spy(path, text, **kw):
+        calls.append((path, text, kw))
+        if error is not None:
+            raise error
+        if result is not None:
+            return result
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(daemon.safe_write, "write_text", spy)
+    return calls
+
+
+def test_write_minutes_scrubs_home_its_realpath_and_the_data_root(tmp_path, monkeypatch):
+    """Писатель финальных минуток: иглы этого вызова (дом, его realpath,
+    корень данных) снимаются до диска. Запись — одним вызовом общего
+    атомарного ``safe_write.write_text`` (его контракт tmp+replace —
+    в test_safe_write), ``note`` — один раз ровно байтами с диска."""
+    mpath, raw, needles = _minutes_target(tmp_path, monkeypatch)
+    calls = _spy_safe_write(monkeypatch)
     notes: list[str] = []
 
     doc = daemon.write_minutes(mpath, raw, notes.append)
 
     on_disk = mpath.read_text(encoding="utf-8")
     assert on_disk == doc == f"# Минутки\nсм. ~/a.md, {MARK}/b.md и ~/c.md\n"
-    for needle in (str(home), str(root), real_text):
+    for needle in needles:
         assert _gone(on_disk, needle), needle
-    assert notes == [on_disk]
-    assert sorted(p.name for p in folder.iterdir()) == [mpath.name]
+    assert calls == [(mpath, doc, {})]
+    assert len(notes) == 1
+    assert hashlib.sha256(notes[0].encode("utf-8")).digest() == hashlib.sha256(mpath.read_bytes()).digest()
+    assert sorted(p.name for p in mpath.parent.iterdir()) == [mpath.name]
+
+
+def test_write_minutes_refused_by_the_writer_gate_notes_nothing(tmp_path, monkeypatch):
+    """Гейт писателя отклонил запись — None и без ``note``: хеш в live.json
+    описывает только байты на диске."""
+    mpath, raw, _needles = _minutes_target(tmp_path, monkeypatch)
+    _spy_safe_write(monkeypatch, result=False)
+    notes: list[str] = []
+    assert daemon.write_minutes(mpath, raw, notes.append) is None
+    assert notes == []
+    assert mpath.read_text(encoding="utf-8") == "прежние минутки\n"
+
+
+def test_write_minutes_failed_replace_keeps_old_minutes_and_notes_nothing(tmp_path, monkeypatch):
+    """Обрыв на replace: ошибка — вызывающему, прежние минутки целы, tmp
+    убран, ``note`` не звался."""
+    mpath, raw, _needles = _minutes_target(tmp_path, monkeypatch)
+
+    def broken(self, target):
+        raise OSError("диск")
+
+    monkeypatch.setattr(pathlib.Path, "replace", broken)
+    notes: list[str] = []
+    with pytest.raises(OSError):
+        daemon.write_minutes(mpath, raw, notes.append)
+    assert notes == []
+    assert mpath.read_text(encoding="utf-8") == "прежние минутки\n"
+    assert sorted(p.name for p in mpath.parent.iterdir()) == [mpath.name]
+
+
+_WRITE_CALLS = {"write_text", "write_bytes", "rename", "touch", "copyfile", "copy2", "copy", "move", "open"}
 
 
 def test_protocol_writes_minutes_only_through_write_minutes():
     """«Протокол» демона (``_do_summary`` — замыкание ``main()``, напрямую не
-    вызвать) пишет минутки только писателем со скрабом внутри: ни своей
-    записи файла, ни своего replace. Порядок строк здесь больше не важен —
-    скраб у писателя. Второй будущий писатель в обход — Долг зоны №609."""
+    вызвать) пишет минутки только писателем со скрабом внутри. По вызовам
+    AST, как соседние сторожа демона (test_pending_question): комментарии
+    и переносы строк не в счёт. Поток управления не разбираем — скраб у
+    писателя. Второй будущий писатель в обход — Долг зоны №609."""
     src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
-    body = src[src.index("    def _do_summary():"):]
-    body = body[: body.index("\n    def ", 10)]
-    assert body.count("write_minutes(mpath, doc, note_minutes_written)") == 1, body
-    for writer in (".write_text(", ".write_bytes(", ".replace(", "open(", "safe_write."):
-        assert writer not in body, f"«Протокол» пишет мимо write_minutes: {writer}"
+    funcs = [node for node in ast.walk(ast.parse(src))
+             if isinstance(node, ast.FunctionDef) and node.name == "_do_summary"]
+    assert len(funcs) == 1, "замыкание _do_summary не найдено — сторож ослеп"
+    calls = [node for node in ast.walk(funcs[0]) if isinstance(node, ast.Call)]
+    writer = [c for c in calls if isinstance(c.func, ast.Name) and c.func.id == "write_minutes"]
+    assert len(writer) == 1, [ast.unparse(c) for c in writer]
+    bypass = []
+    for c in calls:
+        name = c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+        owner = ast.unparse(c.func.value) if isinstance(c.func, ast.Attribute) else ""
+        # Path.replace(target) — один аргумент, os.replace — у os;
+        # str.replace(old, new) — два и больше, это не запись.
+        replace = name == "replace" and (owner in ("os", "shutil") or len(c.args) == 1)
+        if name in _WRITE_CALLS or replace or owner.startswith(("safe_write", "shutil")):
+            bypass.append(ast.unparse(c))
+    assert not bypass, f"«Протокол» пишет мимо write_minutes: {bypass}"
 
 
 def test_scrub_count_goes_to_stderr_not_the_daemon_stdout(tmp_path, monkeypatch, capsys):

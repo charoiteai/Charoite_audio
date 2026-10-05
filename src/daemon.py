@@ -251,14 +251,20 @@ def minutes_document(text: str) -> str:
     return scrubbed
 
 
-def write_minutes(mpath: pathlib.Path, text: str, note) -> str:
+def write_minutes(mpath: pathlib.Path, text: str, note) -> str | None:
     """Финальные минутки на диск: скраб пути машины, запись через tmp и
     replace (общий ``safe_write.write_text``), затем ``note`` с теми же
     байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб живёт
     здесь, у писателя, а не в порядке строк вызывающего: снять его, переставив
-    операторы ``_do_summary``, нельзя. Возвращает записанный текст."""
+    операторы ``_do_summary``, нельзя.
+
+    Возвращает записанный текст. Запись отклонена гейтом писателя — None и
+    без ``note``: хеш в live.json обязан описывать байты на диске, иначе
+    пересборка приняла бы чужой файл за свой автотекст. Ошибка записи идёт
+    вызывающему, ``note`` не зовётся."""
     doc = minutes_document(text)
-    safe_write.write_text(mpath, doc)
+    if not safe_write.write_text(mpath, doc):
+        return None
     note(doc)
     return doc
 
