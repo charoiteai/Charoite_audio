@@ -37,7 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import brain  # noqa: E402
 import graphs  # noqa: E402
 import deps  # noqa: E402
-from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
+from charoite_paths import code_root, harden_umask, log_path, resolve_root  # noqa: E402
 
 
 def _root() -> pathlib.Path:
@@ -647,7 +647,7 @@ def code_head() -> str:
     import subprocess
     try:
         out = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True,
-                             timeout=10, cwd=pathlib.Path(__file__).resolve().parent)
+                             timeout=10, cwd=code_root(__file__))
     except OSError:
         return "?"
     return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "?"
@@ -818,7 +818,7 @@ def pin_hash_seed(profile: str) -> None:
     if profile not in brain.PROFILES or os.environ.get("PYTHONHASHSEED") == SEED:
         return
     env = {**os.environ, "PYTHONHASHSEED": SEED}
-    os.execve(sys.executable, [sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]], env)
+    os.execve(sys.executable, [sys.executable, *sys.argv], env)
 
 
 def main() -> None:

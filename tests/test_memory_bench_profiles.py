@@ -299,10 +299,12 @@ def test_hash_seed_is_pinned_by_reexec(monkeypatch):
     seen = {}
     monkeypatch.setattr(mb.os, "execve", lambda exe, argv, env: seen.update(env=env, argv=argv))
     monkeypatch.delenv("PYTHONHASHSEED")
+    monkeypatch.setattr(sys, "argv", ["scripts/memory_bench.py", "--profile", "answer", "--stats"])
     mb.pin_hash_seed("raw")
     assert seen == {}
     mb.pin_hash_seed("answer")
-    assert seen["env"]["PYTHONHASHSEED"] == "0" and seen["argv"][1].endswith("memory_bench.py")
+    assert seen["env"]["PYTHONHASHSEED"] == "0"
+    assert seen["argv"] == [sys.executable, "scripts/memory_bench.py", "--profile", "answer", "--stats"]
     seen.clear()
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     mb.pin_hash_seed("answer")
