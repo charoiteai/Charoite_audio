@@ -779,7 +779,8 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     `None` — сравнили, просадки нет: ключ снят, пустой файл удаляется. Состояние
     `unmeasured` (базы нет, сравнимых вопросов мало, грязный прогон против базы на
     другом коде) стоявшую тревогу не снимает, а помечает: прогон, который ничего не
-    сравнил, не свидетельствует «чисто». `run` тревоги остаётся тем итогом, что её поднял.
+    сравнил, не свидетельствует «чисто». `run` и `ts` тревоги остаются от итога, что её
+    поднял: `ts` — время последнего замера, бриф считает от него возраст тревоги.
     Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -791,7 +792,7 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     if entry is None:
         data.pop(key, None)
     elif entry["state"] == "unmeasured" and isinstance(prev, dict) and prev.get("state") == "alert":
-        data[key] = {**prev, "ts": entry["ts"], "unmeasured": entry["why"]}
+        data[key] = {**prev, "unmeasured": entry["why"]}
     else:
         data[key] = entry
     if data:
@@ -825,9 +826,9 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
     stamp = {"ts": rec["ts"], "run": rec["id"], "profile": rec["profile"], "mode": rec["mode"],
              "graph_dir": str(graph) if graph is not None else ""}
     print(f"итог {rec['id']} записан")
+    hint = (f"--accept --run {rec['id']} --profile {rec['profile']}"
+            f"{' --stats' if rec['mode'] == 'stats' else ''}")
     if base is None:
-        hint = (f"--accept --run {rec['id']} --profile {rec['profile']}"
-                f"{' --stats' if rec['mode'] == 'stats' else ''}")
         print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой {hint}")
         update_alert(alert_path, alert_key(rec),
                      {**stamp, "state": "unmeasured", "why": f"база не принята ({hint})"})
@@ -836,9 +837,10 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
         # правка без коммита против базы на другом коде: «чисто» здесь не говорит о
         # коде, который пойдёт в работу, — тревогу не снимаем и не поднимаем
         print(f"не сравниваю: прогон на незакоммиченном коде против базы на другом коде "
-              f"({rec['head']} против {base.get('head', '?')})")
+              f"({rec['head']} против {base.get('head', '?')}); взвести сторож на этом коде — {hint}")
         update_alert(alert_path, alert_key(rec),
-                     {**stamp, "state": "unmeasured", "why": "прогон на незакоммиченном коде против базы на другом коде"})
+                     {**stamp, "state": "unmeasured",
+                      "why": f"прогон на незакоммиченном коде против базы на другом коде ({hint})"})
         return None
     d = compare(base, rec)
     print(f"против базы от {base['ts']}: было {passed(base)}, стало {passed(rec)}; ✓→✗ {len(d.regressed)}")
@@ -971,7 +973,8 @@ def main() -> None:
     if args.accept != bool(args.run):
         ap.error("--accept и --run ID — только вместе: принимается итог, который вы видели")
     mode = "stats" if args.stats or args.profile == "live" else "synth"
-    pin_hash_seed(args.profile)
+    if not args.accept:     # принятие ничего не мерит: порядок хеша ему не нужен
+        pin_hash_seed(args.profile)
 
     cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):

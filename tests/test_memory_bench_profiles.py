@@ -457,8 +457,13 @@ def test_alert_carries_the_run_that_raised_it(tmp_path):
     mb.judge(tmp_path, low)
     assert _alert(tmp_path)["answer"]["run"] == low["id"]
     mb.judge(tmp_path, _rec([True] * 5, sems=[False] * 5))
+    raised = _alert(tmp_path)["answer"]["ts"]
+    later = _rec([True] * 5, sems=[False] * 5)
+    later["ts"] = "2099-01-01T00:00:00"
+    mb.judge(tmp_path, later)
     entry = _alert(tmp_path)["answer"]
     assert entry["state"] == "alert" and entry["unmeasured"] and entry["run"] == low["id"]
+    assert entry["ts"] == raised, "ts — время последнего замера, несравнимый прогон его не двигает"
 
 
 # ------------------------------------------------- грязный прогон против базы на другом коде (Opus M2)
@@ -472,6 +477,7 @@ def test_dirty_run_without_regression_does_not_lift_the_alert(tmp_path, capsys):
     assert "не сравниваю: прогон на незакоммиченном коде против базы на другом коде (xxx+dirty против aaa)" in said
     entry = _alert(tmp_path)["answer"]
     assert entry["state"] == "alert" and entry["unmeasured"].startswith("прогон на незакоммиченном коде")
+    assert "--accept --run " in entry["unmeasured"], "бриф говорит, чем взвести сторож"
 
 
 def test_dirty_run_with_regression_against_other_code_raises_nothing(tmp_path):
@@ -541,6 +547,20 @@ def test_hash_seed_is_pinned_by_reexec_with_interpreter_flags(monkeypatch):
     _flags(monkeypatch, hr=0)
     mb.pin_hash_seed("answer")
     assert seen == {}, "порядок хеша уже фиксирован — перезапуска нет"
+
+
+def test_accept_does_not_pin_the_hash_seed(monkeypatch, tmp_path):
+    """Принятие ничего не мерит: ни перезапуска, ни отказа под -E/-I."""
+    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: pytest.fail("принятие перезапускает бенч"))
+    seen = []
+    monkeypatch.setattr(mb, "accept", lambda *a: seen.append(a))
+    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("sufler: {}\n", encoding="utf-8")
+    monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--stats", "--accept", "--run", "r1"])
+    mb.main()
+    assert seen and seen[0][1:4] == ("answer", "stats", "r1")
 
 
 def test_hash_seed_loop_guard(monkeypatch):
