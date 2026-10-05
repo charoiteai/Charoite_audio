@@ -516,7 +516,11 @@ def machine_final(live: pathlib.Path) -> bool:
         if not isinstance(meta, dict):
             return True
         return valid_sha(meta.get("transcript_sha256")) is not None
-    except Exception:  # noqa: BLE001 — тотальная: битый сайдкар не роняет конвейер
+    except Exception as e:  # noqa: BLE001 — тотальная: битый сайдкар не роняет конвейер
+        # «не знаем» оставляет след: иначе пропавшая пометка не диагностируется
+        # (Sonnet M1, DS M2 круга 2)
+        print(f"сайдкар {live.name} не прочитан ({type(e).__name__}: {e}) — "
+              "машинный финал считаю записанным", file=sys.stderr)
         return True
 
 

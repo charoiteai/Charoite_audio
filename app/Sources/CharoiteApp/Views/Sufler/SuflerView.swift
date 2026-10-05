@@ -299,6 +299,12 @@ struct SuflerView: View {
         return sufler.statusIsError
     }
 
+    /// Строке нужно внимание — вес и перенос: проблема или пометка готовой
+    /// встречи (№500; пометка в одну строку усекалась — DS M1 круга 2).
+    private var statusNeedsAttention: Bool {
+        statusIsProblem || (!sufler.isRunning && processing.statusIsReadyNote)
+    }
+
     private var statusColor: Color {
         if sufler.isRunning {
             if sufler.stopConfirmPending { return .secondary }
@@ -521,10 +527,10 @@ struct SuflerView: View {
             // мелкий серый текст в одну строку человек на встрече не заметит, а
             // сообщение «нажмите ещё раз» вдобавок обрезалось на полуслове.
             Text(displayedStatus)
-                .font(statusIsProblem ? .caption.weight(.medium) : .caption)
+                .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusColor)
-                .lineLimit(sufler.isRunning && sufler.stickyProblemCount > 1 ? 3 : (statusIsProblem ? 2 : 1))
-                .fixedSize(horizontal: false, vertical: statusIsProblem)
+                .lineLimit(sufler.isRunning && sufler.stickyProblemCount > 1 ? 3 : (statusNeedsAttention ? 2 : 1))
+                .fixedSize(horizontal: false, vertical: statusNeedsAttention)
                 .textSelection(.enabled)
 
             if !sufler.isRunning, processing.isProcessing {

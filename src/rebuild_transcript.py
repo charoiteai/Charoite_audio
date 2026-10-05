@@ -1194,26 +1194,28 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # тот же исход, что у P0-1, только через другой вход. Канала связи с
     # демоном у нас нет, а возраст файла — ровно тот язык, на котором ретеншн
     # принимает решения; touch честно продлевает жизнь на keep_days от старта
-    # пересборки.
+    # пересборки. Тот же обход отвечает, есть ли под СВОИМ штампом хоть
+    # один файл канала: под минутой бывают файлы соседки, а свои смёл ретеншн
+    # — тогда ждать нечего, повтор даст то же, и 2×45 с под rebuild.lock были
+    # бы пустыми (Sonnet M1, DS M3 выходных кругов №500). Ошибка листинга —
+    # «есть»: не знаем — ждём, как recordings_under_minute.
+    own = False
     for _label in meeting_stamp.RECORDING_LABELS:
         for _ext in meeting_stamp.RECORDING_EXTS:
             _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
             try:
                 if _p.exists():
+                    own = True
                     os.utime(_p)
             except OSError:
-                pass          # не продлили — ретеншн решит по старому mtime
+                own = True    # не продлили — ретеншн решит по старому mtime
+    if not own:
+        log("записей нет — оставляю живую стенограмму")
+        return None
 
     mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
     bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:
-        # Под минутой бывают файлы соседки, а под своим штампом — ничего
-        # (свои смёл ретеншн): ждать нечего, повтор даст то же (Sonnet M1
-        # выходного круга №500).
-        if not any(meeting_stamp.recording_path(rec_dir, recording_stamp, lab, ext).exists()
-                   for lab in meeting_stamp.RECORDING_LABELS for ext in meeting_stamp.RECORDING_EXTS):
-            log("записей нет — оставляю живую стенограмму")
-            return None
         log("записи не готовы — оставляю живую стенограмму")
         return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)
 

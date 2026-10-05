@@ -75,11 +75,46 @@ def test_only_a_neighbours_files_under_the_minute_is_a_deterministic_refusal(tmp
     rec.mkdir()
     meeting_stamp.recording_path(rec, "2026-08-04_120345", "mic", "wav").write_bytes(b"RIFF")
     monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", lambda *_a, **_k: "2026-08-04_120314")
-    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
-    monkeypatch.setattr(rt, "log", lambda _m: None)
+    waited: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, _s, label, _c: waited.append(label))
+    lines: list[str] = []
+    monkeypatch.setattr(rt, "log", lines.append)
     monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
 
     assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
+    # ждать нечего — и не ждём: 2×45 с под rebuild.lock были бы пустыми (DS M3 круга 2)
+    assert waited == [], waited
+    assert "записей нет — оставляю живую стенограмму" in lines, lines
+
+
+def test_unlistable_own_files_mean_wait_not_refuse(tmp_path, monkeypatch):
+    """Ошибка stat своего файла — «не знаем, есть ли»: ждём и, не дождавшись, даём
+    устранимый код, а не немой None и не `failed` (Sonnet M2 круга 2)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "pcm").write_bytes(b"\0" * 32)
+    real = pathlib.Path.exists
+
+    def refuse(self, *a, **k):
+        if self.parent == rec:
+            raise PermissionError(13, "EACCES")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", lambda *_a, **_k: "2026-08-04_120314")
+    monkeypatch.setattr(pathlib.Path, "exists", refuse)
+    waited: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, _s, label, _c: waited.append(label))
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    got = rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert got == RS(RS.RECORDING_NOT_READY) and isinstance(got, RS)
+    assert waited == ["mic", "blackhole"], waited
 
 
 def test_skipped_is_falsy_like_the_old_none():
@@ -129,6 +164,16 @@ def test_machine_final_is_total(root, monkeypatch):
 
     monkeypatch.setattr(live_sidecar.json, "loads", deep)
     assert live_sidecar.machine_final(live) is True
+
+
+def test_machine_final_unknown_leaves_a_trace(root, capsys):
+    """«Не знаем» пишет причину в stderr: иначе пропавшая пометка не
+    диагностируется (Sonnet M1, DS M2 круга 2)."""
+    live = _live(root)
+    live.with_name(live.name + ".live.json").write_bytes(b"\xff\xfe")
+    assert live_sidecar.machine_final(live) is True
+    err = capsys.readouterr().err
+    assert "не прочитан" in err and "UnicodeDecodeError" in err, err
 
 
 def test_machine_final_ambiguous_sidecar_is_unknown(root):
