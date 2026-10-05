@@ -1663,7 +1663,9 @@ during a meeting) lexical matches are *unverified*, never confident and never
 "nothing in the archive"; "weak" — the honest "the archive has almost nothing"
 — is only pronounced when the vector cache covers at least 80 % of the index.
 Dossiers count as evidence in the verdict (their key coverage of the query), so
-a summary without snippets is never "empty". What to *say* is one table in the
+a summary without snippets is never "empty" — this holds for the profiles whose
+dossiers axis is on (`LIVE`, `EXPAND`), not for `ANSWER`, which does not look
+dossiers up at all (see the profiles below). What to *say* is one table in the
 facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
 "unverified" — embedder busy or cache incomplete — is a field of the result) and
 one builder, `brain.pack(profile, result)`, that splits a prompt budget between graph nodes and
@@ -1684,8 +1686,11 @@ raw primitives behind them are private — the layout gate (`ENV_SEAMS`) turns a
 call outside `brain.py` red. `pack` returns a record (`Packed`), not a string:
 `text` goes into the prompt, while `lead`, `nodes`, `body` and the snippets the
 budget cut are fields, so the bench never parses the header to score a fact.
-Before this, every number lived as a copy in three daemon sites and in the bench,
-and the bench measured a path the owner never took.
+`ANSWER` goes without dossiers: on the owner's 37 questions (seed 0) topic
+summaries first ate the 2000-character block, and the answer found 8 of 37 with
+them against 16 without; `LIVE` and `EXPAND` keep dossiers — their input is a
+topic, not a question. Before this, every number lived as a copy in three daemon
+sites and in the bench, and the bench measured a path the owner never took.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
@@ -1817,7 +1822,9 @@ questions slower than the chat's 4 s deadline are out of comparison); the
 default `raw` keeps the old contour. `--no-dossiers` (daemon profiles only)
 runs the profile without the dossiers axis: topic summaries are not looked up
 at all — neither the "📁" section nor their evidence in the verdict; dossier
-files keep their role and never take a retrieval slot. The `dossiers` field enters
+files keep their role and never take a retrieval slot. For `answer` the profile
+already has dossiers off, so the flag changes nothing in the run — but `--accept`
+of an answer record still needs it, and the hint prints it. The `dossiers` field enters
 the comparison and alert key only as `false`: a record without the field reads as
 "with dossiers", so results, accepted baselines and alerts written before the flag
 keep their keys. Latency is printed per stage (search,

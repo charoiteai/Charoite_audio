@@ -539,7 +539,8 @@ def test_no_dossiers_only_for_daemon_profiles(monkeypatch, capsys):
 
 def test_no_dossiers_reaches_run_profile_and_record(monkeypatch, tmp_path):
     """`--no-dossiers` — профиль прогона без оси (`_replace`), и запись несёт `False`;
-    ручной путь `_accept --no-dossiers` потом найдёт её по ключу."""
+    ручной путь `_accept --no-dossiers` потом найдёт её по ключу. Через `live`:
+    у `answer` ось выключена самим профилем, и тест там был бы пустым (№641)."""
     monkeypatch.setattr(mb, "_root", lambda: tmp_path)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "config.yaml").write_text("sufler: {}\n", encoding="utf-8")
@@ -552,7 +553,7 @@ def test_no_dossiers_reaches_run_profile_and_record(monkeypatch, tmp_path):
     monkeypatch.setattr(mb, "run_profile",
                         lambda profile, *a, **k: (seen.update(p=profile), [], "", "")[1:])
     monkeypatch.setattr(mb, "judge", lambda root, rec, graph=None: seen.update(rec=rec))
-    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--stats",
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "live", "--stats",
                                       "--record", "--no-dossiers"])
     mb.main()
     assert seen["p"].dossiers is False and seen["rec"]["dossiers"] is False
