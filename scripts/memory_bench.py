@@ -755,8 +755,9 @@ def update_alert(path: pathlib.Path, profile: str, payload: dict | None) -> None
         path.unlink()
 
 
-def judge(root: pathlib.Path, rec: dict) -> dict | None:
-    """Запись итога и сверка с принятой базой. -> тревога или None."""
+def judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None = None) -> dict | None:
+    """Запись итога и сверка с принятой базой. `graph` — для утреннего брифа: тревога
+    видна в брифе того графа, по которому мерили. -> тревога или None."""
     base_path = log_path(root, "memory_bench_baseline")
     records = read_records(base_path)
     append_record(base_path, rec)
@@ -776,6 +777,7 @@ def judge(root: pathlib.Path, rec: dict) -> dict | None:
         head_changed = base.get("head") != rec["head"]
         graph_changed = base.get("graph") != rec["graph"]
         alert = {"ts": rec["ts"], "profile": rec["profile"], "mode": rec["mode"],
+                 "graph_dir": str(graph) if graph is not None else "",
                  "base_ts": base["ts"], "was": passed(base), "now": passed(rec),
                  "regressed": [{"n": q["n"], "cat": q["cat"], "why": q["why"]} for q in d.regressed],
                  "head_changed": head_changed, "graph_changed": graph_changed, "sem_diff": d.sem_diff}
@@ -914,7 +916,7 @@ def main() -> None:
         out, model, graph_fp = run_profile(brain.PROFILES[args.profile], graph, emb, cases,
                                            stats=args.stats, cfg=cfg)
         if args.record:
-            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out))
+            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out), graph)
         return
     if args.brain:
         require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур

@@ -209,13 +209,14 @@ def test_two_regressions_with_same_sem_used_raise_the_alert(tmp_path, capsys):
     capsys.readouterr()
     alert = mb.judge(tmp_path, _rec([False, False, True, True, True], head="bbb",
                                     cats=["latest", "fact", "fact", "fact", "fact"],
-                                    whys=["срезано бюджетом", "не выдано", "", "", ""]))
+                                    whys=["срезано бюджетом", "не выдано", "", "", ""]), tmp_path / "Граф")
     said = capsys.readouterr().out
     assert alert is not None and _alert(tmp_path)["answer"]["regressed"] == [
         {"n": 1, "cat": "latest", "why": "срезано бюджетом"}, {"n": 2, "cat": "fact", "why": "не выдано"}]
     assert "HEAD изменился: да; граф изменился: нет" in said
     assert "latest №1: срезано бюджетом" in said
     assert _alert(tmp_path)["answer"]["was"] == 5 and _alert(tmp_path)["answer"]["now"] == 3
+    assert _alert(tmp_path)["answer"]["graph_dir"] == str(tmp_path / "Граф"), "бриф ищет тревогу своего графа"
 
 
 def test_one_regression_is_noise(tmp_path):

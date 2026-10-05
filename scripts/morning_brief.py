@@ -28,7 +28,7 @@ import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 from charoite_graph import redirects  # noqa: E402
 from charoite_graph import safe_write  # noqa: E402
-from charoite_paths import harden_umask, resolve_root  # noqa: E402
+from charoite_paths import harden_umask, log_path, resolve_root  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -71,6 +71,33 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
            f"меток диаризации среди Люди {rep.get('placeholders', 0)}, "
            f"дублей {rep.get('dup_real', 0)}, вне MOC {rep.get('moc_missing', 0)}"]
     out += [f"- ⚠️ {w}" for w in rep.get("warnings", [])]
+    return out
+
+
+def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
+    """Строки брифа из logs/memory_bench_alert.json — тревога ночного бенча памяти
+    (№629 ч. 2): свежая и про этот граф. Номера и категории вопросов, не тексты."""
+    path = log_path(resolve_root(__file__), "memory_bench_alert")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        items = list(data.values())
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = []
+    for a in items:
+        try:
+            made = dt.datetime.fromisoformat(a["ts"])
+            mine = a.get("graph_dir") in (str(graph), str(graph.resolve()))
+            fresh = dt.datetime.now() - made <= dt.timedelta(hours=max_age_h)
+            if not (mine and fresh):
+                continue
+            qs = ", ".join(f"№{q['n']} {q['cat']}" + (f" ({q['why']})" if q.get("why") else "")
+                           for q in a["regressed"])
+            out.append(f"- ⚠️ бенч памяти ({a['profile']}): было {a['was']}, стало {a['now']}; ✓→✗ {qs}; "
+                       f"HEAD изменился: {'да' if a['head_changed'] else 'нет'}, "
+                       f"граф изменился: {'да' if a['graph_changed'] else 'нет'}")
+        except (KeyError, TypeError, ValueError):
+            continue
     return out
 
 
@@ -155,7 +182,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
 
     # здоровье графа — из ночного graph_doctor (детерминированный линт):
     # только свежий отчёт (до 36 часов) и только по этому графу.
-    health = _graph_health(graph)
+    health = _graph_health(graph) + _bench_alert(graph)
     if health:
         lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
 
