@@ -656,3 +656,59 @@ def test_scrub_count_goes_to_stderr_not_the_daemon_stdout(tmp_path, monkeypatch,
     captured = capsys.readouterr()
     assert captured.out == "" and "заменены: 1" in captured.err
 
+
+def test_home_at_the_very_end_of_the_text_is_replaced(tmp_path, monkeypatch):
+    """Игла кончается ровно на конце текста: цикл не выходит за его край."""
+    home = _home(tmp_path, monkeypatch)
+    assert privacy.scrub_local_paths(f"см. {home}") == ("см. ~", 1)
+    assert privacy.scrub_local_paths(f"см. {home}/") == ("см. ~/", 1)
+
+
+def test_text_without_a_slash_is_returned_as_is(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch)
+    assert privacy.scrub_local_paths("") == ("", 0)
+    assert privacy.scrub_local_paths("без путей") == ("без путей", 0)
+
+
+def _rt_minutes(tmp_path, body: str):
+    live = tmp_path / "2026-09-11_1533.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    mpath = tmp_path / "2026-09-11_1533_minutes.md"
+    mpath.write_text(body, encoding="utf-8")
+    return live, mpath
+
+
+def test_rebuild_restamp_minutes_logs_the_marker_only_when_it_was_there(tmp_path, monkeypatch, capsys):
+    home = _home(tmp_path, monkeypatch)
+    live, mpath = _rt_minutes(tmp_path, f"{transcript.MINUTES_DRAFT_MARK}\n# Минутки\n")
+    assert rt.restamp_minutes(live, {}) is True
+    assert mpath.read_text(encoding="utf-8") == "# Минутки\n"
+    assert "(снят маркер черновика)" in capsys.readouterr().out
+
+    mpath.write_text(f"# Минутки\nсмотри {home}/a.md\n", encoding="utf-8")
+    assert rt.restamp_minutes(live, {}) is True
+    out = capsys.readouterr().out
+    assert f"минутки перештампованы: {mpath.name}\n" in out and "маркер" not in out
+
+
+def test_rebuild_restamp_minutes_refusals_answer_false(tmp_path, monkeypatch, capsys):
+    """Каждый отказ записи — ровно False и своя строка лога; нет файла — тихо."""
+    live, mpath = _rt_minutes(tmp_path, "# Минутки\n")
+    LostRace = rt.safe_write.LostRace
+    cases = [
+        (LostRace(mpath, "x", LostRace.CHANGED), "меняются под пересборкой"),
+        (LostRace(mpath, "x", LostRace.UNREACHABLE), "(не прочитались)"),
+        (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "плохой байт"), "не прочитались): плохой байт"),
+        (OSError("нет доступа"), "(не прочитались)"),
+        (LostRace(mpath, "x", LostRace.GONE), "(stat не удался)"),
+    ]
+    for exc, said in cases:
+        def boom(*_a, _e=exc, **_k):
+            raise _e
+        monkeypatch.setattr(rt.name_fixes, "rewrite_meeting_text", boom)
+        assert rt.restamp_minutes(live, {}) is False
+        assert said in capsys.readouterr().out
+    mpath.unlink()
+    assert rt.restamp_minutes(live, {}) is False
+    assert capsys.readouterr().out == ""
+

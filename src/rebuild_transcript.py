@@ -1908,14 +1908,13 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
     это подстановка наугад (GLM Critical по #464).
     """
     mpath = live.with_name(live.stem + "_minutes.md")
-    stripped_marker = False
 
     def edit(text: str) -> tuple[str, int]:
-        nonlocal stripped_marker
+        # Счёт правки — снят ли маркер черновика (0 или 1): по нему строка лога.
         fixed = text
         for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
             fixed = fixed.replace(line, "", 1)
-        stripped_marker = fixed != text
+        stripped = 0 if fixed == text else 1
         for label, name in live_names.items():
             # Только нейтральные метки — включая голый «Собеседник» канала
             # без диаризации (audio.SPEAKER; GLM r2 I1). Любой другой ключ
@@ -1928,7 +1927,7 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
                 continue
             fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\s*\d)(?!\w)",
                            lambda _m, n=name: n, fixed)
-        return fixed, (0 if fixed == text else 1)
+        return fixed, stripped
 
     # Гейт потери обновления + одна повторная попытка — внутри помощника
     # (safe_write.rewrite_file): пересборка — отдельный процесс, minutes_lock
@@ -1937,7 +1936,7 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
     try:
         # .prev/ — прошлое поколение минуток (его кладёт удачная регенерация).
         # Отказ модели доходит сюда раньше этой записи и не должен его затереть.
-        _edit_n, wrote = name_fixes.rewrite_meeting_text(
+        stripped_marker, wrote = name_fixes.rewrite_meeting_text(
             mpath, edit, live=live, sha_key="minutes_sha256",
             what="минутки не перештампованы", keep_prev=False)
     except safe_write.LostRace as e:

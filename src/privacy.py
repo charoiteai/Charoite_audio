@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import sys
 import unicodedata
 import urllib.parse
@@ -358,20 +359,6 @@ def is_loopback_url(url: str) -> bool:
 DATA_ROOT_MARK = "‹данные Чароита›"
 
 
-def _path_text(path: pathlib.Path | str) -> str:
-    text = str(path)
-    if len(text) > 1 and text.endswith("/"):
-        text = text.rstrip("/")
-    return text
-
-
-def _realpath(path: pathlib.Path | str) -> str:
-    try:
-        return os.path.realpath(path)
-    except (OSError, ValueError):
-        return str(path)
-
-
 def _needles() -> list[tuple[str, str, str]]:
     """Иглы этого вызова: (форма, «plain»|«percent», замена). Длинные — первыми.
 
@@ -383,17 +370,16 @@ def _needles() -> list[tuple[str, str, str]]:
     домашнему и не лежит в нём (и то же для ``realpath`` домашнего). Вложенный
     корень закрывает игла дома: замена та же, отдельная игла не нужна.
     """
+    # pathlib и realpath отдают путь без «/» в конце; «/» отсеивает put.
     home = pathlib.Path.home()
     homes: list[str] = []
-    for raw in (home, _realpath(home)):
-        text = _path_text(raw)
-        if text and text not in homes:
+    for text in (str(home), os.path.realpath(home)):
+        if text not in homes:
             homes.append(text)
     root = charoite_paths.resolve_root(__file__)
     roots: list[str] = []
-    for raw in (root, _realpath(root)):
-        text = _path_text(raw)
-        if text and text not in roots:
+    for text in (str(root), os.path.realpath(root)):
+        if text not in roots:
             roots.append(text)
 
     repl: dict[str, str] = {}
@@ -455,21 +441,16 @@ def _boundary(text: str, end: int) -> bool:
     return not _name_continues(char)
 
 
+_PERCENT_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
+
+
 def _percent_equal(segment: str, form: str) -> bool:
-    """Процентная запись: ``%XX`` сравнивается без учёта регистра шестнадцатеричных."""
-    index = 0
-    size = len(form)
-    while index < size:
-        if form[index] == "%" and index + 2 < size and segment[index] == "%":
-            if segment[index + 1].lower() != form[index + 1].lower() \
-                    or segment[index + 2].lower() != form[index + 2].lower():
-                return False
-            index += 3
-            continue
-        if segment[index] != form[index]:
-            return False
-        index += 1
-    return True
+    """Процентная запись: ``%XX`` сравнивается без учёта регистра шестнадцатеричных.
+
+    ``form`` — вывод ``urllib.parse.quote``: шестнадцатеричные заглавные, а «%»
+    в нём бывает только началом записи (сам знак «%» пути уходит в ``%25``).
+    """
+    return _PERCENT_ESCAPE.sub(lambda m: m.group().upper(), segment) == form
 
 
 def scrub_local_paths(text: str) -> tuple[str, int]:
@@ -485,11 +466,9 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
     имени. Формы: NFC, NFD и процентная запись в любом месте текста.
     Длинная игла заменяется раньше короткой. Повторный вызов ничего не меняет.
     """
-    if not text or "/" not in text:
+    if "/" not in text:
         return text, 0
     needles = _needles()
-    if not needles:
-        return text, 0
     out: list[str] = []
     index = 0
     count = 0
@@ -527,5 +506,5 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
         return text, 0
     # Только число: сам путь в журнал не пишем. В stderr: stdout демона —
     # построчный JSON для приложения, а скраб зовут его нити мимо замка emit.
-    print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr, flush=True)
+    print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr)
     return "".join(out), count

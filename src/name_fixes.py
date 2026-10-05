@@ -389,7 +389,7 @@ def rename_participants(text: str, mapping: dict[str, str]) -> str:
     return text[:m.start("rest")] + _word_map(m.group("rest"), mapping) + text[m.end("rest"):]
 
 
-def _machine_owned(live: pathlib.Path, key: str, text: str) -> bool:
+def _machine_owned(live: pathlib.Path, key: str | None, text: str) -> bool:
     meta = live_sidecar.read(live) or {}
     expected = live_sidecar.valid_sha(meta.get(key))
     return bool(expected) and expected == live_sidecar.sha(text)
@@ -417,7 +417,9 @@ def rewrite_meeting_text(path: pathlib.Path, edit, *, live: pathlib.Path,
     def transform(raw: str) -> tuple[str, int]:
         # Имя `_machine_owned` резолвится здесь, на вызове: тест гонки
         # подменяет его и ждёт, что подмена сработает внутри transform.
-        owned = _machine_owned(live, sha_key, raw) if sha_key else False
+        # Без ключа хеша (минутки без стенограммы) текст не машинный:
+        # `meta.get(None)` пуст.
+        owned = _machine_owned(live, sha_key, raw)
         scrubbed, _scrub = privacy.scrub_local_paths(raw)
         edited, n_edit = edit(scrubbed)
         if machine_fixup is not None and owned and n_edit > 0:
