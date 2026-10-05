@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import platform
 import shlex
 import subprocess
 import sys
@@ -257,20 +258,35 @@ def check_models() -> None:
 
 
 def check_engine(cfg: dict) -> None:
-    """Движок диаризации после встречи — строка, только если выбран не sherpa (№474).
+    """Движок диаризации — строкой из `engine_state` (№474, №622 B2).
 
-    Без сети и без mlx в процессе доктора: окружение (настройка или установленное),
-    версия mlx-audio и каталог весов — пробой движка его же интерпретатором; строка
-    называет интерпретатор, который выбрала дверь (ключ главнее окружения). Не
-    готов — не авария: пересборка размечает голоса sherpa и пишет причину в шапку
-    стенограммы, поэтому «–», а не «✗»."""
-    sufler = cfg.get("sufler") or {}
-    if str(sufler.get("diarize_backend") or "sherpa").strip().lower() != "nemotron":
-        return
+    Без сети и без mlx в процессе доктора. Выбран Nemotron — проба его же
+    интерпретатором, как раньше. Выбран sherpa на Apple Silicon — информационная
+    строка: движок на месте, просто не включён, или его нет, и тогда с командой.
+    Живой поток не `off`, а движку нечем работать — предупреждение: он молча не
+    поднимется. Не готов — не авария: пересборка размечает голоса sherpa и пишет
+    причину в шапку стенограммы, поэтому «–», а не «✗»."""
     root = _root()
+    state = diarize_nemotron.engine_state(root, cfg)
+    if state["backend"] == "nemotron":
+        _check_nemotron_engine(cfg, root, state)
+    else:
+        _check_sherpa_engine(root, state)
+    if state["live_mode"] != "off" and not _engine_ready(state):
+        line(WARN, f"живой поток Nemotron включён ({state['live_mode']}), а движок не готов",
+             f"поток не поднимется — {diarize_nemotron.install_command(root)}")
+
+
+def _engine_ready(state: dict) -> bool:
+    """Окружение стоит и на месте веса: по этому доктор отличает «не включён» от «не готов»."""
+    return state["environment"] and state["weights"] and not state["interpreter_reason"]
+
+
+def _check_nemotron_engine(cfg: dict, root: pathlib.Path, state: dict) -> None:
+    """Выбран Nemotron: проба — настоящая, как и была; причина и совет — из состояния."""
+    sufler = cfg.get("sufler") or {}
     setting = str(sufler.get("nemotron_python") or "")
-    # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
-    python, refusal = diarize_nemotron.engine_interpreter(setting, root)
+    python, refusal = state["interpreter"], state["interpreter_reason"]
     out = diarize_nemotron.probe_in_env(setting, root=root)
     if out.ok:
         line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
@@ -290,6 +306,19 @@ def check_engine(cfg: dict) -> None:
         advice = f"переставить окружение: {command}"
     line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa",
          out.reason + (f"; {advice}" if advice else ""))
+
+
+def _check_sherpa_engine(root: pathlib.Path, state: dict) -> None:
+    """Выбран sherpa: движок Nemotron только на Apple Silicon — на других машинах молчим."""
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        return
+    command = diarize_nemotron.install_command(root)
+    if _engine_ready(state):
+        line(WARN, "Nemotron-движок стоит, но не включён — голоса после встречи размечает sherpa",
+             f"включить: sufler.diarize_backend: nemotron; либо {command}")
+    else:
+        line(WARN, "Nemotron-движок не стоит — голоса после встречи размечает sherpa",
+             f"поставить: {command}")
 
 
 def check_deps() -> None:

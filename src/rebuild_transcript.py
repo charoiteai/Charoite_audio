@@ -352,7 +352,7 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path, duration_s: float, *,
     `(None, "")` — выбран sherpa.
     """
     sufler = cfg.get("sufler") or {}
-    backend = str(sufler.get("diarize_backend") or "sherpa").strip().lower()
+    backend = diarize_nemotron.normalize_engine_key(sufler.get("diarize_backend"))
     if backend == "sherpa":
         return None, ""
     if backend not in DIARIZE_BACKENDS:

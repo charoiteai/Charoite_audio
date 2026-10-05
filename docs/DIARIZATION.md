@@ -438,7 +438,31 @@ the app's interpreter when it can find it, and with your data root):
 ```bash
 CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron          # install
 CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --check  # what is there, no network
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --plan   # plan as one JSON line, no network
 ```
+
+The installer also installs the missing sherpa voice set (embedding and
+segmentation, via `scripts/get_models.py`) before the environment: the fallback
+engine needs it, and both files are fetched by the same loader. It prints the
+weight licence (NVIDIA OpenMDW 1.1, with its link) in the network block, before
+connecting. The outcome is honest: **0** — installed and the probe is green;
+**`EXIT_INSTALL_BUSY` (12)** — the machine is busy (a meeting being processed, a
+live recording, a test mutation) or another install is running; **
+`EXIT_INSTALL_CANCELLED` (13)** — SIGTERM/SIGHUP/Ctrl-C; **1** — a refusal (wrong
+machine, volume without flock, the weight loader's refusal). A cancelled install
+leaves the previous environment untouched, removes its staging folder and keeps
+half-downloaded weights as `.part` to resume. When the app starts the installer,
+it makes it its process-group leader (`CHAROITE_INSTALL_NEW_PGROUP=1`), so a
+SIGKILL to the group also kills pip; without the variable the group is left alone
+and Ctrl-C from a terminal keeps working. `--plan` prints one line of JSON —
+machine fitness `{ok, reason}`, the network addresses, the sizes (environment,
+weights, voice set), the weight licence, and `engine_state`: the normalised
+`diarize_backend`, whether `nemotron_python` is set, which interpreter was chosen
+or why not, whether the environment and weights are there, and the live-stream
+mode — without touching the network. The doctor reads the same state: on Apple
+Silicon, when `sherpa` is chosen but the engine is installed and fit, it says
+«installed, not enabled» and names the switch (`sufler.diarize_backend:
+nemotron`); with a live mode other than `off` and a broken engine it warns.
 
 In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`,
 and the data folder is the one under Settings → Data folder
