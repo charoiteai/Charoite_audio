@@ -14,26 +14,30 @@ Charoite 采用两遍说话人分离：
      之前先找出发言边界。没有它时，实时跟踪器退回简化模式：比较整块三秒音频，
      在发言边界上会混淆声音（状态栏会说明这一点并给出安装命令；DER 见下文）。
 
-   **最简单的方式——应用首次运行向导里的「区分不同说话人」按钮**：它安装嵌入
-   模型。分段模型还需一条命令：
+   **最简单的方式——应用首次运行向导里的「区分不同说话人」按钮**：它安装两个
+   模型，先是嵌入，然后是分段。分段模型仍可单独安装。`--diar` 与 `--url` 或
+   `--dest` 一起使用时只安装嵌入模型：
 
    ```bash
-   .venv/bin/python scripts/get_models.py --diar          # 嵌入模型（默认）
-   .venv/bin/python scripts/get_models.py --segmentation  # 分段模型
+   .venv/bin/python scripts/get_models.py --diar          # 先嵌入，再分段
+   .venv/bin/python scripts/get_models.py --segmentation  # 仅分段模型
    .venv/bin/python scripts/get_models.py --list          # 还有哪些可选
-   .venv/bin/python scripts/get_models.py --diar --check  # 检查已安装的模型
+   .venv/bin/python scripts/get_models.py --diar --check  # 检查两个文件
    ```
 
    默认嵌入模型是 `eres2net-base`（40 MB，用 20 万名说话人训练——在混合的会议上最稳）；备选有 `--model eres2net-en`（27 MB，
    更轻，用英语训练）和 `--model eres2netv2`（71 MB，对相近的声音更准，较慢）。
-   脚本会在连接前打印地址，用脚本内置的 sha256 核对文件，校验下载的确实是 ONNX
-   且没有被截断，下次运行时续传中断的下载，并放到守护进程查找的位置。嵌入模型
+   脚本会在每次连接前打印地址，用脚本内置的 sha256 核对文件，校验下载的确实是 ONNX
+   且没有被截断，下次运行时续传中断的下载，并放到守护进程查找的位置。不带 `--url`
+   和 `--dest` 时，`--diar` 先从 Hugging Face 下载嵌入模型，再从 sherpa-onnx
+   的发布页下载分段模型；若第二次下载失败，嵌入模型会保留，退出码为 1，最后一行
+   写明原因和同一条命令。嵌入模型
    来自 [3D-Speaker 项目](https://github.com/modelscope/3D-Speaker)（Apache-2.0；
    ERes2Net 对俄语和英语效果良好），分段模型来自
    [pyannote](https://github.com/pyannote/pyannote-audio)，ONNX 构建为 sherpa-onnx
    整理。自定义链接用 `--url`（此时不核对校验和）。
 
-   脚本只在你手动运行时联网，一次，之后模型完全离线工作；`--check` 完全不开连接。
+   脚本只在你手动运行时联网：最多两次一次性下载（先嵌入，后分段），之后模型完全离线工作；`--check` 完全不开连接。
    除可选云层之外，产品只在版本检查和首次运行时下载 STT 模型时联网——见
    [PRIVACY.md](PRIVACY.md)。
 

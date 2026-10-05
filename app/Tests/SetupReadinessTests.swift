@@ -94,3 +94,80 @@ final class ReadinessFixActionsTests: XCTestCase {
                                                      completed: nil, total: nil), "verifying")
     }
 }
+
+/// Набор голосов: предупреждение только когда эмбеддинги есть, а сегментации нет.
+final class DiarizationReadinessTests: XCTestCase {
+    func testDiarizationCheckCoversFourCombinations() {
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: false, segmentation: false),
+                     "без эмбеддингов отдельной строки нет")
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: false, segmentation: true),
+                     "одна сегментация — не этот случай")
+        XCTAssertNil(SetupReadinessPolicy.diarizationCheck(embeddings: true, segmentation: true),
+                     "оба файла на месте — строки нет")
+
+        let check = SetupReadinessPolicy.diarizationCheck(embeddings: true, segmentation: false)
+        XCTAssertEqual(check?.id, "diarization")
+        XCTAssertEqual(check?.state, .warning)
+        let titles = [
+            "Голоса после встречи не размечаются заново",
+            "Voices are not labelled again after the meeting",
+            "会后不会重新标注说话人",
+        ]
+        let details = [
+            "На границах реплик голоса путаются; не хватает модели сегментации, около 7 МБ",
+            "Voices get mixed up at utterance boundaries; the segmentation model is missing, about 7 MB",
+            "在发言边界上声音会混淆；缺少分段模型，约 7 MB",
+        ]
+        XCTAssertTrue(titles.contains(check?.title ?? ""))
+        XCTAssertTrue(details.contains(check?.detail ?? ""))
+        let detail = check?.detail ?? ""
+        XCTAssertTrue(SetupReadinessPolicy.pullableModels(in: detail).isEmpty,
+                      "терминальный рецепт в тексте стал бы кнопкой pull")
+        XCTAssertNil(SetupReadinessPolicy.copyableCommand(in: detail),
+                     "терминальный рецепт в тексте стал бы командой для копирования")
+        let snapshot = SetupReadinessSnapshot(checks: [check!])
+        XCTAssertTrue(snapshot.canStart, "предупреждение не блокирует старт")
+        XCTAssertEqual(snapshot.warnings, 1)
+        XCTAssertEqual(snapshot.problems, 0)
+    }
+
+    /// Кнопка постановки (мастер и «Сегодня») — по составу набора на диске:
+    /// видна при любом из трёх неполных сочетаний, в том числе без эмбеддингов,
+    /// когда проверки «diarization» в снимке нет (№625).
+    func testVoiceSetIsCompleteOnlyWithBothFiles() throws {
+        let files = FileManager.default
+        for (embeddings, segmentation) in [(false, false), (true, false), (false, true), (true, true)] {
+            let root = files.temporaryDirectory
+                .appendingPathComponent("voice-set-\(UUID().uuidString)", isDirectory: true)
+            defer { try? files.removeItem(at: root) }
+            try files.createDirectory(at: root.appendingPathComponent("models/diar"),
+                                      withIntermediateDirectories: true)
+            if embeddings {
+                XCTAssertTrue(files.createFile(atPath: DiarizationModels.embeddingURL(root).path,
+                                               contents: Data([8])))
+            }
+            if segmentation {
+                XCTAssertTrue(files.createFile(atPath: DiarizationModels.segmentationURL(root).path,
+                                               contents: Data([8])))
+            }
+            XCTAssertEqual(DiarizationModels.isComplete(root: root), embeddings && segmentation,
+                           "эмбеддинги \(embeddings), сегментация \(segmentation)")
+            XCTAssertEqual(SetupReadinessPolicy.diarizationCheck(
+                embeddings: embeddings, segmentation: segmentation) != nil,
+                           embeddings && !segmentation,
+                           "проверка — только при «эмбеддинги есть, сегментации нет»")
+        }
+    }
+
+    func testWizardCaptionNamesWhatIsMissing() {
+        let both = SetupReadinessPolicy.diarizationInstallCaption(embeddings: false, segmentation: false)
+        let seg = SetupReadinessPolicy.diarizationInstallCaption(embeddings: true, segmentation: false)
+        let emb = SetupReadinessPolicy.diarizationInstallCaption(embeddings: false, segmentation: true)
+        XCTAssertTrue(both.contains("50"))
+        XCTAssertFalse(both.contains("7"))
+        XCTAssertTrue(seg.contains("7"))
+        XCTAssertFalse(seg.contains("50"))
+        XCTAssertTrue(emb.contains("40"))
+        XCTAssertFalse(emb.contains("7"))
+    }
+}
