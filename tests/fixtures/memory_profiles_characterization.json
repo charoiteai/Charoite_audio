@@ -20,6 +20,7 @@
    "engine.search",
    "что решили по релизу?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -102,6 +103,7 @@
    "engine.search",
    "кто ведёт?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -176,6 +178,7 @@
    "engine.search",
    "когда?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -250,6 +253,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -324,6 +328,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -463,6 +468,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -537,6 +543,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -590,6 +597,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -664,6 +672,7 @@
    "engine.search",
    "что?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -738,6 +747,7 @@
    "engine.search",
    "что решили?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600
@@ -811,6 +821,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -890,6 +901,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -960,6 +972,7 @@
    "engine.search",
    "Тема из нити",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1079,6 +1092,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1156,6 +1170,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1258,6 +1273,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1335,6 +1351,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1388,6 +1405,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1430,6 +1448,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1519,6 +1538,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1565,6 +1585,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1627,6 +1648,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1667,6 +1689,7 @@
    "engine.search",
    "Релиз",
    {
+    "dossiers": true,
     "embed_timeout": 4.0,
     "limit": 3,
     "snippet_chars": 700
@@ -1815,6 +1838,7 @@
    "engine.search",
    "релиз, шлюз, Анна",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -1927,6 +1951,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2039,6 +2064,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2113,6 +2139,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2209,6 +2236,7 @@
    "engine.search",
    "ограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стенограммы хвост стеногра",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2362,6 +2390,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2468,6 +2497,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2580,6 +2610,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2692,6 +2723,7 @@
    "engine.search",
    "релиз",
    {
+    "dossiers": true,
     "embed_timeout": 3.0,
     "limit": 4,
     "snippet_chars": 500
@@ -2733,6 +2765,7 @@
    "engine.search",
    "а что по релизу?",
    {
+    "dossiers": true,
     "embed_timeout": 1.25,
     "limit": 4,
     "snippet_chars": 600

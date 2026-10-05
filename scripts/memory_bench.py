@@ -466,7 +466,8 @@ def synth(profile: brain.Profile, llm, question: str, packed: brain.Packed,
 
 def describe(profile: brain.Profile) -> str:
     return (f"поиск {profile.limit}×{profile.snippet_chars}, таймаут {profile.timeout} с "
-            f"(вектор запроса до {max(0.5, min(6.0, profile.timeout / 2))} с), бюджет {profile.budget}")
+            f"(вектор запроса до {max(0.5, min(6.0, profile.timeout / 2))} с), бюджет {profile.budget}"
+            + ("" if profile.dossiers else ", без досье"))
 
 
 def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[dict], *,
@@ -678,21 +679,37 @@ def qid(case: dict) -> str:
 
 
 def make_record(profile: str, mode: str, model: str, graph_fp: str, cases: list[dict],
-                out: list[Q], graph_dir: str = "") -> dict:
+                out: list[Q], graph_dir: str = "", dossiers: bool = True) -> dict:
     import uuid
     # id — ссылка принятия на итог: время с точностью до секунды у двух прогонов совпадает
     return {"kind": "run", "id": uuid.uuid4().hex[:12], "ts": dt.datetime.now().isoformat(timespec="seconds"),
             "profile": profile, "mode": mode, "head": code_head(), "seed": hash_seed(),
             "model": model if mode == "synth" else None, "graph": graph_fp, "graph_dir": graph_dir,
+            "dossiers": dossiers,
             "questions": [{"id": qid(c), "n": q.n, "cat": q.cat, "ok": q.ok, "sem": q.sem_used,
                            "status": q.status, "why": q.why, "new": q.new_pos, "old": q.old_pos,
                            "cmp": q.comparable} for c, q in zip(cases, out)]}
 
 
+# Оси, вошедшие в ключ после первой версии журнала. Запись без поля читается
+# значением по умолчанию. В ключ ось входит только отклонением от умолчания,
+# поэтому ключи старых записей, принятых баз и тревог не меняются.
+ADDED_AXES = {"dossiers": True}
+
+
+def axis(rec: dict, name: str) -> bool:
+    """Значение поздней оси записи: поле, а без поля — умолчание из `ADDED_AXES`."""
+    return rec.get(name, ADDED_AXES[name])
+
+
 def run_key(rec: dict) -> tuple:
-    """Что обязано совпасть, чтобы сравнение имело смысл; им же ключуется тревога."""
-    return (rec.get("profile"), rec.get("mode"), rec.get("seed"),
+    """Что обязано совпасть, чтобы сравнение имело смысл; им же ключуется тревога.
+    Поздние оси входят в ключ только отклонением от умолчания, поэтому строки ключей
+    записей до их появления не меняются."""
+    head = (rec.get("profile"), rec.get("mode"), rec.get("seed"),
             rec.get("model") if rec.get("mode") == "synth" else None, rec.get("graph_dir", ""))
+    return head + tuple(f"{name}={axis(rec, name)}" for name in ADDED_AXES
+                        if axis(rec, name) != ADDED_AXES[name])
 
 
 def alert_key(rec: dict) -> str:
@@ -824,10 +841,12 @@ def _judge(root: pathlib.Path, rec: dict, graph: pathlib.Path | None) -> dict | 
     append_record(base_path, rec)
     base = accepted_base(records, run_key(rec))
     stamp = {"ts": rec["ts"], "run": rec["id"], "profile": rec["profile"], "mode": rec["mode"],
+             "dossiers": axis(rec, "dossiers"),
              "graph_dir": str(graph) if graph is not None else ""}
     print(f"итог {rec['id']} записан")
     hint = (f"--accept --run {rec['id']} --profile {rec['profile']}"
-            f"{' --stats' if rec['mode'] == 'stats' else ''}")
+            f"{' --stats' if rec['mode'] == 'stats' else ''}"
+            f"{' --no-dossiers' if axis(rec, 'dossiers') is False else ''}")
     if base is None:
         print(f"база не принята ({rec['profile']}, {rec['mode']}): примите итог командой {hint}")
         update_alert(alert_path, alert_key(rec),
@@ -881,17 +900,18 @@ def yes_no(v: bool | None) -> str:
 
 
 def accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: str,
-           graph_dir: str = "") -> None:
+           graph_dir: str = "", dossiers: bool = True) -> None:
     """Принять базой итог `run_id` — тот, что человек видел (`judge` печатает id), а не
     последний в журнале. Итог хуже прежней базы — только с причиной (`--reason`): молча
     опущенная планка — не база. Итог, прошедший через откат модели (`fallback:?`),
     базой не годится: модель неизвестна. Тревога ключа снимается: следующий прогон
     судит против новой базы, а ключ, который больше не гоняют, не висит вечно."""
     with bench_lock(root):
-        _accept(root, profile, mode, run_id, reason, graph_dir)
+        _accept(root, profile, mode, run_id, reason, graph_dir, dossiers)
 
 
-def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: str, graph_dir: str) -> None:
+def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: str, graph_dir: str,
+            dossiers: bool = True) -> None:
     path = log_path(root, "memory_bench_baseline")
     records = read_records(path)
     rec = next((r for r in records if r.get("kind") == "run" and r.get("id") == run_id), None)
@@ -901,6 +921,8 @@ def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: st
     for field, want in (("profile", profile), ("mode", mode), ("seed", SEED), ("graph_dir", graph_dir)):
         if rec.get(field, "") != want:
             sys.exit(f"итог {run_id} не того ключа: поле {field} не совпадает с командой — не принят")
+    if axis(rec, "dossiers") != dossiers:
+        sys.exit(f"итог {run_id} не того ключа: поле dossiers не совпадает с командой — не принят")
     if str(rec.get("model") or "").startswith("fallback:"):
         sys.exit(f"итог {run_id} прошёл через откат модели (fallback:?) — базой не годится, повторите прогон")
     prev = accepted_base(records, run_key(rec))
@@ -908,7 +930,8 @@ def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: st
         sys.exit(f"итог {passed(rec)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
     append_record(path, {"kind": "accept", "ts": dt.datetime.now().isoformat(timespec="seconds"),
                          "run": rec["id"], "profile": profile, "mode": mode, "seed": rec["seed"],
-                         "model": rec.get("model"), "graph_dir": graph_dir, "reason": reason})
+                         "model": rec.get("model"), "graph_dir": graph_dir, "reason": reason,
+                         "dossiers": dossiers})
     print(f"база {profile}/{mode} принята: итог {rec['id']} от {rec['ts']}, {passed(rec)}/{len(rec['questions'])}"
           + (f" — причина: {reason}" if reason else ""))
     update_alert(log_path(root, "memory_bench_alert"), alert_key(rec), None)
@@ -958,6 +981,9 @@ def main() -> None:
     ap.add_argument("--stats", action="store_true",
                     help="без синтеза: с --profile answer|live|expand — выдача профиля, ночной сигнал; "
                          "raw — покрытие, косинус и вердикт гейта для калибровки порогов")
+    ap.add_argument("--no-dossiers", action="store_true",
+                    help="с --profile answer|live|expand: профиль без оси досье — сводки тем выключены "
+                         "(замер вклада досье; поле входит в ключ сравнения и тревоги)")
     ap.add_argument("--record", action="store_true",
                     help="с --profile answer|live|expand: дописать итог в logs/memory_bench_baseline.jsonl "
                          "и сверить с принятой базой (тревога — logs/memory_bench_alert.json)")
@@ -968,6 +994,9 @@ def main() -> None:
     args = ap.parse_args()
     if (args.brain or args.legacy) and args.profile != "raw":
         ap.error("--brain и --legacy — флаги режима raw")
+    if args.no_dossiers and args.profile not in brain.PROFILES:
+        ap.error("--no-dossiers — только с профилями демона: answer, live, expand "
+                 "(у raw и companion оси досье нет)")
     if (args.record or args.accept) and args.profile not in brain.PROFILES:
         ap.error("--record и --accept — для профилей демона: answer, live, expand")
     if args.record and (args.limit or args.demo or args.demo_en or args.demo_zh):
@@ -1011,7 +1040,7 @@ def main() -> None:
         graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
         bench_file = _root() / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if args.accept:
-        accept(_root(), args.profile, mode, args.run, args.reason, str(graph))
+        accept(_root(), args.profile, mode, args.run, args.reason, str(graph), not args.no_dossiers)
         return
     if not bench_file.exists():
         # Не настроен — не то же самое, что провален. Раньше здесь был выход с
@@ -1034,10 +1063,15 @@ def main() -> None:
         emb = build_embedder(cfg if not args.demo else {})
         print(f"порядок хеша: seed {hash_seed()} — выдача воспроизводима между прогонами; "
               "демон идёт со случайным порядком хеша (№631)")
-        out, model, graph_fp = run_profile(brain.PROFILES[args.profile], graph, emb, cases,
+        profile = brain.PROFILES[args.profile]
+        if args.no_dossiers:
+            # перезапуск ради seed (pin_hash_seed) сохраняет флаг через sys.orig_argv
+            profile = profile._replace(dossiers=False)
+        out, model, graph_fp = run_profile(profile, graph, emb, cases,
                                            stats=args.stats, cfg=cfg)
         if args.record:
-            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out, str(graph)), graph)
+            judge(_root(), make_record(args.profile, mode, model, graph_fp, cases, out, str(graph),
+                                       dossiers=profile.dossiers), graph)
         return
     if args.brain:
         require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур

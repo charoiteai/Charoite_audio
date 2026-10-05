@@ -1313,10 +1313,14 @@ class GraphSearch:
 
     # ---------------------------------------------------------------- поиск
     def search(self, query: str, *, limit: int = 4, snippet_chars: int = 500,
-               semantic: bool = True, embed_timeout: float = 6.0) -> Result:
+               semantic: bool = True, embed_timeout: float = 6.0,
+               dossiers: bool = True) -> Result:
         """Выдача по запросу. Индекс не прогрет — Result(ready=False): у
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
-        обновляется фоном, ответ — по текущему."""
+        обновляется фоном, ответ — по текущему. `dossiers=False` — ось бенча:
+        сводки тем не ищутся вовсе (`_dossier_blocks` не зовётся), секция и
+        вердикт считаются без них; файлы досье остаются ролью DOSSIER и в слоты
+        первичной выдачи не идут, как и всегда."""
         if not self.ready:
             gen = self._gen
             return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread,
@@ -1411,8 +1415,12 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel, self.schema) * placeholder_factor(d.base), d.rel))
 
-        dossier_pairs, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
-        dossiers = [block for _, block in dossier_pairs]
+        if dossiers:
+            dossier_pairs, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
+        else:
+            # ось бенча: сводки тем выключены — ни секции, ни свидетельства в вердикте
+            dossier_pairs, dossier_cov = [], 0.0
+        dossier_blocks = [block for _, block in dossier_pairs]
         dossier_rels = tuple(rel for rel, _ in dossier_pairs)
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
@@ -1433,9 +1441,9 @@ class GraphSearch:
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
-            if status is Verdict.WEAK and not dossiers:
+            if status is Verdict.WEAK and not dossier_blocks:
                 status = Verdict.EMPTY
-            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
+            return Result([], 0, status, dossiers=dossier_blocks, sem_used=sem_used, query=query,
                           reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service,
                           sources=dossier_rels)
         low_conf = status is not Verdict.CONFIDENT
@@ -1456,7 +1464,7 @@ class GraphSearch:
             blocks += [block for _, block in hops]
             shown += [rel for rel, _ in hops]
             total += len(hops)
-        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
+        return Result(blocks, total, status, dossiers=dossier_blocks, sem_used=sem_used, query=query,
                       reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service,
                       sources=dossier_rels + tuple(shown))
 

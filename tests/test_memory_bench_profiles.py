@@ -173,12 +173,13 @@ CASES = [{"q": f"вопрос {i}", "must": ["x"]} for i in range(5)]
 
 
 def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=None, whys=None,
-         mode="stats", graph_dir=""):
+         mode="stats", graph_dir="", dossiers=True):
     sems = sems or [True] * len(oks)
     out = [mb.Q(i + 1, (cats or ["fact"] * len(oks))[i], ok, sems[i], "confident",
                 (whys or [""] * len(oks))[i]) for i, ok in enumerate(oks)]
     monkey_head[0] = head
-    return mb.make_record(profile, mode, "", graph, CASES[:len(oks)], out, graph_dir)
+    return mb.make_record(profile, mode, "", graph, CASES[:len(oks)], out, graph_dir,
+                          dossiers=dossiers)
 
 
 monkey_head = ["aaa"]
@@ -205,9 +206,10 @@ def _alert(root):
             for v in mb.json.loads(p.read_text(encoding="utf-8")).values()}
 
 
-def _accept(root, rec, reason="", graph_dir=None):
+def _accept(root, rec, reason="", graph_dir=None, dossiers=True):
+    """Значение оси в команде, а не в записи: команда без `--no-dossiers` — `True`."""
     mb.accept(root, rec["profile"], rec["mode"], rec["id"], reason,
-              rec["graph_dir"] if graph_dir is None else graph_dir)
+              rec["graph_dir"] if graph_dir is None else graph_dir, dossiers)
 
 
 def _accept_first(root, oks, **kw):
@@ -433,6 +435,127 @@ def test_accept_refuses_a_run_of_another_key(tmp_path):
         _accept(tmp_path, rnd)
     assert not [r for r in mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
                 if r["kind"] == "accept"]
+
+
+def test_run_key_covers_the_dossiers_axis():
+    """Ось досье — часть ключа сравнения: запись без поля читается как «с досье»,
+    `False` — другой ключ."""
+    base = {"profile": "answer", "mode": "stats", "seed": "0", "graph_dir": ""}
+    assert mb.run_key(base) == mb.run_key({**base, "dossiers": True}), "старая запись — «с досье»"
+    assert mb.run_key({**base, "dossiers": False}) != mb.run_key(base)
+
+
+def test_alert_key_literals_of_a_base_record():
+    """Строки ключа выписаны руками: запись формата базы (без поля) и её значения —
+    те же ключи, что у базы 282a528f; `False` добавляет элемент с именем оси."""
+    rec = _rec([True] * 5, graph_dir="/g")
+    del rec["dossiers"]
+    assert mb.alert_key(rec) == "answer|stats|0||/g"
+    assert mb.alert_key({**rec, "dossiers": True}) == "answer|stats|0||/g"
+    assert mb.alert_key({**rec, "dossiers": False}) == "answer|stats|0||/g|dossiers=False"
+
+
+def test_accept_takes_a_base_format_record(tmp_path):
+    """Итог без поля досье — формата базы; команда без `--no-dossiers` его принимает
+    (запись читается «с досье»), а с `False` — отказ по тому же полю."""
+    rec = _rec([True] * 5, graph_dir="/g")
+    del rec["dossiers"]
+    mb.judge(tmp_path, rec)
+    with pytest.raises(SystemExit, match="поле dossiers не совпадает"):
+        mb.accept(tmp_path, "answer", "stats", rec["id"], "", "/g", False)
+    mb.accept(tmp_path, "answer", "stats", rec["id"], "", "/g", True)
+    records = mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
+    assert any(r.get("kind") == "accept" for r in records)
+    assert mb.accepted_base(records, mb.run_key(rec))["id"] == rec["id"]
+
+
+def _base_alert(tmp_path, key="answer|stats|0||"):
+    """Тревога формата базы: ключ из пяти полей, поля записи без `dossiers`."""
+    path = tmp_path / "logs" / "memory_bench_alert.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"ts": "2026-01-01T00:00:00", "run": "old000000001", "profile": "answer",
+             "mode": "stats", "graph_dir": "", "state": "alert", "base_ts": "2026-01-01T00:00:00",
+             "was": 5, "now": 3, "regressed": [], "head_changed": False, "graph_changed": False,
+             "sem_diff": 0, "dirty": False}
+    path.write_text(mb.json.dumps({key: entry}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _alert_keys(path):
+    """Ключи файла тревоги; файла нет (снят последний ключ) — пусто."""
+    return mb.json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def test_base_format_alert_is_lifted_by_a_clean_judge(tmp_path):
+    """Тревога, поднятая до флага, лежит под ключом из пяти полей: прогон без просадки
+    снимает её по тому же ключу, а не заводит второй под шестипольным."""
+    _accept_first(tmp_path, [True] * 5)
+    path = _base_alert(tmp_path)
+    assert mb.judge(tmp_path, _rec([True] * 5)) is None
+    assert "answer|stats|0||" not in _alert_keys(path)
+
+
+def test_base_format_alert_is_lifted_by_accept(tmp_path):
+    """`--accept` итога формата базы снимает тревогу его ключа из пяти полей."""
+    rec = _rec([True] * 5)
+    del rec["dossiers"]
+    mb.append_record(tmp_path / "logs" / "memory_bench_baseline.jsonl", rec)
+    path = _base_alert(tmp_path)
+    mb.accept(tmp_path, "answer", "stats", rec["id"], "", "")
+    assert "answer|stats|0||" not in _alert_keys(path)
+
+
+def test_accept_keys_and_checks_the_dossiers_axis(tmp_path, capsys):
+    """Принятие сверяет `dossiers` записи с командой; запись `accept` хранит поле,
+    иначе `accepted_base` не найдёт её по ключу. База «с досье» не трогается."""
+    on = _accept_first(tmp_path, [True] * 5)
+    off = _rec([True] * 5, dossiers=False)
+    mb.judge(tmp_path, off)
+    capsys.readouterr()
+    with pytest.raises(SystemExit, match="поле dossiers не совпадает"):
+        _accept(tmp_path, off, dossiers=True)       # команда без --no-dossiers
+    _accept(tmp_path, off, dossiers=False)
+    records = mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
+    assert mb.accepted_base(records, mb.run_key(off))["id"] == off["id"]
+    assert mb.accepted_base(records, mb.run_key(on))["id"] == on["id"], "база «с досье» не тронута"
+    acc = next(r for r in records if r["kind"] == "accept" and r["dossiers"] is False)
+    assert acc["run"] == off["id"]
+
+
+def test_hint_and_stamp_carry_the_dossiers_axis(tmp_path, capsys):
+    rec = _rec([True] * 5, dossiers=False)
+    mb.judge(tmp_path, rec)
+    said = capsys.readouterr().out
+    assert f"--accept --run {rec['id']} --profile answer --stats --no-dossiers" in said
+    assert _alert(tmp_path)["answer"]["dossiers"] is False
+
+
+def test_no_dossiers_only_for_daemon_profiles(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "raw", "--no-dossiers"])
+    with pytest.raises(SystemExit):
+        mb.main()
+    assert "профилями демона" in capsys.readouterr().err
+
+
+def test_no_dossiers_reaches_run_profile_and_record(monkeypatch, tmp_path):
+    """`--no-dossiers` — профиль прогона без оси (`_replace`), и запись несёт `False`;
+    ручной путь `_accept --no-dossiers` потом найдёт её по ключу."""
+    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("sufler: {}\n", encoding="utf-8")
+    (tmp_path / "config" / "memory_bench.yaml").write_text("- q: 'вопрос'\n", encoding="utf-8")
+    monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
+    monkeypatch.setattr(mb, "build_embedder", lambda cfg: None)
+    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: None)
+    monkeypatch.setattr(mb, "resolve_lang", lambda *a, **k: "ru")
+    seen: dict = {}
+    monkeypatch.setattr(mb, "run_profile",
+                        lambda profile, *a, **k: (seen.update(p=profile), [], "", "")[1:])
+    monkeypatch.setattr(mb, "judge", lambda root, rec, graph=None: seen.update(rec=rec))
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--stats",
+                                      "--record", "--no-dossiers"])
+    mb.main()
+    assert seen["p"].dossiers is False and seen["rec"]["dossiers"] is False
 
 
 def test_accept_lifts_the_alert_of_its_key(tmp_path, capsys):

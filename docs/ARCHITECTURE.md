@@ -1814,7 +1814,13 @@ named "cut by budget" when the search found it and the budget dropped it.
 runs without graph nodes, so it is an upper bound for non-confident results.
 `--profile companion` measures the app chat's companion server (owner only,
 questions slower than the chat's 4 s deadline are out of comparison); the
-default `raw` keeps the old contour. Latency is printed per stage (search,
+default `raw` keeps the old contour. `--no-dossiers` (daemon profiles only)
+runs the profile without the dossiers axis: topic summaries are not looked up
+at all — neither the "📁" section nor their evidence in the verdict; dossier
+files keep their role and never take a retrieval slot. The `dossiers` field enters
+the comparison and alert key only as `false`: a record without the field reads as
+"with dossiers", so results, accepted baselines and alerts written before the flag
+keep their keys. Latency is printed per stage (search,
 packing, first token, full synthesis) as p50/p95, with the cold start apart.
 
 `--record` appends the profile's result to `logs/memory_bench_baseline.jsonl`

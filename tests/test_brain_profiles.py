@@ -89,7 +89,27 @@ def test_search_passes_the_profile_numbers_to_the_engine(monkeypatch):
     emb = types.SimpleNamespace(model="bge")
     brain.search(brain.EXPAND, "тема", graph=pathlib.Path("/g"), embedder=emb)
     assert seen == {"query": "тема", "limit": 3, "snippet_chars": 700, "embed_timeout": 4.0,
-                    "graph": pathlib.Path("/g"), "model": "bge"}
+                    "dossiers": True, "graph": pathlib.Path("/g"), "model": "bge"}
+
+
+def test_search_carries_the_dossiers_axis_to_the_engine(monkeypatch):
+    """Ось профиля — аргумент вызова: `ANSWER._replace(dossiers=False)` доезжает до
+    `mem.search` как `dossiers=False`, а профили по умолчанию идут с `True`."""
+    seen = {}
+
+    class GS:
+        def search(self, query, **kw):
+            seen.update(kw, query=query)
+            return _res(V.CONFIDENT, blocks=("x",))
+
+    monkeypatch.setattr(brain, "shared", lambda *a, **kw: GS())
+    monkeypatch.setattr(brain.llm, "embedder", lambda cfg: types.SimpleNamespace(model="bge"))
+    brain.search(brain.ANSWER._replace(dossiers=False), "тема", cfg={})
+    assert seen["dossiers"] is False
+    seen.clear()
+    brain.search(brain.LIVE, "тема", cfg={})
+    assert seen["dossiers"] is True
+    assert all(p.dossiers is True for p in (brain.ANSWER, brain.EXPAND, brain.LIVE))
 
 
 def test_stream_kwargs_pass_only_what_the_profile_sets():
