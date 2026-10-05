@@ -76,9 +76,12 @@ def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
 
 def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
     """Строки брифа из logs/memory_bench_alert.json — тревога ночного бенча памяти
-    (№629 ч. 2): свежая и про этот граф. Номера и категории вопросов, не тексты.
-    Два состояния: `alert` — просадка против базы; `unmeasured` — сторож не взведён
-    (база не принята или сравнимых вопросов мало), немым он быть не должен."""
+    (№629 ч. 2) про этот граф. Номера и категории вопросов, не тексты. Два состояния:
+    `alert` — просадка против базы; не стареет: снимает её только прогон, который
+    сравнил и просадки не нашёл, или `--accept`, а оборванные ночи `ts` не двигают —
+    тогда строка несёт время последнего замера. `unmeasured` — сторож не взведён
+    (база не принята или сравнимых вопросов мало), немым он быть не должен; старше
+    `max_age_h` не показывается."""
     path = log_path(resolve_root(__file__), "memory_bench_alert")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -90,16 +93,17 @@ def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
         return "неизвестно" if v is None else "да" if v else "нет"
 
     out = []
+    now = dt.datetime.now()
     for a in items:
         try:
             made = dt.datetime.fromisoformat(a["ts"])
-            mine = a.get("graph_dir") in (str(graph), str(graph.resolve()))
-            fresh = dt.datetime.now() - made <= dt.timedelta(hours=max_age_h)
-            if not (mine and fresh):
+            if a.get("graph_dir") not in (str(graph), str(graph.resolve())):
                 continue
+            stale = now - made > dt.timedelta(hours=max_age_h)
             who = f"{a['profile']}/{a['mode']}" if a.get("mode") else a["profile"]
             if a.get("state") == "unmeasured":
-                out.append(f"- ⚠️ бенч памяти ({who}): сторож не взведён — {a['why']}")
+                if not stale:
+                    out.append(f"- ⚠️ бенч памяти ({who}): сторож не взведён — {a['why']}")
                 continue
             qs = ", ".join(f"№{q['n']} {q['cat']}" + (f" ({q['why']})" if q.get("why") else "")
                            for q in a["regressed"])
@@ -108,6 +112,11 @@ def _bench_alert(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
                     f"граф изменился: {yes_no(a['graph_changed'])}")
             if a.get("unmeasured"):
                 line += f"; последний прогон не сравним: {a['unmeasured']}"
+            if stale:
+                hours = int((now - made).total_seconds() // 3600)
+                line += f"; последний замер {made:%d.%m %H:%M} — {hours} ч назад"
+            if a.get("run"):
+                line += f"; итог {a['run']}"
             out.append(line)
         except (KeyError, TypeError, ValueError):
             continue

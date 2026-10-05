@@ -47,10 +47,40 @@ def test_fresh_alert_of_this_graph_is_in_the_health_section(tmp_path, monkeypatc
     assert "HEAD изменился: да, граф изменился: нет" in line
 
 
-def test_stale_or_foreign_alert_is_not_shown(tmp_path, monkeypatch):
+def test_foreign_alert_is_not_shown(tmp_path, monkeypatch):
     graph = tmp_path / "Работа"
-    alert = {**_alert(graph, hours_ago=48), **_alert(tmp_path / "Другой", profile="live")}
+    graph = _setup(tmp_path, monkeypatch, _alert(tmp_path / "Другой", profile="live"))
+    assert "бенч памяти" not in morning_brief.build_brief(graph)
+
+
+def test_stale_alert_stays_with_the_time_of_the_last_measurement(tmp_path, monkeypatch):
+    """Взведённая тревога не стареет молча: ночи, оборванные до сравнения, `ts` не
+    двигают, а просадку никто не опроверг (Opus I1)."""
+    graph = tmp_path / "Работа"
+    alert = _alert(graph, hours_ago=48)
+    alert["answer"].update(mode="stats", state="alert", run="r1d")
+    made = dt.datetime.fromisoformat(alert["answer"]["ts"])
     graph = _setup(tmp_path, monkeypatch, alert)
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert line.startswith("- ⚠️ бенч памяти (answer/stats): было 30, стало 27")
+    assert line.endswith(f"; последний замер {made:%d.%m %H:%M} — 48 ч назад; итог r1d")
+
+
+def test_fresh_alert_has_no_age_tail(tmp_path, monkeypatch):
+    graph = tmp_path / "Работа"
+    alert = _alert(graph, hours_ago=2)
+    alert["answer"].update(state="alert", run="r1d")
+    graph = _setup(tmp_path, monkeypatch, alert)
+    line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
+    assert "последний замер" not in line and line.endswith("граф изменился: нет; итог r1d")
+
+
+def test_stale_unarmed_watch_is_not_shown(tmp_path, monkeypatch):
+    graph = tmp_path / "Работа"
+    entry = {"ts": (dt.datetime.now() - dt.timedelta(hours=48)).isoformat(timespec="seconds"),
+             "profile": "answer", "mode": "stats", "graph_dir": str(graph), "state": "unmeasured",
+             "why": "база не принята"}
+    graph = _setup(tmp_path, monkeypatch, {"k": entry})
     assert "бенч памяти" not in morning_brief.build_brief(graph)
 
 
@@ -73,11 +103,11 @@ def test_unarmed_watch_is_a_line_not_silence(tmp_path, monkeypatch):
     graph = tmp_path / "Работа"
     entry = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "profile": "answer", "mode": "stats",
              "graph_dir": str(graph), "state": "unmeasured",
-             "why": "база не принята (--accept --profile answer --stats)"}
+             "why": "база не принята (--accept --run 0a1b2c3d4e5f --profile answer --stats)"}
     graph = _setup(tmp_path, monkeypatch, {"k": entry})
     line = next(ln for ln in morning_brief.build_brief(graph).splitlines() if "бенч памяти" in ln)
     assert line == ("- ⚠️ бенч памяти (answer/stats): сторож не взведён — "
-                    "база не принята (--accept --profile answer --stats)")
+                    "база не принята (--accept --run 0a1b2c3d4e5f --profile answer --stats)")
 
 
 def test_alert_kept_by_an_uncomparable_run_says_so(tmp_path, monkeypatch):
