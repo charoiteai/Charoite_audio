@@ -228,13 +228,28 @@ _hint_file_lock = threading.Lock()   # шесть контуров пишут в
 
 def append_hint(tr_path: pathlib.Path, header: str, body: str):
     """Дозапись в _hints.md. Полный диск/недоступная папка не должны молча
-    убивать вечный тред (open стоял вне try в трёх контурах)."""
+    убивать вечный тред (open стоял вне try в трёх контурах).
+
+    Заголовок и тело — без пути машины: архив копирует файл байт в байт,
+    а инструмент подсказок отдаёт его клиенту.
+    """
     try:
+        header, _n = privacy.scrub_local_paths(header)
+        body, _n = privacy.scrub_local_paths(body)
         hpath = tr_path.with_name(tr_path.stem + "_hints.md")
         with _hint_file_lock, hpath.open("a", encoding="utf-8") as f:
             f.write(f"\n## {header}\n{body}\n")
     except Exception as e:  # noqa: BLE001
         emit({"type": "status", "text": f"запись подсказок: {e}"})
+
+
+def minutes_draft(text: str) -> str:
+    """Черновик минуток: путь машины снят, маркер черновика — первая строка.
+
+    Цикл минуток пишет эти байты и передаёт их же в ``note_minutes_written``.
+    """
+    scrubbed, _n = privacy.scrub_local_paths(text)
+    return MINUTES_DRAFT_MARK + "\n" + scrubbed
 
 
 #: Фраза для человека по виду отказа двери модели (`llm.failure_kind`). Вида нет в
@@ -3071,7 +3086,7 @@ def main():
                         # пересборки (DS Minor-1 по #483).
                         if stop.is_set():
                             continue
-                        draft = MINUTES_DRAFT_MARK + "\n" + out
+                        draft = minutes_draft(out)
                         if not safe_write.write_text(mpath, draft, expect=before):
                             continue          # файл сменился под нами — не затираем чужой финал
                         note_minutes_written(draft)
