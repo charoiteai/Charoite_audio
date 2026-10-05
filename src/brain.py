@@ -198,7 +198,7 @@ def warm(cfg: dict, *, graph: pathlib.Path | None = None,
     граф не настроен. Вызывать из фонового потока: холодный обход рабочего
     графа — секунды, первый вопрос владельца их ждать не должен. Бенч греет тот
     же общий индекс, что потом спросит `search` (граф и векторизатор — те же)."""
-    mem = shared(cfg, graph, embedder=embedder or llm.embedder(cfg))
+    mem = shared(cfg, graph, embedder=embedder if embedder is not None else llm.embedder(cfg))
     if mem is None:
         return None
     mem.refresh(force=True)
@@ -222,7 +222,7 @@ def _vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
 
     Приватная: потребители зовут `search(profile, …)`, числа — из профиля.
     Граф и векторизатор параметрами — для бенча и демо (`cfg` пустой)."""
-    mem = shared(cfg, graph, embedder=embedder or llm.embedder(cfg))
+    mem = shared(cfg, graph, embedder=embedder if embedder is not None else llm.embedder(cfg))
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars,

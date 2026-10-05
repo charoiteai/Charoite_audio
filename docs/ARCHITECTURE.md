@@ -1804,6 +1804,19 @@ regression.
 contours for before/after comparisons. It still cannot answer questions about
 the app's search, which is a separate Swift implementation.
 
+`--profile answer|live|expand` measures each daemon consumer through its own
+profile in `src/brain.py` — the same `brain.search` + `brain.pack` call, the
+same limits and block budget, and for synthesis the same model arguments
+(`stream_kwargs`, the model recorded as `effective_model`). A fact counts only
+if it reached the block's fragments or nodes, never the header; a miss is
+named "cut by budget" when the search found it and the budget dropped it.
+`--stats` with a profile skips the model and is the nightly signal. `live`
+runs without graph nodes, so it is an upper bound for non-confident results.
+`--profile companion` measures the app chat's companion server (owner only,
+questions slower than the chat's 4 s deadline are out of comparison); the
+default `raw` keeps the old contour. Latency is printed per stage (search,
+packing, first token, full synthesis) as p50/p95, with the cold start apart.
+
 ## The readiness probe does not trust the data folder
 
 The first-run probe counts missing modules and microphones with a separate

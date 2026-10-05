@@ -20,14 +20,19 @@ exit code 1, если провалов больше трети — заметн�
 from __future__ import annotations
 
 import argparse
+import math
+import os
 import pathlib
 import re
 import sys
+import time
+from typing import NamedTuple
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py. Вставка —
 # только чтобы импортировать сам канон.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import brain  # noqa: E402
 import graphs  # noqa: E402
 import deps  # noqa: E402
 from charoite_paths import harden_umask, resolve_root  # noqa: E402
@@ -183,14 +188,31 @@ BRAIN_DEAD = "dead"          # :8100 не отвечает (выключен р�
 BRAIN_FOREIGN = "foreign"    # сервер жив, но этого графа в его vault нет (демо, другой диск)
 BRAIN_ALIVE = "alive"
 
+# Чат приложения ждёт сервер-компаньон 4 с (ArchiveSearch.swift) и молча уходит
+# в свой поиск на Swift; бенч ждёт дольше, чтобы напечатать задержку, но вопрос
+# дольше порога в сравнение не берёт — в продукте ответ дал бы другой поиск
+COMPANION_DEADLINE_S = 4.0
+COMPANION_LIMIT, COMPANION_SNIPPET = 8, 800     # параметры чата приложения
 
-def search_brain(graph: pathlib.Path, query: str) -> tuple[str, str]:
-    """Прежний контур: vault_search на brain :8100 (тот, что был в приложении).
 
-    -> (исход, текст выдачи): текст непустой только при BRAIN_ALIVE; пустая
-    выдача живого сервера — ("alive", "").
+class BrainHit(NamedTuple):
+    """Ответ сервера памяти: исход, текст выдачи без шапки, «⚠» полем, задержка."""
+    outcome: str
+    text: str
+    low_conf: bool = False
+    elapsed: float = 0.0
+
+
+def search_brain(graph: pathlib.Path, query: str, *, limit: int = LIMIT_FILES,
+                 snippet: int = SNIPPET, timeout: float = 25) -> BrainHit:
+    """Сервер памяти :8100 (`vault_search`). Сейчас это сервер-компаньон чата
+    приложения у владельца; у демона его нет с №250.
+
+    -> BrainHit: текст непустой только при BRAIN_ALIVE; пустая выдача живого
+    сервера — ("alive", "").
     """
     import json
+    import time
     import urllib.request
 
     from charoite_graph.net import open_url
@@ -200,45 +222,48 @@ def search_brain(graph: pathlib.Path, query: str) -> tuple[str, str]:
     req = urllib.request.Request(
         "http://127.0.0.1:8100/vault_search",
         data=json.dumps({"query": query, "folder": folder,
-                         "limit": LIMIT_FILES, "snippet_chars": SNIPPET},
+                         "limit": limit, "snippet_chars": snippet},
                         ensure_ascii=False).encode(),
         headers={"Content-Type": "application/json"},
     )
+    t0 = time.monotonic()
     try:
         # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-        with open_url(req, timeout=25) as resp:
+        with open_url(req, timeout=timeout) as resp:
             text = json.load(resp).get("text", "")
     except (OSError, ValueError):
-        return BRAIN_DEAD, ""
+        return BrainHit(BRAIN_DEAD, "", elapsed=time.monotonic() - t0)
+    elapsed = time.monotonic() - t0
     if text.startswith("Ничего не найдено"):
-        return BRAIN_ALIVE, ""
+        return BrainHit(BRAIN_ALIVE, "", elapsed=elapsed)
     if text.startswith("Папка не найдена") or text.startswith("Недопустимый путь"):
-        return BRAIN_FOREIGN, ""
+        return BrainHit(BRAIN_FOREIGN, "", elapsed=elapsed)
+    low = text.startswith("⚠")
     # срезаем шапку «Найдено в vault (N из M):»
     _, _, body = text.partition("\n\n")
-    return BRAIN_ALIVE, body or text
+    return BrainHit(BRAIN_ALIVE, body or text, low, elapsed)
 
 
-def require_brain(graph: pathlib.Path, demo: bool) -> None:
-    """`--brain` — явный отказ с причиной, а не молчаливый уход на другой контур:
+def require_brain(graph: pathlib.Path, demo: bool, flag: str = "--brain") -> None:
+    """Сервер памяти — явный отказ с причиной, а не молчаливый уход на другой контур:
     иначе заголовок «память демона» печатался при любом выборе (№296)."""
     if demo:
-        sys.exit("--brain неприменим к демо-графу: его нет в vault сервера памяти")
-    outcome, _ = search_brain(graph, "проверка")
+        sys.exit(f"{flag} неприменим к демо-графу: его нет в vault сервера памяти")
+    outcome = search_brain(graph, "проверка").outcome
     if outcome == BRAIN_DEAD:
-        sys.exit("--brain: сервер памяти :8100 не отвечает — он выключен решением по №250; "
-                 "снимите флаг или поднимите сервер")
+        sys.exit(f"{flag}: сервер памяти :8100 не отвечает — у пользователей его нет, у демона "
+                 "он выключен решением по №250; снимите флаг или поднимите сервер")
     if outcome == BRAIN_FOREIGN:
-        sys.exit("--brain: сервер памяти жив, но этого графа в его vault нет — флаг неприменим")
+        sys.exit(f"{flag}: сервер памяти жив, но этого графа в его vault нет — флаг неприменим")
 
 
 _INDEX: dict[str, object] = {}
 
 
 def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
-    """Боевой контур подсказок демона — src/charoite_graph/graph_search.py (№250): лексика,
-    семантика по кэшу векторов (если cfg задан и Ollama доступна), досье,
-    переход по ссылкам. Бенч меряет то, что видит владелец на встрече."""
+    """Режим `raw` — прежний контур бенча (5 файлов × 1 200 знаков, свой SYNTH): демо
+    en/zh и одно сравнение с базой 23/37. Потребителей демона мерят профили
+    (`--profile answer|live|expand`), а не этот вход."""
     mem = _INDEX.get(str(graph))
     if mem is None:
         mem = _INDEX[str(graph)] = graphs.open_search(graph, build_embedder(cfg or {}))
@@ -309,10 +334,307 @@ def search_legacy(graph: pathlib.Path, query: str) -> str:
     return "\n\n".join(h for _, h in scored[:LIMIT_FILES])
 
 
+PROFILE_CHOICES = ("raw", "answer", "live", "expand", "companion")
+
+
+class Q(NamedTuple):
+    """Итог вопроса эталона в профиле — то, что пишется в базу и сравнивается.
+
+    `why` — причина провала: «срезано бюджетом» (факт был в выдаче, бюджет блока
+    его отрезал), «не выдано», «поиск пуст», «синтез» (факт в блоке, модель его
+    потеряла). `new_pos` / `old_pos` — позиция нового и старого значения в блоке
+    у вопросов `latest` (диагностика порядка; None — нет в блоке). `comparable` —
+    False, когда вопрос вне сравнения: компаньон дольше порога чата, ответ дал
+    облачный откат на локальную модель."""
+    n: int
+    cat: str
+    ok: bool
+    sem_used: bool | None
+    status: str
+    why: str = ""
+    new_pos: int | None = None
+    old_pos: int | None = None
+    comparable: bool = True
+
+
+class Timings:
+    """Задержки по этапам: поиск, упаковка, синтез (первый токен и целиком)."""
+
+    STAGES = ("поиск", "упаковка", "синтез: первый токен", "синтез целиком")
+
+    def __init__(self):
+        self.data: dict[str, list[float]] = {s: [] for s in self.STAGES}
+
+    def add(self, stage: str, seconds: float) -> None:
+        self.data[stage].append(seconds)
+
+    def lines(self) -> list[str]:
+        out = []
+        for stage, xs in self.data.items():
+            if xs:
+                out.append(f"  {stage}: p50 {percentile(xs, 0.5):.3f} с, p95 {percentile(xs, 0.95):.3f} с, n={len(xs)}")
+        return out
+
+
+def percentile(xs: list[float], q: float) -> float:
+    """Ближайший ранг: на 37 вопросах интерполяция ничего не уточняет."""
+    s = sorted(xs)
+    return s[min(len(s) - 1, max(0, math.ceil(q * len(s)) - 1))] if s else 0.0
+
+
+def first_pos(needles: list[str], text: str) -> int | None:
+    """Позиция первой из игл в тексте по нормализованному виду; None — нет ни одной."""
+    low = norm(text)
+    found = [p for p in (low.find(norm(n)) for n in needles if n) if p >= 0]
+    return min(found) if found else None
+
+
+def warm_profile(profile: brain.Profile, graph: pathlib.Path, emb) -> object:
+    """Прогрев до цикла: обход графа и векторы из кэша — тот же общий индекс, что
+    потом спросит `brain.search`, — и один вектор запроса: холодная модель
+    эмбеддингов иначе ложится задержкой на первый вопрос. Холодный старт —
+    отдельной строкой, в p50/p95 он не входит."""
+    t0 = time.perf_counter()
+    mem = brain.warm({}, graph=graph, embedder=emb)
+    t1 = time.perf_counter()
+    try:
+        brain.search(profile, "прогрев векторизатора", graph=graph, embedder=emb)
+    except (brain.MemoryNotReady, brain.MemoryUnavailable) as exc:
+        sys.exit(f"память по графу не готова после прогрева: {exc}")
+    t2 = time.perf_counter()
+    print(f"холодный старт: индекс {t1 - t0:.1f} с (файлов {mem.size}, с векторами {mem.vectors}), "
+          f"первый вектор запроса {t2 - t1:.2f} с")
+    return mem
+
+
+def retrieve(profile: brain.Profile, case: dict, n: int, graph: pathlib.Path, emb,
+             timings: Timings) -> tuple[Q, brain.Packed, object]:
+    """Выдача профиля тем же швом, что у демона: `brain.search` + `brain.pack`.
+
+    Факт засчитан, если он в `Packed.body` (вошедшие фрагменты) или
+    `Packed.nodes`: слова шапки и оговорки фактом не считаются (DS C2 r3). Узлов
+    у бенча нет — `nodes` пуст (`nodes=none` в записи)."""
+    t0 = time.perf_counter()
+    result = brain.search(profile, case["q"], graph=graph, embedder=emb)
+    t1 = time.perf_counter()
+    packed = brain.pack(profile, result)
+    timings.add("поиск", t1 - t0)
+    timings.add("упаковка", time.perf_counter() - t1)
+    must = case.get("must") or []
+    seen = packed.body + "\n" + packed.nodes
+    missing = [m for m in must if not contains(m, seen)]
+    why = ""
+    if missing:
+        if result.empty:
+            why = "поиск пуст"
+        elif all(contains(m, result.fragments) for m in missing):
+            why = "срезано бюджетом"
+        else:
+            why = "не выдано"
+    new_pos = old_pos = None
+    if case.get("cat") == "latest":
+        new_pos, old_pos = first_pos(must, packed.body), first_pos(case.get("stale") or [], packed.body)
+    q = Q(n, str(case.get("cat") or "?"), not missing, result.sem_used, result.status.value,
+          why, new_pos, old_pos)
+    return q, packed, result
+
+
+def synth(profile: brain.Profile, llm, question: str, packed: brain.Packed,
+          timings: Timings) -> tuple[str, bool]:
+    """Синтез моделью профиля. Хвост живой стенограммы пуст: бенч мерит долю
+    памяти в ответе. Температура 0 — регрессия, не творчество (у демона — из
+    конфига). -> (ответ, ушло ли облако на локальный запас)."""
+    prompt = (brain.answer_prompt(question, packed.text, "") if profile.name == "answer"
+              else brain.expand_prompt(question, packed.text))
+    llm._fell_back_local = False
+    t0 = time.perf_counter()
+    first = None
+    parts: list[str] = []
+    for tok in llm.stream(prompt, temperature=0.0, **brain.stream_kwargs(profile, llm)):
+        if first is None:
+            first = time.perf_counter() - t0
+        parts.append(tok)
+    total = time.perf_counter() - t0
+    timings.add("синтез: первый токен", total if first is None else first)
+    timings.add("синтез целиком", total)
+    return "".join(parts), bool(llm._fell_back_local)
+
+
+def describe(profile: brain.Profile) -> str:
+    return (f"поиск {profile.limit}×{profile.snippet_chars}, таймаут {profile.timeout} с "
+            f"(вектор запроса до {max(0.5, min(6.0, profile.timeout / 2))} с), бюджет {profile.budget}")
+
+
+def run_profile(profile: brain.Profile, graph: pathlib.Path, emb, cases: list[dict], *,
+                stats: bool, cfg: dict) -> tuple[list[Q], str]:
+    """Профиль потребителя демона: выдача без модели (`--stats`, и всегда у `live`)
+    или с синтезом моделью профиля. -> (итоги по вопросам, фактическая модель или '')."""
+    print(f"профиль {profile.name}: {describe(profile)}")
+    if profile.name == "live":
+        print("  фрагменты без узлов (nodes=none) — верхняя оценка для не-CONFIDENT: в продукте "
+              f"узлам графа достаётся до {int(brain.NODES_SHARE * 100)} % бюджета (№634)")
+    do_synth = not stats and profile.synth is not None
+    llm = model = None
+    if do_synth:
+        if os.environ.pop("CHAROITE_ONE_MODEL", None):
+            print("  CHAROITE_ONE_MODEL снят для бенча: демон днём идёт на своей малой модели")
+        llm = LLM(cfg)
+        model = llm.effective_model(brain.stream_kwargs(profile, llm)["model"])
+        print(f"  синтез: модель {model} (роль {profile.synth.role}), хвост стенограммы пуст — "
+              "доля памяти в ответе")
+    warm_profile(profile, graph, emb)
+    timings = Timings()
+    out: list[Q] = []
+    fallback = 0
+    for i, case in enumerate(cases, 1):
+        try:
+            q, packed, result = retrieve(profile, case, i, graph, emb, timings)
+        except (brain.MemoryNotReady, brain.MemoryUnavailable) as exc:
+            sys.exit(f"[{i}/{len(cases)}] память по графу отпала посреди прогона ({exc}) — итог не сравним")
+        mark = "✓" if q.ok else "✗"
+        line = f"[{i}/{len(cases)}] {mark} {q.cat} {q.status} sem={'да' if q.sem_used else 'нет'}"
+        if q.cat == "latest":
+            line += f" новое@{q.new_pos} старое@{q.old_pos}"
+        if q.why:
+            line += f" — {q.why}"
+        if do_synth:
+            answer, fell = synth(profile, llm, case["q"], packed, timings)
+            missing = [m for m in case.get("must") or [] if not contains(m, answer)]
+            stage = "" if not missing else ("ПОИСК" if not q.ok else "синтез")
+            q = q._replace(ok=not missing, why=q.why or ("синтез" if missing else ""),
+                           comparable=not fell)
+            fallback += fell
+            line += f" | синтез {'✓' if not missing else '✗ (этап: ' + stage + ')'}"
+            if fell:
+                line += " (облако ушло на локальный запас — вне сравнения)"
+        print(line)
+        out.append(q)
+    total = len(out)
+    passed = sum(q.ok for q in out if q.comparable)
+    print(f"\nИТОГ {profile.name}{'' if do_synth else ' (выдача без модели)'}: {passed}/{total - fallback}")
+    if profile.name == "expand" and do_synth:
+        sure = [q for q in out if q.status == brain.Verdict.CONFIDENT.value]
+        rest = [q for q in out if q.status != brain.Verdict.CONFIDENT.value]
+        print(f"  CONFIDENT (в продукте путь модели): {sum(q.ok for q in sure)}/{len(sure)}")
+        print(f"  прочие (в продукте сначала узлы графа; синтез справочно): "
+              f"{sum(q.ok for q in rest)}/{len(rest)}")
+    print("задержки по этапам:")
+    for ln in timings.lines():
+        print(ln)
+    if fallback:
+        model = "fallback:?"
+    return out, model or ""
+
+
+def run_companion(graph: pathlib.Path, cases: list[dict], demo: bool) -> list[Q]:
+    """Сервер-компаньон чата приложения — справочно, вне ночи.
+
+    Есть только у владельца и только пока жив сервер :8100; у пользователей чат
+    идёт в поиск на Swift (его мерит P2 плана памяти). Один запрос с потолком
+    25 с: дольше порога чата (4 с) вопрос вне сравнения — в продукте ответ дал бы
+    Swift-поиск. Упаковка на стороне сервера, бюджета у бенча нет."""
+    require_brain(graph, demo, "--profile companion")
+    print(f"профиль companion (engine=companion): {COMPANION_LIMIT}×{COMPANION_SNIPPET}, "
+          f"порог чата {COMPANION_DEADLINE_S:.0f} с; у пользователей чат идёт в Swift-поиск, его мерит P2")
+    timings = Timings()
+    out: list[Q] = []
+    for i, case in enumerate(cases, 1):
+        hit = search_brain(graph, case["q"], limit=COMPANION_LIMIT, snippet=COMPANION_SNIPPET, timeout=25)
+        if hit.outcome != BRAIN_ALIVE:
+            sys.exit(f"--profile companion: сервер памяти отпал посреди прогона ({hit.outcome}) — итог не сравним")
+        timings.add("поиск", hit.elapsed)
+        must = case.get("must") or []
+        ok = all(contains(m, hit.text) for m in must)
+        comparable = hit.elapsed <= COMPANION_DEADLINE_S
+        q = Q(i, str(case.get("cat") or "?"), ok, None, "weak" if hit.low_conf else "ok",
+              "" if ok else ("поиск пуст" if not hit.text else "не выдано"), comparable=comparable)
+        note = "" if comparable else " — дольше порога: в продукте ушёл бы в Swift-поиск, вне сравнения"
+        print(f"[{i}/{len(cases)}] {'✓' if ok else '✗'} {q.cat} {'⚠' if hit.low_conf else ''}"
+              f" {hit.elapsed:.2f} с{note}")
+        out.append(q)
+    comp = [q for q in out if q.comparable]
+    print(f"\nИТОГ companion: {sum(q.ok for q in comp)}/{len(comp)}, вне сравнения {len(out) - len(comp)}")
+    print("задержки по этапам:")
+    for ln in timings.lines():
+        print(ln)
+    return out
+
+
+def raw_stats(graph: pathlib.Path, cfg: dict, demo: bool, cases: list[dict]) -> None:
+    """Калибровка гейта честности (круги 1–2 по #577) в режиме `raw`: распределение
+    сигналов на своих вопросах, без модели. Пороги — в graph_search.py."""
+    from charoite_graph import graph_search
+    # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
+    # векторизатор: демо меряет лексику, не ходя в сеть
+    mem = graphs.open_search(graph, build_embedder(cfg if not demo else {}))
+    mem.refresh(force=True)
+    mem.load_vectors()
+    print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")
+    v = mem.vote_stats()
+    print(f"роли: первичных {v['primary']}, досье {v['dossier']}, служебных вне индекса {v['service']}; "
+          f"голосов {v['votes']} за {v['targets']} целей, на потолке хаба {v['at_cap']}; "
+          f"не голосуют (досье): {v['dossier_votes']} голосов, которые сняли бы потолок ещё у {v['cap_if_dossier_voted'] - v['at_cap']}")
+    for i, case in enumerate(cases, 1):
+        r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
+        hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
+        print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} {r.status.value} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
+
+
+def run_raw(args, graph: pathlib.Path, cfg: dict, cases: list[dict], lang: str) -> None:
+    """Режим `raw` — как было до профилей: 5 × 1 200, свой SYNTH, флаги --brain и --legacy."""
+    llm = LLM(cfg)
+    passed, failures = 0, []
+    # по умолчанию — память демона (src/charoite_graph/graph_search.py): то, что видит владелец
+    # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
+    print("контур поиска: " + ("сервер памяти :8100" if args.brain else
+                               "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
+    for i, case in enumerate(cases, 1):
+        q, must = case["q"], case.get("must", [])
+        if args.brain:
+            hit = search_brain(graph, q)
+            if hit.outcome != BRAIN_ALIVE:
+                sys.exit(f"--brain: сервер памяти отпал посреди прогона ({hit.outcome}) — итог не сравним")
+            found = hit.text
+        else:
+            found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
+        if not found:
+            failures.append((q, must, "поиск ничего не нашёл"))
+            print(f"[{i}/{len(cases)}] ✗ {q} — поиск пуст")
+            continue
+        # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
+        # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
+        retr_missing = [m for m in must if not contains(m, found)]
+        prompt_tpl, system_msg = SYNTH[lang]
+        answer = "".join(llm.stream(
+            prompt_tpl.format(q=q, found=found),
+            system=system_msg,
+            temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
+        ))
+        missing = [m for m in must if not contains(m, answer)]
+        if missing:
+            stage = "ПОИСК" if retr_missing else "синтез"
+            failures.append((q, missing, f"[{stage}] " + answer[:160]))
+            print(f"[{i}/{len(cases)}] ✗ {q} — нет: {missing} (этап: {stage})")
+        else:
+            passed += 1
+            note = f" (в выдаче не было: {retr_missing})" if retr_missing else ""
+            print(f"[{i}/{len(cases)}] ✓ {q}{note}")
+
+    total = len(cases)
+    print(f"\nИТОГ: {passed}/{total}")
+    for q, missing, ctx in failures:
+        print(f"  ✗ «{q}»: не найдено {missing}\n    ответ: {ctx}…")
+    if total and passed < total * 2 / 3:
+        sys.exit(1)   # деградация больше трети — сигнал при ручном прогоне
+
+
 def main() -> None:
     harden_umask()   # кэш векторов памяти хранит блоки текста графа — только владельцу (№385)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--limit", type=int, default=0, help="только первые N вопросов")
+    ap.add_argument("--profile", choices=PROFILE_CHOICES, default="raw",
+                    help="чей путь мерить: answer / live / expand — потребители демона через профиль "
+                         "brain.py; companion — сервер-компаньон чата (справочно); raw — прежний контур")
     ap.add_argument("--demo", action="store_true",
                     help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
     ap.add_argument("--demo-en", action="store_true",
@@ -320,12 +642,15 @@ def main() -> None:
     ap.add_argument("--demo-zh", action="store_true",
                     help="китайский демо-граф (demo/graph_zh) и китайские кейсы")
     ap.add_argument("--brain", action="store_true",
-                    help="искать через сервер памяти :8100 (сравнение с прежним контуром)")
+                    help="raw: искать через сервер памяти :8100 (сравнение с прежним контуром)")
     ap.add_argument("--legacy", action="store_true",
-                    help="прежний локальный фолбэк вместо src/charoite_graph/graph_search.py (сравнение до/после)")
+                    help="raw: прежний локальный фолбэк вместо src/charoite_graph/graph_search.py (сравнение до/после)")
     ap.add_argument("--stats", action="store_true",
-                    help="без синтеза: по каждому кейсу покрытие, лучший косинус и вердикт гейта — для калибровки порогов")
+                    help="без синтеза: с --profile answer|live|expand — выдача профиля, ночной сигнал; "
+                         "raw — покрытие, косинус и вердикт гейта для калибровки порогов")
     args = ap.parse_args()
+    if (args.brain or args.legacy) and args.profile != "raw":
+        ap.error("--brain и --legacy — флаги режима raw")
 
     cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
@@ -370,71 +695,20 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
 
+    if args.profile == "companion":
+        run_companion(graph, cases, args.demo)
+        return
+    if args.profile != "raw":
+        # пустой конфиг фабрика читает как «моделей нет»: демо меряет лексику, не ходя в сеть
+        emb = build_embedder(cfg if not args.demo else {})
+        run_profile(brain.PROFILES[args.profile], graph, emb, cases, stats=args.stats, cfg=cfg)
+        return
     if args.brain:
         require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур
-
     if args.stats:
-        # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
-        # своих вопросах, без модели. Пороги — в src/charoite_graph/graph_search.py.
-        from charoite_graph import graph_search
-        # пустой конфиг фабрика читает как «моделей нет» и отдаёт пустой
-        # векторизатор: демо меряет лексику, не ходя в сеть
-        mem = graphs.open_search(graph, build_embedder(cfg if not args.demo else {}))
-        mem.refresh(force=True)
-        mem.load_vectors()
-        print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")
-        v = mem.vote_stats()
-        print(f"роли: первичных {v['primary']}, досье {v['dossier']}, служебных вне индекса {v['service']}; "
-              f"голосов {v['votes']} за {v['targets']} целей, на потолке хаба {v['at_cap']}; "
-              f"не голосуют (досье): {v['dossier_votes']} голосов, которые сняли бы потолок ещё у {v['cap_if_dossier_voted'] - v['at_cap']}")
-        for i, case in enumerate(cases, 1):
-            r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
-            hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
-            print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} {r.status.value} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
+        raw_stats(graph, cfg, args.demo, cases)
         return
-    llm = LLM(cfg)
-    passed, failures = 0, []
-    # по умолчанию — память демона (src/charoite_graph/graph_search.py): то, что видит владелец
-    # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
-    print("контур поиска: " + ("сервер памяти :8100" if args.brain else
-                               "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
-    for i, case in enumerate(cases, 1):
-        q, must = case["q"], case.get("must", [])
-        if args.brain:
-            outcome, found = search_brain(graph, q)
-            if outcome != BRAIN_ALIVE:
-                sys.exit(f"--brain: сервер памяти отпал посреди прогона ({outcome}) — итог не сравним")
-        else:
-            found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
-        if not found:
-            failures.append((q, must, "поиск ничего не нашёл"))
-            print(f"[{i}/{len(cases)}] ✗ {q} — поиск пуст")
-            continue
-        # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
-        # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
-        retr_missing = [m for m in must if not contains(m, found)]
-        prompt_tpl, system_msg = SYNTH[lang]
-        answer = "".join(llm.stream(
-            prompt_tpl.format(q=q, found=found),
-            system=system_msg,
-            temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
-        ))
-        missing = [m for m in must if not contains(m, answer)]
-        if missing:
-            stage = "ПОИСК" if retr_missing else "синтез"
-            failures.append((q, missing, f"[{stage}] " + answer[:160]))
-            print(f"[{i}/{len(cases)}] ✗ {q} — нет: {missing} (этап: {stage})")
-        else:
-            passed += 1
-            note = f" (в выдаче не было: {retr_missing})" if retr_missing else ""
-            print(f"[{i}/{len(cases)}] ✓ {q}{note}")
-
-    total = len(cases)
-    print(f"\nИТОГ: {passed}/{total}")
-    for q, missing, ctx in failures:
-        print(f"  ✗ «{q}»: не найдено {missing}\n    ответ: {ctx}…")
-    if total and passed < total * 2 / 3:
-        sys.exit(1)   # деградация больше трети — сигнал в ночном логе
+    run_raw(args, graph, cfg, cases, lang)
 
 
 if __name__ == "__main__":
