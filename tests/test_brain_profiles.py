@@ -93,8 +93,8 @@ def test_search_passes_the_profile_numbers_to_the_engine(monkeypatch):
 
 
 def test_search_carries_the_dossiers_axis_to_the_engine(monkeypatch):
-    """Ось профиля — аргумент вызова: `ANSWER._replace(dossiers=False)` доезжает до
-    `mem.search` как `dossiers=False`, а профили по умолчанию идут с `True`."""
+    """Ось профиля — аргумент вызова: `LIVE._replace(dossiers=False)` доезжает до
+    `mem.search` как `dossiers=False`, а профиль с включённой осью идёт с `True`."""
     seen = {}
 
     class GS:
@@ -104,12 +104,45 @@ def test_search_carries_the_dossiers_axis_to_the_engine(monkeypatch):
 
     monkeypatch.setattr(brain, "shared", lambda *a, **kw: GS())
     monkeypatch.setattr(brain.llm, "embedder", lambda cfg: types.SimpleNamespace(model="bge"))
-    brain.search(brain.ANSWER._replace(dossiers=False), "тема", cfg={})
+    brain.search(brain.LIVE._replace(dossiers=False), "тема", cfg={})
     assert seen["dossiers"] is False
     seen.clear()
     brain.search(brain.LIVE, "тема", cfg={})
     assert seen["dossiers"] is True
-    assert all(p.dossiers is True for p in (brain.ANSWER, brain.EXPAND, brain.LIVE))
+
+
+def test_profiles_dossiers_axis_is_a_conscious_table():
+    """Ось досье — решение по каждому профилю, а не умолчание: замер 06.10 на 37
+    вопросах владельца (seed 0) — ответ с досье находит 8, без досье 16, сводки
+    тем съедают блок 2000 знаков. Таблица целиком, чтобы профиль без решения
+    (добавленный молча) уронил тест."""
+    assert {p.name: p.dossiers for p in brain.PROFILES.values()} == {
+        "answer": False, "live": True, "expand": True}
+
+
+def test_answer_profile_looks_no_dossiers_up(monkeypatch):
+    """`ANSWER` — сам, без `_replace`: движок получает `dossiers=False`, иначе
+    замеренный выигрыш не доезжает до владельца."""
+    seen = {}
+
+    class GS:
+        def search(self, query, **kw):
+            seen.update(kw, query=query)
+            return _res(V.EMPTY)
+
+    monkeypatch.setattr(brain, "shared", lambda *a, **kw: GS())
+    monkeypatch.setattr(brain.llm, "embedder", lambda cfg: types.SimpleNamespace(model="bge"))
+    brain.search(brain.ANSWER, "вопрос", cfg={})
+    assert seen["dossiers"] is False
+
+
+def test_answer_prompt_without_a_block_has_no_source_two_but_keeps_abstention():
+    """Пустой блок (`EMPTY` у `ANSWER`) — в промпте нет «ИСТОЧНИК 2», но указание
+    о пометке воздержания стоит всегда: ответ без памяти обязан сказать, что он из
+    общих знаний (№641)."""
+    prompt = brain.answer_prompt("что решили?", "", "хвост стенограммы")
+    assert "ИСТОЧНИК 2" not in prompt
+    assert brain.ANSWER.synth.abstain in prompt
 
 
 def test_stream_kwargs_pass_only_what_the_profile_sets():
