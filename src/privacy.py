@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 import unicodedata
 import urllib.parse
 
@@ -524,6 +525,7 @@ def scrub_local_paths(text: str) -> tuple[str, int]:
         count += 1
     if not count:
         return text, 0
-    # Только число: сам путь в журнал не пишем.
-    print(f"[privacy] пути машины в тексте встречи заменены: {count}", flush=True)
+    # Только число: сам путь в журнал не пишем. В stderr: stdout демона —
+    # построчный JSON для приложения, а скраб зовут его нити мимо замка emit.
+    print(f"[privacy] пути машины в тексте встречи заменены: {count}", file=sys.stderr, flush=True)
     return "".join(out), count

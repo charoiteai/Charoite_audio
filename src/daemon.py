@@ -243,13 +243,17 @@ def append_hint(tr_path: pathlib.Path, header: str, body: str):
         emit({"type": "status", "text": f"запись подсказок: {e}"})
 
 
-def minutes_draft(text: str) -> str:
-    """Черновик минуток: путь машины снят, маркер черновика — первая строка.
-
-    Цикл минуток пишет эти байты и передаёт их же в ``note_minutes_written``.
-    """
+def minutes_document(text: str) -> str:
+    """Минутки перед записью: путь машины снят. Оба писателя демона —
+    черновик и ручной «Протокол» — пишут эти байты и передают их же в
+    ``note_minutes_written``."""
     scrubbed, _n = privacy.scrub_local_paths(text)
-    return MINUTES_DRAFT_MARK + "\n" + scrubbed
+    return scrubbed
+
+
+def minutes_draft(text: str) -> str:
+    """Черновик минуток: путь машины снят, маркер черновика — первая строка."""
+    return MINUTES_DRAFT_MARK + "\n" + minutes_document(text)
 
 
 #: Фраза для человека по виду отказа двери модели (`llm.failure_kind`). Вида нет в
@@ -3191,6 +3195,7 @@ def main():
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
                     owner_name, lang=llm.lang)
                 doc = meeting_source.with_note(doc, source.recording_note)
+                doc = minutes_document(doc)
                 # Через временное имя: обрыв посреди write_text оставлял бы
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)

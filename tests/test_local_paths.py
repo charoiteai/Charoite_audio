@@ -22,6 +22,8 @@ import charoite_paths  # noqa: E402
 import daemon  # noqa: E402
 import import_meeting as im  # noqa: E402
 import live_sidecar  # noqa: E402
+import llm  # noqa: E402
+import mcp_server  # noqa: E402
 import meeting_archive as ma  # noqa: E402
 import name_fixes as nf  # noqa: E402
 import privacy  # noqa: E402
@@ -575,3 +577,82 @@ def test_minutes_draft_scrubs_and_puts_the_marker_first(tmp_path, monkeypatch):
     out = daemon.minutes_draft(f"смотри {home}/a.md\nи всё")
     assert out == transcript.MINUTES_DRAFT_MARK + "\nсмотри ~/a.md\nи всё"
     assert _gone(out, str(home))
+
+
+def test_rewrite_meeting_text_hook_only_for_machine_text_with_edits(tmp_path, monkeypatch):
+    """Контракт крюка без знания о плашке: машинный текст с правкой — вызван;
+    правки нет или текст ручной — не вызван."""
+    home = _home(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def fixup(text: str) -> str:
+        calls.append(text)
+        return text + "доправка\n"
+
+    def run(raw: str, owned: bool, edit_n: int) -> str:
+        path = tmp_path / f"t{len(list(tmp_path.glob('t*.md')))}.md"
+        path.write_text(raw, encoding="utf-8")
+        live_sidecar.remember(path, "transcript_sha256", live_sidecar.sha(raw if owned else "чужое"))
+        nf.rewrite_meeting_text(path, lambda t: (t.replace("а", "б") if edit_n else t, edit_n),
+                                live=path, sha_key="transcript_sha256", what="тест",
+                                keep_prev=False, machine_fixup=fixup)
+        return path.read_text(encoding="utf-8")
+
+    assert run(f"а {home}/x\n", owned=True, edit_n=1) == "б ~/x\nдоправка\n"
+    assert calls == ["б ~/x\n"]
+    assert run(f"а {home}/x\n", owned=True, edit_n=0) == "а ~/x\n"
+    assert run(f"а {home}/x\n", owned=False, edit_n=1) == "б ~/x\n"
+    assert len(calls) == 1
+
+
+def test_mcp_minutes_scrub_before_write_and_passport(tmp_path, monkeypatch):
+    """Инструмент «Минутки»: путь, повторённый моделью, не ложится на диск;
+    паспорт производной снят с байтов на диске."""
+    home = _home(tmp_path, monkeypatch)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-09-13_1200.md"
+    live.write_text("# Встреча\nреплика\n", encoding="utf-8")
+    charoite_paths.use_data_root(tmp_path, replace=True)
+
+    class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
+
+        def fit(self, text):
+            return text
+
+        def complete(self, prompt, **kw):
+            return f"- **Кто** — смотри {home}/a.md — срок"
+
+    monkeypatch.setattr(mcp_server, "_client", lambda: Fake())
+    out = mcp_server.sufler_make_minutes()
+
+    mpath = tdir / "2026-09-13_1200_minutes.md"
+    text = mpath.read_text(encoding="utf-8")
+    assert "Минутки сохранены" in out and _gone(text, str(home)) and "~/a.md" in text
+    assert live_sidecar.read(live)["minutes_sha256"] == hashlib.sha256(mpath.read_bytes()).hexdigest()
+
+
+def test_daemon_minutes_document_scrubs_and_protocol_writes_it(tmp_path, monkeypatch):
+    """Ручной «Протокол» демона пишет минутки через тот же скраб, что
+    черновик. Протокол — замыкание цикла демона, поэтому порядок держится по
+    исходнику: скраб после последней правки текста и до записи."""
+    home = _home(tmp_path, monkeypatch)
+    assert daemon.minutes_document(f"смотри {home}/a.md\n") == "смотри ~/a.md\n"
+    src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
+    body = src[src.index("    def _do_summary():"):]
+    body = body[: body.index("\n    def ", 10)]
+    call = body.index("doc = minutes_document(doc)")
+    assert body.index("doc = meeting_source.with_note(doc") < call < body.index("tmp.write_text(doc")
+
+
+def test_scrub_count_goes_to_stderr_not_the_daemon_stdout(tmp_path, monkeypatch, capsys):
+    """stdout демона — построчный JSON для приложения: строка скраба идёт в stderr."""
+    home = _home(tmp_path, monkeypatch)
+    privacy.scrub_local_paths(f"{home}/a")
+    captured = capsys.readouterr()
+    assert captured.out == "" and "заменены: 1" in captured.err
+
