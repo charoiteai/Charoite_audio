@@ -100,6 +100,11 @@ MIC_ENGINE_FALLBACK_NOTE = "> ⚠️ Речь микрофона размече�
 #: владельцу его покажут журнал и доктор (№495).
 ENGINE_REFUSED_REASON = ("Nemotron не разметил голоса — причина в журнале разбора (logs/), "
                          "проверка — доктор (scripts/doctor.py)")
+#: Причина отмены пересборки в журнале, когда длинный канал движок не разметил
+#: (№622 B1): сбой, а не тишина, и финал из одного канала потерял бы владельца
+#: или собеседников, которые были в живой стенограмме. Без путей машины. Код
+#: для статуса и приложения — `RebuildSkipped.CHANNEL_LOST`.
+CHANNEL_LOST_REASON = "канал не размечен — пересборка отменена, живая стенограмма остаётся"
 #: Движки разметки канала собеседников (`sufler.diarize_backend`).
 DIARIZE_BACKENDS = ("sherpa", "nemotron")
 #: Потолок Nemotron: запуск интерпретатора и загрузка весов плюс десятая доля
@@ -273,6 +278,10 @@ def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
 #: Отрезок разметки короче этого (с) выбрасывается до разбора голосов — у любого
 #: движка: осколок не несёт реплики, а своё STT на полсекунды звука — шум.
 MIN_SEGMENT_S = 1.0
+#: Канал короче или ровно столько (с) не размечается: на такой записи разметке
+#: не по чему судить. Длиннее — размечается, и `None` после разметки уже сбой
+#: движка, а не тишина (замер 04.10: тишина и шум дают [], не None; №622 B1).
+MIN_DIARIZE_S = 20
 
 
 def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
@@ -373,9 +382,13 @@ def call_channel_engine(cfg: dict, wav: pathlib.Path, duration_s: float, *,
 
 
 def mic_channel_engine(cfg: dict, wav: pathlib.Path,
-                       duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str]:
-    """Разметка микрофона ЗВОНКА Nemotron (№509) — `(сегменты, "")` или
-    `(None, причина)`, и тогда микрофон размечает sherpa, как раньше.
+                       duration_s: float) -> tuple[list[tuple[float, float, int]] | None, str, bool]:
+    """Разметка микрофона ЗВОНКА Nemotron (№509) — `(сегменты, "", False)` или
+    `(None, причина, тонкий)`, и тогда микрофон размечает sherpa, как раньше.
+    `тонкий` — True, только когда движок ответил, а ответ отвергнут полом речи
+    (`_mic_thin`); отказ движка — False. Бит, а не сравнение строк причины: по
+    нему `rebuild()` отличает «Nemotron услышал почти тишину» от сбоя, когда
+    sherpa затем тоже не разметила (№622 B1).
 
     Зовётся, только когда Nemotron разметил канал собеседников и в нём есть речь:
     на звонке метки микрофона решает правило владельца (`owner_voices` — все
@@ -393,9 +406,9 @@ def mic_channel_engine(cfg: dict, wav: pathlib.Path,
     """
     segs, reason, _ = _nemotron(cfg, wav, duration_s, "речь микрофона")
     if segs is None:
-        return None, reason
+        return None, reason, False
     thin = _mic_thin(segs, duration_s)
-    return (None, thin) if thin else (segs, "")
+    return (None, thin, True) if thin else (segs, "", False)
 
 
 def speech_seconds(segs: list[tuple[float, float, int]]) -> float:
@@ -1109,12 +1122,25 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
     return out
 
 
+def _channel_lost(channel: str, seconds: float, note: str) -> RebuildSkipped:
+    """Отмена пересборки: канал длиннее MIN_DIARIZE_S движок не разметил (№622 B1).
+
+    Одна строка журнала на оба канала: причина, канал, длина записи и причина
+    отката движка, если откат был. Живая стенограмма остаётся, `write_final` не
+    зовётся; повтор пересборки может разметить канал, поэтому отказ устранимый.
+    """
+    log(f"{CHANNEL_LOST_REASON}: {channel}, {seconds:.0f} с записи"
+        + (f"; откат движка: {note}" if note else ""))
+    return RebuildSkipped(RebuildSkipped.CHANNEL_LOST)
+
+
 def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | None:
     """Пересобрать стенограмму встречи по записям каналов.
 
     Исходы:
     - `Path` — финал или правленая стенограмма;
-    - `RebuildSkipped` — устранимый отказ (записи не готовы), повтор его снимет;
+    - `RebuildSkipped` — устранимый отказ (записи не готовы, длинный канал не
+      размечен), повтор его снимет;
     - `None` — детерминированный отказ, повтор даст то же.
     """
     # Штамп берём целиком: демон называет записи ИМЕНЕМ СТЕНОГРАММЫ (daemon
@@ -1219,8 +1245,9 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
         log("записи не готовы — оставляю живую стенограмму")
         return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)
 
-    # Сырые сегменты каналов: None — канал не размечали (записи нет, она
-    # короче 20 с или разметка не удалась), [] — размечали, речи не нашли. Разметку по голосам и
+    # Сырые сегменты каналов: None — канал не размечали (записи нет или она
+    # не длиннее MIN_DIARIZE_S; сбой разметки длинного канала отменяет
+    # пересборку ниже), [] — размечали, речи не нашли. Разметку по голосам и
     # эхо решает resolve_channel_segments; здесь — только звук и движок.
     bh_raw: list[tuple[float, float, int]] | None = None
     mic_raw: list[tuple[float, float, int]] | None = None
@@ -1231,6 +1258,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     bh_by_nemotron = False         # канал собеседников разметил Nemotron, а не откат
     call_s: float | None = None    # длина записи канала собеседников — для признака комнаты
     gate_call = False              # порог речи гейта в окне — признак звонка (№586)
+    bh_long = False                # канал собеседников размечается — его None уже сбой
+    mic_long = False               # то же для микрофона
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         call_s = len(bh) / sr
@@ -1238,7 +1267,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
         gate_call = owner_voice_rules.call_from_gate(
             speech_gate.speech_starts(bh, sr, chunk_s, overlap_s, vad_db),
             speech_gate.step_seconds(chunk_s, overlap_s))
-        if len(bh) > sr * 20:
+        bh_long = len(bh) > sr * MIN_DIARIZE_S
+        if bh_long:
             # Уступка встрече — перед каждой тяжёлой разметкой, а не только на
             # входе в очередь: пересборка, простоявшая за соседней, о начавшейся
             # встрече не знает, а разметка канала — минуты работы (№508).
@@ -1256,8 +1286,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
                 # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
                 # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
                 bh_raw = diarize_channel(bh, sr, num_speakers=call_hint(meta) or -1)
-    # Канал собеседников молчит: записи нет или она размечена пустой. Сбой
-    # разметки и запись короче 20 с (None) — не тишина: звонок мог быть, число
+    if bh_long and bh_raw is None:
+        # Длинный канал, который движок не разметил, — сбой, а не тишина: финал
+        # по одному микрофону потерял бы собеседников живой стенограммы. Микрофон
+        # не размечаем — на часе записи это минуты sherpa впустую (№622 B1).
+        return _channel_lost("канал собеседников", len(bh) / sr, engine_note)
+    # Канал собеседников молчит: записи нет или она размечена пустой. Запись
+    # не длиннее MIN_DIARIZE_S (None) — не тишина: звонок мог быть, число
     # живых голосов считает его собеседников, а эхо-фильтру микрофона не по чему
     # резать (выход r1 №559, обе головы). Одно значение на подсказку микрофону
     # и на вердикт слияния ниже — два места не расходятся. Отрезки без порога
@@ -1270,7 +1305,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
                else "в канале собеседников нет порога звонка")
     if mic_p is not None:
         mic, sr = load_wav(mic_p)
-        if len(mic) > sr * 20:
+        mic_long = len(mic) > sr * MIN_DIARIZE_S
+        if mic_long:
             _yield_to_live("разметка голосов микрофона", cap=600)
             # Канал собеседников разметил Nemotron — микрофон тоже Nemotron.
             # Звонок (№509) — тот же, что у подписи владельца: порог гейта И
@@ -1279,12 +1315,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
             # люди. Откат канала собеседников на sherpa и записи канала нет —
             # sherpa, как раньше: второй отказ того же движка стоил бы ещё
             # одного потолка ожидания.
+            mic_thin = False   # Nemotron звонка ответил, но речи меньше пола
             if bh_by_nemotron:
                 if call_silent:
                     mic_raw, mic_engine_note = room_mic_engine(
                         cfg, mic_p, len(mic) / sr, mic_count(meta))
                 else:
-                    mic_raw, mic_engine_note = mic_channel_engine(cfg, mic_p, len(mic) / sr)
+                    mic_raw, mic_engine_note, mic_thin = mic_channel_engine(
+                        cfg, mic_p, len(mic) / sr)
                 if mic_raw is None:
                     # отказ мог съесть потолок движка — уступка перед sherpa свежая
                     _yield_to_live("разметка голосов микрофона", cap=600)
@@ -1293,11 +1331,25 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
             if mic_raw is None:
                 mic_raw = mic_sherpa(mic, sr, mic_plan(meta, call_silent, call_s, len(mic) / sr),
                                      silence)
-                if not mic_raw:
-                    # шапка не говорит «разметил sherpa», когда речи не нашёл никто
+                if mic_raw is None and mic_thin:
+                    # Nemotron слышал почти тишину, sherpa упала: ответ движка
+                    # есть, и он «речи почти нет» — микрофон размечен пустым,
+                    # финал по каналу собеседников, как до гейта. В комнате
+                    # отрезки микрофона — вся стенограмма, там это гейт (№622 B1).
+                    log("mic: Nemotron услышал почти тишину, sherpa не разметила — "
+                        "микрофон размечен пустым")
+                    mic_raw = []
+                if mic_raw == []:
+                    # шапка не говорит «разметил sherpa», когда речи не нашёл никто;
+                    # при None причина отката нужна строке гейта ниже
                     mic_engine_note = ""
-    # Подпись владельца читается из настроек, только когда микрофон размечен:
-    # без микрофона пересборка конфиг здесь не читала и не читает.
+        if mic_long and mic_raw is None:
+            # Длинный микрофон не размечен — сбой, а не тишина: финал по одному
+            # каналу собеседников потерял бы все реплики владельца (№622 B1).
+            return _channel_lost("микрофон", len(mic) / sr, mic_engine_note)
+    # Подпись владельца читается из настроек, только когда микрофон размечен
+    # (длинный неразмеченный до сюда не доходит): без микрофона пересборка
+    # конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
                    if mic_raw is not None else "")
     segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label,
