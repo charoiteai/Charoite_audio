@@ -222,6 +222,81 @@ def test_restamp_transcript_hand_edit_drops_path_and_keeps_the_hash(tmp_path, mo
     assert live_sidecar.read(live)["transcript_sha256"] == live_sidecar.sha(clean)
 
 
+def _banner(*labels: str) -> str:
+    return transcript.names_pending_line(transcript.NAMES_PENDING_NOTE, labels)
+
+
+def _count_rewrites(monkeypatch) -> list:
+    calls: list = []
+    real = nf.review_bridge.rewrite_file
+
+    def spy(path, transform, what):
+        calls.append(path)
+        return real(path, transform, what)
+
+    monkeypatch.setattr(nf.review_bridge, "rewrite_file", spy)
+    return calls
+
+
+def test_restamp_transcript_machine_file_path_rename_and_banner_in_one_write(tmp_path, monkeypatch):
+    """Машинный текст: путь снят, заголовок переименован, плашка (#501)
+    пересчитана — одной записью; хеш сайдкара по байтам на диске."""
+    home = _home(tmp_path, monkeypatch)
+    live, _mpath = _minutes(tmp_path, home)
+    raw = (f"# Встреча\n\n{_banner('Собеседник 1', 'Собеседник 2')}\n\n"
+           f"**Собеседник 1** [15:33]:\nсмотри {home}/a.md\n\n**Собеседник 2** [15:34]:\nда\n")
+    live.write_text(raw, encoding="utf-8")
+    live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(raw))
+    calls = _count_rewrites(monkeypatch)
+
+    assert nf.restamp_transcript(live, {"Собеседник 1": "Анна"}) == 1
+
+    assert calls == [live]
+    text = live.read_text(encoding="utf-8")
+    assert _gone(text, str(home)) and "~/a.md" in text and "**Анна** [15:33]:" in text
+    assert "безымянные: Собеседник 2" in text and "Собеседник 1" not in text
+    assert live_sidecar.read(live)["transcript_sha256"] == hashlib.sha256(live.read_bytes()).hexdigest()
+    assert (live.parent / ".prev" / live.name).read_text(encoding="utf-8") == raw
+
+
+def test_restamp_transcript_hand_edit_keeps_the_banner_and_the_hash(tmp_path, monkeypatch):
+    """Ручной текст: путь снят и заголовок переименован, но плашка прежняя,
+    хеш сайдкара не сдвинут — иначе правка стала бы машинной."""
+    home = _home(tmp_path, monkeypatch)
+    live, _mpath = _minutes(tmp_path, home)
+    base = (f"# Встреча\n\n{_banner('Собеседник 1', 'Собеседник 2')}\n\n"
+            "**Собеседник 1** [15:33]:\nа\n\n**Собеседник 2** [15:34]:\nб\n")
+    live.write_text(base + f"правка руками {home}/a.md\n", encoding="utf-8")
+    live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(base))
+
+    assert nf.restamp_transcript(live, {"Собеседник 1": "Анна"}) == 1
+
+    text = live.read_text(encoding="utf-8")
+    assert _gone(text, str(home)) and "**Анна** [15:33]:" in text
+    assert "безымянные: Собеседник 1, Собеседник 2" in text
+    assert live_sidecar.read(live)["transcript_sha256"] == live_sidecar.sha(base)
+
+
+def test_restamp_transcript_machine_file_path_only_leaves_the_banner(tmp_path, monkeypatch):
+    """Машинный текст без переименований: снимается только путь. Плашка,
+    чей список разошёлся с заголовками, не переписывается — доправка
+    идёт только при переименовании."""
+    home = _home(tmp_path, monkeypatch)
+    live, _mpath = _minutes(tmp_path, home)
+    stale = _banner("Собеседник 1", "Собеседник 2")
+    raw = (f"# Встреча\n\n{stale}\n\n"
+           f"**Собеседник 1** [15:33]:\nсмотри {home}/a.md\n")
+    live.write_text(raw, encoding="utf-8")
+    live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(raw))
+
+    assert nf.restamp_transcript(live, {"Борис": "Анна"}) == 0
+
+    text = live.read_text(encoding="utf-8")
+    assert _gone(text, str(home)) and "~/a.md" in text
+    assert stale in text
+    assert live_sidecar.read(live)["transcript_sha256"] == hashlib.sha256(live.read_bytes()).hexdigest()
+
+
 def test_name_fixes_restamp_minutes_rewrites_when_only_the_path_changes(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     live, mpath = _minutes(tmp_path, home)
