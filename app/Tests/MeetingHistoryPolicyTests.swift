@@ -419,7 +419,7 @@ final class RebuildSkippedTests: XCTestCase {
     func testBothMarksInOneLine() throws {
         let s = try decode(",\"names_pending\":true,\"rebuild_skipped\":\"failed\"")
         let skip = L.t("пересборка не завершена: сбой", "rebuild not finished: failure", "重建未完成：出错")
-        XCTAssertEqual(P.readyNote(for: s), names + "; " + skip)
+        XCTAssertEqual(P.readyNote(for: s), skip + "; " + names, "пересборка первой — строка меню усекает хвост")
         XCTAssertTrue(P.offersRebuild(for: s))
     }
 

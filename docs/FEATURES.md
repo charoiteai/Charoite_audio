@@ -96,10 +96,11 @@
   the meeting is `ready`, but the status gets a `rebuild_skipped` key with a
   code: `recording_not_ready` (the recording channels were not ready within
   the wait — a long meeting the daemon is still converting), `failed` (the
-  rebuild raised an error) and `channel_lost` (reserved for the lost-channel
-  gate). The key is written only while this transcript never had a machine
-  final (no valid `transcript_sha256` in its sidecar); an ambiguous or
-  unreadable sidecar counts as "had one", so no false note. A rebuild that
+  rebuild raised an error — the rebuild log says whether a retry can help)
+  and `channel_lost` (reserved for the lost-channel gate). The key is written
+  only while this transcript never had a machine final (no valid
+  `transcript_sha256` in its sidecar); an ambiguous or unreadable sidecar
+  counts as "had one", so no false note. A rebuild that
   fails for a deterministic reason (nothing to wait for, a repeat gives the
   same) writes no key. The app shows "rebuild not finished: …" next to
   "Ready" in the library, on the Today card, in the menu line, the status line

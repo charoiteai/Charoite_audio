@@ -63,6 +63,25 @@ def test_records_not_ready_is_a_skipped_outcome(tmp_path, monkeypatch):
     assert "записи не готовы — оставляю живую стенограмму" in lines, lines
 
 
+def test_only_a_neighbours_files_under_the_minute_is_a_deterministic_refusal(tmp_path, monkeypatch):
+    """Под минутой лежат файлы соседки, под своим штампом — ничего (свои смёл
+    ретеншн): ждать нечего, повтор даст то же — немой None, без кода и кнопки
+    (Sonnet M1 выходного круга)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120345", "mic", "wav").write_bytes(b"RIFF")
+    monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", lambda *_a, **_k: "2026-08-04_120314")
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
+
+
 def test_skipped_is_falsy_like_the_old_none():
     for reason in (RS.RECORDING_NOT_READY, RS.CHANNEL_LOST, RS.FAILED):
         assert not RS(reason)
@@ -91,10 +110,25 @@ def test_machine_final_garbage_hash(root):
     assert live_sidecar.machine_final(_live(root, {"transcript_sha256": 123})) is False
 
 
-def test_machine_final_broken_json(root):
+@pytest.mark.parametrize("raw", [b"{\xd0 not json", b"\xff\xfe\x00garbage", b"[]", b"\"x\"", b"42"],
+                         ids=["broken-json", "not-utf8", "list", "string", "number"])
+def test_machine_final_unreadable_content_is_unknown(root, raw):
+    """Сайдкар не читается как объект — был ли в нём хеш, не знаем: метки нет.
+    Ложная пометка у встречи с записанным финалом хуже пропущенной (DS C1)."""
     live = _live(root)
-    live.with_name(live.name + ".live.json").write_text("{не json", encoding="utf-8")
-    assert live_sidecar.machine_final(live) is False
+    live.with_name(live.name + ".live.json").write_bytes(raw)
+    assert live_sidecar.machine_final(live) is True
+
+
+def test_machine_final_is_total(root, monkeypatch):
+    """Любое исключение чтения — «не знаем», а не падение `main()` в `failed` (DS I1)."""
+    live = _live(root, {"transcript_sha256": SHA})
+
+    def deep(*_a, **_k):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(live_sidecar.json, "loads", deep)
+    assert live_sidecar.machine_final(live) is True
 
 
 def test_machine_final_ambiguous_sidecar_is_unknown(root):

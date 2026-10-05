@@ -1207,6 +1207,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
     bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:
+        # Под минутой бывают файлы соседки, а под своим штампом — ничего
+        # (свои смёл ретеншн): ждать нечего, повтор даст то же (Sonnet M1
+        # выходного круга №500).
+        if not any(meeting_stamp.recording_path(rec_dir, recording_stamp, lab, ext).exists()
+                   for lab in meeting_stamp.RECORDING_LABELS for ext in meeting_stamp.RECORDING_EXTS):
+            log("записей нет — оставляю живую стенограмму")
+            return None
         log("записи не готовы — оставляю живую стенограмму")
         return RebuildSkipped(RebuildSkipped.RECORDING_NOT_READY)
 

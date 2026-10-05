@@ -499,10 +499,12 @@ def machine_final(live: pathlib.Path) -> bool:
     ретитл и перештамповка имён лишь обновляют совпавший.
 
     Тотальная: исключений не бросает. «Не знаем» — True: сайдкар неоднозначен
-    (две встречи в минуту) или ввод-вывод упал (`sidecar_for` зовёт `exists()`
-    и обход каталога вне `try`). True снимает пометку «пересборка не
-    завершена» (№500): ложная пометка у готового финала хуже пропущенной.
-    False — сайдкар однозначен, а валидного хеша нет (или нет самого файла).
+    (две встречи в минуту), не читается (ввод-вывод, не UTF-8, не JSON-объект)
+    или чтение упало чем угодно (`sidecar_for` зовёт `exists()` и обход
+    каталога вне `try`). True снимает пометку «пересборка не завершена»
+    (№500): ложная пометка у готового финала хуже пропущенной (DS C1, I1
+    выходного круга). False — сайдкар однозначен и прочитан, а валидного хеша
+    в нём нет, или самого файла нет.
     """
     try:
         p = sidecar_for(live)
@@ -511,11 +513,11 @@ def machine_final(live: pathlib.Path) -> bool:
         if not p.exists():
             return False
         meta = json.loads(p.read_text(encoding="utf-8"))
-    except OSError:
+        if not isinstance(meta, dict):
+            return True
+        return valid_sha(meta.get("transcript_sha256")) is not None
+    except Exception:  # noqa: BLE001 — тотальная: битый сайдкар не роняет конвейер
         return True
-    except ValueError:
-        return False                          # не JSON — хеша в нём нет
-    return isinstance(meta, dict) and valid_sha(meta.get("transcript_sha256")) is not None
 
 
 def exact_stamp(live: pathlib.Path) -> str | None:

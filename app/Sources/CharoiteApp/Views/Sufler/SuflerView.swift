@@ -305,7 +305,8 @@ struct SuflerView: View {
             if sufler.pipelineStatusIsCritical || sufler.statusIsError || sufler.stickyStatus != nil { return .red }
             if sufler.pipelineStatusText != nil { return Theme.warning }
         }
-        return statusIsProblem ? .red : .secondary
+        if statusIsProblem { return .red }
+        return !sufler.isRunning && processing.statusIsReadyNote ? Theme.warning : .secondary
     }
 
     /// Откуда панель берёт текст прямо сейчас.

@@ -1,5 +1,7 @@
 import Foundation
 
+#if os(macOS)
+
 /// Пометка готовой встречи — «имена не определены», «пересборка не
 /// завершена…» (№500). Вынесено из MeetingProcessingService: там политика
 /// статуса и сервис, и файл уходил за тысячу строк.
@@ -15,12 +17,14 @@ extension MeetingProcessingPolicy {
     /// или с непересобранным черновиком выглядит ровно так же, как разобранная
     /// до конца.
     static func readyNote(for snapshot: MeetingProcessingSnapshot) -> String? {
+        // Пересборка — первой: строка меню в одну строку усекает хвост, а
+        // незавершённая пересборка важнее имён (Sonnet M4 выходного круга).
         var parts: [String] = []
-        if snapshot.namesPending == true {
-            parts.append(L.t("имена не определены", "speakers unnamed", "未识别出姓名"))
-        }
         if let code = snapshot.rebuildSkipped {
             parts.append(rebuildSkipNote(code))
+        }
+        if snapshot.namesPending == true {
+            parts.append(L.t("имена не определены", "speakers unnamed", "未识别出姓名"))
         }
         return parts.isEmpty ? nil : parts.joined(separator: "; ")
     }
@@ -65,3 +69,5 @@ extension MeetingProcessingPolicy {
         snapshot.rebuildSkipped.map(rebuildSkipCodes.contains) ?? false
     }
 }
+
+#endif

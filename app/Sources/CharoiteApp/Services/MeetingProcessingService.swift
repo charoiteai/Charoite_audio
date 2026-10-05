@@ -817,6 +817,14 @@ final class MeetingProcessingService: ObservableObject {
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
+    /// Строка статуса сейчас — «Встреча готова — <пометка>» (№500): красится
+    /// предупреждением, как пометка в меню и карточках (DS M1 выходного круга).
+    var statusIsReadyNote: Bool {
+        guard !retryFailedToStart, !waitingForPipeline, !pipelineSilent, let snapshot,
+              MeetingProcessingPolicy.resolvedState(snapshot) == .ready else { return false }
+        return MeetingProcessingPolicy.readyNote(for: snapshot) != nil
+    }
+
     /// Результат последней встречи готов — предикат владельца для строки меню.
     /// `actionTitle != nil` означает «есть кнопка» и истинно также для пустой
     /// записи и ошибки: «Встреча готова» зелёным для записи без речи —
