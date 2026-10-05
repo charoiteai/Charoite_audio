@@ -140,6 +140,7 @@
 
 ## Пути, названные кодом, но не исполняемые (подсказки и сообщения)
 
+- `src/brain.py` ← scripts/layout_map.py
 - `src/charoite_graph/cli.py` ← scripts/layout_map.py
 - `src/charoite_graph/graph_search.py` ← scripts/layout_map.py, scripts/memory_bench.py
 - `src/charoite_paths.py` ← scripts/layout_map.py

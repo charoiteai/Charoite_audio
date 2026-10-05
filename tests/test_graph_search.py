@@ -372,16 +372,16 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
     cfg = {"sufler": {"graph_dir": str(g)}}
     with pytest.raises(RuntimeError):
-        brain.vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
+        brain._vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
     with pytest.raises(RuntimeError):
-        brain.vault_search({"sufler": {}}, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
+        brain._vault_search({"sufler": {}}, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
     mem = brain.warm(cfg)
     assert mem is not None and mem.ready and brain.warm({"sufler": {}}) is None
-    r = brain.vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
+    r = brain._vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
     # шов отдаёт значение: состояние полем, фрагменты — модели, текст — человеку (круг 3 по #577)
     assert r.status is brain.Verdict.UNVERIFIED and "Системы/Платёжный шлюз.md" in r.fragments and "⚠" not in r.fragments
     assert r.text.startswith("⚠ Совпадения не проверены семантикой") and "Системы/Платёжный шлюз.md" in r.text
-    none = brain.vault_search(cfg, "qqqzzz", limit=2, snippet_chars=200, timeout=2.5)
+    none = brain._vault_search(cfg, "qqqzzz", limit=2, snippet_chars=200, timeout=2.5)
     assert none.empty and none.status is brain.Verdict.UNVERIFIED and none.text.startswith("⚠ По словам ничего не нашлось")
 
 

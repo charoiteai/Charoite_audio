@@ -1655,7 +1655,7 @@ half as many slots (34 → 17), primary nodes more (47 → 61), median age 10 �
 The hub boost needed no recalibration: 462 nodes sit at the cap against 467, the
 same set.
 
-**The verdict is a field, not a prefix.** `brain.vault_search` returns a
+**The verdict is a field, not a prefix.** `brain.search(profile, query)` returns a
 `Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,
 `fragments` is what goes into a prompt (dossiers and snippets, no headers, no
 markers), `text` is the human rendering. Without an embedding (Ollama busy
@@ -1666,13 +1666,26 @@ Dossiers count as evidence in the verdict (their key coverage of the query), so
 a summary without snippets is never "empty". What to *say* is one table in the
 facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
 "unverified" — embedder busy or cache incomplete — is a field of the result) and
-one builder, `memory_block`, that splits a prompt budget between graph nodes and
+one builder, `brain.pack(profile, result)`, that splits a prompt budget between graph nodes and
 archive snippets by share instead of letting the nodes eat the archive; on a
 confident verdict the snippets come first and nodes get only the remainder.
 Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
 "empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
 `startswith` in three places — a dossier printed before the marker silenced the
 gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
+
+**A profile per memory consumer.** The answer to a question, the live context
+and topic expansion each have a named profile in `brain.py` (`ANSWER`, `LIVE`,
+`EXPAND`): how many files and characters to take, how long to wait, the block
+budget and, for the two that call a model, the model role, the reply cap, the
+system prompt and the abstention marker. It is the only place these numbers
+live: the daemon and the memory bench both go through `search` + `pack`, and the
+raw primitives behind them are private — the layout gate (`ENV_SEAMS`) turns any
+call outside `brain.py` red. `pack` returns a record (`Packed`), not a string:
+`text` goes into the prompt, while `lead`, `nodes`, `body` and the snippets the
+budget cut are fields, so the bench never parses the header to score a fact.
+Before this, every number lived as a copy in three daemon sites and in the bench,
+and the bench measured a path the owner never took.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
