@@ -351,3 +351,90 @@ final class NamesPendingTests: XCTestCase {
             try decode(",\"names_pending\":true")), .ready)
     }
 }
+
+/// Пересборка не завершилась по устранимой причине — видно человеку (№500).
+///
+/// Конвейер пишет `rebuild_skipped: <код>` в готовый статус: граф построен по
+/// живому черновику, результат можно пересобрать. Пометка — один источник
+/// слов (`readyNote`), кнопка — только при известном коде.
+final class RebuildSkippedTests: XCTestCase {
+    private typealias P = MeetingProcessingPolicy
+
+    private func decode(_ extra: String) throws -> MeetingProcessingSnapshot {
+        let json = """
+        {"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete",
+         "started_at":1,"updated_at":2,"transcript_path":"/t/2026-08-12_1532.md"\(extra)}
+        """
+        return try JSONDecoder().decode(MeetingProcessingSnapshot.self, from: Data(json.utf8))
+    }
+
+    private let ready = L.t("Готово", "Ready", "已完成")
+    private let names = L.t("имена не определены", "speakers unnamed", "未识别出姓名")
+
+    func testCodeIsDecodedAndOldStatusStillDecodes() throws {
+        XCTAssertEqual(try decode(",\"rebuild_skipped\":\"failed\"").rebuildSkipped, "failed")
+        XCTAssertNil(try decode("").rebuildSkipped)
+        XCTAssertEqual(P.resolvedState(try decode(",\"rebuild_skipped\":\"failed\"")), .ready)
+    }
+
+    func testNoMarks() throws {
+        let s = try decode("")
+        XCTAssertNil(P.readyNote(for: s))
+        XCTAssertEqual(P.readyText(for: s), ready)
+        XCTAssertFalse(P.offersRebuild(for: s))
+    }
+
+    func testNamesPendingOnly() throws {
+        let s = try decode(",\"names_pending\":true")
+        XCTAssertEqual(P.readyNote(for: s), names)
+        XCTAssertEqual(P.readyText(for: s), L.t("Готово, ", "Ready, ", "已完成，") + names)
+        XCTAssertFalse(P.offersRebuild(for: s), "кнопка пересборки — не ответ на одни имена")
+    }
+
+    func testEachKnownCode() throws {
+        let expected = [
+            "recording_not_ready": L.t("пересборка не завершена: записи ещё не готовы",
+                                       "rebuild not finished: recordings not ready yet",
+                                       "重建未完成：录音尚未就绪"),
+            "channel_lost": L.t("пересборка не завершена: канал записи не размечен",
+                                "rebuild not finished: a recording channel was not diarized",
+                                "重建未完成：录音声道未完成说话人标注"),
+            "failed": L.t("пересборка не завершена: сбой", "rebuild not finished: failure", "重建未完成：出错"),
+        ]
+        for (code, note) in expected {
+            let s = try decode(",\"rebuild_skipped\":\"\(code)\"")
+            XCTAssertEqual(P.readyNote(for: s), note, code)
+            XCTAssertEqual(P.readyText(for: s), L.t("Готово, ", "Ready, ", "已完成，") + note, code)
+            XCTAssertTrue(P.offersRebuild(for: s), code)
+        }
+        XCTAssertEqual(Set(expected.keys), P.rebuildSkipCodes)
+    }
+
+    func testUnknownCodeIsNotedWithoutButton() throws {
+        let s = try decode(",\"rebuild_skipped\":\"from_the_future\"")
+        XCTAssertEqual(P.readyNote(for: s), L.t("пересборка не завершена", "rebuild not finished", "重建未完成"))
+        XCTAssertFalse(P.offersRebuild(for: s))
+    }
+
+    func testBothMarksInOneLine() throws {
+        let s = try decode(",\"names_pending\":true,\"rebuild_skipped\":\"failed\"")
+        let skip = L.t("пересборка не завершена: сбой", "rebuild not finished: failure", "重建未完成：出错")
+        XCTAssertEqual(P.readyNote(for: s), names + "; " + skip)
+        XCTAssertTrue(P.offersRebuild(for: s))
+    }
+
+    func testNoteSpeaksOfOutcomeNotFile() throws {
+        for code in P.rebuildSkipCodes {
+            let note = P.readyNote(for: try decode(",\"rebuild_skipped\":\"\(code)\"")) ?? ""
+            XCTAssertFalse(note.contains("живая версия") || note.contains("черновик"), note)
+        }
+    }
+
+    func testBannerDoesNotClaimUpdatedGraph() throws {
+        let skipped = try decode(",\"rebuild_skipped\":\"recording_not_ready\",\"note_path\":\"/n.md\"")
+        XCTAssertEqual(MeetingNotificationService.readyBody(for: skipped), P.readyNote(for: skipped))
+        let clean = try decode(",\"note_path\":\"/n.md\"")
+        XCTAssertEqual(MeetingNotificationService.readyBody(for: clean),
+                       L.t("Стенограмма и граф обновлены", "The transcript and graph are updated", "逐字稿和图谱已更新"))
+    }
+}

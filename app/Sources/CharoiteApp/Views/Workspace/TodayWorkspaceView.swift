@@ -208,7 +208,8 @@ struct TodayWorkspaceView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(record.title).font(.callout.weight(.medium)).lineLimit(2)
-                            Text(record.card.gist ?? compactState(record.state))
+                            recentNote(record)
+                            Text(record.card.gist ?? compactState(record.snapshot))
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(3)
                             let open = tasks.items(for: record.id, includeDone: false).count
                             if open > 0 {
@@ -326,7 +327,9 @@ struct TodayWorkspaceView: View {
     private var lifecycleIcon: String {
         if sufler.isRunning { return "record.circle.fill" }
         if processing.isProcessing { return "gearshape.2" }
-        if processing.snapshot?.state == .ready { return "checkmark.circle.fill" }
+        if processing.snapshot?.state == .ready {
+            return readyNote == nil ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+        }
         return calendar.today.isEmpty ? "sun.max" : "calendar.badge.clock"
     }
 
@@ -343,7 +346,7 @@ struct TodayWorkspaceView: View {
                                         "Transcript, thread and hints are updating in Meeting.",
                                         "逐字稿、脉络与提示正在「会议」中更新。") }
         if let status = processing.activityText { return status }   // слот работы — только работа (Minor GLM круга 3)
-        if let ready = processing.snapshot, ready.state == .ready { return ready.title }
+        if let ready = processing.snapshot, ready.state == .ready { return readyNote ?? ready.title }
         if let event = calendar.today.first {
             return L.t("Ближайшая встреча · \(Self.time(event.start))",
                        "Next meeting · \(Self.time(event.start))",
@@ -365,9 +368,25 @@ struct TodayWorkspaceView: View {
         }
     }
 
-    private func compactState(_ state: MeetingProcessingSnapshot.State) -> String {
-        switch state {
-        case .ready: return L.t("Готово", "Ready", "已完成")
+    /// Пометка последней встречи (№500): «имена не определены», «пересборка не
+    /// завершена…» — значок и подпись карточки дня говорят о ней.
+    private var readyNote: String? {
+        processing.snapshot.flatMap(MeetingProcessingPolicy.readyNote(for:))
+    }
+
+    /// Пометка недавней встречи — над сутью, суть остаётся. Сути нет — пометку
+    /// несёт `compactState`, второй строкой её не повторяем.
+    @ViewBuilder
+    private func recentNote(_ record: MeetingRecord) -> some View {
+        if record.card.gist != nil, record.state == .ready,
+           let note = MeetingProcessingPolicy.readyNote(for: record.snapshot) {
+            Text(note).font(.caption).foregroundStyle(Theme.warning).lineLimit(2)
+        }
+    }
+
+    private func compactState(_ snapshot: MeetingProcessingSnapshot) -> String {
+        switch MeetingProcessingPolicy.resolvedState(snapshot) {
+        case .ready: return MeetingProcessingPolicy.readyText(for: snapshot)
         case .processing: return L.t("Обрабатывается", "Processing", "处理中")
         case .error: return L.t("Ошибка обработки", "Processing failed", "处理失败")
         case .empty: return L.t("Запись без речи", "Recording without speech", "录音中无语音")

@@ -493,6 +493,31 @@ def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
+def machine_final(live: pathlib.Path) -> bool:
+    """Был ли когда-то записан машинный финал этой стенограммы — по валидному
+    `transcript_sha256` в её сайдкаре. Ключ вводит только `write_final`;
+    ретитл и перештамповка имён лишь обновляют совпавший.
+
+    Тотальная: исключений не бросает. «Не знаем» — True: сайдкар неоднозначен
+    (две встречи в минуту) или ввод-вывод упал (`sidecar_for` зовёт `exists()`
+    и обход каталога вне `try`). True снимает пометку «пересборка не
+    завершена» (№500): ложная пометка у готового финала хуже пропущенной.
+    False — сайдкар однозначен, а валидного хеша нет (или нет самого файла).
+    """
+    try:
+        p = sidecar_for(live)
+        if p is None:
+            return True
+        if not p.exists():
+            return False
+        meta = json.loads(p.read_text(encoding="utf-8"))
+    except OSError:
+        return True
+    except ValueError:
+        return False                          # не JSON — хеша в нём нет
+    return isinstance(meta, dict) and valid_sha(meta.get("transcript_sha256")) is not None
+
+
 def exact_stamp(live: pathlib.Path) -> str | None:
     """Посекундный штамп встречи с МИНУТНЫМ именем (после наката темы) —
     из ключа `stamp` её СОБСТВЕННОГО сайдкара, а не угадыванием по каталогу
