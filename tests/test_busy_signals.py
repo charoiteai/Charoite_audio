@@ -75,12 +75,23 @@ def test_mutator_guard_does_not_count_other_mutators(tmp_path):
         daemon.parent.mkdir(parents=True, exist_ok=True)
         with daemon.open("a") as owner:
             fcntl.flock(owner, fcntl.LOCK_EX)
-            assert busy_signals.machine_busy(tmp_path, count_mutation=False) == \
-                ["живая запись", "ночной цикл"]
-            assert busy_signals.machine_busy(tmp_path) == \
-                ["живая запись", "ночной цикл", "мутация тестов"]
+            busy = busy_signals.machine_busy(tmp_path, count_mutation=False)
+            assert busy[0] == "живая запись"
+            assert busy[1].startswith("ночной цикл (")
+            assert str(night) in busy[1], "причина ночного цикла называет файл статуса"
+            assert busy_signals.machine_busy(tmp_path) == [*busy, "мутация тестов"]
     finally:
         lock.release()
+
+
+def test_machine_busy_names_the_meeting_stage_in_words(tmp_path):
+    """Стадия разбора встречи — словами: сырое имя стадии читателю ничего не говорит."""
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "встреча.json").write_text(
+        json.dumps({"state": "processing", "stage": "transcribe", "updated_at": time.time()}),
+        encoding="utf-8")
+    assert busy_signals.machine_busy(tmp_path) == ["разбор встречи (transcribe)"]
 
 
 def test_lock_file_is_private(tmp_path):
@@ -111,3 +122,27 @@ def test_stale_night_status_does_not_block(tmp_path):
     os.utime(path, (old, old))
     # ребут посреди ночи оставил running навсегда — мутатор не заложник
     assert not busy_signals.night_running(tmp_path)
+
+
+def test_a_fresh_night_reason_names_the_status_file_and_its_age(tmp_path):
+    """Идущая ночь называет файл статуса и возраст: иначе брошенный `running`
+    до `NIGHT_STALE_S` не отличить от живой ночи, и человек ждёт зря (№622 B2)."""
+    path = tmp_path / "logs" / "nightly.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    os.utime(path, (time.time() - 90 * 60, time.time() - 90 * 60))
+    assert busy_signals.machine_busy(tmp_path) == \
+        [f"ночной цикл ({path}, обновлён 90 мин назад)"]
+
+
+def test_a_status_from_the_future_has_no_negative_age(tmp_path):
+    """Время правки в будущем (сбитые часы) не даёт отрицательного возраста:
+    причина говорит «обновлён 0 мин назад», а не «-5» (№622 B2, часть 1)."""
+    path = tmp_path / "logs" / "nightly.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    future = time.time() + 5 * 60
+    os.utime(path, (future, future))
+    reason = busy_signals.night_busy_reason(tmp_path)
+    assert reason is not None, "будущее время правки — ночь всё ещё идёт"
+    assert "обновлён 0 мин назад" in reason, reason

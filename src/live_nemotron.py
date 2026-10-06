@@ -952,13 +952,9 @@ def start(cfg: dict, *, root: pathlib.Path, stamp: str, sr: int, labels: typing.
     весь звонок впустую. Давление памяти уже критичное (`PRESSURE_STOP`) — поток не
     стартует: запись важнее потока (№579; уровень 2 старту больше не мешает)."""
     sufler = cfg.get("sufler") or {}
-    raw = sufler.get("live_nemotron")
-    if raw is None or raw is False:            # YAML читает голое off как false
-        mode = OFF
-    elif raw is True:                          # …а голое on — как true
-        mode = "on"
-    else:
-        mode = str(raw).strip().lower() or OFF
+    # Режим — общим нормализатором модуля движка (одно определение на продукт);
+    # импорт в обратную сторону нельзя: live_nemotron сам импортирует diarize_nemotron.
+    mode = diarize_nemotron.normalize_live_mode(sufler.get("live_nemotron"))
     if mode == OFF:
         return NO_SHADOW
     if mode not in MODES:

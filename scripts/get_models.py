@@ -167,20 +167,56 @@ NEMOTRON = Model(
 #: sha256 спутника config.json (не LFS, сумма снята вручную 28.09 с файла ревизии выше)
 NEMOTRON_CONFIG_SHA256 = "f215091252bc54f8dcc7d682962a659e03a6bcb26d1c86e4728b8c6730130eb4"
 
+#: Файлы весов Nemotron: имя, адрес, размер МБ, sha256. Одна таблица и на проверку
+#: (`nemotron_missing`), и на загрузку (`fetch_nemotron`) — чтобы план считал по
+#: той же проверке, по которой решает установка.
+NEMOTRON_FILES = (
+    ("config.json", f"{NEMOTRON_MIRROR}/config.json", 1, NEMOTRON_CONFIG_SHA256),
+    ("model.safetensors", NEMOTRON.url, NEMOTRON.size_mb, NEMOTRON.sha256),
+)
+
+#: Лицензия весов Nemotron: имя и ссылка. Веса в репозиторий не кладутся — человек
+#: скачивает их сам и принимает условия; установщик печатает эту строку в блоке
+#: сети до соединения, а `--plan` кладёт её в JSON.
+NEMOTRON_LICENSE = ("NVIDIA OpenMDW 1.1",
+                    "https://huggingface.co/nvidia/Nemotron-3-Diarization/blob/main/LICENSE")
+
+
+def nemotron_missing(dest: pathlib.Path) -> list[tuple[str, str, int, str]]:
+    """Файлы весов, которые `fetch_nemotron` будет качать: нет файла или его
+    сумма не та. Той же проверкой считает и план (`--plan`): структура каталога
+    (`diarize_nemotron.check_model_dir`) ловит только форму и пропустила бы
+    битый `model.safetensors` при правдоподобном `config.json` — план обещал бы
+    0, а установка тянула 190 МБ.
+
+    `OSError` при чтении суммы — «файла нет в рабочем виде»: недостающий, без
+    исключения наружу (иначе нечитаемый файл обернулся бы в `--plan` строкой
+    `{"error": …}` вместо плана)."""
+    missing = []
+    for name, url, size_mb, sha in NEMOTRON_FILES:
+        target = dest / name
+        try:
+            if target.is_file() and _digest(target) == sha:
+                continue
+        except OSError:
+            pass
+        missing.append((name, url, size_mb, sha))
+    return missing
+
 
 def fetch_nemotron(dest: pathlib.Path) -> None:
-    """Веса Nemotron в каталог `dest` — оба файла, каждый со своей суммой.
+    """Веса Nemotron в каталог `dest` — недостающие файлы, каждый со своей суммой.
 
-    Файл на месте и с той же суммой не качается заново: повтор установки после
-    сбоя окружения не тянет 190 МБ второй раз."""
-    for name, url, size_mb, sha in (
-            ("config.json", f"{NEMOTRON_MIRROR}/config.json", 1, NEMOTRON_CONFIG_SHA256),
-            ("model.safetensors", NEMOTRON.url, NEMOTRON.size_mb, NEMOTRON.sha256)):
+    Что качать, решает `nemotron_missing` — та же проверка, по которой считает
+    план. Файл на месте и с той же суммой не качается заново: повтор установки
+    после сбоя окружения не тянет 190 МБ второй раз."""
+    missing = {name for name, *_ in nemotron_missing(dest)}
+    for name, url, size_mb, sha in NEMOTRON_FILES:
         target = dest / name
-        if target.is_file() and _digest(target) == sha:
+        if name in missing:
+            download(url, target, size_mb, onnx=False, sha256=sha)
+        else:
             print(f"уже на месте: {target}")
-            continue
-        download(url, target, size_mb, onnx=False, sha256=sha)
 
 
 def seg_target(root: pathlib.Path | None = None) -> pathlib.Path:
@@ -204,19 +240,26 @@ def check(path: pathlib.Path, min_bytes: int = MIN_BYTES) -> str | None:
     Проверка нарочно дешёвая и офлайновая: существование, размер, ONNX-магия.
     Загружать модель в sherpa-onnx здесь не нужно — это делает демон, а
     ответ «подойдёт ли файл» человек должен получать мгновенно и без сети.
-    """
+
+    `exists`, `open` и `stat` — под `try/except OSError`: каталог или нечитаемый
+    файл там, где ждали модель, это «модели нет в рабочем виде», а не исключение
+    наружу. `--plan` зовёт `check` для набора голосов и обязан выдать одну строку
+    JSON, а не `{"error": …}` с кодом 1."""
     fix = ("поставить: .venv/bin/python scripts/get_models.py --diar "
            "(модели: --list)")
-    if not path.exists():
-        return f"модели диаризации нет ({path}) — {fix}"
-    # Сначала «это вообще ONNX?», потом «целиком ли скачалось»: HTML-страница
-    # логина весит килобайты, и жаловаться на её размер — путать причину.
-    with path.open("rb") as f:
-        head = f.read(1)
+    try:
+        if not path.exists():
+            return f"модели диаризации нет ({path}) — {fix}"
+        # Сначала «это вообще ONNX?», потом «целиком ли скачалось»: HTML-страница
+        # логина весит килобайты, и жаловаться на её размер — путать причину.
+        with path.open("rb") as f:
+            head = f.read(1)
+        size = path.stat().st_size
+    except OSError as e:
+        return f"{path} не читается ({e}) — {fix}"
     if head != ONNX_MAGIC:
         return (f"{path.name} не похож на .onnx (первый байт {head!r}) — так "
                 f"выглядит скачанная HTML-страница вместо модели. {fix}")
-    size = path.stat().st_size
     if size < min_bytes:
         return (f"файл .onnx слишком мал: {size} байт "
                 f"(ждём хотя бы {min_bytes // 1024 // 1024} МБ) — похоже на обрыв "
