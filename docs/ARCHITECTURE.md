@@ -236,6 +236,15 @@ independent reviewers) confirmed the frame and closed four seams:
   read-only mode had no deny rules at all, so the boundary rested solely
   on an external program's behaviour.
 
+On the same nightly path, a damaged dossier no longer stops the run. The
+nightly dossier build reads every file through the single door
+`dossier.load_dossier` (states `ok`, `damaged`, `unreadable`, `missing`),
+so a file that is not UTF-8 is read with replacement instead of raising;
+the decision about «Правки автора» is made before the model call, a
+refusal leaves the theme in the index, and just before the write the
+dossier is re-read under the graph lock so an edit made during generation
+is not overwritten.
+
 ### A graph node is never lost mid-write
 
 `write_text` opens a file for writing and truncates it to zero BEFORE it
