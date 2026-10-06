@@ -21,6 +21,7 @@ import os
 import pathlib
 import shutil
 import stat
+import uuid
 
 
 def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
@@ -68,9 +69,8 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     if path.is_symlink():
         path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # PID в имени: два процесса, пишущие один узел, не должны собирать файл
-    # друг за другом. Кто заменит последним — тот и победил, но целиком.
-    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    # Имя на вызов: потоки одного процесса не забирают и не удаляют tmp соседа.
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}-{uuid.uuid4().hex}")
     try:
         if mode is None:
             tmp.write_text(text, encoding=encoding)
@@ -142,7 +142,7 @@ def copy_if_changed(src: pathlib.Path, dst: pathlib.Path) -> bool:
     if _same_bytes(dst, data):
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.tmp{os.getpid()}")
+    tmp = dst.with_name(f"{dst.name}.tmp{os.getpid()}-{uuid.uuid4().hex}")
     try:
         shutil.copy2(src, tmp)
         tmp.replace(dst)

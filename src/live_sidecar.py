@@ -120,9 +120,11 @@ def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sh
 def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
            bare: str | None = None) -> bool:
     """Выдать производной паспорт после МАШИННОЙ записи: байты и речь источника.
-    Обёртка над `remember` — сайдкара нет — создаст; неоднозначный — False."""
-    return (remember(live, f"{kind}_sha256", sha(file_text), bare)
-            and remember(live, f"{kind}_source_sha256", source_sha, bare))
+    Оба хеша — одним `merge`: читатель или сбой записи не должен увидеть
+    байты новой производной с источником старой. Нет сайдкара — создаст;
+    неоднозначный — False."""
+    return merge(live, {f"{kind}_sha256": sha(file_text),
+                        f"{kind}_source_sha256": source_sha}, bare)
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
@@ -159,7 +161,9 @@ class WriteOutcome(typing.NamedTuple):
 
 
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
+                     source_sha: str, *, expect: tuple[int, int] | None = None,
+                     expect_absent: bool = False,
+                     log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
     стенограммой (`prev_path`): уверенная, но неверная генерация не должна быть
@@ -172,7 +176,13 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
     оракулом `derivative_state` или причину отказа значением. Вызывающий не
     пересобирает знание сам и не гадает, какая ветка отказала (Important DS и
     GLM круга 1; Important DS круга 4)."""
-    before = safe_write.stat_snapshot(path)
+    # Долгая генерация передаёт снимок ДО вызова модели (или «файла не было»).
+    # Снять его только здесь — принять ручную правку за версию под перезапись.
+    # Без внешнего снимка сохраняем прежний API немедленного писателя.
+    before = expect if expect is not None or expect_absent else safe_write.stat_snapshot(path)
+    if safe_write.stat_snapshot(path) != before:
+        log(f"{path.name} изменился за время генерации — не перезаписываю")
+        return WriteOutcome(None, WriteOutcome.RACE)
     if before is not None:
         try:
             prev = prev_path(live, path)

@@ -23,6 +23,7 @@ import live_sidecar  # noqa: E402
 import meeting_source  # noqa: E402
 import meeting_stamp  # noqa: E402
 import meeting_archive  # noqa: E402
+from charoite_graph import safe_write  # noqa: E402
 from meeting_archive import (SummaryMode, SummaryOutcome, archive_meeting,  # noqa: E402
                              canon_tally_line, cothinking_notes)
 from meeting_processing import find_final_transcript  # noqa: E402
@@ -164,13 +165,15 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
         skipped.append(f"минутки {state}")
 
     dpath = meeting_stamp.derivative_path(f, "debrief", graph)
+    d_before = safe_write.stat_snapshot(dpath)
     state = live_sidecar.derivative_state(dpath, meta, "debrief", source_sha)
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
                        "Не выдумывай факты.", source.speech, DEBRIEF_PROMPT, note=source.recording_note)
         out = meeting_source.with_note(out, source.recording_note) if out else out
         _built(made, skipped, "разбор", out,
-               lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", source_sha))
+               lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", source_sha,
+                                         expect=d_before, expect_absent=d_before is None))
     else:
         skipped.append(f"разбор {state}")
 
@@ -195,6 +198,7 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
                 skipped.append(archived.canon.line())
     if folder is not None:
         tpath = _theses_path(folder)
+        t_before = safe_write.stat_snapshot(tpath)
         # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
         # копию перебила легаси-производная без строк ко-мышления, файла нет —
         # тогда к модели, как у встречи без живого контура (Important DS круга 2)
@@ -211,7 +215,8 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path,
                 _built(made, skipped, "тезисы", out,
                        lambda: _write_derivative(f, tpath, "theses",
                                                  "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
-                                                 + out + "\n", source_sha))
+                                                 + out + "\n", source_sha, expect=t_before,
+                                                 expect_absent=t_before is None))
             else:
                 skipped.append(f"тезисы {state}")
     parts = []
@@ -242,10 +247,12 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
 
 
 def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                      source_sha: str) -> bool:
+                      source_sha: str, *, expect: tuple[int, int] | None = None,
+                      expect_absent: bool = False) -> bool:
     """Записалось ли: шов возвращает состояние после записи или None (№314);
     ретро-отчёту нужен только факт записи — состояние он печатает отдельно."""
     return live_sidecar.write_derivative(live, path, kind, body, source_sha,
+                                         expect=expect, expect_absent=expect_absent,
                                          log=lambda msg: print(f"ретро: {msg}", file=sys.stderr)).written
 
 

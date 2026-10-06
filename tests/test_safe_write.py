@@ -3,11 +3,59 @@ import os
 import pathlib
 import time
 import sys
+import threading
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_graph import safe_write  # noqa: E402
+
+
+@pytest.mark.parametrize("copy, mode", [(False, None), (False, 0o600), (True, None)])
+def test_threads_writing_one_target_have_independent_temporary_files(tmp_path, monkeypatch, copy, mode):
+    """Оба писателя обязаны закончить; завершившийся не забирает tmp соседа."""
+    target = tmp_path / "общая.md"
+    target.write_text("до записи", encoding="utf-8")
+    first_ready, release_first = threading.Event(), threading.Event()
+    errors = []
+    real_replace = pathlib.Path.replace
+
+    def ordered_replace(path, dest):
+        if dest == target and threading.current_thread().name == "first-writer":
+            first_ready.set()
+            assert release_first.wait(5), "второй писатель не завершился"
+        return real_replace(path, dest)
+
+    monkeypatch.setattr(pathlib.Path, "replace", ordered_replace)
+    first_src, second_src = tmp_path / "первая.md", tmp_path / "вторая.md"
+    first_src.write_text("первая целая версия", encoding="utf-8")
+    second_src.write_text("вторая целая версия", encoding="utf-8")
+
+    def write_first():
+        try:
+            if copy:
+                safe_write.copy_if_changed(first_src, target)
+            else:
+                safe_write.write_text(target, first_src.read_text(encoding="utf-8"), mode=mode)
+        except Exception as exc:  # noqa: BLE001 — ошибку потока проверяет тест
+            errors.append(exc)
+
+    worker = threading.Thread(target=write_first, name="first-writer")
+    worker.start()
+    try:
+        assert first_ready.wait(5), "первый писатель не дошёл до replace"
+        if copy:
+            assert safe_write.copy_if_changed(second_src, target)
+        else:
+            assert safe_write.write_text(target, second_src.read_text(encoding="utf-8"), mode=mode)
+        assert target.read_text(encoding="utf-8") == "вторая целая версия"
+    finally:
+        release_first.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert not errors, errors
+    assert target.read_text(encoding="utf-8") == "первая целая версия"
+    assert not list(tmp_path.glob("*.tmp*"))
 
 
 def test_a_failed_write_leaves_the_previous_version_intact(tmp_path, monkeypatch):

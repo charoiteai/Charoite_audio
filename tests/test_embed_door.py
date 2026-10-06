@@ -241,6 +241,16 @@ def test_vectors_ok_accepts_a_full_answer():
     assert embed_door._vectors_ok([[1.0, 2.0], [3.0, 4.0]], 2, None) is True
 
 
+@pytest.mark.parametrize("bad", ["не число", None, True, [], {}, float("nan"),
+                                 float("inf"), float("-inf"), 10 ** 400])
+def test_embedding_transport_rejects_invalid_components_after_the_first(bad, capsys):
+    """Число в первой координате не делает остальные координаты пригодными."""
+    wire = Wire(vectors=lambda inp, n: [[1.0, bad] for _ in inp])
+    answer = _дверь(post=wire).run(["проверка памяти"], timeout=5)
+    assert answer == []
+    assert "не по вектору на текст" in capsys.readouterr().err
+
+
 # ── усечение: `truncate: false`, повтор с `truncate: true` ───────────────
 
 def _отказ(тело: str, код: int = 400):

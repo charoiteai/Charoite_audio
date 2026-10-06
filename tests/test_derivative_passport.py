@@ -32,6 +32,65 @@ import transcript  # noqa: E402
 SPEECH = "**Инга** [10:21]:\nСмету пришлю к пятому, провайдер прежний.\n" * 30
 
 
+def test_attest_publishes_the_byte_hash_and_source_hash_together(tmp_path, monkeypatch):
+    """Сбой второй записи раньше оставлял паспорт с байтами и чужим источником."""
+    import json
+    from charoite_graph import safe_write
+    live = tmp_path / "2026-10-06_120000.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    old_source, new_source = live_sidecar.sha("старая речь"), live_sidecar.sha("новая речь")
+    assert live_sidecar.attest(live, "debrief", "старое тело", old_source)
+    sidecar = live.with_name(live.name + ".live.json")
+    snapshots = []
+    real_write = safe_write.write_text
+
+    def only_one_write(path, body, **kwargs):
+        if path == sidecar and snapshots:
+            raise OSError("вторая запись не удалась")
+        result = real_write(path, body, **kwargs)
+        if path == sidecar:
+            snapshots.append(json.loads(path.read_text(encoding="utf-8")))
+        return result
+
+    monkeypatch.setattr(safe_write, "write_text", only_one_write)
+    assert live_sidecar.attest(live, "debrief", "новое тело", new_source)
+    assert len(snapshots) == 1
+    assert snapshots[0]["debrief_sha256"] == live_sidecar.sha("новое тело")
+    assert snapshots[0]["debrief_source_sha256"] == new_source
+
+
+@pytest.mark.parametrize("kind,existing", [(kind, exists) for kind in ("debrief", "theses")
+                                         for exists in (False, True)])
+def test_retro_keeps_a_file_edited_during_generation(tmp_path, monkeypatch, kind, existing):
+    from types import SimpleNamespace
+    live, tdir = _meeting(tmp_path, monkeypatch)
+    folder = tmp_path / "archive"
+    folder.mkdir()
+    dpath = (live.with_name("2026-09-02_1021_разбор.md") if kind == "debrief"
+             else folder / "Тезисы.md")
+    if existing:
+        assert live_sidecar.write_derivative(live, dpath, kind, "старое машинное", "0" * 64).written
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **kw: SimpleNamespace(
+        folder=folder, summary=meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None),
+        canon=None))
+    meta_before = live_sidecar.read(live) or {}
+    human = "разбор, написанный человеком пока отвечала модель"
+
+    def gen_with_edit(*args, **kwargs):
+        task = args[3]
+        if task == (retro_fill.DEBRIEF_PROMPT if kind == "debrief" else retro_fill.THESES_PROMPT):
+            dpath.write_text(human, encoding="utf-8")
+        return "ответ модели"
+
+    monkeypatch.setattr(retro_fill, "gen", gen_with_edit)
+    made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert ("разбор" if kind == "debrief" else "тезисы") not in made
+    assert dpath.read_text(encoding="utf-8") == human
+    meta = live_sidecar.read(live) or {}
+    assert meta.get(f"{kind}_sha256") == meta_before.get(f"{kind}_sha256")
+    assert meta.get(f"{kind}_source_sha256") == meta_before.get(f"{kind}_source_sha256")
+
+
 @pytest.fixture(autouse=True)
 def _no_live_model(monkeypatch):
     """`archive_meeting` собирает саммари моделью — тесты архива ходили в живой

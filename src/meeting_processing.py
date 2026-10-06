@@ -617,7 +617,16 @@ class MeetingStatusStore:
             # по нему врало бы вниз (№500).
             if data.get("rebuild_skipped"):
                 continue
-            span = float(data.get("updated_at", 0)) - float(data.get("started_at", 0))
+            raw_start, raw_end = data.get("started_at"), data.get("updated_at")
+            if isinstance(raw_start, bool) or isinstance(raw_end, bool):
+                continue
+            try:
+                start, end = float(raw_start), float(raw_end)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(start) or not math.isfinite(end) or start <= 0:
+                continue
+            span = end - start
             if span > 0:
                 spans.append(span)
         if len(spans) < minimum_samples:
