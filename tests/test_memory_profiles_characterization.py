@@ -103,7 +103,11 @@ class FakeLLM:
         return self.__dict__["_system"]
 
     def stream(self, prompt, **kwargs):
-        self.log.add("llm.stream", prompt, dict(sorted(kwargs.items())), self.system)
+        # system вызова по правилу настоящего `LLM.stream`: `system or self.system`
+        # (сборка сообщения `system` в `src/llm.py`); иначе журнал не показывает,
+        # что уходит в модель
+        self.log.add("llm.stream", prompt, dict(sorted(kwargs.items())),
+                     kwargs.get("system") or self.system)
         reply = self.replies.pop(0) if self.replies else ["ok"]
         if isinstance(reply, BaseException):
             raise reply
@@ -283,8 +287,8 @@ WEAK_BARE = dict(result=_result(V.WEAK, blocks=()))
 UNVERIFIED = dict(result=_result(V.UNVERIFIED, reason="Ollama занята", sem_used=False))
 EMPTY = dict(result=_result(V.EMPTY, blocks=()))
 BOOM = dict(result=_result(V.CONFIDENT, cls=BoomResult))
-# Три фрагмента по ~1 600 знаков — больше любого бюджета блока (2 000 / 3 000 /
-# 2 600): иначе журнал не видит, где потребитель режет блок, и сдвиг бюджета на
+# Три фрагмента по ~1 600 знаков — больше любого бюджета блока (3 000 / 2 600):
+# иначе журнал не видит, где потребитель режет блок, и сдвиг бюджета на
 # единицу проходит зелёным (опровергающий опыт №629 ч. 2)
 LONG = tuple(f"фрагмент {i}: " + "длинный текст встречи " * 70 for i in (1, 2, 3))
 OVER = dict(result=_result(V.CONFIDENT, blocks=LONG))
@@ -342,9 +346,20 @@ def run_scenario(monkeypatch, name: str) -> list:
 
 
 def run_live_then_answer(monkeypatch) -> list:
-    """Такт живого → ответ: ответ видит в `llm.system` блок прошлого такта (№637,
-    переносится как есть)."""
+    """Такт живого → ответ: такт записал блок памяти в общий `llm.system` для
+    авто-подсказки, а ответ идёт с ролью без памяти (№652) — в журнале видно и
+    то, и другое."""
     h = Harness(monkeypatch, result=_result(V.CONFIDENT), replies=[["релиз"], ["ответ"]])
+    h.call("live_context_loop")
+    return h.call("gen_answer", "а что по релизу?")
+
+
+def run_live_then_answer_search_fails(monkeypatch) -> list:
+    """Такт живого → ответ, у которого собственный поиск бросил исключение
+    (`NOT_READY` — как `answer.not_ready`, фасад поднимает `MemoryNotReady`):
+    ветка отказа (№652 ч. 2) берёт общее поле демона, записанное тактом живого,
+    а не роль — в журнале видно и то, и другое."""
+    h = Harness(monkeypatch, result=NOT_READY, replies=[["релиз"], ["ответ"]])
     h.call("live_context_loop")
     return h.call("gen_answer", "а что по релизу?")
 
@@ -356,23 +371,36 @@ def _normalize(log) -> list:
 def snapshot(monkeypatch) -> dict:
     out = {name: _normalize(run_scenario(monkeypatch, name)) for name in SCENARIOS}
     out["live_then_answer"] = _normalize(run_live_then_answer(monkeypatch))
+    out["live_then_answer_search_fails"] = _normalize(
+        run_live_then_answer_search_fails(monkeypatch))
     return out
 
 
-@pytest.mark.parametrize("name", [*SCENARIOS, "live_then_answer"])
+@pytest.mark.parametrize("name", [*SCENARIOS, "live_then_answer", "live_then_answer_search_fails"])
 def test_memory_consumers_match_the_snapshot_byte_for_byte(monkeypatch, name):
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    got = (run_live_then_answer(monkeypatch) if name == "live_then_answer"
-           else run_scenario(monkeypatch, name))
+    if name == "live_then_answer_search_fails":
+        got = run_live_then_answer_search_fails(monkeypatch)
+    elif name == "live_then_answer":
+        got = run_live_then_answer(monkeypatch)
+    else:
+        got = run_scenario(monkeypatch, name)
     assert _normalize(got) == golden[name]
 
 
-def test_snapshot_covers_every_scenario_and_observes_the_seams():
+def test_snapshot_covers_every_scenario_and_observes_the_seams(monkeypatch):
     """Снимок не пуст и видит то, ради чего снят: таймаут вектора на уровне
     движка у каждого потребителя, kwargs модели, присваивание `llm.system`,
-    исключение упаковки наружу у раскрытия и живого и его отсутствие у ответа."""
+    исключение упаковки наружу у раскрытия и живого и его отсутствие у ответа.
+
+    Утверждения о system ответа — на СВЕЖИХ прогонах `live_then_answer` и
+    `live_then_answer_search_fails`, а не на снимке. Снимок фиксирует kwargs
+    ответа по сценариям, но пересобирается вместе с правкой `gen_answer` (так
+    часть 2 №652 сменила system у четырёх сценариев `answer.*`). Поэтому связь
+    «такт живого записал общее поле → ответ выбрал system» стережёт только
+    свежий прогон, а меняют её `daemon.py` и заглушка."""
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    assert set(golden) == {*SCENARIOS, "live_then_answer"}
+    assert set(golden) == {*SCENARIOS, "live_then_answer", "live_then_answer_search_fails"}
 
     def engine_timeouts(name):
         return [e[2]["embed_timeout"] for e in golden[name] if e[0] == "engine.search"]
@@ -385,8 +413,47 @@ def test_snapshot_covers_every_scenario_and_observes_the_seams():
     assert golden["expand.pack_raises"][-1][:2] == ["raised", "Boom"]
     assert golden["live.pack_raises"][-1][:2] == ["raised", "Boom"]
     assert not any(e[0] == "raised" for e in golden["answer.pack_raises"])
-    streams = [e for e in golden["live_then_answer"] if e[0] == "llm.stream"]
-    assert streams[-1][3].startswith("БАЗА РОЛИ"), "ответ видит блок прошлого такта живого"
+
+    live = _normalize(run_live_then_answer(monkeypatch))
+    # Положительный контроль: такт живого записал память в общее поле — его
+    # значение длиннее роли (иначе «ответ видит блок прошлого такта» было бы
+    # пусто: startswith верен и с памятью, и без неё).
+    systems = [e for e in live if e[0] == "llm.system="]
+    assert systems, "такт живого не записал память в общее llm.system"
+    assert len(systems[-1][1]) > len("БАЗА РОЛИ"), "блок памяти такта — длиннее роли"
+    # Ответ идёт ровно с ролью без памяти (№652): равенство, не startswith.
+    streams = [e for e in live if e[0] == "llm.stream"]
+    assert streams[-1][3] == "БАЗА РОЛИ", "ответ идёт с ролью без памяти"
+
+    # Ветка отказа собственного поиска (№652 ч. 2): такт живого записал память в
+    # общее поле, и ответ берёт её — равенство, не startswith.
+    failed = _normalize(run_live_then_answer_search_fails(monkeypatch))
+    failed_systems = [e for e in failed if e[0] == "llm.system="]
+    assert failed_systems, "такт живого не записал память в общее llm.system"
+    assert len(failed_systems[-1][1]) > len("БАЗА РОЛИ"), "блок памяти такта — длиннее роли"
+    failed_streams = [e for e in failed if e[0] == "llm.stream"]
+    assert failed_streams[-1][3] == failed_systems[-1][1], \
+        "ветка отказа берёт общее поле демона, а не роль"
+
+
+def test_answer_profile_system_wins_over_the_daemons_default(monkeypatch):
+    """У system один владелец (№652 ч. 2): если профилю `ANSWER` задали
+    `synth.system`, побеждает он, а не выбор демона. Иначе вызов с
+    `system=<выбор>` и `**stream_kwargs(..., system=…)` падал бы `TypeError` о
+    повторном аргументе, и каждый ответ кончался строкой об ошибке.
+
+    Точка подмены — `brain.ANSWER`: замыкание `gen_answer` читает профиль через
+    модуль `brain`, и `stream_kwargs`/`answer_prompt` берут его же."""
+    h = Harness(monkeypatch, result=_result(V.CONFIDENT), replies=[["ответ"]])
+    override = brain.ANSWER._replace(
+        synth=brain.ANSWER.synth._replace(system="ПРОФИЛЬ"))
+    monkeypatch.setattr(brain, "ANSWER", override)
+    log = h.call("gen_answer", "что решили?")
+    streams = [e for e in log if e[0] == "llm.stream"]
+    assert streams and streams[-1][3] == "ПРОФИЛЬ", "system профиля побеждает"
+    assert not any(e[0] == "emit_error" for e in log), "вызов не упал на повторном system"
+    assert any(e[0] == "emit" and e[1].get("type") == "hint" and e[1].get("text") == "ответ"
+               for e in log), "ответ дошёл до панели"
 
 
 if __name__ == "__main__" and "--write" in sys.argv:
