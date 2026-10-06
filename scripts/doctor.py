@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import platform
 import shlex
 import subprocess
 import sys
@@ -257,20 +258,56 @@ def check_models() -> None:
 
 
 def check_engine(cfg: dict) -> None:
-    """Движок диаризации после встречи — строка, только если выбран не sherpa (№474).
+    """Движок диаризации — строкой из `engine_state` (№474, №622 B2).
 
-    Без сети и без mlx в процессе доктора: окружение (настройка или установленное),
-    версия mlx-audio и каталог весов — пробой движка его же интерпретатором; строка
-    называет интерпретатор, который выбрала дверь (ключ главнее окружения). Не
-    готов — не авария: пересборка размечает голоса sherpa и пишет причину в шапку
-    стенограммы, поэтому «–», а не «✗»."""
-    sufler = cfg.get("sufler") or {}
-    if str(sufler.get("diarize_backend") or "sherpa").strip().lower() != "nemotron":
-        return
+    Без сети и без mlx в процессе доктора. Выбран Nemotron — проба его же
+    интерпретатором, как раньше. Выбран sherpa на Apple Silicon — информационная
+    строка: движок готов (`state["ready"]`: выбранный интерпретатор есть файлом и
+    веса годны), просто не включён, или не готов, и тогда с советом. Готовность
+    доктор сам не считает — только читает поле. Неизвестный `diarize_backend` —
+    своя строка без совета ставить. Живой поток не `off`, а движок не готов —
+    предупреждение: он молча не
+    поднимется; на машине, где движок не работает, вместо команды установщика
+    совет выключить поток. Не готов — не авария: пересборка размечает голоса
+    sherpa и пишет причину в шапку стенограммы, поэтому «–», а не «✗»."""
     root = _root()
-    setting = str(sufler.get("nemotron_python") or "")
-    # чей интерпретатор в работе — выбором самой двери: заданный ключ главнее установленного окружения
-    python, refusal = diarize_nemotron.engine_interpreter(setting, root)
+    state = diarize_nemotron.engine_state(root, cfg)
+    if state["backend"] == "nemotron":
+        _check_nemotron_engine(cfg, root, state)
+    elif state["backend"] in diarize_nemotron.ENGINE_BACKENDS:
+        _check_sherpa_engine(root, state)
+    else:
+        # Неизвестный ключ (опечатка) — своя строка без совета ставить движок:
+        # ставить нечего, пока ключ не исправлен; размечает всё равно sherpa.
+        line(WARN, f"ключ sufler.diarize_backend: {state['backend']!r} неизвестен — голоса после "
+                   f"встречи размечает sherpa; допустимые: {', '.join(diarize_nemotron.ENGINE_BACKENDS)}")
+    if state["live_mode"] != "off" and not state["ready"]:
+        # Готовность считает `engine_state` — доктор только читает поле. На машине,
+        # где движок вообще не работает, команды установщика не даём: он там
+        # отказывает кодом 1 («только на Mac с Apple Silicon»), и совет был бы
+        # тупиком — советуем выключить поток.
+        if _on_apple_silicon():
+            line(WARN, f"живой поток Nemotron включён ({state['live_mode']}), а движок не готов",
+                 f"поток не поднимется — {diarize_nemotron.install_command(root)}")
+        else:
+            line(WARN, f"живой поток Nemotron включён ({state['live_mode']}), а движок на этой машине не работает",
+                 "поток не поднимется — sufler.live_nemotron: off")
+
+
+def _on_apple_silicon() -> bool:
+    """Машина, где движок Nemotron вообще работает: одна проверка на оба места доктора."""
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _check_nemotron_engine(cfg: dict, root: pathlib.Path, state: dict) -> None:
+    """Выбран Nemotron: проба — настоящая, как и была; причина и совет — из состояния.
+
+    `cfg` не читается намеренно: форму конфига уже нормализовал `engine_state`, и
+    значение `sufler.nemotron_python` приходит в `state` — знание о форме живёт
+    в одном месте. `cfg` остаётся в подписи ради вызывающего, но не трогается:
+    строка вместо `sufler` здесь больше не роняет доктора (№622 B2, часть 1)."""
+    setting = state["nemotron_python"]
+    python, refusal = state["interpreter"], state["interpreter_reason"]
     out = diarize_nemotron.probe_in_env(setting, root=root)
     if out.ok:
         line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
@@ -281,15 +318,37 @@ def check_engine(cfg: dict) -> None:
     command = diarize_nemotron.install_command(root)
     if refusal:          # окружения нет — отказ пробы уже несёт команду установщика
         advice = ""
-    elif setting.strip():  # ключ главнее установленного окружения: переустановка его не заменит
+    elif state["nemotron_python_set"]:  # ключ главнее установленного окружения: переустановка его не заменит
+        # Команду установщика не даём: он ключ не заменит — лечит правка ключа.
         advice = ("ключ sufler.nemotron_python главнее установленного окружения — исправьте или "
-                  f"очистите его; окружение ставит {command}")
+                  "очистите его")
     elif out.kind == "unavailable":  # установленное окружение неполно — команда пришла с причиной
         advice = ""
     else:                # установленное окружение есть, но падает
         advice = f"переставить окружение: {command}"
     line(WARN, "Nemotron выбран, но не готов — голоса после встречи размечает sherpa",
          out.reason + (f"; {advice}" if advice else ""))
+
+
+def _check_sherpa_engine(root: pathlib.Path, state: dict) -> None:
+    """Выбран sherpa: движок Nemotron только на Apple Silicon — на других машинах молчим.
+
+    Готовность — поле `ready` состояния: заданный `nemotron_python` главнее
+    установленного окружения, и его годность судит та же мера, что у двери."""
+    if not _on_apple_silicon():
+        return
+    command = diarize_nemotron.install_command(root)
+    if state["ready"]:
+        line(WARN, "Nemotron-движок стоит, но не включён — голоса после встречи размечает sherpa",
+             f"включить: sufler.diarize_backend: nemotron; либо {command}")
+    elif state["nemotron_python_set"]:
+        # Ключ задан, но движок по нему не готов: установщик ключ не заменит,
+        # поэтому команды установщика нет — советуем исправить или очистить ключ.
+        line(WARN, "Nemotron-движок не готов — голоса после встречи размечает sherpa",
+             f"исправьте или очистите ключ sufler.nemotron_python; причина: {state['ready_reason']}")
+    else:
+        line(WARN, "Nemotron-движок не стоит — голоса после встречи размечает sherpa",
+             f"поставить: {command}")
 
 
 def check_deps() -> None:
