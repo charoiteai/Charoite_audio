@@ -223,3 +223,35 @@ def test_shared_acquire_default_retries_are_spaced_against_probes(tmp_path):
         assert file_locks.acquire_shared(f, sleep=pauses.append) is False
     holder.close()
     assert pauses == [0.2] * 4
+
+
+# ---- Исход захвата: взят / занято / том без flock (№622 B2) ------------------
+
+
+def test_acquire_outcome_is_taken_on_a_free_lock(tmp_path):
+    with (tmp_path / "x.lock").open("w") as f:
+        assert file_locks.acquire_outcome(f) == file_locks.TAKEN
+
+
+def test_acquire_outcome_names_a_holder_as_busy(tmp_path):
+    """Занятость — после умолчаний, как у `acquire_exclusive`: пять попыток через 0,2 с."""
+    holder = (tmp_path / "x.lock").open("w")
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    pauses: list[float] = []
+    try:
+        with (tmp_path / "x.lock").open("w") as f:
+            assert file_locks.acquire_outcome(f, sleep=pauses.append) == file_locks.BUSY
+    finally:
+        holder.close()
+    assert pauses == [0.2] * 4
+
+
+def test_acquire_outcome_keeps_no_flock_distinct_from_busy(monkeypatch, tmp_path):
+    """Том без flock — не занятость: установщик по этому исходу отказывает кодом 1,
+    а «занято» — своим кодом. Свёрнутые в одно, они неразличимы снаружи."""
+    def no_flock(fd, op):
+        raise OSError(errno.ENOLCK, "no locks")
+    monkeypatch.setattr(file_locks.fcntl, "flock", no_flock)
+    with (tmp_path / "x.lock").open("w") as f:
+        got = file_locks.acquire_outcome(f)
+    assert got == file_locks.NO_FLOCK and got != file_locks.BUSY

@@ -846,6 +846,38 @@ def test_the_engine_lives_under_the_data_root_next_to_its_weights(tmp_path):
     assert nem.model_dir(tmp_path) == tmp_path / "models" / "diar" / "nemotron"
 
 
+def test_engine_state_missing_names_what_is_lacking(tmp_path):
+    """`engine_state.missing` называет, чего не хватает до готовности: окружения,
+    интерпретатора, бита исполнения у интерпретатора, весов — или `None`, когда готов;
+    `ready` равно `missing is None`. Готовность — по раскладке, без запуска движка
+    (№622 B2, часть 1)."""
+    state = nem.engine_state(tmp_path, {})
+    assert state["missing"] == "environment" and state["ready"] is False
+
+    state = nem.engine_state(tmp_path, {"sufler": {"nemotron_python": str(tmp_path / "нет" / "python")}})
+    assert state["missing"] == "interpreter" and state["ready"] is False
+
+    python = tmp_path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#", encoding="utf-8")
+    python.chmod(0o644)   # файл есть, бита исполнения нет — дверь получила бы PermissionError
+    state = nem.engine_state(tmp_path, {"sufler": {"nemotron_python": str(python)}})
+    assert state["missing"] == "interpreter" and state["ready"] is False
+
+    python.chmod(0o755)
+    state = nem.engine_state(tmp_path, {"sufler": {"nemotron_python": str(python)}})
+    assert state["missing"] == "weights" and state["ready"] is False
+
+    weights = nem.model_dir(tmp_path)
+    weights.mkdir(parents=True)
+    (weights / "config.json").write_text(
+        json.dumps({"model_type": nem.MODEL_TYPE, "num_speakers": nem.MAX_SLOTS}), encoding="utf-8")
+    with (weights / "model.safetensors").open("wb") as f:
+        f.truncate(nem.MIN_WEIGHTS_BYTES)
+    state = nem.engine_state(tmp_path, {"sufler": {"nemotron_python": str(python)}})
+    assert state["missing"] is None and state["ready"] is True and state["ready_reason"] is None
+
+
 def test_inside_the_bundle_the_command_names_the_app_python_next_to_the_code(tmp_path, monkeypatch):
     """Код внутри Charoite.app: Python приложения — рядом, кто бы ни печатал команду
     (доктор из терминала — тоже), а корень данных — тот, с которым работает печатающий
