@@ -1127,7 +1127,7 @@ class GraphSearch:
                 return None
             checked = []
             for entry in entries:
-                if not isinstance(entry, list) or len(entry) != 3:
+                if not isinstance(entry, list):
                     return None
                 path, stamp, n = entry
                 if (not isinstance(path, str) or not path or type(n) is not int or n <= 0
@@ -1170,7 +1170,9 @@ class GraphSearch:
         stem = self._vec_manifest.stem
         previous = None
         try:
-            previous = json.loads(self._vec_manifest.read_text(encoding="utf-8")).get("blob")
+            prior = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
+            if isinstance(prior, dict) and isinstance(prior.get("blob"), str):
+                previous = prior["blob"]
         except (OSError, ValueError):
             pass
         blob = self._vec_manifest.with_name(f"{stem}.{uuid.uuid4().hex[:12]}.f32")   # уникально по построению, не по часам (DS I3 r2)

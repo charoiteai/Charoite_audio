@@ -149,7 +149,7 @@ def test_mcp_minutes_keep_edits_made_during_generation(tmp_path, monkeypatch, ex
     _minutes_client(monkeypatch, answer)
     out = mcp_server.sufler_make_minutes()
 
-    assert "НЕ тронуты" in out
+    assert "файл изменился за время генерации" in out and "НЕ тронуты" in out
     assert minutes.read_text(encoding="utf-8") == "правка владельца во время генерации"
     assert prev.read_text(encoding="utf-8") == "прежняя резервная копия"
     assert mcp_server.live_sidecar.read(live) == passport
@@ -170,6 +170,24 @@ def test_mcp_minutes_keep_previous_version_and_attest_new_bytes(tmp_path, monkey
     meta = mcp_server.live_sidecar.read(live)
     assert meta["minutes_sha256"] == mcp_server.live_sidecar.sha(minutes.read_text(encoding="utf-8"))
     assert meta["minutes_source_sha256"] == mcp_server.meeting_source.of(live, live.read_text(encoding="utf-8")).sha()
+
+
+def test_mcp_minutes_report_backup_failure_without_replacing_the_file(tmp_path, monkeypatch):
+    tdir = _transcripts(tmp_path, monkeypatch)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    minutes.write_text("прежние минутки", encoding="utf-8")
+    assert mcp_server.live_sidecar.attest(live, "minutes", "прежние минутки", "1" * 64)
+    passport = mcp_server.live_sidecar.read(live)
+    prev = mcp_server.live_sidecar.prev_path(live, minutes)
+    prev.parent.write_text("каталог резервных копий недоступен", encoding="utf-8")
+    _minutes_client(monkeypatch, lambda: "- Решение модели")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "предыдущая версия не сохранена" in out and "НЕ тронуты" in out
+    assert minutes.read_text(encoding="utf-8") == "прежние минутки"
+    assert mcp_server.live_sidecar.read(live) == passport
 
 
 def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):

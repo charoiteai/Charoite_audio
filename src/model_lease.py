@@ -237,7 +237,7 @@ class Lease:
 
 def _finite_time(value: object) -> float | None:
     """Повреждённое время не доказывает зависание и не ломает диагностику."""
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
         result = float(value)

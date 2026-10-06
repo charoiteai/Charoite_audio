@@ -125,6 +125,13 @@ def test_bad_started_time_does_not_break_restart_refusal(tmp_path, monkeypatch, 
         assert "время начала неизвестно" in messages[0]
 
 
+@pytest.mark.parametrize("started,age", [(986.0, 14), (1001.0, 0)])
+def test_lease_description_reports_elapsed_time_and_clamps_future_start(started, age):
+    description = model_lease.describe([{"pid": 7, "kind": "minutes", "engine": "ollama",
+                                         "started": started}], now=1000.0)
+    assert f"идёт {age} с" in description
+
+
 def test_a_lease_is_never_visible_without_its_lock(tmp_path, monkeypatch):
     """Протокол публикации (C1 DS / I2 GLM выходного круга): файл появляется
     под именем `*.json` только через rename уже запертого inode. Раньше

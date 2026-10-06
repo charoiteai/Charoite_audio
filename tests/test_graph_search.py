@@ -334,9 +334,12 @@ def test_dossiers_axis_off_on_a_summary_only_question_is_empty(tmp_path):
 @pytest.mark.parametrize("part,bad", [
     ("manifest", []), ("manifest", None), ("files", None),
     ("files", [["сломанная запись"]]), ("count", "не число"),
+    ("files", [["путь", 1.0, 1, "лишнее поле"]]),
+    ("files", [{"path": "путь", "mtime": 1.0, "count": 1}]),
     ("mtime", "не время"), ("mtime", None), ("path", None),
     ("component", float("nan")), ("component", float("inf")),
     ("empty_dim", 0), ("empty_count", 0),
+    ("blob", []), ("blob", {}),
 ])
 def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
@@ -348,6 +351,8 @@ def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad
         manifest = bad
     elif part == "files":
         manifest["files"] = bad
+    elif part == "blob":
+        manifest["blob"] = bad
     elif part in {"empty_dim", "empty_count"}:
         if part == "empty_dim":
             manifest["dim"] = bad
@@ -369,6 +374,13 @@ def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad
     assert cold.pending_vectors()
     result = cold.search("платёжный шлюз", semantic=False)
     assert not result.empty and result.blocks
+    assert cold.embed_pending() == cold.size, "повреждение не мешает заменить кэш"
+    restored = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    restored.refresh(force=True)
+    assert restored.load_vectors() == restored.size
+    assert not restored.pending_vectors(), "новый кэш годится следующему процессу"
+    result = restored.search("поставщик платёжного шлюза")
+    assert result.sem_used and not result.empty
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
