@@ -5,6 +5,31 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.94.0](https://github.com/charoiteai/Charoite_audio/compare/v0.93.0...v0.94.0) (2026-10-06)
+
+
+### Features
+
+* **graph:** dossiers axis in the memory profile and bench ([#743](https://github.com/charoiteai/Charoite_audio/issues/743)) ([fd7c8d8](https://github.com/charoiteai/Charoite_audio/commit/fd7c8d840784677817585fa30719ac72d3b3305d))
+* **memory:** consumer profiles in brain.py, the bench measures the daemon's path ([#734](https://github.com/charoiteai/Charoite_audio/issues/734)) ([53f5c43](https://github.com/charoiteai/Charoite_audio/commit/53f5c43d32fabce36f88a0a0ade18d0fe6f5b19b))
+
+
+### Bug Fixes
+
+* **audio:** disk and memory headroom checks before recording ([#319](https://github.com/charoiteai/Charoite_audio/issues/319)) ([#728](https://github.com/charoiteai/Charoite_audio/issues/728)) ([b48b204](https://github.com/charoiteai/Charoite_audio/commit/b48b20483698df609f502ee6e94c1616cac02604))
+* **diarization:** a long channel the engine failed to label cancels the rebuild ([#732](https://github.com/charoiteai/Charoite_audio/issues/732)) ([d1f1b4e](https://github.com/charoiteai/Charoite_audio/commit/d1f1b4eaf25e6c6202ba571f2ebe9b20b568e51e))
+* **diarization:** install the segmentation model with the voice set ([#730](https://github.com/charoiteai/Charoite_audio/issues/730)) ([b72081a](https://github.com/charoiteai/Charoite_audio/commit/b72081aeb5fe2a8533c66930fd5f175e45112ddb))
+* **graph:** newest meeting reaches the dossier prompt ([#741](https://github.com/charoiteai/Charoite_audio/issues/741)) ([2a2c8b0](https://github.com/charoiteai/Charoite_audio/commit/2a2c8b0bb0549b9c83d2cff0a4ce6d64e6ebfb8f))
+* **memory:** answer profile without dossiers ([#744](https://github.com/charoiteai/Charoite_audio/issues/744)) ([ef3dbb4](https://github.com/charoiteai/Charoite_audio/commit/ef3dbb449a5d839e086c55f9bd5fd31334187bcc))
+* **memory:** the panel answer gets the role and budget 3000, and the shared system when its own search fails ([#752](https://github.com/charoiteai/Charoite_audio/issues/752)) ([7f3eaa9](https://github.com/charoiteai/Charoite_audio/commit/7f3eaa9fbb27ae12f48a35f08998484c1709adef))
+* **mutation:** a door function's zone follows name mentions in its module ([#726](https://github.com/charoiteai/Charoite_audio/issues/726)) ([a37856d](https://github.com/charoiteai/Charoite_audio/commit/a37856d7ce819abe5358d998bdac28b41ea93454))
+* **names:** отказы имён дописываются в конец ревизии, гонка и шум мимо раздела ([#727](https://github.com/charoiteai/Charoite_audio/issues/727)) ([1b5457d](https://github.com/charoiteai/Charoite_audio/commit/1b5457dd8a1ae4fa0749e16d5cb18011c948fc08))
+* **privacy:** keep the previous minutes generation and scrub hints ([#733](https://github.com/charoiteai/Charoite_audio/issues/733)) ([282a528](https://github.com/charoiteai/Charoite_audio/commit/282a528f5a96f8bb580db3ca5f469decb6324a18))
+* **privacy:** show a policy-refused model address before the meeting starts ([#724](https://github.com/charoiteai/Charoite_audio/issues/724)) ([17d0d83](https://github.com/charoiteai/Charoite_audio/commit/17d0d83496c1f4a7df4ac3042208ef2868ba37fb))
+* **rebuild:** neutral labels for echo voices where the call channel is dead ([#747](https://github.com/charoiteai/Charoite_audio/issues/747)) ([79979f1](https://github.com/charoiteai/Charoite_audio/commit/79979f10854758eecd1369a041fd624a07e8bdd9))
+* **status:** an unfinished rebuild is visible on the ready meeting ([#731](https://github.com/charoiteai/Charoite_audio/issues/731)) ([1b7118d](https://github.com/charoiteai/Charoite_audio/commit/1b7118d3c29d781163871bd282e8b3856a17a1e6))
+* **transcript:** pending-names flag follows content, not the banner line ([#501](https://github.com/charoiteai/Charoite_audio/issues/501)) ([3c120ac](https://github.com/charoiteai/Charoite_audio/commit/3c120ac1516dd601344bcc50b4566cebaf11f4c6))
+
 ## [0.93.0](https://github.com/charoiteai/Charoite_audio/compare/v0.92.0...v0.93.0) (2026-10-03)
 
 
