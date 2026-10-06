@@ -27,6 +27,34 @@ import retro_fill  # noqa: E402
 NOTE = channel_trace.SUMMARY_MARK + ": без собеседников 10:00–10:05 (эпизодов 1, всего 5 мин)"
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_summary_keeps_human_edits_made_while_the_model_answers(tmp_path, monkeypatch, existing):
+    import llm
+    folder, live = _folder(tmp_path)
+    out = folder / "Саммари.md"
+    source = ma._summary_freshness(folder, live, None).source_sha
+    if existing:
+        assert live_sidecar.write_derivative(live, out, "summary", "старое машинное", "0" * 64).written
+    prev = live_sidecar.prev_path(live, out)
+    prev.parent.mkdir(exist_ok=True)
+    prev.write_text("предыдущая версия до аудита", encoding="utf-8")
+    meta_before = live_sidecar.read(live)
+    human = "ручная правка во время ответа модели, сохранить целиком"
+
+    def complete_with_edit(self, *args, **kwargs):
+        out.write_text(human, encoding="utf-8")
+        return "**Суть** ответ модели\n"
+
+    monkeypatch.setattr(llm.LLM, "complete", complete_with_edit)
+    result = ma.summary_pass(folder, live, None, mode=ma.SummaryMode.REBUILD)
+    assert result.action == ma.SummaryOutcome.REFUSED
+    assert out.read_text(encoding="utf-8") == human
+    assert prev.read_text(encoding="utf-8") == "предыдущая версия до аудита"
+    assert live_sidecar.read(live) == meta_before
+    assert live_sidecar.derivative_state(out, meta_before, "summary", source) in (
+        live_sidecar.UNKNOWN, live_sidecar.HUMAN)
+
+
 def _folder(tmp_path, minutes="## Решения\n1. Первое решение принято.\n"):
     folder = tmp_path / "2026-09-19 10-00 — Тема"
     folder.mkdir()

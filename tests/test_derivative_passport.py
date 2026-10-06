@@ -12,7 +12,9 @@ mtime двигают ретитл, ко-мышление, ревизия, кри
 from __future__ import annotations
 
 import collections
+import os
 import pathlib
+import stat
 import sys
 
 import pytest
@@ -30,6 +32,162 @@ import retro_fill  # noqa: E402
 import transcript  # noqa: E402
 
 SPEECH = "**Инга** [10:21]:\nСмету пришлю к пятому, провайдер прежний.\n" * 30
+
+
+def test_retro_immediate_writer_keeps_previous_version_and_updates_passport(tmp_path):
+    live = tmp_path / "2026-10-06_1200.md"
+    live.write_text("речь", encoding="utf-8")
+    target = tmp_path / "2026-10-06_1200_debrief.md"
+    target.write_text("прежний разбор", encoding="utf-8")
+    source = live_sidecar.sha("речь")
+
+    assert retro_fill._write_derivative(live, target, "debrief", "новый разбор", source).written
+
+    assert target.read_text(encoding="utf-8") == "новый разбор"
+    assert live_sidecar.prev_path(live, target).read_text(encoding="utf-8") == "прежний разбор"
+    meta = live_sidecar.read(live)
+    assert meta["debrief_sha256"] == live_sidecar.sha("новый разбор")
+    assert meta["debrief_source_sha256"] == source
+
+
+def test_previous_version_is_copied_as_bytes_even_outside_utf8(tmp_path):
+    """Прежняя версия производной копируется в `.prev` байтами: минутки не в
+    UTF-8 — штатное состояние (оракул зовёт такие байты HUMAN), а чтение их
+    текстом роняло писателя `UnicodeDecodeError`: это ValueError, не OSError,
+    и он уходил мимо всех обработчиков (№663)."""
+    live = tmp_path / "2026-10-06_1200.md"
+    live.write_text("# Встреча 2026-10-06_1200\n", encoding="utf-8")
+    target = live.with_name("2026-10-06_1200_minutes.md")
+    old = "прежняя версия в cp1251: сроки, суммы\n".encode("cp1251")
+    target.write_bytes(old)
+    source = live_sidecar.sha("речь")
+
+    outcome = live_sidecar.write_derivative(live, target, "minutes", "новые минутки\n", source)
+
+    assert outcome.written
+    assert live_sidecar.prev_path(live, target).read_bytes() == old, "копия — байт в байт"
+    assert target.read_text(encoding="utf-8") == "новые минутки\n"
+    meta = live_sidecar.read(live)
+    assert meta["minutes_sha256"] == live_sidecar.sha("новые минутки\n")
+    assert meta["minutes_source_sha256"] == source
+
+
+def test_previous_version_gets_the_process_mask_not_the_source_mode(tmp_path):
+    """`.prev` — копия прежней производной с правами ПО МАСКЕ ПРОЦЕССА, а не с
+    правами источника: минутки 0644 (записаны до `harden_umask` или правлены в
+    редакторе) не должны оставлять читаемую всем базу — прежняя запись `.prev`
+    шла `write_text`, то есть создавалась по маске (0600 при 0o077), а
+    `copy_if_changed` через `copy2` тащила права и времена источника (№663)."""
+    live = tmp_path / "2026-10-06_1200.md"
+    live.write_text("# Встреча 2026-10-06_1200\n", encoding="utf-8")
+    target = live.with_name("2026-10-06_1200_minutes.md")
+    old = "прежние минутки в cp1251: сроки, суммы\n".encode("cp1251")
+    target.write_bytes(old)
+    os.chmod(target, 0o644)                      # как файл, записанный до harden_umask
+    old_umask = os.umask(0o077)
+    try:
+        outcome = live_sidecar.write_derivative(live, target, "minutes", "новые\n",
+                                                live_sidecar.sha("речь"))
+    finally:
+        os.umask(old_umask)
+
+    assert outcome.written
+    prev = live_sidecar.prev_path(live, target)
+    assert prev.read_bytes() == old, "копия — байт в байт"
+    assert stat.S_IMODE(prev.stat().st_mode) == 0o600, "не права источника 0644"
+
+
+@pytest.mark.parametrize("refused,words", [
+    (live_sidecar.WriteOutcome.RACE, "файл изменился за время генерации"),
+    (live_sidecar.WriteOutcome.PREV, "предыдущая версия не сохранена"),
+])
+def test_retro_report_names_the_write_refusal_reason(refused, words):
+    """RACE и PREV — разные причины отказа, и владельцу они говорят разное.
+    Отчёт печатает их теми же словами, что `mcp_server`, а не общим «запись
+    отклонена» (№663)."""
+    made: list[str] = []
+    skipped: list[str] = []
+
+    retro_fill._built(made, skipped, "разбор", "тело модели",
+                      lambda: live_sidecar.WriteOutcome(None, refused))
+
+    assert made == []
+    assert skipped == [f"разбор — {words}"]
+
+
+@pytest.mark.parametrize("outcome,words", [
+    (live_sidecar.WriteOutcome(None, live_sidecar.WriteOutcome.RACE),
+     "файл изменился за время генерации"),
+    (live_sidecar.WriteOutcome(None, live_sidecar.WriteOutcome.PREV),
+     "предыдущая версия не сохранена"),
+    (live_sidecar.WriteOutcome(None, "disk"),
+     "запись не выполнена (disk)"),          # новый вид называет себя, а не берёт слова PREV
+    (live_sidecar.WriteOutcome(live_sidecar.FRESH), ""),   # удачная запись слов не требует
+])
+def test_refusal_words_live_with_the_kind_and_are_said_once(outcome, words):
+    """Словарь «вид отказа → слова для человека» жил копиями в `mcp_server` и
+    `retro_fill`, и обе копии любой вид, кроме RACE, печатали как «предыдущая
+    версия не сохранена» (№663). Теперь слова — у самого `WriteOutcome`."""
+    assert outcome.refusal_words == words
+
+
+def test_attest_publishes_the_byte_hash_and_source_hash_together(tmp_path, monkeypatch):
+    """Сбой второй записи раньше оставлял паспорт с байтами и чужим источником."""
+    import json
+    from charoite_graph import safe_write
+    live = tmp_path / "2026-10-06_120000.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    old_source, new_source = live_sidecar.sha("старая речь"), live_sidecar.sha("новая речь")
+    assert live_sidecar.attest(live, "debrief", "старое тело", old_source)
+    sidecar = live.with_name(live.name + ".live.json")
+    snapshots = []
+    real_write = safe_write.write_text
+
+    def only_one_write(path, body, **kwargs):
+        if path == sidecar and snapshots:
+            raise OSError("вторая запись не удалась")
+        result = real_write(path, body, **kwargs)
+        if path == sidecar:
+            snapshots.append(json.loads(path.read_text(encoding="utf-8")))
+        return result
+
+    monkeypatch.setattr(safe_write, "write_text", only_one_write)
+    assert live_sidecar.attest(live, "debrief", "новое тело", new_source)
+    assert len(snapshots) == 1
+    assert snapshots[0]["debrief_sha256"] == live_sidecar.sha("новое тело")
+    assert snapshots[0]["debrief_source_sha256"] == new_source
+
+
+@pytest.mark.parametrize("kind,existing", [(kind, exists) for kind in ("debrief", "theses")
+                                         for exists in (False, True)])
+def test_retro_keeps_a_file_edited_during_generation(tmp_path, monkeypatch, kind, existing):
+    from types import SimpleNamespace
+    live, tdir = _meeting(tmp_path, monkeypatch)
+    folder = tmp_path / "archive"
+    folder.mkdir()
+    dpath = (live.with_name("2026-09-02_1021_разбор.md") if kind == "debrief"
+             else folder / "Тезисы.md")
+    if existing:
+        assert live_sidecar.write_derivative(live, dpath, kind, "старое машинное", "0" * 64).written
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **kw: SimpleNamespace(
+        folder=folder, summary=meeting_archive.SummaryOutcome(meeting_archive.SummaryOutcome.NONE, None),
+        canon=None))
+    meta_before = live_sidecar.read(live) or {}
+    human = "разбор, написанный человеком пока отвечала модель"
+
+    def gen_with_edit(*args, **kwargs):
+        task = args[3]
+        if task == (retro_fill.DEBRIEF_PROMPT if kind == "debrief" else retro_fill.THESES_PROMPT):
+            dpath.write_text(human, encoding="utf-8")
+        return "ответ модели"
+
+    monkeypatch.setattr(retro_fill, "gen", gen_with_edit)
+    made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert ("разбор" if kind == "debrief" else "тезисы") not in made
+    assert dpath.read_text(encoding="utf-8") == human
+    meta = live_sidecar.read(live) or {}
+    assert meta.get(f"{kind}_sha256") == meta_before.get(f"{kind}_sha256")
+    assert meta.get(f"{kind}_source_sha256") == meta_before.get(f"{kind}_source_sha256")
 
 
 @pytest.fixture(autouse=True)

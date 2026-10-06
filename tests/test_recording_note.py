@@ -313,12 +313,9 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert rf.count("meeting_source.with_note(out, source.recording_note)") == 2, "строка итога — у разбора И тезисов (DS круга 2)"
     assert "meeting_source.of(f, text)" in rf and "meeting_source.of(f, text, bare)" not in rf, \
         "источник — по прямому сайдкару, штамп bare читателю не передаётся (Critical DS/GLM круга 1)"
-
-    mcp = (ROOT / "src" / "mcp_server.py").read_text(encoding="utf-8")
-    fn = mcp[mcp.index("def sufler_make_minutes"):mcp.index("def sufler_hints")]
-    assert fn.index("client.fit(source.speech)") < fn.index("client.recording_block(source.recording_note)")
-    assert "meeting_source.with_note(out, source.recording_note)" in fn
-    assert 'live_sidecar.attest(f, "minutes", out, source.sha())' in fn
+    # MCP-сборщик проверяется поведением, а не текстом исходника (№663):
+    # test_mcp_minutes_take_the_speech_the_note_and_leave_a_passport смотрит на
+    # промпт, документ и паспорт записанного файла.
 
     rt = (ROOT / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
     fin = rt[rt.index("def finalize_minutes("):rt.index("def _fallback_restamp(")]

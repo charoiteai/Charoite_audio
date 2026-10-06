@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -84,8 +85,16 @@ def _vectors_ok(vectors, count: int, dim: int | None) -> bool:
     if not isinstance(vectors, list) or len(vectors) != count:
         return False
     for v in vectors:
-        if not isinstance(v, list) or not v or not isinstance(v[0], (int, float)):
+        if not isinstance(v, list) or not v:
             return False
+        for value in v:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+            try:
+                if not math.isfinite(value):
+                    return False
+            except OverflowError:
+                return False
         if dim is not None and len(v) != dim:
             return False
         dim = len(v)
