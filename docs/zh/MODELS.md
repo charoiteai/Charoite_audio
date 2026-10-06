@@ -181,6 +181,25 @@ sha256 核对）。`--segmentation` 仍只安装分段模型。详见 [DIARIZATI
   也约为 19%,且以录音中途标签互换著称 — 因此 Charoite 在实时说话人
   分离之外,还对完整录音做离线重跑(回声过滤、微片段合并、姓名分配)。
 
+## Nemotron 引擎(可选,Apple Silicon)
+
+会后处理可以用 [Nemotron 3
+Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) 代替 sherpa
+标注通话声道(`sufler.diarize_backend: nemotron`)。其 MLX 移植版
+(`mlx-community/Nemotron-3-Diarization`)由 `scripts/install_engine.py
+nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安装好的环境
+位于数据根目录的 `engines/nemotron`。
+
+- **许可证:**权重为 NVIDIA OpenMDW 1.1,而非 Apache-2.0——它们不在本仓库中,
+  需自行下载并接受条款
+  (<https://huggingface.co/nvidia/Nemotron-3-Diarization/blob/main/LICENSE>)。
+- **大小:**环境约 601 MB(本安装器于 2026-09-29 在 Apple Silicon 上放置的环境
+  的 `du -sm` 值,测量于 2026-10-05);权重约 190 MB,sherpa 声纹集(嵌入 +
+  分段)约 47 MB。`scripts/install_engine.py nemotron --plan` 以一行 JSON 输出
+  这些数字(已在位的权重或音色集计为 0——权重按每个文件的 sha256,与下载所用
+  相同的校验;而环境始终按完整大小计算:安装每次都会重建环境)、网络地址和
+  许可证,不建立连接。
+
 ## 必须显式设置 num_ctx
 
 部分 Ollama Modelfile 的默认上下文是 262144 — 如果不显式设置

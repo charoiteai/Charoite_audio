@@ -1,0 +1,67 @@
+# Таблица характеризации ключей диаризации: как значение из YAML сворачивается
+# продуктом. Каждая строка — `text` (то, что человек пишет в config.yaml), и
+# ожидаемый нормализованный ключ. Значение `text` проходит через `yaml.safe_load`,
+# потому что голое `off` YAML 1.1 читает как False, а `~` — как None.
+#
+# Часть 2 (Swift) сверяет с этой таблицей запись ключа в приложении; сюда же
+# смотрит `tests/test_diarize_normalizers.py`, который гоняет нормализаторы
+# продукта по каждой строке. Ожидания не правятся при выносе логики: фикстура —
+# это контракт, а не снимок кода.
+#
+# `key`/`mode` — во что сворачивается значение; `known` — попало ли оно в
+# известный набор (для ключа: sherpa, nemotron; для режима: off, shadow, on).
+# Неизвестное НЕ сворачивается в sherpa/off: вызывающий называет его сам.
+
+engine:
+  - { text: '',            key: sherpa,   known: true }   # пустое значение
+  - { text: '~',           key: sherpa,   known: true }
+  - { text: 'null',        key: sherpa,   known: true }
+  - { text: 'Null',        key: sherpa,   known: true }
+  - { text: 'NULL',        key: sherpa,   known: true }
+  - { text: 'false',       key: sherpa,   known: true }
+  - { text: 'False',       key: sherpa,   known: true }
+  - { text: 'FALSE',       key: sherpa,   known: true }
+  - { text: 'no',          key: sherpa,   known: true }
+  - { text: 'No',          key: sherpa,   known: true }
+  - { text: 'NO',          key: sherpa,   known: true }
+  - { text: 'off',         key: sherpa,   known: true }
+  - { text: 'Off',         key: sherpa,   known: true }
+  - { text: 'OFF',         key: sherpa,   known: true }
+  - { text: '0',           key: sherpa,   known: true }   # 0 ложное — как незаданное
+  - { text: '""',          key: sherpa,   known: true }   # явная пустая строка
+  - { text: '"sherpa"',    key: sherpa,   known: true }
+  - { text: '" Sherpa "',  key: sherpa,   known: true }
+  - { text: 'nemotron',    key: nemotron, known: true }
+  - { text: 'foo',         key: foo,      known: false }  # неизвестное — сырым
+
+live:
+  - { text: '',            mode: 'off',    known: true }
+  - { text: '~',           mode: 'off',    known: true }
+  - { text: 'null',        mode: 'off',    known: true }
+  - { text: 'Null',        mode: 'off',    known: true }
+  - { text: 'NULL',        mode: 'off',    known: true }
+  - { text: 'false',       mode: 'off',    known: true }
+  - { text: 'False',       mode: 'off',    known: true }
+  - { text: 'FALSE',       mode: 'off',    known: true }
+  - { text: 'no',          mode: 'off',    known: true }
+  - { text: 'No',          mode: 'off',    known: true }
+  - { text: 'NO',          mode: 'off',    known: true }
+  - { text: 'off',         mode: 'off',    known: true }
+  - { text: 'Off',         mode: 'off',    known: true }
+  - { text: 'OFF',         mode: 'off',    known: true }
+  - { text: '0',           mode: '0',      known: false }  # 0 не тождественен False
+  - { text: '""',          mode: 'off',    known: true }
+  - { text: '"sherpa"',    mode: sherpa,   known: false }
+  - { text: '" Sherpa "',  mode: sherpa,   known: false }
+  - { text: 'nemotron',    mode: nemotron, known: false }
+  - { text: 'foo',         mode: foo,      known: false }
+  - { text: 'true',        mode: 'on',     known: true }
+  - { text: 'True',        mode: 'on',     known: true }
+  - { text: 'TRUE',        mode: 'on',     known: true }
+  - { text: 'yes',         mode: 'on',     known: true }
+  - { text: 'Yes',         mode: 'on',     known: true }
+  - { text: 'YES',         mode: 'on',     known: true }
+  - { text: 'on',          mode: 'on',     known: true }
+  - { text: 'On',          mode: 'on',     known: true }
+  - { text: 'ON',          mode: 'on',     known: true }
+  - { text: 'shadow',      mode: shadow,   known: true }

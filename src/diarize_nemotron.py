@@ -76,6 +76,12 @@ from exit_codes import EXIT_ENGINE_UNAVAILABLE  # noqa: E402
 
 SAMPLE_RATE = 16000
 
+#: Известные ключи движка разметки канала собеседников (`sufler.diarize_backend`)
+#: и режимы живого потока (`sufler.live_nemotron`). Их берут пересборка, доктор,
+#: живой поток и `engine_state` — одно определение на продукт.
+ENGINE_BACKENDS = ("sherpa", "nemotron")
+LIVE_MODES = ("off", "shadow", "on")
+
 #: `model_type` в config.json чекпойнта mlx-audio (convert.py пишет asdict(config)).
 MODEL_TYPE = "nemotron_diarization"
 
@@ -117,6 +123,33 @@ INSTALLER_POINTER = ("команда установки — docs/DIARIZATION.md,
 #: — около сотни. Меньше — обрыв закачки, HTML-страница или указатель git-lfs
 #: (~130 байт: клон репозитория без LFS выглядит как модель, но ею не является).
 MIN_WEIGHTS_BYTES = 20 * 1024 * 1024
+
+
+def normalize_engine_key(raw: object) -> str:
+    """`sufler.diarize_backend` → `sherpa`, `nemotron` или неизвестное сырым.
+
+    Пустое и ложное (None, False, 0, "") — `sherpa`: YAML читает голое `off` как
+    false, а `0` — как 0, и ключ «не задан» обязан работать как раньше. Известные
+    значения сверены без регистра и внешних пробелов; неизвестное НЕ сворачивается
+    в `sherpa` — вызывающий сам называет его в отказе. Отдаёт строку; известность —
+    членство в `ENGINE_BACKENDS`.
+    """
+    return str(raw or "sherpa").strip().lower()
+
+
+def normalize_live_mode(raw: object) -> str:
+    """`sufler.live_nemotron` → `off`, `on`, `shadow` или неизвестное сырым.
+
+    `None`/`False` → `off`, `True` → `on`: YAML читает голое `off` как false, а
+    голое `on` — как true. Строка чистится и опускается; пустая — `off`.
+    Неизвестный режим не сворачивается в `off` — вызывающий сам называет его.
+    Отдаёт строку; известность — членство в `LIVE_MODES`.
+    """
+    if raw is None or raw is False:
+        return "off"
+    if raw is True:
+        return "on"
+    return str(raw).strip().lower() or "off"
 
 
 class ModelUnavailable(RuntimeError):
@@ -820,6 +853,80 @@ def engine_interpreter(setting: str, root: pathlib.Path) -> tuple[str, str]:
     if installed.exists():
         return str(installed), ""
     return "", f"окружение движка не установлено ({engine_dir(root)})"
+
+
+def engine_state(root: pathlib.Path, cfg: dict) -> dict:
+    """Что стоит и что выбрано — одно определение для пересборки, доктора и живого потока.
+
+    Без сети, без MLX и без запуска движка: только раскладка (окружение, веса,
+    интерпретатор по настройке) и нормализованные ключи — то, что модуль уже умеет.
+    `cfg` читает вызывающий: импорт модуля не тянет yaml, numpy и mlx (проба
+    приложения просит 0,08–0,10 с вместе с ними — без них модуль ещё дешевле).
+    Не-словарь `cfg` или `cfg["sufler"]` (`sufler: "текст"`, конфиг-список)
+    читается как `{}`: доктор и `--plan` не должны падать трассой на опечатке.
+
+    Поля:
+      * `backend` — нормализованный `sufler.diarize_backend`;
+      * `nemotron_python` — значение ключа строкой (пустая — не задан);
+      * `nemotron_python_set` — задан ли ключ `sufler.nemotron_python`;
+      * `interpreter` / `interpreter_reason` — выбор `engine_interpreter`;
+      * `environment` — есть ли каталог окружения;
+      * `weights` / `weights_reason` — годен ли каталог весов;
+      * `ready` / `ready_reason` — готов ли движок по раскладке: интерпретатор,
+        выбранный `engine_interpreter`, есть исполняемым файлом, а веса годны.
+        Заданный `sufler.nemotron_python` главнее установленного окружения,
+        поэтому каталог `engines/nemotron` для готовности не нужен.
+        `ready_reason` — первая причина «нет»: отказ выбора, нет файла
+        интерпретатора или он не исполняемый, причина весов. Есть ли в этом
+        интерпретаторе mlx-audio нужной версии, готовность не проверяет: контракт
+        модуля — «без запуска движка», и это меряет только проба, которую доктор
+        зовёт при выбранном Nemotron;
+      * `missing` — чего не хватает для готовности: `None` — готов;
+        `"environment"` — ключ пуст и `engine_interpreter` не нашёл, чем
+        запускать (окружение не установлено); `"interpreter"` — выбранного
+        интерпретатора нет исполняемым файлом (файла нет или у него нет бита
+        исполнения); `"weights"` — причина `check_model_dir`. `ready` равно
+        `missing is None`;
+      * `live_mode` — нормализованный `sufler.live_nemotron`.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    sufler = cfg.get("sufler")
+    if not isinstance(sufler, dict):
+        # Не-словарь (`sufler: "текст"`, конфиг-список) читается как пустой:
+        # `.get` на строке/списке ронял бы доктора и `--plan` трассой.
+        sufler = {}
+    setting = str(sufler.get("nemotron_python") or "")
+    python, refusal = engine_interpreter(setting, root)
+    weights_problem = check_model_dir(model_dir(root))
+    if refusal:
+        missing, ready_reason = "environment", refusal
+    elif not (os.path.isfile(python) and os.access(python, os.X_OK)):
+        # Файла нет и файл есть, но не исполняемый — две разные причины: по первой
+        # человек ищет пропавший файл, по второй — бит исполнения (№622 B2, часть 1).
+        if not os.path.isfile(python):
+            ready_reason = f"нет файла интерпретатора {python}"
+        else:
+            ready_reason = f"интерпретатор {python} не исполняемый файл"
+        missing = "interpreter"
+    elif weights_problem is not None:
+        missing, ready_reason = "weights", weights_problem
+    else:
+        missing, ready_reason = None, None
+    ready = missing is None
+    return {
+        "backend": normalize_engine_key(sufler.get("diarize_backend")),
+        "nemotron_python": setting,
+        "nemotron_python_set": bool(setting.strip()),
+        "interpreter": python,
+        "interpreter_reason": refusal,
+        "environment": engine_dir(root).exists(),
+        "weights": weights_problem is None,
+        "weights_reason": weights_problem,
+        "ready": ready,
+        "ready_reason": ready_reason,
+        "missing": missing,
+        "live_mode": normalize_live_mode(sufler.get("live_nemotron")),
+    }
 
 
 def _with_remedy(out: foreign_python.Outcome, setting: str, remedy: str) -> foreign_python.Outcome:
