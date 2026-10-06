@@ -331,7 +331,7 @@ def describe(leases: list[dict], *, now: float | None = None) -> str:
     now = time.time() if now is None else now
     parts = []
     for info in leases:
-        started = _finite_time(info.get("started", now))
+        started = _finite_time(info.get("started"))
         age = (f"идёт {max(0, int(now - started))} с" if started is not None
                else "время начала неизвестно")
         parts.append(f"pid {info.get('pid', '?')} ({info.get('kind', '?')}, {info.get('engine', '?')}, {age}"

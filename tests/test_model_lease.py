@@ -105,12 +105,18 @@ def test_malformed_deadline_does_not_authorize_a_restart(tmp_path, monkeypatch, 
         assert not busy[0]["stalled"]
 
 
-@pytest.mark.parametrize("bad", [None, "не время", float("nan"), float("inf"), {}, 10 ** 400])
-def test_bad_started_time_does_not_break_restart_refusal(tmp_path, monkeypatch, bad):
+@pytest.mark.parametrize("present,bad", [
+    (False, None), (True, None), (True, "не время"), (True, float("nan")),
+    (True, float("inf")), (True, {}), (True, 10 ** 400),
+])
+def test_bad_started_time_does_not_break_restart_refusal(tmp_path, monkeypatch, present, bad):
     monkeypatch.setattr(llm_health, "_root", lambda: tmp_path)
     with model_lease.Lease(tmp_path, server=SRV, engine="ollama", kind="minutes") as lease:
         data = json.loads(lease.path.read_text())
-        data["started"] = bad
+        if present:
+            data["started"] = bad
+        else:
+            del data["started"]
         lease.path.write_text(json.dumps(data))
         messages = []
 

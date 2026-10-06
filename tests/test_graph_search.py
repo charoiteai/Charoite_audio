@@ -336,6 +336,7 @@ def test_dossiers_axis_off_on_a_summary_only_question_is_empty(tmp_path):
     ("files", [["сломанная запись"]]), ("count", "не число"),
     ("mtime", "не время"), ("mtime", None), ("path", None),
     ("component", float("nan")), ("component", float("inf")),
+    ("empty_dim", 0), ("empty_count", 0),
 ])
 def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
@@ -347,6 +348,13 @@ def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad
         manifest = bad
     elif part == "files":
         manifest["files"] = bad
+    elif part in {"empty_dim", "empty_count"}:
+        if part == "empty_dim":
+            manifest["dim"] = bad
+        else:
+            for entry in manifest["files"]:
+                entry[2] = bad
+        manifest_path.with_name(manifest["blob"]).write_bytes(b"")
     elif part == "component":
         import array
         blob = manifest_path.with_name(manifest["blob"])
