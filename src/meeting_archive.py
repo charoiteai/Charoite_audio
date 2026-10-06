@@ -1226,6 +1226,7 @@ def _build_summary(folder: pathlib.Path, live: pathlib.Path, materials: list[tup
     состояние переспрашивается у оракула: прежнее недействительно (Minor GLM
     круга 2)."""
     out = folder / "Саммари.md"
+    before = safe_write.stat_snapshot(out)  # до долгого ответа модели
 
     def failed(action: str, why: str) -> SummaryOutcome:
         state = live_sidecar.derivative_state(out, live_sidecar.read(live) or {}, "summary", source_sha)
@@ -1312,6 +1313,7 @@ def _build_summary(folder: pathlib.Path, live: pathlib.Path, materials: list[tup
             # состояние после записи — от шва (Important DS и GLM круга 1)
             wrote = live_sidecar.write_derivative(
                 live, out, "summary", body, source_sha,
+                expect=before, expect_absent=before is None,
                 log=lambda msg: print(f"саммари: {msg}", file=sys.stderr))
             if wrote.refused == live_sidecar.WriteOutcome.RACE:
                 return failed(SummaryOutcome.REFUSED, "запись отклонена: файл менялся под рукой")

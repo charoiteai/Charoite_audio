@@ -44,7 +44,7 @@ def _root() -> pathlib.Path:
 
 import charoite_paths  # noqa: E402
 import install_profile  # noqa: E402
-from charoite_graph import safe_write  # noqa: E402
+from charoite_graph import frontmatter, safe_write  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_stamp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
@@ -478,11 +478,9 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
             n = 1
         # Старая тема — в aliases: по ней встречу уже искали и находили,
         # обрывать этот след переименованием нельзя.
-        m = re.search(r'(?m)^aliases:\s*\[(.*)\]$', text)
-        if m and f'"{pretty}"' not in m.group(1):
-            joined = (m.group(1).strip() + ", " if m.group(1).strip() else "")
-            text = text[:m.start()] + f'aliases: [{joined}"{pretty}"]' + text[m.end():]
-        if n or m:
+        aliased = frontmatter.with_aliases(text, [pretty])
+        if n or aliased != text:
+            text = aliased
             safe_write.write_text(note, text)   # единственный экземпляр заметки встречи
 
     # Статус для приложения: transcript_path указывает на переименованный файл.

@@ -91,6 +91,63 @@ def test_two_calls_in_one_process_do_not_clobber_each_other(tmp_path):
     assert model_lease.live(tmp_path, server=SRV) == []
 
 
+@pytest.mark.parametrize("bad", [float("-inf"), True, 10 ** 400])
+def test_malformed_deadline_does_not_authorize_a_restart(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(llm_health, "_root", lambda: tmp_path)
+    with model_lease.Lease(tmp_path, server=SRV, engine="ollama", kind="minutes") as lease:
+        data = json.loads(lease.path.read_text())
+        data["deadline"] = bad
+        lease.path.write_text(json.dumps(data))
+
+        busy = llm_health.busy_with_ours(LOCAL)
+
+        assert busy and len(busy) == 1
+        assert not busy[0]["stalled"]
+
+
+@pytest.mark.parametrize("present,bad", [
+    (False, None), (True, None), (True, "не время"), (True, float("nan")),
+    (True, float("inf")), (True, {}), (True, 10 ** 400),
+])
+def test_bad_started_time_does_not_break_restart_refusal(tmp_path, monkeypatch, present, bad):
+    monkeypatch.setattr(llm_health, "_root", lambda: tmp_path)
+    with model_lease.Lease(tmp_path, server=SRV, engine="ollama", kind="minutes") as lease:
+        data = json.loads(lease.path.read_text())
+        if present:
+            data["started"] = bad
+        else:
+            del data["started"]
+        lease.path.write_text(json.dumps(data))
+        messages = []
+
+        assert llm_health._spare(LOCAL, messages.append, force=False)
+        assert len(messages) == 1 and "перезапуск отложен" in messages[0]
+        assert "время начала неизвестно" in messages[0]
+
+
+@pytest.mark.parametrize("started,age", [(986.0, 14), (1001.0, 0)])
+def test_lease_description_reports_elapsed_time_and_clamps_future_start(started, age):
+    description = model_lease.describe([{"pid": 7, "kind": "minutes", "engine": "ollama",
+                                         "started": started}], now=1000.0)
+    assert f"идёт {age} с" in description
+
+
+@pytest.mark.parametrize("deadline", [None, float("nan"), float("inf"), "не время", {}])
+def test_unknown_deadline_is_named_in_the_lease_description(deadline):
+    """Нечитаемый срок не доказывает зависание — держат замок, значит работа
+    жива, — но молчать о нём в строке для лога нельзя: рядом с неизвестным
+    началом говорится и «срок неизвестен» (№663)."""
+    info = {"pid": 7, "kind": "minutes", "engine": "ollama",
+            "started": 1000.0, "deadline": deadline}
+    assert "срок неизвестен" in model_lease.describe([info], now=1000.0)
+
+
+def test_known_deadline_has_no_unknown_term():
+    info = {"pid": 7, "kind": "minutes", "engine": "ollama",
+            "started": 1000.0, "deadline": 2000.0}
+    assert "срок неизвестен" not in model_lease.describe([info], now=1000.0)
+
+
 def test_a_lease_is_never_visible_without_its_lock(tmp_path, monkeypatch):
     """Протокол публикации (C1 DS / I2 GLM выходного круга): файл появляется
     под именем `*.json` только через rename уже запертого inode. Раньше

@@ -230,6 +230,8 @@ def test_the_same_key_prints_on_repeat_after_a_reset(monkeypatch, capsys):
     ([["x"]], 1, None),                   # не числа
     ([[1.0], [1.0, 2.0]], 2, None),       # размерность скачет
     ([[1.0]], 1, 3),                      # не та размерность кэша
+    ([[1.0, float("inf")]], 1, None),     # не конечная координата после первой
+    ([[1.0, 10 ** 400]], 1, None),        # переполнение преобразования
 ])
 def test_vectors_ok_reports_false_not_a_falsy_value(vectors, count, dim):
     """Контракт возвращает именно `False`: `None` прошёл бы как «нет», и форма
@@ -239,6 +241,16 @@ def test_vectors_ok_reports_false_not_a_falsy_value(vectors, count, dim):
 
 def test_vectors_ok_accepts_a_full_answer():
     assert embed_door._vectors_ok([[1.0, 2.0], [3.0, 4.0]], 2, None) is True
+
+
+@pytest.mark.parametrize("bad", ["не число", None, True, [], {}, float("nan"),
+                                 float("inf"), float("-inf"), 10 ** 400])
+def test_embedding_transport_rejects_invalid_components_after_the_first(bad, capsys):
+    """Число в первой координате не делает остальные координаты пригодными."""
+    wire = Wire(vectors=lambda inp, n: [[1.0, bad] for _ in inp])
+    answer = _дверь(post=wire).run(["проверка памяти"], timeout=5)
+    assert answer == []
+    assert "не по вектору на текст" in capsys.readouterr().err
 
 
 # ── усечение: `truncate: false`, повтор с `truncate: true` ───────────────

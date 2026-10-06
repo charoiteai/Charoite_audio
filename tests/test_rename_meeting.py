@@ -25,6 +25,46 @@ import charoite_paths  # noqa: E402
 STAMP = "2026-08-03_1130"
 
 
+def test_alias_is_added_when_owner_keeps_a_custom_note_heading(world):
+    from charoite_graph import frontmatter
+    graph, _tdir = world
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text('---\nтип: встреча\naliases: ["Прежняя тема"]\n---\n'
+                    '# Моя карточка встречи\n\nтело\n', encoding="utf-8")
+
+    rm.apply({"moves": [], "old_folder": None, "new_folder": None, "note": note},
+             graph, STAMP, "Новая тема")
+
+    text = note.read_text(encoding="utf-8")
+    meta = frontmatter.parse(text)
+    _head, body = frontmatter.split(text)
+    assert meta["aliases"] == ["Прежняя тема", "Новая тема"]
+    assert body == "# Моя карточка встречи\n\nтело\n"
+
+
+@pytest.mark.parametrize("aliases", [
+    'aliases: ["Старая тема"]\n',
+    'aliases:\n  - Старая тема\n',
+    "",
+])
+def test_rename_keeps_yaml_valid_and_adds_a_quoted_title(world, aliases):
+    from charoite_graph import frontmatter
+    graph, tdir = world
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text(f"---\nтип: встреча\n{aliases}---\n# Встреча {STAMP} — до правки\n\nтело\n",
+                    encoding="utf-8")
+    title = 'План "Альфа", путь C:\\новый'
+    pretty, slug = rm.pretty_and_slug(title)
+    plan = rm.plan(graph, tdir, STAMP, slug, pretty)
+    rm.apply(plan, graph, STAMP, pretty)
+    text = note.read_text(encoding="utf-8")
+    parsed = frontmatter.parse(text)
+    assert parsed["тип"] == "встреча"
+    assert parsed["aliases"] == (["Старая тема"] if aliases else []) + [pretty]
+    assert f"# Встреча {STAMP} — {pretty}" in text
+    assert text.endswith("\n\nтело\n")
+
+
 def test_short_stamp_accepts_any_spelling():
     assert rm.short_stamp("2026-08-03_1130") == STAMP
     # Секунды сохраняются: ими выбирается вторая встреча той же минуты
@@ -593,4 +633,3 @@ def test_rename_reads_the_flag_and_the_mark_itself(tmp_path, monkeypatch, mark, 
     monkeypatch.setitem(sys.modules, "requests", Down)
     msg = rm.brain_note(stamp, "Новая тема", cfg)
     assert (said in msg) if said else msg == ""
-

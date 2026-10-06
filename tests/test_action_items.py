@@ -12,6 +12,11 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import charoite_paths  # noqa: E402
+import live_sidecar  # noqa: E402
+import llm  # noqa: E402
+import mcp_server  # noqa: E402
+import meeting_source  # noqa: E402
 from action_items import OUTSIDER_MARK, OUTSIDER_MARKS, flag_outsiders, normalize, participants_of, participants_set  # noqa: E402
 
 CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ", re.M)
@@ -249,17 +254,38 @@ def test_long_unclosed_name_does_not_leave_dangling_bold():
     assert line.count("**") % 2 == 0, out
 
 
-def test_mcp_minutes_normalize_before_write():
-    """Третий путь записи минуток — mcp-«Минутки» — обязан прогонять
-    normalize ДО записи (№141): порядок, а не наличие строки — перенос
-    после write_text давал бы ложный зелёный (урок DS I2 по #462)."""
-    mcp = (SRC / "mcp_server.py").read_text(encoding="utf-8")
-    fn = mcp[mcp.index("def sufler_make_minutes"):]
-    fn = fn[: fn.index("\n@")]                     # тело одного инструмента
-    assert "action_items.normalize(out)" in fn, (
-        "mcp-путь минуток должен звать action_items.normalize")
-    assert fn.index("action_items.normalize(out)") < fn.index("tmp.write_text"), (
-        "normalize обязан отработать ДО записи файла")
+def test_mcp_minutes_normalize_before_write(tmp_path, monkeypatch):
+    """Третий путь записи минуток — mcp-«Минутки» — обязан прогнать normalize
+    ДО записи (№141). Проверяем записанный файл, а не текст исходника (№663):
+    нормализация после `write_text` дала бы на диске сырой ответ модели."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-09-13_1200.md"
+    text = "# Встреча 2026-09-13_1200\n**Мира** [10:21]:\n" + "реплика\n" * 100
+    live.write_text(text, encoding="utf-8")
+    charoite_paths.use_data_root(tmp_path, replace=True)
+
+    class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
+
+        def fit(self, speech):
+            return speech
+
+        def complete(self, prompt, **kw):
+            return "**Поручения:**\n*   **- **Мира** — собрать данные. — **Срок: 10.09**.**\n"
+
+    monkeypatch.setattr(mcp_server, "_client", lambda: Fake())
+    out = mcp_server.sufler_make_minutes()
+
+    assert "Минутки сохранены" in out, out
+    doc = (tdir / "2026-09-13_1200_minutes.md").read_text(encoding="utf-8")
+    assert "- [ ] **Мира** — собрать данные. — до 10.09" in doc, doc
+    meta = live_sidecar.read(live)
+    assert meta["minutes_source_sha256"] == meeting_source.of(live, text).sha(), \
+        "хеш источника в паспорте минуток — хеш стенограммы"
 
 
 def test_pair_restore_leftover_bold_is_cleaned():
