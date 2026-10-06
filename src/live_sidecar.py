@@ -120,9 +120,11 @@ def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sh
 def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
            bare: str | None = None) -> bool:
     """Выдать производной паспорт после МАШИННОЙ записи: байты и речь источника.
-    Обёртка над `remember` — сайдкара нет — создаст; неоднозначный — False."""
-    return (remember(live, f"{kind}_sha256", sha(file_text), bare)
-            and remember(live, f"{kind}_source_sha256", source_sha, bare))
+    Оба хеша — одним `merge`: читатель или сбой записи не должен увидеть
+    байты новой производной с источником старой. Нет сайдкара — создаст;
+    неоднозначный — False."""
+    return merge(live, {f"{kind}_sha256": sha(file_text),
+                        f"{kind}_source_sha256": source_sha}, bare)
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
@@ -144,7 +146,10 @@ class WriteOutcome(typing.NamedTuple):
     (FRESH при удавшемся паспорте, UNKNOWN без владельца), None — запись не
     состоялась; `refused` — почему: RACE («файл менялся под рукой» — повтор
     бессмыслен) или PREV («прежняя версия не сохранена» — сбой диска, повтор
-    имеет смысл)."""
+    имеет смысл). Человеческие слова для вида отказа — тоже здесь
+    (`refusal_words`): словарь был скопирован в `mcp_server` и `retro_fill`, и
+    обе копии любой вид, кроме RACE, печатали как «предыдущая версия не
+    сохранена» (№663)."""
     state: str | None
     refused: str | None = None
 
@@ -157,9 +162,25 @@ class WriteOutcome(typing.NamedTuple):
     def written(self) -> bool:
         return self.state is not None
 
+    @property
+    def refusal_words(self) -> str:
+        """Вид отказа — словами для человека, ОДНИМ местом. Удачная запись слов
+        не требует: пустая строка. Неизвестный вид не выдаём за PREV — он
+        называет себя сам, чтобы новый вид не получил чужое объяснение молча
+        (тот же урок, что у `LostRace`)."""
+        if self.written:
+            return ""
+        if self.refused == self.RACE:
+            return "файл изменился за время генерации"
+        if self.refused == self.PREV:
+            return "предыдущая версия не сохранена"
+        return f"запись не выполнена ({self.refused})"
+
 
 def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
-                     source_sha: str, *, log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
+                     source_sha: str, *, expect: tuple[int, int] | None = None,
+                     expect_absent: bool = False,
+                     log=lambda msg: print(msg, file=sys.stderr)) -> WriteOutcome:
     """Записать производную и выдать ей паспорт — единственный машинный
     писатель производных с паспортом. Прежняя версия — в `.prev/` рядом со
     стенограммой (`prev_path`): уверенная, но неверная генерация не должна быть
@@ -172,12 +193,24 @@ def write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: st
     оракулом `derivative_state` или причину отказа значением. Вызывающий не
     пересобирает знание сам и не гадает, какая ветка отказала (Important DS и
     GLM круга 1; Important DS круга 4)."""
-    before = safe_write.stat_snapshot(path)
+    # Долгая генерация передаёт снимок ДО вызова модели (или «файла не было»).
+    # Снять его только здесь — принять ручную правку за версию под перезапись.
+    # Без внешнего снимка сохраняем прежний API немедленного писателя.
+    before = expect if expect is not None or expect_absent else safe_write.stat_snapshot(path)
+    if safe_write.stat_snapshot(path) != before:
+        log(f"{path.name} изменился за время генерации — не перезаписываю")
+        return WriteOutcome(None, WriteOutcome.RACE)
     if before is not None:
         try:
             prev = prev_path(live, path)
-            prev.parent.mkdir(exist_ok=True)
-            safe_write.write_text(prev, path.read_text(encoding="utf-8"))
+            # Копия — БАЙТАМИ, без декодирования: прежние минутки бывают не в
+            # UTF-8 (`derivative_state` такие байты честно зовёт HUMAN), и
+            # `read_text` ронял инструмент `UnicodeDecodeError` — это ValueError,
+            # а не OSError, мимо всех обработчиков (№663). Пишем `write_bytes`:
+            # права у копии — по маске процесса, а не права и времена источника,
+            # как у `copy_if_changed` (её контракт — копия документа в граф):
+            # иначе минутки 0644 давали бы такую же читаемую всем базу `.prev`.
+            safe_write.write_bytes(prev, path.read_bytes())
         except OSError as e:
             log(f"прежняя версия {path.name} не сохранена ({e}) — не перезаписываю")
             return WriteOutcome(None, WriteOutcome.PREV)

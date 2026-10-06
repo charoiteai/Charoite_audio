@@ -1,13 +1,62 @@
 """Обрыв записи не должен уничтожать то, что уже лежит на диске."""
 import os
 import pathlib
+import stat
 import time
 import sys
+import threading
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from charoite_graph import safe_write  # noqa: E402
+
+
+@pytest.mark.parametrize("copy, mode", [(False, None), (False, 0o600), (True, None)])
+def test_threads_writing_one_target_have_independent_temporary_files(tmp_path, monkeypatch, copy, mode):
+    """Оба писателя обязаны закончить; завершившийся не забирает tmp соседа."""
+    target = tmp_path / "общая.md"
+    target.write_text("до записи", encoding="utf-8")
+    first_ready, release_first = threading.Event(), threading.Event()
+    errors = []
+    real_replace = pathlib.Path.replace
+
+    def ordered_replace(path, dest):
+        if dest == target and threading.current_thread().name == "first-writer":
+            first_ready.set()
+            assert release_first.wait(5), "второй писатель не завершился"
+        return real_replace(path, dest)
+
+    monkeypatch.setattr(pathlib.Path, "replace", ordered_replace)
+    first_src, second_src = tmp_path / "первая.md", tmp_path / "вторая.md"
+    first_src.write_text("первая целая версия", encoding="utf-8")
+    second_src.write_text("вторая целая версия", encoding="utf-8")
+
+    def write_first():
+        try:
+            if copy:
+                safe_write.copy_if_changed(first_src, target)
+            else:
+                safe_write.write_text(target, first_src.read_text(encoding="utf-8"), mode=mode)
+        except Exception as exc:  # noqa: BLE001 — ошибку потока проверяет тест
+            errors.append(exc)
+
+    worker = threading.Thread(target=write_first, name="first-writer")
+    worker.start()
+    try:
+        assert first_ready.wait(5), "первый писатель не дошёл до replace"
+        if copy:
+            assert safe_write.copy_if_changed(second_src, target)
+        else:
+            assert safe_write.write_text(target, second_src.read_text(encoding="utf-8"), mode=mode)
+        assert target.read_text(encoding="utf-8") == "вторая целая версия"
+    finally:
+        release_first.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert not errors, errors
+    assert target.read_text(encoding="utf-8") == "первая целая версия"
+    assert not list(tmp_path.glob("*.tmp*"))
 
 
 def test_a_failed_write_leaves_the_previous_version_intact(tmp_path, monkeypatch):
@@ -218,3 +267,61 @@ def test_the_kind_of_a_lost_race_must_be_chosen_not_inherited(tmp_path):
         assert (exc.gone, exc.unreachable) == (gone, unreachable), kind
         assert exc.reason and exc.path is p and kind not in exc.reason, \
             "вид — ключ для машины, reason — текст для человека"
+
+
+def test_write_bytes_keeps_the_mode_of_an_existing_file(tmp_path):
+    """`write_bytes` — права как у `write_text` без `mode`: у существующего файла
+    сохраняются его прежние права, а не права источника (которых у байтов нет).
+    Так пишется `.prev`: минутки 0644 не должны оставлять читаемую всем копию
+    (№663)."""
+    node = tmp_path / "prev.md"
+    node.write_bytes("старое".encode("cp1251"))
+    os.chmod(node, 0o640)
+
+    safe_write.write_bytes(node, "новое".encode("cp1251"))
+
+    assert node.read_bytes() == "новое".encode("cp1251"), "байты заменены целиком"
+    assert stat.S_IMODE(node.stat().st_mode) == 0o640, "права прежнего файла сохранены"
+    assert not list(tmp_path.glob("*.tmp*")), "остаток tmp убран"
+
+
+def test_write_bytes_creates_a_new_file_by_the_process_mask(tmp_path):
+    """Нового файла ещё нет — права по маске процесса, как у `write_text` без
+    `mode`: это и есть исход «минутки 0644 → `.prev` 0600» (№663)."""
+    path = tmp_path / ".prev" / "минутки.md"          # каталога ещё нет — создаём
+    old_umask = os.umask(0o077)
+    try:
+        safe_write.write_bytes(path, b"\xff\xfe cp1251 \xea")
+    finally:
+        os.umask(old_umask)
+    assert path.read_bytes() == b"\xff\xfe cp1251 \xea"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(path.parent.glob("*.tmp*"))
+
+
+def test_write_bytes_follows_a_symlink_instead_of_replacing_it(tmp_path):
+    """Симлинк ведёт к настоящему файлу — пишем в него, а не подменяем саму
+    ссылку обычным файлом (та же защита, что у `write_text`)."""
+    real = tmp_path / "настоящий.md"
+    real.write_bytes("старое".encode("utf-8"))
+    link = tmp_path / "ссылка.md"
+    link.symlink_to(real)
+
+    safe_write.write_bytes(link, "новое".encode("utf-8"))
+
+    assert link.is_symlink() and real.read_bytes() == "новое".encode("utf-8")
+
+
+def test_write_bytes_creates_every_missing_parent_directory(tmp_path):
+    """Контракт `write_bytes` шире одного уровня: недостающих каталогов может
+    быть несколько, и с `parents=False` запись падала бы на втором. Единственный
+    вызывающий (`.prev` в `live_sidecar`) достраивает лишь один уровень, и на
+    этом мутация «`parents=True` → `parents=False`» выживала (№663)."""
+    path = tmp_path / "встреча" / ".prev" / "минутки.md"
+    assert not (tmp_path / "встреча").exists(), "каталога ещё нет — создаём оба уровня"
+
+    data = "минутки встречи".encode("utf-8")
+    safe_write.write_bytes(path, data)
+
+    assert path.read_bytes() == data, "байты записаны целиком"
+    assert not list(path.parent.glob("*.tmp*")), "остаток tmp убран"
