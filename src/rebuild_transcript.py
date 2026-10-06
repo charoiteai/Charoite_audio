@@ -575,9 +575,11 @@ def resolve_channel_segments(
         owner_label: str,
         call: bool,
         bh_dwarf_s: float = BH_DWARF_S,
-) -> tuple[list[tuple[float, float, str]], dict[str, str]]:
-    """Сырые сегменты двух каналов → отрезки (start, end, метка) и канал-источник
-    каждой метки («bh» / «mic»: по нему распознавание берёт звук).
+        unsupported: typing.Sequence[tuple[float, float]] = (),
+) -> tuple[list[tuple[float, float, str]], dict[str, str], set[str]]:
+    """Сырые сегменты двух каналов → отрезки (start, end, метка), канал-источник
+    каждой метки («bh» / «mic»: по нему распознавание берёт звук) и метки,
+    переподписанные из-за отрезков без опоры.
 
     `bh_raw` / `mic_raw` — (start, end, номер кластера) от движка разметки;
     None — канал не размечали (записи нет, она короче 20 с или разметка не
@@ -596,10 +598,18 @@ def resolve_channel_segments(
     владельца не подписываем. Канал собеседников при любом движке сперва
     лишается перекрытий (`disjoint`), потом карликов (`bh_dwarf_s` — порог
     движка: BH_DWARF_S у sherpa, NEMOTRON_BH_DWARF_S у Nemotron).
+
+    `unsupported` — отрезки без опоры (`owner_voice.unsupported_spans`): там
+    канал собеседников молчит нулями или кончился раньше микрофона. ВНЕ них
+    геометрия доказывает, какие голоса микрофона — эхо (`echo_voices`); ВНУТРИ
+    них такой голос подписывается нейтральной меткой, а не владельцем, раз
+    сверять эхо не с чем. Третий элемент выхода — те нейтральные метки; при
+    пустом `unsupported` выход побайтно равен базе, и он пуст.
     """
     segments: list[tuple[float, float, str]] = []  # (start, end, метка)
     chan: dict[str, str] = {}  # метка → канал-источник звука
     next_n = 1
+    unsupported_labels: set[str] = set()
 
     # Объявляем ДО ветки: на mic-only машине (нет BlackHole или не выдано
     # разрешение на системный звук) блок ниже не выполняется, а `bh_segs`
@@ -628,14 +638,49 @@ def resolve_channel_segments(
         # 28.09, встреча 8 минут: по одному отрезку в микрофоне оставалось 69 %
         # речи против 17.5 % у sherpa, по объединению — 17.8 % (№473).
         bh_iv = [(s, e) for s, e, _ in segments]
-        mic_segs = [t for t in mic_raw
-                    if not sum(overlap_frac((t[0], t[1]), iv) for iv in bh_iv) > 0.5]
+
+        def echo_covered(t: tuple[float, float]) -> bool:
+            return sum(overlap_frac(t, iv) for iv in bh_iv) > 0.5
+
+        def in_unsupported(s: float, e: float) -> bool:
+            return sum(overlap_frac((s, e), iv) for iv in unsupported) > 0.5
+
+        # Карта эха — по СЫРЫМ отрезкам микрофона и только вне отрезков без
+        # опоры: там геометрия ещё работает. Отрезок, лежащий больше чем
+        # наполовину внутри отрезка без опоры, в карту не идёт — его судьбу
+        # решает доказательство, добытое снаружи.
+        echo: set[int] = set()
+        if unsupported:
+            total: dict[int, float] = {}
+            removed: dict[int, float] = {}
+            for s, e, k in mic_raw:
+                if in_unsupported(s, e):
+                    continue
+                total[k] = total.get(k, 0.0) + (e - s)
+                if echo_covered((s, e)):
+                    removed[k] = removed.get(k, 0.0) + (e - s)
+            echo = owner_voice_rules.echo_voices(total, removed)
+
+        mic_segs = [t for t in mic_raw if not echo_covered((t[0], t[1]))]
         # Без перекрытий — после эхо-фильтра (до него дробление увеличивает
         # утечку эха, №473), до карликов: у Nemotron отрезки микрофона
         # перекрываются, и в комнате один звук шёл в STT дважды под двумя
         # метками (№584, №596). На звонке с владельцем все метки — он, и
         # `paragraphs` склеивает их как раньше; у sherpa перекрытий нет.
-        mic_segs = merge_dwarfs(disjoint(mic_segs), MIC_DWARF_S)
+        mic_segs = disjoint(mic_segs)
+        # Исходный номер голоса — ДО карликов: у голоса-эха, влитого после
+        # слияния в чужой кластер, решение о переподписи принимает именно он
+        # (карлик эха внутри отрезка без опоры — эхо, а карлик владельца,
+        # влитый в голос-эхо, — владелец). `merge_dwarfs` меняет только номер,
+        # длину и порядок списка хранит.
+        orig_voices = [k for _, _, k in mic_segs]
+        merged_mic = merge_dwarfs(mic_segs, MIC_DWARF_S)
+        assert len(merged_mic) == len(mic_segs)
+        assert all((m[0], m[1]) == (p[0], p[1])
+                   for m, p in zip(merged_mic, mic_segs)), \
+            "merge_dwarfs изменил границы отрезков — оригинальные номера голосов разошлись"
+        mic_segs = merged_mic
+
         durs: dict[int, float] = {}
         for s, e, k in mic_segs:
             durs[k] = durs.get(k, 0.0) + (e - s)
@@ -672,7 +717,8 @@ def resolve_channel_segments(
             owners, why = set(), "не назначен (подпись пуста)"
         else:
             why = "все голоса микрофона после эхо-фильтра"
-        mapping = {}
+        mapping: dict[int, str] = {}
+        base_labels: list[str] = []
         for s, e, k in mic_segs:
             if k not in mapping:
                 if k in owners:
@@ -681,10 +727,43 @@ def resolve_channel_segments(
                     mapping[k] = f"Собеседник {next_n}"
                     next_n += 1
                 chan[mapping[k]] = "mic"
-            segments.append((s, e, mapping[k]))
+            base_labels.append(mapping[k])
+
+        # Переподпись — вторым проходом ПОСЛЕ базовой: базовые метки и их
+        # номера уже разданы, новые продолжают нумерацию за ними. Отрезок
+        # становится нейтральным, только если лежит больше чем наполовину
+        # внутри отрезка без опоры, его исходный голос доказан эхом вне этих
+        # отрезков, а базовая метка — непустой владелец. Один исходный голос —
+        # одна метка, где бы он ни звучал внутри отрезков без опоры.
+        new_of: dict[int, str] = {}
+        resigned_s = 0.0
+        owner_left_s = 0.0
+        for (s, e, k), k_orig, base in zip(mic_segs, orig_voices, base_labels):
+            label = base
+            if (in_unsupported(s, e) and k_orig in echo and owner_label
+                    and base == owner_label):
+                if k_orig not in new_of:
+                    new_of[k_orig] = f"Собеседник {next_n}"
+                    next_n += 1
+                    chan[new_of[k_orig]] = "mic"
+                    unsupported_labels.add(new_of[k_orig])
+                label = new_of[k_orig]
+            if in_unsupported(s, e):
+                if label == owner_label and owner_label:
+                    owner_left_s += e - s
+                elif label in unsupported_labels:
+                    resigned_s += e - s
+            segments.append((s, e, label))
+
         log(f"mic: {len(mic_segs)} сегментов, голосов {len(durs)}, "
             f"владелец: {why}")
-    return segments, chan
+        if unsupported:
+            spans = ", ".join(f"{s:.0f}–{e:.0f}" for s, e in unsupported)
+            log(f"без опоры: {len(unsupported)} отрезков ({spans}), "
+                f"{sum(e - s for s, e in unsupported):.0f} с; "
+                f"эхо-голоса {sorted(echo)}; переподписано {resigned_s:.0f} с, "
+                f"владельцу осталось {owner_left_s:.0f} с")
+    return segments, chan, unsupported_labels
 
 
 def paragraphs(segments: list[tuple[float, float, str]], gap: float = 2.0) -> list[list]:
@@ -1352,13 +1431,32 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
             # Длинный микрофон не размечен — сбой, а не тишина: финал по одному
             # каналу собеседников потерял бы все реплики владельца (№622 B1).
             return _channel_lost("микрофон", len(mic) / sr, mic_engine_note)
+    # Отрезки без опоры: канал собеседников молчит нулями или кончился раньше
+    # микрофона — эхо-фильтру в них не с чем сверять. Нули считаются по записи
+    # канала собеседников, только когда загружены оба канала; нет записи — нет
+    # и отрезков. Подпись ими пользуется, только когда микрофон разметил
+    # Nemotron: авто-режим sherpa в звонке может слить владельца с эхом в один
+    # кластер, замеров нет — тогда подпись как на базе, а в журнале строка.
+    unsupported: list[tuple[float, float]] = []
+    if bh_p is not None and mic_p is not None:
+        runs = speech_gate.zero_runs(bh, sr, 10.0)
+        log(f"нули канала собеседников: серий ≥ 10 с — {len(runs)}, "
+            f"самая длинная {max((e - s for s, e in runs), default=0.0):.0f} с")
+        unsupported = owner_voice_rules.unsupported_spans(
+            runs, len(bh) / sr, len(mic) / sr)
+        if unsupported and mic_engine != "Nemotron":
+            spans = ", ".join(f"{s:.0f}–{e:.0f}" for s, e in unsupported)
+            log(f"отрезки без опоры: {spans} — микрофон размечен sherpa, "
+                f"подпись как на базе")
+            unsupported = []
     # Подпись владельца читается из настроек, только когда микрофон размечен
     # (длинный неразмеченный до сюда не доходит): без микрофона пересборка
     # конфиг здесь не читала и не читает.
     owner_label = (channel_labels.ChannelLabels.from_config(cfg).mic_signed
                    if mic_raw is not None else "")
-    segments, chan = resolve_channel_segments(bh_raw, mic_raw, owner_label=owner_label,
-                                              call=gate_call, bh_dwarf_s=bh_dwarf_s)
+    segments, chan, unsupported_labels = resolve_channel_segments(
+        bh_raw, mic_raw, owner_label=owner_label,
+        call=gate_call, bh_dwarf_s=bh_dwarf_s, unsupported=unsupported)
     if not segments:
         log("сегментов не нашлось — оставляю живую стенограмму")
         return None
@@ -1400,9 +1498,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # встречу — самопредставления, ответы после обращения), сопоставляя по
     # времени. Затем qwen досматривает только те метки, которым имя не досталось.
     allowed = set(live_session_names(meta).values())
+    # Метки без имени — свёрнутый микрофон И переподписанные из-за отрезков
+    # без опоры: имя собеседника ни той, ни другой не присваивается, в модель
+    # и перенос они не идут. Плашка шапки при этом — только про свёрнутый
+    # микрофон: отрезок без опоры человеку покажет след канала (№654).
+    no_names = collapsed | unsupported_labels
     names = names_by_time(live.read_text(encoding="utf-8"), base,
                           [(s, e, spk) for s, e, spk, _ in lines], allowed,
-                          exclude=collapsed) if allowed else {}
+                          exclude=no_names) if allowed else {}
     if names:
         log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
     # Безымянными считаются только НЕЙТРАЛЬНЫЕ метки: владелец имя по
@@ -1414,7 +1517,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
                if channel_labels.is_neutral_label(spk)}
     # Слитая метка микрофона модели не отдаётся: она назвала бы её по
     # самопредставлению любого из тех, кто под ней (№559, вход r1 C2).
-    rest = neutral - set(names) - collapsed
+    rest = neutral - set(names) - no_names
     naming = NamesOutcome({}, NamesOutcome.ANSWERED)
     if rest:
         naming = name_speakers(
@@ -1430,7 +1533,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
     # метки = потеря, которую человеку надо видеть в самом файле; причина — своя
     # у каждого исхода (№499). Пустой ответ модели при полностью названных
     # участниках ничего не стоит: помечаем только когда потеря видна в файле.
-    unnamed = neutral - set(names) - collapsed
+    unnamed = neutral - set(names) - no_names
     pending_note = None
     if unnamed and naming.outcome == NamesOutcome.SILENT:
         pending_note = transcript.names_pending_line(NAMES_PENDING_NOTE, unnamed)

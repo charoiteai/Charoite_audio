@@ -216,7 +216,17 @@ One rule has three costs:
 - **Echo residue.** The rebuild drops a microphone segment as speaker bleed
   when system-channel speech covers more than half of it. Bleed covered half
   or less stays: it used to be a neutral «Собеседник N», now it carries the
-  owner's name.
+  owner's name. There is one exception. When the call channel stops being a
+  witness — a run of exact zeros of 60 s or more (a headset unplugged mid-call,
+  the channel records digital silence to the end), or a channel that ends more
+  than 60 s before the microphone — the rebuild has nothing to compare bleed
+  against. A microphone voice proved to be bleed *outside* those spans (the
+  echo filter strips at least 80 % of its speech, and it has at least 20 s) is
+  signed with a neutral «Собеседник N» *inside* them instead of the owner. That
+  label carries no name: the transfer by time, the name model and the
+  unnamed-labels note all pass it by. The price is that one remote speaker may
+  end up with two labels — the one from the call channel and the one from the
+  microphone.
 - **Sound that is not a call.** A video or music played through the speakers
   for more than 30 s of a two-minute window raises the flag in an in-person
   meeting, and the whole microphone is signed as the owner. Not seen in field
@@ -502,7 +512,10 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   call segments, not one at a time: Nemotron cuts a turn into pieces, and echo
   over three pieces of 30 % each used to pass as live speech. On an 8-minute
   call of 28.09 one-at-a-time kept 69 % of the mic speech with Nemotron against
-  17.5 % with sherpa; the union keeps 17.8 %.
+  17.5 % with sherpa; the union keeps 17.8 %. Where the call channel is not a
+  witness, the share test has nothing to compare against: a voice proved to be
+  bleed outside those spans keeps a neutral label inside them (see *Echo
+  residue* above).
 - **The mic on a call.** When Nemotron labelled the call channel and found
   speech in it, the mic channel goes to Nemotron as well: on a call every mic
   voice that survives the echo filter is the owner (see
