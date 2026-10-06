@@ -52,3 +52,37 @@ def speech_starts(x: np.ndarray, sr: int, chunk_s: float, overlap_s: float,
         return []
     return [i / sr for i in range(0, len(x) - need + 1, step)
             if chunk_is_speech(x[i:i + need], vad_db)]
+
+
+def zero_runs(x: np.ndarray, sr: int, min_s: float,
+              block_s: float = 0.1) -> list[tuple[float, float]]:
+    """Серии подряд идущих блоков по `block_s`, где ВСЕ отсчёты точно ноль.
+
+    Точный ноль — не «тихо», а отсутствие записи: канал собеседников,
+    переставший писаться посреди звонка, отдаёт цифровые нули. Один ненулевой
+    отсчёт в блоке рвёт серию (щелчок, шум нарезки). В выход — серии длиной не
+    меньше `min_s`, в секундах от начала записи; серия, дотянувшаяся до конца
+    записи, тоже. Неполный последний блок не считается вовсе: как и у гейта,
+    хвост короче окна не судится.
+
+    Не знает ни про пересборку, ни про каналы: тем же разрезом хабу нужны
+    нули записи в карточке №654.
+    """
+    width = int(sr * block_s)
+    if width <= 0 or len(x) == 0:
+        return []
+    out: list[tuple[float, float]] = []
+    run_start: int | None = None
+    i = 0
+    while i + width <= len(x):
+        if np.any(x[i:i + width]):
+            if run_start is not None:
+                if (i - run_start) / sr >= min_s:
+                    out.append((run_start / sr, i / sr))
+                run_start = None
+        elif run_start is None:
+            run_start = i
+        i += width
+    if run_start is not None and (i - run_start) / sr >= min_s:
+        out.append((run_start / sr, i / sr))
+    return out
