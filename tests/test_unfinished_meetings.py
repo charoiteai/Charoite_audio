@@ -154,6 +154,32 @@ def test_typical_duration_is_median_not_average(store, tmp_path):
     assert store.typical_duration() == 360
 
 
+@pytest.mark.parametrize("field,bad", [
+    ("started_at", None), ("updated_at", "не время"),
+    ("started_at", []), ("started_at", True),
+    ("updated_at", float("inf")), ("started_at", float("-inf")),
+    ("updated_at", float("nan")), ("updated_at", 10 ** 400),
+])
+def test_typical_duration_ignores_corrupt_times(store, field, bad):
+    for stem, span in (("a", 300), ("b", 360), ("c", 1800)):
+        _put(store, stem, state="ready", started_at=NOW - span, updated_at=NOW)
+    times = {"started_at": NOW - 100, "updated_at": NOW}
+    times[field] = bad
+    _put(store, "повреждённый", state="ready", **times)
+    assert store.typical_duration() == 360
+
+
+def test_corrupt_times_do_not_count_as_completed_samples(store):
+    _put(store, "a", state="ready", started_at=NOW - 300, updated_at=NOW)
+    _put(store, "b", state="ready", updated_at=NOW)
+    path = store.directory / "b.json"
+    missing = json.loads(path.read_text(encoding="utf-8"))
+    del missing["started_at"]
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    _put(store, "c", state="ready", started_at=NOW, updated_at=float("inf"))
+    assert store.typical_duration() is None
+
+
 def test_no_promise_until_there_is_something_to_promise(store):
     _put(store, "a", state="ready", started_at=NOW - 300, updated_at=NOW)
     assert store.typical_duration() is None, "по одной встрече обещать нечего"

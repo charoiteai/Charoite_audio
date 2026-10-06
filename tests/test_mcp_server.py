@@ -113,6 +113,104 @@ def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypat
     assert "Минутки сохранены" in out and (tdir / "2026-09-13_1200_minutes.md").exists()
 
 
+def _minutes_client(monkeypatch, answer):
+    class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
+
+        def fit(self, speech):
+            return speech
+
+        def complete(self, prompt, **kw):
+            return answer()
+
+    monkeypatch.setattr(mcp_server, "_client", lambda: Fake())
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_mcp_minutes_keep_edits_made_during_generation(tmp_path, monkeypatch, existing):
+    tdir = _transcripts(tmp_path, monkeypatch)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    if existing:
+        minutes.write_text("прежние минутки", encoding="utf-8")
+        assert mcp_server.live_sidecar.attest(live, "minutes", "прежние минутки", "1" * 64)
+    passport = mcp_server.live_sidecar.read(live)
+    prev = mcp_server.live_sidecar.prev_path(live, minutes)
+    prev.parent.mkdir(parents=True, exist_ok=True)
+    prev.write_text("прежняя резервная копия", encoding="utf-8")
+
+    def answer():
+        minutes.write_text("правка владельца во время генерации", encoding="utf-8")
+        return "- Решение модели"
+
+    _minutes_client(monkeypatch, answer)
+    out = mcp_server.sufler_make_minutes()
+
+    assert "файл изменился за время генерации" in out and "НЕ тронуты" in out
+    assert minutes.read_text(encoding="utf-8") == "правка владельца во время генерации"
+    assert prev.read_text(encoding="utf-8") == "прежняя резервная копия"
+    assert mcp_server.live_sidecar.read(live) == passport
+
+
+def test_mcp_minutes_keep_previous_version_and_attest_new_bytes(tmp_path, monkeypatch):
+    tdir = _transcripts(tmp_path, monkeypatch)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    minutes.write_text("прежние минутки", encoding="utf-8")
+    _minutes_client(monkeypatch, lambda: "- Решение модели")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "Минутки сохранены" in out
+    prev = mcp_server.live_sidecar.prev_path(live, minutes)
+    assert prev.read_text(encoding="utf-8") == "прежние минутки"
+    meta = mcp_server.live_sidecar.read(live)
+    assert meta["minutes_sha256"] == mcp_server.live_sidecar.sha(minutes.read_text(encoding="utf-8"))
+    assert meta["minutes_source_sha256"] == mcp_server.meeting_source.of(live, live.read_text(encoding="utf-8")).sha()
+
+
+def test_mcp_minutes_survive_non_utf8_previous_version(tmp_path, monkeypatch):
+    """Прежние минутки не в UTF-8 — штатное состояние, а не ошибка: писатель
+    копирует их в `.prev` байтами, а не роняет инструмент `UnicodeDecodeError`
+    мимо обработчиков (№663). Раньше владелец видел безликую ошибку инструмента."""
+    tdir = _transcripts(tmp_path, monkeypatch)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    old = "прежние минутки в cp1251: сроки, суммы\n".encode("cp1251")
+    minutes.write_bytes(old)
+    _minutes_client(monkeypatch, lambda: "- **Кто** — что — срок")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "Минутки сохранены" in out, out
+    prev = mcp_server.live_sidecar.prev_path(live, minutes)
+    assert prev.read_bytes() == old, "прежняя версия — байт в байт"
+    doc = minutes.read_text(encoding="utf-8")        # новые минутки — UTF-8
+    meta = mcp_server.live_sidecar.read(live)
+    assert meta["minutes_sha256"] == mcp_server.live_sidecar.sha(doc), "паспорт выдан"
+
+
+def test_mcp_minutes_report_backup_failure_without_replacing_the_file(tmp_path, monkeypatch):
+    tdir = _transcripts(tmp_path, monkeypatch)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    minutes.write_text("прежние минутки", encoding="utf-8")
+    assert mcp_server.live_sidecar.attest(live, "minutes", "прежние минутки", "1" * 64)
+    passport = mcp_server.live_sidecar.read(live)
+    prev = mcp_server.live_sidecar.prev_path(live, minutes)
+    prev.parent.write_text("каталог резервных копий недоступен", encoding="utf-8")
+    _minutes_client(monkeypatch, lambda: "- Решение модели")
+
+    out = mcp_server.sufler_make_minutes()
+
+    assert "предыдущая версия не сохранена" in out and "НЕ тронуты" in out
+    assert minutes.read_text(encoding="utf-8") == "прежние минутки"
+    assert mcp_server.live_sidecar.read(live) == passport
+
+
 def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):
     def run(*a, **k):
         raise subprocess.TimeoutExpired(cmd=a[0], timeout=mcp_server.GRAPH_UPDATE_TIMEOUT)
@@ -382,3 +480,39 @@ def test_failed_minutes_keep_the_digests_for_the_retry(tmp_path, monkeypatch, an
     out, speech = _minutes_with_cached_digests(tmp_path, monkeypatch, answer)
     assert "НЕ тронуты" in out
     assert (llm._fit_speech_id(speech), "ollama") in llm._fit_cache
+
+
+def test_write_refusal_drops_the_digests_of_that_meeting(tmp_path, monkeypatch):
+    """Отказ записи (RACE) наступает ПОСЛЕ ответа модели: сводки этой встречи
+    больше не нужны и уходят сразу, как при успехе; чужие остаются (№663).
+    Раньше ранний возврат оставлял их до конца срока кэша свёртки."""
+    import meeting_source
+
+    text = "# Встреча\n" + "реплика\n" * 100
+    tdir = _transcripts(tmp_path, monkeypatch, text=text)
+    live = tdir / "2026-09-13_1200.md"
+    minutes = live.with_name(live.stem + "_minutes.md")
+    speech = meeting_source.of(live, text).speech
+    llm._fit_cache_put((llm._fit_speech_id(speech), "ollama"), "сводки этой встречи")
+    llm._fit_cache_put((llm._fit_speech_id("чужая встреча"), "ollama"), "сводки чужой")
+
+    class Fake:
+        lang = "ru"
+        recording_block = llm.LLM.recording_block
+        document_model = llm.LLM.document_model
+        engine, model, mlx_model = "ollama", "проба", ""
+
+        def fit(self, transcript):
+            return "[сжато]"
+
+        def complete(self, prompt, **kw):
+            minutes.write_text("правка владельца во время генерации", encoding="utf-8")
+            return "- **Кто** — что — срок"
+
+    monkeypatch.setattr(mcp_server, "_client", lambda: Fake())
+    out = mcp_server.sufler_make_minutes()
+
+    assert "файл изменился за время генерации" in out and "НЕ тронуты" in out
+    assert (llm._fit_speech_id(speech), "ollama") not in llm._fit_cache, \
+        "отказ записи после ответа модели — сводки этой встречи из памяти ушли"
+    assert (llm._fit_speech_id("чужая встреча"), "ollama") in llm._fit_cache, "чужие не тронуты"

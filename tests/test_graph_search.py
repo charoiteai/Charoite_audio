@@ -331,6 +331,58 @@ def test_dossiers_axis_off_on_a_summary_only_question_is_empty(tmp_path):
     assert brain.pack(brain.ANSWER, one).text == ""
 
 
+@pytest.mark.parametrize("part,bad", [
+    ("manifest", []), ("manifest", None), ("files", None),
+    ("files", [["сломанная запись"]]), ("count", "не число"),
+    ("files", [["путь", 1.0, 1, "лишнее поле"]]),
+    ("files", [{"path": "путь", "mtime": 1.0, "count": 1}]),
+    ("mtime", "не время"), ("mtime", None), ("path", None),
+    ("component", float("nan")), ("component", float("inf")),
+    ("empty_dim", 0), ("empty_count", 0),
+    ("blob", []), ("blob", {}),
+])
+def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad):
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    s.refresh(force=True)
+    assert s.embed_pending() == s.size
+    manifest_path = s._vec_manifest
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if part == "manifest":
+        manifest = bad
+    elif part == "files":
+        manifest["files"] = bad
+    elif part == "blob":
+        manifest["blob"] = bad
+    elif part in {"empty_dim", "empty_count"}:
+        if part == "empty_dim":
+            manifest["dim"] = bad
+        else:
+            for entry in manifest["files"]:
+                entry[2] = bad
+        manifest_path.with_name(manifest["blob"]).write_bytes(b"")
+    elif part == "component":
+        import array
+        blob = manifest_path.with_name(manifest["blob"])
+        blob.write_bytes(array.array("f", [bad]).tobytes() + blob.read_bytes()[4:])
+    else:
+        manifest["files"][0][{"path": 0, "mtime": 1, "count": 2}[part]] = bad
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    cold = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    cold.refresh(force=True)
+
+    assert cold.load_vectors() == 0
+    assert cold.pending_vectors()
+    result = cold.search("платёжный шлюз", semantic=False)
+    assert not result.empty and result.blocks
+    assert cold.embed_pending() == cold.size, "повреждение не мешает заменить кэш"
+    restored = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    restored.refresh(force=True)
+    assert restored.load_vectors() == restored.size
+    assert not restored.pending_vectors(), "новый кэш годится следующему процессу"
+    result = restored.search("поставщик платёжного шлюза")
+    assert result.sem_used and not result.empty
+
+
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)

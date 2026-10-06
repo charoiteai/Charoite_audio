@@ -1120,17 +1120,34 @@ class GraphSearch:
         try:
             mtime = self._vec_manifest.stat().st_mtime
             manifest = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
-            if manifest.get("key") != self.cache_key():
+            if not isinstance(manifest, dict) or manifest.get("key") != self.cache_key():
                 return None
-            dim, entries = int(manifest["dim"]), manifest["files"]
+            dim, entries = manifest["dim"], manifest["files"]
+            if type(dim) is not int or dim <= 0 or not isinstance(entries, list):
+                return None
+            checked = []
+            for entry in entries:
+                if not isinstance(entry, list):
+                    return None
+                path, stamp, n = entry
+                if (not isinstance(path, str) or not path or type(n) is not int or n <= 0
+                        or isinstance(stamp, bool) or not isinstance(stamp, (int, float))):
+                    return None
+                stamp = float(stamp)
+                if not math.isfinite(stamp):
+                    return None
+                checked.append((path, stamp, n))
+            entries = checked
             flat = array.array("f")
             with open(self._vec_manifest.with_name(str(manifest["blob"])), "rb") as fh:
                 flat.frombytes(fh.read())
         except FileNotFoundError:
             return self._read_cache(retry=False) if retry else None
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
             return None
-        if len(flat) != dim * sum(int(n) for _, _, n in entries):
+        if len(flat) != dim * sum(n for _, _, n in entries):
+            return None
+        if not all(math.isfinite(value) for value in flat):
             return None
         return entries, flat, dim, mtime
 
@@ -1153,7 +1170,9 @@ class GraphSearch:
         stem = self._vec_manifest.stem
         previous = None
         try:
-            previous = json.loads(self._vec_manifest.read_text(encoding="utf-8")).get("blob")
+            prior = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
+            if isinstance(prior, dict) and isinstance(prior.get("blob"), str):
+                previous = prior["blob"]
         except (OSError, ValueError):
             pass
         blob = self._vec_manifest.with_name(f"{stem}.{uuid.uuid4().hex[:12]}.f32")   # уникально по построению, не по часам (DS I3 r2)
@@ -1641,5 +1660,4 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     # иначе — только сводка: «Найдено (0 из 0)» под ней врало бы
     warn = f"⚠ {result.why_low}. Ниже найденное:\n" if result.low_conf else ""   # первой строкой, ПЕРЕД досье (DS C1 r3)
     return warn + "\n\n".join(parts)
-
 
