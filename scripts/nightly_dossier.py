@@ -66,17 +66,59 @@ def all_graphs() -> list[pathlib.Path]:
     return graphs.all_graphs("Ядра")
 
 
-def _index_entry_from_disk(theme: str, members: list[str], path: pathlib.Path,
+def _index_entry_from_disk(theme: str, members: list[str], loaded: dossier.DossierLoad,
                            fp: str, today: str) -> dict:
     """Запись индекса для темы, которую этот прогон не пересобирал: досье
     на диске живо — в индексе оно должно остаться (отпечаток — фактический)."""
     return {
         "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
         "источников": len(members),
-        "собрано": _собрано(path) or today,
-        "отпечаток": dossier.read_fingerprint(path) or fp,
+        "собрано": _собрано(loaded) or today,
+        "отпечаток": dossier.read_fingerprint(loaded) or fp,
         "ключи": dossier.keywords(theme + " " + " ".join(members)),
     }
+
+
+class _DossierReads:
+    """Один снимок на путь за прогон, один лог и учёт повреждённых путей."""
+
+    def __init__(self):
+        self.loaded: dict[pathlib.Path, dossier.DossierLoad] = {}
+        self.damaged: set[pathlib.Path] = set()
+
+    def load(self, path: pathlib.Path) -> dossier.DossierLoad:
+        if path not in self.loaded:
+            loaded = dossier.load_dossier(path)
+            self.loaded[path] = loaded
+            if loaded.state == "damaged":
+                self.damaged.add(path)
+                print(f"  ⚠️ битое досье: {path} — UTF-8 прочитан с заменой")
+        return self.loaded[path]
+
+
+def _keep_in_index(entries: list[dict], theme: str, members: list[str],
+                   loaded: dossier.DossierLoad, fp: str, today: str) -> None:
+    """Любая неприменённая пересборка оставляет прежнее досье в индексе."""
+    if loaded.state != "missing":
+        entries.append(_index_entry_from_disk(theme, members, loaded, fp, today))
+
+
+def _manual_for_rebuild(theme: str, loaded: dossier.DossierLoad) -> tuple[bool, str | None, int]:
+    """Решение ДО модели: можно ли сохранить единственный авторский текст.
+
+    Третий элемент — отказ для сводки; повреждение не означает отказ модели.
+    """
+    if loaded.state == "unreadable":
+        print(f"  ✗ {theme}: прежнее досье не прочитано — не трогаю")
+        return False, None, 1
+    text = loaded.text or ""
+    if loaded.state == "damaged":
+        section = dossier.KEEP_RE.search(text)
+        # заголовок раздела — литерал регулярки, поэтому знак замены во всём совпадении означает знак замены в тексте раздела
+        if section is None or "\ufffd" in section.group():
+            print(f"  ✗ {theme}: Правки автора повреждены или не найдены — не трогаю")
+            return False, None, 0
+    return True, dossier.preserve_manual(text), 0
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
@@ -128,7 +170,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     folder = graph / CHAROITE.dossier_dir
     files, backlinks = dossier.scan(graph, schema=CHAROITE)
     if not files:
-        return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0, "отказы": 0}
+        return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0, "отказы": 0, "битые": 0}
 
     cl = dossier.clusters(files, backlinks, schema=CHAROITE)
     today = date.today().isoformat()
@@ -136,7 +178,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     entries, built, skipped = [], 0, 0
     # Раздельно, иначе ночь с занятым графом выглядит как «всё без
     # изменений» (круг-2 по PR #438, DS Minor 9).
-    unchanged = over_limit = locked = late = 0
+    unchanged = over_limit = locked = late = changed = broken_manual = 0
+    reads = _DossierReads()
     отказы = 0   # модель не ответила: тема осталась без разбора
 
     # Несобранные темы — вперёд, и только потом крупнейшие. Прежняя
@@ -149,25 +192,19 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     for ti, (theme, members) in enumerate(themes):
         path = folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
-        old_fp = dossier.read_fingerprint(path)
+        loaded = reads.load(path)
+        old_fp = dossier.read_fingerprint(loaded)
 
         if not full and old_fp == fp and path.exists():
             skipped += 1
             unchanged += 1
-            # индекс всё равно перечитываем — тема жива
-            entries.append({
-                "тема": theme, "файл": f"{CHAROITE.dossier_dir}/{theme}.md",
-                "источников": len(members), "собрано": _собрано(path) or today,
-                "отпечаток": fp,
-                "ключи": dossier.keywords(theme + " " + " ".join(members)),
-            })
+            _keep_in_index(entries, theme, members, loaded, fp, today)
             continue
 
         if not full and built >= limit:
             skipped += 1
             over_limit += 1
-            if path.exists():   # новую тему сверх лимита в индекс не выдумываем
-                entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+            _keep_in_index(entries, theme, members, loaded, fp, today)
             continue
 
         if dry:
@@ -189,11 +226,19 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             late += len(themes) - ti
             for late_theme, late_members in themes[ti:]:
                 late_path = folder / f"{late_theme}.md"
-                if late_path.exists():
-                    entries.append(_index_entry_from_disk(
-                        late_theme, late_members, late_path,
-                        dossier.fingerprint(late_members, files), today))
+                _keep_in_index(entries, late_theme, late_members, reads.load(late_path),
+                               dossier.fingerprint(late_members, files), today)
             break
+        allowed, manual, failures = _manual_for_rebuild(theme, loaded)
+        if not allowed:
+            отказы += failures
+            if failures == 0:
+                # Отказ из-за повреждённых «Правок автора» — это пропуск темы,
+                # а не молчание модели: тема уйдёт на следующую ночь.
+                skipped += 1
+                broken_manual += 1
+            _keep_in_index(entries, theme, members, loaded, fp, today)
+            continue
         t0 = time.time()
         body = ""
         for attempt in (1, 2):          # вторая попытка чуть холоднее
@@ -214,18 +259,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             # «Принято, что дальше?» на всех темах выходила с кодом 0 и
             # статусом «ok» (аудит 17.08). Прежнее досье в индексе оставляем.
             отказы += 1
-            if path.exists():
-                entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+            _keep_in_index(entries, theme, members, loaded, fp, today)
             continue
 
-        try:
-            manual = dossier.preserve_manual(path.read_text(encoding="utf-8")) if path.exists() else None
-        except (OSError, UnicodeDecodeError) as e:
-            # не-UTF-8 обрывок iCloud или снятые права на одно досье — отказ темы,
-            # не падение всей пересборки (DS M4 по #561)
-            print(f"  ✗ {theme}: прежнее досье не прочитано ({e}) — не трогаю")
-            отказы += 1
-            continue
         text = dossier.render(theme, body, members, files, fp, today)
         if manual:
             text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
@@ -236,8 +272,16 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                       f"{LOCK_WAIT // 60} мин — тема уйдёт на следующую ночь")
                 skipped += 1
                 locked += 1
-                if path.exists():
-                    entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+                _keep_in_index(entries, theme, members, loaded, fp, today)
+                continue
+            # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
+            fresh = dossier.load_dossier(path)
+            if fresh.state != loaded.state or fresh.text != loaded.text:
+                print(f"  ⏸ {theme}: досье изменилось за время генерации — "
+                      "тема уйдёт на следующую ночь")
+                skipped += 1
+                changed += 1
+                _keep_in_index(entries, theme, members, fresh, fp, today)
                 continue
             folder.mkdir(parents=True, exist_ok=True)
             # копия прежнего досье: пересборка сохраняла только «Правки автора» и
@@ -249,8 +293,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             except OSError as e:
                 print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
                 отказы += 1
-                if path.exists():
-                    entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+                _keep_in_index(entries, theme, members, loaded, fp, today)
                 continue
             # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
             safe_write.write_text(path, text)
@@ -278,19 +321,22 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     if skipped:
         print(f"  пропущено {skipped}: без изменений {unchanged}, "
               f"сверх лимита {over_limit}, граф занят {locked}, "
-              f"не успели за ночь {late}")
+              f"не успели за ночь {late}, правки автора повреждены {broken_manual}, "
+              f"досье изменилось {changed}")
     return {"граф": graph.name, "тем": len(cl), "собрано": built,
-            "пропущено": skipped, "отказы": отказы,
+            "пропущено": skipped, "отказы": отказы, "битые": len(reads.damaged),
             "без_изменений": unchanged, "сверх_лимита": over_limit,
-            "занят": locked, "не_успели": late}
+            "занят": locked, "не_успели": late,
+            "правки_повреждены": broken_manual, "досье_изменилось": changed}
 
 
-def _собрано(path: pathlib.Path) -> str:
+def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
     import re
+    loaded = dossier.load_dossier(source) if isinstance(source, pathlib.Path) else source
+    m = re.search(r"^собрано:\s*(\S+)", (loaded.text or "")[:400], re.M)
     try:
-        m = re.search(r"^собрано:\s*(\S+)", path.read_text(encoding="utf-8")[:400], re.M)
-        return m.group(1) if m else ""
-    except OSError:
+        return date.fromisoformat(m.group(1)).isoformat() if m else ""
+    except ValueError:
         return ""
 
 
@@ -335,7 +381,7 @@ def main() -> int:
         # вдвое (аудит графа 26.08, Codex).
         r = run(g, c, full=args.full, dry=args.dry, limit=remaining)
         remaining = max(0, remaining - r["собрано"])
-        print(f"    тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}"
+        print(f"    тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}, битые: {r['битые']}"
               + (f", отказов модели: {r['отказы']}" if r.get("отказы") else ""))
         total += r["собрано"]
         тем += r["тем"]
