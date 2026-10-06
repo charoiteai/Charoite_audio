@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import pathlib
 import shlex
 import subprocess
 import sys
 
 import requests
+from charoite_graph import safe_write
 import action_items
 import transcript
 
@@ -282,6 +282,7 @@ def sufler_make_minutes() -> str:
     # ВЕСЬ файл с хвостом «Ко-мышления», и след канала читался как сказанное
     source = meeting_source.of(f, transcript)
     mpath = f.with_name(f.stem + "_minutes.md")
+    before = safe_write.stat_snapshot(mpath)  # версия до свёртки и ответа модели
     # Ни статус, ни непустоту раньше никто не проверял: удалённая или
     # переименованная модель давала 404, `.get("message", {})` превращал ошибку
     # в пустую строку, и она безусловно ложилась ПОВЕРХ готовых минуток — а
@@ -341,22 +342,22 @@ def sufler_make_minutes() -> str:
     # Путь машины, повторённый моделью из речи или заметки, — до записи и
     # паспорта: хеш снимается с тех же байтов, что лягут на диск (№504).
     out, _scrub = privacy.scrub_local_paths(out)
-    # Через временное имя: обрыв посреди write_text оставлял бы усечённые
-    # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
-    tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
-    try:
-        tmp.write_text(out, encoding="utf-8")
-        tmp.replace(mpath)
-    finally:
-        tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
+    # Общий писатель хранит прежнюю версию, проверяет правку за время модели
+    # и выдаёт паспорт той же записью, что остальные производные встречи.
+    wrote = live_sidecar.write_derivative(f, mpath, "minutes", out, source.sha(),
+                                          expect=before, expect_absent=before is None)
+    if not wrote.written:
+        why = ("файл изменился за время генерации" if wrote.refused == live_sidecar.WriteOutcome.RACE
+               else "предыдущая версия не сохранена")
+        return f"{why} — минутки НЕ тронуты ({mpath.name})"
     # Минутки на диске — повтор уже не нужен, и сводки частей этой встречи из
     # памяти процесса уходят сразу, не дожидаясь 30 минут (№265, PRIVACY)
     forget_fit(source.speech)
     # Паспорт производной (№309): машинные минутки без него читались пересборкой
     # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
     # изменились. Хеш источника — тем же объектом, что у пересборки.
-    tail = "" if live_sidecar.attest(f, "minutes", out, source.sha()) else (
-        "\n(паспорт производной не записан: сайдкар стенограммы неоднозначен)")
+    tail = "" if wrote.state == live_sidecar.FRESH else (
+        "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
     return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
 
 

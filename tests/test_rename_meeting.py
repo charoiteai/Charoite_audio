@@ -25,6 +25,23 @@ import charoite_paths  # noqa: E402
 STAMP = "2026-08-03_1130"
 
 
+def test_alias_is_added_when_owner_keeps_a_custom_note_heading(world):
+    from charoite_graph import frontmatter
+    graph, _tdir = world
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text('---\nтип: встреча\naliases: ["Прежняя тема"]\n---\n'
+                    '# Моя карточка встречи\n\nтело\n', encoding="utf-8")
+
+    rm.apply({"moves": [], "old_folder": None, "new_folder": None, "note": note},
+             graph, STAMP, "Новая тема")
+
+    text = note.read_text(encoding="utf-8")
+    meta = frontmatter.parse(text)
+    _head, body = frontmatter.split(text)
+    assert meta["aliases"] == ["Прежняя тема", "Новая тема"]
+    assert body == "# Моя карточка встречи\n\nтело\n"
+
+
 @pytest.mark.parametrize("aliases", [
     'aliases: ["Старая тема"]\n',
     'aliases:\n  - Старая тема\n',

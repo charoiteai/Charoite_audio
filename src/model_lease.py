@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import pathlib
 import time
@@ -234,6 +235,17 @@ class Lease:
         self._drop()
 
 
+def _finite_time(value: object) -> float | None:
+    """Повреждённое время не доказывает зависание и не ломает диагностику."""
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def live(root: pathlib.Path, *, server: str | None = None,
          now: float | None = None) -> list[dict]:
     """Аренды, которые сейчас держат живые процессы — на этот сервер.
@@ -267,10 +279,7 @@ def live(root: pathlib.Path, *, server: str | None = None,
             continue
         if server is not None and info.get("server") != server:
             continue                          # аренда на другой сервер — не наш перезапуск
-        try:
-            deadline = float(info["deadline"])
-        except (KeyError, TypeError, ValueError):
-            deadline = None                   # поля deadline нет: живая, висящей не считаем
+        deadline = _finite_time(info.get("deadline"))  # неизвестен: живую работу щадим
         info["stalled"] = deadline is not None and deadline < now
         info["path"] = str(p)
         out.append(info)
@@ -322,7 +331,9 @@ def describe(leases: list[dict], *, now: float | None = None) -> str:
     now = time.time() if now is None else now
     parts = []
     for info in leases:
-        age = max(0, int(now - float(info.get("started", now))))
-        parts.append(f"pid {info.get('pid', '?')} ({info.get('kind', '?')}, {info.get('engine', '?')}, идёт {age} с"
+        started = _finite_time(info.get("started", now))
+        age = (f"идёт {max(0, int(now - started))} с" if started is not None
+               else "время начала неизвестно")
+        parts.append(f"pid {info.get('pid', '?')} ({info.get('kind', '?')}, {info.get('engine', '?')}, {age}"
                      + (", висит" if info.get("stalled") else "") + ")")
     return "; ".join(parts) or "никого"

@@ -318,7 +318,8 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     fn = mcp[mcp.index("def sufler_make_minutes"):mcp.index("def sufler_hints")]
     assert fn.index("client.fit(source.speech)") < fn.index("client.recording_block(source.recording_note)")
     assert "meeting_source.with_note(out, source.recording_note)" in fn
-    assert 'live_sidecar.attest(f, "minutes", out, source.sha())' in fn
+    # Общий писатель выдаёт паспорт тем же source.sha после проверки версии.
+    assert 'live_sidecar.write_derivative(f, mpath, "minutes", out, source.sha(),' in fn
 
     rt = (ROOT / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
     fin = rt[rt.index("def finalize_minutes("):rt.index("def _fallback_restamp(")]

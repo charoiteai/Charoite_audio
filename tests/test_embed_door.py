@@ -230,6 +230,8 @@ def test_the_same_key_prints_on_repeat_after_a_reset(monkeypatch, capsys):
     ([["x"]], 1, None),                   # не числа
     ([[1.0], [1.0, 2.0]], 2, None),       # размерность скачет
     ([[1.0]], 1, 3),                      # не та размерность кэша
+    ([[1.0, float("inf")]], 1, None),     # не конечная координата после первой
+    ([[1.0, 10 ** 400]], 1, None),        # переполнение преобразования
 ])
 def test_vectors_ok_reports_false_not_a_falsy_value(vectors, count, dim):
     """Контракт возвращает именно `False`: `None` прошёл бы как «нет», и форма

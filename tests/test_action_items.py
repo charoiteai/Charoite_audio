@@ -258,7 +258,7 @@ def test_mcp_minutes_normalize_before_write():
     fn = fn[: fn.index("\n@")]                     # тело одного инструмента
     assert "action_items.normalize(out)" in fn, (
         "mcp-путь минуток должен звать action_items.normalize")
-    assert fn.index("action_items.normalize(out)") < fn.index("tmp.write_text"), (
+    assert fn.index("action_items.normalize(out)") < fn.index("live_sidecar.write_derivative"), (
         "normalize обязан отработать ДО записи файла")
 
 

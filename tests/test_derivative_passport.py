@@ -32,6 +32,22 @@ import transcript  # noqa: E402
 SPEECH = "**Инга** [10:21]:\nСмету пришлю к пятому, провайдер прежний.\n" * 30
 
 
+def test_retro_immediate_writer_keeps_previous_version_and_updates_passport(tmp_path):
+    live = tmp_path / "2026-10-06_1200.md"
+    live.write_text("речь", encoding="utf-8")
+    target = tmp_path / "2026-10-06_1200_debrief.md"
+    target.write_text("прежний разбор", encoding="utf-8")
+    source = live_sidecar.sha("речь")
+
+    assert retro_fill._write_derivative(live, target, "debrief", "новый разбор", source)
+
+    assert target.read_text(encoding="utf-8") == "новый разбор"
+    assert live_sidecar.prev_path(live, target).read_text(encoding="utf-8") == "прежний разбор"
+    meta = live_sidecar.read(live)
+    assert meta["debrief_sha256"] == live_sidecar.sha("новый разбор")
+    assert meta["debrief_source_sha256"] == source
+
+
 def test_attest_publishes_the_byte_hash_and_source_hash_together(tmp_path, monkeypatch):
     """Сбой второй записи раньше оставлял паспорт с байтами и чужим источником."""
     import json

@@ -331,6 +331,38 @@ def test_dossiers_axis_off_on_a_summary_only_question_is_empty(tmp_path):
     assert brain.pack(brain.ANSWER, one).text == ""
 
 
+@pytest.mark.parametrize("part,bad", [
+    ("manifest", []), ("manifest", None), ("files", None),
+    ("files", [["сломанная запись"]]), ("count", "не число"),
+    ("mtime", "не время"), ("mtime", None), ("path", None),
+    ("component", float("nan")), ("component", float("inf")),
+])
+def test_corrupt_vector_cache_keeps_lexical_search_available(tmp_path, part, bad):
+    s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    s.refresh(force=True)
+    assert s.embed_pending() == s.size
+    manifest_path = s._vec_manifest
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if part == "manifest":
+        manifest = bad
+    elif part == "files":
+        manifest["files"] = bad
+    elif part == "component":
+        import array
+        blob = manifest_path.with_name(manifest["blob"])
+        blob.write_bytes(array.array("f", [bad]).tobytes() + blob.read_bytes()[4:])
+    else:
+        manifest["files"][0][{"path": 0, "mtime": 1, "count": 2}[part]] = bad
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    cold = gs.GraphSearch(s.graph, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    cold.refresh(force=True)
+
+    assert cold.load_vectors() == 0
+    assert cold.pending_vectors()
+    result = cold.search("платёжный шлюз", semantic=False)
+    assert not result.empty and result.blocks
+
+
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
     s = gs.GraphSearch(_graph(tmp_path), data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
     s.refresh(force=True)
