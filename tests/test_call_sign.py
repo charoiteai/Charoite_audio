@@ -72,6 +72,35 @@ def test_speech_starts_cut_the_recording_like_the_hub():
     assert speech_gate.step_seconds(3.0, 0.5) == 2.5
 
 
+# --------------------------------------------------------------- нули записи
+
+def test_a_run_of_exactly_the_minimum_counts_and_a_hair_shorter_does_not():
+    """5 с нулей — серия; 4,9 с — нет. Блок 0,1 с: длина — целое число блоков."""
+    assert speech_gate.zero_runs(np.zeros(5 * SR, dtype=np.float32), SR, 5.0) == [(0.0, 5.0)]
+    assert speech_gate.zero_runs(np.zeros(int(4.9 * SR), dtype=np.float32), SR, 5.0) == []
+
+
+def test_one_nonzero_sample_breaks_the_run():
+    """Единственный ненулевой отсчёт в блоке — уже не цифровой ноль: две серии."""
+    x = np.zeros(20 * SR, dtype=np.float32)
+    x[int(10.05 * SR)] = 1.0          # блок 10,0–10,1 с
+    assert speech_gate.zero_runs(x, SR, 5.0) == [(0.0, 10.0), (10.1, 20.0)]
+
+
+def test_a_run_reaching_the_end_of_the_recording_counts():
+    """Серия до последнего полного блока — серия; ей не нужен ненулевой хвост."""
+    x = np.zeros(8 * SR, dtype=np.float32)
+    x[0] = 0.5                        # звук в первом блоке, дальше нули до конца
+    assert speech_gate.zero_runs(x, SR, 5.0) == [(0.1, 8.0)]
+
+
+def test_an_incomplete_last_block_is_not_counted():
+    """Нули 6,95 с: полных блоков 69 — 6,9 с; неполный хвост 0,05 с не считается,
+    поэтому при пороге 6,9 серия кончается на 6,9, а не на 6,95."""
+    x = np.zeros(int(6.95 * SR), dtype=np.float32)
+    assert speech_gate.zero_runs(x, SR, 6.9) == [(0.0, 6.9)]
+
+
 # ------------------------------------------------------------ правило окна
 
 def test_thirty_seconds_in_the_window_is_a_call_one_chunk_less_is_not():
