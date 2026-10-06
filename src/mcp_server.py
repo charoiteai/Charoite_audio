@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import pathlib
 import shlex
 import subprocess
 import sys
 
 import requests
+from charoite_graph import safe_write
 import action_items
 import transcript
 
@@ -282,6 +282,7 @@ def sufler_make_minutes() -> str:
     # ВЕСЬ файл с хвостом «Ко-мышления», и след канала читался как сказанное
     source = meeting_source.of(f, transcript)
     mpath = f.with_name(f.stem + "_minutes.md")
+    before = safe_write.stat_snapshot(mpath)  # версия до свёртки и ответа модели
     # Ни статус, ни непустоту раньше никто не проверял: удалённая или
     # переименованная модель давала 404, `.get("message", {})` превращал ошибку
     # в пустую строку, и она безусловно ложилась ПОВЕРХ готовых минуток — а
@@ -325,39 +326,48 @@ def sufler_make_minutes() -> str:
                 f"({mpath.name})")
     if not out:
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
-    # Поручения — в чекбоксы ДО записи: это был третий путь записи минуток
-    # (после авто-черновика и ручного «Протокола»), и единственный без
-    # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
-    out = action_items.normalize(out)
-    _sufler = _cfg().get("sufler") or {}
-    # владелец — одним написанием, потом пометка «не участник» — как в демоне:
-    # иначе пересборка этим путём возвращала бы «**Марку**» поверх «**Марк**»
-    # (Important GLM r1 по #536); порядок — контракт finalize_assignees
-    user_name = str(_sufler.get("user_name") or "")
-    out = action_items.finalize_assignees(
-        out, action_items.participants_of(transcript, owner=user_name), user_name,
-        lang=str(_sufler.get("language") or "ru"))
-    out = meeting_source.with_note(out, source.recording_note)   # строка итога — механически
-    # Путь машины, повторённый моделью из речи или заметки, — до записи и
-    # паспорта: хеш снимается с тех же байтов, что лягут на диск (№504).
-    out, _scrub = privacy.scrub_local_paths(out)
-    # Через временное имя: обрыв посреди write_text оставлял бы усечённые
-    # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
-    tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+    # Сводки частей этой встречи живут в памяти процесса (кэш свёртки) и нужны
+    # только до ответа модели. Раньше их снимали ПОСЛЕ записи, и новый ранний
+    # возврат при отказе (RACE/PREV) оставлял их до конца срока кэша; теперь
+    # `finally` от ответа и до конца записи снимает их на любом исходе. Отказы
+    # ДО ответа (модель недоступна или пуста) кэш сохраняют: он заведён ради
+    # повтора, и трогать договорённость нельзя (№265, PRIVACY; №663).
     try:
-        tmp.write_text(out, encoding="utf-8")
-        tmp.replace(mpath)
+        # Поручения — в чекбоксы ДО записи: это был третий путь записи минуток
+        # (после авто-черновика и ручного «Протокола»), и единственный без
+        # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
+        out = action_items.normalize(out)
+        _sufler = _cfg().get("sufler") or {}
+        # владелец — одним написанием, потом пометка «не участник» — как в демоне:
+        # иначе пересборка этим путём возвращала бы «**Марку**» поверх «**Марк**»
+        # (Important GLM r1 по #536); порядок — контракт finalize_assignees
+        user_name = str(_sufler.get("user_name") or "")
+        out = action_items.finalize_assignees(
+            out, action_items.participants_of(transcript, owner=user_name), user_name,
+            lang=str(_sufler.get("language") or "ru"))
+        out = meeting_source.with_note(out, source.recording_note)   # строка итога — механически
+        # Путь машины, повторённый моделью из речи или заметки, — до записи и
+        # паспорта: хеш снимается с тех же байтов, что лягут на диск (№504).
+        out, _scrub = privacy.scrub_local_paths(out)
+        # Общий писатель хранит прежнюю версию, проверяет правку за время модели
+        # и выдаёт паспорт той же записью, что остальные производные встречи.
+        wrote = live_sidecar.write_derivative(f, mpath, "minutes", out, source.sha(),
+                                              expect=before, expect_absent=before is None)
+        if not wrote.written:
+            return f"{wrote.refusal_words} — минутки НЕ тронуты ({mpath.name})"
+        # Паспорт производной (№309): машинные минутки без него читались пересборкой
+        # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
+        # изменились. Хеш источника — тем же объектом, что у пересборки.
+        tail = "" if wrote.state == live_sidecar.FRESH else (
+            "\n(паспорт производной не подтверждён: проверьте сайдкар стенограммы)")
+        return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
     finally:
-        tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
-    # Минутки на диске — повтор уже не нужен, и сводки частей этой встречи из
-    # памяти процесса уходят сразу, не дожидаясь 30 минут (№265, PRIVACY)
-    forget_fit(source.speech)
-    # Паспорт производной (№309): машинные минутки без него читались пересборкой
-    # как UNKNOWN; с ним они STALE ровно тогда, когда речь или оговорка
-    # изменились. Хеш источника — тем же объектом, что у пересборки.
-    tail = "" if live_sidecar.attest(f, "minutes", out, source.sha()) else (
-        "\n(паспорт производной не записан: сайдкар стенограммы неоднозначен)")
-    return f"Минутки сохранены: {mpath}{tail}\n\n{out[:2000]}"
+        # Сводки частей снимаются на ЛЮБОМ исходе ПОСЛЕ ответа модели — это
+        # решение в пользу приватности: кэш свёртки хранит речь встречи и без
+        # этого жил бы 30 минут (№265, PRIVACY). Отказ записи исход не отменяет:
+        # RACE и PREV — тот же «после ответа», и кэш уходит. Повтор после PREV
+        # заново пересчитает свёртку речи, и это принятая цена.
+        forget_fit(source.speech)
 
 
 @_tool
