@@ -229,6 +229,21 @@ per-channel (you/them); with both — per voice ("Speaker 1/2/…"). Embeddings
 without segmentation leave live labels in a simplified mode and skip the
 after-meeting re-labelling.
 
+The optional Nemotron engine (Apple Silicon, after-meeting diarization) is
+installed from a terminal, with the data folder named — use the app's own
+Python when the code lives in the bundle:
+
+```bash
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron          # install
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --check  # what is there, no network
+CHAROITE_ROOT=<data folder> <app python> scripts/install_engine.py nemotron --plan   # plan as one JSON line, no network
+```
+
+The prompt is honest: 0 — installed and the probe is green; 12
+(`EXIT_INSTALL_BUSY`) — the machine is busy or another install is running; 13
+(`EXIT_INSTALL_CANCELLED`) — cancelled; 1 — refused. Details —
+[DIARIZATION.md](DIARIZATION.md).
+
 ## 6. Run
 
 ```bash

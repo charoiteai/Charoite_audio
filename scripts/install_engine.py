@@ -6,7 +6,7 @@ Python приложения mlx нет, бандл подписан. Раньш�
 руками — venv разработчика, который ломался от обновления Homebrew, а у
 пользователя приложения его не было вовсе. Теперь окружение ставит продукт:
 
-1. печатает, куда пойдёт в сеть (PyPI, Hugging Face), — до соединения;
+1. печатает, куда пойдёт в сеть (PyPI, Hugging Face, GitHub), — до соединения;
 2. сверяет машину с шапкой лока: macOS не ниже `min-macos`, Apple Silicon,
    Python той версии, под которую собран лок;
 3. копирует интерпретатор, которым запущен (`sys.base_prefix`), во временный
@@ -31,6 +31,16 @@ Python приложения mlx нет, бандл подписан. Раньш�
 
     CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron          # поставить
     CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --check  # что стоит, без сети
+    CHAROITE_ROOT=<папка данных> <python приложения> scripts/install_engine.py nemotron --plan   # план одной строкой JSON
+
+Исход установщика честный: 0 — поставлено и проба зелёная; `EXIT_INSTALL_BUSY` —
+машина занята или идёт другая установка; `EXIT_INSTALL_CANCELLED` — прервали
+(SIGTERM/SIGHUP/Ctrl-C); 1 — отказ (`Refused`, том без flock, отказ загрузчика
+весов). Единственный переводчик «исключение → код» — `main`.
+
+Приложение запускает установщик лидером своей группы процессов — тогда SIGKILL
+группе гасит и pip. Признак — переменная `CHAROITE_INSTALL_NEW_PGROUP=1`; без неё
+группа не меняется и Ctrl-C из терминала доходит как обычно.
 
 У приложения это `Charoite.app/Contents/Resources/python/bin/python3`; команду
 целиком — с корнем данных — печатают доктор и `--check`, если движок выбран, а
@@ -44,15 +54,18 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import json
 import os
 import pathlib
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import urllib.parse
 import wave
 from collections.abc import Callable
 
@@ -65,17 +78,35 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from charoite_paths import code_root, harden_umask, name_data_root_or_exit  # noqa: E402
+import busy_signals  # noqa: E402
+import config_loader  # noqa: E402
 import diarize_nemotron  # noqa: E402
 import file_locks  # noqa: E402
 import foreign_python  # noqa: E402
 import get_models  # noqa: E402
+from exit_codes import EXIT_INSTALL_BUSY, EXIT_INSTALL_CANCELLED  # noqa: E402
 
 CODE = code_root(__file__)
 
-#: Куда пойдёт сеть — печатается до соединения, как у get_models.
-NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами; ваши индексы и файлы настроек "
-           "pip, ~/.netrc не читаются, прокси системы и окружения учитываются",
-           "Hugging Face (huggingface.co) — веса с проверкой sha256")
+def _net_host(url: str) -> str:
+    """Хост адреса: в блоке сети называем его, а не весь путь."""
+    return urllib.parse.urlsplit(url).hostname or url
+
+
+#: Куда пойдёт сеть — печатается до соединения, как у get_models. Список — из
+#: адресов, которые может скачать путь установки: эмбеддинги и сегментация
+#: набора голосов (только когда его нет) и веса Nemotron. Один и тот же список
+#: у блока «сеть:» и у поля `network` в `--plan`.
+NETWORK = (
+    "PyPI (pypi.org, files.pythonhosted.org) — пакеты из лока с хешами; ваши индексы и файлы настроек "
+    "pip, ~/.netrc не читаются, прокси системы и окружения учитываются",
+    f"{_net_host(get_models.MODELS[get_models.DEFAULT].url)} — эмбеддинги набора голосов, "
+    "только если набора голосов нет; файлы этот хост отдаёт через свою сеть доставки",
+    f"{_net_host(get_models.SEGMENTATION[get_models.SEG_DEFAULT].url)} — сегментация набора голосов, "
+    "только если набора голосов нет; файлы этот хост отдаёт через свою сеть доставки",
+    f"{_net_host(get_models.NEMOTRON.url)} — веса Nemotron с проверкой sha256; "
+    "файлы этот хост отдаёт через свою сеть доставки",
+)
 
 #: Отпечаток python-build-standalone: сборка идёт с префиксом /install, и он
 #: остаётся в данных sysconfig. У Homebrew, системного Python и venv поверх них —
@@ -83,6 +114,41 @@ NETWORK = ("PyPI (pypi.org, files.pythonhosted.org) — пакеты из лок
 STANDALONE_PREFIX = "/install"
 
 PROBE_TIMEOUT_S = 180.0
+
+#: Размер окружения движка, МБ. Замер 05.10.2026: `du -sm` окружения, поставленного
+#: этим установщиком 29.09.2026 на Apple Silicon.
+ENVIRONMENT_MB = 601
+
+#: Признак от приложения: установщик запускают лидером своей группы процессов,
+#: чтобы SIGKILL группе погасил и pip. Без переменной группу не меняем — Ctrl-C
+#: из терминала обязан доходить.
+NEW_PGROUP_ENV = "CHAROITE_INSTALL_NEW_PGROUP"
+
+#: Сигналы, которые считаем отменой установки: закрытие приложения (SIGTERM),
+#: оборванный терминал (SIGHUP) и Ctrl-C (SIGINT). SIGINT ставится тем же
+#: обработчиком, что и остальные; `except KeyboardInterrupt` в `main` остаётся
+#: на случай, если сигнал придёт, пока обработчик ещё не поставлен.
+CANCEL_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+class InstallCancelled(BaseException):
+    """Установку прервали. Наследник `BaseException`, а не `Exception`: обработчик
+    сигнала бросает её поверх любого шага, и внутренние `except Exception` (в том
+    числе `SystemExit` вокруг загрузки набора голосов) не должны её проглотить."""
+
+
+class InstallBusy(Exception):
+    """Машина или каталог движка заняты другой работой; текст — чем именно."""
+
+
+def busy_now(root: pathlib.Path) -> list[str]:
+    """Чем занята машина глазами установщика — общий вердикт `busy_signals`.
+
+    Раньше установщик брал занятость из скрипта ожидания ночи и не видел идущую
+    ночь; `machine_busy` — то же определение, что у ночи, мутатора и прочих
+    тяжеловесов: живая запись, разбор встречи (стадией словами), ночной цикл,
+    мутация тестов."""
+    return busy_signals.machine_busy(root)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -199,18 +265,35 @@ def silence(path: pathlib.Path, seconds: float = 1.0) -> pathlib.Path:
 def swap_in(new: pathlib.Path, home: pathlib.Path) -> None:
     """Каталог окружения → новый: оба переименования в одном каталоге (один том).
 
-    Прежнее окружение живёт до последнего шага; сбой на замене возвращает его."""
+    Оба переименования идут под маской сигналов отмены (SIGTERM, SIGHUP,
+    SIGINT): отмена между ними иначе оставила бы `home` пустым, а прежнее
+    окружение — в `.old-*` до следующей установки. Пока маска стоит, сигнал
+    только откладывается — обработчик увидит его после конца отката (и тогда
+    бросит отмену) или после фиксации (и тогда не бросит).
+
+    Откат — на ЛЮБОМ исключении (в том числе отмене `BaseException`), а не
+    только `OSError`. Решение об откате — по состоянию каталогов, как в
+    `sweep`: `home` нет, `.old` есть — вернуть. Сразу после удачного второго
+    переименования, ещё под маской, ставится признак фиксации
+    (`_SWAP_COMMITTED`): с этого мига отмена не бросает, а просит доделать
+    уборку. Прежнее, оставшееся после удачной замены, убирает `finally`
+    установки или следующий `sweep`."""
+    global _SWAP_COMMITTED
     old = home.with_name(f".{home.name}.old-{os.getpid()}")
-    had_old = home.exists()
-    if had_old:
-        os.rename(home, old)
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, CANCEL_SIGNALS)
     try:
-        os.rename(new, home)
-    except OSError:
-        if had_old:
-            os.rename(old, home)
-        raise
-    if had_old:
+        try:
+            if home.exists():
+                os.rename(home, old)
+            os.rename(new, home)
+        except BaseException:
+            if not home.exists() and old.exists():
+                os.rename(old, home)
+            raise
+        _SWAP_COMMITTED = True
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+    if old.exists():
         shutil.rmtree(old, ignore_errors=True)
 
 
@@ -219,12 +302,16 @@ def one_install(home: pathlib.Path):
     """Одна установка движка за раз: замок рядом с каталогом окружения.
 
     Без него две установки меняли бы каталог наперегонки, а уборка остатков
-    (`sweep`) сносила бы временный каталог живой соседки."""
+    (`sweep`) сносила бы временный каталог живой соседки. Исход замка — функцией
+    исхода: «занято» и «том без flock» — разные беды, и переводятся в разные коды."""
     fd = os.open(home.with_name(f".{home.name}.install.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+b") as f:
-        if not file_locks.acquire_exclusive(f):
-            raise Refused(f"замок установки {home.name} не взят: идёт другая установка "
-                          f"(или том без flock) — дождитесь её")
+        outcome = file_locks.acquire_outcome(f)
+        if outcome == file_locks.BUSY:
+            raise InstallBusy(f"идёт другая установка движка {home.name} — дождитесь её")
+        if outcome == file_locks.NO_FLOCK:
+            raise Refused(f"замок установки {home.name} не взять: том без flock — "
+                          f"поставьте движок в локальный корень данных")
         yield
 
 
@@ -245,8 +332,164 @@ def sweep(home: pathlib.Path) -> None:
             os.rename(p, home)
 
 
-def install(name: str, root: pathlib.Path) -> int:
+def machine_fitness(lock: pathlib.Path) -> dict:
+    """Годность машины полем `{ok, reason}`: отказ `check_machine` — не исключение
+    наружу, а причина в JSON (`--plan` не должен ломаться на чужой машине)."""
+    try:
+        check_machine(lock)
+    except Refused as e:
+        return {"ok": False, "reason": str(e)}
+    except OSError as e:
+        # Лок без прав на чтение — тоже причина, а не исключение наружу: `--plan`
+        # обязан отдать одну строку JSON и на ней.
+        return {"ok": False, "reason": str(e)}
+    return {"ok": True, "reason": ""}
+
+
+def enter_process_group(env=None) -> bool:
+    """Лидер группы процессов — только по явному признаку от приложения.
+
+    SIGKILL группе тогда гасит и pip (установщик и его дети — одна группа). Без
+    переменной группу не трогаем: запуск из терминала обязан оставить Ctrl-C
+    работающим как обычно.
+
+    Уже лидер группы (а лидер сессии всегда и лидер группы) — выходим без
+    `setpgid`: на лидере сессии он бросает EPERM, и это была бы трасса до разбора
+    корня. Прочая `OSError` — `Refused` с текстом, `main` отдаёт её кодом 1."""
+    env = os.environ if env is None else env
+    if env.get(NEW_PGROUP_ENV) != "1":
+        return False
+    if os.getpgrp() == os.getpid():
+        return True
+    try:
+        os.setpgid(0, 0)
+    except OSError as e:
+        raise Refused(f"не удалось стать лидером группы процессов ({e}) — "
+                      f"запустите установщик без {NEW_PGROUP_ENV}") from e
+    return True
+
+
+#: Замена окружения зафиксирована: второе переименование `swap_in` удалось, и
+#: отката больше нет. Ставится `swap_in` под маской сигналов; снимается `main`
+#: в `finally` — второй вызов `main` в том же процессе не должен унаследовать
+#: признак.
+_SWAP_COMMITTED = False
+
+
+def _cancel(signum, frame) -> None:
+    """Обработчик отмены: `BaseException`, а не `SystemExit`.
+
+    Наследник `BaseException`, а не `SystemExit`: `SystemExit` прочитался бы
+    ошибкой загрузки весов и вернул бы код 1 вместо честного «отменено».
+
+    Если замена уже зафиксирована (`_SWAP_COMMITTED`), отменять нечего: движок
+    поставлен. Тогда обработчик не бросает — печатает в stderr, что отмена
+    пришла после замены, — и уборка доходит до конца: `main` печатает «готово»
+    и возвращает 0."""
+    if _SWAP_COMMITTED:
+        print("отмена пришла после замены — движок уже поставлен, доделываю уборку",
+              file=sys.stderr)
+        return
+    raise InstallCancelled(f"получен сигнал {signum}")
+
+
+def install_signals() -> dict:
+    """Обработчики отмены — на все режимы, включая `--check`: отменённая проверка
+    тоже честное «отменено». Возвращает прежние, их возвращает `main` на выходе."""
+    return {s: signal.signal(s, _cancel) for s in CANCEL_SIGNALS}
+
+
+def restore_signals(previous: dict) -> None:
+    for s, handler in previous.items():
+        signal.signal(s, handler)
+
+
+def plan(name: str, root: pathlib.Path) -> int:
+    """План установки одной строкой JSON — без сети и без запуска движка.
+
+    Битый или нечитаемый конфиг не роняет `--plan` трассой: `engine` тогда несёт
+    поле `error`, остальные поля — как есть, код 0. Прочие исключения — забота
+    `main`: последний рубеж вокруг режима `--plan` отдаёт одну строку и код 1."""
     spec = ENGINES[name]
+    try:
+        cfg = config_loader.load_user_or_example(root) or {}
+    except Exception as e:  # noqa: BLE001 — одна строка JSON важнее трассы
+        engine: dict = {"error": f"конфиг не прочитан: {e}"}
+    else:
+        engine = diarize_nemotron.engine_state(root, cfg)
+    payload = {
+        "machine": machine_fitness(spec.lock),
+        "network": list(NETWORK),
+        "license": {"name": get_models.NEMOTRON_LICENSE[0], "url": get_models.NEMOTRON_LICENSE[1]},
+        "sizes_mb": {
+            # Числа — сколько займёт на диске то, что поставит установка (№622 B2).
+            # Для весов и набора голосов это и объём загрузки, а для окружения
+            # загрузка меньше: из сети идут только колёса лока, интерпретатор
+            # копируется локально, так что `du -sm` окружения — не трафик.
+            #
+            # Набор голосов — по проверке «только если его нет»: блок сети помечает
+            # его так же, и план обязан считать так же, иначе кнопка приложения
+            # покажет загрузку, которой не будет.
+            #
+            # Окружение — всегда полный размер на диске: установка пересобирает его
+            # всегда (`copy_interpreter` и `pip_install` идут без проверки «уже
+            # стоит»), и проверки «на месте», которой 0 означал бы «ставить нечего»,
+            # у неё нет. Ноль здесь обещал бы кнопке 0 МБ, а установка снова
+            # копировала бы интерпретатор и ставила пакеты.
+            "environment": ENVIRONMENT_MB,
+            # Веса — по той же проверке, по которой их качает `fetch_nemotron`
+            # (сумма каждого файла), а не по структуре каталога: `check_model_dir`
+            # пропустила бы битый `model.safetensors` при правдоподобном
+            # `config.json`, и план обещал бы 0, а установка тянула 190 МБ.
+            "weights": sum(size_mb for _n, _u, size_mb, _s
+                           in get_models.nemotron_missing(spec.weights(root))),
+            "voice_set": sum(model.size_mb for dest, min_bytes, model in _voice_targets(root)
+                             if get_models.check(dest, min_bytes=min_bytes) is not None),
+        },
+        "engine": engine,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def _voice_targets(root: pathlib.Path) -> tuple[tuple[pathlib.Path, int, object], ...]:
+    """Цели набора голосов sherpa: `(куда, минимальный размер, чем качать)`.
+
+    Один список для установки и для `--plan`: размер в плане обязан считаться по
+    той же проверке, по которой `ensure_voice_set` решает, качать ли файл."""
+    return (
+        (get_models.diar_target(root), get_models.MIN_BYTES,
+         get_models.MODELS[get_models.DEFAULT]),
+        (get_models.seg_target(root), get_models.SEG_MIN_BYTES,
+         get_models.SEGMENTATION[get_models.SEG_DEFAULT]),
+    )
+
+
+def ensure_voice_set(root: pathlib.Path) -> None:
+    """Недостающий набор голосов sherpa — запасной движок пересборки.
+
+    Ставится тем же загрузчиком `get_models`, что `--diar`: веса нужны и без
+    окружения Nemotron — на них уходит пересборка, если движок не разметил. Отказ
+    загрузки — `SystemExit` из `get_models.download`, его переводит `main`."""
+    for dest, min_bytes, model in _voice_targets(root):
+        if get_models.check(dest, min_bytes=min_bytes) is None:
+            print(f"набор голосов: {dest} уже на месте")
+            continue
+        print(f"набор голосов: {dest.name}…")
+        get_models.download(model.url, dest, model.size_mb, sha256=model.sha256)
+
+
+def install(name: str, root: pathlib.Path) -> int:
+    # В группу входят режимы, которые запускают процессы: установка (pip, проба)
+    # и проверка (`check` зовёт `spec.probe`, а та запускает интерпретатор движка
+    # дочерним процессом). `--plan` в группу не входит: он ничего не запускает и
+    # обязан выдать одну строку JSON — отказ `setpgid` обернул бы её отказом с
+    # пустым stdout.
+    enter_process_group()
+    spec = ENGINES[name]
+    busy = busy_now(root)
+    if busy:
+        raise InstallBusy(", ".join(busy) + " — дождитесь конца и повторите установку")
     check_machine(spec.lock)
     home = spec.home(root)
     home.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +499,9 @@ def install(name: str, root: pathlib.Path) -> int:
         print(f"ставлю движок {name} в {home}\nсеть:")
         for line in NETWORK:
             print(f"  {line}")
+        print(f"  лицензия весов: {get_models.NEMOTRON_LICENSE[0]} — {get_models.NEMOTRON_LICENSE[1]}")
         try:
+            ensure_voice_set(root)
             staging.mkdir()
             print(f"копирую интерпретатор {sys.base_prefix}…")
             python = copy_interpreter(staging / "python")
@@ -275,12 +520,17 @@ def install(name: str, root: pathlib.Path) -> int:
             shutil.rmtree(staging, ignore_errors=True)
     print(f"готово: {spec.python(root)}\n"
           f"пересборка берёт это окружение, если ключ sufler.nemotron_python пуст; заданный ключ главнее — "
-          f"чей интерпретатор в работе, показывает scripts/doctor.py")
+          f"чей интерпретатор в работе, показывает scripts/doctor.py.\n"
+          f"включить движок: sufler.diarize_backend: nemotron в конфиге (или кнопка установки движка в приложении)")
     return 0
 
 
 def check(name: str, root: pathlib.Path) -> int:
     """Что стоит — без сети: окружение, версия mlx-audio, веса (через пробу движка)."""
+    # `check` зовёт `spec.probe`, а та запускает интерпретатор движка дочерним
+    # процессом: без входа в группу SIGKILL группе не погасит пробу вместе с
+    # установщиком. Отказ `setpgid` — `Refused` кодом 1, как у установки.
+    enter_process_group()
     spec = ENGINES[name]
     lock_platform(spec.lock)   # лок читают и установка, и проверка: «нет лока» не ждёт до установки (№489)
     python = spec.python(root)
@@ -309,12 +559,63 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("engine", choices=sorted(ENGINES), help="какой движок ставить")
     ap.add_argument("--check", action="store_true", help="только проверить, что стоит (без сети)")
+    ap.add_argument("--plan", action="store_true",
+                    help="показать план установки одной строкой JSON (без сети)")
     args = ap.parse_args(argv)
+    # Слово отказа задаёт режим, и выбирается оно здесь, в одном месте: в `--check`
+    # ничего не ставилось, отказ `setpgid` или отсутствие лока — это «проверка не
+    # выполнена», а в установке — «не поставлено». Ветки `except` слово не
+    # дублируют. Код возврата у обоих один и тот же — 1.
+    refusal = "проверка не выполнена" if args.check else "не поставлено"
+    # Обработчики отмены — до работы и на все режимы: отменённый --check или --plan
+    # тоже честное «отменено», а не обрыв без уборки.
+    previous = install_signals()
     try:
+        if args.plan:
+            # Последний рубеж: `--plan` обязан выдать ровно одну строку JSON даже
+            # на непредвиденном исключении. Отмена сохраняет свой код.
+            try:
+                return plan(args.engine, root)
+            except Exception as e:
+                print(json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+                return 1
         return check(args.engine, root) if args.check else install(args.engine, root)
+    except InstallCancelled as e:
+        print(f"отменено: {e}", file=sys.stderr)
+        return EXIT_INSTALL_CANCELLED
+    except KeyboardInterrupt:
+        print("отменено: прервано с клавиатуры (Ctrl-C)", file=sys.stderr)
+        return EXIT_INSTALL_CANCELLED
+    except InstallBusy as e:
+        print(f"занято: {e}", file=sys.stderr)
+        return EXIT_INSTALL_BUSY
     except Refused as e:
-        print(f"не поставлено: {e}", file=sys.stderr)
+        print(f"{refusal}: {e}", file=sys.stderr)
         return 1
+    except SystemExit as e:
+        # Загрузчик весов (`get_models.download`) отказывает `SystemExit` с текстом:
+        # для вызывающего это отказ кодом 1, словом режима. Голый выход (код 0 или
+        # None) внутри `try` — тоже отказ, а не успех: argparse с `--help` стоит
+        # выше `try` и сюда не попадает.
+        if e.code in (0, None):
+            print(f"{refusal}: загрузчик вышел без причины", file=sys.stderr)
+        else:
+            print(f"{refusal}: {get_models._exit_text(e)}", file=sys.stderr)
+        return 1
+    finally:
+        # Обработчики возвращаем ПЕРЕД сбросом признака: сигнал между сбросом и
+        # возвратом иначе попал бы в `_cancel` при `_SWAP_COMMITTED=False` и
+        # бросил `InstallCancelled` из `finally` — трасса после удачной замены.
+        global _SWAP_COMMITTED
+        # Сброс признака — в `finally` вокруг возврата обработчиков: исключение
+        # из `restore_signals` не смеет оставить признак фиксации взведённым.
+        try:
+            restore_signals(previous)
+        finally:
+            # Признак фиксации — на процесс: без сброса второй `main` в том же
+            # процессе тестов унаследовал бы «замена зафиксирована» и не бросил
+            # бы отмену до всякой установки.
+            _SWAP_COMMITTED = False
 
 
 if __name__ == "__main__":

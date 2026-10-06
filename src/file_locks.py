@@ -15,6 +15,7 @@ nonblocking, таймауты, что писать в файл лока — ос
 | `held_by_anyone` | проба EX, 3 попытки через 0,1 с | любой держатель, SH или EX | «свободно» |
 | `acquire_exclusive` | EX, `attempts` через `pause` | чужой лок любого вида | отказ сразу (демон: `busy=(OSError,)` — ретраи) |
 | `acquire_shared` | SH, `attempts` через `pause` | чужой эксклюзив | отказ сразу |
+| `acquire_outcome` | EX или `op`, `attempts` через `pause` | исход `BUSY` | исход `NO_FLOCK` |
 
 Пробы берут лок на микросекунды и сразу отпускают — поэтому у захватов и у
 пробы эксклюзивом есть ретраи: чужая проба не должна читаться как держатель.
@@ -51,7 +52,10 @@ def held_by_someone(f) -> bool:
 #: Исходы попытки взять лок: взят; занят держателем (ретраи кончились); ФС
 #: без flock — судить не по чему. Три значения, а не bool: проба эксклюзивом
 #: читает «занят» и «без flock» по-разному, а захваты — одинаково (отказ).
-_TAKEN, _BUSY, _NO_FLOCK = "taken", "busy", "no-flock"
+#: Публичные имена — для исхода `acquire_outcome`: установщику важно их
+#: различить (занято — дождаться соседа, без flock — отказ с причиной).
+TAKEN, BUSY, NO_FLOCK = "taken", "busy", "no-flock"
+_TAKEN, _BUSY, _NO_FLOCK = TAKEN, BUSY, NO_FLOCK
 
 
 def _try_lock(f, op: int, *, attempts: int, pause: float,
@@ -105,6 +109,21 @@ def acquire_shared(f, *, attempts: int = 5, pause: float = 0.2, sleep=time.sleep
     остаётся на f до закрытия файла или смерти процесса."""
     return _try_lock(f, fcntl.LOCK_SH, attempts=attempts, pause=pause,
                      busy=(BlockingIOError,), sleep=sleep) == _TAKEN
+
+
+def acquire_outcome(f, op: int = fcntl.LOCK_EX, *, attempts: int = 5, pause: float = 0.2,
+                    busy: tuple[type[BaseException], ...] = (BlockingIOError,),
+                    sleep=time.sleep) -> str:
+    """Исход попытки взять лок: `TAKEN` / `BUSY` / `NO_FLOCK`.
+
+    Та же механика, что у булевых захватов, но «занято» и «том без flock» —
+    разные исходы: установщику первый говорит «дождитесь соседа», второй — «лок
+    здесь не берётся вовсе». Умолчания — как у `acquire_exclusive` (пять попыток
+    через 0,2 с): чужая проба держит файл микросекунды, и одна попытка ложно
+    отвечала бы «занято». Булевы `acquire_exclusive`/`acquire_shared` не трогаем:
+    их читают демон и замок мутации, и им обоих отказов довольно.
+    """
+    return _try_lock(f, op, attempts=attempts, pause=pause, busy=busy, sleep=sleep)
 
 
 def held_by_anyone(f, *, sleep=time.sleep) -> bool:
