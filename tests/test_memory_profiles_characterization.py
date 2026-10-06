@@ -103,7 +103,11 @@ class FakeLLM:
         return self.__dict__["_system"]
 
     def stream(self, prompt, **kwargs):
-        self.log.add("llm.stream", prompt, dict(sorted(kwargs.items())), self.system)
+        # system вызова по правилу настоящего `LLM.stream`: `system or self.system`
+        # (сборка сообщения `system` в `src/llm.py`); иначе журнал не показывает,
+        # что уходит в модель
+        self.log.add("llm.stream", prompt, dict(sorted(kwargs.items())),
+                     kwargs.get("system") or self.system)
         reply = self.replies.pop(0) if self.replies else ["ok"]
         if isinstance(reply, BaseException):
             raise reply
@@ -283,8 +287,8 @@ WEAK_BARE = dict(result=_result(V.WEAK, blocks=()))
 UNVERIFIED = dict(result=_result(V.UNVERIFIED, reason="Ollama занята", sem_used=False))
 EMPTY = dict(result=_result(V.EMPTY, blocks=()))
 BOOM = dict(result=_result(V.CONFIDENT, cls=BoomResult))
-# Три фрагмента по ~1 600 знаков — больше любого бюджета блока (2 000 / 3 000 /
-# 2 600): иначе журнал не видит, где потребитель режет блок, и сдвиг бюджета на
+# Три фрагмента по ~1 600 знаков — больше любого бюджета блока (3 000 / 2 600):
+# иначе журнал не видит, где потребитель режет блок, и сдвиг бюджета на
 # единицу проходит зелёным (опровергающий опыт №629 ч. 2)
 LONG = tuple(f"фрагмент {i}: " + "длинный текст встречи " * 70 for i in (1, 2, 3))
 OVER = dict(result=_result(V.CONFIDENT, blocks=LONG))
@@ -342,8 +346,9 @@ def run_scenario(monkeypatch, name: str) -> list:
 
 
 def run_live_then_answer(monkeypatch) -> list:
-    """Такт живого → ответ: ответ видит в `llm.system` блок прошлого такта (№637,
-    переносится как есть)."""
+    """Такт живого → ответ: такт записал блок памяти в общий `llm.system` для
+    авто-подсказки, а ответ идёт с ролью без памяти (№652) — в журнале видно и
+    то, и другое."""
     h = Harness(monkeypatch, result=_result(V.CONFIDENT), replies=[["релиз"], ["ответ"]])
     h.call("live_context_loop")
     return h.call("gen_answer", "а что по релизу?")
@@ -367,10 +372,14 @@ def test_memory_consumers_match_the_snapshot_byte_for_byte(monkeypatch, name):
     assert _normalize(got) == golden[name]
 
 
-def test_snapshot_covers_every_scenario_and_observes_the_seams():
+def test_snapshot_covers_every_scenario_and_observes_the_seams(monkeypatch):
     """Снимок не пуст и видит то, ради чего снят: таймаут вектора на уровне
     движка у каждого потребителя, kwargs модели, присваивание `llm.system`,
-    исключение упаковки наружу у раскрытия и живого и его отсутствие у ответа."""
+    исключение упаковки наружу у раскрытия и живого и его отсутствие у ответа.
+
+    Последние два утверждения — на СВЕЖЕМ прогоне `live_then_answer`, а не на
+    снимке: сторожем поведения ответа снимок быть не может (правка `gen_answer`
+    его не меняет), а поведение меняют `daemon.py` и заглушка."""
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert set(golden) == {*SCENARIOS, "live_then_answer"}
 
@@ -385,8 +394,17 @@ def test_snapshot_covers_every_scenario_and_observes_the_seams():
     assert golden["expand.pack_raises"][-1][:2] == ["raised", "Boom"]
     assert golden["live.pack_raises"][-1][:2] == ["raised", "Boom"]
     assert not any(e[0] == "raised" for e in golden["answer.pack_raises"])
-    streams = [e for e in golden["live_then_answer"] if e[0] == "llm.stream"]
-    assert streams[-1][3].startswith("БАЗА РОЛИ"), "ответ видит блок прошлого такта живого"
+
+    live = _normalize(run_live_then_answer(monkeypatch))
+    # Положительный контроль: такт живого записал память в общее поле — его
+    # значение длиннее роли (иначе «ответ видит блок прошлого такта» было бы
+    # пусто: startswith верен и с памятью, и без неё).
+    systems = [e for e in live if e[0] == "llm.system="]
+    assert systems, "такт живого не записал память в общее llm.system"
+    assert len(systems[-1][1]) > len("БАЗА РОЛИ"), "блок памяти такта — длиннее роли"
+    # Ответ идёт ровно с ролью без памяти (№652): равенство, не startswith.
+    streams = [e for e in live if e[0] == "llm.stream"]
+    assert streams[-1][3] == "БАЗА РОЛИ", "ответ идёт с ролью без памяти"
 
 
 if __name__ == "__main__" and "--write" in sys.argv:

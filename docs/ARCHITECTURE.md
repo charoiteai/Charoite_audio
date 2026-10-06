@@ -1689,7 +1689,14 @@ budget cut are fields, so the bench never parses the header to score a fact.
 `ANSWER` goes without dossiers: on the owner's 37 questions (seed 0) topic
 summaries first ate the 2000-character block, and the answer found 8 of 37 with
 them against 16 without; `LIVE` and `EXPAND` keep dossiers — their input is a
-topic, not a question. Before this, every number lived as a copy in three daemon
+topic, not a question. The panel-question answer goes with the role's system,
+without the meeting memory: the memory the daemon keeps in the shared system for
+the live hint is not needed by the answer — its own search provides it; the answer
+block budget is 3000 characters. Measured on the same 37 questions with a
+2947-character transcript tail: memory in the system cost 1.24–1.28 s to the first
+token and added nothing beyond noise by score (16–17 against 16 with the role
+alone), while the 3000 budget placed the needed fact in the block on 22 questions
+against 16 at 2000. Before this, every number lived as a copy in three daemon
 sites and in the bench, and the bench measured a path the owner never took.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import sys
 import types
 
@@ -151,7 +152,52 @@ def test_stream_kwargs_pass_only_what_the_profile_sets():
     assert brain.stream_kwargs(brain.EXPAND, llm) == {"model": "s", "system": brain.EXPAND_SYSTEM}
     with pytest.raises(ValueError):
         brain.stream_kwargs(brain.LIVE, llm)
-    assert brain.ANSWER.synth.abstain in brain.answer_prompt("в", "", "хвост")
+
+
+def _worst_fragment() -> str:
+    """Худший одиночный фрагмент поиска `ANSWER`: строит сам `graph_search.snippet`
+    на плотном тексте длиннее порога «короткий файл целиком». Игла запроса стоит
+    дальше 150 знаков от начала, редкая игла — вне первого окна с запасом текста с
+    обеих сторон, так что второй фрагмент строится даже при росте `snippet_chars`
+    (ветка `chars >= 800`, `graph_search.py`). Размер даёт `snippet`, не тест."""
+    needle, rare = "релиз", "уникальныйфакт"
+    text = "п" * 400 + needle + "о" * 2500 + rare + "р" * 9000
+    assert len(text) >= 10_000
+    return graph_search.snippet(text, re.compile(re.escape(needle)),
+                                brain.ANSWER.snippet_chars, [rare], dense=True)
+
+
+def test_answer_budget_holds_the_largest_block_the_search_can_build():
+    """Наибольший одиночный блок, который может выдать поиск `ANSWER`, вместе с
+    самой длинной шапкой помещается в бюджет профиля целиком, а бюджет на знак
+    меньше — режет. Обе формы блока: прямая находка `UNVERIFIED` (самая длинная
+    шапка, к ней дописана оговорка охвата) и переход по ссылке `CONFIDENT`.
+    Пути и охват — не короче, чем у графа владельца (замер 06.10: пути p99 60,
+    максимум 90 знаков; оговорка охвата 120, шапка UNVERIFIED с ней — 246)."""
+    frag = _worst_fragment()
+    assert "… …" in frag, "построен не худший случай: второго фрагмента нет"
+
+    rel = ("Проекты/Чароит/Встречи/2026/Октябрь/подпапка/ещё/вложенная/папка/"
+           + "очень_длинное_имя_заметки_" * 3 + "заметка.md")
+    node_rel = ("Проекты/Чароит/Люди/Отдел/Команда/ещё/одна/вложенная/папка/"
+                + "длинный_путь_узла_" * 3 + "узел.md")
+    skipped = ("архив встреч за прошлые годы, копии стенограмм и звук",
+               "личные дневники владельца вне рабочего графа")
+    assert len(rel) >= 100 and len(node_rel) >= 100, "пути короче графа владельца"
+    assert all(len(s) >= 40 for s in skipped), "оговорка охвата короче графа владельца"
+
+    forms = {
+        "прямая находка": _res(V.UNVERIFIED, blocks=(f"• {rel}\n  {frag}",),
+                                skipped=skipped, service=42),
+        "переход по ссылке": _res(
+            V.CONFIDENT, blocks=(f"• {rel}\n  ↳ по ссылке из {node_rel}\n  {frag}",)),
+    }
+    for label, res in forms.items():
+        packed = brain.pack(brain.ANSWER, res)
+        assert packed.cut == (), f"{label}: блок не помещается в бюджет целиком"
+        assert res.blocks[0] in packed.text, f"{label}: блок входит не целиком"
+        tight = brain.pack(brain.ANSWER._replace(budget=len(packed.text) - 1), res)
+        assert tight.cut, f"{label}: бюджет на знак меньше не срезал тот же блок"
 
 
 def _code(src: str) -> lm.FileInfo:
