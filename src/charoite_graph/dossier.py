@@ -37,7 +37,9 @@ import re
 import shutil
 import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date
+from typing import Literal
 from charoite_graph.graph_schema import GraphSchema, name_date
 from charoite_graph.redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
@@ -152,9 +154,15 @@ def scan(graph: pathlib.Path, *, schema: GraphSchema) -> tuple[dict[str, dict], 
         if schema.is_dossier(rel.as_posix()) or schema.is_service_name(p.name):
             continue
         try:
-            text = p.read_text(encoding="utf-8")
+            raw = p.read_bytes()
         except OSError:
             continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+            print(f"  ⚠️ файл графа не в UTF-8: {p} — читаю с заменой")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         # Redirect-заглушка после tier3-слияния — не тема: она сохраняет
         # входящие ссылки заметок и ссылку на канон, кластер вокруг неё
         # «жив», и ночь собирала досье по мёртвому дублю рядом с каноном,
@@ -484,11 +492,37 @@ def preserve_manual(old_text: str) -> str | None:
     return kept if kept and kept != "—" else None
 
 
-def read_fingerprint(path: pathlib.Path) -> str:
+@dataclass(frozen=True)
+class DossierLoad:
+    state: Literal["ok", "damaged", "unreadable", "missing"]
+    text: str | None = None
+
+
+def load_dossier(path: pathlib.Path) -> DossierLoad:
+    """Один снимок байтов: строго декодируем ВЕСЬ файл, затем допускаем замену.
+
+    Повреждение в конце тела тоже повреждение, даже если шапка цела.
+    Отсутствие и ошибка доступа различаются; пустой файл — прочитан успешно.
+    """
     try:
-        head = path.read_text(encoding="utf-8")[:600]
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return DossierLoad("missing")
     except OSError:
-        return ""
+        return DossierLoad("unreadable")
+    state: Literal["ok", "damaged"] = "ok"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        state = "damaged"
+        text = raw.decode("utf-8", errors="replace")
+    # Сохраняем перевод строк, который раньше делал Path.read_text.
+    return DossierLoad(state, text.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def read_fingerprint(source: pathlib.Path | DossierLoad) -> str:
+    loaded = load_dossier(source) if isinstance(source, pathlib.Path) else source
+    head = (loaded.text or "")[:600]
     m = re.search(r"^отпечаток:\s*(\S+)", head, re.M)
     return m.group(1) if m else ""
 
