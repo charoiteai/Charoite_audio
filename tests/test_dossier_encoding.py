@@ -19,7 +19,7 @@ GOOD = ("## Сейчас\nновое тело\n## Как пришли\nт\n## Р
 
 def _script():
     path = pathlib.Path(__file__).resolve().parents[1] / "scripts/nightly_dossier.py"
-    spec = importlib.util.spec_from_file_location("nightly_dossier_encoding", path)
+    spec = importlib.util.spec_from_file_location("nightly_dossier", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
