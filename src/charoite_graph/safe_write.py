@@ -75,9 +75,9 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
         if mode is None:
             tmp.write_text(text, encoding=encoding)
         else:
-            # сирота прошлого обрыва с тем же pid иначе валила бы O_EXCL на каждом
-            # запуске; unlink по симлинку не идёт (входной круг 2 по №323 PR 2, M1)
-            tmp.unlink(missing_ok=True)
+            # Сохраняем уборку сироты прежнего формата после обновления.
+            # unlink по симлинку не идёт; tmp текущих вызовов не трогаем.
+            path.with_name(f"{path.name}.tmp{os.getpid()}").unlink(missing_ok=True)
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(text.encode(encoding))

@@ -624,7 +624,7 @@ class MeetingStatusStore:
                 start, end = float(raw_start), float(raw_end)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if not math.isfinite(start) or not math.isfinite(end) or start <= 0:
+            if not math.isfinite(start) or not math.isfinite(end):
                 continue
             span = end - start
             if span > 0:

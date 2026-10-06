@@ -158,7 +158,7 @@ def test_typical_duration_is_median_not_average(store, tmp_path):
     ("started_at", None), ("updated_at", "не время"),
     ("started_at", []), ("started_at", True),
     ("updated_at", float("inf")), ("started_at", float("-inf")),
-    ("updated_at", float("nan")), ("started_at", 0),
+    ("updated_at", float("nan")), ("updated_at", 10 ** 400),
 ])
 def test_typical_duration_ignores_corrupt_times(store, field, bad):
     for stem, span in (("a", 300), ("b", 360), ("c", 1800)):
