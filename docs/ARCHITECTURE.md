@@ -1679,18 +1679,34 @@ gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
 **A profile per memory consumer.** The answer to a question, the live context
 and topic expansion each have a named profile in `brain.py` (`ANSWER`, `LIVE`,
 `EXPAND`): how many files and characters to take, how long to wait, the block
-budget and, for the two that call a model, the model role, the reply cap, the
-system prompt and the abstention marker. It is the only place these numbers
-live: the daemon and the memory bench both go through `search` + `pack`, and the
-raw primitives behind them are private — the layout gate (`ENV_SEAMS`) turns any
-call outside `brain.py` red. `pack` returns a record (`Packed`), not a string:
-`text` goes into the prompt, while `lead`, `nodes`, `body` and the snippets the
-budget cut are fields, so the bench never parses the header to score a fact.
-`ANSWER` goes without dossiers: on the owner's 37 questions (seed 0) topic
-summaries first ate the 2000-character block, and the answer found 8 of 37 with
-them against 16 without; `LIVE` and `EXPAND` keep dossiers — their input is a
-topic, not a question. Before this, every number lived as a copy in three daemon
-sites and in the bench, and the bench measured a path the owner never took.
+budget and, for the two that call a model, the model role, the reply cap and the
+abstention marker; a profile's own system prompt is set only by `EXPAND` — the
+answer's system comes from the caller (the role without memory, or, when its own
+search threw, the daemon's shared `llm.system`; a profile system, if set, wins).
+It is the only place these numbers live: the daemon and the memory bench both go
+through `search` + `pack`, and the raw primitives behind them are private — the
+layout gate (`ENV_SEAMS`) turns any call outside `brain.py` red. `pack` returns a
+record (`Packed`), not a string: `text` goes into the prompt, while `lead`,
+`nodes`, `body` and the snippets the budget cut are fields, so the bench never
+parses the header to score a fact. `ANSWER` goes without dossiers: on the owner's
+37 questions (seed 0) topic summaries first ate the 2000-character block of the
+previous budget, and the answer found 8 of 37 with them against 16 without;
+`LIVE` and `EXPAND` keep dossiers — their input is a topic, not a question. The
+panel-question answer goes with the role's system, without the meeting memory:
+the memory the daemon keeps in the shared system for the live hint is not needed
+by the answer — its own search provides it; the answer block budget is 3000
+characters. If the answer's own search threw (the index is warming up, or the
+search engine or the packer failed), the answer takes the shared system, as
+before the change, and pays the first-token price only in that branch. Measured
+on the same 37 questions with a 2947-character transcript tail: memory in the
+system cost 1.24–1.28 s to the first
+token and added nothing beyond noise by score (16–17 against 16 with the role
+alone), while the 3000 budget placed the needed fact in the block on 22 questions
+against 16 at 2000. The bench does not reproduce the price of memory in the
+system: it runs the answer with the role alone, and the number comes from a
+one-off run with the system swapped in. Before this, every number lived as a
+copy in three daemon sites and in the bench, and the bench measured a path the
+owner never took.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.

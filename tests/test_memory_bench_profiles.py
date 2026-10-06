@@ -59,10 +59,12 @@ def _fake_search(monkeypatch, result):
 
 def test_fact_cut_by_budget_is_named_so(monkeypatch, no_bypass):
     """Факт был в выдаче, бюджет блока его отрезал — «срезано бюджетом», не «не выдано»."""
-    r = _res(V.CONFIDENT, blocks=("ш" * 2500, "ИСКОМОЕ слово"))
-    _fake_search(monkeypatch, r)
+    # Первый фрагмент длиннее бюджета `ANSWER` (3000 знаков, №652) — второй, с
+    # фактом, не входит; у `EXPAND` тот же бюджет, но фрагменты короче.
+    _fake_search(monkeypatch, _res(V.CONFIDENT, blocks=("ш" * 3500, "ИСКОМОЕ слово")))
     out, _, _ = mb.run_profile(brain.ANSWER, DEMO, None, [{"q": "?", "must": ["искомое"]}], stats=True, cfg={})
     assert out[0].ok is False and out[0].why == "срезано бюджетом"
+    _fake_search(monkeypatch, _res(V.CONFIDENT, blocks=("ш" * 2000, "ИСКОМОЕ слово")))
     out, _, _ = mb.run_profile(brain.EXPAND, DEMO, None, [{"q": "?", "must": ["искомое"]}], stats=True, cfg={})
     assert out[0].ok is True, "бюджет раскрытия 3000 вмещает оба фрагмента"
     out, _, _ = mb.run_profile(brain.ANSWER, DEMO, None, [{"q": "?", "must": ["нет такого"]}], stats=True, cfg={})
