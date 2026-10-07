@@ -185,10 +185,24 @@ sufler:
   graph_context_chars: 2500
   deja_vu: true           # «⏮ уже обсуждалось DD.MM» — темы из Ядер в тезисах
   deja_vu_margin: 0.04    # запас над порогом похожести: больше — реже «уже обсуждалось»
-  # эмбеддинги для deja_vu (Ollama). Только для него: Tier3-ревизия ядер
-  # прибита к bge-m3 намеренно — её порог отбора пар (EMB_PREFILTER в
-  # src/tier3.py) выставлен по разбросу косинусов именно этой модели
+  # Модель эмбеддингов (Ollama) — одна на все смысловые контуры: дежавю,
+  # ревизия ядер (tier3) и поиск по графу. Пороги этих контуров замерены на
+  # bge-m3 и у другой модели значат другое: сменив модель, задайте её пороги
+  # в embed_thresholds — их считает scripts/embed_bench.py. Без них работают
+  # пороги bge-m3, и демон один раз скажет, что они не замерены. Смена модели —
+  # пересборка кэша поиска (scripts/graph_search_index.py).
+  # Семейство EmbeddingGemma (embeddinggemma, embeddinggemma-2) размечается
+  # префиксами задачи само — ничего добавлять не нужно.
   embed_model: bge-m3:latest
+  # Пороги своей модели (пусто — пороги bge-m3). Ключи: tier3_prefilter,
+  # search_sim_floor, search_low_sim, deja_vu_margin. deja_vu_margin отсюда
+  # сильнее одноимённого ключа выше.
+  embed_thresholds: {}
+  # embed_thresholds:
+  #   tier3_prefilter: 0.55
+  #   search_sim_floor: 0.35
+  #   search_low_sim: 0.47
+  #   deja_vu_margin: 0.04
   meeting_brief: true     # авто-бриф в начале встречи: контекст из архива по теме
   # Tier3-ревизия ядер после каждой встречи. false — дубли и вложения
   # помечаются в графе обратимо (строка «возможный дубль», её собирает

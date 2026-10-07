@@ -1,4 +1,4 @@
-"""Tier 3: ревизия ядер графа — дубли и вложения через bge-m3 + NLI.
+"""Tier 3: ревизия ядер графа — дубли и вложения через эмбеддинги (bge-m3) + NLI.
 
 Экстрактор создаёт ядра по названию из каждой встречи, и сквозная тема со
 временем расщепляется на двойников с размазанной хроникой. Модуль находит
@@ -43,7 +43,9 @@ from charoite_graph.model_seam import Embedder, Judge, SeamTransportError
 from charoite_graph.redirects import is_merged as _is_merged
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
-EMB_PREFILTER = 0.55      # косинус bge-m3; ниже — пары даже не судим
+EMB_PREFILTER = 0.55      # косинус bge-m3; ниже — пары даже не судим. В ревизии действует
+# порог профиля векторизатора (`EmbedProfile.tier3_prefilter`): модель берётся из
+# `sufler.embed_model`, как у дежавю и поиска, и 0.55 — значение только для bge-m3
 DUP_T = 0.72              # обоюдное следование → похоже на дубль
 # ОСТОРОЖНЫЙ РЕЖИМ автомата (cautious mode): деструктивное слияние —
 # только при кристальной уверенности с ОБЕИХ сторон; зона DUP_T..MERGE_T
@@ -161,7 +163,8 @@ def _embed_all(cores: list[dict], embedder: Embedder) -> list[list[float]]:
     они свои (модель держится дольше живого контура), и ревизии об этом знать
     нечего.
     """
-    return embedder.run([c["repr"] for c in cores], 120)
+    pair = embedder.profile.pair          # стороны пары равноправны: симметричная разметка
+    return embedder.run([pair(c["repr"]) for c in cores], 120)
 
 
 def _cos(a: list[float], b: list[float]) -> float:
@@ -430,6 +433,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     out["status"], out["reason"] = "complete", ""
     tried = 0          # сколько пар дошло до суда: ниже по ним судят сам прогон
 
+    prefilter = embedder.profile.tier3_prefilter   # порог той модели, что считала векторы
     pairs = []
     for i in range(len(cores)):
         for j in range(i + 1, len(cores)):
@@ -443,7 +447,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
             if frozenset((cores[i]["name"], cores[j]["name"])) in skip_pairs:
                 continue
             c = _cos(embs[i], embs[j])
-            if c >= EMB_PREFILTER:
+            if c >= prefilter:
                 pairs.append((c, cores[i], cores[j]))
     pairs.sort(key=lambda x: -x[0])
 

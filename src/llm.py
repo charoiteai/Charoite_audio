@@ -45,7 +45,7 @@ import once
 import privacy
 import threads
 from charoite_graph.model_seam import (DEFAULT_EMBED_MODEL, NO_MODEL, Embedder,  # noqa: F401 — реэкспорт канона
-                        SeamTransportError, embed_model_name)
+                        EmbedProfile, SeamTransportError, embed_model_name, embed_profile)
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
 # на занятой модели отвечает 503 за ~250 мс вместо того, чтобы поставить
@@ -552,6 +552,7 @@ def embedder(cfg: dict, *, model: str | None = None,
                 "пустой конфиг значит «моделей нет»")
         return Embedder(lambda texts, timeout: [], NO_MODEL)
     name = embed_model_name(cfg, model)
+    profile = embed_model_profile(cfg, name)
 
     # Спрашиваем политику сразу, при сборке: адрес нужен уже здесь, а отказ
     # виден владельцу, не дожидаясь первого вектора. На пустом кэше поиск за
@@ -560,8 +561,28 @@ def embedder(cfg: dict, *, model: str | None = None,
     try:
         base = privacy.llm_base_url(cfg)
     except privacy.PrivacyRefused as exc:
-        return embed_door.embedder("", name, keep_alive=keep_alive, refused=str(exc), notices=once)
-    return embed_door.embedder(base, name, keep_alive=keep_alive, post=_requests_post, notices=once)
+        return embed_door.embedder("", name, keep_alive=keep_alive, refused=str(exc), notices=once,
+                                   profile=profile)
+    return embed_door.embedder(base, name, keep_alive=keep_alive, post=_requests_post, notices=once,
+                               profile=profile)
+
+
+def embed_model_profile(cfg: dict, name: str) -> EmbedProfile:
+    """Профиль модели эмбеддингов с порогами владельца (`sufler.embed_thresholds`).
+
+    Неоткалиброванный профиль — чужая модель на порогах bge-m3 — работает, но
+    говорит об этом один раз за процесс: пороги дежавю, ревизии ядер и поиска
+    подобраны по разбросу косинусов bge-m3, и на другой модели они значат
+    другое. Молча это стоило бы «дежавю не срабатывает никогда» или «ревизия
+    судит каждую пару», и причину никто бы не связал со сменой модели.
+    """
+    raw = (cfg.get("sufler") or {}).get("embed_thresholds")
+    profile = embed_profile(name, raw if isinstance(raw, dict) else None)
+    if not profile.calibrated:
+        once.say(("embed", ("uncalibrated", name)),
+                 f"эмбеддинги: пороги не замерены для {name} — стоят пороги bge-m3; "
+                 f"откалибруйте: scripts/embed_bench.py --models bge-m3 {name}")
+    return profile
 
 
 class LLM:

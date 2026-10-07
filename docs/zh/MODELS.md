@@ -211,8 +211,19 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
 
 `bge-m3`（Ollama，常驻约 1.2 GB）把文本转成向量，供既视感、核心复核（tier3）、
 提示记忆的图谱搜索和应用内搜索使用。无论 `llm.engine` 是什么，它都留在 Ollama
-上——`mlx_lm.server` 不提供嵌入。`sufler.embed_model` 可以替换它，但阈值（核心
-复核的 0.55 预筛、既视感的余量）是按 bge-m3 的余弦分布调出来的。
+上——`mlx_lm.server` 不提供嵌入。
+
+**更换模型。** `sufler.embed_model` 是所有语义环节共用的一个键：既视感、核心复核
+和图谱搜索（Swift 应用内的搜索仍按名称调用 bge-m3）。四个阈值都按 bge-m3 的余弦
+分布测得：复核预筛 0.55、搜索下限 0.35、搜索诚实闸门 0.47、既视感余量 0.04；换了
+模型，同样的数字含义不同。模型档案（`model_seam.EmbedProfile`）把阈值和任务前缀
+与模型名放在一起：bge-m3 使用原始文本和上述阈值，搜索缓存键不变；EmbeddingGemma
+系列（`embeddinggemma`、`embeddinggemma-2`）自动为查询、文档和复核配对加上模型
+自带的任务前缀（前缀参与缓存键，切换后会重建缓存）；任何模型都可通过
+`sufler.embed_thresholds` 设定四个阈值，未全部设定前守护进程会提示一次仍在使用
+bge-m3 的数值。`scripts/embed_bench.py` 在合成的俄语数据集
+（`config/embed_bench_demo.yaml`）和已配置的图谱上测量候选模型，输出无阈值质量
+指标、速度、Ollama 内存，以及保持 bge-m3 行为的阈值（可直接放入 `config.yaml`）。
 
 **输入上限：2048 个 token。** 模型声称支持 8192，但 Ollama 按运行器的物理批大小
 截断输入：2026-09-26 在 Ollama 0.34.4 上实测，更长的输入返回 HTTP 200，

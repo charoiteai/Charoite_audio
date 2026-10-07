@@ -268,9 +268,38 @@ the meeting. `mlx_lm.server` takes its context at server start instead.
 `bge-m3` (Ollama, ~1.2 GB resident) turns text into vectors for déjà vu, the
 core revision (tier3), the hint memory's graph search and the app's search.
 It stays on Ollama whatever `llm.engine` says — `mlx_lm.server` serves no
-embeddings. `sufler.embed_model` swaps it, but the
-thresholds (the core revision's 0.55 prefilter, the déjà vu margin) were
-tuned on bge-m3's cosine spread.
+embeddings.
+
+**Swapping the model.** `sufler.embed_model` is one key for every semantic
+contour — déjà vu, the core revision and graph search (the Swift app's search
+still asks bge-m3 by name). Their four thresholds were measured on bge-m3's
+cosine spread: core revision prefilter 0.55, search floor 0.35, the search
+honesty gate 0.47 and the déjà vu margin 0.04. Another model spreads its
+cosines differently, so the same numbers mean something else. The model's profile (`model_seam.EmbedProfile`) carries its
+thresholds and task prefixes next to its name:
+
+- bge-m3 — bare text, the thresholds above; the search cache key is
+  unchanged, nothing is re-indexed.
+- The EmbeddingGemma family (`embeddinggemma`, `embeddinggemma-2`) — trained
+  with an instruction at the start of the input, so the query (a meeting
+  fragment, a question) gets `task: search result | query: `, a document (a
+  core, a graph block) gets `title: none | text: ` and the two sides of a
+  core-revision pair get `task: sentence similarity | query: ` — the strings
+  from the model's own `config_sentence_transformers.json`. Ollama adds none of
+  them itself. The prefixes sign the search cache key: switching rebuilds it.
+- Any model — `sufler.embed_thresholds` sets its four thresholds; until all
+  four are set the daemon says once that bge-m3's numbers are in use.
+
+`scripts/embed_bench.py` measures the candidates on Charoite's tasks — a
+synthetic Russian set (`config/embed_bench_demo.yaml`: 45 cores, 90 live-speech
+fragments, 30 off-topic ones, 70 core pairs, 45 questions and 20 traps) and,
+when a graph is configured, your own graph with weak labels taken from it
+(meeting transcripts against the cores whose chronicle names that meeting;
+cores already marked as possible duplicates). It prints threshold-free quality
+(top-1, MRR, AUC), speed, Ollama memory, and the thresholds that keep
+bge-m3's behaviour: the same share of false déjà vu on off-topic talk, of
+traps passing the search gate and of noise above the floor, and the same
+duplicate recall in the core revision — as a ready `config.yaml` snippet.
 
 **Input ceiling: 2048 tokens.** The model declares 8192, but Ollama cuts the
 input at the runner's physical batch: measured 2026-09-26 on Ollama 0.34.4, a

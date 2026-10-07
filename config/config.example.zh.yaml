@@ -103,6 +103,13 @@ sufler:
   deja_vu: true           # 「⏮ 已于 DD.MM 讨论过」——核心主题浮现在要点中
   deja_vu_margin: 0.04
   embed_model: bge-m3:latest
+  # 更换嵌入模型后，在此填写该模型的阈值（由 scripts/embed_bench.py 测得）；留空则沿用 bge-m3 的阈值
+  embed_thresholds: {}
+  # embed_thresholds:
+  #   tier3_prefilter: 0.55
+  #   search_sim_floor: 0.35
+  #   search_low_sim: 0.47
+  #   deja_vu_margin: 0.04
   meeting_brief: true     # 会议开始时自动简报：按主题提取档案上下文
   tier3_auto_apply: false
   # 用硬链接把逐字节相同的会议文档副本（原件在「Документация」，供 Finder

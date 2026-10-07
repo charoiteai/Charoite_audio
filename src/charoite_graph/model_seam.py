@@ -38,6 +38,117 @@ DEFAULT_EMBED_MODEL = "bge-m3:latest"
 NO_MODEL = "(моделей нет)"
 
 
+#: Пороги, замеренные на bge-m3 — боевые значения всех установок. Каждый был
+#: подобран по разбросу косинусов именно этой модели (дежавю — замер 22.07,
+#: 0.33…0.45 на живом графе; ревизия ядер и поиск — свои замеры), поэтому у
+#: другой модели они не значат ничего: у неё свой разброс. Ключи — имена в
+#: `sufler.embed_thresholds`, через который владелец задаёт пороги своей модели
+#: (их считает `scripts/embed_bench.py`).
+BGE_M3_THRESHOLDS = {
+    "tier3_prefilter": 0.55,    # ревизия ядер: ниже — пару даже не судим NLI
+    "search_sim_floor": 0.35,   # поиск: ниже — семантический шум
+    "search_low_sim": 0.47,     # поиск: гейт честности «⚠» (вместе с покрытием)
+    "deja_vu_margin": 0.04,     # дежавю: отрыв лидера от медианы ядер
+}
+THRESHOLD_KEYS = tuple(BGE_M3_THRESHOLDS)
+
+
+@dataclasses.dataclass(frozen=True)
+class EmbedProfile:
+    """Что надо знать о модели эмбеддингов, кроме её имени.
+
+    Две вещи, и обе — свойство модели, а не потребителя:
+
+    * **Префиксы задачи.** bge-m3 считает вектор по голому тексту. Семейство
+      EmbeddingGemma обучено с инструкцией в начале входа — запрос и документ
+      размечаются по-разному (`config_sentence_transformers.json` модели), и без
+      разметки вектор хуже, а косинусы сдвинуты. Ollama префиксов сама не
+      ставит: их ставит тот, кто знает, что именно он векторизует.
+    * **Пороги.** Абсолютные числа, подобранные по разбросу одной модели. Чужой
+      модели они достаются как «неоткалиброванные»: контуры работают, но
+      `calibrated` ложно, и владелец слышит об этом строкой.
+
+    Профиль едет внутри `Embedder` вместе с именем: префиксы меняют векторы,
+    значит, подписывают кэш так же, как имя (`cache_tag`).
+    """
+
+    family: str = ""
+    query_prefix: str = ""
+    document_prefix: str = ""
+    pair_prefix: str = ""
+    tier3_prefilter: float = BGE_M3_THRESHOLDS["tier3_prefilter"]
+    search_sim_floor: float = BGE_M3_THRESHOLDS["search_sim_floor"]
+    search_low_sim: float = BGE_M3_THRESHOLDS["search_low_sim"]
+    deja_vu_margin: float = BGE_M3_THRESHOLDS["deja_vu_margin"]
+    calibrated: bool = True
+
+    def query(self, text: str) -> str:
+        """Текст как поисковый запрос: реплика встречи, вопрос к памяти."""
+        return self.query_prefix + text
+
+    def document(self, text: str) -> str:
+        """Текст как документ, среди которого ищут: ядро, блок файла графа."""
+        return self.document_prefix + text
+
+    def pair(self, text: str) -> str:
+        """Текст одной из двух равноправных сторон пары — ревизия ядер."""
+        return self.pair_prefix + text
+
+    def cache_tag(self) -> str:
+        """Подпись префиксов для ключа кэша; без префиксов — пусто.
+
+        Пусто — намеренно: у bge-m3 префиксов нет, и ключ кэша поиска у всех
+        установок остаётся прежним — переиндексации нет. У модели с префиксами
+        другой префикс — другие векторы, значит, и другой ключ.
+        """
+        if not (self.query_prefix or self.document_prefix or self.pair_prefix):
+            return ""
+        return f"doc={self.document_prefix!r}"
+
+
+#: Префиксы семейства EmbeddingGemma (1 и 2) — из `prompts` модели:
+#: SearchQuery/Retrieval-query, Document/Retrieval-document, STS.
+_GEMMA_PREFIXES = {
+    "query_prefix": "task: search result | query: ",
+    "document_prefix": "title: none | text: ",
+    "pair_prefix": "task: sentence similarity | query: ",
+}
+
+
+def embed_profile(model: str, overrides: dict | None = None) -> EmbedProfile:
+    """Профиль модели по имени Ollama плюс пороги владельца.
+
+    `overrides` — `sufler.embed_thresholds`: только известные ключи
+    `THRESHOLD_KEYS` с числом; остальное отбрасывается (опечатка в ключе не
+    должна молча ставить порог в ноль). Заданный владельцем порог считается
+    откалиброванным — за него отвечает тот, кто его замерил; профиль
+    неоткалиброван, пока хоть один порог взят у bge-m3 для чужой модели.
+    """
+    base = str(model or "").lower()
+    if base.startswith("bge-m3"):
+        kw: dict = {"family": "bge-m3"}
+        own = True
+    elif "embeddinggemma" in base:
+        kw = {"family": "embeddinggemma", **_GEMMA_PREFIXES}
+        own = False
+    else:
+        kw = {"family": ""}
+        own = False
+    given = {}
+    for key, value in (overrides or {}).items():
+        if key not in THRESHOLD_KEYS or isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number == number and -1.0 <= number <= 1.0:     # не NaN, косинус
+            given[key] = number
+    kw.update(given)
+    kw["calibrated"] = own or set(given) == set(THRESHOLD_KEYS)
+    return EmbedProfile(**kw)
+
+
 def embed_model_name(cfg: dict, model: str | None = None) -> str:
     """Чем считаем векторы: явное имя, конфиг владельца или дефолт поставки.
 
@@ -144,6 +255,11 @@ class Embedder:
         """
         if not self.model:
             raise ValueError("векторизатор без имени: подписывать кэш нечем")
+        if self.profile is None:
+            # Профиль — свойство модели: собранный без него векторизатор получает
+            # профиль по имени, а не «пустой» — иначе EmbeddingGemma, собранная
+            # руками, считала бы векторы без префиксов под своим же именем.
+            object.__setattr__(self, "profile", embed_profile(self.model))
     #: Почему способности не будет, если это известно уже при сборке. Пустая
     #: строка — всё в порядке. Отказ политики адреса виден фабрике сразу, а
     #: потребитель узнал бы о нём только с первым вектором — которого на
@@ -151,3 +267,7 @@ class Embedder:
     #: («сервер занят» вместо «вы запретили этот адрес»). Исход принадлежит
     #: способности, а не тому, кто её звал (круг 3 по коду, обе головы).
     refused: str = ""
+    #: Префиксы и пороги модели (`EmbedProfile`). Не задан — берётся по имени.
+    #: В сравнении и repr не участвует: два векторизатора одной модели с разными
+    #: порогами считают одни и те же векторы.
+    profile: EmbedProfile | None = dataclasses.field(default=None, compare=False, repr=False)

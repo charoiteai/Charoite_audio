@@ -94,6 +94,7 @@
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
 - `scripts/doctor.py` ← scripts/install_engine.py, src/deps.py, src/rebuild_transcript.py; проба help
+- `scripts/embed_bench.py` ← src/llm.py; проба help
 - `scripts/fix_action_items.py` ← ручной запуск: разовая починка поручений руками; проба help
 - `scripts/forget_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/gate_bench.py` ← ручной запуск: замер решающего гейта, ручной прогон; проба help
@@ -164,12 +165,13 @@
 - `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
 - `scripts/doctor.py` ← README.md, docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/DIARIZATION.md, docs/FEATURES.md, docs/SETUP.md, docs/USER_GUIDE.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/README.md, docs/ru/SETUP.md, docs/ru/USER_GUIDE.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/README.md, docs/zh/SETUP.md, docs/zh/USER_GUIDE.md, pyproject.toml
+- `scripts/embed_bench.py` ← config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, config/embed_bench_demo.yaml, docs/MODELS.md, docs/ru/MODELS.md, docs/zh/MODELS.md
 - `scripts/fix_action_items.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/forget_meeting.py` ← PRIVACY.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md
 - `scripts/gate_bench.py` ← ROADMAP.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/MODELS.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/ROADMAP.md
 - `scripts/get_models.py` ← PRIVACY.md, README.md, ROADMAP.md, SECURITY.md, config/README.md, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/FEATURES.md, docs/MODELS.md, docs/SETUP.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/ROADMAP.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/ru/config/README.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/ROADMAP.md, docs/zh/SECURITY.md, docs/zh/SETUP.md, docs/zh/config/README.md
 - `scripts/graph_doctor.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
-- `scripts/graph_search_index.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
+- `scripts/graph_search_index.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/import_meeting.py` ← PRIVACY.md, README.md, docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/ru/PRIVACY.md, docs/ru/README.md, docs/ru/USER_GUIDE.md, docs/ru/scripts/README.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md, docs/zh/PRIVACY.md, docs/zh/README.md, docs/zh/USER_GUIDE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/install_engine.py` ← PRIVACY.md, config/config.example.en.yaml, config/config.example.yaml, config/config.example.zh.yaml, docs/DIARIZATION.md, docs/MODELS.md, docs/SETUP.md, docs/ru/DIARIZATION.md, docs/ru/MODELS.md, docs/ru/PRIVACY.md, docs/ru/SETUP.md, docs/zh/MODELS.md, docs/zh/PRIVACY.md, docs/zh/SETUP.md
 - `scripts/layout_map.py` ← CONTRIBUTING.md, ROADMAP.md, docs/ARCHITECTURE.md, docs/RELEASING.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/RELEASING.md, docs/ru/ROADMAP.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/RELEASING.md, docs/zh/ROADMAP.md, packages/README.md
@@ -226,7 +228,7 @@
 - `src/speaker_names.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/ru/DIARIZATION.md, docs/ru/FEATURES.md, docs/zh/DIARIZATION.md, docs/zh/FEATURES.md
 - `src/stt_runtime.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/zh/CONTRIBUTING.md
 - `src/threads.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
-- `src/tier3.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `src/tier3.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/transcript.py` ← docs/ARCHITECTURE.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/transcript_origin.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/voice_pitch.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md

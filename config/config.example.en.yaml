@@ -114,10 +114,24 @@ sufler:
   graph_context_chars: 2500
   deja_vu: true           # "⏮ discussed on DD.MM" — Core topics surfaced in theses
   deja_vu_margin: 0.04    # margin above the similarity threshold: higher — rarer déjà vu
-  # embeddings for deja_vu (Ollama). Only for it: the Tier3 core revision is
-  # pinned to bge-m3 on purpose — its pair-selection threshold (EMB_PREFILTER
-  # in src/tier3.py) is tuned to this model's cosine spread
+  # Embedding model (Ollama) — one for every semantic contour: deja_vu, the
+  # core revision (tier3) and graph search. Their thresholds were measured on
+  # bge-m3 and mean something else for another model: after switching, set the
+  # model's thresholds in embed_thresholds — scripts/embed_bench.py measures
+  # them. Without them bge-m3 thresholds apply and the daemon says once that
+  # they are unmeasured. Switching models rebuilds the search cache
+  # (scripts/graph_search_index.py). The EmbeddingGemma family (embeddinggemma,
+  # embeddinggemma-2) gets its task prefixes automatically.
   embed_model: bge-m3:latest
+  # Your model's thresholds (empty — bge-m3's). Keys: tier3_prefilter,
+  # search_sim_floor, search_low_sim, deja_vu_margin. deja_vu_margin here
+  # overrides the key of the same name above.
+  embed_thresholds: {}
+  # embed_thresholds:
+  #   tier3_prefilter: 0.55
+  #   search_sim_floor: 0.35
+  #   search_low_sim: 0.47
+  #   deja_vu_margin: 0.04
   meeting_brief: true     # auto-brief at meeting start: archive context on the topic
   # Tier3 core revision after every meeting. false — duplicates and nestings
   # are marked in the graph reversibly (a "possible duplicate" line picked up

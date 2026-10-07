@@ -37,7 +37,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 import charoite_graph.address_policy as address_policy   # атрибутом модуля: сторож подменяет guard_model_url
-from charoite_graph.model_seam import Embedder, SeamTransportError
+from charoite_graph.model_seam import EmbedProfile, Embedder, SeamTransportError
 from charoite_graph.net import open_url
 from charoite_graph.notices import Notices
 
@@ -231,7 +231,8 @@ def urllib_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
 
 
 def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
-             post=urllib_post, refused: str = "", notices=None) -> Embedder:
+             post=urllib_post, refused: str = "", notices=None,
+             profile: EmbedProfile | None = None) -> Embedder:
     """Собрать векторизатор на адрес и модель.
 
     `refused` непуст — политика уже отказала: адрес не нужен (передают `""`),
@@ -244,6 +245,10 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
     `forget` с ключом `(пространство, смысл)`): приложение передаёт реестр
     процесса, без него у двери свой `Notices()`. Собирайте дверь один раз: у
     каждой сборки без реестра своя память «уже сказали».
+
+    `profile` — префиксы и пороги модели (`model_seam.EmbedProfile`); не задан —
+    профиль по имени модели. Дверь префиксов не ставит: что запрос, а что
+    документ, знает только потребитель, — профиль едет к нему в паре.
     """
     if notices is None:     # первой строкой, до любой ветки: и отказу нужен реестр (вход 4, M2)
         notices = Notices()
@@ -254,7 +259,7 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
         def run_refused(texts: list[str], timeout: float) -> list[list[float]]:
             raise SeamTransportError(refused, policy=True)
 
-        return Embedder(run_refused, model, refused)
+        return Embedder(run_refused, model, refused, profile)
 
     if urlsplit(base_url).scheme not in {"http", "https"}:
         raise ValueError(f"адрес эмбеддингов не http(s): {base_url!r}")
@@ -392,12 +397,13 @@ def embedder(base_url: str, model: str, *, keep_alive: str | None = None,
             if not усекали:
                 notices.forget(ключ_усечения)
 
-    return Embedder(run, model)
+    return Embedder(run, model, profile=profile)
 
 
 def ollama_embedder(model: str, *, url: str = address_policy.DEFAULT_OLLAMA_URL,
                     allow_remote: bool = False, keep_alive: str | None = None,
-                    post=urllib_post, notices=None) -> Embedder:
+                    post=urllib_post, notices=None,
+                    profile: EmbedProfile | None = None) -> Embedder:
     """Векторизатор Ollama `/api/embed` по адресу и имени модели — вход пакета.
 
     Адрес проходит `address_policy.guard_model_url`: сервер на этой машине —
@@ -412,4 +418,4 @@ def ollama_embedder(model: str, *, url: str = address_policy.DEFAULT_OLLAMA_URL,
     реестр строк `notices`; собирайте векторизатор один раз.
     """
     return embedder(address_policy.guard_model_url(url, allow_remote=allow_remote), model,
-                    keep_alive=keep_alive, post=post, notices=notices)
+                    keep_alive=keep_alive, post=post, notices=notices, profile=profile)

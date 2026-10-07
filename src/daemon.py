@@ -96,7 +96,7 @@ from charoite_paths import (
 WARM_BATCHES = 4
 
 
-def deja_vu_embed(cfg: dict, texts: list[str]) -> list[list[float]]:
+def deja_vu_embed(cfg: dict, texts: list[str], *, query: bool = False) -> list[list[float]]:
     """Векторы для дежавю. 20 с, не 120: эмбеддинг занимает ~0.2 с, и если Ollama
     занят тяжёлой генерацией — лучше пропустить проход дежавю, чем держать поток
     заблокированным две минуты. keep_alive=None: дежавю делит слот с чат-моделью
@@ -108,8 +108,35 @@ def deja_vu_embed(cfg: dict, texts: list[str]) -> list[list[float]]:
 
     Функцией модуля, а не строкой в замыкании `main()`: поведение (тело запроса
     без keep_alive) проверяет тест, а не поиск по исходнику (выходной круг 1 по
-    №423, DS I2)."""
-    return llm_mod.embedder(cfg, keep_alive=None).run(texts, 20)
+    №423, DS I2).
+
+    `query` — тексты запросы (свежий фрагмент разговора), иначе документы
+    (ядра). Разметку ставит профиль модели: у bge-m3 её нет, у EmbeddingGemma
+    запрос и документ размечаются по-разному."""
+    embedder = llm_mod.embedder(cfg, keep_alive=None)
+    mark = embedder.profile.query if query else embedder.profile.document
+    return embedder.run([mark(t) for t in texts], 20)
+
+
+def deja_vu_margin(cfg: dict) -> float:
+    """Отрыв лидера от медианы, с которого дежавю считается совпадением.
+
+    Порядок: `sufler.embed_thresholds.deja_vu_margin` (замер владельца под свою
+    модель) → `sufler.deja_vu_margin` (старый ключ; в шаблоне конфига он стоит
+    явно — 0.04) → порог из профиля модели. Старый ключ остаётся сильнее
+    профиля: владелец, который крутил его руками, не теряет своей настройки.
+    """
+    section = cfg.get("sufler") or {}
+    profile = llm_mod.embed_model_profile(cfg, llm_mod.embed_model_name(cfg))
+    own = section.get("embed_thresholds")
+    if isinstance(own, dict) and "deja_vu_margin" in own:
+        return profile.deja_vu_margin       # профиль уже принял число владельца
+    if "deja_vu_margin" in section:
+        try:
+            return float(section["deja_vu_margin"])
+        except (TypeError, ValueError):
+            pass
+    return profile.deja_vu_margin
 
 
 def warm_core_vectors(cores, vecs: dict, embed, max_batches: int = WARM_BATCHES) -> int:
@@ -2648,7 +2675,7 @@ def main():
         if gdir is None:
             return
         cores_dir = gdir / "Ядра"
-        margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
+        margin = deja_vu_margin(cfg)
         # Авто-бриф в начале встречи: как только по первым репликам понятна
         # тема — один раз вытащить контекст из архива (топ-ядра: статус +
         # когда обсуждалось). Собирается из ГОТОВЫХ строк файлов, без LLM:
@@ -2661,8 +2688,9 @@ def main():
         seen_len = 0
         vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
 
-        def embed(texts: list[str]) -> list[list[float]]:
-            return deja_vu_embed(cfg, texts)     # срок и keep_alive — в докстринге функции
+        def embed(texts: list[str], query: bool = False) -> list[list[float]]:
+            # срок, keep_alive и разметка запроса/документа — в докстринге функции
+            return deja_vu_embed(cfg, texts, query=query)
 
         def cosine(a: list[float], b: list[float]) -> float:
             num = sum(x * y for x, y in zip(a, b))
@@ -2684,7 +2712,7 @@ def main():
                     continue
                 # прогреваем кэш векторов (и добираем новые ядра) пачками
                 warm_core_vectors(cores, vecs, embed)
-                qv = embed([" ".join(fresh[-1500:].split())])
+                qv = embed([" ".join(fresh[-1500:].split())], query=True)
                 if not qv:
                     continue
                 scored = sorted(((cosine(qv[0], vecs[p.stem]), p) for p in cores

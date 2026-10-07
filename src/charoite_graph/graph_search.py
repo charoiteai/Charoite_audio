@@ -81,7 +81,9 @@ REFRESH_S = 60.0           # свежесть обхода: чаще смысл�
 CHUNK_CHARS = 4_000        # блок для эмбеддера: ниже потолка Ollama — 2048 токенов (замер 26.09: самый длинный блок 1587)
 MAX_CHUNKS = 12            # на файл: у узла новые встречи сверху — первые блоки самые свежие
 EMBED_BATCH = 16
-SIM_FLOOR = 0.35           # ниже — семантический шум, в список не берём
+SIM_FLOOR = 0.35           # ниже — семантический шум, в список не берём. Число bge-m3:
+# в поиске действует порог из профиля векторизатора (`EmbedProfile.search_sim_floor`),
+# константа — его значение для bge-m3 и для тех, кто считает без векторизатора
 # Гейт честности «⚠» — правило проекта, то же, что у поиска приложения
 # (ArchiveSearch: bestSim < 0.47 && bestCov < 0.66; 0,66 — «две иглы из трёх»):
 # слабы ОБА сигнала. Без семантики (Ollama занята — на встрече это норма) гейт
@@ -93,7 +95,7 @@ SIM_FLOOR = 0.35           # ниже — семантический шум, в 
 # как ненадёжную или уходит к узлам, но не принимает за память. Порог 0,47 под
 # «лучший блок из многих» перекрывается (ловушки 0,46–0,62, вопросы 0,49–0,74) —
 # калибровка на размеченном наборе — отдельная карточка, не угадывание здесь.
-LOW_SIM, LOW_COV = 0.47, 0.66
+LOW_SIM, LOW_COV = 0.47, 0.66     # LOW_SIM — bge-m3; у другой модели свой (профиль)
 # «В архиве нет» — вердикт о проверенном архиве: пока векторы есть меньше чем у
 # этой доли файлов индекса (кэш собирается вне встреч, по бюджету), низкий лучший
 # косинус говорит о векторизованной части, а не об архиве — выдача «не проверена»,
@@ -201,7 +203,8 @@ class Verdict(str, enum.Enum):
     EMPTY = "empty"               # ничего, и это проверено — в прочитанной части
 
 
-def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0) -> Verdict:
+def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0,
+            low_sim: float = LOW_SIM) -> Verdict:
     """Вердикт по свидетельствам: без семантики уверенности нет вовсе — одна
     лексика на большом графе не отличает вопрос от ловушки (замер 17.09); с ней
     сильный любой из сигналов — уверенно (правило приложения), слабы оба — «почти
@@ -211,10 +214,13 @@ def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0) -> V
     встреч и копии стенограмм у Чароита исключены схемой. Поэтому ни один вердикт
     не вправе говорить «в архиве нет»; что осталось непрочитанным, несёт
     `Result.skipped`, а слова об этом собирает фасад (замер 17.09: 11 506
-    файлов вне индекса против 3 283 в нём, DS и GLM, входной круг по №295)."""
+    файлов вне индекса против 3 283 в нём, DS и GLM, входной круг по №295).
+
+    `low_sim` — порог косинуса той модели, что считала `sim`: 0,47 замерено на
+    bge-m3, у другой модели разброс свой, и порог приходит из её профиля."""
     if not sem_used:
         return Verdict.UNVERIFIED
-    if cov >= LOW_COV or sim >= LOW_SIM:
+    if cov >= LOW_COV or sim >= low_sim:
         return Verdict.CONFIDENT
     if sem_share < SEM_SHARE_MIN:
         return Verdict.UNVERIFIED
@@ -921,7 +927,11 @@ class GraphSearch:
         Пока имя выводилось здесь отдельно, подменённый векторизатор писал чужое
         пространство под привычным именем — и кэш врал молча."""
         model = self._embedder.model
-        return f"{model}|chunks{CHUNK_VERSION}|{CHUNK_CHARS}|{MAX_CHUNKS}|{MAX_CHUNKS_NODE}"
+        key = f"{model}|chunks{CHUNK_VERSION}|{CHUNK_CHARS}|{MAX_CHUNKS}|{MAX_CHUNKS_NODE}"
+        # Префиксы модели меняют векторы — подписывают кэш вместе с именем. У
+        # bge-m3 префиксов нет и подпись пуста: ключ прежний, переиндексации нет.
+        tag = self._embedder.profile.cache_tag()
+        return f"{key}|{tag}" if tag else key
 
     def refresh(self, force: bool = False) -> bool:
         """Обход графа по mtime: новые и изменённые файлы перечитываются,
@@ -1314,7 +1324,8 @@ class GraphSearch:
                 self.note = "началась живая запись — векторы доберём позже"
                 break
             part = queue[i:i + batch]
-            embs = self._embed([t for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
+            doc = self._embedder.profile.document      # блок — документ, среди которого ищут
+            embs = self._embed([doc(t) for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
             if len(embs) != len(part):
                 # Причина — та же строка, что видит владелец в выдаче: два канала об
                 # одном состоянии не должны спорить. Заметка винила сервер там, где
@@ -1414,13 +1425,14 @@ class GraphSearch:
         # кэш сверяется каждый раз: stat манифеста дёшев, а чужую запись (ночь,
         # апдейтер) короткое замыкание по непустым векторам не видело (GLM I1 r3)
         if semantic and self.load_vectors():
-            qv = self._embed([query], embed_timeout)
+            qv = self._embed([self._embedder.profile.query(query)], embed_timeout)
             if qv and qv[0]:
                 sem_used = True
                 q = _unit(qv[0])
                 with self._lock:
                     vecs = list(self._vecs.items())
                 paths = {d.path: d for d in docs}
+                floor = self._embedder.profile.search_sim_floor
                 sims = []
                 checked = 0
                 for path, (mt, vs) in vecs:
@@ -1429,7 +1441,7 @@ class GraphSearch:
                         continue
                     checked += 1
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
-                    if sim >= SIM_FLOOR:
+                    if sim >= floor:
                         sims.append((sim, d))
                 # знаменатель — файлы, которым векторы вообще положены: пустой файл
                 # ждёт вектора вечно и держал бы долю ниже порога (DS M2 r4)
@@ -1451,7 +1463,8 @@ class GraphSearch:
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
-        status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
+        status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share,
+                         low_sim=self._embedder.profile.search_low_sim)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
         if status is not Verdict.UNVERIFIED:
             reason = ""
         elif self._refusal:
