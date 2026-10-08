@@ -268,6 +268,9 @@ jobs:
           path: ${{ env.REPORT }}*
           if-no-files-found: ignore
           retention-days: 7
+          # перезапуск упавшего шарда грузит тот же артефакт заново: без overwrite
+          # загрузка падает «артефакт уже есть» (№683)
+          overwrite: true
 
   # Вердикт мутаций — один на PR, по машинным строкам всех шардов (№441). Правило —
   # функция мутатора `merge_shards`, а не разбор отчётов здесь: отчётов ровно N,
@@ -278,7 +281,7 @@ jobs:
     needs: mutation
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     # Имя отчёта вердикта — одно на job, как у шардов `env.REPORT`: его пишет судья
     # и читает сводка (выходной круг 3 по №441, DS M2)
     env:
@@ -310,3 +313,16 @@ jobs:
           else
             echo "### Мутация: вердикта нет — см. лог шага verdict" >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Вердикт — артефактом `mutation-verdict`: его читает ds_ci_status.sh исполнителя
+      # (№683), не разбирая сводку. `if: always()` — красный вердикт тоже вердикт;
+      # overwrite — перезапуск job не падает на уже выложенном артефакте.
+      - name: verdict artifact
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-verdict
+          path: ${{ env.VERDICT }}
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
