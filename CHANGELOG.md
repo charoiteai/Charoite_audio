@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.0](https://github.com/charoiteai/Charoite_audio/compare/v0.94.0...v0.95.0) (2026-10-08)
+
+
+### Features
+
+* **diarization:** engine state in one function and an honest installer outcome ([#761](https://github.com/charoiteai/Charoite_audio/issues/761)) ([d2541cf](https://github.com/charoiteai/Charoite_audio/commit/d2541cff7baebea6b97d776e5071ad6e33da3107))
+
+
+### Bug Fixes
+
+* **derivatives:** module audit fixes for writes, derivatives and the vector cache ([#765](https://github.com/charoiteai/Charoite_audio/issues/765)) ([522cdcd](https://github.com/charoiteai/Charoite_audio/commit/522cdcda1063fe379f293a0b688f61b4d364aaab))
+* **dossier:** a dossier not in UTF-8 no longer stops the nightly dossier step ([#763](https://github.com/charoiteai/Charoite_audio/issues/763)) ([b08acd0](https://github.com/charoiteai/Charoite_audio/commit/b08acd0e25fd842865038cd8c1d1091488da5fdc))
+
 ## [0.94.0](https://github.com/charoiteai/Charoite_audio/compare/v0.93.0...v0.94.0) (2026-10-06)
 
 
