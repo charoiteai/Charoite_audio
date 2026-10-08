@@ -433,6 +433,31 @@ def test_mutation_runs_the_whole_plan_in_shards_and_one_job_judges_them():
         "сводка вердикта читает env.VERDICT")
 
 
+def test_every_artifact_upload_overwrites():
+    """Перезапуск упавшего job грузит артефакт с тем же именем: без `overwrite: true`
+    upload-artifact падает «уже есть», и перезапуск красит прогон сам (№683)."""
+    found = 0
+    for wf in sorted(WF.glob("*.y*ml")):
+        for name, job in (_load(wf.name).get("jobs") or {}).items():
+            for s in job.get("steps", []):
+                if str(s.get("uses", "")).startswith("actions/upload-artifact"):
+                    found += 1
+                    assert (s.get("with") or {}).get("overwrite") is True, (
+                        f"{wf.name}: job {name}, шаг {s.get('name')!r} — upload-artifact без overwrite: true")
+    assert found, "ни одного upload-artifact — сторож смотрит не туда"
+
+
+def test_mutation_verdict_is_an_artifact():
+    """Вердикт мутаций выкладывается артефактом `mutation-verdict` и при красном
+    судье: его читает ds_ci_status.sh исполнителя DeepSeek (№683)."""
+    verdict = _load("ci.yml")["jobs"]["mutation-verdict"]
+    ups = [s for s in verdict["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(ups) == 1, "вердикт выкладывается одним шагом"
+    assert ups[0].get("if") == "always()", "красный вердикт тоже выкладывается"
+    assert ups[0]["with"]["name"] == "mutation-verdict"
+    assert ups[0]["with"]["path"] == "${{ env.VERDICT }}", "выкладывается файл, который пишет судья"
+
+
 def test_mutation_artifact_carries_the_line_the_verdict_reads():
     """Имя отчёта шарда объявлено один раз — `env.REPORT` job: мутатор пишет в
     него (`--report "$REPORT"`), сводка читает его, артефакт забирает
