@@ -1882,6 +1882,14 @@ interpreter flags) until retrieval is deterministic — the daemon still runs wi
 a random hash order; the record stores the seed in effect, and `-E`/`-I`, which
 make the variable void, are refused.
 
+The result order itself no longer depends on that hash order: the score and the
+path descending form one key (`_order_key`) that orders the lexical list, the
+vector similarity list and the hop candidates alike, and the clock is read once
+per search and handed to the hop step — the iteration order of a `set` of link
+targets or of the vector cache cannot change what is shown. The fix removes the
+scatter, not the pin: the bench keeps `PYTHONHASHSEED=0` until the owner
+re-measures.
+
 ## The readiness probe does not trust the data folder
 
 The first-run probe counts missing modules and microphones with a separate

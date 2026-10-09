@@ -319,6 +319,19 @@ def owner_key(d: Doc) -> tuple[float, str]:
     return (-d.date_ts, d.rel)
 
 
+def _order_key(score: float, rel: str) -> tuple[float, str]:
+    """Ключ порядка выдачи: балл, при равном балле — путь по УБЫВАНИЮ.
+
+    Без второго компонента порядок при равных баллах оставался порядком входа,
+    а он у документов одного поколения зависит от истории обновлений, у
+    кандидатов перехода — от порядка `set` (хеш процесса): выдача менялась между
+    запусками при одном графе и запросе (№631). Путь-имя встречи — дата_время,
+    поэтому «по убыванию пути» = свежая встреча первой, как и решено для
+    переходов. Формулы баллов этим ключом не трогаются: неравные баллы
+    упорядочены ровно как прежде."""
+    return (score, rel)
+
+
 def wiki_targets(text: str) -> set[str]:
     """Цели [[ссылок]] как НАПИСАНЫ: с папкой, если автор её назвал.
 
@@ -1434,7 +1447,7 @@ class GraphSearch:
                 # знаменатель — файлы, которым векторы вообще положены: пустой файл
                 # ждёт вектора вечно и держал бы долю ниже порога (DS M2 r4)
                 sem_share = checked / max(1, sum(1 for d in docs if d.low.strip()))
-                sims.sort(key=lambda x: -x[0])
+                sims.sort(key=lambda x: _order_key(x[0], x[1].rel), reverse=True)
                 best_sim = sims[0][0] if sims else 0.0
                 for sim, d in sims[:max(limit * 4, 20)]:
                     # те же демпферы, что у лексики: метка диаризации с сотней упоминаний
@@ -1473,7 +1486,7 @@ class GraphSearch:
                           reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service,
                           sources=dossier_rels)
         low_conf = status is not Verdict.CONFIDENT
-        fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
+        fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: _order_key(x[0], x[1]), reverse=True)],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
         fused = _swap_stubs(fused, by_rel, catalog)
         picked = diversify([(s, r) for r, s in fused], limit)
@@ -1486,7 +1499,8 @@ class GraphSearch:
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first, now,
+                              max(1, limit // 2))
             blocks += [block for _, block in hops]
             shown += [rel for rel, _ in hops]
             total += len(hops)
@@ -1534,7 +1548,8 @@ class GraphSearch:
         return _frag_or_head(d.body or d.text, rx, chars, rare, dense=not self.schema.is_raw(d.rel))
 
     def _hops(self, shown: list[str], by_rel: dict[str, Doc], catalog: LinkCatalog, keys: list[str],
-              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[tuple[str, str]]:
+              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], now: float,
+              limit: int) -> list[tuple[str, str]]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
         запроса ВНЕ имени узла (покрытие × свежесть), при голом имени — самые
         свежие; тёзки в разных папках — один кандидат; по одному слоту на узел,
@@ -1563,17 +1578,23 @@ class GraphSearch:
 
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
+                # одна цель двумя написаниями ([[Отчёт]] и [[Папка/Отчёт]]) даёт
+                # один Doc дважды: без этого набора оба экземпляра уходили в
+                # выдачу двумя одинаковыми блоками (№631)
+                cand_seen: set[str] = set()
                 for base in wiki_targets(node.text):
                     hit = catalog.live(base)
                     for d in ([hit] if hit is not None else []):
-                        if d.rel in seen or self.schema.is_node_path(d.rel) or d.role != PRIMARY:
+                        if (d.rel in seen or d.rel in cand_seen
+                                or self.schema.is_node_path(d.rel) or d.role != PRIMARY):
                             continue      # переход — к первичной заметке, не к узлу и не к сводке
                         matched = sum(1 for k in other if k in d.low)
                         if other and not matched:
                             continue
                         cov = matched / len(other) if other else 1.0
-                        cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel, self.schema), d, matched))
-                cands.sort(key=lambda x: (x[0], x[1].rel), reverse=True)
+                        cand_seen.add(d.rel)
+                        cands.append((cov * recency_factor(d.date_ts, now) * raw_dampener(d.rel, self.schema), d, matched))
+                cands.sort(key=lambda x: _order_key(x[0], x[1].rel), reverse=True)
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
                     frag = self._fragment(d, rx, snippet_chars, rare_first)
                     seen.add(d.rel)
