@@ -185,18 +185,13 @@ def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=Non
 
 
 monkey_head = ["aaa"]
-monkey_seed = ["0"]
 REAL_CODE_HEAD = mb.code_head
-REAL_HASH_SEED = mb.hash_seed
 
 
 @pytest.fixture(autouse=True)
 def _fixed_head(monkeypatch):
-    """Версия кода и seed — подменой: seed судится по факту интерпретатора, а pytest
-    идёт со случайным порядком хеша."""
+    """Версия кода — подменой."""
     monkeypatch.setattr(mb, "code_head", lambda: monkey_head[0])
-    monkey_seed[0] = "0"
-    monkeypatch.setattr(mb, "hash_seed", lambda: monkey_seed[0])
 
 
 def _alert(root):
@@ -375,11 +370,10 @@ def test_judge_holds_the_bench_lock(tmp_path, monkeypatch):
     assert not list((tmp_path / "logs").glob("*.tmp")), "временный файл тревоги не остаётся"
 
 
-def test_baseline_is_per_profile_mode_and_seed(tmp_path, monkeypatch, capsys):
+def test_baseline_is_per_profile_and_mode(tmp_path, capsys):
     _accept_first(tmp_path, [True] * 5)
-    monkey_seed[0] = "random"
     capsys.readouterr()
-    assert mb.judge(tmp_path, _rec([False] * 5)) is None
+    assert mb.judge(tmp_path, _rec([False] * 5, profile="live")) is None
     assert "база не принята" in capsys.readouterr().out
 
 
@@ -424,17 +418,14 @@ def test_accept_takes_the_seen_run_not_the_latest(tmp_path, capsys):
 
 
 def test_accept_refuses_a_run_of_another_key(tmp_path):
-    """Профиль, режим, seed, граф итога — те, что в команде; иначе отказ с именем поля."""
+    """Профиль, режим, граф итога — те, что в команде; иначе отказ с именем поля."""
     rec = _rec([True] * 5, graph_dir="/А")
     mb.judge(tmp_path, rec)
     for args, field in (((rec["id"], "live", "stats"), "profile"), ((rec["id"], "answer", "synth"), "mode")):
         with pytest.raises(SystemExit, match=f"поле {field} не совпадает"):
             mb.accept(tmp_path, args[1], args[2], args[0], "", "/А")
-    monkey_seed[0] = "random"
-    rnd = _rec([True] * 5, graph_dir="/А")
-    mb.judge(tmp_path, rnd)
-    with pytest.raises(SystemExit, match="поле seed не совпадает"):
-        _accept(tmp_path, rnd)
+    with pytest.raises(SystemExit, match="поле graph_dir не совпадает"):
+        mb.accept(tmp_path, "answer", "stats", rec["id"], "", "/Б")
     assert not [r for r in mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
                 if r["kind"] == "accept"]
 
@@ -442,8 +433,9 @@ def test_accept_refuses_a_run_of_another_key(tmp_path):
 def test_run_key_covers_the_dossiers_axis():
     """Ось досье — часть ключа сравнения: запись без поля читается как «с досье»,
     `False` — другой ключ."""
-    base = {"profile": "answer", "mode": "stats", "seed": "0", "graph_dir": ""}
+    base = {"profile": "answer", "mode": "stats", "graph_dir": ""}
     assert mb.run_key(base) == mb.run_key({**base, "dossiers": True}), "старая запись — «с досье»"
+    assert mb.run_key({**base, "seed": "0"}) == mb.run_key(base), "seed старой записи ключа не меняет (№631)"
     assert mb.run_key({**base, "dossiers": False}) != mb.run_key(base)
 
 
@@ -452,9 +444,9 @@ def test_alert_key_literals_of_a_base_record():
     те же ключи, что у базы 282a528f; `False` добавляет элемент с именем оси."""
     rec = _rec([True] * 5, graph_dir="/g")
     del rec["dossiers"]
-    assert mb.alert_key(rec) == "answer|stats|0||/g"
-    assert mb.alert_key({**rec, "dossiers": True}) == "answer|stats|0||/g"
-    assert mb.alert_key({**rec, "dossiers": False}) == "answer|stats|0||/g|dossiers=False"
+    assert mb.alert_key(rec) == "answer|stats||/g"
+    assert mb.alert_key({**rec, "dossiers": True}) == "answer|stats||/g"
+    assert mb.alert_key({**rec, "dossiers": False}) == "answer|stats||/g|dossiers=False"
 
 
 def test_accept_takes_a_base_format_record(tmp_path):
@@ -471,7 +463,7 @@ def test_accept_takes_a_base_format_record(tmp_path):
     assert mb.accepted_base(records, mb.run_key(rec))["id"] == rec["id"]
 
 
-def _base_alert(tmp_path, key="answer|stats|0||"):
+def _base_alert(tmp_path, key="answer|stats||"):
     """Тревога формата базы: ключ из пяти полей, поля записи без `dossiers`."""
     path = tmp_path / "logs" / "memory_bench_alert.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -549,7 +541,6 @@ def test_no_dossiers_reaches_run_profile_and_record(monkeypatch, tmp_path):
     (tmp_path / "config" / "memory_bench.yaml").write_text("- q: 'вопрос'\n", encoding="utf-8")
     monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
     monkeypatch.setattr(mb, "build_embedder", lambda cfg: None)
-    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: None)
     monkeypatch.setattr(mb, "resolve_lang", lambda *a, **k: "ru")
     seen: dict = {}
     monkeypatch.setattr(mb, "run_profile",
@@ -653,72 +644,3 @@ def test_record_flags_are_validated(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             mb.main()
         assert "usage" in capsys.readouterr().err
-
-
-# ------------------------------------------------------------------ seed по факту (Opus M3)
-
-def _flags(monkeypatch, *, hr, ie=0):
-    monkeypatch.setattr(sys, "flags", types.SimpleNamespace(hash_randomization=hr, ignore_environment=ie))
-
-
-def test_hash_seed_is_pinned_by_reexec_with_interpreter_flags(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(mb.os, "execve", lambda exe, argv, env: seen.update(exe=exe, env=env, argv=argv))
-    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
-    monkeypatch.setattr(sys, "argv", ["scripts/memory_bench.py", "--profile", "answer", "--stats"])
-    orig = [sys.executable, "-X", "utf8", "-u", "scripts/memory_bench.py", "--profile", "answer", "--stats"]
-    monkeypatch.setattr(sys, "orig_argv", orig)
-    _flags(monkeypatch, hr=1)
-    mb.pin_hash_seed("raw")
-    assert seen == {}
-    mb.pin_hash_seed("answer")
-    assert seen["exe"] == sys.executable and seen["argv"] == orig
-    assert seen["env"]["PYTHONHASHSEED"] == "0"
-    seen.clear()
-    _flags(monkeypatch, hr=0)
-    mb.pin_hash_seed("answer")
-    assert seen == {}, "порядок хеша уже фиксирован — перезапуска нет"
-
-
-def test_accept_does_not_pin_the_hash_seed(monkeypatch, tmp_path):
-    """Принятие ничего не мерит: ни перезапуска, ни отказа под -E/-I."""
-    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: pytest.fail("принятие перезапускает бенч"))
-    seen = []
-    monkeypatch.setattr(mb, "accept", lambda *a: seen.append(a))
-    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text("sufler: {}\n", encoding="utf-8")
-    monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
-    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--stats", "--accept", "--run", "r1"])
-    mb.main()
-    assert seen and seen[0][1:4] == ("answer", "stats", "r1")
-
-
-def test_hash_seed_loop_guard(monkeypatch):
-    """В окружении уже 0, а порядок случайный — выход, не второй execve."""
-    monkeypatch.setattr(mb.os, "execve", lambda *a: pytest.fail("execve в цикле"))
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-    _flags(monkeypatch, hr=1)
-    with pytest.raises(SystemExit, match="перезапуск не поможет"):
-        mb.pin_hash_seed("answer")
-
-
-def test_record_seed_is_the_fact(monkeypatch):
-    monkeypatch.setattr(mb, "hash_seed", REAL_HASH_SEED)
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-    _flags(monkeypatch, hr=1, ie=1)
-    assert _rec([True])["seed"] == "random", "переменная 0, а хеш случайный — пишется факт"
-    _flags(monkeypatch, hr=0)
-    assert _rec([True])["seed"] == "0"
-
-
-def test_ignore_environment_refuses_without_reexec(tmp_path):
-    """Настоящий интерпретатор: `PYTHONHASHSEED=0 python -E` — хеш случайный, перезапуск
-    окружение не прочтёт; отказ с текстом, без execve."""
-    import subprocess
-    env = {**mb.os.environ, "PYTHONHASHSEED": "0", "CHAROITE_ROOT": str(tmp_path)}
-    r = subprocess.run([sys.executable, "-E", str(ROOT / "scripts" / "memory_bench.py"),
-                        "--profile", "answer", "--stats"],
-                       capture_output=True, text=True, env=env, timeout=120)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "запустите без -E/-I" in r.stderr
