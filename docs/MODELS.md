@@ -441,7 +441,8 @@ choice.
 
 | Config key | Default | Where it runs |
 |----|----|----|
-| `cloud_model` | `claude-opus-5` | post-meeting debrief, nightly core and dossier reviews — not at conversation speed, so the strongest model is worth it |
+| `cloud_debrief_model` | `claude-sonnet-5-5` | post-meeting debrief: quality is enough while time and spend are lower; put `claude-opus-5` here to go back to Opus |
+| `cloud_model` | `claude-opus-5` | nightly core and dossier reviews (not the debrief) — not at conversation speed, so the strongest model is worth it |
 | `cloud_live_model` | `claude-haiku-4-5` | answering a question mid-meeting: speed matters more |
 | `cloud_hints_model` | `claude-haiku-4-5` | revision of the on-screen thread (`cloud_hints`): same, but more often |
 | `cloud_effort` | `medium` | reasoning effort for the post-meeting debrief (`low`…`max`, or `auto`). Headless `claude -p` otherwise runs at `high` (at `max` from a shell with a global setting): by 80 review logs (28.08–08.09) 22 debriefs hit the 30-minute ceiling on 34–47 graph edits and were quarantined; `medium` shortens the run so it fits those 30 minutes. The ceiling was not raised: the next meeting's worker waits for the graph lock just as long |
@@ -451,7 +452,11 @@ choice.
 Defaults live in one place — `src/cloud.py` — and match the example configs; a
 mismatch fails a test. Previously the literal sat in every call site, and one
 key (`cloud_model`) had two different defaults: with a trimmed config the
-post-meeting debrief and the nightly review went to different models.
+post-meeting debrief and the nightly review went to different models. The roles
+are now split: `cloud_debrief_model` is the post-meeting debrief (Sonnet by
+default; set `claude-opus-5` there to go back), `cloud_model` is only the
+nightly core and dossier reviews, and `cloud_live_model` /
+`cloud_hints_model` are the in-meeting calls.
 
 The keys above drive the Claude CLI. The third chat engine is a different
 thing: `llm.engine: cloud` sends hints, theses, the thread and minutes to an
