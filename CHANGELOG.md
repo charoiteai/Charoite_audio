@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.96.0](https://github.com/charoiteai/Charoite_audio/compare/v0.95.0...v0.96.0) (2026-10-09)
+
+
+### Features
+
+* **cloud:** separate model key for meeting debrief, Sonnet by default ([#770](https://github.com/charoiteai/Charoite_audio/issues/770)) ([5149770](https://github.com/charoiteai/Charoite_audio/commit/5149770552b2b49c8b48dec12ad44a8351028cbf))
+
+
+### Bug Fixes
+
+* **memory:** deterministic graph search bench — drop seed pin, migrate alert keys ([#631](https://github.com/charoiteai/Charoite_audio/issues/631)) ([#771](https://github.com/charoiteai/Charoite_audio/issues/771)) ([df56a53](https://github.com/charoiteai/Charoite_audio/commit/df56a535c1b1c018ed10aa9a669c82d884b6c609))
+* **memory:** deterministic graph search order on score ties ([#768](https://github.com/charoiteai/Charoite_audio/issues/768)) ([60ea056](https://github.com/charoiteai/Charoite_audio/commit/60ea0564d3c89b1dad7122a31fe8eb49f3d1ae83))
+
 ## [0.95.0](https://github.com/charoiteai/Charoite_audio/compare/v0.94.0...v0.95.0) (2026-10-08)
 
 
