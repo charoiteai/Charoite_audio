@@ -587,23 +587,42 @@ def test_mixed_alert_file_keeps_one_best_entry(tmp_path, new_cell, old_cell, wri
         assert data[NEW].get("unmeasured") == unmeasured
 
 
+def _legacy(key):
+    """Ключ старого формата (до №631): слот seed третьим полем."""
+    a, b, rest = key.split("|", 2)
+    return f"{a}|{b}|0|{rest}"
+
+
 def test_legacy_key_with_dossiers_tail_is_migrated(tmp_path):
-    path = _base_alert(tmp_path, key="answer|stats|0||dossiers=False")
-    mb.update_alert(path, "answer|stats||dossiers=False",
-                    {"state": "unmeasured", "why": "нет базы"})
+    key = mb.alert_key(_rec([True] * 5, dossiers=False))
+    path = _base_alert(tmp_path, key=_legacy(key))
+    mb.update_alert(path, key, {"state": "unmeasured", "why": "нет базы"})
     data = _alert_keys(path)
-    assert list(data) == ["answer|stats||dossiers=False"]
-    assert data["answer|stats||dossiers=False"]["state"] == "alert"
+    assert list(data) == [key]
+    assert data[key]["state"] == "alert"
 
 
 def test_neighbour_legacy_keys_of_other_graph_and_profile_are_untouched(tmp_path):
-    path = _base_alert(tmp_path, key="answer|stats|0|/g|")
+    key = mb.alert_key(_rec([True] * 5, graph_dir="/g"))
+    other = mb.alert_key(_rec([True] * 5, graph_dir="/h"))
+    live = mb.alert_key(_rec([True] * 5, profile="live", graph_dir="/g"))
+    path = _base_alert(tmp_path, key=_legacy(other))
     data = _alert_keys(path)
-    data["live|stats|0||"] = dict(data["answer|stats|0|/g|"])
+    data[_legacy(live)] = dict(data[_legacy(other)])
     path.write_text(mb.json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    mb.update_alert(path, "answer|stats||", {"state": "unmeasured", "why": "нет базы"})
+    mb.update_alert(path, key, {"state": "unmeasured", "why": "нет базы"})
     after = _alert_keys(path)
-    assert set(after) == {"answer|stats|0|/g|", "live|stats|0||", "answer|stats||"}
+    assert set(after) == {_legacy(other), _legacy(live), key}
+
+
+@pytest.mark.parametrize("entry", [None, {"state": "unmeasured", "why": "нет базы"}])
+def test_non_string_state_in_file_does_not_crash_update_alert(tmp_path, entry):
+    """Ручная правка файла (state списком) не роняет запись и снятие тревоги."""
+    path = _mixed_alert(tmp_path, [(NEW, ["alert"], T8, "runN"), (OLD, {"x": 1}, T1, "runO")])
+    mb.update_alert(path, NEW, entry)
+    data = _alert_keys(path)
+    assert OLD not in data
+    assert (NEW in data) == (entry is not None)
 
 
 def test_accept_keys_and_checks_the_dossiers_axis(tmp_path, capsys):

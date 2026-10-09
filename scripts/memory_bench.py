@@ -794,9 +794,8 @@ def _merge_alert_entries(cands: list) -> dict | None:
     """Из записей под новым и старыми ключами одного сравнения — одна: тревога
     (`alert`) раньше `unmeasured`, среди равных — с большим `ts`."""
     found = [c for c in cands if isinstance(c, dict)]
-    rank = {"alert": 1}
-    return max(found, key=lambda c: (rank.get(c.get("state"), 0), str(c.get("ts") or "")),
-               default=None)
+    return max(found, key=lambda c: (1 if c.get("state") == "alert" else 0,
+                                     str(c.get("ts") or "")), default=None)
 
 
 def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
@@ -809,8 +808,8 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     Ключи старого формата (до №631 третьим полем шёл слот seed: "0", "" или "random")
     подтягиваются к новому: из записей под новым и старыми ключами остаётся одна
     (`_merge_alert_entries`), а старый ключ удаляется при любой записи — иначе он висел
-    бы в брифе вечно. Слоты seed исчерпывающие: `hash_seed()` даёт "0" или "random",
-    запись без поля seed — "".
+    бы в брифе вечно. Слоты seed исчерпывающие: писатель до 376fcd26 ставил "0" или
+    "random", запись без поля seed — "".
     Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
