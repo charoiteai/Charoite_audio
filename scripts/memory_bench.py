@@ -790,6 +790,15 @@ def compare(base: dict, cur: dict) -> Diff:
     return Diff(regressed, sem_diff, total)
 
 
+def _merge_alert_entries(cands: list) -> dict | None:
+    """Из записей под новым и старыми ключами одного сравнения — одна: тревога
+    (`alert`) раньше `unmeasured`, среди равных — с большим `ts`."""
+    found = [c for c in cands if isinstance(c, dict)]
+    rank = {"alert": 1}
+    return max(found, key=lambda c: (rank.get(c.get("state"), 0), str(c.get("ts") or "")),
+               default=None)
+
+
 def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     """Файл тревоги для утреннего брифа: ключ — ключ сравнения (`alert_key`).
     `None` — сравнили, просадки нет: ключ снят, пустой файл удаляется. Состояние
@@ -798,8 +807,10 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     сравнил, не свидетельствует «чисто». `run` и `ts` тревоги остаются от итога, что её
     поднял: `ts` — время последнего замера, бриф считает от него возраст тревоги.
     Ключи старого формата (до №631 третьим полем шёл слот seed: "0", "" или "random")
-    подтягиваются к новому: состояние берётся оттуда, если под новым ключом его нет, а
-    старый ключ удаляется при любой записи — иначе он висел бы в брифе вечно.
+    подтягиваются к новому: из записей под новым и старыми ключами остаётся одна
+    (`_merge_alert_entries`), а старый ключ удаляется при любой записи — иначе он висел
+    бы в брифе вечно. Слоты seed исчерпывающие: `hash_seed()` даёт "0" или "random",
+    запись без поля seed — "".
     Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -810,13 +821,7 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     parts = key.split("|", 2)
     legacy = [f"{parts[0]}|{parts[1]}|{seed}|{parts[2]}" for seed in ("0", "", "random")] \
         if len(parts) == 3 else []
-    prev = data.get(key)
-    for old in legacy:
-        old_entry = data.pop(old, None)
-        if prev is None and old_entry is not None:
-            prev = old_entry
-    if prev is not None:
-        data[key] = prev
+    prev = _merge_alert_entries([data.get(key), *(data.pop(old, None) for old in legacy)])
     if entry is None:
         data.pop(key, None)
     elif entry["state"] == "unmeasured" and isinstance(prev, dict) and prev.get("state") == "alert":

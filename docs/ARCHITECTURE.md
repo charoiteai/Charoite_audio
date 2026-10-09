@@ -1878,7 +1878,7 @@ accepted only by an explicit `--accept --run ID`, and the run must be of the
 same profile, mode and graph; accepting a worse result needs `--reason`,
 a run that fell back to another model is refused; accepting lifts the alert of
 its key, including one left under the pre-#631 key format (the hash-seed slot
-in the key is migrated away on the next write).
+in the key is migrated away on the next write under the same key).
 
 The result order itself no longer depends on that hash order: the score and the
 path descending form one key (`_order_key`) that orders the lexical list, the

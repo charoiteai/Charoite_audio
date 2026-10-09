@@ -536,6 +536,76 @@ def test_unmeasured_over_legacy_alert_keeps_alert_and_migrates_key(tmp_path):
     assert data["answer|stats||"]["run"] == "old000000001"
 
 
+def _mixed_alert(tmp_path, cells):
+    """Файл тревоги со смешанными ключами: `cells` — [(ключ, состояние, ts, run)]."""
+    path = tmp_path / "logs" / "memory_bench_alert.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    for key, state, ts, run in cells:
+        data[key] = {"ts": ts, "run": run, "profile": "answer", "mode": "stats",
+                     "graph_dir": "", "state": state, "was": 5, "now": 3}
+        if state == "unmeasured":
+            data[key]["why"] = "старая причина"
+    path.write_text(mb.json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+NEW, OLD = "answer|stats||", "answer|stats|0||"
+T1, T8 = "2026-10-01T00:00:00", "2026-10-08T00:00:00"
+
+
+@pytest.mark.parametrize("new_cell,old_cell,write,expect", [
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), "unmeasured", ("alert", "runO", "нет базы")),
+    (("alert", T1, "runN"), ("unmeasured", T8, "runO"), "unmeasured", ("alert", "runN", "нет базы")),
+    (("unmeasured", T1, "runN"), ("unmeasured", T8, "runO"), "unmeasured", ("unmeasured", None, None)),
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), None, None),
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), "alert", ("alert", "runW", None)),
+    (("alert", T1, "runA"), ("alert", T8, "runB"), "unmeasured", ("alert", "runB", "нет базы")),
+    (("alert", T8, "runA"), ("alert", T1, "runB"), "unmeasured", ("alert", "runA", "нет базы")),
+])
+def test_mixed_alert_file_keeps_one_best_entry(tmp_path, new_cell, old_cell, write, expect):
+    path = _mixed_alert(tmp_path, [(NEW, new_cell[0], new_cell[1], new_cell[2]),
+                                   (OLD, old_cell[0], old_cell[1], old_cell[2])])
+    if write is None:
+        entry = None
+    elif write == "alert":
+        entry = {"state": "alert", "ts": "2026-10-09T00:00:00", "run": "runW"}
+    else:
+        entry = {"state": "unmeasured", "why": "нет базы", "ts": "2026-10-09T00:00:00",
+                 "run": "runW"}
+    mb.update_alert(path, NEW, entry)
+    data = _alert_keys(path)
+    if expect is None:
+        assert data == {}
+        return
+    assert list(data) == [NEW]
+    state, run, unmeasured = expect
+    assert data[NEW]["state"] == state
+    if run is not None:
+        assert data[NEW]["run"] == run
+    if state == "alert":
+        assert data[NEW].get("unmeasured") == unmeasured
+
+
+def test_legacy_key_with_dossiers_tail_is_migrated(tmp_path):
+    path = _base_alert(tmp_path, key="answer|stats|0||dossiers=False")
+    mb.update_alert(path, "answer|stats||dossiers=False",
+                    {"state": "unmeasured", "why": "нет базы"})
+    data = _alert_keys(path)
+    assert list(data) == ["answer|stats||dossiers=False"]
+    assert data["answer|stats||dossiers=False"]["state"] == "alert"
+
+
+def test_neighbour_legacy_keys_of_other_graph_and_profile_are_untouched(tmp_path):
+    path = _base_alert(tmp_path, key="answer|stats|0|/g|")
+    data = _alert_keys(path)
+    data["live|stats|0||"] = dict(data["answer|stats|0|/g|"])
+    path.write_text(mb.json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    mb.update_alert(path, "answer|stats||", {"state": "unmeasured", "why": "нет базы"})
+    after = _alert_keys(path)
+    assert set(after) == {"answer|stats|0|/g|", "live|stats|0||", "answer|stats||"}
+
+
 def test_accept_keys_and_checks_the_dossiers_axis(tmp_path, capsys):
     """Принятие сверяет `dossiers` записи с командой; запись `accept` хранит поле,
     иначе `accepted_base` не найдёт её по ключу. База «с досье» не трогается."""
