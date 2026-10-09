@@ -118,18 +118,22 @@ def test_night_effort_default_is_high():
 
 
 # Прямой вызов выбора модели: `cloud.model(cfg, "<ключ>")` в src/ и scripts/.
-# `cloud_review.py` строит команду не сам, а через cloud_enrich_command, и в
-# сканере усилия по литералу `claude -p` не виден — поэтому точка выхода у
-# него держится здесь, отдельным перечнем (факт 2 задания).
-_MODEL_CALL = re.compile(r"cloud\.model\(\s*cfg\s*,\s*[\"']([a-z_]+)[\"']")
+# `cloud_review.py` строит команду через cloud_enrich_command, литерала
+# `claude -p` в нём нет, и сканер усилия его не видит — поэтому точка выхода у
+# него держится здесь, отдельным перечнем (№687). Имя переменной конфига
+# любое (`cfg`, `config`, `self.cfg`): узкий регэксп пропускал новый файл.
+_MODEL_CALL = re.compile(r"cloud\.model\(\s*[\w.]+\s*,\s*[\"']([a-z_]+)[\"']")
+# Любой выбор модели из cloud, даже с неразобранным ключом или импортом `model`
+_MODEL_USE = re.compile(r"cloud\.model\(|from\s+cloud\s+import[^\n]*\bmodel\b")
 # Точка выхода → ключ(и) модели, которые она вправе читать. Разбор встречи —
 # свой ключ (Sonnet по умолчанию), ночные скрипты — cloud_model, живой слой —
 # cloud_live_model/cloud_hints_model.
 _MODEL_KEYS_BY_FILE = {
-    "scripts/cloud_review.py": {"cloud_debrief_model"},
-    "scripts/nightly_claude_cores.py": {"cloud_model"},
-    "scripts/nightly_dossier_review.py": {"cloud_model"},
-    "src/daemon.py": {"cloud_live_model", "cloud_hints_model"},
+    "scripts/cloud_review.py": ["cloud_debrief_model"],
+    "scripts/nightly_claude_cores.py": ["cloud_model"],
+    "scripts/nightly_dossier_review.py": ["cloud_model"],
+    # порядок вхождения в файле: подсказки (строка ~2011), затем живой ответ
+    "src/daemon.py": ["cloud_hints_model", "cloud_live_model"],
 }
 
 
@@ -137,10 +141,11 @@ def test_every_model_exit_reads_its_documented_key():
     """Точка выхода читает СВОЙ ключ модели, а не соседний.
 
     Подмена `cloud_debrief_model` на `cloud_model`/`cloud_live_model` в
-    `cloud_review.py` раньше не краснила ни один тест (факт 9 задания) — и
-    разбор встречи молча уходил на ночную или живую модель. Сканер знает и
-    `cloud_review.py`, и оба ночных скрипта, и запрещает любой ключ вне
-    перечня — новый прямой `cloud.model(` обязан появиться здесь.
+    `cloud_review.py` раньше не краснила ни один тест — и разбор встречи
+    молча уходил на ночную или живую модель. Сравнивается упорядоченный
+    список ключей по файлу (перестановка двух ключей в daemon.py иначе
+    проходила бы), а любой файл с `cloud.model(` или импортом `model` из
+    cloud обязан быть в перечне.
     """
     checked: set[str] = set()
     for folder in ("src", "scripts"):
@@ -148,13 +153,15 @@ def test_every_model_exit_reads_its_documented_key():
             if path.name == "cloud.py":
                 continue
             rel = f"{folder}/{path.name}"
-            keys = set(_MODEL_CALL.findall(path.read_text(encoding="utf-8")))
-            if not keys:
+            text = path.read_text(encoding="utf-8")
+            if not _MODEL_USE.search(text):
                 continue
             checked.add(rel)
+            keys = _MODEL_CALL.findall(text)
             assert keys == _MODEL_KEYS_BY_FILE.get(rel), (
-                f"{rel}: читает {sorted(keys)}, а перечень разрешает "
-                f"{sorted(_MODEL_KEYS_BY_FILE.get(rel, ()))} — ключ модели разошёлся")
+                f"{rel}: читает {keys}, а перечень разрешает "
+                f"{_MODEL_KEYS_BY_FILE.get(rel, [])} — ключ модели разошёлся "
+                f"или новая точка выхода не внесена в _MODEL_KEYS_BY_FILE")
     assert checked == set(_MODEL_KEYS_BY_FILE), (
         f"сканируемые точки выхода разошлись с перечнем: нашли {sorted(checked)}, "
         f"ждали {sorted(_MODEL_KEYS_BY_FILE)}")
@@ -165,6 +172,40 @@ _SENTINEL_REPORT = ("- **Решение:** оставить граф закры�
                     "- **Риск:** файловый доступ не выдавался\n")
 
 
+_STAMP = "2026-07-15_1400"
+
+
+def _debrief_run(tmp_path, monkeypatch, cfg_sufler, fake_run):
+    """Один `_run_once` разбора без графа (только текст): без замка, бэкапов и
+    доставки — тесту нужны команда и лог. Возвращает (код, текст лога)."""
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{_STAMP}.md"
+    transcript.write_text("текст встречи\n", encoding="utf-8")
+    graph = tmp_path / "граф"
+    graph.mkdir()
+    rev = transcripts / f"{_STAMP}_ревизия.md"
+    log = tmp_path / "cloud.log"
+    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: False)
+    monkeypatch.setattr(cloud_review.cloud, "claude_bin", lambda: "/x/claude")
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    cfg = {"sufler": {"cloud_enrich": True, **cfg_sufler}}
+    code = cloud_review._run_once(_STAMP, transcript, graph, rev, log, cfg)
+    return code, log.read_text(encoding="utf-8")
+
+
+_DEBRIEF = "claude-debrief-sentinel"
+_NIGHT = "claude-night-sentinel"
+_LIVE = "claude-live-sentinel"
+
+
+def _labels_cfg():
+    for value in (_DEBRIEF, _NIGHT, _LIVE):
+        assert value not in cloud.DEFAULTS.values(), "метка совпала с дефолтом — тест слепой"
+    return {"cloud_debrief_model": _DEBRIEF, "cloud_model": _NIGHT, "cloud_live_model": _LIVE}
+
+
 def test_debrief_log_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypatch):
     """Модель разбора — один объект: она уходит в команду и целиком в лог
     (шапку и строку «за N мин»), а значений соседних ключей там нет.
@@ -172,19 +213,6 @@ def test_debrief_log_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypa
     Значения — отличимые метки, ни одна не равна дефолту: на дефолтах тест
     был бы зелёным и при лжи лога (соседний ключ совпал бы с разбором).
     """
-    debrief, night, live = ("claude-debrief-sentinel", "claude-night-sentinel",
-                            "claude-live-sentinel")
-    for value in (debrief, night, live):
-        assert value not in cloud.DEFAULTS.values(), "метка совпала с дефолтом — тест слепой"
-    stamp = "2026-07-15_1400"
-    transcripts = tmp_path / "transcripts"
-    transcripts.mkdir()
-    transcript = transcripts / f"{stamp}.md"
-    transcript.write_text("текст встречи\n", encoding="utf-8")
-    graph = tmp_path / "граф"
-    graph.mkdir()
-    rev = transcripts / f"{stamp}_ревизия.md"
-    log = tmp_path / "cloud.log"
     captured: dict = {}
 
     class Result:
@@ -195,20 +223,63 @@ def test_debrief_log_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypa
         kwargs["stdout"].write(_SENTINEL_REPORT)
         return Result()
 
-    # Графа нет — прогон только текстом: без замка, бэкапов и доставки,
-    # тесту нужна одна команда и её лог.
-    monkeypatch.setattr(cloud_review, "_root", lambda _к=tmp_path / "data": _к)
-    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: False)
-    monkeypatch.setattr(cloud_review.cloud, "claude_bin", lambda: "/x/claude")
-    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
-    cfg = {"sufler": {"cloud_enrich": True, "cloud_debrief_model": debrief,
-                      "cloud_model": night, "cloud_live_model": live}}
-    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    code, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), fake_run)
+    assert code == cloud_review.RC_OK
 
     cmd = captured["cmd"]
-    assert cmd[cmd.index("--model") + 1] == debrief, cmd
-    text = log.read_text(encoding="utf-8")
+    assert cmd[cmd.index("--model") + 1] == _DEBRIEF, cmd
     head = text.splitlines()[0]
     saved = [ln for ln in text.splitlines() if "ревизия сохранена" in ln]
-    assert debrief in head and len(saved) == 1 and debrief in saved[0], text
-    assert night not in text and live not in text, "в лог просочился соседний ключ модели"
+    assert _DEBRIEF in head and len(saved) == 1 and _DEBRIEF in saved[0], text
+    assert _NIGHT not in text and _LIVE not in text, "в лог просочился соседний ключ модели"
+
+
+def test_debrief_timeout_line_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypatch):
+    """Ветка таймаута: и строка «таймаут», и «НЕ сохранена» несут модель разбора."""
+    def fake_run(cmd, **kwargs):
+        raise cloud_review.subprocess.TimeoutExpired(cmd, 1)
+
+    _, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), fake_run)
+    timeout_line = [ln for ln in text.splitlines() if "таймаут" in ln and "разбор прерван" in ln]
+    unsaved = [ln for ln in text.splitlines() if "НЕ сохранена" in ln]
+    assert len(timeout_line) == 1 and _DEBRIEF in timeout_line[0], text
+    assert len(unsaved) == 1 and _DEBRIEF in unsaved[0], text
+    assert _NIGHT not in text and _LIVE not in text, "в лог просочился соседний ключ модели"
+
+
+def test_debrief_stub_report_line_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypatch):
+    """Ветка «код 0, но форма не ревизия» (огрызок короче MIN_REPORT)."""
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write("ok\n")
+        assert len("ok\n") < cloud_review.MIN_REPORT
+        return Result()
+
+    _, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), fake_run)
+    unsaved = [ln for ln in text.splitlines() if "НЕ сохранена" in ln]
+    assert len(unsaved) == 1 and _DEBRIEF in unsaved[0] and "форма не ревизия" in unsaved[0], text
+    assert _NIGHT not in text and _LIVE not in text, "в лог просочился соседний ключ модели"
+
+
+def _ok_run(cmd, **kwargs):
+    class Result:
+        returncode = 0
+    kwargs["stdout"].write(_SENTINEL_REPORT)
+    return Result()
+
+
+def test_old_config_with_only_cloud_model_gets_a_switch_notice(tmp_path, monkeypatch):
+    """Задан cloud_model, cloud_debrief_model нет: разбор ушёл на умолчание, и
+    лог говорит об этом один раз (иначе выбравший Opus заметит по счёту)."""
+    _, text = _debrief_run(tmp_path, monkeypatch, {"cloud_model": _NIGHT}, _ok_run)
+    notes = [ln for ln in text.splitlines() if "теперь только для ночных ревизий" in ln]
+    assert len(notes) == 1, text
+    assert f"cloud_model={_NIGHT}" in notes[0] and "cloud_debrief_model" in notes[0], notes
+    assert cloud.DEFAULTS["cloud_debrief_model"] in notes[0], notes
+
+
+def test_both_model_keys_set_means_no_switch_notice(tmp_path, monkeypatch):
+    _, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), _ok_run)
+    assert "теперь только для ночных ревизий" not in text, text

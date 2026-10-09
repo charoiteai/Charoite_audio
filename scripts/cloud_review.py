@@ -1544,6 +1544,13 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             f"усилие {effort}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
             + (f"; {bad_effort}" if bad_effort else "") + "\n")
+    # Старый конфиг: cloud_model задан, cloud_debrief_model нет — разбор ушёл на
+    # Sonnet по умолчанию (№687); пользователь, выбравший Opus, видит смену в логе
+    scfg = cfg.get("sufler") or {}
+    if scfg.get("cloud_model") and not scfg.get("cloud_debrief_model"):
+        head += (f"[cloud-review] разбор встречи идёт на {model}; прежний "
+                 f"cloud_model={scfg['cloud_model']} теперь только для ночных "
+                 f"ревизий — вернуть: cloud_debrief_model\n")
     # Заметка встречи ДО облака: после переноса по ней видно, какие решения
     # ревизия сняла (⛔ на месте), и память переотправляется без них (№237)
     note_path = (graph / "Встречи" / f"{stamp}.md") if graph_available and graph is not None else None
