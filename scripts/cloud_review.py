@@ -1304,7 +1304,8 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                        "или запуск scripts/cloud_review.py руками")
     elif rc == RC_TIMEOUT:
         _log_line(log, "таймаут — повтор не поможет: тот же контекст упрётся в тот же потолок; "
-                       "сократить усилие (sufler.cloud_effort) или разбить встречу")
+                       "сократить усилие (sufler.cloud_effort), взять модель побыстрее "
+                       "(sufler.cloud_debrief_model) или разбить встречу")
     return rc
 
 
@@ -1516,9 +1517,10 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,
         context=context)
     effort = cloud.effort(cfg)          # один раз: и в команду, и в строку лога
+    model = cloud.model(cfg, "cloud_debrief_model")  # то же: один объект на команду и лог
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=cloud.claude_bin(),
-        prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
+        prompt=prompt, model=model, may_edit=may_edit,
         graph_available=graph_available, deny_paths=denied,
         symlink_paths=links, effort=effort)
 
@@ -1538,9 +1540,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             "только текст (граф недоступен)")
     bad_effort = cloud.effort_warning(cfg)
     head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
-            f"({', '.join(sent)}), {len(context)} знаков, режим {mode}, усилие {effort}"
+            f"({', '.join(sent)}), {len(context)} знаков, режим {mode}, модель {model}, "
+            f"усилие {effort}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
             + (f"; {bad_effort}" if bad_effort else "") + "\n")
+    # Старый конфиг: cloud_model задан, cloud_debrief_model нет — разбор ушёл на
+    # Sonnet по умолчанию (№687); пользователь, выбравший Opus, видит смену в логе
+    scfg = cfg.get("sufler") or {}
+    if scfg.get("cloud_model") and not scfg.get("cloud_debrief_model"):
+        head += (f"[cloud-review] разбор встречи идёт на {model}; прежний "
+                 f"cloud_model={scfg['cloud_model']} теперь только для ночных "
+                 f"ревизий — вернуть: cloud_debrief_model\n")
     # Заметка встречи ДО облака: после переноса по ней видно, какие решения
     # ревизия сняла (⛔ на месте), и память переотправляется без них (№237)
     note_path = (graph / "Встречи" / f"{stamp}.md") if graph_available and graph is not None else None
@@ -1566,7 +1576,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                   stdin=subprocess.DEVNULL, stdout=out, stderr=lf,
                                   timeout=TIMEOUT).returncode
         except subprocess.TimeoutExpired:
-            lf.write(f"[cloud-review] таймаут {TIMEOUT}с — разбор прерван\n")
+            lf.write(f"[cloud-review] таймаут {TIMEOUT}с — разбор прерван "
+                     f"(модель {model}, усилие {effort})\n")
             code = -1
             timed_out = True
         except OSError as e:
@@ -1589,10 +1600,18 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             text = ""
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
-        took = f"за {(time.monotonic() - t_start) / 60:.1f} мин, усилие {effort}"
-        lines.append(f"[cloud-review] ревизия сохранена: {rev.name} ({took})\n" if published else
-                     f"[cloud-review] ревизия НЕ сохранена (код {code}, "
-                     f"{len(text)} знаков, {took}) — см. {rev.name}.partial\n")
+        took = (f"за {(time.monotonic() - t_start) / 60:.1f} мин, "
+                f"модель {model}, усилие {effort}")
+        # Причина видна в строке целиком: таймаут / ненулевой код / код 0, но
+        # форма не ревизия. Раньше «код 0» у ответа-не-ревизии читался как успех
+        if published:
+            lines.append(f"[cloud-review] ревизия сохранена: {rev.name} ({took})\n")
+        else:
+            reason = ("таймаут" if timed_out else
+                      f"код {code}" if code != 0 else
+                      "код 0, но форма не ревизия")
+            lines.append(f"[cloud-review] ревизия НЕ сохранена ({reason}, "
+                         f"{len(text)} знаков, {took}) — см. {rev.name}.partial\n")
     finally:
         # Сверка — раньше всего и без зависимости от лога: падение log.open
         # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).

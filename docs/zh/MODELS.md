@@ -348,7 +348,8 @@ Mac 的模型。
 
 | 配置键 | 默认值 | 在哪里运行 |
 |----|----|----|
-| `cloud_model` | `claude-opus-5` | 会后复盘、每夜的核心与档案修订——不在对话速度下运行，因此值得用最强的模型 |
+| `cloud_debrief_model` | `claude-sonnet-5-5` | 会后复盘：质量足够，时间与开销更低；改回 Opus 就在此填入 `claude-opus-5` |
+| `cloud_model` | `claude-opus-5` | 每夜的核心与档案修订（不是复盘）——不在对话速度下运行，因此值得用最强的模型 |
 | `cloud_live_model` | `claude-haiku-4-5` | 会议进行中回答问题：速度更重要 |
 | `cloud_hints_model` | `claude-haiku-4-5` | 修订屏幕上的脉络（`cloud_hints`）：同理，但更频繁 |
 | `cloud_effort` | `medium` | 会后复盘的推理强度（`low`…`max` 或 `auto`）。无此项时 headless `claude -p` 以 `high` 运行（从带全局设置的 shell 启动则为 `max`）：按 80 份复盘日志（28.08–08.09），22 次在 34–47 处图谱修改上撞到 30 分钟上限并被隔离；`medium` 缩短运行，使复盘落在这 30 分钟之内。上限没有提高：下一场会议的工作进程等待图谱锁的时间也同样长 |
@@ -357,7 +358,10 @@ Mac 的模型。
 
 默认值只写在一个地方——`src/cloud.py`——并与示例配置保持一致；不一致会导致
 测试失败。此前这些字面量散落在每个调用点，其中一个键（`cloud_model`）有两个
-不同的默认值：配置被精简后，会后复盘与夜间修订会走向不同的模型。
+不同的默认值：配置被精简后，会后复盘与夜间修订会走向不同的模型。现在职责已
+拆分：`cloud_debrief_model` 是会后复盘（默认 Sonnet；改回 Opus 就填入
+`claude-opus-5`），`cloud_model` 只管每夜的核心与档案修订，`cloud_live_model` /
+`cloud_hints_model` 是会中调用。
 
 上面这些键驱动的是 Claude CLI。第三个聊天引擎是另一回事：`llm.engine: cloud`
 把提示、要点、脉络和会议纪要发往兼容 OpenAI 的网关，而不是本地模型。它的
