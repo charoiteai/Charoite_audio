@@ -1857,7 +1857,7 @@ packing, first token, full synthesis) as p50/p95, with the cold start apart.
 
 `--record` appends the profile's result to `logs/memory_bench_baseline.jsonl`
 (append-only, outside retention) and compares it with the accepted baseline of
-the same profile, mode, hash seed and graph (and model, for synthesis); the
+the same profile, mode and graph (and model, for synthesis); the
 alert file is keyed the same way. Two or more questions going ✓→✗ with the same
 `sem_used` write `logs/memory_bench_alert.json` with the questions' numbers and
 categories and whether HEAD (with uncommitted edits) or the graph changed; a
@@ -1875,20 +1875,18 @@ as it was, so an alert older than 36 h stays with the time of its last
 measurement and the id of the run that raised it. The journal and the alert file
 are written under one lock. Each recorded run prints its id; a baseline is
 accepted only by an explicit `--accept --run ID`, and the run must be of the
-same profile, mode, seed and graph; accepting a worse result needs `--reason`,
+same profile, mode and graph; accepting a worse result needs `--reason`,
 a run that fell back to another model is refused; accepting lifts the alert of
-its key. The bench re-runs itself with `PYTHONHASHSEED=0` (keeping the
-interpreter flags) until retrieval is deterministic — the daemon still runs with
-a random hash order; the record stores the seed in effect, and `-E`/`-I`, which
-make the variable void, are refused.
+its key, including one left under the pre-#631 key format (the hash-seed slot
+in the key is migrated away on the next write).
 
 The result order itself no longer depends on that hash order: the score and the
 path descending form one key (`_order_key`) that orders the lexical list, the
 vector similarity list and the hop candidates alike, and the clock is read once
 per search and handed to the hop step — the iteration order of a `set` of link
 targets or of the vector cache cannot change what is shown. The fix removes the
-scatter, not the pin: the bench keeps `PYTHONHASHSEED=0` until the owner
-re-measures.
+scatter: the bench runs with the interpreter's own hash order, like the daemon,
+and the record carries no seed.
 
 ## The readiness probe does not trust the data folder
 

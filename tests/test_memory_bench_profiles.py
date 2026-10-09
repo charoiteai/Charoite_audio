@@ -375,6 +375,17 @@ def test_baseline_is_per_profile_and_mode(tmp_path, capsys):
     capsys.readouterr()
     assert mb.judge(tmp_path, _rec([False] * 5, profile="live")) is None
     assert "база не принята" in capsys.readouterr().out
+    assert mb.judge(tmp_path, _rec([False] * 5, mode="synth")) is None
+    assert "база не принята" in capsys.readouterr().out
+
+
+def test_main_dispatches_accept(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(mb, "accept", lambda *a, **k: seen.append(a))
+    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--accept", "--run", "r1", "--profile", "answer", "--stats", "--demo"])
+    mb.main()
+    assert seen and seen[0][1:4] == ("answer", "stats", "r1")
 
 
 def test_changed_question_is_not_compared(tmp_path):
@@ -436,6 +447,7 @@ def test_run_key_covers_the_dossiers_axis():
     base = {"profile": "answer", "mode": "stats", "graph_dir": ""}
     assert mb.run_key(base) == mb.run_key({**base, "dossiers": True}), "старая запись — «с досье»"
     assert mb.run_key({**base, "seed": "0"}) == mb.run_key(base), "seed старой записи ключа не меняет (№631)"
+    assert "seed" not in _rec([True]), "seed в запись не пишется (№631)"
     assert mb.run_key({**base, "dossiers": False}) != mb.run_key(base)
 
 
@@ -463,8 +475,8 @@ def test_accept_takes_a_base_format_record(tmp_path):
     assert mb.accepted_base(records, mb.run_key(rec))["id"] == rec["id"]
 
 
-def _base_alert(tmp_path, key="answer|stats||"):
-    """Тревога формата базы: ключ из пяти полей, поля записи без `dossiers`."""
+def _base_alert(tmp_path, key="answer|stats|0||"):
+    """Тревога старого формата (до №631): третье поле ключа — слот seed."""
     path = tmp_path / "logs" / "memory_bench_alert.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {"ts": "2026-01-01T00:00:00", "run": "old000000001", "profile": "answer",
@@ -481,22 +493,47 @@ def _alert_keys(path):
 
 
 def test_base_format_alert_is_lifted_by_a_clean_judge(tmp_path):
-    """Тревога, поднятая до флага, лежит под ключом из пяти полей: прогон без просадки
-    снимает её по тому же ключу, а не заводит второй под шестипольным."""
+    """Тревога старого формата лежит под ключом со слотом seed: прогон без просадки
+    снимает её, а не оставляет висеть в брифе."""
     _accept_first(tmp_path, [True] * 5)
     path = _base_alert(tmp_path)
     assert mb.judge(tmp_path, _rec([True] * 5)) is None
-    assert "answer|stats|0||" not in _alert_keys(path)
+    assert _alert_keys(path) == {}
 
 
 def test_base_format_alert_is_lifted_by_accept(tmp_path):
-    """`--accept` итога формата базы снимает тревогу его ключа из пяти полей."""
+    """`--accept` итога снимает и тревогу старого ключа со слотом seed."""
     rec = _rec([True] * 5)
     del rec["dossiers"]
     mb.append_record(tmp_path / "logs" / "memory_bench_baseline.jsonl", rec)
     path = _base_alert(tmp_path)
     mb.accept(tmp_path, "answer", "stats", rec["id"], "", "")
-    assert "answer|stats|0||" not in _alert_keys(path)
+    assert _alert_keys(path) == {}
+
+
+@pytest.mark.parametrize("seed", ["0", "", "random"])
+def test_every_legacy_seed_slot_is_lifted(tmp_path, seed):
+    _accept_first(tmp_path, [True] * 5)
+    path = _base_alert(tmp_path, key=f"answer|stats|{seed}||")
+    assert mb.judge(tmp_path, _rec([True] * 5)) is None
+    assert _alert_keys(path) == {}
+
+
+def test_regression_over_legacy_alert_leaves_one_new_key(tmp_path):
+    _accept_first(tmp_path, [True] * 5)
+    path = _base_alert(tmp_path)
+    assert mb.judge(tmp_path, _rec([False, False, True, True, True])) is not None
+    assert list(_alert_keys(path)) == ["answer|stats||"]
+
+
+def test_unmeasured_over_legacy_alert_keeps_alert_and_migrates_key(tmp_path):
+    path = _base_alert(tmp_path)
+    mb.update_alert(path, "answer|stats||", {"state": "unmeasured", "why": "нет базы"})
+    data = _alert_keys(path)
+    assert list(data) == ["answer|stats||"]
+    assert data["answer|stats||"]["state"] == "alert"
+    assert data["answer|stats||"]["unmeasured"] == "нет базы"
+    assert data["answer|stats||"]["run"] == "old000000001"
 
 
 def test_accept_keys_and_checks_the_dossiers_axis(tmp_path, capsys):
