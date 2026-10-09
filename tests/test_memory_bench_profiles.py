@@ -185,18 +185,13 @@ def _rec(oks, sems=None, *, profile="answer", head="aaa", graph="5:ff", cats=Non
 
 
 monkey_head = ["aaa"]
-monkey_seed = ["0"]
 REAL_CODE_HEAD = mb.code_head
-REAL_HASH_SEED = mb.hash_seed
 
 
 @pytest.fixture(autouse=True)
 def _fixed_head(monkeypatch):
-    """Версия кода и seed — подменой: seed судится по факту интерпретатора, а pytest
-    идёт со случайным порядком хеша."""
+    """Версия кода — подменой."""
     monkeypatch.setattr(mb, "code_head", lambda: monkey_head[0])
-    monkey_seed[0] = "0"
-    monkeypatch.setattr(mb, "hash_seed", lambda: monkey_seed[0])
 
 
 def _alert(root):
@@ -375,12 +370,22 @@ def test_judge_holds_the_bench_lock(tmp_path, monkeypatch):
     assert not list((tmp_path / "logs").glob("*.tmp")), "временный файл тревоги не остаётся"
 
 
-def test_baseline_is_per_profile_mode_and_seed(tmp_path, monkeypatch, capsys):
+def test_baseline_is_per_profile_and_mode(tmp_path, capsys):
     _accept_first(tmp_path, [True] * 5)
-    monkey_seed[0] = "random"
     capsys.readouterr()
-    assert mb.judge(tmp_path, _rec([False] * 5)) is None
+    assert mb.judge(tmp_path, _rec([False] * 5, profile="live")) is None
     assert "база не принята" in capsys.readouterr().out
+    assert mb.judge(tmp_path, _rec([False] * 5, mode="synth")) is None
+    assert "база не принята" in capsys.readouterr().out
+
+
+def test_main_dispatches_accept(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(mb, "accept", lambda *a, **k: seen.append(a))
+    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--accept", "--run", "r1", "--profile", "answer", "--stats", "--demo"])
+    mb.main()
+    assert seen and seen[0][1:4] == ("answer", "stats", "r1")
 
 
 def test_changed_question_is_not_compared(tmp_path):
@@ -424,17 +429,14 @@ def test_accept_takes_the_seen_run_not_the_latest(tmp_path, capsys):
 
 
 def test_accept_refuses_a_run_of_another_key(tmp_path):
-    """Профиль, режим, seed, граф итога — те, что в команде; иначе отказ с именем поля."""
+    """Профиль, режим, граф итога — те, что в команде; иначе отказ с именем поля."""
     rec = _rec([True] * 5, graph_dir="/А")
     mb.judge(tmp_path, rec)
     for args, field in (((rec["id"], "live", "stats"), "profile"), ((rec["id"], "answer", "synth"), "mode")):
         with pytest.raises(SystemExit, match=f"поле {field} не совпадает"):
             mb.accept(tmp_path, args[1], args[2], args[0], "", "/А")
-    monkey_seed[0] = "random"
-    rnd = _rec([True] * 5, graph_dir="/А")
-    mb.judge(tmp_path, rnd)
-    with pytest.raises(SystemExit, match="поле seed не совпадает"):
-        _accept(tmp_path, rnd)
+    with pytest.raises(SystemExit, match="поле graph_dir не совпадает"):
+        mb.accept(tmp_path, "answer", "stats", rec["id"], "", "/Б")
     assert not [r for r in mb.read_records(tmp_path / "logs" / "memory_bench_baseline.jsonl")
                 if r["kind"] == "accept"]
 
@@ -442,8 +444,10 @@ def test_accept_refuses_a_run_of_another_key(tmp_path):
 def test_run_key_covers_the_dossiers_axis():
     """Ось досье — часть ключа сравнения: запись без поля читается как «с досье»,
     `False` — другой ключ."""
-    base = {"profile": "answer", "mode": "stats", "seed": "0", "graph_dir": ""}
+    base = {"profile": "answer", "mode": "stats", "graph_dir": ""}
     assert mb.run_key(base) == mb.run_key({**base, "dossiers": True}), "старая запись — «с досье»"
+    assert mb.run_key({**base, "seed": "0"}) == mb.run_key(base), "seed старой записи ключа не меняет (№631)"
+    assert "seed" not in _rec([True]), "seed в запись не пишется (№631)"
     assert mb.run_key({**base, "dossiers": False}) != mb.run_key(base)
 
 
@@ -452,9 +456,9 @@ def test_alert_key_literals_of_a_base_record():
     те же ключи, что у базы 282a528f; `False` добавляет элемент с именем оси."""
     rec = _rec([True] * 5, graph_dir="/g")
     del rec["dossiers"]
-    assert mb.alert_key(rec) == "answer|stats|0||/g"
-    assert mb.alert_key({**rec, "dossiers": True}) == "answer|stats|0||/g"
-    assert mb.alert_key({**rec, "dossiers": False}) == "answer|stats|0||/g|dossiers=False"
+    assert mb.alert_key(rec) == "answer|stats||/g"
+    assert mb.alert_key({**rec, "dossiers": True}) == "answer|stats||/g"
+    assert mb.alert_key({**rec, "dossiers": False}) == "answer|stats||/g|dossiers=False"
 
 
 def test_accept_takes_a_base_format_record(tmp_path):
@@ -472,7 +476,7 @@ def test_accept_takes_a_base_format_record(tmp_path):
 
 
 def _base_alert(tmp_path, key="answer|stats|0||"):
-    """Тревога формата базы: ключ из пяти полей, поля записи без `dossiers`."""
+    """Тревога старого формата (до №631): третье поле ключа — слот seed."""
     path = tmp_path / "logs" / "memory_bench_alert.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {"ts": "2026-01-01T00:00:00", "run": "old000000001", "profile": "answer",
@@ -489,22 +493,136 @@ def _alert_keys(path):
 
 
 def test_base_format_alert_is_lifted_by_a_clean_judge(tmp_path):
-    """Тревога, поднятая до флага, лежит под ключом из пяти полей: прогон без просадки
-    снимает её по тому же ключу, а не заводит второй под шестипольным."""
+    """Тревога старого формата лежит под ключом со слотом seed: прогон без просадки
+    снимает её, а не оставляет висеть в брифе."""
     _accept_first(tmp_path, [True] * 5)
     path = _base_alert(tmp_path)
     assert mb.judge(tmp_path, _rec([True] * 5)) is None
-    assert "answer|stats|0||" not in _alert_keys(path)
+    assert _alert_keys(path) == {}
 
 
 def test_base_format_alert_is_lifted_by_accept(tmp_path):
-    """`--accept` итога формата базы снимает тревогу его ключа из пяти полей."""
+    """`--accept` итога снимает и тревогу старого ключа со слотом seed."""
     rec = _rec([True] * 5)
     del rec["dossiers"]
     mb.append_record(tmp_path / "logs" / "memory_bench_baseline.jsonl", rec)
     path = _base_alert(tmp_path)
     mb.accept(tmp_path, "answer", "stats", rec["id"], "", "")
-    assert "answer|stats|0||" not in _alert_keys(path)
+    assert _alert_keys(path) == {}
+
+
+@pytest.mark.parametrize("seed", ["0", "", "random"])
+def test_every_legacy_seed_slot_is_lifted(tmp_path, seed):
+    _accept_first(tmp_path, [True] * 5)
+    path = _base_alert(tmp_path, key=f"answer|stats|{seed}||")
+    assert mb.judge(tmp_path, _rec([True] * 5)) is None
+    assert _alert_keys(path) == {}
+
+
+def test_regression_over_legacy_alert_leaves_one_new_key(tmp_path):
+    _accept_first(tmp_path, [True] * 5)
+    path = _base_alert(tmp_path)
+    assert mb.judge(tmp_path, _rec([False, False, True, True, True])) is not None
+    assert list(_alert_keys(path)) == ["answer|stats||"]
+
+
+def test_unmeasured_over_legacy_alert_keeps_alert_and_migrates_key(tmp_path):
+    path = _base_alert(tmp_path)
+    mb.update_alert(path, "answer|stats||", {"state": "unmeasured", "why": "нет базы"})
+    data = _alert_keys(path)
+    assert list(data) == ["answer|stats||"]
+    assert data["answer|stats||"]["state"] == "alert"
+    assert data["answer|stats||"]["unmeasured"] == "нет базы"
+    assert data["answer|stats||"]["run"] == "old000000001"
+
+
+def _mixed_alert(tmp_path, cells):
+    """Файл тревоги со смешанными ключами: `cells` — [(ключ, состояние, ts, run)]."""
+    path = tmp_path / "logs" / "memory_bench_alert.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    for key, state, ts, run in cells:
+        data[key] = {"ts": ts, "run": run, "profile": "answer", "mode": "stats",
+                     "graph_dir": "", "state": state, "was": 5, "now": 3}
+        if state == "unmeasured":
+            data[key]["why"] = "старая причина"
+    path.write_text(mb.json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+NEW, OLD = "answer|stats||", "answer|stats|0||"
+T1, T8 = "2026-10-01T00:00:00", "2026-10-08T00:00:00"
+
+
+@pytest.mark.parametrize("new_cell,old_cell,write,expect", [
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), "unmeasured", ("alert", "runO", "нет базы")),
+    (("alert", T1, "runN"), ("unmeasured", T8, "runO"), "unmeasured", ("alert", "runN", "нет базы")),
+    (("unmeasured", T1, "runN"), ("unmeasured", T8, "runO"), "unmeasured", ("unmeasured", None, None)),
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), None, None),
+    (("unmeasured", T8, "runN"), ("alert", T1, "runO"), "alert", ("alert", "runW", None)),
+    (("alert", T1, "runA"), ("alert", T8, "runB"), "unmeasured", ("alert", "runB", "нет базы")),
+    (("alert", T8, "runA"), ("alert", T1, "runB"), "unmeasured", ("alert", "runA", "нет базы")),
+])
+def test_mixed_alert_file_keeps_one_best_entry(tmp_path, new_cell, old_cell, write, expect):
+    path = _mixed_alert(tmp_path, [(NEW, new_cell[0], new_cell[1], new_cell[2]),
+                                   (OLD, old_cell[0], old_cell[1], old_cell[2])])
+    if write is None:
+        entry = None
+    elif write == "alert":
+        entry = {"state": "alert", "ts": "2026-10-09T00:00:00", "run": "runW"}
+    else:
+        entry = {"state": "unmeasured", "why": "нет базы", "ts": "2026-10-09T00:00:00",
+                 "run": "runW"}
+    mb.update_alert(path, NEW, entry)
+    data = _alert_keys(path)
+    if expect is None:
+        assert data == {}
+        return
+    assert list(data) == [NEW]
+    state, run, unmeasured = expect
+    assert data[NEW]["state"] == state
+    if run is not None:
+        assert data[NEW]["run"] == run
+    if state == "alert":
+        assert data[NEW].get("unmeasured") == unmeasured
+
+
+def _legacy(key):
+    """Ключ старого формата (до №631): слот seed третьим полем."""
+    a, b, rest = key.split("|", 2)
+    return f"{a}|{b}|0|{rest}"
+
+
+def test_legacy_key_with_dossiers_tail_is_migrated(tmp_path):
+    key = mb.alert_key(_rec([True] * 5, dossiers=False))
+    path = _base_alert(tmp_path, key=_legacy(key))
+    mb.update_alert(path, key, {"state": "unmeasured", "why": "нет базы"})
+    data = _alert_keys(path)
+    assert list(data) == [key]
+    assert data[key]["state"] == "alert"
+
+
+def test_neighbour_legacy_keys_of_other_graph_and_profile_are_untouched(tmp_path):
+    key = mb.alert_key(_rec([True] * 5, graph_dir="/g"))
+    other = mb.alert_key(_rec([True] * 5, graph_dir="/h"))
+    live = mb.alert_key(_rec([True] * 5, profile="live", graph_dir="/g"))
+    path = _base_alert(tmp_path, key=_legacy(other))
+    data = _alert_keys(path)
+    data[_legacy(live)] = dict(data[_legacy(other)])
+    path.write_text(mb.json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    mb.update_alert(path, key, {"state": "unmeasured", "why": "нет базы"})
+    after = _alert_keys(path)
+    assert set(after) == {_legacy(other), _legacy(live), key}
+
+
+@pytest.mark.parametrize("entry", [None, {"state": "unmeasured", "why": "нет базы"}])
+def test_non_string_state_in_file_does_not_crash_update_alert(tmp_path, entry):
+    """Ручная правка файла (state списком) не роняет запись и снятие тревоги."""
+    path = _mixed_alert(tmp_path, [(NEW, ["alert"], T8, "runN"), (OLD, {"x": 1}, T1, "runO")])
+    mb.update_alert(path, NEW, entry)
+    data = _alert_keys(path)
+    assert OLD not in data
+    assert (NEW in data) == (entry is not None)
 
 
 def test_accept_keys_and_checks_the_dossiers_axis(tmp_path, capsys):
@@ -549,7 +667,6 @@ def test_no_dossiers_reaches_run_profile_and_record(monkeypatch, tmp_path):
     (tmp_path / "config" / "memory_bench.yaml").write_text("- q: 'вопрос'\n", encoding="utf-8")
     monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
     monkeypatch.setattr(mb, "build_embedder", lambda cfg: None)
-    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: None)
     monkeypatch.setattr(mb, "resolve_lang", lambda *a, **k: "ru")
     seen: dict = {}
     monkeypatch.setattr(mb, "run_profile",
@@ -653,72 +770,3 @@ def test_record_flags_are_validated(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             mb.main()
         assert "usage" in capsys.readouterr().err
-
-
-# ------------------------------------------------------------------ seed по факту (Opus M3)
-
-def _flags(monkeypatch, *, hr, ie=0):
-    monkeypatch.setattr(sys, "flags", types.SimpleNamespace(hash_randomization=hr, ignore_environment=ie))
-
-
-def test_hash_seed_is_pinned_by_reexec_with_interpreter_flags(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(mb.os, "execve", lambda exe, argv, env: seen.update(exe=exe, env=env, argv=argv))
-    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
-    monkeypatch.setattr(sys, "argv", ["scripts/memory_bench.py", "--profile", "answer", "--stats"])
-    orig = [sys.executable, "-X", "utf8", "-u", "scripts/memory_bench.py", "--profile", "answer", "--stats"]
-    monkeypatch.setattr(sys, "orig_argv", orig)
-    _flags(monkeypatch, hr=1)
-    mb.pin_hash_seed("raw")
-    assert seen == {}
-    mb.pin_hash_seed("answer")
-    assert seen["exe"] == sys.executable and seen["argv"] == orig
-    assert seen["env"]["PYTHONHASHSEED"] == "0"
-    seen.clear()
-    _flags(monkeypatch, hr=0)
-    mb.pin_hash_seed("answer")
-    assert seen == {}, "порядок хеша уже фиксирован — перезапуска нет"
-
-
-def test_accept_does_not_pin_the_hash_seed(monkeypatch, tmp_path):
-    """Принятие ничего не мерит: ни перезапуска, ни отказа под -E/-I."""
-    monkeypatch.setattr(mb, "pin_hash_seed", lambda profile: pytest.fail("принятие перезапускает бенч"))
-    seen = []
-    monkeypatch.setattr(mb, "accept", lambda *a: seen.append(a))
-    monkeypatch.setattr(mb, "_root", lambda: tmp_path)
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text("sufler: {}\n", encoding="utf-8")
-    monkeypatch.setattr(mb.graphs, "graph_dir", lambda cfg: tmp_path / "Граф")
-    monkeypatch.setattr(sys, "argv", ["memory_bench.py", "--profile", "answer", "--stats", "--accept", "--run", "r1"])
-    mb.main()
-    assert seen and seen[0][1:4] == ("answer", "stats", "r1")
-
-
-def test_hash_seed_loop_guard(monkeypatch):
-    """В окружении уже 0, а порядок случайный — выход, не второй execve."""
-    monkeypatch.setattr(mb.os, "execve", lambda *a: pytest.fail("execve в цикле"))
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-    _flags(monkeypatch, hr=1)
-    with pytest.raises(SystemExit, match="перезапуск не поможет"):
-        mb.pin_hash_seed("answer")
-
-
-def test_record_seed_is_the_fact(monkeypatch):
-    monkeypatch.setattr(mb, "hash_seed", REAL_HASH_SEED)
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-    _flags(monkeypatch, hr=1, ie=1)
-    assert _rec([True])["seed"] == "random", "переменная 0, а хеш случайный — пишется факт"
-    _flags(monkeypatch, hr=0)
-    assert _rec([True])["seed"] == "0"
-
-
-def test_ignore_environment_refuses_without_reexec(tmp_path):
-    """Настоящий интерпретатор: `PYTHONHASHSEED=0 python -E` — хеш случайный, перезапуск
-    окружение не прочтёт; отказ с текстом, без execve."""
-    import subprocess
-    env = {**mb.os.environ, "PYTHONHASHSEED": "0", "CHAROITE_ROOT": str(tmp_path)}
-    r = subprocess.run([sys.executable, "-E", str(ROOT / "scripts" / "memory_bench.py"),
-                        "--profile", "answer", "--stats"],
-                       capture_output=True, text=True, env=env, timeout=120)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "запустите без -E/-I" in r.stderr

@@ -638,11 +638,10 @@ def run_raw(args, graph: pathlib.Path, cfg: dict, cases: list[dict], lang: str) 
 # Итог профиля дописывается строкой в logs/memory_bench_baseline.jsonl; принятая
 # база — отдельная строка `accept` со ссылкой на итог (принимается явной командой,
 # по id итога). Тревога — два и больше вопросов ✓→✗ против принятой базы
-# того же профиля, режима и seed (у синтеза — и модели), только среди вопросов с
+# того же профиля и режима (у синтеза — и модели), только среди вопросов с
 # тем же sem_used: сменившийся векторизатор — другой опыт, не регресс поиска.
 
 ALERT_MIN = 2           # один вопрос — шум (сдвиг меньше 2–3 вопросов на 37)
-SEED = "0"              # до №631 выдача зависит от порядка хеша — бенч фиксирует его сам
 
 
 def code_head() -> str:
@@ -683,7 +682,7 @@ def make_record(profile: str, mode: str, model: str, graph_fp: str, cases: list[
     import uuid
     # id — ссылка принятия на итог: время с точностью до секунды у двух прогонов совпадает
     return {"kind": "run", "id": uuid.uuid4().hex[:12], "ts": dt.datetime.now().isoformat(timespec="seconds"),
-            "profile": profile, "mode": mode, "head": code_head(), "seed": hash_seed(),
+            "profile": profile, "mode": mode, "head": code_head(),
             "model": model if mode == "synth" else None, "graph": graph_fp, "graph_dir": graph_dir,
             "dossiers": dossiers,
             "questions": [{"id": qid(c), "n": q.n, "cat": q.cat, "ok": q.ok, "sem": q.sem_used,
@@ -706,7 +705,7 @@ def run_key(rec: dict) -> tuple:
     """Что обязано совпасть, чтобы сравнение имело смысл; им же ключуется тревога.
     Поздние оси входят в ключ только отклонением от умолчания, поэтому строки ключей
     записей до их появления не меняются."""
-    head = (rec.get("profile"), rec.get("mode"), rec.get("seed"),
+    head = (rec.get("profile"), rec.get("mode"),
             rec.get("model") if rec.get("mode") == "synth" else None, rec.get("graph_dir", ""))
     return head + tuple(f"{name}={axis(rec, name)}" for name in ADDED_AXES
                         if axis(rec, name) != ADDED_AXES[name])
@@ -791,6 +790,14 @@ def compare(base: dict, cur: dict) -> Diff:
     return Diff(regressed, sem_diff, total)
 
 
+def _merge_alert_entries(cands: list) -> dict | None:
+    """Из записей под новым и старыми ключами одного сравнения — одна: тревога
+    (`alert`) раньше `unmeasured`, среди равных — с большим `ts`."""
+    found = [c for c in cands if isinstance(c, dict)]
+    return max(found, key=lambda c: (1 if c.get("state") == "alert" else 0,
+                                     str(c.get("ts") or "")), default=None)
+
+
 def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     """Файл тревоги для утреннего брифа: ключ — ключ сравнения (`alert_key`).
     `None` — сравнили, просадки нет: ключ снят, пустой файл удаляется. Состояние
@@ -798,6 +805,11 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
     другом коде) стоявшую тревогу не снимает, а помечает: прогон, который ничего не
     сравнил, не свидетельствует «чисто». `run` и `ts` тревоги остаются от итога, что её
     поднял: `ts` — время последнего замера, бриф считает от него возраст тревоги.
+    Ключи старого формата (до №631 третьим полем шёл слот seed: "0", "" или "random")
+    подтягиваются к новому: из записей под новым и старыми ключами остаётся одна
+    (`_merge_alert_entries`), а старый ключ удаляется при любой записи — иначе он висел
+    бы в брифе вечно. Слоты seed исчерпывающие: писатель до 376fcd26 ставил "0" или
+    "random", запись без поля seed — "".
     Вызывать под `bench_lock`."""
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -805,7 +817,10 @@ def update_alert(path: pathlib.Path, key: str, entry: dict | None) -> None:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    prev = data.get(key)
+    parts = key.split("|", 2)
+    legacy = [f"{parts[0]}|{parts[1]}|{seed}|{parts[2]}" for seed in ("0", "", "random")] \
+        if len(parts) == 3 else []
+    prev = _merge_alert_entries([data.get(key), *(data.pop(old, None) for old in legacy)])
     if entry is None:
         data.pop(key, None)
     elif entry["state"] == "unmeasured" and isinstance(prev, dict) and prev.get("state") == "alert":
@@ -918,7 +933,7 @@ def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: st
     if rec is None:
         sys.exit(f"итога {run_id} в журнале нет — id печатает прогон с --record")
     # значение пути графа в текст не идёт: только имя поля
-    for field, want in (("profile", profile), ("mode", mode), ("seed", SEED), ("graph_dir", graph_dir)):
+    for field, want in (("profile", profile), ("mode", mode), ("graph_dir", graph_dir)):
         if rec.get(field, "") != want:
             sys.exit(f"итог {run_id} не того ключа: поле {field} не совпадает с командой — не принят")
     if axis(rec, "dossiers") != dossiers:
@@ -929,36 +944,13 @@ def _accept(root: pathlib.Path, profile: str, mode: str, run_id: str, reason: st
     if prev is not None and passed(rec) < passed(prev) and not reason:
         sys.exit(f"итог {passed(rec)} хуже принятой базы {passed(prev)} — принять можно только с --reason")
     append_record(path, {"kind": "accept", "ts": dt.datetime.now().isoformat(timespec="seconds"),
-                         "run": rec["id"], "profile": profile, "mode": mode, "seed": rec["seed"],
+                         "run": rec["id"], "profile": profile, "mode": mode,
                          "model": rec.get("model"), "graph_dir": graph_dir, "reason": reason,
                          "dossiers": dossiers})
     print(f"база {profile}/{mode} принята: итог {rec['id']} от {rec['ts']}, {passed(rec)}/{len(rec['questions'])}"
           + (f" — причина: {reason}" if reason else ""))
     update_alert(log_path(root, "memory_bench_alert"), alert_key(rec), None)
     print("тревога ключа снята, следующий прогон судит против новой базы")
-
-
-def hash_seed() -> str:
-    """Действующий seed порядка хеша — по факту интерпретатора, а не по переменной:
-    при `-E`/`-I` `PYTHONHASHSEED=0` в окружении есть, а хеш случайный."""
-    return SEED if sys.flags.hash_randomization == 0 else "random"
-
-
-def pin_hash_seed(profile: str) -> None:
-    """До №631 выдача зависит от порядка хеша: бенч профиля перезапускает себя с
-    seed 0, иначе два прогона одного кода расходятся сами по себе. Перезапуск —
-    с `sys.orig_argv`: флаги интерпретатора (`-u`, `-X`, `-W`) сохраняются."""
-    if profile not in brain.PROFILES or sys.flags.hash_randomization == 0:
-        return
-    if sys.flags.ignore_environment:
-        sys.exit("бенч профиля фиксирует порядок хеша через PYTHONHASHSEED, а интерпретатор "
-                 "окружение не читает — запустите без -E/-I")
-    if os.environ.get("PYTHONHASHSEED") == SEED:
-        # перезапуск уже был или окружение то же — новый execve дал бы цикл
-        sys.exit(f"PYTHONHASHSEED={SEED} в окружении, а порядок хеша случайный — перезапуск не поможет")
-    sys.stdout.flush()      # execve выбрасывает буфер: напечатанное до него пропало бы
-    sys.stderr.flush()
-    os.execve(sys.executable, sys.orig_argv, {**os.environ, "PYTHONHASHSEED": SEED})
 
 
 def main() -> None:
@@ -1008,8 +1000,6 @@ def main() -> None:
     if args.accept != bool(args.run):
         ap.error("--accept и --run ID — только вместе: принимается итог, который вы видели")
     mode = "stats" if args.stats or args.profile == "live" else "synth"
-    if not args.accept:     # принятие ничего не мерит: порядок хеша ему не нужен
-        pin_hash_seed(args.profile)
 
     cfg_path = _root() / "config" / "config.yaml"
     if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
@@ -1063,11 +1053,8 @@ def main() -> None:
     if args.profile != "raw":
         # пустой конфиг фабрика читает как «моделей нет»: демо меряет лексику, не ходя в сеть
         emb = build_embedder(cfg if not args.demo else {})
-        print(f"порядок хеша: seed {hash_seed()} — выдача воспроизводима между прогонами; "
-              "демон идёт со случайным порядком хеша (№631)")
         profile = brain.PROFILES[args.profile]
         if args.no_dossiers:
-            # перезапуск ради seed (pin_hash_seed) сохраняет флаг через sys.orig_argv
             profile = profile._replace(dossiers=False)
         out, model, graph_fp = run_profile(profile, graph, emb, cases,
                                            stats=args.stats, cfg=cfg)
