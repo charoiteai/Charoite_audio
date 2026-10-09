@@ -234,6 +234,24 @@ def test_debrief_log_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypa
     assert _NIGHT not in text and _LIVE not in text, "в лог просочился соседний ключ модели"
 
 
+def test_saved_line_reports_elapsed_minutes_from_start_to_end(tmp_path, monkeypatch):
+    """«за N мин» — разность конца и старта в минутах: 90 с от ненулевого
+    старта дают 1.5 (не сумму и не секунды, умноженные на 60)."""
+    ticks = iter([1000.0])
+    monkeypatch.setattr(cloud_review.time, "monotonic", lambda: next(ticks, 1090.0))
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(_SENTINEL_REPORT)
+        return Result()
+
+    _, text = _debrief_run(tmp_path, monkeypatch, _labels_cfg(), fake_run)
+    saved = [ln for ln in text.splitlines() if "ревизия сохранена" in ln]
+    assert len(saved) == 1 and "за 1.5 мин," in saved[0], text
+
+
 def test_debrief_timeout_line_names_the_debrief_model_and_no_neighbour(tmp_path, monkeypatch):
     """Ветка таймаута: и строка «таймаут», и «НЕ сохранена» несут модель разбора."""
     def fake_run(cmd, **kwargs):
