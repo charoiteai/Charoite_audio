@@ -878,7 +878,14 @@ it signals degradation, it does not break the loop.
   both signals are weak, the prompt says "almost nothing in the part that
   was read" instead of inventing. Timeouts and degradation stay with the
   loops (⚡ 2.5 s, deja-vu 8 s, deep 6 s). The owner's question in the audit
-  label is no longer cut at 120 chars — the cap is 400 (№95).
+  label is no longer cut at 120 chars — the cap is 400 (№95). A fragment cut
+  from a dated block carries that block's date on its second line —
+  `[встреча ГГГГ-ММ-ДД]` for a fact date (a meeting link, an «обновлено»
+  stamp, a date in the file name) and `[упомянуто ГГГГ-ММ-ДД]` for a
+  «последнее упоминание» stamp — and freshness in the score comes from the
+  date of the best block for the query, not the file mtime, so a node
+  rewritten by every meeting no longer floats an old fact above a fresh one
+  (№633).
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
