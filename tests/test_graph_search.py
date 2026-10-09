@@ -16,6 +16,7 @@ import os
 import dataclasses
 import pathlib
 import re
+import subprocess
 import sys
 import time
 import unicodedata
@@ -1900,3 +1901,184 @@ def test_fingerprint_changes_with_the_graph_not_with_the_order(tmp_path):
     clock["t"] += gs.REFRESH_S + 1
     s.refresh()
     assert s.fingerprint() != second
+
+
+# ------------------------------------------------------------------ №631: порядок выдачи
+def test_order_key_is_total_and_breaks_ties_by_path_descending():
+    """Ключ порядка выдачи — функция пары (балл, путь), а не голый балл: при
+    равных баллах входной порядок не решает, путь идёт по убыванию (имя встречи —
+    дата_время, свежая первой). Разные баллы — по убыванию балла (№631)."""
+    def arrange(items: list[tuple[str, float]]) -> list[str]:
+        return [rel for rel, s in sorted(items, key=lambda kv: gs._order_key(kv[1], kv[0]), reverse=True)]
+
+    a = [("Встречи/2026-09-10_1100.md", 1.0), ("Встречи/2026-09-10_1400.md", 1.0)]
+    assert arrange(a) == arrange(list(reversed(a))) == ["Встречи/2026-09-10_1400.md", "Встречи/2026-09-10_1100.md"]
+    assert arrange([("Документация/Отчёт.md", 2.0), ("Встречи/Сводка.md", 1.0)]) == \
+        ["Документация/Отчёт.md", "Встречи/Сводка.md"]
+    # путь — второй компонент: больший путь раньше только при РАВНЫХ баллах
+    assert arrange([("Документация/Отчёт.md", 1.0), ("Встречи/Сводка.md", 2.0)]) == \
+        ["Встречи/Сводка.md", "Документация/Отчёт.md"]
+
+
+def test_hop_order_does_not_depend_on_link_iteration_order(tmp_path, monkeypatch):
+    """Часы у перехода — одни на весь поиск, а порядок целей не решает: при
+    равных баллах путь идёт по убыванию, поэтому выдача одна и при прямом, и при
+    обратном порядке `wiki_targets` (у множества строк это порядок хеша, и он
+    менялся между запусками — №631)."""
+    clock = {"t": 1_791_244_800.0}     # полночь UTC 2026-10-06 — позже встреч 2026-09-10
+
+    def tick() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    g = tmp_path / "Работа"
+    for folder in ("Ядра", "Встречи", "Документация"):
+        (g / folder).mkdir(parents=True, exist_ok=True)
+    (g / "Ядра" / "Сводка квартала.md").write_text(
+        "# Сводка квартала\nИтоги по бюджету.\n\n## Связи\n"
+        "- [[Встречи/2026-09-10_1100]]\n- [[Встречи/2026-09-10_1400]]\n", encoding="utf-8")
+    for hh, marker in (("1100", "РАННЯЯ"), ("1400", "ПОЗДНЯЯ")):
+        (g / "Встречи" / f"2026-09-10_{hh}.md").write_text(
+            f"# Встреча {hh}\nбюджет {marker}\n", encoding="utf-8")
+    # наполнители с сильной лексикой занимают слоты выдачи: две встречи-цели
+    # остаются за лимитом и попадают в выдачу только переходом (`seen = shown`)
+    for i in range(6):
+        (g / "Документация" / f"Бюджет {i}.md").write_text("# Бюджет\n" + "бюджет " * 50, encoding="utf-8")
+    s = gs.GraphSearch(g, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE, now=tick)
+    s.refresh(force=True)
+    s.embed_pending()
+
+    targets = [gs.norm_text("Встречи/2026-09-10_1100"), gs.norm_text("Встречи/2026-09-10_1400")]
+
+    def hops_for(seq: list[str]) -> list[str]:
+        monkeypatch.setattr(gs, "wiki_targets", lambda text: list(seq))
+        r = s.search("сводка квартала бюджет", limit=4)
+        out = [b.split("\n")[0][2:] for b in r.blocks if "↳ по ссылке из" in b]
+        assert out, f"переходов нет — тест ничего не доказывает: {r.blocks}"
+        return out
+
+    fwd = hops_for(targets)
+    rev = hops_for(list(reversed(targets)))
+    assert fwd == rev == ["Встречи/2026-09-10_1400.md", "Встречи/2026-09-10_1100.md"], (fwd, rev)
+
+
+def test_search_order_does_not_depend_on_update_history_or_entry_order(tmp_path):
+    """Порядок выдачи не зависит ни от истории обновлений (`docs.update(fresh)`
+    оставляет изменённые на местах, новые дописывает в конец), ни от порядка
+    документов обхода и векторов: ключ порядка — (балл, путь) (№631)."""
+    text = "# Встреча\nбюджет согласован срок пятнадцатое августа\n"
+    query = "бюджет согласован срок пятнадцатое августа"
+
+    def make(name: str, split: int) -> gs.GraphSearch:
+        g = tmp_path / name
+        notes = g / "Заметки"
+        notes.mkdir(parents=True, exist_ok=True)
+        s = gs.GraphSearch(g, data_dir=tmp_path / f"{name}_data", embedder=fake_embedder())
+        if split:
+            for i in range(split):
+                (notes / f"2026-09-10_{i:02d}00.md").write_text(text, encoding="utf-8")
+            s.refresh(force=True)
+            s.embed_pending()
+        for i in range(split, 24):
+            (notes / f"2026-09-10_{i:02d}00.md").write_text(text, encoding="utf-8")
+        s.refresh(force=True)
+        s.embed_pending()
+        return s
+
+    cold = make("холодный", 0)
+    warm = make("тёплый", 12)
+    base = _rels(cold.search(query, limit=25))
+    assert len(base) == 24, base                        # оснастка: все встречи в выдаче
+    assert _rels(warm.search(query, limit=25)) == base, "история обновлений изменила порядок"
+
+    gen0 = cold._gen
+    cold._gen = dataclasses.replace(gen0, primary=tuple(reversed(gen0.primary)))
+    assert _rels(cold.search(query, limit=25)) == base, "порядок документов обхода изменил выдачу"
+    cold._gen = gen0
+
+    cold.load_vectors()
+    cold._vecs = dict(reversed(list(cold._vecs.items())))
+    cold._vecs_loaded = True
+    cold._manifest_seen = cold._vec_manifest.stat().st_mtime
+    assert _rels(cold.search(query, limit=25)) == base, "порядок векторов изменил выдачу"
+
+
+def test_a_target_named_twice_in_a_node_lands_once(tmp_path):
+    """Одна цель двумя написаниями ([[Отчёт приёмки]] и [[Документация/Отчёт
+    приёмки]]) — один Doc: без уникальности кандидатов он попадал в `cands`
+    дважды и уходил в выдачу двумя одинаковыми блоками перехода (№631)."""
+    g = tmp_path / "Граф"
+    for folder in ("Ядра", "Документация", "Встречи"):
+        (g / folder).mkdir(parents=True, exist_ok=True)
+    links = ("- [[Документация/Отчёт приёмки]]\n- [[Отчёт приёмки]]\n- [[Документация/Бюджетный контур]]\n"
+             + "".join(f"- [[Встречи/2026-09-10_{h:02d}00]]\n" for h in range(8, 22)))
+    (g / "Ядра" / "Сводка квартала.md").write_text(
+        "# Сводка квартала\nбюджет\n\n## Связи\n" + links, encoding="utf-8")
+    # отчёт и контур — редкие лексические попадания (по одному слову): они не
+    # берут слоты выдачи и остаются кандидатами перехода
+    (g / "Документация" / "Отчёт приёмки.md").write_text("# Отчёт приёмки\nбюджет согласован\n", encoding="utf-8")
+    (g / "Документация" / "Бюджетный контур.md").write_text("# Бюджетный контур\nбюджет\n", encoding="utf-8")
+    # встречи-наполнители сильны по лексике и занимают слоты выдачи; по свежести
+    # они ниже отчёта, поэтому в переходе решают отчёт и контур
+    for h in range(8, 22):
+        (g / "Встречи" / f"2026-09-10_{h:02d}00.md").write_text("# Встреча\n" + "бюджет " * 40, encoding="utf-8")
+    # наполнитель свежее отчёта, отчёт свежее встреч: в первом заходе берётся
+    # контур, во втором — оба экземпляра отчёта (второй слот и ловит дубль)
+    old = time.time() - 10 * 86400
+    os.utime(g / "Документация" / "Отчёт приёмки.md", (old, old))
+    s = gs.GraphSearch(g, data_dir=tmp_path / "data", embedder=fake_embedder(), schema=CHAROITE)
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("сводка квартала бюджет", limit=6)
+    hops = [b for b in r.blocks if "↳ по ссылке из" in b]
+    assert hops, f"переходов нет — тест ничего не доказывает: {r.blocks}"
+    reports = [b for b in hops if "Отчёт приёмки" in b]
+    assert len(reports) == 1, f"цель двумя написаниями ушла повторно: {hops}"
+
+
+_SEED_SCRIPT = r'''
+import hashlib, json, math, pathlib, re, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from charoite_graph import graph_search as gs
+from charoite_schema import CHAROITE
+_SYN = {"поставщик": "провайдер", "gateway": "шлюз"}
+def fake_embed(texts, timeout):
+    out = []
+    for t in texts:
+        v = [0.0] * 512
+        for w in (_SYN.get(x, x) for x in re.findall(r"\w+", gs.norm(t))):
+            v[int(hashlib.md5(w.encode()).hexdigest(), 16) % 512] += 1.0
+        n = math.sqrt(sum(x * x for x in v)) or 1.0
+        out.append([x / n for x in v])
+    return out
+tmp = tempfile.mkdtemp()
+g = pathlib.Path(tmp) / "Работа"
+for d in ("Встречи", "Ядра"):
+    (g / d).mkdir(parents=True, exist_ok=True)
+hours = [f"{h:02d}00" for h in range(9, 15)]
+links = "".join(f"- [[Встречи/2026-09-10_{m}]]\n" for m in hours)
+(g / "Ядра" / "Сводка квартала.md").write_text("# Сводка квартала\nИтоги.\n\n## Связи\n" + links, encoding="utf-8")
+for m in hours:
+    (g / "Встречи" / f"2026-09-10_{m}.md").write_text(f"# Встреча {m}\nбюджет обсудили\n", encoding="utf-8")
+s = gs.GraphSearch(g, data_dir=pathlib.Path(tmp) / "data",
+                   embedder=gs.Embedder(fake_embed, "test-fake"), schema=CHAROITE)
+s.refresh(force=True)
+s.embed_pending()
+r = s.search("сводка квартала бюджет", limit=4)
+hops = [b.split("\n")[0][2:] for b in r.blocks if "↳ по ссылке из" in b]
+print(json.dumps(hops, ensure_ascii=False))
+'''
+
+
+def test_hop_order_survives_a_random_python_hash_seed(tmp_path):
+    """Перебор seed 0–3 не фиксирует порядок хеша, а показывает его невиновность:
+    при одном графе и запросе выдача и переходы одни в каждом процессе (№631)."""
+    outs = []
+    for seed in ("0", "1", "2", "3"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": str(REPO / "src")}
+        proc = subprocess.run([sys.executable, "-c", _SEED_SCRIPT, str(REPO / "src")],
+                              capture_output=True, text=True, env=env, timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        outs.append(json.loads(proc.stdout.strip().splitlines()[-1]))
+    assert all(outs), outs
+    assert all(o == outs[0] for o in outs), outs
