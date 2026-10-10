@@ -119,3 +119,24 @@ def test_the_cold_vector_check_does_not_hold_normalised_block_texts(tmp_path):
     assert s._block_counts, "число блоков при этом считается и помнится"
     s.search(_Q, limit=4, semantic=False)
     assert s._norm_cache, "выдача строит тексты для попавших файлов"
+
+
+def test_the_order_does_not_depend_on_the_limit(tmp_path):
+    """Дата блока считается для всех попавших файлов, а не для топ-N после BM25:
+    у файлов за порогом топ-N дата оставалась свежим mtime и они обгоняли тех, кто
+    внутри порога, — порядок зависел от `limit`. Здесь у всех блок со ссылкой на
+    давнюю встречу и свежий mtime; BM25 убывает с номером файла."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    for i in range(30):
+        body = (f"# Заметка{i:02d}\n## Решения\n- [[Встречи/2026-01-02_1000]] — "
+                + "проект Альфа решение " * (30 - i) + "\n")
+        (g / "Документация" / f"Заметка{i:02d}.md").write_text(body, encoding="utf-8")
+        os.utime(g / "Документация" / f"Заметка{i:02d}.md", (NOW - 3600, NOW - 3600))
+    s = gs.GraphSearch(g, embedder=Embedder(_feat, "t"), data_dir=tmp_path / "data",
+                       schema=CHAROITE, now=lambda: NOW)
+    s.refresh(force=True)
+    few = _rels(s.search("проект Альфа решение", limit=4, semantic=False))
+    many = _rels(s.search("проект Альфа решение", limit=10, semantic=False))
+    assert few == many[:len(few)]

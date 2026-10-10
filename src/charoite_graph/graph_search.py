@@ -1634,13 +1634,10 @@ class GraphSearch:
                 matched = sum(1 for i in range(len(keys)) if t[i] or p[i])
                 best_cov = max(best_cov, matched / len(keys))
                 scored.append((score, d, matched))
-            # дата блока считается только для топ-N файлов после BM25: остальные
-            # идут по `d.date_ts`, как на `main` (цена — нарезка, не на весь индекс)
-            top = {d.rel for _, d, _ in sorted(scored, key=lambda x: _order_key(x[0], x[1].rel),
-                                               reverse=True)[:max(limit * 4, 20)]}
+            # дата блока — для всех попавших файлов: порядок не зависит от `limit`
             for score, d, matched in scored:
                 ts = d.date_ts
-                if BLOCK_DATES and d.rel in top:
+                if BLOCK_DATES:
                     win, _cov = self._lex_winner(d, keys, rx)
                     got = self._block_ts(d, win, keys, rx)
                     if got is not None:
