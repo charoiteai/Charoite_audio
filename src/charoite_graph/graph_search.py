@@ -1821,7 +1821,7 @@ class GraphSearch:
                 return main_frag, None
         if len(d.body or d.text) <= chars + chars // 2:
             return main_frag, self._doc_block_dates(d)[win]
-        return _frag_or_head(block, rx, chars, rare, dense), self._doc_block_dates(d)[win]
+        return _frag_or_head(_without_crumb(block), rx, chars, rare, dense), self._doc_block_dates(d)[win]
 
     def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
         """Фрагмент документа для выдачи и для перехода — одно правило на оба места:

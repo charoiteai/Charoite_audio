@@ -87,6 +87,7 @@ def test_fragment_comes_from_the_winning_block_and_carries_its_date(tmp_path):
     assert lines[1].startswith("  [встреча 2026-09-30] "), "метка — во второй строке"
     assert "новое решение" in lines[1] and "старое решение" not in lines[1], \
         "фрагмент целиком из блока-победителя, не окно через границу блоков"
+    assert " → " not in lines[1], "хлебная крошка «Файл → H1 → H2» во фрагмент не попадает, как на `main`"
 
 
 def test_a_block_without_a_date_has_no_prefix(tmp_path):
