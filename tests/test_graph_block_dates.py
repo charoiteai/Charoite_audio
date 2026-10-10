@@ -60,14 +60,6 @@ def test_block_date_reads_links_and_stamps(block, expected):
     assert gs.block_date(block, CHAROITE) == (None if expected is None else _ts(expected))
 
 
-def test_block_date_labels_the_source_of_the_stamp():
-    """Метка во фрагменте различает «дату факта» и «упомянуто»: источник хранится
-    рядом с датой, а не угадывается по тексту при печати."""
-    assert gs._block_date_marked("_(обновлено 2026-09-12)_", CHAROITE).label == "встреча"
-    assert gs._block_date_marked("_(последнее упоминание: 2026-09-29)_", CHAROITE).label == "упомянуто"
-    assert gs._block_date_marked("[[Встречи/2026-03-02]]", CHAROITE).label == "встреча"
-
-
 def test_the_chronicle_line_is_dated_by_its_own_link():
     """Строка «_(было: … → стало: …)_» датируется ссылкой строки — отдельного
     разбора её грамматики в поиске нет."""
@@ -84,15 +76,14 @@ def test_file_without_dated_blocks_falls_back_to_the_file_date():
     d = _doc("Документация/заметка.md", date_ts=111.0)
     dates = gs.file_block_dates(d, CHAROITE, ["без даты", "тоже"])
     assert [x.ts for x in dates] == [111.0, 111.0]
-    assert all(x.label is None for x in dates), "унаследованная дата — без метки"
 
 
 def test_undated_block_inherits_the_max_of_dated_blocks():
     d = _doc("Люди/Иван.md", date_ts=1.0)
     blocks = ["[[Встречи/2026-03-02]] и [[Встречи/2026-07-05]]", "блок без даты"]
     dates = gs.file_block_dates(d, CHAROITE, blocks)
-    assert dates[0].ts == _ts("2026-07-05") and dates[0].label == "встреча"
-    assert dates[1].ts == _ts("2026-07-05") and dates[1].label is None
+    assert dates[0].ts == _ts("2026-07-05")
+    assert dates[1].ts == _ts("2026-07-05")
 
 
 def test_the_inherited_date_is_the_maximum_not_the_median():
@@ -103,7 +94,6 @@ def test_the_inherited_date_is_the_maximum_not_the_median():
               "_(обновлено 2026-09-12)_ сентябрь", "блок без даты"]
     dates = gs.file_block_dates(d, CHAROITE, blocks)
     assert dates[3].ts == _ts("2026-09-12"), "максимум (сентябрь), не медиана (июль)"
-    assert dates[3].label is None
 
 
 def test_node_head_with_a_stamp_is_dated_by_it_and_without_inherits():
@@ -111,7 +101,7 @@ def test_node_head_with_a_stamp_is_dated_by_it_and_without_inherits():
     with_stamp = ["# Иван\n\n_(последнее упоминание: 2026-09-29)_",
                   "хроника [[Встречи/2026-07-01]]", "блок без даты"]
     dates = gs.file_block_dates(d, CHAROITE, with_stamp)
-    assert dates[0].ts == _ts("2026-09-29") and dates[0].label == "упомянуто"
+    assert dates[0].ts == _ts("2026-09-29")
     assert dates[1].ts == _ts("2026-07-01"), "у блока своя дата — берётся она"
     assert dates[2].ts == _ts("2026-09-29"), "без штампа — максимум датированных блоков"
     without = ["# Иван\n\nтекст без штампа", "старый блок [[Встречи/2026-07-01]]"]
@@ -122,7 +112,7 @@ def test_fallback_block_of_an_empty_body_carries_the_file_date(tmp_path):
     s = _searcher(tmp_path)
     d = _doc("Документация/пусто.md", date_ts=777.0, text="")
     dates = s._doc_block_dates(d)
-    assert len(dates) == 1 and dates[0].ts == 777.0 and dates[0].label is None
+    assert len(dates) == 1 and dates[0].ts == 777.0
 
 
 def test_meeting_with_a_date_in_the_name_ignores_inner_links():
@@ -188,14 +178,14 @@ def test_a_planned_meeting_in_the_future_is_not_a_date_of_the_block(tmp_path):
     assert len(dates) >= 2
     assert all(x.ts != _ts("2026-12-15") for x in dates), "будущая дата не стала датой блока"
     plan = next(x for x, blk in zip(dates, gs.chunks("Дорожная карта", text, limit=gs.MAX_CHUNKS)) if "2026-12-15" in blk)
-    assert plan.label is None and plan.ts == _ts("2026-09-01"), "блок плана унаследовал факт, а не план"
+    assert plan.ts == _ts("2026-09-01"), "блок плана унаследовал факт, а не план"
     tomorrow = gs.block_date("[[Встречи/2026-10-11]]", CHAROITE)
     assert gs._block_date_marked("[[Встречи/2026-10-11]]", CHAROITE, now + 86400).ts == tomorrow
     assert gs._block_date_marked("[[Встречи/2026-10-12]]", CHAROITE, now + 86400) is None
     assert gs._block_date_marked("_(обновлено 2026-12-01)_", CHAROITE, now + 86400) is None
 
 
-def test_a_planned_meeting_does_not_put_a_label_on_the_fragment(tmp_path):
+def test_a_planned_meeting_puts_no_label_on_the_fragment(tmp_path):
     g = tmp_path / "Работа"
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация", "Заметки"):
         (g / d).mkdir(parents=True, exist_ok=True)
@@ -218,7 +208,7 @@ def test_only_a_node_inherits_the_freshest_date_of_its_blocks():
     plain = _doc("Документация/Решение по шлюзу.md", date_ts=_ts("2026-10-09"))
     assert gs.file_block_dates(node, CHAROITE, blocks)[1].ts == _ts("2025-03-02")
     got = gs.file_block_dates(plain, CHAROITE, blocks)
-    assert got[1].ts == _ts("2026-10-09") and got[1].label is None, "не-узел: дата файла"
+    assert got[1].ts == _ts("2026-10-09"), "не-узел: дата файла"
     assert got[0].ts == _ts("2025-03-02"), "размеченный блок не-узла датируется ссылкой"
 
 

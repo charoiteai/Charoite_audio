@@ -27,20 +27,19 @@ def _mk(tmp_path, files, mtimes=None):
     return s
 
 
-def test_a_future_dated_file_name_puts_no_label(tmp_path):
-    """C1 (DS): файл с датой в имени позже «сегодня + сутки» — не дата факта, метки нет;
-    ранг по дате файла, как на main. Прошедший — метка на месте."""
+def test_a_file_name_date_prints_no_label_past_or_future(tmp_path):
+    """Метки даты во фрагменте нет ни у прошедшего, ни у будущего имени файла (круги 1–3
+    по №633: метка трижды врала про показанный текст, из PR снята)."""
     s = _mk(tmp_path, {
         "Встречи/2026-12-15_1000.md": "# Планирование\nУчастники: [[Люди/Иван]]\nпроект Омега запуск, планирование бюджета\n",
         "Встречи/2026-09-01_1000.md": "# Планирование\nУчастники: [[Люди/Иван]]\nпроект Омега запуск, планирование бюджета\n"})
     r = s.search("планирование проект Омега запуск", limit=4, semantic=False)
     assert "[встреча" not in _block_for(r, "Встречи/2026-12-15_1000.md")
-    assert _block_for(r, "Встречи/2026-09-01_1000.md").split("\n")[1].startswith("  [встреча 2026-09-01] ")
+    assert "[встреча" not in _block_for(r, "Встречи/2026-09-01_1000.md")
 
 
 def test_a_window_without_any_date_on_a_mixed_block_has_no_label(tmp_path):
-    """C1 (Haiku): окно упало на строку без ссылки в блоке со строками разных дат —
-    метка даты чужой строки не ставится."""
+    """Окно упало на строку без ссылки в блоке со строками разных дат — метки нет."""
     node = ("# Иван\n## Встречи\n"
             f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {_FILL} по договору. {_FILL} аренды помещения. {_FILL}\n"
             f"- [[Встречи/2026-09-30_1000]] — Иван перешёл в проект Гамма. {_FILL}\n"
@@ -52,13 +51,12 @@ def test_a_window_without_any_date_on_a_mixed_block_has_no_label(tmp_path):
     assert "[встреча" not in line and "[упомянуто" not in line, line[:60]
 
 
-def test_a_tie_between_blocks_is_won_by_the_fresher_matched_line(tmp_path):
-    """I1 (DS): равное покрытие, в блоке A совпала старая строка (а свежая рядом — нет),
-    в блоке B совпала свежая: побеждает B, узел датируется 09-30 и идёт перед встречей 08-15."""
+def test_a_tie_between_blocks_is_won_by_the_fresher_block(tmp_path):
+    """Равное покрытие, блок A датирован мартом, блок B — сентябрём: побеждает B, узел
+    датируется 09-30 и идёт перед встречей 08-15."""
     fill = "подробности обсуждения и сопутствующие обстоятельства дела " * 6
     node = ("# Иван\n## Итоги\n"
             f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n"
-            f"- [[Встречи/2026-09-30_1000]] — Иван перешёл в проект Гамма. {fill}\n"
             f"## Проект\n- [[Встречи/2026-09-30_1000]] — Иван отвечает за выплаты. {fill}\n")
     s = _mk(tmp_path, {"Люди/Иван.md": node,
                        "Встречи/2026-08-15_1000.md": "# Выплаты\nУчастники: [[Люди/Иван]]\nИван отвечает за выплаты\n"},
@@ -68,24 +66,9 @@ def test_a_tie_between_blocks_is_won_by_the_fresher_matched_line(tmp_path):
     keys = words + grams
     rx = re.compile("|".join(re.escape(k) for k in keys))
     win, _ = s._lex_winner(d, keys, rx)
-    assert s._block_ts(d, win, keys, rx) == gs._ts_from_iso("2026-09-30")
+    assert s._block_ts(d, win) == gs._ts_from_iso("2026-09-30")
     rels = _rels(s.search("кто отвечает за выплаты", limit=4, semantic=False))
     assert rels.index("Люди/Иван.md") < rels.index("Встречи/2026-08-15_1000.md")
-
-
-def test_the_freshest_of_two_equally_covering_lines_dates_a_mixed_block(tmp_path):
-    """M2 (DS): мутация rank=(cov, ts) -> (cov, 0) не ловилась: две строки одного блока
-    с равным покрытием — датой блока-победителя служит свежая."""
-    fill = "подробности " * 5
-    node = ("# Иван\n## Встречи\n"
-            f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n"
-            f"- [[Встречи/2026-09-30_1000]] — Иван отвечает за выплаты. {fill}\n")
-    s = _mk(tmp_path, {"Люди/Иван.md": node}, {"Люди/Иван.md": NOW - 86400})
-    d = s._gen.docs[str(s.graph / "Люди" / "Иван.md")]
-    words, grams = gs.needles("кто отвечает за выплаты")
-    keys = words + grams
-    rx = re.compile("|".join(re.escape(k) for k in keys))
-    assert s._block_ts(d, 0, keys, rx) == gs._ts_from_iso("2026-09-30")
 
 
 def _stale_fact_graph(tmp_path):
@@ -118,7 +101,7 @@ def test_candidate_cap_leaves_files_beyond_it_on_the_file_date(tmp_path, monkeyp
     monkeypatch.setattr(gs, "BLOCK_DATE_CANDIDATES", 1)
     s.search(q, limit=4, semantic=False)
     assert len(dated) == 1                                    # потолок 1: дата блока — у одного файла
-    assert "[встреча 2026-03-02]" in _block_for(with_blocks, "Люди/Иван.md")   # в потолке — блок датирован
+    assert "[встреча" not in _block_for(with_blocks, "Люди/Иван.md")          # метки нет и в потолке
 
 
 def test_candidate_cap_does_not_depend_on_limit_or_walk_order(tmp_path, monkeypatch):
@@ -131,3 +114,26 @@ def test_candidate_cap_does_not_depend_on_limit_or_walk_order(tmp_path, monkeypa
     s = _stale_fact_graph(tmp_path)
     q = "кто отвечает за выплаты"
     assert _rels(s.search(q, limit=1, semantic=False))[:1] == _rels(s.search(q, limit=10, semantic=False))[:1]
+
+
+def test_a_limit_does_not_change_the_order_with_a_cap_below_the_hit_count(tmp_path, monkeypatch):
+    """Р6 + №631 (сверка out3 № 9): граф из шести файлов, K = 3 при шести попаданиях —
+    порядок первых `n` не зависит от `limit` (в том числе когда limit < K). Мутация
+    `dated = frozenset(sorted(dated)[:limit])` сдвигает K с `limit` и этот тест краснит."""
+    monkeypatch.setattr(gs, "BLOCK_DATE_CANDIDATES", 3)
+    fill = "подробности обсуждения и сопутствующие обстоятельства дела " * 6
+    files, mtimes = {}, {}
+    # K = три файла с лучшим баллом (Аня, Борис, Вера: слово чаще) — у них блок старый (март),
+    # у остальных трёх даты нет и ранг по свежему mtime; Борис свежее всех по mtime
+    for i, name in enumerate(("Аня", "Борис", "Вера")):
+        files[f"Люди/{name}.md"] = f"# {name}\n## Итоги\n- [[Встречи/2026-03-0{i + 1}_1000]] — {name} отвечает за выплаты, выплаты, выплаты. {fill}\n"
+    for name in ("Глеб", "Дина", "Егор"):
+        files[f"Люди/{name}.md"] = f"# {name}\n## Итоги\n- {name} отвечает за выплаты. {fill}\n"
+    for rel, off in (("Борис", 0), ("Глеб", 100), ("Дина", 200), ("Егор", 300), ("Аня", 400), ("Вера", 500)):
+        mtimes[f"Люди/{rel}.md"] = NOW - off
+    s = _mk(tmp_path, files, mtimes)
+    q = "кто отвечает за выплаты"
+    full = _rels(s.search(q, limit=10, semantic=False))
+    assert len(full) == 6
+    for n in (1, 2, 4):
+        assert _rels(s.search(q, limit=n, semantic=False)) == full[:n], n

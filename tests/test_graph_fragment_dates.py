@@ -78,13 +78,13 @@ def _block_for(result: gs.Result, rel: str) -> str:
 
 
 # --------------------------------------------------------------- А/Д: фрагмент
-def test_fragment_comes_from_the_winning_block_and_carries_its_date(tmp_path):
+def test_fragment_comes_from_the_winning_block_and_has_no_date_label(tmp_path):
     s = _kira_graph(tmp_path)
     r = s.search("последнее решение по проекту Альфа", limit=4, semantic=False)
     block = _block_for(r, "Люди/Кира.md")
     lines = block.split("\n")
     assert lines[0] == "• Люди/Кира.md", "первая строка — путь, префикс её не трогает"
-    assert lines[1].startswith("  [встреча 2026-09-30] "), "метка — во второй строке"
+    assert "[встреча" not in block and "[упомянуто" not in block, "метки даты во фрагменте нет"
     assert "новое решение" in lines[1] and "старое решение" not in lines[1], \
         "фрагмент целиком из блока-победителя, не окно через границу блоков"
     assert " → " not in lines[1], "хлебная крошка «Файл → H1 → H2» во фрагмент не попадает, как на `main`"
@@ -105,8 +105,8 @@ def test_a_block_without_a_date_has_no_prefix(tmp_path):
     assert "[встреча" not in block and "[упомянуто" not in block
 
 
-def test_the_last_seen_stamp_reads_upomnuto(tmp_path):
-    """Штамп «последнее упоминание» — метка «упомянуто», а не «дата факта»."""
+def test_the_last_seen_stamp_prints_no_label(tmp_path):
+    """Штамп «последнее упоминание» даёт блоку дату для ранга, но метки нет."""
     g = tmp_path / "Работа"
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,7 @@ def test_the_last_seen_stamp_reads_upomnuto(tmp_path):
     s.embed_pending()
     r = s.search("последнее решение по проекту Альфа", limit=3, semantic=False)
     block = _block_for(r, "Люди/Пётр.md")
-    assert block.split("\n")[1].startswith("  [упомянуто 2026-09-29] ")
+    assert "[встреча" not in block and "[упомянуто" not in block
 
 
 def test_the_main_window_is_kept_when_the_winner_block_has_no_needles(tmp_path):
@@ -126,13 +126,13 @@ def test_the_main_window_is_kept_when_the_winner_block_has_no_needles(tmp_path):
     s = _kira_graph(tmp_path)
     d = s._gen.docs[str(s.graph / "Люди" / "Кира.md")]
     main = s._fragment(d, re.compile("несуществующая_игла"), 500, [])
-    frag, bd = s._block_fragment(d, 0, main, ["несуществующая_игла"],
-                                 re.compile("несуществующая_игла"), 500, [], False)
-    assert frag == main and bd is None
+    frag = s._block_fragment(d, 0, main, ["несуществующая_игла"],
+                             re.compile("несуществующая_игла"), 500, [], False)
+    assert frag == main
 
 
-def test_a_short_node_is_shown_whole_but_dated_by_the_winner(tmp_path):
-    """Тело в пределах окна фрагмента показывается целиком; дату даёт победитель."""
+def test_a_short_node_is_shown_whole_without_a_label(tmp_path):
+    """Тело в пределах окна фрагмента показывается целиком, метки даты нет."""
     g = tmp_path / "Работа"
     for d in ("Люди", "Встречи", "Ядра", "Системы", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
@@ -144,7 +144,7 @@ def test_a_short_node_is_shown_whole_but_dated_by_the_winner(tmp_path):
     r = s.search("решение по проекту Бета", limit=3, semantic=False)
     block = _block_for(r, "Люди/Нина.md")
     lines = block.split("\n")
-    assert lines[1].startswith("  [встреча 2026-09-30] ")
+    assert "[встреча" not in block and "[упомянуто" not in block
     assert "решение принято" in lines[1]
 
 
@@ -173,42 +173,37 @@ def _list_node_graph(tmp_path, long_lines: bool) -> gs.GraphSearch:
     return s
 
 
-def test_a_list_node_is_dated_by_the_matched_line_not_by_the_freshest_line(tmp_path):
-    """Запрос по старой строке списка: дата узла — дата ЭТОЙ строки (03-02), а не
-    максимум блока (09-30); по свежей строке — 09-30."""
+def test_a_list_node_is_ranked_by_the_date_of_its_block(tmp_path):
+    """Единица даты для ранга — блок: узел со списком встреч в одной секции получает
+    максимум блока (09-30) при любой строке запроса (строчная дата — в долгах зоны)."""
     s = _list_node_graph(tmp_path, long_lines=False)
     d = s._gen.docs[str(s.graph / "Люди" / "Иван.md")]
-    for q, want in (("кто отвечает за выплаты", "2026-03-02"), ("Иван перешёл в проект Гамма", "2026-09-30")):
+    for q, want in (("кто отвечает за выплаты", "2026-09-30"), ("Иван перешёл в проект Гамма", "2026-09-30")):
         words, grams = gs.needles(q)
         rx = re.compile("|".join(re.escape(k) for k in words + grams))
         win, _ = s._lex_winner(d, words + grams, rx)
-        assert s._block_ts(d, win, words + grams, rx) == gs._ts_from_iso(want), q
+        assert s._block_ts(d, win) == gs._ts_from_iso(want), q
 
 
 def test_a_short_list_node_shown_whole_has_no_label(tmp_path):
-    """Узел из строк трёх дат показан целиком — под одной меткой солгал бы про
-    остальные строки: метки нет. Позиция в выдаче — по дате найденной строки."""
+    """Узел из строк трёх дат показан целиком — метки нет."""
     s = _list_node_graph(tmp_path, long_lines=False)
     r = s.search("кто отвечает за выплаты", limit=4, semantic=False)
     block = _block_for(r, "Люди/Иван.md")
     assert "[встреча" not in block and "[упомянуто" not in block
-    rels = _rels(r)
-    assert rels.index("Встречи/2026-03-02_1000.md") < rels.index("Люди/Иван.md"), \
-        "старый факт узла не встаёт впереди встречи с тем же фактом из-за свежей соседней строки"
 
 
-def test_a_window_with_one_line_gets_that_lines_label(tmp_path):
-    """Длинный узел: окно вокруг иглы показывает одну строку списка — метка её даты,
-    а не максимума блока."""
+def test_a_window_with_one_line_has_no_label(tmp_path):
+    """Длинный узел: окно вокруг иглы показывает одну строку списка — метки нет."""
     s = _list_node_graph(tmp_path, long_lines=True)
     r = s.search("кто отвечает за выплаты", limit=4, semantic=False)
     line = _block_for(r, "Люди/Иван.md").split("\n")[1]
-    assert line.startswith("  [встреча 2026-03-02] "), line[:120]
+    assert not line.startswith("  ["), line[:120]
     assert "перешёл в проект Гамма" not in line
 
 
 # ------------------------------------------------------------------- досье
-def test_the_dossier_date_is_taken_from_the_shown_slice(tmp_path):
+def test_the_dossier_has_no_label_with_or_without_a_link_in_the_slice(tmp_path):
     from charoite_graph import dossier as dossier_mod
     s = _kira_graph(tmp_path)
     folder = s.graph / CHAROITE.dossier_dir
@@ -220,8 +215,7 @@ def test_the_dossier_date_is_taken_from_the_shown_slice(tmp_path):
                                       "собрано": "2026-09-30"}])
     s.refresh(force=True)
     r = s.search("термин", limit=2)
-    assert r.dossiers and r.dossiers[0].split("\n")[1].startswith("  [встреча 2026-09-30] ")
-    # ссылка после обрезки в 1500 знаков даты не даёт
+    assert r.dossiers and "[встреча" not in r.dossiers[0] and "[упомянуто" not in r.dossiers[0]
     (folder / "Тема.md").write_text(far, encoding="utf-8")
     s.refresh(force=True)
     r2 = s.search("термин", limit=2)
@@ -229,14 +223,14 @@ def test_the_dossier_date_is_taken_from_the_shown_slice(tmp_path):
 
 
 # ------------------------------------------------------------------- метка у перехода
-def test_a_hop_carries_the_date_on_the_third_line(tmp_path):
+def test_a_hop_has_no_label_on_the_third_line(tmp_path):
     s = _kira_graph(tmp_path)
     r = s.search("Кира", limit=1)         # только узел в слотах — переход к встрече
     hop = next((b for b in r.blocks if "↳ по ссылке из" in b), None)
     assert hop is not None, "переход из узла Кира на встречу"
     lines = hop.split("\n")
     assert lines[0].startswith("• ") and lines[1].startswith("  ↳ по ссылке из ")
-    assert lines[2].startswith("  [встреча 2026-")
+    assert not lines[2].startswith("  [")
 
 
 # --------------------------------------------------- Е: чужая длина вектора
