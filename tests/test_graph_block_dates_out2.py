@@ -1,5 +1,5 @@
 """Дата блока в поиске (№633), выходной круг out2: будущая дата в имени файла,
-метка на тексте без дат, победитель ничьей по совпавшей строке, потолок кандидатов."""
+текст без дат без метки, победитель ничьей по совпавшей строке, потолок кандидатов."""
 from __future__ import annotations
 
 import os
@@ -137,3 +137,17 @@ def test_a_limit_does_not_change_the_order_with_a_cap_below_the_hit_count(tmp_pa
     assert len(full) == 6
     for n in (1, 2, 4):
         assert _rels(s.search(q, limit=n, semantic=False)) == full[:n], n
+
+
+def test_a_future_file_name_date_ranks_as_on_main(tmp_path):
+    """Дата в имени файла датирует файл, даже будущая: ранг как на `main` (множитель
+    свежести 1,0, файл 2026-12-15 не ниже 2026-10-05) — закрепляет поведение, не обещание."""
+    text = "# Планирование\nУчастники: [[Люди/Иван]]\nпроект Омега запуск, планирование бюджета\n"
+    day = NOW - 86400
+    s = _mk(tmp_path, {"Встречи/2026-12-15_1000.md": text, "Встречи/2026-10-05_1000.md": text},
+            {"Встречи/2026-12-15_1000.md": day, "Встречи/2026-10-05_1000.md": day})
+    assert gs.recency_factor(gs._ts_from_iso("2026-12-15"), NOW) == 1.0
+    for sem in (False, True):
+        r = s.search("планирование проект Омега запуск", limit=4, semantic=sem)
+        rels = _rels(r)
+        assert rels.index("Встречи/2026-12-15_1000.md") < rels.index("Встречи/2026-10-05_1000.md"), sem
