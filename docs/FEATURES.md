@@ -885,7 +885,9 @@ it signals degradation, it does not break the loop.
   «последнее упоминание» stamp — and freshness in the score comes from the
   date of the best block for the query, not the file mtime, so a node
   rewritten by every meeting no longer floats an old fact above a fresh one
-  (№633).
+  (№633). The label is printed only when the shown text carries a single
+  date (a list with several meeting dates is dated by the matched line and
+  left unlabelled), and every lexical hit is dated by its own block.
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35

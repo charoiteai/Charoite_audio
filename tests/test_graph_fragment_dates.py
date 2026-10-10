@@ -300,6 +300,23 @@ def test_the_rollback_flag_leaves_the_output_as_main(tmp_path, monkeypatch):
     assert touched == [], "при выключенном флаге механизм дат не трогается"
 
 
+#: sha256 выдачи (блоки и вердикт трёх запросов `_kira_graph`, JSON с ensure_ascii=False),
+#: снятой на базе 51497705 — коде до №633. Эталон снят на базе, а не выводом кода под проверкой.
+_KIRA_BASE_SHA = "9f19e92fce16512c2672e63344fbbcc1aed8effa98b25afb74a4453be8c0099e"
+
+
+def test_the_rollback_flag_gives_the_output_of_the_base_byte_for_byte(tmp_path, monkeypatch):
+    import json
+    s = _kira_graph(tmp_path)
+    monkeypatch.setattr(gs, "BLOCK_DATES", False)
+    out = {}
+    for q in ("последнее решение по проекту Альфа", "Кира", "старое решение"):
+        r = s.search(q, limit=4)
+        out[q] = [r.blocks, str(r.status)]
+    got = json.dumps(out, ensure_ascii=False).encode("utf-8")
+    assert hashlib.sha256(got).hexdigest() == _KIRA_BASE_SHA, "выдача при выключенном флаге разошлась с базой"
+
+
 # ----------------------------------------------------------- З: owner_key/date_ts
 def test_block_dates_do_not_touch_date_ts_or_the_owner_key(tmp_path):
     s = _kira_graph(tmp_path)
