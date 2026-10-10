@@ -278,26 +278,32 @@ def _later(cur: BlockDate | None, cand: BlockDate) -> BlockDate:
     return cur
 
 
-def _block_date_marked(block: str, schema: GraphSchema, not_after: float | None = None) -> BlockDate | None:
-    """Явная дата блока: максимум дат встреч в целях `[[ссылок]]` и машинных
-    штампов «_(обновлено …)_» / «_(последнее упоминание: …)_». None — явной даты
-    в тексте нет (блок унаследует дату файла по п.3 решений). Дата позже
-    `not_after` (запланированная встреча «Следующая встреча: [[…]]») датой факта
-    не считается: ни метки, ни наследования."""
-    best: BlockDate | None = None
+def _marked_dates(block: str, schema: GraphSchema, not_after: float | None = None) -> list[BlockDate]:
+    """Все явные даты текста: цели `[[ссылок]]` на встречи и машинные штампы
+    «_(обновлено …)_» / «_(последнее упоминание: …)_». Дата позже `not_after`
+    (запланированная встреча «Следующая встреча: [[…]]») датой факта не считается."""
+    out: list[BlockDate] = []
     for target in wiki_targets(block):
         if not schema.is_meeting_link(target):
             continue
         iso = name_date(target)
         ts = None if iso is None else _ts_from_iso(iso)
         if ts is not None and (not_after is None or ts <= not_after):
-            best = _later(best, BlockDate(ts, "встреча"))
+            out.append(BlockDate(ts, "встреча"))
     for m in _STAMP_RX.finditer(block):
         ts = _ts_from_iso(m.group(2))
         if ts is None or (not_after is not None and ts > not_after):
             continue
-        label = "упомянуто" if m.group(1).startswith("последнее") else "встреча"
-        best = _later(best, BlockDate(ts, label))
+        out.append(BlockDate(ts, "упомянуто" if m.group(1).startswith("последнее") else "встреча"))
+    return out
+
+
+def _block_date_marked(block: str, schema: GraphSchema, not_after: float | None = None) -> BlockDate | None:
+    """Явная дата блока — максимум по `_marked_dates`. None — явной даты в тексте
+    нет (блок унаследует дату файла по п.3 решений)."""
+    best: BlockDate | None = None
+    for cand in _marked_dates(block, schema, not_after):
+        best = _later(best, cand)
     return best
 
 
@@ -312,8 +318,8 @@ def block_date(block: str, schema: GraphSchema) -> float | None:
 
 def file_block_dates(d: Doc, schema: GraphSchema, blocks: Sequence[str],
                      not_after: float | None = None) -> list[BlockDate]:
-    """Даты блоков файла по п.3 решений: явная дата блока; иначе — максимум дат
-    датированных блоков этого файла (не медиана — она ставила текущее описание на
+    """Даты блоков файла по п.3 решений: явная дата блока; иначе у узла — максимум
+    дат датированных блоков этого файла (не медиана — она ставила текущее описание на
     март при хронике июля); ни одного датированного — дата файла (`file_date_ts`).
     Файл с датой в имени (встреча, дневник): дата блока — дата файла на всех
     блоках, ссылки внутри её не перебивают. Даты позже `not_after` в расчёт не идут."""
@@ -323,7 +329,9 @@ def file_block_dates(d: Doc, schema: GraphSchema, blocks: Sequence[str],
     dated = [m for m in marked if m is not None and m.ts is not None]
     if not dated:
         return [BlockDate(d.date_ts, None)] * len(blocks)
-    base = max(m.ts for m in dated)          # type: ignore[type-var]
+    # наследуют «не верить mtime» только узлы: их переписывает каждая встреча. У
+    # не-узла mtime надёжен, и блок без даты идёт по дате файла, как на `main`
+    base = max(m.ts for m in dated) if schema.is_node_path(d.rel) else d.date_ts   # type: ignore[type-var]
     return [m if m is not None else BlockDate(base, None) for m in marked]
 
 
@@ -333,6 +341,14 @@ def _without_crumb(block: str) -> str:
     учтено весом пути в балле."""
     _, sep, rest = block.partition("\n")
     return rest if sep else block
+
+
+def _needle_cov(low: str, keys: Sequence[str], rx: re.Pattern | None) -> int:
+    """Покрытие запроса нормализованным текстом: сколько игл в нём; для запроса без
+    игл (одна фраза) — есть ли фраза."""
+    if keys:
+        return sum(1 for k in keys if k in low)
+    return 1 if rx is not None and rx.search(low) else 0
 
 
 def _date_label(bd: BlockDate | None) -> str:

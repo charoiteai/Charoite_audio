@@ -87,7 +87,7 @@ def test_file_without_dated_blocks_falls_back_to_the_file_date():
 
 
 def test_undated_block_inherits_the_max_of_dated_blocks():
-    d = _doc("Документация/заметка.md", date_ts=1.0)
+    d = _doc("Люди/Иван.md", date_ts=1.0)
     blocks = ["[[Встречи/2026-03-02]] и [[Встречи/2026-07-05]]", "блок без даты"]
     dates = gs.file_block_dates(d, CHAROITE, blocks)
     assert dates[0].ts == _ts("2026-07-05") and dates[0].label == "встреча"
@@ -97,7 +97,7 @@ def test_undated_block_inherits_the_max_of_dated_blocks():
 def test_the_inherited_date_is_the_maximum_not_the_median():
     """Медиана ставила текущее описание на март при хронике июля и штампе
     сентября: унаследованная дата — максимум датированных блоков, не середина."""
-    d = _doc("Документация/заметка.md", date_ts=1.0)
+    d = _doc("Люди/Иван.md", date_ts=1.0)
     blocks = ["[[Встречи/2026-03-02]] март", "[[Встречи/2026-07-05]] июль",
               "_(обновлено 2026-09-12)_ сентябрь", "блок без даты"]
     dates = gs.file_block_dates(d, CHAROITE, blocks)
@@ -182,7 +182,7 @@ def test_a_planned_meeting_in_the_future_is_not_a_date_of_the_block(tmp_path):
                        schema=CHAROITE, now=lambda: now)
     text = ("# Дорожная карта\n\n## План\n" + "пункт плана. " * 200 + "\nСледующая встреча: [[Встречи/2026-12-15]]\n\n"
             "## Итоги\n- [[Встречи/2026-09-01_1000]] — итог квартала. " + "текст. " * 200 + "\n")
-    d = _doc("Заметки/Дорожная карта.md", date_ts=5.0, text=text, mtime=1.0)
+    d = _doc("Люди/Дорожная карта.md", date_ts=5.0, text=text, mtime=1.0)
     dates = s._doc_block_dates(d)
     assert len(dates) >= 2
     assert all(x.ts != _ts("2026-12-15") for x in dates), "будущая дата не стала датой блока"
@@ -206,3 +206,39 @@ def test_a_planned_meeting_does_not_put_a_label_on_the_fragment(tmp_path):
     block = next(b for b in s.search("дорожную карту", limit=3, semantic=False).blocks
                  if b.startswith("• Заметки/Дорожная карта.md"))
     assert "[встреча" not in block
+
+
+# ------------------------------------- наследование «не верить mtime» — только узлам
+def test_only_a_node_inherits_the_freshest_date_of_its_blocks():
+    """У узла mtime переписывает каждая встреча — блок без даты берёт максимум
+    датированных. У не-узла mtime надёжен: блок без даты идёт по дате файла."""
+    blocks = ["# Решение\n## Итог\n- [[Встречи/2025-03-02_1000]] — старое\n", "# Решение\n## Обзор\nбез дат\n"]
+    node = _doc("Люди/Иван.md", date_ts=_ts("2026-10-09"))
+    plain = _doc("Документация/Решение по шлюзу.md", date_ts=_ts("2026-10-09"))
+    assert gs.file_block_dates(node, CHAROITE, blocks)[1].ts == _ts("2025-03-02")
+    got = gs.file_block_dates(plain, CHAROITE, blocks)
+    assert got[1].ts == _ts("2026-10-09") and got[1].label is None, "не-узел: дата файла"
+    assert got[0].ts == _ts("2025-03-02"), "размеченный блок не-узла датируется ссылкой"
+
+
+def test_a_plain_document_with_an_old_link_keeps_its_place(tmp_path, monkeypatch):
+    """Не-узел со свежим mtime и ссылкой на старую встречу в соседней секции: искомое
+    в секции без дат — позиция та же, что на `main`, при обоих значениях флага."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    (g / "Документация" / "Решение по шлюзу.md").write_text(
+        "# Решение по шлюзу\n## История\n- [[Встречи/2025-03-02_1000]] — обсуждали давно. " + "справка. " * 600
+        + "\n## Решение\nшлюз Омега принят, срок май\n", encoding="utf-8")
+    (g / "Встречи" / "2026-09-01_1000.md").write_text("# Омега\nшлюз Омега обсуждали, срок май\n", encoding="utf-8")
+    now = _ts("2026-10-10")
+    os_utime = __import__("os").utime
+    os_utime(g / "Документация" / "Решение по шлюзу.md", (now - 3600, now - 3600))
+    pos = {}
+    for flag in (True, False):
+        monkeypatch.setattr(gs, "BLOCK_DATES", flag)
+        s = gs.GraphSearch(g, embedder=Embedder(_embed, "t"), data_dir=None, schema=CHAROITE, now=lambda: now)
+        s.refresh(force=True)
+        rels = [b.split("\n")[0][2:] for b in s.search("шлюз Омега срок май", limit=4, semantic=False).blocks]
+        pos[flag] = rels.index("Документация/Решение по шлюзу.md")
+    assert pos[True] == pos[False]
