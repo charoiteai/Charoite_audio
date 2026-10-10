@@ -328,7 +328,8 @@ def file_block_dates(d: Doc, schema: GraphSchema, blocks: Sequence[str],
     Файл с датой в имени (встреча, дневник): дата блока — дата файла на всех
     блоках, ссылки внутри её не перебивают. Даты позже `not_after` в расчёт не идут."""
     if name_date(d.rel) is not None:
-        return [BlockDate(d.date_ts, "встреча")] * len(blocks)
+        label = "встреча" if not_after is None or d.date_ts <= not_after else None
+        return [BlockDate(d.date_ts, label)] * len(blocks)
     marked = [_block_date_marked(b, schema, not_after) for b in blocks]
     dated = [m for m in marked if m is not None and m.ts is not None]
     if not dated:
@@ -1827,8 +1828,8 @@ class GraphSearch:
         dates = self._doc_block_dates(d)
 
         def fresh(i: int) -> float:
-            ts = dates[i].ts if i < len(dates) else None
-            return float("-inf") if ts is None else ts
+            bd = self._win_date(d, i, keys, rx) if i < len(dates) else None
+            return float("-inf") if bd is None or bd.ts is None else bd.ts
         for i, text in enumerate(self._norm_blocks(d)):
             cov = _needle_cov(text, keys, rx)
             if cov > best_cov or (cov == best_cov > 0 and best_i is not None and fresh(i) > fresh(best_i)):
@@ -1867,9 +1868,9 @@ class GraphSearch:
             shown = main_frag
         else:
             shown = _frag_or_head(_without_crumb(block), rx, chars, rare, dense)
-        return shown, self._one_date(bd, shown, d)
+        return shown, self._one_date(bd, shown, d, win in self._date_entry(d)[3])
 
-    def _one_date(self, bd: BlockDate | None, shown: str, d: Doc) -> BlockDate | None:
+    def _one_date(self, bd: BlockDate | None, shown: str, d: Doc, mixed_block: bool = False) -> BlockDate | None:
         """Метка ставится, только когда в ПОКАЗАННОМ тексте одна дата — та, что
         получил победитель: фрагмент с датами разных строк (короткий узел целиком,
         окно через две строки списка) под одной меткой солгал бы про остальные.
@@ -1878,7 +1879,9 @@ class GraphSearch:
         if bd is None or bd.label is None or name_date(d.rel) is not None:
             return bd
         seen = {m.ts for m in _marked_dates(shown, self.schema, self._now() + 86400)}
-        return bd if seen <= {bd.ts} else BlockDate(bd.ts, None)
+        if seen == {bd.ts} or (not seen and not mixed_block):
+            return bd
+        return BlockDate(bd.ts, None)
 
     def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
         """Фрагмент документа для выдачи и для перехода — одно правило на оба места:

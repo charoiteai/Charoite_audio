@@ -1,0 +1,88 @@
+"""Дата блока в поиске (№633), выходной круг out2: будущая дата в имени файла,
+метка на тексте без дат, победитель ничьей по совпавшей строке, потолок кандидатов."""
+from __future__ import annotations
+
+import os
+import pathlib
+import re
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from test_graph_fragment_dates import NOW, _block_for, _rels, _searcher, _write, gs  # noqa: E402
+
+_FILL = "подробности обсуждения и сопутствующие обстоятельства дела " * 15
+
+
+def _mk(tmp_path, files, mtimes=None):
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация", "Заметки"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    for rel, text in files.items():
+        _write(g, rel, text)
+    for rel, t in (mtimes or {}).items():
+        os.utime(g / rel, (t, t))
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def test_a_future_dated_file_name_puts_no_label(tmp_path):
+    """C1 (DS): файл с датой в имени позже «сегодня + сутки» — не дата факта, метки нет;
+    ранг по дате файла, как на main. Прошедший — метка на месте."""
+    s = _mk(tmp_path, {
+        "Встречи/2026-12-15_1000.md": "# Планирование\nУчастники: [[Люди/Иван]]\nпроект Омега запуск, планирование бюджета\n",
+        "Встречи/2026-09-01_1000.md": "# Планирование\nУчастники: [[Люди/Иван]]\nпроект Омега запуск, планирование бюджета\n"})
+    r = s.search("планирование проект Омега запуск", limit=4, semantic=False)
+    assert "[встреча" not in _block_for(r, "Встречи/2026-12-15_1000.md")
+    assert _block_for(r, "Встречи/2026-09-01_1000.md").split("\n")[1].startswith("  [встреча 2026-09-01] ")
+
+
+def test_a_window_without_any_date_on_a_mixed_block_has_no_label(tmp_path):
+    """C1 (Haiku): окно упало на строку без ссылки в блоке со строками разных дат —
+    метка даты чужой строки не ставится."""
+    node = ("# Иван\n## Встречи\n"
+            f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {_FILL} по договору. {_FILL} аренды помещения. {_FILL}\n"
+            f"- [[Встречи/2026-09-30_1000]] — Иван перешёл в проект Гамма. {_FILL}\n"
+            f"- Иван ведёт переговоры с Сигмой о лицензиях. {_FILL}\n")
+    s = _mk(tmp_path, {"Люди/Иван.md": node}, {"Люди/Иван.md": NOW - 86400})
+    r = s.search("выплаты договору аренды переговоры Сигмой", limit=3, semantic=False)
+    line = _block_for(r, "Люди/Иван.md").split("\n")[1]
+    assert "переговоры с Сигмой" in line and "[[" not in line, line[:200]
+    assert "[встреча" not in line and "[упомянуто" not in line, line[:60]
+
+
+def test_a_tie_between_blocks_is_won_by_the_fresher_matched_line(tmp_path):
+    """I1 (DS): равное покрытие, в блоке A совпала старая строка (а свежая рядом — нет),
+    в блоке B совпала свежая: побеждает B, узел датируется 09-30 и идёт перед встречей 08-15."""
+    fill = "подробности обсуждения и сопутствующие обстоятельства дела " * 6
+    node = ("# Иван\n## Итоги\n"
+            f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n"
+            f"- [[Встречи/2026-09-30_1000]] — Иван перешёл в проект Гамма. {fill}\n"
+            f"## Проект\n- [[Встречи/2026-09-30_1000]] — Иван отвечает за выплаты. {fill}\n")
+    s = _mk(tmp_path, {"Люди/Иван.md": node,
+                       "Встречи/2026-08-15_1000.md": "# Выплаты\nУчастники: [[Люди/Иван]]\nИван отвечает за выплаты\n"},
+            {"Люди/Иван.md": NOW - 86400})
+    d = s._gen.docs[str(s.graph / "Люди" / "Иван.md")]
+    words, grams = gs.needles("кто отвечает за выплаты")
+    keys = words + grams
+    rx = re.compile("|".join(re.escape(k) for k in keys))
+    win, _ = s._lex_winner(d, keys, rx)
+    assert s._block_ts(d, win, keys, rx) == gs._ts_from_iso("2026-09-30")
+    rels = _rels(s.search("кто отвечает за выплаты", limit=4, semantic=False))
+    assert rels.index("Люди/Иван.md") < rels.index("Встречи/2026-08-15_1000.md")
+
+
+def test_the_freshest_of_two_equally_covering_lines_dates_a_mixed_block(tmp_path):
+    """M2 (DS): мутация rank=(cov, ts) -> (cov, 0) не ловилась: две строки одного блока
+    с равным покрытием — датой блока-победителя служит свежая."""
+    fill = "подробности " * 5
+    node = ("# Иван\n## Встречи\n"
+            f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n"
+            f"- [[Встречи/2026-09-30_1000]] — Иван отвечает за выплаты. {fill}\n")
+    s = _mk(tmp_path, {"Люди/Иван.md": node}, {"Люди/Иван.md": NOW - 86400})
+    d = s._gen.docs[str(s.graph / "Люди" / "Иван.md")]
+    words, grams = gs.needles("кто отвечает за выплаты")
+    keys = words + grams
+    rx = re.compile("|".join(re.escape(k) for k in keys))
+    assert s._block_ts(d, 0, keys, rx) == gs._ts_from_iso("2026-09-30")

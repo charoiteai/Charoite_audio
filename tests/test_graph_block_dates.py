@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
@@ -232,7 +233,7 @@ def test_a_plain_document_with_an_old_link_keeps_its_place(tmp_path, monkeypatch
         + "\n## Решение\nшлюз Омега принят, срок май\n", encoding="utf-8")
     (g / "Встречи" / "2026-09-01_1000.md").write_text("# Омега\nшлюз Омега обсуждали, срок май\n", encoding="utf-8")
     now = _ts("2026-10-10")
-    os_utime = __import__("os").utime
+    os_utime = os.utime
     os_utime(g / "Документация" / "Решение по шлюзу.md", (now - 3600, now - 3600))
     pos = {}
     for flag in (True, False):
