@@ -171,3 +171,38 @@ def test_block_dates_are_recomputed_only_when_the_file_version_changes(tmp_path,
     monkeypatch.setattr(s, "_block_limit", lambda _d: gs.MAX_CHUNKS)
     s._doc_block_dates(d)
     assert calls["n"] == 3, "смена потолка блоков — другая нарезка"
+
+
+# ------------------------------------------------ будущая дата — не дата факта
+def test_a_planned_meeting_in_the_future_is_not_a_date_of_the_block(tmp_path):
+    """«Следующая встреча: [[Встречи/ГГГГ-ММ-ДД]]» — план, не факт: ни метки, ни
+    наследования соседним блоком. Граница — сутки после «сейчас»."""
+    now = _ts("2026-10-10")
+    s = gs.GraphSearch(tmp_path / "g", embedder=Embedder(_embed, "t"), data_dir=None,
+                       schema=CHAROITE, now=lambda: now)
+    text = ("# Дорожная карта\n\n## План\n" + "пункт плана. " * 200 + "\nСледующая встреча: [[Встречи/2026-12-15]]\n\n"
+            "## Итоги\n- [[Встречи/2026-09-01_1000]] — итог квартала. " + "текст. " * 200 + "\n")
+    d = _doc("Заметки/Дорожная карта.md", date_ts=5.0, text=text, mtime=1.0)
+    dates = s._doc_block_dates(d)
+    assert len(dates) >= 2
+    assert all(x.ts != _ts("2026-12-15") for x in dates), "будущая дата не стала датой блока"
+    plan = next(x for x, blk in zip(dates, gs.chunks("Дорожная карта", text, limit=gs.MAX_CHUNKS)) if "2026-12-15" in blk)
+    assert plan.label is None and plan.ts == _ts("2026-09-01"), "блок плана унаследовал факт, а не план"
+    tomorrow = gs.block_date("[[Встречи/2026-10-11]]", CHAROITE)
+    assert gs._block_date_marked("[[Встречи/2026-10-11]]", CHAROITE, now + 86400).ts == tomorrow
+    assert gs._block_date_marked("[[Встречи/2026-10-12]]", CHAROITE, now + 86400) is None
+    assert gs._block_date_marked("_(обновлено 2026-12-01)_", CHAROITE, now + 86400) is None
+
+
+def test_a_planned_meeting_does_not_put_a_label_on_the_fragment(tmp_path):
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация", "Заметки"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    (g / "Заметки" / "Дорожная карта.md").write_text(
+        "# Дорожная карта\nСледующая встреча: [[Встречи/2026-12-15]] — обсудим дорожную карту\n", encoding="utf-8")
+    s = gs.GraphSearch(g, embedder=Embedder(_embed, "t"), data_dir=None, schema=CHAROITE,
+                       now=lambda: _ts("2026-10-10"))
+    s.refresh(force=True)
+    block = next(b for b in s.search("дорожную карту", limit=3, semantic=False).blocks
+                 if b.startswith("• Заметки/Дорожная карта.md"))
+    assert "[встреча" not in block

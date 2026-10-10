@@ -278,21 +278,23 @@ def _later(cur: BlockDate | None, cand: BlockDate) -> BlockDate:
     return cur
 
 
-def _block_date_marked(block: str, schema: GraphSchema) -> BlockDate | None:
+def _block_date_marked(block: str, schema: GraphSchema, not_after: float | None = None) -> BlockDate | None:
     """Явная дата блока: максимум дат встреч в целях `[[ссылок]]` и машинных
     штампов «_(обновлено …)_» / «_(последнее упоминание: …)_». None — явной даты
-    в тексте нет (блок унаследует дату файла по п.3 решений)."""
+    в тексте нет (блок унаследует дату файла по п.3 решений). Дата позже
+    `not_after` (запланированная встреча «Следующая встреча: [[…]]») датой факта
+    не считается: ни метки, ни наследования."""
     best: BlockDate | None = None
     for target in wiki_targets(block):
         if not schema.is_meeting_link(target):
             continue
         iso = name_date(target)
         ts = None if iso is None else _ts_from_iso(iso)
-        if ts is not None:
+        if ts is not None and (not_after is None or ts <= not_after):
             best = _later(best, BlockDate(ts, "встреча"))
     for m in _STAMP_RX.finditer(block):
         ts = _ts_from_iso(m.group(2))
-        if ts is None:
+        if ts is None or (not_after is not None and ts > not_after):
             continue
         label = "упомянуто" if m.group(1).startswith("последнее") else "встреча"
         best = _later(best, BlockDate(ts, label))
@@ -308,15 +310,16 @@ def block_date(block: str, schema: GraphSchema) -> float | None:
     return None if marked is None else marked.ts
 
 
-def file_block_dates(d: Doc, schema: GraphSchema, blocks: Sequence[str]) -> list[BlockDate]:
+def file_block_dates(d: Doc, schema: GraphSchema, blocks: Sequence[str],
+                     not_after: float | None = None) -> list[BlockDate]:
     """Даты блоков файла по п.3 решений: явная дата блока; иначе — максимум дат
     датированных блоков этого файла (не медиана — она ставила текущее описание на
     март при хронике июля); ни одного датированного — дата файла (`file_date_ts`).
     Файл с датой в имени (встреча, дневник): дата блока — дата файла на всех
-    блоках, ссылки внутри её не перебивают."""
+    блоках, ссылки внутри её не перебивают. Даты позже `not_after` в расчёт не идут."""
     if name_date(d.rel) is not None:
         return [BlockDate(d.date_ts, "встреча")] * len(blocks)
-    marked = [_block_date_marked(b, schema) for b in blocks]
+    marked = [_block_date_marked(b, schema, not_after) for b in blocks]
     dated = [m for m in marked if m is not None and m.ts is not None]
     if not dated:
         return [BlockDate(d.date_ts, None)] * len(blocks)
@@ -1391,7 +1394,7 @@ class GraphSearch:
         if seen is not None and seen[:2] == (d.mtime, limit):
             return seen[2]
         parts = chunks(pathlib.PurePosixPath(d.rel).stem, d.text, limit=limit)
-        dates = file_block_dates(d, self.schema, parts) if parts else [BlockDate(d.date_ts, None)]
+        dates = file_block_dates(d, self.schema, parts, self._now() + 86400) if parts else [BlockDate(d.date_ts, None)]
         self._block_dates[d.path] = (d.mtime, limit, dates)
         return dates
 
@@ -1748,7 +1751,7 @@ class GraphSearch:
             head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
             # дата — максимум по ПОКАЗАННОМУ куску, а не по всему телу: ссылка на
             # встречу после обрезки даты не даёт (№633)
-            bd = _block_date_marked(head, self.schema) if BLOCK_DATES else None
+            bd = _block_date_marked(head, self.schema, self._now() + 86400) if BLOCK_DATES else None
             label = _date_label(bd) if BLOCK_DATES else ""
             out.append((d.rel, f"📁 Досье «{e['тема']}»\n  {label}{head}"))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
