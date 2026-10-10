@@ -105,3 +105,17 @@ def test_the_query_winners_date_is_not_written_into_the_doc(tmp_path):
     before = {rel: d.date_ts for rel, d in s._gen.docs.items()}
     s.search(_Q, limit=4)
     assert {rel: d.date_ts for rel, d in s._gen.docs.items()} == before
+
+
+def test_the_cold_vector_check_does_not_hold_normalised_block_texts(tmp_path):
+    """Холодная сверка кэша векторов идёт по ВСЕМУ индексу и считает только число
+    блоков: нормализованные тексты блоков (+42 МБ и +7 с на 4000 узлах) строятся
+    лишь для файлов, попавших в выдачу."""
+    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW + "\n")
+    s._norm_cache.clear()
+    s._block_counts.clear()
+    s.pending_vectors()
+    assert s._norm_cache == {}, "сверка кэша векторов не должна нормализовать тексты блоков"
+    assert s._block_counts, "число блоков при этом считается и помнится"
+    s.search(_Q, limit=4, semantic=False)
+    assert s._norm_cache, "выдача строит тексты для попавших файлов"

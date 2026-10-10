@@ -965,10 +965,14 @@ class GraphSearch:
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
-        # Блоки файла при ТЕКУЩЕЙ схеме: путь → (mtime, потолок, нормализованные
-        # тексты блоков без крошки). Число — длина кортежа. Нарезка и нормализация
-        # считаются один раз на версию файла, а не на каждый поиск.
-        self._block_counts: dict[str, tuple[float, int, tuple[str, ...]]] = {}
+        # Сколько блоков у файла при ТЕКУЩЕЙ схеме: путь → (mtime, потолок, число).
+        # Нарезка считается один раз на версию файла, а не на каждую сверку кэша.
+        self._block_counts: dict[str, tuple[float, int, int]] = {}
+        # Нормализованные тексты блоков без крошки: путь → (mtime, потолок, тексты).
+        # Отдельно от `_block_counts`: тот зовёт холодная сверка кэша векторов по
+        # ВСЕМУ индексу, а тексты нужны только попавшим в выдачу файлам — их
+        # нормализация на холодном старте стоила +42 МБ и +7 с на 4000 узлах (#633).
+        self._norm_cache: dict[str, tuple[float, int, tuple[str, ...]]] = {}
         # Даты блоков при текущей схеме: путь → (mtime, потолок, даты блоков).
         # Отдельно от `_block_counts`: там только число, здесь — значение на
         # каждый блок. Пересчёт — при смене mtime или потолка, не на каждый поиск.
@@ -1081,6 +1085,7 @@ class GraphSearch:
             for p in gone:
                 self._vecs.pop(p, None)
                 self._block_counts.pop(p, None)
+                self._norm_cache.pop(p, None)
                 # даты блоков исчезнувшего файла — рядом с его блоками: обе
                 # записи живут одной версией файла, и чистятся одним циклом
                 self._block_dates.pop(p, None)
@@ -1348,20 +1353,25 @@ class GraphSearch:
 
     def _norm_blocks(self, d: Doc) -> tuple[str, ...]:
         """Нормализованные тексты блоков файла (без первой строки-крошки) при
-        текущей схеме — одна нарезка на версию файла. Живут в записи
-        `_block_counts` рядом с потолком: нормализацию блоков на каждый поиск не
-        повторяем, а покрытие запроса считается по ним."""
+        текущей схеме — одна нарезка на версию файла. Зовут только выбор
+        победителя и фрагмент: холодная сверка кэша векторов их не строит."""
         limit = self._block_limit(d)
-        seen = self._block_counts.get(d.path)
+        seen = self._norm_cache.get(d.path)
         if seen is not None and seen[:2] == (d.mtime, limit):
             return seen[2]
         norm_blocks = tuple(norm(_without_crumb(b)) for b in self._blocks(d))
-        self._block_counts[d.path] = (d.mtime, limit, norm_blocks)
+        self._norm_cache[d.path] = (d.mtime, limit, norm_blocks)
         return norm_blocks
 
     def _expected_blocks(self, d: Doc) -> int:
         """Число блоков файла при текущей схеме — с памятью на версию файла."""
-        return len(self._norm_blocks(d))
+        limit = self._block_limit(d)
+        seen = self._block_counts.get(d.path)
+        if seen is not None and seen[:2] == (d.mtime, limit):
+            return seen[2]
+        n = len(self._blocks(d))
+        self._block_counts[d.path] = (d.mtime, limit, n)
+        return n
 
     def _block_ts(self, d: Doc, win: int | None) -> float | None:
         """Дата блока-победителя файла для запроса. None — победителя нет, номер
