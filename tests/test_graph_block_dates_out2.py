@@ -86,3 +86,48 @@ def test_the_freshest_of_two_equally_covering_lines_dates_a_mixed_block(tmp_path
     keys = words + grams
     rx = re.compile("|".join(re.escape(k) for k in keys))
     assert s._block_ts(d, 0, keys, rx) == gs._ts_from_iso("2026-09-30")
+
+
+def _stale_fact_graph(tmp_path):
+    """Узел переписан только что (mtime = сегодня), но совпавшая строка — март;
+    встреча октября с тем же фактом. По дате блока встреча первая, по mtime — узел."""
+    fill = "подробности обсуждения и сопутствующие обстоятельства дела " * 6
+    node = ("# Иван\n## Итоги\n"
+            f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n")
+    return _mk(tmp_path, {"Люди/Иван.md": node,
+                          "Встречи/2026-10-05_1000.md": "# Выплаты\nУчастники: [[Люди/Иван]]\nИван отвечает за выплаты\n"},
+               {"Люди/Иван.md": NOW})
+
+
+def test_candidate_cap_leaves_files_beyond_it_on_the_file_date(tmp_path, monkeypatch):
+    """Р6: за потолком K дата блока не считается — дата файла, как на main; в потолке — дата блока."""
+    s = _stale_fact_graph(tmp_path)
+    q = "кто отвечает за выплаты"
+    with_blocks = s.search(q, limit=4, semantic=False)
+    monkeypatch.setattr(gs, "BLOCK_DATE_CANDIDATES", 0)
+    capped = s.search(q, limit=4, semantic=False)
+    monkeypatch.setattr(gs, "BLOCK_DATES", False)
+    base = s.search(q, limit=4, semantic=False)
+    assert _rels(capped) == _rels(base)                       # за потолком — порядок как на main
+    dated: list[str] = []
+    real = s._block_ts
+    monkeypatch.setattr(s, "_block_ts", lambda d, *a, **kw: dated.append(d.rel) or real(d, *a, **kw))
+    monkeypatch.setattr(gs, "BLOCK_DATES", True)
+    s.search(q, limit=4, semantic=False)
+    assert dated == []                                        # потолок 0: дат блоков для оценки нет
+    monkeypatch.setattr(gs, "BLOCK_DATE_CANDIDATES", 1)
+    s.search(q, limit=4, semantic=False)
+    assert len(dated) == 1                                    # потолок 1: дата блока — у одного файла
+    assert "[встреча 2026-03-02]" in _block_for(with_blocks, "Люди/Иван.md")   # в потолке — блок датирован
+
+
+def test_candidate_cap_does_not_depend_on_limit_or_walk_order(tmp_path, monkeypatch):
+    """Р6 + №631: набор кандидатов — K лучших по баллу до свежести, ничья по пути;
+    ни `limit`, ни порядок попаданий на него не влияют."""
+    monkeypatch.setattr(gs, "BLOCK_DATE_CANDIDATES", 2)
+    docs = [(1.0, type("D", (), {"rel": r})()) for r in ("в", "а", "б", "г")]
+    assert gs.GraphSearch._dated_candidates(docs) == {"а", "б"}
+    assert gs.GraphSearch._dated_candidates(docs[::-1]) == {"а", "б"}
+    s = _stale_fact_graph(tmp_path)
+    q = "кто отвечает за выплаты"
+    assert _rels(s.search(q, limit=1, semantic=False))[:1] == _rels(s.search(q, limit=10, semantic=False))[:1]

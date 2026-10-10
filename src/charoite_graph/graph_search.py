@@ -145,6 +145,13 @@ _STAMP_RX = re.compile(r"_\((обновлено|последнее упомин�
 #: читается на каждом поиске, поэтому тесты гасят её monkeypatch-ем.
 BLOCK_DATES = True
 
+#: Потолок кандидатов под свежесть по дате блока (№633, Р6): даты блоков,
+#: нормализация и карта смешанных строк считаются только для K лучших файлов по
+#: баллу ДО свежести; остальные попадания датируются файлом, как на main.
+#: Не зависит от `limit` запроса — иначе порядок выдачи зависел бы от него (№631).
+#: Замер: 3000 узлов × 8 секций, широкий запрос — первый поиск 11,8 с без потолка.
+BLOCK_DATE_CANDIDATES = 100
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class BlockDate:
@@ -1635,10 +1642,15 @@ class GraphSearch:
                 matched = sum(1 for i in range(len(keys)) if t[i] or p[i])
                 best_cov = max(best_cov, matched / len(keys))
                 scored.append((score, d, matched))
-            # дата блока — для всех попавших файлов: порядок не зависит от `limit`
+            # дата блока — для K лучших по баллу до свежести (потолок не зависит от
+            # `limit`: порядок выдачи от него не зависит); прочие — дата файла
+            dated = self._dated_candidates([
+                (score * coverage_factor(matched, len(keys)) * hub_factor(indeg.get(d.key, 0))
+                 * placeholder_factor(d.base) * raw_dampener(d.rel, self.schema), d)
+                for score, d, matched in scored]) if BLOCK_DATES else frozenset()
             for score, d, matched in scored:
                 ts = d.date_ts
-                if BLOCK_DATES:
+                if d.rel in dated:
                     win, _cov = self._lex_winner(d, keys, rx)
                     got = self._block_ts(d, win, keys, rx)
                     if got is not None:
@@ -1647,16 +1659,17 @@ class GraphSearch:
                 score *= hub_factor(indeg.get(d.key, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel, self.schema)
                 lex.append((score, d.rel))
         else:
-            for d in docs:
-                if rx.search(d.low):
-                    best_cov = 1.0
-                    ts = d.date_ts
-                    if BLOCK_DATES:
-                        win, _cov = self._lex_winner(d, keys, rx)
-                        got = self._block_ts(d, win, keys, rx)
-                        if got is not None:
-                            ts = got
-                    lex.append((recency_factor(ts, now), d.rel))
+            phrase_hits = [d for d in docs if rx.search(d.low)]
+            dated = self._dated_candidates([(0.0, d) for d in phrase_hits]) if BLOCK_DATES else frozenset()
+            for d in phrase_hits:
+                best_cov = 1.0
+                ts = d.date_ts
+                if d.rel in dated:
+                    win, _cov = self._lex_winner(d, keys, rx)
+                    got = self._block_ts(d, win, keys, rx)
+                    if got is not None:
+                        ts = got
+                lex.append((recency_factor(ts, now), d.rel))
 
         # ----- семантика: вектор запроса против кэша векторов файлов
         sem: list[tuple[float, str]] = []
@@ -1816,6 +1829,13 @@ class GraphSearch:
             out.append((d.rel, f"📁 Досье «{e['тема']}»\n  {label}{head}"))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
+
+    @staticmethod
+    def _dated_candidates(pre: Sequence[tuple[float, Doc]]) -> frozenset[str]:
+        """Пути K лучших файлов по баллу до свежести (`BLOCK_DATE_CANDIDATES`);
+        ничья — по пути: набор не зависит ни от порядка обхода, ни от `limit`."""
+        top = sorted(pre, key=lambda x: (-x[0], x[1].rel))[:BLOCK_DATE_CANDIDATES]
+        return frozenset(d.rel for _, d in top)
 
     def _lex_winner(self, d: Doc, keys: Sequence[str], rx: re.Pattern | None) -> tuple[int | None, int]:
         """Номер блока файла с наибольшим покрытием слов запроса и само покрытие;
