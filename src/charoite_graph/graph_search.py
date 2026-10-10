@@ -1619,11 +1619,6 @@ class GraphSearch:
                     d = paths.get(path)
                     if d is None or mt != d.mtime or not d.low.strip():   # переписан — старые блоки не свидетели (GLM M3); пустой — не свидетель
                         continue
-                    if len(vs) != self._expected_blocks(d):
-                        # вектор от другой нарезки при том же mtime — номер блока
-                        # ничего не значит: дата и фрагмент как на `main`, не по
-                        # индексу этого вектора (№633)
-                        continue
                     checked += 1
                     best_i, sim = -1, 0.0                                  # лучший блок файла
                     for i, v in enumerate(vs):
@@ -1634,7 +1629,11 @@ class GraphSearch:
                             sim, best_i = s, i
                     if sim >= SIM_FLOOR:
                         sims.append((sim, d))
-                        sem_win[d.rel] = best_i
+                        # вектор от другой нарезки при том же mtime: файл остаётся
+                        # свидетелем, как на `main`, но номер блока ничего не значит —
+                        # победителя семантики у него нет (№633)
+                        if BLOCK_DATES and len(vs) == self._expected_blocks(d):
+                            sem_win[d.rel] = best_i
                 # знаменатель — файлы, которым векторы вообще положены: пустой файл
                 # ждёт вектора вечно и держал бы долю ниже порога (DS M2 r4)
                 sem_share = checked / max(1, sum(1 for d in docs if d.low.strip()))

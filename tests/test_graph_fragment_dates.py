@@ -14,6 +14,8 @@ import pathlib
 import re
 import sys
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
@@ -178,23 +180,44 @@ def test_a_hop_carries_the_date_on_the_third_line(tmp_path):
 
 
 # --------------------------------------------------- Е: чужая длина вектора
-def test_a_vector_of_another_slicing_is_not_a_witness(tmp_path):
-    """Вектор другой длины, чем у текущей нарезки, — не свидетель: файл, который
-    находит только семантика, из выдачи уходит (индекс блока ничего не значит)."""
+#: Эталон, снятый на базе 51497705 (код до №633) на том же графе и тех же запросах:
+#: выдача и вердикт при векторе чужой нарезки. Не вывод кода под проверкой.
+_BASE_FRAGMENT = ("# Поставщик ## Статус поставщик платежей подписан договор ## Заметки "
+                  + " ".join(["наполнитель."] * 30))
+
+
+def _foreign_slicing_graph(tmp_path) -> gs.GraphSearch:
+    """Файл и три соседа; у файла в кэше один вектор вместо двух (чужая нарезка при
+    том же mtime). Соседи нужны, чтобы доля проверенного (`sem_share`) была видна."""
     g = tmp_path / "Работа"
     for d in ("Системы", "Люди", "Встречи", "Ядра", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
     _write(g / "Системы", "Поставщик.md",
            "# Поставщик\n## Статус\nпоставщик платежей подписан договор\n"
            + "## Заметки\n" + "наполнитель. " * 30 + "\n")
+    for i in range(3):
+        _write(g / "Системы", f"Склад{i}.md", f"# Склад{i}\n## Статус\nскладской учёт и приёмка {i}\n")
     s = _searcher(tmp_path)
     s.refresh(force=True)
     s.embed_pending()
-    assert _rels(s.search("провайдер", limit=3)) == ["Системы/Поставщик.md"]
     path = str(s.graph / "Системы" / "Поставщик.md")
     mt, vs = s._vecs[path]
+    assert len(vs) == 2
     s._vecs[path] = (mt, vs[:1])          # чужая нарезка: длина ≠ _expected_blocks
-    assert _rels(s.search("провайдер", limit=3)) == [], "вектор чужой длины — не свидетель"
+    return s
+
+
+@pytest.mark.parametrize("flag", [True, False])
+@pytest.mark.parametrize("query", ["провайдер", "платежи подписан"])
+def test_a_vector_of_another_slicing_stays_a_witness_as_on_main(tmp_path, monkeypatch, flag, query):
+    """Вектор другой длины, чем у текущей нарезки, номера блока не даёт, но файл
+    остаётся свидетелем семантики, как на базе: вердикт, `sem_share`, состав выдачи
+    и фрагмент те же при любом значении флага; метки нет."""
+    s = _foreign_slicing_graph(tmp_path)
+    monkeypatch.setattr(gs, "BLOCK_DATES", flag)
+    r = s.search(query, limit=3)
+    assert r.status == gs.Verdict.CONFIDENT and r.sem_used and r.reason == ""
+    assert r.blocks == [f"• Системы/Поставщик.md\n  {_BASE_FRAGMENT}"]
 
 
 def _rels(result: gs.Result) -> list[str]:
@@ -207,7 +230,7 @@ def test_the_rollback_flag_leaves_the_output_as_main(tmp_path, monkeypatch):
     s = _kira_graph(tmp_path)
     monkeypatch.setattr(gs, "BLOCK_DATES", False)
     touched = []
-    for name in ("_block_fragment", "_lex_winner", "_doc_block_dates"):
+    for name in ("_block_fragment", "_lex_winner", "_doc_block_dates", "_expected_blocks"):
         real = getattr(s, name)
         monkeypatch.setattr(s, name, lambda *a, _n=name, _r=real, **kw: touched.append(_n) or _r(*a, **kw))
     for q in ("последнее решение по проекту Альфа", "Кира", "старое решение"):
