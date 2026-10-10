@@ -886,8 +886,12 @@ it signals degradation, it does not break the loop.
   date of the best block for the query, not the file mtime, so a node
   rewritten by every meeting no longer floats an old fact above a fresh one
   (№633). The label is printed only when the shown text carries a single
-  date (a list with several meeting dates is dated by the matched line and
-  left unlabelled), and every lexical hit is dated by its own block.
+  date, or, when the shown text has no dates at all, only if every line of
+  the block has the same date (a list with several meeting dates is dated by
+  the matched line and left unlabelled). A date later than «today + one day»
+  is not a fact date and gets no label, a date in the file name included.
+  Lexical hits are dated by their own block within the 100 best files by
+  score before freshness; the rest keep the file date, as before.
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
