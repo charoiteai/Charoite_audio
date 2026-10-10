@@ -60,15 +60,16 @@ def _graph(tmp_path, node_text: str) -> gs.GraphSearch:
 
 _Q = "последнее решение по проекту Альфа"
 _OLD = "## Решения\n- [[Встречи/2026-03-02_1000]] — проект Альфа: старое решение. " + "наполнитель. " * 20
+_NEW_LESS = "## Новости\n- [[Встречи/2026-09-30_1000]] — проект, финальное решение. " + "наполнитель. " * 20
 _NEW = "## Новости\n- [[Встречи/2026-09-30_1000]] — проект Альфа, финальное решение. " + "наполнитель. " * 20
 
 
 def test_a_node_with_an_old_fact_goes_behind_the_fresh_meeting(tmp_path):
     """А/Б: узел с датированными блоками и mtime вчера — позади встречи 2026-09-30.
 
-    Лексический победитель запроса — старый блок (покрытие равно, раньше в файле),
-    поэтому дата узла — 2026-03-02, а не mtime. На `main` узел был бы первым."""
-    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW + "\n")
+    Лексический победитель запроса — старый блок (в новом нет слова «Альфа» — у
+    старого строго лучшее покрытие, на покрытие файла это не влияет), поэтому дата узла — 2026-03-02, а не mtime. На `main` узел был бы первым."""
+    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW_LESS + "\n")
     rels = _rels(s.search(_Q, limit=4, semantic=False))
     assert rels[0] == "Встречи/2026-09-30_1000.md"
     assert rels.index("Встречи/2026-09-30_1000.md") < rels.index("Люди/Кира.md")
@@ -84,7 +85,7 @@ def test_a_node_with_only_old_blocks_goes_behind_the_fresh_meeting(tmp_path):
 
 def test_the_fresh_meeting_wins_with_semantics_on_too(tmp_path):
     """Семантическая ветвь считает свежесть по дате блока-победителя так же."""
-    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW + "\n")
+    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW_LESS + "\n")
     rels = _rels(s.search(_Q, limit=4))
     assert rels[0] == "Встречи/2026-09-30_1000.md"
 
@@ -140,3 +141,15 @@ def test_the_order_does_not_depend_on_the_limit(tmp_path):
     few = _rels(s.search("проект Альфа решение", limit=4, semantic=False))
     many = _rels(s.search("проект Альфа решение", limit=10, semantic=False))
     assert few == many[:len(few)]
+
+
+def test_equal_coverage_is_won_by_the_fresher_block(tmp_path):
+    """Ничья покрытия — свежий блок: узел с одинаково подходящими старым и новым
+    блоками не прячет свежий факт за старым (раньше побеждал блок раньше в файле)."""
+    s = _graph(tmp_path, "# Кира\n" + _OLD + "\n" + _NEW + "\n")
+    d = s._gen.docs[str(s.graph / "Люди" / "Кира.md")]
+    words, grams = gs.needles(_Q)
+    keys = words + grams
+    rx = re.compile("|".join(re.escape(k) for k in keys))
+    win, _ = s._lex_winner(d, keys, rx)
+    assert s._doc_block_dates(d)[win].ts == gs._ts_from_iso("2026-09-30")

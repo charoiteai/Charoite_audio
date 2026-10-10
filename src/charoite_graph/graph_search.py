@@ -1818,14 +1818,20 @@ class GraphSearch:
 
     def _lex_winner(self, d: Doc, keys: Sequence[str], rx: re.Pattern | None) -> tuple[int | None, int]:
         """Номер блока файла с наибольшим покрытием слов запроса и само покрытие;
-        при равном покрытии — блок раньше в файле. Игл нет ни в одном блоке —
-        (None, 0). Покрытие — по тексту блока без первой строки (крошки): она
-        несёт имя файла и давала бы ложные ничьи. Для запроса без игл (одна фраза)
-        покрытие — есть ли фраза в блоке."""
+        при равном покрытии — блок свежее по дате (узел с одинаково подходящими
+        блоками не должен прятать свежий факт за старым), при равной дате — раньше
+        в файле. Игл нет ни в одном блоке — (None, 0). Покрытие — по тексту блока
+        без первой строки (крошки): она несёт имя файла и давала бы ложные ничьи.
+        Для запроса без игл (одна фраза) покрытие — есть ли фраза в блоке."""
         best_i, best_cov = None, 0
+        dates = self._doc_block_dates(d)
+
+        def fresh(i: int) -> float:
+            ts = dates[i].ts if i < len(dates) else None
+            return float("-inf") if ts is None else ts
         for i, text in enumerate(self._norm_blocks(d)):
             cov = _needle_cov(text, keys, rx)
-            if cov > best_cov:
+            if cov > best_cov or (cov == best_cov > 0 and best_i is not None and fresh(i) > fresh(best_i)):
                 best_i, best_cov = i, cov
         return best_i, best_cov
 
