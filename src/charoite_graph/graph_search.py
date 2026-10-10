@@ -160,6 +160,10 @@ class BlockDate:
     label: str | None = None
 
 
+#: Блок со строками разных дат: номер блока → (нормализованная строка, её явная дата).
+_MixedRows = dict[int, tuple[tuple[str, "BlockDate | None"], ...]]
+
+
 #: Регистр, ё→е, полноширинные латиница и цифры → обычные — тот же объект, что
 #: `text_norm.fold`: одна форма сравнения путей, имён и слов на поиск и схему
 #: хранилища. Форму Unicode здесь отдельно не приводят: NFC меняет ДЛИНУ
@@ -995,7 +999,9 @@ class GraphSearch:
         # Даты блоков при текущей схеме: путь → (mtime, потолок, даты блоков).
         # Отдельно от `_block_counts`: там только число, здесь — значение на
         # каждый блок. Пересчёт — при смене mtime или потолка, не на каждый поиск.
-        self._block_dates: dict[str, tuple[float, int, list[BlockDate]]] = {}
+        # Четвёртое поле — строки блоков, где встречаются две и более разных даты
+        # (список «## Встречи»): единица даты там строка, а не блок.
+        self._block_dates: dict[str, tuple[float, int, list[BlockDate], _MixedRows]] = {}
         # `data_dir=None` — кэша нет: векторы не читаются и не пишутся (лексический поиск
         # CLI без адреса модели), а не «несуществующий путь», который создал бы первый
         # писатель (входной круг 2 по №323 PR 2, M3)
@@ -1392,27 +1398,66 @@ class GraphSearch:
         self._block_counts[d.path] = (d.mtime, limit, n)
         return n
 
-    def _block_ts(self, d: Doc, win: int | None) -> float | None:
-        """Дата блока-победителя файла для запроса. None — победителя нет, номер
-        вне нарезки или дата неизвестна: тогда ранжирование идёт по `d.date_ts`,
-        как на `main`."""
+    def _block_ts(self, d: Doc, win: int | None, keys: Sequence[str] = (),
+                  rx: re.Pattern | None = None) -> float | None:
+        """Дата победителя файла для запроса. None — победителя нет, номер вне
+        нарезки или дата неизвестна: тогда ранжирование идёт по `d.date_ts`, как на
+        `main`."""
+        bd = self._win_date(d, win, keys, rx)
+        return None if bd is None else bd.ts
+
+    def _win_date(self, d: Doc, win: int | None, keys: Sequence[str] = (),
+                  rx: re.Pattern | None = None) -> BlockDate | None:
+        """Дата победителя: у блока из строк одной даты — дата блока; у блока со
+        строками разных дат (список встреч в одной секции) — дата строки с
+        наибольшим покрытием запроса, при равенстве — свежей; строка без ссылки
+        несёт дату блока, но без метки."""
         if win is None:
             return None
-        dates = self._doc_block_dates(d)
-        return dates[win].ts if 0 <= win < len(dates) else None
+        _mt, _lim, dates, mixed = self._date_entry(d)
+        if not 0 <= win < len(dates):
+            return None
+        bd = dates[win]
+        best: tuple[tuple[int, float], BlockDate] | None = None
+        for low, marked in mixed.get(win, ()):
+            cov = _needle_cov(low, keys, rx)
+            if cov <= 0:
+                continue
+            cand = marked if marked is not None else BlockDate(bd.ts, None)
+            rank = (cov, cand.ts if cand.ts is not None else float("-inf"))
+            if best is None or rank > best[0]:
+                best = (rank, cand)
+        return bd if best is None else best[1]
 
     def _doc_block_dates(self, d: Doc) -> list[BlockDate]:
-        """Даты блоков файла — с памятью на версию файла. Фолбэк-блок
-        (`chunks(...) or [d.text[:CHUNK_CHARS]]`) несёт дату файла: своей даты у
-        него нет по построению. Роль в потолке — от схемы, как у нарезки."""
+        """Даты блоков файла — с памятью на версию файла."""
+        return self._date_entry(d)[2]
+
+    def _date_entry(self, d: Doc) -> tuple[float, int, list[BlockDate], _MixedRows]:
+        """Даты блоков и строки блоков со смесью дат — одна нарезка на версию
+        файла. Фолбэк-блок (`chunks(...) or [d.text[:CHUNK_CHARS]]`) несёт дату
+        файла: своей даты у него нет по построению. Роль в потолке — от схемы, как
+        у нарезки. Дата позже «сегодня + сутки» датой факта не считается."""
         limit = self._block_limit(d)
         seen = self._block_dates.get(d.path)
         if seen is not None and seen[:2] == (d.mtime, limit):
-            return seen[2]
+            return seen
+        not_after = self._now() + 86400
         parts = chunks(pathlib.PurePosixPath(d.rel).stem, d.text, limit=limit)
-        dates = file_block_dates(d, self.schema, parts, self._now() + 86400) if parts else [BlockDate(d.date_ts, None)]
-        self._block_dates[d.path] = (d.mtime, limit, dates)
-        return dates
+        mixed: _MixedRows = {}
+        if parts:
+            dates = file_block_dates(d, self.schema, parts, not_after)
+            if name_date(d.rel) is None:
+                for i, part in enumerate(parts):
+                    rows = [(ln, _block_date_marked(ln, self.schema, not_after))
+                            for ln in _without_crumb(part).split("\n")]
+                    if len({m.ts for _ln, m in rows if m is not None}) >= 2:
+                        mixed[i] = tuple((norm(ln), m) for ln, m in rows)
+        else:
+            dates = [BlockDate(d.date_ts, None)]
+        entry = (d.mtime, limit, dates, mixed)
+        self._block_dates[d.path] = entry
+        return entry
 
     def pending_vectors(self, gen: Generation | None = None) -> list[str]:
         """Файлы без свежего вектора. `gen` — поколение вызывающего, если он уже
@@ -1596,8 +1641,8 @@ class GraphSearch:
             for score, d, matched in scored:
                 ts = d.date_ts
                 if BLOCK_DATES and d.rel in top:
-                    win, _cov = self._lex_winner(d, keys, None)
-                    got = self._block_ts(d, win)
+                    win, _cov = self._lex_winner(d, keys, rx)
+                    got = self._block_ts(d, win, keys, rx)
                     if got is not None:
                         ts = got               # дата победителя лексики, не всего файла
                 score *= coverage_factor(matched, len(keys)) * recency_factor(ts, now)
@@ -1610,7 +1655,7 @@ class GraphSearch:
                     ts = d.date_ts
                     if BLOCK_DATES:
                         win, _cov = self._lex_winner(d, keys, rx)
-                        got = self._block_ts(d, win)
+                        got = self._block_ts(d, win, keys, rx)
                         if got is not None:
                             ts = got
                     lex.append((recency_factor(ts, now), d.rel))
@@ -1663,7 +1708,7 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     ts = d.date_ts
                     if BLOCK_DATES:
-                        got = self._block_ts(d, sem_win.get(d.rel))
+                        got = self._block_ts(d, sem_win.get(d.rel), keys, rx)
                         if got is not None:
                             ts = got            # дата блока-победителя семантики
                     sem.append((sim * recency_factor(ts, now) * raw_dampener(d.rel, self.schema) * placeholder_factor(d.base), d.rel))
@@ -1767,7 +1812,8 @@ class GraphSearch:
             head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
             # дата — максимум по ПОКАЗАННОМУ куску, а не по всему телу: ссылка на
             # встречу после обрезки даты не даёт (№633)
-            bd = _block_date_marked(head, self.schema, self._now() + 86400) if BLOCK_DATES else None
+            bd = self._one_date(_block_date_marked(head, self.schema, self._now() + 86400), head, d) \
+                if BLOCK_DATES else None
             label = _date_label(bd) if BLOCK_DATES else ""
             out.append((d.rel, f"📁 Досье «{e['тема']}»\n  {label}{head}"))
             best = max(best, min(1.0, float(e.get("счёт", 0))))
@@ -1781,10 +1827,7 @@ class GraphSearch:
         покрытие — есть ли фраза в блоке."""
         best_i, best_cov = None, 0
         for i, text in enumerate(self._norm_blocks(d)):
-            if keys:
-                cov = sum(1 for k in keys if k in text)
-            else:
-                cov = 1 if rx is not None and rx.search(text) else 0
+            cov = _needle_cov(text, keys, rx)
             if cov > best_cov:
                 best_i, best_cov = i, cov
         return best_i, best_cov
@@ -1812,16 +1855,27 @@ class GraphSearch:
             return main_frag, None            # игл в блоке нет — как на `main`
         if require_cov:
             lows = self._norm_blocks(d)
-
-            def cov(low: str) -> int:
-                return sum(1 for k in keys if k in low) if keys else (1 if rx.search(low) else 0)
-            if cov(lows[win]) < cov(norm(main_frag)):
+            if _needle_cov(lows[win], keys, rx) < _needle_cov(norm(main_frag), keys, rx):
                 # лексический победитель слабее окна основного тела (узел длиннее
                 # потолка блоков — середина выброшена): фрагмент как на `main`
                 return main_frag, None
+        bd = self._win_date(d, win, keys, rx)
         if len(d.body or d.text) <= chars + chars // 2:
-            return main_frag, self._doc_block_dates(d)[win]
-        return _frag_or_head(_without_crumb(block), rx, chars, rare, dense), self._doc_block_dates(d)[win]
+            shown = main_frag
+        else:
+            shown = _frag_or_head(_without_crumb(block), rx, chars, rare, dense)
+        return shown, self._one_date(bd, shown, d)
+
+    def _one_date(self, bd: BlockDate | None, shown: str, d: Doc) -> BlockDate | None:
+        """Метка ставится, только когда в ПОКАЗАННОМ тексте одна дата — та, что
+        получил победитель: фрагмент с датами разных строк (короткий узел целиком,
+        окно через две строки списка) под одной меткой солгал бы про остальные.
+        Дату ранжирования это не меняет. Дата в имени файла (встреча) от ссылок
+        внутри не зависит."""
+        if bd is None or bd.label is None or name_date(d.rel) is not None:
+            return bd
+        seen = {m.ts for m in _marked_dates(shown, self.schema, self._now() + 86400)}
+        return bd if seen <= {bd.ts} else BlockDate(bd.ts, None)
 
     def _fragment(self, d: Doc, rx: re.Pattern, chars: int, rare: Sequence[str]) -> str:
         """Фрагмент документа для выдачи и для перехода — одно правило на оба места:

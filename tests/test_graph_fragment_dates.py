@@ -148,6 +148,65 @@ def test_a_short_node_is_shown_whole_but_dated_by_the_winner(tmp_path):
     assert "решение принято" in lines[1]
 
 
+# ------------------------------------------- Р2: единица даты — строка списка
+_FILL = "подробности обсуждения и сопутствующие обстоятельства дела " * 15
+
+
+def _list_node_graph(tmp_path, long_lines: bool) -> gs.GraphSearch:
+    """Узел человека с секцией `## Встречи`: строки разных дат в ОДНОМ блоке. Свежая
+    встреча рядом — узел и она должны разойтись по дате строки, а не по максимуму блока."""
+    g = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
+        (g / d).mkdir(parents=True, exist_ok=True)
+    fill = _FILL if long_lines else ""
+    _write(g / "Люди", "Иван.md",
+           "# Иван\n## Встречи\n"
+           f"- [[Встречи/2026-03-02_1000]] — Иван отвечает за выплаты. {fill}\n"
+           f"- [[Встречи/2026-05-10_1000]] — Иван ведёт реестр лицензий. {fill}\n"
+           f"- [[Встречи/2026-09-30_1000]] — Иван перешёл в проект Гамма. {fill}\n")
+    _write(g / "Встречи", "2026-09-30_1000.md", "# Гамма\nУчастники: [[Люди/Иван]]\nИван перешёл в проект Гамма\n")
+    _write(g / "Встречи", "2026-03-02_1000.md", "# Выплаты\nУчастники: [[Люди/Иван]]\nИван отвечает за выплаты\n")
+    os.utime(g / "Люди" / "Иван.md", (NOW - 86400, NOW - 86400))
+    s = _searcher(tmp_path)
+    s.refresh(force=True)
+    s.embed_pending()
+    return s
+
+
+def test_a_list_node_is_dated_by_the_matched_line_not_by_the_freshest_line(tmp_path):
+    """Запрос по старой строке списка: дата узла — дата ЭТОЙ строки (03-02), а не
+    максимум блока (09-30); по свежей строке — 09-30."""
+    s = _list_node_graph(tmp_path, long_lines=False)
+    d = s._gen.docs[str(s.graph / "Люди" / "Иван.md")]
+    for q, want in (("кто отвечает за выплаты", "2026-03-02"), ("Иван перешёл в проект Гамма", "2026-09-30")):
+        words, grams = gs.needles(q)
+        rx = re.compile("|".join(re.escape(k) for k in words + grams))
+        win, _ = s._lex_winner(d, words + grams, rx)
+        assert s._block_ts(d, win, words + grams, rx) == gs._ts_from_iso(want), q
+
+
+def test_a_short_list_node_shown_whole_has_no_label(tmp_path):
+    """Узел из строк трёх дат показан целиком — под одной меткой солгал бы про
+    остальные строки: метки нет. Позиция в выдаче — по дате найденной строки."""
+    s = _list_node_graph(tmp_path, long_lines=False)
+    r = s.search("кто отвечает за выплаты", limit=4, semantic=False)
+    block = _block_for(r, "Люди/Иван.md")
+    assert "[встреча" not in block and "[упомянуто" not in block
+    rels = _rels(r)
+    assert rels.index("Встречи/2026-03-02_1000.md") < rels.index("Люди/Иван.md"), \
+        "старый факт узла не встаёт впереди встречи с тем же фактом из-за свежей соседней строки"
+
+
+def test_a_window_with_one_line_gets_that_lines_label(tmp_path):
+    """Длинный узел: окно вокруг иглы показывает одну строку списка — метка её даты,
+    а не максимума блока."""
+    s = _list_node_graph(tmp_path, long_lines=True)
+    r = s.search("кто отвечает за выплаты", limit=4, semantic=False)
+    line = _block_for(r, "Люди/Иван.md").split("\n")[1]
+    assert line.startswith("  [встреча 2026-03-02] "), line[:120]
+    assert "перешёл в проект Гамма" not in line
+
+
 # ------------------------------------------------------------------- досье
 def test_the_dossier_date_is_taken_from_the_shown_slice(tmp_path):
     from charoite_graph import dossier as dossier_mod
