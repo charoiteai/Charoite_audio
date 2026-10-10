@@ -11,13 +11,6 @@ merging happens in memory during a single recording and is discarded.
 
 ## Near
 
-- **Live thread rewrite (MeetingState)** — the current thread repeats
-  itself and grows without structure. Prototype №689 showed that a pure
-  incremental prompt fails after ~20 minutes (topics merge, questions
-  are not linked across time, nothing closes, length explodes).
-  Replace it with an explicit state: topic detector, open-question list,
-  collapse of closed topics, and a hard 1500-character screen view.
-  Design: [docs/design/meeting-state.md](docs/design/meeting-state.md).
 - **Full English and Chinese faces** — the engine, the macOS UI and the phone
   speak all three; the archive summary follows `sufler.language`, and reading
   is separate from writing, so switching the language no longer breaks the
