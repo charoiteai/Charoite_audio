@@ -309,12 +309,17 @@ final class NemotronEngineService: ObservableObject {
                 if decision == .attemptWrite, admit() != nil {
                     decision = blocked()
                 } else if decision == .attemptWrite {
+                    var gateBusy = false   // отказал именно допуск внутри CAS, а не проверка/запись
                     let cas = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r1,
                                                                            value: "nemotron", root: root,
-                                                                           recheck: { [self] in writeRefusal(root) })
+                                                                           recheck: { [self] in
+                        let why = writeRefusal(root)
+                        gateBusy = why != nil && admit() != nil
+                        return why
+                    })
                     // Отказ допуска внутри CAS (запись или выход начались во время
                     // проверки записи) — тот же исход, что до неё (сверка fix7 №1).
-                    if case .failed = cas, admit() != nil {
+                    if case .failed = cas, gateBusy {
                         decision = blocked()
                     } else {
                         decision = decide(true, "", cas)
@@ -375,8 +380,10 @@ final class NemotronEngineService: ObservableObject {
         let r0 = AppSettings.configValue("diarize_backend", root: root)
         configWriteInFlight = true
         return Task { @MainActor [self] in
+            var quitting = false   // отказал выход внутри CAS, а не проверка/запись
             let cas = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r0, value: "sherpa",
                                                                   root: root, recheck: {
+                quitting = terminationInProgress
                 // Выключение при записи встречи разрешено (sherpa — движок по умолчанию),
                 // держим только выход и корень.
                 if terminationInProgress { return L.t("приложение закрывается", "the app is quitting", "应用正在退出") }
@@ -386,11 +393,11 @@ final class NemotronEngineService: ObservableObject {
                     : nil
             })
             configWriteInFlight = false
-            disableFinished(cas)
+            disableFinished(cas, quitting: quitting)
         }
     }
 
-    private func disableFinished(_ cas: AppSettings.ConfigCAS) {
+    private func disableFinished(_ cas: AppSettings.ConfigCAS, quitting: Bool) {
         switch cas {
         case .written:
             setOutcome(ActionOutcome(text: L.t("Nemotron выключен — голоса размечает sherpa",
@@ -400,7 +407,7 @@ final class NemotronEngineService: ObservableObject {
             setOutcome(ActionOutcome(text: L.t("конфиг изменили — не выключено, проверьте ещё раз",
                                                "the config changed — not disabled, check again",
                                                "配置已被修改——未停用，请再检查"), success: false))
-        case .failed where terminationInProgress:
+        case .failed where quitting:
             // Отказ допуска внутри CAS, а не сбой записи (сверка fix7 №1).
             setOutcome(ActionOutcome(text: L.t("приложение закрывается — не выключено", "the app is quitting — not disabled",
                                                "应用正在退出——未停用"), success: false))

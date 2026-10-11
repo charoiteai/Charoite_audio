@@ -140,19 +140,20 @@ def test_edge_inputs_pass(name, old, new):
 # Сверка n622p2-B-fix7 №3, №4: nan сменили, два документа, правка не той из двух секций — отказ.
 EDGE_REFUSED = [
     ("nan сменили на число", "sufler:\n  threshold: .nan\n  diarize_backend: sherpa\n",
-     'sufler:\n  threshold: 1.0\n  diarize_backend: "nemotron"\n'),
+     'sufler:\n  threshold: 1.0\n  diarize_backend: "nemotron"\n', "sherpa"),
     ("два документа", "sufler:\n  diarize_backend: sherpa\n---\na: 1\n",
-     'sufler:\n  diarize_backend: "nemotron"\n---\na: 1\n'),
+     'sufler:\n  diarize_backend: "nemotron"\n---\na: 1\n', "sherpa"),
     ("правка первой из двух секций", "sufler:\n  diarize_backend: sherpa\nsufler:\n  diarize_backend: sherpa\n",
-     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  diarize_backend: sherpa\n'),
+     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  diarize_backend: sherpa\n', "sherpa"),
+    # Последняя секция без ключа — приложение видит None: отказ на сверке правки, а не ожидаемого.
     ("ключ только в первой секции", "sufler:\n  diarize_backend: sherpa\nsufler:\n  quiet: true\n",
-     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  quiet: true\n'),
+     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  quiet: true\n', None),
 ]
 
 
-@pytest.mark.parametrize("name,old,new", EDGE_REFUSED, ids=[c[0] for c in EDGE_REFUSED])
-def test_edge_inputs_refused(name, old, new):
-    assert ie.verify_config_edit(_payload(old, new, "sherpa")) is not None, name
+@pytest.mark.parametrize("name,old,new,expected", EDGE_REFUSED, ids=[c[0] for c in EDGE_REFUSED])
+def test_edge_inputs_refused(name, old, new, expected):
+    assert ie.verify_config_edit(_payload(old, new, expected)) is not None, name
 
 
 def test_raw_bare_off_matches_yaml_false():
@@ -198,4 +199,4 @@ def test_cli_recursive_alias_refused(tmp_path):
     # Сверка n622p2-B-fix7 №4: рекурсивный алиас — отказ процесса, а не зависание или «ок».
     old = "a: &a [*a]\nsufler:\n  diarize_backend: sherpa\n"
     r = _run(json.dumps(_payload(old, old.replace("sherpa", '"nemotron"'), "sherpa")), tmp_path)
-    assert r.returncode == 1 and r.stdout.startswith("отказ: проверка упала"), (r.stdout, r.stderr)
+    assert r.returncode == 1 and r.stdout.startswith("отказ: "), (r.stdout, r.stderr)

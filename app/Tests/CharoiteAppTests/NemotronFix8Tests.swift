@@ -28,6 +28,13 @@ final class NemotronFix8Tests: XCTestCase {
 
     private var configURL: URL { root.appendingPathComponent("config/config.yaml") }
 
+    /// Проверка записи падает через 0,6 с с кодом 3 — сбой самой проверки, а не допуска.
+    private func failingCheck() throws {
+        let sh = root.appendingPathComponent("failing_check.sh")
+        try "#!/bin/sh\ncat >/dev/null\nsleep 0.6\nexit 3\n".write(to: sh, atomically: true, encoding: .utf8)
+        ConfigEditCheck.current = ConfigEditCheck(python: URL(fileURLWithPath: "/bin/sh"), script: sh.path)
+    }
+
     private func makeService() -> NemotronEngineService {
         NemotronEngineService(
             makeProcess: { [unowned self] args, _, _, _ in
@@ -92,6 +99,65 @@ final class NemotronFix8Tests: XCTestCase {
         guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
         XCTAssertFalse(o.success)
         XCTAssertFalse(o.text.contains("config.yaml"), o.text)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+    }
+
+    // Сверка n622p2-B-fix8 №1: проверка упала сама, запись встречи началась во время
+    // неё — причина сбоя видна, а не «идёт запись встречи».
+    func testFix9СбойПроверкиПриЗаписиПоказываетПричину() async throws {
+        try failingCheck()
+        let before = "sufler:\n  diarize_backend: sherpa\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        s.startEnable()
+        processes[0].finish(NemotronPlanTests.outcome("ok"))
+        await eventually("план после пробы") { processes.count == 2 }
+        processes[1].finish(plan(state: "ready_off", "enable"))
+        try await Task.sleep(nanoseconds: 250_000_000)   // проверка записи идёт
+        recording = true
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.text.hasSuffix(" 3"), "причина — код 3: \(o.text)")
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+    }
+
+    // Сверка n622p2-B-fix8 №3, обратное направление: допуск свободен, проверка упала —
+    // причина видна.
+    func testFix9СбойПроверкиБезЗаписиПоказываетПричину() async throws {
+        try failingCheck()
+        let before = "sufler:\n  diarize_backend: sherpa\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        s.startEnable()
+        processes[0].finish(NemotronPlanTests.outcome("ok"))
+        await eventually("план после пробы") { processes.count == 2 }
+        processes[1].finish(plan(state: "ready_off", "enable"))
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.text.hasSuffix(" 3"), "причина — код 3: \(o.text)")
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+    }
+
+    // Сверка n622p2-B-fix8 №2: проверка выключения упала сама, выход начался во время
+    // неё — причина видна, а не «приложение закрывается».
+    func testFix9СбойПроверкиВыключенияПриВыходеПоказываетПричину() async throws {
+        try failingCheck()
+        let before = "sufler:\n  diarize_backend: nemotron\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        s.requestPlan()
+        processes[0].finish(plan(state: "enabled", "disable"))
+        await eventually("план") { if case .ready = s.plan { return true }; return false }
+        let t = s.disable()
+        XCTAssertNotNil(t)
+        try await Task.sleep(nanoseconds: 250_000_000)   // проверка записи идёт
+        s.terminationInProgress = true
+        await t?.value
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.text.hasSuffix(" 3"), "причина — код 3: \(o.text)")
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
     }
 }
