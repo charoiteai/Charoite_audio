@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import importlib.util
 import pathlib
 import platform
 import shlex
@@ -226,6 +227,60 @@ def check_stt(cfg: dict) -> None:
         line(FAIL, "stt.backend: sensevoice, но модели нет",
              ".venv/bin/python scripts/get_models.py --stt sensevoice — "
              "228 МБ, качается один раз")
+
+
+def check_nli(*, probe: bool = False) -> bool | None:
+    """Файлы — дешёвая проверка; инференс — только по --probe-nli.
+
+    None означает непроверенный инференс или отложенную пробу. True —
+    положительная канарейка судьи ответила, не оценка качества на встречах.
+    """
+    root = _root()
+    folder = root / "models" / "nli"
+    mark = FAIL if probe else WARN
+    try:
+        missing = [name for name in ("model.onnx", "tokenizer.json", "config.json")
+                   if not (folder / name).is_file() or (folder / name).stat().st_size == 0]
+    except OSError:
+        line(mark, "NLI: не удалось прочитать файлы модели",
+             "проверьте доступ к models/nli в корне данных")
+        return False
+    if missing:
+        line(mark, f"NLI: нет или пусты {', '.join(missing)} — комплект модели неполный",
+             "в models/nli нужны model.onnx, tokenizer.json и config.json из одного экспорта; "
+             "инструкция — src/nli.py")
+        return False
+    try:
+        packages = [name for name in ("onnxruntime", "tokenizers")
+                    if importlib.util.find_spec(name) is None]
+    except (ImportError, ValueError):
+        packages = ["onnxruntime/tokenizers"]
+    if packages:
+        line(mark, f"NLI: недоступны пакеты {', '.join(packages)}",
+             "восстановите зависимости Python приложения")
+        return False
+    if not probe:
+        line(WARN, "NLI: файлы и пакеты на месте; инференс не проверен",
+             "scripts/doctor.py --probe-nli — локальная проба без скачивания весов")
+        return None
+    import live_gate
+    if live_gate.daemon_alive(root):
+        line(WARN, "NLI: проба отложена — идёт встреча",
+             "повторите --probe-nli после остановки встречи")
+        return None
+    import nli
+    try:
+        judge = nli.judge()
+        if judge.refused or not judge.ready():
+            line(FAIL, "NLI: локальная проба не прошла",
+                 "проверьте целостность весов и совместимость экспорта в models/nli")
+            return False
+    except Exception as exc:  # noqa: BLE001 — диагностический отказ, без текста пользовательских данных
+        line(FAIL, f"NLI: локальная проба завершилась ошибкой {type(exc).__name__}",
+             "проверьте зависимости и экспорт модели")
+        return False
+    line(OK, "NLI: локальная проба прошла; качество на встречах не измерено")
+    return True
 
 
 def check_models() -> None:
@@ -608,10 +663,16 @@ def restart_llm() -> None:
 def main() -> None:
     harden_umask()   # --restart-llm создаёт logs/mlx_server.log сервера моделей — только владельцу
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--restart-llm", action="store_true",
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--restart-llm", action="store_true",
                     help="аварийный перезапуск сервера моделей поверх живых аренд "
                          "(единственный ручной выход при зависшем владельце порта)")
+    mode.add_argument("--probe-nli", action="store_true",
+                      help="только локальная проба NLI; не запускает диагностику LLM или скачивание")
     args = ap.parse_args()
+    if args.probe_nli:
+        print("Charoite doctor: NLI\n")
+        sys.exit(0 if check_nli(probe=True) is True else 1)
     if args.restart_llm:
         restart_llm()
         return
@@ -623,6 +684,7 @@ def main() -> None:
     check_ollama(cfg)
     check_stt(cfg)
     check_models()
+    check_nli()
     check_engine(cfg)
     print("\nРабочее состояние")
     alive = check_llm_alive(cfg)

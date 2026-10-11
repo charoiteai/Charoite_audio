@@ -306,6 +306,15 @@ into `models/nli/` under the data root, for example with
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
 
+The regular `scripts/doctor.py` checks NLI files and packages without loading the model. Installed files do not mean inference works. For a dedicated local probe:
+
+```bash
+CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli
+```
+
+This checks only NLI, downloads no weights, and makes no LLM requests. During a meeting the probe is deferred. Exit 0 means the judge canary passed; exit 1 means unavailable, failed, or deferred. This checks readiness, not quality on real meetings.
+
+
 ## Decision gate (research, shadow mode only)
 
 Should a remark wake the model for ⚡ at all? Today structural checks decide
