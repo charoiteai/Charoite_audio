@@ -485,6 +485,32 @@ def coverage(m: dict, *, min_s: float = MIN_VOICE_S) -> dict[str, float]:
     return out
 
 
+def speech_coverage(hyp: list[Interval], reference: list[Interval], *, total: float) -> dict:
+    """Покрытие речи любыми метками, без порога длительности голоса.
+
+    Общие секунды — объединение интервалов, а каждый голос считается отдельно:
+    два одновременно говорящих имеют полные секунды в своих строках. Наличие
+    метки не доказывает правильную личность — её оценивают DER/чистота.
+    """
+    def measured(ref: list[Interval]) -> tuple[dict, float]:
+        matrix = overlap_matrix(hyp, ref, lo=0.0, hi=total)
+        covered = sum(v for (p, q), v in matrix.items() if p != NONE and q != NONE)
+        missed = sum(v for (p, q), v in matrix.items() if p == NONE and q != NONE)
+        extra = sum(v for (p, q), v in matrix.items() if p != NONE and q == NONE)
+        seconds = covered + missed
+        return {"reference_s": round(seconds, 3), "covered_s": round(covered, 3),
+                "missed_s": round(missed, 3),
+                "coverage": round(covered / seconds, 4) if seconds else None}, extra
+
+    result, extra = measured(reference)
+    result["extra_s"] = round(extra, 3)
+    by_voice: dict[str, list[Interval]] = collections.defaultdict(list)
+    for segment in reference:
+        by_voice[segment[2]].append(segment)
+    result["voices"] = {voice: measured(segments)[0] for voice, segments in sorted(by_voice.items())}
+    return result
+
+
 def fragmentation(m: dict, *, min_s: float = MIN_VOICE_S, share: float = FRAGMENT_SHARE) -> dict[str, int]:
     """Во скольких слотах лежит заметная (≥ `share`) доля голоса."""
     cols: dict[str, dict[str, float]] = collections.defaultdict(dict)
@@ -611,6 +637,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
             "matrix_s": {f"{p}|{q}": round(v, 1) for (p, q), v in sorted(m.items())},
             "purity": purity(m),
             "coverage": coverage(m),
+            "speech_coverage": speech_coverage(stream, fin, total=total),
             "fragmentation": fragmentation(m),
             "windowed": windowed_purity(stream, fin, total=total),
             "prefix": prefix_mapping(stream, fin, total=total),
@@ -623,6 +650,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         "labels": len({lab for _, _, lab in shown if lab != CHANNEL}),
         "channel_s": round(sum(cnt for (p, _q), cnt in sm.items() if p == CHANNEL), 1),
         "unfed_s": unfed_s,
+        "speech_coverage": speech_coverage(shown, fin, total=total),
         "voices_final": len({lab for _, _, lab in fin}),
         **foreign(sm),
         "der": der(fin, shown, total),
