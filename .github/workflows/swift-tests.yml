@@ -12,11 +12,15 @@ on:
       - "app/**"
       - "app-ios/**"
       - "scripts/install_engine.py"
+      - ".swiftlint.yml"
+      - ".github/workflows/swift-tests.yml"
   push:
     paths:
       - "app/**"
       - "app-ios/**"
       - "scripts/install_engine.py"
+      - ".swiftlint.yml"
+      - ".github/workflows/swift-tests.yml"
 
 concurrency:
   # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,

@@ -446,6 +446,9 @@ enum ArchiveSearch {
             if shown.count >= limit { shown.removeLast() }
             shown.append(topHit)
         }
+        shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
+                              snippet: snippet, limit: limit,
+                              strongSemantic: bestSim >= 0.47 ? sem.first?.path : nil)
         let (body, keptHits) = packContextKept(shown, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
@@ -459,6 +462,34 @@ enum ArchiveSearch {
             return Outcome(text: lowConfidenceMarker + body, rels: rels)
         }
         return Outcome(text: body, rels: rels)
+    }
+
+    static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
+                              snippet: Int, limit: Int, strongSemantic: String?) -> [Hit] {
+        var shown = original
+        // Reserve one slot for the outgoing link of a matched node: its decision
+        // may live in a meeting without any of the query's words. This context
+        // does not raise bestCov/bestSim or clear the honesty marker.
+        if limit >= 2 {
+            let seedRels = Array(shown.prefix(2).map(\.rel))
+            let neighbors = ArchiveLinks.neighbors(seeds: seedRels, documents: documents)
+            if let neighbor = neighbors.first(where: { candidate in
+                !shown.contains(where: { $0.rel == candidate.rel })
+            }), let text = documents[neighbor.rel] {
+                let fragment = bestWindow(text: text, needles: needles, span: snippet)
+                if !fragment.isEmpty {
+                    let protected = Set([shown.first?.rel, neighbor.parent,
+                                         strongSemantic].compactMap { $0 })
+                    let replace = shown.lastIndex(where: { !protected.contains($0.rel) })
+                    if shown.count < limit || replace != nil {
+                        if shown.count >= limit, let replace { shown.remove(at: replace) }
+                        shown.append(Hit(score: 0, rel: neighbor.rel,
+                                         block: "• \(neighbor.rel)\n  Связано с [[\(neighbor.parent)]]\n  …\(fragment)…"))
+                    }
+                }
+            }
+        }
+        return shown
     }
 
     // MARK: - Бюджет контекста

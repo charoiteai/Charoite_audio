@@ -144,7 +144,7 @@
     },
     "nli": {
       "layer": "llm",
-      "why": "ONNX-инференс NLI-модели; читают tier3 и daemon"
+      "why": "ONNX-инференс NLI-модели; читают tier3, daemon и scripts/doctor.py (годность — refusal(), проба — judge())"
     },
     "decision_gate": {
       "layer": "llm",
@@ -261,7 +261,11 @@
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
+    "scripts/memory_case_suite.py": "валидация и экспорт учебных вопросов памяти, ручной прогон",
+    "scripts/retrieval_compare.py": "сравнение результатов поиска по эталонным вопросам, ручной прогон",
+    "scripts/decision_evidence_audit.py": "проверка цитат и истории решений в экспортированных записях, ручной прогон",
+    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -375,6 +379,10 @@
       "ticket": "№364 (проба вместо none)"
     },
     "scripts/memory_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/memory_case_suite.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },
@@ -505,6 +513,18 @@
     "src/voice_memos_bridge.py": {
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
+    },
+    "scripts/retrieval_compare.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/decision_evidence_audit.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/runtime_profile.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
     }
   },
   "schema_module": "src/charoite_graph/graph_schema.py",

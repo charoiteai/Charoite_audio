@@ -331,7 +331,7 @@ DER (diarization error rate): долю времени речи, подписан
 напечатает точный каталог):
 
 ```bash
-.venv/bin/pip install "mlx-audio==0.5.6"
+.venv/bin/pip install "mlx-audio==0.5.8"
 .venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
 .venv/bin/python scripts/diar_bench.py --make --crosstalk
 .venv/bin/python scripts/diar_bench.py --crosstalk --engine compare

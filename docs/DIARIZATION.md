@@ -343,7 +343,7 @@ the development venv (paths are relative to the repo root; with `CHAROITE_ROOT`
 set, the bench prints the exact folder):
 
 ```bash
-.venv/bin/pip install "mlx-audio==0.5.6"
+.venv/bin/pip install "mlx-audio==0.5.8"
 .venv/bin/hf download mlx-community/Nemotron-3-Diarization --local-dir models/diar/nemotron
 .venv/bin/python scripts/diar_bench.py --make --crosstalk
 .venv/bin/python scripts/diar_bench.py --crosstalk --engine compare
@@ -657,8 +657,13 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   people, and a local path carries the account name. A misspelt
   `diarize_backend`, a reply with no segments or one segment over the whole
   recording fall back the same way, each with its own short reason.
-- **What happens to the segments.** Shorter than 1 s — dropped, as sherpa's
-  are. The call channel then loses overlaps, whatever the engine: a partial
+- **What happens to the segments.** Sherpa drops segments shorter than 1 s.
+  Nemotron keeps replies of at least 0.6 s (the minimum STT window) when that
+  slot also has a segment of at least 1 s somewhere in the recording. A slot
+  made only of subsecond fragments remains filtered out; slots for the model
+  ceiling are still counted before filtering. This preserves isolated short
+  replies of established voices without promoting fragment-only slots.
+  The call channel then loses overlaps, whatever the engine: a partial
   overlap is split in the middle; a reply longer than 1 s inside someone else's
   cuts it in three; a shorter one goes to the enclosing voice — its sound is
   still transcribed inside that segment, only the authorship is lost, as with a
@@ -714,6 +719,33 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
   sherpa pass on one thread runs at RTF 0.35 — about 7 minutes for 20 minutes
   of call; on two threads see below.
+
+### Application boundaries
+
+These rules apply to the Nemotron **diarization** checkpoint, not to a text LLM.
+A slot is local to one model run; neither its number nor a matching number in
+another recording establishes a person's identity.
+
+| Scenario | Current use | Evidence required before expanding it |
+| --- | --- | --- |
+| Recording after a meeting | Selected backend, with sherpa fallback and refusal notes | Labeled recordings: missed speech, false speech, speaker confusion and runtime; compare the final transcript, not just raw model segments |
+| Live call | Call channel only; `off` → `shadow` → `on`, retaining the tracker | Replay then actual calls: p95/max label waits, fallback share/reasons, uncovered speech, shown-label confusion, memory and STT backlog |
+| Room microphone | Offline pass; room refusal checks and echo/overlap handling | Separate room set with reverberation, simultaneous speech and short replies; the live call-stream results do not validate live room capture |
+| Person across meetings | Slot numbers must not be reused as identity | Separate voice-embedding/identity layer, registered examples and an unknown result; test wrong-person matches on other meetings before attaching names |
+| Text tasks | Diarization is not used | Use the text pipeline's LLM/NLI models for their respective tasks |
+
+For live evaluation, use `scripts/nemotron_shadow_replay.py` followed by
+`scripts/nemotron_shadow_check.py` with the final segments, tracker journal,
+timing and replay metadata. The final offline pass is a comparison baseline,
+not human ground truth: agreement with it alone cannot prove diarization
+accuracy. Use independently annotated speech for the quality verdict.
+
+The short-reply adapter tests prove retention down to the existing 0.6 s STT
+floor for established slots. They do not prove acoustic recall, recover speech
+missed by the model, or preserve simultaneous speakers after `disjoint`.
+Changing embeddings or adding cross-meeting identification requires its own
+held-out evaluation; replacing diarization with an identity model is not a
+substitute for that evaluation.
 
 ### Threads, and yielding to a live meeting
 
@@ -821,6 +853,22 @@ nothing in the transcript (default `off`).
   memory probe run outside it, so a slow disk under `logs/` delays the journal,
   not the recording.
 
+The report also separates **speech presence** from speaker assignment.
+`b_slots.speech_coverage` compares raw stream speech with the final pass;
+`d_shown.speech_coverage` compares the feed's reconstructed labels, including
+channel-only speech. Both report reference, covered and missed seconds,
+coverage and extra speech, plus a `voices` row for every reference voice,
+including a person who only spoke for 0.8 seconds. The older `coverage` metric
+still uses its 30-second minimum and measures the best single slot's share.
+The new metric counts speech under any label: a wrong name can have perfect
+speech coverage, so retain DER and label purity for assignment quality.
+
+Overall seconds count interval unions within the recording boundaries; each
+voice's row counts its own full intervals, so simultaneous speakers can make
+the sum of voice rows exceed the overall speech time. This is comparison with
+the final pass, not human annotation, and does not prove that words were
+recognized correctly or that the stream recovered every simultaneous speaker.
+
 ### Live labels (`on`)
 
 `sufler.live_nemotron: on` puts the stream's labels into the live transcript for
@@ -836,6 +884,17 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   A stream that has not started, is dead, is further behind than the cap, or
   hears no speech in the chunk leaves the chunk to the tracker; the journal line
   says why (`fallback`).
+- **Measure fallback waits too.** In the shadow check report, `sources` keeps
+  `wait_labeled_s` for chunks whose label became available. For `on` journals,
+  `wait_all_s` includes every stream decision, including timeouts and immediate
+  fallback; `wait_all_share` shows the fraction above each wait threshold.
+  `wait_fallback_s` isolates chunks whose layout used the tracker, including
+  labelled chunks that fell back because there was no stream speech. A run
+  with 90 fast labels and 10 two-second timeouts has a two-second overall p95,
+  even if its labelled-only p95 is 0.1 s. These times measure the journal's
+  stream-decision wait, not total recognition or feed latency. Shadow-only
+  observations do not provide the `on` waiting distribution; measure actual
+  `on` calls as well. This report does not change the configured live mode.
 - **The layout.** Stream segments go through the same windows and rules as the
   tracker's (`plan_pieces`, `settle`). Speech the tracker hears and the stream
   did not label is transcribed as its own tracker piece; stream windows do not

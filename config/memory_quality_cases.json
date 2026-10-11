@@ -1,0 +1,224 @@
+[
+  {
+    "id": "ru-decision",
+    "language": "ru",
+    "category": "decision",
+    "graph": "demo/graph",
+    "query": "Кого выбрали платёжным провайдером?",
+    "relevant": {
+      "Встречи/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Встречи/2026-07-17_1400.md": "Берём ЮPay"
+    }
+  },
+  {
+    "id": "ru-number",
+    "language": "ru",
+    "category": "number",
+    "graph": "demo/graph",
+    "query": "Какая комиссия у ЮPay?",
+    "relevant": {
+      "Встречи/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Встречи/2026-07-17_1400.md": "комиссия 2,8%"
+    }
+  },
+  {
+    "id": "ru-action",
+    "language": "ru",
+    "category": "action",
+    "graph": "demo/graph",
+    "query": "Что поручили Марии по договору ЮPay?",
+    "relevant": {
+      "Встречи/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Встречи/2026-07-17_1400.md": "подписать договор с ЮPay"
+    }
+  },
+  {
+    "id": "ru-completed",
+    "language": "ru",
+    "category": "completed",
+    "graph": "demo/graph",
+    "query": "Какое поручение Игорь уже выполнил?",
+    "relevant": {
+      "Встречи/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Встречи/2026-07-17_1400.md": "прислать сравнение провайдеров — сделано 17.07"
+    }
+  },
+  {
+    "id": "ru-history",
+    "language": "ru",
+    "category": "history",
+    "graph": "demo/graph",
+    "query": "Что решили о переносе каталога 10 июля?",
+    "relevant": {
+      "Встречи/2026-07-10_1000.md": 3
+    },
+    "evidence": {
+      "Встречи/2026-07-10_1000.md": "Каталог переносим до 1 августа"
+    }
+  },
+  {
+    "id": "ru-negative",
+    "language": "ru",
+    "category": "negative",
+    "graph": "demo/graph",
+    "query": "Подписали ли договор с FastPay?",
+    "relevant": {},
+    "evidence": {}
+  },
+  {
+    "id": "en-decision",
+    "language": "en",
+    "category": "decision",
+    "graph": "demo/graph_en",
+    "query": "Which payment provider did we choose?",
+    "relevant": {
+      "Meetings/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Meetings/2026-07-17_1400.md": "We take YuPay"
+    }
+  },
+  {
+    "id": "en-number",
+    "language": "en",
+    "category": "number",
+    "graph": "demo/graph_en",
+    "query": "What is the YuPay fee?",
+    "relevant": {
+      "Meetings/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Meetings/2026-07-17_1400.md": "2.8% fee"
+    }
+  },
+  {
+    "id": "en-action",
+    "language": "en",
+    "category": "action",
+    "graph": "demo/graph_en",
+    "query": "What did Maria promise about the YuPay contract?",
+    "relevant": {
+      "Meetings/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Meetings/2026-07-17_1400.md": "sign the YuPay contract"
+    }
+  },
+  {
+    "id": "en-completed",
+    "language": "en",
+    "category": "completed",
+    "graph": "demo/graph_en",
+    "query": "Which action has Igor already completed?",
+    "relevant": {
+      "Meetings/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "Meetings/2026-07-17_1400.md": "send the provider comparison — done Jul 17"
+    }
+  },
+  {
+    "id": "en-history",
+    "language": "en",
+    "category": "history",
+    "graph": "demo/graph_en",
+    "query": "What did we decide about the catalog on July 10?",
+    "relevant": {
+      "Meetings/2026-07-10_1000.md": 3
+    },
+    "evidence": {
+      "Meetings/2026-07-10_1000.md": "Catalog migration by August 1st"
+    }
+  },
+  {
+    "id": "en-negative",
+    "language": "en",
+    "category": "negative",
+    "graph": "demo/graph_en",
+    "query": "Did we sign a contract with FastPay?",
+    "relevant": {},
+    "evidence": {}
+  },
+  {
+    "id": "zh-decision",
+    "language": "zh",
+    "category": "decision",
+    "graph": "demo/graph_zh",
+    "query": "支付服务商选了哪家？",
+    "relevant": {
+      "会议/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "会议/2026-07-17_1400.md": "选 YuPay"
+    }
+  },
+  {
+    "id": "zh-number",
+    "language": "zh",
+    "category": "number",
+    "graph": "demo/graph_zh",
+    "query": "YuPay 的费率是多少？",
+    "relevant": {
+      "会议/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "会议/2026-07-17_1400.md": "费率 2.8%"
+    }
+  },
+  {
+    "id": "zh-action",
+    "language": "zh",
+    "category": "action",
+    "graph": "demo/graph_zh",
+    "query": "苏雅雯要签什么合同？",
+    "relevant": {
+      "会议/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "会议/2026-07-17_1400.md": "签署 YuPay 合同"
+    }
+  },
+  {
+    "id": "zh-completed",
+    "language": "zh",
+    "category": "completed",
+    "graph": "demo/graph_zh",
+    "query": "陈志远完成了什么行动项？",
+    "relevant": {
+      "会议/2026-07-17_1400.md": 3
+    },
+    "evidence": {
+      "会议/2026-07-17_1400.md": "发出服务商对比 — 7月17日已完成"
+    }
+  },
+  {
+    "id": "zh-history",
+    "language": "zh",
+    "category": "history",
+    "graph": "demo/graph_zh",
+    "query": "7月10日决定什么时候完成商品目录迁移？",
+    "relevant": {
+      "会议/2026-07-10_1000.md": 3
+    },
+    "evidence": {
+      "会议/2026-07-10_1000.md": "商品目录迁移在 8 月 1 日前完成"
+    }
+  },
+  {
+    "id": "zh-negative",
+    "language": "zh",
+    "category": "negative",
+    "graph": "demo/graph_zh",
+    "query": "FastPay 合同签了吗？",
+    "relevant": {},
+    "evidence": {}
+  }
+]
