@@ -666,8 +666,8 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   count once) is a refusal — the owner rule would not sign it anyway, and
   silently accepting it would lose the owner. On a refusal sherpa labels the
   mic as before, and the header gets its own line: «Речь микрофона размечена
-  запасным движком (sherpa): …». A call channel that fell back to sherpa, and
-  keep sherpa on the mic. With no call recording, an explicitly selected
+  запасным движком (sherpa): …». If the call channel fell back to sherpa,
+  the mic keeps sherpa too. With no call recording, an explicitly selected
   Nemotron labels the microphone using the conservative room checks below;
   absence of system audio does not identify a meeting type or the owner.
   On refusal, the existing sherpa plan (including live-count hints) applies.
