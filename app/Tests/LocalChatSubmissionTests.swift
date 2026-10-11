@@ -20,9 +20,9 @@ final class LocalChatSubmissionTests: XCTestCase {
             service.isStreaming = true
             let before = service.messages
             var draft = "Новый вопрос\nс уточнением"
-            // Same acceptance contract used by the view; the refused send
-            // never starts network work and must not discard the next question.
-            if service.send(draft) { draft = "" }
+            // Exercise the actual view transition without constructing a window.
+            // Reverting it to unconditional clearing makes this test fail.
+            LocalChatView.submitDraft(&draft, using: service)
             XCTAssertEqual(draft, "Новый вопрос\nс уточнением")
             XCTAssertEqual(service.messages, before)
             XCTAssertTrue(service.isStreaming)

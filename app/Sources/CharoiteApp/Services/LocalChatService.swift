@@ -154,7 +154,7 @@ final class LocalChatService: ObservableObject {
         // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
         // потому что этого требовала зашитая здесь строка.
         var system = L.t("""
-        Ты — Чароит, локальный ассистент владельца этого Mac, работаешь офлайн. \
+        Ты — Чароит, ассистент владельца этого Mac. \
         Отвечай по-русски, кратко и по делу. ЧЕСТНОСТЬ: отвечай только \
         по данным из блоков ниже и из разговора; если блоки не про то, что спросили, — \
         так и скажи («в памяти этого нет»), не сочиняй. Ты помнишь весь текущий \
@@ -164,7 +164,7 @@ final class LocalChatService: ObservableObject {
         графа. На вопрос «кто ты» — «Чароит, локальный ассистент», без имени \
         вендора модели.
         """, """
-        You are Charoite, the local assistant of this Mac's owner, running offline. \
+        You are Charoite, the assistant of this Mac's owner. \
         Answer in English, briefly and to the point. HONESTY: answer only from the \
         blocks below and from this conversation; if the blocks are not about what \
         was asked, say so ("that is not in memory") and do not invent. You remember \
@@ -181,6 +181,11 @@ final class LocalChatService: ObservableObject {
         分歧以及随时间发生的变化，并附上图谱资料块中的日期与来源。\
         被问「你是谁」时回答「Charoite，本地助手」，不要提模型厂商。
         """)
+        system += inferenceIsLocal
+            ? L.t("\nМодель отвечает на этом Mac.", "\nThe model responds on this Mac.", "\n模型在此 Mac 上生成回复。")
+            : L.t("\nМодель отвечает на другом сервере, явно выбранном в настройках; не называй этот ответ офлайн или локальным.",
+                  "\nThe model responds on another server explicitly chosen in settings; do not call this response offline or local.",
+                  "\n模型在设置中明确选择的其他服务器上生成回复；请勿称此回复为离线或本地。")
         let startedAt = Date()
         // Тумблер снят ОДИН раз на старте: переключение памяти во время
         // генерации не должно переписывать происхождение уже собранного

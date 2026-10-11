@@ -237,8 +237,12 @@ struct LocalChatView: View {
     }
 
     private func submit() {
-        // Enter and the button share the same acceptance check. A draft is
-        // retained when a previous response is still streaming.
+        Self.submitDraft(&draft, using: chat)
+    }
+
+    /// Both Enter and the button use this transition. Keep a refused draft.
+    @MainActor
+    static func submitDraft(_ draft: inout String, using chat: LocalChatService) {
         if chat.send(draft) { draft = "" }
     }
 }
