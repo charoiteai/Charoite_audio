@@ -285,7 +285,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                 _keep_in_index(entries, theme, members, fresh, fp, today)
                 continue
             try:
-                folder.mkdir(parents=True, exist_ok=True)
+                folder.mkdir(exist_ok=True)
             except OSError as e:
                 print(f"  ✗ {theme}: каталог досье недоступен ({e})")
                 write_errors += 1

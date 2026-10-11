@@ -1,5 +1,8 @@
 """Adversarial regression witnesses from the 11 October audit."""
 import errno
+import importlib.util
+import pathlib
+import shutil
 import json
 import os
 import sys
@@ -9,6 +12,14 @@ import pytest
 from charoite_graph import dossier, graph_search as gs
 from charoite_graph.model_seam import Embedder
 from charoite_schema import CHAROITE
+
+
+def _nightly_dossier():
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts/nightly_dossier.py"
+    spec = importlib.util.spec_from_file_location("nightly_dossier", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.parametrize("payload", [[], {"досье": [None]}, {"досье": ["broken"]}, {"досье": None}])
@@ -22,6 +33,7 @@ def test_bad_dossier_index_keeps_graph_search_available(tmp_path, payload):
     search = gs.GraphSearch(graph, data_dir=None, schema=CHAROITE,
                            embedder=Embedder(lambda texts, timeout: [], "audit"))
     search.refresh(force=True)
+    assert dossier.load_index(folder) == []
     result = search.search("сервисный токен", semantic=False)
     assert any("Доступ.md" in block for block in result.blocks)
 
@@ -29,9 +41,9 @@ def test_bad_dossier_index_keeps_graph_search_available(tmp_path, payload):
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("error", [errno.EACCES, errno.ENOSPC, errno.EIO])
 def test_one_dossier_write_failure_does_not_abort_other_themes(tmp_path, monkeypatch, existing, error):
-    from test_dossier import _граф, _скрипт_пересборки
+    from test_dossier import _граф
 
-    nd = _скрипт_пересборки()
+    nd = _nightly_dossier()
     graph = _граф(tmp_path)
     extra = graph / "Ядра" / "Вторая тема.md"
     extra.write_text("# Вторая тема\n## Статус\nРаботает [[Встречи/2026-07-22_1000]] [[Встречи/2026-07-24_1100]]\n", encoding="utf-8")
@@ -79,6 +91,7 @@ def test_vectors_of_wrong_dimension_do_not_prove_empty_result(tmp_path):
     dimension[0] = 3
     result = search.search("кварц", dossiers=False)
     assert result.status == gs.Verdict.UNVERIFIED, result
+    assert not result.sem_used
     assert gs.REASON_DIMENSION in result.why_low
     assert search.pending_vectors() == [str(graph / "note.md")]
     assert search.embed_pending() == 1
@@ -136,9 +149,9 @@ def test_a_partial_dimension_rebuild_does_not_publish_a_mixed_blob(tmp_path):
 
 @pytest.mark.parametrize("phase", ["mkdir", "index", "backup"])
 def test_nightly_storage_failures_are_visible_to_the_entry_point(tmp_path, monkeypatch, phase):
-    from test_dossier import _граф, _скрипт_пересборки
+    from test_dossier import _граф
 
-    nd = _скрипт_пересборки()
+    nd = _nightly_dossier()
     graph = _граф(tmp_path)
     monkeypatch.setattr(nd.live_gate, "night_window_open", lambda *a, **k: True)
     monkeypatch.setattr(nd, "generate", lambda *a, **k:
@@ -183,3 +196,21 @@ def test_inconsistent_embedding_dimensions_stop_before_mixing(tmp_path, batch):
                          embedder=Embedder(lambda texts, timeout: [], "audit"))
     cold.refresh(force=True)
     assert cold.load_vectors() == (1 if batch == 1 else 0)
+
+
+def test_dossier_generation_does_not_recreate_a_removed_graph(tmp_path, monkeypatch):
+    from test_dossier import _граф
+
+    nd = _nightly_dossier()
+    graph = _граф(tmp_path)
+    monkeypatch.setattr(nd.live_gate, "night_window_open", lambda *a, **k: True)
+
+    def generate(*a, **k):
+        shutil.rmtree(graph)
+        return "## Сейчас\nготово\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме\nт"
+
+    monkeypatch.setattr(nd, "generate", generate)
+    result = nd.run(graph, {"sufler": {}}, full=False, dry=False, limit=5)
+    assert not graph.exists()
+    assert result["собрано"] == 0
+    assert result["ошибки_записи"] >= 1
