@@ -420,10 +420,10 @@ final class TasksService: ObservableObject {
         let matches = lines.indices.filter { lines[$0] == change.changedLine }
         guard !matches.isEmpty else { return .missing }
         guard matches.count == 1, let index = matches.first else { return .conflict }
-        // Строка ушла с места, а рядом живёт её близнец в исходном состоянии: та,
-        // что совпала по тексту, может быть чужой отметкой владельца (два
-        // одинаковых поручения, свою он снял, соседнюю отметил) — не трогаем.
-        if index != change.lineIndex, lines.contains(change.originalLine) { return .conflict }
+        // Пишем только в ту же строку: ушедшая с места строка может быть чужой
+        // отметкой владельца (два одинаковых поручения, свою он снял или
+        // удалил, соседнюю отметил) — по тексту их не отличить, не трогаем.
+        if index != change.lineIndex { return .conflict }
         lines[index] = change.originalLine
         return saveMutation(lines.joined(separator: "\n"), replacing: text, at: change.item.file)
     }

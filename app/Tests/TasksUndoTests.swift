@@ -39,14 +39,15 @@ final class TasksUndoTests: XCTestCase {
         }
     }
 
-    func testUndoFindsMovedTaskAndPreservesUnrelatedExternalEdits() throws {
+    /// Строка ушла с места — отмена отказывает: по тексту не отличить свою
+    /// отметку от отметки владельца (№695, C3). Файл цел, отмена не сгорает.
+    func testUndoRefusesMovedTaskAndKeepsTheFile() throws {
         try withFile("# План\n- [ ] Мария — договор\nЗаметка\n") { root, file in
             let receipt = try change(in: root)
             let edited = "Новая строка\n# План\n- [x] Мария — договор\nОбновлённая заметка\n"
             try edited.write(to: file, atomically: true, encoding: .utf8)
-            XCTAssertEqual(TasksService.undoSync(receipt), .changed)
-            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8),
-                           "Новая строка\n# План\n- [ ] Мария — договор\nОбновлённая заметка\n")
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), edited)
         }
     }
 
@@ -164,6 +165,20 @@ final class TasksUndoTests: XCTestCase {
             try "- [x] Договор\nзаметка\nещё\n- [ ] Договор\n".write(to: file, atomically: true, encoding: .utf8)
             XCTAssertEqual(TasksService.undoSync(receipt), .changed)
             XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), original)
+        }
+    }
+
+    /// Вход C3 (№695, круг n695-p2): приложение отметило первое из двух
+    /// одинаковых поручений; владелец удалил его строку и отметил второе.
+    /// Близнеца в исходном состоянии в файле уже нет, совпавшая строка — чужая
+    /// отметка на чужом месте: отмена не вправе её стереть.
+    func testUndoDoesNotClearTheOwnersCheckAfterDeletingTheTwin() throws {
+        try withFile("- [ ] Договор\nзаметка\nещё\n- [ ] Договор\n") { root, file in
+            let receipt = try change(in: root)
+            let owners = "заметка\nещё\n- [x] Договор\n"
+            try owners.write(to: file, atomically: true, encoding: .utf8)
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), owners)
         }
     }
 
