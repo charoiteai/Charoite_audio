@@ -188,7 +188,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     # маленькие темы стояли в хвосте неопределённо долго: на графе 26.08
     # это 112 собранных досье из 419 тем (аудит графа, DS + GLM).
     themes = sorted(cl.items(),
-                    key=lambda kv: ((folder / f"{kv[0]}.md").exists(), -len(kv[1])))
+                    key=lambda kv: ((folder / f"{kv[0]}.md").exists(), -len(kv[1]),
+                                    kv[0].casefold(), kv[0]))
     for ti, (theme, members) in enumerate(themes):
         path = folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
