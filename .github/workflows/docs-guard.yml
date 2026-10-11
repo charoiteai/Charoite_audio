@@ -80,7 +80,9 @@ jobs:
           touches_code="$(echo "$touches_code" | grep -vE '(^|/)(libs\.versions\.toml|gradle-wrapper\.properties|gradle-wrapper\.jar|gradlew|gradlew\.bat|Package\.resolved)$' || true)"
           # pyproject.toml пакета меняет dependabot при бампе зависимости
           # (dependabot.yml, /packages/charoite-graph) — то же, что выше.
-          touches_code="$(echo "$touches_code" | grep -vE '^packages/[^/]+/pyproject\.toml$' || true)"
+          # packages/README.md и LICENSE пакета — не код. В touches_docs их не
+          # добавлять: непустой touches_docs закрыл бы и src/.
+          touches_code="$(echo "$touches_code" | grep -vE '^packages/([^/]+/(pyproject\.toml|LICENSE)|README\.md)$' || true)"
           # Документацией — только то, что человек правда читает как документацию.
           # Переводы (docs/ru/ и docs/zh/) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
@@ -96,7 +98,7 @@ jobs:
               case "$f" in
                 packages/*/*)
                   pkg="${f#packages/}"; pkg="${pkg%%/*}"
-                  if echo "$changed" | grep -qxF "packages/$pkg/README.md"; then
+                  if grep -qxF "packages/$pkg/README.md" <<<"$changed"; then
                     continue
                   fi ;;
               esac
