@@ -1,7 +1,8 @@
 # Требует обновлять документацию вместе с кодом.
 #
-# Ловит ровно случай «код починил, доку забыл»: если PR трогает src/**, но
-# не трогает docs/**, README* или CHANGELOG — падает. Обойти осознанно можно
+# Ловит случай «код починил, доку забыл»: изменение кода без основной
+# документации падает. CHANGELOG и правка только перевода не закрывают гейт.
+# Обойти осознанно можно
 # меткой skip-docs на PR (например, чистый рефакторинг без смысловых правок).
 #
 # Безопасность: имена файлов из git и метку из события НЕ подставляем в
@@ -66,7 +67,7 @@ jobs:
 
           # Кодом считается весь код, а не только Python: приложение на 4400
           # строк Swift раньше можно было переписать целиком, и страж молчал.
-          touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|app-android/|scripts/)' || true)"
+          touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|app-android/|scripts/|packages/)' || true)"
           # Поднятая версия зависимости — не изменение поведения, и требовать
           # под неё абзац в README значит либо плодить пустые абзацы, либо
           # держать вечно красным каждый PR бота. Сам код при этом под стражем.
@@ -78,10 +79,10 @@ jobs:
           # приучить ставить skip-docs не глядя, а вот это уже опасно.
           touches_code="$(echo "$touches_code" | grep -vE '(^|/)(libs\.versions\.toml|gradle-wrapper\.properties|gradle-wrapper\.jar|gradlew|gradlew\.bat|Package\.resolved)$' || true)"
           # Документацией — только то, что человек правда читает как документацию.
-          # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
+          # Переводы (docs/ru/ и docs/zh/) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
           # CHANGELOG убран тоже — docs/RELEASING.md запрещает править его руками.
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|(app|app-ios|app-android|scripts)/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|(app|app-ios|app-android|scripts)/README\.md$|packages/[^/]+/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$|MAINTENANCE\.md$|MANIFESTO\.md$)' | grep -vE '^docs/(ru|zh)/' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код, но не тронута документация."
