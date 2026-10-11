@@ -841,18 +841,29 @@ def test_a_probe_on_another_mlx_audio_branch_is_a_warning_with_advice(key, capsy
     assert "проверен на" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("suffix", [".post1", ".dev0+g1a2b"])
 @pytest.mark.parametrize("key", ["", "/env/python"])
-def test_a_post_release_of_the_tested_branch_warns_without_reinstall_advice(key, capsys, monkeypatch, tmp_path):
-    """`0.5.8.post1` при проверенной 0.5.8 — та же ветка: пересборка идёт
-    (`version_verdict`), доктор только предупреждает и не советует переставить
-    окружение (№695, круг n695-p2, DS M1)."""
+def test_a_post_release_of_the_tested_branch_warns_without_reinstall_advice(key, suffix, capsys,
+                                                                            monkeypatch, tmp_path):
+    """`0.5.8.post1` (и dev-сборка) при проверенной 0.5.8 — та же ветка: пересборка
+    идёт (`version_verdict`), доктор только предупреждает и не советует переставить
+    окружение (№695, круг n695-p2, DS M1). Рецепт на случай отказа загрузки — по
+    тому, чей интерпретатор: при заданном ключе установщик его не обновит, совет —
+    окружение ключа (№695, круг n695-p3, DS I1)."""
     tested = doctor.diarize_nemotron.MLX_AUDIO_VERSION
-    version = f"{tested}.post1"
+    version = f"{tested}{suffix}"
     _probe_answers(monkeypatch, tmp_path, [version])
     issues = doctor.issues
     doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": key}})
     out = capsys.readouterr().out
     assert f"– Nemotron: mlx-audio {version}: стык проверен на {tested}, ветка та же" in out
-    assert "→" not in out.split(f"mlx-audio {version}:", 1)[1]
-    assert "install_engine.py" not in out and "обновите mlx-audio" not in out
+    tail = out.split(f"mlx-audio {version}:", 1)[1]
+    assert "→" not in tail
+    assert "install_engine.py" not in out
+    if key:
+        assert "установщик" not in out
+        assert f"откажет загрузка — обновите mlx-audio=={tested} в окружении ключа sufler.nemotron_python" in tail
+    else:
+        assert "обновите mlx-audio" not in out
+        assert f"откажет загрузка — {doctor.diarize_nemotron.INSTALL_RECIPE}" in tail
     assert doctor.issues == issues

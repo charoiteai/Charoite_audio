@@ -381,13 +381,16 @@ def _check_nemotron_engine(cfg: dict, root: pathlib.Path, state: dict) -> None:
         # по #800). Политика одна — `version_verdict`, как у пересборки: та же ветка
         # `major.minor` (post-, dev-, локальная сборка) — прогон идёт, совета
         # переставлять окружение нет; другая ветка — совет. Ключ главнее окружения:
-        # установщик его интерпретатор не обновит.
-        refusal, warning = diarize_nemotron.version_verdict(installed)
+        # установщик его интерпретатор не обновит — ни отказ, ни предупреждение той же
+        # ветки рецепт установщика при ключе не несут (№695, круг n695-p3, DS I1).
+        key_fix = (f"обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении "
+                   "ключа sufler.nemotron_python")
+        refusal, warning = diarize_nemotron.version_verdict(
+            installed, recipe=key_fix if state["nemotron_python_set"] else diarize_nemotron.INSTALL_RECIPE)
         if warning:
             line(WARN, f"Nemotron: {warning}")
         elif refusal:
-            fix = (f'обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении '
-                   "ключа sufler.nemotron_python" if state["nemotron_python_set"]
+            fix = (key_fix if state["nemotron_python_set"]
                    else f"поставить: {diarize_nemotron.install_command(root)}")
             line(WARN, f"Nemotron: mlx-audio {installed}, продукт проверен на "
                        f"{diarize_nemotron.MLX_AUDIO_VERSION}", fix)
