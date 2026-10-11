@@ -698,6 +698,33 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   sherpa pass on one thread runs at RTF 0.35 — about 7 minutes for 20 minutes
   of call; on two threads see below.
 
+### Application boundaries
+
+These rules apply to the Nemotron **diarization** checkpoint, not to a text LLM.
+A slot is local to one model run; neither its number nor a matching number in
+another recording establishes a person's identity.
+
+| Scenario | Current use | Evidence required before expanding it |
+| --- | --- | --- |
+| Recording after a meeting | Selected backend, with sherpa fallback and refusal notes | Labeled recordings: missed speech, false speech, speaker confusion and runtime; compare the final transcript, not just raw model segments |
+| Live call | Call channel only; `off` → `shadow` → `on`, retaining the tracker | Replay then actual calls: p95/max label waits, fallback share/reasons, uncovered speech, shown-label confusion, memory and STT backlog |
+| Room microphone | Offline pass; room refusal checks and echo/overlap handling | Separate room set with reverberation, simultaneous speech and short replies; the live call-stream results do not validate live room capture |
+| Person across meetings | Slot numbers must not be reused as identity | Separate voice-embedding/identity layer, registered examples and an unknown result; test wrong-person matches on other meetings before attaching names |
+| Text tasks | Diarization is not used | Use the text pipeline's LLM/NLI models for their respective tasks |
+
+For live evaluation, use `scripts/nemotron_shadow_replay.py` followed by
+`scripts/nemotron_shadow_check.py` with the final segments, tracker journal,
+timing and replay metadata. The final offline pass is a comparison baseline,
+not human ground truth: agreement with it alone cannot prove diarization
+accuracy. Use independently annotated speech for the quality verdict.
+
+The short-reply adapter tests prove retention down to the existing 0.6 s STT
+floor for established slots. They do not prove acoustic recall, recover speech
+missed by the model, or preserve simultaneous speakers after `disjoint`.
+Changing embeddings or adding cross-meeting identification requires its own
+held-out evaluation; replacing diarization with an identity model is not a
+substitute for that evaluation.
+
 ### Threads, and yielding to a live meeting
 
 sherpa-onnx runs one thread unless told otherwise, and after a 69-minute meeting
