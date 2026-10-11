@@ -518,8 +518,8 @@ enum AppSettings {
                 // Значение на нескольких строках (`>`, `|`, кавычка с переносом): замена
                 // одной строки оставит хвост висеть и сломает YAML.
                 let ind = lines[i].prefix { $0 == " " }.count
-                if i + 1 < lines.count,
-                   !lines[i + 1].trimmingCharacters(in: .whitespaces).isEmpty,
+                let next = i + 1 < lines.count ? lines[i + 1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                if !next.isEmpty, !next.hasPrefix("#"),
                    lines[i + 1].prefix(while: { $0 == " " }).count > ind {
                     return .unsupported(L.t("значение ключа занимает несколько строк — поправьте config.yaml руками",
                                             "the key value spans several lines — edit config.yaml by hand",

@@ -296,7 +296,7 @@ final class NemotronEngineServiceTests: XCTestCase {
 
     /// C1: исход действия снимается, когда вид кнопки уходит с экрана, — иначе
     /// кнопка «Nemotron…» висит на «Сегодня» при здоровом плане навсегда.
-    func testC1ИсходСнимаетсяУходомВида() async throws {
+    func testC1ИсходСнимаетсяDismissOutcome() async throws {
         try "sufler:\n  diarize_backend: nemotron\n".write(to: configURL, atomically: true, encoding: .utf8)
         let s = makeService()
         await enabledPlan(s)
@@ -474,6 +474,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         processes[1].finish(readyOff())
         await eventually("исход") { if case .outcome = s.action { return true }; return false }
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa", "ключ записан при выходе")
+        await eventually("ответ выходу") { done == 1 }
     }
 
     /// Fix1 п. 2: повтор плана (`planAgain`) при начавшейся записи — второй `--plan` не стартует, ждёт конца записи.
@@ -553,5 +554,35 @@ final class NemotronEngineServiceTests: XCTestCase {
         XCTAssertEqual(s.action, .outcome(o))
         s.viewGone()
         XCTAssertEqual(s.action, .idle)
+    }
+
+    // MARK: fix3 (сверка fix2): комментарий и CRLF после ключа, исход установки при записи
+
+    /// Fix2 п. 1: комментарий глубже ключа и строка из пробелов с `\r` — не продолжение значения.
+    func testFix3КомментарийИCRLFПослеКлючаНеМногострочье() {
+        for before in ["sufler:\n  diarize_backend: sherpa\n      # заметка\n  other: 1\n",
+                       "sufler:\n  diarize_backend: sherpa\n      \r\n  other: 1\n"] {
+            guard case .text(let after) = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before)
+            else { XCTFail("ложный отказ: \(before.debugDescription)"); continue }
+            XCTAssertTrue(after.contains("  diarize_backend: \"nemotron\"\n"), after)
+            XCTAssertEqual(after.replacingOccurrences(of: "  diarize_backend: \"nemotron\"", with: "  diarize_backend: sherpa"),
+                           before, "кроме ключа файл не тронут")
+        }
+    }
+
+    /// Fix2 п. 2: установка прошла, `--plan` упал, а к его ответу идёт запись — исход говорит «поставлено».
+    func testFix3ПланУпалПриЗаписиИсходПоставлено() async {
+        let s = makeService()
+        s.startInstall()
+        processes[0].finish(NemotronPlanTests.outcome("готово"))
+        await eventually("план после установки") { processes.count == 2 }
+        recording = true
+        processes[1].finish(NemotronPlanTests.outcome("", code: 1, stderr: "план упал"))
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
+        guard case .outcome(let o) = s.action else { return XCTFail() }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.offerEnable)
+        XCTAssertTrue(o.text.hasPrefix("поставлено"), o.text)
     }
 }

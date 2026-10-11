@@ -314,7 +314,7 @@ final class NemotronEngineService: ObservableObject {
                     if case .written = decision { planDone = false }
                 }
             } else if case .failed(let text) = state {
-                decision = .stop(text, offerEnable: true, offerReinstall: false)
+                decision = admit() != nil ? blocked() : .stop(text, offerEnable: true, offerReinstall: false)
             }
         }
         setOutcome(Self.outcome(of: decision))
