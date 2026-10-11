@@ -188,6 +188,7 @@ final class CodeRootPolicyTests: XCTestCase {
         let requiredCalls = [
             "Services/DictationService.swift": 1,
             "Services/ImportService.swift": 2,   // --scan и --prune (№166)
+            "Services/LongProcess.swift": 1,     // установщик Nemotron, --check, --plan (№622)
             "Services/MeetingActionsService.swift": 1,
             "Services/MeetingProcessingService.swift": 2,
             "Services/ModelPullService.swift": 1,

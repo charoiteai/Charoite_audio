@@ -173,15 +173,19 @@ enum AppSettings {
     /// бандла без CHAROITE_ROOT, попытается писать в подписанную папку.
     /// `executable` нужен контурам, где готовая команда оборачивает python
     /// (`/usr/bin/nice`) или была собрана до перехода в detached-задачу.
+    /// `extraEnvironment` ложится до `CHAROITE_ROOT`: перекрыть корень данных
+    /// параметром нельзя (установщик Nemotron, №622).
     static func preparePython(
         _ process: Process,
         root: URL? = nil,
-        executable: URL? = nil
+        executable: URL? = nil,
+        extraEnvironment: [String: String] = [:]
     ) {
         let dataRoot = root ?? charoiteRoot
         process.executableURL = executable ?? pythonExecutable(root: dataRoot)
         process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
         var env = ProcessInfo.processInfo.environment
+        env.merge(extraEnvironment) { _, new in new }
         env["CHAROITE_ROOT"] = dataRoot.path
         process.environment = env
     }
