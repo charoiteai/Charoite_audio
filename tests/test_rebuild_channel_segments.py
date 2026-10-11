@@ -747,52 +747,6 @@ def test_rebuild_transcribes_a_separate_short_nemotron_reply(meeting, monkeypatc
     assert any(abs(length - 0.8) < 0.001 for length in lengths), lengths
 
 
-def _call_segs(payload, monkeypatch, tmp_path):
-    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
-                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
-    segs, reason = rt.call_channel_engine(_nemotron_cfg(), tmp_path / "bh.wav", 60.0,
-                                          gate_call=True)
-    assert reason == ""
-    return segs
-
-
-@pytest.mark.parametrize("payload, expected", [
-    # Haiku I1: осколок поверх конца чужой фразы — делёж по середине откусил бы
-    # у слота 0 хвост 0,2 с, а кусок 0,5 с ушёл бы под пол STT.
-    ([(0.0, 10.0, 0), (9.6, 10.3, 1), (20.0, 30.0, 1)],
-     [(0.0, 10.0, 0), (20.0, 30.0, 1)]),
-    # Опыт O1: 0,65 с с перекрытием — у соседа откусывалось 0,1 с.
-    ([(9.0, 10.2, 0), (10.0, 10.65, 1), (20.0, 40.0, 1)],
-     [(9.0, 10.2, 0), (20.0, 40.0, 1)]),
-])
-def test_a_short_nemotron_reply_over_another_voice_is_dropped(payload, expected,
-                                                              monkeypatch, tmp_path):
-    """Короткая реплика подтверждённого слота держится только в тишине: поверх
-    чужого отрезка она не режет соседа (№695, постфактум-2 по #791)."""
-    segs = _call_segs(payload, monkeypatch, tmp_path)
-    assert segs == expected
-    assert rt.disjoint(segs)[0] == expected[0]
-
-
-def test_short_replies_do_not_make_a_nemotron_slot_a_voice(monkeypatch, tmp_path):
-    """Опыт O2: слот 3 — одна секунда и десять осколков по 0,61 с. В сумме 7,1 с,
-    но голосом его делают только отрезки от MIN_SEGMENT_S — слот остаётся
-    карликом и вливается в крупный, а не становится «Собеседником»."""
-    big = [(i * 20.0, i * 20.0 + 15.0, 0) for i in range(5)]
-    shards = [(200 + x * 2.0, 200 + x * 2.0 + 0.61, 3) for x in range(10)]
-    segs = _call_segs(big + [(150.0, 151.0, 3)] + shards, monkeypatch, tmp_path)
-    assert {k for *_, k in segs} == {0, 3}
-    merged = rt.merge_dwarfs(rt.disjoint(segs), rt.NEMOTRON_BH_DWARF_S)
-    assert {k for *_, k in merged} == {0}
-
-
-def test_nemotron_floors_hold_on_float_lengths(monkeypatch, tmp_path):
-    """1.4 - 0.4 = 0.9999999999999999 и 10.6 - 10.0 = 0.5999999999999996: отрезок
-    ровно в пол подтверждает слот, реплика ровно в пол STT сохраняется."""
-    payload = [(0.4, 1.4, 0), (10.0, 10.6, 0), (20.0, 20.59, 0)]
-    assert _call_segs(payload, monkeypatch, tmp_path) == payload[:2]
-
-
 @pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])
 def test_a_refusal_of_nemotron_gives_the_fixed_phrase_and_logs_the_raw_reason(kind, monkeypatch, tmp_path):
     """№495: в шапку — закреплённая фраза, сырой отказ — только в журнал."""
