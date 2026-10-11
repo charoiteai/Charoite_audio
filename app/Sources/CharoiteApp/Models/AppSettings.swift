@@ -351,7 +351,13 @@ enum AppSettings {
     }
 
     static func configValue(_ key: String) -> String? {
-        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        configValue(key, root: charoiteRoot)
+    }
+
+    /// Значение ключа в конфиге данного корня: служба, начавшая долгое
+    /// действие, держит корень с его начала, а не перечитывает настройку.
+    static func configValue(_ key: String, root: URL) -> String? {
+        let cfg = root.appendingPathComponent("config/config.yaml")
         guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
         return parseValue(key, in: text)
     }
@@ -491,6 +497,74 @@ enum AppSettings {
             // демон не стартует. Сигнал отказа мастеру — №640.
             return text
         }
+    }
+
+    /// Исход условной записи ключа.
+    enum ConfigCAS: Equatable {
+        case written
+        /// Значение в момент записи не то, что ждали; файл не тронут.
+        case changed(current: String?)
+        case failed(reason: String)
+    }
+
+    /// Ядро условной записи — текст без файла.
+    enum CASText: Equatable {
+        case text(String)
+        case changed(String?)
+        case unsupported(String)
+    }
+
+    /// Записать ключ, только если его сырое значение всё ещё `expected`
+    /// (`nil` — ключа нет или он пуст). Сравнение строковое, точное: регистр и
+    /// голое `off` нормализует только Python, здесь нормализации нет (№622).
+    ///
+    /// Чтение и запись — в одном вызове на главном акторе, как у остальных
+    /// писателей конфига в приложении. Файла нет — отказ: образец несёт
+    /// `diarize_backend: sherpa`, а `ensureConfigExists` берёт `charoiteRoot`,
+    /// а не `root`; файл создаёт мастер первого запуска.
+    @MainActor
+    static func setConfigValueIfUnchanged(_ key: String, expected: String?, value: String,
+                                          root: URL) -> ConfigCAS {
+        let cfg = root.appendingPathComponent("config/config.yaml")
+        guard FileManager.default.fileExists(atPath: cfg.path) else {
+            return .failed(reason: L.t("config.yaml ещё нет — сначала пройдите первый запуск",
+                                       "config.yaml does not exist yet — finish the first run first",
+                                       "config.yaml 尚不存在——请先完成首次运行"))
+        }
+        let text: String
+        do {
+            text = try String(contentsOf: cfg, encoding: .utf8)
+        } catch {
+            return .failed(reason: error.localizedDescription)
+        }
+        switch replacingIfUnchanged(key, expected: expected, value: value, in: text) {
+        case .changed(let current):
+            return .changed(current: current)
+        case .unsupported(let reason):
+            return .failed(reason: reason)
+        case .text(let updated):
+            do {
+                try updated.write(to: cfg, atomically: true, encoding: .utf8)
+                return .written
+            } catch {
+                return .failed(reason: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Чистое ядро условной записи: значение не `expected` — `.changed`; ключа
+    /// нет, а секцию sufler дописать нельзя — `.unsupported`; иначе — текст
+    /// после `replacing`.
+    static func replacingIfUnchanged(_ key: String, expected: String?, value: String,
+                                     in text: String) -> CASText {
+        let current = parseValue(key, in: text)
+        guard current == expected else { return .changed(current) }
+        let lines = text.components(separatedBy: "\n")
+        let present = lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix(key + ":") }
+        if !present, case .unsupported(let reason) = suflerSection(in: lines) {
+            return .unsupported(reason)
+        }
+        return .text(replacing(key, with: value, in: text))
     }
 
     /// Где в тексте конфига секция `sufler:` и куда в неё дописывать ключ.
