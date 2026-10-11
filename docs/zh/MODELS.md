@@ -248,7 +248,7 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
 没有它时，要点不做语义去重，核心复核不会运行（会在自己的日志里说明原因）；
 其他一切照常。
 
-普通的 `scripts/doctor.py` 按守护进程相同的方式报告 NLI 是否可用（文件、`config.json` 标签、依赖），不加载模型。可用不代表推理已经验证。单独运行本地检查：
+普通的 `scripts/doctor.py` 按守护进程相同的方式报告 NLI 是否可用（文件、`config.json` 标签、依赖），不加载模型，但会导入 onnxruntime 和 tokenizers。可用不代表推理已经验证。单独运行本地检查：
 
 ```bash
 CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli

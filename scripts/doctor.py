@@ -241,7 +241,12 @@ def check_nli(*, probe: bool = False) -> bool | None:
         line(FAIL, f"NLI: модуль nli не импортируется ({type(exc).__name__})",
              "восстановите зависимости Python приложения (docs/MODELS.md)")
         return False
-    why = nli.refusal()
+    try:
+        why = nli.refusal()
+    except Exception as e:  # noqa: BLE001 — сбой проверки годности строкой, не трейсбеком (долг №572)
+        line(FAIL if probe else WARN, f"NLI: проверка упала ({type(e).__name__}: {e})",
+             "docs/MODELS.md")
+        return False
     if not probe:
         if why:
             line(WARN, f"NLI: {why}", "docs/MODELS.md")

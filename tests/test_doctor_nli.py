@@ -188,3 +188,14 @@ def test_probe_and_restart_are_mutually_exclusive(root, monkeypatch):
     with pytest.raises(SystemExit) as done:
         doctor.main()
     assert done.value.code == 2
+
+
+@pytest.mark.parametrize("probe", [False, True], ids=["regular", "probe"])
+def test_refusal_crash_is_a_line_not_a_traceback(root, monkeypatch, capsys, probe):
+    def crash(): raise RuntimeError("boom")
+    monkeypatch.setattr(nli, "refusal", crash)
+    monkeypatch.setattr(nli, "judge", lambda: pytest.fail("must not load NLI"))
+    assert doctor.check_nli(probe=probe) is False
+    mark = "✗" if probe else "–"
+    assert f" {mark} NLI: проверка упала (RuntimeError: boom)" in capsys.readouterr().out
+    assert doctor.issues == int(probe)
