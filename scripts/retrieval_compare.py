@@ -43,6 +43,8 @@ def evaluate(judgments: list[dict], run: dict, k: int = 5) -> dict:
             raise ValueError("relevance grades must be integers from 1 to 3")
         truth[key] = relevant
     for result in run.get("results", []):
+        if result.get("status") == "error" or result.get("error"):
+            raise ValueError("failed queries are operational errors, not valid refusals; rerun the full suite")
         key, ranking = result.get("id"), result.get("ranking")
         if not isinstance(key, str) or key in results or not isinstance(ranking, list):
             raise ValueError("results need unique ids and rankings")

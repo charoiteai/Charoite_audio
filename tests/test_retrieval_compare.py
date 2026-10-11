@@ -46,3 +46,10 @@ def test_graded_relevance_and_cutoff():
     result = rc.evaluate([{"id": "q", "relevant": {"a": 3, "b": 1}}], run(["b", "a"]), k=1)
     assert result["recall"] == .5
     assert result["ndcg"] == pytest.approx(1 / 7)
+
+
+def test_operational_error_is_never_counted_as_a_successful_negative_refusal():
+    failed = run([], abstained=True)
+    failed["results"][0]["status"] = "error"
+    with pytest.raises(ValueError, match="operational errors"):
+        rc.evaluate([{"id": "q", "relevant": {}}], failed)
