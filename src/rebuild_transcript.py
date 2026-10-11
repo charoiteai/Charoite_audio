@@ -1408,11 +1408,15 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | RebuildSkipped | No
             # Звонок (№509) — тот же, что у подписи владельца: порог гейта И
             # отрезки собеседников; все метки микрофона станут владельцем, и
             # нужны только отрезки. Комната (№596) — слоты Nemotron и есть
-            # люди. Откат канала собеседников на sherpa и записи канала нет —
-            # sherpa, как раньше: второй отказ того же движка стоил бы ещё
-            # одного потолка ожидания.
+            # люди. Без записи канала пробуем выбранный Nemotron с проверками
+            # комнаты: это не доказательство очной встречи, поэтому имена
+            # остаются нейтральными. После отказа на канале повторно движок
+            # не зовём: второй отказ стоил бы ещё одного потолка ожидания.
             mic_thin = False   # Nemotron звонка ответил, но речи меньше пола
-            if bh_by_nemotron:
+            mic_only_nemotron = (bh_p is None and
+                diarize_nemotron.normalize_engine_key(
+                    (cfg.get("sufler") or {}).get("diarize_backend")) == "nemotron")
+            if bh_by_nemotron or mic_only_nemotron:
                 if call_silent:
                     mic_raw, mic_engine_note = room_mic_engine(
                         cfg, mic_p, len(mic) / sr, mic_count(meta))
