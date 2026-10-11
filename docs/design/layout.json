@@ -261,7 +261,8 @@
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
+    "scripts/decision_evidence_audit.py": "проверка цитат и истории решений в экспортированных записях, ручной прогон"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -309,6 +310,10 @@
       "why": "приёмка №340: вход обязан отвечать на --help"
     },
     "scripts/cloud_review.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/decision_evidence_audit.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },

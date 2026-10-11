@@ -90,6 +90,7 @@
 - `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; проба help
 - `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; проба help
 - `scripts/cloud_review.py` ← src/graph_updater.py; проба help
+- `scripts/decision_evidence_audit.py` ← ручной запуск: проверка цитат и истории решений в экспортированных записях, ручной прогон; проба help
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
@@ -160,6 +161,7 @@
 - `scripts/build_embedded_python.sh` ← README.md, app/README.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/check_private_markers.py` ← CONTRIBUTING.md, MAINTENANCE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md
 - `scripts/check_test_assertions.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
+- `scripts/decision_evidence_audit.py` ← docs/design/DECISION_EVIDENCE_AUDIT.md
 - `scripts/dedup_archive.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
