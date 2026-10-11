@@ -799,6 +799,22 @@ nothing in the transcript (default `off`).
   memory probe run outside it, so a slow disk under `logs/` delays the journal,
   not the recording.
 
+The report also separates **speech presence** from speaker assignment.
+`b_slots.speech_coverage` compares raw stream speech with the final pass;
+`d_shown.speech_coverage` compares the feed's reconstructed labels, including
+channel-only speech. Both report reference, covered and missed seconds,
+coverage and extra speech, plus a `voices` row for every reference voice,
+including a person who only spoke for 0.8 seconds. The older `coverage` metric
+still uses its 30-second minimum and measures the best single slot's share.
+The new metric counts speech under any label: a wrong name can have perfect
+speech coverage, so retain DER and label purity for assignment quality.
+
+Overall seconds count interval unions within the recording boundaries; each
+voice's row counts its own full intervals, so simultaneous speakers can make
+the sum of voice rows exceed the overall speech time. This is comparison with
+the final pass, not human annotation, and does not prove that words were
+recognized correctly or that the stream recovered every simultaneous speaker.
+
 ### Live labels (`on`)
 
 `sufler.live_nemotron: on` puts the stream's labels into the live transcript for
