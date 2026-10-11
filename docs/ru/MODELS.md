@@ -292,6 +292,13 @@ NLI — противоречие. `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingu
 Её не скачивает ни один скрипт. Положите `model.onnx`, `tokenizer.json` и
 `config.json` в `models/nli/` в корне данных, например так:
 `optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`.
+В `config.json` нужен `id2label` ровно с `entailment`, `neutral` и
+`contradiction` на индексах 0, 1, 2 в любом порядке: логит следования берётся
+по нему, а не угадывается. Без `config.json` или с безымянными `LABEL_0…`
+судья выключается — как без модели: лог демона один раз называет причину
+(`тезис-дедуп выключен: …`), ревизия ядер после встречи пишет
+`tier3: пропущен — …`, ночная — в своём логе. Контракт:
+[NLI_LABEL_CONTRACT_2026-10.md](../design/NLI_LABEL_CONTRACT_2026-10.md).
 Без неё тезисы не дедуплицируются по смыслу, а ревизия ядер не запускается
 (в своём логе она говорит почему); остальное работает как прежде.
 

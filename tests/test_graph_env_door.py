@@ -111,6 +111,15 @@ def test_the_day_path_revises_the_meeting_cores_through_the_door(tmp_path, monke
     assert order == ["уступка", "ревизия"], "ревизия тянет эмбеддер — сначала уступить живой встрече"
 
 
+def test_the_day_path_names_why_the_revision_did_not_run(tmp_path, monkeypatch, capsys):
+    graph_updater, graph, order = _day_path(tmp_path, monkeypatch)
+    _window(monkeypatch)
+    _spy_revise(monkeypatch, report={"log": [], "skipped": [], "pending_merges": [],
+                                     "status": "unavailable", "reason": "судья отказал: нет config.json"})
+    graph_updater._revise_meeting_cores({}, graph, [{"имя": "Релиз"}])
+    assert "tier3: пропущен — судья отказал: нет config.json" in capsys.readouterr().out
+
+
 def test_the_day_path_is_silent_when_the_profile_turns_the_revision_off(tmp_path, monkeypatch, capsys):
     graph_updater, graph, order = _day_path(tmp_path, monkeypatch, enabled=False)
     calls = _spy_revise(monkeypatch, order=order)
