@@ -188,6 +188,7 @@ def needles(query: str) -> tuple[list[str], list[str]]:
 
 REASON_EMBED = "модель эмбеддингов занята или не ответила"
 REASON_CACHE = "кэш векторов собран не весь"
+REASON_DIMENSION = "размерность эмбеддингов изменилась — кэш нужно добрать"
 
 
 class Verdict(str, enum.Enum):
@@ -730,7 +731,7 @@ class Result:
     status: Verdict = Verdict.EMPTY
     ready: bool = True
     dossiers: list[str] = dataclasses.field(default_factory=list)
-    sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
+    sem_used: bool = False      # семантика посчиталась (выполнено сравнение с совместимыми векторами файла)
     query: str = ""
     reason: str = ""            # почему UNVERIFIED — одно поле, три рендера (why_low, render, статус нити; GLM M2 r5)
     skipped: tuple[str, ...] = ()   # области графа ВНЕ индекса: их не читали, и ответ не вправе о них судить
@@ -856,6 +857,7 @@ class GraphSearch:
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
+        self._vector_dim: int | None = None   # известна только после ответа текущей модели
         # Сколько блоков у файла при ТЕКУЩЕЙ схеме: путь → (mtime, потолок, число).
         # Нарезка считается один раз на версию файла, а не на каждую сверку кэша.
         self._block_counts: dict[str, tuple[float, int, int]] = {}
@@ -1117,8 +1119,12 @@ class GraphSearch:
             off += int(n) * dim
         with self._lock:
             for path, entry in got.items():
+                if self._vector_dim is not None and dim != self._vector_dim:
+                    continue   # прежний манифест не возвращает несовместимые векторы
                 cur = self._vecs.get(path)
-                if cur is None or cur[0] < entry[0]:
+                if (cur is None or cur[0] < entry[0]
+                        or (self._vector_dim is not None
+                            and any(len(v) != self._vector_dim for v in cur[1]))):
                     self._vecs[path] = entry       # свежее по mtime главнее, откуда бы ни пришло
             self._vecs_loaded = True
             self._vecs_tried_at = None
@@ -1176,9 +1182,12 @@ class GraphSearch:
             return
         with self._lock:
             items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._gen.docs and vs]
+            dim = self._vector_dim or (len(items[0][2][0]) if items else None)
+            # Один манифест — одна размерность. При частичной пересборке
+            # прежняя модель не должна смешаться с новой в плоском блобе.
+            items = [(p, m, vs) for p, m, vs in items if all(len(v) == dim for v in vs)]
         if not items:
             return
-        dim = len(items[0][2][0])
         flat = array.array("f")
         for _, _, vs in items:
             for v in vs:
@@ -1251,7 +1260,8 @@ class GraphSearch:
             # векторы положены тем, кто участвует в семантике — первичным: сводки
             # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
             # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
-            have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()}
+            have = {p: (mt, len(v)) for p, (mt, v) in self._vecs.items()
+                    if self._vector_dim is None or all(len(x) == self._vector_dim for x in v)}
         # пустой файл не свидетель (то же правило, что у семантики в `search`): в очереди
         # он ждал бы вектора вечно, и `index` отвечал бы «собрано не всё» на каждом запуске
         # (выходной круг 1 по №323 PR 2, M1)
@@ -1318,6 +1328,7 @@ class GraphSearch:
                 parts = self._blocks(d)
                 queue += [(p, d.mtime, i, len(parts), t) for i, t in enumerate(parts)]
         got: dict[str, tuple[float, int, dict[int, array.array]]] = {}
+        batch_dim = None
         for i in range(0, len(queue), batch):
             left = None if budget_s is None else budget_s - (self._now() - started)
             if left is not None and left <= 0:
@@ -1335,6 +1346,13 @@ class GraphSearch:
                 self.note = self._refusal or \
                     "сервер эмбеддингов не ответил — недобранное дособерём позже"
                 break
+            dims = {len(v) for v in embs if v}
+            if len(dims) != 1 or (batch_dim is not None and dims != {batch_dim}):
+                self.note = "размерность эмбеддингов меняется между пачками — доберём позже"
+                break
+            batch_dim = next(iter(dims))
+            with self._lock:
+                self._vector_dim = batch_dim
             for (p, mtime, idx, total, _), emb in zip(part, embs):
                 if not emb:
                     continue
@@ -1423,6 +1441,7 @@ class GraphSearch:
         best_sim = 0.0
         sem_used = False
         sem_share = 0.0     # доля файлов ИНДЕКСА с актуальными векторами: свидетель «проверено
+        incompatible = False
         # столько-то из прочитанного», но не свидетель по графу целиком (№295)
         # кэш сверяется каждый раз: stat манифеста дёшев, а чужую запись (ночь,
         # апдейтер) короткое замыкание по непустым векторам не видело (GLM I1 r3)
@@ -1432,6 +1451,7 @@ class GraphSearch:
                 sem_used = True
                 q = _unit(qv[0])
                 with self._lock:
+                    self._vector_dim = len(q)
                     vecs = list(self._vecs.items())
                 paths = {d.path: d for d in docs}
                 sims = []
@@ -1440,12 +1460,16 @@ class GraphSearch:
                     d = paths.get(path)
                     if d is None or mt != d.mtime or not d.low.strip():   # переписан — старые блоки не свидетели (GLM M3); пустой — не свидетель
                         continue
+                    if not vs or any(len(v) != len(q) for v in vs):
+                        incompatible = True
+                        continue
                     checked += 1
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
                     if sim >= SIM_FLOOR:
                         sims.append((sim, d))
                 # знаменатель — файлы, которым векторы вообще положены: пустой файл
                 # ждёт вектора вечно и держал бы долю ниже порога (DS M2 r4)
+                sem_used = checked > 0
                 sem_share = checked / max(1, sum(1 for d in docs if d.low.strip()))
                 sims.sort(key=lambda x: _order_key(x[0], x[1].rel), reverse=True)
                 best_sim = sims[0][0] if sims else 0.0
@@ -1469,6 +1493,8 @@ class GraphSearch:
             reason = ""
         elif self._refusal:
             reason = self._refusal        # слова того, кто отказал, а не наша догадка
+        elif incompatible:
+            reason = REASON_DIMENSION
         elif sem_used or not self.vectors:
             # Либо семантика была, но покрытия не хватило, либо кэша нет вовсе
             # и шов не спрашивали ни разу. Сказать во втором случае «модель

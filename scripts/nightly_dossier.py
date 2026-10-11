@@ -181,6 +181,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     unchanged = over_limit = locked = late = changed = broken_manual = 0
     reads = _DossierReads()
     отказы = 0   # модель не ответила: тема осталась без разбора
+    write_errors = 0   # отказ хранения — отдельный сигнал, не молчание модели
 
     # Несобранные темы — вперёд, и только потом крупнейшие. Прежняя
     # сортировка только по размеру отдавала все 12 слотов ночи большим
@@ -283,7 +284,13 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                 changed += 1
                 _keep_in_index(entries, theme, members, fresh, fp, today)
                 continue
-            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                print(f"  ✗ {theme}: каталог досье недоступен ({e})")
+                write_errors += 1
+                _keep_in_index(entries, theme, members, loaded, fp, today)
+                continue
             # копия прежнего досье: пересборка сохраняла только «Правки автора» и
             # стирала тело с редактурой облачной ревизии без единой копии
             # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
@@ -292,11 +299,17 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                 copy = dossier.backup(folder, stamp, path)
             except OSError as e:
                 print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
-                отказы += 1
+                write_errors += 1
                 _keep_in_index(entries, theme, members, loaded, fp, today)
                 continue
             # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
-            safe_write.write_text(path, text)
+            try:
+                safe_write.write_text(path, text)
+            except OSError as e:
+                print(f"  ✗ {theme}: досье не записано ({e})")
+                write_errors += 1
+                _keep_in_index(entries, theme, members, loaded, fp, today)
+                continue
         built += 1
         if copy is not None:
             print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{stamp}/")
@@ -316,7 +329,11 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         # Без замка: write_index пишет через tmp+replace, полуфайла не будет,
         # а ждать соседа здесь значило бы оставить свежие досье невидимыми для
         # поиска до следующей ночи (круг-2 по PR #438, DS Important 3).
-        dossier.write_index(folder, entries)
+        try:
+            dossier.write_index(folder, entries)
+        except OSError as e:
+            print(f"  ✗ индекс досье не записан ({e})")
+            write_errors += 1
 
     if skipped:
         print(f"  пропущено {skipped}: без изменений {unchanged}, "
@@ -327,7 +344,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             "пропущено": skipped, "отказы": отказы, "битые": len(reads.damaged),
             "без_изменений": unchanged, "сверх_лимита": over_limit,
             "занят": locked, "не_успели": late,
-            "правки_повреждены": broken_manual, "досье_изменилось": changed}
+            "правки_повреждены": broken_manual, "досье_изменилось": changed,
+            "ошибки_записи": write_errors}
 
 
 def _собрано(source: pathlib.Path | dossier.DossierLoad) -> str:
@@ -371,6 +389,7 @@ def main() -> int:
     remaining = args.limit
     тем = 0
     отказов = 0
+    write_errors = 0
     for g in graphs:
         if not g.is_dir():
             print(f"{g}: нет такой папки")
@@ -386,10 +405,14 @@ def main() -> int:
         total += r["собрано"]
         тем += r["тем"]
         отказов += r.get("отказы", 0)
+        write_errors += r.get("ошибки_записи", 0)
 
     print(f"итого собрано досье: {total}")
     if отказов:
         print(f"отказов модели: {отказов} из {тем} тем")
+    if write_errors:
+        print(f"ошибок записи досье или индекса: {write_errors}")
+        return 2   # ошибка хранения не должна стать ночным «ok» даже на одной теме
     # Молчащая модель — это не успех.
     #
     # 12.08 локальный сервер лёг посреди прогона: 258 тем ушли без разбора,

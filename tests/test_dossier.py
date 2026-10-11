@@ -587,7 +587,8 @@ def test_пересборка_без_копии_не_перезаписывае�
 
     monkeypatch.setattr(nd.dossier, "backup", no_copy)
     r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=5)
-    assert r["собрано"] == 0 and r["отказы"] == 1
+    assert r["собрано"] == 0 and r["отказы"] == 0
+    assert r["ошибки_записи"] == 1
     assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"
 

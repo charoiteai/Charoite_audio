@@ -280,7 +280,8 @@ def test_every_exit_reuses_loaded_dossier(night, monkeypatch, capsys, branch):
     counts = _watch(monkeypatch, paths)
     result = nd.run(graph, {}, full=False, dry=branch == "dry", limit=0 if branch == "limit" else 12)
     assert result["собрано"] == (3 if branch == "dry" else 0)
-    assert result["отказы"] == (3 if branch in ("model", "backup") else 0)
+    assert result["отказы"] == (3 if branch == "model" else 0)
+    assert result["ошибки_записи"] == (3 if branch == "backup" else 0)
     if branch != "dry":
         entries = _all_index(folder)
         assert entries["Бета"]["отпечаток"] == "старый", "нужен отпечаток прежнего досье"
