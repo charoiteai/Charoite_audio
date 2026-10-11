@@ -13,6 +13,14 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule: {interval: weekly}
+  # У отдельно собираемого пакета графа свой манифест.
+  - package-ecosystem: pip
+    directory: /packages/charoite-graph
+    schedule: {interval: weekly}
+  # Девлог исполняет Ruby-зависимости в GitHub Actions.
+  - package-ecosystem: bundler
+    directory: /devlog
+    schedule: {interval: weekly}
   - package-ecosystem: swift
     directory: /app
     schedule: {interval: weekly}

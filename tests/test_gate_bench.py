@@ -121,6 +121,16 @@ def test_shadow_rows_take_model_refusal_as_skip_and_drop_failures():
     assert by_backend["head:question_gate"] == [R("ask", "ask", 0.6, 100.0)]
 
 
+def test_shadow_rows_keep_backends_with_different_names_apart():
+    """Строки NLI до поправки (доли) и после (поддержка) — разные шкалы: под
+    разными именами бэкенда они не складываются в один замер."""
+    lines = [dg.shadow_line(dg.Verdict("skip", p, {}, backend, 100.0), "refusal")
+             for p, backend in ((0.9, "nli-zero-shot"), (0.4, "nli-zero-shot-support"))]
+    by_backend, _ = gb.shadow_rows(lines)
+    assert by_backend == {"nli-zero-shot": [R("skip", "skip", 0.9, 100.0)],
+                          "nli-zero-shot-support": [R("skip", "skip", 0.4, 100.0)]}
+
+
 def test_read_labeled_skips_rows_without_a_verdict(tmp_path):
     data = tmp_path / "gate.jsonl"
     data.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
@@ -235,7 +245,7 @@ def test_eval_nli_backend_judges_every_row(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(gb.nli, "judge", lambda: _Judge())
     assert gb.main(["eval", str(_labeled(tmp_path)), "--backend", "nli"]) == 0
     out = capsys.readouterr().out
-    assert "## nli-zero-shot: 2 реплик" in out and "точность 100.0%" in out
+    assert "## nli-zero-shot-support: 2 реплик" in out and "точность 100.0%" in out
 
 
 def test_eval_skips_nli_backend_that_refused(tmp_path, capsys, monkeypatch):

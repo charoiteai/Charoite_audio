@@ -253,6 +253,8 @@ the installed environment goes into `engines/nemotron` under the data root.
   environment is always counted in full, because the install rebuilds it every
   time), the network addresses and the licence as one JSON line
   without connecting.
+- **Free space:** about 1.2 GB for a reinstall and about 1.4 GB for a first
+  install; `--plan` prints this in the `disk` field.
 
 ## Mandatory explicit num_ctx
 
@@ -301,8 +303,23 @@ fallback (below).
 Nothing downloads it. Put `model.onnx`, `tokenizer.json` and `config.json`
 into `models/nli/` under the data root, for example with
 `optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`.
+`config.json` must carry `id2label` with exactly `entailment`, `neutral` and
+`contradiction` on indices 0, 1, 2 in any order: the entailment logit is read
+from it, never guessed. A missing `config.json` or generic `LABEL_0…` names
+switch the judge off, as if the model were absent: the daemon log says why once
+(`тезис-дедуп выключен: …`), the core revision after a meeting prints
+`tier3: пропущен — …`, the nightly one says it in its own log. The contract:
+[NLI_LABEL_CONTRACT_2026-10.md](design/NLI_LABEL_CONTRACT_2026-10.md).
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
+
+The regular `scripts/doctor.py` reports NLI readiness the same way the daemon sees it (files, `config.json` labels, packages) without loading the model; it imports onnxruntime and tokenizers only if the model files are in place. A ready set does not mean inference works. For a dedicated local probe:
+
+```bash
+CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli
+```
+
+This checks only NLI, downloads no weights, and makes no LLM requests. If a meeting is running when the probe starts, it is deferred; a meeting that starts after this check does not cancel a probe already loading the model. Exit 0 means the judge canary passed; exit 1 means unavailable, failed, or deferred. This checks readiness, not quality on real meetings.
 
 ## Decision gate (research, shadow mode only)
 

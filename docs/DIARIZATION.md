@@ -541,6 +541,52 @@ Silicon, and on a machine where the engine does not work at all (not
 darwin/arm64) with advice to set `sufler.live_nemotron: off`, since the
 installer itself refuses there.
 
+For the app's button `--plan` also prints `disk`, `memory` and `offer`, and the
+button builds no rules of its own. `disk` is `{free_mb, reclaimable_mb, need_mb,
+ok, reason}`: what the install adds on the volume at its peak — a new copy of the
+environment (601 MB), pip's wheels (601 MB more; an upper bound, not a
+measurement — pip without a cache holds them in `TMPDIR` until it finishes) and the
+missing weights and voice set. The previous environment is not counted: it already
+takes space. The gate counts a full reinstall, because the environment is rebuilt
+every time even when only the weights need fixing: about 1.2 GB for a reinstall and
+1.4 GB for a first install. The space is measured on the volume of `engines/`;
+`reclaimable_mb` is what the install's own cleanup of `.nemotron.new-*` and
+`.nemotron.old-*` leftovers will free, and `ok` is `free_mb + reclaimable_mb >=
+need_mb`. If the free space cannot be measured, `free_mb` is `null` and the gate stays
+open. The install itself runs the gate after that cleanup, so what the cleanup freed is
+already in `free_mb`, and leftovers it did not remove are not counted (`reclaimable_mb`
+is only the estimate in `--plan`); it refuses with
+code 1 before it writes the environment, the weights or the voice set (only
+`engines/` and the install lock exist by then). `memory` is `{total_mb, warn,
+reason}`: at 16 GB or less (or when the size is unknown) it warns that the engine has
+not been measured on such a machine — a warning, never a refusal.
+
+`offer` is the one decision: `state`, `reason`, `install`/`enable`/`disable` as
+`{allowed, reason}` and `warnings`. States: `not_installed` (no environment),
+`broken` (`sherpa` chosen, the interpreter or the weights are not usable),
+`ready_off` (ready, `sherpa` chosen — «Enable» writes `nemotron` without
+installing), `enabled`, `enabled_broken` (`nemotron` chosen but not ready — the
+rebuild falls back to sherpa with a line in the header), `custom_interpreter`
+(`sufler.nemotron_python` is set; the button does not install over it),
+`backend_unknown` (`diarize_backend` holds something else; the rebuild uses sherpa)
+and `config_error` (the config cannot be read; all three actions refused with
+`engine.error`). `ready_off` and `enabled` mean ready by layout — the work of the
+engine is checked by `--check`. «Install» needs a fitting machine, enough disk, an
+empty `sufler.nemotron_python`, a known `diarize_backend` and an engine that is not
+already installed and on; «Enable» needs a ready engine and `sherpa` chosen;
+«Disable» — anything but `sherpa`. The value of `diarize_backend` in the reasons is
+shown after normalisation: lower case, no outer spaces, as the doctor shows it.
+`offer.install` is the button's policy: the command line installer reads no config
+and still installs when `sufler.nemotron_python` is set. Warnings: `memory`,
+`voice_set_missing` (`nemotron` chosen while the voice set is incomplete, so there is
+nothing to fall back to) and `live_nemotron` — the button controls the diarization
+after a meeting, while the live stream has its own key, `sufler.live_nemotron`.
+
+A cancellation that arrives after the swap is fixed ends with code 0: the engine is
+installed. A caller that asked for the cancellation itself has to read that as
+«installed, but the person changed their mind» and must not write the engine key;
+the installer never writes it.
+
 In the app the interpreter is `Charoite.app/Contents/Resources/python/bin/python3`,
 and the data folder is the one under Settings → Data folder
 (`~/Library/Application Support/Charoite` by default). Without `CHAROITE_ROOT` the
@@ -753,6 +799,22 @@ nothing in the transcript (default `off`).
   memory probe run outside it, so a slow disk under `logs/` delays the journal,
   not the recording.
 
+The report also separates **speech presence** from speaker assignment.
+`b_slots.speech_coverage` compares raw stream speech with the final pass;
+`d_shown.speech_coverage` compares the feed's reconstructed labels, including
+channel-only speech. Both report reference, covered and missed seconds,
+coverage and extra speech, plus a `voices` row for every reference voice,
+including a person who only spoke for 0.8 seconds. The older `coverage` metric
+still uses its 30-second minimum and measures the best single slot's share.
+The new metric counts speech under any label: a wrong name can have perfect
+speech coverage, so retain DER and label purity for assignment quality.
+
+Overall seconds count interval unions within the recording boundaries; each
+voice's row counts its own full intervals, so simultaneous speakers can make
+the sum of voice rows exceed the overall speech time. This is comparison with
+the final pass, not human annotation, and does not prove that words were
+recognized correctly or that the stream recovered every simultaneous speaker.
+
 ### Live labels (`on`)
 
 `sufler.live_nemotron: on` puts the stream's labels into the live transcript for
@@ -768,6 +830,17 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   A stream that has not started, is dead, is further behind than the cap, or
   hears no speech in the chunk leaves the chunk to the tracker; the journal line
   says why (`fallback`).
+- **Measure fallback waits too.** In the shadow check report, `sources` keeps
+  `wait_labeled_s` for chunks whose label became available. For `on` journals,
+  `wait_all_s` includes every stream decision, including timeouts and immediate
+  fallback; `wait_all_share` shows the fraction above each wait threshold.
+  `wait_fallback_s` isolates chunks whose layout used the tracker, including
+  labelled chunks that fell back because there was no stream speech. A run
+  with 90 fast labels and 10 two-second timeouts has a two-second overall p95,
+  even if its labelled-only p95 is 0.1 s. These times measure the journal's
+  stream-decision wait, not total recognition or feed latency. Shadow-only
+  observations do not provide the `on` waiting distribution; measure actual
+  `on` calls as well. This report does not change the configured live mode.
 - **The layout.** Stream segments go through the same windows and rules as the
   tracker's (`plan_pieces`, `settle`). Speech the tracker hears and the stream
   did not label is transcribed as its own tracker piece; stream windows do not

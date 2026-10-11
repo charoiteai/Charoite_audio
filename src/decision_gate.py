@@ -27,8 +27,8 @@
   `tokenizer.json`, `labels.json` с температурой калибровки): дистиллят,
   обученный на своих встречах, один проход;
 * zero-shot через NLI, которая уже лежит в `models/nli/` (`nli.py`): две
-  гипотезы, нормировка следования. Ни новых пакетов, ни скачиваний, но
-  уверенность не откалибрована — ровно поэтому только тень.
+  гипотезы, доли следования, ограниченные абсолютной поддержкой. Ни новых
+  пакетов, ни скачиваний, но уверенность не откалибрована — ровно поэтому только тень.
 
 Нет ни того, ни другого — фабрика честно отказывает строкой `refused`, демон
 работает как раньше.
@@ -87,7 +87,11 @@ def shadow_enabled(cfg: dict) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class Verdict:
-    """Решение гейта по одной реплике."""
+    """Решение гейта по одной реплике.
+
+    `confidence` у головы — калиброванная вероятность метки, у NLI — min(доля, поддержка)
+    гипотезы, а не калибровка.
+    """
 
     label: str
     confidence: float
@@ -100,9 +104,11 @@ class Verdict:
 class Decider:
     """Решатель как значение: имя, функция вероятностей, причина отказа.
 
-    `probs(text)` отдаёт распределение по `LABELS`. Судить нечем — бросает
-    исключение, а не отдаёт равные доли: 0.5/0.5 неотличимо от честного
-    «не уверен», и тень записала бы шум под видом вердикта.
+    `probs(text)` отдаёт оценки по `LABELS`. Голова даёт распределение,
+    NLI — доли, ограниченные абсолютной поддержкой (остаток — неизвестность).
+    Судить нечем — бросает исключение, а не отдаёт равные доли: 0.5/0.5
+    неотличимо от честного «не уверен», и тень записала бы шум под видом
+    вердикта.
     """
 
     name: str
@@ -117,7 +123,7 @@ def normalize(scores: Mapping[str, float]) -> dict[str, float]:
     уверенности»: вероятность следования лежит в [0, 1].
     """
     for label, s in scores.items():
-        if not isinstance(s, (int, float)) or isinstance(s, bool) or not math.isfinite(s) or s < 0:
+        if not isinstance(s, (int, float)) or isinstance(s, bool) or not math.isfinite(s) or not 0 <= s <= 1:
             raise ValueError(f"оценка «{label}» — не вероятность: {s!r}")
     total = sum(scores.values())
     if total <= 0:
@@ -127,11 +133,17 @@ def normalize(scores: Mapping[str, float]) -> dict[str, float]:
 
 def zero_shot_probs(text: str, entail: Callable[[str, str], float],
                     hypotheses: Mapping[str, str] = HYPOTHESES) -> dict[str, float]:
-    """Zero-shot через NLI: P(следует гипотеза метки | реплика), нормировано."""
+    """Относительные доли NLI, ограниченные абсолютной поддержкой гипотез.
+
+    Остаток массы — неизвестность. Это оценки для каскада, не калиброванные
+    вероятности классов: 0.009 против 0.001 не становится уверенностью 0.9.
+    """
     missing = set(LABELS) - set(hypotheses)
     if missing:
         raise ValueError(f"нет гипотез для меток: {sorted(missing)}")
-    return normalize({label: entail(text, hypotheses[label]) for label in LABELS})
+    scores = {label: entail(text, hypotheses[label]) for label in LABELS}
+    relative = normalize(scores)
+    return {label: min(relative[label], scores[label]) for label in LABELS}
 
 
 def calibrated(logits: list[float], temperature: float) -> list[float]:
@@ -164,8 +176,10 @@ def decide(decider: Decider, text: str,
 def cascade(verdict: Verdict | None, accept_at: float) -> str:
     """Каскад: метка, если гейт уверен не меньше порога, иначе «escalate».
 
-    Порог — доля из (0.5, 1]: при двух метках уверенность победителя не ниже
-    0.5, и порог 0.5 означал бы «решаю всегда» — это уже не каскад.
+    Порог — доля из (0.5, 1]: у головы при двух метках уверенность победителя
+    не ниже 0.5, и порог 0.5 означал бы «решаю всегда» — это уже не каскад.
+    У NLI `confidence` — min(доля, поддержка), и бывает меньше 0.5:
+    такой вердикт каскад эскалирует.
     `escalate` — отдать реплику модели, как сегодня.
     """
     if not (isinstance(accept_at, (int, float)) and not isinstance(accept_at, bool)
@@ -303,10 +317,10 @@ def decider(head_dir: pathlib.Path | None = None, judge: Callable[[], object] | 
         return Decider(f"head:{d.name}", _Lazy(lambda: load_head(d)))
     j = (judge or nli.judge)()
     if not j.refused:
-        return Decider("nli-zero-shot",
+        return Decider("nli-zero-shot-support",
                        lambda text: zero_shot_probs(text, j.entail, hypotheses))
     return Decider("none", _refuse, refused=(
-        f"нет ни обученной головы в {d}, ни NLI-модели — гейт в тени выключен"))
+        f"нет обученной головы в {d}; судья: {j.refused} — гейт в тени выключен"))
 
 
 # --- тень ---------------------------------------------------------------------

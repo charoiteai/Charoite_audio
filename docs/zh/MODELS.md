@@ -199,6 +199,8 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
   这些数字(已在位的权重或音色集计为 0——权重按每个文件的 sha256,与下载所用
   相同的校验;而环境始终按完整大小计算:安装每次都会重建环境)、网络地址和
   许可证,不建立连接。
+- **可用空间:**重新安装约需 1.2 GB 可用空间,首次安装约需 1.4 GB;`--plan` 在
+  `disk` 字段中输出该数值。
 
 ## 必须显式设置 num_ctx
 
@@ -237,8 +239,22 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
 没有任何脚本会下载它。请把 `model.onnx`、`tokenizer.json` 和 `config.json`
 放进数据根目录下的 `models/nli/`，例如：
 `optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`。
+`config.json` 必须带 `id2label`，在索引 0、1、2 上恰好是 `entailment`、
+`neutral`、`contradiction`（顺序不限）：蕴含的 logit 按它读取，绝不猜测。缺少
+`config.json` 或标签是通用的 `LABEL_0…` 时，裁判会关闭，效果同没有模型：守护进程
+日志只写一次原因（`тезис-дедуп выключен: …`），会后的核心复核输出
+`tier3: пропущен — …`，夜间复核写在自己的日志里。契约：
+[NLI_LABEL_CONTRACT_2026-10.md](../design/NLI_LABEL_CONTRACT_2026-10.md)。
 没有它时，要点不做语义去重，核心复核不会运行（会在自己的日志里说明原因）；
 其他一切照常。
+
+普通的 `scripts/doctor.py` 按守护进程相同的方式报告 NLI 是否可用（文件、`config.json` 标签、依赖），不加载模型；仅当模型文件齐全时才会导入 onnxruntime 和 tokenizers。可用不代表推理已经验证。单独运行本地检查：
+
+```bash
+CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli
+```
+
+该命令只检查 NLI，不下载权重，也不向 LLM 发送请求。检查开始时若会议正在进行则推迟；检查之后才开始的会议不会取消已在加载模型的检查。退出码 0 表示测试语句通过；1 表示模型不可用、检查失败或已推迟。这是就绪检查，不是实际会议上的质量评估。
 
 ## 决策门（研究，仅影子模式）
 

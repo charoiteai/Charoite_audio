@@ -300,6 +300,41 @@ def test_report_runs_end_to_end_on_a_synthetic_journal():
     assert out["c_agreement_with_final"]["stream"]["der"] == pytest.approx(0.0, abs=0.01)
 
 
+def test_report_exposes_a_fully_missed_short_voice():
+    start = START0 / SR
+    j = journal(chunk_ends=[START0 + 64000], segs=[(START0, START0 + 5 * SR, 0)])
+    final = {"duration_s": 20.0,
+             "segments": [[start, start + 5, "Long"], [start + 10, start + 10.8, "Short"]]}
+    got = chk.report(j, final)
+    assert got["b_slots"]["coverage"] == {}  # прежняя оценка исключает оба голоса < 30 с
+    speech = got["b_slots"]["speech_coverage"]
+    assert speech["reference_s"] == 5.8 and speech["missed_s"] == 0.8
+    assert speech["voices"]["f1"] == {
+        "reference_s": 0.8, "covered_s": 0.0, "missed_s": 0.8, "coverage": 0.0}
+    assert got["d_shown"]["speech_coverage"]["voices"]["f1"]["coverage"] == 0.0
+
+
+def test_speech_coverage_counts_unions_and_does_not_claim_correct_identity():
+    reference = [(0., 4., "A"), (2., 6., "B"), (3., 4., "A")]
+    hyp = [(0., 3., "wrong-person"), (1., 2., "another-slot"), (8., 10., "extra")]
+    got = chk.speech_coverage(hyp, reference, total=10.)
+    assert got["reference_s"] == 6.0  # одновременно говорящих не суммируем
+    assert got["covered_s"] == 3.0 and got["missed_s"] == 3.0
+    assert got["extra_s"] == 2.0 and got["coverage"] == 0.5
+    assert got["voices"]["A"]["reference_s"] == 4.0
+    assert got["voices"]["A"]["coverage"] == 0.75
+    assert got["voices"]["B"]["reference_s"] == 4.0
+    assert got["voices"]["B"]["coverage"] == 0.25
+
+
+def test_speech_coverage_clips_to_the_recording_and_handles_empty_speech():
+    got = chk.speech_coverage([(-2., 12., "slot")], [(0., 2., "A")], total=4.)
+    assert got["covered_s"] == 2.0 and got["extra_s"] == 2.0
+    empty = chk.speech_coverage([], [], total=4.)
+    assert empty == {"reference_s": 0.0, "covered_s": 0.0, "missed_s": 0.0,
+                     "coverage": None, "extra_s": 0.0, "voices": {}}
+
+
 def test_report_counts_the_labels_the_feed_shows_not_the_raw_slots():
     """№580: сверка включила `on` по сырым слотам, а лента показывала поколения. Метки ленты
     считает тот же класс, что демон: призрак (слот 2, 2 с речи) под меткой канала, слот,
@@ -1328,6 +1363,35 @@ def test_sources_count_fallbacks_apart_and_the_wait_only_of_labelled_chunks():
     assert got["stream_pieces"] == 3 and got["no_recon_share"] == round(1 / 3, 4)
     assert got["recon_agree_share"] == 0.5
     assert (got["lost_s"], got["tracker_pieces"]) == (0.25, 1)
+
+
+@pytest.mark.parametrize("fast,slow", [(90, 10), (0, 10)], ids=["timeout-tail", "all-fallback"])
+def test_sources_show_time_spent_on_fallback_in_the_all_chunk_tail(fast, slow):
+    j = journal()
+    j.v, j.mode = 2, ln.ON
+    j.chunks = [_on_chunk(n, ln.LABELED, "stream", 0.1) for n in range(fast)]
+    j.chunks += [_on_chunk(fast + n, ln.FALLBACK, "tracker", 2.0, fallback="timeout")
+                 for n in range(slow)]
+    got = chk.sources(j)
+    assert got["wait_all_s"] == {"n": fast + slow, "p50": 0.1 if fast else 2.0,
+                                 "p90": 0.1 if fast else 2.0, "p95": 2.0, "max": 2.0}
+    assert got["wait_fallback_s"] == {"n": slow, "p50": 2.0, "p90": 2.0,
+                                      "p95": 2.0, "max": 2.0}
+    assert got["wait_labeled_s"]["n"] == fast
+    assert got["wait_all_share"][">1s"] == round(slow / (fast + slow), 4)
+
+
+def test_sources_include_immediate_fallbacks_but_not_shadow_observations():
+    j = journal()
+    j.v, j.mode = 2, ln.ON
+    j.chunks = [_on_chunk(0, ln.BEFORE_STREAM, "tracker", 0.0, fallback="before_stream"),
+                _on_chunk(1, ln.LABELED, "stream", 0.8),
+                _on_chunk(2, ln.LABELED, "tracker", 0.5, fallback="no_speech"),
+                _on_chunk(3, ln.BEFORE_STREAM, "tracker", 50.0)]
+    got = chk.sources(j)
+    assert got["wait_all_s"] == {"n": 3, "p50": 0.5, "p90": 0.8, "p95": 0.8, "max": 0.8}
+    assert got["wait_fallback_s"] == {"n": 2, "p50": 0.0, "p90": 0.5, "p95": 0.5, "max": 0.5}
+    assert got["wait_labeled_s"]["n"] == 2
 
 
 def test_sources_of_a_shadow_journal_are_empty():
