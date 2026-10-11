@@ -90,6 +90,7 @@
 - `scripts/check_private_markers.py` ← .github/workflows/supply-chain.yml, .pre-commit-config.yaml, scripts/preflight.sh; проба help
 - `scripts/check_test_assertions.py` ← .github/workflows/ci.yml, .pre-commit-config.yaml; проба help
 - `scripts/cloud_review.py` ← src/graph_updater.py; проба help
+- `scripts/decision_evidence_audit.py` ← ручной запуск: проверка цитат и истории решений в экспортированных записях, ручной прогон; проба help
 - `scripts/dedup_archive.py` ← ручной запуск: разовая уборка дублей архива руками; проба help
 - `scripts/dedup_graph.py` ← scripts/nightly.sh; проба help
 - `scripts/diar_bench.py` ← ручной запуск: бенчмарк диаризации, ручной прогон; проба help
@@ -106,6 +107,7 @@
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
+- `scripts/memory_case_suite.py` ← ручной запуск: валидация и экспорт учебных вопросов памяти, ручной прогон; проба help
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
 - `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; проба help
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
@@ -120,6 +122,8 @@
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
+- `scripts/retrieval_compare.py` ← ручной запуск: сравнение результатов поиска по эталонным вопросам, ручной прогон; проба help
+- `scripts/runtime_profile.py` ← ручной запуск: замер локального потокового транспорта на заданных запросах, ручной прогон; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
@@ -160,6 +164,7 @@
 - `scripts/build_embedded_python.sh` ← README.md, app/README.md, docs/RELEASING.md, docs/SETUP.md, docs/ru/README.md, docs/ru/RELEASING.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/ru/scripts/README.md, docs/zh/README.md, docs/zh/RELEASING.md, docs/zh/SETUP.md, docs/zh/app/README.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/check_private_markers.py` ← CONTRIBUTING.md, MAINTENANCE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md
 - `scripts/check_test_assertions.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
+- `scripts/decision_evidence_audit.py` ← docs/design/DECISION_EVIDENCE_AUDIT.md
 - `scripts/dedup_archive.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/dedup_graph.py` ← docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, docs/ru/ARCHITECTURE.md, docs/ru/DATA_AND_RECOVERY.md, docs/zh/ARCHITECTURE.md, docs/zh/DATA_AND_RECOVERY.md
 - `scripts/diar_bench.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, docs/zh/DIARIZATION.md
@@ -176,6 +181,7 @@
 - `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/DIARIZATION.md, docs/RELEASING.md, docs/ru/DIARIZATION.md, docs/ru/RELEASING.md, docs/ru/SECURITY.md, docs/zh/RELEASING.md, docs/zh/SECURITY.md, requirements-nemotron.in, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, MANIFESTO.md, README.md, config/README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/README.md, docs/ru/config/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/README.md, docs/zh/config/README.md, docs/zh/demo/README.md
+- `scripts/memory_case_suite.py` ← docs/design/MEMORY_QUALITY_CASES.md
 - `scripts/merge_graphs.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/migrate_placeholders.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `scripts/morning_brief.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
@@ -188,6 +194,8 @@
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
+- `scripts/retrieval_compare.py` ← docs/design/RETRIEVAL_MODEL_EVALUATION.md
+- `scripts/runtime_profile.py` ← docs/design/RUNTIME_PROFILE.md
 - `scripts/sign_release_manifest.py` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/zh/RELEASING.md
 - `scripts/stt_bench.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/zh/FEATURES.md, docs/zh/MODELS.md
 - `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/design/NLI_LABEL_CONTRACT_2026-10.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
