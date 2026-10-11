@@ -13,8 +13,11 @@ import pathlib
 import sys
 import unicodedata
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+from charoite_paths import code_root
+
+REPO = code_root(__file__)
 
 
 def normalize(text: str) -> str:

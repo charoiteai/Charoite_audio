@@ -261,7 +261,8 @@
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
+    "scripts/memory_case_suite.py": "валидация и экспорт учебных вопросов памяти, ручной прогон"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -375,6 +376,10 @@
       "ticket": "№364 (проба вместо none)"
     },
     "scripts/memory_bench.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/memory_case_suite.py": {
       "mode": "help",
       "why": "по коду: argparse"
     },

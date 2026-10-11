@@ -106,6 +106,7 @@
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/memory_bench.py` ← scripts/doctor.py, scripts/nightly.sh; проба help
+- `scripts/memory_case_suite.py` ← ручной запуск: валидация и экспорт учебных вопросов памяти, ручной прогон; проба help
 - `scripts/merge_graphs.py` ← ручной запуск: слияние графов руками; проба help
 - `scripts/migrate_placeholders.py` ← ручной запуск: разовая миграция заглушек руками; проба help
 - `scripts/morning_brief.py` ← scripts/nightly.sh; проба help
@@ -176,6 +177,7 @@
 - `scripts/lock_runtime_deps.py` ← SECURITY.md, docs/DIARIZATION.md, docs/RELEASING.md, docs/ru/DIARIZATION.md, docs/ru/RELEASING.md, docs/ru/SECURITY.md, docs/zh/RELEASING.md, docs/zh/SECURITY.md, requirements-nemotron.in, requirements-runtime.in
 - `scripts/make_dmg.sh` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/ru/scripts/README.md, docs/zh/RELEASING.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/memory_bench.py` ← CONTRIBUTING.md, MANIFESTO.md, README.md, config/README.md, config/memory_bench.example.yaml, demo/README.md, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/FEATURES.md, docs/ru/MANIFESTO.md, docs/ru/README.md, docs/ru/config/README.md, docs/ru/demo/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/FEATURES.md, docs/zh/MANIFESTO.md, docs/zh/README.md, docs/zh/config/README.md, docs/zh/demo/README.md
+- `scripts/memory_case_suite.py` ← docs/design/MEMORY_QUALITY_CASES.md
 - `scripts/merge_graphs.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/migrate_placeholders.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `scripts/morning_brief.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
