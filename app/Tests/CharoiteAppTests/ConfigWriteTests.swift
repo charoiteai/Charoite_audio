@@ -89,7 +89,17 @@ final class ConfigWriteTests: XCTestCase {
             return XCTFail("ключ не добавлен")
         }
         XCTAssertTrue(lines[i].hasPrefix("  "), "ключ в корне YAML ничего не настроит")
-        XCTAssertTrue(lines[i - 1].hasPrefix("sufler:"), "ключ обязан лечь в секцию sufler")
+        // Ключ — внутри последней секции sufler (после заголовка и до первой
+        // непустой строки без отступа), с отступом её первого ребёнка (№622).
+        guard let header = lines.lastIndex(where: { $0.hasPrefix("sufler:") }) else {
+            return XCTFail("секция sufler пропала")
+        }
+        let sectionEnd = lines[(header + 1)...].firstIndex(where: {
+            !$0.isEmpty && !$0.hasPrefix(" ")
+        }) ?? lines.endIndex
+        XCTAssertTrue(i > header && i < sectionEnd, "ключ обязан лечь в секцию sufler")
+        XCTAssertEqual(lines[i], "  user_name: \"Мария\"", "отступ — как у первого ребёнка")
+        XCTAssertEqual(i, lines.count - 1, "вставка в конец секции")
     }
 
     func testПоследнееВхождениеПобеждает() {

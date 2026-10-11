@@ -179,6 +179,8 @@ struct TodayWorkspaceView: View {
                 if !ModelPullService.diarizationInstalled {
                     DiarizationInstallButton(alignment: .trailing)
                 }
+                // Nemotron — по действию или беде, само действие в поповере.
+                NemotronTodayButton()
                 ReadinessLine(snapshot: readiness.snapshot,
                               isChecking: readiness.isChecking)
             }

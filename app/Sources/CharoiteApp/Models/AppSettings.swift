@@ -173,15 +173,19 @@ enum AppSettings {
     /// бандла без CHAROITE_ROOT, попытается писать в подписанную папку.
     /// `executable` нужен контурам, где готовая команда оборачивает python
     /// (`/usr/bin/nice`) или была собрана до перехода в detached-задачу.
+    /// `extraEnvironment` ложится до `CHAROITE_ROOT`: перекрыть корень данных
+    /// параметром нельзя (установщик Nemotron, №622).
     static func preparePython(
         _ process: Process,
         root: URL? = nil,
-        executable: URL? = nil
+        executable: URL? = nil,
+        extraEnvironment: [String: String] = [:]
     ) {
         let dataRoot = root ?? charoiteRoot
         process.executableURL = executable ?? pythonExecutable(root: dataRoot)
         process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
         var env = ProcessInfo.processInfo.environment
+        env.merge(extraEnvironment) { _, new in new }
         env["CHAROITE_ROOT"] = dataRoot.path
         process.environment = env
     }
@@ -347,7 +351,13 @@ enum AppSettings {
     }
 
     static func configValue(_ key: String) -> String? {
-        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        configValue(key, root: charoiteRoot)
+    }
+
+    /// Значение ключа в конфиге данного корня: служба, начавшая долгое
+    /// действие, держит корень с его начала, а не перечитывает настройку.
+    static func configValue(_ key: String, root: URL) -> String? {
+        let cfg = root.appendingPathComponent("config/config.yaml")
         guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
         return parseValue(key, in: text)
     }
@@ -467,19 +477,237 @@ enum AppSettings {
             target = i
         }
         if let i = target {
-            let indent = String(lines[i].prefix { $0 == " " })
-            // Комментарий справа сохраняем: он объясняет поле человеку.
-            let comment = lines[i].range(of: " #").map { String(lines[i][$0.lowerBound...]) } ?? ""
-            lines[i] = "\(indent)\(key): \"\(escaped)\"\(comment)"
+            lines[i] = rewritten(lines[i], key: key, escaped: escaped)
             return lines.joined(separator: "\n")
         }
         // Ключа нет вовсе — дописываем в секцию sufler, а не в конец файла:
-        // в корне YAML он ничего не настроит.
-        if let i = lines.firstIndex(where: { $0.hasPrefix("sufler:") }) {
-            lines.insert("  \(key): \"\(escaped)\"", at: i + 1)
+        // в корне YAML он ничего не настроит. Отступ — как у детей секции:
+        // литерал в два пробела у секции с детьми в четыре ломал YAML.
+        switch suflerSection(in: lines) {
+        case .found(_, let end, let indent):
+            lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)
             return lines.joined(separator: "\n")
+        case .absent:
+            return text + "\nsufler:\n  \(key): \"\(escaped)\"\n"
+        case .unsupported:
+            // Сломать YAML хуже, чем не записать: после сломанного файла
+            // демон не стартует. Сигнал отказа мастеру — №640.
+            return text
         }
-        return text + "\nsufler:\n  \(key): \"\(escaped)\"\n"
+    }
+
+    /// Строка ключа с новым значением: отступ и комментарий справа — прежние
+    /// (комментарий объясняет поле человеку).
+    private static func rewritten(_ line: String, key: String, escaped: String) -> String {
+        let indent = String(line.prefix { $0 == " " })
+        let comment = line.range(of: " #").map { String(line[$0.lowerBound...]) } ?? ""
+        return "\(indent)\(key): \"\(escaped)\"\(comment)"
+    }
+
+    /// Замена ключа только внутри последней секции `sufler:` — её читает PyYAML.
+    /// Ключ в первой (мёртвой) секции не трогаем, в последней нет — дописываем
+    /// в её конец (сверка out1 №6).
+    static func replacingInSufler(_ key: String, with value: String, in text: String) -> CASText {
+        var lines = text.components(separatedBy: "\n")
+        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        switch suflerSection(in: lines) {
+        case .found(let header, let end, let indent):
+            if let i = (header + 1..<end).last(where: {
+                lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix(key + ":")
+            }) {
+                guard let comment = simpleValueComment(in: lines, at: i, key: key, indent: indent) else {
+                    return .unsupported(L.t("значение сложной формы — поправьте config.yaml руками",
+                                            "the key value has a complex form — edit config.yaml by hand",
+                                            "该键的值格式复杂——请手动编辑 config.yaml"))
+                }
+                let cr = lines[i].hasSuffix("\r") ? "\r" : ""
+                lines[i] = "\(indent)\(key): \"\(escaped)\"" + (comment.isEmpty ? "" : " \(comment)") + cr
+            } else {
+                lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)
+            }
+            return .text(lines.joined(separator: "\n"))
+        case .absent:
+            // Секции по заголовку нет, а слово `sufler` в тексте есть: `sufler :`,
+            // BOM, кавычки — секцию не распознали, и `replacing` переписал бы
+            // строку мимо белого списка или дописал второй блок (круг fix6, Haiku C-1, C-2).
+            if text.contains("sufler") {
+                return .unsupported(L.t("секция sufler записана непривычно — поправьте config.yaml руками",
+                                        "the sufler section has an unusual form — edit config.yaml by hand",
+                                        "sufler 段格式不常见——请手动编辑 config.yaml"))
+            }
+            return .text(replacing(key, with: value, in: text))
+        case .unsupported(let reason):
+            return .unsupported(reason)
+        }
+    }
+
+    /// Белый список формы значения (круг fix5): переписать строку ключа можно, только если
+    /// 1) ключ стоит ровно на отступе детей секции (глубже — строка внутри чужого значения);
+    /// 2) значение на строке ключа — законченный однострочный скаляр: голое слово из
+    ///    `[A-Za-z0-9_.-]`, `"…"` без `"` и `\` внутри или `'…'`, дальше только комментарий;
+    /// 3) первая следующая строка, не пустая и не комментарий, не глубже ключа (или конца нет).
+    /// Возвращает комментарий строки (`""` — его нет) или `nil` — отказ, файл не трогать.
+    /// Ложный отказ на экзотике дешевле сломанного YAML; разбор формы для чтения — долг №640.
+    private static func simpleValueComment(in lines: [String], at i: Int, key: String,
+                                           indent: String) -> String? {
+        let pattern = "^" + NSRegularExpression.escapedPattern(for: indent + key)
+            + #":[ ]+([A-Za-z0-9_.-]+|"[^"\\]*"|'[^']*')[ ]*(#.*)?\r?$"#
+        let line = lines[i]
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return nil }
+        let comment = Range(m.range(at: 2), in: line).map {
+            String(line[$0]).trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+        } ?? ""
+        if let j = (i + 1..<lines.count).first(where: {
+            let t = lines[$0].trimmingCharacters(in: .whitespacesAndNewlines)
+            return !t.isEmpty && !t.hasPrefix("#")
+        }) {
+            let lead = lines[j].prefix { $0 == " " || $0 == "\t" }
+            if lead.contains("\t") || lead.count > indent.count { return nil }
+        }
+        return comment
+    }
+
+    /// Исход условной записи ключа.
+    enum ConfigCAS: Equatable {
+        case written
+        /// Значение в момент записи не то, что ждали; файл не тронут.
+        case changed(current: String?)
+        case failed(reason: String)
+    }
+
+    /// Ядро условной записи — текст без файла.
+    enum CASText: Equatable {
+        case text(String)
+        case changed(String?)
+        case unsupported(String)
+    }
+
+    /// Записать ключ, только если его сырое значение всё ещё `expected`
+    /// (`nil` — ключа нет или он пуст). Сравнение строковое, точное: регистр и
+    /// голое `off` нормализует только Python, здесь нормализации нет (№622).
+    ///
+    /// Новый текст до записи сверяет `ConfigEditCheck` — тот же `yaml.safe_load`,
+    /// что у демона (круг fix6): отказ проверки — файл не трогаем. Пока идёт
+    /// проверка, файл могли изменить: перед записью он перечитывается и обязан
+    /// совпасть с прочитанным байт в байт (CAS), а `recheck` ещё раз спрашивает
+    /// допуск (запись встречи, выход, смена корня). Между перечтением и записью
+    /// `await` нет. Файла нет — отказ: образец несёт `diarize_backend: sherpa`,
+    /// а `ensureConfigExists` берёт `charoiteRoot`, а не `root`; файл создаёт
+    /// мастер первого запуска.
+    @MainActor
+    static func setConfigValueIfUnchanged(_ key: String, expected: String?, value: String, root: URL,
+                                          recheck: @MainActor () -> String? = { nil }) async -> ConfigCAS {
+        let cfg = root.appendingPathComponent("config/config.yaml")
+        guard FileManager.default.fileExists(atPath: cfg.path) else {
+            return .failed(reason: L.t("config.yaml ещё нет — сначала пройдите первый запуск",
+                                       "config.yaml does not exist yet — finish the first run first",
+                                       "config.yaml 尚不存在——请先完成首次运行"))
+        }
+        let bytes: Data
+        do {
+            bytes = try Data(contentsOf: cfg)
+        } catch {
+            return .failed(reason: error.localizedDescription)
+        }
+        guard let text = String(data: bytes, encoding: .utf8) else {
+            return .failed(reason: L.t("config.yaml не в UTF-8", "config.yaml is not UTF-8", "config.yaml 不是 UTF-8"))
+        }
+        switch replacingIfUnchanged(key, expected: expected, value: value, in: text) {
+        case .changed(let current):
+            return .changed(current: current)
+        case .unsupported(let reason):
+            return .failed(reason: reason)
+        case .text(let updated):
+            if let reason = await ConfigEditCheck.current.refusal(old: text, new: updated, key: key,
+                                                                  expected: expected, value: value, root: root) {
+                return .failed(reason: reason)
+            }
+            // Сравнение байтов, а не строк: `==` у String — каноническая
+            // эквивалентность Unicode, иная нормализация прошла бы как «не менялся».
+            guard let again = try? Data(contentsOf: cfg) else {
+                return .failed(reason: L.t("config.yaml пропал во время проверки", "config.yaml vanished during the check",
+                                           "检查期间 config.yaml 消失了"))
+            }
+            guard again == bytes else {
+                return .changed(current: parseValue(key, in: String(bytes: again, encoding: .utf8) ?? ""))
+            }
+            if let reason = recheck() { return .failed(reason: reason) }
+            do {
+                try updated.write(to: cfg, atomically: true, encoding: .utf8)
+                return .written
+            } catch {
+                return .failed(reason: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Чистое ядро условной записи: значение не `expected` — `.changed`;
+    /// секцию sufler правкой строки не поправить — `.unsupported`; иначе — текст
+    /// после `replacingInSufler`.
+    static func replacingIfUnchanged(_ key: String, expected: String?, value: String,
+                                     in text: String) -> CASText {
+        let current = parseValue(key, in: text)
+        guard current == expected else { return .changed(current) }
+        return replacingInSufler(key, with: value, in: text)
+    }
+
+    /// Где в тексте конфига секция `sufler:` и куда в неё дописывать ключ.
+    enum SuflerSection: Equatable {
+        /// `header` — строка заголовка; `end` — место вставки (сразу после
+        /// последней строки секции с отступом); `indent` — отступ детей.
+        case found(header: Int, end: Int, indent: String)
+        case absent
+        /// Секция есть, но дописать в неё строкой нельзя — причина человеку.
+        case unsupported(String)
+    }
+
+    /// Общий расчёт секции для `replacing`, `settingFlag` и условной записи.
+    ///
+    /// Заголовок — ПОСЛЕДНЯЯ строка `sufler:` с нулевым отступом: `parseValue`
+    /// и PyYAML читают последнюю секцию, ключ во вложенной или первой PyYAML
+    /// потерял бы молча. Секция кончается на первой непустой строке без
+    /// отступа, кроме комментария. Вставка — после последней строки с
+    /// отступом, а не перед пустыми строками и комментариями, которые
+    /// отделяют следующую секцию.
+    static func suflerSection(in lines: [String]) -> SuflerSection {
+        guard let header = lines.lastIndex(where: { $0.hasPrefix("sufler:") }) else {
+            return .absent
+        }
+        let rest = lines[header].dropFirst("sufler:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rest.isEmpty && !rest.hasPrefix("#") {
+            return .unsupported(L.t(
+                "секция sufler записана в одну строку — поправьте config.yaml руками",
+                "the sufler section is written on one line — fix config.yaml by hand",
+                "sufler 段写在了一行里——请手动修改 config.yaml"))
+        }
+        var insertAt = header + 1
+        var indent: String?
+        var i = header + 1
+        while i < lines.endIndex {
+            let line = lines[i]
+            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer { i += 1 }
+            if t.isEmpty { continue }
+            let indented = line.hasPrefix(" ") || line.hasPrefix("\t")
+            if !indented {
+                if t.hasPrefix("#") { continue }   // комментарий с нулевым отступом секцию не кончает
+                break
+            }
+            insertAt = i + 1
+            if indent == nil, !t.hasPrefix("#") {
+                let prefix = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                if prefix.contains("\t") {
+                    return .unsupported(L.t(
+                        "в секции sufler отступ табом — YAML так не читает, поправьте config.yaml",
+                        "the sufler section is indented with a tab — YAML does not read that, fix config.yaml",
+                        "sufler 段使用了制表符缩进——YAML 无法读取，请修改 config.yaml"))
+                }
+                indent = prefix
+            }
+        }
+        return .found(header: header, end: insertAt, indent: indent ?? "  ")
     }
 
     /// Отделено от чтения файла ради тестов: разбор — чистая функция.
@@ -579,8 +807,19 @@ enum AppSettings {
     @discardableResult
     static func setConfigFlag(_ key: String, _ value: Bool) -> Bool {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
-        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8),
+              let out = settingFlag(key, value, in: text) else { return false }
+        do {
+            try out.write(to: cfg, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
 
+    /// Ядро `setConfigFlag` без файла — под тест. `nil` — ключа нет и
+    /// вставить его некуда: файл не трогаем.
+    static func settingFlag(_ key: String, _ value: Bool, in text: String) -> String? {
         var out: [String] = []
         var done = false
         for line in text.components(separatedBy: "\n") {
@@ -602,36 +841,12 @@ enum AppSettings {
             // появления тумблера: строка не находится, тумблер молча не
             // работает (круг-1 DS по #436). Дописываем в конец секции
             // sufler — она есть в любом рабочем конфиге, потому что без неё
-            // демон не стартует.
-            guard let start = out.firstIndex(where: {
-                $0.trimmingCharacters(in: .whitespaces).hasPrefix("sufler:")
-            }) else { return false }
-            var end = out.index(after: start)
-            // Отступ берём у первого же ребёнка секции, а не из литерала:
-            // конфиг документирован под ручную правку, и у секции с детьми
-            // в четыре пробела вставка в два ломает YAML — после сохранения
-            // тумблером демон не стартует вовсе (круг-2 GLM, I7).
-            var indent = "  "
-            var sawChild = false
-            while end < out.endIndex {
-                let line = out[end]
-                let t = line.trimmingCharacters(in: .whitespaces)
-                // конец секции — первая непустая строка без отступа
-                if !t.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
-                if !sawChild, !t.isEmpty, !t.hasPrefix("#") {
-                    let prefix = line.prefix(while: { $0 == " " || $0 == "\t" })
-                    if !prefix.isEmpty { indent = String(prefix); sawChild = true }
-                }
-                end = out.index(after: end)
-            }
+            // демон не стартует. Отступ — у первого ребёнка секции (круг-2
+            // GLM, I7); секции нет или она в неподдерживаемом виде — отказ.
+            guard case .found(_, let end, let indent) = suflerSection(in: out) else { return nil }
             out.insert("\(indent)\(key): \(value)", at: end)
             done = true
         }
-        do {
-            try out.joined(separator: "\n").write(to: cfg, atomically: true, encoding: .utf8)
-            return true
-        } catch {
-            return false
-        }
+        return out.joined(separator: "\n")
     }
 }

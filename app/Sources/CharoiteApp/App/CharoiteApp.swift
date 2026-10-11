@@ -188,10 +188,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Выход посреди встречи — самая дорогая случайность: цена промаха —
-    /// оборванная запись, которую уже не переснять.
+    /// оборванная запись, которую уже не переснять. Установка Nemotron при
+    /// выходе отменяется (SIGTERM группе, SIGKILL через 10 с), иначе pip
+    /// остался бы сиротой (№622).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let sufler = SuflerService.shared
-        guard sufler.hasActiveLifecycle else { return .terminateNow }
+        let nemotron = NemotronEngineService.shared
+        let decision = termination.begin(recording: sufler.hasActiveLifecycle,
+                                         installing: nemotron.isActive,
+                                         askStay: { Self.askStayForRecording(sufler) })
+        switch decision {
+        case .now:
+            return .terminateNow
+        case .cancel:
+            // Остаться: установка не отменяется, флаг выхода не стоит.
+            nemotron.terminationInProgress = false
+            return .terminateCancel
+        case .alreadyInProgress:
+            return .terminateLater
+        case .later(let waits):
+            nemotron.terminationInProgress = true
+            if waits.contains(.install) {
+                nemotron.cancelForTermination { [weak self] in
+                    DispatchQueue.main.async { self?.finishTermination(.install) }
+                }
+                let ceiling = NemotronEngineService.terminationGrace + NemotronEngineService.eofCeiling + 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + ceiling) { [weak self] in
+                    self?.finishTermination(.install)
+                }
+            }
+            if waits.contains(.sufler) {
+                // Демону нужно успеть закрыть аудио-стримы и дописать граф встречи.
+                // Три секунды тут стояли произвольно и были МЕНЬШЕ грейса, который
+                // назначает себе сам stop() (8с на terminate, 12с на SIGKILL): оба
+                // добивающих таймера умирали вместе с процессом на третьей секунде,
+                // и зависший демон оставался сиротой — держал flock, из-за чего
+                // следующий запуск приложения молча отскакивал.
+                sufler.stop()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 14.0) { [weak self] in
+                    self?.finishTermination(.sufler)
+                }
+            }
+            return .terminateLater
+        }
+    }
+
+    private var termination = TerminationCoordinator()
+
+    /// Ровно один ответ AppKit — когда сняты все ожидания.
+    private func finishTermination(_ wait: TerminationCoordinator.Wait) {
+        guard termination.finish(wait) else { return }
+        NSApp.reply(toApplicationShouldTerminate: true)
+    }
+
+    /// Прежний диалог записи; `true` — остаться.
+    @MainActor private static func askStayForRecording(_ sufler: SuflerService) -> Bool {
         let alert = NSAlert()
         if sufler.lifecycle == .stopping {
             // Capture уже закрыт, поэтому обещать «продолжить встречу» нельзя.
@@ -221,18 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: L.t("Выйти и остановить запись", "Quit and stop recording", "退出并停止录音"))
         }
         alert.buttons.last?.hasDestructiveAction = true
-        if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
-        // Демону нужно успеть закрыть аудио-стримы и дописать граф встречи.
-        // Три секунды тут стояли произвольно и были МЕНЬШЕ грейса, который
-        // назначает себе сам stop() (8с на terminate, 12с на SIGKILL): оба
-        // добивающих таймера умирали вместе с процессом на третьей секунде,
-        // и зависший демон оставался сиротой — держал flock, из-за чего
-        // следующий запуск приложения молча отскакивал.
-        sufler.stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 14.0) {
-            NSApp.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func applicationWillTerminate(_ notification: Notification) {

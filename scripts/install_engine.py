@@ -48,6 +48,11 @@ Python приложения mlx нет, бандл подписан. Раньш�
 уходит только указатель — её пересылают людям, а команда несёт пути машины. Корень
 установщик НАЗЫВАЕТ дверью канона, а не выводит из положения файла: из бандла
 догадкой вышел бы сам бандл, и окружение легло бы в подписанный `.app` (№489).
+
+Режим `--verify-config-edit` — проверка правки `config.yaml` кнопкой Nemotron тем же
+парсером, что у демона (`yaml.safe_load`, `daemon.py`). Вход — одна строка JSON на
+stdin `{"old", "new", "key", "expected", "value"}`; выход — код 0 и строка `ok` или
+код 1 и строка `отказ: <причина>`. Ничего не пишет и корня данных не требует.
 """
 from __future__ import annotations
 
@@ -806,8 +811,98 @@ def check(name: str, root: pathlib.Path) -> int:
     return 0
 
 
+# Ключи, которые пишет кнопка Nemotron, и их значения (`verify_config_edit`).
+_CONFIG_EDIT_VALUES = {"diarize_backend": ("nemotron", "sherpa")}
+
+
+def _same(a: object, b: object) -> bool:
+    """Равенство разобранного YAML с типами: `True == 1` и `1 == 1.0` в Python
+    равны, а для демона это разные значения."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    # nan != nan: без этого правка ключа отказывала бы на любом конфиге с `.nan`.
+    return a == b or (a != a and b != b)
+
+
+def _matches_raw(current: object, expected: str | None) -> bool:
+    """Значение ключа в старом файле — то, которое видело приложение.
+
+    `expected` — сырое значение строкой (`AppSettings.parseValue`); `None` — ключа
+    нет или он пуст. Голое `off` YAML читает как `False`, поэтому строка сверяется
+    и сама, и прочитанной как скаляр YAML."""
+    if expected is None:
+        return current is None or current == ""
+    if current == expected and isinstance(current, str):
+        return True
+    import yaml
+    try:
+        return _same(current, yaml.safe_load(expected))
+    except yaml.YAMLError:
+        return False
+
+
+def verify_config_edit(payload: object) -> str | None:
+    """Правка конфига кнопкой — ровно замена `sufler.<key>` на `value`.
+
+    Оракул — тот же `yaml.safe_load`, которым конфиг читает демон: старый текст
+    разбирается, значение ключа совпадает с ожидаемым; новый текст разбирается и
+    равен старому с одной заменой `sufler.<key>`. `None` — правка верна, иначе
+    причина отказа. Построчный разбор приложения — только первый фильтр:
+    семь кругов подряд находили контекст документа, которого строка не видит
+    (кавычка или скобка выше, второй блок `sufler`, секция в flow-форме)."""
+    import yaml
+    if not isinstance(payload, dict):
+        return "вход не объект JSON"
+    old_text, new_text = payload.get("old"), payload.get("new")
+    key, expected, value = payload.get("key"), payload.get("expected"), payload.get("value")
+    if not isinstance(old_text, str) or not isinstance(new_text, str):
+        return "нет текста old или new"
+    if value not in _CONFIG_EDIT_VALUES.get(key, ()):
+        return f"кнопка не пишет {key!r} = {value!r}"
+    if expected is not None and not isinstance(expected, str):
+        return "expected не строка"
+    try:
+        old = yaml.safe_load(old_text)
+    except yaml.YAMLError as e:
+        return f"старый config.yaml не читается YAML: {type(e).__name__}"
+    old = {} if old is None else old
+    if not isinstance(old, dict):
+        return "старый config.yaml — не словарь"
+    section = old.get("sufler")
+    if section is not None and not isinstance(section, dict):
+        return "секция sufler — не словарь"
+    current = (section or {}).get(key)
+    if not _matches_raw(current, expected):
+        return f"sufler.{key} для YAML — {current!r}, а приложение видело {expected!r}"
+    try:
+        new = yaml.safe_load(new_text)
+    except yaml.YAMLError as e:
+        return f"после правки config.yaml не читается YAML: {type(e).__name__}"
+    want = dict(old)
+    want["sufler"] = {**(section or {}), key: value}
+    if not _same(new, want):
+        return f"правка меняет не только sufler.{key}"
+    return None
+
+
+def _verify_config_edit_main() -> int:
+    try:
+        reason = verify_config_edit(json.loads(sys.stdin.read()))
+    except Exception as e:  # noqa: BLE001 — любой сбой проверки — отказ записи, одной строкой
+        reason = f"проверка упала: {type(e).__name__}: {e}"
+    print("ok" if reason is None else f"отказ: {reason}")
+    return 0 if reason is None else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     harden_umask()   # окружение и веса под корнем данных — только владельцу
+    # Проверка правки конфига — до корня данных: он ей не нужен, и она ничего не пишет.
+    if (sys.argv[1:] if argv is None else argv) == ["--verify-config-edit"]:
+        return _verify_config_edit_main()
     # Корень — до разбора аргументов, как у import_meeting: проба `refuse` зовёт
     # вход без аргументов и ждёт отказа двери, а не ошибки argparse (№489).
     root = name_data_root_or_exit(__file__)

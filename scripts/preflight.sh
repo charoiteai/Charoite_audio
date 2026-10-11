@@ -129,6 +129,10 @@ else
   else
     echo "   – swiftlint не установлен (в CI он гейт)"; SKIPPED="$SKIPPED swiftlint(нет бинарника)"
   fi
+  # Тесты записи конфига зовут проверку PyYAML (`scripts/install_engine.py`) — тем же python:
+  # его каталог первым в PATH (переменной CHAROITE_* детерминированные тесты не читают).
+  PATH="$(cd "$(dirname "$PY")" && pwd):$PATH"
+  export PATH
   if (cd app && swift build --build-tests > "$WORK/swift-build.log" 2>&1); then
     (cd app && swift test --skip-build --filter '^CharoiteAppTests\.' > "$WORK/swift-test.log" 2>&1 \
        && grep -Eq 'Executed [1-9][0-9]* test' "$WORK/swift-test.log"); rc=$?
