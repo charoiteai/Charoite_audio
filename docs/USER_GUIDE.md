@@ -22,6 +22,19 @@ understand post-processing, take the result and recover from a failure.
    permission or a terminal run without the app.
 4. Make a short test recording and wait for its result card. That exercises
    audio capture, transcription, Ollama and the graph in one pass.
+5. Voice labelling decides which participant said what. When the voice set is
+   incomplete, the "Install voice labelling" button is shown in **Settings → Voice
+   labelling**, on Today and in the wizard. The same place holds the second
+   engine, Nemotron: it labels voices after the meeting more accurately, while
+   sherpa stays as the fallback. Before you press "Install and enable for
+   meeting processing" it shows the disk space (environment about 601 MB,
+   weights 191 MB, voice set 47 MB if missing), the free space the install needs
+   and the weights licence, NVIDIA OpenMDW 1.1 — pressing it means you accept.
+   "Enable" checks the engine first, "Disable" brings sherpa back. The live
+   stream during a meeting is not controlled by this button — it has its own key,
+   `sufler.live_nemotron`. While a meeting is being recorded, install and
+   "Enable" are off. On Today the "Nemotron…" button appears only when there is
+   something to do or something is broken.
 
 If readiness does not explain the problem, run this from the repository root:
 

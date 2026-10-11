@@ -582,6 +582,19 @@ and still installs when `sufler.nemotron_python` is set. Warnings: `memory`,
 nothing to fall back to) and `live_nemotron` — the button controls the diarization
 after a meeting, while the live stream has its own key, `sufler.live_nemotron`.
 
+The app's button (Settings → "Voice labelling", the "Nemotron…" popover on Today,
+the wizard) reads this contract as follows. Buttons follow `offer.*.allowed`, the
+title follows `state`, `offer.reason` is the second line. "Install and enable for
+meeting processing" runs the installer and writes `sufler.diarize_backend:
+"nemotron"` only when the installer exits with code 0 and no cancellation, the raw
+key value did not change while it ran (exact string match: before, after and at the
+moment of writing) and a fresh `--plan` gives `offer.enable.allowed`. "Enable" does
+the same after a green `--check`, without installing. "Disable" writes `sherpa`
+under the same raw-value condition, with no probe. Cancel sends SIGTERM to the
+installer's process group and SIGKILL after 30 s; when the app quits — after 10 s.
+While a meeting is being recorded, install, "Enable" and "Reinstall" are off, and
+`--plan` waits until the recording ends.
+
 A cancellation that arrives after the swap is fixed ends with code 0: the engine is
 installed. A caller that asked for the cancellation itself has to read that as
 «installed, but the person changed their mind» and must not write the engine key;
