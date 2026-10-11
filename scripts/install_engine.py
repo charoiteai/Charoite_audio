@@ -475,8 +475,10 @@ def plan(name: str, root: pathlib.Path) -> int:
         "license": {"name": get_models.NEMOTRON_LICENSE[0], "url": get_models.NEMOTRON_LICENSE[1]},
         "sizes_mb": sizes,
         "engine": engine,
-        "disk": disk_need(root, sizes),
     }
+    payload["disk"] = disk_need(root, sizes)
+    payload["memory"] = machine_memory()
+    payload["offer"] = offer(payload["machine"], engine, payload["disk"], payload["memory"], sizes)
     print(json.dumps(payload, ensure_ascii=False))
     return 0
 
@@ -580,6 +582,117 @@ def disk_need(root: pathlib.Path, sizes: dict) -> dict:
     reason = "" if ok else (f"на томе с папкой данных свободно {free} МБ, установке нужно {need} МБ — "
                             "освободите место")
     return {"free_mb": free, "reclaimable_mb": reclaim, "need_mb": need, "ok": ok, "reason": reason}
+
+
+#: Порог предупреждения о памяти: на машинах до 16 ГБ разбор с Nemotron не замерен.
+#: Не запрет — память не меняет ни одного решения `offer`, только `warnings`.
+MEMORY_WARN_MB = 16 * 1024
+MEMORY_REASON = ("на машинах с 16 ГБ памяти и меньше разбор с Nemotron не замерен; пик на 64 ГБ — "
+                 "около 2,9 ГБ (встреча 55 минут, 06.10.2026)")
+
+
+def machine_memory() -> dict:
+    """Объём памяти машины — поле `memory` у `--plan`: `{total_mb, warn, reason}`.
+
+    Сравнение с порогом — в байтах: в целых МБ «16 ГиБ + страница» неотличимо от
+    16 ГиБ. `total_mb` — только для показа. Объём не определён — тоже `warn`."""
+    try:
+        total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):
+        total = None
+    if total is not None and total <= 0:   # sysconf отдаёт -1, если значение не определено
+        total = None
+    warn = total is None or total <= MEMORY_WARN_MB * _MIB
+    if not warn:
+        reason = ""
+    elif total is None:
+        reason = f"объём памяти не определён; {MEMORY_REASON}"
+    else:
+        reason = MEMORY_REASON
+    return {"total_mb": None if total is None else total // _MIB, "warn": warn, "reason": reason}
+
+
+#: Причины отказа действий кнопки — одна строка на один отказ (`offer`).
+REASON_INSTALL_CUSTOM = "задан sufler.nemotron_python — установка не меняет, чем запускается движок"
+REASON_INSTALL_UNKNOWN = "в конфиге diarize_backend: {backend!r} — неизвестное значение"
+REASON_INSTALL_DONE = "движок поставлен и включён"
+REASON_ENABLE_NOT_SHERPA = "в конфиге выбран не sherpa — включать нечего"
+REASON_ENABLE_NOT_READY = "движок не поставлен или неполон — сначала поставьте"
+REASON_DISABLE_SHERPA = "разбор уже идёт на sherpa"
+#: Причины строки состояния.
+REASON_STATE_UNKNOWN = "diarize_backend: {backend!r} — неизвестное значение, разбор идёт sherpa"
+REASON_STATE_CUSTOM = "движок по ключу sufler.nemotron_python"
+#: `ready` — готовность по раскладке: mlx-audio и запуск движка она не проверяет.
+REASON_READY_BY_LAYOUT = "готов по раскладке; работу движка проверяет install_engine.py nemotron --check"
+
+
+def _first_refusal(*checks: tuple[bool, str]) -> str:
+    """Первая причина отказа сверху или `""` — разрешено."""
+    return next((reason for failed, reason in checks if failed), "")
+
+
+def _action(reason: str) -> dict:
+    return {"allowed": reason == "", "reason": reason}
+
+
+def offer(machine: dict, engine: dict, disk: dict, memory: dict, sizes: dict) -> dict:
+    """Что стоит и что можно сделать — поле `offer` у `--plan`, одно место правила.
+
+    Чистая функция без ввода-вывода: вход — уже собранные поля плана. Приложение
+    состояние и действия только показывает, своих правил не строит.
+
+    `install.allowed` — политика кнопки приложения: CLI `install_engine.py nemotron`
+    конфиг не читает и при заданном `sufler.nemotron_python` или неизвестном
+    `diarize_backend` по-прежнему ставит. `machine.ok` — гейт только установки, метку
+    состояния он не меняет. Память — только предупреждение, ни одно `allowed` от неё
+    не зависит. `backend` — уже нормализованное `engine_state` значение; в причинах
+    оно через `!r`, чтобы пустое читалось как `''`.
+
+    `engine` с полем `error` (битый конфиг) — `config_error`, все действия запрещены
+    той же причиной; кроме `error` ничего не читается."""
+    if "error" in engine:
+        error = engine["error"]
+        return {"state": "config_error", "reason": error, "install": _action(error),
+                "enable": _action(error), "disable": _action(error), "warnings": []}
+    backend = engine["backend"]
+    ready = engine["ready"]
+    custom = engine["nemotron_python_set"]
+    known = backend in diarize_nemotron.ENGINE_BACKENDS
+    install = _action(_first_refusal(
+        (not machine["ok"], machine["reason"]),
+        (not disk["ok"], disk["reason"]),
+        (custom, REASON_INSTALL_CUSTOM),
+        (not known, REASON_INSTALL_UNKNOWN.format(backend=backend)),
+        (ready and backend == "nemotron", REASON_INSTALL_DONE),
+    ))
+    enable = _action(_first_refusal(
+        (backend != "sherpa", REASON_ENABLE_NOT_SHERPA),
+        (not ready, REASON_ENABLE_NOT_READY),
+    ))
+    disable = _action(_first_refusal((backend == "sherpa", REASON_DISABLE_SHERPA)))
+    if not known:
+        state, reason = "backend_unknown", REASON_STATE_UNKNOWN.format(backend=backend)
+    elif custom:
+        state, reason = "custom_interpreter", engine["ready_reason"] or REASON_STATE_CUSTOM
+    elif backend == "nemotron":
+        state, reason = ("enabled", REASON_READY_BY_LAYOUT) if ready else ("enabled_broken", engine["ready_reason"])
+    elif ready:
+        state, reason = "ready_off", REASON_READY_BY_LAYOUT
+    elif engine["missing"] == "environment":
+        state, reason = "not_installed", ""
+    else:
+        state, reason = "broken", engine["ready_reason"]
+    warnings = []
+    if memory["warn"] and (install["allowed"] or enable["allowed"] or backend == "nemotron"):
+        warnings.append("memory")
+    if sizes["voice_set"] > 0 and backend == "nemotron":
+        # откат на sherpa невозможен, пока набора голосов нет
+        warnings.append("voice_set_missing")
+    if engine["live_mode"] != "off":
+        # живой поток работает по своему ключу `sufler.live_nemotron`, кнопка им не управляет
+        warnings.append("live_nemotron")
+    return {"state": state, "reason": reason, "install": install, "enable": enable, "disable": disable,
+            "warnings": warnings}
 
 
 def _voice_targets(root: pathlib.Path) -> tuple[tuple[pathlib.Path, int, object], ...]:
