@@ -40,7 +40,7 @@ final class TasksUndoTests: XCTestCase {
     }
 
     /// Строка ушла с места — отмена отказывает: по тексту не отличить свою
-    /// отметку от отметки владельца (№695, C3). Файл цел, отмена не сгорает.
+    /// отметку от отметки владельца (№695, C3). Файл цел.
     func testUndoRefusesMovedTaskAndKeepsTheFile() throws {
         try withFile("# План\n- [ ] Мария — договор\nЗаметка\n") { root, file in
             let receipt = try change(in: root)
@@ -56,7 +56,7 @@ final class TasksUndoTests: XCTestCase {
             let receipt = try change(in: root)
             let edited = "- [x] Мария — новый договор\n"
             try edited.write(to: file, atomically: true, encoding: .utf8)
-            XCTAssertEqual(TasksService.undoSync(receipt), .missing)
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
             XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), edited)
         }
     }
@@ -84,7 +84,7 @@ final class TasksUndoTests: XCTestCase {
         try withFile("- [ ] Мария — договор\n") { root, file in
             let receipt = try change(in: root)
             XCTAssertEqual(TasksService.undoSync(receipt), .changed)
-            XCTAssertEqual(TasksService.undoSync(receipt), .missing)
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
             XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "- [ ] Мария — договор\n")
         }
     }
@@ -182,9 +182,37 @@ final class TasksUndoTests: XCTestCase {
         }
     }
 
-    /// Конфликт отмену не сжигает: после правки файла владельцем отмену можно
-    /// повторить (№695, постфактум-2 по #794).
-    func testConflictingUndoKeepsTheUndoAvailable() async throws {
+    /// Опыт O1 (№695, круг n695-p3, C1): два одинаковых поручения, приложение
+    /// отметило первое; владелец удалил второе. Своя строка на своём месте
+    /// совпадает по тексту, но по строкам не отличить, чья это отметка, — отмена
+    /// судит весь файл: он не тот, что записали, — конфликт, файл цел.
+    func testUndoDoesNotClearTheOwnersCheckAfterTheTwinWasRemoved() throws {
+        try withFile("- [ ] Договор\n- [ ] Договор\n") { root, file in
+            let receipt = try change(in: root)
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "- [x] Договор\n- [ ] Договор\n")
+            let owners = "- [x] Договор\n"
+            try owners.write(to: file, atomically: true, encoding: .utf8)
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), owners)
+        }
+    }
+
+    /// Цена правила: любая внешняя правка файла после отметки, даже строки ниже,
+    /// гасит отмену — конфликт без записи.
+    func testUndoRefusesAfterAnyExternalEditOfTheFile() throws {
+        try withFile("- [ ] Мария — договор\nЗаметка\n") { root, file in
+            let receipt = try change(in: root)
+            let appended = "- [x] Мария — договор\nЗаметка\nДописано владельцем\n"
+            try appended.write(to: file, atomically: true, encoding: .utf8)
+            XCTAssertEqual(TasksService.undoSync(receipt), .conflict)
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), appended)
+        }
+    }
+
+    /// Конфликт отмену сжигает: снимок, который записала отметка, после внешней
+    /// правки не вернётся, и вечная «повторите» не нужна (№695, круг n695-p3).
+    /// Вернувший файл владелец отмену не воскрешает.
+    func testConflictingUndoBurnsTheUndo() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("task-undo-keep-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -197,15 +225,16 @@ final class TasksUndoTests: XCTestCase {
         let receipt = try XCTUnwrap(service.lastChange)
         let duplicated = "- [x] Договор\n- [x] Договор\n"
         try duplicated.write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(receipt.resultingText, "- [x] Договор\n")
         service.undoLastChange()
         try await waitForWrite(service)
-        XCTAssertEqual(service.lastChange, receipt)
+        XCTAssertNil(service.lastChange)
         XCTAssertNotNil(service.mutationError)
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), duplicated)
         try "- [x] Договор\n".write(to: file, atomically: true, encoding: .utf8)
         service.undoLastChange()
         try await waitForWrite(service)
         XCTAssertNil(service.lastChange)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "- [ ] Договор\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "- [x] Договор\n")
     }
 }
