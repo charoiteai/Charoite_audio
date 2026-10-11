@@ -288,10 +288,12 @@ extension NemotronVisibleActions {
     }
 
     /// Кнопки и тексты по паре `(action, plan)`, занятости и записи встречи.
+    /// `processRunning` — жив процесс действия: без него «Отмена» выключена.
     static func make(action: NemotronEngineService.Action,
                      plan: NemotronPlanState,
                      busy: Bool,
-                     recording: Bool) -> NemotronVisibleActions {
+                     recording: Bool,
+                     processRunning: Bool = true) -> NemotronVisibleActions {
         var v = NemotronVisibleActions()
         switch action {
         case .running(let kind, let line):
@@ -300,7 +302,7 @@ extension NemotronVisibleActions {
                                     : L.t("проверяю движок перед включением…", "checking the engine before enabling…",
                                           "启用前检查引擎…"))
                 : line
-            v.cancel = .enabled
+            v.cancel = processRunning ? .enabled : .disabled
             v.showOnToday = true
             return v
         case .cancelling(let afterCommit):
@@ -379,12 +381,16 @@ extension NemotronVisibleActions {
 
     private static func stateTitle(_ state: String) -> String { NemotronPlan.stateTitle(state) }
 
+    /// Постоянные информационные предупреждения: видны в настройках, кнопку на
+    /// «Сегодня» не держат (решение главной по сверке out1 №19).
+    static let infoWarnings: Set<String> = ["memory", "live_nemotron"]
+
     /// Предикат кнопки на «Сегодня» при `action == idle` (v2.1): действие или беда.
     /// `disable` не считается: он разрешён у каждого здорового `enabled`.
     static func todayPredicate(_ p: NemotronPlan) -> Bool {
         let o = p.offer
         if o.install.allowed || o.enable.allowed { return true }
-        if !o.warnings.isEmpty { return true }
+        if o.warnings.contains(where: { !infoWarnings.contains($0) }) { return true }
         if o.state == "enabled_broken" || o.state == "backend_unknown" { return true }
         return !NemotronPlan.knownStates.contains(o.state)
     }

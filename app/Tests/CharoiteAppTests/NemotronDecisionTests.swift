@@ -121,6 +121,24 @@ final class NemotronDecisionTests: XCTestCase {
         XCTAssertEqual(r, .text("sufler:\n  diarize_backend: sherpa\nsufler:\n  diarize_backend: \"nemotron\""))
     }
 
+    /// Z2: ключ в мёртвой первой секции — пишется в последнюю `sufler:`, которую читает PyYAML.
+    func testCASКлючТолькоВПервойСекцииПишетсяВПоследнюю() {
+        let text = "sufler:\n  diarize_backend: sherpa\nllm:\n  m: 1\nsufler:\n  quiet: true"
+        let r = AppSettings.replacingIfUnchanged("diarize_backend", expected: "sherpa", value: "nemotron", in: text)
+        XCTAssertEqual(r, .text("sufler:\n  diarize_backend: sherpa\nllm:\n  m: 1\nsufler:\n  quiet: true\n"
+                                + "  diarize_backend: \"nemotron\""))
+    }
+
+    /// Сверка out1 п. 10: уборка после замены без своей отмены (установщик убит
+    /// снаружи) — ключ не пишется, предложить «Включить».
+    func testУборкаПослеЗаменыБезОтменыКлючНеПишется() {
+        let o = LongProcessOutcome(code: 0, reason: .exit, cancelRequested: false, notStarted: false,
+                                   stdout: "", stderrTail: "", cleanupAfterCommit: true)
+        guard case .stop(_, true, false)? = NemotronDecision.outcomeFailure(o, kind: .install) else {
+            return XCTFail("\(String(describing: NemotronDecision.outcomeFailure(o, kind: .install)))")
+        }
+    }
+
     func testCASFlowИТабОтказ() {
         for text in ["sufler: {}\n", "sufler:\n\tquiet: true\n"] {
             guard case .unsupported = AppSettings.replacingIfUnchanged("diarize_backend", expected: nil,

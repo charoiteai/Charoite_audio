@@ -24,7 +24,8 @@ understand post-processing, take the result and recover from a failure.
    audio capture, transcription, Ollama and the graph in one pass.
 5. Voice labelling decides which participant said what. When the voice set is
    incomplete, the "Install voice labelling" button is shown in **Settings → Voice
-   labelling**, on Today and in the wizard. The same place holds the second
+   labelling** and on Today; in the wizard it is called "Tell speakers
+   apart". The same place holds the second
    engine, Nemotron: it labels voices after the meeting more accurately, while
    sherpa stays as the fallback. Before you press "Install and enable for
    meeting processing" it shows the disk space (environment about 601 MB,
@@ -33,8 +34,11 @@ understand post-processing, take the result and recover from a failure.
    "Enable" checks the engine first, "Disable" brings sherpa back. The live
    stream during a meeting is not controlled by this button — it has its own key,
    `sufler.live_nemotron`. While a meeting is being recorded, install and
-   "Enable" are off. On Today the "Nemotron…" button appears only when there is
-   something to do or something is broken.
+   "Enable" are off. On Today the "Nemotron…" button appears when there is
+   something to do, something is broken or an action is running; the result of
+   an action is cleared when you close the popover, unless it offers "Enable" or
+   "Reinstall". Standing notes (memory, the live stream) are shown only in
+   Settings.
 
 If readiness does not explain the problem, run this from the repository root:
 

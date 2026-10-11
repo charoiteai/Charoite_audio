@@ -590,10 +590,12 @@ meeting processing" runs the installer and writes `sufler.diarize_backend:
 key value did not change while it ran (exact string match: before, after and at the
 moment of writing) and a fresh `--plan` gives `offer.enable.allowed`. "Enable" does
 the same after a green `--check`, without installing. "Disable" writes `sherpa`
-under the same raw-value condition, with no probe. Cancel sends SIGTERM to the
+right away, with no probe: reading the value and writing it is one call, so there
+is no window in which the config could change. Cancel sends SIGTERM to the
 installer's process group and SIGKILL after 30 s; when the app quits — after 10 s.
 While a meeting is being recorded, install, "Enable" and "Reinstall" are off, and
-`--plan` waits until the recording ends.
+`--plan` waits until the recording ends; an install that finishes during a recording
+does not write the key — press "Enable" after the meeting.
 
 A cancellation that arrives after the swap is fixed ends with code 0: the engine is
 installed. A caller that asked for the cancellation itself has to read that as

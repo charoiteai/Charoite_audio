@@ -64,7 +64,9 @@ enum NemotronDecision: Equatable {
     /// без отмены, идём дальше. Одна функция для установки и пробы.
     static func outcomeFailure(_ o: LongProcessOutcome, kind: NemotronActionKind) -> NemotronDecision? {
         if o.code == 0 && o.reason == .exit && !o.notStarted {
-            guard o.cancelRequested else { return nil }
+            // Уборка после замены без своей отмены — установщик убили снаружи:
+            // движок поставлен, ключ не пишем (сверка out1 №10).
+            guard o.cancelRequested || o.cleanupAfterCommit else { return nil }
             return .stop(kind == .install
                 ? L.t("поставлено, не включено", "installed, not enabled", "已安装，未启用")
                 : L.t("проверку отменили — не включено", "the check was cancelled — not enabled", "检查已取消——未启用"),

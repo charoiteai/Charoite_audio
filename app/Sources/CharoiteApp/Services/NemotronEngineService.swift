@@ -72,7 +72,13 @@ final class NemotronEngineService: ObservableObject {
     private let voiceSetInstalling: @MainActor () -> Bool
     private let refreshReadiness: @MainActor () -> Void
 
-    private var current: NemotronProcess?
+    /// Процесс действия жив: «Отмена» горит только при нём. После выхода
+    /// процесса решение ещё ждёт `--plan`, но отменять уже нечего (сверка out1 №8).
+    @Published private(set) var processRunning = false
+
+    private var current: NemotronProcess? {
+        didSet { processRunning = current != nil }
+    }
     private var subscriptions: Set<AnyCancellable> = []
 
     // single-flight плана
@@ -209,6 +215,13 @@ final class NemotronEngineService: ObservableObject {
         if action.isActive || voiceSetInstalling() { return EngineInstallActivity.busyText }
         if isRecording() { return NemotronVisibleActions.recordingText }
         if terminationInProgress { return L.t("приложение закрывается", "the app is quitting", "应用正在退出") }
+        // Без config.yaml ключ после установки некуда записать (сверка out1 №4):
+        // файл создаёт мастер кнопкой «Сохранить».
+        if !FileManager.default.fileExists(atPath: currentRoot().appendingPathComponent("config/config.yaml").path) {
+            return L.t("сначала сохраните настройки — config.yaml ещё нет",
+                       "save the settings first — config.yaml does not exist yet",
+                       "请先保存设置——config.yaml 尚不存在")
+        }
         return nil
     }
 
@@ -236,14 +249,26 @@ final class NemotronEngineService: ObservableObject {
     private func finish(_ kind: NemotronActionKind, outcome: LongProcessOutcome, root: URL, r0: String?) async {
         current = nil
         let r1 = AppSettings.configValue("diarize_backend", root: root)
-        let rootChanged = currentRoot() != root
+        // Корень сверяется на каждом решении, а не до `await freshPlan()`: папку
+        // данных могут сменить, пока идёт план, и CAS ушёл бы в старый корень
+        // (сверка out1 C3). Между последним решением и CAS `await` нет.
         func decide(_ allowed: Bool, _ reason: String, _ cas: AppSettings.ConfigCAS?) -> NemotronDecision {
-            NemotronDecision.decide(outcome: outcome, kind: kind, rootChanged: rootChanged, r0: r0, r1: r1,
+            NemotronDecision.decide(outcome: outcome, kind: kind, rootChanged: currentRoot() != root, r0: r0, r1: r1,
                                     enableAllowed: allowed, enableReason: reason, cas: cas)
         }
         var decision = decide(true, "", nil)
         var planDone = false
-        if decision == .attemptWrite {
+        if decision == .attemptWrite, isRecording() || terminationInProgress {
+            // Во время записи `--plan` не идёт (сверка out1 C2); при выходе из
+            // приложения его никто не дождётся (№8). Ключ не пишем — «Включить»
+            // после встречи; план для показа — по концу записи (`requestPlan`
+            // в хвосте его откладывает).
+            decision = .stop(isRecording()
+                ? L.t("поставлено; включу после встречи — нажмите «Включить»",
+                      "installed; enable after the meeting — press “Enable”", "已安装；会议结束后请点击“启用”")
+                : L.t("приложение закрывается — не включено", "the app is quitting — not enabled", "应用正在退出——未启用"),
+                offerEnable: true, offerReinstall: false)
+        } else if decision == .attemptWrite {
             let state = await freshPlan()
             planDone = true
             if case .ready(let p) = state {
@@ -260,7 +285,8 @@ final class NemotronEngineService: ObservableObject {
         }
         setOutcome(Self.outcome(of: decision))
         refreshReadiness()
-        if !planDone && !terminationInProgress { _ = await freshPlan() }
+        // Через `requestPlan`: во время записи он откладывает план до её конца.
+        if !planDone && !terminationInProgress { requestPlan() }
     }
 
     static func outcome(of decision: NemotronDecision) -> ActionOutcome {
@@ -302,7 +328,16 @@ final class NemotronEngineService: ObservableObject {
                                                "无法写入 config.yaml：") + reason, success: false))
         }
         refreshReadiness()
-        Task { @MainActor [weak self] in _ = await self?.freshPlan() }
+        requestPlan()
+    }
+
+    /// Вид кнопки ушёл с экрана: исход снят, «Сегодня» снова считает по плану
+    /// (сверка out1 C1). Исход с «Включить» или «Переставить» остаётся до
+    /// следующего действия — иначе кнопка после неудачной пробы пропала бы.
+    func dismissOutcome() {
+        if case .outcome(let o) = action, o.success || !(o.offerEnable || o.offerReinstall) {
+            action = .idle
+        }
     }
 
     /// «Отмена»: SIGTERM группе, SIGKILL через `cancelGrace`.

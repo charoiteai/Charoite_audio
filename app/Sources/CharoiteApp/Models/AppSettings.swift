@@ -477,10 +477,7 @@ enum AppSettings {
             target = i
         }
         if let i = target {
-            let indent = String(lines[i].prefix { $0 == " " })
-            // Комментарий справа сохраняем: он объясняет поле человеку.
-            let comment = lines[i].range(of: " #").map { String(lines[i][$0.lowerBound...]) } ?? ""
-            lines[i] = "\(indent)\(key): \"\(escaped)\"\(comment)"
+            lines[i] = rewritten(lines[i], key: key, escaped: escaped)
             return lines.joined(separator: "\n")
         }
         // Ключа нет вовсе — дописываем в секцию sufler, а не в конец файла:
@@ -496,6 +493,37 @@ enum AppSettings {
             // Сломать YAML хуже, чем не записать: после сломанного файла
             // демон не стартует. Сигнал отказа мастеру — №640.
             return text
+        }
+    }
+
+    /// Строка ключа с новым значением: отступ и комментарий справа — прежние
+    /// (комментарий объясняет поле человеку).
+    private static func rewritten(_ line: String, key: String, escaped: String) -> String {
+        let indent = String(line.prefix { $0 == " " })
+        let comment = line.range(of: " #").map { String(line[$0.lowerBound...]) } ?? ""
+        return "\(indent)\(key): \"\(escaped)\"\(comment)"
+    }
+
+    /// Замена ключа только внутри последней секции `sufler:` — её читает PyYAML.
+    /// Ключ в первой (мёртвой) секции не трогаем, в последней нет — дописываем
+    /// в её конец (сверка out1 №6).
+    static func replacingInSufler(_ key: String, with value: String, in text: String) -> CASText {
+        var lines = text.components(separatedBy: "\n")
+        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        switch suflerSection(in: lines) {
+        case .found(let header, let end, let indent):
+            if let i = (header + 1..<end).last(where: {
+                lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix(key + ":")
+            }) {
+                lines[i] = rewritten(lines[i], key: key, escaped: escaped)
+            } else {
+                lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)
+            }
+            return .text(lines.joined(separator: "\n"))
+        case .absent:
+            return .text(replacing(key, with: value, in: text))
+        case .unsupported(let reason):
+            return .unsupported(reason)
         }
     }
 
@@ -552,19 +580,14 @@ enum AppSettings {
         }
     }
 
-    /// Чистое ядро условной записи: значение не `expected` — `.changed`; ключа
-    /// нет, а секцию sufler дописать нельзя — `.unsupported`; иначе — текст
-    /// после `replacing`.
+    /// Чистое ядро условной записи: значение не `expected` — `.changed`;
+    /// секцию sufler правкой строки не поправить — `.unsupported`; иначе — текст
+    /// после `replacingInSufler`.
     static func replacingIfUnchanged(_ key: String, expected: String?, value: String,
                                      in text: String) -> CASText {
         let current = parseValue(key, in: text)
         guard current == expected else { return .changed(current) }
-        let lines = text.components(separatedBy: "\n")
-        let present = lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix(key + ":") }
-        if !present, case .unsupported(let reason) = suflerSection(in: lines) {
-            return .unsupported(reason)
-        }
-        return .text(replacing(key, with: value, in: text))
+        return replacingInSufler(key, with: value, in: text)
     }
 
     /// Где в тексте конфига секция `sufler:` и куда в неё дописывать ключ.

@@ -13,7 +13,8 @@ struct NemotronEngineControl: View {
 
     private var visible: NemotronVisibleActions {
         NemotronVisibleActions.make(action: service.action, plan: service.plan,
-                                    busy: activity.busy, recording: sufler.hasActiveLifecycle)
+                                    busy: activity.busy, recording: sufler.hasActiveLifecycle,
+                                    processRunning: service.processRunning)
     }
 
     var body: some View {
@@ -28,7 +29,7 @@ struct NemotronEngineControl: View {
             if let outcome = v.outcome {
                 Label(outcome.text, systemImage: outcome.success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(outcome.success ? Color.green : Theme.warning)
+                    .foregroundStyle(outcome.success ? Theme.ok : Theme.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let progress = v.progress {
@@ -60,6 +61,8 @@ struct NemotronEngineControl: View {
             }
         }
         .onAppear { service.requestPlanIfNeeded() }
+        // Исход виден, пока вид на экране; ушёл — кнопка на «Сегодня» снова по плану.
+        .onDisappear { service.dismissOutcome() }
     }
 
     @ViewBuilder
