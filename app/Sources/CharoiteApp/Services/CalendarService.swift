@@ -105,6 +105,8 @@ final class CalendarService: ObservableObject {
         let start: Date
         var end: Date?
         let attendees: Int
+        var topicCalendarID: String = ""
+        var topicItemID: String = ""
     }
 
     @Published private(set) var today: [DayEvent] = []
@@ -130,7 +132,9 @@ final class CalendarService: ObservableObject {
                          title: ev.title ?? "",
                          start: ev.startDate,
                          end: ev.endDate,
-                         attendees: max(0, (ev.attendees?.count ?? 0) - 1))
+                         attendees: max(0, (ev.attendees?.count ?? 0) - 1),
+                         topicCalendarID: ev.calendar.calendarIdentifier,
+                         topicItemID: ev.calendarItemExternalIdentifier ?? ev.calendarItemIdentifier)
             }
     }
 
@@ -156,7 +160,9 @@ final class CalendarService: ObservableObject {
                          title: ev.title ?? "",
                          start: ev.startDate,
                          end: ev.endDate,
-                         attendees: max(0, (ev.attendees?.count ?? 0) - 1))
+                         attendees: max(0, (ev.attendees?.count ?? 0) - 1),
+                         topicCalendarID: ev.calendar.calendarIdentifier,
+                         topicItemID: ev.calendarItemExternalIdentifier ?? ev.calendarItemIdentifier)
             }
 
         let predicate = store.predicateForEvents(

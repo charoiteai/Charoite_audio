@@ -17,6 +17,8 @@ struct PrepView: View {
     /// Тот же ключ, что в Настройках и библиотеке: подключение календаря
     /// отсюда обязано отразиться там, а не жить третьим флагом.
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
+    @AppStorage("charoite.prepTopicBindings") private var topicBindings = Data()
+    @State private var topicDraft = ""
     /// Хвосты по теме ближайшей встречи — из того же поиска, что в окне встреч.
     @State private var topicHits: [MeetingSearch.Hit] = []
     @State private var topicSearchTask: Task<Void, Never>?
@@ -40,6 +42,7 @@ struct PrepView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     todaySection
+                    topicBindingSection
                     topicSection
                     tasksSection
                     debtsSection
@@ -64,6 +67,10 @@ struct PrepView: View {
         }
         .onChange(of: tasks.items) { _, _ in recomputeDebts() }
         .onChange(of: topicHits) { _, _ in recomputeDebts() }
+        .onChange(of: topicBindings) { _, _ in
+            loadTopicTrail()
+            recomputeDebts()
+        }
         .onDisappear { cancelTopicLoad() }
     }
 
@@ -145,11 +152,39 @@ struct PrepView: View {
     // MARK: - Что было по теме
 
     @ViewBuilder
+    private var topicBindingSection: some View {
+        if let next = calendar.today.first, let key = bindingKey(next) {
+            section(L.t("Тема для подготовки", "Preparation topic", "会前准备主题"), icon: "link") {
+                Text(nextTopic ?? "").font(.callout)
+                HStack {
+                    TextField(L.t("Проект или тема", "Project or topic", "项目或主题"), text: $topicDraft)
+                    Button(L.t("Запомнить", "Remember", "记住")) {
+                        var bindings = PrepTopicBindings(data: topicBindings)
+                        bindings.set(topicDraft, key: key)
+                        topicBindings = bindings.data
+                    }.disabled(topicDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button(L.t("По названию", "Use title", "使用标题")) {
+                        var bindings = PrepTopicBindings(data: topicBindings)
+                        bindings.set("", key: key)
+                        topicBindings = bindings.data
+                        topicDraft = ""
+                    }
+                }
+                Text(L.t("Привязка хранится локально для этого календарного события и графа.",
+                         "The binding is stored locally for this calendar item and graph.",
+                         "关联在本地保存，仅用于此日历事项和图谱。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .onChange(of: key, initial: true) { _, _ in topicDraft = nextTopic ?? "" }
+        }
+    }
+
+    @ViewBuilder
     private var topicSection: some View {
         if let next = calendar.today.first {
-            section(L.t("Что было по теме «\(short(next.title))»",
-                        "Previously on “\(short(next.title))”",
-                        "「\(short(next.title))」此前的情况"),
+            section(L.t("Что было по теме «\(nextTopic ?? short(next.title))»",
+                        "Previously on “\(nextTopic ?? short(next.title))”",
+                        "「\(nextTopic ?? short(next.title))」此前的情况"),
                     icon: "clock.arrow.circlepath") {
                 if isLoadingTopic {
                     HStack(spacing: 7) {
@@ -364,7 +399,7 @@ struct PrepView: View {
             isLoadingTopic = false
             return
         }
-        let query = PrepPolicy.titleQuery(next.title)
+        let query = PrepTopicBindings(data: topicBindings).topic(key: bindingKey(next), title: next.title)
         guard !query.isEmpty else {
             topicHits = []
             isLoadingTopic = false
@@ -374,7 +409,7 @@ struct PrepView: View {
         isLoadingTopic = true
         topicSearchTask = Task { @MainActor in
             let hits = await MeetingSearch.searchAsync(query, graph: graph, limit: 3)
-            guard !Task.isCancelled, nextTopic == query else { return }
+            guard !Task.isCancelled, calendar.today.first?.id == next.id, nextTopic == query else { return }
             topicHits = hits
             isLoadingTopic = false
         }
@@ -387,9 +422,14 @@ struct PrepView: View {
     }
 
     private var nextTopic: String? {
-        guard let title = calendar.today.first?.title else { return nil }
-        let query = PrepPolicy.titleQuery(title)
+        guard let next = calendar.today.first else { return nil }
+        let query = PrepTopicBindings(data: topicBindings).topic(key: bindingKey(next), title: next.title)
         return query.isEmpty ? nil : query
+    }
+
+    private func bindingKey(_ event: CalendarService.DayEvent) -> String? {
+        guard let graph = AppSettings.graphDir else { return nil }
+        return PrepTopicBindings.key(graph: graph, calendar: event.topicCalendarID, item: event.topicItemID)
     }
 
     private var relatedDays: Set<String> {
