@@ -45,6 +45,9 @@ final class TasksService: ObservableObject {
 
     struct Change: Equatable, Sendable {
         let item: Item
+        /// Строка, которую переключили на деле: `item.lineIndex` — лишь быстрый
+        /// путь, файл мог сдвинуться между сканом и записью.
+        let lineIndex: Int
         let originalLine: String
         let changedLine: String
     }
@@ -334,7 +337,9 @@ final class TasksService: ObservableObject {
             let result = Self.undoSync(change)
             await MainActor.run {
                 self.pendingIDs.remove(change.item.id)
-                if result != .writeFailed {
+                // Конфликт отмену не сжигает: владелец разберётся с файлом и
+                // повторит (№695, постфактум-2 по #794).
+                if result == .changed || result == .missing {
                     self.lastChange = nil
                     self.undoRoot = nil
                 }
@@ -403,7 +408,8 @@ final class TasksService: ObservableObject {
         guard flipped != line else { return (.conflict, nil) }
         lines[targetIndex] = flipped
         let result = saveMutation(lines.joined(separator: "\n"), replacing: text, at: item.file)
-        let change = result == .changed ? Change(item: item, originalLine: line, changedLine: flipped) : nil
+        let change = result == .changed ? Change(item: item, lineIndex: targetIndex,
+                                                       originalLine: line, changedLine: flipped) : nil
         return (result, change)
     }
 
@@ -414,6 +420,10 @@ final class TasksService: ObservableObject {
         let matches = lines.indices.filter { lines[$0] == change.changedLine }
         guard !matches.isEmpty else { return .missing }
         guard matches.count == 1, let index = matches.first else { return .conflict }
+        // Строка ушла с места, а рядом живёт её близнец в исходном состоянии: та,
+        // что совпала по тексту, может быть чужой отметкой владельца (два
+        // одинаковых поручения, свою он снял, соседнюю отметил) — не трогаем.
+        if index != change.lineIndex, lines.contains(change.originalLine) { return .conflict }
         lines[index] = change.originalLine
         return saveMutation(lines.joined(separator: "\n"), replacing: text, at: change.item.file)
     }

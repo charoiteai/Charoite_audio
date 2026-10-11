@@ -259,7 +259,7 @@ struct MeetingCardView: View {
                                     .foregroundStyle(item.done ? Theme.accent : Color.secondary)
                             }
                         }
-                        .buttonStyle(.plain).disabled(tasks.isUpdating(item))
+                        .buttonStyle(.plain).disabled(tasks.isMutating)
                         Text(MarkdownLine.render(item.text))
                             .font(.callout)
                             .strikethrough(item.done)
