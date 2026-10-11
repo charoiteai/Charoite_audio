@@ -595,7 +595,10 @@ is no window in which the config could change. Cancel sends SIGTERM to the
 installer's process group and SIGKILL after 30 s; when the app quits — after 10 s.
 While a meeting is being recorded, install, "Enable" and "Reinstall" are off, and
 `--plan` waits until the recording ends; an install that finishes during a recording
-does not write the key — press "Enable" after the meeting.
+does not write the key — press "Enable" after the meeting. Recording and app quit are
+checked once more right before the key is written, after the fresh `--plan`. A key
+value that spans several lines (`>`, `|`, a quote with a line break) is not
+rewritten — the button asks you to edit config.yaml by hand.
 
 A cancellation that arrives after the swap is fixed ends with code 0: the engine is
 installed. A caller that asked for the cancellation itself has to read that as

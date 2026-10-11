@@ -39,8 +39,10 @@ final class NemotronPlanTests: XCTestCase {
     }
 
     private func visible(_ plan: NemotronPlanState, action: NemotronEngineService.Action = .idle,
-                         busy: Bool = false, recording: Bool = false) -> NemotronVisibleActions {
-        NemotronVisibleActions.make(action: action, plan: plan, busy: busy, recording: recording)
+                         busy: Bool = false, recording: Bool = false,
+                         refusal: String? = nil) -> NemotronVisibleActions {
+        NemotronVisibleActions.make(action: action, plan: plan, busy: busy, recording: recording,
+                                    processRunning: true, refusal: refusal)
     }
 
     // MARK: 2. разбор
@@ -179,6 +181,18 @@ final class NemotronPlanTests: XCTestCase {
         let e = visible(.ready(Self.plan("enabled", disable: true)), busy: true)
         XCTAssertEqual(e.disable?.enabled, false)
         XCTAssertEqual(e.disable?.note, busy)
+    }
+
+    /// Сверка fix1 п. 7: отказ службы (нет config.yaml) виден подписью у
+    /// выключенной кнопки, а не тихим нажатием впустую.
+    func testОтказСлужбыВыключаетКнопкиСПодписью() {
+        let why = "сначала сохраните настройки — config.yaml ещё нет"
+        let v = visible(.ready(Self.plan(install: true)), refusal: why)
+        XCTAssertEqual(v.install, .init(title: NemotronVisibleActions.installTitle, enabled: false, note: why))
+        let e = visible(.ready(Self.plan("ready_off", install: true, enable: true, disable: false)), refusal: why)
+        XCTAssertEqual(e.enable, .init(title: NemotronVisibleActions.enableTitle, enabled: false, note: why))
+        let ok = visible(.ready(Self.plan(install: true)))
+        XCTAssertEqual(ok.install?.enabled, true)
     }
 
     func testУстановкаЗапрещенаНоОсмысленна() {

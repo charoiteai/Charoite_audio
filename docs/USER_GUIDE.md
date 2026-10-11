@@ -36,9 +36,10 @@ understand post-processing, take the result and recover from a failure.
    `sufler.live_nemotron`. While a meeting is being recorded, install and
    "Enable" are off. On Today the "Nemotron…" button appears when there is
    something to do, something is broken or an action is running; the result of
-   an action is cleared when you close the popover, unless it offers "Enable" or
-   "Reinstall". Standing notes (memory, the live stream) are shown only in
-   Settings.
+   an action is cleared once it has been seen and every window with the button
+   (popover, Settings, setup wizard) is closed, unless it offers "Enable" or
+   "Reinstall". Standing notes (memory, the live stream) do not keep the button
+   on Today — they are shown in Settings and in the popover.
 
 If readiness does not explain the problem, run this from the repository root:
 

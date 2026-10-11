@@ -289,11 +289,15 @@ extension NemotronVisibleActions {
 
     /// Кнопки и тексты по паре `(action, plan)`, занятости и записи встречи.
     /// `processRunning` — жив процесс действия: без него «Отмена» выключена.
+    /// `refusal` — `startRefusal()` службы: действие не начнётся (например, нет
+    /// config.yaml) — кнопки выключены с этой подписью, а не молчат (сверка fix1 п. 7).
+    /// Без умолчаний: забытый аргумент — ошибка сборки, а не тихая «Отмена» (п. 12).
     static func make(action: NemotronEngineService.Action,
                      plan: NemotronPlanState,
                      busy: Bool,
                      recording: Bool,
-                     processRunning: Bool = true) -> NemotronVisibleActions {
+                     processRunning: Bool,
+                     refusal: String?) -> NemotronVisibleActions {
         var v = NemotronVisibleActions()
         switch action {
         case .running(let kind, let line):
@@ -334,22 +338,23 @@ extension NemotronVisibleActions {
             v.showOnToday = true
             return v
         case .ready(let p):
-            fill(&v, plan: p, action: action, busy: busy, recording: recording)
+            fill(&v, plan: p, action: action, busy: busy, recording: recording, refusal: refusal)
             if case .idle = action { v.showOnToday = todayPredicate(p) }
             return v
         }
     }
 
     private static func fill(_ v: inout NemotronVisibleActions, plan p: NemotronPlan,
-                             action: NemotronEngineService.Action, busy: Bool, recording: Bool) {
+                             action: NemotronEngineService.Action, busy: Bool, recording: Bool,
+                             refusal: String?) {
         let offer = p.offer
         v.title = stateTitle(offer.state)
         if let r = offer.reason, !r.isEmpty { v.detail = r }
         let configError = offer.state == "config_error"
         // Установка, проба и переустановка ждут конца записи и чужой установки;
         // «Выключить» — только правка конфига, запись ей не мешает.
-        let blockNote: String? = busy ? EngineInstallActivity.busyText : (recording ? recordingText : nil)
-        let blocked = busy || recording || configError
+        let blockNote: String? = busy ? EngineInstallActivity.busyText : (recording ? recordingText : refusal)
+        let blocked = busy || recording || configError || refusal != nil
 
         let enableAllowed = offer.enable.allowed
         var consentShown = false

@@ -515,6 +515,16 @@ enum AppSettings {
             if let i = (header + 1..<end).last(where: {
                 lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix(key + ":")
             }) {
+                // Значение на нескольких строках (`>`, `|`, кавычка с переносом): замена
+                // одной строки оставит хвост висеть и сломает YAML.
+                let ind = lines[i].prefix { $0 == " " }.count
+                if i + 1 < lines.count,
+                   !lines[i + 1].trimmingCharacters(in: .whitespaces).isEmpty,
+                   lines[i + 1].prefix(while: { $0 == " " }).count > ind {
+                    return .unsupported(L.t("значение ключа занимает несколько строк — поправьте config.yaml руками",
+                                            "the key value spans several lines — edit config.yaml by hand",
+                                            "该键的值跨多行——请手动编辑 config.yaml"))
+                }
                 lines[i] = rewritten(lines[i], key: key, escaped: escaped)
             } else {
                 lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)

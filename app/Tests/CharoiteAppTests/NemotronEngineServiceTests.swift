@@ -313,7 +313,8 @@ final class NemotronEngineServiceTests: XCTestCase {
         await eventually("план") { if case .ready = s.plan { return true }; return false }
         s.dismissOutcome()
         XCTAssertEqual(s.action, .idle)
-        XCTAssertFalse(NemotronVisibleActions.make(action: s.action, plan: s.plan, busy: false, recording: false).showOnToday,
+        XCTAssertFalse(NemotronVisibleActions.make(action: s.action, plan: s.plan, busy: false, recording: false,
+                                                   processRunning: s.processRunning, refusal: nil).showOnToday,
                        "здоровый enabled после ухода вида — кнопки на «Сегодня» нет")
     }
 
@@ -341,7 +342,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
         s.disable()
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
-        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(s.planDeferred, "план отложен до конца записи")
         XCTAssertEqual(processes.count, 1, "при записи второго процесса нет")
         recording = false
         lifecycle.send(())
@@ -358,11 +359,13 @@ final class NemotronEngineServiceTests: XCTestCase {
         lifecycle.send(())
         processes[0].finish(NemotronPlanTests.outcome("готово"))
         await eventually("исход") { if case .outcome = s.action { return true }; return false }
-        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(s.planDeferred, "план отложен до конца записи")
         XCTAssertEqual(processes.count, 1, "при записи плана нет")
         guard case .outcome(let o) = s.action else { return XCTFail() }
         XCTAssertFalse(o.success)
         XCTAssertTrue(o.offerEnable)
+        XCTAssertTrue(o.text.hasPrefix("поставлено"), o.text)
+        XCTAssertFalse(o.text.contains("включу"), "ключ после встречи сам не пишется")
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
         recording = false
         lifecycle.send(())
@@ -376,7 +379,10 @@ final class NemotronEngineServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: newRoot.appendingPathComponent("config"), withIntermediateDirectories: true)
         let newConfig = "sufler:\n  diarize_backend: sherpa\n"
         try newConfig.write(to: newRoot.appendingPathComponent("config/config.yaml"), atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: oldRoot) }
+        defer {
+            try? FileManager.default.removeItem(at: oldRoot)
+            try? FileManager.default.removeItem(at: newRoot)
+        }
         let s = makeService()
         s.startEnable()
         processes[0].finish(NemotronPlanTests.outcome("ok"))
@@ -397,13 +403,13 @@ final class NemotronEngineServiceTests: XCTestCase {
         s.startEnable()
         XCTAssertTrue(s.processRunning)
         XCTAssertEqual(NemotronVisibleActions.make(action: s.action, plan: s.plan, busy: false, recording: false,
-                                                   processRunning: s.processRunning).cancel, .enabled)
+                                                   processRunning: s.processRunning, refusal: nil).cancel, .enabled)
         processes[0].finish(NemotronPlanTests.outcome("ok"))
         await eventually("план в решении") { processes.count == 2 }
         XCTAssertTrue(s.isActive)
         XCTAssertFalse(s.processRunning)
         XCTAssertEqual(NemotronVisibleActions.make(action: s.action, plan: s.plan, busy: false, recording: false,
-                                                   processRunning: s.processRunning).cancel, .disabled)
+                                                   processRunning: s.processRunning, refusal: nil).cancel, .disabled)
     }
 
     /// Z4: выход из приложения решён, пока шла проба, — `--plan` в решении не стартует.
@@ -415,7 +421,9 @@ final class NemotronEngineServiceTests: XCTestCase {
         s.cancelForTermination { done += 1 }
         processes[0].finish(NemotronPlanTests.outcome("ok"))
         await eventually("ответ выходу") { done == 1 }
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Исход ставится в том же ходе, что и решение: после `done` плану стартовать негде.
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertTrue(o.offerEnable, o.text)
         XCTAssertEqual(processes.count, 1, "плана нет")
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
     }
@@ -428,5 +436,122 @@ final class NemotronEngineServiceTests: XCTestCase {
         XCTAssertNotNil(s.startRefusal())
         s.startInstall(); s.startEnable()
         XCTAssertTrue(processes.isEmpty)
+    }
+
+    // MARK: fix2 (сверка fix1): допуск admit, многострочный ключ, исход по видам
+
+    private func readyOff() -> LongProcessOutcome { planOutcome(planText(state: "ready_off", enable: true)) }
+
+    /// Проба прошла, `--plan` в решении в полёте; к его ответу идёт запись встречи.
+    private func enableUpToPlan(_ s: NemotronEngineService) async {
+        s.startEnable()
+        processes[0].finish(NemotronPlanTests.outcome("ok"))
+        await eventually("план в решении") { processes.count == 2 }
+    }
+
+    /// Fix1 п. 1, вход A: запись началась в окне `--plan` внутри решения — ключ не пишется.
+    func testFix2ЗаписьВОкнеПланаКлючНеПишется() async {
+        let s = makeService()
+        await enableUpToPlan(s)
+        recording = true
+        processes[1].finish(readyOff())
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa", "ключ записан при записи встречи")
+        guard case .outcome(let o) = s.action else { return XCTFail() }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.offerEnable)
+        XCTAssertTrue(o.text.hasPrefix("проверено"), "проба, а не установка: \(o.text)")
+    }
+
+    /// Fix1 п. 1, вход B (и п. 4): выход решён в окне `--plan` — ключ не пишется, план отменён со сроком выхода.
+    func testFix2ВыходВОкнеПланаКлючНеПишетсяПланОтменён() async {
+        let s = makeService()
+        await enableUpToPlan(s)
+        s.terminationInProgress = true
+        var done = 0
+        s.cancelForTermination { done += 1 }
+        XCTAssertEqual(processes[1].cancels, [NemotronEngineService.terminationGrace], "план при выходе не отменён")
+        processes[1].finish(readyOff())
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa", "ключ записан при выходе")
+    }
+
+    /// Fix1 п. 2: повтор плана (`planAgain`) при начавшейся записи — второй `--plan` не стартует, ждёт конца записи.
+    func testFix2ПовторПланаПриЗаписиОткладывается() async {
+        let s = makeService()
+        s.requestPlan(); s.requestPlan()
+        recording = true
+        lifecycle.send(())
+        processes[0].finish(planOutcome())
+        await eventually("повтор отложен") { s.planDeferred }
+        XCTAssertEqual(processes.count, 1, "--plan стартовал при записи")
+        recording = false
+        lifecycle.send(())
+        await eventually("план по концу записи") { processes.count == 2 }
+    }
+
+    /// Fix1 п. 3: значение ключа на нескольких строках — файл не трогаем, исход говорит почему.
+    func testFix2МногострочныйКлючНеПереписывается() async throws {
+        for before in ["sufler:\n  diarize_backend: >\n    sherpa\n  other: 1\n",
+                       "sufler:\n  diarize_backend: \"sherpa\n    cont\"\n  other: 1\n"] {
+            try before.write(to: configURL, atomically: true, encoding: .utf8)
+            processes.removeAll()
+            let s = makeService()
+            await enableUpToPlan(s)
+            processes[1].finish(readyOff())
+            await eventually("исход") { if case .outcome = s.action { return true }; return false }
+            XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before, "многострочный ключ переписан")
+            guard case .outcome(let o) = s.action else { return XCTFail() }
+            XCTAssertFalse(o.success, o.text)
+        }
+    }
+
+    /// Fix1 п. 3: `disable()` на блочном скаляре — тоже отказ без записи.
+    func testFix2ВыключитьМногострочныйКлючНеПереписывается() async throws {
+        let before = "sufler:\n  diarize_backend: |\n    nemotron\n  other: 1\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        await enabledPlan(s)
+        s.disable()
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+        guard case .outcome(let o) = s.action else { return XCTFail() }
+        XCTAssertFalse(o.success)
+    }
+
+    /// Fix1 п. 3: однострочный ключ пишется как раньше.
+    func testFix2ОднострочныйКлючПишется() async {
+        let s = makeService()
+        await enableUpToPlan(s)
+        processes[1].finish(readyOff())
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "nemotron")
+    }
+
+    /// Fix1 пп. 5–6: вид поповера открыт и закрыт при открытых настройках — исход
+    /// остаётся; ушёл последний вид — снят.
+    func testFix2ИсходСнимаетсяПоследнимВидом() async throws {
+        try "sufler:\n  diarize_backend: nemotron\n".write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        await enabledPlan(s)
+        s.viewAppeared()                      // настройки
+        s.disable()
+        guard case .outcome(let o) = s.action, o.success else { return XCTFail("нет исхода") }
+        s.viewAppeared(); s.viewGone()        // поповер открыт и закрыт
+        XCTAssertEqual(s.action, .outcome(o), "исход стёрт чужим видом")
+        s.viewGone()
+        XCTAssertEqual(s.action, .idle, "последний вид ушёл — исход снят")
+    }
+
+    /// Fix1 п. 5: исход, которого никто не видел, живёт до первого показа.
+    func testFix2НепоказанныйИсходЖдётПоказа() async throws {
+        try "sufler:\n  diarize_backend: nemotron\n".write(to: configURL, atomically: true, encoding: .utf8)
+        let s = makeService()
+        await enabledPlan(s)
+        s.disable()                           // ни одного вида на экране
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        s.viewAppeared()
+        XCTAssertEqual(s.action, .outcome(o))
+        s.viewGone()
+        XCTAssertEqual(s.action, .idle)
     }
 }

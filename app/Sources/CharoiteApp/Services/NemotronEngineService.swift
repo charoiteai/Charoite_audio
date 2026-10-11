@@ -76,6 +76,7 @@ final class NemotronEngineService: ObservableObject {
     /// процесса решение ещё ждёт `--plan`, но отменять уже нечего (сверка out1 №8).
     @Published private(set) var processRunning = false
 
+    private var planProcess: NemotronProcess?
     private var current: NemotronProcess? {
         didSet { processRunning = current != nil }
     }
@@ -84,7 +85,8 @@ final class NemotronEngineService: ObservableObject {
     // single-flight плана
     private var planInFlight = false
     private var planAgain = false
-    private var planDeferred = false
+    /// План отложен до конца записи встречи (виден тестам как позитивный сигнал).
+    private(set) var planDeferred = false
     private var plansStarted = 0
     private var planWaiters: [(minRun: Int, resume: (NemotronPlanState) -> Void)] = []
     private var activeEndWaiters: [() -> Void] = []
@@ -160,14 +162,32 @@ final class NemotronEngineService: ObservableObject {
         }
     }
 
+    /// Допуск эффекта (сверка fix1): синхронно, вплотную перед процессом `--plan`
+    /// и перед записью ключа. `nil` — можно; иначе текст причины.
+    private func admit() -> String? {
+        if isRecording() { return NemotronVisibleActions.recordingText }
+        if terminationInProgress { return L.t("приложение закрывается", "the app is quitting", "应用正在退出") }
+        return nil
+    }
+
     private func startPlan() {
+        if let why = admit() {
+            if isRecording() { planDeferred = true }
+            planAgain = false
+            let waiting = planWaiters
+            planWaiters.removeAll()
+            for w in waiting { w.resume(.failed(why)) }
+            return
+        }
         planInFlight = true
         plansStarted += 1
         let run = plansStarted
         plan = .planning(previous: plan.effective)
         let process = makeProcess(["nemotron", "--plan"], currentRoot(), nil, nil)
+        planProcess = process
         Task { @MainActor [weak self] in
             let outcome = await Self.runDetached(process)
+            self?.planProcess = nil
             self?.planFinished(run, NemotronPlan.parse(outcome))
         }
     }
@@ -258,22 +278,36 @@ final class NemotronEngineService: ObservableObject {
         }
         var decision = decide(true, "", nil)
         var planDone = false
-        if decision == .attemptWrite, isRecording() || terminationInProgress {
+        // Ключ после встречи сам не пишется — только по нажатию «Включить» (сверка fix1 п. 8).
+        func blocked() -> NemotronDecision {
+            let text: String
+            if isRecording() {
+                text = kind == .install
+                    ? L.t("поставлено, но идёт запись встречи — после неё нажмите «Включить»",
+                          "installed, but a meeting is being recorded — press “Enable” after it",
+                          "已安装，但正在录制会议——结束后请点击“启用”")
+                    : L.t("проверено, но идёт запись встречи — после неё нажмите «Включить»",
+                          "checked, but a meeting is being recorded — press “Enable” after it",
+                          "已检查，但正在录制会议——结束后请点击“启用”")
+            } else {
+                text = L.t("приложение закрывается — не включено", "the app is quitting — not enabled", "应用正在退出——未启用")
+            }
+            return .stop(text, offerEnable: true, offerReinstall: false)
+        }
+        if decision == .attemptWrite, admit() != nil {
             // Во время записи `--plan` не идёт (сверка out1 C2); при выходе из
             // приложения его никто не дождётся (№8). Ключ не пишем — «Включить»
             // после встречи; план для показа — по концу записи (`requestPlan`
             // в хвосте его откладывает).
-            decision = .stop(isRecording()
-                ? L.t("поставлено; включу после встречи — нажмите «Включить»",
-                      "installed; enable after the meeting — press “Enable”", "已安装；会议结束后请点击“启用”")
-                : L.t("приложение закрывается — не включено", "the app is quitting — not enabled", "应用正在退出——未启用"),
-                offerEnable: true, offerReinstall: false)
+            decision = blocked()
         } else if decision == .attemptWrite {
             let state = await freshPlan()
             planDone = true
             if case .ready(let p) = state {
                 decision = decide(p.offer.enable.allowed, p.offer.enable.reason ?? "", nil)
-                if decision == .attemptWrite {
+                if decision == .attemptWrite, admit() != nil {
+                    decision = blocked()
+                } else if decision == .attemptWrite {
                     let cas = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r1,
                                                                      value: "nemotron", root: root)
                     decision = decide(true, "", cas)
@@ -302,6 +336,7 @@ final class NemotronEngineService: ObservableObject {
 
     private func setOutcome(_ o: ActionOutcome) {
         action = .outcome(o)
+        outcomeSeen = viewCount > 0
         let waiters = activeEndWaiters
         activeEndWaiters.removeAll()
         for w in waiters { w() }
@@ -338,6 +373,23 @@ final class NemotronEngineService: ObservableObject {
         if case .outcome(let o) = action, o.success || !(o.offerEnable || o.offerReinstall) {
             action = .idle
         }
+        outcomeSeen = false
+    }
+
+    private var viewCount = 0
+    private var outcomeSeen = false
+
+    /// Вид кнопки появился: исход, который он показывает, считается увиденным.
+    func viewAppeared() {
+        viewCount += 1
+        if case .outcome = action { outcomeSeen = true }
+        requestPlanIfNeeded()
+    }
+
+    /// Вид ушёл: исход снимается, когда ушёл последний вид и исход видели.
+    func viewGone() {
+        viewCount = max(0, viewCount - 1)
+        if viewCount == 0, outcomeSeen { dismissOutcome() }
     }
 
     /// «Отмена»: SIGTERM группе, SIGKILL через `cancelGrace`.
@@ -350,6 +402,7 @@ final class NemotronEngineService: ObservableObject {
     /// Выход из приложения: отмена со сроком 10 с; `done` — когда действие
     /// кончилось (сразу, если его нет).
     func cancelForTermination(done: @escaping () -> Void) {
+        planProcess?.cancel(grace: Self.terminationGrace)
         guard action.isActive else { return done() }
         activeEndWaiters.append(done)
         if case .running = action { action = .cancelling(afterCommit: false) }

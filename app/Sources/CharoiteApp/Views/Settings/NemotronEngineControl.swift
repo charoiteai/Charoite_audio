@@ -14,7 +14,7 @@ struct NemotronEngineControl: View {
     private var visible: NemotronVisibleActions {
         NemotronVisibleActions.make(action: service.action, plan: service.plan,
                                     busy: activity.busy, recording: sufler.hasActiveLifecycle,
-                                    processRunning: service.processRunning)
+                                    processRunning: service.processRunning, refusal: service.startRefusal())
     }
 
     var body: some View {
@@ -60,9 +60,9 @@ struct NemotronEngineControl: View {
                     .charoite(.regular, .s)
             }
         }
-        .onAppear { service.requestPlanIfNeeded() }
-        // Исход виден, пока вид на экране; ушёл — кнопка на «Сегодня» снова по плану.
-        .onDisappear { service.dismissOutcome() }
+        .onAppear { service.viewAppeared() }
+        // Исход снимает служба, когда ушёл последний вид и исход видели.
+        .onDisappear { service.viewGone() }
     }
 
     @ViewBuilder
@@ -136,7 +136,8 @@ struct NemotronTodayButton: View {
 
     var body: some View {
         let v = NemotronVisibleActions.make(action: service.action, plan: service.plan,
-                                            busy: activity.busy, recording: sufler.hasActiveLifecycle)
+                                            busy: activity.busy, recording: sufler.hasActiveLifecycle,
+                                            processRunning: service.processRunning, refusal: service.startRefusal())
         Group {
             if v.showOnToday {
                 Button(L.t("Nemotron…", "Nemotron…", "Nemotron…")) { shown = true }
