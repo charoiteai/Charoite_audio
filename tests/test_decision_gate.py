@@ -258,6 +258,7 @@ def test_decider_without_complete_head_falls_back_to_nli(tmp_path):
 def test_decider_refuses_honestly_without_any_model(tmp_path):
     dec = dg.decider(head_dir=tmp_path / "нет", judge=lambda: _Judge(refused="нет NLI"))
     assert dec.refused and "гейт в тени выключен" in dec.refused
+    assert "судья: нет NLI" in dec.refused, "причину судьи не подменять на «нет NLI-модели»"
     with pytest.raises(RuntimeError):
         dec.probs("x")
 

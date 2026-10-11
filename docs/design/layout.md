@@ -190,7 +190,7 @@
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
 - `scripts/sign_release_manifest.py` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/zh/RELEASING.md
 - `scripts/stt_bench.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/zh/FEATURES.md, docs/zh/MODELS.md
-- `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
+- `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/design/NLI_LABEL_CONTRACT_2026-10.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `src/audio.py` ← docs/INVARIANTS.md
 - `src/brain.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
 - `src/channel_labels.py` ← docs/ARCHITECTURE.md, docs/DIARIZATION.md, docs/design/OVERHAUL_2026-08.md, docs/ru/ARCHITECTURE.md, docs/ru/DIARIZATION.md, docs/zh/ARCHITECTURE.md, docs/zh/DIARIZATION.md

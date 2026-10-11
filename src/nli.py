@@ -117,6 +117,11 @@ def _refusal() -> str:
     return _problem() or _packages()
 
 
+def refusal() -> str:
+    """Публичная причина отказа судьи (для логов потребителей); "" — судить есть чем."""
+    return _refusal()
+
+
 def is_available() -> bool:
     """Модель (model.onnx, tokenizer.json, config.json с годными метками) на
     диске и пакеты на месте — без загрузки самой модели."""
@@ -143,7 +148,7 @@ def _load():
         # любая поломка сборки сессии = «судья не пришёл»: ready() и _entail
         # говорят это честно, с причиной
         except Exception as e:  # noqa: BLE001
-            _why = f"ONNX-сессия не собралась: {type(e).__name__}: {e}"
+            _why = f"ONNX-сессия не собралась: {type(e).__name__}: {e}; перезапустите демон"
             _failed = True
             print(f"NLI: {_why}", flush=True)
 

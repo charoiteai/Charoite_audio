@@ -1,5 +1,6 @@
 """Regression: the ONNX output label order comes from local metadata."""
 import json
+import os
 import pathlib
 import types
 
@@ -133,6 +134,28 @@ def test_config_is_parsed_once_per_mtime(model, monkeypatch):
     for _ in range(5):
         assert nli.is_available()
     assert len(calls) == 1
+
+
+def test_config_rewritten_in_place_is_parsed_again(model):
+    # ключ кэша — путь, mtime и размер: правка той же длины тоже видна
+    cfg = model / "config.json"
+    cfg.write_text(json.dumps(_labels("entailment", "neutral", "contradiction")))
+    assert nli.is_available()
+    st = cfg.stat()
+    cfg.write_text(json.dumps(_labels("entailmenx", "neutral", "contradiction")))
+    assert cfg.stat().st_size == st.st_size
+    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert nli.is_available() is False
+    assert "entailmenx" in nli.judge().refused
+
+
+def test_config_removed_after_success_refuses(model):
+    cfg = model / "config.json"
+    cfg.write_bytes(MDEBERTA_CONFIG.read_bytes())
+    assert nli.is_available()
+    cfg.unlink()
+    assert nli.is_available() is False
+    assert "нет config.json" in nli.judge().refused
 
 
 @pytest.mark.parametrize("logits", [[1., 2.], [float("nan"), 0., 1.]])

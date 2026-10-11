@@ -306,7 +306,7 @@ def decider(head_dir: pathlib.Path | None = None, judge: Callable[[], object] | 
         return Decider("nli-zero-shot",
                        lambda text: zero_shot_probs(text, j.entail, hypotheses))
     return Decider("none", _refuse, refused=(
-        f"нет ни обученной головы в {d}, ни NLI-модели — гейт в тени выключен"))
+        f"нет обученной головы в {d}; судья: {j.refused} — гейт в тени выключен"))
 
 
 # --- тень ---------------------------------------------------------------------
