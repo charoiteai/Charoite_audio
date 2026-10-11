@@ -899,11 +899,10 @@ def _verify_config_edit_main() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Проверка правки конфига — до корня данных и umask: ей не нужен ни тот, ни
-    # другой, и она ничего не пишет.
+    harden_umask()   # окружение и веса под корнем данных — только владельцу
+    # Проверка правки конфига — до корня данных: он ей не нужен, и она ничего не пишет.
     if (sys.argv[1:] if argv is None else argv) == ["--verify-config-edit"]:
         return _verify_config_edit_main()
-    harden_umask()   # окружение и веса под корнем данных — только владельцу
     # Корень — до разбора аргументов, как у import_meeting: проба `refuse` зовёт
     # вход без аргументов и ждёт отказа двери, а не ошибки argparse (№489).
     root = name_data_root_or_exit(__file__)

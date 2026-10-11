@@ -162,8 +162,8 @@
    `app/`, мутатор на изменённых строках. Для правок приложения это значит
    чистый `swift build` и зелёный `swift test --filter '^CharoiteAppTests\.'`
    (живые пробы — только вручную); тестам записи конфига нужен python с
-   PyYAML — `.venv` репозитория или `CHAROITE_TEST_PYTHON` (preflight
-   выставляет сам); тронули поиск или промпты — прогоните
+   PyYAML — `.venv` репозитория или `python3` в PATH (preflight ставит
+   свой первым); тронули поиск или промпты — прогоните
    `scripts/memory_bench.py`.
 4. **Документация обновляется в том же PR** — CI блокирует PR, который
    меняет код (`src/`, `scripts/`, `app/`, `app-ios/`, `app-android/`) и не

@@ -101,7 +101,7 @@
 - `scripts/graph_doctor.py` ← scripts/nightly.sh; проба help
 - `scripts/graph_search_index.py` ← scripts/nightly.sh; проба help
 - `scripts/import_meeting.py` ← app/Sources/CharoiteApp/Services/ImportService.swift, scripts/doctor.py, src/daemon.py; проба help+refuse
-- `scripts/install_engine.py` ← scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help+refuse
+- `scripts/install_engine.py` ← .github/workflows/swift-tests.yml, app/Sources/CharoiteApp/Models/ConfigEditCheck.swift, app/Sources/CharoiteApp/Services/NemotronEngineService.swift, scripts/lock_runtime_deps.py, src/diarize_nemotron.py; проба help+refuse
 - `scripts/layout_map.py` ← .github/workflows/ci.yml, scripts/preflight.sh; не запускается: режимы руками, --help нет — голый запуск пишет карту; снимет №364 (проба вместо none)
 - `scripts/lock_runtime_deps.py` ← scripts/build_embedded_python.sh, scripts/install_engine.py; проба help
 - `scripts/make_dmg.sh` ← .github/workflows/release-app.yml; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)

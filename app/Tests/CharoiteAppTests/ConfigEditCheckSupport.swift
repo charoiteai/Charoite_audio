@@ -9,11 +9,10 @@ extension ConfigEditCheck {
     static let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
 
-    /// `CHAROITE_TEST_PYTHON`, `.venv` репозитория, затем `python3` из PATH — первый с PyYAML.
+    /// `.venv` репозитория, затем `python3` из PATH — первый с PyYAML. Своей переменной
+    /// окружения нет: детерминированный target не читает `CHAROITE_*` (страж в test_workflows.py).
     static let testPython: URL? = {
-        var candidates: [String] = []
-        if let env = ProcessInfo.processInfo.environment["CHAROITE_TEST_PYTHON"], !env.isEmpty { candidates.append(env) }
-        candidates.append(repo.appendingPathComponent(".venv/bin/python").path)
+        var candidates = [repo.appendingPathComponent(".venv/bin/python").path]
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         candidates += path.split(separator: ":").map { "\($0)/python3" }
         candidates.append("/usr/bin/python3")
@@ -42,7 +41,7 @@ extension ConfigEditCheck {
         guard let check = forTests else {
             // Не пропуск: без проверки тесты записи молча перестали бы проверять запись.
             throw NSError(domain: "ConfigEditCheck", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "нет python с PyYAML: задайте CHAROITE_TEST_PYTHON"])
+                NSLocalizedDescriptionKey: "нет python с PyYAML: ни в .venv репозитория, ни python3 в PATH"])
         }
         current = check
         test.addTeardownBlock { @MainActor in ConfigEditCheck.current = .live }

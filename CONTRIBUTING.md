@@ -169,8 +169,8 @@ review gates, and who answers for what — is documented in
    touched, the mutation check on the changed lines. For app changes that
    means `swift build` clean and `swift test --filter '^CharoiteAppTests\.'`
    green (live probes run only by hand); the config-write tests need a
-   python with PyYAML — `.venv` of the repo or `CHAROITE_TEST_PYTHON`
-   (preflight sets it); run `scripts/memory_bench.py` if you touch search
+   python with PyYAML — `.venv` of the repo or `python3` in PATH
+   (preflight puts its python first); run `scripts/memory_bench.py` if you touch search
    or prompts.
 4. **Update docs in the same PR** — CI blocks a PR that changes code
    (`src/`, `scripts/`, `app/`, `app-ios/`, `app-android/`) and leaves the
