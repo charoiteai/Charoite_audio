@@ -518,9 +518,10 @@ enum AppSettings {
                 // Значение на нескольких строках (`>`, `|`, кавычка с переносом): замена
                 // одной строки оставит хвост висеть и сломает YAML.
                 let ind = lines[i].prefix { $0 == " " }.count
-                if i + 1 < lines.count,
-                   !lines[i + 1].trimmingCharacters(in: .whitespaces).isEmpty,
-                   lines[i + 1].prefix(while: { $0 == " " }).count > ind {
+                let deeperNext = i + 1 < lines.count
+                    && !lines[i + 1].trimmingCharacters(in: .whitespaces).isEmpty
+                    && lines[i + 1].prefix(while: { $0 == " " }).count > ind
+                if deeperNext || continuesValue(after: i, indent: ind, in: lines) {
                     return .unsupported(L.t("значение ключа занимает несколько строк — поправьте config.yaml руками",
                                             "the key value spans several lines — edit config.yaml by hand",
                                             "该键的值跨多行——请手动编辑 config.yaml"))
@@ -535,6 +536,18 @@ enum AppSettings {
         case .unsupported(let reason):
             return .unsupported(reason)
         }
+    }
+
+    /// Первая непустая строка после ключа (пустые с `\r` пропускаются) глубже ключа или
+    /// элемент списка на его отступе — значение продолжается ниже. Только в сторону отказа;
+    /// общий разбор формы значения — долг №640.
+    private static func continuesValue(after i: Int, indent ind: Int, in lines: [String]) -> Bool {
+        guard let j = (i + 1..<lines.count).first(where: {
+            !lines[$0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else { return false }
+        let next = lines[j].trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextInd = lines[j].prefix { $0 == " " }.count
+        return nextInd > ind || (nextInd >= ind && (next == "-" || next.hasPrefix("- ")))
     }
 
     /// Исход условной записи ключа.

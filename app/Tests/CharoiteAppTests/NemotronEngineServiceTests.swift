@@ -567,6 +567,10 @@ final class NemotronEngineServiceTests: XCTestCase {
             ("C блок > с голым #", "sufler:\n  diarize_backend: >\n    #\n    x\n  other: 1\n"),
             ("DS пустое значение, комментарий, sherpa", "sufler:\n  diarize_backend:\n    # голоса размечает движок\n    sherpa\n  other: 1\n"),
             ("C2 CRLF, блок > с пустой строкой \\r", "sufler:\r\n  diarize_backend: >\r\n      \r\n    sherpa\r\n  other: 1\r\n"),
+            // fix5 (круг fix4, Haiku I1/I2): голая пустая строка под ключом, список на уровне ключа.
+            ("I1 CRLF, блок > с голой пустой строкой \\r", "sufler:\r\n  diarize_backend: >\r\n\r\n    sherpa\r\n  other: 1\r\n"),
+            ("I1 LF, блок > с пустой строкой", "sufler:\n  diarize_backend: >\n\n    sherpa\n  other: 1\n"),
+            ("I2 список на отступе ключа", "sufler:\n  diarize_backend:\n  - sherpa\n  other: 1\n"),
         ]
         for (name, before) in cases {
             if case .text = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before) {
