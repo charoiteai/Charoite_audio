@@ -8,6 +8,7 @@ import SwiftUI
 struct MemoryInventoryColumn: View {
     let snapshot: GraphInventoryService.Snapshot
     var configured = true
+    @State private var selectedCore: GraphInventoryService.Core?
     // Раз в минуту — как раз шаг троттлинга сервиса: без внешнего пинка
     // «свежие ядра» застывали на весь сеанс (круг-1, DS: refresh только
     // на появление вью, троттлинг не успевал сработать ни разу).
@@ -38,6 +39,11 @@ struct MemoryInventoryColumn: View {
             }
         }
         .onReceive(pulse) { _ in GraphInventoryService.shared.refresh() }
+        .sheet(item: $selectedCore) { core in
+            if let graph = AppSettings.graphDir {
+                TopicCardView(graph: graph, folder: core.folder, name: core.name)
+            }
+        }
     }
 
     private var counters: some View {
@@ -73,10 +79,7 @@ struct MemoryInventoryColumn: View {
                 .foregroundStyle(.secondary)
             ForEach(snapshot.cores) { core in
                 Button {
-                    if let graph = AppSettings.graphDir {
-                        NSWorkspace.shared.open(
-                            graph.appendingPathComponent("\(core.folder)/\(core.name).md"))
-                    }
+                    selectedCore = core
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(core.name).font(.caption.weight(.medium)).lineLimit(1)
@@ -97,7 +100,7 @@ struct MemoryInventoryColumn: View {
                 .buttonStyle(.plain)
                 .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
                     .fill(Color(nsColor: .controlBackgroundColor)))
-                .help(L.t("Открыть ядро", "Open the core", "打开核心"))
+                .help(L.t("Что изменилось по теме", "What changed on this topic", "此主题的变化"))
             }
         }
     }
