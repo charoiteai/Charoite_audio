@@ -12,7 +12,10 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import sys
 import unicodedata
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 
 def normalized(text: str) -> str:
@@ -119,4 +122,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from charoite_paths import harden_umask
+    harden_umask()
     raise SystemExit(main())
