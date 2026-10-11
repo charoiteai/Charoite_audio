@@ -270,9 +270,9 @@ mlx==0.32.2 \
     --hash=sha256:fe813a4dee2daa6d5ac496ef25117034728c77fe26f713983a3b406eb6f4e8f0 \
     --hash=sha256:fe8c1ecdad687259944b76d67621b00536b00194557588a4604a45efcd238d8e
     # via mlx-audio
-mlx-audio==0.5.6 \
-    --hash=sha256:6f6fb5107bf4647dd3ed079c48ee9f0db90a443803c75bcfd2a396b392d33fdd \
-    --hash=sha256:7cf7b49135f6f681988a9e0b9d2fbfdd2e9be783b0a3204d0c4028e0cf2d8b4c
+mlx-audio==0.5.8 \
+    --hash=sha256:55a7378a4d27dddeba2d989f71f255ce70498b3f1c27928a8b1fb0baf3577d9e \
+    --hash=sha256:cf2eaef3d5d965d3a0a5c98ab68d4867db51daace190a77b3b9576577a7d2eab
     # via -r requirements-nemotron.in
 mlx-metal==0.32.2 \
     --hash=sha256:3825fff379dbc107dd3413e564a06caeaa24819910ec49c0439e454c06a1b9b8 \
