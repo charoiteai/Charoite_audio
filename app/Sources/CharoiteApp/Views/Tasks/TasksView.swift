@@ -58,8 +58,7 @@ struct TasksView: View {
             Divider()
             content
         }
-        // 640, не 520: шапка с сводкой и переключателем режима при 520
-        // обрезала правые контролы (круг по PR #367, DeepSeek)
+        // Keep the workspace detail minimum; filters now occupy their own row.
         .frame(minWidth: 640, minHeight: 360)
         .onAppear {
             tasks.rescan()
@@ -81,6 +80,19 @@ struct TasksView: View {
                 // просрочка оранжевым, три числа не пересекаются.
                 summaryLine
                 Spacer()
+                Button { copyVisibleOpen() } label: { Image(systemName: "doc.on.doc") }
+                    .help(L.t("Скопировать видимые открытые задачи",
+                              "Copy visible open tasks",
+                              "复制当前显示的未完成任务"))
+                    .accessibilityLabel(L.t("Скопировать видимые открытые задачи", "Copy visible open tasks", "复制当前显示的未完成任务"))
+                    .disabled(visibleOpen.isEmpty)
+                Button { tasks.rescan() } label: { Image(systemName: "arrow.clockwise") }
+                    .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+                    .accessibilityLabel(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+            }
+            // Summary and actions stay above the filters. At the workspace's
+            // 640 pt detail minimum, a single row pushed controls off screen.
+            HStack(spacing: 10) {
                 Picker("", selection: $groupingRaw) {
                     ForEach(TasksGrouping.allCases, id: \.rawValue) { mode in
                         Text(mode.title).tag(mode.rawValue)
@@ -88,20 +100,16 @@ struct TasksView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .accessibilityLabel(L.t("Группировка задач", "Task grouping", "任务分组"))
+                .frame(maxWidth: 240)
                 TextField(L.t("Найти поручение", "Find an action item", "查找任务"), text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 210)
+                    .frame(minWidth: 120, idealWidth: 210, maxWidth: .infinity)
+                    .accessibilityLabel(L.t("Найти поручение", "Find an action item", "查找任务"))
                 Toggle(isOn: $showDone) {
                     Text(L.t("Сделанные", "Completed", "已完成")).fixedSize()
                 }
                 .toggleStyle(.checkbox).font(.caption)
-                Button { copyVisibleOpen() } label: { Image(systemName: "doc.on.doc") }
-                    .help(L.t("Скопировать видимые открытые задачи",
-                              "Copy visible open tasks",
-                              "复制当前显示的未完成任务"))
-                    .disabled(visibleOpen.isEmpty)
-                Button { tasks.rescan() } label: { Image(systemName: "arrow.clockwise") }
-                    .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
             }
             if let meeting = selectedMeeting {
                 HStack(spacing: 7) {
