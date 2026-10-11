@@ -145,9 +145,13 @@ enum ArchiveSearch {
         let rels: [String]?
     }
 
+    /// `includeLinked: false` — без соседа по `[[ссылке]]`: он попадает в
+    /// контекст без единого слова запроса, и чат не отдаёт его модели на
+    /// чужом сервере (№695, постфактум-2 по #776).
     static func searchStructured(query: String, limit: Int = 5,
                                  snippet: Int = 1200,
-                                 budget: Int = defaultBudget) async -> Outcome {
+                                 budget: Int = defaultBudget,
+                                 includeLinked: Bool = true) async -> Outcome {
         let graphOverridden = AppSettings.graphDirEnvNames.contains { name in
             !(ProcessInfo.processInfo.environment[name] ?? "")
                 .trimmingCharacters(in: .whitespaces).isEmpty
@@ -167,7 +171,8 @@ enum ArchiveSearch {
             return Outcome(text: viaBrain, rels: headerRels.isEmpty ? nil : headerRels)
         }
         return await localSearchOutcome(query: query, limit: limit,
-                                        snippet: snippet, budget: budget)
+                                        snippet: snippet, budget: budget,
+                                        includeLinked: includeLinked)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -222,7 +227,8 @@ enum ArchiveSearch {
     static func localSearchOutcome(query: String, limit: Int = 5,
                                    snippet: Int = 1200,
                                    budget: Int = defaultBudget,
-                                   root: URL? = nil) async -> Outcome {
+                                   root: URL? = nil,
+                                   includeLinked: Bool = true) async -> Outcome {
         guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path)
         else { return Outcome(text: "", rels: []) }
@@ -447,8 +453,7 @@ enum ArchiveSearch {
             shown.append(topHit)
         }
         shown = linkedContext(shown, documents: byPath.mapValues(\.text), needles: needles,
-                              snippet: snippet, limit: limit,
-                              strongSemantic: bestSim >= 0.47 ? sem.first?.path : nil)
+                              snippet: snippet, limit: limit, enabled: includeLinked)
         let (body, keptHits) = packContextKept(shown, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
@@ -465,12 +470,13 @@ enum ArchiveSearch {
     }
 
     static func linkedContext(_ original: [Hit], documents: [String: String], needles: [String],
-                              snippet: Int, limit: Int, strongSemantic: String?) -> [Hit] {
+                              snippet: Int, limit: Int, enabled: Bool = true) -> [Hit] {
         var shown = original
-        // Reserve one slot for the outgoing link of a matched node: its decision
-        // may live in a meeting without any of the query's words. This context
-        // does not raise bestCov/bestSim or clear the honesty marker.
-        if limit >= 2 {
+        // Free slot only: the outgoing link of a matched node may hold its decision
+        // in a meeting without any of the query's words, but it never displaces a
+        // real hit (№695, posthoc 2 on #776). This context does not raise
+        // bestCov/bestSim or clear the honesty marker.
+        if enabled, shown.count < limit {
             let seedRels = Array(shown.prefix(2).map(\.rel))
             let neighbors = ArchiveLinks.neighbors(seeds: seedRels, documents: documents)
             if let neighbor = neighbors.first(where: { candidate in
@@ -478,14 +484,8 @@ enum ArchiveSearch {
             }), let text = documents[neighbor.rel] {
                 let fragment = bestWindow(text: text, needles: needles, span: snippet)
                 if !fragment.isEmpty {
-                    let protected = Set([shown.first?.rel, neighbor.parent,
-                                         strongSemantic].compactMap { $0 })
-                    let replace = shown.lastIndex(where: { !protected.contains($0.rel) })
-                    if shown.count < limit || replace != nil {
-                        if shown.count >= limit, let replace { shown.remove(at: replace) }
-                        shown.append(Hit(score: 0, rel: neighbor.rel,
-                                         block: "• \(neighbor.rel)\n  Связано с [[\(neighbor.parent)]]\n  …\(fragment)…"))
-                    }
+                    shown.append(Hit(score: 0, rel: neighbor.rel,
+                                     block: "• \(neighbor.rel)\n  Связано с [[\(neighbor.parent)]]\n  …\(fragment)…"))
                 }
             }
         }

@@ -27,6 +27,8 @@ final class LocalChatService: ObservableObject {
     /// Адрес Ollama — из настроек, а не из строки в коде: настройка, которая
     /// молча ничего не делает, хуже отсутствующей.
     private var ollamaBase: String { AppSettings.ollamaURL }
+    /// Отвечает ли модель на этом Mac — для подписей экрана чата.
+    var inferenceIsLocal: Bool { MemoryScreenPolicy.inferenceIsLocal(base: ollamaBase) }
 
     private let historyOverride: URL?
 
@@ -78,7 +80,8 @@ final class LocalChatService: ObservableObject {
     @Published var models = ["qwen3.6:35b-a3b", "gemma4:26b", "gemma4:latest"]
 
     /// nil — ещё не спрашивали; true/false — Ollama ответила/нет. Питает
-    /// честную строку шапки «Ollama отвечает · 0 запросов в сеть».
+    /// строку шапки «Ollama отвечает»; где она — на этом Mac или на сервере из
+    /// настроек — говорит `inferenceIsLocal`, а не эта строка.
     @Published private(set) var ollamaAlive: Bool?
 
     func refreshModels() async {
@@ -148,7 +151,7 @@ final class LocalChatService: ObservableObject {
     private func stream(_ prompt: String, into bubbleId: UUID) async {
         // Snapshot the configured endpoint before asynchronous retrieval.
         let inferenceBase = ollamaBase
-        let inferenceIsLocal = URL(string: inferenceBase)?.host.map(AppSettings.isLoopbackHost) ?? false
+        let inferenceIsLocal = MemoryScreenPolicy.inferenceIsLocal(base: inferenceBase)
         // Промпт локализован целиком: при sufler.language: en интерфейс,
         // панели и поиск по архиву уже отвечали по-английски, а чат — главная
         // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
@@ -202,8 +205,11 @@ final class LocalChatService: ObservableObject {
             // Бюджет задаётся поиску, а не срезается по хвосту: prefix(5000) резал
             // ПОСЛЕДНИЙ источник на полуслове и мог оставить от него огрызок,
             // при этом первый источник имел право занять сколько угодно.
+            // Сосед по [[ссылке]] без слов запроса — только модели на этом Mac
+            // (№695, постфактум-2 по #776).
             let outcome = await ArchiveSearch.searchStructured(
-                query: String(topic), limit: 8, snippet: 800, budget: 5000)
+                query: String(topic), limit: 8, snippet: 800, budget: 5000,
+                includeLinked: inferenceIsLocal)
             var vault = outcome.text
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)

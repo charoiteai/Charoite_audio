@@ -36,4 +36,40 @@ final class ArchiveLinksTests: XCTestCase {
         XCTAssertTrue(outcome.text.contains("Выбрали провайдера Б"))
         XCTAssertTrue(outcome.rels?.contains("Meetings/One.md") == true)
     }
+
+    /// Опыт O4 (№695, постфактум-2 по #776): выдача полна — сосед по ссылке без
+    /// слов запроса не вытесняет настоящее совпадение.
+    func testLinkedSourceNeverDisplacesARealHit() async throws {
+        let root = try linkedGraph()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "# Иван в системе\nИван отвечает за систему".write(to: root.appendingPathComponent("Systems/CRM.md"),
+                                                               atomically: true, encoding: .utf8)
+        let outcome = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 2, snippet: 800, root: root)
+        XCTAssertEqual(Set(outcome.rels ?? []), ["People/Иван.md", "Systems/CRM.md"])
+        XCTAssertFalse(outcome.text.contains("Пароль от сейфа"))
+    }
+
+    /// Модель не на этом Mac — соседа по ссылке без слов запроса в контексте нет.
+    func testLinkedSourceIsLeftOutWhenAsked() async throws {
+        let root = try linkedGraph()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let linked = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 8, snippet: 800, root: root)
+        XCTAssertTrue(linked.text.contains("Пароль от сейфа"))
+        let plain = await ArchiveSearch.localSearchOutcome(query: "Иван", limit: 8, snippet: 800, root: root,
+                                                           includeLinked: false)
+        XCTAssertEqual(plain.rels, ["People/Иван.md"])
+        XCTAssertFalse(plain.text.contains("Пароль от сейфа"))
+    }
+
+    private func linkedGraph() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        for folder in ["People", "Meetings", "Systems"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        try "# Иван\nИван Иван Иван [[Meetings/Short]]".write(to: root.appendingPathComponent("People/Иван.md"),
+                                                          atomically: true, encoding: .utf8)
+        try "# Секрет\nПароль от сейфа 1234, к слову не относится.".write(
+            to: root.appendingPathComponent("Meetings/Short.md"), atomically: true, encoding: .utf8)
+        return root
+    }
 }
