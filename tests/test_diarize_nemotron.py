@@ -534,7 +534,8 @@ def test_availability_names_a_version_other_than_the_checked_one(tmp_path, monke
 
 
 @pytest.mark.parametrize("installed, refused, warned", [
-    ("0.5.6", False, False),
+    (nem.MLX_AUDIO_VERSION, False, False),
+    ("0.5.6", False, True),
     ("0.5.7", False, True),
     ("0.5.7.dev0+g1a2b3c", False, True),
     ("0.5.6+local", False, True),

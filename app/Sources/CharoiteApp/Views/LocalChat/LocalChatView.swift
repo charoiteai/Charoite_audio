@@ -7,6 +7,7 @@ struct LocalChatView: View {
     // shared: одна история в отдельном окне и в панели суфлёра, персист на диске
     @ObservedObject private var chat = LocalChatService.shared
     @State private var draft = ""
+    @State private var confirmClear = false
     @FocusState private var inputFocused: Bool
 
     @ObservedObject private var inventory = GraphInventoryService.shared
@@ -25,6 +26,17 @@ struct LocalChatView: View {
             }
         }
         .frame(minHeight: 320)
+        .alert(L.t("Очистить диалог?", "Clear the conversation?", "清空对话？"),
+               isPresented: $confirmClear) {
+            Button(L.t("Отмена", "Cancel", "取消"), role: .cancel) {}
+            Button(L.t("Очистить диалог", "Clear conversation", "清空对话"), role: .destructive) {
+                chat.clear()
+            }
+        } message: {
+            Text(L.t("Сообщения будут удалены из сохранённой истории чата. Записи встреч и память графа останутся. Отменить очистку нельзя.",
+                     "Messages will be removed from saved chat history. Meeting recordings and graph memory will remain. This cannot be undone.",
+                     "消息将从保存的聊天历史中删除。会议录音和图谱记忆将保留。此操作无法撤销。"))
+        }
         .onDisappear { chat.stopStreaming() }  // закрытое окно не должно держать Ollama 300с
         .task {
             await chat.refreshModels()   // пикер моделей — живой список из Ollama
@@ -47,14 +59,9 @@ struct LocalChatView: View {
                                                  "A local model on this Mac. With memory on, answers lean on meetings, the graph and dossiers.",
                                                  "运行在本机的本地模型。开启记忆后，回答会依据会议、图谱与档案。"),
                                        systemImage: "brain.head.profile") {
-                                HStack(spacing: 8) {
-                                    ForEach(Self.starterQuestions, id: \.self) { q in
-                                        Button(q) {
-                                            draft = q
-                                            inputFocused = true
-                                        }
-                                        .charoite(.regular, .s)
-                                    }
+                                ViewThatFits(in: .horizontal) {
+                                    HStack(spacing: 8) { starterButtons }
+                                    VStack(alignment: .leading, spacing: 8) { starterButtons }
                                 }
                             }
                         }
@@ -80,62 +87,55 @@ struct LocalChatView: View {
         // распирали drawer, кнопка «Отправить» уезжала за край окна.
     }
 
+    private var starterButtons: some View {
+        ForEach(Self.starterQuestions, id: \.self) { question in
+            Button(question) {
+                draft = question
+                inputFocused = true
+            }
+            .charoite(.regular, .s)
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "brain.head.profile")
-                .foregroundStyle(Theme.accent)
-            // fixedSize: в панели рядом с суфлёром места мало, и заголовки
-            // ломались пополам — «Локальный / чат», «Память / Чароита».
-            Text(L.t("Локальный чат", "Local chat", "本地聊天"))
-                .font(.headline)
-                .fixedSize()
-            // 150, не 190: в панели при окне-минимуме заголовок был ШИРЕ
-            // самой панели — чат вылезал за край окна. Имя модели длинное —
-            // пикер его усечёт, полное видно в раскрытом меню.
-            Picker("", selection: $chat.model) {
-                ForEach(chat.models, id: \.self) { Text($0).tag($0) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "brain.head.profile").foregroundStyle(Theme.accent)
+                Text(L.t("Чат с памятью", "Chat with memory", "记忆聊天"))
+                    .font(.headline)
+                Spacer(minLength: 4)
+                if chat.isStreaming {
+                    Button(L.t("Стоп", "Stop", "停止")) { chat.stopStreaming() }
+                }
+                Button {
+                    confirmClear = true
+                } label: { Image(systemName: "trash") }
+                .disabled(chat.messages.isEmpty)
+                .help(L.t("Очистить диалог", "Clear the chat", "清空对话"))
+                .accessibilityLabel(L.t("Очистить диалог", "Clear the chat", "清空对话"))
             }
-            .accessibilityLabel(L.t("Модель для ответов", "Answering model", "回答所用模型"))
-            .frame(width: 150)
-            // Чип-состояние вместо системного чекбокса (макет MOBILE_2026-08,
-            // экран «Память»; правило LayerChip из встречи): включённая память
-            // графа — индиго, выключенная — серая.
-            LayerChip(title: L.t("Память графа", "Graph memory", "图谱记忆"), isOn: $chat.useMemory)
-                .help(L.t("Подмешивать факты и граф встреч из памяти Чароита", "Mix in facts and the meeting graph from Charoite's memory", "混入 Charoite 记忆中的事实与会议图谱"))
-                .accessibilityLabel(L.t("Память Чароита", "Charoite memory", "Charoite 记忆"))
+            HStack(spacing: 10) {
+                Picker("", selection: $chat.model) {
+                    ForEach(chat.models, id: \.self) { Text($0).tag($0) }
+                }
+                .accessibilityLabel(L.t("Модель для ответов", "Answering model", "回答所用模型"))
+                .frame(minWidth: 100, maxWidth: 180)
+                LayerChip(title: L.t("Память графа", "Graph memory", "图谱记忆"), isOn: $chat.useMemory)
+                    .help(L.t("Использовать материалы встреч, графа и досье при ответе",
+                              "Use meeting, graph and dossier materials when answering", "回答时使用会议、图谱和档案资料"))
+                    .accessibilityLabel(L.t("Память Чароита", "Charoite memory", "Charoite 记忆"))
+                Spacer(minLength: 0)
+            }
             if !chat.status.isEmpty {
-                Text(chat.status)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.tail)
-            } else if chat.ollamaAlive != nil {
-                // До первого ответа /api/tags состояние неизвестно — чип
-                // молчит, а не обещает «отвечает» (круг-1, DS/Codex/GLM).
-                // Честная строка происхождения (макет: «Ollama отвечает ·
-                // 0 запросов в сеть»): «отвечает» — по факту живого списка
-                // моделей, «0 запросов в сеть» — факт, а не обещание: чужой
-                // адрес Ollama приложение отвергает
-                // (AppSettings.ollamaURLRejection). Живёт в слоте статуса и
-                // ужимается первой (ревью 22.08).
-                Text(chat.ollamaAlive == false
-                     ? L.t("Ollama не отвечает", "Ollama is not responding", "Ollama 无响应")
-                     : L.t("Ollama отвечает · 0 запросов в сеть", "Ollama responding · 0 network calls", "Ollama 正常 · 0 次外网请求"))
+                Text(chat.status).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let alive = chat.ollamaAlive {
+                Text(alive
+                     ? L.t("Ollama отвечает", "Ollama is responding", "Ollama 正常")
+                     : L.t("Ollama не отвечает", "Ollama is not responding", "Ollama 无响应"))
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(chat.ollamaAlive == false ? Theme.warning : Theme.ok)
-                    .lineLimit(1).truncationMode(.tail)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill((chat.ollamaAlive == false ? Theme.warning : Theme.ok).opacity(0.12)))
-                    .layoutPriority(-1)
+                    .foregroundStyle(alive ? Theme.ok : Theme.warning)
             }
-            Spacer(minLength: 4)
-            if chat.isStreaming {
-                Button(L.t("Стоп", "Stop", "停止")) { chat.stopStreaming() }
-            }
-            Button {
-                chat.clear()
-            } label: {
-                Image(systemName: "trash")
-            }
-            .help(L.t("Очистить диалог", "Clear the chat", "清空对话"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -191,8 +191,11 @@ struct LocalChatView: View {
     @ViewBuilder
     private func answerFooter(_ m: LocalChatService.Message) -> some View {
         if let sources = m.sources, !sources.isEmpty {
+            Text(L.t("Материалы, переданные модели", "Materials provided to the model", "提供给模型的资料"))
+                .font(.caption2).foregroundStyle(.secondary)
             SourceChipsRow(sources: sources)
-        } else if m.weakMatches == true {
+        }
+        if m.weakMatches == true {
             Text(L.t("⚠ совпадения в графе слабые", "⚠ weak graph matches", "⚠ 图谱匹配较弱"))
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(Theme.warning)
@@ -220,7 +223,7 @@ struct LocalChatView: View {
             Button(L.t("Отправить", "Send", "发送")) { submit() }
                 .charoite(.prominent)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(chat.isStreaming || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(chat.isStreaming || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(12)
         .onAppear { inputFocused = true }
@@ -234,8 +237,13 @@ struct LocalChatView: View {
     }
 
     private func submit() {
-        chat.send(draft)
-        draft = ""
+        Self.submitDraft(&draft, using: chat)
+    }
+
+    /// Both Enter and the button use this transition. Keep a refused draft.
+    @MainActor
+    static func submitDraft(_ draft: inout String, using chat: LocalChatService) {
+        if chat.send(draft) { draft = "" }
     }
 }
 

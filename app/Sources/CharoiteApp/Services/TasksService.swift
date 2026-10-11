@@ -43,6 +43,16 @@ final class TasksService: ObservableObject {
         case writeFailed
     }
 
+    struct Change: Equatable, Sendable {
+        let item: Item
+        let originalLine: String
+        let changedLine: String
+    }
+
+    @Published private(set) var lastChange: Change?
+    private var undoRoot: URL?
+    var isMutating: Bool { !pendingIDs.isEmpty }
+
     @Published private(set) var items: [Item] = []
     @Published private(set) var openCount = 0
     @Published private(set) var mutationError: String?
@@ -295,36 +305,65 @@ final class TasksService: ObservableObject {
     /// Переключить чекбокс вне главного потока. Пока запись идёт, повторный
     /// клик по той же строке блокируется; после изменения перечитываем граф.
     func toggle(_ item: Item, root: URL? = nil) {
-        guard !pendingIDs.contains(item.id) else { return }
+        // Serialize writes even for different rows in the same Markdown file.
+        guard !isMutating else { return }
         mutationError = nil
         pendingIDs.insert(item.id)
         let target = root ?? AppSettings.graphDir
         Task.detached(priority: .userInitiated) {
-            let result = Self.toggleSync(item)
+            let outcome = Self.toggleRecordingSync(item)
             await MainActor.run {
                 self.pendingIDs.remove(item.id)
-                switch result {
-                case .changed:
-                    self.rescan(root: target)
-                case .missing:
-                    self.mutationError = L.t(
-                        "Поручение уже изменилось или было удалено. Список обновлён.",
-                        "The action item changed or was deleted. The list was refreshed.",
-                        "该任务已更改或删除。列表已刷新。")
-                    self.rescan(root: target)
-                case .conflict:
-                    self.mutationError = L.t(
-                        "Файл изменился в другом редакторе. Проверьте поручение и повторите.",
-                        "The file changed in another editor. Check the action item and try again.",
-                        "文件已在其他编辑器中更改。请检查任务后重试。")
-                    self.rescan(root: target)
-                case .writeFailed:
-                    self.mutationError = L.t(
-                        "Не удалось сохранить поручение. Markdown-файл не изменён.",
-                        "The action item could not be saved. The Markdown file was not changed.",
-                        "无法保存任务。Markdown 文件未更改。")
+                if let change = outcome.change {
+                    self.lastChange = change
+                    self.undoRoot = target
                 }
+                self.finishMutation(outcome.result, root: target)
             }
+        }
+    }
+
+    /// One-level undo stays available until the next successful change.
+    /// It belongs to the shared service, so changing filters doesn't hide it.
+    func undoLastChange() {
+        guard !isMutating, let change = lastChange else { return }
+        mutationError = nil
+        pendingIDs.insert(change.item.id)
+        let target = undoRoot ?? AppSettings.graphDir
+        Task.detached(priority: .userInitiated) {
+            let result = Self.undoSync(change)
+            await MainActor.run {
+                self.pendingIDs.remove(change.item.id)
+                if result != .writeFailed {
+                    self.lastChange = nil
+                    self.undoRoot = nil
+                }
+                self.finishMutation(result, root: target)
+            }
+        }
+    }
+
+    private func finishMutation(_ result: ToggleResult, root: URL?) {
+        switch result {
+        case .changed:
+            rescan(root: root)
+        case .missing:
+            mutationError = L.t(
+                "Поручение уже изменилось или было удалено. Список обновлён.",
+                "The action item changed or was deleted. The list was refreshed.",
+                "该任务已更改或删除。列表已刷新。")
+            rescan(root: root)
+        case .conflict:
+            mutationError = L.t(
+                "Файл изменился в другом редакторе. Проверьте поручение и повторите.",
+                "The file changed in another editor. Check the action item and try again.",
+                "文件已在其他编辑器中更改。请检查任务后重试。")
+            rescan(root: root)
+        case .writeFailed:
+            mutationError = L.t(
+                "Не удалось сохранить поручение. Markdown-файл не изменён.",
+                "The action item could not be saved. The Markdown file was not changed.",
+                "无法保存任务。Markdown 文件未更改。")
         }
     }
 
@@ -334,32 +373,58 @@ final class TasksService: ObservableObject {
     /// строку с тем же текстом и состоянием. Два одинаковых кандидата —
     /// конфликт: лучше не отметить ничего, чем закрыть чужое поручение.
     nonisolated static func toggleSync(_ item: Item) -> ToggleResult {
-        guard var text = try? String(contentsOf: item.file, encoding: .utf8) else {
-            return .missing
+        toggleRecordingSync(item).result
+    }
+
+    nonisolated static func toggleRecordingSync(_ item: Item) -> (result: ToggleResult, change: Change?) {
+        guard let text = try? String(contentsOf: item.file, encoding: .utf8) else {
+            return (.missing, nil)
         }
         var lines = text.components(separatedBy: "\n")
         let targetIndex: Int
-        if item.lineIndex < lines.count, lines[item.lineIndex] == item.sourceLine {
+        if lines.indices.contains(item.lineIndex), lines[item.lineIndex] == item.sourceLine {
             targetIndex = item.lineIndex
         } else {
             let candidates = lines.indices.filter { index in
                 guard let parsed = parse(lines[index]) else { return false }
                 return parsed.text == item.text && parsed.done == item.done
             }
-            guard !candidates.isEmpty else { return .missing }
-            guard candidates.count == 1, let only = candidates.first else { return .conflict }
+            guard !candidates.isEmpty else { return (.missing, nil) }
+            guard candidates.count == 1, let only = candidates.first else { return (.conflict, nil) }
             targetIndex = only
         }
         let line = lines[targetIndex]
-        let flipped = item.done
-            ? line.replacingOccurrences(of: "[x]", with: "[ ]")
-                  .replacingOccurrences(of: "[X]", with: "[ ]")
-            : line.replacingOccurrences(of: "[ ]", with: "[x]")
-        guard flipped != line else { return .conflict }
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = todoRx.firstMatch(in: line, range: range),
+              let marker = Range(match.range(at: 1), in: line) else { return (.conflict, nil) }
+        var flipped = line
+        // Only the checkbox marker, never a literal "[ ]" in the task text.
+        flipped.replaceSubrange(marker, with: item.done ? " " : "x")
+        guard flipped != line else { return (.conflict, nil) }
         lines[targetIndex] = flipped
-        text = lines.joined(separator: "\n")
+        let result = saveMutation(lines.joined(separator: "\n"), replacing: text, at: item.file)
+        let change = result == .changed ? Change(item: item, originalLine: line, changedLine: flipped) : nil
+        return (result, change)
+    }
+
+    nonisolated static func undoSync(_ change: Change) -> ToggleResult {
+        guard let text = try? String(contentsOf: change.item.file, encoding: .utf8) else { return .missing }
+        var lines = text.components(separatedBy: "\n")
+        // Even the old index is unsafe when another identical row was added.
+        let matches = lines.indices.filter { lines[$0] == change.changedLine }
+        guard !matches.isEmpty else { return .missing }
+        guard matches.count == 1, let index = matches.first else { return .conflict }
+        lines[index] = change.originalLine
+        return saveMutation(lines.joined(separator: "\n"), replacing: text, at: change.item.file)
+    }
+
+    nonisolated private static func saveMutation(_ text: String, replacing snapshot: String,
+                                                at file: URL) -> ToggleResult {
+        // Catch external edits made between our read and the write attempt.
+        guard let current = try? String(contentsOf: file, encoding: .utf8) else { return .missing }
+        guard current == snapshot else { return .conflict }
         do {
-            try text.write(to: item.file, atomically: true, encoding: .utf8)
+            try text.write(to: file, atomically: true, encoding: .utf8)
             return .changed
         } catch {
             return .writeFailed

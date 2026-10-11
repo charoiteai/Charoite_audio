@@ -1,0 +1,41 @@
+# Проверяем зависимости и сайт до слияния; публикация остаётся в pages.yml.
+name: devlog-tests
+
+on:
+  pull_request:
+    paths:
+      - "devlog/**"
+      - ".github/workflows/devlog-tests.yml"
+  push:
+    paths:
+      - "devlog/**"
+      - ".github/workflows/devlog-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Jekyll build (devlog)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          working-directory: devlog
+          bundler-cache: true
+      - name: Build site
+        working-directory: devlog
+        run: bundle exec jekyll build --destination ../_site
+      - name: Check feed XML and home page
+        run: |
+          test -s _site/index.html
+          python3 -c 'import xml.etree.ElementTree as ET; ET.parse("_site/feed.xml")'

@@ -2,7 +2,7 @@ import Foundation
 
 #if os(macOS)
 
-/// Локальный чат с моделью через Ollama (localhost:11434) — ничего не покидает машину.
+/// Чат через настроенный Ollama: по умолчанию localhost, удалённый хост — по явному разрешению.
 /// Опция «Память»: перед вопросом ищет по графу встреч (локально, по файлам)
 /// и подмешивает найденное в системный промпт.
 @MainActor
@@ -28,7 +28,10 @@ final class LocalChatService: ObservableObject {
     /// молча ничего не делает, хуже отсутствующей.
     private var ollamaBase: String { AppSettings.ollamaURL }
 
+    private let historyOverride: URL?
+
     private var historyURL: URL {
+        if let historyOverride { return historyOverride }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CharoiteApp")
         // История цитирует граф — те же права, что у данных встреч: 0700/0600
@@ -43,8 +46,9 @@ final class LocalChatService: ObservableObject {
         return url
     }
 
-    init() {
-        if let data = try? Data(contentsOf: historyURL),
+    init(historyURL: URL? = nil) {
+        historyOverride = historyURL
+        if let data = try? Data(contentsOf: self.historyURL),
            let saved = try? JSONDecoder().decode([Message].self, from: data) {
             messages = saved
         }
@@ -108,15 +112,17 @@ final class LocalChatService: ObservableObject {
         return URLSession(configuration: cfg)
     }()
 
-    func send(_ text: String) {
+    @discardableResult
+    func send(_ text: String) -> Bool {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isStreaming else { return }
+        guard !prompt.isEmpty, !isStreaming else { return false }
         messages.append(Message(role: "user", text: prompt))
         let assistant = Message(role: "assistant", text: "")
         messages.append(assistant)
         isStreaming = true
         status = ""
         task = Task { await stream(prompt, into: assistant.id) }
+        return true
     }
 
     func stopStreaming() {
@@ -140,38 +146,46 @@ final class LocalChatService: ObservableObject {
     }
 
     private func stream(_ prompt: String, into bubbleId: UUID) async {
+        // Snapshot the configured endpoint before asynchronous retrieval.
+        let inferenceBase = ollamaBase
+        let inferenceIsLocal = URL(string: inferenceBase)?.host.map(AppSettings.isLoopbackHost) ?? false
         // Промпт локализован целиком: при sufler.language: en интерфейс,
         // панели и поиск по архиву уже отвечали по-английски, а чат — главная
         // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
         // потому что этого требовала зашитая здесь строка.
         var system = L.t("""
-        Ты — Чароит, локальный ассистент владельца этого Mac, работаешь офлайн. \
+        Ты — Чароит, ассистент владельца этого Mac. \
         Отвечай по-русски, кратко и по делу. ЧЕСТНОСТЬ: отвечай только \
         по данным из блоков ниже и из разговора; если блоки не про то, что спросили, — \
         так и скажи («в памяти этого нет»), не сочиняй. Ты помнишь весь текущий \
         диалог — «а что я спрашивал», «продолжи», «а по второму пункту» относятся \
         к нему. Сопоставляй факты из разных встреч: называй повторяющиеся темы, \
         расхождения и что изменилось со временем, с датами и источниками из блока \
-        графа. На вопрос «кто ты» — «Чароит, локальный ассистент», без имени \
+        графа. На вопрос «кто ты» — «Чароит, ассистент», без имени \
         вендора модели.
         """, """
-        You are Charoite, the local assistant of this Mac's owner, running offline. \
+        You are Charoite, the assistant of this Mac's owner. \
         Answer in English, briefly and to the point. HONESTY: answer only from the \
         blocks below and from this conversation; if the blocks are not about what \
         was asked, say so ("that is not in memory") and do not invent. You remember \
         the whole current dialogue — "what did I ask", "go on", "what about the \
         second point" refer to it. Cross-reference facts across meetings: name \
         recurring topics, contradictions and what changed over time, with dates and \
-        sources from the graph block. To "who are you" — "Charoite, a local \
+        sources from the graph block. To "who are you" — "Charoite, an \
         assistant", without naming the model vendor.
         """, """
-        你是 Charoite，这台 Mac 主人的本地助手，离线运行。用中文简洁地回答。\
+        你是 Charoite，这台 Mac 主人的助手。用中文简洁地回答。\
         诚实原则：只依据下面的资料块和当前对话作答；如果资料块与所问无关，\
         就直说「记忆中没有这条」，不要编造。你记得整段对话——「我刚才问了什么」\
         「继续」「第二点呢」都指向它。跨会议比对事实：指出反复出现的主题、\
         分歧以及随时间发生的变化，并附上图谱资料块中的日期与来源。\
-        被问「你是谁」时回答「Charoite，本地助手」，不要提模型厂商。
+        被问「你是谁」时回答「Charoite，助手」，不要提模型厂商。
         """)
+        system += inferenceIsLocal
+            ? L.t("\nМодель отвечает на этом Mac.", "\nThe model responds on this Mac.", "\n模型在此 Mac 上生成回复。")
+            : L.t("\nМодель отвечает на другом сервере, явно выбранном в настройках; не называй этот ответ офлайн или локальным.",
+                  "\nThe model responds on another server explicitly chosen in settings; do not call this response offline or local.",
+                  "\n模型在设置中明确选择的其他服务器上生成回复；请勿称此回复为离线或本地。")
         let startedAt = Date()
         // Тумблер снят ОДИН раз на старте: переключение памяти во время
         // генерации не должно переписывать происхождение уже собранного
@@ -237,7 +251,7 @@ final class LocalChatService: ObservableObject {
             status = L.t("встреча идёт — отвечает лёгкая модель (qwen3.5:4b)", "meeting in progress — the light model answers (qwen3.5:4b)", "会议进行中——由轻量模型回答（qwen3.5:4b）")
         }
 
-        guard let url = URL(string: ollamaBase + "/api/chat") else { return }
+        guard let url = URL(string: inferenceBase + "/api/chat") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -294,7 +308,8 @@ final class LocalChatService: ObservableObject {
                     model: effModel, seconds: secs,
                     meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
                     sourcesInContext: sourcesInContext,
-                    memoryOn: memoryOn, weakMatches: weakMatches)
+                    memoryOn: memoryOn, weakMatches: weakMatches,
+                    inferenceIsLocal: inferenceIsLocal)
             }
             // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа
             // отработал своё, слот возвращается честному чипу здоровья
