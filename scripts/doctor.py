@@ -376,11 +376,16 @@ def _check_nemotron_engine(cfg: dict, root: pathlib.Path, state: dict) -> None:
     if out.ok:
         installed = out.payload['mlx_audio']
         line(OK, f"Nemotron: mlx-audio {installed}, веса на месте, интерпретатор {python}")
-        if installed != diarize_nemotron.MLX_AUDIO_VERSION:
-            # Проба отвечает и на другой версии: прогон идёт, а стык (`load`, поток)
-            # проверен на одной — расхождение видно здесь, а не только в stderr
-            # пересборки (№695, постфактум-2 по #800). Ключ главнее окружения:
-            # установщик его интерпретатор не обновит.
+        # Проба отвечает и на другой версии: стык (`load`, поток) проверен на одной —
+        # расхождение видно здесь, а не только в stderr пересборки (№695, постфактум-2
+        # по #800). Политика одна — `version_verdict`, как у пересборки: та же ветка
+        # `major.minor` (post-, dev-, локальная сборка) — прогон идёт, совета
+        # переставлять окружение нет; другая ветка — совет. Ключ главнее окружения:
+        # установщик его интерпретатор не обновит.
+        refusal, warning = diarize_nemotron.version_verdict(installed)
+        if warning:
+            line(WARN, f"Nemotron: {warning}")
+        elif refusal:
             fix = (f'обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении '
                    "ключа sufler.nemotron_python" if state["nemotron_python_set"]
                    else f"поставить: {diarize_nemotron.install_command(root)}")
