@@ -83,7 +83,8 @@ enum TopicCard {
         let name = target.hasSuffix(".md") ? target : target + ".md"
         let matches = files.filter { url in
             guard isInside(url, graph: graph) else { return false }
-            let rel = String(url.path.dropFirst(graph.resolvingSymlinksInPath().path.count + 1))
+            let rel = String(url.resolvingSymlinksInPath().path
+                .dropFirst(graph.resolvingSymlinksInPath().path.count + 1))
             guard !rel.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { return false }
             return target.contains("/") ? rel == name : url.lastPathComponent == name
         }

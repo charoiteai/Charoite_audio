@@ -71,7 +71,7 @@ final class TopicCardTests: XCTestCase {
         let card = try TopicCard.load(graph: root, folder: "Ядра", name: "Оплата")
         XCTAssertTrue(card.isDossier)
         XCTAssertEqual(card.assembled, "2026-10-10")
-        XCTAssertEqual(card.sources[.current]?.first?.url, meeting)
+        XCTAssertEqual(card.sources[.current]?.first?.url?.resolvingSymlinksInPath(), meeting.resolvingSymlinksInPath())
         XCTAssertNil(card.sources[.open]?.first?.url)
         XCTAssertEqual(card.sources[.open]?.first?.target, "Нет файла")
     }
