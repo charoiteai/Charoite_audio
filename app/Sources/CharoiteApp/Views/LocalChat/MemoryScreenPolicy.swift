@@ -138,8 +138,12 @@ enum MemoryScreenPolicy {
     /// подвале (круг-1, DS Critical + GLM).
     static func metaLine(model: String, seconds: Int, meetingsInContext: Int,
                          sourcesInContext: Int = 0,
-                         memoryOn: Bool, weakMatches: Bool) -> String {
-        var parts = [L.t("локально", "local", "本地"), model,
+                         memoryOn: Bool, weakMatches: Bool,
+                         inferenceIsLocal: Bool = true) -> String {
+        let location = inferenceIsLocal
+            ? L.t("локально", "local", "本地")
+            : L.t("другой сервер", "another server", "其他服务器")
+        var parts = [location, model,
                      L.t("\(seconds) с", "\(seconds) s", "\(seconds) 秒")]
         if !memoryOn {
             parts.append(L.t("память выключена", "memory off", "记忆已关闭"))

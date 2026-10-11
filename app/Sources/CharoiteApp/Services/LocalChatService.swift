@@ -2,7 +2,7 @@ import Foundation
 
 #if os(macOS)
 
-/// Локальный чат с моделью через Ollama (localhost:11434) — ничего не покидает машину.
+/// Чат через настроенный Ollama: по умолчанию localhost, удалённый хост — по явному разрешению.
 /// Опция «Память»: перед вопросом ищет по графу встреч (локально, по файлам)
 /// и подмешивает найденное в системный промпт.
 @MainActor
@@ -28,7 +28,10 @@ final class LocalChatService: ObservableObject {
     /// молча ничего не делает, хуже отсутствующей.
     private var ollamaBase: String { AppSettings.ollamaURL }
 
+    private let historyOverride: URL?
+
     private var historyURL: URL {
+        if let historyOverride { return historyOverride }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CharoiteApp")
         // История цитирует граф — те же права, что у данных встреч: 0700/0600
@@ -43,8 +46,9 @@ final class LocalChatService: ObservableObject {
         return url
     }
 
-    init() {
-        if let data = try? Data(contentsOf: historyURL),
+    init(historyURL: URL? = nil) {
+        historyOverride = historyURL
+        if let data = try? Data(contentsOf: self.historyURL),
            let saved = try? JSONDecoder().decode([Message].self, from: data) {
             messages = saved
         }
@@ -108,15 +112,17 @@ final class LocalChatService: ObservableObject {
         return URLSession(configuration: cfg)
     }()
 
-    func send(_ text: String) {
+    @discardableResult
+    func send(_ text: String) -> Bool {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isStreaming else { return }
+        guard !prompt.isEmpty, !isStreaming else { return false }
         messages.append(Message(role: "user", text: prompt))
         let assistant = Message(role: "assistant", text: "")
         messages.append(assistant)
         isStreaming = true
         status = ""
         task = Task { await stream(prompt, into: assistant.id) }
+        return true
     }
 
     func stopStreaming() {
@@ -140,6 +146,9 @@ final class LocalChatService: ObservableObject {
     }
 
     private func stream(_ prompt: String, into bubbleId: UUID) async {
+        // Snapshot the configured endpoint before asynchronous retrieval.
+        let inferenceBase = ollamaBase
+        let inferenceIsLocal = URL(string: inferenceBase)?.host.map(AppSettings.isLoopbackHost) ?? false
         // Промпт локализован целиком: при sufler.language: en интерфейс,
         // панели и поиск по архиву уже отвечали по-английски, а чат — главная
         // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
@@ -237,7 +246,7 @@ final class LocalChatService: ObservableObject {
             status = L.t("встреча идёт — отвечает лёгкая модель (qwen3.5:4b)", "meeting in progress — the light model answers (qwen3.5:4b)", "会议进行中——由轻量模型回答（qwen3.5:4b）")
         }
 
-        guard let url = URL(string: ollamaBase + "/api/chat") else { return }
+        guard let url = URL(string: inferenceBase + "/api/chat") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -294,7 +303,8 @@ final class LocalChatService: ObservableObject {
                     model: effModel, seconds: secs,
                     meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
                     sourcesInContext: sourcesInContext,
-                    memoryOn: memoryOn, weakMatches: weakMatches)
+                    memoryOn: memoryOn, weakMatches: weakMatches,
+                    inferenceIsLocal: inferenceIsLocal)
             }
             // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа
             // отработал своё, слот возвращается честному чипу здоровья
