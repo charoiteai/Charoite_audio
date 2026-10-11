@@ -584,6 +584,89 @@ final class NemotronEngineServiceTests: XCTestCase {
         }
     }
 
+    // MARK: fix6 (круг fix5): белый список формы значения вместо эвристик соседа
+
+    /// Fix6 (круг fix5, Critical Sonnet C1–C2, DS C1–C2, Haiku C-1…C-4): каждый вход — отказ,
+    /// файл байт в байт.
+    func testFix6ВходыКругаFix5Отказ() {
+        let cases: [(String, String)] = [
+            ("Sonnet C1.1 кавычка, хвост на отступе ключа", "sufler:\n  diarize_backend: \"sherpa\n  d\"\n  other: 1\n"),
+            ("Sonnet C1.2 кавычка, хвост на нулевом отступе", "sufler:\n  diarize_backend: \"sherpa\nd\"\n  other: 1\n"),
+            ("Sonnet C1.3 flow [a, с хвостом", "sufler:\n  diarize_backend: [a,\n  b]\n"),
+            ("Sonnet C1.4 flow [ с ] на нулевом", "sufler:\n  diarize_backend: [\n]\n"),
+            ("Sonnet C2 комментарий на 0 между ключом и значением", "sufler:\n  diarize_backend:\n# голоса размечает движок\n    sherpa\n  other: 1\n"),
+            ("Sonnet C2' комментарий на отступе ключа", "sufler:\n  diarize_backend:\n  # голоса размечает движок\n    sherpa\n  other: 1\n"),
+            ("DS C1.1 кавычка, хвост на отступе ключа", "sufler:\n  diarize_backend: \"sherpa\n  sherpa2\"\n  other: 1\n"),
+            ("DS C1.2 кавычка, комментарий на 0, хвост", "sufler:\n  diarize_backend: \"sherpa\n# комментарий\n  sherpa2\"\n  other: 1\n"),
+            ("DS C1.3 flow [sherpa, с хвостом", "sufler:\n  diarize_backend: [sherpa,\n  nemotron]\n  other: 1\n"),
+            ("DS C2 строка ключа внутри блока |", "sufler:\n  diarize_backend: |\n    diarize_backend: sherpa\n  other: 1\n"),
+            ("Haiku C-1.2 одинарная кавычка с хвостом", "sufler:\n  diarize_backend: 'sherpa\n  d'\n  other: 1\n"),
+            ("Haiku C-1.3 flow [a, с хвостом и соседом", "sufler:\n  diarize_backend: [a,\n  b]\n  other: 1\n"),
+            ("Haiku C-1.4 flow [ с ] на нулевом и соседом", "sufler:\n  diarize_backend: [\n]\n  other: 1\n"),
+            ("Haiku C-3 список -\\t на отступе ключа", "sufler:\n  diarize_backend:\n  -\tsherpa\n  other: 1\n"),
+            ("Haiku C-4 якорь и алиас", "sufler:\n  diarize_backend: &b sherpa\n  x: *b\n"),
+            ("правило 3: голое слово продолжается глубже", "sufler:\n  diarize_backend: sherpa\n# c\n    cont\n  other: 1\n"),
+        ]
+        for (name, before) in cases {
+            if case .text = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before) {
+                XCTFail("\(name): значение сложной формы переписано")
+            }
+            try? before.write(to: configURL, atomically: true, encoding: .utf8)
+            let expected = AppSettings.parseValue("diarize_backend", in: before)
+            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
+            if case .written = r { XCTFail("\(name): запись прошла") }
+            XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), before, "\(name): файл изменён")
+        }
+    }
+
+    /// Fix6: форма, которую пишет приложение и образцы конфига, — `.text`, ключ записан,
+    /// остальное байт в байт.
+    func testFix6ФормаПриложенияПишется() {
+        let cases: [(String, String, String)] = [
+            ("кавычки", "sufler:\n  diarize_backend: \"nemotron\"\n  other: 1\n",
+             "sufler:\n  diarize_backend: \"sherpa\"\n  other: 1\n"),
+            ("голое", "sufler:\n  diarize_backend: nemotron\n  other: 1\n",
+             "sufler:\n  diarize_backend: \"sherpa\"\n  other: 1\n"),
+            ("одинарные кавычки", "sufler:\n  diarize_backend: 'nemotron'\n  other: 1\n",
+             "sufler:\n  diarize_backend: \"sherpa\"\n  other: 1\n"),
+            ("комментарий в конце", "sufler:\n  diarize_backend: nemotron  # sherpa | nemotron\n  other: 1\n",
+             "sufler:\n  diarize_backend: \"sherpa\" # sherpa | nemotron\n  other: 1\n"),
+            ("CRLF", "sufler:\r\n  diarize_backend: nemotron\r\n  other: 1\r\n",
+             "sufler:\r\n  diarize_backend: \"sherpa\"\r\n  other: 1\r\n"),
+            ("последний в секции", "sufler:\n  other: 1\n  diarize_backend: nemotron\nllm:\n  m: 1\n",
+             "sufler:\n  other: 1\n  diarize_backend: \"sherpa\"\nllm:\n  m: 1\n"),
+            ("последний в файле", "sufler:\n  other: 1\n  diarize_backend: nemotron\n",
+             "sufler:\n  other: 1\n  diarize_backend: \"sherpa\"\n"),
+            ("последний в файле без перевода строки", "sufler:\n  other: 1\n  diarize_backend: nemotron",
+             "sufler:\n  other: 1\n  diarize_backend: \"sherpa\""),
+            ("комментарий глубже под ключом", "sufler:\n  diarize_backend: nemotron\n    # пояснение\n  other: 1\n",
+             "sufler:\n  diarize_backend: \"sherpa\"\n    # пояснение\n  other: 1\n"),
+        ]
+        for (name, before, after) in cases {
+            XCTAssertEqual(AppSettings.replacingInSufler("diarize_backend", with: "sherpa", in: before), .text(after), name)
+            try? before.write(to: configURL, atomically: true, encoding: .utf8)
+            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: "nemotron", value: "sherpa", root: root)
+            XCTAssertEqual(r, .written, name)
+            XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), after, "\(name): файл")
+        }
+    }
+
+    /// Fix6: образцы конфига из репозитория (ru/en/zh) — ключ переписывается, остальные строки целы.
+    func testFix6ОбразцыКонфигаПишутся() throws {
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        for name in ["config.example.yaml", "config.example.en.yaml", "config.example.zh.yaml"] {
+            let before = try String(contentsOf: repo.appendingPathComponent("config/\(name)"), encoding: .utf8)
+            guard case .text(let after) = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before) else {
+                XCTFail("\(name): отказ на образце"); continue
+            }
+            let b = before.components(separatedBy: "\n"), a = after.components(separatedBy: "\n")
+            XCTAssertEqual(a.count, b.count, name)
+            let diff = zip(b, a).filter { $0 != $1 }
+            XCTAssertEqual(diff.map(\.1), ["  diarize_backend: \"nemotron\""], name)
+        }
+    }
+
     /// Fix2 п. 2: установка прошла, `--plan` упал, а к его ответу идёт запись — исход говорит «поставлено».
     func testFix3ПланУпалПриЗаписиИсходПоставлено() async {
         let s = makeService()

@@ -515,18 +515,13 @@ enum AppSettings {
             if let i = (header + 1..<end).last(where: {
                 lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix(key + ":")
             }) {
-                // Значение на нескольких строках (`>`, `|`, кавычка с переносом): замена
-                // одной строки оставит хвост висеть и сломает YAML.
-                let ind = lines[i].prefix { $0 == " " }.count
-                let deeperNext = i + 1 < lines.count
-                    && !lines[i + 1].trimmingCharacters(in: .whitespaces).isEmpty
-                    && lines[i + 1].prefix(while: { $0 == " " }).count > ind
-                if deeperNext || continuesValue(after: i, indent: ind, in: lines) {
-                    return .unsupported(L.t("значение ключа занимает несколько строк — поправьте config.yaml руками",
-                                            "the key value spans several lines — edit config.yaml by hand",
-                                            "该键的值跨多行——请手动编辑 config.yaml"))
+                guard let comment = simpleValueComment(in: lines, at: i, key: key, indent: indent) else {
+                    return .unsupported(L.t("значение сложной формы — поправьте config.yaml руками",
+                                            "the key value has a complex form — edit config.yaml by hand",
+                                            "该键的值格式复杂——请手动编辑 config.yaml"))
                 }
-                lines[i] = rewritten(lines[i], key: key, escaped: escaped)
+                let cr = lines[i].hasSuffix("\r") ? "\r" : ""
+                lines[i] = "\(indent)\(key): \"\(escaped)\"" + (comment.isEmpty ? "" : " \(comment)") + cr
             } else {
                 lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)
             }
@@ -538,16 +533,31 @@ enum AppSettings {
         }
     }
 
-    /// Первая непустая строка после ключа (пустые с `\r` пропускаются) глубже ключа или
-    /// элемент списка на его отступе — значение продолжается ниже. Только в сторону отказа;
-    /// общий разбор формы значения — долг №640.
-    private static func continuesValue(after i: Int, indent ind: Int, in lines: [String]) -> Bool {
-        guard let j = (i + 1..<lines.count).first(where: {
-            !lines[$0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }) else { return false }
-        let next = lines[j].trimmingCharacters(in: .whitespacesAndNewlines)
-        let nextInd = lines[j].prefix { $0 == " " }.count
-        return nextInd > ind || (nextInd >= ind && (next == "-" || next.hasPrefix("- ")))
+    /// Белый список формы значения (круг fix5): переписать строку ключа можно, только если
+    /// 1) ключ стоит ровно на отступе детей секции (глубже — строка внутри чужого значения);
+    /// 2) значение на строке ключа — законченный однострочный скаляр: голое слово из
+    ///    `[A-Za-z0-9_.-]`, `"…"` без `"` и `\` внутри или `'…'`, дальше только комментарий;
+    /// 3) первая следующая строка, не пустая и не комментарий, не глубже ключа (или конца нет).
+    /// Возвращает комментарий строки (`""` — его нет) или `nil` — отказ, файл не трогать.
+    /// Ложный отказ на экзотике дешевле сломанного YAML; разбор формы для чтения — долг №640.
+    private static func simpleValueComment(in lines: [String], at i: Int, key: String,
+                                           indent: String) -> String? {
+        let pattern = "^" + NSRegularExpression.escapedPattern(for: indent + key)
+            + #":[ ]+([A-Za-z0-9_.-]+|"[^"\\]*"|'[^']*')[ ]*(#.*)?\r?$"#
+        let line = lines[i]
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return nil }
+        let comment = Range(m.range(at: 2), in: line).map {
+            String(line[$0]).trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+        } ?? ""
+        if let j = (i + 1..<lines.count).first(where: {
+            let t = lines[$0].trimmingCharacters(in: .whitespacesAndNewlines)
+            return !t.isEmpty && !t.hasPrefix("#")
+        }) {
+            let lead = lines[j].prefix { $0 == " " || $0 == "\t" }
+            if lead.contains("\t") || lead.count > indent.count { return nil }
+        }
+        return comment
     }
 
     /// Исход условной записи ключа.
