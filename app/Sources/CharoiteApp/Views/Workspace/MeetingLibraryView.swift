@@ -26,6 +26,7 @@ struct MeetingLibraryView: View {
     /// сразу на выбранной глубине.
     @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Environment(\.openSettings) private var openSettings
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
@@ -36,18 +37,24 @@ struct MeetingLibraryView: View {
     @State private var dayEvents: [CalendarService.DayEvent] = []
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                weekStrip
-                Divider()
-                searchBar
-                Divider()
-                resultList
+        GeometryReader { geometry in
+            // The workspace can give us only ~640 pt at its minimum width.
+            // Keep both the archive and the result reachable at that size.
+            if geometry.size.width < 800 {
+                VSplitView {
+                    libraryColumn
+                        .frame(minHeight: 180, idealHeight: 260, maxHeight: 340)
+                    detail
+                        .frame(minHeight: 220, maxHeight: .infinity)
+                }
+            } else {
+                HSplitView {
+                    libraryColumn
+                        .frame(minWidth: 300, idealWidth: 340, maxWidth: 430)
+                    detail
+                        .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .frame(minWidth: 300, idealWidth: 340, maxWidth: 430)
-
-            detail
-                .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             chooseDefaultIfNeeded()
@@ -58,6 +65,42 @@ struct MeetingLibraryView: View {
         .onChange(of: calendar.accessGranted) { _, _ in reloadDayEvents() }
         .onChange(of: calendar.eventsRevision) { _, _ in reloadDayEvents() }
         .onDisappear { cancelSearch() }
+    }
+
+    private var libraryColumn: some View {
+        VStack(spacing: 0) {
+            weekHeading
+            weekStrip
+            Divider()
+            searchBar
+            Divider()
+            resultList
+        }
+    }
+
+    private var weekHeading: some View {
+        HStack(spacing: 8) {
+            if let first = weekDays.first, let last = weekDays.last {
+                Text(Self.weekRangeFormatter.string(from: first, to: last))
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .help(Self.weekRangeFormatter.string(from: first, to: last))
+            }
+            Spacer(minLength: 0)
+            Button(L.t("Сегодня", "Today", "今天")) {
+                weekAnchor = Calendar.current.startOfDay(for: Date())
+                selectedDay = weekAnchor
+            }
+            .charoite(.link, .s)
+            .help(L.t("Показать записи и события сегодня", "Show today's recordings and events", "显示今天的录音和日程"))
+            if selectedDay != nil {
+                Button(L.t("Весь архив", "All meetings", "全部会议")) { selectedDay = nil }
+                    .charoite(.link, .s)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .disabled(searchActive)
     }
 
     // MARK: - Полоса недели
@@ -89,7 +132,6 @@ struct MeetingLibraryView: View {
                 .charoite(.icon, .s)
                 .help(L.t("Следующая неделя", "Next week", "下一周"))
                 .accessibilityLabel(Text(L.t("Следующая неделя", "Next week", "下一周")))
-            Spacer(minLength: 4)
             if calendar.accessGranted != true {
                 Button {
                     calendarBriefs = true
@@ -107,7 +149,7 @@ struct MeetingLibraryView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .opacity(searchActive ? 0.4 : 1)
-        .allowsHitTesting(!searchActive)
+        .disabled(searchActive)
     }
 
     private func dayCell(_ day: Date) -> some View {
@@ -129,7 +171,7 @@ struct MeetingLibraryView: View {
                     .fill(hasRecords ? (isSelected ? Color.white : Theme.accent) : Color.clear)
                     .frame(width: 4, height: 4)
             }
-            .frame(width: 34)
+            .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
             .background(RoundedRectangle(cornerRadius: 7)
                 .fill(isSelected ? Theme.accent : Color.clear))
@@ -137,6 +179,7 @@ struct MeetingLibraryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(Self.fullDayFormatter.string(from: day)))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func shiftWeek(_ direction: Int) {
@@ -262,7 +305,17 @@ struct MeetingLibraryView: View {
 
     @ViewBuilder
     private var searchResults: some View {
-        if hits.isEmpty {
+        if AppSettings.graphDir == nil {
+            EmptyState(title: L.t("Выберите папку памяти", "Choose a memory folder", "选择记忆文件夹"),
+                       text: L.t("Поиск пока недоступен: папка графа не настроена. Выберите её в Настройках и повторите поиск.",
+                                 "Search is unavailable because no graph folder is configured. Choose it in Settings, then search again.",
+                                 "尚未设置图谱文件夹，搜索暂不可用。请在设置中选择文件夹后重新搜索。"),
+                       systemImage: "folder.badge.questionmark") {
+                Button(L.t("Открыть настройки", "Open Settings", "打开设置")) { openSettings() }
+                    .charoite(.regular, .s)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if hits.isEmpty {
             if isSearching {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -593,6 +646,13 @@ struct MeetingLibraryView: View {
         let f = DateFormatter()
         f.locale = L.locale
         f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let weekRangeFormatter: DateIntervalFormatter = {
+        let f = DateIntervalFormatter()
+        f.locale = L.locale
+        f.dateTemplate = "dMMMy"
         return f
     }()
 
