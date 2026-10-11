@@ -597,7 +597,7 @@ def load_index(folder: pathlib.Path) -> list[dict]:
         return []
     try:
         entries = json.loads(p.read_text(encoding="utf-8")).get("досье", [])
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
     # индекс прежней версии хранит цельные CJK-последовательности; запрос теперь
     # биграммный — нормализуем ключи при чтении, а не ослабляем сравнение

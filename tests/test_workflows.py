@@ -17,7 +17,10 @@ PR по-прежнему не запускает ничего:
 """
 import pathlib
 import re
+import os
+import subprocess
 
+import pytest
 import yaml
 
 WF = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows"
@@ -205,6 +208,56 @@ def test_docs_guard_lets_a_release_only_diff_through_by_content():
     for name in (r"CHANGELOG\.md", r"\.release-please-manifest\.json", r"app-ios/project\.yml"):
         assert name in source, name
     assert 'release_only' in source and '[ -z "$release_only" ]' in source
+
+
+@pytest.mark.parametrize("files,labels,expected", [
+    (["src/example.py"], "", 1),
+    (["src/example.py", "docs/ru/README.md"], "", 1),
+    (["src/example.py", "docs/zh/README.md"], "", 1),
+    (["src/example.py", "docs/USER_GUIDE.md"], "", 0),
+    (["packages/charoite-graph/pyproject.toml"], "", 1),
+    (["packages/charoite-graph/pyproject.toml", "packages/charoite-graph/README.md"], "", 0),
+    (["src/example.py", "MAINTENANCE.md"], "", 0),
+    (["docs/ru/README.md"], "", 0),
+    (["src/example.py"], "skip-docs", 0),
+    (["src/example.py"], "do-not-skip-docs", 1),
+    (["app-android/gradlew"], "", 0),
+    (["CHANGELOG.md", ".github/.release-please-manifest.json", "app-ios/project.yml"], "", 0),
+])
+def test_docs_guard_executes_its_actual_policy(tmp_path, files, labels, expected):
+    """Run the workflow's shell in a disposable repo, not a copied regex."""
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+            cwd=tmp_path, text=True, stderr=subprocess.STDOUT).strip()
+
+    git("init", "-q")
+    git("commit", "--allow-empty", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    for name in files:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("example\n", encoding="utf-8")
+    git("add", "--all")
+    git("commit", "-qm", "change")
+    step = _load("docs-guard.yml")["jobs"]["docs-updated"]["steps"][-1]
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], cwd=tmp_path, text=True, capture_output=True,
+        env={**os.environ, "BASE_SHA": base, "HEAD_SHA": git("rev-parse", "HEAD"),
+             "PR_LABELS": labels}, timeout=10)
+    assert result.returncode == expected, result.stdout + result.stderr
+
+
+def test_swift_gate_runs_when_its_own_configuration_changes():
+    for event in ("push", "pull_request"):
+        paths = set(_on(_load("swift-tests.yml"))[event]["paths"])
+        assert {".swiftlint.yml", ".github/workflows/swift-tests.yml"} <= paths
+
+
+def test_dependabot_covers_each_declared_dependency_manifest():
+    config = yaml.safe_load((WF.parent / "dependabot.yml").read_text(encoding="utf-8"))
+    covered = {(entry["package-ecosystem"], entry["directory"]) for entry in config["updates"]}
+    assert {("pip", "/packages/charoite-graph"), ("bundler", "/devlog")} <= covered
 
 
 def test_dependabot_tracks_android_gradle_dependencies():
