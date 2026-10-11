@@ -881,9 +881,10 @@ it signals degradation, it does not break the loop.
   label is no longer cut at 120 chars — the cap is 400 (№95). Freshness in the
   score comes from the date of the best block for the query, not the file
   mtime, so a node rewritten by every meeting no longer floats an old fact
-  above a fresh one when the dates sit in different sections (№633); within
-  one section a block that lists several meetings is dated by its latest
-  line. A date later than «today + one day» inside a block is not
+  above a fresh one when the dates sit in different blocks (№633); a section
+  shorter than 40 chars joins the block before it and is dated with it.
+  A block is dated by the latest date among its lines, so a block that lists
+  several meetings takes the latest one. A date later than «today + one day» inside a block is not
   a fact date; a date in the file name dates the file even when it is in the
   future, as on main. Lexical hits are dated by their own block within the
   100 best files by score before freshness; the rank of the rest is by the

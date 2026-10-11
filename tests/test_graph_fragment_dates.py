@@ -329,11 +329,12 @@ def test_block_dates_do_not_touch_date_ts_or_the_owner_key(tmp_path):
     assert next(iter(twins.values())).rel == "Ядра/Ёлка.md", "хозяин тёзок — свежайший по Doc.date_ts"
 
 
-def test_a_list_node_ranks_above_an_old_meeting_as_on_main(tmp_path):
-    """Узел со списком встреч в одной секции датируется последней строкой (09-30), поэтому
-    стоит выше давней встречи 03-02 (выше «давний факт не выше свежего» для такого узла
+def test_a_list_node_ranks_above_an_old_meeting_by_the_date_of_its_block(tmp_path):
+    """Узел со списком встреч в одном блоке датируется самой поздней датой строк (09-30),
+    поэтому стоит выше давней встречи 03-02 («давний факт не выше свежего» для такого узла
     не обещано, строчная дата — в долгах зоны). mtime узла старше встречи: порядок даёт
-    только дата последней строки блока, при `BLOCK_DATES=False` тест падает."""
+    только дата блока, при `BLOCK_DATES=False` тест падает. Дата блока утверждается и прямо:
+    порядок держится на зазоре множителя свежести, его сдвинут веса."""
     g = tmp_path / "Работа"
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
@@ -348,3 +349,30 @@ def test_a_list_node_ranks_above_an_old_meeting_as_on_main(tmp_path):
     r = s.search("кто отвечает за выплаты", limit=4, semantic=False)
     rels = _rels(r)
     assert rels.index("Люди/Иван.md") < rels.index("Встречи/2026-03-02_1000.md")
+    d = s._gen.docs[str(g / "Люди" / "Иван.md")]
+    words, grams = gs.needles("кто отвечает за выплаты")
+    win, _ = s._lex_winner(d, words + grams, re.compile("|".join(re.escape(k) for k in words + grams)))
+    assert s._block_ts(d, win) == gs._ts_from_iso("2026-09-30")
+
+
+def test_a_short_section_joins_the_block_before_it_and_dates_it(tmp_path):
+    """Секция короче 40 знаков входит в блок предыдущей и датирует его своей датой: давнее
+    решение (03-02) получает дату свежей встречи (09-30). Ограничение нарезки закреплено
+    как есть (не сливать датированную секцию — долг зоны); с длинной секцией блоков два."""
+    g = tmp_path / "Работа"
+    for sub in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
+        (g / sub).mkdir(parents=True, exist_ok=True)
+    old = "# Кира\n## Решения\n- [[Встречи/2026-03-02_1000]] — проект Альфа: старое решение по срокам.\n"
+    q = "старое решение по срокам"
+    for news, want in (("## Новости\n- [[Встречи/2026-09-30_1000]]\n", ["2026-09-30"]),
+                       ("## Новости\n- [[Встречи/2026-09-30_1000]] — проект Гамма: Кира ведёт поставки "
+                        "и отвечает за реестр лицензий.\n", ["2026-03-02", "2026-09-30"])):
+        _write(g, "Люди/Кира.md", old + news)
+        os.utime(g / "Люди/Кира.md", (NOW - 86400, NOW - 86400 * len(want)))
+        s = _searcher(tmp_path)
+        s.refresh(force=True)
+        d = s._gen.docs[str(g / "Люди" / "Кира.md")]
+        assert [gs._ts_from_iso(w) for w in want] == [b.ts for b in s._doc_block_dates(d)], want
+        words, grams = gs.needles(q)
+        win, _ = s._lex_winner(d, words + grams, re.compile("|".join(re.escape(k) for k in words + grams)))
+        assert s._block_ts(d, win) == gs._ts_from_iso(want[0]), want
