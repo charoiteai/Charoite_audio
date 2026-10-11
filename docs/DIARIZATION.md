@@ -635,8 +635,13 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   people, and a local path carries the account name. A misspelt
   `diarize_backend`, a reply with no segments or one segment over the whole
   recording fall back the same way, each with its own short reason.
-- **What happens to the segments.** Shorter than 1 s — dropped, as sherpa's
-  are. The call channel then loses overlaps, whatever the engine: a partial
+- **What happens to the segments.** Sherpa drops segments shorter than 1 s.
+  Nemotron keeps replies of at least 0.6 s (the minimum STT window) when that
+  slot also has a segment of at least 1 s somewhere in the recording. A slot
+  made only of subsecond fragments remains filtered out; slots for the model
+  ceiling are still counted before filtering. This preserves isolated short
+  replies of established voices without promoting fragment-only slots.
+  The call channel then loses overlaps, whatever the engine: a partial
   overlap is split in the middle; a reply longer than 1 s inside someone else's
   cuts it in three; a shorter one goes to the enclosing voice — its sound is
   still transcribed inside that segment, only the authorship is lost, as with a
