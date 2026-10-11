@@ -881,15 +881,9 @@ it signals degradation, it does not break the loop.
   label is no longer cut at 120 chars — the cap is 400 (№95). Freshness in the
   score comes from the date of the best block for the query, not the file
   mtime, so a node rewritten by every meeting no longer floats an old fact
-  above a fresh one when the dates sit in different blocks (№633); a section
-  shorter than 40 chars joins the block before it and is dated with it.
-  A block is dated by the latest date among its lines, so a block that lists
-  several meetings takes the latest one. A date later than «today + one day» inside a block is not
-  a fact date; a date in the file name dates the file even when it is in the
-  future, as on main. Lexical hits are dated by their own block within the
-  100 best files by score before freshness; the rank of the rest is by the
-  file date, as before, and the 100-file boundary moves with the score (for a
-  query without words, with the path). The fragment carries no date label.
+  above a fresh one when the dates sit in different blocks (№633). How a
+  block is dated is described in the docstrings of `file_block_dates` and
+  `chunks()` in `graph_search.py`. The fragment carries no date label.
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
