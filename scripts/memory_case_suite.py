@@ -120,4 +120,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from charoite_paths import harden_umask
+    harden_umask()
     raise SystemExit(main())
