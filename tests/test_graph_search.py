@@ -240,6 +240,20 @@ def test_honesty_gate_and_render_markers(tmp_path):
     assert "⚠" not in lex.fragments and "Найдено" not in lex.fragments and "• Системы/Платёжный шлюз.md" in lex.fragments
 
 
+@pytest.mark.parametrize("payload", [None, [], {"досье": [None]}, {"досье": ["entry"]}])
+def test_invalid_dossier_schema_preserves_graph_search(tmp_path, payload):
+    s = _search(tmp_path)
+    folder = s.graph / CHAROITE.dossier_dir
+    folder.mkdir()
+    index = folder / dossier.INDEX_JSON
+    raw = json.dumps(payload).encode("utf-8")
+    index.write_bytes(raw)
+    result = s.search("платёжный шлюз", limit=2)
+    assert result.blocks and not result.dossiers
+    assert "Системы/Платёжный шлюз.md" in result.sources
+    assert index.read_bytes() == raw
+
+
 def test_dossier_comes_first(tmp_path):
     s = _search(tmp_path)
     folder = s.graph / CHAROITE.dossier_dir

@@ -363,6 +363,51 @@ def test_non_utf8_index_refuses_without_modifying_the_file(tmp_path, operation):
     assert index.read_bytes() == damaged
 
 
+@pytest.mark.parametrize("payload", [
+    None, [], "index", 42, True,
+    {"досье": None}, {"досье": {}}, {"досье": "index"}, {"досье": 42},
+    {"досье": [None]}, {"досье": [[]]}, {"досье": ["entry"]},
+    {"досье": [{}]},
+    {"досье": [{"тема": None, "ключи": ["доступ"]}]},
+    {"досье": [{"тема": 42, "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "", "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "  ", "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "Доступ", "ключи": None}]},
+    {"досье": [{"тема": "Доступ", "ключи": "доступ"}]},
+    {"досье": [{"тема": "Доступ", "ключи": {"доступ": 1}}]},
+    {"досье": [{"тема": "Доступ", "ключи": 42}]},
+    {"досье": [{"тема": "Доступ", "ключи": [None]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [42]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [[]]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [""]}]},
+    {"досье": [{"тема": "Доступ", "ключи": ["  "]}]},
+    {"досье": [{"тема": "Доступ", "ключи": ["доступ"]}, None]},
+])
+def test_index_schema_refuses_malformed_json_values_without_writing(tmp_path, payload):
+    folder = tmp_path / CHAROITE.dossier_dir
+    folder.mkdir()
+    index = folder / dossier.INDEX_JSON
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    index.write_bytes(raw)
+    assert dossier.load_index(folder) == []
+    assert dossier.lookup(folder, "доступ") == []
+    assert index.read_bytes() == raw
+
+
+def test_index_schema_keeps_optional_metadata_and_legacy_entries(tmp_path):
+    folder = tmp_path / CHAROITE.dossier_dir
+    folder.mkdir()
+    entries = [{"тема": "Доступ", "ключи": ["доступ"], "extra": {"local": True}},
+               {"тема": "Без ключей"}, {"тема": "Пустые ключи", "ключи": []}]
+    index = folder / dossier.INDEX_JSON
+    raw = json.dumps({"досье": entries}, ensure_ascii=False).encode("utf-8")
+    index.write_bytes(raw)
+    assert dossier.load_index(folder) == entries
+    hits = dossier.lookup(folder, "доступ")
+    assert len(hits) == 1 and hits[0]["extra"] == {"local": True}
+    assert index.read_bytes() == raw
+
+
 def test_заглушка_tier3_не_становится_темой(tmp_path):
     """После слияния дубль остаётся файлом-редиректом с входящими ссылками;
     раньше кластер вокруг него был «жив», и ночь собирала досье по мёртвой
