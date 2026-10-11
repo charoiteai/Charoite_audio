@@ -558,15 +558,25 @@ final class NemotronEngineServiceTests: XCTestCase {
 
     // MARK: fix3 (сверка fix2): комментарий и CRLF после ключа, исход установки при записи
 
-    /// Fix2 п. 1: комментарий глубже ключа и строка из пробелов с `\r` — не продолжение значения.
-    func testFix3КомментарийИCRLFПослеКлючаНеМногострочье() {
-        for before in ["sufler:\n  diarize_backend: sherpa\n      # заметка\n  other: 1\n",
-                       "sufler:\n  diarize_backend: sherpa\n      \r\n  other: 1\n"] {
-            guard case .text(let after) = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before)
-            else { XCTFail("ложный отказ: \(before.debugDescription)"); continue }
-            XCTAssertTrue(after.contains("  diarize_backend: \"nemotron\"\n"), after)
-            XCTAssertEqual(after.replacingOccurrences(of: "  diarize_backend: \"nemotron\"", with: "  diarize_backend: sherpa"),
-                           before, "кроме ключа файл не тронут")
+    /// Fix3 (круг fix3, Critical Sonnet/DS/Haiku): строка с `#` или из пробелов с `\r` под ключом с
+    /// многострочным значением — хвост значения, а не комментарий; запись — отказ, файл цел.
+    func testFix4МногострочноеЗначениеСКомментариемИCRLFНеПереписывается() {
+        let cases: [(String, String)] = [
+            ("A блок | с # первой строкой", "sufler:\n  diarize_backend: |\n    # note\n    sherpa\n  other: 1\n"),
+            ("B кавычка с # в продолжении", "sufler:\n  diarize_backend: \"sherpa\n    # c\n    d\"\n  other: 1\n"),
+            ("C блок > с голым #", "sufler:\n  diarize_backend: >\n    #\n    x\n  other: 1\n"),
+            ("DS пустое значение, комментарий, sherpa", "sufler:\n  diarize_backend:\n    # голоса размечает движок\n    sherpa\n  other: 1\n"),
+            ("C2 CRLF, блок > с пустой строкой \\r", "sufler:\r\n  diarize_backend: >\r\n      \r\n    sherpa\r\n  other: 1\r\n"),
+        ]
+        for (name, before) in cases {
+            if case .text = AppSettings.replacingInSufler("diarize_backend", with: "nemotron", in: before) {
+                XCTFail("\(name): многострочное значение переписано")
+            }
+            try? before.write(to: configURL, atomically: true, encoding: .utf8)
+            let expected = AppSettings.parseValue("diarize_backend", in: before)
+            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
+            if case .written = r { XCTFail("\(name): запись прошла") }
+            XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), before, "\(name): файл изменён")
         }
     }
 
