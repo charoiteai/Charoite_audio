@@ -17,6 +17,7 @@ import re
 import sys
 
 import pytest
+from packaging.requirements import Requirement
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -56,7 +57,9 @@ def test_каждый_пакет_в_lock_имеет_хеш():
     for i, line in enumerate(lines):
         if not re.match(r"^[A-Za-z0-9][\w.\-]*==", line):
             continue
-        tail = " ".join(lines[i:i + 40])
+        end = next((j for j in range(i + 1, len(lines))
+                    if re.match(r"^[A-Za-z0-9][\w.\-]*==", lines[j])), len(lines))
+        tail = " ".join(lines[i:end])
         pkg = line.split("==")[0]
         assert "--hash=sha256:" in tail, f"{pkg} в lock без хеша"
 
@@ -69,6 +72,16 @@ def test_lock_не_отстал_от_pyproject():
     assert not missing, (
         f"нет в lock: {sorted(missing)} — пересоберите: "
         ".venv/bin/python scripts/lock_runtime_deps.py")
+    from lock_runtime_deps import dist_name
+
+    pins = {dist_name(m.group(1)): m.group(2)
+            for line in LOCK.read_text(encoding="utf-8").splitlines()
+            if (m := re.match(r"^([A-Za-z0-9][\w.\-]*)==([^\s;\\]+)", line))}
+    for spec in runtime_deps():
+        requirement = Requirement(spec)
+        version = pins[dist_name(requirement.name)]
+        assert requirement.specifier.contains(version, prereleases=True), (
+            f"{requirement.name}=={version} не удовлетворяет {spec} — пересоберите lock")
 
 
 def test_вход_lock_совпадает_с_манифестом():
@@ -79,8 +92,36 @@ def test_вход_lock_совпадает_с_манифестом():
         return  # .in не обязателен в дереве: его пересоздаёт генератор
     listed = {ln.strip() for ln in INPUT.read_text(encoding="utf-8").splitlines()
               if ln.strip() and not ln.startswith("#")}
-    assert _dep_names(listed) == _dep_names(runtime_deps()), (
+    assert listed == set(runtime_deps()), (
         "requirements-runtime.in разъехался с pyproject.toml")
+
+
+def test_runtime_hash_guard_refuses_a_hash_borrowed_from_the_next_package(monkeypatch, tmp_path):
+    lock = tmp_path / "runtime.lock"
+    lock.write_text("first==1\nsecond==2 \\\n    --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "LOCK", lock)
+    with pytest.raises(AssertionError, match="first"):
+        test_каждый_пакет_в_lock_имеет_хеш()
+
+
+def test_runtime_input_guard_refuses_version_drift_with_the_same_name(monkeypatch, tmp_path):
+    import lock_runtime_deps as lrd
+    source = tmp_path / "runtime.in"
+    source.write_text("example>=1\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "INPUT", source)
+    monkeypatch.setattr(lrd, "runtime_deps", lambda: ["example>=2"])
+    with pytest.raises(AssertionError, match="requirements-runtime.in"):
+        test_вход_lock_совпадает_с_манифестом()
+
+
+def test_runtime_pin_guard_refuses_a_version_outside_the_manifest(monkeypatch, tmp_path):
+    import lock_runtime_deps as lrd
+    lock = tmp_path / "runtime.lock"
+    lock.write_text("example==1\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "LOCK", lock)
+    monkeypatch.setattr(lrd, "runtime_deps", lambda: ["example>=2"])
+    with pytest.raises(AssertionError, match="example"):
+        test_lock_не_отстал_от_pyproject()
 
 
 def test_сборка_бандла_требует_хеши():

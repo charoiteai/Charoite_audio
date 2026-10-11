@@ -258,12 +258,16 @@ def _take_rebuild_queue():
     return f
 
 
+#: Минимальное окно распознавания; короткие ответы движка фильтруются тем же полом.
+MIN_STT_SECONDS = 0.6
+
+
 def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
     parts, prev = [], ""
     seg, ov = int(SEG_S * sr), int(OVERLAP_S * sr)
     for off in range(0, len(audio), seg - ov):
         piece = audio[off:off + seg]
-        if len(piece) < sr * 0.6:
+        if len(piece) < sr * MIN_STT_SECONDS:
             break
         t = stt.transcribe(piece, sr).strip()
         if not t or is_noise(t):
@@ -275,8 +279,8 @@ def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
     return " ".join(parts)
 
 
-#: Отрезок разметки короче этого (с) выбрасывается до разбора голосов — у любого
-#: движка: осколок не несёт реплики, а своё STT на полсекунды звука — шум.
+#: Пол отрезка sherpa и подтверждения слота Nemotron. У подтверждённого
+#: слота сохраняем короткие реплики до пола STT; отдельные короткие слоты — шум.
 MIN_SEGMENT_S = 1.0
 #: Канал короче или ровно столько (с) не размечается: на такой записи разметке
 #: не по чему судить. Длиннее — размечается, и `None` после разметки уже сбой
@@ -314,8 +318,9 @@ def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
               what: str) -> tuple[list[tuple[float, float, int]] | None, str, int]:
     """Вызов Nemotron по записи одного канала — общая часть обоих каналов.
 
-    `(сегменты, "", слотов)` — движок ответил; отрезки короче MIN_SEGMENT_S
-    отброшены, как у sherpa в `diarize_channel`, а `слотов` — число занятых слотов
+    `(сегменты, "", слотов)` — движок ответил; слот подтверждён хотя бы одним
+    отрезком MIN_SEGMENT_S, его короткие реплики до пола STT сохраняются.
+    Отдельные короткие слоты отброшены, а `слотов` — число занятых слотов
     модели в СЫРОМ ответе, до отсева: слот из одних осколков < 1 с тоже занят
     (вход №596, r4 GLM I3). `(None, ENGINE_REFUSED_REASON, 0)` — отказ: сырой
     отказ с путями машины — только в журнал (№495). Годен ли ответ — политика
@@ -331,7 +336,9 @@ def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
     if not out.ok:
         log(f"Nemotron не разметил {what} ({out.kind}: {out.reason}) — размечает sherpa")
         return None, ENGINE_REFUSED_REASON, 0
-    segs = [(s, e, k) for s, e, k in out.payload if e - s >= MIN_SEGMENT_S]
+    established = {k for s, e, k in out.payload if e - s >= MIN_SEGMENT_S}
+    segs = [(s, e, k) for s, e, k in out.payload
+            if k in established and e - s >= MIN_STT_SECONDS]
     log(f"Nemotron ({what}): {len(segs)} сегментов из {len(out.payload)} "
         f"за {time.time() - t0:.0f} с")
     return segs, "", len({k for *_, k in out.payload})

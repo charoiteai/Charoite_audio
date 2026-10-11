@@ -1,3 +1,14 @@
+> **Historical source review — status checked 2026-10-11.**
+> This document records the author's qualitative assessment of the old commit
+> named below. It contains no reproducible test commands, regression evidence,
+> mutation results, or complete coverage inventory. Statements about severity,
+> open issues, and accepted risks are historical author assessments, not a
+> verified verdict about current main or an owner acceptance of risks.
+> Later dossier, NLI, diarization and application changes are outside this
+> snapshot. For the subsequent repository review see
+> [REPOSITORY_AUDIT_2026-10-11](../design/REPOSITORY_AUDIT_2026-10-11.md).
+> Archived from audit/2026-10-10-code-review; original report text follows.
+
 # Deep Audit — 2026-10-10
 
 Branch: `audit/2026-10-10-code-review`  

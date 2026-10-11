@@ -350,6 +350,64 @@ def test_битый_индекс_не_роняет_поиск(tmp_path):
     assert dossier.lookup(folder, "любой запрос") == []
 
 
+@pytest.mark.parametrize("operation", [dossier.load_index,
+                                      lambda folder: dossier.lookup(folder, "доступ")])
+def test_non_utf8_index_refuses_without_modifying_the_file(tmp_path, operation):
+    """A damaged cache must leave the graph-search fallback reachable."""
+    folder = tmp_path / CHAROITE.dossier_dir
+    folder.mkdir()
+    index = folder / dossier.INDEX_JSON
+    damaged = b'{"' + "досье".encode("utf-8") + b'": []}\xff'
+    index.write_bytes(damaged)
+    assert operation(folder) == []
+    assert index.read_bytes() == damaged
+
+
+@pytest.mark.parametrize("payload", [
+    None, [], "index", 42, True,
+    {"досье": None}, {"досье": {}}, {"досье": "index"}, {"досье": 42},
+    {"досье": [None]}, {"досье": [[]]}, {"досье": ["entry"]},
+    {"досье": [{}]},
+    {"досье": [{"тема": None, "ключи": ["доступ"]}]},
+    {"досье": [{"тема": 42, "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "", "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "  ", "ключи": ["доступ"]}]},
+    {"досье": [{"тема": "Доступ", "ключи": None}]},
+    {"досье": [{"тема": "Доступ", "ключи": "доступ"}]},
+    {"досье": [{"тема": "Доступ", "ключи": {"доступ": 1}}]},
+    {"досье": [{"тема": "Доступ", "ключи": 42}]},
+    {"досье": [{"тема": "Доступ", "ключи": [None]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [42]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [[]]}]},
+    {"досье": [{"тема": "Доступ", "ключи": [""]}]},
+    {"досье": [{"тема": "Доступ", "ключи": ["  "]}]},
+    {"досье": [{"тема": "Доступ", "ключи": ["доступ"]}, None]},
+])
+def test_index_schema_refuses_malformed_json_values_without_writing(tmp_path, payload):
+    folder = tmp_path / CHAROITE.dossier_dir
+    folder.mkdir()
+    index = folder / dossier.INDEX_JSON
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    index.write_bytes(raw)
+    assert dossier.load_index(folder) == []
+    assert dossier.lookup(folder, "доступ") == []
+    assert index.read_bytes() == raw
+
+
+def test_index_schema_keeps_optional_metadata_and_legacy_entries(tmp_path):
+    folder = tmp_path / CHAROITE.dossier_dir
+    folder.mkdir()
+    entries = [{"тема": "Доступ", "ключи": ["доступ"], "extra": {"local": True}},
+               {"тема": "Без ключей"}, {"тема": "Пустые ключи", "ключи": []}]
+    index = folder / dossier.INDEX_JSON
+    raw = json.dumps({"досье": entries}, ensure_ascii=False).encode("utf-8")
+    index.write_bytes(raw)
+    assert dossier.load_index(folder) == entries
+    hits = dossier.lookup(folder, "доступ")
+    assert len(hits) == 1 and hits[0]["extra"] == {"local": True}
+    assert index.read_bytes() == raw
+
+
 def test_заглушка_tier3_не_становится_темой(tmp_path):
     """После слияния дубль остаётся файлом-редиректом с входящими ссылками;
     раньше кластер вокруг него был «жив», и ночь собирала досье по мёртвой
@@ -369,7 +427,8 @@ def test_заглушка_tier3_не_становится_темой(tmp_path):
     assert "Доступ и токены" not in cl
 
 
-def test_индекс_не_теряет_досье_сверх_лимита_и_при_браке(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reverse_scan", [False, True])
+def test_индекс_не_теряет_досье_сверх_лимита_и_при_браке(tmp_path, monkeypatch, reverse_scan):
     """Индекс — карта всех досье на диске: темы сверх лимита ночи и темы с
     отказом раньше выпадали из _index/_ИНДЕКС, а --full оставлял 12 записей;
     брак формата дважды не считался отказом — ночь «ok» (аудит 17.08)."""
@@ -378,6 +437,14 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
         "nightly_dossier", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "nightly_dossier.py")
     nd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(nd)
+
+    original_scan = dossier.scan
+
+    def ordered_scan(*args, **kwargs):
+        files, backlinks = original_scan(*args, **kwargs)
+        return dict(sorted(files.items(), reverse=reverse_scan)), backlinks
+
+    monkeypatch.setattr(dossier, "scan", ordered_scan)
 
     g = _граф(tmp_path)
     # вторая тема-ядро с двумя источниками

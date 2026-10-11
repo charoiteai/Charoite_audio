@@ -228,6 +228,56 @@ def check_stt(cfg: dict) -> None:
              "228 МБ, качается один раз")
 
 
+def check_nli(*, probe: bool = False) -> bool | None:
+    """Годность комплекта — `nli.refusal()`, тот же ответ, что видит демон;
+    инференс — только по --probe-nli.
+
+    None означает непроверенный инференс или отложенную пробу. True —
+    положительная канарейка судьи ответила, не оценка качества на встречах.
+    """
+    try:
+        import nli
+    except Exception as exc:  # noqa: BLE001 — модуль приложения не импортируется
+        line(FAIL, f"NLI: модуль nli не импортируется ({type(exc).__name__})",
+             "восстановите зависимости Python приложения (docs/MODELS.md)")
+        return False
+    try:
+        why = nli.refusal()
+    except Exception as e:  # noqa: BLE001 — сбой проверки — ошибка в обоих режимах, строкой, не трейсбеком
+        line(FAIL, f"NLI: проверка упала ({type(e).__name__}: {e})",
+             "docs/MODELS.md")
+        return False
+    if not probe:
+        if why:
+            line(WARN, f"NLI: {why}", "docs/MODELS.md")
+            return False
+        line(OK, "NLI: файлы, метки и пакеты годны; инференс — scripts/doctor.py --probe-nli")
+        return None
+    if why:
+        line(FAIL, f"NLI: {why}", "docs/MODELS.md")
+        return False
+    import live_gate
+    if live_gate.daemon_alive(_root()):
+        line(WARN, "NLI: проба отложена — идёт встреча",
+             "повторите --probe-nli после остановки встречи")
+        return None
+    try:
+        judge = nli.judge()
+        if judge.refused:
+            line(FAIL, f"NLI: {judge.refused}", "docs/MODELS.md")
+            return False
+        if not judge.ready():
+            line(FAIL, "NLI: локальная проба не прошла",
+                 "проверьте целостность весов и совместимость экспорта в models/nli")
+            return False
+    except Exception as exc:  # noqa: BLE001 — диагностический отказ, без текста пользовательских данных
+        line(FAIL, f"NLI: локальная проба завершилась ошибкой {type(exc).__name__}",
+             "проверьте зависимости и экспорт модели")
+        return False
+    line(OK, "NLI: локальная проба прошла; качество на встречах не измерено")
+    return True
+
+
 def check_models() -> None:
     """Набор голосов — два файла. Одних эмбеддингов мало.
 
@@ -608,10 +658,16 @@ def restart_llm() -> None:
 def main() -> None:
     harden_umask()   # --restart-llm создаёт logs/mlx_server.log сервера моделей — только владельцу
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--restart-llm", action="store_true",
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--restart-llm", action="store_true",
                     help="аварийный перезапуск сервера моделей поверх живых аренд "
                          "(единственный ручной выход при зависшем владельце порта)")
+    mode.add_argument("--probe-nli", action="store_true",
+                      help="только локальная проба NLI; не запускает диагностику LLM или скачивание")
     args = ap.parse_args()
+    if args.probe_nli:
+        print("Charoite doctor: NLI\n")
+        sys.exit(0 if check_nli(probe=True) is True else 1)
     if args.restart_llm:
         restart_llm()
         return
@@ -623,6 +679,7 @@ def main() -> None:
     check_ollama(cfg)
     check_stt(cfg)
     check_models()
+    check_nli()
     check_engine(cfg)
     print("\nРабочее состояние")
     alive = check_llm_alive(cfg)

@@ -55,11 +55,13 @@ struct TasksView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.bottom, 8)
             }
+            if let change = tasks.lastChange {
+                undoNotice(change)
+            }
             Divider()
             content
         }
-        // 640, не 520: шапка с сводкой и переключателем режима при 520
-        // обрезала правые контролы (круг по PR #367, DeepSeek)
+        // Keep the workspace detail minimum; filters now occupy their own row.
         .frame(minWidth: 640, minHeight: 360)
         .onAppear {
             tasks.rescan()
@@ -69,6 +71,29 @@ struct TasksView: View {
                 groupingRaw = TasksGrouping.byMeeting.rawValue
             }
         }
+    }
+
+    private func undoNotice(_ change: TasksService.Change) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(change.item.done
+                     ? L.t("Поручение снова открыто", "Action item reopened", "任务已重新打开")
+                     : L.t("Поручение отмечено выполненным", "Action item completed", "任务已标记完成"))
+                    .font(.caption.weight(.medium))
+                Text(MarkdownLine.render(change.item.text))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                tasks.undoLastChange()
+            } label: {
+                Label(L.t("Отменить отметку", "Undo status change", "撤销状态更改"), systemImage: "arrow.uturn.backward")
+            }
+            .disabled(tasks.isMutating)
+            .help(L.t("Восстановить прежнюю отметку этого поручения", "Restore this action item's previous status", "恢复此任务的先前状态"))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Theme.accent.opacity(0.06))
     }
 
     private var header: some View {
@@ -81,6 +106,19 @@ struct TasksView: View {
                 // просрочка оранжевым, три числа не пересекаются.
                 summaryLine
                 Spacer()
+                Button { copyVisibleOpen() } label: { Image(systemName: "doc.on.doc") }
+                    .help(L.t("Скопировать видимые открытые задачи",
+                              "Copy visible open tasks",
+                              "复制当前显示的未完成任务"))
+                    .accessibilityLabel(L.t("Скопировать видимые открытые задачи", "Copy visible open tasks", "复制当前显示的未完成任务"))
+                    .disabled(visibleOpen.isEmpty)
+                Button { tasks.rescan() } label: { Image(systemName: "arrow.clockwise") }
+                    .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+                    .accessibilityLabel(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+            }
+            // Summary and actions stay above the filters. At the workspace's
+            // 640 pt detail minimum, a single row pushed controls off screen.
+            HStack(spacing: 10) {
                 Picker("", selection: $groupingRaw) {
                     ForEach(TasksGrouping.allCases, id: \.rawValue) { mode in
                         Text(mode.title).tag(mode.rawValue)
@@ -88,20 +126,16 @@ struct TasksView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .accessibilityLabel(L.t("Группировка задач", "Task grouping", "任务分组"))
+                .frame(maxWidth: 240)
                 TextField(L.t("Найти поручение", "Find an action item", "查找任务"), text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 210)
+                    .frame(minWidth: 120, idealWidth: 210, maxWidth: .infinity)
+                    .accessibilityLabel(L.t("Найти поручение", "Find an action item", "查找任务"))
                 Toggle(isOn: $showDone) {
                     Text(L.t("Сделанные", "Completed", "已完成")).fixedSize()
                 }
                 .toggleStyle(.checkbox).font(.caption)
-                Button { copyVisibleOpen() } label: { Image(systemName: "doc.on.doc") }
-                    .help(L.t("Скопировать видимые открытые задачи",
-                              "Copy visible open tasks",
-                              "复制当前显示的未完成任务"))
-                    .disabled(visibleOpen.isEmpty)
-                Button { tasks.rescan() } label: { Image(systemName: "arrow.clockwise") }
-                    .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
             }
             if let meeting = selectedMeeting {
                 HStack(spacing: 7) {
@@ -367,7 +401,7 @@ struct TasksView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(tasks.isUpdating(item))
+            .disabled(tasks.isMutating)
             Text(MarkdownLine.render(item.text))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
