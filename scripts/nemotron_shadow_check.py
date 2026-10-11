@@ -286,7 +286,9 @@ def live_waits(j: Journal) -> dict:
 def sources(j: Journal) -> dict:
     """Режим `on` (журнал v2): чем разложены чанки. Доля фолбэков — чанки, разложенные
     трекером, с причинами; ожидание метки — только у дождавшихся (`labeled`), фолбэки —
-    отдельной долей: время до «сдался» не время метки. Сверка каналов — доля кусков потока
+    отдельной долей: время до «сдался» не время метки. `wait_all_s` — время
+    всех решений, включая отказ; `wait_fallback_s` — время резервных исходов.
+    Это ожидание решения потока, а не полный срок STT. Сверка каналов — доля кусков потока
     без номера сверки (их эхо фильтр не видит) и доля, чей голос трекера уже был связан с
     той же меткой потока (устойчивость номера сверки)."""
     waited = [c for c in j.chunks if c.get("source") == live_nemotron.SOURCE_STREAM
@@ -298,10 +300,15 @@ def sources(j: Journal) -> dict:
     no_recon = sum(int(c.get("no_recon", 0)) for c in waited)
     agree = sum(int(c.get("recon_agree", 0)) for c in waited)
     waits = [float(c["wait_s"]) for c in waited if c["outcome"] == live_nemotron.LABELED]
+    all_waits = [float(c["wait_s"]) for c in waited]
+    fallback_waits = [float(c["wait_s"]) for c in tracker]
     return {"n": len(waited),
             "fallback_share": round(len(tracker) / len(waited), 4),
             "fallback_reasons": dict(collections.Counter(c.get("fallback", "?") for c in tracker)),
             "wait_labeled_s": quantiles(waits),
+            "wait_all_s": quantiles(all_waits),
+            "wait_all_share": share_over(all_waits),
+            "wait_fallback_s": quantiles(fallback_waits),
             "stream_pieces": pieces,
             "no_recon_share": round(no_recon / pieces, 4) if pieces else None,
             "recon_agree_share": round(agree / (pieces - no_recon), 4) if pieces > no_recon else None,

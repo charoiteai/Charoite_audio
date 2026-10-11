@@ -1330,6 +1330,35 @@ def test_sources_count_fallbacks_apart_and_the_wait_only_of_labelled_chunks():
     assert (got["lost_s"], got["tracker_pieces"]) == (0.25, 1)
 
 
+@pytest.mark.parametrize("fast,slow", [(90, 10), (0, 10)], ids=["timeout-tail", "all-fallback"])
+def test_sources_show_time_spent_on_fallback_in_the_all_chunk_tail(fast, slow):
+    j = journal()
+    j.v, j.mode = 2, ln.ON
+    j.chunks = [_on_chunk(n, ln.LABELED, "stream", 0.1) for n in range(fast)]
+    j.chunks += [_on_chunk(fast + n, ln.FALLBACK, "tracker", 2.0, fallback="timeout")
+                 for n in range(slow)]
+    got = chk.sources(j)
+    assert got["wait_all_s"] == {"n": fast + slow, "p50": 0.1 if fast else 2.0,
+                                 "p90": 0.1 if fast else 2.0, "p95": 2.0, "max": 2.0}
+    assert got["wait_fallback_s"] == {"n": slow, "p50": 2.0, "p90": 2.0,
+                                      "p95": 2.0, "max": 2.0}
+    assert got["wait_labeled_s"]["n"] == fast
+    assert got["wait_all_share"][">1s"] == round(slow / (fast + slow), 4)
+
+
+def test_sources_include_immediate_fallbacks_but_not_shadow_observations():
+    j = journal()
+    j.v, j.mode = 2, ln.ON
+    j.chunks = [_on_chunk(0, ln.BEFORE_STREAM, "tracker", 0.0, fallback="before_stream"),
+                _on_chunk(1, ln.LABELED, "stream", 0.8),
+                _on_chunk(2, ln.LABELED, "tracker", 0.5, fallback="no_speech"),
+                _on_chunk(3, ln.BEFORE_STREAM, "tracker", 50.0)]
+    got = chk.sources(j)
+    assert got["wait_all_s"] == {"n": 3, "p50": 0.5, "p90": 0.8, "p95": 0.8, "max": 0.8}
+    assert got["wait_fallback_s"] == {"n": 2, "p50": 0.0, "p90": 0.5, "p95": 0.5, "max": 0.5}
+    assert got["wait_labeled_s"]["n"] == 2
+
+
 def test_sources_of_a_shadow_journal_are_empty():
     assert chk.sources(journal(chunk_ends=[START0 + 64000])) == {"n": 0}
 

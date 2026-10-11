@@ -814,6 +814,17 @@ the call channel. The rollout is `off` → `shadow` on a live call → `on`.
   A stream that has not started, is dead, is further behind than the cap, or
   hears no speech in the chunk leaves the chunk to the tracker; the journal line
   says why (`fallback`).
+- **Measure fallback waits too.** In the shadow check report, `sources` keeps
+  `wait_labeled_s` for chunks whose label became available. For `on` journals,
+  `wait_all_s` includes every stream decision, including timeouts and immediate
+  fallback; `wait_all_share` shows the fraction above each wait threshold.
+  `wait_fallback_s` isolates chunks whose layout used the tracker, including
+  labelled chunks that fell back because there was no stream speech. A run
+  with 90 fast labels and 10 two-second timeouts has a two-second overall p95,
+  even if its labelled-only p95 is 0.1 s. These times measure the journal's
+  stream-decision wait, not total recognition or feed latency. Shadow-only
+  observations do not provide the `on` waiting distribution; measure actual
+  `on` calls as well. This report does not change the configured live mode.
 - **The layout.** Stream segments go through the same windows and rules as the
   tracker's (`plan_pieces`, `settle`). Speech the tracker hears and the stream
   did not label is transcribed as its own tracker piece; stream windows do not
