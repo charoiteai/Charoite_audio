@@ -42,6 +42,14 @@ def _reset_swap_flag():
     ie._SWAP_COMMITTED = False
 
 
+@pytest.fixture(autouse=True)
+def _roomy_disk(monkeypatch):
+    """Свободное место — не свойство машины, на которой идёт прогон: гейт диска
+    установки (`disk_need`) по умолчанию видит 1 ТБ. Тесты гейта подменяют
+    `ie.free_bytes` своим значением поверх этого."""
+    monkeypatch.setattr(ie, "free_bytes", lambda _path: 1 << 40)
+
+
 def _raise(exc):
     """Шаг, который падает заданным исключением — подмена install/check в main."""
     def step(*_a, **_k):
@@ -920,6 +928,11 @@ def test_plan_is_one_json_line_even_when_the_machine_is_refused(tmp_path, monkey
     assert payload["sizes_mb"]["voice_set"] > 0
     assert payload["license"]["name"] and payload["license"]["url"].startswith("https://")
     assert payload["engine"]["backend"] in ("sherpa", "nemotron")
+    # контракт кнопки (№622 ч. 2): место, память и одно решение — в той же строке
+    assert set(payload["disk"]) == {"free_mb", "reclaimable_mb", "need_mb", "ok", "reason"}
+    assert set(payload["memory"]) == {"total_mb", "warn", "reason"}
+    assert payload["offer"]["install"] == {"allowed": False, "reason": "движок только на Apple Silicon"}
+    assert set(payload["offer"]) == {"state", "reason", "install", "enable", "disable", "warnings"}
 
 
 def _user_config(root, text):
@@ -1247,6 +1260,35 @@ def test_a_cancel_during_the_old_env_cleanup_still_finishes_with_ready(tmp_path,
     assert "после замены" in out.err
 
 
+def test_a_cancel_after_the_commit_leaves_the_key_to_the_caller(tmp_path, monkeypatch, capsys):
+    """Отмена после фиксации — код 0 (контракт `EXIT_INSTALL_CANCELLED`): установщик
+    ключ движка не пишет, и `--plan` после такого прогона при `sherpa` показывает
+    «поставлен, не включён». Решение о ключе — за вызывающим, который сам просил
+    отмену (№622 ч. 2, правка 4).
+
+    `ready_engine` — потому что подменённая копия оставляет неисполняемый `"#"`, а
+    веса — только событие: без неё план честно сказал бы `broken`."""
+    _old_home(tmp_path)
+    _mocked_steps(tmp_path, monkeypatch, [])
+    _main_root(tmp_path, monkeypatch)
+    real = shutil.rmtree
+
+    def rmtree(path, ignore_errors=False, **kw):
+        if ".old-" in pathlib.Path(path).name:
+            signal.raise_signal(signal.SIGTERM)
+        real(path, ignore_errors=ignore_errors, **kw)
+    monkeypatch.setattr(ie.shutil, "rmtree", rmtree)
+    assert ie.main(["nemotron"]) == 0
+    assert "после замены" in capsys.readouterr().err
+    monkeypatch.setattr(ie.shutil, "rmtree", real)
+    ready_engine(tmp_path)
+    _user_config(tmp_path, "sufler:\n  diarize_backend: sherpa\n")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    offer = json.loads(capsys.readouterr().out)["offer"]
+    assert offer["state"] == "ready_off"
+    assert offer["enable"] == {"allowed": True, "reason": ""}
+
+
 def test_a_cancel_at_the_pip_step_keeps_the_old_env(tmp_path, monkeypatch, capsys):
     """Отмена до фиксации: прежнее окружение цело, временного каталога нет, код 13."""
     home = _old_home(tmp_path)
@@ -1320,3 +1362,461 @@ class TestTheCommitFlagIsResetByMain:
         finally:
             for s, handler in previous.items():
                 signal.signal(s, handler)
+
+
+# ---- Гейт диска установки (№622 ч. 2, правка 1) -------------------------------
+
+_MIB = 1024 * 1024
+
+
+def _free(mb):
+    """Подмена `ie.free_bytes`: «свободно `mb` МБ» и путь, о котором спросили."""
+    asked = []
+
+    def free_bytes(path):
+        asked.append(pathlib.Path(path))
+        return mb * _MIB
+    return free_bytes, asked
+
+
+def _sparse(path: pathlib.Path, mb: int) -> pathlib.Path:
+    """Файл нужного размера без записи сотен МБ — разреженный, через `truncate`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.truncate(mb * _MIB)
+    return path
+
+
+_EMPTY_SIZES = {"environment": 601, "weights": 191, "voice_set": 47}
+_READY_SIZES = {"environment": 601, "weights": 0, "voice_set": 0}
+
+
+def test_plan_sizes_on_an_empty_root_are_pinned(tmp_path, monkeypatch, capsys):
+    """Пин чисел, от которых считается гейт: окружение 601, веса 191 (1 + 190), набор 47."""
+    _main_root(tmp_path, monkeypatch)
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out)["sizes_mb"] == _EMPTY_SIZES
+
+
+def test_disk_need_counts_a_full_reinstall_without_the_old_env(tmp_path, monkeypatch):
+    """Нужно = новая копия окружения + колёса pip + недостающие веса и набор. Прежнее
+    окружение не считается: оно уже занимает место, а не просит свободного."""
+    free, _ = _free(10_000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    first = ie.disk_need(tmp_path, _EMPTY_SIZES)
+    assert first["need_mb"] == 2 * ie.ENVIRONMENT_MB + _EMPTY_SIZES["weights"] + _EMPTY_SIZES["voice_set"] == 1440
+    _old_home(tmp_path)
+    again = ie.disk_need(tmp_path, _READY_SIZES)
+    assert again["need_mb"] == 1202
+    assert again == {"free_mb": 10_000, "reclaimable_mb": 0, "need_mb": 1202, "ok": True, "reason": ""}
+
+
+def test_disk_need_refuses_a_tight_volume_with_both_numbers(tmp_path, monkeypatch):
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["ok"] is False and disk["free_mb"] == 1000
+    assert "1000 МБ" in disk["reason"] and "1202 МБ" in disk["reason"]
+
+
+def test_leftovers_that_sweep_removes_count_as_free(tmp_path, monkeypatch):
+    """`.new-*` после SIGKILL по сроку — 600 МБ мусора; убирает его `sweep` установки,
+    и гейт `--plan` считает его освобождаемым, а не держит кнопку закрытой."""
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    home = nem.engine_dir(tmp_path)
+    _sparse(home.with_name(".nemotron.new-123") / "python" / "lib.so", 300)
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["reclaimable_mb"] == 300
+    assert disk == {"free_mb": 1000, "reclaimable_mb": 300, "need_mb": 1202, "ok": True, "reason": ""}
+
+
+def test_an_old_env_counts_only_when_sweep_would_remove_it(tmp_path, monkeypatch):
+    """`.old-*` при пустом месте `home` `sweep` не удаляет, а возвращает на место —
+    тогда оно не освобождаемое."""
+    home = nem.engine_dir(tmp_path)
+    _sparse(home.with_name(".nemotron.old-5") / "f", 100)
+    assert ie.reclaimable_mb(home) == 0
+    home.mkdir()
+    assert ie.reclaimable_mb(home) == 100
+
+
+def test_an_unmeasured_volume_keeps_the_gate_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(ie, "free_bytes", _raise(OSError("statfs: нет")))
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["free_mb"] is None and disk["ok"] is True
+    assert disk["reason"].startswith("свободное место не измерено")
+
+
+def test_the_gate_measures_from_the_nearest_existing_ancestor(tmp_path, monkeypatch):
+    """Корень без `engines/`: мера зовётся от существующего предка, `FileNotFoundError`
+    настоящей `free_bytes` не всплывает."""
+    import charoite_paths
+    asked = []
+
+    def real(path):
+        asked.append(pathlib.Path(path))
+        return charoite_paths.free_bytes(path)
+    monkeypatch.setattr(ie, "free_bytes", real)
+    root = tmp_path / "ещё" / "нет"
+    disk = ie.disk_need(root, _READY_SIZES)
+    assert isinstance(disk["free_mb"], int) and not disk["reason"].startswith("свободное место не измерено")
+    assert asked == [tmp_path]
+
+
+def test_install_refuses_a_tight_disk_before_writing_anything(tmp_path, monkeypatch, capsys):
+    """Отказ по диску — код 1 до записи окружения, весов и набора голосов: на свежем
+    корне есть только каталог `engines/` с замком."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, events)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: events.append("voice"))
+    _main_root(tmp_path, monkeypatch)
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    assert ie.main(["nemotron"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("не поставлено:") and "свободно 1000 МБ" in err and "1440 МБ" in err
+    assert sorted(p.name for p in nem.engine_dir(tmp_path).parent.iterdir()) == [".nemotron.install.lock"]
+    assert not nem.model_dir(tmp_path).exists()
+    assert events == []
+
+
+def test_the_install_gate_runs_after_the_sweep(tmp_path, monkeypatch):
+    """Гейт — после `sweep`: остатки уже убраны, считается настоящее свободное место."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, [])
+    free, _ = _free(1440)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    leftover = _sparse(nem.engine_dir(tmp_path).with_name(".nemotron.new-123") / "f", 300).parent
+    real_sweep, real_need = ie.sweep, ie.disk_need
+    monkeypatch.setattr(ie, "sweep", lambda home: (events.append("sweep"), real_sweep(home))[1])
+    monkeypatch.setattr(ie, "disk_need", lambda *a, **k: (events.append("disk"), real_need(*a, **k))[1])
+    assert ie.install("nemotron", tmp_path) == 0
+    assert events == ["sweep", "disk"]
+    assert not leftover.exists()
+
+
+def test_an_unremovable_leftover_does_not_open_the_install_gate(tmp_path, monkeypatch, capsys):
+    """Остаток, который `sweep` не убрал (`rmtree(ignore_errors=True)` молча оставил его),
+    место не освободил: гейт `install` его не прибавляет. Свободно 900 МБ, остаток 600,
+    нужно 1440 — с прибавкой гейт открылся бы (1500), без неё — отказ до записи."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, events)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: events.append("voice"))
+    _main_root(tmp_path, monkeypatch)
+    free, _ = _free(900)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    leftover = _sparse(nem.engine_dir(tmp_path).with_name(".nemotron.new-1") / "python" / "big", 600)
+    monkeypatch.setattr(ie.shutil, "rmtree", lambda *_a, **_k: None)
+    assert ie.main(["nemotron"]) == 1
+    err = capsys.readouterr().err
+    assert "свободно 900 МБ" in err and "1440 МБ" in err
+    assert leftover.exists()
+    assert events == []
+
+
+def test_an_unmeasured_disk_does_not_stop_the_install(tmp_path, monkeypatch, capsys):
+    _mocked_steps(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(ie, "free_bytes", _raise(OSError("statfs: нет")))
+    assert ie.install("nemotron", tmp_path) == 0
+    assert "свободное место не измерено" in capsys.readouterr().out
+
+
+# ---- Память и одно решение `offer` (№622 ч. 2, правки 2–3) ---------------------
+
+_GIB = 1024 * _MIB
+
+
+def _sysconf(pages, page_size):
+    def sysconf(name):
+        return {"SC_PHYS_PAGES": pages, "SC_PAGE_SIZE": page_size}[name]
+    return sysconf
+
+
+def test_memory_of_exactly_16_gib_warns(monkeypatch):
+    monkeypatch.setattr(ie.os, "sysconf", _sysconf(16 * _GIB // 16384, 16384))
+    memory = ie.machine_memory()
+    assert memory == {"total_mb": 16384, "warn": True, "reason": ie.MEMORY_REASON}
+
+
+def test_memory_one_page_above_16_gib_does_not_warn(monkeypatch):
+    """Сравнение в байтах: в целых МБ «16 ГиБ + страница» неотличимо от 16 ГиБ."""
+    monkeypatch.setattr(ie.os, "sysconf", _sysconf(16 * _GIB // 16384 + 1, 16384))
+    memory = ie.machine_memory()
+    assert memory == {"total_mb": 16384, "warn": False, "reason": ""}
+
+
+def test_unknown_memory_warns_and_says_so(monkeypatch):
+    monkeypatch.setattr(ie.os, "sysconf", _raise(ValueError("нет SC_PHYS_PAGES")))
+    memory = ie.machine_memory()
+    assert memory["total_mb"] is None and memory["warn"] is True
+    assert memory["reason"].startswith("объём памяти не определён") and ie.MEMORY_REASON in memory["reason"]
+
+
+_M = {True: {"ok": True, "reason": ""}, False: {"ok": False, "reason": "машина: не Apple Silicon"}}
+_D = {True: {"free_mb": 9000, "reclaimable_mb": 0, "need_mb": 1202, "ok": True, "reason": ""},
+      False: {"free_mb": 900, "reclaimable_mb": 0, "need_mb": 1202, "ok": False,
+              "reason": "на томе с папкой данных свободно 900 МБ, установке нужно 1202 МБ — освободите место"}}
+_MEM_OK = {"total_mb": 65536, "warn": False, "reason": ""}
+_MEM_LOW = {"total_mb": 16384, "warn": True, "reason": "мало памяти"}
+_CONFIG_ERROR = {"error": "конфиг не прочитан: битый YAML"}
+
+
+def _engine(backend, missing, custom=False, live="off"):
+    """`engine` плана, как его отдаёт `engine_state`: только поля, которые читает `offer`."""
+    return {"backend": backend, "nemotron_python_set": custom, "ready": missing is None,
+            "ready_reason": None if missing is None else f"нет: {missing}", "missing": missing,
+            "live_mode": live}
+
+
+def _why(code, engine):
+    """Причина по коду строки таблицы задания — по константам модуля."""
+    return {
+        "": "",
+        "machine": _M[False]["reason"],
+        "disk": _D[False]["reason"],
+        "ключ": ie.REASON_INSTALL_CUSTOM,
+        "неизв.": ie.REASON_INSTALL_UNKNOWN.format(backend=engine.get("backend")),
+        "поставлен": ie.REASON_INSTALL_DONE,
+        "не sherpa": ie.REASON_ENABLE_NOT_SHERPA,
+        "не готов": ie.REASON_ENABLE_NOT_READY,
+        "уже sherpa": ie.REASON_DISABLE_SHERPA,
+        "error": _CONFIG_ERROR["error"],
+    }[code]
+
+
+_R = "ready"
+# n, backend (None — битый конфиг), missing (_R — готов), K, M, D, state, причины install/enable/disable
+_TABLE = [
+    (1, "sherpa", "environment", False, True, True, "not_installed", "", "не готов", "уже sherpa"),
+    (2, "sherpa", "environment", False, False, True, "not_installed", "machine", "не готов", "уже sherpa"),
+    (3, "sherpa", "environment", False, True, False, "not_installed", "disk", "не готов", "уже sherpa"),
+    (4, "sherpa", "environment", False, False, False, "not_installed", "machine", "не готов", "уже sherpa"),
+    (5, "sherpa", "weights", False, True, True, "broken", "", "не готов", "уже sherpa"),
+    (6, "sherpa", "interpreter", False, True, True, "broken", "", "не готов", "уже sherpa"),
+    (7, "sherpa", _R, False, True, True, "ready_off", "", "", "уже sherpa"),
+    (8, "sherpa", _R, False, False, True, "ready_off", "machine", "", "уже sherpa"),
+    (9, "nemotron", _R, False, True, True, "enabled", "поставлен", "не sherpa", ""),
+    (10, "nemotron", "environment", False, True, True, "enabled_broken", "", "не sherpa", ""),
+    (11, "nemotron", "weights", False, True, False, "enabled_broken", "disk", "не sherpa", ""),
+    (12, "sherpa", _R, True, True, True, "custom_interpreter", "ключ", "", "уже sherpa"),
+    (13, "sherpa", "interpreter", True, True, True, "custom_interpreter", "ключ", "не готов", "уже sherpa"),
+    (14, "nemotron", _R, True, True, True, "custom_interpreter", "ключ", "не sherpa", ""),
+    (15, "pyannote", "environment", False, True, True, "backend_unknown", "неизв.", "не sherpa", ""),
+    (16, "pyannote", _R, False, True, True, "backend_unknown", "неизв.", "не sherpa", ""),
+    (17, None, None, False, True, True, "config_error", "error", "error", "error"),
+    (18, "sherpa", "weights", True, True, True, "custom_interpreter", "ключ", "не готов", "уже sherpa"),
+    (19, "nemotron", "weights", True, True, True, "custom_interpreter", "ключ", "не sherpa", ""),
+    (20, "nemotron", "interpreter", False, True, True, "enabled_broken", "", "не sherpa", ""),
+    (21, "nemotron", _R, False, False, True, "enabled", "machine", "не sherpa", ""),
+    (22, "nemotron", _R, False, True, False, "enabled", "disk", "не sherpa", ""),
+    (23, "sherpa", _R, False, True, False, "ready_off", "disk", "", "уже sherpa"),
+    (24, "pyannote", _R, True, True, True, "backend_unknown", "ключ", "не sherpa", ""),
+    (25, "pyannote", "environment", False, False, True, "backend_unknown", "machine", "не sherpa", ""),
+    (26, "pyannote", _R, False, True, False, "backend_unknown", "disk", "не sherpa", ""),
+    (27, None, None, False, False, False, "config_error", "error", "error", "error"),
+    (28, "sherpa", _R, True, False, True, "custom_interpreter", "machine", "", "уже sherpa"),
+    (29, "sherpa", _R, True, True, False, "custom_interpreter", "disk", "", "уже sherpa"),
+    (30, "pyannote", "weights", False, True, True, "backend_unknown", "неизв.", "не sherpa", ""),
+    (31, "nemotron", "interpreter", True, True, True, "custom_interpreter", "ключ", "не sherpa", ""),
+    (32, "", "environment", False, True, True, "backend_unknown", "неизв.", "не sherpa", ""),
+]
+
+
+def _state_reason(state, engine):
+    """Причина строки состояния по таблице меток задания."""
+    if state == "config_error":
+        return engine["error"]
+    if state == "backend_unknown":
+        return ie.REASON_STATE_UNKNOWN.format(backend=engine["backend"])
+    if state == "custom_interpreter":
+        return engine["ready_reason"] or ie.REASON_STATE_CUSTOM
+    if state in ("enabled", "ready_off"):
+        return ie.REASON_READY_BY_LAYOUT
+    if state == "not_installed":
+        return ""
+    return engine["ready_reason"]
+
+
+@pytest.mark.parametrize("row", _TABLE, ids=lambda r: f"row{r[0]}")
+def test_offer_follows_the_decision_table(row):
+    n, backend, missing, k, m, d, state, why_install, why_enable, why_disable = row
+    engine = dict(_CONFIG_ERROR) if backend is None else _engine(backend, None if missing == _R else missing, k)
+    got = ie.offer(_M[m], engine, _D[d], _MEM_OK, _READY_SIZES)
+    assert got["state"] == state, n
+    assert got["reason"] == _state_reason(state, engine), n
+    for action, code in (("install", why_install), ("enable", why_enable), ("disable", why_disable)):
+        assert got[action] == {"allowed": code == "", "reason": _why(code, engine)}, (n, action)
+    if backend is None:
+        assert got["warnings"] == []
+
+
+def test_unknown_values_are_named_normalized_and_quoted():
+    """Значение ключа в причинах — после приведения и через `!r`: пустое видно как `''`."""
+    got = ie.offer(_M[True], _engine("", "environment"), _D[True], _MEM_OK, _READY_SIZES)
+    assert "''" in got["reason"] and "''" in got["install"]["reason"]
+    got = ie.offer(_M[True], _engine("pyannote", None), _D[True], _MEM_OK, _READY_SIZES)
+    assert "'pyannote'" in got["reason"] and "'pyannote'" in got["install"]["reason"]
+
+
+def _oracle(machine_ok, disk_ok, engine):
+    """Независимая реализация правила задания: предикаты, порядок причин, таблица меток.
+    Написана заново по тексту задания — не импорт и не копия функций модуля."""
+    backend, ready, k, missing = engine["backend"], engine["ready"], engine["nemotron_python_set"], engine["missing"]
+    known = backend == "sherpa" or backend == "nemotron"
+    install_why = ""
+    for failed, why in ((not machine_ok, _M[False]["reason"]), (not disk_ok, _D[False]["reason"]),
+                        (k, ie.REASON_INSTALL_CUSTOM),
+                        (not known, ie.REASON_INSTALL_UNKNOWN.format(backend=backend)),
+                        (ready and backend == "nemotron", ie.REASON_INSTALL_DONE)):
+        if failed:
+            install_why = why
+            break
+    if backend != "sherpa":
+        enable_why = ie.REASON_ENABLE_NOT_SHERPA
+    elif not ready:
+        enable_why = ie.REASON_ENABLE_NOT_READY
+    else:
+        enable_why = ""
+    disable_why = ie.REASON_DISABLE_SHERPA if backend == "sherpa" else ""
+    if not known:
+        state = "backend_unknown"
+    elif k:
+        state = "custom_interpreter"
+    elif backend == "nemotron":
+        state = "enabled" if ready else "enabled_broken"
+    elif ready:
+        state = "ready_off"
+    elif missing == "environment":
+        state = "not_installed"
+    else:
+        state = "broken"
+    return state, install_why, enable_why, disable_why
+
+
+def _product():
+    for backend in ("sherpa", "nemotron", "pyannote"):
+        for missing in (None, "environment", "interpreter", "weights"):
+            for k in (False, True):
+                # при заданном ключе интерпретатора `engine_interpreter` не отказывает
+                # выбором — «окружение не установлено» с ним не бывает
+                if k and missing == "environment":
+                    continue
+                for m in (False, True):
+                    for d in (False, True):
+                        for warn in (False, True):
+                            yield backend, missing, k, m, d, warn
+
+
+def test_offer_invariants_over_the_whole_product():
+    seen = 0
+    for backend, missing, k, m, d, warn in _product():
+        engine = _engine(backend, missing, k)
+        got = ie.offer(_M[m], engine, _D[d], _MEM_LOW if warn else _MEM_OK, _READY_SIZES)
+        case = (backend, missing, k, m, d, warn)
+        if got["enable"]["allowed"]:
+            assert engine["ready"] and backend == "sherpa", case
+        if got["install"]["allowed"]:
+            assert m and d and not k, case
+        for action in ("install", "enable", "disable"):
+            assert got[action]["allowed"] == (got[action]["reason"] == ""), (case, action)
+        state, install_why, enable_why, disable_why = _oracle(m, d, engine)
+        assert (got["state"], got["install"]["reason"], got["enable"]["reason"], got["disable"]["reason"]) \
+            == (state, install_why, enable_why, disable_why), case
+        assert (got["install"]["allowed"], got["enable"]["allowed"], got["disable"]["allowed"]) \
+            == (install_why == "", enable_why == "", disable_why == ""), case
+        if warn and backend == "nemotron":
+            assert "memory" in got["warnings"], case
+        seen += 1
+    assert seen == 3 * (4 + 3) * 2 * 2 * 2
+
+
+@pytest.mark.parametrize("row", [9, 21, 22])
+def test_memory_warning_stays_visible_when_the_engine_is_on(row):
+    """Строки 9, 21, 22: оба действия ложны, но движок включён — предупреждение видно."""
+    _n, backend, _missing, k, m, d, *_ = _TABLE[row - 1]
+    got = ie.offer(_M[m], _engine(backend, None, k), _D[d], _MEM_LOW, _READY_SIZES)
+    assert not got["install"]["allowed"] and not got["enable"]["allowed"]
+    assert got["warnings"] == ["memory"]
+
+
+def test_memory_warning_follows_the_actions():
+    low = ie.offer(_M[True], _engine("sherpa", "environment"), _D[True], _MEM_LOW, _READY_SIZES)
+    assert low["warnings"] == ["memory"]
+    enable_only = ie.offer(_M[False], _engine("sherpa", None), _D[True], _MEM_LOW, _READY_SIZES)
+    assert enable_only["warnings"] == ["memory"]
+    assert ie.offer(_M[True], _engine("sherpa", "environment"), _D[True], _MEM_OK, _READY_SIZES)["warnings"] == []
+    # ни одно действие недоступно, движок не включён — предупреждать не о чем
+    idle = ie.offer(_M[False], _engine("sherpa", "environment"), _D[True], _MEM_LOW, _READY_SIZES)
+    assert idle["warnings"] == []
+
+
+def test_memory_never_changes_a_decision():
+    for backend, missing, k, m, d, _warn in _product():
+        engine = _engine(backend, missing, k)
+        ok = ie.offer(_M[m], engine, _D[d], _MEM_OK, _READY_SIZES)
+        low = ie.offer(_M[m], engine, _D[d], _MEM_LOW, _READY_SIZES)
+        assert {a: ok[a] for a in ("state", "reason", "install", "enable", "disable")} == \
+            {a: low[a] for a in ("state", "reason", "install", "enable", "disable")}
+
+
+def test_a_missing_voice_set_is_a_warning_only_under_nemotron():
+    sizes = {"environment": 601, "weights": 0, "voice_set": 7}
+    on = ie.offer(_M[True], _engine("nemotron", None), _D[True], _MEM_LOW, sizes)
+    assert on["warnings"] == ["memory", "voice_set_missing"]
+    off = ie.offer(_M[True], _engine("sherpa", None), _D[True], _MEM_OK, sizes)
+    assert off["warnings"] == []
+
+
+@pytest.mark.parametrize("live", ["on", "shadow", "сломано"])
+@pytest.mark.parametrize("backend", ["sherpa", "nemotron"])
+def test_the_live_stream_is_a_warning_and_nothing_else(backend, live):
+    """Живой поток включается своим ключом: кнопка им не управляет, решение не меняется."""
+    quiet = ie.offer(_M[True], _engine(backend, None, live="off"), _D[True], _MEM_OK, _READY_SIZES)
+    loud = ie.offer(_M[True], _engine(backend, None, live=live), _D[True], _MEM_OK, _READY_SIZES)
+    assert quiet["warnings"] == [] and loud["warnings"] == ["live_nemotron"]
+    assert {a: quiet[a] for a in ("state", "reason", "install", "enable", "disable")} == \
+        {a: loud[a] for a in ("state", "reason", "install", "enable", "disable")}
+
+
+def test_a_broken_config_reads_nothing_but_the_error():
+    """Ветка битого конфига: `engine` — только `error`; `KeyError` значил бы лишнее чтение."""
+    got = ie.offer(_M[False], dict(_CONFIG_ERROR), _D[False], _MEM_LOW, _EMPTY_SIZES)
+    assert got["state"] == "config_error" and got["warnings"] == []
+
+
+def ready_engine(root: pathlib.Path) -> None:
+    """Готовый по раскладке движок без сети и без записи сотен МБ: исполняемый
+    интерпретатор, `config.json` с `model_type`, разреженные веса."""
+    python = nem.engine_python(root)
+    if not python.exists():
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("#", encoding="utf-8")
+    python.chmod(0o755)
+    weights = nem.model_dir(root)
+    weights.mkdir(parents=True, exist_ok=True)
+    (weights / "config.json").write_text(json.dumps({"model_type": nem.MODEL_TYPE}), encoding="utf-8")
+    with open(weights / "model.safetensors", "wb") as f:
+        f.truncate(nem.MIN_WEIGHTS_BYTES)
+
+
+@pytest.mark.parametrize("value, state, shown", [
+    ("Sherpa", "ready_off", None),
+    ("off", "ready_off", None),
+    ('" NEMOTRON "', "enabled", None),
+    ('" PyAnnote "', "backend_unknown", "'pyannote'"),
+    ('" "', "backend_unknown", "''"),
+    (None, "ready_off", None),
+])
+def test_plan_offer_sees_the_normalized_key(tmp_path, monkeypatch, capsys, value, state, shown):
+    _main_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(ie, "check_machine", lambda lock: None)   # причина установки — ключ, не машина
+    ready_engine(tmp_path)
+    _user_config(tmp_path, "sufler: {}\n" if value is None else f"sufler:\n  diarize_backend: {value}\n")
+    assert ie.main(["nemotron", "--plan"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    offer = json.loads(lines[0])["offer"]
+    assert offer["state"] == state
+    if shown:
+        assert shown in offer["reason"] and shown in offer["install"]["reason"]

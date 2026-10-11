@@ -253,6 +253,8 @@ the installed environment goes into `engines/nemotron` under the data root.
   environment is always counted in full, because the install rebuilds it every
   time), the network addresses and the licence as one JSON line
   without connecting.
+- **Free space:** about 1.2 GB for a reinstall and about 1.4 GB for a first
+  install; `--plan` prints this in the `disk` field.
 
 ## Mandatory explicit num_ctx
 
