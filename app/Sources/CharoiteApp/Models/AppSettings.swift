@@ -583,8 +583,19 @@ enum AppSettings {
     @discardableResult
     static func setConfigFlag(_ key: String, _ value: Bool) -> Bool {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
-        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8),
+              let out = settingFlag(key, value, in: text) else { return false }
+        do {
+            try out.write(to: cfg, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
 
+    /// Ядро `setConfigFlag` без файла — под тест. `nil` — ключа нет и
+    /// вставить его некуда: файл не трогаем.
+    static func settingFlag(_ key: String, _ value: Bool, in text: String) -> String? {
         var out: [String] = []
         var done = false
         for line in text.components(separatedBy: "\n") {
@@ -609,7 +620,7 @@ enum AppSettings {
             // демон не стартует.
             guard let start = out.firstIndex(where: {
                 $0.trimmingCharacters(in: .whitespaces).hasPrefix("sufler:")
-            }) else { return false }
+            }) else { return nil }
             var end = out.index(after: start)
             // Отступ берём у первого же ребёнка секции, а не из литерала:
             // конфиг документирован под ручную правку, и у секции с детьми
@@ -631,11 +642,6 @@ enum AppSettings {
             out.insert("\(indent)\(key): \(value)", at: end)
             done = true
         }
-        do {
-            try out.joined(separator: "\n").write(to: cfg, atomically: true, encoding: .utf8)
-            return true
-        } catch {
-            return false
-        }
+        return out.joined(separator: "\n")
     }
 }
