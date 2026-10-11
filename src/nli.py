@@ -49,41 +49,82 @@ _lock = threading.Lock()
 _session = None
 _tokenizer = None
 _failed = False
+_why = ""             # причина, по которой не собралась сессия (_failed)
 _entail_index = None
-
-
-def is_available() -> bool:
-    """Модель на диске и пакеты на месте (без загрузки самой модели)."""
-    if _failed:
-        return False
-    if not (_dir() / "model.onnx").exists() or not (_dir() / "tokenizer.json").exists() or not (_dir() / "config.json").exists():
-        return False
-    try:
-        import onnxruntime  # noqa: F401
-        import tokenizers  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
+_cfg_cache = None     # ((путь, mtime_ns, размер), причина отказа или "")
 
 
 def _label_index(path: pathlib.Path) -> int:
     """Не угадывать смысл логита: нужен однозначный контракт трёх классов."""
     meta = json.loads(path.read_text(encoding="utf-8"))
-    labels = meta.get("id2label")
+    labels = meta.get("id2label") if isinstance(meta, dict) else None
     if not isinstance(labels, dict) or set(labels) != {"0", "1", "2"}:
-        raise ValueError("NLI config.json: нужны id2label с индексами 0, 1, 2")
+        raise ValueError("нужен id2label с индексами 0, 1, 2")
     names = [labels[str(i)] for i in range(3)]
     if any(not isinstance(name, str) for name in names):
-        raise ValueError("NLI config.json: метки должны быть строками")
+        raise ValueError("метки id2label должны быть строками")
     names = [name.strip().lower() for name in names]
     if set(names) != {"entailment", "neutral", "contradiction"}:
-        raise ValueError("NLI config.json: неоднозначный порядок классов")
+        raise ValueError("метки id2label не из entailment/neutral/contradiction: "
+                         f"{[labels[str(i)] for i in range(3)]}")
     return names.index("entailment")
 
 
+def _problem() -> str:
+    """Дешёвая проверка файлов модели; пустая строка — файлы годны.
+
+    config.json разбирается здесь, а не только при загрузке: иначе неверные
+    метки всплывали бы лишь после чтения ядер и пробуждения эмбеддера, и с
+    чужой причиной. Разбор кэшируется по mtime — is_available() зовут на
+    каждую пару тезисов.
+    """
+    global _cfg_cache
+    d = _dir()
+    for name in ("model.onnx", "tokenizer.json"):
+        if not (d / name).exists():
+            return f"нет файла {name} в {d}"
+    cfg = d / "config.json"
+    try:
+        st = cfg.stat()
+    except OSError:
+        return f"нет config.json в {d}: порядок классов не проверить (см. docs/MODELS.md)"
+    key = (str(cfg), st.st_mtime_ns, st.st_size)
+    cached = _cfg_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        _label_index(cfg)
+        why = ""
+    except (OSError, ValueError) as e:  # ValueError покрывает и битый JSON
+        why = f"{cfg}: {e} (см. docs/MODELS.md)"
+    _cfg_cache = (key, why)
+    return why
+
+
+def _packages() -> str:
+    try:
+        import onnxruntime  # noqa: F401
+        import tokenizers  # noqa: F401
+    except ImportError:
+        return "нет onnxruntime/tokenizers"
+    return ""
+
+
+def _refusal() -> str:
+    """Почему судить нечем; пустая строка — файлы и пакеты на месте."""
+    if _failed:
+        return _why
+    return _problem() or _packages()
+
+
+def is_available() -> bool:
+    """Модель (model.onnx, tokenizer.json, config.json с годными метками) на
+    диске и пакеты на месте — без загрузки самой модели."""
+    return not _refusal()
+
+
 def _load():
-    global _session, _tokenizer, _failed, _entail_index
+    global _session, _tokenizer, _failed, _why, _entail_index
     with _lock:
         if _session is not None or _failed:
             return
@@ -99,8 +140,12 @@ def _load():
             opts.intra_op_num_threads = 2
             _session = ort.InferenceSession(
                 str(_dir() / "model.onnx"), opts, providers=["CPUExecutionProvider"])
-        except Exception:  # noqa: BLE001 — любая поломка сборки сессии = «судья не пришёл»: ready() и _entail говорят это честно
+        # любая поломка сборки сессии = «судья не пришёл»: ready() и _entail
+        # говорят это честно, с причиной
+        except Exception as e:  # noqa: BLE001
+            _why = f"ONNX-сессия не собралась: {type(e).__name__}: {e}"
             _failed = True
+            print(f"NLI: {_why}", flush=True)
 
 
 def ready() -> bool:
@@ -117,7 +162,11 @@ def ready() -> bool:
 
 
 def entail_prob(premise: str, hypothesis: str) -> float:
-    """P(entailment): насколько из premise СЛЕДУЕТ hypothesis. 0.0 если слой недоступен."""
+    """P(entailment): насколько из premise СЛЕДУЕТ hypothesis.
+
+    0.0 — если нет файлов/пакетов или сессия не собралась. Выход модели не из
+    трёх конечных логитов — SeamTransportError.
+    """
     if not is_available():
         return 0.0
     _load()
@@ -180,9 +229,9 @@ def judge() -> Judge:
     возвращает в фокус следующего прогона те пары, на которых судья отказал,
     и не возвращает те, которые честно разошлись.
     """
-    why = "" if is_available() else (
-        f"NLI-модель не найдена в {_dir()} или нет onnxruntime/tokenizers — "
-        "смысловой дедуп ядер выключен")
+    why = _refusal()
+    if why:
+        why = f"{why} — смысловой дедуп ядер выключен"
 
     def _ready() -> bool:
         if not ready():
@@ -193,11 +242,12 @@ def judge() -> Judge:
             return False
 
     def _entail(premise: str, hypothesis: str) -> float:
-        if not is_available():
-            raise SeamTransportError("судья исчез посреди прогона: модель или пакеты пропали")
-        _load()
-        if _session is None:
-            raise SeamTransportError("судья не поднялся: ONNX-сессия не собралась")
+        why = _refusal()
+        if not why:
+            _load()
+            why = "" if _session is not None else (_refusal() or "ONNX-сессия не собралась")
+        if why:
+            raise SeamTransportError(f"NLI-судья отказал: {why}")
         return entail_prob(premise, hypothesis)
 
     return Judge(_ready, _entail, why)

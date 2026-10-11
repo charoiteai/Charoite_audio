@@ -301,6 +301,10 @@ fallback (below).
 Nothing downloads it. Put `model.onnx`, `tokenizer.json` and `config.json`
 into `models/nli/` under the data root, for example with
 `optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`.
+`config.json` must carry `id2label` with exactly `entailment`, `neutral` and
+`contradiction` on indices 0, 1, 2 in any order: the entailment logit is read
+from it, never guessed. A missing `config.json` or generic `LABEL_0…` names
+switch the judge off with that reason in the log, as if the model were absent.
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
 

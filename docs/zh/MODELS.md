@@ -237,6 +237,10 @@ nemotron` 从固定修订以 sha256 校验下载到 `models/diar/nemotron`;安�
 没有任何脚本会下载它。请把 `model.onnx`、`tokenizer.json` 和 `config.json`
 放进数据根目录下的 `models/nli/`，例如：
 `optimum-cli export onnx --model MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 models/nli/`。
+`config.json` 必须带 `id2label`，在索引 0、1、2 上恰好是 `entailment`、
+`neutral`、`contradiction`（顺序不限）：蕴含的 logit 按它读取，绝不猜测。缺少
+`config.json` 或标签是通用的 `LABEL_0…` 时，裁判会关闭并在日志里写明原因，
+效果同没有模型。
 没有它时，要点不做语义去重，核心复核不会运行（会在自己的日志里说明原因）；
 其他一切照常。
 

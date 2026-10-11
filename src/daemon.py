@@ -1637,6 +1637,7 @@ def main():
         import difflib as _dl
 
         import nli
+        from charoite_graph.model_seam import SeamTransportError
         if not nli.is_available():
             return False
         text = thesis_rules.strip_mark(line)
@@ -1650,7 +1651,14 @@ def main():
                 continue  # совсем далёкие пары NLI не беспокоят
             # 0.8 — осторожный режим: лучше редкий повтор в ленте, чем
             # потерянный тезис с новым фактом
-            if nli.is_duplicate(text, prev, threshold=0.8):
+            try:
+                dup = nli.is_duplicate(text, prev, threshold=0.8)
+            except SeamTransportError as e:
+                # судья отказал — значит, не дубль: тезис в ленту, а не
+                # исключение, которое уронит хвост тезисов этого тика
+                print(f"тезис-дедуп: NLI отказал ({e}) — тезис оставлен", flush=True)
+                return False
+            if dup:
                 print(f"тезис-дубль отсеян: «{text[:80]}» ≈ «{prev[:80]}»", flush=True)
                 return True
         recent_theses.append(text)
