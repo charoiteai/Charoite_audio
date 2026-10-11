@@ -42,7 +42,8 @@ final class ModelPullService: ObservableObject {
     static let shared = ModelPullService()
 
     /// model → строка прогресса («34 %», «распаковка…»).
-    @Published private(set) var progress: [String: String] = [:]
+    /// Сеттер внутренний: тест занятости ставит ключ набора голосов руками.
+    @Published var progress: [String: String] = [:]
     /// model → текст ошибки последней попытки.
     @Published private(set) var failed: [String: String] = [:]
 
@@ -85,6 +86,12 @@ final class ModelPullService: ObservableObject {
     func pullDiarization() {
         let key = Self.diarizationKey
         guard progress[key] == nil else { return }
+        // Проверка в методе, а не только на кнопке: зовут два места напрямую.
+        // Отказ не молчит — иначе нажатие читается как «кнопка не работает».
+        guard !EngineInstallActivity.shared.busy else {
+            failed[key] = EngineInstallActivity.busyText
+            return
+        }
         progress[key] = L.t("качаю модель голосов…", "pulling voice model…", "正在拉取声纹模型…")
         failed[key] = nil
         let root = AppSettings.charoiteRoot
@@ -179,6 +186,7 @@ final class ModelPullService: ObservableObject {
 struct DiarizationInstallButton: View {
     var alignment: HorizontalAlignment = .leading
     @ObservedObject private var pulls = ModelPullService.shared
+    @ObservedObject private var activity = EngineInstallActivity.shared
 
     var body: some View {
         VStack(alignment: alignment, spacing: 4) {
@@ -202,8 +210,16 @@ struct DiarizationInstallButton: View {
                     .foregroundStyle(.secondary)
             }
         } else {
-            Button(Self.title) { pulls.pullDiarization() }
-                .charoite(.regular, .s)
+            HStack(spacing: 6) {
+                Button(Self.title) { pulls.pullDiarization() }
+                    .charoite(.regular, .s)
+                    .disabled(activity.busy)
+                if activity.busy {
+                    Text(EngineInstallActivity.busyText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 

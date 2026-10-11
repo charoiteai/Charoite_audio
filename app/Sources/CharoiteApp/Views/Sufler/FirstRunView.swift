@@ -16,6 +16,7 @@ struct FirstRunView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var readiness = SetupReadinessService.shared
     @ObservedObject private var pulls = ModelPullService.shared
+    @ObservedObject private var installs = EngineInstallActivity.shared
     @ObservedObject private var runtime = OllamaRuntimeService.shared
     @State private var requestingMicrophone = false
     let onStart: () -> Void
@@ -311,6 +312,9 @@ struct FirstRunView: View {
             if !ModelPullService.diarizationInstalled {
                 voiceInstallRow
             }
+            // Второй движок разметки — по желанию; Enter остаётся у «Начать
+            // слушать встречу», у кнопок Nemotron своего сочетания нет.
+            NemotronEngineControl()
         }
     }
 
@@ -327,8 +331,11 @@ struct FirstRunView: View {
                                "Tell speakers apart",
                                "区分不同说话人")) { pulls.pullDiarization() }
                         .charoite(.regular, .m)
-                    Text(SetupReadinessPolicy.diarizationInstallCaption(
-                        embeddings: got.embeddings, segmentation: got.segmentation))
+                        .disabled(installs.busy)
+                    Text(installs.busy
+                         ? EngineInstallActivity.busyText
+                         : SetupReadinessPolicy.diarizationInstallCaption(
+                            embeddings: got.embeddings, segmentation: got.segmentation))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

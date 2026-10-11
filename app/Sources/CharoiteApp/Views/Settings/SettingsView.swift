@@ -210,6 +210,16 @@ struct SettingsView: View {
                          "放入此处的文件会成为图谱中的一场会议：逐字稿、纪要、任务、节点。处理完的移入 done/，并在 audio.import_keep_days（默认 2 天）后与归档中的音频源一起删除；失败的保留可见。队列与期限见“外部录音”标签页。全部本地。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section(L.t("Разметка голосов", "Voice labelling", "说话人标注")) {
+                if !ModelPullService.diarizationInstalled {
+                    DiarizationInstallButton()
+                }
+                NemotronEngineControl()
+                Text(L.t("Разметка решает, кто из собеседников что сказал. После встречи её может делать Nemotron — второй движок, точнее на разборе; sherpa остаётся запасным и работает, если Nemotron выключен или не готов. Локально.",
+                         "Voice labelling decides which participant said what. After the meeting it can be done by Nemotron, a second, more accurate engine; sherpa stays as the fallback when Nemotron is off or not ready. Locally.",
+                         "说话人标注决定哪位参与者说了什么。会后可由 Nemotron（第二个、更准确的引擎）完成；Nemotron 关闭或未就绪时，sherpa 作为备用。全部本地。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section(L.t("Календарь", "Calendar", "日历")) {
                 Toggle(
                     L.t("Запускать Charoite при входе",
