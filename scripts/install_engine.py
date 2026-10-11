@@ -61,6 +61,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -77,7 +78,7 @@ sys.dont_write_bytecode = True
 # Вставки — канон путей и модуль движка (src), загрузчик весов (scripts).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from charoite_paths import code_root, harden_umask, name_data_root_or_exit  # noqa: E402
+from charoite_paths import code_root, free_bytes, harden_umask, name_data_root_or_exit  # noqa: E402
 import busy_signals  # noqa: E402
 import config_loader  # noqa: E402
 import diarize_nemotron  # noqa: E402
@@ -118,6 +119,29 @@ PROBE_TIMEOUT_S = 180.0
 #: Размер окружения движка, МБ. Замер 05.10.2026: `du -sm` окружения, поставленного
 #: этим установщиком 29.09.2026 на Apple Silicon.
 ENVIRONMENT_MB = 601
+
+#: Гейт диска установки (№622 ч. 2) — что установка ДОБАВИТ на томе корня данных в
+#: пике: новая копия окружения `.new-*` (`ENVIRONMENT_MB`), временные колёса pip
+#: (`PIP_TEMP_MB`), недостающие веса и набор голосов (`sizes_mb`). Прежнее окружение
+#: не считается: оно уже занимает место, а не просит свободного. Гейт считает полную
+#: переустановку — окружение пересобирается всегда, даже когда чинить нужно только
+#: веса. Итог: переустановка при готовых весах и наборе — 1202 МБ, первая установка —
+#: 1440 МБ.
+#:
+#: Веса качаются в `.part` рядом с целью и переименовываются — второй копии нет.
+#: Набор голосов: архив сегментации плюс распакованная копия, до двух размеров
+#: (≈ +7–14 МБ), запас покрывает. Мера — по тому `engines/`: веса лежат в
+#: `root/models/`, и при `models/` симлинком на другой том проверяется не тот том
+#: (группировка слагаемых по `st_dev` — №640).
+#:
+#: Колёса pip — верхняя граница без замера: pip без кэша держит скачанные колёса во
+#: временном каталоге до конца своей команды, а сжатое не больше установленного.
+#: Лежат они в `TMPDIR` процесса, а гейт меряет том корня данных. `TMPDIR` на том же
+#: томе — гейт верен; на другом и большем — гейт перестраховывается не больше чем на
+#: `PIP_TEMP_MB`; на другом и меньшем — гейт недопроверяет: pip упадёт посреди
+#: установки, а прежнее окружение останется целым. Перенос `TMPDIR` в
+#: `staging.parent` — №640.
+PIP_TEMP_MB = ENVIRONMENT_MB
 
 #: Признак от приложения: установщик запускают лидером своей группы процессов,
 #: чтобы SIGKILL группе погасил и pip. Без переменной группу не меняем — Ctrl-C
@@ -444,39 +468,118 @@ def plan(name: str, root: pathlib.Path) -> int:
         engine: dict = {"error": f"конфиг не прочитан: {e}"}
     else:
         engine = diarize_nemotron.engine_state(root, cfg)
+    sizes = sizes_mb(spec, root)
     payload = {
         "machine": machine_fitness(spec.lock),
         "network": list(NETWORK),
         "license": {"name": get_models.NEMOTRON_LICENSE[0], "url": get_models.NEMOTRON_LICENSE[1]},
-        "sizes_mb": {
-            # Числа — сколько займёт на диске то, что поставит установка (№622 B2).
-            # Для весов и набора голосов это и объём загрузки, а для окружения
-            # загрузка меньше: из сети идут только колёса лока, интерпретатор
-            # копируется локально, так что `du -sm` окружения — не трафик.
-            #
-            # Набор голосов — по проверке «только если его нет»: блок сети помечает
-            # его так же, и план обязан считать так же, иначе кнопка приложения
-            # покажет загрузку, которой не будет.
-            #
-            # Окружение — всегда полный размер на диске: установка пересобирает его
-            # всегда (`copy_interpreter` и `pip_install` идут без проверки «уже
-            # стоит»), и проверки «на месте», которой 0 означал бы «ставить нечего»,
-            # у неё нет. Ноль здесь обещал бы кнопке 0 МБ, а установка снова
-            # копировала бы интерпретатор и ставила пакеты.
-            "environment": ENVIRONMENT_MB,
-            # Веса — по той же проверке, по которой их качает `fetch_nemotron`
-            # (сумма каждого файла), а не по структуре каталога: `check_model_dir`
-            # пропустила бы битый `model.safetensors` при правдоподобном
-            # `config.json`, и план обещал бы 0, а установка тянула 190 МБ.
-            "weights": sum(size_mb for _n, _u, size_mb, _s
-                           in get_models.nemotron_missing(spec.weights(root))),
-            "voice_set": sum(model.size_mb for dest, min_bytes, model in _voice_targets(root)
-                             if get_models.check(dest, min_bytes=min_bytes) is not None),
-        },
+        "sizes_mb": sizes,
         "engine": engine,
+        "disk": disk_need(root, sizes),
     }
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def sizes_mb(spec: EngineSpec, root: pathlib.Path) -> dict:
+    """Сколько займёт на диске то, что поставит установка, — одно определение для
+    `--plan` и гейта диска в `install`.
+
+    Читает веса ради суммы (секунды: `_digest` по каждому файлу,
+    `get_models.py:196–203`), отказ по диску наступает после."""
+    return {
+        # Числа — сколько займёт на диске то, что поставит установка (№622 B2).
+        # Для весов и набора голосов это и объём загрузки, а для окружения
+        # загрузка меньше: из сети идут только колёса лока, интерпретатор
+        # копируется локально, так что `du -sm` окружения — не трафик.
+        #
+        # Набор голосов — по проверке «только если его нет»: блок сети помечает
+        # его так же, и план обязан считать так же, иначе кнопка приложения
+        # покажет загрузку, которой не будет.
+        #
+        # Окружение — всегда полный размер на диске: установка пересобирает его
+        # всегда (`copy_interpreter` и `pip_install` идут без проверки «уже
+        # стоит»), и проверки «на месте», которой 0 означал бы «ставить нечего»,
+        # у неё нет. Ноль здесь обещал бы кнопке 0 МБ, а установка снова
+        # копировала бы интерпретатор и ставила пакеты.
+        "environment": ENVIRONMENT_MB,
+        # Веса — по той же проверке, по которой их качает `fetch_nemotron`
+        # (сумма каждого файла), а не по структуре каталога: `check_model_dir`
+        # пропустила бы битый `model.safetensors` при правдоподобном
+        # `config.json`, и план обещал бы 0, а установка тянула 190 МБ.
+        "weights": sum(size_mb for _n, _u, size_mb, _s
+                       in get_models.nemotron_missing(spec.weights(root))),
+        "voice_set": sum(model.size_mb for dest, min_bytes, model in _voice_targets(root)
+                         if get_models.check(dest, min_bytes=min_bytes) is not None),
+    }
+
+
+_MIB = 1024 * 1024
+
+
+def _tree_bytes(path: pathlib.Path) -> int:
+    """Размер дерева по `lstat`, без перехода по ссылкам. Ошибка чтения одного файла —
+    ноль за файл, а не исключение: оценка не смеет ронять `--plan`."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0
+    if not stat.S_ISDIR(st.st_mode):
+        return st.st_size
+    total = 0
+    for top, dirs, files in os.walk(path, onerror=lambda _e: None):
+        for name in dirs + files:
+            try:
+                st = os.lstat(os.path.join(top, name))
+            except OSError:
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                total += st.st_size
+    return total
+
+
+def reclaimable_mb(home: pathlib.Path) -> int:
+    """Сколько МБ уберёт `sweep`: все `.<имя>.new-*` и `.<имя>.old-*` при живом `home`
+    (без него `sweep` возвращает `.old-*` на место, а не удаляет).
+
+    Оценка без замка: `--plan` замок установки не берёт и посчитает `.new-*` живой
+    соседней установки как освобождаемое; проба замка — №640. Без этой оценки 600 МБ
+    остатков после SIGKILL по сроку держали бы гейт `--plan` закрытым, а `sweep`,
+    который их убирает, зовёт только установка."""
+    leftovers = list(home.parent.glob(f".{home.name}.new-*"))
+    if home.exists():
+        leftovers += home.parent.glob(f".{home.name}.old-*")
+    return sum(_tree_bytes(p) for p in leftovers) // _MIB
+
+
+def _existing_ancestor(path: pathlib.Path) -> pathlib.Path:
+    """Ближайший существующий предок: `free_bytes` на несуществующем пути бросает
+    `FileNotFoundError`, а у свежего корня данных ещё нет `engines/`."""
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    return path
+
+
+def disk_need(root: pathlib.Path, sizes: dict) -> dict:
+    """Хватит ли места на томе `engines/` для установки — поле `disk` у `--plan` и
+    гейт `install`. Слагаемые и их оговорки — у `PIP_TEMP_MB`.
+
+    `ok` — свободное плюс освобождаемое `sweep` не меньше нужного. Мера свободного —
+    `free_bytes`, одна на проект. Если она не сработала (`OSError`), гейт открыт:
+    `free_mb` — null, причина «не измерено». На корне, где мера не работает,
+    установка упадёт и сама, а ложный запрет хуже."""
+    home = diarize_nemotron.engine_dir(root)
+    need = sizes["environment"] + PIP_TEMP_MB + sizes["weights"] + sizes["voice_set"]
+    reclaim = reclaimable_mb(home)
+    try:
+        free = free_bytes(_existing_ancestor(home)) // _MIB
+    except OSError as e:
+        return {"free_mb": None, "reclaimable_mb": reclaim, "need_mb": need, "ok": True,
+                "reason": f"свободное место не измерено: {e}"}
+    ok = free + reclaim >= need
+    reason = "" if ok else (f"на томе с папкой данных свободно {free} МБ, установке нужно {need} МБ — "
+                            "освободите место")
+    return {"free_mb": free, "reclaimable_mb": reclaim, "need_mb": need, "ok": ok, "reason": reason}
 
 
 def _voice_targets(root: pathlib.Path) -> tuple[tuple[pathlib.Path, int, object], ...]:
@@ -529,6 +632,14 @@ def install(name: str, root: pathlib.Path) -> int:
     home.parent.mkdir(parents=True, exist_ok=True)
     with one_install(home):
         sweep(home)
+        # Гейт диска — после уборки остатков (место уже освобождено) и до записи
+        # окружения, весов и набора голосов: к этому мигу созданы только каталог
+        # `engines/` и замок.
+        disk = disk_need(root, sizes_mb(spec, root))
+        if not disk["ok"]:
+            raise Refused(disk["reason"])
+        if disk["free_mb"] is None:
+            print(disk["reason"])
         staging = home.with_name(f".{home.name}.new-{os.getpid()}")
         print(f"ставлю движок {name} в {home}\nсеть:")
         for line in NETWORK:

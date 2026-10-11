@@ -42,6 +42,14 @@ def _reset_swap_flag():
     ie._SWAP_COMMITTED = False
 
 
+@pytest.fixture(autouse=True)
+def _roomy_disk(monkeypatch):
+    """Свободное место — не свойство машины, на которой идёт прогон: гейт диска
+    установки (`disk_need`) по умолчанию видит 1 ТБ. Тесты гейта подменяют
+    `ie.free_bytes` своим значением поверх этого."""
+    monkeypatch.setattr(ie, "free_bytes", lambda _path: 1 << 40, raising=False)
+
+
 def _raise(exc):
     """Шаг, который падает заданным исключением — подмена install/check в main."""
     def step(*_a, **_k):
@@ -1320,3 +1328,143 @@ class TestTheCommitFlagIsResetByMain:
         finally:
             for s, handler in previous.items():
                 signal.signal(s, handler)
+
+
+# ---- Гейт диска установки (№622 ч. 2, правка 1) -------------------------------
+
+_MIB = 1024 * 1024
+
+
+def _free(mb):
+    """Подмена `ie.free_bytes`: «свободно `mb` МБ» и путь, о котором спросили."""
+    asked = []
+
+    def free_bytes(path):
+        asked.append(pathlib.Path(path))
+        return mb * _MIB
+    return free_bytes, asked
+
+
+def _sparse(path: pathlib.Path, mb: int) -> pathlib.Path:
+    """Файл нужного размера без записи сотен МБ — разреженный, через `truncate`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.truncate(mb * _MIB)
+    return path
+
+
+_EMPTY_SIZES = {"environment": 601, "weights": 191, "voice_set": 47}
+_READY_SIZES = {"environment": 601, "weights": 0, "voice_set": 0}
+
+
+def test_plan_sizes_on_an_empty_root_are_pinned(tmp_path, monkeypatch, capsys):
+    """Пин чисел, от которых считается гейт: окружение 601, веса 191 (1 + 190), набор 47."""
+    _main_root(tmp_path, monkeypatch)
+    assert ie.main(["nemotron", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out)["sizes_mb"] == _EMPTY_SIZES
+
+
+def test_disk_need_counts_a_full_reinstall_without_the_old_env(tmp_path, monkeypatch):
+    """Нужно = новая копия окружения + колёса pip + недостающие веса и набор. Прежнее
+    окружение не считается: оно уже занимает место, а не просит свободного."""
+    free, _ = _free(10_000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    first = ie.disk_need(tmp_path, _EMPTY_SIZES)
+    assert first["need_mb"] == 2 * ie.ENVIRONMENT_MB + _EMPTY_SIZES["weights"] + _EMPTY_SIZES["voice_set"] == 1440
+    _old_home(tmp_path)
+    again = ie.disk_need(tmp_path, _READY_SIZES)
+    assert again["need_mb"] == 1202
+    assert again == {"free_mb": 10_000, "reclaimable_mb": 0, "need_mb": 1202, "ok": True, "reason": ""}
+
+
+def test_disk_need_refuses_a_tight_volume_with_both_numbers(tmp_path, monkeypatch):
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["ok"] is False and disk["free_mb"] == 1000
+    assert "1000 МБ" in disk["reason"] and "1202 МБ" in disk["reason"]
+
+
+def test_leftovers_that_sweep_removes_count_as_free(tmp_path, monkeypatch):
+    """`.new-*` после SIGKILL по сроку — 600 МБ мусора; убирает его `sweep` установки,
+    и гейт `--plan` считает его освобождаемым, а не держит кнопку закрытой."""
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    home = nem.engine_dir(tmp_path)
+    _sparse(home.with_name(".nemotron.new-123") / "python" / "lib.so", 300)
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["reclaimable_mb"] == 300
+    assert disk == {"free_mb": 1000, "reclaimable_mb": 300, "need_mb": 1202, "ok": True, "reason": ""}
+
+
+def test_an_old_env_counts_only_when_sweep_would_remove_it(tmp_path, monkeypatch):
+    """`.old-*` при пустом месте `home` `sweep` не удаляет, а возвращает на место —
+    тогда оно не освобождаемое."""
+    home = nem.engine_dir(tmp_path)
+    _sparse(home.with_name(".nemotron.old-5") / "f", 100)
+    assert ie.reclaimable_mb(home) == 0
+    home.mkdir()
+    assert ie.reclaimable_mb(home) == 100
+
+
+def test_an_unmeasured_volume_keeps_the_gate_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(ie, "free_bytes", _raise(OSError("statfs: нет")))
+    disk = ie.disk_need(tmp_path, _READY_SIZES)
+    assert disk["free_mb"] is None and disk["ok"] is True
+    assert disk["reason"].startswith("свободное место не измерено")
+
+
+def test_the_gate_measures_from_the_nearest_existing_ancestor(tmp_path, monkeypatch):
+    """Корень без `engines/`: мера зовётся от существующего предка, `FileNotFoundError`
+    настоящей `free_bytes` не всплывает."""
+    import charoite_paths
+    asked = []
+
+    def real(path):
+        asked.append(pathlib.Path(path))
+        return charoite_paths.free_bytes(path)
+    monkeypatch.setattr(ie, "free_bytes", real)
+    root = tmp_path / "ещё" / "нет"
+    disk = ie.disk_need(root, _READY_SIZES)
+    assert isinstance(disk["free_mb"], int) and not disk["reason"].startswith("свободное место не измерено")
+    assert asked == [tmp_path]
+
+
+def test_install_refuses_a_tight_disk_before_writing_anything(tmp_path, monkeypatch, capsys):
+    """Отказ по диску — код 1 до записи окружения, весов и набора голосов: на свежем
+    корне есть только каталог `engines/` с замком."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, events)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: events.append("voice"))
+    _main_root(tmp_path, monkeypatch)
+    free, _ = _free(1000)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    assert ie.main(["nemotron"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("не поставлено:") and "свободно 1000 МБ" in err and "1440 МБ" in err
+    assert sorted(p.name for p in nem.engine_dir(tmp_path).parent.iterdir()) == [".nemotron.install.lock"]
+    assert not nem.model_dir(tmp_path).exists()
+    assert events == []
+
+
+def test_the_install_gate_runs_after_the_sweep(tmp_path, monkeypatch):
+    """Гейт — после `sweep`: остатки уже убраны, считается настоящее свободное место."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, [])
+    free, _ = _free(1440)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    leftover = _sparse(nem.engine_dir(tmp_path).with_name(".nemotron.new-123") / "f", 300).parent
+    real_sweep, real_need = ie.sweep, ie.disk_need
+    monkeypatch.setattr(ie, "sweep", lambda home: (events.append("sweep"), real_sweep(home))[1])
+    monkeypatch.setattr(ie, "disk_need", lambda root, sizes: (events.append("disk"), real_need(root, sizes))[1])
+    assert ie.install("nemotron", tmp_path) == 0
+    assert events == ["sweep", "disk"]
+    assert not leftover.exists()
+
+
+def test_an_unmeasured_disk_does_not_stop_the_install(tmp_path, monkeypatch, capsys):
+    _mocked_steps(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(ie, "free_bytes", _raise(OSError("statfs: нет")))
+    assert ie.install("nemotron", tmp_path) == 0
+    assert "свободное место не измерено" in capsys.readouterr().out
+
