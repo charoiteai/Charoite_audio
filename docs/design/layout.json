@@ -144,7 +144,7 @@
     },
     "nli": {
       "layer": "llm",
-      "why": "ONNX-инференс NLI-модели; читают tier3 и daemon"
+      "why": "ONNX-инференс NLI-модели; читают tier3, daemon и scripts/doctor.py (годность — refusal(), проба — judge())"
     },
     "decision_gate": {
       "layer": "llm",

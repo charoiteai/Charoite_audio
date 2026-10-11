@@ -286,7 +286,9 @@ def live_waits(j: Journal) -> dict:
 def sources(j: Journal) -> dict:
     """Режим `on` (журнал v2): чем разложены чанки. Доля фолбэков — чанки, разложенные
     трекером, с причинами; ожидание метки — только у дождавшихся (`labeled`), фолбэки —
-    отдельной долей: время до «сдался» не время метки. Сверка каналов — доля кусков потока
+    отдельной долей: время до «сдался» не время метки. `wait_all_s` — время
+    всех решений, включая отказ; `wait_fallback_s` — время резервных исходов.
+    Это ожидание решения потока, а не полный срок STT. Сверка каналов — доля кусков потока
     без номера сверки (их эхо фильтр не видит) и доля, чей голос трекера уже был связан с
     той же меткой потока (устойчивость номера сверки)."""
     waited = [c for c in j.chunks if c.get("source") == live_nemotron.SOURCE_STREAM
@@ -298,10 +300,15 @@ def sources(j: Journal) -> dict:
     no_recon = sum(int(c.get("no_recon", 0)) for c in waited)
     agree = sum(int(c.get("recon_agree", 0)) for c in waited)
     waits = [float(c["wait_s"]) for c in waited if c["outcome"] == live_nemotron.LABELED]
+    all_waits = [float(c["wait_s"]) for c in waited]
+    fallback_waits = [float(c["wait_s"]) for c in tracker]
     return {"n": len(waited),
             "fallback_share": round(len(tracker) / len(waited), 4),
             "fallback_reasons": dict(collections.Counter(c.get("fallback", "?") for c in tracker)),
             "wait_labeled_s": quantiles(waits),
+            "wait_all_s": quantiles(all_waits),
+            "wait_all_share": share_over(all_waits),
+            "wait_fallback_s": quantiles(fallback_waits),
             "stream_pieces": pieces,
             "no_recon_share": round(no_recon / pieces, 4) if pieces else None,
             "recon_agree_share": round(agree / (pieces - no_recon), 4) if pieces > no_recon else None,
@@ -478,6 +485,32 @@ def coverage(m: dict, *, min_s: float = MIN_VOICE_S) -> dict[str, float]:
     return out
 
 
+def speech_coverage(hyp: list[Interval], reference: list[Interval], *, total: float) -> dict:
+    """Покрытие речи любыми метками, без порога длительности голоса.
+
+    Общие секунды — объединение интервалов, а каждый голос считается отдельно:
+    два одновременно говорящих имеют полные секунды в своих строках. Наличие
+    метки не доказывает правильную личность — её оценивают DER/чистота.
+    """
+    def measured(ref: list[Interval]) -> tuple[dict, float]:
+        matrix = overlap_matrix(hyp, ref, lo=0.0, hi=total)
+        covered = sum(v for (p, q), v in matrix.items() if p != NONE and q != NONE)
+        missed = sum(v for (p, q), v in matrix.items() if p == NONE and q != NONE)
+        extra = sum(v for (p, q), v in matrix.items() if p != NONE and q == NONE)
+        seconds = covered + missed
+        return {"reference_s": round(seconds, 3), "covered_s": round(covered, 3),
+                "missed_s": round(missed, 3),
+                "coverage": round(covered / seconds, 4) if seconds else None}, extra
+
+    result, extra = measured(reference)
+    result["extra_s"] = round(extra, 3)
+    by_voice: dict[str, list[Interval]] = collections.defaultdict(list)
+    for segment in reference:
+        by_voice[segment[2]].append(segment)
+    result["voices"] = {voice: measured(segments)[0] for voice, segments in sorted(by_voice.items())}
+    return result
+
+
 def fragmentation(m: dict, *, min_s: float = MIN_VOICE_S, share: float = FRAGMENT_SHARE) -> dict[str, int]:
     """Во скольких слотах лежит заметная (≥ `share`) доля голоса."""
     cols: dict[str, dict[str, float]] = collections.defaultdict(dict)
@@ -604,6 +637,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
             "matrix_s": {f"{p}|{q}": round(v, 1) for (p, q), v in sorted(m.items())},
             "purity": purity(m),
             "coverage": coverage(m),
+            "speech_coverage": speech_coverage(stream, fin, total=total),
             "fragmentation": fragmentation(m),
             "windowed": windowed_purity(stream, fin, total=total),
             "prefix": prefix_mapping(stream, fin, total=total),
@@ -616,6 +650,7 @@ def report(j: Journal, final: dict, *, tracker: list[dict] | None = None,
         "labels": len({lab for _, _, lab in shown if lab != CHANNEL}),
         "channel_s": round(sum(cnt for (p, _q), cnt in sm.items() if p == CHANNEL), 1),
         "unfed_s": unfed_s,
+        "speech_coverage": speech_coverage(shown, fin, total=total),
         "voices_final": len({lab for _, _, lab in fin}),
         **foreign(sm),
         "der": der(fin, shown, total),
