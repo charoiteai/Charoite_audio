@@ -478,12 +478,77 @@ enum AppSettings {
             return lines.joined(separator: "\n")
         }
         // Ключа нет вовсе — дописываем в секцию sufler, а не в конец файла:
-        // в корне YAML он ничего не настроит.
-        if let i = lines.firstIndex(where: { $0.hasPrefix("sufler:") }) {
-            lines.insert("  \(key): \"\(escaped)\"", at: i + 1)
+        // в корне YAML он ничего не настроит. Отступ — как у детей секции:
+        // литерал в два пробела у секции с детьми в четыре ломал YAML.
+        switch suflerSection(in: lines) {
+        case .found(_, let end, let indent):
+            lines.insert("\(indent)\(key): \"\(escaped)\"", at: end)
             return lines.joined(separator: "\n")
+        case .absent:
+            return text + "\nsufler:\n  \(key): \"\(escaped)\"\n"
+        case .unsupported:
+            // Сломать YAML хуже, чем не записать: после сломанного файла
+            // демон не стартует. Сигнал отказа мастеру — №640.
+            return text
         }
-        return text + "\nsufler:\n  \(key): \"\(escaped)\"\n"
+    }
+
+    /// Где в тексте конфига секция `sufler:` и куда в неё дописывать ключ.
+    enum SuflerSection: Equatable {
+        /// `header` — строка заголовка; `end` — место вставки (сразу после
+        /// последней строки секции с отступом); `indent` — отступ детей.
+        case found(header: Int, end: Int, indent: String)
+        case absent
+        /// Секция есть, но дописать в неё строкой нельзя — причина человеку.
+        case unsupported(String)
+    }
+
+    /// Общий расчёт секции для `replacing`, `settingFlag` и условной записи.
+    ///
+    /// Заголовок — ПОСЛЕДНЯЯ строка `sufler:` с нулевым отступом: `parseValue`
+    /// и PyYAML читают последнюю секцию, ключ во вложенной или первой PyYAML
+    /// потерял бы молча. Секция кончается на первой непустой строке без
+    /// отступа, кроме комментария. Вставка — после последней строки с
+    /// отступом, а не перед пустыми строками и комментариями, которые
+    /// отделяют следующую секцию.
+    static func suflerSection(in lines: [String]) -> SuflerSection {
+        guard let header = lines.lastIndex(where: { $0.hasPrefix("sufler:") }) else {
+            return .absent
+        }
+        let rest = lines[header].dropFirst("sufler:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rest.isEmpty && !rest.hasPrefix("#") {
+            return .unsupported(L.t(
+                "секция sufler записана в одну строку — поправьте config.yaml руками",
+                "the sufler section is written on one line — fix config.yaml by hand",
+                "sufler 段写在了一行里——请手动修改 config.yaml"))
+        }
+        var insertAt = header + 1
+        var indent: String?
+        var i = header + 1
+        while i < lines.endIndex {
+            let line = lines[i]
+            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer { i += 1 }
+            if t.isEmpty { continue }
+            let indented = line.hasPrefix(" ") || line.hasPrefix("\t")
+            if !indented {
+                if t.hasPrefix("#") { continue }   // комментарий с нулевым отступом секцию не кончает
+                break
+            }
+            insertAt = i + 1
+            if indent == nil, !t.hasPrefix("#") {
+                let prefix = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                if prefix.contains("\t") {
+                    return .unsupported(L.t(
+                        "в секции sufler отступ табом — YAML так не читает, поправьте config.yaml",
+                        "the sufler section is indented with a tab — YAML does not read that, fix config.yaml",
+                        "sufler 段使用了制表符缩进——YAML 无法读取，请修改 config.yaml"))
+                }
+                indent = prefix
+            }
+        }
+        return .found(header: header, end: insertAt, indent: indent ?? "  ")
     }
 
     /// Отделено от чтения файла ради тестов: разбор — чистая функция.
@@ -617,28 +682,9 @@ enum AppSettings {
             // появления тумблера: строка не находится, тумблер молча не
             // работает (круг-1 DS по #436). Дописываем в конец секции
             // sufler — она есть в любом рабочем конфиге, потому что без неё
-            // демон не стартует.
-            guard let start = out.firstIndex(where: {
-                $0.trimmingCharacters(in: .whitespaces).hasPrefix("sufler:")
-            }) else { return nil }
-            var end = out.index(after: start)
-            // Отступ берём у первого же ребёнка секции, а не из литерала:
-            // конфиг документирован под ручную правку, и у секции с детьми
-            // в четыре пробела вставка в два ломает YAML — после сохранения
-            // тумблером демон не стартует вовсе (круг-2 GLM, I7).
-            var indent = "  "
-            var sawChild = false
-            while end < out.endIndex {
-                let line = out[end]
-                let t = line.trimmingCharacters(in: .whitespaces)
-                // конец секции — первая непустая строка без отступа
-                if !t.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
-                if !sawChild, !t.isEmpty, !t.hasPrefix("#") {
-                    let prefix = line.prefix(while: { $0 == " " || $0 == "\t" })
-                    if !prefix.isEmpty { indent = String(prefix); sawChild = true }
-                }
-                end = out.index(after: end)
-            }
+            // демон не стартует. Отступ — у первого ребёнка секции (круг-2
+            // GLM, I7); секции нет или она в неподдерживаемом виде — отказ.
+            guard case .found(_, let end, let indent) = suflerSection(in: out) else { return nil }
             out.insert("\(indent)\(key): \(value)", at: end)
             done = true
         }
