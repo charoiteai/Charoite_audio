@@ -48,6 +48,7 @@ final class LongProcess: @unchecked Sendable {
     private let eofCeiling: TimeInterval
     private let signalFunction: SignalFunction
     private let onLine: (@MainActor (String) -> Void)?
+    private let onCleanupAfterCommit: (@MainActor () -> Void)?
     private let outPipe = Pipe()
     private let errPipe = Pipe()
 
@@ -82,10 +83,12 @@ final class LongProcess: @unchecked Sendable {
          executable: URL? = nil,
          eofCeiling: TimeInterval = 2,
          signal: @escaping SignalFunction = LongProcess.defaultSignal,
-         onLine: (@MainActor (String) -> Void)? = nil) {
+         onLine: (@MainActor (String) -> Void)? = nil,
+         onCleanupAfterCommit: (@MainActor () -> Void)? = nil) {
         self.eofCeiling = eofCeiling
         self.signalFunction = signal
         self.onLine = onLine
+        self.onCleanupAfterCommit = onCleanupAfterCommit
         process.arguments = arguments
         // Установщик и `--check` становятся лидером своей группы, если ещё не
         // лидеры; `--plan` группу не трогает — переменная ему не вредит.
@@ -251,13 +254,19 @@ final class LongProcess: @unchecked Sendable {
             return
         }
         lock.lock()
+        let before = cleanupAfterCommit
         for line in lines {
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if t.isEmpty { continue }
             stderrLast = t
             if t.hasPrefix(installCleanupAfterCommitPrefix) { cleanupAfterCommit = true }
         }
+        let firstSeen = cleanupAfterCommit && !before
         lock.unlock()
+        if firstSeen, let onCleanupAfterCommit {
+            // Отмена пришла после замены: кнопка говорит «доделываю уборку».
+            DispatchQueue.main.async { MainActor.assumeIsolated { onCleanupAfterCommit() } }
+        }
     }
 
     private func dropHandlers() {

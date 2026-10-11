@@ -154,6 +154,21 @@ final class LongProcessTests: XCTestCase {
         XCTAssertTrue(late.cleanupAfterCommit)
     }
 
+    /// Строка «отмена пришла после замены» доходит до кнопки по ходу, один раз.
+    @MainActor
+    func testУборкаПослеЗаменыСообщаетсяОдинРаз() async {
+        var calls = 0
+        let seen = expectation(description: "колбэк уборки")
+        let p = LongProcess(arguments: ["-c", "echo 'отмена пришла после замены — доделываю уборку' >&2; "
+                                              + "echo 'отмена пришла после замены — ещё раз' >&2; exit 0"],
+                            root: root, executable: URL(fileURLWithPath: "/bin/sh"),
+                            onCleanupAfterCommit: { calls += 1; seen.fulfill() })
+        _ = await p.run()
+        await fulfillment(of: [seen], timeout: 3)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(calls, 1)
+    }
+
     /// Подделка сигнала: доставляет по-настоящему, но о группе всегда говорит
     /// ESRCH — так видно, идёт ли запасной сигнал по pid.
     private func esrchForGroups(_ log: SignalLog) -> LongProcess.SignalFunction {

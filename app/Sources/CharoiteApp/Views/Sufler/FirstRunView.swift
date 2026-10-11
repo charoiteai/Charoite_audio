@@ -312,6 +312,9 @@ struct FirstRunView: View {
             if !ModelPullService.diarizationInstalled {
                 voiceInstallRow
             }
+            // Второй движок разметки — по желанию; Enter остаётся у «Начать
+            // слушать встречу», у кнопок Nemotron своего сочетания нет.
+            NemotronEngineControl()
         }
     }
 

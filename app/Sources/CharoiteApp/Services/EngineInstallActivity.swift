@@ -18,7 +18,9 @@ final class EngineInstallActivity: ObservableObject {
 
     private var subscription: AnyCancellable?
 
-    init(pulls: ModelPullService = .shared, nemotron: NemotronEngineService = .shared) {
+    init(pulls: ModelPullService? = nil, nemotron: NemotronEngineService? = nil) {
+        let pulls = pulls ?? .shared
+        let nemotron = nemotron ?? .shared
         // @Published отдаёт новое значение до записи — `busy` верен сразу после
         // присваивания в службе, а не на следующем ходу цикла.
         subscription = pulls.$progress
@@ -30,7 +32,7 @@ final class EngineInstallActivity: ObservableObject {
     }
 
     /// Подпись к выключенной кнопке.
-    static var busyText: String {
+    nonisolated static var busyText: String {
         L.t("идёт другая установка", "another installation is running", "另一项安装正在进行")
     }
 }
