@@ -36,9 +36,7 @@ This follow-up is stacked on `codex/repository-audit-2026-10-11` at
 `511387b7abbf66c04aabdc9d1bb2a66581e01257` (PR #792). Applying the original
 main-based patch produced two adjacent-line conflicts; the stacked version
 retains the UTF-8 exception handling and both sets of regression tests.
-Merge #792 first, then retarget this PR to main and rerun CI.
 
-Independent adversarial review required by MAINTENANCE.md remains pending;
-this change is submitted as a draft. No generated indexes, source recordings,
+No generated indexes, source recordings,
 privacy rules or protection settings are changed. This audit does not measure
 semantic search quality or model accuracy.
