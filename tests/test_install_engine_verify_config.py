@@ -145,8 +145,12 @@ EDGE_REFUSED = [
      'sufler:\n  diarize_backend: "nemotron"\n---\na: 1\n', "sherpa"),
     ("правка первой из двух секций", "sufler:\n  diarize_backend: sherpa\nsufler:\n  diarize_backend: sherpa\n",
      'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  diarize_backend: sherpa\n', "sherpa"),
-    # Последняя секция без ключа — приложение видит None: отказ на сверке правки, а не ожидаемого.
+    # Последняя секция без ключа. Приложение (построчный скан) видит sherpa — реальный вход кнопки:
+    # отказ на сверке ожидаемого (YAML видит None).
     ("ключ только в первой секции", "sufler:\n  diarize_backend: sherpa\nsufler:\n  quiet: true\n",
+     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  quiet: true\n', "sherpa"),
+    # Тот же вход с expected=None (ожидаемое совпало с YAML) — отказ на сверке правки.
+    ("ключ только в первой секции, ожидали None", "sufler:\n  diarize_backend: sherpa\nsufler:\n  quiet: true\n",
      'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  quiet: true\n', None),
 ]
 
@@ -199,4 +203,4 @@ def test_cli_recursive_alias_refused(tmp_path):
     # Сверка n622p2-B-fix7 №4: рекурсивный алиас — отказ процесса, а не зависание или «ок».
     old = "a: &a [*a]\nsufler:\n  diarize_backend: sherpa\n"
     r = _run(json.dumps(_payload(old, old.replace("sherpa", '"nemotron"'), "sherpa")), tmp_path)
-    assert r.returncode == 1 and r.stdout.startswith("отказ: "), (r.stdout, r.stderr)
+    assert r.returncode == 1 and r.stdout.startswith("отказ: проверка упала"), (r.stdout, r.stderr)

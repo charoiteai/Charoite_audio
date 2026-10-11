@@ -160,4 +160,46 @@ final class NemotronFix8Tests: XCTestCase {
         XCTAssertTrue(o.text.hasSuffix(" 3"), "причина — код 3: \(o.text)")
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
     }
+
+    // Сверка n622p2-B-fix9 (Important Haiku): допуск свободен, проверка «ок», recheck == nil,
+    // а запись упала (каталог config/ без права записи) — причина записи видна, не «закрывается».
+    func testFix10СбойЗаписиПослеПроверкиEnableПоказываетПричину() async throws {
+        let before = "sufler:\n  diarize_backend: sherpa\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let dir = configURL.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        let s = makeService()
+        s.startEnable()
+        processes[0].finish(NemotronPlanTests.outcome("ok"))
+        await eventually("план после пробы") { processes.count == 2 }
+        processes[1].finish(plan(state: "ready_off", "enable"))
+        await eventually("исход") { if case .outcome = s.action { return true }; return false }
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.text.hasPrefix("не удалось записать config.yaml: "), "причина — запись: \(o.text)")
+        XCTAssertFalse(o.text.contains("закрывается"), o.text)
+        XCTAssertFalse(o.text.contains("запись встречи"), o.text)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+    }
+
+    func testFix10СбойЗаписиПослеПроверкиDisableПоказываетПричину() async throws {
+        let before = "sufler:\n  diarize_backend: nemotron\n"
+        try before.write(to: configURL, atomically: true, encoding: .utf8)
+        let dir = configURL.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        let s = makeService()
+        s.requestPlan()
+        processes[0].finish(plan(state: "enabled", "disable"))
+        await eventually("план") { if case .ready = s.plan { return true }; return false }
+        let t = s.disable()
+        XCTAssertNotNil(t)
+        await t?.value
+        guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
+        XCTAssertFalse(o.success)
+        XCTAssertTrue(o.text.hasPrefix("не удалось записать config.yaml: "), "причина — запись: \(o.text)")
+        XCTAssertFalse(o.text.contains("закрывается"), o.text)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
+    }
 }
