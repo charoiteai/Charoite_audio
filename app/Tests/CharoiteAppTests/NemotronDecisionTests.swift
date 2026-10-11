@@ -4,6 +4,9 @@ import XCTest
 /// Решение о записи `sufler.diarize_backend: nemotron` и условная запись (№622).
 @MainActor
 final class NemotronDecisionTests: XCTestCase {
+    override func setUp() async throws {
+        try ConfigEditCheck.installForTest(self)
+    }
 
     private func outcome(_ code: Int32 = 0, _ reason: Process.TerminationReason = .exit,
                          cancel: Bool = false, notStarted: Bool = false,
@@ -163,31 +166,32 @@ final class NemotronDecisionTests: XCTestCase {
         try text.write(to: dir.appendingPathComponent("config.yaml"), atomically: true, encoding: .utf8)
     }
 
-    func testCASБезФайлаОтказИФайлНеСоздан() throws {
+    func testCASБезФайлаОтказИФайлНеСоздан() async throws {
         let root = try tempRoot()
         let mainConfig = AppSettings.charoiteRoot.appendingPathComponent("config/config.yaml")
         let before = try? Data(contentsOf: mainConfig)
-        let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: nil, value: "nemotron", root: root)
+        let r = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: nil, value: "nemotron", root: root)
         guard case .failed(let reason) = r else { return XCTFail("\(r)") }
         XCTAssertTrue(reason.contains("config.yaml"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("config/config.yaml").path))
         XCTAssertEqual(try? Data(contentsOf: mainConfig), before, "файл в charoiteRoot не тронут")
     }
 
-    func testCASПишетТолькоВСвойКорень() throws {
+    func testCASПишетТолькоВСвойКорень() async throws {
         let a = try tempRoot(), b = try tempRoot()
         let text = "sufler:\n  diarize_backend: sherpa\n"
         try writeConfig(a, text)
         try writeConfig(b, text)
         let r0 = AppSettings.configValue("diarize_backend", root: a)
         XCTAssertEqual(r0, "sherpa")
-        XCTAssertEqual(AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r0,
-                                                             value: "nemotron", root: a), .written)
+        let first = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r0,
+                                                                value: "nemotron", root: a)
+        XCTAssertEqual(first, .written)
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: a), "nemotron")
         XCTAssertEqual(try String(contentsOf: b.appendingPathComponent("config/config.yaml"), encoding: .utf8), text)
-        XCTAssertEqual(AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: "sherpa",
-                                                             value: "nemotron", root: a),
-                       .changed(current: "nemotron"))
+        let second = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: "sherpa",
+                                                                 value: "nemotron", root: a)
+        XCTAssertEqual(second, .changed(current: "nemotron"))
     }
 
     // 11. Корень сменили между R0 и записью — ключ не пишется, новый корень не тронут.

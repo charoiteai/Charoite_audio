@@ -527,6 +527,14 @@ enum AppSettings {
             }
             return .text(lines.joined(separator: "\n"))
         case .absent:
+            // Секции по заголовку нет, а слово `sufler` в тексте есть: `sufler :`,
+            // BOM, кавычки — секцию не распознали, и `replacing` переписал бы
+            // строку мимо белого списка или дописал второй блок (круг fix6, Haiku C-1, C-2).
+            if text.contains("sufler") {
+                return .unsupported(L.t("секция sufler записана непривычно — поправьте config.yaml руками",
+                                        "the sufler section has an unusual form — edit config.yaml by hand",
+                                        "sufler 段格式不常见——请手动编辑 config.yaml"))
+            }
             return .text(replacing(key, with: value, in: text))
         case .unsupported(let reason):
             return .unsupported(reason)
@@ -579,24 +587,31 @@ enum AppSettings {
     /// (`nil` — ключа нет или он пуст). Сравнение строковое, точное: регистр и
     /// голое `off` нормализует только Python, здесь нормализации нет (№622).
     ///
-    /// Чтение и запись — в одном вызове на главном акторе, как у остальных
-    /// писателей конфига в приложении. Файла нет — отказ: образец несёт
-    /// `diarize_backend: sherpa`, а `ensureConfigExists` берёт `charoiteRoot`,
-    /// а не `root`; файл создаёт мастер первого запуска.
+    /// Новый текст до записи сверяет `ConfigEditCheck` — тот же `yaml.safe_load`,
+    /// что у демона (круг fix6): отказ проверки — файл не трогаем. Пока идёт
+    /// проверка, файл могли изменить: перед записью он перечитывается и обязан
+    /// совпасть с прочитанным байт в байт (CAS), а `recheck` ещё раз спрашивает
+    /// допуск (запись встречи, выход, смена корня). Между перечтением и записью
+    /// `await` нет. Файла нет — отказ: образец несёт `diarize_backend: sherpa`,
+    /// а `ensureConfigExists` берёт `charoiteRoot`, а не `root`; файл создаёт
+    /// мастер первого запуска.
     @MainActor
-    static func setConfigValueIfUnchanged(_ key: String, expected: String?, value: String,
-                                          root: URL) -> ConfigCAS {
+    static func setConfigValueIfUnchanged(_ key: String, expected: String?, value: String, root: URL,
+                                          recheck: @MainActor () -> String? = { nil }) async -> ConfigCAS {
         let cfg = root.appendingPathComponent("config/config.yaml")
         guard FileManager.default.fileExists(atPath: cfg.path) else {
             return .failed(reason: L.t("config.yaml ещё нет — сначала пройдите первый запуск",
                                        "config.yaml does not exist yet — finish the first run first",
                                        "config.yaml 尚不存在——请先完成首次运行"))
         }
-        let text: String
+        let bytes: Data
         do {
-            text = try String(contentsOf: cfg, encoding: .utf8)
+            bytes = try Data(contentsOf: cfg)
         } catch {
             return .failed(reason: error.localizedDescription)
+        }
+        guard let text = String(data: bytes, encoding: .utf8) else {
+            return .failed(reason: L.t("config.yaml не в UTF-8", "config.yaml is not UTF-8", "config.yaml 不是 UTF-8"))
         }
         switch replacingIfUnchanged(key, expected: expected, value: value, in: text) {
         case .changed(let current):
@@ -604,6 +619,20 @@ enum AppSettings {
         case .unsupported(let reason):
             return .failed(reason: reason)
         case .text(let updated):
+            if let reason = await ConfigEditCheck.current.refusal(old: text, new: updated, key: key,
+                                                                  expected: expected, value: value, root: root) {
+                return .failed(reason: reason)
+            }
+            // Сравнение байтов, а не строк: `==` у String — каноническая
+            // эквивалентность Unicode, иная нормализация прошла бы как «не менялся».
+            guard let again = try? Data(contentsOf: cfg) else {
+                return .failed(reason: L.t("config.yaml пропал во время проверки", "config.yaml vanished during the check",
+                                           "检查期间 config.yaml 消失了"))
+            }
+            guard again == bytes else {
+                return .changed(current: parseValue(key, in: String(bytes: again, encoding: .utf8) ?? ""))
+            }
+            if let reason = recheck() { return .failed(reason: reason) }
             do {
                 try updated.write(to: cfg, atomically: true, encoding: .utf8)
                 return .written

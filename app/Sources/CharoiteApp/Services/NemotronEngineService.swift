@@ -232,7 +232,7 @@ final class NemotronEngineService: ObservableObject {
 
     /// Почему действие сейчас не начнётся; `nil` — начнётся.
     func startRefusal() -> String? {
-        if action.isActive || voiceSetInstalling() { return EngineInstallActivity.busyText }
+        if action.isActive || configWriteInFlight || voiceSetInstalling() { return EngineInstallActivity.busyText }
         if isRecording() { return NemotronVisibleActions.recordingText }
         if terminationInProgress { return L.t("приложение закрывается", "the app is quitting", "应用正在退出") }
         // Без config.yaml ключ после установки некуда записать (сверка out1 №4):
@@ -271,7 +271,8 @@ final class NemotronEngineService: ObservableObject {
         let r1 = AppSettings.configValue("diarize_backend", root: root)
         // Корень сверяется на каждом решении, а не до `await freshPlan()`: папку
         // данных могут сменить, пока идёт план, и CAS ушёл бы в старый корень
-        // (сверка out1 C3). Между последним решением и CAS `await` нет.
+        // (сверка out1 C3). Внутри CAS — `await` проверки записи (круг fix6),
+        // поэтому допуск и корень он спрашивает ещё раз вплотную перед записью.
         func decide(_ allowed: Bool, _ reason: String, _ cas: AppSettings.ConfigCAS?) -> NemotronDecision {
             NemotronDecision.decide(outcome: outcome, kind: kind, rootChanged: currentRoot() != root, r0: r0, r1: r1,
                                     enableAllowed: allowed, enableReason: reason, cas: cas)
@@ -308,8 +309,9 @@ final class NemotronEngineService: ObservableObject {
                 if decision == .attemptWrite, admit() != nil {
                     decision = blocked()
                 } else if decision == .attemptWrite {
-                    let cas = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r1,
-                                                                     value: "nemotron", root: root)
+                    let cas = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r1,
+                                                                           value: "nemotron", root: root,
+                                                                           recheck: { [self] in writeRefusal(root) })
                     decision = decide(true, "", cas)
                     if case .written = decision { planDone = false }
                 }
@@ -342,13 +344,47 @@ final class NemotronEngineService: ObservableObject {
         for w in waiters { w() }
     }
 
+    /// Допуск записи ключа вплотную перед ней (после `await` проверки записи):
+    /// `nil` — можно; иначе причина.
+    private func writeRefusal(_ root: URL) -> String? {
+        if let why = admit() { return why }
+        if currentRoot() != root {
+            return L.t("папку данных сменили — ключ не записан", "the data folder changed — the key was not written",
+                       "数据文件夹已更改——未写入")
+        }
+        return nil
+    }
+
+    /// Идёт условная запись «Выключить» (проверка записи — отдельный процесс):
+    /// второе действие кнопки в это время не начинается.
+    @Published private(set) var configWriteInFlight = false
+
     /// «Выключить»: условная запись `sherpa` по сырому значению, без пробы.
-    func disable() {
-        guard !action.isActive, !terminationInProgress,
-              case .ready(let p) = plan, p.offer.disable.allowed else { return }
+    /// Исход — когда проверка записи ответила; конец ждут по возвращённой задаче.
+    @discardableResult
+    func disable() -> Task<Void, Never>? {
+        guard !action.isActive, !terminationInProgress, !configWriteInFlight,
+              case .ready(let p) = plan, p.offer.disable.allowed else { return nil }
         let root = currentRoot()
         let r0 = AppSettings.configValue("diarize_backend", root: root)
-        let cas = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r0, value: "sherpa", root: root)
+        configWriteInFlight = true
+        return Task { @MainActor [self] in
+            let cas = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r0, value: "sherpa",
+                                                                  root: root, recheck: {
+                // Выключение при записи встречи разрешено (sherpa — движок по умолчанию),
+                // держим только выход и корень.
+                if terminationInProgress { return L.t("приложение закрывается", "the app is quitting", "应用正在退出") }
+                return currentRoot() != root
+                    ? L.t("папку данных сменили — ключ не записан", "the data folder changed — the key was not written",
+                          "数据文件夹已更改——未写入")
+                    : nil
+            })
+            configWriteInFlight = false
+            disableFinished(cas)
+        }
+    }
+
+    private func disableFinished(_ cas: AppSettings.ConfigCAS) {
         switch cas {
         case .written:
             setOutcome(ActionOutcome(text: L.t("Nemotron выключен — голоса размечает sherpa",

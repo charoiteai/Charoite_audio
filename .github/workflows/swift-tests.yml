@@ -65,6 +65,13 @@ jobs:
       # Фильтр, не совпавший ни с одним тестом, даёт exit 0 при нуле
       # прогонов — «зелёный без прогона» (круг-1 по #426: DS, GLM и Codex
       # сошлись). Поэтому сверяем строку Executed: тестов должно быть >0.
+      # Тесты записи конфига кнопкой Nemotron сверяют правку тем же PyYAML, что у
+      # демона (`install_engine.py --verify-config-edit`, №622): без него тесты падают.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: PyYAML для проверки записи конфига
+        run: python -m pip install -q "pyyaml==6.0.3"
       - name: Test deterministic suite
         working-directory: app
         shell: bash

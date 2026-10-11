@@ -49,6 +49,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("nemo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("config"), withIntermediateDirectories: true)
         try "sufler:\n  diarize_backend: sherpa\n".write(to: configURL, atomically: true, encoding: .utf8)
+        try ConfigEditCheck.installForTest(self)
     }
 
     override func tearDown() async throws {
@@ -202,7 +203,7 @@ final class NemotronEngineServiceTests: XCTestCase {
             d["offer"] = offer
         })
         await eventually("план") { if case .ready = s.plan { return true }; return false }
-        s.disable()
+        await s.disable()?.value
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
         guard case .outcome(let o) = s.action else { return XCTFail() }
         XCTAssertTrue(o.success)
@@ -300,7 +301,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         try "sufler:\n  diarize_backend: nemotron\n".write(to: configURL, atomically: true, encoding: .utf8)
         let s = makeService()
         await enabledPlan(s)
-        s.disable()
+        await s.disable()?.value
         guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
         XCTAssertTrue(o.success)
         await eventually("план после выключения") { processes.count == 2 }
@@ -340,7 +341,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         recording = true
         lifecycle.send(())
         try await Task.sleep(nanoseconds: 50_000_000)
-        s.disable()
+        await s.disable()?.value
         XCTAssertEqual(AppSettings.configValue("diarize_backend", root: root), "sherpa")
         XCTAssertTrue(s.planDeferred, "план отложен до конца записи")
         XCTAssertEqual(processes.count, 1, "при записи второго процесса нет")
@@ -513,7 +514,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         try before.write(to: configURL, atomically: true, encoding: .utf8)
         let s = makeService()
         await enabledPlan(s)
-        s.disable()
+        await s.disable()?.value
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), before)
         guard case .outcome(let o) = s.action else { return XCTFail() }
         XCTAssertFalse(o.success)
@@ -535,7 +536,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         let s = makeService()
         await enabledPlan(s)
         s.viewAppeared()                      // настройки
-        s.disable()
+        await s.disable()?.value
         guard case .outcome(let o) = s.action, o.success else { return XCTFail("нет исхода") }
         s.viewAppeared(); s.viewGone()        // поповер открыт и закрыт
         XCTAssertEqual(s.action, .outcome(o), "исход стёрт чужим видом")
@@ -548,7 +549,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         try "sufler:\n  diarize_backend: nemotron\n".write(to: configURL, atomically: true, encoding: .utf8)
         let s = makeService()
         await enabledPlan(s)
-        s.disable()                           // ни одного вида на экране
+        await s.disable()?.value                           // ни одного вида на экране
         guard case .outcome(let o) = s.action else { return XCTFail("нет исхода") }
         s.viewAppeared()
         XCTAssertEqual(s.action, .outcome(o))
@@ -560,7 +561,7 @@ final class NemotronEngineServiceTests: XCTestCase {
 
     /// Fix3 (круг fix3, Critical Sonnet/DS/Haiku): строка с `#` или из пробелов с `\r` под ключом с
     /// многострочным значением — хвост значения, а не комментарий; запись — отказ, файл цел.
-    func testFix4МногострочноеЗначениеСКомментариемИCRLFНеПереписывается() {
+    func testFix4МногострочноеЗначениеСКомментариемИCRLFНеПереписывается() async {
         let cases: [(String, String)] = [
             ("A блок | с # первой строкой", "sufler:\n  diarize_backend: |\n    # note\n    sherpa\n  other: 1\n"),
             ("B кавычка с # в продолжении", "sufler:\n  diarize_backend: \"sherpa\n    # c\n    d\"\n  other: 1\n"),
@@ -578,7 +579,7 @@ final class NemotronEngineServiceTests: XCTestCase {
             }
             try? before.write(to: configURL, atomically: true, encoding: .utf8)
             let expected = AppSettings.parseValue("diarize_backend", in: before)
-            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
+            let r = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
             if case .written = r { XCTFail("\(name): запись прошла") }
             XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), before, "\(name): файл изменён")
         }
@@ -588,7 +589,7 @@ final class NemotronEngineServiceTests: XCTestCase {
 
     /// Fix6 (круг fix5, Critical Sonnet C1–C2, DS C1–C2, Haiku C-1…C-4): каждый вход — отказ,
     /// файл байт в байт.
-    func testFix6ВходыКругаFix5Отказ() {
+    func testFix6ВходыКругаFix5Отказ() async {
         let cases: [(String, String)] = [
             ("Sonnet C1.1 кавычка, хвост на отступе ключа", "sufler:\n  diarize_backend: \"sherpa\n  d\"\n  other: 1\n"),
             ("Sonnet C1.2 кавычка, хвост на нулевом отступе", "sufler:\n  diarize_backend: \"sherpa\nd\"\n  other: 1\n"),
@@ -613,7 +614,7 @@ final class NemotronEngineServiceTests: XCTestCase {
             }
             try? before.write(to: configURL, atomically: true, encoding: .utf8)
             let expected = AppSettings.parseValue("diarize_backend", in: before)
-            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
+            let r = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: expected, value: "nemotron", root: root)
             if case .written = r { XCTFail("\(name): запись прошла") }
             XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), before, "\(name): файл изменён")
         }
@@ -621,7 +622,7 @@ final class NemotronEngineServiceTests: XCTestCase {
 
     /// Fix6: форма, которую пишет приложение и образцы конфига, — `.text`, ключ записан,
     /// остальное байт в байт.
-    func testFix6ФормаПриложенияПишется() {
+    func testFix6ФормаПриложенияПишется() async {
         let cases: [(String, String, String)] = [
             ("кавычки", "sufler:\n  diarize_backend: \"nemotron\"\n  other: 1\n",
              "sufler:\n  diarize_backend: \"sherpa\"\n  other: 1\n"),
@@ -645,7 +646,7 @@ final class NemotronEngineServiceTests: XCTestCase {
         for (name, before, after) in cases {
             XCTAssertEqual(AppSettings.replacingInSufler("diarize_backend", with: "sherpa", in: before), .text(after), name)
             try? before.write(to: configURL, atomically: true, encoding: .utf8)
-            let r = AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: "nemotron", value: "sherpa", root: root)
+            let r = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: "nemotron", value: "sherpa", root: root)
             XCTAssertEqual(r, .written, name)
             XCTAssertEqual(try? String(contentsOf: configURL, encoding: .utf8), after, "\(name): файл")
         }
