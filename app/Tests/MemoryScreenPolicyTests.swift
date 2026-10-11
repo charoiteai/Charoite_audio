@@ -44,6 +44,14 @@ final class MemoryScreenPolicyTests: XCTestCase {
         XCTAssertEqual(node.title, "Узел · ВВКИ")
     }
 
+    func testRemoteInferenceIsNotReportedAsLocal() {
+        let line = MemoryScreenPolicy.metaLine(model: "test", seconds: 3,
+                                               meetingsInContext: 0, memoryOn: false,
+                                               weakMatches: false, inferenceIsLocal: false)
+        XCTAssertTrue(line.hasPrefix("другой сервер · test"), line)
+        XCTAssertFalse(line.contains("локально"), line)
+    }
+
     func testMetaLineVariants() {
         XCTAssertEqual(
             MemoryScreenPolicy.metaLine(model: "qwen3.6:35b-a3b", seconds: 12,
