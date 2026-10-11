@@ -314,6 +314,12 @@ def diarize_channel(audio: np.ndarray, sr: int, min_len: float = MIN_SEGMENT_S,
         return None
 
 
+def _at_least(length: float, floor: float) -> bool:
+    """Длина не короче пола с точностью до микросекунды: 10.6 - 10.0 даёт
+    0.5999999999999996, и реплика ровно в пол без округления отсекалась."""
+    return round(length, 6) >= floor
+
+
 def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
               what: str) -> tuple[list[tuple[float, float, int]] | None, str, int]:
     """Вызов Nemotron по записи одного канала — общая часть обоих каналов.
@@ -336,9 +342,15 @@ def _nemotron(cfg: dict, wav: pathlib.Path, duration_s: float,
     if not out.ok:
         log(f"Nemotron не разметил {what} ({out.kind}: {out.reason}) — размечает sherpa")
         return None, ENGINE_REFUSED_REASON, 0
-    established = {k for s, e, k in out.payload if e - s >= MIN_SEGMENT_S}
-    segs = [(s, e, k) for s, e, k in out.payload
-            if k in established and e - s >= MIN_STT_SECONDS]
+    established = {k for s, e, k in out.payload if _at_least(e - s, MIN_SEGMENT_S)}
+    kept = [(s, e, k) for s, e, k in out.payload
+            if k in established and _at_least(e - s, MIN_STT_SECONDS)]
+    # Короткая реплика сохраняется только в тишине: осколок поверх чужого
+    # отрезка `disjoint` делил бы по середине — сосед терял хвост, а кусок
+    # реплики уходил под пол STT (№695, постфактум-2 по #791).
+    segs = [(s, e, k) for s, e, k in kept
+            if _at_least(e - s, MIN_SEGMENT_S)
+            or not any(ok != k and os_ < e and oe > s for os_, oe, ok in kept)]
     log(f"Nemotron ({what}): {len(segs)} сегментов из {len(out.payload)} "
         f"за {time.time() - t0:.0f} с")
     return segs, "", len({k for *_, k in out.payload})
@@ -561,10 +573,14 @@ def merge_dwarfs(segs: list[tuple[float, float, int]],
                  min_dur: float) -> list[tuple[float, float, int]]:
     """Кластеры-карлики (< min_dur суммарно) — осколки кластеризации
     (встреча 21.07: 23 «голоса» в канале звонка): вливаем их сегменты
-    во временно ближайший крупный кластер — текст не теряется."""
+    во временно ближайший крупный кластер — текст не теряется. Голос
+    считают только отрезки от MIN_SEGMENT_S: короткие реплики едут со своим
+    слотом, но голосом его не делают — слот из одних осколков Nemotron
+    остаётся карликом (№695, постфактум-2 по #791)."""
     durs: dict[int, float] = {}
     for s, e, k in segs:
-        durs[k] = durs.get(k, 0.0) + (e - s)
+        long_enough = _at_least(e - s, MIN_SEGMENT_S)
+        durs[k] = durs.get(k, 0.0) + ((e - s) if long_enough else 0.0)
     big = {k for k, d in durs.items() if d >= min_dur} or set(durs)
     bigsegs = [t for t in segs if t[2] in big]
     if not bigsegs:

@@ -640,7 +640,11 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   slot also has a segment of at least 1 s somewhere in the recording. A slot
   made only of subsecond fragments remains filtered out; slots for the model
   ceiling are still counted before filtering. This preserves isolated short
-  replies of established voices without promoting fragment-only slots.
+  replies of established voices without promoting fragment-only slots. A short
+  reply survives only in silence: one that overlaps another voice's segment is
+  dropped, so the overlap split below never bites a tail off the neighbour for
+  a piece too short to transcribe. Lengths are compared rounded to a
+  microsecond (10.6 − 10.0 is 0.5999999999999996 in floating point).
   The call channel then loses overlaps, whatever the engine: a partial
   overlap is split in the middle; a reply longer than 1 s inside someone else's
   cuts it in three; a shorter one goes to the enclosing voice — its sound is
@@ -648,7 +652,8 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   merged fragment. Every moment is transcribed once.
 - **Fragments.** A call voice with less than 5 s of speech over the meeting is
   merged into its nearest neighbour (sherpa: 25 s — it shatters voices into
-  shards, Nemotron does not). Measured on five recordings of 28.09: voices with
+  shards, Nemotron does not). Only segments of at least 1 s count as speech
+  here: short replies travel with their voice but do not make it one. Measured on five recordings of 28.09: voices with
   10–22 s are real people with a reply or two, 2–4 s is noise; recalibration
   after a week of real meetings is card №476. The mic channel keeps its 10 s.
 - **Speaker echo in the mic.** A mic segment more than half covered by call
