@@ -74,6 +74,8 @@ def _load():
             from tokenizers import Tokenizer
 
             _tokenizer = Tokenizer.from_file(str(_dir() / "tokenizer.json"))
+            # Экспорт может хранить скрытую обрезку: проверяем полную пару.
+            _tokenizer.no_truncation()
             # один поток: NLI зовётся из фоновых потоков демона, где рядом
             # живёт STT — не отбирать у него ядра ради миллисекунд
             opts = ort.SessionOptions()
@@ -107,8 +109,12 @@ def entail_prob(premise: str, hypothesis: str) -> float:
     import numpy as np
 
     enc = _tokenizer.encode(premise, hypothesis)
-    ids = enc.ids[:512]
-    mask = enc.attention_mask[:512]
+    if len(enc.ids) > 512:
+        # Обрезка способна убрать отрицание или всю гипотезу. Не судим
+        # изменённое утверждение; ночник сохранит эту пару в очереди.
+        raise SeamTransportError("NLI: полная пара превышает 512 токенов")
+    ids = enc.ids
+    mask = enc.attention_mask
     feed = {
         "input_ids": np.array([ids], dtype=np.int64),
         "attention_mask": np.array([mask], dtype=np.int64),
@@ -116,7 +122,7 @@ def entail_prob(premise: str, hypothesis: str) -> float:
     # часть экспортов DeBERTa требует token_type_ids — подаём, только если вход объявлен
     names = {i.name for i in _session.get_inputs()}
     if "token_type_ids" in names:
-        feed["token_type_ids"] = np.array([enc.type_ids[:512]], dtype=np.int64)
+        feed["token_type_ids"] = np.array([enc.type_ids], dtype=np.int64)
     logits = _session.run(None, feed)[0][0]
     # softmax над [entailment, neutral, contradiction] (порядок из config.json)
     e = np.exp(logits - logits.max())
@@ -131,7 +137,11 @@ def is_duplicate(a: str, b: str, threshold: float = 0.75) -> bool:
     """
     if not a or not b:
         return False
-    return entail_prob(a, b) >= threshold and entail_prob(b, a) >= threshold
+    try:
+        return entail_prob(a, b) >= threshold and entail_prob(b, a) >= threshold
+    except SeamTransportError:
+        # В живой ленте отказ судьи сохраняет тезис, а не теряет его.
+        return False
 
 
 #: Пара, на которой проверяется живость поднятой сессии: из утверждения следует
