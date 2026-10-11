@@ -47,6 +47,7 @@ def test_normalize_turns_scores_into_distribution():
 @pytest.mark.parametrize("scores", [
     {"ask": 0.0, "skip": 0.0},          # судить не по чему — не 0.5/0.5
     {"ask": -0.1, "skip": 0.5},
+    {"ask": 1.1, "skip": 0.5},
     {"ask": float("nan"), "skip": 0.5},
     {"ask": True, "skip": 0.5},
 ])
@@ -649,3 +650,27 @@ def test_a_broken_sink_at_start_does_not_stop_the_daemon(monkeypatch):
     monkeypatch.setattr(dg, "decider", lambda: dg.Decider("fake", lambda t: {}))
     shadow = dg.shadow_for({"sufler": {"decision_gate_shadow": True}}, True, broken)
     assert shadow.active
+
+
+def test_low_absolute_nli_support_cannot_become_ninety_percent_confidence():
+    dec = dg.Decider("nli-zero-shot", lambda text: dg.zero_shot_probs(
+        text, lambda p,h: .009 if h == "ASK" else .001,
+        {"ask": "ASK", "skip": "SKIP"}))
+    verdict = dg.decide(dec, "unknown text")
+    assert verdict.confidence <= .009
+    assert dg.cascade(verdict, .9) == "escalate"
+
+
+def test_moderate_absolute_support_caps_relative_confidence():
+    scores = dg.zero_shot_probs("text", lambda p,h: .6 if h == "ASK" else .001,
+                               {"ask": "ASK", "skip": "SKIP"})
+    verdict = dg.decide(dg.Decider("nli-zero-shot", lambda _: scores), "text")
+    assert verdict.confidence == pytest.approx(.6)
+    assert dg.cascade(verdict, .9) == "escalate"
+
+
+def test_mutually_supported_hypotheses_remain_ambiguous():
+    scores = dg.zero_shot_probs("text", lambda p,h: .9)
+    verdict = dg.decide(dg.Decider("nli-zero-shot", lambda _: scores), "text")
+    assert verdict.confidence == pytest.approx(.5)
+    assert dg.cascade(verdict, .9) == "escalate"

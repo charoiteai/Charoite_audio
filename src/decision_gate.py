@@ -100,7 +100,9 @@ class Verdict:
 class Decider:
     """Решатель как значение: имя, функция вероятностей, причина отказа.
 
-    `probs(text)` отдаёт распределение по `LABELS`. Судить нечем — бросает
+    `probs(text)` отдаёт оценки по `LABELS`. Голова даёт распределение,
+    NLI — доли, ограниченные абсолютной поддержкой (остаток — неизвестность).
+    Судить нечем — бросает
     исключение, а не отдаёт равные доли: 0.5/0.5 неотличимо от честного
     «не уверен», и тень записала бы шум под видом вердикта.
     """
@@ -117,7 +119,7 @@ def normalize(scores: Mapping[str, float]) -> dict[str, float]:
     уверенности»: вероятность следования лежит в [0, 1].
     """
     for label, s in scores.items():
-        if not isinstance(s, (int, float)) or isinstance(s, bool) or not math.isfinite(s) or s < 0:
+        if not isinstance(s, (int, float)) or isinstance(s, bool) or not math.isfinite(s) or not 0 <= s <= 1:
             raise ValueError(f"оценка «{label}» — не вероятность: {s!r}")
     total = sum(scores.values())
     if total <= 0:
@@ -127,11 +129,17 @@ def normalize(scores: Mapping[str, float]) -> dict[str, float]:
 
 def zero_shot_probs(text: str, entail: Callable[[str, str], float],
                     hypotheses: Mapping[str, str] = HYPOTHESES) -> dict[str, float]:
-    """Zero-shot через NLI: P(следует гипотеза метки | реплика), нормировано."""
+    """Относительные доли NLI, ограниченные абсолютной поддержкой гипотез.
+
+    Остаток массы — неизвестность. Это оценки для каскада, не калиброванные
+    вероятности классов: 0.009 против 0.001 не становится уверенностью 0.9.
+    """
     missing = set(LABELS) - set(hypotheses)
     if missing:
         raise ValueError(f"нет гипотез для меток: {sorted(missing)}")
-    return normalize({label: entail(text, hypotheses[label]) for label in LABELS})
+    scores = {label: entail(text, hypotheses[label]) for label in LABELS}
+    relative = normalize(scores)
+    return {label: min(relative[label], scores[label]) for label in LABELS}
 
 
 def calibrated(logits: list[float], temperature: float) -> list[float]:
