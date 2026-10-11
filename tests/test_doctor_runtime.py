@@ -803,3 +803,27 @@ def test_a_live_stream_with_an_unexecutable_installed_interpreter_advises_the_in
         assert "исправьте или очистите ключ sufler.nemotron_python" not in out
     finally:
         installed.chmod(0o755)
+
+
+@pytest.mark.parametrize("key", ["", "/env/python"])
+def test_a_probe_on_another_mlx_audio_version_is_a_warning(key, capsys, monkeypatch, tmp_path):
+    """Проба отвечает и на 0.5.6, а продукт проверен на MLX_AUDIO_VERSION: доктор
+    говорит о расхождении «–», с советом по тому, чей интерпретатор в работе; на
+    проверенной версии — тишина (№695, постфактум-2 по #800)."""
+    import foreign_python as fp
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "arm64")
+    tested = doctor.diarize_nemotron.MLX_AUDIO_VERSION
+    version = "0.5.6"
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.OK, payload={"mlx_audio": version}))
+    cfg = {"sufler": {"diarize_backend": "nemotron", "nemotron_python": key}}
+    doctor.check_engine(cfg)
+    out = capsys.readouterr().out
+    assert f"– Nemotron: mlx-audio 0.5.6, продукт проверен на {tested}" in out
+    advice = "ключа sufler.nemotron_python" if key else "install_engine.py"
+    assert advice in out.split("продукт проверен на", 1)[1]
+    version = tested
+    doctor.check_engine(cfg)
+    assert "продукт проверен на" not in capsys.readouterr().out
