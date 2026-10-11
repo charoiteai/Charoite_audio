@@ -171,13 +171,15 @@ def test_a_planned_meeting_in_the_future_is_not_a_date_of_the_block(tmp_path):
     now = _ts("2026-10-10")
     s = gs.GraphSearch(tmp_path / "g", embedder=Embedder(_embed, "t"), data_dir=None,
                        schema=CHAROITE, now=lambda: now)
-    text = ("# Дорожная карта\n\n## План\n" + "пункт плана. " * 200 + "\nСледующая встреча: [[Встречи/2026-12-15]]\n\n"
+    text = ("# Дорожная карта\n\n## План\n" + "пункт плана. " * 200
+            + "\nСледующая встреча: [[Встречи/2026-12-15]]\n\n"
             "## Итоги\n- [[Встречи/2026-09-01_1000]] — итог квартала. " + "текст. " * 200 + "\n")
     d = _doc("Люди/Дорожная карта.md", date_ts=5.0, text=text, mtime=1.0)
     dates = s._doc_block_dates(d)
     assert len(dates) >= 2
     assert all(x.ts != _ts("2026-12-15") for x in dates), "будущая дата не стала датой блока"
-    plan = next(x for x, blk in zip(dates, gs.chunks("Дорожная карта", text, limit=gs.MAX_CHUNKS)) if "2026-12-15" in blk)
+    plan = next(x for x, blk in zip(dates, gs.chunks("Дорожная карта", text, limit=gs.MAX_CHUNKS))
+                if "2026-12-15" in blk)
     assert plan.ts == _ts("2026-09-01"), "блок плана унаследовал факт, а не план"
     tomorrow = gs.block_date("[[Встречи/2026-10-11]]", CHAROITE)
     assert gs._block_date_marked("[[Встречи/2026-10-11]]", CHAROITE, now + 86400).ts == tomorrow
@@ -190,7 +192,8 @@ def test_a_planned_meeting_puts_no_label_on_the_fragment(tmp_path):
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация", "Заметки"):
         (g / d).mkdir(parents=True, exist_ok=True)
     (g / "Заметки" / "Дорожная карта.md").write_text(
-        "# Дорожная карта\nСледующая встреча: [[Встречи/2026-12-15]] — обсудим дорожную карту\n", encoding="utf-8")
+        "# Дорожная карта\nСледующая встреча: [[Встречи/2026-12-15]] — обсудим дорожную карту\n",
+        encoding="utf-8")
     s = gs.GraphSearch(g, embedder=Embedder(_embed, "t"), data_dir=None, schema=CHAROITE,
                        now=lambda: _ts("2026-10-10"))
     s.refresh(force=True)
@@ -203,7 +206,8 @@ def test_a_planned_meeting_puts_no_label_on_the_fragment(tmp_path):
 def test_only_a_node_inherits_the_freshest_date_of_its_blocks():
     """У узла mtime переписывает каждая встреча — блок без даты берёт максимум
     датированных. У не-узла mtime надёжен: блок без даты идёт по дате файла."""
-    blocks = ["# Решение\n## Итог\n- [[Встречи/2025-03-02_1000]] — старое\n", "# Решение\n## Обзор\nбез дат\n"]
+    blocks = ["# Решение\n## Итог\n- [[Встречи/2025-03-02_1000]] — старое\n",
+              "# Решение\n## Обзор\nбез дат\n"]
     node = _doc("Люди/Иван.md", date_ts=_ts("2026-10-09"))
     plain = _doc("Документация/Решение по шлюзу.md", date_ts=_ts("2026-10-09"))
     assert gs.file_block_dates(node, CHAROITE, blocks)[1].ts == _ts("2025-03-02")
@@ -219,9 +223,11 @@ def test_a_plain_document_with_an_old_link_keeps_its_place(tmp_path, monkeypatch
     for d in ("Люди", "Системы", "Ядра", "Встречи", "Документация"):
         (g / d).mkdir(parents=True, exist_ok=True)
     (g / "Документация" / "Решение по шлюзу.md").write_text(
-        "# Решение по шлюзу\n## История\n- [[Встречи/2025-03-02_1000]] — обсуждали давно. " + "справка. " * 600
+        "# Решение по шлюзу\n## История\n- [[Встречи/2025-03-02_1000]] — обсуждали давно. "
+        + "справка. " * 600
         + "\n## Решение\nшлюз Омега принят, срок май\n", encoding="utf-8")
-    (g / "Встречи" / "2026-09-01_1000.md").write_text("# Омега\nшлюз Омега обсуждали, срок май\n", encoding="utf-8")
+    (g / "Встречи" / "2026-09-01_1000.md").write_text("# Омега\nшлюз Омега обсуждали, срок май\n",
+                                                       encoding="utf-8")
     now = _ts("2026-10-10")
     os_utime = os.utime
     os_utime(g / "Документация" / "Решение по шлюзу.md", (now - 3600, now - 3600))
