@@ -553,7 +553,9 @@ every time even when only the weights need fixing: about 1.2 GB for a reinstall 
 `reclaimable_mb` is what the install's own cleanup of `.nemotron.new-*` and
 `.nemotron.old-*` leftovers will free, and `ok` is `free_mb + reclaimable_mb >=
 need_mb`. If the free space cannot be measured, `free_mb` is `null` and the gate stays
-open. The install itself runs the same gate after that cleanup and refuses with
+open. The install itself runs the gate after that cleanup, so what the cleanup freed is
+already in `free_mb`, and leftovers it did not remove are not counted (`reclaimable_mb`
+is only the estimate in `--plan`); it refuses with
 code 1 before it writes the environment, the weights or the voice set (only
 `engines/` and the install lock exist by then). `memory` is `{total_mb, warn,
 reason}`: at 16 GB or less (or when the size is unknown) it warns that the engine has
