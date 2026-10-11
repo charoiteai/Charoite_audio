@@ -55,6 +55,9 @@ struct TasksView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.bottom, 8)
             }
+            if let change = tasks.lastChange {
+                undoNotice(change)
+            }
             Divider()
             content
         }
@@ -68,6 +71,29 @@ struct TasksView: View {
                 groupingRaw = TasksGrouping.byMeeting.rawValue
             }
         }
+    }
+
+    private func undoNotice(_ change: TasksService.Change) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(change.item.done
+                     ? L.t("Поручение снова открыто", "Action item reopened", "任务已重新打开")
+                     : L.t("Поручение отмечено выполненным", "Action item completed", "任务已标记完成"))
+                    .font(.caption.weight(.medium))
+                Text(MarkdownLine.render(change.item.text))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                tasks.undoLastChange()
+            } label: {
+                Label(L.t("Отменить отметку", "Undo status change", "撤销状态更改"), systemImage: "arrow.uturn.backward")
+            }
+            .disabled(tasks.isMutating)
+            .help(L.t("Восстановить прежнюю отметку этого поручения", "Restore this action item's previous status", "恢复此任务的先前状态"))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Theme.accent.opacity(0.06))
     }
 
     private var header: some View {
@@ -375,7 +401,7 @@ struct TasksView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(tasks.isUpdating(item))
+            .disabled(tasks.isMutating)
             Text(MarkdownLine.render(item.text))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
