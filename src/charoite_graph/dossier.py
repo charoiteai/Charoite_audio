@@ -592,13 +592,35 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
 
 
 def load_index(folder: pathlib.Path) -> list[dict]:
+    """Повреждённый производный индекс — без досье, но с поиском по графу.
+
+    Проверяем поля поиска до нормализации: корректный JSON ещё не означает
+    корректный индекс. Отказываем целиком, не меняя файл на диске. Отсутствие
+    необязательных ключей и дополнительные метаданные совместимы со старым индексом.
+    """
     p = folder / INDEX_JSON
     if not p.exists():
         return []
     try:
-        entries = json.loads(p.read_text(encoding="utf-8")).get("досье", [])
+        payload = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
+    if not isinstance(payload, dict):
+        return []
+    entries = payload.get("досье", [])
+    if not isinstance(entries, list):
+        return []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return []
+        theme = entry.get("тема")
+        if not isinstance(theme, str) or not theme.strip():
+            return []
+        keys = entry.get("ключи", [])
+        if not isinstance(keys, list):
+            return []
+        if any(not isinstance(key, str) or not key.strip() for key in keys):
+            return []
     # индекс прежней версии хранит цельные CJK-последовательности; запрос теперь
     # биграммный — нормализуем ключи при чтении, а не ослабляем сравнение
     # (luna r2, критика GLM r3): свежий индекс это не трогает
