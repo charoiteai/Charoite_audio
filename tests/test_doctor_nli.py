@@ -196,6 +196,20 @@ def test_refusal_crash_is_a_line_not_a_traceback(root, monkeypatch, capsys, prob
     monkeypatch.setattr(nli, "refusal", crash)
     monkeypatch.setattr(nli, "judge", lambda: pytest.fail("must not load NLI"))
     assert doctor.check_nli(probe=probe) is False
-    mark = "✗" if probe else "–"
-    assert f" {mark} NLI: проверка упала (RuntimeError: boom)" in capsys.readouterr().out
-    assert doctor.issues == int(probe)
+    assert " ✗ NLI: проверка упала (RuntimeError: boom)" in capsys.readouterr().out
+    assert doctor.issues == 1
+
+
+def test_refusal_crash_fails_regular_doctor_exit_code(root, monkeypatch, capsys):
+    for name in ("check_python", "check_deps", "check_ollama", "check_stt", "check_models",
+                 "check_engine", "check_llm_alive", "check_strict_json", "check_pipeline",
+                 "check_import_queue", "check_disk"):
+        monkeypatch.setattr(doctor, name, lambda *a, **kw: None)
+    monkeypatch.setattr(doctor, "check_config", lambda: {})
+    def crash(): raise RuntimeError("boom")
+    monkeypatch.setattr(nli, "refusal", crash)
+    monkeypatch.setattr(sys, "argv", ["doctor.py"])
+    with pytest.raises(SystemExit) as done:
+        doctor.main()
+    assert done.value.code == 1
+    assert "Всё на месте" not in capsys.readouterr().out

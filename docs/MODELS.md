@@ -313,7 +313,7 @@ switch the judge off, as if the model were absent: the daemon log says why once
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
 
-The regular `scripts/doctor.py` reports NLI readiness the same way the daemon sees it (files, `config.json` labels, packages) without loading the model; it does import onnxruntime and tokenizers. A ready set does not mean inference works. For a dedicated local probe:
+The regular `scripts/doctor.py` reports NLI readiness the same way the daemon sees it (files, `config.json` labels, packages) without loading the model; it imports onnxruntime and tokenizers only if the model files are in place. A ready set does not mean inference works. For a dedicated local probe:
 
 ```bash
 CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli

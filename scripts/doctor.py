@@ -243,8 +243,8 @@ def check_nli(*, probe: bool = False) -> bool | None:
         return False
     try:
         why = nli.refusal()
-    except Exception as e:  # noqa: BLE001 — сбой проверки годности строкой, не трейсбеком (долг №572)
-        line(FAIL if probe else WARN, f"NLI: проверка упала ({type(e).__name__}: {e})",
+    except Exception as e:  # noqa: BLE001 — сбой проверки — ошибка в обоих режимах, строкой, не трейсбеком
+        line(FAIL, f"NLI: проверка упала ({type(e).__name__}: {e})",
              "docs/MODELS.md")
         return False
     if not probe:
