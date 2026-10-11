@@ -2682,6 +2682,9 @@ def _revise_meeting_cores(cfg: dict, graph: pathlib.Path, cores: list[dict]) -> 
             rebuild_cores_moc(graph)  # слияния меняют список ядер
         for line in rep["skipped"]:
             print(f"tier3: пропущено — {line}")
+        if rep.get("status") == "unavailable":
+            # судить было нечем (нет NLI, эмбеддер) — причина в лог, а не молча
+            print(f"tier3: пропущен — {rep['reason']}")
         if rep["pending_merges"]:
             # советуем --apply, только когда ему есть что делать: совет,
             # который на данных пользователя ничего не меняет, хуже молчания
