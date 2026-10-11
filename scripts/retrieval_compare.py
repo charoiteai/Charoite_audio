@@ -11,6 +11,9 @@ import argparse
 import json
 import math
 import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 
 def rerank(candidates: list[str], scores: dict[str, float]) -> list[str]:
@@ -101,4 +104,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from charoite_paths import harden_umask
+    harden_umask()
     raise SystemExit(main())
