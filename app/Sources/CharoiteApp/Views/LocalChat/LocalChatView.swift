@@ -8,6 +8,7 @@ struct LocalChatView: View {
     @ObservedObject private var chat = LocalChatService.shared
     @State private var draft = ""
     @State private var confirmClear = false
+    @State private var scrollPolicy = ChatScrollPolicy()
     @FocusState private var inputFocused: Bool
 
     @ObservedObject private var inventory = GraphInventoryService.shared
@@ -69,12 +70,51 @@ struct LocalChatView: View {
                         Color.clear.frame(height: 1).id("chatBottom")
                     }
                     .padding(14)
+                    .background(ChatScrollObserver(
+                        onBegin: { scrollPolicy.beginUserScroll() },
+                        onMove: { scrollPolicy.updateUserScroll(distanceFromBottom: $0) },
+                        onEnd: { distance in
+                            scrollPolicy.endUserScroll(distanceFromBottom: distance)
+                            if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
+                        }
+                    ))
                 }
-                .onChange(of: chat.messages.count) { _, _ in
-                    DispatchQueue.main.async { proxy.scrollTo("chatBottom", anchor: .bottom) }
+                .onAppear { scrollToLatest(using: proxy) }
+                .onChange(of: chat.messages.count) { _, count in
+                    if count == 0 { scrollPolicy = ChatScrollPolicy() }
+                    if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
                 }
                 .onChange(of: chat.messages.last?.text) { _, _ in
-                    DispatchQueue.main.async { proxy.scrollTo("chatBottom", anchor: .bottom) }
+                    if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    HStack(spacing: 8) {
+                        if scrollPolicy.followsLatest {
+                            Button {
+                                scrollPolicy.pause()
+                            } label: {
+                                Label(L.t("Приостановить прокрутку", "Pause auto-scroll", "暂停自动滚动"), systemImage: "pause")
+                            }
+                        } else {
+                            Text(L.t("Прокрутка приостановлена", "Auto-scroll paused", "自动滚动已暂停"))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button {
+                                scrollPolicy.resume()
+                                scrollToLatest(using: proxy)
+                            } label: {
+                                Label(scrollPolicy.hasUnreadContent
+                                      ? L.t("Новый ответ ↓", "New response ↓", "新回复 ↓")
+                                      : L.t("Вниз ↓", "To latest ↓", "到底部 ↓"), systemImage: "arrow.down")
+                            }
+                            .help(L.t("Вернуться вниз и включить автопрокрутку", "Return to the bottom and resume auto-scroll", "返回底部并恢复自动滚动"))
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .background(.bar)
                 }
             }
             Divider()
@@ -92,6 +132,14 @@ struct LocalChatView: View {
                 inputFocused = true
             }
             .charoite(.regular, .s)
+        }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            // A gesture can start after the stream scheduled this update.
+            guard scrollPolicy.shouldFollow else { return }
+            proxy.scrollTo("chatBottom", anchor: .bottom)
         }
     }
 
