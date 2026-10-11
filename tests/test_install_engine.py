@@ -47,7 +47,7 @@ def _roomy_disk(monkeypatch):
     """Свободное место — не свойство машины, на которой идёт прогон: гейт диска
     установки (`disk_need`) по умолчанию видит 1 ТБ. Тесты гейта подменяют
     `ie.free_bytes` своим значением поверх этого."""
-    monkeypatch.setattr(ie, "free_bytes", lambda _path: 1 << 40, raising=False)
+    monkeypatch.setattr(ie, "free_bytes", lambda _path: 1 << 40)
 
 
 def _raise(exc):
@@ -1490,10 +1490,29 @@ def test_the_install_gate_runs_after_the_sweep(tmp_path, monkeypatch):
     leftover = _sparse(nem.engine_dir(tmp_path).with_name(".nemotron.new-123") / "f", 300).parent
     real_sweep, real_need = ie.sweep, ie.disk_need
     monkeypatch.setattr(ie, "sweep", lambda home: (events.append("sweep"), real_sweep(home))[1])
-    monkeypatch.setattr(ie, "disk_need", lambda root, sizes: (events.append("disk"), real_need(root, sizes))[1])
+    monkeypatch.setattr(ie, "disk_need", lambda *a, **k: (events.append("disk"), real_need(*a, **k))[1])
     assert ie.install("nemotron", tmp_path) == 0
     assert events == ["sweep", "disk"]
     assert not leftover.exists()
+
+
+def test_an_unremovable_leftover_does_not_open_the_install_gate(tmp_path, monkeypatch, capsys):
+    """Остаток, который `sweep` не убрал (`rmtree(ignore_errors=True)` молча оставил его),
+    место не освободил: гейт `install` его не прибавляет. Свободно 900 МБ, остаток 600,
+    нужно 1440 — с прибавкой гейт открылся бы (1500), без неё — отказ до записи."""
+    events = []
+    _mocked_steps(tmp_path, monkeypatch, events)
+    monkeypatch.setattr(ie, "ensure_voice_set", lambda root: events.append("voice"))
+    _main_root(tmp_path, monkeypatch)
+    free, _ = _free(900)
+    monkeypatch.setattr(ie, "free_bytes", free)
+    leftover = _sparse(nem.engine_dir(tmp_path).with_name(".nemotron.new-1") / "python" / "big", 600)
+    monkeypatch.setattr(ie.shutil, "rmtree", lambda *_a, **_k: None)
+    assert ie.main(["nemotron"]) == 1
+    err = capsys.readouterr().err
+    assert "свободно 900 МБ" in err and "1440 МБ" in err
+    assert leftover.exists()
+    assert events == []
 
 
 def test_an_unmeasured_disk_does_not_stop_the_install(tmp_path, monkeypatch, capsys):

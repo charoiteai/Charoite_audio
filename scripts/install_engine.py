@@ -562,17 +562,20 @@ def _existing_ancestor(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
-def disk_need(root: pathlib.Path, sizes: dict) -> dict:
+def disk_need(root: pathlib.Path, sizes: dict, reclaim_mb: int | None = None) -> dict:
     """Хватит ли места на томе `engines/` для установки — поле `disk` у `--plan` и
     гейт `install`. Слагаемые и их оговорки — у `PIP_TEMP_MB`.
 
-    `ok` — свободное плюс освобождаемое `sweep` не меньше нужного. Мера свободного —
+    `ok` — свободное плюс освобождаемое `sweep` не меньше нужного. `reclaim_mb` None —
+    оценить освобождаемое (`--plan`, `sweep` ещё не звали); `install` передаёт 0: после
+    `sweep` место уже освобождено, а остаток, который `rmtree(ignore_errors=True)` не
+    убрал, места не вернёт. Мера свободного —
     `free_bytes`, одна на проект. Если она не сработала (`OSError`), гейт открыт:
     `free_mb` — null, причина «не измерено». На корне, где мера не работает,
     установка упадёт и сама, а ложный запрет хуже."""
     home = diarize_nemotron.engine_dir(root)
     need = sizes["environment"] + PIP_TEMP_MB + sizes["weights"] + sizes["voice_set"]
-    reclaim = reclaimable_mb(home)
+    reclaim = reclaimable_mb(home) if reclaim_mb is None else reclaim_mb
     try:
         free = free_bytes(_existing_ancestor(home)) // _MIB
     except OSError as e:
@@ -748,7 +751,7 @@ def install(name: str, root: pathlib.Path) -> int:
         # Гейт диска — после уборки остатков (место уже освобождено) и до записи
         # окружения, весов и набора голосов: к этому мигу созданы только каталог
         # `engines/` и замок.
-        disk = disk_need(root, sizes_mb(spec, root))
+        disk = disk_need(root, sizes_mb(spec, root), reclaim_mb=0)
         if not disk["ok"]:
             raise Refused(disk["reason"])
         if disk["free_mb"] is None:
