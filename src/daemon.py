@@ -1630,14 +1630,19 @@ def main():
     # ловит, эмбеддинги путают «согласован»/«не согласован», поэтому NLI:
     # дубль = двустороннее следование (nli.py, ONNX, без torch). Дорогой
     # инференс (~0.2с) прикрыт дешёвым difflib-префильтром — в NLI идут только
-    # словесно похожие кандидаты. Нет модели на диске — дедуп молча выключен.
+    # словесно похожие кандидаты. Нет модели на диске — дедуп выключен, причина
+    # в логе один раз (thesis_dedup_off — флаг «уже сказали»).
     recent_theses: deque[str] = deque(maxlen=16)
+    thesis_dedup_off: list[str] = []
 
     def is_dup_thesis(line: str) -> bool:
         import difflib as _dl
 
         import nli
         if not nli.is_available():
+            if not thesis_dedup_off:
+                thesis_dedup_off.append(nli.refusal())
+                print(f"тезис-дедуп выключен: {thesis_dedup_off[0]}", flush=True)
             return False
         text = thesis_rules.strip_mark(line)
         if len(text) < 12:
@@ -1650,7 +1655,16 @@ def main():
                 continue  # совсем далёкие пары NLI не беспокоят
             # 0.8 — осторожный режим: лучше редкий повтор в ленте, чем
             # потерянный тезис с новым фактом
-            if nli.is_duplicate(text, prev, threshold=0.8):
+            try:
+                dup = nli.is_duplicate(text, prev, threshold=0.8)
+            except Exception as e:  # noqa: BLE001
+                # судья отказал (контракт выхода, ORT, токенайзер) — значит, не
+                # дубль: тезис в ленту, а не исключение, которое уронит хвост
+                # тезисов этого тика
+                print(f"тезис-дедуп: судья отказал ({type(e).__name__}: {e}) — тезис оставлен",
+                      flush=True)
+                return False
+            if dup:
                 print(f"тезис-дубль отсеян: «{text[:80]}» ≈ «{prev[:80]}»", flush=True)
                 return True
         recent_theses.append(text)

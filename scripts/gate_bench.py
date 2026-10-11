@@ -69,7 +69,8 @@ def ece(rows: list[Row], bins: int = 10) -> float | None:
     """Ожидаемая ошибка калибровки: насколько уверенность врёт о точности.
 
     Для каскада это главное свойство: порог τ имеет смысл, только если «0.9»
-    действительно значит «прав девять раз из десяти».
+    действительно значит «прав девять раз из десяти». Для NLI `confidence` —
+    поддержка, не калибровка: ECE там меряет не то.
     """
     if not rows:
         return None
@@ -259,7 +260,7 @@ def _backend(name: str, args) -> dg.Decider | None:
         if judge.refused:
             print(f"nli: {judge.refused}", file=sys.stderr)
             return None
-        return dg.Decider("nli-zero-shot", lambda t: dg.zero_shot_probs(t, judge.entail, hyps))
+        return dg.Decider("nli-zero-shot-support", lambda t: dg.zero_shot_probs(t, judge.entail, hyps))
     head_dir = pathlib.Path(args.head_dir) if args.head_dir else dg.default_head_dir()
     if not all((head_dir / f).exists() for f in dg.HEAD_FILES):
         print(f"head: в {head_dir} нет {', '.join(dg.HEAD_FILES)}", file=sys.stderr)
