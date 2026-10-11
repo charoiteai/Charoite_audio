@@ -21,6 +21,7 @@ ONNX-экспорте: model.onnx, tokenizer.json, config.json (экспорт �
 
 from __future__ import annotations
 
+import json
 import pathlib
 import threading
 
@@ -48,13 +49,14 @@ _lock = threading.Lock()
 _session = None
 _tokenizer = None
 _failed = False
+_entail_index = None
 
 
 def is_available() -> bool:
     """Модель на диске и пакеты на месте (без загрузки самой модели)."""
     if _failed:
         return False
-    if not (_dir() / "model.onnx").exists() or not (_dir() / "tokenizer.json").exists():
+    if not (_dir() / "model.onnx").exists() or not (_dir() / "tokenizer.json").exists() or not (_dir() / "config.json").exists():
         return False
     try:
         import onnxruntime  # noqa: F401
@@ -64,8 +66,24 @@ def is_available() -> bool:
     return True
 
 
+
+def _label_index(path: pathlib.Path) -> int:
+    """Не угадывать смысл логита: нужен однозначный контракт трёх классов."""
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    labels = meta.get("id2label")
+    if not isinstance(labels, dict) or set(labels) != {"0", "1", "2"}:
+        raise ValueError("NLI config.json: нужны id2label с индексами 0, 1, 2")
+    names = [labels[str(i)] for i in range(3)]
+    if any(not isinstance(name, str) for name in names):
+        raise ValueError("NLI config.json: метки должны быть строками")
+    names = [name.strip().lower() for name in names]
+    if set(names) != {"entailment", "neutral", "contradiction"}:
+        raise ValueError("NLI config.json: неоднозначный порядок классов")
+    return names.index("entailment")
+
+
 def _load():
-    global _session, _tokenizer, _failed
+    global _session, _tokenizer, _failed, _entail_index
     with _lock:
         if _session is not None or _failed:
             return
@@ -73,6 +91,7 @@ def _load():
             import onnxruntime as ort
             from tokenizers import Tokenizer
 
+            _entail_index = _label_index(_dir() / "config.json")
             _tokenizer = Tokenizer.from_file(str(_dir() / "tokenizer.json"))
             # один поток: NLI зовётся из фоновых потоков демона, где рядом
             # живёт STT — не отбирать у него ядра ради миллисекунд
@@ -118,9 +137,11 @@ def entail_prob(premise: str, hypothesis: str) -> float:
     if "token_type_ids" in names:
         feed["token_type_ids"] = np.array([enc.type_ids[:512]], dtype=np.int64)
     logits = _session.run(None, feed)[0][0]
-    # softmax над [entailment, neutral, contradiction] (порядок из config.json)
+    if logits.shape != (3,) or not np.isfinite(logits).all():
+        raise SeamTransportError("NLI: выход не соответствует контракту трёх классов")
+    # softmax: порядок классов проверен по config.json при загрузке.
     e = np.exp(logits - logits.max())
-    return float((e / e.sum())[0])
+    return float((e / e.sum())[_entail_index])
 
 
 def is_duplicate(a: str, b: str, threshold: float = 0.75) -> bool:
