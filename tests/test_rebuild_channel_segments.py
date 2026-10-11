@@ -710,41 +710,10 @@ def test_nemotron_gets_its_setting_the_data_root_and_a_ceiling(monkeypatch, tmp_
     monkeypatch.setattr(rt, "log", said.append)
     cfg = {"sufler": {"diarize_backend": "Nemotron", "nemotron_python": " /env/bin/python "}}
     segs, reason = rt.call_channel_engine(cfg, tmp_path / "bh.wav", 1200.0, gate_call=True)
-    assert (segs, reason) == ([(0.0, 5.0, 0), (5.0, 5.9, 1), (6.0, 7.0, 1)], "")
-    assert said == ["Nemotron (голоса собеседников): 3 сегментов из 3 за 0 с"]
+    assert (segs, reason) == ([(0.0, 5.0, 0), (6.0, 7.0, 1)], "")     # короче секунды — прочь
+    assert said == ["Nemotron (голоса собеседников): 2 сегментов из 3 за 0 с"]
     assert seen == {"setting": " /env/bin/python ", "wav": tmp_path / "bh.wav",
                     "root": tmp_path, "timeout": 180.0}
-
-
-@pytest.mark.parametrize("channel", ["call", "mic", "room"])
-def test_nemotron_keeps_short_replies_of_an_established_slot(channel, monkeypatch, tmp_path):
-    """Короткое подтверждение в начале/конце встречи не должно исчезать.
-    Одиночный шумовой слот и звук короче окна STT всё ещё отсекаются."""
-    payload = [(0.0, 0.6, 0), (3.0, 3.1, 0), (5.0, 25.0, 0),
-               (30.0, 30.9, 0), (40.0, 40.9, 1)]
-    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
-                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
-    expected = [payload[0], payload[2], payload[3]]
-    if channel == "call":
-        assert rt.call_channel_engine(_nemotron_cfg(), tmp_path / "bh.wav", 60.0,
-                                      gate_call=True) == (expected, "")
-    elif channel == "mic":
-        assert rt.mic_channel_engine(_nemotron_cfg(), tmp_path / "mic.wav", 60.0) == (
-            expected, "", False)
-    else:
-        assert rt.room_mic_engine(_nemotron_cfg(), tmp_path / "mic.wav", 60.0, None) == (
-            expected, "")
-
-
-def test_rebuild_transcribes_a_separate_short_nemotron_reply(meeting, monkeypatch):
-    payload = [(0.0, 20.0, 0), (25.0, 25.8, 0)]
-    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
-        fp.Outcome(fp.OK, payload=payload), fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)])))
-    lengths = []
-    monkeypatch.setattr(rt, "stt_segment", lambda stt, audio, sr:
-                        lengths.append(len(audio) / sr) or "реплика")
-    rt.rebuild(meeting["live"], _nemotron_cfg())
-    assert any(abs(length - 0.8) < 0.001 for length in lengths), lengths
 
 
 @pytest.mark.parametrize("kind", [fp.UNAVAILABLE, fp.FAILED])

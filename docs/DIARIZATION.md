@@ -635,13 +635,8 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   people, and a local path carries the account name. A misspelt
   `diarize_backend`, a reply with no segments or one segment over the whole
   recording fall back the same way, each with its own short reason.
-- **What happens to the segments.** Sherpa drops segments shorter than 1 s.
-  Nemotron keeps replies of at least 0.6 s (the minimum STT window) when that
-  slot also has a segment of at least 1 s somewhere in the recording. A slot
-  made only of subsecond fragments remains filtered out; slots for the model
-  ceiling are still counted before filtering. This preserves isolated short
-  replies of established voices without promoting fragment-only slots.
-  The call channel then loses overlaps, whatever the engine: a partial
+- **What happens to the segments.** Shorter than 1 s — dropped, as sherpa's
+  are. The call channel then loses overlaps, whatever the engine: a partial
   overlap is split in the middle; a reply longer than 1 s inside someone else's
   cuts it in three; a shorter one goes to the enclosing voice — its sound is
   still transcribed inside that segment, only the authorship is lost, as with a
@@ -697,33 +692,6 @@ environment lives in `engines/nemotron`; both paths come from the engine module
   start and the model load; 20 minutes: 3 s; 8 minutes: 2 s. The production
   sherpa pass on one thread runs at RTF 0.35 — about 7 minutes for 20 minutes
   of call; on two threads see below.
-
-### Application boundaries
-
-These rules apply to the Nemotron **diarization** checkpoint, not to a text LLM.
-A slot is local to one model run; neither its number nor a matching number in
-another recording establishes a person's identity.
-
-| Scenario | Current use | Evidence required before expanding it |
-| --- | --- | --- |
-| Recording after a meeting | Selected backend, with sherpa fallback and refusal notes | Labeled recordings: missed speech, false speech, speaker confusion and runtime; compare the final transcript, not just raw model segments |
-| Live call | Call channel only; `off` → `shadow` → `on`, retaining the tracker | Replay then actual calls: p95/max label waits, fallback share/reasons, uncovered speech, shown-label confusion, memory and STT backlog |
-| Room microphone | Offline pass; room refusal checks and echo/overlap handling | Separate room set with reverberation, simultaneous speech and short replies; the live call-stream results do not validate live room capture |
-| Person across meetings | Slot numbers must not be reused as identity | Separate voice-embedding/identity layer, registered examples and an unknown result; test wrong-person matches on other meetings before attaching names |
-| Text tasks | Diarization is not used | Use the text pipeline's LLM/NLI models for their respective tasks |
-
-For live evaluation, use `scripts/nemotron_shadow_replay.py` followed by
-`scripts/nemotron_shadow_check.py` with the final segments, tracker journal,
-timing and replay metadata. The final offline pass is a comparison baseline,
-not human ground truth: agreement with it alone cannot prove diarization
-accuracy. Use independently annotated speech for the quality verdict.
-
-The short-reply adapter tests prove retention down to the existing 0.6 s STT
-floor for established slots. They do not prove acoustic recall, recover speech
-missed by the model, or preserve simultaneous speakers after `disjoint`.
-Changing embeddings or adding cross-meeting identification requires its own
-held-out evaluation; replacing diarization with an identity model is not a
-substitute for that evaluation.
 
 ### Threads, and yielding to a live meeting
 
