@@ -824,7 +824,8 @@ def _same(a: object, b: object) -> bool:
         return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
     if isinstance(a, list):
         return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
-    return a == b
+    # nan != nan: без этого правка ключа отказывала бы на любом конфиге с `.nan`.
+    return a == b or (a != a and b != b)
 
 
 def _matches_raw(current: object, expected: str | None) -> bool:

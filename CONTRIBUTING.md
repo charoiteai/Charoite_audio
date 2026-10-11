@@ -168,8 +168,10 @@ review gates, and who answers for what — is documented in
    layout guard, privacy markers, the full pytest set, Swift when `app/` is
    touched, the mutation check on the changed lines. For app changes that
    means `swift build` clean and `swift test --filter '^CharoiteAppTests\.'`
-   green (live probes run only by hand); run `scripts/memory_bench.py` if
-   you touch search or prompts.
+   green (live probes run only by hand); the config-write tests need a
+   python with PyYAML — `.venv` of the repo or `CHAROITE_TEST_PYTHON`
+   (preflight sets it); run `scripts/memory_bench.py` if you touch search
+   or prompts.
 4. **Update docs in the same PR** — CI blocks a PR that changes code
    (`src/`, `scripts/`, `app/`, `app-ios/`, `app-android/`) and leaves the
    documentation untouched: `docs/`, `README.md` (root or of those folders),

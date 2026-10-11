@@ -11,10 +11,12 @@ on:
     paths:
       - "app/**"
       - "app-ios/**"
+      - "scripts/install_engine.py"
   push:
     paths:
       - "app/**"
       - "app-ios/**"
+      - "scripts/install_engine.py"
 
 concurrency:
   # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,

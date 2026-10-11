@@ -119,6 +119,42 @@ def test_other_changes_refused(old, new, expected, why):
     assert ie.verify_config_edit(_payload(old, new, expected)) is not None, why
 
 
+# Сверка n622p2-B-fix7 №3, №4: nan, дубль ключа, merge `<<` — правка верна, ok.
+EDGE_PASS = [
+    ("nan вне sufler", "x: .nan\nsufler:\n  diarize_backend: sherpa\n",
+     'x: .nan\nsufler:\n  diarize_backend: "nemotron"\n'),
+    ("nan внутри sufler", "sufler:\n  threshold: .nan\n  diarize_backend: sherpa\n",
+     'sufler:\n  threshold: .nan\n  diarize_backend: "nemotron"\n'),
+    ("дубль ключа, правка последнего", "sufler:\n  diarize_backend: sherpa\n  diarize_backend: sherpa\n",
+     'sufler:\n  diarize_backend: sherpa\n  diarize_backend: "nemotron"\n'),
+    ("merge и явный ключ", "b: &b\n  diarize_backend: sherpa\nsufler:\n  <<: *b\n  diarize_backend: sherpa\n",
+     'b: &b\n  diarize_backend: sherpa\nsufler:\n  <<: *b\n  diarize_backend: "nemotron"\n'),
+]
+
+
+@pytest.mark.parametrize("name,old,new", EDGE_PASS, ids=[c[0] for c in EDGE_PASS])
+def test_edge_inputs_pass(name, old, new):
+    assert ie.verify_config_edit(_payload(old, new, "sherpa")) is None, name
+
+
+# Сверка n622p2-B-fix7 №3, №4: nan сменили, два документа, правка не той из двух секций — отказ.
+EDGE_REFUSED = [
+    ("nan сменили на число", "sufler:\n  threshold: .nan\n  diarize_backend: sherpa\n",
+     'sufler:\n  threshold: 1.0\n  diarize_backend: "nemotron"\n'),
+    ("два документа", "sufler:\n  diarize_backend: sherpa\n---\na: 1\n",
+     'sufler:\n  diarize_backend: "nemotron"\n---\na: 1\n'),
+    ("правка первой из двух секций", "sufler:\n  diarize_backend: sherpa\nsufler:\n  diarize_backend: sherpa\n",
+     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  diarize_backend: sherpa\n'),
+    ("ключ только в первой секции", "sufler:\n  diarize_backend: sherpa\nsufler:\n  quiet: true\n",
+     'sufler:\n  diarize_backend: "nemotron"\nsufler:\n  quiet: true\n'),
+]
+
+
+@pytest.mark.parametrize("name,old,new", EDGE_REFUSED, ids=[c[0] for c in EDGE_REFUSED])
+def test_edge_inputs_refused(name, old, new):
+    assert ie.verify_config_edit(_payload(old, new, "sherpa")) is not None, name
+
+
 def test_raw_bare_off_matches_yaml_false():
     # Голое off YAML читает как False, приложение видит строку «off».
     assert ie.verify_config_edit(_payload("sufler:\n  diarize_backend: off\n",
@@ -156,3 +192,10 @@ def test_cli_contract_and_writes_nothing(tmp_path):
     r = _run("не json", tmp_path)
     assert r.returncode == 1 and r.stdout.startswith("отказ: проверка упала")
     assert list(tmp_path.iterdir()) == [], "проверка ничего не пишет"
+
+
+def test_cli_recursive_alias_refused(tmp_path):
+    # Сверка n622p2-B-fix7 №4: рекурсивный алиас — отказ процесса, а не зависание или «ок».
+    old = "a: &a [*a]\nsufler:\n  diarize_backend: sherpa\n"
+    r = _run(json.dumps(_payload(old, old.replace("sherpa", '"nemotron"'), "sherpa")), tmp_path)
+    assert r.returncode == 1 and r.stdout.startswith("отказ: проверка упала"), (r.stdout, r.stderr)

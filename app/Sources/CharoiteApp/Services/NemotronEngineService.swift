@@ -312,7 +312,13 @@ final class NemotronEngineService: ObservableObject {
                     let cas = await AppSettings.setConfigValueIfUnchanged("diarize_backend", expected: r1,
                                                                            value: "nemotron", root: root,
                                                                            recheck: { [self] in writeRefusal(root) })
-                    decision = decide(true, "", cas)
+                    // Отказ допуска внутри CAS (запись или выход начались во время
+                    // проверки записи) — тот же исход, что до неё (сверка fix7 №1).
+                    if case .failed = cas, admit() != nil {
+                        decision = blocked()
+                    } else {
+                        decision = decide(true, "", cas)
+                    }
                     if case .written = decision { planDone = false }
                 }
             } else if case .failed(let text) = state {
@@ -394,6 +400,10 @@ final class NemotronEngineService: ObservableObject {
             setOutcome(ActionOutcome(text: L.t("конфиг изменили — не выключено, проверьте ещё раз",
                                                "the config changed — not disabled, check again",
                                                "配置已被修改——未停用，请再检查"), success: false))
+        case .failed where terminationInProgress:
+            // Отказ допуска внутри CAS, а не сбой записи (сверка fix7 №1).
+            setOutcome(ActionOutcome(text: L.t("приложение закрывается — не выключено", "the app is quitting — not disabled",
+                                               "应用正在退出——未停用"), success: false))
         case .failed(let reason):
             setOutcome(ActionOutcome(text: L.t("не удалось записать config.yaml: ", "could not write config.yaml: ",
                                                "无法写入 config.yaml：") + reason, success: false))
