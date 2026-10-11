@@ -300,6 +300,41 @@ def test_report_runs_end_to_end_on_a_synthetic_journal():
     assert out["c_agreement_with_final"]["stream"]["der"] == pytest.approx(0.0, abs=0.01)
 
 
+def test_report_exposes_a_fully_missed_short_voice():
+    start = START0 / SR
+    j = journal(chunk_ends=[START0 + 64000], segs=[(START0, START0 + 5 * SR, 0)])
+    final = {"duration_s": 20.0,
+             "segments": [[start, start + 5, "Long"], [start + 10, start + 10.8, "Short"]]}
+    got = chk.report(j, final)
+    assert got["b_slots"]["coverage"] == {}  # прежняя оценка исключает оба голоса < 30 с
+    speech = got["b_slots"]["speech_coverage"]
+    assert speech["reference_s"] == 5.8 and speech["missed_s"] == 0.8
+    assert speech["voices"]["f1"] == {
+        "reference_s": 0.8, "covered_s": 0.0, "missed_s": 0.8, "coverage": 0.0}
+    assert got["d_shown"]["speech_coverage"]["voices"]["f1"]["coverage"] == 0.0
+
+
+def test_speech_coverage_counts_unions_and_does_not_claim_correct_identity():
+    reference = [(0., 4., "A"), (2., 6., "B"), (3., 4., "A")]
+    hyp = [(0., 3., "wrong-person"), (1., 2., "another-slot"), (8., 10., "extra")]
+    got = chk.speech_coverage(hyp, reference, total=10.)
+    assert got["reference_s"] == 6.0  # одновременно говорящих не суммируем
+    assert got["covered_s"] == 3.0 and got["missed_s"] == 3.0
+    assert got["extra_s"] == 2.0 and got["coverage"] == 0.5
+    assert got["voices"]["A"]["reference_s"] == 4.0
+    assert got["voices"]["A"]["coverage"] == 0.75
+    assert got["voices"]["B"]["reference_s"] == 4.0
+    assert got["voices"]["B"]["coverage"] == 0.25
+
+
+def test_speech_coverage_clips_to_the_recording_and_handles_empty_speech():
+    got = chk.speech_coverage([(-2., 12., "slot")], [(0., 2., "A")], total=4.)
+    assert got["covered_s"] == 2.0 and got["extra_s"] == 2.0
+    empty = chk.speech_coverage([], [], total=4.)
+    assert empty == {"reference_s": 0.0, "covered_s": 0.0, "missed_s": 0.0,
+                     "coverage": None, "extra_s": 0.0, "voices": {}}
+
+
 def test_report_counts_the_labels_the_feed_shows_not_the_raw_slots():
     """№580: сверка включила `on` по сырым слотам, а лента показывала поколения. Метки ленты
     считает тот же класс, что демон: призрак (слот 2, 2 с речи) под меткой канала, слот,
