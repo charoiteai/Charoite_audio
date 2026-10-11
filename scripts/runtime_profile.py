@@ -76,10 +76,9 @@ def main() -> int:
     args = parser.parse_args()
     if args.repeats < 2 or args.num_context < 1 or args.num_predict < 1:
         parser.error("repeats >= 2; context and prediction limits must be positive")
-    from charoite_paths import harden_umask, resolve_root
+    from charoite_paths import resolve_root
     import live_gate
     from llm import LLM
-    harden_umask()
     try:
         root = resolve_root(__file__)
         prompts = [path.read_text(encoding="utf-8") for path in args.prompt_file]
@@ -101,4 +100,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from charoite_paths import harden_umask
+    harden_umask()
     raise SystemExit(main())

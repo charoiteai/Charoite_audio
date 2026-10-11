@@ -261,7 +261,8 @@
     "src/diarize.py": "диаризация одной записи из терминала ради замеров; конвейер зовёт модуль импортом, не процессом",
     "src/mcp_server.py": "запускает конфиг настольного MCP-клиента вне репозитория",
     "src/meeting_archive.py": "разовая миграция архива `--all` руками",
-    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210"
+    "src/voice_memos_bridge.py": "мост Диктофона — отдельный процесс, поднимается руками до №210",
+    "scripts/runtime_profile.py": "замер локального потокового транспорта на заданных запросах, ручной прогон"
   },
   "root_exemptions": {
     "src/deps.py": {
@@ -436,6 +437,10 @@
     "scripts/rename_meeting.py": {
       "mode": "help",
       "why": "приёмка №340: вход обязан отвечать на --help"
+    },
+    "scripts/runtime_profile.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
     },
     "scripts/sign_release_manifest.py": {
       "mode": "help",
