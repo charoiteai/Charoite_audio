@@ -120,6 +120,7 @@
 - `scripts/preflight.sh` ← ручной запуск: приёмка перед кругом голов и чужой работы — ручной запуск (№339); не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/protocol.py` ← app/Sources/CharoiteApp/Services/MeetingActionsService.swift; проба help
 - `scripts/rename_meeting.py` ← app/Sources/CharoiteApp/Services/MeetingCard.swift; проба help
+- `scripts/retrieval_compare.py` ← ручной запуск: сравнение результатов поиска по эталонным вопросам, ручной прогон; проба help
 - `scripts/sign_release_manifest.py` ← .github/workflows/release-app.yml; проба help
 - `scripts/stt_bench.py` ← ручной запуск: бенчмарк STT, ручной прогон; проба help
 - `scripts/tier3_cores.py` ← scripts/nightly.sh, src/graph_updater.py; проба help
@@ -188,6 +189,7 @@
 - `scripts/preflight.sh` ← .github/pull_request_template.md, CONTRIBUTING.md, MAINTENANCE.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/ru/MAINTENANCE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md, docs/zh/MAINTENANCE.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/protocol.py` ← docs/FEATURES.md, docs/USER_GUIDE.md, docs/ru/FEATURES.md, docs/ru/USER_GUIDE.md, docs/zh/FEATURES.md, docs/zh/USER_GUIDE.md
 - `scripts/rename_meeting.py` ← docs/DATA_AND_RECOVERY.md, docs/FEATURES.md, docs/ru/DATA_AND_RECOVERY.md, docs/ru/FEATURES.md, docs/zh/DATA_AND_RECOVERY.md, docs/zh/FEATURES.md
+- `scripts/retrieval_compare.py` ← docs/design/RETRIEVAL_MODEL_EVALUATION.md
 - `scripts/sign_release_manifest.py` ← docs/RELEASING.md, docs/ru/RELEASING.md, docs/zh/RELEASING.md
 - `scripts/stt_bench.py` ← docs/FEATURES.md, docs/MODELS.md, docs/ru/FEATURES.md, docs/ru/MODELS.md, docs/zh/FEATURES.md, docs/zh/MODELS.md
 - `scripts/tier3_cores.py` ← config/config.example.en.yaml, config/config.example.yaml, docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
