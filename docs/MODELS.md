@@ -313,14 +313,13 @@ switch the judge off, as if the model were absent: the daemon log says why once
 Without it theses are not deduplicated by meaning and the core revision does
 not run (it says why in its log); everything else works as before.
 
-The regular `scripts/doctor.py` checks NLI files and packages without loading the model. Installed files do not mean inference works. For a dedicated local probe:
+The regular `scripts/doctor.py` reports NLI readiness the same way the daemon sees it (files, `config.json` labels, packages) without loading the model. A ready set does not mean inference works. For a dedicated local probe:
 
 ```bash
 CHAROITE_ROOT=/path/to/data .venv/bin/python scripts/doctor.py --probe-nli
 ```
 
-This checks only NLI, downloads no weights, and makes no LLM requests. During a meeting the probe is deferred. Exit 0 means the judge canary passed; exit 1 means unavailable, failed, or deferred. This checks readiness, not quality on real meetings.
-
+This checks only NLI, downloads no weights, and makes no LLM requests. If a meeting is running when the probe starts, it is deferred; a meeting that starts after this check does not cancel a probe already loading the model. Exit 0 means the judge canary passed; exit 1 means unavailable, failed, or deferred. This checks readiness, not quality on real meetings.
 
 ## Decision gate (research, shadow mode only)
 

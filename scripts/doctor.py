@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import importlib.util
 import pathlib
 import platform
 import shlex
@@ -230,48 +229,39 @@ def check_stt(cfg: dict) -> None:
 
 
 def check_nli(*, probe: bool = False) -> bool | None:
-    """Файлы — дешёвая проверка; инференс — только по --probe-nli.
+    """Годность комплекта — `nli.refusal()`, тот же ответ, что видит демон;
+    инференс — только по --probe-nli.
 
     None означает непроверенный инференс или отложенную пробу. True —
     положительная канарейка судьи ответила, не оценка качества на встречах.
     """
-    root = _root()
-    folder = root / "models" / "nli"
-    mark = FAIL if probe else WARN
     try:
-        missing = [name for name in ("model.onnx", "tokenizer.json", "config.json")
-                   if not (folder / name).is_file() or (folder / name).stat().st_size == 0]
-    except OSError:
-        line(mark, "NLI: не удалось прочитать файлы модели",
-             "проверьте доступ к models/nli в корне данных")
+        import nli
+    except Exception as exc:  # noqa: BLE001 — модуль приложения не импортируется
+        line(FAIL, f"NLI: модуль nli не импортируется ({type(exc).__name__})",
+             "восстановите зависимости Python приложения (docs/MODELS.md)")
         return False
-    if missing:
-        line(mark, f"NLI: нет или пусты {', '.join(missing)} — комплект модели неполный",
-             "в models/nli нужны model.onnx, tokenizer.json и config.json из одного экспорта; "
-             "инструкция — src/nli.py")
-        return False
-    try:
-        packages = [name for name in ("onnxruntime", "tokenizers")
-                    if importlib.util.find_spec(name) is None]
-    except (ImportError, ValueError):
-        packages = ["onnxruntime/tokenizers"]
-    if packages:
-        line(mark, f"NLI: недоступны пакеты {', '.join(packages)}",
-             "восстановите зависимости Python приложения")
-        return False
+    why = nli.refusal()
     if not probe:
-        line(WARN, "NLI: файлы и пакеты на месте; инференс не проверен",
-             "scripts/doctor.py --probe-nli — локальная проба без скачивания весов")
+        if why:
+            line(WARN, f"NLI: {why}", "docs/MODELS.md")
+            return False
+        line(OK, "NLI: файлы, метки и пакеты годны; инференс — scripts/doctor.py --probe-nli")
         return None
+    if why:
+        line(FAIL, f"NLI: {why}", "docs/MODELS.md")
+        return False
     import live_gate
-    if live_gate.daemon_alive(root):
+    if live_gate.daemon_alive(_root()):
         line(WARN, "NLI: проба отложена — идёт встреча",
              "повторите --probe-nli после остановки встречи")
         return None
-    import nli
     try:
         judge = nli.judge()
-        if judge.refused or not judge.ready():
+        if judge.refused:
+            line(FAIL, f"NLI: {judge.refused}", "docs/MODELS.md")
+            return False
+        if not judge.ready():
             line(FAIL, "NLI: локальная проба не прошла",
                  "проверьте целостность весов и совместимость экспорта в models/nli")
             return False
