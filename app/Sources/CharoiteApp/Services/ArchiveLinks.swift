@@ -25,8 +25,11 @@ enum ArchiveLinks {
                       !target.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { continue }
                 let file = target.hasSuffix(".md") ? target : target + ".md"
                 let rel: String?
-                if target.contains("/") { rel = documents[file] == nil ? nil : file }
-                else { rel = names[file]?.count == 1 ? names[file]?.first : nil }
+                if target.contains("/") {
+                    rel = documents[file] == nil ? nil : file
+                } else {
+                    rel = names[file]?.count == 1 ? names[file]?.first : nil
+                }
                 guard let rel, seen.insert(rel).inserted else { continue }
                 let parts = rel.split(separator: "/")
                 guard let top = parts.first, GraphFolders.all.contains(String(top)),
