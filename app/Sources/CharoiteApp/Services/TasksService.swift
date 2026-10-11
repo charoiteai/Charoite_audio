@@ -343,7 +343,7 @@ final class TasksService: ObservableObject {
         }
     }
 
-    private func finishMutation(_ result: ToggleResult, root: URL) {
+    private func finishMutation(_ result: ToggleResult, root: URL?) {
         switch result {
         case .changed:
             rescan(root: root)
