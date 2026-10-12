@@ -937,17 +937,49 @@ def test_when_the_call_channel_fell_back_the_mic_stays_on_sherpa(meeting, monkey
     assert "Речь микрофона размечена" not in text
 
 
-def test_without_a_call_recording_the_mic_stays_on_sherpa(meeting, monkeypatch):
-    """Записи канала собеседников нет — Nemotron по нему не отвечал, комнату от
-    звонка в наушниках не отличить: микрофон на sherpa с подсказкой живой сессии
-    и склейкой после (№559), Nemotron не зовётся."""
+@pytest.mark.parametrize("failed", [False, True], ids=["nemotron", "fallback"])
+def test_without_a_call_recording_the_selected_engine_labels_the_mic(
+        failed, meeting, monkeypatch):
+    """Микрофон без системного канала: выбранный движок, нейтральные имена,
+    а при отказе — прежний план sherpa с подсказкой живой сессии."""
     asked = []
+    answer = (fp.Outcome(fp.FAILED, reason="нет весов") if failed else
+              fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0), (25.0, 40.0, 1),
+                                         (42.0, 55.0, 2)]))
     monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env", _by_channel(
-        fp.Outcome(fp.OK, payload=[]), fp.Outcome(fp.OK, payload=[(0.0, 20.0, 0)]), asked))
+        fp.Outcome(fp.OK, payload=[]), answer, asked))
     _room(meeting, call="absent")
-    rt.rebuild(meeting["live"], _nemotron_cfg())
-    assert asked == []
-    assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert [channel for channel, _ in asked] == ["mic"]
+    assert OWNER not in text
+    if failed:
+        assert ("mic", 7) in meeting["calls"] and ("mic", True) in meeting["merge"]
+        assert rt.ENGINE_REFUSED_REASON in text
+    else:
+        assert meeting["calls"] == []
+        assert "Собеседник 3" in text and "запасным движком" not in text
+
+
+@pytest.mark.parametrize("payload,reason", [
+    ([], "меньше 15 с"),
+    ([(0.0, 59.0, 0)], "один отрезок на всю запись"),
+    ([(2.0 * k, 2.0 * k + 2.0, k) for k in range(8)], "заняты все 8 слотов"),
+], ids=["empty", "degenerate", "slots"])
+def test_mic_only_nemotron_keeps_the_room_refusal_checks(payload, reason, meeting, monkeypatch):
+    _room(meeting, call="absent")
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: fp.Outcome(fp.OK, payload=payload))
+    text = rt.rebuild(meeting["live"], _nemotron_cfg()).read_text(encoding="utf-8")
+    assert ("mic", 7) in meeting["calls"]
+    assert reason in text and OWNER not in text
+
+
+def test_without_a_call_recording_sherpa_remains_the_default(meeting, monkeypatch):
+    _room(meeting, call="absent")
+    monkeypatch.setattr(rt.diarize_nemotron, "diarize_in_env",
+                        lambda *a, **k: pytest.fail("Nemotron не выбран"))
+    rt.rebuild(meeting["live"], CFG)
+    assert ("mic", 7) in meeting["calls"]
 
 
 def test_a_room_mic_goes_to_nemotron_and_sherpa_is_not_run(meeting, monkeypatch):
