@@ -55,9 +55,7 @@ struct LocalChatView: View {
                             // Три вопроса-подсказки сразу показывают жанр: чем
                             // это отличается от разового вопроса по архиву.
                             EmptyState(title: L.t("Память Чароита", "Charoite memory", "Charoite 记忆"),
-                                       text: L.t("Локальная модель на этой машине. С включённой памятью ответ опирается на встречи, граф и досье.",
-                                                 "A local model on this Mac. With memory on, answers lean on meetings, the graph and dossiers.",
-                                                 "运行在本机的本地模型。开启记忆后，回答会依据会议、图谱与档案。"),
+                                       text: MemoryScreenPolicy.chatIntro(inferenceIsLocal: chat.inferenceIsLocal),
                                        systemImage: "brain.head.profile") {
                                 ViewThatFits(in: .horizontal) {
                                     HStack(spacing: 8) { starterButtons }
@@ -213,8 +211,9 @@ struct LocalChatView: View {
         HStack(spacing: 10) {
             // плейсхолдер отличает чат от архивного бара суфлёра: это ДИАЛОГ
             // с памятью, а не разовый вопрос по архиву
-            TextField(L.t("Диалог с локальной моделью · память Чароита…", "Chat with the local model · Charoite memory…", "与本地模型对话 · Charoite 记忆…"), text: $draft, axis: .vertical)
-                .accessibilityLabel(L.t("Вопрос локальной модели", "Question to the local model", "向本地模型提问"))
+            TextField(MemoryScreenPolicy.inputPlaceholder(inferenceIsLocal: chat.inferenceIsLocal),
+                      text: $draft, axis: .vertical)
+                .accessibilityLabel(MemoryScreenPolicy.inputLabel(inferenceIsLocal: chat.inferenceIsLocal))
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .focused($inputFocused)

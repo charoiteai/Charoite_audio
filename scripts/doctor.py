@@ -374,7 +374,26 @@ def _check_nemotron_engine(cfg: dict, root: pathlib.Path, state: dict) -> None:
     python, refusal = state["interpreter"], state["interpreter_reason"]
     out = diarize_nemotron.probe_in_env(setting, root=root)
     if out.ok:
-        line(OK, f"Nemotron: mlx-audio {out.payload['mlx_audio']}, веса на месте, интерпретатор {python}")
+        installed = out.payload['mlx_audio']
+        line(OK, f"Nemotron: mlx-audio {installed}, веса на месте, интерпретатор {python}")
+        # Проба отвечает и на другой версии: стык (`load`, поток) проверен на одной —
+        # расхождение видно здесь, а не только в stderr пересборки (№695, постфактум-2
+        # по #800). Политика одна — `version_verdict`, как у пересборки: та же ветка
+        # `major.minor` (post-, dev-, локальная сборка) — прогон идёт, совета
+        # переставлять окружение нет; другая ветка — совет. Ключ главнее окружения:
+        # установщик его интерпретатор не обновит — ни отказ, ни предупреждение той же
+        # ветки рецепт установщика при ключе не несут (№695, круг n695-p3, DS I1).
+        key_fix = (f"обновите mlx-audio=={diarize_nemotron.MLX_AUDIO_VERSION} в окружении "
+                   "ключа sufler.nemotron_python")
+        refusal, warning = diarize_nemotron.version_verdict(
+            installed, recipe=key_fix if state["nemotron_python_set"] else diarize_nemotron.INSTALL_RECIPE)
+        if warning:
+            line(WARN, f"Nemotron: {warning}")
+        elif refusal:
+            fix = (key_fix if state["nemotron_python_set"]
+                   else f"поставить: {diarize_nemotron.install_command(root)}")
+            line(WARN, f"Nemotron: mlx-audio {installed}, продукт проверен на "
+                       f"{diarize_nemotron.MLX_AUDIO_VERSION}", fix)
         return
     # Команду установщика несёт один текст. При пустом ключе отказ «нечем работать»
     # (UNAVAILABLE) приходит из пробы уже с ней — второй раз не дописываем (№489); при

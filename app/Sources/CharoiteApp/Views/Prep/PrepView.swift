@@ -210,7 +210,7 @@ struct PrepView: View {
                                     Image(systemName: "square").foregroundStyle(.secondary)
                                 }
                             }
-                            .buttonStyle(.plain).disabled(tasks.isUpdating(item))
+                            .buttonStyle(.plain).disabled(tasks.isMutating)
                             Text(MarkdownLine.render(item.text)).font(.callout).lineLimit(2)
                         }
                     }
@@ -265,7 +265,7 @@ struct PrepView: View {
                                     Image(systemName: "square").foregroundStyle(.secondary)
                                 }
                             }
-                            .buttonStyle(.plain).disabled(tasks.isUpdating(item))
+                            .buttonStyle(.plain).disabled(tasks.isMutating)
                             Text(MarkdownLine.render(item.text)).font(.callout).lineLimit(2)
                             Spacer(minLength: 4)
                             if let due = TaskDue.parse(item.text) {

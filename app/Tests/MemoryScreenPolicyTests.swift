@@ -55,16 +55,16 @@ final class MemoryScreenPolicyTests: XCTestCase {
     func testMetaLineVariants() {
         XCTAssertEqual(
             MemoryScreenPolicy.metaLine(model: "qwen3.6:35b-a3b", seconds: 12,
-                                        meetingsInContext: 2, memoryOn: true, weakMatches: false),
+                                        meetingsInContext: 2, memoryOn: true, weakMatches: false, inferenceIsLocal: true),
             "локально · qwen3.6:35b-a3b · 12 с · 2 встречи в контексте")
         XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0,
-                                                  memoryOn: false, weakMatches: false)
+                                                  memoryOn: false, weakMatches: false, inferenceIsLocal: true)
             .hasSuffix("память выключена"))
         XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0,
-                                                  memoryOn: true, weakMatches: true)
+                                                  memoryOn: true, weakMatches: true, inferenceIsLocal: true)
             .hasSuffix("граф: слабые совпадения"))
         XCTAssertTrue(MemoryScreenPolicy.metaLine(model: "m", seconds: 3, meetingsInContext: 0,
-                                                  memoryOn: true, weakMatches: false)
+                                                  memoryOn: true, weakMatches: false, inferenceIsLocal: true)
             .hasSuffix("граф не в контексте"))
     }
 
@@ -74,12 +74,12 @@ final class MemoryScreenPolicyTests: XCTestCase {
     func testMetaLineNodesOnlyCountsSources() {
         let line = MemoryScreenPolicy.metaLine(
             model: "qwen", seconds: 3, meetingsInContext: 0,
-            sourcesInContext: 2, memoryOn: true, weakMatches: false)
+            sourcesInContext: 2, memoryOn: true, weakMatches: false, inferenceIsLocal: true)
         XCTAssertTrue(line.contains("2 источника в контексте"), line)
         XCTAssertFalse(line.contains("граф не в контексте"), line)
         let empty = MemoryScreenPolicy.metaLine(
             model: "qwen", seconds: 3, meetingsInContext: 0,
-            sourcesInContext: 0, memoryOn: true, weakMatches: false)
+            sourcesInContext: 0, memoryOn: true, weakMatches: false, inferenceIsLocal: true)
         XCTAssertTrue(empty.contains("граф не в контексте"), empty)
     }
 
@@ -130,6 +130,22 @@ final class MemoryScreenPolicyTests: XCTestCase {
         XCTAssertEqual(MemoryScreenPolicy.kind(of: "Dossiers/Signing.md"), .dossier)
         XCTAssertEqual(MemoryScreenPolicy.kind(of: "Документация/Отчёт.md"), .doc)
         XCTAssertEqual(MemoryScreenPolicy.kind(of: "Неизвестное/файл.md"), .doc)
+    }
+
+    /// №695, постфактум-2 по #785: экран чата не называет модель на сервере из
+    /// настроек «локальной» — правило одно с подписью под ответом.
+    func testChatLabelsFollowTheInferenceHost() {
+        XCTAssertTrue(MemoryScreenPolicy.inferenceIsLocal(base: "http://127.0.0.1:11434"))
+        XCTAssertTrue(MemoryScreenPolicy.inferenceIsLocal(base: "http://localhost:11434"))
+        XCTAssertFalse(MemoryScreenPolicy.inferenceIsLocal(base: "http://192.168.1.20:11434"))
+        XCTAssertFalse(MemoryScreenPolicy.inferenceIsLocal(base: "не адрес"))
+        for remote in [MemoryScreenPolicy.chatIntro(inferenceIsLocal: false),
+                       MemoryScreenPolicy.inputPlaceholder(inferenceIsLocal: false),
+                       MemoryScreenPolicy.inputLabel(inferenceIsLocal: false)] {
+            XCTAssertFalse(remote.lowercased().contains("локальн"), remote)
+            XCTAssertFalse(remote.contains("этой машине"), remote)
+        }
+        XCTAssertTrue(MemoryScreenPolicy.chatIntro(inferenceIsLocal: true).hasPrefix("Локальная модель"))
     }
 }
 #endif

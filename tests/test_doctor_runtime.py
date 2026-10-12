@@ -803,3 +803,67 @@ def test_a_live_stream_with_an_unexecutable_installed_interpreter_advises_the_in
         assert "исправьте или очистите ключ sufler.nemotron_python" not in out
     finally:
         installed.chmod(0o755)
+
+
+def _probe_answers(monkeypatch, tmp_path, versions):
+    import foreign_python as fp
+    monkeypatch.setattr(doctor, "_root", lambda: tmp_path)
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(doctor.diarize_nemotron, "probe_in_env",
+                        lambda setting, *, root: fp.Outcome(fp.OK, payload={"mlx_audio": versions[0]}))
+
+
+def _other_branch(tested: str) -> str:
+    """Другая ветка `major.minor` при любой поставке — с проверенной не совпадёт."""
+    major, minor = (int(x) for x in tested.split(".")[:2])
+    return f"{major}.{minor + 1}.0"
+
+
+@pytest.mark.parametrize("key", ["", "/env/python"])
+def test_a_probe_on_another_mlx_audio_branch_is_a_warning_with_advice(key, capsys, monkeypatch, tmp_path):
+    """Проба отвечает и на другой ветке, а продукт проверен на MLX_AUDIO_VERSION: доктор
+    говорит о расхождении «–», с советом по тому, чей интерпретатор в работе; на
+    проверенной версии — тишина (№695, постфактум-2 по #800)."""
+    tested = doctor.diarize_nemotron.MLX_AUDIO_VERSION
+    version = _other_branch(tested)
+    assert version != tested
+    versions = [version]
+    _probe_answers(monkeypatch, tmp_path, versions)
+    cfg = {"sufler": {"diarize_backend": "nemotron", "nemotron_python": key}}
+    doctor.check_engine(cfg)
+    out = capsys.readouterr().out
+    assert f"– Nemotron: mlx-audio {version}, продукт проверен на {tested}" in out
+    advice = "ключа sufler.nemotron_python" if key else "install_engine.py"
+    assert advice in out.split("продукт проверен на", 1)[1]
+    versions[0] = tested
+    doctor.check_engine(cfg)
+    assert "проверен на" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("suffix", [".post1", ".dev0+g1a2b"])
+@pytest.mark.parametrize("key", ["", "/env/python"])
+def test_a_post_release_of_the_tested_branch_warns_without_reinstall_advice(key, suffix, capsys,
+                                                                            monkeypatch, tmp_path):
+    """`0.5.8.post1` (и dev-сборка) при проверенной 0.5.8 — та же ветка: пересборка
+    идёт (`version_verdict`), доктор только предупреждает и не советует переставить
+    окружение (№695, круг n695-p2, DS M1). Рецепт на случай отказа загрузки — по
+    тому, чей интерпретатор: при заданном ключе установщик его не обновит, совет —
+    окружение ключа (№695, круг n695-p3, DS I1)."""
+    tested = doctor.diarize_nemotron.MLX_AUDIO_VERSION
+    version = f"{tested}{suffix}"
+    _probe_answers(monkeypatch, tmp_path, [version])
+    issues = doctor.issues
+    doctor.check_engine({"sufler": {"diarize_backend": "nemotron", "nemotron_python": key}})
+    out = capsys.readouterr().out
+    assert f"– Nemotron: mlx-audio {version}: стык проверен на {tested}, ветка та же" in out
+    tail = out.split(f"mlx-audio {version}:", 1)[1]
+    assert "→" not in tail
+    assert "install_engine.py" not in out
+    if key:
+        assert "установщик" not in out
+        assert f"откажет загрузка — обновите mlx-audio=={tested} в окружении ключа sufler.nemotron_python" in tail
+    else:
+        assert "обновите mlx-audio" not in out
+        assert f"откажет загрузка — {doctor.diarize_nemotron.INSTALL_RECIPE}" in tail
+    assert doctor.issues == issues
