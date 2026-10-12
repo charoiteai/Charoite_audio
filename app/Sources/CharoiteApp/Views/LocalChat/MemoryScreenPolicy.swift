@@ -131,6 +131,34 @@ enum MemoryScreenPolicy {
                                    en: ("source", "sources"), zh: "个来源")
     }
 
+    /// Модель отвечает на этом Mac: адрес Ollama — loopback. Одно правило для
+    /// подписи под ответом, пустого экрана и поля ввода (№695, постфактум-2 по #785).
+    static func inferenceIsLocal(base: String) -> Bool {
+        URL(string: base)?.host.map(AppSettings.isLoopbackHost) ?? false
+    }
+
+    static func chatIntro(inferenceIsLocal: Bool) -> String {
+        inferenceIsLocal
+            ? L.t("Локальная модель на этой машине. С включённой памятью ответ опирается на встречи, граф и досье.",
+                  "A local model on this Mac. With memory on, answers lean on meetings, the graph and dossiers.",
+                  "运行在本机的本地模型。开启记忆后，回答会依据会议、图谱与档案。")
+            : L.t("Модель на сервере, выбранном в настройках. С включённой памятью ответ опирается на встречи, граф и досье.",
+                  "A model on the server chosen in settings. With memory on, answers lean on meetings, the graph and dossiers.",
+                  "运行在设置所选服务器上的模型。开启记忆后，回答会依据会议、图谱与档案。")
+    }
+
+    static func inputPlaceholder(inferenceIsLocal: Bool) -> String {
+        inferenceIsLocal
+            ? L.t("Диалог с локальной моделью · память Чароита…", "Chat with the local model · Charoite memory…", "与本地模型对话 · Charoite 记忆…")
+            : L.t("Диалог с моделью на сервере · память Чароита…", "Chat with the server model · Charoite memory…", "与服务器模型对话 · Charoite 记忆…")
+    }
+
+    static func inputLabel(inferenceIsLocal: Bool) -> String {
+        inferenceIsLocal
+            ? L.t("Вопрос локальной модели", "Question to the local model", "向本地模型提问")
+            : L.t("Вопрос модели на сервере", "Question to the server model", "向服务器模型提问")
+    }
+
     /// Строка происхождения под ответом: «локально · модель · время · что в
     /// контексте». У каждого числа источник; нолей и обещаний не пишем.
     /// `sourcesInContext` — все подмешанные хиты (не только встречи): «граф
@@ -139,7 +167,7 @@ enum MemoryScreenPolicy {
     static func metaLine(model: String, seconds: Int, meetingsInContext: Int,
                          sourcesInContext: Int = 0,
                          memoryOn: Bool, weakMatches: Bool,
-                         inferenceIsLocal: Bool = true) -> String {
+                         inferenceIsLocal: Bool) -> String {
         let location = inferenceIsLocal
             ? L.t("локально", "local", "本地")
             : L.t("другой сервер", "another server", "其他服务器")

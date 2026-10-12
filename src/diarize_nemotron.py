@@ -276,7 +276,8 @@ def _branch(version: str) -> tuple[int, int] | None:
     return (int(m[1]), int(m[2])) if m else None
 
 
-def version_verdict(installed: str | None) -> tuple[str | None, str | None]:
+def version_verdict(installed: str | None,
+                    recipe: str = INSTALL_RECIPE) -> tuple[str | None, str | None]:
     """Установленный mlx-audio против проверенного: `(отказ, предупреждение)`.
 
     Отказ — метаданных дистрибутива нет (версию не сверить) или другая ветка
@@ -285,17 +286,19 @@ def version_verdict(installed: str | None) -> tuple[str | None, str | None]:
     рецепт на случай отказа `load` назван заранее. Строгое равенство отказывало
     любой сборке из git и `pip install -e` без выхода (выходной круг 3 по #648,
     DS I2). Политика одна — её читает `availability`, а `load_model` при отказе
-    загрузки называет тот же рецепт.
+    загрузки называет тот же рецепт. `recipe` — совет того, кто спрашивает: doctor
+    при заданном `sufler.nemotron_python` называет окружение ключа — установщик его
+    интерпретатор не обновит.
     """
     if installed is None:
         return (f"mlx-audio стоит без метаданных дистрибутива — версию не сверить, стык "
-                f"проверен на {MLX_AUDIO_VERSION}: {INSTALL_RECIPE}", None)
+                f"проверен на {MLX_AUDIO_VERSION}: {recipe}", None)
     if installed == MLX_AUDIO_VERSION:
         return None, None
     if _branch(installed) is None or _branch(installed) != _branch(MLX_AUDIO_VERSION):
-        return f"mlx-audio {installed}, стык проверен на {MLX_AUDIO_VERSION} — {INSTALL_RECIPE}", None
+        return f"mlx-audio {installed}, стык проверен на {MLX_AUDIO_VERSION} — {recipe}", None
     return None, (f"mlx-audio {installed}: стык проверен на {MLX_AUDIO_VERSION}, ветка та же — "
-                  f"прогон идёт; откажет загрузка — {INSTALL_RECIPE}")
+                  f"прогон идёт; откажет загрузка — {recipe}")
 
 
 def _stderr(line: str) -> None:

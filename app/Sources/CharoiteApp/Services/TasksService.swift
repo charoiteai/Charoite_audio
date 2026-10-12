@@ -45,8 +45,14 @@ final class TasksService: ObservableObject {
 
     struct Change: Equatable, Sendable {
         let item: Item
+        /// Строка, которую переключили на деле: `item.lineIndex` — лишь быстрый
+        /// путь, файл мог сдвинуться между сканом и записью.
+        let lineIndex: Int
         let originalLine: String
         let changedLine: String
+        /// Весь текст файла, который записала отметка. Отмена пишет только в этот
+        /// же снимок: любая внешняя правка файла — конфликт (№695, круг n695-p3).
+        let resultingText: String
     }
 
     @Published private(set) var lastChange: Change?
@@ -323,7 +329,8 @@ final class TasksService: ObservableObject {
         }
     }
 
-    /// One-level undo stays available until the next successful change.
+    /// One-level undo stays available until the next successful change or the
+    /// first undo attempt that reached the file (only a failed write keeps it).
     /// It belongs to the shared service, so changing filters doesn't hide it.
     func undoLastChange() {
         guard !isMutating, let change = lastChange else { return }
@@ -334,6 +341,8 @@ final class TasksService: ObservableObject {
             let result = Self.undoSync(change)
             await MainActor.run {
                 self.pendingIDs.remove(change.item.id)
+                // Отмена сгорает при любом исходе, кроме неудачной записи: после
+                // внешней правки снимок не вернётся, повтор бессмыслен (№695, n695-p3).
                 if result != .writeFailed {
                     self.lastChange = nil
                     self.undoRoot = nil
@@ -402,19 +411,25 @@ final class TasksService: ObservableObject {
         flipped.replaceSubrange(marker, with: item.done ? " " : "x")
         guard flipped != line else { return (.conflict, nil) }
         lines[targetIndex] = flipped
-        let result = saveMutation(lines.joined(separator: "\n"), replacing: text, at: item.file)
-        let change = result == .changed ? Change(item: item, originalLine: line, changedLine: flipped) : nil
+        let written = lines.joined(separator: "\n")
+        let result = saveMutation(written, replacing: text, at: item.file)
+        let change = result == .changed ? Change(item: item, lineIndex: targetIndex,
+                                                       originalLine: line, changedLine: flipped,
+                                                       resultingText: written) : nil
         return (result, change)
     }
 
     nonisolated static func undoSync(_ change: Change) -> ToggleResult {
         guard let text = try? String(contentsOf: change.item.file, encoding: .utf8) else { return .missing }
+        // Отменяем только в тот самый файл, который записали. По строкам свою
+        // отметку от отметки владельца не отличить (два одинаковых поручения:
+        // свою он снял или удалил, соседнюю отметил) — любая правка файла после
+        // нас — конфликт без записи (№695, круг n695-p3, C1).
+        guard text == change.resultingText else { return .conflict }
         var lines = text.components(separatedBy: "\n")
-        // Even the old index is unsafe when another identical row was added.
-        let matches = lines.indices.filter { lines[$0] == change.changedLine }
-        guard !matches.isEmpty else { return .missing }
-        guard matches.count == 1, let index = matches.first else { return .conflict }
-        lines[index] = change.originalLine
+        guard lines.indices.contains(change.lineIndex),
+              lines[change.lineIndex] == change.changedLine else { return .conflict }
+        lines[change.lineIndex] = change.originalLine
         return saveMutation(lines.joined(separator: "\n"), replacing: text, at: change.item.file)
     }
 
