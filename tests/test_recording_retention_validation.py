@@ -61,3 +61,22 @@ def test_nan_from_yaml_does_not_remove_fresh_recording(tmp_path):
     path.write_bytes(b"fresh recording")
     audio.AudioHub.prune_recordings(tmp_path, days)
     assert path.read_bytes() == b"fresh recording"
+
+
+@pytest.mark.parametrize("cfg", [{}, {"audio": {}}])
+def test_missing_retention_keeps_logs_for_two_days(tmp_path, monkeypatch, cfg):
+    import daemon
+    charoite_paths.use_data_root(tmp_path, replace=True)
+    now = 1_800_000_000.0
+    monkeypatch.setattr(daemon.time, "time", lambda: now)
+    folder = tmp_path / "logs"
+    folder.mkdir()
+    recent = folder / "graph_2026-10-10_120000.log"
+    expired = folder / "graph_2026-10-09_120000.log"
+    for path, age in ((recent, 1.5), (expired, 2.5)):
+        path.write_bytes(b"meeting diagnostic")
+        then = now - age * 86400
+        os.utime(path, (then, then))
+    daemon._prune_graph_logs(cfg)
+    assert recent.read_bytes() == b"meeting diagnostic"
+    assert not expired.exists()
