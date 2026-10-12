@@ -600,6 +600,25 @@ def resolve_record_free_min(audio_cfg: dict) -> int:
     return n if n > 0 else default
 
 
+def resolve_record_keep_days(raw) -> float | None:
+    """Неверный срок не разрешает удаление; None означает пропуск уборки.
+
+    Ноль — явное удаление при следующем проходе. Строковые числа оставляем
+    совместимыми с прежним float(), но bool, отрицательное, NaN, бесконечность
+    и переполнение в секундах не являются сроком. Не подставляем два дня:
+    это могло бы стереть записи раньше срока, который хотел задать человек.
+    """
+    try:
+        days = float(raw)
+        if not isinstance(raw, bool) and days >= 0 and math.isfinite(days * 86400):
+            return days
+    except (TypeError, ValueError, OverflowError):
+        pass
+    _safe_stderr("audio.record_keep_days: нужен конечный неотрицательный срок в днях; "
+                 "очистка пропущена, исправьте настройку")
+    return None
+
+
 class AudioHub:
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
@@ -1348,7 +1367,10 @@ class AudioHub:
         """
         if not record_dir.exists():
             return 0
-        cutoff = time.time() - float(keep_days) * 86400
+        days = resolve_record_keep_days(keep_days)
+        if days is None:
+            return 0
+        cutoff = time.time() - days * 86400
         protected = set(protect)
         held = 0
         for old in record_dir.iterdir():
@@ -1387,7 +1409,10 @@ class AudioHub:
         """
         if not data_dir.exists():
             return 0
-        cutoff = time.time() - float(keep_days) * 86400
+        days = resolve_record_keep_days(keep_days)
+        if days is None:
+            return 0
+        cutoff = time.time() - days * 86400
         alive: set[str] = set()
         manifest = fresh_sck_manifest() or {}
         for key in ("system", "mic"):
