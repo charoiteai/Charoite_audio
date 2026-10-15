@@ -1324,6 +1324,12 @@ it signals degradation, it does not break the loop.
   list sums up "N overdue · N open · N stale · N done", and a second view,
   "By due date", regroups the open items into Overdue, Next 7 days, Later
   and No due date; a due date shows as a chip on its row.
+  A tick can be taken back: "Undo status change" restores the line that was
+  actually toggled. Undo refuses rather than guess when that line has moved
+  and an identical unchanged twin is in the file, so it never clears someone
+  else's check; while any write is running, task toggles on the Prep and
+  meeting cards are disabled, as on the Tasks screen, so a click is not
+  silently dropped.
 - **Action items go to participants only.** If the minutes assign a task to
   someone who was not in the meeting (merely mentioned), the line loses its
   checkbox and gets a «⚠ не участник» mark: it stays out of the Tasks window
@@ -1365,6 +1371,35 @@ it signals degradation, it does not break the loop.
   The same door guards the other entry points (pipeline modules, meeting
   import, dictation and notes, the Voice Memos bridge): started without `CHAROITE_ROOT` they exit
   with code 5 and the same recipe instead of guessing where the data lives.
+
+## Post-meeting diarization on Nemotron (optional)
+
+- The transcript rebuild can label speakers with Nemotron 3 Diarization
+  (MLX port, `src/diarize_nemotron.py`) instead of sherpa:
+  `sufler.diarize_backend: nemotron` (default `sherpa`). The environment is
+  installed once on your command — `scripts/install_engine.py nemotron` or the
+  Nemotron button in the app, which checks the config and runs the install as
+  a cancellable long process. When selected, it also runs on
+  microphone-only recordings. `scripts/doctor.py` warns when the probe runs on
+  an untested `mlx-audio`. Details: [DIARIZATION.md](DIARIZATION.md#post-meeting-pass-on-nemotron).
+
+## Utilities (scripts/)
+
+Tools not covered above — for maintenance, benchmarks and diagnostics:
+
+| Script | What it does |
+|---|---|
+| `scripts/install_engine.py` | Installs a diarization engine environment (interpreter copy, locked packages, weights), e.g. `nemotron` |
+| `scripts/dedup_graph.py` | Nightly de-duplication of graph files (run by `scripts/nightly.sh`) |
+| `scripts/cloud_review.py` | Controlled cloud review of a meeting, with a timeout and limits (called by the graph pipeline) |
+| `scripts/decision_evidence_audit.py` | Read-only audit of exported decision quotes and replacement links |
+| `scripts/retrieval_compare.py` | Compares ranked retrieval runs on the same frozen judgments; no model or network calls |
+| `scripts/memory_case_suite.py` | Validates the frozen demo memory questions and optionally exports lexical retrieval |
+| `scripts/runtime_profile.py` | Profiles a local runtime (Ollama, MLX) through Charoite's own streaming transport |
+| `scripts/bench_models.py` | Benchmarks models on Charoite's own scenarios |
+| `scripts/diar_bench.py` | Diarization benchmark: how much time is attributed to the wrong voice |
+| `scripts/nemotron_shadow_replay.py` | Replays a recording through the streaming Nemotron shadow, without a call |
+| `scripts/nemotron_shadow_check.py` | Compares the streaming Nemotron shadow log with the final meeting labels |
 
 ## Document format
 
