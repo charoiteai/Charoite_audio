@@ -26,7 +26,9 @@ struct MeetingLibraryView: View {
     /// сразу на выбранной глубине.
     @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
     @Environment(\.accessibilityReduceMotion) var reduceMotion
-    @State private var graphFolderSaveFailed = false
+    /// Готовность поиска считается вне `body` и вне главного потока: `stat` по
+    /// уснувшему сетевому тому висит до таймаута ядра. nil — ещё не проверено.
+    @State private var searchReadiness: LibrarySearchReadiness?
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
@@ -231,6 +233,7 @@ struct MeetingLibraryView: View {
     private var resultList: some View {
         if searchActive {
             searchResults
+                .task(id: query) { await checkSearchReadiness() }
         } else if let day = selectedDay {
             dayFeed(day)
         } else if repository.records.isEmpty {
@@ -305,52 +308,37 @@ struct MeetingLibraryView: View {
     }
 
     /// Почему поиск не может идти: папка не задана или не найдена на диске.
+    /// Папку графа выбирает мастер первого запуска; отсюда config.yaml не пишется.
     private var searchBlocked: (title: String, text: String)? {
-        switch LibrarySearchReadiness.resolve(graphDir: AppSettings.graphDir) {
-        case .ready:
+        switch searchReadiness {
+        case .ready, nil:
             return nil
         case .notConfigured:
-            return (L.t("Выберите папку памяти", "Choose a memory folder", "选择记忆文件夹"),
-                    L.t("Поиск пока недоступен: папка графа не настроена.",
-                        "Search is unavailable because no graph folder is configured.",
-                        "尚未设置图谱文件夹，搜索暂不可用。"))
+            return (L.t("Папка памяти не настроена", "Memory folder not configured", "未设置记忆文件夹"),
+                    L.t("Поиск пока недоступен: папка графа не настроена. Укажите graph_dir в config.yaml или пройдите первый запуск заново.",
+                        "Search is unavailable because no graph folder is configured. Set graph_dir in config.yaml or run the first-run setup again.",
+                        "尚未设置图谱文件夹，搜索暂不可用。请在 config.yaml 中设置 graph_dir，或重新运行首次设置。"))
         case .unreachable(let url):
             return (L.t("Папка памяти недоступна", "Memory folder unavailable", "记忆文件夹不可用"),
-                    L.t("Папка графа \(url.path) не найдена или не подключена — поиск не выполнялся.",
-                        "The graph folder \(url.path) was not found or is not connected — no search was run.",
-                        "未找到或未连接图谱文件夹 \(url.path)——未执行搜索。"))
+                    L.t("Папка графа \(url.path) недоступна: не найдена, не подключена или нет доступа — поиск не выполнялся.",
+                        "The graph folder \(url.path) is unavailable: not found, not connected or not permitted — no search was run.",
+                        "图谱文件夹 \(url.path) 不可用：未找到、未连接或无权限——未执行搜索。"))
         }
     }
 
-    /// Та же запись graph_dir, что у мастера первого запуска: в Настройках
-    /// папка графа только показывается, выбрать её там нельзя.
-    private func chooseGraphFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = L.t("Выбрать", "Choose", "选择")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        graphFolderSaveFailed = !AppSettings.setConfigValue("graph_dir", url.path)
-        if !graphFolderSaveFailed { runSearch(debounced: false) }
+    private func checkSearchReadiness() async {
+        let dir = AppSettings.graphDir
+        let state = await Task.detached(priority: .userInitiated) {
+            LibrarySearchReadiness.resolve(graphDir: dir)
+        }.value
+        searchReadiness = state
     }
 
     @ViewBuilder
     private var searchResults: some View {
         if let blocked = searchBlocked {
-            EmptyState(title: blocked.title, text: blocked.text,
-                       systemImage: "folder.badge.questionmark") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Button(L.t("Выбрать папку…", "Choose folder…", "选择文件夹…")) { chooseGraphFolder() }
-                        .charoite(.regular, .s)
-                    if graphFolderSaveFailed {
-                        Text(L.t("Не удалось записать config.yaml — проверьте папку данных в Настройках.",
-                                 "Could not write config.yaml — check the data folder in Settings.",
-                                 "无法写入 config.yaml——请在设置中检查数据文件夹。"))
-                            .font(.caption).foregroundStyle(Theme.warning)
-                    }
-                }
-            }
+            EmptyState(blocked.title, text: blocked.text,
+                       systemImage: "folder.badge.questionmark")
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else if hits.isEmpty {
             if isSearching {
