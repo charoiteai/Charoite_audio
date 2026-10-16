@@ -335,9 +335,8 @@ struct TasksView: View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return scoped.filter { item in
             (showDone || !item.done)
-                && (trimmed.isEmpty
-                    || item.text.localizedCaseInsensitiveContains(trimmed)
-                    || TasksService.sourceTitle(item.rel).localizedCaseInsensitiveContains(trimmed))
+                && TasksScreenPolicy.matchesSearch(
+                    text: item.text, source: TasksService.sourceTitle(item.rel), query: trimmed)
         }
     }
 
@@ -402,6 +401,8 @@ struct TasksView: View {
             }
             .buttonStyle(.plain)
             .disabled(tasks.isMutating)
+            .accessibilityLabel(TasksScreenPolicy.statusAction(text: item.text, done: item.done))
+            .help(TasksScreenPolicy.statusAction(text: item.text, done: item.done))
             Text(MarkdownLine.render(item.text))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)

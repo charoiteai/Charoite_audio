@@ -131,6 +131,8 @@ final class LocalChatService: ObservableObject {
     func stopStreaming() {
         task?.cancel()
         isStreaming = false
+        // A canceled memory lookup can return before stream's final save.
+        saveHistory()
     }
 
     func clear() {
@@ -210,6 +212,7 @@ final class LocalChatService: ObservableObject {
             let outcome = await ArchiveSearch.searchStructured(
                 query: String(topic), limit: 8, snippet: 800, budget: 5000,
                 includeLinked: inferenceIsLocal)
+            guard !Task.isCancelled else { return }
             var vault = outcome.text
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
@@ -235,18 +238,17 @@ final class LocalChatService: ObservableObject {
             }
             status = vault.isEmpty ? L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容") : (lowConf ? L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配") : L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱"))
         }
+        guard !Task.isCancelled else { return }
         var msgs: [[String: String]] = [["role": "system", "content": system]]
         // Окно истории: не хвост в N сообщений, а бюджет в знаках — длинные
         // ответы не выталкивают начало разговора мгновенно
-        var budget = 12000
-        var window: [[String: String]] = []
-        for m in messages.reversed() where !m.text.isEmpty {
-            let cost = m.text.count
-            if budget - cost < 0 { break }
-            budget -= cost
-            window.append(["role": m.role, "content": m.text])
+        let currentUserIndex = messages.firstIndex(where: { $0.id == bubbleId })
+            .map { max(0, $0 - 1) } ?? messages.count
+        let history = messages.prefix(currentUserIndex).map {
+            ChatContextWindow.Entry(role: $0.role, text: $0.text)
         }
-        msgs.append(contentsOf: window.reversed())
+        let window = ChatContextWindow.select(history: history, prompt: prompt)
+        msgs.append(contentsOf: window.map { ["role": $0.role, "content": $0.text] })
 
         // Встреча держит большую модель в очереди Ollama (запросы к одной модели
         // сериализуются) — вопрос в чате «висел без реакции» минутами. На время

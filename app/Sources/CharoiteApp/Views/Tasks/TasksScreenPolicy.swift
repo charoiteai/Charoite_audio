@@ -14,6 +14,26 @@ enum TasksGrouping: String, CaseIterable {
 /// раздел «macOS: доделки»): сводка трёх чисел и корзины сроков —
 /// тестируются без UI и без TasksService.
 enum TasksScreenPolicy {
+    /// All query words may match task text or its source, in any order.
+    static func matchesSearch(text: String, source: String, query: String) -> Bool {
+        func normalized(_ value: String) -> String {
+            value.folding(options: [.caseInsensitive, .diacriticInsensitive],
+                          locale: Locale(identifier: "ru_RU"))
+                .replacingOccurrences(of: "ё", with: "е")
+                .replacingOccurrences(of: "Ё", with: "е")
+        }
+        let terms = normalized(query).split(whereSeparator: { $0.isWhitespace })
+        let content = normalized(text + " " + source)
+        return terms.allSatisfy { content.contains($0) }
+    }
+
+    static func statusAction(text: String, done: Bool) -> String {
+        let action = done
+            ? L.t("Снова открыть поручение", "Reopen action item", "重新打开任务")
+            : L.t("Отметить выполненным", "Mark completed", "标记完成")
+        return action + ": " + text
+    }
+
 
     struct Summary: Equatable {
         let overdue: Int

@@ -30,6 +30,19 @@ final class LocalChatSubmissionTests: XCTestCase {
         }
     }
 
+    func testStopPreservesVisibleQuestionBeforeRetrievalReturns() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Новый вопрос до поиска"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            XCTAssertFalse(service.isStreaming)
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(saved, service.messages)
+            XCTAssertEqual(LocalChatService(historyURL: url).messages, service.messages)
+        }
+    }
+
     func testWhitespaceSubmissionDoesNotCreateMessagesOrStartStreaming() throws {
         try withHistory { service, url, bytes in
             let before = service.messages

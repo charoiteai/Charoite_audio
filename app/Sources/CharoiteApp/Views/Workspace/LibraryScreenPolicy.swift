@@ -7,6 +7,17 @@ import Foundation
 /// подписи чисел — тестируются без UI и без репозитория, как
 /// `TasksScreenPolicy` у экрана задач.
 enum LibraryScreenPolicy {
+    /// Keep the detail selection inside the active day feed.
+    static func selectedID<T>(in records: [T], current: String?, day: Date?,
+                              id: (T) -> String, date: (T) -> Date,
+                              calendar: Calendar = .current) -> String? {
+        let candidates = records.filter { record in
+            day.map { calendar.isDate(date(record), inSameDayAs: $0) } ?? true
+        }
+        if let current, candidates.contains(where: { id($0) == current }) { return current }
+        return candidates.first.map(id)
+    }
+
 
     /// Порядок — это и порядок секций ленты: свежее сверху. «Впереди» —
     /// запись с датой за пределами этой недели в будущем: импорт с чужим

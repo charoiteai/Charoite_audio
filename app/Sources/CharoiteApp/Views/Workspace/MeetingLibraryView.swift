@@ -50,11 +50,18 @@ struct MeetingLibraryView: View {
                 .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
+            alignDayWithExplicitSelection()
             chooseDefaultIfNeeded()
             reloadDayEvents()
         }
         .onChange(of: repository.records) { _, _ in chooseDefaultIfNeeded() }
-        .onChange(of: selectedDay) { _, _ in reloadDayEvents() }
+        .onChange(of: navigation.selectedMeetingID) { _, _ in
+            if !searchActive { alignDayWithExplicitSelection() }
+        }
+        .onChange(of: selectedDay) { _, _ in
+            reloadDayEvents()
+            chooseDefaultIfNeeded()
+        }
         .onChange(of: calendar.accessGranted) { _, _ in reloadDayEvents() }
         .onChange(of: calendar.eventsRevision) { _, _ in reloadDayEvents() }
         .onDisappear { cancelSearch() }
@@ -164,8 +171,12 @@ struct MeetingLibraryView: View {
                 .textFieldStyle(.plain)
                 .onSubmit { runSearch(debounced: false) }
                 .onChange(of: query) { _, value in
-                    value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? cancelSearch() : runSearch()
+                    if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        cancelSearch()
+                        chooseDefaultIfNeeded()
+                    } else {
+                        runSearch()
+                    }
                 }
             if isSearching { ProgressView().controlSize(.small) }
             if !query.isEmpty {
@@ -273,9 +284,9 @@ struct MeetingLibraryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 EmptyState(title: L.t("Ничего не найдено", "Nothing found", "未找到结果"),
-                           text: L.t("Искал «\(query.trimmingCharacters(in: .whitespacesAndNewlines))» в резюме, минутках, стенограммах и узлах графа. Попробуйте одно слово или имя участника.",
-                                     "Searched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))” in summaries, minutes, transcripts and graph nodes. Try a single word or a participant's name.",
-                                     "已在摘要、纪要、逐字稿和图谱节点中搜索“\(query.trimmingCharacters(in: .whitespacesAndNewlines))”。试试单个词或参会者姓名。"),
+                           text: L.t("Искал «\(query.trimmingCharacters(in: .whitespacesAndNewlines))» в резюме, минутках, разборах и узлах графа. Попробуйте одно слово или имя участника.",
+                                     "Searched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))” in summaries, minutes, analyses and graph nodes. Try a single word or a participant's name.",
+                                     "已在摘要、纪要、分析和图谱节点中搜索“\(query.trimmingCharacters(in: .whitespacesAndNewlines))”。试试单个词或参会者姓名。"),
                            systemImage: "magnifyingglass") {
                     Button(L.t("Сбросить поиск", "Clear search", "清除搜索")) {
                         query = ""
@@ -563,9 +574,19 @@ struct MeetingLibraryView: View {
         }
     }
 
+    /// Opening a meeting from another screen takes precedence over a saved day filter.
+    private func alignDayWithExplicitSelection() {
+        guard let day = selectedDay,
+              let record = repository.record(id: navigation.selectedMeetingID),
+              !Calendar.current.isDate(record.startedAt, inSameDayAs: day) else { return }
+        selectedDay = nil
+        weekAnchor = Calendar.current.startOfDay(for: record.startedAt)
+    }
+
     private func chooseDefaultIfNeeded() {
-        guard repository.record(id: navigation.selectedMeetingID) == nil else { return }
-        navigation.selectedMeetingID = repository.records.first?.id
+        navigation.selectedMeetingID = LibraryScreenPolicy.selectedID(
+            in: repository.records, current: navigation.selectedMeetingID, day: searchActive ? nil : selectedDay,
+            id: { $0.id }, date: { $0.startedAt })
     }
 
     func stateColor(_ state: MeetingProcessingSnapshot.State) -> Color {
