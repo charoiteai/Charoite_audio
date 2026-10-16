@@ -3,12 +3,10 @@ import AppKit
 import SwiftUI
 
 /// Scoped to this chat's scroll view; content resizing is not a user scroll.
-/// Position comes from the clip view bounds, so the mouse wheel without phases, keyboard
-/// paging, scroller arrows and VoiceOver are seen too, not only live-scroll gestures.
+/// Only live-scroll gestures are reported; the end carries the reader's distance from the bottom.
 struct ChatScrollObserver: NSViewRepresentable {
     var onBegin: () -> Void
-    var onMove: (_ distanceFromBottom: CGFloat, _ movedUp: Bool) -> Void
-    var onEnd: () -> Void
+    var onEnd: (_ distanceFromBottom: CGFloat) -> Void
     /// The observed scroll view is gone mid-gesture: release the gesture latch, never scroll.
     var onCancel: () -> Void
 
@@ -16,7 +14,6 @@ struct ChatScrollObserver: NSViewRepresentable {
 
     func updateNSView(_ view: Marker, context: Context) {
         view.onBegin = onBegin
-        view.onMove = onMove
         view.onEnd = onEnd
         view.onCancel = onCancel
         view.attach()
@@ -28,11 +25,9 @@ struct ChatScrollObserver: NSViewRepresentable {
 
     final class Marker: NSView {
         var onBegin: (() -> Void)?
-        var onMove: ((CGFloat, Bool) -> Void)?
-        var onEnd: (() -> Void)?
+        var onEnd: ((CGFloat) -> Void)?
         var onCancel: (() -> Void)?
         private weak var observedScrollView: NSScrollView?
-        private var lastOriginY: CGFloat?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attach() }
@@ -42,20 +37,17 @@ struct ChatScrollObserver: NSViewRepresentable {
             guard let scroll = enclosingScrollView, scroll !== observedScrollView else { return }
             detach()
             observedScrollView = scroll
-            lastOriginY = scroll.contentView.bounds.origin.y
-            scroll.contentView.postsBoundsChangedNotifications = true
             let center = NotificationCenter.default
             center.addObserver(self, selector: #selector(began), name: NSScrollView.willStartLiveScrollNotification, object: scroll)
             center.addObserver(self, selector: #selector(ended), name: NSScrollView.didEndLiveScrollNotification, object: scroll)
-            center.addObserver(self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         }
 
         func detach() {
             NotificationCenter.default.removeObserver(self)
             // A gesture that began on the old scroll view will never report its end here.
+            // Deferred: detach runs inside SwiftUI view updates, where state must not change.
             if observedScrollView != nil, let cancel = onCancel { DispatchQueue.main.async(execute: cancel) }
             observedScrollView = nil
-            lastOriginY = nil
         }
 
         private var distance: CGFloat {
@@ -66,16 +58,7 @@ struct ChatScrollObserver: NSViewRepresentable {
         }
 
         @objc private func began(_ notification: Notification) { onBegin?() }
-        @objc private func ended(_ notification: Notification) { onEnd?() }
-
-        @objc private func boundsChanged(_ notification: Notification) {
-            guard let scroll = observedScrollView else { return }
-            let originY = scroll.contentView.bounds.origin.y
-            defer { lastOriginY = originY }
-            guard let last = lastOriginY, originY != last else { return }
-            let flipped = scroll.documentView?.isFlipped ?? true
-            onMove?(distance, ChatScrollPolicy.movedUp(originY: originY, previousOriginY: last, flipped: flipped))
-        }
+        @objc private func ended(_ notification: Notification) { onEnd?(distance) }
 
         deinit { NotificationCenter.default.removeObserver(self) }
     }

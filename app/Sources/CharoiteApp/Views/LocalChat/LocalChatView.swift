@@ -72,12 +72,11 @@ struct LocalChatView: View {
                     .padding(14)
                     .background(ChatScrollObserver(
                         onBegin: { scrollPolicy.beginUserScroll() },
-                        onMove: { scrollPolicy.positionChanged(distanceFromBottom: $0, movedUp: $1) },
                         onEnd: {
-                            scrollPolicy.endUserScroll()
+                            scrollPolicy.endUserScroll(distanceFromBottom: $0)
                             if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
                         },
-                        onCancel: { scrollPolicy.endUserScroll() }
+                        onCancel: { scrollPolicy.cancelUserScroll() }
                     ))
                 }
                 .onAppear { scrollToLatest(using: proxy) }

@@ -6,8 +6,7 @@ final class ChatScrollPolicyTests: XCTestCase {
         var policy = ChatScrollPolicy()
         XCTAssertTrue(policy.contentChanged())
         policy.beginUserScroll()
-        policy.positionChanged(distanceFromBottom: 250, movedUp: true)
-        policy.endUserScroll()
+        policy.endUserScroll(distanceFromBottom: 250)
         for _ in 0..<100 { XCTAssertFalse(policy.contentChanged()) }
         XCTAssertTrue(policy.hasUnreadContent)
         policy.resume()
@@ -15,72 +14,45 @@ final class ChatScrollPolicyTests: XCTestCase {
         XCTAssertFalse(policy.hasUnreadContent)
     }
 
-    func testWheelOrKeyboardWithoutGestureStillPauses() {
-        // No live-scroll begin/end: only the clip view moved (wheel without phases, Page Up).
-        var policy = ChatScrollPolicy()
-        policy.positionChanged(distanceFromBottom: 400, movedUp: true)
-        XCTAssertFalse(policy.contentChanged())
-        XCTAssertTrue(policy.hasUnreadContent)
-        policy.positionChanged(distanceFromBottom: 10, movedUp: false)
-        XCTAssertTrue(policy.contentChanged())
-    }
-
-    func testOwnJumpDownNeverPausesItself() {
-        // A programmatic jump can land short of the bottom while the lazy stack measures rows.
-        var policy = ChatScrollPolicy()
-        policy.positionChanged(distanceFromBottom: 300, movedUp: false)
-        XCTAssertTrue(policy.shouldFollow)
-    }
-
-    func testGestureCancelsAlreadyScheduledJumpEvenAtBottom() {
+    func testGestureCancelsAlreadyScheduledJump() {
         var policy = ChatScrollPolicy()
         XCTAssertTrue(policy.contentChanged()) // queued by the view
         policy.beginUserScroll()
-        XCTAssertFalse(policy.shouldFollow) // rechecked when queue executes
+        XCTAssertFalse(policy.shouldFollow) // rechecked when the queue executes
         XCTAssertFalse(policy.contentChanged())
-        policy.positionChanged(distanceFromBottom: 0, movedUp: false)
-        policy.endUserScroll()
+    }
+
+    func testGestureEndingNearBottomKeepsFollowing() {
+        // Our anchor sits a padding above the true bottom, and insets shift the visible rect:
+        // a few dozen points are geometry, not the reader leaving.
+        var policy = ChatScrollPolicy()
+        policy.beginUserScroll()
+        policy.endUserScroll(distanceFromBottom: 14)
         XCTAssertTrue(policy.shouldFollow)
         XCTAssertFalse(policy.hasUnreadContent)
     }
 
-    func testOneWheelTickUpPausesAndScrollingBackDownResumes() {
-        // A wheel notch is 10-60 pt: the reader left the bottom even though it is inside the tolerance.
+    func testGestureBackToBottomResumesAndClearsBadge() {
         var policy = ChatScrollPolicy()
-        policy.positionChanged(distanceFromBottom: 24, movedUp: true)
-        XCTAssertFalse(policy.contentChanged())
-        XCTAssertTrue(policy.hasUnreadContent)
-        policy.positionChanged(distanceFromBottom: 40, movedUp: false)
-        XCTAssertTrue(policy.shouldFollow)
-        XCTAssertFalse(policy.hasUnreadContent)
-    }
-
-    func testShrinkingDocumentClampDoesNotResumeOrPause() {
-        // Window resize reflows the text: the clip view clamps its origin up to the new bottom.
-        var paused = ChatScrollPolicy()
-        paused.positionChanged(distanceFromBottom: 150, movedUp: true)
-        paused.positionChanged(distanceFromBottom: 0, movedUp: true)
-        XCTAssertFalse(paused.shouldFollow)
-        var following = ChatScrollPolicy()
-        following.positionChanged(distanceFromBottom: 0, movedUp: true)
-        XCTAssertTrue(following.shouldFollow)
-    }
-
-    func testReturningToBottomWhilePausedClearsNewReplyBadge() {
-        var policy = ChatScrollPolicy()
-        policy.pause()
+        policy.beginUserScroll()
+        policy.endUserScroll(distanceFromBottom: 600)
         policy.contentChanged()
         XCTAssertTrue(policy.hasUnreadContent)
-        policy.positionChanged(distanceFromBottom: 0, movedUp: false)
+        policy.beginUserScroll()
+        policy.endUserScroll(distanceFromBottom: 0)
+        XCTAssertTrue(policy.shouldFollow)
         XCTAssertFalse(policy.hasUnreadContent)
-        XCTAssertFalse(policy.shouldFollow)
     }
 
-    func testMoveDirectionFollowsFlippedCoordinates() {
-        XCTAssertTrue(ChatScrollPolicy.movedUp(originY: 90, previousOriginY: 100, flipped: true))
-        XCTAssertFalse(ChatScrollPolicy.movedUp(originY: 110, previousOriginY: 100, flipped: true))
-        XCTAssertTrue(ChatScrollPolicy.movedUp(originY: 110, previousOriginY: 100, flipped: false))
-        XCTAssertFalse(ChatScrollPolicy.movedUp(originY: 90, previousOriginY: 100, flipped: false))
+    func testOnlyGesturesDecide() {
+        // No gesture, no decision: content growth alone never pauses or resumes.
+        var policy = ChatScrollPolicy()
+        for _ in 0..<10 { XCTAssertTrue(policy.contentChanged()) }
+        var paused = ChatScrollPolicy()
+        paused.beginUserScroll()
+        paused.endUserScroll(distanceFromBottom: 300)
+        for _ in 0..<10 { XCTAssertFalse(paused.contentChanged()) }
+        XCTAssertFalse(paused.shouldFollow)
     }
 
     func testManualPauseAndReturnWithoutNewContent() {
@@ -92,35 +64,49 @@ final class ChatScrollPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldFollow)
     }
 
-    func testManualPauseSurvivesTouchNearBottom() {
+    func testManualPauseSurvivesGestureAtBottom() {
         var policy = ChatScrollPolicy()
         policy.pause()
+        policy.contentChanged()
         policy.beginUserScroll()
-        policy.positionChanged(distanceFromBottom: 30, movedUp: true)
-        policy.positionChanged(distanceFromBottom: 0, movedUp: false)
-        policy.endUserScroll()
+        policy.endUserScroll(distanceFromBottom: 0)
         XCTAssertFalse(policy.shouldFollow)
+        XCTAssertFalse(policy.hasUnreadContent, "at the bottom the reader has seen the new reply")
         XCTAssertFalse(policy.contentChanged())
         policy.resume()
         XCTAssertTrue(policy.shouldFollow)
     }
 
+    func testCancelledGestureReleasesLatchAndKeepsDecision() {
+        // didEndLiveScroll is lost when the observed scroll view is replaced mid-gesture.
+        var following = ChatScrollPolicy()
+        following.beginUserScroll()
+        following.cancelUserScroll()
+        XCTAssertTrue(following.shouldFollow)
+        var paused = ChatScrollPolicy()
+        paused.beginUserScroll()
+        paused.endUserScroll(distanceFromBottom: 400)
+        paused.beginUserScroll()
+        paused.cancelUserScroll()
+        XCTAssertFalse(paused.shouldFollow, "a lost gesture end is not a return to the bottom")
+    }
+
     func testResumeClearsStuckGesture() {
-        // didEndLiveScroll can be lost when the observed scroll view is replaced mid-gesture.
         var policy = ChatScrollPolicy()
         policy.beginUserScroll()
-        policy.positionChanged(distanceFromBottom: 500, movedUp: true)
         policy.resume()
         XCTAssertTrue(policy.shouldFollow)
     }
 
     func testBottomToleranceAndUnknownGeometry() {
         var policy = ChatScrollPolicy()
-        policy.positionChanged(distanceFromBottom: 81, movedUp: true)
+        policy.endUserScroll(distanceFromBottom: 81)
         XCTAssertFalse(policy.shouldFollow)
-        policy.positionChanged(distanceFromBottom: 80, movedUp: false)
+        policy.endUserScroll(distanceFromBottom: 80)
         XCTAssertTrue(policy.shouldFollow)
-        policy.positionChanged(distanceFromBottom: .nan, movedUp: true)
+        policy.endUserScroll(distanceFromBottom: .nan)
+        XCTAssertFalse(policy.shouldFollow)
+        policy.endUserScroll(distanceFromBottom: .infinity)
         XCTAssertFalse(policy.shouldFollow)
     }
 
