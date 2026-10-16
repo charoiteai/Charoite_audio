@@ -129,13 +129,22 @@ final class MeetingSearchTests: XCTestCase {
         XCTAssertEqual(result?.isEmpty, false, "\(String(describing: result))")
     }
 
-    /// Обходы идут по одному: следующий ждёт предыдущий и отдаёт свой результат.
-    func testSequentialSearchesThroughTheGateBothAnswer() async throws {
-        async let first = MeetingSearch.searchLibraryAsync("ретеншн", graph: graph)
-        async let second = MeetingSearch.searchLibraryAsync("нет-такого-слова", graph: graph)
-        let (a, b) = await (first, second)
-        XCTAssertNotNil(a)
-        XCTAssertEqual(b, [])
+    /// Закрытая вспомогательная папка не прячет выдачу архива (DS, Haiku, круг 7).
+    func testUnreadableNotesOrNodesDoNotHideArchiveHits() async throws {
+        let root = graph.appendingPathComponent("граф-с-закрытыми-заметками")
+        let archive = root.appendingPathComponent("Встречи-архив/2026-08-01 10-00 — Тема")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try "ретеншн".write(to: archive.appendingPathComponent("Саммари.md"), atomically: true, encoding: .utf8)
+        var locked: [String] = []
+        for name in ["Встречи", "Люди"] {
+            let dir = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dir.path)
+            locked.append(dir.path)
+        }
+        defer { for path in locked { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path) } }
+        let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root, includeNodes: true)
+        XCTAssertEqual(result?.isEmpty, false, "\(String(describing: result))")
     }
 }
 

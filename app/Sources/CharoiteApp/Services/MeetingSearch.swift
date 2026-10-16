@@ -173,8 +173,8 @@ enum MeetingSearch {
     /// что обход архива: новой точки ожидания диска она не добавляет.
     static func searchLibraryAsync(_ query: String, graph: URL, limit: Int = 30,
                                    includeNodes: Bool = false) async -> [Hit]? {
-        let worker = await diskGate.run {
-            guard libraryReadable(graph, includeNodes: includeNodes) else { return nil }
+        let worker = Task.detached(priority: .userInitiated) { () -> [Hit]? in
+            guard libraryReadable(graph) else { return nil }
             return search(query, graph: graph, limit: limit, includeNodes: includeNodes)
         }
         return await withTaskCancellationHandler {
@@ -184,38 +184,17 @@ enum MeetingSearch {
         }
     }
 
-    /// Папка графа и те её подпапки, которые поиск открывает, читаются. Корень поиск не
-    /// листает: право прохода по нему нужно, чтение — нет (`chmod 111` на общих томах);
-    /// недостающая подпапка — не отказ, нечитаемая — отказ, а не «ничего не найдено».
-    static func libraryReadable(_ graph: URL, includeNodes: Bool) -> Bool {
+    /// Папка графа и её архив встреч читаются. Корень поиск не листает: право прохода по нему
+    /// нужно, чтение — нет (`chmod 111` на общих томах). Отказ — только у архива, без которого
+    /// поиску нечем ответить; закрытые заметки и узлы просто не дают своих находок, как на main.
+    static func libraryReadable(_ graph: URL) -> Bool {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: graph.path, isDirectory: &isDirectory), isDirectory.boolValue,
               fm.isExecutableFile(atPath: graph.path) else { return false }
-        let opened = ["Встречи-архив", "Встречи"] + (includeNodes ? nodeFolders : [])
-        return opened.allSatisfy { name in
-            let dir = graph.appendingPathComponent(name).path
-            return !fm.fileExists(atPath: dir) || fm.isReadableFile(atPath: dir)
-        }
-    }
-
-    /// Один обход диска за раз: обход на спящем томе отмена не прерывает (поток стоит в
-    /// системном вызове), и повторные Enter не должны занимать им пул потоков. Следующий
-    /// ждёт предыдущий, не занимая поток; отменённый за это время не начинается вовсе.
-    private static let diskGate = DiskGate()
-
-    private actor DiskGate {
-        private var last: Task<[Hit]?, Never>?
-
-        func run(_ body: @escaping @Sendable () -> [Hit]?) -> Task<[Hit]?, Never> {
-            let previous = last
-            let task = Task.detached(priority: .userInitiated) { () -> [Hit]? in
-                _ = await previous?.value
-                return Task.isCancelled ? nil : body()
-            }
-            last = task
-            return task
-        }
+        let archive = graph.appendingPathComponent("Встречи-архив").path
+        // Обходу архива нужны и чтение, и проход (`chmod 644` на папке — листинг есть, вход в папки встреч нет).
+        return !fm.fileExists(atPath: archive) || (fm.isReadableFile(atPath: archive) && fm.isExecutableFile(atPath: archive))
     }
 
     /// Все ли слова запроса есть в файле; сниппет — первая строка с совпадением.
