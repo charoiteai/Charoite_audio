@@ -192,7 +192,7 @@ struct MenuBarView: View {
                 }
                 .charoite(.icon, .s)
                 .help(L.t("Отправить вопрос", "Send the question", "发送问题"))
-                .disabled(quick.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(quick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if let refusal = quickRefusal, !refusal.isEmpty {
                 Text(refusal).font(.caption2).foregroundStyle(.secondary)
