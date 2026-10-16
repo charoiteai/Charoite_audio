@@ -168,7 +168,7 @@ enum MeetingSearch {
         await searchLibraryAsync(query, graph: graph, limit: limit, includeNodes: includeNodes) ?? []
     }
 
-    /// То же, но nil — папки графа нет или это не каталог: экран архива называет
+    /// То же, но nil — папки графа нет, это не каталог или её не прочитать: экран архива называет
     /// причину вместо «ничего не найдено». Проверка — в той же рабочей задаче,
     /// что обход архива: новой точки ожидания диска она не добавляет.
     static func searchLibraryAsync(_ query: String, graph: URL, limit: Int = 30,
@@ -176,7 +176,8 @@ enum MeetingSearch {
         let worker = Task.detached(priority: .userInitiated) { () -> [Hit]? in
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: graph.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else { return nil }
+                  isDirectory.boolValue,
+                  (try? FileManager.default.contentsOfDirectory(atPath: graph.path)) != nil else { return nil }
             return search(query, graph: graph, limit: limit, includeNodes: includeNodes)
         }
         return await withTaskCancellationHandler {

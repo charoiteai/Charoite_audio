@@ -94,6 +94,15 @@ final class MeetingSearchTests: XCTestCase {
         let missingLegacy = await MeetingSearch.searchAsync("ретеншн", graph: missing)
         XCTAssertTrue(missingLegacy.isEmpty, "старая обёртка для Prep — пустота, как прежде")
     }
+
+    func testUnreadableGraphFolderIsNotNoHits() async throws {
+        let locked = graph.appendingPathComponent("закрытая")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: locked)
+        XCTAssertNil(result, "нет доступа — причина, а не «ничего не найдено»")
+    }
 }
 
 extension MeetingSearchTests {

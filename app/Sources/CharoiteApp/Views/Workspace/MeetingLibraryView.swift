@@ -317,9 +317,9 @@ struct MeetingLibraryView: View {
                         "尚未设置图谱文件夹，搜索暂不可用。请在 config.yaml 中设置 graph_dir。"))
         case .unavailable(let url):
             return (L.t("Папка памяти недоступна", "Memory folder unavailable", "记忆文件夹不可用"),
-                    L.t("Папки графа \(url.path) нет или к ней нет доступа: подключите диск или проверьте graph_dir в config.yaml.",
-                        "The graph folder \(url.path) is missing or unreadable: connect the drive or check graph_dir in config.yaml.",
-                        "图谱文件夹 \(url.path) 不存在或无法访问：请连接磁盘或检查 config.yaml 中的 graph_dir。"))
+                    L.t("Папки графа \(url.path) нет или к ней нет доступа: подключите диск или проверьте graph_dir в config.yaml, затем нажмите Enter в поле поиска.",
+                        "The graph folder \(url.path) is missing or unreadable: connect the drive or check graph_dir in config.yaml, then press Return in the search field.",
+                        "图谱文件夹 \(url.path) 不存在或无法访问：请连接磁盘或检查 config.yaml 中的 graph_dir，然后在搜索框中按回车。"))
         case .ready, nil:
             return nil
         }
@@ -332,13 +332,15 @@ struct MeetingLibraryView: View {
                        systemImage: "folder.badge.questionmark") {
                 Button(L.t("Показать config.yaml", "Show config.yaml", "显示 config.yaml")) {
                     // Первый запуск мог не дойти до конфига: тогда — ближайшая
-                    // существующая папка, а не пустое окно Finder. Проверка на клик,
-                    // не в body.
+                    // существующая папка, а не пустое окно Finder. Диск — вне
+                    // главного потока: корень данных бывает на уснувшем сетевом томе.
                     let root = AppSettings.charoiteRoot
-                    let target = [root.appendingPathComponent("config/config.yaml"),
-                                  root.appendingPathComponent("config"), root]
-                        .first { FileManager.default.fileExists(atPath: $0.path) } ?? root
-                    NSWorkspace.shared.activateFileViewerSelecting([target])
+                    Task.detached(priority: .userInitiated) {
+                        let target = [root.appendingPathComponent("config/config.yaml"),
+                                      root.appendingPathComponent("config"), root]
+                            .first { FileManager.default.fileExists(atPath: $0.path) } ?? root
+                        await MainActor.run { _ = NSWorkspace.shared.activateFileViewerSelecting([target]) }
+                    }
                 }
                 .charoite(.regular, .s)
             }
