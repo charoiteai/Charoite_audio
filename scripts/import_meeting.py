@@ -401,16 +401,16 @@ def import_keep_days(cfg: dict, override=None) -> float:
         print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     except (TypeError, ValueError):
-        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        print(f"import_keep_days: непонятное значение {_shown(raw, 60)} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     # bool (YAML off/on; на main давал 0 или 1 день), NaN и −inf — непонятное. Отрицательное
     # конечное — отказ до проверки секунд: иначе -1e308 (в секундах -inf) тихо
     # стал бы умолчанием (Haiku, круг 2 по #809)
     if isinstance(raw, bool) or math.isnan(days) or days == -math.inf:
-        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        print(f"import_keep_days: непонятное значение {_shown(raw, 60)} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
-        sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
+        sys.exit(f"import_keep_days не может быть отрицательным: {_shown(raw, 60)}")
     if days >= IMPORT_KEEP_DAYS_CEILING:
         return _keep_days_ceiling(raw)
     return days

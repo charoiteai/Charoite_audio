@@ -761,6 +761,10 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert "на потолке или выше" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -huge}})
+    # Огромное целое внутри списка или словаря: строка «непонятное» тоже не падает (DS, Haiku, круг 7)
+    for raw in ([huge], {"k": huge}):
+        assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+        assert "непонятное" in capsys.readouterr().out
     # −inf и NaN — непонятное, как на main (не новый путь отказа уборки)
     for raw in (float("nan"), float("-inf"), "-1e999"):
         assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
