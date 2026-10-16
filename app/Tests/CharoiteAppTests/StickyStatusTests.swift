@@ -152,4 +152,13 @@ final class StickyStatusTests: XCTestCase {
                                                 sticky: "СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ", status: "👥 диаризация",
                                                 info: refusal).hasSuffix(refusal))
     }
+
+    func testInfoTailGetsRoomToShowItsAction() {
+        // Справка срока хранения стоит хвостом: в одну строку её «исправьте config.yaml» обрезалось.
+        XCTAssertEqual(SuflerView.statusLineLimit(running: true, problems: 0, needsAttention: false, hasInfo: true), 3)
+        XCTAssertEqual(SuflerView.statusLineLimit(running: true, problems: 1, needsAttention: true, hasInfo: true), 3)
+        XCTAssertEqual(SuflerView.statusLineLimit(running: true, problems: 0, needsAttention: false, hasInfo: false), 1)
+        XCTAssertEqual(SuflerView.statusLineLimit(running: true, problems: 1, needsAttention: true, hasInfo: false), 2)
+        XCTAssertEqual(SuflerView.statusLineLimit(running: true, problems: 2, needsAttention: true, hasInfo: false), 3)
+    }
 }

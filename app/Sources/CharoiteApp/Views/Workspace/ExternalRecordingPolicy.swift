@@ -171,7 +171,9 @@ enum ExternalRecordingPolicy {
         }
         let f = DateFormatter()
         f.locale = L.locale
-        f.dateFormat = "dd.MM"
+        // Чужой год — с годом: потолок срока не должен читаться как «07.09 этого года»
+        let sameYear = Calendar.current.isDate(deleteAt, equalTo: now, toGranularity: .year)
+        f.dateFormat = sameYear ? "dd.MM" : "dd.MM.yyyy"
         let day = f.string(from: deleteAt)
         return L.t("удалится \(day)", "deleted on \(day)", "\(day) 删除")
     }

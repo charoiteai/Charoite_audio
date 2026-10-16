@@ -307,6 +307,13 @@ struct SuflerView: View {
         statusIsProblem || (!sufler.isRunning && processing.statusIsReadyNote)
     }
 
+    /// Справка (срок хранения «записи не удаляются — исправьте config.yaml») идёт хвостом
+    /// строки: в одну строку её действие обрезалось первым (круг 5 по #809).
+    static func statusLineLimit(running: Bool, problems: Int, needsAttention: Bool, hasInfo: Bool) -> Int {
+        if (running && problems > 1) || hasInfo { return 3 }
+        return needsAttention ? 2 : 1
+    }
+
     private var statusColor: Color {
         if sufler.isRunning {
             if sufler.stopConfirmPending { return .secondary }
@@ -531,8 +538,10 @@ struct SuflerView: View {
             Text(displayedStatus)
                 .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusColor)
-                .lineLimit(sufler.isRunning && sufler.stickyProblemCount > 1 ? 3 : (statusNeedsAttention ? 2 : 1))
-                .fixedSize(horizontal: false, vertical: statusNeedsAttention)
+                .lineLimit(Self.statusLineLimit(running: sufler.isRunning, problems: sufler.stickyProblemCount,
+                                                needsAttention: statusNeedsAttention, hasInfo: sufler.stickyInfo != nil))
+                .fixedSize(horizontal: false, vertical: statusNeedsAttention || sufler.stickyInfo != nil)
+                .help(displayedStatus)
                 .textSelection(.enabled)
 
             if !sufler.isRunning, processing.isProcessing {

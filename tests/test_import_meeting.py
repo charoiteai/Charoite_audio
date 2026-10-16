@@ -739,7 +739,9 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
         days = im.import_keep_days({"audio": {"import_keep_days": raw}})
         assert days == im.IMPORT_KEEP_DAYS_CEILING, raw
         assert math.isfinite(days * 86400)
+        assert "больше потолка" in capsys.readouterr().out, f"потолок не молчит: {raw!r}"
     assert im.import_keep_days({"audio": {"import_keep_days": 36500}}) == 36500
+    assert capsys.readouterr().out == "", "обычный срок — без слов"
     assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == im.IMPORT_KEEP_DAYS_DEFAULT, \
         "срок импорта не наследует record_keep_days (аудит 05.09: чужая запись не живёт дольше, чем просили)"
     assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == \

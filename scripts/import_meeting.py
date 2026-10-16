@@ -397,7 +397,7 @@ def import_keep_days(cfg: dict, override=None) -> float:
         if isinstance(raw, int) and not isinstance(raw, bool) and raw < 0:
             sys.exit(f"import_keep_days не может быть отрицательным: {str(raw)[:20]}…")
         if isinstance(raw, int) and not isinstance(raw, bool):
-            return IMPORT_KEEP_DAYS_CEILING
+            return _keep_days_ceiling(raw)
         print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     except (TypeError, ValueError):
@@ -411,7 +411,16 @@ def import_keep_days(cfg: dict, override=None) -> float:
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
         sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
-    return min(days, IMPORT_KEEP_DAYS_CEILING)
+    if days > IMPORT_KEEP_DAYS_CEILING:
+        return _keep_days_ceiling(raw)
+    return days
+
+
+def _keep_days_ceiling(raw) -> float:
+    """Срок за потолком: копия живёт практически бессрочно — говорим вслух."""
+    print(f"import_keep_days: {str(raw)[:24]!s} больше потолка — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
+          f"(практически бессрочно)")
+    return IMPORT_KEEP_DAYS_CEILING
 
 
 def _archive_source_for(meta: dict, done_file: pathlib.Path,

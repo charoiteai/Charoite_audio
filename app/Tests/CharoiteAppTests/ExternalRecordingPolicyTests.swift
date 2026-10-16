@@ -91,6 +91,14 @@ final class ExternalRecordingPolicyTests: XCTestCase {
         XCTAssertTrue(text.contains(f.string(from: inThreeDays)), text)
     }
 
+    func testДалёкийСрокНесётГод() {
+        // Потолок срока копии — тысячи лет: «удалится 07.09» без года читалось как этот год.
+        let now = Date()
+        let far = now.addingTimeInterval(36_500_000 * 86400)
+        let year = Calendar.current.component(.year, from: far)
+        XCTAssertTrue(ExternalRecordingPolicy.deletionText(deleteAt: far, now: now).contains(String(year)))
+    }
+
     func testПодписьСостоянияНесётШтампИСрок() {
         let now = Date()
         let done = imported(at: now, deleteAt: now.addingTimeInterval(3 * 86400))
