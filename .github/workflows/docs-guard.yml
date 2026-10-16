@@ -59,7 +59,7 @@ jobs:
           # документировать нечего. Пропуск — по СОСТАВУ диффа, а не по имени
           # ветки: появится новый extra-file — страж покраснеет и заставит
           # вписать его сюда осознанно, а не замолчит (GLM r1 по PR #503).
-          release_only="$(echo "$changed" | grep -vE '^(CHANGELOG\.md|\.github/\.release-please-manifest\.json|app-ios/project\.yml)$' || true)"
+          release_only="$(echo "$changed" | grep -vE '^(CHANGELOG\.md|\.github/\.release-please-manifest\.json|app-ios/project\.yml|pyproject\.toml)$' || true)"
           if [ -n "$changed" ] && [ -z "$release_only" ]; then
             echo "Только релизные файлы (версия, манифест, CHANGELOG) — документировать нечего."
             exit 0
@@ -118,3 +118,28 @@ jobs:
           fi
 
           echo "Документация в порядке."
+
+  # Переводы, заметно отставшие от английского оригинала: предупреждение,
+  # не блок. Порог — 60% строк оригинала.
+  translation-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Переводы не короче 60% оригинала?
+        run: |
+          set -euo pipefail
+          for t in docs/ru/*.md docs/zh/*.md docs/ru/*/README.md docs/zh/*/README.md; do
+            [ -f "$t" ] || continue
+            rel="${t#docs/ru/}"; rel="${rel#docs/zh/}"
+            if [ -f "docs/$rel" ]; then en="docs/$rel"
+            elif [ -f "$rel" ]; then en="$rel"
+            else continue; fi
+            a=$(wc -l < "$en"); b=$(wc -l < "$t")
+            if [ "$a" -gt 0 ] && [ $((b * 100)) -lt $((a * 60)) ]; then
+              echo "::warning file=$t::$t: $b lines vs $a in $en (<60%) — translation is abridged or stale."
+            fi
+          done
+          exit 0
