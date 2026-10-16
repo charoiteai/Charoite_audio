@@ -65,7 +65,7 @@ import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import threads  # noqa: E402
 import voice_pitch  # noqa: E402
-from audio import AudioHub, resolve_record_keep_days  # noqa: E402
+from audio import AudioHub, keep_days_refusal, resolve_record_keep_days  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import MINUTES_DRAFT_MARK, Transcript, is_noise  # noqa: E402
@@ -821,6 +821,9 @@ def main():
     # недельном простое записи лежали дольше обещанного в PRIVACY.
     try:
         keep_days = cfg["audio"].get("record_keep_days", 2)
+        refusal = keep_days_refusal(keep_days)
+        if refusal is not None:
+            emit(stt_runtime.status_event(refusal))
         held = AudioHub.prune_recordings(
             _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
             keep_days,

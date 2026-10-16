@@ -730,6 +730,10 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({"audio": {"import_keep_days": "два"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное" in capsys.readouterr().out
     assert im.import_keep_days({"audio": {"import_keep_days": "1e999"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    # Те же входы, что у record_keep_days: bool (YAML off/on), переполнение
+    # float() и срок, который в секундах уже бесконечность.
+    for raw in (True, False, 10 ** 400, 1e308):
+        assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
     assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == im.IMPORT_KEEP_DAYS_DEFAULT, \
         "срок импорта не наследует record_keep_days (аудит 05.09: чужая запись не живёт дольше, чем просили)"
     assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == \

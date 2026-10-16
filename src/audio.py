@@ -619,6 +619,22 @@ def resolve_record_keep_days(raw) -> float | None:
     return None
 
 
+def keep_days_refusal(raw) -> "stt_runtime.Status | None":
+    """Липкий статус для приложения, если срок хранения не понят, иначе None.
+
+    Отказ срока означает «старые записи не удаляются» — на месяцы, если никто
+    не заглянет в stderr. На main тот же `off` (YAML False) стирал все записи
+    сразу; молчаливое бессрочное хранение — тоже нарушение PRIVACY, только с
+    другой стороны. Поэтому отказ виден владельцу, а не только журналу.
+    """
+    if resolve_record_keep_days(raw) is not None:
+        return None
+    return stt_runtime.Status(
+        f"СРОК ХРАНЕНИЯ ЗАПИСЕЙ НЕ ПОНЯТ: audio.record_keep_days = {raw!r} — старые записи "
+        "не удаляются. Укажите число дней в config.yaml",
+        sticky=True, error=True, topic=stt_runtime.TOPIC_RETENTION)
+
+
 class AudioHub:
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
@@ -1296,6 +1312,9 @@ class AudioHub:
         # один try: файл, исчезнувший между iterdir() и stat(), или строка вместо
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
+        refusal = keep_days_refusal(self.record_keep_days)
+        if refusal is not None:
+            self._say(refusal)
         try:
             held = self.prune_recordings(self.record_dir, self.record_keep_days,
                                          protect=self.protect_stamps)

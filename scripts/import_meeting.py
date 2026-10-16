@@ -386,10 +386,12 @@ def import_keep_days(cfg: dict, override=None) -> float:
         _hint_keep_days_once(audio.get("record_keep_days"))
     try:
         days = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    if math.isnan(days) or math.isinf(days):
+    # bool — не срок (YAML off/on); срок, который в секундах уже бесконечность
+    # (1e308 дней), в JSON сайдкара не пишется — те же входы, что у record_keep_days
+    if isinstance(raw, bool) or not math.isfinite(days * 86400):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
