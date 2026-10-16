@@ -6,6 +6,7 @@
 не нужно: всё перечисленное — чистые функции над буфером.
 """
 import ast
+import os
 import pathlib
 import queue
 import sys
@@ -432,6 +433,57 @@ def test_частичный_отказ_open_sinks_не_оставляет_сир
     assert hub._sinks == {}
     assert not a.meeting_stamp.recording_path(tmp_path, hub.stamp, "mic", "pcm").exists()
     assert busy.exists() and any("ВЫКЛЮЧЕНА" in m for m in said)
+
+
+@pytest.mark.parametrize("keep_days", [False, "off", {"days": 2}])
+def test_непонятый_срок_хранения_липкая_справка_и_запись_идёт(tmp_path, monkeypatch, keep_days):
+    """YAML `off` (False), строка или словарь в record_keep_days: старые записи
+    не удаляются, владелец видит липкий отказ темы retention, а каналы
+    открываются — отказ срока не выключает запись (круг 2 по #809)."""
+    hub = _hub()
+    hub.record_dir = tmp_path
+    hub.record_keep_days = keep_days
+    hub.stamp = "2026-07-15_1400"
+    hub.protect_stamps = frozenset()
+    hub.captures = [_QueueCapture("mic")]
+    old = tmp_path / "2026-07-01_1200_mic.wav"
+    old.write_bytes(b"old")
+    then = time.time() - 30 * 86400
+    os.utime(old, (then, then))
+    said: list = []
+    hub.on_status = said.append
+    hub._open_sinks()
+    try:
+        refusals = [m for m in said if getattr(m, "topic", None) == a.stt_runtime.TOPIC_RETENTION]
+        assert len(refusals) == 1
+        assert refusals[0].sticky and refusals[0].error
+        assert old.exists()
+        assert set(hub._sinks) == {"mic"}
+    finally:
+        for sink in hub._sinks.values():
+            sink.close()
+
+
+def test_сломанный_показ_срока_не_выключает_запись(tmp_path, monkeypatch):
+    """Сбой в построении отказа срока ловится тем же try, что уборка."""
+    def boom(_raw):
+        raise RuntimeError("показ")
+    monkeypatch.setattr(a, "keep_days_refusal", boom)
+    hub = _hub()
+    hub.record_dir = tmp_path
+    hub.record_keep_days = "off"
+    hub.stamp = "2026-07-15_1400"
+    hub.protect_stamps = frozenset()
+    hub.captures = [_QueueCapture("mic")]
+    said: list = []
+    hub.on_status = said.append
+    hub._open_sinks()
+    try:
+        assert set(hub._sinks) == {"mic"}
+        assert any("чистка старых записей не удалась" in str(m) for m in said)
+    finally:
+        for sink in hub._sinks.values():
+            sink.close()
 
 
 def _arm_sinks(hub, directory):

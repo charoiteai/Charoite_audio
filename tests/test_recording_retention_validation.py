@@ -122,3 +122,16 @@ def test_missing_retention_keeps_logs_for_two_days(tmp_path, monkeypatch, cfg):
     daemon._prune_graph_logs(cfg)
     assert recent.read_bytes() == b"meeting diagnostic"
     assert not expired.exists()
+
+
+def test_refusal_shows_a_long_value_shortly():
+    status = audio.keep_days_refusal("x" * 500)
+    assert status is not None
+    assert len(status) < 220
+    assert "..." in status
+
+
+def test_refusal_itself_is_silent_in_stderr(capsys):
+    # stderr говорит уборка; отказ для приложения второй строки не добавляет
+    audio.keep_days_refusal(False)
+    assert capsys.readouterr().err == ""

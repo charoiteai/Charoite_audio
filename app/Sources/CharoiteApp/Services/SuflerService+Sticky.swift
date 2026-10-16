@@ -10,7 +10,7 @@ extension SuflerService {
     /// Явный ранг вместо порядка кейсов: «меньший rawValue выигрывает»
     /// читается как опечатка (Minor DS входного круга).
     static let stickyRank: [String: Int] = [StickyTopic.channelLoss: 0, StickyTopic.capture: 1,
-                                            StickyTopic.notifications: 2]
+                                            StickyTopic.notifications: 2, StickyTopic.retention: 3]
 
     /// Серьёзность темы: слои-проблемы («собеседников не будет», «права на
     /// микрофон нет») стоят выше живой строки и красятся красным; слои-справки
@@ -19,7 +19,10 @@ extension SuflerService {
     /// строку всю встречу ради справки (Important DS выходного круга по №310).
     /// Неизвестная тема — проблема: писатель липкого предупреждения без своей
     /// строки здесь считается серьёзным, пока не сказано иное.
-    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications]
+    /// Срок хранения записей не понят (`retention`) — тоже справка: старые
+    /// записи не удаляются, но встрече это не мешает; красный слой прятал бы
+    /// живую строку до конца встречи (Sonnet и Haiku, круг 2 по #809).
+    static let stickyInfoTopics: Set<String> = [StickyTopic.notifications, StickyTopic.retention]
 
     var orderedLayers: [(key: String, value: String)] {
         stickyLayers.sorted { a, b in
@@ -51,5 +54,6 @@ extension SuflerService {
         static let channelLoss = "channel_loss"      // тема демона по умолчанию (демон 0.82 без topic)
         static let capture = "capture"
         static let notifications = "notifications"
+        static let retention = "retention"           // stt_runtime.TOPIC_RETENTION
     }
 }

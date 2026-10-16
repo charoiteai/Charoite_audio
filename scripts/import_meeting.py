@@ -389,13 +389,18 @@ def import_keep_days(cfg: dict, override=None) -> float:
     except (TypeError, ValueError, OverflowError):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    # bool — не срок (YAML off/on); срок, который в секундах уже бесконечность
-    # (1e308 дней), в JSON сайдкара не пишется — те же входы, что у record_keep_days
-    if isinstance(raw, bool) or not math.isfinite(days * 86400):
+    if isinstance(raw, bool):  # YAML off/on — не срок
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
+    # Отрицательное — отказ до проверки конечности: иначе -1e308 (в секундах
+    # -inf) тихо стал бы умолчанием, а не отказом (Haiku, круг 2 по #809)
     if days < 0:
         sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
+    # NaN и срок, который в секундах уже бесконечность (1e308 дней), в JSON
+    # сайдкара не пишутся — те же входы, что у record_keep_days
+    if not math.isfinite(days * 86400):
+        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        return float(IMPORT_KEEP_DAYS_DEFAULT)
     return days
 
 

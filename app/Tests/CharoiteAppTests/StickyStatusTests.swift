@@ -86,6 +86,22 @@ final class StickyStatusTests: XCTestCase {
                           SuflerService.stickyRank[SuflerService.StickyTopic.notifications]!)
     }
 
+    func testRetentionRefusalIsInfoAndKeepsLiveLineVisible() {
+        // Срок хранения не понят — справка на всю встречу, а не красный слой
+        // поверх живой строки (Sonnet и Haiku, круг 2 по #809). Тема — та же
+        // строка, что stt_runtime.TOPIC_RETENTION у демона.
+        let s = SuflerService()
+        let text = "СРОК ХРАНЕНИЯ ЗАПИСЕЙ НЕ ПОНЯТ: audio.record_keep_days = False"
+        s.consumeForTest(#"{"type":"status","text":"\#(text)","sticky":true,"error":true,"topic":"retention"}"#)
+        XCTAssertEqual(SuflerService.StickyTopic.retention, "retention")
+        XCTAssertNil(s.stickyStatus, "справка не прячет живую строку")
+        XCTAssertEqual(s.stickyInfo, text)
+        XCTAssertEqual(s.stickyProblemCount, 0)
+        s.consumeForTest(#"{"type":"status","text":"\#(warning)","sticky":true,"topic":"channel_loss"}"#)
+        XCTAssertEqual(s.stickyStatus, warning, "проблема канала — своим слоем, справка срока к ней не подмешивается")
+        XCTAssertEqual(s.stickyInfo, text)
+    }
+
     func testStickyWithoutErrorFlagIsStillSticky() {
         // контракт: липкость и окраска — независимые ключи; липкость не
         // зависит от error
