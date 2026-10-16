@@ -72,13 +72,16 @@ final class ChatAnswerOutcomeTests: XCTestCase {
 
     func testHTTPRefusalCarriesServerReason() {
         // Ответ 404 живой Ollama: причина сервера, не «Ollama запущена?».
-        let reason = LocalChatService.serverReason(body: #"{"error":"model \"qwen\" not found, try pulling it first"}"#,
-                                                   status: 404)
+        let reason = LocalChatService.serverReason(body: #"{"error":"model \"qwen\" not found, try pulling it first"}"#)
         XCTAssertEqual(reason, #"model "qwen" not found, try pulling it first"#)
-        XCTAssertEqual(LocalChatService.serverReason(body: "<html>bad gateway</html>", status: 502), "HTTP 502")
-        XCTAssertEqual(LocalChatService.serverReason(body: #"{"error":"  "}"#, status: 500), "HTTP 500")
-        let note = ChatAnswerOutcome.failureNote(ChatStreamError(message: reason))
-        XCTAssertFalse(note.contains("Ollama запущена"))
+        XCTAssertNil(LocalChatService.serverReason(body: "<html>bad gateway</html>"))
+        XCTAssertNil(LocalChatService.serverReason(body: #"{"error":"  "}"#))
+        XCTAssertFalse(ChatAnswerOutcome.failureNote(ChatStreamError(message: reason ?? "")).contains("Ollama запущена"))
+        // Прокси без причины: это не ошибка модели, и сервер модели живым не объявлен.
+        let proxy: Error = ChatHTTPError(status: 502)
+        XCTAssertFalse(proxy is ChatStreamError)
+        XCTAssertTrue(ChatAnswerOutcome.failureNote(proxy).contains("502"))
+        XCTAssertFalse(ChatAnswerOutcome.failureNote(proxy).contains("ошибка модели"))
     }
 
     func testNoticeIsNotFedBackAsModelAnswer() {

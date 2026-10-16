@@ -385,7 +385,7 @@ final class LocalChatService: ObservableObject {
     }
 
     /// Отказ живого сервера: первые ~4000 знаков тела, причина — из `{"error": …}`.
-    nonisolated static func serverRefusal(_ bytes: URLSession.AsyncBytes, status: Int) async -> ChatStreamError {
+    nonisolated static func serverRefusal(_ bytes: URLSession.AsyncBytes, status: Int) async -> Error {
         var body = ""
         do {
             for try await line in bytes.lines {
@@ -393,18 +393,20 @@ final class LocalChatService: ObservableObject {
                 if body.count > 4000 { break }
             }
         } catch {}
-        return ChatStreamError(message: serverReason(body: body, status: status))
+        // Причину прислала Ollama — сервер жив; без неё (прокси, чужой сервер) — это HTTP, не модель
+        if let reason = serverReason(body: body) { return ChatStreamError(message: reason) }
+        return ChatHTTPError(status: status)
     }
 
-    /// Причина отказа из тела не-200 ответа Ollama (`{"error": …}`), иначе код HTTP.
-    nonisolated static func serverReason(body: String, status: Int) -> String {
+    /// Причина отказа из тела не-200 ответа Ollama (`{"error": …}`); нет её — nil.
+    nonisolated static func serverReason(body: String) -> String? {
         if let data = body.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let reason = obj["error"] as? String,
            !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return reason
         }
-        return "HTTP \(status)"
+        return nil
     }
 
     /// Пузырь по исходу потока: заглушка уходит, неполный помечен, ошибка и

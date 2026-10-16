@@ -79,3 +79,10 @@ struct ChatStreamError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
 }
+
+/// Не-200 без причины от Ollama (прокси, чужой сервер, пустое тело): ответил
+/// не сервер модели — вопрос «Ollama запущена?» уместен, живость не доказана.
+struct ChatHTTPError: LocalizedError {
+    let status: Int
+    var errorDescription: String? { "HTTP \(status)" }
+}
