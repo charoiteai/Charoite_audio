@@ -88,6 +88,13 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertEqual(ChatAnswerOutcome.serverAlive(after: ChatStreamError(message: "runner stopped")), true)
         XCTAssertNil(ChatAnswerOutcome.serverAlive(after: ChatHTTPError(status: 500)))
         XCTAssertEqual(ChatAnswerOutcome.serverAlive(after: URLError(.cannotConnectToHost)), false)
+        // DS, круг 9: причина в теле не-200 (шлюз перед портом) — не доказательство Ollama.
+        let gateway = ChatStreamError(message: "upstream unavailable", status: 502)
+        XCTAssertNil(ChatAnswerOutcome.serverAlive(after: gateway))
+        XCTAssertTrue(ChatAnswerOutcome.failureNote(gateway).contains("HTTP 502"))
+        XCTAssertFalse(ChatAnswerOutcome.failureNote(gateway).contains("ошибка модели"))
+        // Правило проекта (`OllamaRuntimeService.refused`): таймаут — неизвестность, не «не отвечает».
+        XCTAssertNil(ChatAnswerOutcome.serverAlive(after: URLError(.timedOut)))
     }
 
     func testNoticeIsNotFedBackAsModelAnswer() {

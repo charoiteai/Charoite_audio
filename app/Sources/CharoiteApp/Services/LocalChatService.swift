@@ -98,10 +98,17 @@ final class LocalChatService: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 3
-        guard let (data, _) = try? await URLSession(configuration: cfg).data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let data: Data
+        do {
+            (data, _) = try await URLSession(configuration: cfg).data(from: url)
+        } catch {
+            // Правило шапки одно с ответом чата: «не отвечает» — только никто не слушает
+            ollamaAlive = ChatAnswerOutcome.serverAlive(after: error)
+            return
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = obj["models"] as? [[String: Any]] else {
-            ollamaAlive = false
+            ollamaAlive = nil       // ответил не Ollama или не так — живость не доказана
             return
         }
         ollamaAlive = true
@@ -384,8 +391,8 @@ final class LocalChatService: ObservableObject {
         messages.map { ChatContextWindow.Entry(role: $0.role, text: $0.notice == true ? "" : $0.text) }
     }
 
-    /// Ответ не 200: первые ~4000 знаков тела. Причина из `{"error": …}` — отказ Ollama
-    /// (`ChatStreamError`), без неё — `ChatHTTPError`: кто ответил, не доказано.
+    /// Ответ не 200: первые ~4000 знаков тела. Причина из `{"error": …}` — `ChatStreamError` со
+    /// статусом, без неё — `ChatHTTPError`; в обоих случаях кто ответил, не доказано.
     nonisolated static func serverRefusal(_ bytes: URLSession.AsyncBytes, status: Int) async -> Error {
         var body = ""
         do {
@@ -395,7 +402,7 @@ final class LocalChatService: ObservableObject {
             }
         } catch {}
         // Причину прислала Ollama — сервер жив; без неё (прокси, чужой сервер) — это HTTP, не модель
-        if let reason = serverReason(body: body) { return ChatStreamError(message: reason) }
+        if let reason = serverReason(body: body) { return ChatStreamError(message: reason, status: status) }
         return ChatHTTPError(status: status)
     }
 

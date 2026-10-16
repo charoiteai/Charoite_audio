@@ -52,6 +52,10 @@ enum ChatAnswerOutcome: Equatable {
     /// Строка ошибки в пузыре. Отказ модели (`{"error": …}`) прислала живая
     /// Ollama — вопрос «Ollama запущена?» только у ошибок транспорта и HTTP.
     static func failureNote(_ error: Error) -> String {
+        if let model = error as? ChatStreamError, let status = model.status {
+            return L.t("[ошибка: HTTP \(status) — \(model.message)]", "[error: HTTP \(status) — \(model.message)]",
+                       "[错误：HTTP \(status)——\(model.message)]")
+        }
         if let model = error as? ChatStreamError {
             return L.t("[ошибка модели: \(model.message)]", "[model error: \(model.message)]", "[模型错误：\(model.message)]")
         }
@@ -60,14 +64,15 @@ enum ChatAnswerOutcome: Equatable {
                    "[错误：\(reason)——Ollama 是否在运行？]")
     }
 
-    /// Что сбой говорит о живости сервера модели — одно решение для шапки. `{"error": …}` прислала
-    /// Ollama — жива; HTTP-ответ без причины — кто-то ответил, но что это Ollama, не доказано:
-    /// шапка молчит, как при обрыве; ответа не было вовсе — «не отвечает».
+    /// Что сбой говорит о живости сервера модели — одно решение для шапки. `{"error": …}` внутри
+    /// начатого потока прислала Ollama — жива. Отказ не 200 (с причиной в теле или без) — кто-то
+    /// ответил, но что это Ollama, не доказано: шапка молчит, как при обрыве. «Не отвечает» — только
+    /// когда на порту никто не слушает (`OllamaRuntimeService.refused`); прочее — неизвестность.
     static func serverAlive(after error: Error) -> Bool? {
         switch error {
-        case is ChatStreamError: return true
-        case is ChatHTTPError: return nil
-        default: return false
+        case let model as ChatStreamError: return model.status == nil ? true : nil
+        case let transport as URLError: return OllamaRuntimeService.refused(transport.code) ? false : nil
+        default: return nil
         }
     }
 
@@ -88,6 +93,8 @@ enum ChatAnswerOutcome: Equatable {
 /// хватило памяти): это ошибка с причиной, а не молчаливый обрыв.
 struct ChatStreamError: LocalizedError {
     let message: String
+    /// Статус ответа не 200, в теле которого пришла причина; nil — причина внутри потока 200.
+    var status: Int? = nil
     var errorDescription: String? { message }
 }
 
