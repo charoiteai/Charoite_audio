@@ -181,6 +181,10 @@ struct MenuBarView: View {
                 TextField(L.t("Быстрый вопрос…", "Quick question…", "快速提问…"), text: $quick)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(sendQuick)
+                    // Причина отказа живёт, пока жива сама причина: правка текста
+                    // или конец (начало) ответа в любом окне её снимает.
+                    .onChange(of: quick) { _, _ in quickRefusal = nil }
+                    .onChange(of: chat.isStreaming) { _, _ in quickRefusal = nil }
                 Button {
                     sendQuick()
                 } label: {
@@ -190,7 +194,7 @@ struct MenuBarView: View {
                 .help(L.t("Отправить вопрос", "Send the question", "发送问题"))
                 .disabled(quick.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if let refusal = quickRefusal {
+            if let refusal = quickRefusal, !refusal.isEmpty {
                 Text(refusal).font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -263,7 +267,7 @@ struct MenuBarView: View {
     /// Быстрый вопрос уходит в общий локальный чат — ответ ждёт в его истории
     /// (здоровье движка — у `OllamaRuntimeService`, строка меню его уже показала).
     private func sendQuick() {
-        let q = quick.trimmingCharacters(in: .whitespaces)
+        let q = quick.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return }
         // Отказ чата (идёт ответ, вопрос длиннее окна модели) не стирает вопрос:
         // поле меню-бара — единственное место, где этот текст ещё есть.

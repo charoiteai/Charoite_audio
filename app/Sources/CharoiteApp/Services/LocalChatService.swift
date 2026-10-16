@@ -139,6 +139,9 @@ final class LocalChatService: ObservableObject {
         messages.append(assistant)
         isStreaming = true
         status = ""
+        // Вопрос — в файл сразу: закрытое посреди ответа приложение его не теряет
+        // (пустой пузырь ответа фильтр `saveHistory` не пишет).
+        saveHistory()
         task = Task { await stream(prompt, into: assistant.id) }
         return true
     }
@@ -302,6 +305,8 @@ final class LocalChatService: ObservableObject {
             "options": ["temperature": 0.35, "num_ctx": 32768, "num_predict": 2048],
         ] as [String: Any])
 
+        var sawDone = false
+        var failure: Error?
         do {
             let (bytes, resp) = try await Self.localSession.bytes(for: req)
             // 404/500 Ollama — это тело ошибки без «done», и EOF выглядел
@@ -310,7 +315,6 @@ final class LocalChatService: ObservableObject {
             if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
                 throw URLError(.badServerResponse)
             }
-            var sawDone = false
             let throttler = StreamThrottler()  // ~30fps: без него растущий Text = O(n²), 100% CPU
             for try await line in bytes.lines {
                 if Task.isCancelled { break }
@@ -325,53 +329,66 @@ final class LocalChatService: ObservableObject {
                 if obj["done"] as? Bool == true { sawDone = true; completedBubble = bubbleId; break }
             }
             let finalText = await throttler.finalText()
-            // Мета ниже описывает запрос (модель, время, что подмешали) и
-            // честна и для оборванного потока; успех/здоровье гейтится
-            // отдельно по sawDone.
             if !finalText.isEmpty { setText(bubbleId, finalText) }
-            // Полнота ответа — по done, а не по тому, успел ли «Стоп»: ответ без
-            // done (Стоп или обрыв соединения) помечен прерванным; оборванный
-            // «Стопом» ещё и не получает строку происхождения и чипы.
-            if !sawDone {
-                if let idx = messages.firstIndex(where: { $0.id == bubbleId }), !messages[idx].text.isEmpty {
-                    messages[idx].interrupted = true
-                }
-                if Task.isCancelled {
-                    saveHistory()
-                    return
-                }
-            }
-            // Строка происхождения и чипы — по факту завершения: у каждого
-            // числа источник (модель — какая отвечала, время — замер, встречи
-            // — счёт подмешанных источников-встреч).
-            if let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
-                let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
-                messages[idx].sources = chipSources.isEmpty ? nil : chipSources
-                messages[idx].weakMatches = weakMatches ? true : nil
-                messages[idx].meta = MemoryScreenPolicy.metaLine(
-                    model: effModel, seconds: secs,
-                    meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
-                    sourcesInContext: sourcesInContext,
-                    memoryOn: memoryOn, weakMatches: weakMatches,
-                    inferenceIsLocal: inferenceIsLocal)
-            }
-            // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа
-            // отработал своё, слот возвращается честному чипу здоровья
-            // (круг-1, Codex). Оборванный без done поток успехом не считаем.
-            if sawDone {
-                ollamaAlive = true
-                // после «Стопа» статус уже принадлежит следующему вопросу
-                if !Task.isCancelled { status = "" }
-            }
         } catch {
-            if !Task.isCancelled, let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
-                messages[idx].text += "\n[ошибка: \(error.localizedDescription) — Ollama запущена?]"
-                ollamaAlive = false
-            }
+            failure = error
+        }
+        // Исход — одно решение по фактам потока (`ChatAnswerOutcome`): пометка
+        // «ответ прерван», строка происхождения и пустой пузырь выводятся из него.
+        let outcome = ChatAnswerOutcome.decide(sawDone: sawDone, cancelled: Task.isCancelled,
+                                               failed: failure != nil)
+        let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
+        apply(outcome, to: bubbleId, failure: failure,
+              sources: chipSources.isEmpty ? nil : chipSources, weakMatches: weakMatches) {
+            MemoryScreenPolicy.metaLine(
+                model: effModel, seconds: secs,
+                meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
+                sourcesInContext: sourcesInContext,
+                memoryOn: memoryOn, weakMatches: weakMatches,
+                inferenceIsLocal: inferenceIsLocal)
+        }
+        switch outcome {
+        case .complete:
+            // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа отработал
+            // своё (круг-1, Codex). Статус принадлежит этому ответу, если поток
+            // не отменён или новый вопрос ещё не начался.
+            ollamaAlive = true
+            if !Task.isCancelled || !isStreaming { status = "" }
+        case .failed:
+            ollamaAlive = false
+        case .stopped, .dropped:
+            break
         }
         // отменённый стрим не должен разблокировать кнопку под живым новым стримом
         if !Task.isCancelled { isStreaming = false }
         saveHistory()
+    }
+
+    /// Пузырь по исходу потока: заглушка уходит, неполный помечен, ошибка и
+    /// пустой обрыв названы, строка происхождения — только у дошедшего текста.
+    private func apply(_ outcome: ChatAnswerOutcome, to bubbleId: UUID, failure: Error?,
+                       sources: [MemoryScreenPolicy.Source]?, weakMatches: Bool, meta: () -> String) {
+        guard let idx = messages.firstIndex(where: { $0.id == bubbleId }) else { return }
+        let empty = messages[idx].text.isEmpty
+        if outcome == .stopped && empty && messages[idx].meta == nil {
+            messages.remove(at: idx)   // заглушка «…», а не ответ
+            return
+        }
+        messages[idx].interrupted = outcome.marksInterrupted(textIsEmpty: empty) ? true : nil
+        if outcome == .failed, let failure {
+            messages[idx].text += "\n[ошибка: \(failure.localizedDescription) — Ollama запущена?]"
+        } else if outcome == .dropped && empty {
+            messages[idx].text = L.t("[ответ не пришёл: соединение закрыто без ответа — Ollama запущена?]",
+                                     "[no answer: the connection closed without a reply — is Ollama running?]",
+                                     "[未收到回答：连接在回复前关闭——Ollama 是否在运行？]")
+        }
+        // Строка происхождения и чипы: у каждого числа источник (модель —
+        // какая отвечала, время — замер, встречи — счёт подмешанных).
+        if outcome.getsMeta(textIsEmpty: empty) {
+            messages[idx].sources = sources
+            messages[idx].weakMatches = weakMatches ? true : nil
+            messages[idx].meta = meta()
+        }
     }
 }
 
