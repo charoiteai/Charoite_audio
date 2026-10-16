@@ -22,6 +22,8 @@ final class LocalChatService: ObservableObject {
         var weakMatches: Bool?
         /// «Стоп» оборвал ответ: в истории это обрывок, а не полный ответ.
         var interrupted: Bool?
+        /// Служебное пояснение вместо ответа («ответ не пришёл…»): модели не отдаётся.
+        var notice: Bool?
     }
 
     @Published var messages: [Message] = []
@@ -271,9 +273,7 @@ final class LocalChatService: ObservableObject {
         // ответы не выталкивают начало разговора мгновенно
         let currentUserIndex = messages.firstIndex(where: { $0.id == bubbleId })
             .map { max(0, $0 - 1) } ?? messages.count
-        let history = messages.prefix(currentUserIndex).map {
-            ChatContextWindow.Entry(role: $0.role, text: $0.text)
-        }
+        let history = Self.contextHistory(messages.prefix(currentUserIndex))
         let window = ChatContextWindow.select(history: history, prompt: prompt)
         msgs.append(contentsOf: window.map { ["role": $0.role, "content": $0.text] })
 
@@ -314,8 +314,9 @@ final class LocalChatService: ObservableObject {
             // 404/500 Ollama — это тело ошибки без «done», и EOF выглядел
             // как успех: пустой пузырь получал мету и зелёный чип (круг-2,
             // Codex). Ошибка HTTP — ошибка, а не тихий конец стрима.
+            // Ответил живой сервер: его причина (`model not found`), а не «Ollama запущена?».
             if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-                throw URLError(.badServerResponse)
+                throw await Self.serverRefusal(bytes, status: http.statusCode)
             }
             for try await line in bytes.lines {
                 if Task.isCancelled { break }
@@ -367,12 +368,43 @@ final class LocalChatService: ObservableObject {
         case .failed:
             // `{"error": …}` прислала сама Ollama: сервер жив, отказала модель
             ollamaAlive = failure is ChatStreamError
-        case .stopped, .dropped:
+        case .dropped:
+            // Обрыв без ответа: жив ли сервер, неизвестно — шапка молчит, а не врёт
+            ollamaAlive = nil
+        case .stopped:
             break
         }
         // отменённый стрим не должен разблокировать кнопку под живым новым стримом
         if !Task.isCancelled { isStreaming = false }
         saveHistory()
+    }
+
+    /// История для модели: служебные пояснения — не ответы модели, их нет в контексте.
+    nonisolated static func contextHistory(_ messages: ArraySlice<Message>) -> [ChatContextWindow.Entry] {
+        messages.map { ChatContextWindow.Entry(role: $0.role, text: $0.notice == true ? "" : $0.text) }
+    }
+
+    /// Отказ живого сервера: первые ~4000 знаков тела, причина — из `{"error": …}`.
+    nonisolated static func serverRefusal(_ bytes: URLSession.AsyncBytes, status: Int) async -> ChatStreamError {
+        var body = ""
+        do {
+            for try await line in bytes.lines {
+                body += line
+                if body.count > 4000 { break }
+            }
+        } catch {}
+        return ChatStreamError(message: serverReason(body: body, status: status))
+    }
+
+    /// Причина отказа из тела не-200 ответа Ollama (`{"error": …}`), иначе код HTTP.
+    nonisolated static func serverReason(body: String, status: Int) -> String {
+        if let data = body.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let reason = obj["error"] as? String,
+           !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return reason
+        }
+        return "HTTP \(status)"
     }
 
     /// Пузырь по исходу потока: заглушка уходит, неполный помечен, ошибка и
@@ -383,13 +415,14 @@ final class LocalChatService: ObservableObject {
         let empty = messages[idx].text.isEmpty
         if empty {
             switch outcome.emptyBubble(failure: failure) {
-            case .remove where messages[idx].meta == nil:
+            case .remove:
                 messages.remove(at: idx)
                 return
-            case .remove, .keep:
+            case .keep:
                 break
             case .explain(let reason):
                 messages[idx].text = reason
+                messages[idx].notice = true
             }
         } else if outcome == .failed, let failure {
             messages[idx].text += "\n" + failure

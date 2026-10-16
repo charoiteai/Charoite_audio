@@ -69,4 +69,27 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         let transport = ChatAnswerOutcome.failureNote(URLError(.cannotConnectToHost))
         XCTAssertTrue(transport.contains("Ollama"))
     }
+
+    func testHTTPRefusalCarriesServerReason() {
+        // Ответ 404 живой Ollama: причина сервера, не «Ollama запущена?».
+        let reason = LocalChatService.serverReason(body: #"{"error":"model \"qwen\" not found, try pulling it first"}"#,
+                                                   status: 404)
+        XCTAssertEqual(reason, #"model "qwen" not found, try pulling it first"#)
+        XCTAssertEqual(LocalChatService.serverReason(body: "<html>bad gateway</html>", status: 502), "HTTP 502")
+        XCTAssertEqual(LocalChatService.serverReason(body: #"{"error":"  "}"#, status: 500), "HTTP 500")
+        let note = ChatAnswerOutcome.failureNote(ChatStreamError(message: reason))
+        XCTAssertFalse(note.contains("Ollama запущена"))
+    }
+
+    func testNoticeIsNotFedBackAsModelAnswer() {
+        typealias M = LocalChatService.Message
+        var notice = M(role: "assistant", text: "[ответ не пришёл]")
+        notice.notice = true
+        let history: [M] = [M(role: "user", text: "q1"), notice,
+                            M(role: "user", text: "q2"), M(role: "assistant", text: "a2")]
+        let entries = LocalChatService.contextHistory(history[...])
+        let window = ChatContextWindow.select(history: entries, prompt: "q3")
+        XCTAssertFalse(window.contains { $0.text == "[ответ не пришёл]" })
+        XCTAssertEqual(window.map(\.text), ["q1", "q2", "a2", "q3"])
+    }
 }
