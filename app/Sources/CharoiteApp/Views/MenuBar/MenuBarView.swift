@@ -64,6 +64,8 @@ struct MenuBarView: View {
     @ObservedObject private var ollama = OllamaRuntimeService.shared
     @ObservedObject private var nightly = NightlyStatusService.shared
     @State private var quick = ""
+    /// Причина, по которой быстрый вопрос не ушёл; текст при этом остаётся в поле.
+    @State private var quickRefusal: String?
 
     /// Что происходит прямо сейчас — одной строкой и одним цветом.
     ///
@@ -188,6 +190,10 @@ struct MenuBarView: View {
                 .help(L.t("Отправить вопрос", "Send the question", "发送问题"))
                 .disabled(quick.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            if let refusal = quickRefusal {
+                Text(refusal).font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // Столбиком, а не в ряд: три подписи с сочетаниями не влезали в
             // 300 точек ширины и обрезались до «Диктовка ⌥…» — то есть именно
@@ -259,8 +265,16 @@ struct MenuBarView: View {
     private func sendQuick() {
         let q = quick.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
+        // Отказ чата (идёт ответ, вопрос длиннее окна модели) не стирает вопрос:
+        // поле меню-бара — единственное место, где этот текст ещё есть.
+        guard chat.send(q) else {
+            quickRefusal = chat.isStreaming
+                ? L.t("Дождитесь конца текущего ответа.", "Wait for the current answer to finish.", "请等待当前回答结束。")
+                : chat.status
+            return
+        }
         quick = ""
-        chat.send(q)
+        quickRefusal = nil
         navigation.open(.memory)
     }
 }

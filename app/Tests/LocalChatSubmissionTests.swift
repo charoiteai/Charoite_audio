@@ -91,5 +91,29 @@ final class LocalChatSubmissionTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: url), bytes)
         }
     }
+
+    func testStopBeforeFirstTokenLeavesScreenEqualToFile() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(service.messages, saved)
+            XCTAssertFalse(service.messages.contains { $0.role == "assistant" })
+        }
+    }
+
+    func testStopAfterDoneDoesNotMarkCompleteAnswerInterrupted() throws {
+        try withHistory { service, _, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            let answer = LocalChatService.Message(role: "assistant", text: "Полный ответ")
+            service.messages.append(answer)
+            service.completedBubble = answer.id
+            service.isStreaming = true
+            service.stopStreaming()
+            XCTAssertNil(service.messages.last?.interrupted)
+        }
+    }
 }
 #endif

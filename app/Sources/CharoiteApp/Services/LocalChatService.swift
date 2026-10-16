@@ -76,6 +76,8 @@ final class LocalChatService: ObservableObject {
         }
     }
     @Published var isStreaming = false
+    /// Пузырь, чей поток уже получил `done`: «Стоп» после этого ответ не обрывает.
+    var completedBubble: UUID?
     @Published var model = "qwen3.6:35b-a3b"
     @Published var useMemory = true
     @Published var status = ""
@@ -144,8 +146,13 @@ final class LocalChatService: ObservableObject {
     func stopStreaming() {
         task?.cancel()
         if isStreaming, let idx = messages.lastIndex(where: { $0.role == "assistant" }),
-           !messages[idx].text.isEmpty {
-            messages[idx].interrupted = true
+           messages[idx].id != completedBubble {
+            if messages[idx].text.isEmpty && messages[idx].meta == nil {
+                // «…» до первого токена — заглушка, а не ответ: экран и файл одинаковы
+                messages.remove(at: idx)
+            } else {
+                messages[idx].interrupted = true
+            }
         }
         isStreaming = false
         // A canceled memory lookup can return before stream's final save.
@@ -315,21 +322,24 @@ final class LocalChatService: ObservableObject {
                         setText(bubbleId, snapshot)
                     }
                 }
-                if obj["done"] as? Bool == true { sawDone = true; break }
+                if obj["done"] as? Bool == true { sawDone = true; completedBubble = bubbleId; break }
             }
             let finalText = await throttler.finalText()
             // Мета ниже описывает запрос (модель, время, что подмешали) и
             // честна и для оборванного потока; успех/здоровье гейтится
             // отдельно по sawDone.
             if !finalText.isEmpty { setText(bubbleId, finalText) }
-            // Оборванный «Стопом» ответ не получает строку происхождения и чипы
-            // полного ответа: в истории он помечен как прерванный.
-            if Task.isCancelled {
+            // Полнота ответа — по done, а не по тому, успел ли «Стоп»: ответ без
+            // done (Стоп или обрыв соединения) помечен прерванным; оборванный
+            // «Стопом» ещё и не получает строку происхождения и чипы.
+            if !sawDone {
                 if let idx = messages.firstIndex(where: { $0.id == bubbleId }), !messages[idx].text.isEmpty {
                     messages[idx].interrupted = true
                 }
-                saveHistory()
-                return
+                if Task.isCancelled {
+                    saveHistory()
+                    return
+                }
             }
             // Строка происхождения и чипы — по факту завершения: у каждого
             // числа источник (модель — какая отвечала, время — замер, встречи
@@ -350,7 +360,8 @@ final class LocalChatService: ObservableObject {
             // (круг-1, Codex). Оборванный без done поток успехом не считаем.
             if sawDone {
                 ollamaAlive = true
-                status = ""
+                // после «Стопа» статус уже принадлежит следующему вопросу
+                if !Task.isCancelled { status = "" }
             }
         } catch {
             if !Task.isCancelled, let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
