@@ -72,9 +72,9 @@ struct LocalChatView: View {
                     .padding(14)
                     .background(ChatScrollObserver(
                         onBegin: { scrollPolicy.beginUserScroll() },
-                        onMove: { scrollPolicy.updateUserScroll(distanceFromBottom: $0) },
-                        onEnd: { distance in
-                            scrollPolicy.endUserScroll(distanceFromBottom: distance)
+                        onMove: { scrollPolicy.positionChanged(distanceFromBottom: $0, movedUp: $1) },
+                        onEnd: {
+                            scrollPolicy.endUserScroll()
                             if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
                         }
                     ))
@@ -88,33 +88,35 @@ struct LocalChatView: View {
                     if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    HStack(spacing: 8) {
-                        if scrollPolicy.followsLatest {
-                            Button {
-                                scrollPolicy.pause()
-                            } label: {
-                                Label(L.t("Приостановить прокрутку", "Pause auto-scroll", "暂停自动滚动"), systemImage: "pause")
+                    if !chat.messages.isEmpty {
+                        HStack(spacing: 8) {
+                            if scrollPolicy.followsLatest {
+                                Button {
+                                    scrollPolicy.pause()
+                                } label: {
+                                    Label(L.t("Приостановить прокрутку", "Pause auto-scroll", "暂停自动滚动"), systemImage: "pause")
+                                }
+                            } else {
+                                Text(L.t("Прокрутка приостановлена", "Auto-scroll paused", "自动滚动已暂停"))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                                Button {
+                                    scrollPolicy.resume()
+                                    scrollToLatest(using: proxy)
+                                } label: {
+                                    Label(scrollPolicy.hasUnreadContent
+                                          ? L.t("Новый ответ", "New response", "新回复")
+                                          : L.t("Вниз", "To latest", "到底部"), systemImage: "arrow.down")
+                                }
+                                .help(L.t("Вернуться вниз и включить автопрокрутку", "Return to the bottom and resume auto-scroll", "返回底部并恢复自动滚动"))
                             }
-                        } else {
-                            Text(L.t("Прокрутка приостановлена", "Auto-scroll paused", "自动滚动已暂停"))
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                            Button {
-                                scrollPolicy.resume()
-                                scrollToLatest(using: proxy)
-                            } label: {
-                                Label(scrollPolicy.hasUnreadContent
-                                      ? L.t("Новый ответ ↓", "New response ↓", "新回复 ↓")
-                                      : L.t("Вниз ↓", "To latest ↓", "到底部 ↓"), systemImage: "arrow.down")
-                            }
-                            .help(L.t("Вернуться вниз и включить автопрокрутку", "Return to the bottom and resume auto-scroll", "返回底部并恢复自动滚动"))
                         }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .background(.bar)
                     }
-                    .font(.caption)
-                    .buttonStyle(.borderless)
-                    .padding(.horizontal, 14).padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .background(.bar)
                 }
             }
             Divider()
@@ -284,13 +286,17 @@ struct LocalChatView: View {
     }
 
     private func submit() {
-        Self.submitDraft(&draft, using: chat)
+        // An own question is an explicit wish to read the newest: it lifts a pause.
+        if Self.submitDraft(&draft, using: chat) { scrollPolicy.resume() }
     }
 
     /// Both Enter and the button use this transition. Keep a refused draft.
     @MainActor
-    static func submitDraft(_ draft: inout String, using chat: LocalChatService) {
-        if chat.send(draft) { draft = "" }
+    @discardableResult
+    static func submitDraft(_ draft: inout String, using chat: LocalChatService) -> Bool {
+        guard chat.send(draft) else { return false }
+        draft = ""
+        return true
     }
 }
 
