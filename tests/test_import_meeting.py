@@ -735,11 +735,11 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
         assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
     # Огромный срок — потолок, а не два дня: на main 1e308 хранило копию
     # бессрочно (круг 4 по #809); в секундах потолок конечен для JSON сайдкара
-    for raw in (10 ** 400, 1e308, "1e999", float("inf"), 1e9):
+    for raw in (10 ** 400, 1e308, "1e999", float("inf"), 1e9, 36_500_000):
         days = im.import_keep_days({"audio": {"import_keep_days": raw}})
         assert days == im.IMPORT_KEEP_DAYS_CEILING, raw
         assert math.isfinite(days * 86400)
-        assert "больше потолка" in capsys.readouterr().out, f"потолок не молчит: {raw!r}"
+        assert "на потолке или выше" in capsys.readouterr().out, f"потолок не молчит: {raw!r}"
     assert im.import_keep_days({"audio": {"import_keep_days": 36500}}) == 36500
     assert capsys.readouterr().out == "", "обычный срок — без слов"
     assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == im.IMPORT_KEEP_DAYS_DEFAULT, \

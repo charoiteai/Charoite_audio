@@ -411,14 +411,14 @@ def import_keep_days(cfg: dict, override=None) -> float:
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
         sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
-    if days > IMPORT_KEEP_DAYS_CEILING:
+    if days >= IMPORT_KEEP_DAYS_CEILING:
         return _keep_days_ceiling(raw)
     return days
 
 
 def _keep_days_ceiling(raw) -> float:
-    """Срок за потолком: копия живёт практически бессрочно — говорим вслух."""
-    print(f"import_keep_days: {str(raw)[:24]!s} больше потолка — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
+    """Срок на потолке и за ним: копия живёт практически бессрочно — говорим вслух."""
+    print(f"import_keep_days: {str(raw)[:24]!s} на потолке или выше — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
           f"(практически бессрочно)")
     return IMPORT_KEEP_DAYS_CEILING
 
