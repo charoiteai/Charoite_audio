@@ -212,7 +212,7 @@
 - `src/charoite_schema.py` ← CONTRIBUTING.md, docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/ru/CONTRIBUTING.md, docs/zh/ARCHITECTURE.md, docs/zh/CONTRIBUTING.md
 - `src/cloud.py` ← docs/ARCHITECTURE.md, docs/MODELS.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/zh/ARCHITECTURE.md, docs/zh/MODELS.md
 - `src/config_loader.py` ← docs/design/OVERHAUL_2026-08.md
-- `src/daemon.py` ← SECURITY.md, app/README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md, docs/zh/app/README.md
+- `src/daemon.py` ← SECURITY.md, app/README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/design/DEEP_AUDIT_2026-10-12.md, docs/ru/ARCHITECTURE.md, docs/ru/SECURITY.md, docs/ru/SETUP.md, docs/ru/app/README.md, docs/zh/ARCHITECTURE.md, docs/zh/SECURITY.md, docs/zh/SETUP.md, docs/zh/app/README.md
 - `src/decision_gate.py` ← docs/ARCHITECTURE.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/scripts/README.md, scripts/README.md
 - `src/deps.py` ← docs/SETUP.md, docs/ru/SETUP.md, docs/zh/SETUP.md
 - `src/diarize_nemotron.py` ← docs/DIARIZATION.md, docs/ru/DIARIZATION.md, requirements-nemotron.in, scripts/README.md
