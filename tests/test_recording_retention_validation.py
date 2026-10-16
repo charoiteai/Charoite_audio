@@ -125,10 +125,15 @@ def test_missing_retention_keeps_logs_for_two_days(tmp_path, monkeypatch, cfg):
 
 
 def test_refusal_shows_a_long_value_shortly():
+    import stt_runtime
     status = audio.keep_days_refusal("x" * 500)
     assert status is not None
     assert len(status) < 220
-    assert "..." in status
+    text = stt_runtime.status_event(status)["text"]
+    assert f"= '{'x' * 56}... не понят" in text, "57 знаков значения и многоточие (мутатор по #809)"
+    # ровно 60 знаков — ещё целиком
+    text = stt_runtime.status_event(audio.keep_days_refusal("y" * 58))["text"]
+    assert f"= '{'y' * 58}' не понят" in text
 
 
 def test_refusal_itself_is_silent_in_stderr(capsys):

@@ -391,16 +391,10 @@ def import_keep_days(cfg: dict, override=None) -> float:
         raw = IMPORT_KEEP_DAYS_DEFAULT
         _hint_keep_days_once(audio.get("record_keep_days"))
     try:
-        days = float(raw)
-    except OverflowError:
-        # -10**400 — отрицательное, как -1: отказ, а не умолчание
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw < 0:
-            sys.exit(f"import_keep_days не может быть отрицательным: {_shown(raw, 20)}…")
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            return _keep_days_ceiling(raw)
-        print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
-        return float(IMPORT_KEEP_DAYS_DEFAULT)
-    except (TypeError, ValueError):
+        # Целое сравнивается с потолком точно и зажимается до float(): 10**400 — потолок,
+        # -10**400 — отрицательное, как -1 (отказ), а не OverflowError
+        days = float(max(-1, min(raw, IMPORT_KEEP_DAYS_CEILING)) if isinstance(raw, int) else raw)
+    except (TypeError, ValueError, OverflowError):
         print(f"import_keep_days: непонятное значение {_shown(raw, 60)} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     # bool (YAML off/on; на main давал 0 или 1 день), NaN и −inf — непонятное. Отрицательное
