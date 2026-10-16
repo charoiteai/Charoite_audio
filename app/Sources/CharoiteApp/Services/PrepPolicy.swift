@@ -24,6 +24,15 @@ enum PrepPolicy {
             .trimmingCharacters(in: .whitespaces)
     }
 
+    /// Generic calendar words are not a useful archive query.
+    static func searchQuery(_ title: String) -> String? {
+        let noise = genericEventWords.union(["по", "о", "об", "про", "с", "со", "для",
+                                             "on", "about", "with", "for", "the", "a", "an", "and", "of"])
+        let terms = MeetingSearch.tokens(of: titleQuery(title))
+            .filter { !noise.contains($0) }
+        return terms.isEmpty ? nil : terms.joined(separator: " ")
+    }
+
     /// Относится ли встреча или поручение к теме ближайшего события.
     ///
     /// Самая надёжная связь — тот же штамп встречи в пути файла. Для заметок

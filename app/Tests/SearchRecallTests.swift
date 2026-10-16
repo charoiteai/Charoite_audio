@@ -56,27 +56,31 @@ func tempIndexStore() -> URL {
 /// (Ollama, bge-m3, индекс на диске), а его главную работу делать некому.
 final class SemanticUnionTests: XCTestCase {
     func testSemanticFindsWhatLexiconMissed() async throws {
+        // A private actor prevents delayed refreshes from another test graph
+        // from pruning this fixture between refresh() and localSearch().
+        let index = SemanticIndex()
+        let budgetPath = "Ядра/Бюджет-\(UUID().uuidString).md"
         let graph = try makeTestGraph([
-            ("Ядра/Бюджет.md", "курс валют и деньги на квартал"),
+            (budgetPath, "курс валют и деньги на квартал"),
             ("Ядра/Погода.md", "дожди весь месяц"),
         ])
         defer { try? FileManager.default.removeItem(at: graph) }
         // Эмбеддер-подделка: запрос и файл про деньги — один вектор,
         // остальное — ортогональ. Настоящая Ollama не трогается.
-        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+        await index.useForTests(store: tempIndexStore()) { texts in
             texts.map { t -> [Float] in
                 (t.contains("деньги") || t.contains("финанс")) ? [1, 0] : [0, 1]
             }
         }
-        await SemanticIndex.shared.refresh(files: [
-            (path: "Ядра/Бюджет.md", mtime: 1, text: "курс валют и деньги на квартал"),
+        await index.refresh(files: [
+            (path: budgetPath, mtime: 1, text: "курс валют и деньги на квартал"),
             (path: "Ядра/Погода.md", mtime: 1, text: "дожди весь месяц"),
         ])
 
         // Ни «финансовый», ни «прогноз» не встречаются ни в одном файле —
         // лексика пуста, ответ обязан прийти из семантики.
         let out = await ArchiveSearch.localSearch(query: "финансовый прогноз",
-                                                  limit: 3, snippet: 200, root: graph)
+                                                  limit: 3, snippet: 200, root: graph, semanticIndex: index)
         XCTAssertTrue(out.contains("Бюджет"),
                       "семантика не смогла добавить файл, которого нет в лексической выдаче; получили: «\(out.prefix(120))»")
         XCTAssertFalse(out.contains("Погода"), "ортогональный файл пролез в выдачу")

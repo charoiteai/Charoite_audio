@@ -251,6 +251,10 @@ struct LocalChatView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             SourceChipsRow(sources: sources)
         }
+        if m.interrupted == true {
+            Text(L.t("ответ прерван", "response interrupted", "回复已中断"))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
         if m.weakMatches == true {
             Text(L.t("⚠ совпадения в графе слабые", "⚠ weak graph matches", "⚠ 图谱匹配较弱"))
                 .font(.caption2.weight(.semibold))

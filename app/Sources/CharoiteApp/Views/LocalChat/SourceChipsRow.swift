@@ -9,24 +9,12 @@ struct SourceChipsRow: View {
     let sources: [MemoryScreenPolicy.Source]
 
     var body: some View {
-        // FlowLayout в проекте нет; чипов не больше шести и они короткие —
-        // перенос даёт обычный HStack в две строки через chunk.
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                HStack(spacing: 4) {
-                    ForEach(row) { source in
-                        chip(source)
-                    }
-                }
+        SourceChipFlow {
+            ForEach(sources) { source in
+                chip(source)
             }
         }
         .padding(.top, 2)
-    }
-
-    private var rows: [[MemoryScreenPolicy.Source]] {
-        stride(from: 0, to: sources.count, by: 3).map {
-            Array(sources[$0..<min($0 + 3, sources.count)])
-        }
     }
 
     private func chip(_ source: MemoryScreenPolicy.Source) -> some View {
@@ -51,6 +39,7 @@ struct SourceChipsRow: View {
         .buttonStyle(.plain)
         .help(source.rel)
         .accessibilityLabel(Text(source.title))
+        .accessibilityHint(L.t("Открыть материал источника", "Open source material", "打开来源资料"))
     }
 
     private func open(_ source: MemoryScreenPolicy.Source) {

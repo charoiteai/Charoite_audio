@@ -17,6 +17,7 @@ struct PrepView: View {
     /// Тот же ключ, что в Настройках и библиотеке: подключение календаря
     /// отсюда обязано отразиться там, а не жить третьим флагом.
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
+    @AppStorage("charoite.root") private var dataRoot = ""
     /// Хвосты по теме ближайшей встречи — из того же поиска, что в окне встреч.
     @State private var topicHits: [MeetingSearch.Hit] = []
     @State private var topicSearchTask: Task<Void, Never>?
@@ -60,6 +61,11 @@ struct PrepView: View {
             // nextTopic зависит от календаря напрямую: опустел — секция
             // становится «Что вы обещали», и горящие нужны даже если
             // topicHits не изменился (второй круг 22.08, Gemini + локальная).
+            recomputeDebts()
+        }
+        .onChange(of: dataRoot) { _, _ in
+            tasks.rescan()
+            loadTopicTrail()
             recomputeDebts()
         }
         .onChange(of: tasks.items) { _, _ in recomputeDebts() }
@@ -151,7 +157,25 @@ struct PrepView: View {
                         "Previously on “\(short(next.title))”",
                         "「\(short(next.title))」此前的情况"),
                     icon: "clock.arrow.circlepath") {
-                if isLoadingTopic {
+                if AppSettings.graphDir == nil {
+                    EmptyState(title: L.t("Память не подключена", "Memory is not connected", "记忆未连接"),
+                               text: L.t("Проверьте папку данных в настройках. Путь к графу задаётся параметром graph_dir в config.yaml.",
+                                         "Check the data folder in Settings. The graph path is set by graph_dir in config.yaml.",
+                                         "请在设置中检查数据文件夹。图谱路径由 config.yaml 中的 graph_dir 设置。"),
+                               inset: false) {
+                        SettingsLink {
+                            Text(L.t("Открыть настройки", "Open Settings", "打开设置"))
+                        }
+                    }
+                } else if nextTopic == nil {
+                    Text(L.t("В названии события нет конкретной темы. Уточните название в календаре или найдите встречу в библиотеке.",
+                             "The event title has no specific topic. Add a topic in your calendar or find a meeting in the library.",
+                             "日程标题没有具体主题。请在日历中补充主题，或在会议库中查找会议。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button(L.t("Открыть библиотеку", "Open library", "打开会议库")) {
+                        navigation.open(.meetings)
+                    }
+                } else if isLoadingTopic {
                     HStack(spacing: 7) {
                         ProgressView().controlSize(.small)
                         Text(L.t("Ищу связанные встречи…",
@@ -195,7 +219,13 @@ struct PrepView: View {
         if nextTopic != nil {
             section(L.t("Поручения по теме", "Topic action items", "主题任务"),
                     icon: "checklist") {
-                if visible.isEmpty {
+                if AppSettings.graphDir == nil {
+                    // Без памяти поиска поручений не было — «не нашлось» было бы неправдой.
+                    Text(L.t("Память не подключена — поручения искать негде.",
+                             "Memory is not connected — there is nowhere to look for action items.",
+                             "记忆未连接——无处查找任务。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                } else if visible.isEmpty {
                     Text(L.t("Открытых поручений, связанных с этой встречей, не нашлось.",
                              "No open action items linked to this meeting were found.",
                              "未找到与本次会议相关的未完成任务。"))
@@ -364,8 +394,7 @@ struct PrepView: View {
             isLoadingTopic = false
             return
         }
-        let query = PrepPolicy.titleQuery(next.title)
-        guard !query.isEmpty else {
+        guard let query = PrepPolicy.searchQuery(next.title) else {
             topicHits = []
             isLoadingTopic = false
             return
@@ -388,8 +417,7 @@ struct PrepView: View {
 
     private var nextTopic: String? {
         guard let title = calendar.today.first?.title else { return nil }
-        let query = PrepPolicy.titleQuery(title)
-        return query.isEmpty ? nil : query
+        return PrepPolicy.searchQuery(title)
     }
 
     private var relatedDays: Set<String> {
