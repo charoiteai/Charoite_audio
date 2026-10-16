@@ -16,11 +16,15 @@ enum TasksGrouping: String, CaseIterable {
 enum TasksScreenPolicy {
     /// All query words may match task text or its source, in any order.
     static func matchesSearch(text: String, source: String, query: String) -> Bool {
+        // «й» — отдельная буква, а не «и» с диакритикой: «краи» не должно
+        // находить «край». Свёртка снимает бреве, поэтому «й» прячем на время.
+        let shortI = "\u{E000}"
         func normalized(_ value: String) -> String {
-            value.folding(options: [.caseInsensitive, .diacriticInsensitive],
-                          locale: Locale(identifier: "ru_RU"))
-                .replacingOccurrences(of: "ё", with: "е")
-                .replacingOccurrences(of: "Ё", with: "е")
+            value.replacingOccurrences(of: "й", with: shortI)
+                .replacingOccurrences(of: "Й", with: shortI)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive],
+                         locale: Locale(identifier: "ru_RU"))
+                .replacingOccurrences(of: shortI, with: "й")
         }
         let terms = normalized(query).split(whereSeparator: { $0.isWhitespace })
         let content = normalized(text + " " + source)

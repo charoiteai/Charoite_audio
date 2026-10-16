@@ -4,6 +4,12 @@ import Foundation
 /// not whether Ollama receives the question at all. It is a character heuristic,
 /// not a guarantee that an arbitrarily large prompt fits a model's token limit.
 enum ChatContextWindow {
+    /// Предел самого вопроса в знаках. Окно модели — 32 768 токенов
+    /// (`LocalChatService`): минус ответ (2 048), блок памяти (до 5 000 знаков)
+    /// и системный промпт. Для CJK знак ≈ токен, поэтому предел считается по
+    /// худшему случаю, а не по кириллице.
+    static let maxPrompt = 20_000
+
     struct Entry: Equatable {
         let role: String
         let text: String

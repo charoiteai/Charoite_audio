@@ -15,7 +15,13 @@ enum LibraryScreenPolicy {
             day.map { calendar.isDate(date(record), inSameDayAs: $0) } ?? true
         }
         if let current, candidates.contains(where: { id($0) == current }) { return current }
-        return candidates.first.map(id)
+        // Лента дня идёт по времени вверх — по умолчанию её первая встреча,
+        // а не последняя запись репозитория (тот хранит новое первым).
+        guard day != nil else { return candidates.first.map(id) }
+        return candidates.enumerated().min { a, b in
+            let da = date(a.element), db = date(b.element)
+            return da == db ? a.offset < b.offset : da < db
+        }.map { id($0.element) }
     }
 
 

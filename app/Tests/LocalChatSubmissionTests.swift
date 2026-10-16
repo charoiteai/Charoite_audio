@@ -38,8 +38,9 @@ final class LocalChatSubmissionTests: XCTestCase {
             service.stopStreaming()
             XCTAssertFalse(service.isStreaming)
             let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
-            XCTAssertEqual(saved, service.messages)
-            XCTAssertEqual(LocalChatService(historyURL: url).messages, service.messages)
+            let visible = service.messages.filter { !$0.text.isEmpty }
+            XCTAssertEqual(saved, visible)
+            XCTAssertEqual(LocalChatService(historyURL: url).messages, visible)
         }
     }
 
@@ -49,6 +50,44 @@ final class LocalChatSubmissionTests: XCTestCase {
             XCTAssertFalse(service.send(" \n\t "))
             XCTAssertEqual(service.messages, before)
             XCTAssertFalse(service.isStreaming)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
+    func testStopDoesNotPersistAnEmptyAnswerPlaceholder() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(saved.map(\.text), ["Сохранённый вопрос", "Вопрос"])
+        }
+    }
+
+    func testStopMarksAVisiblePartialAnswerAsInterrupted() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: "Начало отв"))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(saved.last?.text, "Начало отв")
+            XCTAssertEqual(saved.last?.interrupted, true)
+            XCTAssertNil(saved.last?.meta)
+        }
+    }
+
+    func testQuestionLongerThanModelWindowIsRefusedAndDraftKept() throws {
+        try withHistory { service, url, bytes in
+            let before = service.messages
+            var draft = String(repeating: "会", count: ChatContextWindow.maxPrompt + 1)
+            let original = draft
+            LocalChatView.submitDraft(&draft, using: service)
+            XCTAssertEqual(draft, original)
+            XCTAssertEqual(service.messages, before)
+            XCTAssertFalse(service.isStreaming)
+            XCTAssertFalse(service.status.isEmpty)
             XCTAssertEqual(try Data(contentsOf: url), bytes)
         }
     }

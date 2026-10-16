@@ -37,5 +37,14 @@ final class LibrarySelectionTests: XCTestCase {
         XCTAssertEqual(choose(records, current: "deleted", day: day), "today")
         XCTAssertNil(choose([], current: "deleted", day: nil))
     }
+
+    func testDayDefaultIsTheFirstMeetingOfTheDayFeed() {
+        // Repository keeps the newest first; the day feed goes up in time.
+        let records = [Record(id: "evening", date: day.addingTimeInterval(18 * 3600)),
+                       Record(id: "noon", date: day.addingTimeInterval(13 * 3600)),
+                       Record(id: "morning", date: day.addingTimeInterval(9 * 3600))]
+        XCTAssertEqual(choose(records, current: nil, day: day), "morning")
+        XCTAssertEqual(choose(records, current: nil, day: nil), "evening")
+    }
 }
 #endif

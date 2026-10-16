@@ -20,6 +20,8 @@ final class LocalChatService: ObservableObject {
         var sources: [MemoryScreenPolicy.Source]?
         var meta: String?
         var weakMatches: Bool?
+        /// «Стоп» оборвал ответ: в истории это обрывок, а не полный ответ.
+        var interrupted: Bool?
     }
 
     @Published var messages: [Message] = []
@@ -57,7 +59,10 @@ final class LocalChatService: ObservableObject {
     }
 
     private func saveHistory() {
-        let tail = Array(messages.suffix(200))  // истории хватает, файл не пухнет
+        // Пустой пузырь ответа — заглушка потока, а не сообщение: в файле он
+        // навсегда остался бы «…» после перезапуска.
+        let kept = messages.filter { !($0.role == "assistant" && $0.text.isEmpty && $0.meta == nil) }
+        let tail = Array(kept.suffix(200))  // истории хватает, файл не пухнет
         if let data = try? JSONEncoder().encode(tail) {
             // Файл создаётся сразу 0600: write(to:) без .atomic пишет в тот
             // же inode и права не трогает — окна с 0644 по umask нет
@@ -119,6 +124,14 @@ final class LocalChatService: ObservableObject {
     func send(_ text: String) -> Bool {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isStreaming else { return false }
+        // Вопрос длиннее окна модели Ollama обрезал бы молча, и ответ пришёл бы
+        // не на заданный вопрос. Черновик остаётся в поле ввода.
+        guard prompt.count <= ChatContextWindow.maxPrompt else {
+            status = L.t("Вопрос слишком длинный: \(prompt.count) знаков, предел \(ChatContextWindow.maxPrompt). Сократите его.",
+                         "The question is too long: \(prompt.count) characters, limit \(ChatContextWindow.maxPrompt). Please shorten it.",
+                         "问题过长：\(prompt.count) 个字符，上限 \(ChatContextWindow.maxPrompt)。请缩短。")
+            return false
+        }
         messages.append(Message(role: "user", text: prompt))
         let assistant = Message(role: "assistant", text: "")
         messages.append(assistant)
@@ -130,6 +143,10 @@ final class LocalChatService: ObservableObject {
 
     func stopStreaming() {
         task?.cancel()
+        if isStreaming, let idx = messages.lastIndex(where: { $0.role == "assistant" }),
+           !messages[idx].text.isEmpty {
+            messages[idx].interrupted = true
+        }
         isStreaming = false
         // A canceled memory lookup can return before stream's final save.
         saveHistory()
@@ -305,6 +322,15 @@ final class LocalChatService: ObservableObject {
             // честна и для оборванного потока; успех/здоровье гейтится
             // отдельно по sawDone.
             if !finalText.isEmpty { setText(bubbleId, finalText) }
+            // Оборванный «Стопом» ответ не получает строку происхождения и чипы
+            // полного ответа: в истории он помечен как прерванный.
+            if Task.isCancelled {
+                if let idx = messages.firstIndex(where: { $0.id == bubbleId }), !messages[idx].text.isEmpty {
+                    messages[idx].interrupted = true
+                }
+                saveHistory()
+                return
+            }
             // Строка происхождения и чипы — по факту завершения: у каждого
             // числа источник (модель — какая отвечала, время — замер, встречи
             // — счёт подмешанных источников-встреч).

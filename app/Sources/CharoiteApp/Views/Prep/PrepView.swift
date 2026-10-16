@@ -219,7 +219,13 @@ struct PrepView: View {
         if nextTopic != nil {
             section(L.t("Поручения по теме", "Topic action items", "主题任务"),
                     icon: "checklist") {
-                if visible.isEmpty {
+                if AppSettings.graphDir == nil {
+                    // Без памяти поиска поручений не было — «не нашлось» было бы неправдой.
+                    Text(L.t("Память не подключена — поручения искать негде.",
+                             "Memory is not connected — there is nowhere to look for action items.",
+                             "记忆未连接——无处查找任务。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                } else if visible.isEmpty {
                     Text(L.t("Открытых поручений, связанных с этой встречей, не нашлось.",
                              "No open action items linked to this meeting were found.",
                              "未找到与本次会议相关的未完成任务。"))

@@ -27,5 +27,11 @@ final class TasksSearchTests: XCTestCase {
         XCTAssertEqual(TasksScreenPolicy.statusAction(text: "Договор", done: false), "Отметить выполненным: Договор")
         XCTAssertEqual(TasksScreenPolicy.statusAction(text: "Договор", done: true), "Снова открыть поручение: Договор")
     }
+
+    func testShortIIsALetterNotADiacritic() {
+        XCTAssertFalse(TasksScreenPolicy.matchesSearch(text: "Проверить край таблицы", source: "", query: "краи"))
+        XCTAssertTrue(TasksScreenPolicy.matchesSearch(text: "Проверить КРАЙ таблицы", source: "", query: "край"))
+        XCTAssertTrue(TasksScreenPolicy.matchesSearch(text: "Мой отчёт", source: "", query: "МОЙ ОТЧЕТ"))
+    }
 }
 #endif

@@ -173,6 +173,9 @@ struct MeetingLibraryView: View {
                 .onChange(of: query) { _, value in
                     if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         cancelSearch()
+                        // Встреча, открытая из поиска, — явный выбор: день идёт за
+                        // ней, а не она подменяется первой записью дня.
+                        alignDayWithExplicitSelection()
                         chooseDefaultIfNeeded()
                     } else {
                         runSearch()
