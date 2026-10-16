@@ -358,8 +358,8 @@ def _hint_keep_days_once(record_keep_days) -> None:
         return
     try:
         days = float(record_keep_days)
-    except (TypeError, ValueError):
-        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2)
+    except (TypeError, ValueError, OverflowError):
+        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2, Opus по #809)
     if days == float(IMPORT_KEEP_DAYS_DEFAULT):
         return
     # `say` в stdout: сбой печати забывает ключ, как у всех строк реестра (DS M2)
@@ -395,7 +395,7 @@ def import_keep_days(cfg: dict, override=None) -> float:
     except OverflowError:
         # -10**400 — отрицательное, как -1: отказ, а не умолчание
         if isinstance(raw, int) and not isinstance(raw, bool) and raw < 0:
-            sys.exit(f"import_keep_days не может быть отрицательным: {str(raw)[:20]}…")
+            sys.exit(f"import_keep_days не может быть отрицательным: {_shown(raw, 20)}…")
         if isinstance(raw, int) and not isinstance(raw, bool):
             return _keep_days_ceiling(raw)
         print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
@@ -403,7 +403,7 @@ def import_keep_days(cfg: dict, override=None) -> float:
     except (TypeError, ValueError):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    # bool (YAML off/on), NaN и ±inf — непонятное, как на main. Отрицательное
+    # bool (YAML off/on; на main давал 0 или 1 день), NaN и −inf — непонятное. Отрицательное
     # конечное — отказ до проверки секунд: иначе -1e308 (в секундах -inf) тихо
     # стал бы умолчанием (Haiku, круг 2 по #809)
     if isinstance(raw, bool) or math.isnan(days) or days == -math.inf:
@@ -416,9 +416,18 @@ def import_keep_days(cfg: dict, override=None) -> float:
     return days
 
 
+def _shown(raw, width: int) -> str:
+    """Значение конфига для строки лога. Целое длиннее 4300 цифр (YAML пускает его
+    шестнадцатеричным) Python 3.11+ в строку не переводит — тогда только тип (Opus по #809)."""
+    try:
+        return repr(raw)[:width]
+    except ValueError:
+        return f"<{type(raw).__name__}>"
+
+
 def _keep_days_ceiling(raw) -> float:
     """Срок на потолке и за ним: копия живёт практически бессрочно — говорим вслух."""
-    print(f"import_keep_days: {str(raw)[:24]!s} на потолке или выше — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
+    print(f"import_keep_days: {_shown(raw, 24)} на потолке или выше — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
           f"(практически бессрочно)")
     return IMPORT_KEEP_DAYS_CEILING
 

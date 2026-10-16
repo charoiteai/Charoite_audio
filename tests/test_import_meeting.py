@@ -754,6 +754,13 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     for raw in (-1e308, -10 ** 400):
         with pytest.raises(SystemExit):
             im.import_keep_days({"audio": {"import_keep_days": raw}})
+    # Целое длиннее 4300 цифр (YAML пускает 0x…) в строку не переводится: потолок и отказ
+    # всё равно говорят своё, а не падают ValueError (Opus по #809)
+    huge = int("f" * 3600, 16)
+    assert im.import_keep_days({"audio": {"import_keep_days": huge}}) == im.IMPORT_KEEP_DAYS_CEILING
+    assert "на потолке или выше" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        im.import_keep_days({"audio": {"import_keep_days": -huge}})
     # −inf и NaN — непонятное, как на main (не новый путь отказа уборки)
     for raw in (float("nan"), float("-inf"), "-1e999"):
         assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
@@ -867,6 +874,13 @@ def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch
 
     data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
     assert data["state"] == "error" and "retro_fill" in data["error"] and "сигналом 9" in data["error"]
+
+
+def test_keep_days_hint_survives_an_unfloatable_record_keep_days(capsys):
+    """Opus по #809: огромное целое в record_keep_days не роняет импорт и уборку."""
+    once.reset("import")
+    assert im.import_keep_days({"audio": {"record_keep_days": 10 ** 400}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    assert "больше не влияет" not in capsys.readouterr().out
 
 
 def test_keep_days_hint_is_by_value_and_once(capsys):

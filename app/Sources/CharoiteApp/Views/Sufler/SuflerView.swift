@@ -233,6 +233,10 @@ struct SuflerView: View {
     /// «Recording dropped — recovering» не содержало ни «прервалась», ни
     /// «Failed», и сообщение об оборванной записи показывалось мелким серым
     /// текстом в одну строку — ровно то, чего этот код должен избегать.
+    /// Справка видна только в живой строке (`displayedStatus` при `isRunning`): после Stop слой
+    /// ещё лежит, но место под неё строке обработки не нужно (Opus по #809).
+    private var showsStickyInfo: Bool { sufler.isRunning && sufler.stickyInfo != nil }
+
     private var displayedStatus: String {
         if sufler.isRunning {
             return Self.liveStatusText(
@@ -539,8 +543,8 @@ struct SuflerView: View {
                 .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusColor)
                 .lineLimit(Self.statusLineLimit(running: sufler.isRunning, problems: sufler.stickyProblemCount,
-                                                needsAttention: statusNeedsAttention, hasInfo: sufler.stickyInfo != nil))
-                .fixedSize(horizontal: false, vertical: statusNeedsAttention || sufler.stickyInfo != nil)
+                                                needsAttention: statusNeedsAttention, hasInfo: showsStickyInfo))
+                .fixedSize(horizontal: false, vertical: statusNeedsAttention || showsStickyInfo)
                 .help(displayedStatus)
                 .textSelection(.enabled)
 
