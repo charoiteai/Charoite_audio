@@ -91,6 +91,30 @@ final class ChatScrollPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldFollow)
     }
 
+    func testLateEndOfReleasedGestureDecidesNothing() {
+        // Sonnet, DS, Haiku, round 6: flick up, then "Down" or Return while momentum rolls;
+        // didEndLiveScroll arrives afterwards with the reader's old movement.
+        var policy = ChatScrollPolicy()
+        policy.beginUserScroll()
+        policy.resume()
+        policy.endUserScroll(start: sample(0, height: 1000), lastMove: sample(600, height: 1000))
+        XCTAssertTrue(policy.shouldFollow, "an explicit return is not undone by the gesture tail")
+        // Cleared chat: a fresh policy has no gesture, the old one's end is not its decision.
+        var fresh = ChatScrollPolicy()
+        fresh.endUserScroll(start: sample(0, height: 5000), lastMove: sample(0, height: 40))
+        XCTAssertTrue(fresh.shouldFollow)
+    }
+
+    func testShrinkingDocumentIsNotTheReaderLeaving() {
+        // Haiku, round 6: rows re-measured or the window widened while the reader rests at the bottom.
+        var policy = ChatScrollPolicy()
+        policy.beginUserScroll()
+        policy.endUserScroll(start: sample(0, height: 1000), lastMove: sample(0, height: 900))
+        XCTAssertTrue(policy.shouldFollow)
+        XCTAssertEqual(ChatScrollPolicy.readerDistance(start: sample(0, height: 1000),
+                                                       lastMove: sample(300, height: 900)), 300)
+    }
+
     func testBottomToleranceAndUnknownGeometry() {
         var policy = ChatScrollPolicy()
         policy.gesture(endingAt: 81)

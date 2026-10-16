@@ -29,17 +29,24 @@ struct ChatScrollPolicy {
     mutating func beginUserScroll() { isUserScrolling = true }
 
     /// Where the reader stopped, from the bottom as it was at the gesture start.
-    /// No movement: where the gesture started. Unknown start: nil.
+    /// Only growth is subtracted: a document that shrank (rows re-measured, window resized,
+    /// chat cleared) did not carry the reader away. No movement: where the gesture started.
+    /// Unknown start: nil.
     static func readerDistance(start: ChatScrollSample?, lastMove: ChatScrollSample?) -> CGFloat? {
         guard let start else { return nil }
         let last = lastMove ?? start
-        let distance = last.distanceFromBottom - (last.contentHeight - start.contentHeight)
+        // max(0, NaN) is 0 in Swift: unknown geometry must be rejected before the arithmetic.
+        guard [start.contentHeight, last.contentHeight, last.distanceFromBottom].allSatisfy(\.isFinite) else { return nil }
+        let distance = last.distanceFromBottom - max(0, last.contentHeight - start.contentHeight)
         return distance.isFinite ? distance : nil
     }
 
     /// The gesture ended (or its end will not come): the reader's last own movement decides.
-    /// Unknown geometry is no decision; the previous one stays.
+    /// Unknown geometry is no decision; the previous one stays. A gesture already released by
+    /// the return button, an own question or a cleared chat decides nothing: its late end must
+    /// not undo the reader's explicit request for the latest content.
     mutating func endUserScroll(start: ChatScrollSample?, lastMove: ChatScrollSample?) {
+        guard isUserScrolling else { return }
         isUserScrolling = false
         guard let distance = Self.readerDistance(start: start, lastMove: lastMove) else { return }
         let atBottom = distance <= Self.bottomTolerance
