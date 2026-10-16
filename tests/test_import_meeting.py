@@ -1,4 +1,5 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
+import math
 import os
 
 import pytest
@@ -729,11 +730,16 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert im.import_keep_days({"audio": {"import_keep_days": "два"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное" in capsys.readouterr().out
-    assert im.import_keep_days({"audio": {"import_keep_days": "1e999"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
-    # Те же входы, что у record_keep_days: bool (YAML off/on), переполнение
-    # float() и срок, который в секундах уже бесконечность.
-    for raw in (True, False, 10 ** 400, 1e308):
+    # bool (YAML off/on) — непонятное, как у record_keep_days
+    for raw in (True, False):
         assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
+    # Огромный срок — потолок, а не два дня: на main 1e308 хранило копию
+    # бессрочно (круг 4 по #809); в секундах потолок конечен для JSON сайдкара
+    for raw in (10 ** 400, 1e308, "1e999", float("inf"), 1e9):
+        days = im.import_keep_days({"audio": {"import_keep_days": raw}})
+        assert days == im.IMPORT_KEEP_DAYS_CEILING, raw
+        assert math.isfinite(days * 86400)
+    assert im.import_keep_days({"audio": {"import_keep_days": 36500}}) == 36500
     assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == im.IMPORT_KEEP_DAYS_DEFAULT, \
         "срок импорта не наследует record_keep_days (аудит 05.09: чужая запись не живёт дольше, чем просили)"
     assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == \
@@ -746,8 +752,8 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     for raw in (-1e308, -10 ** 400):
         with pytest.raises(SystemExit):
             im.import_keep_days({"audio": {"import_keep_days": raw}})
-    # ±inf и NaN — непонятное, как на main (не новый путь отказа уборки)
-    for raw in (float("nan"), float("-inf"), "-1e999", float("inf")):
+    # −inf и NaN — непонятное, как на main (не новый путь отказа уборки)
+    for raw in (float("nan"), float("-inf"), "-1e999"):
         assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
 
 

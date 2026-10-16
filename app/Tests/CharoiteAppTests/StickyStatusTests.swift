@@ -91,7 +91,7 @@ final class StickyStatusTests: XCTestCase {
         // поверх живой строки (Sonnet и Haiku, круг 2 по #809). Тема — та же
         // строка, что stt_runtime.TOPIC_RETENTION у демона.
         let s = SuflerService()
-        let text = "СРОК ХРАНЕНИЯ ЗАПИСЕЙ НЕ ПОНЯТ: audio.record_keep_days = False"
+        let text = "audio.record_keep_days = False не понят: записи не удаляются — исправьте config.yaml"
         s.consumeForTest(#"{"type":"status","text":"\#(text)","sticky":true,"error":true,"topic":"retention"}"#)
         XCTAssertEqual(SuflerService.StickyTopic.retention, "retention")
         XCTAssertNil(s.stickyStatus, "справка не прячет живую строку")
@@ -142,6 +142,14 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertEqual(SuflerView.liveStatusText(stopConfirmPending: false, criticalHealthText: nil,
                                                  errorFromDaemon: false, isError: false, healthText: nil,
                                                  sticky: warning, status: "⚡ отвечаю", info: "Уведомления выключены"),
-                       warning, "слой-проблема выше и живой строки, и справки")
+                       warning + " · Уведомления выключены",
+                       "слой-проблема выше живой строки; справка хвостом за ней, а не пропадает (круг 4 по #809)")
+        // отказ срока хранения — единственный канал «записи не удаляются»: под предупреждением
+        // здоровья он ждёт (как на main), под слоем-проблемой — виден хвостом
+        let refusal = "audio.record_keep_days = False не понят: записи не удаляются — исправьте config.yaml"
+        XCTAssertTrue(SuflerView.liveStatusText(stopConfirmPending: false, criticalHealthText: nil,
+                                                errorFromDaemon: false, isError: false, healthText: nil,
+                                                sticky: "СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ", status: "👥 диаризация",
+                                                info: refusal).hasSuffix(refusal))
     }
 }

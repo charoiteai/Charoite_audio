@@ -644,7 +644,7 @@ def keep_days_refusal(raw) -> "stt_runtime.Status | None":
     if len(shown) > 60:
         shown = shown[:57] + "..."
     return stt_runtime.Status(
-        f"record_keep_days = {shown} не понят — старые записи не удаляются",
+        f"audio.record_keep_days = {shown} не понят: записи не удаляются — исправьте config.yaml",
         sticky=True, error=True, topic=stt_runtime.TOPIC_RETENTION)
 
 

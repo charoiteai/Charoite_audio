@@ -103,6 +103,10 @@ WAV_SETTLE_SECONDS = 30
 # приходит готовой, пересобирать её из done/ незачем, а держать вечно —
 # нарушение обещания PRIVACY (карточка №166, 05.09).
 IMPORT_KEEP_DAYS_DEFAULT = 2
+# Потолок срока копии: ~100 тысяч лет — «хранить практически вечно», а в
+# секундах (JSON сайдкара) число конечное. Огромный срок — не повод удалить
+# через два дня (круг 4 по #809: на main 1e308 дней хранило копию бессрочно).
+IMPORT_KEEP_DAYS_CEILING = 36_500_000.0
 ERROR_MARKER_SUFFIX = ".import-error"
 IMPORTED_SIDECAR_SUFFIX = ".imported.json"
 
@@ -373,9 +377,11 @@ def import_keep_days(cfg: dict, override=None) -> float:
     чужая запись (диктофон, звонок) растягивалась бы до срока живых записей
     (14 дней в поле) вопреки просьбе владельца «удалять через два дня»
     (аудит GLM/DS 05.09). Кривое значение — не повод удалять сразу или не
-    удалять никогда: говорим вслух и берём умолчание. Отрицательное — отказ:
-    «удалить до импорта» не бывает. Ноль допустим — копия уходит первым же
-    проходом. Бесконечность — как кривое: в JSON сайдкара она не проходит.
+    удалять никогда: говорим вслух и берём умолчание. Отрицательное конечное
+    — отказ: «удалить до импорта» не бывает (−inf, как на main, — кривое).
+    Ноль допустим — копия уходит первым же проходом. Срок больше потолка и
+    +inf — потолок: в JSON сайдкара бесконечность не проходит, а умолчание
+    удалило бы копию раньше просьбы владельца.
     """
     raw = override
     audio = cfg.get("audio") or {}
@@ -390,6 +396,8 @@ def import_keep_days(cfg: dict, override=None) -> float:
         # -10**400 — отрицательное, как -1: отказ, а не умолчание
         if isinstance(raw, int) and not isinstance(raw, bool) and raw < 0:
             sys.exit(f"import_keep_days не может быть отрицательным: {str(raw)[:20]}…")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return IMPORT_KEEP_DAYS_CEILING
         print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     except (TypeError, ValueError):
@@ -398,17 +406,12 @@ def import_keep_days(cfg: dict, override=None) -> float:
     # bool (YAML off/on), NaN и ±inf — непонятное, как на main. Отрицательное
     # конечное — отказ до проверки секунд: иначе -1e308 (в секундах -inf) тихо
     # стал бы умолчанием (Haiku, круг 2 по #809)
-    if isinstance(raw, bool) or math.isnan(days) or math.isinf(days):
+    if isinstance(raw, bool) or math.isnan(days) or days == -math.inf:
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
         sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
-    # Срок, который в секундах уже бесконечность (1e308 дней), в JSON сайдкара
-    # не пишется — те же входы, что у record_keep_days
-    if not math.isfinite(days * 86400):
-        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
-        return float(IMPORT_KEEP_DAYS_DEFAULT)
-    return days
+    return min(days, IMPORT_KEEP_DAYS_CEILING)
 
 
 def _archive_source_for(meta: dict, done_file: pathlib.Path,

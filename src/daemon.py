@@ -819,11 +819,16 @@ def main():
     # Ретеншн аудио не должен зависеть от того, началась ли новая встреча:
     # раньше чистка жила внутри _open_sinks, поэтому при record: false или
     # недельном простое записи лежали дольше обещанного в PRIVACY.
+    keep_days = (cfg.get("audio") or {}).get("record_keep_days", 2)
+    # Показ отказа — свой try: сбой записи в stdout не смеет отменить уборку
+    # при верном сроке (тот же развод, что в AudioHub._open_sinks, круг 4 по #809)
     try:
-        keep_days = cfg["audio"].get("record_keep_days", 2)
         refusal = keep_days_refusal(keep_days)
         if refusal is not None:
             emit(stt_runtime.status_event(refusal))
+    except Exception as e:  # noqa: BLE001
+        print(f"отказ срока хранения не показан: {e}", file=sys.stderr, flush=True)
+    try:
         held = AudioHub.prune_recordings(
             _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
             keep_days,
