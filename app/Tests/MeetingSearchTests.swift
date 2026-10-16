@@ -103,6 +103,40 @@ final class MeetingSearchTests: XCTestCase {
         let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: locked)
         XCTAssertNil(result, "нет доступа — причина, а не «ничего не найдено»")
     }
+
+    /// Поиск открывает подпапки по имени: закрытый архив при открытом корне — тоже причина (DS, круг 6).
+    func testUnreadableArchiveUnderReadableGraphIsNotNoHits() async throws {
+        let root = graph.appendingPathComponent("граф-с-закрытым-архивом")
+        let archive = root.appendingPathComponent("Встречи-архив/2026-08-01 10-00 — Тема")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try "ретеншн".write(to: archive.appendingPathComponent("Саммари.md"), atomically: true, encoding: .utf8)
+        let locked = root.appendingPathComponent("Встречи-архив").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked) }
+        let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root)
+        XCTAssertNil(result)
+    }
+
+    /// Корень с правом прохода без чтения (`chmod 111`, общие тома): поиск его не листает и работает.
+    func testTraversableButUnlistableGraphStillSearches() async throws {
+        let root = graph.appendingPathComponent("граф-только-проход")
+        let archive = root.appendingPathComponent("Встречи-архив/2026-08-01 10-00 — Тема")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try "ретеншн".write(to: archive.appendingPathComponent("Саммари.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o111], ofItemAtPath: root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path) }
+        let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root)
+        XCTAssertEqual(result?.isEmpty, false, "\(String(describing: result))")
+    }
+
+    /// Обходы идут по одному: следующий ждёт предыдущий и отдаёт свой результат.
+    func testSequentialSearchesThroughTheGateBothAnswer() async throws {
+        async let first = MeetingSearch.searchLibraryAsync("ретеншн", graph: graph)
+        async let second = MeetingSearch.searchLibraryAsync("нет-такого-слова", graph: graph)
+        let (a, b) = await (first, second)
+        XCTAssertNotNil(a)
+        XCTAssertEqual(b, [])
+    }
 }
 
 extension MeetingSearchTests {
