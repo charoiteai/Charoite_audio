@@ -9,6 +9,8 @@ struct ChatScrollObserver: NSViewRepresentable {
     var onBegin: () -> Void
     var onMove: (_ distanceFromBottom: CGFloat, _ movedUp: Bool) -> Void
     var onEnd: () -> Void
+    /// The observed scroll view is gone mid-gesture: release the gesture latch, never scroll.
+    var onCancel: () -> Void
 
     func makeNSView(context: Context) -> Marker { Marker() }
 
@@ -16,6 +18,7 @@ struct ChatScrollObserver: NSViewRepresentable {
         view.onBegin = onBegin
         view.onMove = onMove
         view.onEnd = onEnd
+        view.onCancel = onCancel
         view.attach()
         // SwiftUI may install the enclosing scroll view after updateNSView.
         DispatchQueue.main.async { [weak view] in view?.attach() }
@@ -27,6 +30,7 @@ struct ChatScrollObserver: NSViewRepresentable {
         var onBegin: (() -> Void)?
         var onMove: ((CGFloat, Bool) -> Void)?
         var onEnd: (() -> Void)?
+        var onCancel: (() -> Void)?
         private weak var observedScrollView: NSScrollView?
         private var lastOriginY: CGFloat?
 
@@ -49,7 +53,7 @@ struct ChatScrollObserver: NSViewRepresentable {
         func detach() {
             NotificationCenter.default.removeObserver(self)
             // A gesture that began on the old scroll view will never report its end here.
-            if observedScrollView != nil, let end = onEnd { DispatchQueue.main.async(execute: end) }
+            if observedScrollView != nil, let cancel = onCancel { DispatchQueue.main.async(execute: cancel) }
             observedScrollView = nil
             lastOriginY = nil
         }
@@ -70,7 +74,7 @@ struct ChatScrollObserver: NSViewRepresentable {
             defer { lastOriginY = originY }
             guard let last = lastOriginY, originY != last else { return }
             let flipped = scroll.documentView?.isFlipped ?? true
-            onMove?(distance, flipped ? originY < last : originY > last)
+            onMove?(distance, ChatScrollPolicy.movedUp(originY: originY, previousOriginY: last, flipped: flipped))
         }
 
         deinit { NotificationCenter.default.removeObserver(self) }

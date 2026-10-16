@@ -76,7 +76,8 @@ struct LocalChatView: View {
                         onEnd: {
                             scrollPolicy.endUserScroll()
                             if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
-                        }
+                        },
+                        onCancel: { scrollPolicy.endUserScroll() }
                     ))
                 }
                 .onAppear { scrollToLatest(using: proxy) }

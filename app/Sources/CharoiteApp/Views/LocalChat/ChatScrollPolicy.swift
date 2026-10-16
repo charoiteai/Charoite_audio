@@ -3,6 +3,8 @@ import Foundation
 /// Layout growth never changes the user's decision to read earlier messages.
 struct ChatScrollPolicy {
     static let bottomTolerance: CGFloat = 80
+    /// Sub-point remainder of a clamp or a fractional layout is still "at the bottom".
+    static let atBottom: CGFloat = 1
 
     private(set) var followsLatest = true
     private(set) var isUserScrolling = false
@@ -17,20 +19,18 @@ struct ChatScrollPolicy {
     mutating func endUserScroll() { isUserScrolling = false }
 
     /// The visible position moved: gesture, wheel, keyboard, scroller, VoiceOver or our own jump.
-    /// Only a move up past the tolerance pauses, so a programmatic jump down never pauses itself
-    /// and growth of the reply during a gesture is not mistaken for leaving the bottom.
+    /// Direction decides, not distance: any move up away from the bottom pauses (one wheel tick
+    /// is 10-60 pt), and only a move down into the tolerance resumes. Our own jump only moves
+    /// down; layout growth does not move the origin; a shrinking document clamps the origin up
+    /// but lands at the bottom (distance 0), so neither is taken for the reader leaving.
     mutating func positionChanged(distanceFromBottom distance: CGFloat, movedUp: Bool) {
-        guard distance.isFinite else {
-            if movedUp { followsLatest = false }
+        if movedUp {
+            if !distance.isFinite || distance > Self.atBottom { followsLatest = false }
             return
         }
-        if distance <= Self.bottomTolerance {
-            guard !pausedByUser else { return }
-            followsLatest = true
-            hasUnreadContent = false
-        } else if movedUp {
-            followsLatest = false
-        }
+        guard distance.isFinite, distance <= Self.bottomTolerance else { return }
+        hasUnreadContent = false
+        if !pausedByUser { followsLatest = true }
     }
 
     @discardableResult
@@ -50,6 +50,11 @@ struct ChatScrollPolicy {
         followsLatest = true
         isUserScrolling = false
         hasUnreadContent = false
+    }
+
+    /// Clip view origin moved towards the start of the document.
+    static func movedUp(originY: CGFloat, previousOriginY: CGFloat, flipped: Bool) -> Bool {
+        flipped ? originY < previousOriginY : originY > previousOriginY
     }
 
     static func distanceFromBottom(document: CGRect, visible: CGRect, flipped: Bool) -> CGFloat {

@@ -38,10 +38,49 @@ final class ChatScrollPolicyTests: XCTestCase {
         policy.beginUserScroll()
         XCTAssertFalse(policy.shouldFollow) // rechecked when queue executes
         XCTAssertFalse(policy.contentChanged())
-        policy.positionChanged(distanceFromBottom: 20, movedUp: true)
+        policy.positionChanged(distanceFromBottom: 0, movedUp: false)
         policy.endUserScroll()
         XCTAssertTrue(policy.shouldFollow)
         XCTAssertFalse(policy.hasUnreadContent)
+    }
+
+    func testOneWheelTickUpPausesAndScrollingBackDownResumes() {
+        // A wheel notch is 10-60 pt: the reader left the bottom even though it is inside the tolerance.
+        var policy = ChatScrollPolicy()
+        policy.positionChanged(distanceFromBottom: 24, movedUp: true)
+        XCTAssertFalse(policy.contentChanged())
+        XCTAssertTrue(policy.hasUnreadContent)
+        policy.positionChanged(distanceFromBottom: 40, movedUp: false)
+        XCTAssertTrue(policy.shouldFollow)
+        XCTAssertFalse(policy.hasUnreadContent)
+    }
+
+    func testShrinkingDocumentClampDoesNotResumeOrPause() {
+        // Window resize reflows the text: the clip view clamps its origin up to the new bottom.
+        var paused = ChatScrollPolicy()
+        paused.positionChanged(distanceFromBottom: 150, movedUp: true)
+        paused.positionChanged(distanceFromBottom: 0, movedUp: true)
+        XCTAssertFalse(paused.shouldFollow)
+        var following = ChatScrollPolicy()
+        following.positionChanged(distanceFromBottom: 0, movedUp: true)
+        XCTAssertTrue(following.shouldFollow)
+    }
+
+    func testReturningToBottomWhilePausedClearsNewReplyBadge() {
+        var policy = ChatScrollPolicy()
+        policy.pause()
+        policy.contentChanged()
+        XCTAssertTrue(policy.hasUnreadContent)
+        policy.positionChanged(distanceFromBottom: 0, movedUp: false)
+        XCTAssertFalse(policy.hasUnreadContent)
+        XCTAssertFalse(policy.shouldFollow)
+    }
+
+    func testMoveDirectionFollowsFlippedCoordinates() {
+        XCTAssertTrue(ChatScrollPolicy.movedUp(originY: 90, previousOriginY: 100, flipped: true))
+        XCTAssertFalse(ChatScrollPolicy.movedUp(originY: 110, previousOriginY: 100, flipped: true))
+        XCTAssertTrue(ChatScrollPolicy.movedUp(originY: 110, previousOriginY: 100, flipped: false))
+        XCTAssertFalse(ChatScrollPolicy.movedUp(originY: 90, previousOriginY: 100, flipped: false))
     }
 
     func testManualPauseAndReturnWithoutNewContent() {
