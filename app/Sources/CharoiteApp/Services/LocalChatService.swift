@@ -99,18 +99,19 @@ final class LocalChatService: ObservableObject {
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 3
         let data: Data
+        let response: URLResponse
         do {
-            (data, _) = try await URLSession(configuration: cfg).data(from: url)
+            (data, response) = try await URLSession(configuration: cfg).data(from: url)
         } catch {
-            // Правило шапки одно с ответом чата: «не отвечает» — только никто не слушает
-            ollamaAlive = ChatAnswerOutcome.serverAlive(after: error)
+            // Отменённая проба ничего не доказала; правило шапки одно с ответом чата
+            guard !Task.isCancelled else { return }
+            ollamaAlive = ChatAnswerOutcome.liveness(ollamaAlive, evidence: ChatAnswerOutcome.serverAlive(after: error))
             return
         }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["models"] as? [[String: Any]] else {
-            ollamaAlive = nil       // ответил не Ollama или не так — живость не доказана
-            return
-        }
+        // Ответ не 200 или не того вида — свидетельства нет, известное остаётся
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["models"] as? [[String: Any]] else { return }
         ollamaAlive = true
         // эмбеддинг-модели в чате бессмысленны — прячем
         let names = list.compactMap { $0["name"] as? String }
@@ -374,7 +375,8 @@ final class LocalChatService: ObservableObject {
             if !Task.isCancelled || !isStreaming { status = "" }
         case .failed:
             // Решает исход отказа (`serverAlive`); ошибки нет — сервер не ответил
-            ollamaAlive = failure.map { ChatAnswerOutcome.serverAlive(after: $0) } ?? false
+            ollamaAlive = ChatAnswerOutcome.liveness(
+                ollamaAlive, evidence: failure.map { ChatAnswerOutcome.serverAlive(after: $0) } ?? false)
         case .dropped:
             // Обрыв без ответа: жив ли сервер, неизвестно — шапка молчит, а не врёт
             ollamaAlive = nil

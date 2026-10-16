@@ -95,6 +95,11 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertFalse(ChatAnswerOutcome.failureNote(gateway).contains("ошибка модели"))
         // Правило проекта (`OllamaRuntimeService.refused`): таймаут — неизвестность, не «не отвечает».
         XCTAssertNil(ChatAnswerOutcome.serverAlive(after: URLError(.timedOut)))
+        // Haiku, круг 10: нет свидетельства — известное остаётся; есть — заменяет.
+        XCTAssertEqual(ChatAnswerOutcome.liveness(true, evidence: ChatAnswerOutcome.serverAlive(after: gateway)), true)
+        XCTAssertEqual(ChatAnswerOutcome.liveness(true, evidence: false), false)
+        XCTAssertEqual(ChatAnswerOutcome.liveness(nil, evidence: true), true)
+        XCTAssertNil(ChatAnswerOutcome.liveness(nil, evidence: nil))
     }
 
     func testNoticeIsNotFedBackAsModelAnswer() {

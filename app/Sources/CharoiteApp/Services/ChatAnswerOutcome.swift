@@ -68,6 +68,10 @@ enum ChatAnswerOutcome: Equatable {
     /// начатого потока прислала Ollama — жива. Отказ не 200 (с причиной в теле или без) — кто-то
     /// ответил, но что это Ollama, не доказано: шапка молчит, как при обрыве. «Не отвечает» — только
     /// когда на порту никто не слушает (`OllamaRuntimeService.refused`); прочее — неизвестность.
+    /// Шапка после нового свидетельства: nil — свидетельства нет, известное прежде остаётся
+    /// (отказ 404 живой Ollama не гасит «отвечает» от пробы списка моделей; Haiku, круг 10).
+    static func liveness(_ previous: Bool?, evidence: Bool?) -> Bool? { evidence ?? previous }
+
     static func serverAlive(after error: Error) -> Bool? {
         switch error {
         case let model as ChatStreamError: return model.status == nil ? true : nil
