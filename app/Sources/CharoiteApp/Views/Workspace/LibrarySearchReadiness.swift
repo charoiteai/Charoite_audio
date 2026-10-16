@@ -2,22 +2,17 @@ import Foundation
 
 #if os(macOS)
 
-/// Готов ли поиск по архиву встреч и почему нет. Пустой результат без чтения
-/// файлов — не «ничего не найдено»: экран называет причину и даёт действие.
+/// Готов ли поиск по архиву встреч. Незаданная папка графа — не «ничего не
+/// найдено»: экран называет причину. Доступность папки на диске здесь не
+/// проверяется: `stat` уснувшего сетевого тома висит до таймаута ядра, а
+/// надёжной проверки без владельца-сервиса у экрана нет.
 enum LibrarySearchReadiness: Equatable {
     case notConfigured
-    case unreachable(URL)
     case ready(URL)
 
-    static func resolve(graphDir: URL?,
-                        isDirectory: (URL) -> Bool = LibrarySearchReadiness.isDirectory) -> LibrarySearchReadiness {
+    static func resolve(graphDir: URL?) -> LibrarySearchReadiness {
         guard let graphDir else { return .notConfigured }
-        return isDirectory(graphDir) ? .ready(graphDir) : .unreachable(graphDir)
-    }
-
-    static func isDirectory(_ url: URL) -> Bool {
-        var directory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+        return .ready(graphDir)
     }
 }
 
