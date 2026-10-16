@@ -165,8 +165,19 @@ enum MeetingSearch {
     /// должен ждать чтения десятков файлов.
     static func searchAsync(_ query: String, graph: URL, limit: Int = 30,
                             includeNodes: Bool = false) async -> [Hit] {
-        let worker = Task.detached(priority: .userInitiated) {
-            search(query, graph: graph, limit: limit, includeNodes: includeNodes)
+        await searchLibraryAsync(query, graph: graph, limit: limit, includeNodes: includeNodes) ?? []
+    }
+
+    /// То же, но nil — папки графа нет или это не каталог: экран архива называет
+    /// причину вместо «ничего не найдено». Проверка — в той же рабочей задаче,
+    /// что обход архива: новой точки ожидания диска она не добавляет.
+    static func searchLibraryAsync(_ query: String, graph: URL, limit: Int = 30,
+                                   includeNodes: Bool = false) async -> [Hit]? {
+        let worker = Task.detached(priority: .userInitiated) { () -> [Hit]? in
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: graph.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return nil }
+            return search(query, graph: graph, limit: limit, includeNodes: includeNodes)
         }
         return await withTaskCancellationHandler {
             await worker.value

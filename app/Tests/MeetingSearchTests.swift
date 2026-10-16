@@ -78,6 +78,22 @@ final class MeetingSearchTests: XCTestCase {
         let hits = await MeetingSearch.searchAsync("ретеншн", graph: graph)
         XCTAssertTrue(hits.contains { $0.title.contains("Ретеншн партиций") })
     }
+
+    /// Недоступная папка — nil, а не пустая выдача: экран архива называет
+    /// причину вместо «ничего не найдено» (DS и Haiku, круг 4 по #781).
+    func testLibrarySearchTellsMissingFolderFromNoHits() async throws {
+        let missing = graph.appendingPathComponent("нет-такой-папки")
+        let missingResult = await MeetingSearch.searchLibraryAsync("ретеншн", graph: missing)
+        XCTAssertNil(missingResult)
+        let file = graph.appendingPathComponent("файл-вместо-папки.md")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        let fileResult = await MeetingSearch.searchLibraryAsync("ретеншн", graph: file)
+        XCTAssertNil(fileResult)
+        let none = await MeetingSearch.searchLibraryAsync("словокоторогонет", graph: graph)
+        XCTAssertEqual(none?.isEmpty, true)
+        let missingLegacy = await MeetingSearch.searchAsync("ретеншн", graph: missing)
+        XCTAssertTrue(missingLegacy.isEmpty, "старая обёртка для Prep — пустота, как прежде")
+    }
 }
 
 extension MeetingSearchTests {

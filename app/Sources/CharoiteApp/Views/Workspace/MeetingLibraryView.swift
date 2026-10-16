@@ -29,6 +29,8 @@ struct MeetingLibraryView: View {
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
+    /// Почему поиск не идёт; считается в `runSearch`, `body` к конфигу не ходит.
+    @State private var searchReadiness: LibrarySearchReadiness?
     @State private var searchTask: Task<Void, Never>?
     /// nil — весь архив; дата — лента одного дня.
     @State private var selectedDay: Date?
@@ -303,14 +305,24 @@ struct MeetingLibraryView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Поиск не может идти, если папка графа не задана. Папку выбирает мастер
-    /// первого запуска; отсюда config.yaml не пишется, только показывается.
+    /// Поиск не может идти, если папка графа не задана или недоступна. Папку
+    /// выбирает мастер первого запуска; отсюда config.yaml не пишется, только
+    /// показывается.
     private var searchBlocked: (title: String, text: String)? {
-        guard LibrarySearchReadiness.resolve(graphDir: AppSettings.graphDir) == .notConfigured else { return nil }
-        return (L.t("Папка памяти не настроена", "Memory folder not configured", "未设置记忆文件夹"),
-                L.t("Поиск пока недоступен: папка графа не настроена. Укажите graph_dir в config.yaml.",
-                    "Search is unavailable because no graph folder is configured. Set graph_dir in config.yaml.",
-                    "尚未设置图谱文件夹，搜索暂不可用。请在 config.yaml 中设置 graph_dir。"))
+        switch searchReadiness {
+        case .notConfigured:
+            return (L.t("Папка памяти не настроена", "Memory folder not configured", "未设置记忆文件夹"),
+                    L.t("Поиск пока недоступен: папка графа не настроена. Укажите graph_dir в config.yaml.",
+                        "Search is unavailable because no graph folder is configured. Set graph_dir in config.yaml.",
+                        "尚未设置图谱文件夹，搜索暂不可用。请在 config.yaml 中设置 graph_dir。"))
+        case .unavailable(let url):
+            return (L.t("Папка памяти недоступна", "Memory folder unavailable", "记忆文件夹不可用"),
+                    L.t("Папки графа \(url.path) нет или к ней нет доступа: подключите диск или проверьте graph_dir в config.yaml.",
+                        "The graph folder \(url.path) is missing or unreadable: connect the drive or check graph_dir in config.yaml.",
+                        "图谱文件夹 \(url.path) 不存在或无法访问：请连接磁盘或检查 config.yaml 中的 graph_dir。"))
+        case .ready, nil:
+            return nil
+        }
     }
 
     @ViewBuilder
@@ -319,8 +331,14 @@ struct MeetingLibraryView: View {
             EmptyState(title: blocked.title, text: blocked.text,
                        systemImage: "folder.badge.questionmark") {
                 Button(L.t("Показать config.yaml", "Show config.yaml", "显示 config.yaml")) {
-                    NSWorkspace.shared.activateFileViewerSelecting(
-                        [AppSettings.charoiteRoot.appendingPathComponent("config/config.yaml")])
+                    // Первый запуск мог не дойти до конфига: тогда — ближайшая
+                    // существующая папка, а не пустое окно Finder. Проверка на клик,
+                    // не в body.
+                    let root = AppSettings.charoiteRoot
+                    let target = [root.appendingPathComponent("config/config.yaml"),
+                                  root.appendingPathComponent("config"), root]
+                        .first { FileManager.default.fileExists(atPath: $0.path) } ?? root
+                    NSWorkspace.shared.activateFileViewerSelecting([target])
                 }
                 .charoite(.regular, .s)
             }
@@ -584,10 +602,13 @@ struct MeetingLibraryView: View {
     private func runSearch(debounced: Bool = true) {
         searchTask?.cancel()
         let submitted = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !submitted.isEmpty, let graph = AppSettings.graphDir else {
+        let readiness = LibrarySearchReadiness.resolve(graphDir: AppSettings.graphDir)
+        guard !submitted.isEmpty, case .ready(let graph) = readiness else {
+            searchReadiness = submitted.isEmpty ? nil : readiness
             cancelSearch()
             return
         }
+        searchReadiness = readiness
         hits = []
         isSearching = true
         searchTask = Task { @MainActor in
@@ -596,11 +617,12 @@ struct MeetingLibraryView: View {
             }
             // окно библиотеки ищет и по узлам графа: запрос «имя человека»
             // ведёт к его узлу со всей историей, а не только к встречам
-            let found = await MeetingSearch.searchAsync(submitted, graph: graph,
-                                                        includeNodes: true)
+            let found = await MeetingSearch.searchLibraryAsync(submitted, graph: graph,
+                                                               includeNodes: true)
             guard !Task.isCancelled,
                   submitted == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            hits = found
+            hits = found ?? []
+            searchReadiness = found == nil ? .unavailable(graph) : .ready(graph)
             isSearching = false
         }
     }

@@ -7,7 +7,7 @@ final class LibrarySearchReadinessTests: XCTestCase {
         XCTAssertEqual(LibrarySearchReadiness.resolve(graphDir: nil), .notConfigured)
     }
 
-    func testConfiguredFolderIsReadyWithoutTouchingTheDisk() {
+    func testResolveEchoesTheConfiguredURL() {
         let url = URL(fileURLWithPath: "/Volumes/asleep/graph")
         XCTAssertEqual(LibrarySearchReadiness.resolve(graphDir: url), .ready(url))
     }
