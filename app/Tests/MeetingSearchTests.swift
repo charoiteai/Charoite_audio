@@ -104,7 +104,7 @@ final class MeetingSearchTests: XCTestCase {
         XCTAssertNil(result, "нет доступа — причина, а не «ничего не найдено»")
     }
 
-    /// Поиск открывает подпапки по имени: закрытый архив при открытом корне — тоже причина (DS, круг 6).
+    /// Закрытый архив при открытом корне и пустой выдаче — тоже причина (DS, круг 6).
     func testUnreadableArchiveUnderReadableGraphIsNotNoHits() async throws {
         let root = graph.appendingPathComponent("граф-с-закрытым-архивом")
         let archive = root.appendingPathComponent("Встречи-архив/2026-08-01 10-00 — Тема")
@@ -145,6 +145,66 @@ final class MeetingSearchTests: XCTestCase {
         defer { for path in locked { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path) } }
         let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root, includeNodes: true)
         XCTAssertEqual(result?.isEmpty, false, "\(String(describing: result))")
+    }
+}
+
+extension MeetingSearchTests {
+    /// Граф с заметкой «ретеншн» в `Встречи` и архивом, который приготовит `prepareArchive`.
+    private func graphWithNote(_ name: String, prepareArchive: (URL) throws -> Void) throws -> URL {
+        let root = graph.appendingPathComponent(name)
+        let notes = root.appendingPathComponent("Встречи")
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        try "# Встреча — обсуждали ретеншн логов".write(
+            to: notes.appendingPathComponent("2026-08-03_0900.md"), atomically: true, encoding: .utf8)
+        try prepareArchive(root.appendingPathComponent("Встречи-архив"))
+        return root
+    }
+
+    /// Архив листается, но не проходится, или вместо архива файл: заметки находятся, как на main
+    /// (DS, Haiku, круг 8).
+    func testUntraversableOrFileArchiveDoesNotHideNotes() async throws {
+        let listable = try graphWithNote("граф-архив-644") { archive in
+            try FileManager.default.createDirectory(
+                at: archive.appendingPathComponent("2026-08-01 10-00 — Тема"), withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: archive.path)
+        }
+        let archive = listable.appendingPathComponent("Встречи-архив").path
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: archive) }
+        let fromListable = await MeetingSearch.searchLibraryAsync("ретеншн", graph: listable)
+        XCTAssertEqual(fromListable?.count, 1, "\(String(describing: fromListable))")
+        let noneFromListable = await MeetingSearch.searchLibraryAsync("словокоторогонет", graph: listable)
+        XCTAssertNil(noneFromListable, "архив без права прохода и пусто — причина")
+        let fileArchive = try graphWithNote("граф-архив-файл") { archive in
+            try "x".write(to: archive, atomically: true, encoding: .utf8)
+        }
+        let fromFile = await MeetingSearch.searchLibraryAsync("ретеншн", graph: fileArchive)
+        XCTAssertEqual(fromFile?.count, 1, "\(String(describing: fromFile))")
+        let noneFromFile = await MeetingSearch.searchLibraryAsync("словокоторогонет", graph: fileArchive)
+        XCTAssertEqual(noneFromFile?.isEmpty, true, "файл вместо архива — не закрытая папка")
+    }
+
+    /// Архива нет, заметки закрыты: пустая выдача — причина, а не «ничего не найдено» (Haiku, круг 8).
+    func testUnreadableNotesWithoutArchiveIsNotNoHits() async throws {
+        let root = try graphWithNote("граф-закрытые-заметки") { _ in }
+        let notes = root.appendingPathComponent("Встречи").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: notes)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: notes) }
+        let result = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root)
+        XCTAssertNil(result)
+    }
+
+    /// Закрытый архив при найденном в заметках: находки показываются, отказа нет.
+    func testClosedArchiveDoesNotHideNoteHits() async throws {
+        let root = try graphWithNote("граф-закрытый-архив-и-заметка") { archive in
+            try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: archive.path)
+        }
+        let archive = root.appendingPathComponent("Встречи-архив").path
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: archive) }
+        let found = await MeetingSearch.searchLibraryAsync("ретеншн", graph: root)
+        XCTAssertEqual(found?.count, 1, "\(String(describing: found))")
+        let none = await MeetingSearch.searchLibraryAsync("словокоторогонет", graph: root)
+        XCTAssertNil(none, "пусто при закрытом архиве — причина")
     }
 }
 

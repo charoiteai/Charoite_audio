@@ -168,14 +168,17 @@ enum MeetingSearch {
         await searchLibraryAsync(query, graph: graph, limit: limit, includeNodes: includeNodes) ?? []
     }
 
-    /// То же, но nil — папки графа нет, это не каталог или её не прочитать: экран архива называет
-    /// причину вместо «ничего не найдено». Проверка — в той же рабочей задаче,
+    /// То же, но nil — поиску нечем ответить, и виноват доступ: папки графа нет, это не каталог,
+    /// её не пройти, или выдача пуста при закрытом архиве встреч либо заметках графа. Экран
+    /// называет причину вместо «ничего не найдено». Находки отказ не прячет: закрытая папка при
+    /// найденном в других — частичная выдача, как на main. Проверка — в той же рабочей задаче,
     /// что обход архива: новой точки ожидания диска она не добавляет.
     static func searchLibraryAsync(_ query: String, graph: URL, limit: Int = 30,
                                    includeNodes: Bool = false) async -> [Hit]? {
         let worker = Task.detached(priority: .userInitiated) { () -> [Hit]? in
-            guard libraryReadable(graph) else { return nil }
-            return search(query, graph: graph, limit: limit, includeNodes: includeNodes)
+            guard graphTraversable(graph) else { return nil }
+            let hits = search(query, graph: graph, limit: limit, includeNodes: includeNodes)
+            return hits.isEmpty && !libraryReadable(graph) ? nil : hits
         }
         return await withTaskCancellationHandler {
             await worker.value
@@ -184,17 +187,29 @@ enum MeetingSearch {
         }
     }
 
-    /// Папка графа и её архив встреч читаются. Корень поиск не листает: право прохода по нему
-    /// нужно, чтение — нет (`chmod 111` на общих томах). Отказ — только у архива, без которого
-    /// поиску нечем ответить; закрытые заметки и узлы просто не дают своих находок, как на main.
-    static func libraryReadable(_ graph: URL) -> Bool {
+    /// Папка графа есть, это каталог, по нему есть право прохода. Корень поиск не листает:
+    /// чтение не нужно (`chmod 111` на общих томах).
+    static func graphTraversable(_ graph: URL) -> Bool {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: graph.path, isDirectory: &isDirectory), isDirectory.boolValue,
-              fm.isExecutableFile(atPath: graph.path) else { return false }
-        let archive = graph.appendingPathComponent("Встречи-архив").path
-        // Обходу архива нужны и чтение, и проход (`chmod 644` на папке — листинг есть, вход в папки встреч нет).
-        return !fm.fileExists(atPath: archive) || (fm.isReadableFile(atPath: archive) && fm.isExecutableFile(atPath: archive))
+        return fm.fileExists(atPath: graph.path, isDirectory: &isDirectory) && isDirectory.boolValue
+            && fm.isExecutableFile(atPath: graph.path)
+    }
+
+    /// Корень проходится, а архив встреч и заметки графа, если это папки, читаются и проходятся.
+    static func libraryReadable(_ graph: URL) -> Bool {
+        graphTraversable(graph) && ["Встречи-архив", "Встречи"].allSatisfy {
+            layerReadable(graph.appendingPathComponent($0).path)
+        }
+    }
+
+    /// Слой, которого нет или который не папка, поиск пропускает молча, как на main. Папке нужны
+    /// и чтение, и проход (`chmod 644` — листинг есть, входа в папки встреч нет).
+    private static func layerReadable(_ path: String) -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return true }
+        return fm.isReadableFile(atPath: path) && fm.isExecutableFile(atPath: path)
     }
 
     /// Все ли слова запроса есть в файле; сниппет — первая строка с совпадением.

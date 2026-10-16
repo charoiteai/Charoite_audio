@@ -9,7 +9,8 @@ import Foundation
 enum LibrarySearchReadiness: Equatable {
     case notConfigured
     case ready(URL)
-    /// Поиск пошёл, но папки нет или это не каталог (отключённый том, опечатка).
+    /// Поиск пошёл, но папки нет, это не каталог (отключённый том, опечатка) или выдача пуста
+    /// при закрытом архиве встреч либо заметках графа.
     case unavailable(URL)
 
     static func resolve(graphDir: URL?) -> LibrarySearchReadiness {
