@@ -29,6 +29,8 @@ struct MeetingLibraryView: View {
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
+    /// Почему поиск не идёт; считается в `runSearch`, `body` к конфигу не ходит.
+    @State private var searchReadiness: LibrarySearchReadiness?
     @State private var searchTask: Task<Void, Never>?
     /// nil — весь архив; дата — лента одного дня.
     @State private var selectedDay: Date?
@@ -36,18 +38,24 @@ struct MeetingLibraryView: View {
     @State private var dayEvents: [CalendarService.DayEvent] = []
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                weekStrip
-                Divider()
-                searchBar
-                Divider()
-                resultList
+        GeometryReader { geometry in
+            // The workspace can give us only ~640 pt at its minimum width.
+            // Keep both the archive and the result reachable at that size.
+            if geometry.size.width < 800 {
+                VSplitView {
+                    libraryColumn
+                        .frame(minHeight: 180, idealHeight: 260, maxHeight: 340)
+                    detail
+                        .frame(minHeight: 220, maxHeight: .infinity)
+                }
+            } else {
+                HSplitView {
+                    libraryColumn
+                        .frame(minWidth: 300, idealWidth: 340, maxWidth: 430)
+                    detail
+                        .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .frame(minWidth: 300, idealWidth: 340, maxWidth: 430)
-
-            detail
-                .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             alignDayWithExplicitSelection()
@@ -65,6 +73,43 @@ struct MeetingLibraryView: View {
         .onChange(of: calendar.accessGranted) { _, _ in reloadDayEvents() }
         .onChange(of: calendar.eventsRevision) { _, _ in reloadDayEvents() }
         .onDisappear { cancelSearch() }
+    }
+
+    private var libraryColumn: some View {
+        VStack(spacing: 0) {
+            weekHeading
+            weekStrip
+            Divider()
+            searchBar
+            Divider()
+            resultList
+        }
+    }
+
+    private var weekHeading: some View {
+        HStack(spacing: 8) {
+            if let first = weekDays.first, let last = weekDays.last {
+                Text(Self.weekRangeFormatter.string(from: first, to: last))
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .help(Self.weekRangeFormatter.string(from: first, to: last))
+            }
+            Spacer(minLength: 0)
+            Button(L.t("Сегодня", "Today", "今天")) {
+                weekAnchor = Calendar.current.startOfDay(for: Date())
+                selectedDay = weekAnchor
+            }
+            .charoite(.link, .s)
+            .help(L.t("Показать записи и события сегодня", "Show today's recordings and events", "显示今天的录音和日程"))
+            if selectedDay != nil {
+                Button(L.t("Весь архив", "Whole archive", "全部档案")) { selectedDay = nil }
+                    .charoite(.link, .s)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .disabled(searchActive)
+        .opacity(searchActive ? 0.4 : 1)
     }
 
     // MARK: - Полоса недели
@@ -96,7 +141,6 @@ struct MeetingLibraryView: View {
                 .charoite(.icon, .s)
                 .help(L.t("Следующая неделя", "Next week", "下一周"))
                 .accessibilityLabel(Text(L.t("Следующая неделя", "Next week", "下一周")))
-            Spacer(minLength: 4)
             if calendar.accessGranted != true {
                 Button {
                     calendarBriefs = true
@@ -114,7 +158,7 @@ struct MeetingLibraryView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .opacity(searchActive ? 0.4 : 1)
-        .allowsHitTesting(!searchActive)
+        .disabled(searchActive)
     }
 
     private func dayCell(_ day: Date) -> some View {
@@ -136,7 +180,7 @@ struct MeetingLibraryView: View {
                     .fill(hasRecords ? (isSelected ? Color.white : Theme.accent) : Color.clear)
                     .frame(width: 4, height: 4)
             }
-            .frame(width: 34)
+            .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
             .background(RoundedRectangle(cornerRadius: 7)
                 .fill(isSelected ? Theme.accent : Color.clear))
@@ -144,6 +188,7 @@ struct MeetingLibraryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(Self.fullDayFormatter.string(from: day)))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func shiftWeek(_ direction: Int) {
@@ -274,9 +319,47 @@ struct MeetingLibraryView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Поиск не может идти, если папка графа не задана или недоступна. Папку
+    /// выбирает мастер первого запуска; отсюда config.yaml не пишется, только
+    /// показывается.
+    private var searchBlocked: (title: String, text: String)? {
+        switch searchReadiness {
+        case .notConfigured:
+            return (L.t("Папка памяти не настроена", "Memory folder not configured", "未设置记忆文件夹"),
+                    L.t("Поиск пока недоступен: папка графа не настроена. Укажите graph_dir в config.yaml.",
+                        "Search is unavailable because no graph folder is configured. Set graph_dir in config.yaml.",
+                        "尚未设置图谱文件夹，搜索暂不可用。请在 config.yaml 中设置 graph_dir。"))
+        case .unavailable(let url):
+            return (L.t("Папка памяти недоступна", "Memory folder unavailable", "记忆文件夹不可用"),
+                    L.t("Не удалось прочитать папку графа \(url.path) или её папки Встречи-архив и Встречи: подключите диск, проверьте права на папки или graph_dir в config.yaml, затем нажмите Enter в поле поиска.",
+                        "Could not read the graph folder \(url.path) or its Встречи-архив and Встречи folders: connect the drive, check folder permissions or graph_dir in config.yaml, then press Return in the search field.",
+                        "无法读取图谱文件夹 \(url.path) 或其中的 Встречи-архив 和 Встречи 文件夹：请连接磁盘、检查文件夹权限或 config.yaml 中的 graph_dir，然后在搜索框中按回车。"))
+        case .ready, nil:
+            return nil
+        }
+    }
+
     @ViewBuilder
     private var searchResults: some View {
-        if hits.isEmpty {
+        if let blocked = searchBlocked {
+            EmptyState(title: blocked.title, text: blocked.text,
+                       systemImage: "folder.badge.questionmark") {
+                Button(L.t("Показать config.yaml", "Show config.yaml", "显示 config.yaml")) {
+                    // Первый запуск мог не дойти до конфига: тогда — ближайшая
+                    // существующая папка, а не пустое окно Finder. Диск — вне
+                    // главного потока: корень данных бывает на уснувшем сетевом томе.
+                    let root = AppSettings.charoiteRoot
+                    Task.detached(priority: .userInitiated) {
+                        let target = [root.appendingPathComponent("config/config.yaml"),
+                                      root.appendingPathComponent("config"), root]
+                            .first { FileManager.default.fileExists(atPath: $0.path) } ?? root
+                        await MainActor.run { _ = NSWorkspace.shared.activateFileViewerSelecting([target]) }
+                    }
+                }
+                .charoite(.regular, .s)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if hits.isEmpty {
             if isSearching {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -535,10 +618,13 @@ struct MeetingLibraryView: View {
     private func runSearch(debounced: Bool = true) {
         searchTask?.cancel()
         let submitted = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !submitted.isEmpty, let graph = AppSettings.graphDir else {
+        let readiness = LibrarySearchReadiness.resolve(graphDir: AppSettings.graphDir)
+        guard !submitted.isEmpty, case .ready(let graph) = readiness else {
+            searchReadiness = submitted.isEmpty ? nil : readiness
             cancelSearch()
             return
         }
+        searchReadiness = readiness
         hits = []
         isSearching = true
         searchTask = Task { @MainActor in
@@ -547,11 +633,12 @@ struct MeetingLibraryView: View {
             }
             // окно библиотеки ищет и по узлам графа: запрос «имя человека»
             // ведёт к его узлу со всей историей, а не только к встречам
-            let found = await MeetingSearch.searchAsync(submitted, graph: graph,
-                                                        includeNodes: true)
+            let found = await MeetingSearch.searchLibraryAsync(submitted, graph: graph,
+                                                               includeNodes: true)
             guard !Task.isCancelled,
                   submitted == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            hits = found
+            hits = found ?? []
+            searchReadiness = found == nil ? .unavailable(graph) : .ready(graph)
             isSearching = false
         }
     }
@@ -617,6 +704,13 @@ struct MeetingLibraryView: View {
         let f = DateFormatter()
         f.locale = L.locale
         f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let weekRangeFormatter: DateIntervalFormatter = {
+        let f = DateIntervalFormatter()
+        f.locale = L.locale
+        f.dateTemplate = "dMMMy"
         return f
     }()
 

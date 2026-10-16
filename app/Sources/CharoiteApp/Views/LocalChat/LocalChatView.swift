@@ -8,6 +8,8 @@ struct LocalChatView: View {
     @ObservedObject private var chat = LocalChatService.shared
     @State private var draft = ""
     @State private var confirmClear = false
+    @State private var scrollPolicy = ChatScrollPolicy()
+    @State private var scrollProbe = ChatScrollProbe()
     @FocusState private var inputFocused: Bool
 
     @ObservedObject private var inventory = GraphInventoryService.shared
@@ -69,12 +71,54 @@ struct LocalChatView: View {
                         Color.clear.frame(height: 1).id("chatBottom")
                     }
                     .padding(14)
+                    .background(ChatScrollObserver(
+                        probe: scrollProbe,
+                        onBegin: { scrollPolicy.beginUserScroll() },
+                        onEnd: {
+                            scrollPolicy.endUserScroll(start: $0, lastMove: $1)
+                            if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
+                        },
+                        onCancel: { scrollPolicy.cancelUserScroll() }
+                    ))
                 }
-                .onChange(of: chat.messages.count) { _, _ in
-                    DispatchQueue.main.async { proxy.scrollTo("chatBottom", anchor: .bottom) }
+                .onAppear { scrollToLatest(using: proxy) }
+                .onChange(of: chat.messages.count) { _, count in
+                    if count == 0 { scrollPolicy = ChatScrollPolicy() }
+                    followContent(using: proxy)
                 }
                 .onChange(of: chat.messages.last?.text) { _, _ in
-                    DispatchQueue.main.async { proxy.scrollTo("chatBottom", anchor: .bottom) }
+                    followContent(using: proxy)
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !chat.messages.isEmpty {
+                        HStack(spacing: 8) {
+                            if scrollPolicy.followsLatest {
+                                Button {
+                                    scrollPolicy.pause()
+                                } label: {
+                                    Label(L.t("Приостановить прокрутку", "Pause auto-scroll", "暂停自动滚动"), systemImage: "pause")
+                                }
+                            } else {
+                                Text(L.t("Прокрутка приостановлена", "Auto-scroll paused", "自动滚动已暂停"))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                                Button {
+                                    scrollPolicy.resume()
+                                    scrollToLatest(using: proxy)
+                                } label: {
+                                    Label(scrollPolicy.hasUnreadContent
+                                          ? L.t("Новый ответ", "New response", "新回复")
+                                          : L.t("Вниз", "To latest", "到底部"), systemImage: "arrow.down")
+                                }
+                                .help(L.t("Вернуться вниз и включить автопрокрутку", "Return to the bottom and resume auto-scroll", "返回底部并恢复自动滚动"))
+                            }
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .background(.bar)
+                    }
                 }
             }
             Divider()
@@ -92,6 +136,20 @@ struct LocalChatView: View {
                 inputFocused = true
             }
             .charoite(.regular, .s)
+        }
+    }
+
+    /// A reader back at the bottom without a gesture (wheel, keys) follows again before the jump is decided.
+    private func followContent(using proxy: ScrollViewProxy) {
+        if let distance = scrollProbe.distanceFromBottom { scrollPolicy.readerSeen(distanceFromBottom: distance) }
+        if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            // A gesture can start after the stream scheduled this update.
+            guard scrollPolicy.shouldFollow else { return }
+            proxy.scrollTo("chatBottom", anchor: .bottom)
         }
     }
 
@@ -240,13 +298,17 @@ struct LocalChatView: View {
     }
 
     private func submit() {
-        Self.submitDraft(&draft, using: chat)
+        // An own question is an explicit wish to read the newest: it lifts a pause.
+        if Self.submitDraft(&draft, using: chat) { scrollPolicy.resume() }
     }
 
     /// Both Enter and the button use this transition. Keep a refused draft.
     @MainActor
-    static func submitDraft(_ draft: inout String, using chat: LocalChatService) {
-        if chat.send(draft) { draft = "" }
+    @discardableResult
+    static func submitDraft(_ draft: inout String, using chat: LocalChatService) -> Bool {
+        guard chat.send(draft) else { return false }
+        draft = ""
+        return true
     }
 }
 
