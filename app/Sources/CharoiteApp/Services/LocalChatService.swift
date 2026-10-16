@@ -306,6 +306,7 @@ final class LocalChatService: ObservableObject {
         ] as [String: Any])
 
         var sawDone = false
+        var doneReason: String?
         var failure: Error?
         do {
             let (bytes, resp) = try await Self.localSession.bytes(for: req)
@@ -320,13 +321,21 @@ final class LocalChatService: ObservableObject {
                 if Task.isCancelled { break }
                 guard let data = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                // Ошибка посреди 200-стрима — как в src/llm.py: причина, а не
+                // «соединение закрыто» (DS, круг 4 по #804)
+                if let err = obj["error"] as? String { throw ChatStreamError(message: err) }
                 if let msg = obj["message"] as? [String: Any],
                    let chunk = msg["content"] as? String, !chunk.isEmpty {
                     if let snapshot = await throttler.append(chunk) {
                         setText(bubbleId, snapshot)
                     }
                 }
-                if obj["done"] as? Bool == true { sawDone = true; completedBubble = bubbleId; break }
+                if obj["done"] as? Bool == true {
+                    sawDone = true
+                    doneReason = obj["done_reason"] as? String
+                    completedBubble = bubbleId
+                    break
+                }
             }
             let finalText = await throttler.finalText()
             if !finalText.isEmpty { setText(bubbleId, finalText) }
@@ -335,8 +344,8 @@ final class LocalChatService: ObservableObject {
         }
         // Исход — одно решение по фактам потока (`ChatAnswerOutcome`): пометка
         // «ответ прерван», строка происхождения и пустой пузырь выводятся из него.
-        let outcome = ChatAnswerOutcome.decide(sawDone: sawDone, cancelled: Task.isCancelled,
-                                               failed: failure != nil)
+        let outcome = ChatAnswerOutcome.decide(sawDone: sawDone, doneReason: doneReason,
+                                               cancelled: Task.isCancelled, failed: failure != nil)
         let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
         apply(outcome, to: bubbleId, failure: failure,
               sources: chipSources.isEmpty ? nil : chipSources, weakMatches: weakMatches) {
@@ -348,8 +357,8 @@ final class LocalChatService: ObservableObject {
                 inferenceIsLocal: inferenceIsLocal)
         }
         switch outcome {
-        case .complete:
-            // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа отработал
+        case .complete, .truncated:
+            // Поток дошёл до done — Ollama жива; статус графа отработал
             // своё (круг-1, Codex). Статус принадлежит этому ответу, если поток
             // не отменён или новый вопрос ещё не начался.
             ollamaAlive = true

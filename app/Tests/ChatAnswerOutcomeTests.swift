@@ -21,6 +21,20 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertFalse(ChatAnswerOutcome.complete.marksInterrupted(textIsEmpty: false))
     }
 
+    func testLengthCapIsATruncatedAnswerNotAComplete() {
+        // num_predict исчерпан: тот же done, причина — в done_reason (DS, круг 4 по #804)
+        let cut = ChatAnswerOutcome.decide(sawDone: true, doneReason: "length", cancelled: false, failed: false)
+        XCTAssertEqual(cut, .truncated)
+        XCTAssertTrue(cut.marksInterrupted(textIsEmpty: false))
+        XCTAssertTrue(cut.getsMeta(textIsEmpty: false))
+        XCTAssertEqual(ChatAnswerOutcome.decide(sawDone: true, doneReason: "stop", cancelled: false, failed: false), .complete)
+    }
+
+    func testStreamErrorCarriesTheServerReason() {
+        XCTAssertEqual(ChatStreamError(message: "model runner has unexpectedly stopped").localizedDescription,
+                       "model runner has unexpectedly stopped")
+    }
+
     func testMetaDescribesOnlyArrivedText() {
         XCTAssertTrue(ChatAnswerOutcome.complete.getsMeta(textIsEmpty: true))
         XCTAssertTrue(ChatAnswerOutcome.dropped.getsMeta(textIsEmpty: false))
