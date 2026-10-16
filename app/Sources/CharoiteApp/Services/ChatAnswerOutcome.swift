@@ -60,6 +60,17 @@ enum ChatAnswerOutcome: Equatable {
                    "[错误：\(reason)——Ollama 是否在运行？]")
     }
 
+    /// Что сбой говорит о живости сервера модели — одно решение для шапки. `{"error": …}` прислала
+    /// Ollama — жива; HTTP-ответ без причины — кто-то ответил, но что это Ollama, не доказано:
+    /// шапка молчит, как при обрыве; ответа не было вовсе — «не отвечает».
+    static func serverAlive(after error: Error) -> Bool? {
+        switch error {
+        case is ChatStreamError: return true
+        case is ChatHTTPError: return nil
+        default: return false
+        }
+    }
+
     enum EmptyBubble: Equatable {
         case keep
         case remove

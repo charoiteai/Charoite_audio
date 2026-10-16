@@ -366,8 +366,8 @@ final class LocalChatService: ObservableObject {
             ollamaAlive = true
             if !Task.isCancelled || !isStreaming { status = "" }
         case .failed:
-            // `{"error": …}` прислала сама Ollama: сервер жив, отказала модель
-            ollamaAlive = failure is ChatStreamError
+            // Решает исход отказа (`serverAlive`); ошибки нет — сервер не ответил
+            ollamaAlive = failure.map { ChatAnswerOutcome.serverAlive(after: $0) } ?? false
         case .dropped:
             // Обрыв без ответа: жив ли сервер, неизвестно — шапка молчит, а не врёт
             ollamaAlive = nil
@@ -384,7 +384,8 @@ final class LocalChatService: ObservableObject {
         messages.map { ChatContextWindow.Entry(role: $0.role, text: $0.notice == true ? "" : $0.text) }
     }
 
-    /// Отказ живого сервера: первые ~4000 знаков тела, причина — из `{"error": …}`.
+    /// Ответ не 200: первые ~4000 знаков тела. Причина из `{"error": …}` — отказ Ollama
+    /// (`ChatStreamError`), без неё — `ChatHTTPError`: кто ответил, не доказано.
     nonisolated static func serverRefusal(_ bytes: URLSession.AsyncBytes, status: Int) async -> Error {
         var body = ""
         do {

@@ -79,9 +79,15 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertFalse(ChatAnswerOutcome.failureNote(ChatStreamError(message: reason ?? "")).contains("Ollama запущена"))
         // Прокси без причины: это не ошибка модели, и сервер модели живым не объявлен.
         let proxy: Error = ChatHTTPError(status: 502)
-        XCTAssertFalse(proxy is ChatStreamError)
         XCTAssertTrue(ChatAnswerOutcome.failureNote(proxy).contains("502"))
         XCTAssertFalse(ChatAnswerOutcome.failureNote(proxy).contains("ошибка модели"))
+    }
+
+    func testServerLivenessFollowsWhoAnswered() {
+        // Sonnet, DS, Haiku, круг 8: ответ HTTP без причины — не «Ollama не отвечает».
+        XCTAssertEqual(ChatAnswerOutcome.serverAlive(after: ChatStreamError(message: "runner stopped")), true)
+        XCTAssertNil(ChatAnswerOutcome.serverAlive(after: ChatHTTPError(status: 500)))
+        XCTAssertEqual(ChatAnswerOutcome.serverAlive(after: URLError(.cannotConnectToHost)), false)
     }
 
     func testNoticeIsNotFedBackAsModelAnswer() {
