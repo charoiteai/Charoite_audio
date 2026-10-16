@@ -16,7 +16,7 @@ final class ChatScrollPolicyTests: XCTestCase {
     func testGestureCancelsAlreadyScheduledJump() {
         var policy = ChatScrollPolicy()
         XCTAssertTrue(policy.contentChanged()) // queued by the view
-        policy.beginUserScroll(distanceFromBottom: 0)
+        policy.beginUserScroll()
         XCTAssertFalse(policy.shouldFollow) // rechecked when the queue executes
         XCTAssertFalse(policy.contentChanged())
     }
@@ -74,19 +74,19 @@ final class ChatScrollPolicyTests: XCTestCase {
     func testCancelledGestureReleasesLatchAndKeepsDecision() {
         // didEndLiveScroll is lost when the observed scroll view is replaced mid-gesture.
         var following = ChatScrollPolicy()
-        following.beginUserScroll(distanceFromBottom: 0)
+        following.beginUserScroll()
         following.cancelUserScroll()
         XCTAssertTrue(following.shouldFollow)
         var paused = ChatScrollPolicy()
         paused.gesture(endingAt: 400)
-        paused.beginUserScroll(distanceFromBottom: 400)
+        paused.beginUserScroll()
         paused.cancelUserScroll()
         XCTAssertFalse(paused.shouldFollow, "a lost gesture end is not a return to the bottom")
     }
 
     func testResumeClearsStuckGesture() {
         var policy = ChatScrollPolicy()
-        policy.beginUserScroll(distanceFromBottom: 0)
+        policy.beginUserScroll()
         policy.resume()
         XCTAssertTrue(policy.shouldFollow)
     }
@@ -97,48 +97,58 @@ final class ChatScrollPolicyTests: XCTestCase {
         XCTAssertFalse(policy.shouldFollow)
         policy.gesture(endingAt: 80)
         XCTAssertTrue(policy.shouldFollow)
-        policy.gesture(endingAt: .nan)
+        policy.beginUserScroll()
+        policy.endUserScroll(start: nil, lastMove: nil)
         XCTAssertTrue(policy.shouldFollow, "unknown geometry is no decision")
-        policy.gesture(endingAt: .infinity)
-        XCTAssertTrue(policy.shouldFollow)
         policy.gesture(endingAt: 300)
-        policy.gesture(endingAt: .infinity)
+        policy.beginUserScroll()
+        policy.endUserScroll(start: nil, lastMove: sample(0, height: 1000))
         XCTAssertFalse(policy.shouldFollow, "unknown geometry does not resume either")
+        XCTAssertFalse(policy.isUserScrolling)
     }
 
     func testReplyGrowthDuringGestureIsNotTheReaderLeaving() {
         // Our jumps are suppressed while the gesture lasts, so the bottom runs away from a reader who stays.
         var policy = ChatScrollPolicy()
-        policy.beginUserScroll(distanceFromBottom: 0)
+        policy.beginUserScroll()
         for _ in 0..<200 { XCTAssertFalse(policy.contentChanged()) }
-        policy.endUserScroll()
+        policy.endUserScroll(start: sample(0, height: 1000), lastMove: nil)
+        XCTAssertTrue(policy.shouldFollow)
+        XCTAssertFalse(policy.hasUnreadContent)
+    }
+
+    func testGrowthBeforeTheLastMovementIsNotTheReaders() {
+        // DeepSeek, round 5: the reply grew 400 pt mid-gesture, then the reader nudged down by 10.
+        // The raw distance is 390, the reader's own is -10: still at the bottom.
+        var policy = ChatScrollPolicy()
+        policy.beginUserScroll()
+        policy.contentChanged()
+        policy.endUserScroll(start: sample(0, height: 1000), lastMove: sample(390, height: 1400))
         XCTAssertTrue(policy.shouldFollow)
         XCTAssertFalse(policy.hasUnreadContent)
     }
 
     func testLastOwnMovementDecides() {
         var up = ChatScrollPolicy()
-        up.beginUserScroll(distanceFromBottom: 0)
-        up.userScrolled(distanceFromBottom: 120)
-        up.userScrolled(distanceFromBottom: 300)
+        up.beginUserScroll()
         up.contentChanged()
-        up.endUserScroll()
+        // Moved 300 pt up while the reply grew 200 pt.
+        up.endUserScroll(start: sample(0, height: 1000), lastMove: sample(500, height: 1200))
         XCTAssertFalse(up.shouldFollow)
         XCTAssertTrue(up.hasUnreadContent)
         var back = up
-        back.beginUserScroll(distanceFromBottom: 300)
-        back.userScrolled(distanceFromBottom: 10)
+        back.beginUserScroll()
         back.contentChanged()
-        back.endUserScroll()
+        back.endUserScroll(start: sample(500, height: 1200), lastMove: sample(60, height: 1250))
         XCTAssertTrue(back.shouldFollow)
         XCTAssertFalse(back.hasUnreadContent)
     }
 
-    func testMovementOutsideGestureIsIgnored() {
-        var policy = ChatScrollPolicy()
-        policy.userScrolled(distanceFromBottom: 500)
-        policy.endUserScroll()
-        XCTAssertTrue(policy.shouldFollow, "an end without a start is no decision")
+    func testReaderDistanceIgnoresUnknownGeometry() {
+        XCTAssertNil(ChatScrollPolicy.readerDistance(start: nil, lastMove: sample(0, height: 10)))
+        XCTAssertEqual(ChatScrollPolicy.readerDistance(start: sample(120, height: 10), lastMove: nil), 120)
+        XCTAssertNil(ChatScrollPolicy.readerDistance(start: sample(0, height: .infinity), lastMove: nil))
+        XCTAssertNil(ChatScrollPolicy.readerDistance(start: sample(0, height: 10), lastMove: sample(.nan, height: 10)))
     }
 
     func testReaderAtBottomWithoutGestureResumesOnly() {
@@ -164,7 +174,7 @@ final class ChatScrollPolicyTests: XCTestCase {
         XCTAssertFalse(paused.shouldFollow, "only the return button lifts the pause button")
         var scrolling = ChatScrollPolicy()
         scrolling.gesture(endingAt: 300)
-        scrolling.beginUserScroll(distanceFromBottom: 300)
+        scrolling.beginUserScroll()
         scrolling.readerSeen(distanceFromBottom: 0)
         XCTAssertFalse(scrolling.followsLatest, "the gesture end decides, not a position seen mid-gesture")
     }
@@ -181,10 +191,14 @@ final class ChatScrollPolicyTests: XCTestCase {
     }
 }
 
+private func sample(_ distance: CGFloat, height: CGFloat) -> ChatScrollSample {
+    ChatScrollSample(distanceFromBottom: distance, contentHeight: height)
+}
+
 private extension ChatScrollPolicy {
-    /// A gesture without intermediate movement events: began and ended at the same distance.
+    /// A gesture without intermediate movement events and without growth: began and ended at the same distance.
     mutating func gesture(endingAt distance: CGFloat) {
-        beginUserScroll(distanceFromBottom: distance)
-        endUserScroll()
+        beginUserScroll()
+        endUserScroll(start: sample(distance, height: 1000), lastMove: nil)
     }
 }
