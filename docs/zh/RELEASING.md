@@ -2,6 +2,8 @@
 
 *[English](../RELEASING.md) · [Русский](../ru/RELEASING.md) · **中文***
 
+> **简略译本；以英文版为准。** · *Abridged translation; the English version is authoritative.*
+
 版本号与 `CHANGELOG.md` 由 [release-please](https://github.com/googleapis/release-please) 自动维护。changelog 永远不用手工编辑 — 只需写 `fix:`/`feat:` 约定式提交，其余的在合并进 `main` 时自动完成。
 
 ## 工作原理
