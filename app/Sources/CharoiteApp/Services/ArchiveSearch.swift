@@ -219,16 +219,18 @@ enum ArchiveSearch {
     /// лексически.
     static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
                             budget: Int = defaultBudget,
-                            root: URL? = nil) async -> String {
+                            root: URL? = nil,
+                            semanticIndex: SemanticIndex = .shared) async -> String {
         await localSearchOutcome(query: query, limit: limit, snippet: snippet,
-                                 budget: budget, root: root).text
+                                 budget: budget, root: root, semanticIndex: semanticIndex).text
     }
 
     static func localSearchOutcome(query: String, limit: Int = 5,
                                    snippet: Int = 1200,
                                    budget: Int = defaultBudget,
                                    root: URL? = nil,
-                                   includeLinked: Bool = true) async -> Outcome {
+                                   includeLinked: Bool = true,
+                                   semanticIndex: SemanticIndex = .shared) async -> Outcome {
         guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path)
         else { return Outcome(text: "", rels: []) }
@@ -382,7 +384,7 @@ enum ArchiveSearch {
         let byPath = Dictionary(all.map { ($0.rel, (text: $0.text, dateTs: $0.dateTs)) },
                                 uniquingKeysWith: { first, _ in first })
         let allPaths = Set(all.map(\.rel))
-        let sem = await SemanticIndex.shared.similar(to: query, within: allPaths,
+        let sem = await semanticIndex.similar(to: query, within: allPaths,
                                                      limit: max(limit * 4, 20))
         let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []
@@ -435,7 +437,7 @@ enum ArchiveSearch {
             // pruneMissing: снимок здесь — ВЕСЬ граф, поэтому чего в нём нет,
             // того больше нет и на диске. Так забытая встреча уходит и из
             // индекса, а не живёт там превью-блоками (аудит 16.08).
-            await SemanticIndex.shared.refresh(files: snapshot, pruneMissing: true)
+            await semanticIndex.refresh(files: snapshot, pruneMissing: true)
         }
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота

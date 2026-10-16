@@ -30,6 +30,20 @@ final class LocalChatSubmissionTests: XCTestCase {
         }
     }
 
+    func testStopPreservesVisibleQuestionBeforeRetrievalReturns() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Новый вопрос до поиска"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            XCTAssertFalse(service.isStreaming)
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            let visible = service.messages.filter { !$0.text.isEmpty }
+            XCTAssertEqual(saved, visible)
+            XCTAssertEqual(LocalChatService(historyURL: url).messages, visible)
+        }
+    }
+
     func testWhitespaceSubmissionDoesNotCreateMessagesOrStartStreaming() throws {
         try withHistory { service, url, bytes in
             let before = service.messages
@@ -37,6 +51,68 @@ final class LocalChatSubmissionTests: XCTestCase {
             XCTAssertEqual(service.messages, before)
             XCTAssertFalse(service.isStreaming)
             XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
+    func testStopDoesNotPersistAnEmptyAnswerPlaceholder() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(saved.map(\.text), ["Сохранённый вопрос", "Вопрос"])
+        }
+    }
+
+    func testStopMarksAVisiblePartialAnswerAsInterrupted() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: "Начало отв"))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(saved.last?.text, "Начало отв")
+            XCTAssertEqual(saved.last?.interrupted, true)
+            XCTAssertNil(saved.last?.meta)
+        }
+    }
+
+    func testQuestionLongerThanModelWindowIsRefusedAndDraftKept() throws {
+        try withHistory { service, url, bytes in
+            let before = service.messages
+            var draft = String(repeating: "会", count: ChatContextWindow.maxPrompt + 1)
+            let original = draft
+            LocalChatView.submitDraft(&draft, using: service)
+            XCTAssertEqual(draft, original)
+            XCTAssertEqual(service.messages, before)
+            XCTAssertFalse(service.isStreaming)
+            XCTAssertFalse(service.status.isEmpty)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
+    func testStopBeforeFirstTokenLeavesScreenEqualToFile() throws {
+        try withHistory { service, url, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            service.messages.append(.init(role: "assistant", text: ""))
+            service.isStreaming = true
+            service.stopStreaming()
+            let saved = try JSONDecoder().decode([LocalChatService.Message].self, from: Data(contentsOf: url))
+            XCTAssertEqual(service.messages, saved)
+            XCTAssertFalse(service.messages.contains { $0.role == "assistant" })
+        }
+    }
+
+    func testStopAfterDoneDoesNotMarkCompleteAnswerInterrupted() throws {
+        try withHistory { service, _, _ in
+            service.messages.append(.init(role: "user", text: "Вопрос"))
+            let answer = LocalChatService.Message(role: "assistant", text: "Полный ответ")
+            service.messages.append(answer)
+            service.completedBubble = answer.id
+            service.isStreaming = true
+            service.stopStreaming()
+            XCTAssertNil(service.messages.last?.interrupted)
         }
     }
 }
