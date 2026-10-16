@@ -1,12 +1,14 @@
 import Foundation
 
-/// Layout growth never changes the user's decision to read earlier messages.
+/// Layout growth never pauses following by itself.
 ///
-/// Only the reader's own live-scroll gesture (trackpad, scroller drag) and the two buttons decide.
-/// The clip view origin is not a decision source: our own jump, lazy row measurement, insets and
+/// Only the reader's own live-scroll gesture (trackpad, scroller drag) and the two buttons pause.
+/// The clip view origin is not a pause source: our own jump, lazy row measurement, insets and
 /// clamping move it too, and every attempt to tell those apart by geometry paused the chat by itself.
-/// A mouse wheel without phases and keyboard paging send no gesture: they behave as before this
-/// change, and the pause button covers them.
+/// Inside a gesture the distance is taken at the reader's own movements only: the reply keeps
+/// growing while a gesture suppresses our jumps, and that growth is not the reader leaving.
+/// Without a gesture (mouse wheel without phases, keyboard, window resize) the position can only
+/// resume following, never pause it.
 struct ChatScrollPolicy {
     static let bottomTolerance: CGFloat = 80
 
@@ -15,21 +17,45 @@ struct ChatScrollPolicy {
     private(set) var hasUnreadContent = false
     /// The pause button is a decision; only the return button or a new own question undoes it.
     private(set) var pausedByUser = false
+    /// Distance from the bottom at the reader's last own movement in the current gesture.
+    private var readerDistance: CGFloat?
 
     var shouldFollow: Bool { followsLatest && !isUserScrolling }
 
-    mutating func beginUserScroll() { isUserScrolling = true }
+    mutating func beginUserScroll(distanceFromBottom distance: CGFloat) {
+        isUserScrolling = true
+        readerDistance = distance
+    }
 
-    /// The gesture ended, momentum included: where the reader stopped is the decision.
-    mutating func endUserScroll(distanceFromBottom distance: CGFloat) {
+    /// The reader moved the content (momentum included).
+    mutating func userScrolled(distanceFromBottom distance: CGFloat) {
+        if isUserScrolling { readerDistance = distance }
+    }
+
+    /// The gesture ended: where the reader last moved to is the decision.
+    /// Unknown geometry is no decision; the previous one stays.
+    mutating func endUserScroll() {
         isUserScrolling = false
-        let atBottom = distance.isFinite && distance <= Self.bottomTolerance
+        defer { readerDistance = nil }
+        guard let distance = readerDistance, distance.isFinite else { return }
+        let atBottom = distance <= Self.bottomTolerance
         if atBottom { hasUnreadContent = false }
         followsLatest = atBottom && !pausedByUser
     }
 
-    /// The observed scroll view is gone mid-gesture: release the latch, keep the decision.
-    mutating func cancelUserScroll() { isUserScrolling = false }
+    /// The gesture end is lost (scroll view replaced, window closed or inactive): release the latch, keep the decision.
+    mutating func cancelUserScroll() {
+        isUserScrolling = false
+        readerDistance = nil
+    }
+
+    /// Position seen without a gesture: the reader at the bottom resumes following; nothing here pauses.
+    mutating func readerSeen(distanceFromBottom distance: CGFloat) {
+        guard !followsLatest, !pausedByUser, !isUserScrolling,
+              distance.isFinite, distance <= Self.bottomTolerance else { return }
+        followsLatest = true
+        hasUnreadContent = false
+    }
 
     @discardableResult
     mutating func contentChanged() -> Bool {
@@ -48,6 +74,7 @@ struct ChatScrollPolicy {
         followsLatest = true
         isUserScrolling = false
         hasUnreadContent = false
+        readerDistance = nil
     }
 
     static func distanceFromBottom(document: CGRect, visible: CGRect, flipped: Bool) -> CGFloat {

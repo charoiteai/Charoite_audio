@@ -9,6 +9,7 @@ struct LocalChatView: View {
     @State private var draft = ""
     @State private var confirmClear = false
     @State private var scrollPolicy = ChatScrollPolicy()
+    @State private var scrollProbe = ChatScrollProbe()
     @FocusState private var inputFocused: Bool
 
     @ObservedObject private var inventory = GraphInventoryService.shared
@@ -71,9 +72,11 @@ struct LocalChatView: View {
                     }
                     .padding(14)
                     .background(ChatScrollObserver(
-                        onBegin: { scrollPolicy.beginUserScroll() },
+                        probe: scrollProbe,
+                        onBegin: { scrollPolicy.beginUserScroll(distanceFromBottom: $0) },
+                        onScroll: { scrollPolicy.userScrolled(distanceFromBottom: $0) },
                         onEnd: {
-                            scrollPolicy.endUserScroll(distanceFromBottom: $0)
+                            scrollPolicy.endUserScroll()
                             if scrollPolicy.shouldFollow { scrollToLatest(using: proxy) }
                         },
                         onCancel: { scrollPolicy.cancelUserScroll() }
@@ -82,10 +85,10 @@ struct LocalChatView: View {
                 .onAppear { scrollToLatest(using: proxy) }
                 .onChange(of: chat.messages.count) { _, count in
                     if count == 0 { scrollPolicy = ChatScrollPolicy() }
-                    if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
+                    followContent(using: proxy)
                 }
                 .onChange(of: chat.messages.last?.text) { _, _ in
-                    if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
+                    followContent(using: proxy)
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if !chat.messages.isEmpty {
@@ -135,6 +138,12 @@ struct LocalChatView: View {
             }
             .charoite(.regular, .s)
         }
+    }
+
+    /// A reader back at the bottom without a gesture (wheel, keys) follows again before the jump is decided.
+    private func followContent(using proxy: ScrollViewProxy) {
+        if let distance = scrollProbe.distanceFromBottom { scrollPolicy.readerSeen(distanceFromBottom: distance) }
+        if scrollPolicy.contentChanged() { scrollToLatest(using: proxy) }
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
