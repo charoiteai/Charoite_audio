@@ -179,6 +179,10 @@ TOPIC_DISK = "disk"
 # явным sticky false с этой темой: снятие без темы приложение читает как
 # снятие потери канала (SuflerService.consume).
 TOPIC_MEMORY = "memory"
+# Срок хранения записей не понят: уборка пропущена, записи лежат дольше
+# обещанного в PRIVACY. Липкий слой — человек видит его, пока не исправит
+# config.yaml, а не строку в stderr демона, которую никто не читает.
+TOPIC_RETENTION = "retention"
 # kern.memorystatus_vm_pressure_level: 1 — норма, 2 — предупреждение
 # (на машине с локальной моделью это фон), 4 — критично.
 MEMORY_NORMAL = 1

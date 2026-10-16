@@ -2052,3 +2052,20 @@ def test_plan_and_remainder_cover_every_day_folder_exactly_once(tmp_path):
     [odd] = _remainder_of(forget.plan(MORNING, root, graph), arch / f"{DAY}_1400_тема")
     assert "после даты нет « — »" in odd and "время в имени" not in odd
     assert "времени в имени нет" not in odd
+
+
+def test_forget_preserves_backups_of_same_named_notes(tmp_path):
+    root, graph = _world(tmp_path)
+    originals = {}
+    for category in ("Ядра", "Люди"):
+        path = graph / category / "Общее имя.md"
+        text = f"# {category}\nСобственная заметка.\n- [[Встречи/{STAMP}]] — факт\n"
+        path.write_text(text, encoding="utf-8")
+        originals[path.relative_to(graph)] = text
+    assert forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    copies = list((graph / forget.BACKUP_DIR / STAMP).rglob("Общее имя.md"))
+    assert len(copies) == 2
+    assert {p.read_text(encoding="utf-8") for p in copies} == set(originals.values())
+    for rel in originals:
+        assert "Собственная заметка." in (graph / rel).read_text(encoding="utf-8")
+        assert f"Встречи/{STAMP}" not in (graph / rel).read_text(encoding="utf-8")

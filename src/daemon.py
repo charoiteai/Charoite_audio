@@ -65,7 +65,7 @@ import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import threads  # noqa: E402
 import voice_pitch  # noqa: E402
-from audio import AudioHub  # noqa: E402
+from audio import AudioHub, keep_days_refusal, resolve_record_keep_days  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import MINUTES_DRAFT_MARK, Transcript, is_noise  # noqa: E402
@@ -396,7 +396,9 @@ def _prune_graph_logs(cfg: dict) -> None:
     logs = _root() / "logs"
     if not logs.is_dir():
         return
-    keep_days = float(cfg.get("audio", {}).get("record_keep_days", 2))
+    keep_days = resolve_record_keep_days(cfg.get("audio", {}).get("record_keep_days", 2))
+    if keep_days is None:
+        return
     cutoff = time.time() - max(keep_days, 1) * 86400
     # cloud_review_*.log — тот же класс: имена файлов встречи (тема стоит в
     # имени), счётчики и stderr CLI. Имя другое, поэтому ретеншн его не
@@ -817,8 +819,16 @@ def main():
     # Ретеншн аудио не должен зависеть от того, началась ли новая встреча:
     # раньше чистка жила внутри _open_sinks, поэтому при record: false или
     # недельном простое записи лежали дольше обещанного в PRIVACY.
+    keep_days = (cfg.get("audio") or {}).get("record_keep_days", 2)
+    # Показ отказа — свой try: сбой записи в stdout не смеет отменить уборку
+    # при верном сроке (тот же развод, что в AudioHub._open_sinks, круг 4 по #809)
     try:
-        keep_days = cfg["audio"].get("record_keep_days", 2)
+        refusal = keep_days_refusal(keep_days)
+        if refusal is not None:
+            emit(stt_runtime.status_event(refusal))
+    except Exception as e:  # noqa: BLE001
+        print(f"отказ срока хранения не показан: {e}", file=sys.stderr, flush=True)
+    try:
         held = AudioHub.prune_recordings(
             _root() / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
             keep_days,

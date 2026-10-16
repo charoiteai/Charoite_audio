@@ -103,6 +103,10 @@ WAV_SETTLE_SECONDS = 30
 # приходит готовой, пересобирать её из done/ незачем, а держать вечно —
 # нарушение обещания PRIVACY (карточка №166, 05.09).
 IMPORT_KEEP_DAYS_DEFAULT = 2
+# Потолок срока копии: ~100 тысяч лет — «хранить практически вечно», а в
+# секундах (JSON сайдкара) число конечное. Огромный срок — не повод удалить
+# через два дня (круг 4 по #809: на main 1e308 дней хранило копию бессрочно).
+IMPORT_KEEP_DAYS_CEILING = 36_500_000.0
 ERROR_MARKER_SUFFIX = ".import-error"
 IMPORTED_SIDECAR_SUFFIX = ".imported.json"
 
@@ -354,8 +358,8 @@ def _hint_keep_days_once(record_keep_days) -> None:
         return
     try:
         days = float(record_keep_days)
-    except (TypeError, ValueError):
-        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2)
+    except (TypeError, ValueError, OverflowError):
+        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2, Opus по #809)
     if days == float(IMPORT_KEEP_DAYS_DEFAULT):
         return
     # `say` в stdout: сбой печати забывает ключ, как у всех строк реестра (DS M2)
@@ -373,9 +377,11 @@ def import_keep_days(cfg: dict, override=None) -> float:
     чужая запись (диктофон, звонок) растягивалась бы до срока живых записей
     (14 дней в поле) вопреки просьбе владельца «удалять через два дня»
     (аудит GLM/DS 05.09). Кривое значение — не повод удалять сразу или не
-    удалять никогда: говорим вслух и берём умолчание. Отрицательное — отказ:
-    «удалить до импорта» не бывает. Ноль допустим — копия уходит первым же
-    проходом. Бесконечность — как кривое: в JSON сайдкара она не проходит.
+    удалять никогда: говорим вслух и берём умолчание. Отрицательное конечное
+    — отказ: «удалить до импорта» не бывает (−inf, как на main, — кривое).
+    Ноль допустим — копия уходит первым же проходом. Срок больше потолка и
+    +inf — потолок: в JSON сайдкара бесконечность не проходит, а умолчание
+    удалило бы копию раньше просьбы владельца.
     """
     raw = override
     audio = cfg.get("audio") or {}
@@ -385,16 +391,41 @@ def import_keep_days(cfg: dict, override=None) -> float:
         raw = IMPORT_KEEP_DAYS_DEFAULT
         _hint_keep_days_once(audio.get("record_keep_days"))
     try:
-        days = float(raw)
-    except (TypeError, ValueError):
-        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        # Целое сравнивается с потолком точно и зажимается до float(): 10**400 — потолок,
+        # -10**400 — отрицательное, как -1 (отказ), а не OverflowError
+        days = float(max(-1, min(raw, IMPORT_KEEP_DAYS_CEILING)) if isinstance(raw, int) else raw)
+    except (TypeError, ValueError, OverflowError):
+        print(f"import_keep_days: непонятное значение {_shown(raw, 60)} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    if math.isnan(days) or math.isinf(days):
-        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+    # bool (YAML off/on; на main давал 0 или 1 день), NaN и −inf — непонятное. Отрицательное
+    # конечное — отказ до проверки секунд: иначе -1e308 (в секундах -inf) тихо
+    # стал бы умолчанием (Haiku, круг 2 по #809)
+    if isinstance(raw, bool) or math.isnan(days) or days == -math.inf:
+        print(f"import_keep_days: непонятное значение {_shown(raw, 60)} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
     if days < 0:
-        sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
+        sys.exit(f"import_keep_days не может быть отрицательным: {_shown(raw, 60)}")
+    if days >= IMPORT_KEEP_DAYS_CEILING:
+        return _keep_days_ceiling(raw)
     return days
+
+
+def _shown(raw, width: int) -> str:
+    """Значение конфига для строки лога. Целое длиннее 4300 цифр (YAML пускает его
+    шестнадцатеричным) Python 3.11+ в строку не переводит — тогда только тип (Opus по #809)."""
+    try:
+        text = repr(raw)
+    except ValueError:
+        return f"<{type(raw).__name__}>"
+    # срез помечен: префикс огромного числа иначе читается как само значение (DS, Sonnet, круг 9)
+    return text[:width] + "…" if len(text) > width else text
+
+
+def _keep_days_ceiling(raw) -> float:
+    """Срок на потолке и за ним: копия живёт практически бессрочно — говорим вслух."""
+    print(f"import_keep_days: {_shown(raw, 24)} на потолке или выше — храню {IMPORT_KEEP_DAYS_CEILING:.0f} дн. "
+          f"(практически бессрочно)")
+    return IMPORT_KEEP_DAYS_CEILING
 
 
 def _archive_source_for(meta: dict, done_file: pathlib.Path,
