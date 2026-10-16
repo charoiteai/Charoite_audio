@@ -26,7 +26,7 @@ struct MeetingLibraryView: View {
     /// сразу на выбранной глубине.
     @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
     @Environment(\.accessibilityReduceMotion) var reduceMotion
-    @Environment(\.openSettings) private var openSettings
+    @State private var graphFolderSaveFailed = false
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
@@ -94,13 +94,14 @@ struct MeetingLibraryView: View {
             .charoite(.link, .s)
             .help(L.t("Показать записи и события сегодня", "Show today's recordings and events", "显示今天的录音和日程"))
             if selectedDay != nil {
-                Button(L.t("Весь архив", "All meetings", "全部会议")) { selectedDay = nil }
+                Button(L.t("Весь архив", "Whole archive", "全部档案")) { selectedDay = nil }
                     .charoite(.link, .s)
             }
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
         .disabled(searchActive)
+        .opacity(searchActive ? 0.4 : 1)
     }
 
     // MARK: - Полоса недели
@@ -303,16 +304,52 @@ struct MeetingLibraryView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Почему поиск не может идти: папка не задана или не найдена на диске.
+    private var searchBlocked: (title: String, text: String)? {
+        switch LibrarySearchReadiness.resolve(graphDir: AppSettings.graphDir) {
+        case .ready:
+            return nil
+        case .notConfigured:
+            return (L.t("Выберите папку памяти", "Choose a memory folder", "选择记忆文件夹"),
+                    L.t("Поиск пока недоступен: папка графа не настроена.",
+                        "Search is unavailable because no graph folder is configured.",
+                        "尚未设置图谱文件夹，搜索暂不可用。"))
+        case .unreachable(let url):
+            return (L.t("Папка памяти недоступна", "Memory folder unavailable", "记忆文件夹不可用"),
+                    L.t("Папка графа \(url.path) не найдена или не подключена — поиск не выполнялся.",
+                        "The graph folder \(url.path) was not found or is not connected — no search was run.",
+                        "未找到或未连接图谱文件夹 \(url.path)——未执行搜索。"))
+        }
+    }
+
+    /// Та же запись graph_dir, что у мастера первого запуска: в Настройках
+    /// папка графа только показывается, выбрать её там нельзя.
+    private func chooseGraphFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = L.t("Выбрать", "Choose", "选择")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        graphFolderSaveFailed = !AppSettings.setConfigValue("graph_dir", url.path)
+        if !graphFolderSaveFailed { runSearch(debounced: false) }
+    }
+
     @ViewBuilder
     private var searchResults: some View {
-        if AppSettings.graphDir == nil {
-            EmptyState(title: L.t("Выберите папку памяти", "Choose a memory folder", "选择记忆文件夹"),
-                       text: L.t("Поиск пока недоступен: папка графа не настроена. Выберите её в Настройках и повторите поиск.",
-                                 "Search is unavailable because no graph folder is configured. Choose it in Settings, then search again.",
-                                 "尚未设置图谱文件夹，搜索暂不可用。请在设置中选择文件夹后重新搜索。"),
+        if let blocked = searchBlocked {
+            EmptyState(title: blocked.title, text: blocked.text,
                        systemImage: "folder.badge.questionmark") {
-                Button(L.t("Открыть настройки", "Open Settings", "打开设置")) { openSettings() }
-                    .charoite(.regular, .s)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(L.t("Выбрать папку…", "Choose folder…", "选择文件夹…")) { chooseGraphFolder() }
+                        .charoite(.regular, .s)
+                    if graphFolderSaveFailed {
+                        Text(L.t("Не удалось записать config.yaml — проверьте папку данных в Настройках.",
+                                 "Could not write config.yaml — check the data folder in Settings.",
+                                 "无法写入 config.yaml——请在设置中检查数据文件夹。"))
+                            .font(.caption).foregroundStyle(Theme.warning)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else if hits.isEmpty {
@@ -326,9 +363,9 @@ struct MeetingLibraryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 EmptyState(title: L.t("Ничего не найдено", "Nothing found", "未找到结果"),
-                           text: L.t("Искал «\(query.trimmingCharacters(in: .whitespacesAndNewlines))» в резюме, минутках, стенограммах и узлах графа. Попробуйте одно слово или имя участника.",
-                                     "Searched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))” in summaries, minutes, transcripts and graph nodes. Try a single word or a participant's name.",
-                                     "已在摘要、纪要、逐字稿和图谱节点中搜索“\(query.trimmingCharacters(in: .whitespacesAndNewlines))”。试试单个词或参会者姓名。"),
+                           text: L.t("Искал «\(query.trimmingCharacters(in: .whitespacesAndNewlines))» в резюме, минутках, разборах и узлах графа. Попробуйте одно слово или имя участника.",
+                                     "Searched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))” in summaries, minutes, reviews and graph nodes. Try a single word or a participant's name.",
+                                     "已在摘要、纪要、分析和图谱节点中搜索“\(query.trimmingCharacters(in: .whitespacesAndNewlines))”。试试单个词或参会者姓名。"),
                            systemImage: "magnifyingglass") {
                     Button(L.t("Сбросить поиск", "Clear search", "清除搜索")) {
                         query = ""
