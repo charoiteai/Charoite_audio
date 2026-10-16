@@ -600,6 +600,54 @@ def resolve_record_free_min(audio_cfg: dict) -> int:
     return n if n > 0 else default
 
 
+def _parse_keep_days(raw) -> float | None:
+    """Срок в днях или None — без слов: говорит вызывающий, один раз."""
+    try:
+        days = float(raw)
+        if not isinstance(raw, bool) and days >= 0 and math.isfinite(days * 86400):
+            return days
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def resolve_record_keep_days(raw) -> float | None:
+    """Неверный срок не разрешает удаление; None означает пропуск уборки.
+
+    Ноль — явное удаление при следующем проходе. Строковые числа оставляем
+    совместимыми с прежним float(), но bool, отрицательное, NaN, бесконечность
+    и переполнение в секундах не являются сроком. Не подставляем два дня:
+    это могло бы стереть записи раньше срока, который хотел задать человек.
+    """
+    days = _parse_keep_days(raw)
+    if days is not None:
+        return days
+    _safe_stderr("audio.record_keep_days: нужен конечный неотрицательный срок в днях; "
+                 "очистка пропущена, исправьте настройку")
+    return None
+
+
+def keep_days_refusal(raw) -> "stt_runtime.Status | None":
+    """Липкий статус для приложения, если срок хранения не понят, иначе None.
+
+    Отказ срока означает «старые записи не удаляются» — на месяцы, если никто
+    не заглянет в stderr. На main тот же `off` (YAML False) стирал все записи
+    сразу; молчаливое бессрочное хранение — тоже нарушение PRIVACY, только с
+    другой стороны. Поэтому отказ виден владельцу, а не только журналу.
+    """
+    if _parse_keep_days(raw) is not None:
+        return None
+    try:
+        shown = repr(raw)
+    except Exception:  # noqa: BLE001 — показ значения не смеет ронять отказ
+        shown = type(raw).__name__
+    if len(shown) > 60:
+        shown = shown[:57] + "..."
+    return stt_runtime.Status(
+        f"audio.record_keep_days = {shown} не понят: записи не удаляются — исправьте config.yaml",
+        sticky=True, error=True, topic=stt_runtime.TOPIC_RETENTION)
+
+
 class AudioHub:
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
@@ -1278,6 +1326,12 @@ class AudioHub:
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
         try:
+            # Свой try: сигнал о бессрочном хранении не смеет ни выключить запись
+            # встречи (DS, круг 2), ни отменить уборку при верном сроке (Sonnet, круг 3)
+            self._say(keep_days_refusal(self.record_keep_days))
+        except Exception as e:  # noqa: BLE001 — показ отказа не мешает записи
+            _safe_stderr(f"отказ срока хранения не показан: {e}")
+        try:
             held = self.prune_recordings(self.record_dir, self.record_keep_days,
                                          protect=self.protect_stamps)
             if held:
@@ -1348,7 +1402,10 @@ class AudioHub:
         """
         if not record_dir.exists():
             return 0
-        cutoff = time.time() - float(keep_days) * 86400
+        days = resolve_record_keep_days(keep_days)
+        if days is None:
+            return 0
+        cutoff = time.time() - days * 86400
         protected = set(protect)
         held = 0
         for old in record_dir.iterdir():
@@ -1387,7 +1444,10 @@ class AudioHub:
         """
         if not data_dir.exists():
             return 0
-        cutoff = time.time() - float(keep_days) * 86400
+        days = resolve_record_keep_days(keep_days)
+        if days is None:
+            return 0
+        cutoff = time.time() - days * 86400
         alive: set[str] = set()
         manifest = fresh_sck_manifest() or {}
         for key in ("system", "mic"):

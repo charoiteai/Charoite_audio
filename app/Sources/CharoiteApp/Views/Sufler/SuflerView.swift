@@ -233,6 +233,10 @@ struct SuflerView: View {
     /// «Recording dropped — recovering» не содержало ни «прервалась», ни
     /// «Failed», и сообщение об оборванной записи показывалось мелким серым
     /// текстом в одну строку — ровно то, чего этот код должен избегать.
+    /// Справка видна только в живой строке (`displayedStatus` при `isRunning`): после Stop слой
+    /// ещё лежит, но место под неё строке обработки не нужно (Opus по #809).
+    private var showsStickyInfo: Bool { sufler.isRunning && sufler.stickyInfo != nil }
+
     private var displayedStatus: String {
         if sufler.isRunning {
             return Self.liveStatusText(
@@ -281,10 +285,12 @@ struct SuflerView: View {
         // Липкое предупреждение демона («собеседников в записи не будет»):
         // выше служебных строк — иначе «👥 диаризация включена» через
         // секунду прятала его до конца встречи (№228)
-        if let sticky { return sticky }
-        // Слой-справка («уведомления выключены») — хвостом к живой строке:
-        // видна всю встречу, но не прячет «⚡ отвечаю» и не красит его (№310)
-        if let info, !info.isEmpty { return status.isEmpty ? info : status + " · " + info }
+        // Слой-справка («уведомления выключены», «срок хранения не понят») —
+        // хвостом и к липкому предупреждению, и к живой строке: видна всю
+        // встречу, но не прячет «⚡ отвечаю» и не красит его (№310, круг 4 по #809)
+        let tail = (info?.isEmpty == false) ? info : nil
+        if let sticky { return tail.map { sticky + " · " + $0 } ?? sticky }
+        if let tail { return status.isEmpty ? tail : status + " · " + tail }
         return status
     }
 
@@ -303,6 +309,13 @@ struct SuflerView: View {
     /// встречи (№500; пометка в одну строку усекалась — DS M1 круга 2).
     private var statusNeedsAttention: Bool {
         statusIsProblem || (!sufler.isRunning && processing.statusIsReadyNote)
+    }
+
+    /// Справка (срок хранения «записи не удаляются — исправьте config.yaml») идёт хвостом
+    /// строки: в одну строку её действие обрезалось первым (круг 5 по #809).
+    static func statusLineLimit(running: Bool, problems: Int, needsAttention: Bool, hasInfo: Bool) -> Int {
+        if (running && problems > 1) || hasInfo { return 3 }
+        return needsAttention ? 2 : 1
     }
 
     private var statusColor: Color {
@@ -529,8 +542,10 @@ struct SuflerView: View {
             Text(displayedStatus)
                 .font(statusNeedsAttention ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusColor)
-                .lineLimit(sufler.isRunning && sufler.stickyProblemCount > 1 ? 3 : (statusNeedsAttention ? 2 : 1))
-                .fixedSize(horizontal: false, vertical: statusNeedsAttention)
+                .lineLimit(Self.statusLineLimit(running: sufler.isRunning, problems: sufler.stickyProblemCount,
+                                                needsAttention: statusNeedsAttention, hasInfo: showsStickyInfo))
+                .fixedSize(horizontal: false, vertical: statusNeedsAttention || showsStickyInfo)
+                .help(displayedStatus)
                 .textSelection(.enabled)
 
             if !sufler.isRunning, processing.isProcessing {

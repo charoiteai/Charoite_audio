@@ -1089,7 +1089,9 @@ def _backup(path: pathlib.Path, stamp: str) -> None:
     """Копия узла до правки — рядом с графом, в скрытой папке."""
     for parent in path.parents:
         if (parent / MEETINGS_DIR).is_dir() or (parent / ARCHIVE_DIR).is_dir():
-            dest = parent / BACKUP_DIR / stamp / path.name
+            # Одинаковые имена в разных папках — разные заметки. Плоская
+            # копия перезаписывала предыдущий оригинал при одном забывании.
+            dest = parent / BACKUP_DIR / stamp / path.relative_to(parent)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
             return

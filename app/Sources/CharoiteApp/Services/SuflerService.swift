@@ -821,6 +821,7 @@ final class SuflerService: ObservableObject {
             case "hb":
                 noteHeartbeat(obj)
             case "status":
+                if takeInfoLayer(obj, text) { break }
                 status = text
                 // Признак сбоя приходит от демона (`error: true`), обычный статус
                 // его снимает: раньше флаг был липким — после одного таймаута
