@@ -308,6 +308,7 @@ final class LocalChatService: ObservableObject {
         var sawDone = false
         var doneReason: String?
         var failure: Error?
+        let throttler = StreamThrottler()  // ~30fps: без него растущий Text = O(n²), 100% CPU
         do {
             let (bytes, resp) = try await Self.localSession.bytes(for: req)
             // 404/500 Ollama — это тело ошибки без «done», и EOF выглядел
@@ -316,20 +317,19 @@ final class LocalChatService: ObservableObject {
             if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
                 throw URLError(.badServerResponse)
             }
-            let throttler = StreamThrottler()  // ~30fps: без него растущий Text = O(n²), 100% CPU
             for try await line in bytes.lines {
                 if Task.isCancelled { break }
                 guard let data = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                // Ошибка посреди 200-стрима — как в src/llm.py: причина, а не
-                // «соединение закрыто» (DS, круг 4 по #804)
-                if let err = obj["error"] as? String { throw ChatStreamError(message: err) }
                 if let msg = obj["message"] as? [String: Any],
                    let chunk = msg["content"] as? String, !chunk.isEmpty {
                     if let snapshot = await throttler.append(chunk) {
                         setText(bubbleId, snapshot)
                     }
                 }
+                // Ошибка посреди 200-стрима — как в src/llm.py: причина, а не
+                // «соединение закрыто» (DS, круг 4 по #804)
+                if let err = obj["error"] as? String { throw ChatStreamError(message: err) }
                 if obj["done"] as? Bool == true {
                     sawDone = true
                     doneReason = obj["done_reason"] as? String
@@ -337,17 +337,18 @@ final class LocalChatService: ObservableObject {
                     break
                 }
             }
-            let finalText = await throttler.finalText()
-            if !finalText.isEmpty { setText(bubbleId, finalText) }
         } catch {
             failure = error
         }
+        // Хвост буфера — и после ошибки: дошедший текст не теряется (круг 5 по #804)
+        let finalText = await throttler.finalText()
+        if !finalText.isEmpty { setText(bubbleId, finalText) }
         // Исход — одно решение по фактам потока (`ChatAnswerOutcome`): пометка
         // «ответ прерван», строка происхождения и пустой пузырь выводятся из него.
         let outcome = ChatAnswerOutcome.decide(sawDone: sawDone, doneReason: doneReason,
                                                cancelled: Task.isCancelled, failed: failure != nil)
         let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
-        apply(outcome, to: bubbleId, failure: failure,
+        apply(outcome, to: bubbleId, failure: failure.map(ChatAnswerOutcome.failureNote),
               sources: chipSources.isEmpty ? nil : chipSources, weakMatches: weakMatches) {
             MemoryScreenPolicy.metaLine(
                 model: effModel, seconds: secs,
@@ -364,7 +365,8 @@ final class LocalChatService: ObservableObject {
             ollamaAlive = true
             if !Task.isCancelled || !isStreaming { status = "" }
         case .failed:
-            ollamaAlive = false
+            // `{"error": …}` прислала сама Ollama: сервер жив, отказала модель
+            ollamaAlive = failure is ChatStreamError
         case .stopped, .dropped:
             break
         }
@@ -375,22 +377,24 @@ final class LocalChatService: ObservableObject {
 
     /// Пузырь по исходу потока: заглушка уходит, неполный помечен, ошибка и
     /// пустой обрыв названы, строка происхождения — только у дошедшего текста.
-    private func apply(_ outcome: ChatAnswerOutcome, to bubbleId: UUID, failure: Error?,
+    private func apply(_ outcome: ChatAnswerOutcome, to bubbleId: UUID, failure: String?,
                        sources: [MemoryScreenPolicy.Source]?, weakMatches: Bool, meta: () -> String) {
         guard let idx = messages.firstIndex(where: { $0.id == bubbleId }) else { return }
         let empty = messages[idx].text.isEmpty
-        if outcome == .stopped && empty && messages[idx].meta == nil {
-            messages.remove(at: idx)   // заглушка «…», а не ответ
-            return
+        if empty {
+            switch outcome.emptyBubble(failure: failure) {
+            case .remove where messages[idx].meta == nil:
+                messages.remove(at: idx)
+                return
+            case .remove, .keep:
+                break
+            case .explain(let reason):
+                messages[idx].text = reason
+            }
+        } else if outcome == .failed, let failure {
+            messages[idx].text += "\n" + failure
         }
         messages[idx].interrupted = outcome.marksInterrupted(textIsEmpty: empty) ? true : nil
-        if outcome == .failed, let failure {
-            messages[idx].text += "\n[ошибка: \(failure.localizedDescription) — Ollama запущена?]"
-        } else if outcome == .dropped && empty {
-            messages[idx].text = L.t("[ответ не пришёл: соединение закрыто без ответа — Ollama запущена?]",
-                                     "[no answer: the connection closed without a reply — is Ollama running?]",
-                                     "[未收到回答：连接在回复前关闭——Ollama 是否在运行？]")
-        }
         // Строка происхождения и чипы: у каждого числа источник (модель —
         // какая отвечала, время — замер, встречи — счёт подмешанных).
         if outcome.getsMeta(textIsEmpty: empty) {

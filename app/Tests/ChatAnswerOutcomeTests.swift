@@ -42,4 +42,31 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertFalse(ChatAnswerOutcome.stopped.getsMeta(textIsEmpty: false))
         XCTAssertFalse(ChatAnswerOutcome.failed.getsMeta(textIsEmpty: false))
     }
+
+    func testEmptyBubbleSurvivesRestartForEveryOutcomeButStop() {
+        // Пустой пузырь без меты saveHistory не пишет: «…» на экране и пусто в файле (круг 5 по #804).
+        for outcome in [ChatAnswerOutcome.complete, .truncated, .stopped, .dropped, .failed] {
+            let fate = outcome.emptyBubble(failure: "boom")
+            switch outcome {
+            case .stopped:
+                XCTAssertEqual(fate, .remove)
+            case .complete:
+                XCTAssertEqual(fate, .keep)
+                XCTAssertTrue(outcome.getsMeta(textIsEmpty: true), "мета держит пузырь в файле")
+            case .truncated, .dropped, .failed:
+                guard case .explain(let text) = fate else { return XCTFail("\(outcome): \(fate)") }
+                XCTAssertFalse(text.isEmpty, "\(outcome)")
+            }
+        }
+        guard case .explain(let text) = ChatAnswerOutcome.failed.emptyBubble(failure: "boom") else { return XCTFail() }
+        XCTAssertTrue(text.contains("boom"))
+    }
+
+    func testModelRefusalDoesNotAskWhetherOllamaRuns() {
+        let model = ChatAnswerOutcome.failureNote(ChatStreamError(message: "model runner has unexpectedly stopped"))
+        XCTAssertTrue(model.contains("model runner has unexpectedly stopped"))
+        XCTAssertFalse(model.contains("Ollama"), "отказ прислала сама Ollama")
+        let transport = ChatAnswerOutcome.failureNote(URLError(.cannotConnectToHost))
+        XCTAssertTrue(transport.contains("Ollama"))
+    }
 }
