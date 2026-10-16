@@ -103,15 +103,16 @@ final class LocalChatService: ObservableObject {
         do {
             (data, response) = try await URLSession(configuration: cfg).data(from: url)
         } catch {
-            // Отменённая проба ничего не доказала; правило шапки одно с ответом чата
+            // Отменённая проба ничего не наблюдала; правило шапки одно с ответом чата
             guard !Task.isCancelled else { return }
-            ollamaAlive = ChatAnswerOutcome.liveness(ollamaAlive, evidence: ChatAnswerOutcome.serverAlive(after: error))
+            ollamaAlive = ChatAnswerOutcome.serverAlive(after: error)
             return
         }
-        // Ответ не 200 или не того вида — свидетельства нет, известное остаётся
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["models"] as? [[String: Any]] else { return }
+        guard let list = ChatAnswerOutcome.probeModels(status: (response as? HTTPURLResponse)?.statusCode,
+                                                       data: data) else {
+            ollamaAlive = nil       // ответил не Ollama или не так — живость не доказана
+            return
+        }
         ollamaAlive = true
         // эмбеддинг-модели в чате бессмысленны — прячем
         let names = list.compactMap { $0["name"] as? String }
@@ -374,9 +375,8 @@ final class LocalChatService: ObservableObject {
             ollamaAlive = true
             if !Task.isCancelled || !isStreaming { status = "" }
         case .failed:
-            // Решает исход отказа (`serverAlive`); ошибки нет — сервер не ответил
-            ollamaAlive = ChatAnswerOutcome.liveness(
-                ollamaAlive, evidence: failure.map { ChatAnswerOutcome.serverAlive(after: $0) } ?? false)
+            // Решает только этот отказ (`serverAlive`), прежнее не удерживается
+            ollamaAlive = ChatAnswerOutcome.headerAfterFailure(failure)
         case .dropped:
             // Обрыв без ответа: жив ли сервер, неизвестно — шапка молчит, а не врёт
             ollamaAlive = nil

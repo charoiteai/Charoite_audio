@@ -68,9 +68,16 @@ enum ChatAnswerOutcome: Equatable {
     /// начатого потока прислала Ollama — жива. Отказ не 200 (с причиной в теле или без) — кто-то
     /// ответил, но что это Ollama, не доказано: шапка молчит, как при обрыве. «Не отвечает» — только
     /// когда на порту никто не слушает (`OllamaRuntimeService.refused`); прочее — неизвестность.
-    /// Шапка после нового свидетельства: nil — свидетельства нет, известное прежде остаётся
-    /// (отказ 404 живой Ollama не гасит «отвечает» от пробы списка моделей; Haiku, круг 10).
-    static func liveness(_ previous: Bool?, evidence: Bool?) -> Bool? { evidence ?? previous }
+    /// Шапка после отказа ответа: только это наблюдение, прежнее не удерживается — старое
+    /// «отвечает» рядом с пузырём «Ollama запущена?» было бы ложью (DS, Haiku, Sonnet, круг 11).
+    static func headerAfterFailure(_ failure: Error?) -> Bool? { failure.flatMap(serverAlive(after:)) }
+
+    /// Список моделей из ответа пробы `/api/tags`: только 200 и JSON с `models`. Иначе nil —
+    /// ответил не Ollama или не так, живость не доказана.
+    static func probeModels(status: Int?, data: Data) -> [[String: Any]]? {
+        guard status == 200, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["models"] as? [[String: Any]]
+    }
 
     static func serverAlive(after error: Error) -> Bool? {
         switch error {

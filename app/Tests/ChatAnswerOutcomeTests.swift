@@ -95,11 +95,20 @@ final class ChatAnswerOutcomeTests: XCTestCase {
         XCTAssertFalse(ChatAnswerOutcome.failureNote(gateway).contains("ошибка модели"))
         // Правило проекта (`OllamaRuntimeService.refused`): таймаут — неизвестность, не «не отвечает».
         XCTAssertNil(ChatAnswerOutcome.serverAlive(after: URLError(.timedOut)))
-        // Haiku, круг 10: нет свидетельства — известное остаётся; есть — заменяет.
-        XCTAssertEqual(ChatAnswerOutcome.liveness(true, evidence: ChatAnswerOutcome.serverAlive(after: gateway)), true)
-        XCTAssertEqual(ChatAnswerOutcome.liveness(true, evidence: false), false)
-        XCTAssertEqual(ChatAnswerOutcome.liveness(nil, evidence: true), true)
-        XCTAssertNil(ChatAnswerOutcome.liveness(nil, evidence: nil))
+        // Круг 11: шапка после отказа — только это наблюдение. Обрыв посреди ответа не оставляет
+        // «отвечает» рядом с «Ollama запущена?», 404 не оставляет «не отвечает».
+        XCTAssertNil(ChatAnswerOutcome.headerAfterFailure(URLError(.networkConnectionLost)))
+        XCTAssertNil(ChatAnswerOutcome.headerAfterFailure(gateway))
+        XCTAssertNil(ChatAnswerOutcome.headerAfterFailure(nil))
+        XCTAssertEqual(ChatAnswerOutcome.headerAfterFailure(URLError(.cannotConnectToHost)), false)
+        XCTAssertEqual(ChatAnswerOutcome.headerAfterFailure(ChatStreamError(message: "model crashed")), true)
+        // Проба списка моделей: «отвечает» — только 200 и форма Ollama.
+        let tags = Data(#"{"models":[{"name":"qwen"}]}"#.utf8)
+        XCTAssertEqual(ChatAnswerOutcome.probeModels(status: 200, data: tags)?.count, 1)
+        XCTAssertNil(ChatAnswerOutcome.probeModels(status: 502, data: tags))
+        XCTAssertNil(ChatAnswerOutcome.probeModels(status: 200, data: Data("<html>".utf8)))
+        XCTAssertNil(ChatAnswerOutcome.probeModels(status: 200, data: Data(#"{"error":"x"}"#.utf8)))
+        XCTAssertNil(ChatAnswerOutcome.probeModels(status: nil, data: tags))
     }
 
     func testNoticeIsNotFedBackAsModelAnswer() {
