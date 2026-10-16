@@ -414,9 +414,11 @@ def _shown(raw, width: int) -> str:
     """Значение конфига для строки лога. Целое длиннее 4300 цифр (YAML пускает его
     шестнадцатеричным) Python 3.11+ в строку не переводит — тогда только тип (Opus по #809)."""
     try:
-        return repr(raw)[:width]
+        text = repr(raw)
     except ValueError:
         return f"<{type(raw).__name__}>"
+    # срез помечен: префикс огромного числа иначе читается как само значение (DS, Sonnet, круг 9)
+    return text[:width] + "…" if len(text) > width else text
 
 
 def _keep_days_ceiling(raw) -> float:

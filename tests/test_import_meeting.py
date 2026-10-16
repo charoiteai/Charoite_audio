@@ -776,22 +776,23 @@ def test_import_keep_days_says_which_value_it_did_not_take(capsys):
     long = "x" * 100
     assert im.import_keep_days({"audio": {"import_keep_days": long}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     out = capsys.readouterr().out
-    assert f"непонятное значение '{'x' * 59} — беру" in out
+    assert f"непонятное значение '{'x' * 59}… — беру" in out
     assert im.import_keep_days({"audio": {"import_keep_days": float("nan")}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное значение nan — беру" in capsys.readouterr().out
     # не целое, которое float() не берёт: OverflowError — тоже непонятное, не потолок
     assert im.import_keep_days({"audio": {"import_keep_days": Fraction(10 ** 400)}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное значение Fraction(1000" in capsys.readouterr().out
-    for raw, shown in ((-1, "-1"), (-10 ** 400, "-1" + "0" * 58)):
+    for raw, shown in ((-1, "-1"), (-10 ** 400, "-1" + "0" * 58 + "…")):
         with pytest.raises(SystemExit) as refused:
             im.import_keep_days({"audio": {"import_keep_days": raw}})
         assert refused.value.code == f"import_keep_days не может быть отрицательным: {shown}"
     assert im.import_keep_days({"audio": {"import_keep_days": 10 ** 400}}) == im.IMPORT_KEEP_DAYS_CEILING
-    assert f"import_keep_days: 1{'0' * 23} на потолке или выше" in capsys.readouterr().out
+    assert f"import_keep_days: 1{'0' * 23}… на потолке или выше" in capsys.readouterr().out
 
 
 def test_shown_cuts_the_value_and_names_the_unprintable():
-    assert im._shown("abcdef", 4) == "'abc"
+    assert im._shown("abcdef", 4) == "'abc…"
+    assert im._shown("ab", 4) == "'ab'", "ровно по ширине — целиком, без многоточия"
     assert im._shown([int("f" * 3600, 16)], 60) == "<list>"
 
 
