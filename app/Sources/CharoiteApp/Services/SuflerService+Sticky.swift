@@ -50,6 +50,16 @@ extension SuflerService {
     /// (Important GLM выходного круга: два слоя обрезались двумя строками).
     var stickyProblemCount: Int { orderedLayers.filter { !Self.stickyInfoTopics.contains($0.key) }.count }
 
+    /// Событие слоя-справки (срок хранения) — только хвост к живой строке: живую
+    /// строку оно не заменяет и не красит, иначе тот же текст шёл бы дважды и
+    /// красным (Haiku, круг 3 по #809). true — событие поглощено слоем.
+    func takeInfoLayer(_ obj: [String: Any], _ text: String) -> Bool {
+        guard obj["sticky"] as? Bool == true, let topic = obj["topic"] as? String,
+              Self.stickyInfoTopics.contains(topic) else { return false }
+        setSticky(topic, text)
+        return true
+    }
+
     enum StickyTopic {
         static let channelLoss = "channel_loss"      // тема демона по умолчанию (демон 0.82 без topic)
         static let capture = "capture"

@@ -644,8 +644,7 @@ def keep_days_refusal(raw) -> "stt_runtime.Status | None":
     if len(shown) > 60:
         shown = shown[:57] + "..."
     return stt_runtime.Status(
-        f"СРОК ХРАНЕНИЯ ЗАПИСЕЙ НЕ ПОНЯТ: audio.record_keep_days = {shown} — старые записи "
-        "не удаляются. Укажите число дней в config.yaml",
+        f"record_keep_days = {shown} не понят — старые записи не удаляются",
         sticky=True, error=True, topic=stt_runtime.TOPIC_RETENTION)
 
 
@@ -1327,9 +1326,12 @@ class AudioHub:
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
         try:
-            # Отказ срока — внутри try: сигнал о бессрочном хранении не смеет
-            # выключить запись встречи (DS, круг 2 по #809)
+            # Свой try: сигнал о бессрочном хранении не смеет ни выключить запись
+            # встречи (DS, круг 2), ни отменить уборку при верном сроке (Sonnet, круг 3)
             self._say(keep_days_refusal(self.record_keep_days))
+        except Exception as e:  # noqa: BLE001 — показ отказа не мешает записи
+            _safe_stderr(f"отказ срока хранения не показан: {e}")
+        try:
             held = self.prune_recordings(self.record_dir, self.record_keep_days,
                                          protect=self.protect_stamps)
             if held:

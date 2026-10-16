@@ -97,6 +97,8 @@ final class StickyStatusTests: XCTestCase {
         XCTAssertNil(s.stickyStatus, "справка не прячет живую строку")
         XCTAssertEqual(s.stickyInfo, text)
         XCTAssertEqual(s.stickyProblemCount, 0)
+        XCTAssertNotEqual(s.status, text, "справка не заменяет живую строку — текст не дважды")
+        XCTAssertFalse(s.statusIsError, "справка не красит живую строку")
         s.consumeForTest(#"{"type":"status","text":"\#(warning)","sticky":true,"topic":"channel_loss"}"#)
         XCTAssertEqual(s.stickyStatus, warning, "проблема канала — своим слоем, справка срока к ней не подмешивается")
         XCTAssertEqual(s.stickyInfo, text)

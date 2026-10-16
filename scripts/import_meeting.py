@@ -386,18 +386,25 @@ def import_keep_days(cfg: dict, override=None) -> float:
         _hint_keep_days_once(audio.get("record_keep_days"))
     try:
         days = float(raw)
-    except (TypeError, ValueError, OverflowError):
+    except OverflowError:
+        # -10**400 — отрицательное, как -1: отказ, а не умолчание
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw < 0:
+            sys.exit(f"import_keep_days не может быть отрицательным: {str(raw)[:20]}…")
+        print(f"import_keep_days: непонятное значение — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        return float(IMPORT_KEEP_DAYS_DEFAULT)
+    except (TypeError, ValueError):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    if isinstance(raw, bool):  # YAML off/on — не срок
+    # bool (YAML off/on), NaN и ±inf — непонятное, как на main. Отрицательное
+    # конечное — отказ до проверки секунд: иначе -1e308 (в секундах -inf) тихо
+    # стал бы умолчанием (Haiku, круг 2 по #809)
+    if isinstance(raw, bool) or math.isnan(days) or math.isinf(days):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)
-    # Отрицательное — отказ до проверки конечности: иначе -1e308 (в секундах
-    # -inf) тихо стал бы умолчанием, а не отказом (Haiku, круг 2 по #809)
     if days < 0:
         sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
-    # NaN и срок, который в секундах уже бесконечность (1e308 дней), в JSON
-    # сайдкара не пишутся — те же входы, что у record_keep_days
+    # Срок, который в секундах уже бесконечность (1e308 дней), в JSON сайдкара
+    # не пишется — те же входы, что у record_keep_days
     if not math.isfinite(days * 86400):
         print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
         return float(IMPORT_KEEP_DAYS_DEFAULT)

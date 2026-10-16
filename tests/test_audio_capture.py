@@ -464,23 +464,28 @@ def test_непонятый_срок_хранения_липкая_справк�
             sink.close()
 
 
-def test_сломанный_показ_срока_не_выключает_запись(tmp_path, monkeypatch):
-    """Сбой в построении отказа срока ловится тем же try, что уборка."""
+def test_сломанный_показ_срока_не_выключает_запись_и_уборку(tmp_path, monkeypatch, capsys):
+    """Сбой построения отказа срока — свой try: запись идёт, уборка при
+    верном сроке не отменяется (Sonnet, круг 3 по #809)."""
     def boom(_raw):
         raise RuntimeError("показ")
     monkeypatch.setattr(a, "keep_days_refusal", boom)
     hub = _hub()
     hub.record_dir = tmp_path
-    hub.record_keep_days = "off"
+    hub.record_keep_days = 30
     hub.stamp = "2026-07-15_1400"
     hub.protect_stamps = frozenset()
     hub.captures = [_QueueCapture("mic")]
-    said: list = []
-    hub.on_status = said.append
+    old = tmp_path / "2026-05-01_1200_mic.wav"
+    old.write_bytes(b"old")
+    then = time.time() - 60 * 86400
+    os.utime(old, (then, then))
+    hub.on_status = lambda _m: None
     hub._open_sinks()
     try:
         assert set(hub._sinks) == {"mic"}
-        assert any("чистка старых записей не удалась" in str(m) for m in said)
+        assert not old.exists(), "уборка при верном сроке прошла"
+        assert "отказ срока хранения не показан" in capsys.readouterr().err
     finally:
         for sink in hub._sinks.values():
             sink.close()

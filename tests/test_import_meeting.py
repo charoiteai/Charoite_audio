@@ -743,10 +743,12 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
     # Отрицательное — отказ и тогда, когда в секундах оно уже -inf (Haiku,
     # круг 2 по #809): проверка знака стоит до проверки конечности.
-    for raw in (-1e308, float("-inf"), "-1e999"):
+    for raw in (-1e308, -10 ** 400):
         with pytest.raises(SystemExit):
             im.import_keep_days({"audio": {"import_keep_days": raw}})
-    assert im.import_keep_days({"audio": {"import_keep_days": float("nan")}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    # ±inf и NaN — непонятное, как на main (не новый путь отказа уборки)
+    for raw in (float("nan"), float("-inf"), "-1e999", float("inf")):
+        assert im.import_keep_days({"audio": {"import_keep_days": raw}}) == im.IMPORT_KEEP_DAYS_DEFAULT, raw
 
 
 def _main_keeping_umask() -> None:
