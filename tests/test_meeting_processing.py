@@ -671,7 +671,11 @@ def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     store.track(live)
+    store.directory.mkdir(parents=True, exist_ok=True)   # «нет статуса», а не «нет каталога»
     assert store.repath(live, live) is None, "статуса нет — не заводим"
+    fresh = MeetingStatusStore(tmp_path)
+    assert fresh.repath(live, tmp_path / "нет.md") is None, (
+        "переименованного файла нет — писать нечего, отказа по ключу нет (выход 8, DS M1)")
     done = store.ready(live, None)
     raw = done.read_bytes()
     titled = live.with_name("2026-07-31_1415_План_релиза.md")
