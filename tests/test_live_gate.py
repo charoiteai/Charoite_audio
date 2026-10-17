@@ -2,7 +2,8 @@
 
 Факт 18.08: пересборка 18-часовой записи держала тяжёлую модель, подсказки
 живой встречи 45 минут падали с 503. Здесь проверяется сам признак (лок
-демона занят = встреча идёт) и правило ожидания — без сна и без демона.
+демона занят = встреча идёт) и правило ожидания — без сна; живой демон —
+только в тесте его отказа при консольной встрече (выход 12 №725, Haiku M1).
 """
 from __future__ import annotations
 
@@ -373,9 +374,10 @@ def test_console_meeting_without_its_mark_keeps_the_meeting_lock(tmp_path):
 
 
 def test_daemon_refusal_names_the_console_reason(tmp_path):
-    """Живой демон при консольной встрече отказывает строкой статуса с причиной,
-    которую приложение держит в `fatalReasons`; иначе три «восстанавливаю
-    запись» (выход 3 №725). Поведением, а не сканом `daemon.py`: скан то
+    """Живой демон при консольной встрече отказывает строкой статуса с причиной
+    `console_meeting` и выходит, не стартуя; что причина фатальна для
+    приложения, стережёт `AutostopTests.swift` (выход 12, DS C2). Иначе три
+    «восстанавливаю запись» (выход 3 №725). Поведением, а не сканом `daemon.py`: скан то
     пропускал обход, то падал на равном коде (выходы 8–11); захват лока одной
     функцией в `live_gate` — долг зоны живого контура (№572)."""
     import json
@@ -396,11 +398,9 @@ def test_daemon_refusal_names_the_console_reason(tmp_path):
         except json.JSONDecodeError:
             continue
     refusals = [e for e in events if e.get("type") == "status" and e.get("error") is True]
-    assert refusals and refusals[0].get("reason") == "console_meeting", run.stdout[:400]
-    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
-    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)
-    assert m and "console_meeting" in set(re.findall(r'"([^"]+)"', m.group(1))), (
-        "причина не в fatalReasons приложения (выход 11, DS C1)")
+    assert refusals and refusals[0].get("reason") == "console_meeting", (run.stdout[:400], run.stderr[-400:])
+    assert run.returncode == 0 and "Traceback" not in run.stderr, (
+        f"после отказа демон пошёл стартовать (выход 12, DS I3): {run.returncode}, {run.stderr[-400:]!r}")
 
 
 def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):
