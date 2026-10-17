@@ -210,6 +210,20 @@ def test_docs_guard_lets_a_release_only_diff_through_by_content():
     assert 'release_only' in source and '[ -z "$release_only" ]' in source
 
 
+def test_docs_guard_release_list_matches_release_please_extra_files():
+    """Каждый extra-file release-please — в списке релизных файлов стража:
+    файл вне кодовых путей страж не покрасит сам, расхождение ловит этот тест
+    (Haiku I1 по #813)."""
+    import json
+    cfg = json.loads((REPO / ".github" / "release-please-config.json").read_text(encoding="utf-8"))
+    line = next(l for l in (WF / "docs-guard.yml").read_text(encoding="utf-8").splitlines()
+                if l.strip().startswith('release_only="'))
+    for pkg in cfg["packages"].values():
+        for extra in pkg.get("extra-files", []):
+            path = extra if isinstance(extra, str) else extra["path"]
+            assert path.replace(".", r"\.") in line, path
+
+
 @pytest.mark.parametrize("files,labels,expected", [
     (["src/example.py"], "", 1),
     (["src/example.py", "docs/ru/README.md"], "", 1),
@@ -236,6 +250,7 @@ def test_docs_guard_lets_a_release_only_diff_through_by_content():
     (["src/example.py"], "do-not-skip-docs", 1),
     (["app-android/gradlew"], "", 0),
     (["CHANGELOG.md", ".github/.release-please-manifest.json", "app-ios/project.yml"], "", 0),
+    (["CHANGELOG.md", ".github/.release-please-manifest.json", "app-ios/project.yml", "pyproject.toml"], "", 0),
 ])
 def test_docs_guard_executes_its_actual_policy(tmp_path, files, labels, expected):
     """Run the workflow's shell in a disposable repo, not a copied regex."""

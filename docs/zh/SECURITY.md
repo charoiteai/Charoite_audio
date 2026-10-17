@@ -2,6 +2,8 @@
 
 *[English](../../SECURITY.md) · [Русский](../ru/SECURITY.md) · **中文***
 
+> **简略译本；以英文版为准。** · *Abridged translation; the English version is authoritative.*
+
 Charoite 完全运行在用户本机上，因此大多数经典 Web 攻击面并不适用 — 但音频
 处理、文件路径或本地 HTTP 调用里的缺陷仍然事关安全。
 

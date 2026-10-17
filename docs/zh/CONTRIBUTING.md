@@ -2,6 +2,8 @@
 
 *[English](../../CONTRIBUTING.md) · [Русский](../ru/CONTRIBUTING.md) · **中文***
 
+> **简略译本；以英文版为准。** · *Abridged translation; the English version is authoritative.*
+
 感谢你的关注！Charoite 是一款完全本地运行的会议助手 — 非常欢迎坚持本地优先的贡献。
 
 项目的日常维护方式——AI 维护者流水线、评审闸门以及各自的职责——见
