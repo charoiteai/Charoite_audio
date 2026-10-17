@@ -52,7 +52,7 @@ import model_lease
 
 import privacy
 from charoite_paths import resolve_root, secure_dir, trim_log
-from llm import DEFAULT_MLX_MODEL, is_busy_status
+from llm import DEFAULT_MLX_MODEL, chat_keep_alive, is_busy_status
 
 
 def _root() -> pathlib.Path:
@@ -172,6 +172,8 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
                     "prompt": "ok",
                     "stream": False,
                     "think": False,
+                    # проба — тоже последний писатель срока модели (№725)
+                    "keep_alive": chat_keep_alive(resolve_root(__file__)),
                     "options": {"num_predict": 1},
                 },
                 timeout=timeout,
@@ -204,8 +206,8 @@ def strict_json(base: str, model: str, *, timeout: float = 90) -> tuple[str, str
     from llm import STRICT_UNKNOWN, strict_json_probe_body, strict_json_verdict
     try:
         url = base + "/api/chat"
-        r = requests.post(url, json=strict_json_probe_body(model), timeout=timeout,
-                          **privacy.proxies_for(url))
+        body = strict_json_probe_body(model, chat_keep_alive(resolve_root(__file__)))
+        r = requests.post(url, json=body, timeout=timeout, **privacy.proxies_for(url))
     except requests.Timeout:
         return STRICT_UNKNOWN, "таймаут"
     except requests.RequestException as e:

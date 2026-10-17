@@ -22,7 +22,7 @@ from rich.panel import Panel  # noqa: E402
 import fact_check  # noqa: E402
 import threads  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
-from llm import LLM  # noqa: E402
+from llm import LIVE_KEEP_ALIVE, LLM  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import Transcript, is_noise  # noqa: E402
 
@@ -73,7 +73,7 @@ def main():
 
     console.print("[dim]Загружаю STT…[/dim]")
     stt = STT(cfg)
-    llm = LLM(cfg)
+    llm = LLM(cfg, keep_alive=LIVE_KEEP_ALIVE)   # v1 держит встречу без лока демона (№725)
     model = llm.resolve_model()
     # Один штамп на запись и стенограмму — как в демоне (daemon.py): иначе на
     # границе секунды файлы каналов и .md расходятся именами, и пересборка

@@ -1631,3 +1631,98 @@ def test_a_downed_model_fails_the_stream_at_once(модель_не_отвеча�
     with pytest.raises(requests.RequestException):
         list(LLM(cfg).stream("вопрос"))
     assert модель_не_отвечает == ["вопрос"]
+
+
+# --- срок удержания чат-модели (№725): по встрече в момент запроса ---------
+
+_ДЕРЖАТЬ_ЛОК = (
+    "import fcntl, sys, time\n"
+    "f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX)\n"
+    "print('ready', flush=True); time.sleep(60)\n"
+)
+
+
+@pytest.fixture
+def meeting_root(tmp_path, monkeypatch):
+    """Корень данных клиента — временный: лок демона в нём решает срок."""
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(llm_mod.LLM, "_root", lambda self: tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def hold_lock():
+    """Лок демона держит ДРУГОЙ процесс — как живой демон рядом с разбором."""
+    import subprocess
+    procs = []
+
+    def hold(root):
+        p = subprocess.Popen([sys.executable, "-c", _ДЕРЖАТЬ_ЛОК, str(root / "logs" / "daemon.lock")],
+                             stdout=subprocess.PIPE, text=True)
+        procs.append(p)
+        assert p.stdout.readline().strip() == "ready"
+
+    yield hold
+    for p in procs:
+        p.kill()
+        p.wait()
+
+
+def test_complete_without_meeting_releases_the_model_soon(monkeypatch, meeting_root):
+    """Разбор без встречи: ключ в теле есть и короткий — иначе срок наследуется от прошлых 90m."""
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == llm_mod.BACKGROUND_KEEP_ALIVE == "10m"
+
+
+def test_complete_during_meeting_keeps_the_model(monkeypatch, meeting_root, hold_lock):
+    """Фоновый вызов во время встречи не сбивает 90m демона (вход 2, DS C1)."""
+    hold_lock(meeting_root)
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == llm_mod.LIVE_KEEP_ALIVE == "90m"
+
+
+def test_daemon_sees_its_own_lock_as_a_meeting(monkeypatch, meeting_root):
+    """Демон держит лок сам и ничего не передаёт: свой эксклюзив — тоже встреча (вход 3, DS)."""
+    import fcntl
+    lock = (meeting_root / "logs" / "daemon.lock").open("w")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)   # как daemon.main()
+    try:
+        wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+        LLM(CFG).complete("в", model="м")
+        assert wire.sent["json"]["keep_alive"] == "90m"
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def test_explicit_keep_alive_wins_over_the_meeting_rule(monkeypatch, meeting_root):
+    """v1 (`main.py`) держит встречу без лока демона — его срок явный."""
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG, keep_alive="90m").complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == "90m"
+
+
+@pytest.mark.parametrize("call", ["stream", "stream_messages"])
+def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock, call):
+    """У стримов был литерал 90m: без встречи он держал 35b полтора часа после разбора."""
+    sent: list = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(self, url, payload, busy_wait, timeout=None):
+        sent.append(payload["keep_alive"])
+        raise _Stop
+
+    monkeypatch.setattr(llm_mod.LLM, "_open_stream", capture)
+    client = LLM(CFG)
+    go = (lambda: next(client.stream("в", system="р"))) if call == "stream" else \
+        (lambda: next(client.stream_messages([{"role": "user", "content": "в"}])))
+    with pytest.raises(_Stop):
+        go()
+    hold_lock(meeting_root)
+    with pytest.raises(_Stop):
+        go()
+    assert sent == ["10m", "90m"]

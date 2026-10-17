@@ -39,6 +39,7 @@ from collections.abc import Iterator
 import requests
 
 import charoite_paths
+import live_gate
 import charoite_graph.embed_door as embed_door   # без ребра на узел пакета (слой graph)
 import model_lease
 import once
@@ -363,14 +364,18 @@ def strict_json_sentence(model: str, base: str, reason: str) -> str:
             f"часть разбора и имён может не дойти")
 
 
-def strict_json_probe_body(model: str) -> dict:
-    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима."""
+def strict_json_probe_body(model: str, keep_alive: str) -> dict:
+    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима.
+
+    Срок — обязательный: проба тоже последний писатель срока модели (№725).
+    """
     return {
         "model": model,
         "messages": [{"role": "user", "content": "ok"}],
         "stream": False,
         "format": "json",
         "think": False,
+        "keep_alive": keep_alive,
         "options": {"num_predict": 1},
     }
 
@@ -520,6 +525,24 @@ MLX_MAX_TOKENS_DEFAULT = 4096
 #: таймаут короткий — семантика просто не успевала бы.
 EMBED_KEEP_ALIVE = "30m"
 
+#: Сколько Ollama держит чат-модель после запроса. Срок ставит последний
+#: запрос к модели, а запрос без ключа наследует прошлый срок (опыт 17.10,
+#: №725): 90 минут подсказок встречи продлевались каждым вызовом разбора, и
+#: 35b висела полтора часа после конца встречи. Поэтому ключ — в каждом теле.
+LIVE_KEEP_ALIVE = "90m"
+BACKGROUND_KEEP_ALIVE = "10m"   # не 0: ночной цикл гонит встречи подряд
+
+
+def chat_keep_alive(root: pathlib.Path) -> str:
+    """Срок удержания чат-модели — по встрече в момент запроса, а не по роли процесса.
+
+    Фоновый вызов, пришедший во время встречи, поставил бы короткий срок
+    поверх 90 минут демона, и пауза речи длиннее срока выгрузила бы модель
+    посреди встречи (№725, вход 2, DS C1). Демон держит свой лок сам и видит
+    себя живым (`daemon_alive` — flock второго описателя). Проверка — 27 мкс.
+    """
+    return LIVE_KEEP_ALIVE if live_gate.daemon_alive(root) else BACKGROUND_KEEP_ALIVE
+
 
 def _requests_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     """Транспорт двери векторов на `requests`: `(код, тело)`.
@@ -565,8 +588,11 @@ def embedder(cfg: dict, *, model: str | None = None,
 
 
 class LLM:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, *, keep_alive: str | None = None):
         l = cfg["llm"]
+        # Срок удержания чат-модели: явный — только у процесса без лока демона,
+        # который всё же держит встречу (v1 `main.py`); иначе — по встрече.
+        self._keep_alive = keep_alive
         self._cfg = cfg          # для оживления вставшей модели в complete()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
@@ -761,7 +787,7 @@ class LLM:
             "messages": messages,
             "stream": True,
             "think": think,
-            "keep_alive": "90m",  # держать модель в памяти всю встречу
+            "keep_alive": self._chat_keep_alive(),
             "options": options,
         }
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
@@ -863,6 +889,10 @@ class LLM:
     # Мимо швов к модели ходит только дверь векторов embed_door (0,2 с, убить
     # не жалко, аренды не берёт) и проба
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
+    def _chat_keep_alive(self) -> str:
+        """Срок в тело Ollama-чата: явный из конструктора или по встрече сейчас."""
+        return self._keep_alive or chat_keep_alive(self._root())
+
     def _root(self) -> pathlib.Path:
         """Корень данных — на вызове: аренду пишет этот процесс, а читает её
         сторож здоровья по ТЕКУЩЕМУ корню (`llm_health.busy_with_ours`).
@@ -1030,7 +1060,7 @@ class LLM:
         if num_predict:
             options["num_predict"] = num_predict
         payload = {"model": self.resolve_model(), "messages": messages,
-                   "stream": True, "think": False, "keep_alive": "90m",
+                   "stream": True, "think": False, "keep_alive": self._chat_keep_alive(),
                    "options": options}
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
                                timeout=timeout) as r:
@@ -1131,7 +1161,8 @@ class LLM:
         # под облачным ключом — повтор через минуту взял бы её вместо облака
         self._fell_back_local = True
         local = LLM({**self._cfg,
-                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                     keep_alive=self._keep_alive)
         yield from local.stream_messages(messages, num_predict=num_predict,
                                          temperature=temperature,
                                          busy_wait=busy_wait)
@@ -1298,7 +1329,8 @@ class LLM:
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
                 local = LLM({**self._cfg,
-                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                             keep_alive=self._keep_alive)
                 # model НЕ передаём: у облака имя своё (cloud_model), и
                 # локальный движок с ним получил бы 404 — пусть берёт своё
                 # из конфига (находка Qwen 3.8 на бенче головы 26.08).
@@ -1333,6 +1365,7 @@ class LLM:
             "model": sent,
             "messages": messages,
             "stream": False,
+            "keep_alive": self._chat_keep_alive(),
             "options": options,
         }
         if think is not None:

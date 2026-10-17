@@ -119,7 +119,11 @@ swap. A realistic estimate of the win is 20–30%. Quantisation differs too
 
 **What it costs.** Cold start doubles: 21 s against 9. After a long idle the
 first prompt on a meeting arrives later; afterwards the model stays resident
-via `keep_alive`.
+via `keep_alive`: 90 minutes after the last request while a meeting is being
+recorded, 10 minutes otherwise (background processing, the night run), so
+the memory is freed soon after the meeting is processed. Every chat request
+sends the term explicitly: Ollama keeps the term of the previous request when
+the key is missing.
 
 **Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and
 `sufler.think_model` (the Full profile writes the MLX tag into both).
