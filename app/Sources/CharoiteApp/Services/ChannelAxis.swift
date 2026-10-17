@@ -47,7 +47,6 @@ struct ChannelAxis {
     enum Plan: Equatable {
         case write                    // буфер встаёт как есть
         case fill(zeros: Int)         // сначала столько нулей
-        case trim(frames: Int)        // файл пуст, буфер раньше эпохи: срезать голову
         case broke(gapSeconds: Double)  // разрыв: отсчёт заново
     }
 
@@ -72,11 +71,10 @@ struct ChannelAxis {
         let want = a.frames + Int(((host - a.host) * Double(rate)).rounded())
         let gap = want - fileFrames
         let gapSeconds = Double(gap) / Double(rate)
-        // Пустой файл: всё, что раньше эпохи сессии, лежало бы до начала записи —
-        // срезается без порога, иначе дрожание под порогом осталось бы сдвигом.
-        if fileFrames == 0 && gap < 0 { return .trim(frames: -gap) }
         if gapSeconds < -Self.gapThreshold {
-            // Записанное не отмотать: отсчёт заново от этого буфера.
+            // Буфер раньше своего места в файле (поздний канал на старте, чужие
+            // часы): записанное не отмотать, а резать звук — потерять его
+            // (выход 2 №655). Отсчёт заново от этого буфера, со счётчиком.
             anchor = (host, fileFrames)
             rebases += 1
             return .write
@@ -105,6 +103,13 @@ struct ChannelAxis {
     /// якорь по времени — верным: место несостоявшегося буфера зальёт следующая дыра.
     mutating func didWrite(_ frames: Int) { fileFrames += frames }
 
+    /// Запись не удалась: счёт кадров — по позиции файла, а не по памяти оси
+    /// (откат мог не пройти). Позиции нет — ось выключается.
+    mutating func resync(fileFrames frames: Int?) {
+        guard let frames else { return disable() }
+        fileFrames = frames
+    }
+
     /// Пришёл буфер другой частоты.
     mutating func disable() { disabled = true }
 }
@@ -119,7 +124,10 @@ extension FileHandle {
             try body(self)
             return true
         } catch {
-            if let at { try? truncate(atOffset: at) }
+            if let at {
+                try? truncate(atOffset: at)
+                try? seek(toOffset: at)
+            }
             return false
         }
     }

@@ -807,8 +807,10 @@ final class SystemAudioCapture: NSObject {
         static func hostSeconds(of sb: CMSampleBuffer, clock: CMClock?) -> Double? {
             let pts = sb.presentationTimeStamp
             guard pts.isValid, pts.isNumeric else { return nil }
-            let hostClock = CMClockGetHostTimeClock()
-            let host = clock.map { CMSyncConvertTime(pts, from: $0, to: hostClock) } ?? pts
+            // Без часов потока база PTS неизвестна: сырой PTS рядом с часами
+            // хоста дал бы дыру в часы (выход 2 №655) — буфер идёт без оси.
+            guard let clock else { return nil }
+            let host = CMSyncConvertTime(pts, from: clock, to: CMClockGetHostTimeClock())
             guard host.isValid, host.isNumeric else { return nil }
             let s = CMTimeGetSeconds(host)
             return s.isFinite ? s : nil
@@ -826,19 +828,11 @@ final class SystemAudioCapture: NSObject {
             var ledger = st.ledger[channel] ?? Ledger()
             var lines: [String] = []
             if !axis.disabled && rate != axis.rate {
-                // Дыра перезапуска, после которого частота сменилась, — нулями
-                // старой частоты, пока ось ещё считает в ней (выход 1, Haiku I3).
-                if let host, let epoch = st.epoch,
-                   case .fill(let zeros) = axis.plan(host: host, epoch: epoch),
-                   writeZeros(zeros, to: handle) {
-                    axis.didFill(zeros)
-                }
                 axis.disable()
                 lines.append("\(Self.axisLogMark): \(channel.rawValue) — частота \(rate) Гц вместо "
                              + "\(axis.rate), ось выключена до конца записи")
             }
             var ok = true
-            var pcm = pcm
             if let host {
                 if st.epoch == nil { st.epoch = host }
                 switch axis.plan(host: host, epoch: st.epoch ?? host) {
@@ -860,8 +854,6 @@ final class SystemAudioCapture: NSObject {
                             ledger.zerosSinceLog = 0
                         }
                     }
-                case .trim(let frames):
-                    pcm.removeFirst(min(frames, pcm.count))
                 case .broke(let gap):
                     lines.append(String(format: "%@: %@ — разрыв %.1f с больше потолка %.0f с, "
                                         + "отсчёт заново", Self.axisLogMark, channel.rawValue,
@@ -870,11 +862,12 @@ final class SystemAudioCapture: NSObject {
             } else {
                 ledger.untimed += 1
             }
-            if ok && !pcm.isEmpty { ok = write(pcm, to: handle) }
+            if ok { ok = write(pcm, to: handle) }
             if ok {
                 axis.didWrite(pcm.count)
             } else {
                 ledger.writeFailures += 1
+                axis.resync(fileFrames: (try? handle?.offsetInFile).flatMap { $0.map { Int($0) / 2 } })
             }
             st.axes[channel] = axis
             st.ledger[channel] = ledger

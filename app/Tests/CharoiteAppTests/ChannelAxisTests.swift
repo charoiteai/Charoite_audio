@@ -92,10 +92,11 @@ final class ChannelAxisTests: XCTestCase {
                        .fill(zeros: rate))
     }
 
-    func testFailedWriteLeavesItsSlotToTheNextGap() {
-        // Запись откатывается целиком, счёт кадров равен файлу — якорь по
-        // времени остаётся, и место несостоявшихся буферов заливает следующая
-        // дыра. Сброс якоря сдвигал бы канал на длину провала (выход 1, Haiku I2).
+    func testPlannedButUnwrittenBufferLeavesItsSlotToTheNextGap() {
+        // Арифметика оси: буфер, которому дали `.write`, но не записали
+        // (`didWrite` не позван), — его место заливает следующая дыра. Сброс
+        // якоря сдвигал бы канал на длину провала (выход 1, Haiku I2). Что
+        // файл при сбое откатывается целиком — `testAppendAllRollsBackPartialWrite`.
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 50, epoch: 100)
         XCTAssertEqual(axis.plan(host: 101, epoch: 100), .write)    // этот буфер не лёг
@@ -148,19 +149,38 @@ final class ChannelAxisTests: XCTestCase {
         XCTAssertEqual(axis.gaps, 0)
     }
 
-    func testChannelEarlierThanEpochIsTrimmedNotShifted() {
+    func testChannelEarlierThanEpochRebasesAndKeepsItsSound() {
         // Первый буфер второго канала несёт время раньше эпохи сессии на 0,15 с:
-        // без подрезки канал отстаёт на них до конца, а дыры недоливаются.
+        // отсчёт заново от него, звук не режется, дальнейшие дыры — целиком.
         var axis = ChannelAxis(rate: rate)
         var t = 99.85
         for _ in 0..<50 {
-            switch axis.plan(host: t, epoch: 100) {
-            case .trim(let k): axis.didWrite(max(0, buf - k))
-            case .fill(let z): axis.didFill(z); axis.didWrite(buf)
-            default: axis.didWrite(buf)
-            }
+            if case .fill(let z) = axis.plan(host: t, epoch: 100) { axis.didFill(z) }
+            axis.didWrite(buf)
             t += Double(buf) / Double(rate)
         }
+        XCTAssertEqual(axis.rebases, 1)
+        XCTAssertEqual(axis.fileFrames, 50 * buf)
         XCTAssertEqual(axis.plan(host: t + 1, epoch: 100), .fill(zeros: rate))
+    }
+
+    func testChannelMinutesBeforeEpochIsNotEmptied() {
+        // Время канала на минуту раньше эпохи (чужие часы): каждый буфер — в
+        // файл, переякорение одно (выход 2 №655: срез обнулял весь канал).
+        var axis = ChannelAxis(rate: rate)
+        feed(&axis, from: 40, count: 200, epoch: 100)
+        XCTAssertEqual(axis.fileFrames, 200 * buf)
+        XCTAssertEqual(axis.rebases, 1)
+    }
+
+    func testResyncTakesFileFramesOrDisables() {
+        var axis = ChannelAxis(rate: rate)
+        feed(&axis, from: 100, count: 10, epoch: 100)
+        axis.resync(fileFrames: 7 * buf)            // откат не прошёл до конца — счёт по файлу
+        XCTAssertEqual(axis.fileFrames, 7 * buf)
+        XCTAssertFalse(axis.disabled)
+        axis.resync(fileFrames: nil)                // позиции нет — оси нет
+        XCTAssertTrue(axis.disabled)
+        XCTAssertEqual(axis.plan(host: 200, epoch: 100), .write)
     }
 }
