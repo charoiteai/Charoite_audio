@@ -305,3 +305,34 @@ def test_console_entry_takes_the_meeting_lock_before_loading_models():
     body = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
     main_body = body[body.index("def main():"):]
     assert main_body.index("live_gate.hold_meeting(") < main_body.index("STT(cfg)")
+
+
+def test_console_meeting_lock_without_rights_is_named_not_a_traceback(tmp_path):
+    """На месте `logs/` файл: mkdir падает OSError — исход «лок не взят», а не трейсбек v1 (выход 3 №725)."""
+    (tmp_path / "logs").write_text("не каталог")
+    assert live_gate.hold_meeting(tmp_path, sleep=lambda s: None) == (None, live_gate.file_locks.NO_FLOCK)
+
+
+def test_refused_daemon_tells_a_console_holder_from_another_daemon(tmp_path):
+    """Метка держателя: демон, которому отказано, видит консольный v1 через свой описатель
+    «a+», а после своего захвата метки нет (выход 3 №725, DS I3)."""
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        with live_gate.lock_path(tmp_path).open("a+") as probe:
+            assert live_gate.held_by_console(probe) is True
+    finally:
+        f.close()
+    with live_gate.lock_path(tmp_path).open("a+") as own:
+        fcntl.flock(own, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        own.truncate(0)              # как daemon.main() после захвата
+        assert live_gate.held_by_console(own) is False
+
+
+def test_daemon_refusal_names_the_console_reason():
+    """Отказ демона при консольной записи — `emit_error` с причиной, которую приложение
+    знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725)."""
+    body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert 'live_gate.held_by_console(lockf)' in body and 'reason="console_meeting"' in body
+    assert 'open(_root() / "logs" / "daemon.lock", "w")' not in body, "«w» стирал бы метку держателя"
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
+    assert '"console_meeting"' in swift

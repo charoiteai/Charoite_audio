@@ -78,12 +78,12 @@ def main():
         console.print("[red]Встреча уже записывается (демон или другое окно v1) — второй запуск отменён[/red]")
         return
     if meeting_lock is None:
-        console.print("[yellow]Лок встречи не взят (том без flock): фоновые задачи запись не увидят[/yellow]")
+        console.print("[yellow]Лок встречи не взят (нет flock или прав на logs/): фоновые задачи запись не увидят[/yellow]")
     console.print(Panel.fit("[bold]Суфлёр v1[/bold] — локально, ничего не покидает машину", style="cyan"))
 
     console.print("[dim]Загружаю STT…[/dim]")
     stt = STT(cfg)
-    llm = LLM(cfg, keep_alive=LIVE_KEEP_ALIVE)   # v1 держит встречу без лока демона (№725)
+    llm = LLM(cfg, keep_alive=LIVE_KEEP_ALIVE)   # свои запросы v1 — срок встречи (№725)
     model = llm.resolve_model()
     # Один штамп на запись и стенограмму — как в демоне (daemon.py): иначе на
     # границе секунды файлы каналов и .md расходятся именами, и пересборка

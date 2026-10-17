@@ -74,6 +74,7 @@ import brain  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import hint_guard  # noqa: E402
+import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
@@ -753,14 +754,23 @@ def main():
     harden_existing(_root())
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     secure_dir(_root() / "logs")
-    lockf = open(_root() / "logs" / "daemon.lock", "w")
+    # «a+», не «w»: усечение под чужим локом стирало бы метку держателя
+    # (консольный v1 пишет её в тот же файл, выход 3 №725, DS M5).
+    lockf = open(live_gate.lock_path(_root()), "a+")
     # Ретраи против микросекундных проб фона — в хелпере. busy=(OSError,) —
     # демон не различает «занято» и «flock не поддержан»: вторым не стартует
     # в обоих случаях (семантика прежнего цикла сохранена, D-П6).
     if not file_locks.acquire_exclusive(lockf, attempts=5, pause=0.1,
                                         busy=(OSError,)):
+        if live_gate.held_by_console(lockf):
+            # Консольная запись повтором не уходит: причина значением, иначе
+            # приложение трижды «восстанавливает» запись (выход 3 №725, DS I3).
+            emit_error("⚠️ Идёт консольная запись (src/main.py) — остановите её, затем запустите снова",
+                       reason="console_meeting")
+            return
         emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
         return
+    lockf.truncate(0)     # метка прошлого держателя — уже не про него
     cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
     # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
     # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по

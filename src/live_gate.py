@@ -32,6 +32,9 @@ from typing import Callable
 
 LOCK_NAME = "daemon.lock"
 
+#: Метка держателя лока встречи — консольный v1 (`src/main.py`).
+CONSOLE_HOLDER = "console"
+
 #: До какого момента (unix-время) ночному прогону разрешено работать.
 #: Выставляет `scripts/nightly.sh`; пусто — потолка нет.
 NIGHTLY_UNTIL_ENV = "CHAROITE_NIGHTLY_UNTIL"
@@ -112,13 +115,32 @@ def hold_meeting(root: pathlib.Path, *, sleep=time.sleep):
     том без flock: писать можно, но фон встречи не увидит.
     """
     path = lock_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    f = path.open("a")      # не «w»: усечение файла под чужим локом ни к чему
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = path.open("a")      # не «w»: усечение файла под чужим локом ни к чему
+    except OSError:
+        # Нет прав, том только для чтения, на месте файла каталог: лок здесь
+        # не берётся — тот же исход, что у тома без flock (выход 3 №725).
+        return None, file_locks.NO_FLOCK
     outcome = file_locks.acquire_outcome(f, busy=(BlockingIOError,), sleep=sleep)
     if outcome != file_locks.TAKEN:
         f.close()
         return None, outcome
+    # Под своим локом метка держателя: демон, которому отказано, называет
+    # причину значением, а не «другим окном» (выход 3 №725, DS I3).
+    f.truncate(0)
+    f.write(f"{CONSOLE_HOLDER} {os.getpid()}\n")
+    f.flush()
     return f, outcome
+
+
+def held_by_console(f) -> bool:
+    """Держит ли лок встречи консольный v1: метка в файле, прочитанная через уже открытый описатель."""
+    try:
+        f.seek(0)
+        return f.read().startswith(CONSOLE_HOLDER)
+    except (OSError, ValueError):
+        return False
 
 
 #: Процесс демона в таблице процессов: интерпретатор python, его флаги, затем
