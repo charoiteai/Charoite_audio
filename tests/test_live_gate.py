@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ast
 import fcntl
 import pathlib
 import re
@@ -376,9 +377,16 @@ def test_daemon_refusal_names_the_console_reason():
     знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725)."""
     body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
     assert "text, reason = live_gate.refusal(_root())" in body
-    assert '"daemon.lock"' not in body, "литерал имени лока — только у владельца (выход 8, Sonnet M2)"
-    assert re.search(r"(?m)^[^#\n]*open\(\s*live_gate\.lock_path\(_root\(\)\)\s*,", body), (
-        "имя лока — у владельца (выход 5 №725, DS I1); вызов в коде, не в комментарии (выход 8, DS M1)")
+    assert "daemon.lock" not in body, "имя лока — только у владельца (выход 8, Sonnet M2; выход 9, Sonnet M)"
+
+    def lock_open(n):
+        if not (isinstance(n, ast.Call) and getattr(n.func, "id", None) == "open" and n.args):
+            return False
+        a = n.args[0]
+        return (isinstance(a, ast.Call) and getattr(a.func, "attr", None) == "lock_path"
+                and getattr(a.func.value, "id", None) == "live_gate")
+    assert any(lock_open(n) for n in ast.walk(ast.parse(body))), (
+        "имя лока — у владельца (выход 5 №725, DS I1); вызов в коде, не в строке (выход 9, DS C1)")
     assert "emit_error(text, reason=reason)" in body
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
     assert '"console_meeting"' in swift

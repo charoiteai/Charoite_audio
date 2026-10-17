@@ -197,6 +197,25 @@ def test_broken_pipe_stops_the_daemon_instead_of_killing_one_thread():
     assert stop.is_set(), "поток умер бы молча, а главный цикл продолжал слать hb"
 
 
+class _Clock:
+    """Часы `wait_recording`: время идёт только во сне, срок не зависит от
+    вытеснения процесса (выход 9 №725, DS I1); прочее — из настоящего `time`."""
+
+    def __init__(self):
+        self.t, self.slept = 0.0, []
+
+    def time(self):
+        return self.t
+
+    def sleep(self, s):
+        self.slept.append(s)
+        self.t += s
+
+    def __getattr__(self, name):
+        import time as real
+        return getattr(real, name)
+
+
 def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     """Консоль v1 финализирует тем же `AudioHub` и тем же `.wav.part`: пока она держит
     лок встречи, пересборка не удаляет `.part` и не конвертирует `.pcm` — ни в цикле,
@@ -208,8 +227,8 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     root = rec_dir.parent
     monkeypatch.setattr(rt, "_root", lambda: root)
     monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
-    slept = []
-    monkeypatch.setattr(rt.time, "sleep", slept.append)
+    clock = _Clock()
+    monkeypatch.setattr(rt, "time", clock)
     (root / "logs").mkdir()
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
@@ -226,7 +245,7 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     assert part.exists(), "убрали .part из-под живой консоли"
     assert pcm.exists(), "исходник живой консоли удалён"
     assert not (rec_dir / "s_mic.wav").exists()
-    assert slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
+    assert clock.slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
 
 
 def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, monkeypatch):
@@ -240,19 +259,17 @@ def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, m
     root = rec_dir.parent
     monkeypatch.setattr(rt, "_root", lambda: root)
     monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
-    slept, converted_after = [], []
-    monkeypatch.setattr(rt.time, "sleep", slept.append)
-    monkeypatch.setattr(rt, "pcm_to_wav", lambda pcm, sr: converted_after.append(
-        (len(slept), rt.time.time() >= deadline[0])) or pcm.with_suffix(".wav"))
+    clock, converted_at = _Clock(), []
+    monkeypatch.setattr(rt, "time", clock)
+    monkeypatch.setattr(rt, "pcm_to_wav", lambda pcm, sr: converted_at.append(clock.t) or pcm.with_suffix(".wav"))
     (root / "logs").mkdir()
     (rec_dir / "s_mic.pcm").write_bytes(b"\0" * 4096)
     console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
     try:
         assert outcome == live_gate.file_locks.TAKEN
-        deadline = [rt.time.time() + rt.WAIT_WAV_S]
         rt.wait_recording(rec_dir, "s", "mic", 16000)
     finally:
         console.close()
 
-    assert len(converted_after) == 1, "по сроку .pcm конвертируется один раз"
-    assert converted_after[0][0] > 0 and converted_after[0][1], "конвертация в цикле при живом локе встречи"
+    assert len(converted_at) == 1, "по сроку .pcm конвертируется один раз"
+    assert clock.slept and converted_at[0] >= rt.WAIT_WAV_S, "конвертация в цикле при живом локе встречи"
