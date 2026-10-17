@@ -1755,9 +1755,9 @@ def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock
 class _HoldWire(_Requests):
     """Сервер для тика срока: `/api/ps` отвечает списком резидентных, POST пишется."""
 
-    def __init__(self, resident, fail_gets=()):
+    def __init__(self, resident, fail_gets=(), fail_posts=()):
         super().__init__(_Resp({}))
-        self.resident, self.fail_gets = resident, set(fail_gets)
+        self.resident, self.fail_gets, self.fail_posts = resident, set(fail_gets), set(fail_posts)
         self.gets, self.posts = [], []
 
     def get(self, url, timeout=None, **kw):
@@ -1768,7 +1768,7 @@ class _HoldWire(_Requests):
 
     def post(self, url, json=None, timeout=None, **kw):
         self.posts.append((url, json))
-        return _Resp({})
+        return _Resp({}, status=500) if json["model"] in self.fail_posts else _Resp({})
 
 
 class _Ticks(threading.Event):
@@ -1783,9 +1783,9 @@ class _Ticks(threading.Event):
         return self.n < 0
 
 
-def _held(name, keep_alive):
+def _held(name, keep_alive, ctx=8192):
     return (LLM(CFG).base + "/api/generate",
-            {"model": name, "keep_alive": keep_alive, "options": {"num_ctx": 8192}})
+            {"model": name, "keep_alive": keep_alive, "options": {"num_ctx": ctx}})
 
 
 def test_meeting_owner_reasserts_resident_meeting_models(monkeypatch):
@@ -1802,12 +1802,46 @@ def test_meeting_owner_reasserts_resident_meeting_models(monkeypatch):
 
 
 def test_hold_never_loads_or_reloads_a_model(monkeypatch):
-    """Пустой запрос грузит модель, а без своего контекста перезагружает (опыт 17.10:
-    8192 → 131072): нерезидентной и резидентной с другим контекстом тик не шлёт ничего."""
-    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 131072}])
+    """Пустой запрос грузит модель, а с чужим контекстом перезагружает (опыт 17.10:
+    8192 → 131072): нерезидентной и резидентной без context_length тик не шлёт ничего,
+    модели с контекстом фона (16384) шлёт её же контекст (opusfix2, Sonnet I2, Haiku C2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest"}])
     _подменить_requests(monkeypatch, wire)
     assert LLM(CFG).hold_meeting_model(_Ticks(2), every=0) == 0
-    assert wire.posts == [] and len(wire.gets) == 2
+    assert wire.posts == [] and len(wire.gets) == 3
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 16384}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    assert wire.posts == [_held("тест-модель:latest", "90m", 16384),
+                          _held("тест-модель:latest", "10m", 16384)]
+
+
+def test_hold_keeps_the_think_model(monkeypatch):
+    """Тезисы идут на sufler.think_model: отдельный тег — тоже модель встречи (opusfix2, Sonnet I1)."""
+    wire = _HoldWire([{"name": "тест-тезисы:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": "тест-тезисы"}}
+    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 1
+    assert wire.posts[0] == _held("тест-тезисы:latest", "90m")
+
+
+def test_hold_hands_back_even_when_no_tick_landed(monkeypatch):
+    """90 минут пишет и сам чат встречи: короткая встреча без тика сдаёт срок тоже (opusfix2, DS I5)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(0), every=0) == 0
+    assert wire.posts == [_held("тест-модель:latest", "10m")]
+
+
+def test_hold_one_refusing_model_does_not_drop_the_others(monkeypatch, capsys):
+    """Отказ по одной модели — строка в stderr, остальные тот же тик держит (opusfix2, DS I2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 8192}],
+                     fail_posts={"тест-модель:latest"})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    assert "тест-модель:latest: HTTP 500" in capsys.readouterr().err
+    assert _held("тест-мелкая:latest", "90m") in wire.posts
 
 
 def test_hold_survives_a_failing_tick_and_says_so_once(monkeypatch, capsys):

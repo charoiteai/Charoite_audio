@@ -914,8 +914,10 @@ class LLM:
         дольше 10 минут выгружала бы модель посреди встречи (№725, финальный
         Opus I1, I2, M1). Владелец встречи (демон, консоль) переписывает срок
         сам, кто бы ни писал его между тиками (`_hold_tick`). На `stop` — один
-        раз фоновый срок тем же моделям: последний тик держал бы их 90 минут
-        после встречи (круг opusfix, DS C2). Облачный движок держит свой
+        раз фоновый срок тем же моделям, даже если ни один тик не успел: 90
+        минут пишет и сам чат встречи (круг opusfix, DS C2; opusfix2, DS I5).
+        Поток не ждут: сдачу, не успевшую до выхода процесса, перепишет
+        следующий запрос, как до №725 (долг №572). Облачный движок держит свой
         локальный запас: туда встреча уходит, когда шлюз недоступен (DS I1).
         Сбой тика — одна строка в stderr на причину, поток живёт дальше
         (Sonnet M2, DS M2). Возвращает число принятых утверждений.
@@ -931,51 +933,59 @@ class LLM:
         held, failed = 0, None
         while not stop.wait(every):
             try:
-                held += target._hold_tick(LIVE_KEEP_ALIVE)
-                failed = None
+                ok, errors = target._hold_tick(LIVE_KEEP_ALIVE)
+                held += ok
+                reason = "; ".join(errors) or None
             except Exception as e:  # noqa: BLE001 — тик не смеет гасить поток встречи
                 reason = f"{type(e).__name__}: {e}"
-                if reason != failed:
-                    print(f"llm: срок модели встречи не утверждён ({reason})",
-                          file=sys.stderr, flush=True)
-                failed = reason
-        if held:
-            try:
-                target._hold_tick(BACKGROUND_KEEP_ALIVE)
-            except Exception:  # noqa: BLE001 — встреча кончилась, срок допишет фон
-                pass
+            if reason and reason != failed:
+                print(f"llm: срок модели встречи не утверждён ({reason})",
+                      file=sys.stderr, flush=True)
+            failed = reason
+        try:
+            target._hold_tick(BACKGROUND_KEEP_ALIVE)
+        except Exception:  # noqa: BLE001 — встреча кончилась, срок допишет фон
+            pass
         return held
 
-    def _hold_tick(self, keep_alive: str) -> int:
+    def _hold_tick(self, keep_alive: str) -> tuple[int, list[str]]:
         """Один тик срока — моделям встречи, которые сервер уже держит в памяти.
 
-        Пустой `/api/generate` модель грузит, если её нет, а без `num_ctx` в
-        теле перезагружает с контекстом из Modelfile (опыт 17.10, phi4-mini:
+        Пустой `/api/generate` модель грузит, если её нет, а с другим
+        `num_ctx` (или без него) перезагружает (опыт 17.10, phi4-mini:
         контекст 8192 → 131072; круг opusfix, Sonnet C1). Поэтому тик спрашивает
         `/api/ps` и шлёт срок только резидентным моделям встречи (`model`,
-        `fallback`, `small` — лестница `resolve_model` и тихие подсказки; DS C1)
-        с тем же `num_ctx`, что у чата; модель с другим контекстом не трогает —
-        её перезагрузит сам вызов встречи, как без тика. С совпавшим
-        контекстом запрос — 7 мс, без загрузки. Не 200 — RuntimeError.
+        `fallback`, `small` — лестница `resolve_model` и тихие подсказки, DS C1;
+        `sufler.think_model` — тезисы, opusfix2 Sonnet I1) с тем контекстом,
+        с которым сервер их держит: модель, загруженную фоном с 16384, тик
+        держит, не перезагружая (opusfix2, Sonnet I2). Без `context_length` в
+        ответе модель не трогает. С совпавшим контекстом запрос — 7 мс, без
+        загрузки; между `/api/ps` и запросом остаётся окно в миллисекунды,
+        когда модель может уйти (opusfix2, Haiku C1 — принято, Minor).
+        `/api/ps` не 200 — RuntimeError; отказ по одной модели остальным тик
+        не срывает (DS I2). Возвращает принятые и строки отказов.
         """
         ps_url = f"{self.base}/api/ps"
         r = requests.get(ps_url, timeout=10, **privacy.proxies_for(ps_url))
         if r.status_code != 200:
             raise RuntimeError(f"/api/ps: HTTP {r.status_code}")
-        mine = {m if ":" in m else f"{m}:latest" for m in (self.model, self.fallback, self.small)}
-        names = [m.get("name") for m in r.json().get("models") or []
-                 if m.get("name") in mine and m.get("context_length") in (None, self.num_ctx)]
+        think = (self._cfg.get("sufler") or {}).get("think_model")
+        mine = {m if ":" in m else f"{m}:latest"
+                for m in (self.model, self.fallback, self.small, think) if m}
+        resident = [(m.get("name"), m.get("context_length")) for m in r.json().get("models") or []
+                    if m.get("name") in mine and isinstance(m.get("context_length"), int)]
         url = f"{self.base}/api/generate"
-        held = 0
-        for name in names:
+        held, errors = 0, []
+        for name, ctx in resident:
             g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
-                                         "options": {"num_ctx": self.num_ctx}},
+                                         "options": {"num_ctx": ctx}},
                               timeout=30, **privacy.proxies_for(url))
             g.close()
-            if g.status_code != 200:
-                raise RuntimeError(f"{name}: HTTP {g.status_code}")
-            held += 1
-        return held
+            if g.status_code == 200:
+                held += 1
+            else:
+                errors.append(f"{name}: HTTP {g.status_code}")
+        return held, errors
 
     def _chat_keep_alive(self) -> str:
         """Срок в тело Ollama-чата: явный из конструктора или по встрече сейчас."""
