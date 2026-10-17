@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import pathlib
 import re
 import shutil
@@ -371,17 +372,35 @@ def test_console_meeting_without_its_mark_keeps_the_meeting_lock(tmp_path):
         f.close()
 
 
-def test_daemon_refusal_names_the_console_reason():
-    """Демон отказывает текстом и причиной из `live_gate.refusal`, причину приложение
-    знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725).
-    Владение именем лока исходником не проверяем: три круга подряд скан
-    `daemon.py` то пропускал обход, то падал на равном коде (выходы 8–10);
-    место — захват лока в `live_gate`, №572."""
-    body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
-    assert "text, reason = live_gate.refusal(_root())" in body
-    assert "emit_error(text, reason=reason)" in body
+def test_daemon_refusal_names_the_console_reason(tmp_path):
+    """Живой демон при консольной встрече отказывает строкой статуса с причиной,
+    которую приложение держит в `fatalReasons`; иначе три «восстанавливаю
+    запись» (выход 3 №725). Поведением, а не сканом `daemon.py`: скан то
+    пропускал обход, то падал на равном коде (выходы 8–11); захват лока одной
+    функцией в `live_gate` — долг зоны живого контура (№572)."""
+    import json
+    root = tmp_path / "data"
+    (root / "logs").mkdir(parents=True)
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        run = subprocess.run([sys.executable, str(ROOT / "src" / "daemon.py")], cwd=ROOT,
+                             env=dict(os.environ, CHAROITE_ROOT=str(root)),
+                             capture_output=True, text=True, timeout=120)
+    finally:
+        console.close()
+    events = []
+    for line in run.stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    refusals = [e for e in events if e.get("type") == "status" and e.get("error") is True]
+    assert refusals and refusals[0].get("reason") == "console_meeting", run.stdout[:400]
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
-    assert '"console_meeting"' in swift
+    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)
+    assert m and "console_meeting" in set(re.findall(r'"([^"]+)"', m.group(1))), (
+        "причина не в fatalReasons приложения (выход 11, DS C1)")
 
 
 def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):

@@ -199,7 +199,8 @@ def test_broken_pipe_stops_the_daemon_instead_of_killing_one_thread():
 
 class _Clock:
     """Часы `wait_recording`: время идёт только во сне, срок не зависит от
-    вытеснения процесса (выход 9 №725, DS I1). Других членов `time` нет:
+    вытеснения процесса (выход 9 №725, DS I1). Других членов `time`, кроме
+    `monotonic`, нет:
     новый вызов в `wait_recording` падает здесь, а не уходит в настоящие
     часы (выход 10, DS I2 = Sonnet M2)."""
 
@@ -208,6 +209,8 @@ class _Clock:
 
     def time(self):
         return self.t
+
+    monotonic = time    # срок по монотонным часам — тоже верный код (выход 11, DS C2)
 
     def sleep(self, s):
         self.slept.append(s)
