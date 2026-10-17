@@ -1793,13 +1793,12 @@ def test_meeting_owner_reasserts_resident_meeting_models(monkeypatch):
     встречи переутверждает 90m резидентным моделям встречи (основная и мелкая тихих
     подсказок) с num_ctx чата, чужую модель не трогает; на стопе — фоновый срок им же
     (№725, финальный Opus I1, I2; круг opusfix, DS C1, C2, Sonnet C1)."""
-    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
-                      {"name": "тест-мелкая:latest", "context_length": 8192},
-                      {"name": "чужая:latest", "context_length": 8192}])
+    names = ("тест-модель:latest", "тест-запас:latest", "тест-мелкая:latest")
+    wire = _HoldWire([{"name": n, "context_length": 8192} for n in names + ("чужая:latest",)])
     _подменить_requests(monkeypatch, wire)
-    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 2
-    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-мелкая:latest", "90m"),
-                          _held("тест-модель:latest", "10m"), _held("тест-мелкая:latest", "10m")]
+    cfg = {**CFG, "llm": {**CFG["llm"], "fallback_model": "тест-запас"}}   # лестница целиком
+    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 3
+    assert wire.posts == [_held(n, "90m") for n in names] + [_held(n, "10m") for n in names]
 
 
 def test_hold_never_loads_or_reloads_a_model(monkeypatch):
