@@ -258,9 +258,7 @@ class MeetingStatusStore:
         self.directory = self.root / "logs" / STATUS_DIR
         self._now = now
         self._keys = {}   # путь стенограммы → ключ статуса, на жизнь процесса
-        # Пути, чей ключ посчитан, пока файл жил под этим именем (`track`,
-        # `processing` до наката темы): только по ним `repath` пишет (выход 5 №699).
-        self._keyed_alive: set[str] = set()
+        self._keyed_alive: set[str] = set()   # ключ посчитан при живом файле — см. `_key`
 
     def processing(self, transcript: pathlib.Path, stage: str,
                    part: int | None = None, parts: int | None = None) -> pathlib.Path:
@@ -417,14 +415,15 @@ class MeetingStatusStore:
         занят дольше срока — TimeoutError. Следующей записи того же писателя
         до `ready` может не быть (короткая встреча), поэтому повторяет
         вызывающий (`graph_updater._repath`); сравнение с прочитанным в самой
-        двери записи — долг №615. Ключ под исходным именем этот стор не считал
-        (`track` упал или не звался) — не пишем: по новому имени ключ
-        угадывался бы, и путь мог лечь в чужой документ (выход 5 №699, DS C1;
-        №729).
+        двери записи — долг №615. Ключ под исходным именем этот стор не
+        считал (в боевом прогоне — упал `track`) — LookupError, не молчаливый
+        None: по новому имени ключ угадывался бы, и путь мог лечь в чужой
+        документ (выход 5 №699, DS C1; №729), а вызывающий должен сказать об
+        отказе в лог (выход 6, DS I1 = Sonnet M1 = Haiku I1).
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
         if str(transcript) not in self._keyed_alive:
-            return None
+            raise LookupError("ключ статуса не посчитан под исходным именем")
         if (not moved_to.is_file() or not self.directory.is_dir()
                 or not self._path(transcript).is_file()):
             return None
@@ -740,6 +739,11 @@ class MeetingStatusStore:
         (выход 2 №699, DS C1 = Sonnet I1 = Haiku I1). Ни `graph_key`, ни
         владения минутой здесь нет: имя статуса не обязано совпадать с именем
         заметки графа, ему достаточно быть неизменным.
+
+        Путь попадает в `_keyed_alive` при первом расчёте ключа, пока файл
+        жив, кто бы ни спросил; ключ мёртвого имени — из кэша или угадан, и
+        `repath` по нему не пишет. В боевом прогоне это `track`: `main`
+        проверяет файл до `_open_progress` (выход 6 №699, DS C1, M1).
         """
         transcript = pathlib.Path(transcript)
         tp = str(transcript)

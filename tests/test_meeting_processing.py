@@ -7,6 +7,8 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
@@ -609,8 +611,10 @@ def test_repath_waits_for_the_status_lock_and_skips_when_it_is_busy(tmp_path, mo
 
 def test_repath_needs_a_key_counted_under_the_living_name(tmp_path):
     """Выход 5 №699 (DS C1, Sonnet M2, Haiku M2): ключ, которого стор не считал под
-    исходным именем, — угаданный по новому; такой `repath` не пишет. Ключ из
-    `processing` до наката темы — свой, как из `track`."""
+    исходным именем, — угаданный по новому; такой `repath` не пишет и говорит
+    об этом (выход 6, DS I1). Ключ, посчитанный под мёртвым именем, — тоже
+    не свой, хотя он в кэше (выход 6, DS M2). Ключ любого расчёта при живом
+    файле — свой (`processing` здесь, `track` в боевом прогоне)."""
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     status = store.processing(live, "updating_graph", part=1, parts=2)
@@ -618,9 +622,18 @@ def test_repath_needs_a_key_counted_under_the_living_name(tmp_path):
     titled = live.with_name("2026-07-31_1415_План_релиза.md")
     live.rename(titled)
     fresh = MeetingStatusStore(tmp_path)            # процесс графа, `track` упал
-    assert fresh.repath(live, titled) is None and status.read_bytes() == raw
+    with pytest.raises(LookupError):
+        fresh.repath(live, titled)
+    assert status.read_bytes() == raw
     assert store.repath(live, titled) == status
     assert pathlib.Path(json.loads(status.read_text(encoding="utf-8"))["transcript_path"]).name == titled.name
+    late = MeetingStatusStore(tmp_path)
+    late.processing(live, "updating_graph", part=2, parts=2)   # ключ под мёртвым именем — в кэше
+    raw = status.read_bytes()
+    assert str(live) in late._keys
+    with pytest.raises(LookupError):
+        late.repath(live, titled)
+    assert status.read_bytes() == raw
 
 
 def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp_path):
@@ -657,6 +670,7 @@ def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp
 def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.track(live)
     assert store.repath(live, live) is None, "статуса нет — не заводим"
     done = store.ready(live, None)
     raw = done.read_bytes()

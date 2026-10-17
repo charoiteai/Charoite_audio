@@ -290,6 +290,21 @@ def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
     assert "ключ статуса не запомнен (OSError: каталог)" in capsys.readouterr().out
 
 
+def test_a_refusal_without_a_key_is_logged_once(tmp_path, monkeypatch, capsys):
+    """Стор отказал — ключа под исходным именем нет: строка в лог, без повтора
+    и без записи (выход 6 №699, DS I1 = Sonnet M1 = Haiku I1)."""
+    import meeting_processing
+    old = tmp_path / "2026-07-31_141500.md"
+    titled = tmp_path / "2026-07-31_141500_Тема.md"
+    titled.write_text("x", encoding="utf-8")
+    store = meeting_processing.MeetingStatusStore(tmp_path)
+    monkeypatch.setattr(gu, "_progress", (store, old))
+    gu._repath(titled)
+    out = capsys.readouterr().out
+    assert out.count("новый путь стенограммы в статус не записан (LookupError") == 1, out
+    assert "попытка" not in out
+
+
 def test_no_store_means_no_status_and_no_key_line(monkeypatch, capsys):
     """Стор не открылся — статуса нет; про ключ не говорим (выход 3, DS M3)."""
     import meeting_processing
