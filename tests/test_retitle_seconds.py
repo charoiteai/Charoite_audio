@@ -264,11 +264,17 @@ def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch
     gu._repath(Path("y.md"))                        # руками по файлу — статуса нет, молча
 
     class Broken:
+        calls = 0
+
         def repath(self, transcript, moved_to):
+            Broken.calls += 1
             raise OSError("диск")
     monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
+    monkeypatch.setattr(gu, "_keyed", True)
     gu._repath(Path("y.md"))
-    assert "новый путь стенограммы в статус не записан (OSError: диск)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "новый путь стенограммы в статус не записан (OSError: диск)" in out
+    assert Broken.calls == 1 and out.count("не записан") == 1, "не таймаут — без повтора (выход 4, Sonnet M2)"
 
 
 def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
@@ -283,6 +289,38 @@ def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
     gu._open_progress(Path("x.md"))
     assert gu._progress is not None and gu._progress[1] == Path("x.md")
     assert "ключ статуса не запомнен (OSError: каталог)" in capsys.readouterr().out
+
+
+def test_repath_needs_the_key_from_track(monkeypatch, capsys):
+    """Сбой `track` — ключа нет: новый путь не пишем, ключ по новому имени
+    угадывался бы (выход 4 №699, Sonnet M1; №729). `track` прошёл — пишем."""
+    import meeting_processing
+
+    class Rec:
+        def __init__(self):
+            self.calls = []
+
+        def repath(self, transcript, moved_to):
+            self.calls.append((transcript, moved_to))
+
+    def broken(self, transcript):
+        raise OSError("каталог")
+    monkeypatch.setattr(gu, "_progress", None)
+    monkeypatch.setattr(gu, "_keyed", True)
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", broken)
+    gu._open_progress(Path("x.md"))
+    assert gu._keyed is False
+    rec = Rec()
+    monkeypatch.setattr(gu, "_progress", (rec, Path("x.md")))
+    gu._repath(Path("y.md"))
+    assert rec.calls == [] and "ключ статуса не запомнен" in capsys.readouterr().out
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", lambda self, transcript: None)
+    gu._open_progress(Path("x.md"))
+    assert gu._keyed is True
+    rec = Rec()
+    monkeypatch.setattr(gu, "_progress", (rec, Path("x.md")))
+    gu._repath(Path("y.md"))
+    assert rec.calls == [(Path("x.md"), Path("y.md"))]
 
 
 def test_no_store_means_no_status_and_no_key_line(monkeypatch, capsys):
@@ -304,18 +342,24 @@ def test_repath_tries_again_while_the_status_lock_is_busy(monkeypatch, capsys):
     после последней — строка (выход 3 №699, Haiku I2)."""
     class Busy:
         def __init__(self, fails):
-            self.fails, self.calls = fails, 0
+            self.fails, self.calls, self.args = fails, 0, set()
 
         def repath(self, transcript, moved_to):
             self.calls += 1
+            self.args.add((transcript, moved_to))
             if self.calls <= self.fails:
                 raise TimeoutError("замок занят")
+    monkeypatch.setattr(gu, "_keyed", True)
     store = Busy(gu.REPATH_TRIES - 1)
     monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
     gu._repath(Path("y.md"))
-    assert store.calls == gu.REPATH_TRIES and capsys.readouterr().out == ""
+    out = capsys.readouterr().out
+    assert store.calls == gu.REPATH_TRIES and store.args == {(Path("x.md"), Path("y.md"))}
+    assert out.count("замок статусов занят, попытка") == gu.REPATH_TRIES - 1 and "не записан" not in out
     store = Busy(gu.REPATH_TRIES)
     monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
     gu._repath(Path("y.md"))
-    assert store.calls == gu.REPATH_TRIES
-    assert "не записан (TimeoutError: замок занят)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert store.calls == gu.REPATH_TRIES and store.args == {(Path("x.md"), Path("y.md"))}
+    assert "не записан (TimeoutError: замок занят)" in out
+    assert out.count("замок статусов занят, попытка") == gu.REPATH_TRIES - 1

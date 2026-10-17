@@ -513,6 +513,18 @@ def test_stale_running_or_retrying_review_expires_into_failed(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "ok", "исход не протухает"
 
 
+def test_a_living_transcript_is_found_as_itself(tmp_path):
+    """Живой файл — ровно `.resolve()`, без глоба: repath пишет путь
+    переименователя, и find_final_transcript дал бы тот же (выход 4 №699,
+    DS C1). Свежая соседка того же штампа с темой не мешает."""
+    live = _transcript(tmp_path)
+    neighbour = live.with_name(live.stem + "_Соседка.md")
+    neighbour.write_text("# Соседка\n" + "текст " * 80, encoding="utf-8")
+    os.utime(neighbour, (time.time() + 60, time.time() + 60))
+    assert find_final_transcript(live) == live.resolve()
+    assert find_final_transcript(neighbour) == neighbour.resolve()
+
+
 def test_repath_moves_a_running_status_to_the_titled_name(tmp_path):
     """№699: накат темы переименовал стенограмму посреди шага графа, а до
     `ready` статус держал мёртвый путь — приложение отвечало «стенограммы нет

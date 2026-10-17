@@ -118,7 +118,11 @@ def _looks_main(path: pathlib.Path) -> bool:
 
 
 def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
-    """Return the transcript even if graph_updater renamed it to its title."""
+    """Return the transcript even if graph_updater renamed it to its title.
+
+    Живой файл — ровно `original.resolve()`, без глоба: глоб только для
+    мёртвого пути (выход 4 №699, DS C1).
+    """
     if original.exists():
         return original.resolve()
     # Сначала посекундное имя («…125812_Тема»), потом минутное: вторая
@@ -804,7 +808,8 @@ class MeetingStatusStore:
         Два режима. Обычная запись (этап, ревизия в работе, пересчёт имён)
         замок обязана взять: занят дольше срока — TimeoutError, файл замка
         не годится — его OSError; запись пропускается, следующая запись
-        того же писателя всё равно придёт. `terminal=True` — исход встречи
+        того же писателя обычно придёт; у `repath` её может не быть, и
+        повторяет вызывающий. `terminal=True` — исход встречи
         (ready, failed, no_speech) и доставленная ревизия (`review` «ok»):
         он обязан лечь. Иначе документ остаётся в `processing`, приложение
         через полчаса рисует ошибку, `unfinished()` через час заново гонит
