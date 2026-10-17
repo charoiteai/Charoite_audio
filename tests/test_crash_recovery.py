@@ -199,7 +199,9 @@ def test_broken_pipe_stops_the_daemon_instead_of_killing_one_thread():
 
 class _Clock:
     """Часы `wait_recording`: время идёт только во сне, срок не зависит от
-    вытеснения процесса (выход 9 №725, DS I1); прочее — из настоящего `time`."""
+    вытеснения процесса (выход 9 №725, DS I1). Других членов `time` нет:
+    новый вызов в `wait_recording` падает здесь, а не уходит в настоящие
+    часы (выход 10, DS I2 = Sonnet M2)."""
 
     def __init__(self):
         self.t, self.slept = 0.0, []
@@ -210,10 +212,6 @@ class _Clock:
     def sleep(self, s):
         self.slept.append(s)
         self.t += s
-
-    def __getattr__(self, name):
-        import time as real
-        return getattr(real, name)
 
 
 def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
@@ -258,7 +256,7 @@ def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, m
 
     root = rec_dir.parent
     monkeypatch.setattr(rt, "_root", lambda: root)
-    monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 5)      # три сна по 2 с: конвертация после первого — не по сроку
     clock, converted_at = _Clock(), []
     monkeypatch.setattr(rt, "time", clock)
     monkeypatch.setattr(rt, "pcm_to_wav", lambda pcm, sr: converted_at.append(clock.t) or pcm.with_suffix(".wav"))
@@ -272,4 +270,5 @@ def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, m
         console.close()
 
     assert len(converted_at) == 1, "по сроку .pcm конвертируется один раз"
-    assert clock.slept and converted_at[0] >= rt.WAIT_WAV_S, "конвертация в цикле при живом локе встречи"
+    assert len(clock.slept) == 3 and converted_at[0] >= rt.WAIT_WAV_S, (
+        "конвертация в цикле при живом локе встречи (выход 10, Sonnet M1 = Haiku I3)")
