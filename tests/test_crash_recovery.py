@@ -210,7 +210,10 @@ class _Clock:
     def time(self):
         return self.t
 
-    monotonic = time    # срок по монотонным часам — тоже верный код (выход 11, DS C2)
+    def monotonic(self):
+        # Срок по монотонным часам — верный код (выход 11, DS C2); своя эпоха —
+        # смешанные часы (срок по одним, цикл по другим) тест валят (выход 12, Haiku I1).
+        return self.t + 10**6
 
     def sleep(self, s):
         self.slept.append(s)
