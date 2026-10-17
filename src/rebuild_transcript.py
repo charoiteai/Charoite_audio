@@ -2165,6 +2165,24 @@ class RunningElsewhere(RuntimeError):
     """Отметку не взять: замок держит другой прогон — второй заход запрещён."""
 
 
+def _lock_key(live: pathlib.Path) -> str | None:
+    """Ключ замка пересборки — ключ встречи (`live_sidecar.meeting_key`), а не
+    имя файла: повтор по имени после наката темы иначе получал минуту, а прогон
+    держал секунды (№699)."""
+    return live_sidecar.meeting_key(live)
+
+
+def _refusal_line(live: pathlib.Path, holder: str) -> str:
+    """Строка отказа второму прогону — с ключом замка. По минуте отказ соседке
+    той же минуты иначе неотличим от дубля самой встречи (DS M4 входа 7 №699);
+    только здесь, а не на каждом прогоне — там строка была шумом и врала
+    о встречах с минутным штампом (выход 1 №699, DS M1, Sonnet M3)."""
+    key = _lock_key(live)
+    note = (", по минуте: посекундного штампа у встречи нет"
+            if key is not None and meeting_stamp.minute_of(key) == key else "")
+    return f"пересборка этой встречи уже идёт ({holder}; замок {key}{note}) — выхожу"
+
+
 def running_elsewhere(live: pathlib.Path) -> int | None:
     """Pid живой пересборки этой же встречи, если она уже идёт.
 
@@ -2189,7 +2207,7 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
     чужим свежим замком снимал бы отметку живого прогона (круг по #455).
     Отметки версий без замка не распознаются — разово, при обновлении.
     """
-    stamp = meeting_stamp.stamp_of(live.stem)
+    stamp = _lock_key(live)
     if not stamp:
         return None
     f = _pid_file(stamp)
@@ -2218,7 +2236,7 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
     окне выхода снимал бы отметку прогона, стартовавшего следом (DS r2 по
     #455). Цена — файл в несколько байт на встречу в logs/.
     """
-    stamp = meeting_stamp.stamp_of(live.stem)
+    stamp = _lock_key(live)
     if not stamp:
         return None
     f = _pid_file(stamp)
@@ -2253,12 +2271,12 @@ def main():
     # та же память вдвое и гонка за финальный файл.
     busy = running_elsewhere(live)
     if busy:
-        log(f"пересборка этой встречи уже идёт (pid {busy}) — выхожу")
+        log(_refusal_line(live, f"pid {busy}"))
         return
     try:
         mark = mark_running(live)
     except RunningElsewhere as e:   # проскочили проверку одновременно: решает замок (DS по #455)
-        log(f"пересборка этой встречи уже идёт ({e}) — выхожу")
+        log(_refusal_line(live, str(e)))
         return
     status = MeetingStatusStore(_root())
     pipeline_started = time.time()

@@ -123,6 +123,55 @@ def _report(part: int, parts: int) -> None:
         print(f"граф: прогресс не записан ({type(e).__name__}: {e})")
 
 
+REPATH_TRIES = 3
+
+
+def _repath(moved_to: pathlib.Path) -> None:
+    """После наката темы — статусу новое имя стенограммы (№699). Молча, если некому.
+
+    Замок статусов занят дольше срока — ещё попытка: у короткой встречи
+    следующей записи до `ready` нет, и приложение весь разбор видело бы
+    мёртвый путь (выход 3 №699, Haiku I2). Отказ стора без ключа (упал
+    `track`) — строкой в лог, без повтора (выход 6, DS I1).
+    """
+    if _progress is None:
+        return
+    store, transcript = _progress
+    for attempt in range(1, REPATH_TRIES + 1):
+        try:
+            store.repath(transcript, moved_to)
+            return
+        except TimeoutError as e:
+            if attempt == REPATH_TRIES:
+                print(f"граф: новый путь стенограммы в статус не записан ({type(e).__name__}: {e})")
+            else:
+                print(f"граф: замок статусов занят, попытка {attempt}/{REPATH_TRIES}")
+        except Exception as e:  # noqa: BLE001 — статус не смеет ронять разбор
+            print(f"граф: новый путь стенограммы в статус не записан ({type(e).__name__}: {e})")
+            return
+
+
+def _open_progress(tpath: pathlib.Path) -> None:
+    """Завести статус прогона по стенограмме; без стора разбор идёт молча.
+
+    Ключ — под исходным именем, до наката темы (№699). Сбой ключа не гасит
+    статус (выход 2, DS M4): `_progress` ставится до `track`.
+    """
+    global _progress
+    _progress = None     # прошлая стенограмма процесса не наследуется (выход 5 №699, Sonnet M1 = DS M3)
+    try:
+        from meeting_processing import MeetingStatusStore
+        store = MeetingStatusStore(_root())
+    except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
+        print(f"граф: статус недоступен ({type(e).__name__}: {e})")
+        return
+    _progress = (store, tpath)
+    try:
+        store.track(tpath)
+    except Exception as e:  # noqa: BLE001 — сбой ключа не гасит статус
+        print(f"граф: ключ статуса не запомнен ({type(e).__name__}: {e})")
+
+
 def known_graphs(graph: pathlib.Path) -> list[str]:
     """Графы, которые уже есть в vault, — соседние папки с `_MOC.md`."""
     try:
@@ -2696,17 +2745,12 @@ def _revise_meeting_cores(cfg: dict, graph: pathlib.Path, cores: list[dict]) -> 
 
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
-    global _progress
     cfg = load_cfg()
     tpath = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else latest_transcript()
     if not tpath or not tpath.exists():
         print("нет стенограммы")
         return
-    try:
-        from meeting_processing import MeetingStatusStore
-        _progress = (MeetingStatusStore(_root()), tpath)
-    except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
-        print(f"граф: статус недоступен ({type(e).__name__}: {e})")
+    _open_progress(tpath)
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
     # РАЗДЕЛЕНЫ намеренно. `speech` — то, что реально прозвучало; `context` —
     # то же плюс живые минутки, которые пишет МОДЕЛЬ по ходу встречи.
@@ -2819,6 +2863,7 @@ def main():
     title = " ".join(tw).rstrip(",;:")
     if title and not already_titled:  # переименовать логи: дата + о чём общались
         tpath = retitle(tpath, stamp, bare, title)
+        _repath(tpath)
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)
