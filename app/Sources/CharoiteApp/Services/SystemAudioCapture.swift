@@ -582,7 +582,7 @@ final class SystemAudioCapture: NSObject {
             "system_start": 0,
             // размер на момент манифеста: демон требует роста сверх него за 3 с — иначе
             // проверка «приёмник жив» при чтении с нуля была бы обесценена (критика GLM r2)
-            "system_bytes": 2 * (sink?.systemFrames ?? 0),
+            "system_bytes": sink?.fileBytes(.system) ?? 0,
             // Кто именно владеет этими файлами прямо сейчас. Демон поле
             // игнорирует, а нам оно нужно при остановке — см. `stop()`.
             "session": sessionID.uuidString,
@@ -590,7 +590,7 @@ final class SystemAudioCapture: NSObject {
         if micInStream {
             manifest["mic"] = paths.micURL.path
             manifest["mic_start"] = 0
-            manifest["mic_bytes"] = 2 * (sink?.micFrames ?? 0)
+            manifest["mic_bytes"] = sink?.fileBytes(.mic) ?? 0
             // Частота микрофона — фактическая, а не запрошенная.
             manifest["mic_rate"] = sink?.micSampleRate ?? Self.sampleRate
         }
@@ -670,6 +670,23 @@ final class SystemAudioCapture: NSObject {
             /// считаются — иначе forget() не окончателен, а адрес,
             /// переиспользованный новым потоком, наследовал бы чужие кадры.
             var tombstones: Set<ObjectIdentifier> = []
+            /// Время первого буфера сессии на часах хоста — общий ноль обоих
+            /// каналов; переживает пересоздание потока (№655).
+            var epoch: Double?
+            var axes: [AxisChannel: ChannelAxis] = [:]
+            var ledger: [AxisChannel: Ledger] = [:]
+            /// Потоки, чей первый буфер канала уже записан в журнал.
+            var greeted: Set<String> = []
+        }
+        enum AxisChannel: String { case system = "системный", mic = "микрофон" }
+        /// Чего ось не видит: буферы, выпавшие до неё (итог в журнал на `close`).
+        struct Ledger {
+            var undecoded = 0       // не свёлся в моно
+            var untimed = 0         // время буфера невалидно — записан без оси
+            var writeFailures = 0
+            var lastGapLog: Double = -.infinity
+            var gapsSinceLog = 0
+            var zerosSinceLog = 0
         }
         private let state = OSAllocatedUnfairLock(initialState: Counters())
         /// Поток остановился сам; зовётся с очереди ScreenCaptureKit.
@@ -680,6 +697,14 @@ final class SystemAudioCapture: NSObject {
 
         var systemFrames: Int { state.withLock { $0.systemFrames } }
         var micFrames: Int { state.withLock { $0.micFrames } }
+        /// Размер файла канала в байтах — с нулями оси. Это пол роста для
+        /// демона (`<key>_bytes` манифеста): реальные кадры его занижали бы.
+        func fileBytes(_ channel: AxisChannel) -> Int {
+            state.withLock { st in
+                2 * (st.axes[channel]?.fileFrames
+                     ?? (channel == .system ? st.systemFrames : st.micFrames))
+            }
+        }
         /// Реальная частота микрофона. ScreenCaptureKit применяет
         /// SCStreamConfiguration.sampleRate только к системному звуку —
         /// микрофон приходит в родном формате устройства (обычно 48 кГц).
@@ -724,33 +749,137 @@ final class SystemAudioCapture: NSObject {
         func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer,
                     of type: SCStreamOutputType) {
             guard sb.isValid else { return }
-            let sid = ObjectIdentifier(stream)      // в замок — идентификатор, не поток
+            let channel: AxisChannel
             switch type {
-            case .audio:
-                if let pcm = mono(from: sb) {
-                    state.withLock { st in
-                        guard !st.closed, !st.tombstones.contains(sid) else { return }
-                        st.systemFrames += pcm.count
-                        st.framesByStream[sid, default: 0] += pcm.count
-                        write(pcm, to: systemHandle)
-                    }
-                }
-            case .microphone:
-                let rate = sb.formatDescription?.audioStreamBasicDescription?.mSampleRate
-                let pcm = mono(from: sb)
-                state.withLock { st in
-                    guard !st.closed, !st.tombstones.contains(sid) else { return }
+            case .audio: channel = .system
+            case .microphone: channel = .mic
+            default: return
+            }
+            let sid = ObjectIdentifier(stream)      // в замок — идентификатор, не поток
+            let rate = sb.formatDescription?.audioStreamBasicDescription?.mSampleRate
+            let host = Self.hostSeconds(of: sb, clock: stream.synchronizationClock)
+            let arrived = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+            let pcm = mono(from: sb)
+            let lines = state.withLock { st -> [String] in
+                guard !st.closed, !st.tombstones.contains(sid) else { return [] }
+                if channel == .mic {
                     if st.micSampleRate == 0, let rate { st.micSampleRate = Int(rate) }
                     if let rate, st.micRateByStream[sid] == nil {
                         st.micRateByStream[sid] = Int(rate)
                     }
-                    if let pcm {
-                        st.micFrames += pcm.count
-                        write(pcm, to: micHandle)
-                    }
                 }
-            default:
-                break
+                guard let pcm, let rate else {
+                    st.ledger[channel, default: Ledger()].undecoded += 1
+                    return []
+                }
+                var lines: [String] = []
+                // Первый буфер каждого потока: время буфера против прихода. Факт
+                // про часы потоков, который код принимает на веру (вход 3 №655).
+                if st.greeted.insert("\(sid.hashValue)-\(channel.rawValue)").inserted, let host {
+                    lines.append(String(format: "%@: %@ — первый буфер потока, %d Гц, приход позже "
+                                        + "времени буфера на %.3f с", Self.axisLogMark,
+                                        channel.rawValue, Int(rate), arrived - host))
+                }
+                return lines + place(pcm, rate: Int(rate), host: host, channel: channel,
+                                     stream: sid, in: &st)
+            }
+            for line in lines { SystemAudioCapture.captureLog(line) }
+        }
+
+        /// Метка строк оси в capture.log. Демон берёт последнюю строку лога
+        /// причиной смерти потока и строки с этой меткой пропускает — та же
+        /// пара писатель/читатель, что `LOSS_LOG_MARKS` в `src/audio.py`.
+        static let axisLogMark = "ОСЬ КАНАЛА"
+
+        /// Время буфера в секундах часов хоста. Оба вида буферов одного потока
+        /// идут на его `synchronizationClock`; перевод на часы хоста даёт один
+        /// счёт и для потока, пересозданного посреди встречи. Невалидное время
+        /// — nil: `Int(NaN)` дальше по оси уронил бы приложение.
+        static func hostSeconds(of sb: CMSampleBuffer, clock: CMClock?) -> Double? {
+            let pts = sb.presentationTimeStamp
+            guard pts.isValid, pts.isNumeric else { return nil }
+            let hostClock = CMClockGetHostTimeClock()
+            let host = clock.map { CMSyncConvertTime(pts, from: $0, to: hostClock) } ?? pts
+            guard host.isValid, host.isNumeric else { return nil }
+            let s = CMTimeGetSeconds(host)
+            return s.isFinite ? s : nil
+        }
+
+        /// Буфер — в файл канала по его оси. Только под `state`. Нули пишутся
+        /// лишь перед настоящим звуком: поток без декодированных буферов файл не
+        /// растит. Живость (`systemFrames`, `micFrames`, `framesByStream`) —
+        /// реальные кадры, после успешной записи. Возвращает строки журнала:
+        /// писать их под замком — открытие файла на очереди SCK.
+        private func place(_ pcm: [Int16], rate: Int, host: Double?, channel: AxisChannel,
+                           stream sid: ObjectIdentifier, in st: inout Counters) -> [String] {
+            let handle = channel == .system ? systemHandle : micHandle
+            var axis = st.axes[channel] ?? ChannelAxis(rate: rate)
+            var ledger = st.ledger[channel] ?? Ledger()
+            var lines: [String] = []
+            if !axis.disabled && rate != axis.rate {
+                axis.disable()
+                lines.append("\(Self.axisLogMark): \(channel.rawValue) — частота \(rate) Гц вместо "
+                             + "\(axis.rate), ось выключена до конца записи")
+            }
+            var ok = true
+            if let host {
+                if st.epoch == nil { st.epoch = host }
+                switch axis.plan(host: host, epoch: st.epoch ?? host) {
+                case .write:
+                    break
+                case .fill(let zeros):
+                    ok = writeZeros(zeros, to: handle)
+                    if ok {
+                        axis.didFill(zeros)
+                        ledger.gapsSinceLog += 1
+                        ledger.zerosSinceLog += zeros
+                        // Строка не чаще раза в 10 с, с накопленным с прошлой
+                        if host - ledger.lastGapLog >= 10 {
+                            lines.append(String(format: "%@: %@ — дыр %d, залито нулями %.2f с",
+                                                Self.axisLogMark, channel.rawValue, ledger.gapsSinceLog,
+                                                Double(ledger.zerosSinceLog) / Double(axis.rate)))
+                            ledger.lastGapLog = host
+                            ledger.gapsSinceLog = 0
+                            ledger.zerosSinceLog = 0
+                        }
+                    }
+                case .broke(let gap):
+                    lines.append(String(format: "%@: %@ — разрыв %.1f с больше потолка %.0f с, "
+                                        + "отсчёт заново", Self.axisLogMark, channel.rawValue,
+                                        gap, ChannelAxis.fillCeiling))
+                }
+            } else {
+                ledger.untimed += 1
+            }
+            if ok { ok = write(pcm, to: handle) }
+            if ok {
+                axis.didWrite(pcm.count)
+                if channel == .system {
+                    st.systemFrames += pcm.count
+                    st.framesByStream[sid, default: 0] += pcm.count
+                } else {
+                    st.micFrames += pcm.count
+                }
+            } else {
+                axis.writeFailed()
+                ledger.writeFailures += 1
+            }
+            st.axes[channel] = axis
+            st.ledger[channel] = ledger
+            return lines
+        }
+
+        /// Итог оси по каналам — строки журнала на остановке.
+        private static func summary(_ st: Counters) -> [String] {
+            [AxisChannel.system, .mic].compactMap { ch in
+                guard let axis = st.axes[ch] else { return nil }
+                let l = st.ledger[ch] ?? Ledger()
+                return String(format: "%@: %@ итог — дыр %d, нулей %.2f с, разрывов %d, "
+                              + "наибольшее расхождение %.3f с, не свелось %d, без времени %d, "
+                              + "сбоев записи %d%@", axisLogMark, ch.rawValue, axis.gaps,
+                              Double(axis.zeroFrames) / Double(axis.rate), axis.breaks, axis.worstDrift,
+                              l.undecoded, l.untimed, l.writeFailures,
+                              axis.disabled ? ", ось выключена (смена частоты)" : "")
             }
         }
 
@@ -788,21 +917,44 @@ final class SystemAudioCapture: NSObject {
         }
 
         /// Вызывать только под `state`: так запись и `close()` не пересекаются.
-        private func write(_ pcm: [Int16], to handle: FileHandle?) {
-            guard let handle else { return }
+        /// `false` — запись не удалась: счётчики не растут, ось начнёт отсчёт заново.
+        private func write(_ pcm: [Int16], to handle: FileHandle?) -> Bool {
+            guard let handle else { return false }
             // Бросающий API вместо `write(_:)`: ошибка записи (диск кончился,
             // дескриптор закрыт) — ошибка Swift, а не ObjC-исключение,
             // которое роняет процесс целиком.
-            pcm.withUnsafeBufferPointer { try? handle.write(contentsOf: Data(buffer: $0)) }
+            do {
+                try pcm.withUnsafeBufferPointer { try handle.write(contentsOf: Data(buffer: $0)) }
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        /// Секунда нулей на 48 кГц — один буфер на все заливки.
+        private static let silence = [Int16](repeating: 0, count: 48_000)
+
+        /// Нули кусками не длиннее `silence`: заливка до потолка — под замком на
+        /// очереди SCK, и одна большая аллокация на каждую дыру ни к чему.
+        private func writeZeros(_ count: Int, to handle: FileHandle?) -> Bool {
+            var left = count
+            while left > 0 {
+                let n = min(left, Self.silence.count)
+                guard write(Array(Self.silence[0..<n]), to: handle) else { return false }
+                left -= n
+            }
+            return true
         }
 
         func close() {
-            state.withLock { st in
-                guard !st.closed else { return }
+            let lines = state.withLock { st -> [String] in
+                guard !st.closed else { return [] }
                 st.closed = true
                 try? systemHandle?.close()
                 try? micHandle?.close()
+                return Self.summary(st)
             }
+            for line in lines { SystemAudioCapture.captureLog(line) }
         }
     }
 }

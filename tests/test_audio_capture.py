@@ -1622,6 +1622,37 @@ def test_причиной_не_становится_собственное_пр�
     assert "прошлая встреча" not in msg, "причиной стало собственное предупреждение"
 
 
+def test_строка_оси_канала_не_становится_причиной(tmp_path, monkeypatch):
+    """№655: приложение пишет в capture.log учёт оси (дыры, итог сессии). На
+    stop итог ложится последней строкой — без метки он стал бы «причиной»
+    смерти потока собеседников на следующей встрече."""
+    _no_system_channel(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "capture.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "SCK: permission denied by user\n"
+        f"2026-09-10 12:00:00 {a.AXIS_LOG_MARK}: микрофон — итог сессии: дыр 3\n",
+        encoding="utf-8")
+
+    hub = a.AudioHub.for_meeting(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()
+
+    msg = "".join(said)
+    assert "permission denied by user" in msg, "причина от Swift потеряна"
+    assert "итог сессии" not in msg, "причиной стал учёт оси канала"
+
+
+def test_метка_оси_одна_у_писателя_и_читателя():
+    """Пару писатель/читатель держит строка: Swift пишет `axisLogMark`, демон
+    фильтрует по `AXIS_LOG_MARK`. Разойдутся — фильтр вакуумен."""
+    swift = (pathlib.Path(__file__).resolve().parents[1] / "app" / "Sources" / "CharoiteApp"
+             / "Services" / "SystemAudioCapture.swift").read_text(encoding="utf-8")
+    assert f'static let axisLogMark = "{a.AXIS_LOG_MARK}"' in swift
+    assert a.AXIS_LOG_MARK in a.LOSS_LOG_MARKS
+
+
 def test_смерть_канала_собеседников_после_старта_кричит_один_раз(monkeypatch, tmp_path):
     """№232: сторож переводит канал собеседников в _hung — раньше это была
     тихая строка «перезапуск завис, канал отключён», и человек до конца встречи
