@@ -904,9 +904,8 @@ class LLM:
     # Мимо швов к модели ходит только дверь векторов embed_door (0,2 с, убить
     # не жалко, аренды не берёт) и проба
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
-    def hold_meeting_model(self, stop: threading.Event, *, every: float = HOLD_EVERY_S,
-                           post=requests.post) -> int:
-        """Пока встреча идёт, раз в `every` секунд утверждать модели срок встречи.
+    def hold_meeting_model(self, stop: threading.Event, *, every: float = HOLD_EVERY_S) -> int:
+        """Пока встреча идёт, раз в `every` секунд утверждать моделям встречи её срок.
 
         Срок держит сервер, и пишет его последний запрос. Фоновый запрос,
         принятый раньше вызовов встречи или повторённый на занятом сервере
@@ -914,24 +913,68 @@ class LLM:
         данных встречи не видит вовсе; подсказки идут только на речь — пауза
         дольше 10 минут выгружала бы модель посреди встречи (№725, финальный
         Opus I1, I2, M1). Владелец встречи (демон, консоль) переписывает срок
-        сам, кто бы ни писал его между тиками. Пустой `/api/generate` с
-        `model` и `keep_alive` загруженную модель не гоняет — только новый
-        срок (опыт 17.10: 6 мс, `expires_at` 10m → 90m). Только локальная
-        Ollama: короткий срок фон шлёт лишь ей (`chat_keep_alive`). Отказ и
-        сеть — до следующего тика. Возвращает число принятых утверждений.
+        сам, кто бы ни писал его между тиками (`_hold_tick`). На `stop` — один
+        раз фоновый срок тем же моделям: последний тик держал бы их 90 минут
+        после встречи (круг opusfix, DS C2). Облачный движок держит свой
+        локальный запас: туда встреча уходит, когда шлюз недоступен (DS I1).
+        Сбой тика — одна строка в stderr на причину, поток живёт дальше
+        (Sonnet M2, DS M2). Возвращает число принятых утверждений.
         """
-        if self.engine != "ollama" or not privacy.is_loopback_url(self.base):
+        target = self
+        if self.engine == "cloud":
+            if not self.fallback_local:
+                return 0
+            target = LLM({**self._cfg, "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                         keep_alive=self._keep_alive)
+        if target.engine != "ollama" or not privacy.is_loopback_url(target.base):
             return 0
-        url = f"{self.base}/api/generate"
-        body = {"model": self.model, "keep_alive": LIVE_KEEP_ALIVE}
-        held = 0
+        held, failed = 0, None
         while not stop.wait(every):
             try:
-                r = post(url, json=body, timeout=30, **privacy.proxies_for(url))
-            except requests.RequestException:
-                continue
-            held += r.status_code == 200
-            r.close()
+                held += target._hold_tick(LIVE_KEEP_ALIVE)
+                failed = None
+            except Exception as e:  # noqa: BLE001 — тик не смеет гасить поток встречи
+                reason = f"{type(e).__name__}: {e}"
+                if reason != failed:
+                    print(f"llm: срок модели встречи не утверждён ({reason})",
+                          file=sys.stderr, flush=True)
+                failed = reason
+        if held:
+            try:
+                target._hold_tick(BACKGROUND_KEEP_ALIVE)
+            except Exception:  # noqa: BLE001 — встреча кончилась, срок допишет фон
+                pass
+        return held
+
+    def _hold_tick(self, keep_alive: str) -> int:
+        """Один тик срока — моделям встречи, которые сервер уже держит в памяти.
+
+        Пустой `/api/generate` модель грузит, если её нет, а без `num_ctx` в
+        теле перезагружает с контекстом из Modelfile (опыт 17.10, phi4-mini:
+        контекст 8192 → 131072; круг opusfix, Sonnet C1). Поэтому тик спрашивает
+        `/api/ps` и шлёт срок только резидентным моделям встречи (`model`,
+        `fallback`, `small` — лестница `resolve_model` и тихие подсказки; DS C1)
+        с тем же `num_ctx`, что у чата; модель с другим контекстом не трогает —
+        её перезагрузит сам вызов встречи, как без тика. С совпавшим
+        контекстом запрос — 7 мс, без загрузки. Не 200 — RuntimeError.
+        """
+        ps_url = f"{self.base}/api/ps"
+        r = requests.get(ps_url, timeout=10, **privacy.proxies_for(ps_url))
+        if r.status_code != 200:
+            raise RuntimeError(f"/api/ps: HTTP {r.status_code}")
+        mine = {m if ":" in m else f"{m}:latest" for m in (self.model, self.fallback, self.small)}
+        names = [m.get("name") for m in r.json().get("models") or []
+                 if m.get("name") in mine and m.get("context_length") in (None, self.num_ctx)]
+        url = f"{self.base}/api/generate"
+        held = 0
+        for name in names:
+            g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
+                                         "options": {"num_ctx": self.num_ctx}},
+                              timeout=30, **privacy.proxies_for(url))
+            g.close()
+            if g.status_code != 200:
+                raise RuntimeError(f"{name}: HTTP {g.status_code}")
+            held += 1
         return held
 
     def _chat_keep_alive(self) -> str:

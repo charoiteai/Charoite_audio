@@ -1752,37 +1752,91 @@ def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock
     assert sent == ["10m", "90m"]
 
 
-class _Accepted:
-    status_code = 200
+class _HoldWire(_Requests):
+    """Сервер для тика срока: `/api/ps` отвечает списком резидентных, POST пишется."""
 
-    def close(self):
-        pass
+    def __init__(self, resident, fail_gets=()):
+        super().__init__(_Resp({}))
+        self.resident, self.fail_gets = resident, set(fail_gets)
+        self.gets, self.posts = [], []
 
-
-def test_meeting_owner_reasserts_the_meeting_keep_alive():
-    """Срок пишет последний запрос: фон поверх вызовов встречи ставит 10m. Владелец
-    встречи переутверждает 90m пустым /api/generate каждый тик, сбой сети тик не
-    роняет (№725, финальный Opus I1, I2)."""
-    stop = threading.Event()
-    sent: list = []
-
-    def post(url, json, timeout, **kw):
-        sent.append((url, dict(json)))
-        if len(sent) == 2:
+    def get(self, url, timeout=None, **kw):
+        self.gets.append(url)
+        if len(self.gets) in self.fail_gets:
             raise requests.ConnectionError("сервер встал")
-        if len(sent) == 3:
-            stop.set()
-        return _Accepted()
+        return _Resp({"models": self.resident})
 
-    held = LLM(CFG).hold_meeting_model(stop, every=0, post=post)
-    assert held == 2 and len(sent) == 3
-    assert {u for u, _ in sent} == {LLM(CFG).base + "/api/generate"}
-    assert all(b == {"model": "тест-модель", "keep_alive": "90m"} for _, b in sent)
+    def post(self, url, json=None, timeout=None, **kw):
+        self.posts.append((url, json))
+        return _Resp({})
 
 
-def test_hold_leaves_a_server_on_another_machine_alone():
+class _Ticks(threading.Event):
+    """`stop`, который взводится после `n` тиков и не ждёт."""
+
+    def __init__(self, n):
+        super().__init__()
+        self.n = n
+
+    def wait(self, timeout=None):
+        self.n -= 1
+        return self.n < 0
+
+
+def _held(name, keep_alive):
+    return (LLM(CFG).base + "/api/generate",
+            {"model": name, "keep_alive": keep_alive, "options": {"num_ctx": 8192}})
+
+
+def test_meeting_owner_reasserts_resident_meeting_models(monkeypatch):
+    """Срок пишет последний запрос: фон поверх вызовов встречи ставит 10m. Владелец
+    встречи переутверждает 90m резидентным моделям встречи (основная и мелкая тихих
+    подсказок) с num_ctx чата, чужую модель не трогает; на стопе — фоновый срок им же
+    (№725, финальный Opus I1, I2; круг opusfix, DS C1, C2, Sonnet C1)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 8192},
+                      {"name": "чужая:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 2
+    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-мелкая:latest", "90m"),
+                          _held("тест-модель:latest", "10m"), _held("тест-мелкая:latest", "10m")]
+
+
+def test_hold_never_loads_or_reloads_a_model(monkeypatch):
+    """Пустой запрос грузит модель, а без своего контекста перезагружает (опыт 17.10:
+    8192 → 131072): нерезидентной и резидентной с другим контекстом тик не шлёт ничего."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 131072}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(2), every=0) == 0
+    assert wire.posts == [] and len(wire.gets) == 2
+
+
+def test_hold_survives_a_failing_tick_and_says_so_once(monkeypatch, capsys):
+    """Сбой сети тик не роняет; одна строка на причину, а не на каждый тик."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}], fail_gets={1, 2})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(3), every=0) == 1
+    assert capsys.readouterr().err.count("срок модели встречи не утверждён") == 1
+    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-модель:latest", "10m")]
+
+
+def test_hold_leaves_a_server_on_another_machine_alone(monkeypatch):
     """Чужому серверу фон короткого срока не шлёт — переутверждать нечего."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
     client = LLM(CFG)
     client.base = "http://10.20.0.5:11434"
-    assert client.hold_meeting_model(threading.Event(), every=0,
-                                     post=lambda *a, **k: pytest.fail("запрос ушёл")) == 0
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 0
+    assert wire.gets == [] and wire.posts == []
+
+
+def test_cloud_engine_holds_its_local_fallback(monkeypatch):
+    """Облако недоступно — встреча живёт на локальном запасе: его срок держит тик (DS I1)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    client = LLM(CFG)
+    client.engine, client.fallback_local, client.fallback_engine = "cloud", True, "ollama"
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 1
+    assert wire.posts[0] == _held("тест-модель:latest", "90m")
+    client.fallback_local = False
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 0
