@@ -21,10 +21,17 @@ import Foundation
 struct ChannelAxis {
     /// Меньше — дрожание времени буферов (буфер SCK 10–20 мс), не дыра.
     static let gapThreshold: Double = 0.1
-    /// Потолок заливки — половина живого буфера демона (`BUF_CAP_S = 60` в
-    /// `audio.py`): больше нулей за раз вытеснили бы из него речь до дыры и
-    /// дали бы ложный крик о потере (вход 3 №655, Sonnet C1).
-    static let fillCeiling: Double = 30
+    /// Потолок заливки посреди записи. Замер 15.10: выпадения — ступени
+    /// 0,4–1,2 с за минуту. Решение «залить или разорвать» каждый канал
+    /// принимает сам, и любой разнобой каналов в общей дыре (дыра у потолка,
+    /// заливка, не легшая на полном диске) сдвигает их друг против друга не
+    /// больше чем на потолок — 2 с, а не 30 (Opus C1, DS C1 круга по правкам).
+    static let fillCeiling: Double = 2
+    /// Потолок ведущих нулей канала, стартовавшего позже эпохи (ожидание
+    /// микрофона — до 10 с): второму каналу тут решать нечего. Половина живого
+    /// буфера демона (`BUF_CAP_S = 60` в `audio.py`): больше нулей за раз
+    /// вытеснили бы из него речь (вход 3 №655, Sonnet C1).
+    static let leadCeiling: Double = 30
 
     /// Частота файла — частота первого буфера канала.
     let rate: Int
@@ -62,12 +69,14 @@ struct ChannelAxis {
     mutating func plan(host: Double, epoch: Double) -> Plan {
         guard !disabled else { return .write }
         let a: (host: Double, frames: Int)
+        var lead = false
         if let anchor {
             a = anchor
         } else {
             // Первый буфер с временем: файл пуст — от эпохи сессии (поздний
             // старт канала получит ведущие нули), иначе — от себя.
-            a = fileFrames == 0 ? (epoch, 0) : (host, fileFrames)
+            lead = fileFrames == 0
+            a = lead ? (epoch, 0) : (host, fileFrames)
             anchor = a
         }
         guard abs(host - a.host) < Self.saneSpan else {
@@ -90,7 +99,7 @@ struct ChannelAxis {
             worstDrift = max(worstDrift, abs(gapSeconds))
             return .write
         }
-        guard gapSeconds <= Self.fillCeiling else {
+        guard gapSeconds <= (lead ? Self.leadCeiling : Self.fillCeiling) else {
             anchor = (host, fileFrames)
             breaks += 1
             return .broke(gapSeconds: gapSeconds)
@@ -158,4 +167,15 @@ extension FileHandle {
     /// Бросающий API: `offsetInFile` на сбойном дескрипторе роняет процесс
     /// исключением Objective-C, мимо `try?`.
     func endBytes() -> Int? { (try? seekToEnd()).map { Int($0) } }
+
+    /// Размер после сбоя записи, выровненный на сэмпл: легла половина сэмпла —
+    /// дописать нулевой байт. Иначе всё дальше демон читал бы со сдвигом на
+    /// байт, шумом (круг по правкам Opus, Sonnet I1, Haiku C1). Обрезать байт
+    /// нельзя — демон мог уже его прочитать. Не легло и это — размер нечётный,
+    /// и ось выключается.
+    func alignedEndBytes() -> Int? {
+        guard let n = endBytes() else { return nil }
+        guard n % 2 == 1 else { return n }
+        return appendAll { try $0.write(contentsOf: Data([0])) } ? n + 1 : n
+    }
 }

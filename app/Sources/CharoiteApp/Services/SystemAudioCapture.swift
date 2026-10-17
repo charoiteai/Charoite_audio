@@ -848,7 +848,7 @@ final class SystemAudioCapture: NSObject {
                 case .fill(let zeros):
                     if !writeZeros(zeros, to: handle) {
                         ledger.writeFailures += 1
-                        axis.fillFailed(host: host, fileBytes: handle?.endBytes())
+                        axis.fillFailed(host: host, fileBytes: handle?.alignedEndBytes())
                         lines.append("\(Self.axisLogMark): \(channel.rawValue) — заливка не легла, "
                                      + (axis.disabledReason.map { "\($0), ось выключена до конца записи" }
                                         ?? "отсчёт заново"))
@@ -879,7 +879,7 @@ final class SystemAudioCapture: NSObject {
             } else {
                 ledger.writeFailures += 1
                 let wasOn = !axis.disabled
-                axis.resync(fileBytes: handle?.endBytes())
+                axis.resync(fileBytes: handle?.alignedEndBytes())
                 if wasOn, axis.disabled, let why = axis.disabledReason {
                     lines.append("\(Self.axisLogMark): \(channel.rawValue) — сбой записи, \(why), "
                                  + "ось выключена до конца записи")

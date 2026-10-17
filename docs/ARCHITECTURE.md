@@ -52,15 +52,18 @@ the speakers' echo.
 **One time axis for both channels (ChannelAxis.swift).** Each buffer is placed
 by its own time, not by arrival order: the stream's `synchronizationClock` is
 converted to host time (`CMSyncConvertTime`) and measured from the session
-epoch. A gap over 0.1 s is filled with silence up to 30 s (half of
-`AudioHub.BUF_CAP_S`); a longer gap is a break and the axis is re-anchored. A
+epoch. A gap over 0.1 s is filled with silence up to 2 s (measured drops are
+0.4–1.2 s; each channel decides alone, so any disagreement between channels
+stays within 2 s); a late channel start gets up to 30 s of leading silence
+(half of `AudioHub.BUF_CAP_S`). A longer gap is a break and the axis is
+re-anchored. A
 buffer earlier than its slot re-anchors too, with a counter — no sound is cut.
 Filling works inside one stream only: after the stream is recreated each
 channel counts again from its own first buffer, as before, so the two channels
 never decide the shared restart gap differently. The file only grows (the
 daemon tails it): a failed write is not rolled back, the axis re-reads the
 file size, and a fill that failed re-anchors instead of retrying; an
-unreadable or odd size, a
+unreadable size, an odd size that a zero byte could not pad, a
 sample-rate change or a stream without a clock turns the axis off for the rest
 of the recording, and `capture.log` says why (`ОСЬ КАНАЛА`).
 

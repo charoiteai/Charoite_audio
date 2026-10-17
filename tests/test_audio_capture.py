@@ -1659,7 +1659,7 @@ def test_потолок_заливки_оси_не_больше_половины
     import re
     swift = (pathlib.Path(__file__).resolve().parents[1] / "app" / "Sources" / "CharoiteApp"
              / "Services" / "ChannelAxis.swift").read_text(encoding="utf-8")
-    m = re.search(r"static let fillCeiling: Double = ([0-9.]+)", swift)
+    m = re.search(r"static let leadCeiling: Double = ([0-9.]+)", swift)
     assert m, "потолок заливки не найден в ChannelAxis.swift"
     assert 2 * float(m.group(1)) <= a.AudioHub.BUF_CAP_S
 

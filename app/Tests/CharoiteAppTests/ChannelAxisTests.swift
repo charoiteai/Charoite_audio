@@ -74,6 +74,24 @@ final class ChannelAxisTests: XCTestCase {
         XCTAssertEqual(mic.plan(host: 103, epoch: 100), .fill(zeros: 3 * 48_000))
     }
 
+    func testLateStartMayLeadLongerThanTheMidRecordingCeiling() {
+        // Ожидание микрофона — до 10 с: ведущие нули — до своего потолка, а не
+        // до потолка посреди записи.
+        var mic = ChannelAxis(rate: 48_000)
+        XCTAssertEqual(mic.plan(host: 108, epoch: 100), .fill(zeros: 8 * 48_000))
+    }
+
+    func testCommonGapAboveCeilingBreaksBothChannelsAlike() {
+        // Общая дыра 3 с (стоп очереди SCK): оба канала рвут одинаково —
+        // разнобой каналов внутри потока не больше потолка 2 с (DS C1).
+        var s = ChannelAxis(rate: rate), m = ChannelAxis(rate: rate)
+        feed(&s, from: 100, count: 50, epoch: 100)
+        feed(&m, from: 100, count: 50, epoch: 100)
+        guard case .broke = s.plan(host: 104, epoch: 100), case .broke = m.plan(host: 104.02, epoch: 100)
+        else { return XCTFail("дыра 3 с больше потолка 2 с — разрыв у обоих") }
+        XCTAssertLessThanOrEqual(ChannelAxis.fillCeiling, 2)
+    }
+
     func testGapAboveCeilingBreaksAndRestartsCount() {
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 50, epoch: 100)
@@ -96,11 +114,11 @@ final class ChannelAxisTests: XCTestCase {
         // Арифметика оси: буфер, которому дали `.write`, но не записали
         // (`didWrite` не позван), — его место заливает следующая дыра. Сброс
         // якоря сдвигал бы канал на длину провала (выход 1, Haiku I2). Что
-        // файл при сбое откатывается целиком — `testAppendAllRollsBackPartialWrite`.
+        // легло в файл при сбое — `testFailedAppendNeverShrinksTheFile`.
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 50, epoch: 100)
         XCTAssertEqual(axis.plan(host: 101, epoch: 100), .write)    // этот буфер не лёг
-        XCTAssertEqual(axis.plan(host: 105, epoch: 100), .fill(zeros: 4 * rate))
+        XCTAssertEqual(axis.plan(host: 102, epoch: 100), .fill(zeros: rate))
     }
 
     func testFileAheadOfAxisRebasesAndCounts() {
@@ -145,6 +163,19 @@ final class ChannelAxisTests: XCTestCase {
         var axis = ChannelAxis(rate: rate)
         axis.resync(fileBytes: 96_014)
         XCTAssertEqual(axis.fileFrames, 48_007)
+    }
+
+    func testOddTailAfterFailedWriteIsPaddedToASample() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("axis-odd-\(UUID().uuidString).raw")
+        FileManager.default.createFile(atPath: url.path, contents: Data(count: 11))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let h = try FileHandle(forWritingTo: url)
+        defer { try? h.close() }
+        XCTAssertEqual(h.alignedEndBytes(), 12)
+        try h.synchronize()
+        XCTAssertEqual(try Data(contentsOf: url).count, 12, "легла половина сэмпла — дописан ноль")
+        XCTAssertEqual(h.alignedEndBytes(), 12, "чётный размер не трогается")
     }
 
     func testRestartedStreamCountsEachChannelFromItsOwnFirstBuffer() {
