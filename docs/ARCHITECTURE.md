@@ -49,6 +49,17 @@ two channels stay separate, which gives "me / them" diarization for free;
 when both channels carry speech at once, the microphone chunk is dropped as
 the speakers' echo.
 
+**One time axis for both channels (ChannelAxis.swift).** Each buffer is placed
+by its own time, not by arrival order: the stream's `synchronizationClock` is
+converted to host time (`CMSyncConvertTime`) and measured from the session
+epoch. A gap over 0.1 s is filled with silence up to 30 s (half of
+`AudioHub.BUF_CAP_S`); a longer gap is a break and the axis is re-anchored. A
+buffer earlier than its slot re-anchors too, with a counter — no sound is cut.
+Writes are all-or-nothing: a failed write is rolled back to the offset taken
+before it, and the axis re-reads the file size; an unreadable or odd size, a
+sample-rate change or a stream without a clock turns the axis off for the rest
+of the recording, and `capture.log` says why (`ОСЬ КАНАЛА`).
+
 ### Channel labels and the owner — one source (src/channel_labels.py)
 
 Who speaks into the microphone and who owns the meeting is answered by one
