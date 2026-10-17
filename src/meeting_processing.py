@@ -408,7 +408,7 @@ class MeetingStatusStore:
         встреча 12.10 — 55 минут). Только при `processing`: этап, части,
         `updated_at` и попытки не трогаем — это не новый шаг, а то же место
         под новым именем. Статуса нет или путь прежний — не пишем.
-        `transcript` — исходное имя (ключ — через `track`), `moved_to` — то,
+        `transcript` — исходное имя (ключ — см. `_key`), `moved_to` — то,
         что вернул переименователь, без угадывания глобом (Sonnet M1).
         Это не исход, поэтому обычная запись под замком: без замка она
         откатывала бы чужую запись того же окна (выход 2 №699, DS I2). Замок
@@ -422,10 +422,11 @@ class MeetingStatusStore:
         отказе в лог (выход 6, DS I1 = Sonnet M1 = Haiku I1).
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
+        if not moved_to.is_file() or not self.directory.is_dir():
+            return None             # писать нечего — и отказа нет (выход 7, Haiku I2 = DS M2)
         if str(transcript) not in self._keyed_alive:
             raise LookupError("ключ статуса не посчитан под исходным именем")
-        if (not moved_to.is_file() or not self.directory.is_dir()
-                or not self._path(transcript).is_file()):
+        if not self._path(transcript).is_file():
             return None
         final = str(moved_to.resolve())     # путь переименователя, без глоба (выход 3, DS M1)
 
@@ -741,9 +742,10 @@ class MeetingStatusStore:
         заметки графа, ему достаточно быть неизменным.
 
         Путь попадает в `_keyed_alive` при первом расчёте ключа, пока файл
-        жив, кто бы ни спросил; ключ мёртвого имени — из кэша или угадан, и
-        `repath` по нему не пишет. В боевом прогоне это `track`: `main`
-        проверяет файл до `_open_progress` (выход 6 №699, DS C1, M1).
+        жив, кто бы ни спросил (`track`, `processing`, `ready`…); ключ мёртвого
+        имени — из кэша или угадан, и `repath` по нему не пишет (выходы 6–7
+        №699). Кто спросит первым, не важно: инвариант не опирается на порядок
+        вызовов.
         """
         transcript = pathlib.Path(transcript)
         tp = str(transcript)

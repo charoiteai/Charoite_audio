@@ -300,6 +300,9 @@ def test_a_refusal_without_a_key_is_logged_once(tmp_path, monkeypatch, capsys):
     store = meeting_processing.MeetingStatusStore(tmp_path)
     monkeypatch.setattr(gu, "_progress", (store, old))
     gu._repath(titled)
+    assert capsys.readouterr().out == "", "каталога статусов нет — писать нечего, отказа нет (выход 7, Haiku I2)"
+    store.directory.mkdir(parents=True)
+    gu._repath(titled)
     out = capsys.readouterr().out
     assert out.count("новый путь стенограммы в статус не записан (LookupError") == 1, out
     assert "попытка" not in out
