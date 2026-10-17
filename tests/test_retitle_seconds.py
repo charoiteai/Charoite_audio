@@ -256,8 +256,7 @@ def test_status_is_repathed_right_after_the_retitle():
     text = (Path(__file__).resolve().parent.parent / "src" / "graph_updater.py").read_text(encoding="utf-8")
     call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
     assert text[call:].split("\n", 2)[1].strip() == "_repath(tpath)"
-    track, progress = text.index("store.track(tpath)"), text.index("_progress = (store, tpath)")
-    assert progress < track < call, "ключ статуса — под исходным именем, до наката темы; сбой ключа не гасит статус"
+    assert text.index("    _open_progress(tpath)\n") < call, "ключ статуса — под исходным именем, до наката темы"
 
 
 def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch, capsys):
@@ -270,3 +269,53 @@ def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch
     monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
     gu._repath(Path("y.md"))
     assert "новый путь стенограммы в статус не записан (OSError: диск)" in capsys.readouterr().out
+
+
+def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
+    """Сбой ключа не гасит статус прогона (выход 2 №699, DS M4) — поведением, а не
+    порядком строк (выход 3, Sonnet M1)."""
+    import meeting_processing
+
+    def broken(self, transcript):
+        raise OSError("каталог")
+    monkeypatch.setattr(gu, "_progress", None)
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", broken)
+    gu._open_progress(Path("x.md"))
+    assert gu._progress is not None and gu._progress[1] == Path("x.md")
+    assert "ключ статуса не запомнен (OSError: каталог)" in capsys.readouterr().out
+
+
+def test_no_store_means_no_status_and_no_key_line(monkeypatch, capsys):
+    """Стор не открылся — статуса нет; про ключ не говорим (выход 3, DS M3)."""
+    import meeting_processing
+
+    def broken(self, root, **kw):
+        raise OSError("права")
+    monkeypatch.setattr(gu, "_progress", None)
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "__init__", broken)
+    gu._open_progress(Path("x.md"))
+    out = capsys.readouterr().out
+    assert gu._progress is None
+    assert "статус недоступен (OSError: права)" in out and "ключ статуса" not in out
+
+
+def test_repath_tries_again_while_the_status_lock_is_busy(monkeypatch, capsys):
+    """У короткой встречи следующей записи до `ready` нет: занятый замок — ещё попытка,
+    после последней — строка (выход 3 №699, Haiku I2)."""
+    class Busy:
+        def __init__(self, fails):
+            self.fails, self.calls = fails, 0
+
+        def repath(self, transcript, moved_to):
+            self.calls += 1
+            if self.calls <= self.fails:
+                raise TimeoutError("замок занят")
+    store = Busy(gu.REPATH_TRIES - 1)
+    monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
+    gu._repath(Path("y.md"))
+    assert store.calls == gu.REPATH_TRIES and capsys.readouterr().out == ""
+    store = Busy(gu.REPATH_TRIES)
+    monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
+    gu._repath(Path("y.md"))
+    assert store.calls == gu.REPATH_TRIES
+    assert "не записан (TimeoutError: замок занят)" in capsys.readouterr().out

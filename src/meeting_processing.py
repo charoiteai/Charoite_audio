@@ -407,14 +407,16 @@ class MeetingStatusStore:
         что вернул переименователь, без угадывания глобом (Sonnet M1).
         Это не исход, поэтому обычная запись под замком: без замка она
         откатывала бы чужую запись того же окна (выход 2 №699, DS I2). Замок
-        занят дольше срока — TimeoutError, путь ляжет с `ready`; сравнение
-        с прочитанным в самой двери записи — долг №615.
+        занят дольше срока — TimeoutError. Следующей записи того же писателя
+        до `ready` может не быть (короткая встреча), поэтому повторяет
+        вызывающий (`graph_updater._repath`); сравнение с прочитанным в самой
+        двери записи — долг №615.
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
         if (not moved_to.is_file() or not self.directory.is_dir()
                 or not self._path(transcript).is_file()):
             return None
-        final = str(find_final_transcript(moved_to))
+        final = str(moved_to.resolve())     # путь переименователя, без глоба (выход 3, DS M1)
 
         def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
             if current.get("state") != "processing" or current.get("transcript_path") == final:
@@ -774,11 +776,13 @@ class MeetingStatusStore:
         if best is None:
             return None
         if best[0] == 0 and exact and meeting_stamp.minute_of(exact) != exact:
+            # точный ключ встречи (секунды или суффикс коллизии) — её собственный
             return exact
         if best[0] == 0 and candidates > 1:
             # только мёртвые пути и их несколько: свежесть — не признак владения,
             # соседка той же минуты угнала бы ключ и meeting_id (GLM r2) —
-            # не гадаем, дальше сработает детерминированный штамп текущего файла
+            # не гадаем, дальше — минутный `exact` или стем текущего файла;
+            # встреча без `stamp` с одной мёртвой записью соседки — №729
             return None
         return best[3]
 
