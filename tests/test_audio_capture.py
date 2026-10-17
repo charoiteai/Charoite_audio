@@ -1659,9 +1659,10 @@ def test_потолок_заливки_оси_не_больше_половины
     import re
     swift = (pathlib.Path(__file__).resolve().parents[1] / "app" / "Sources" / "CharoiteApp"
              / "Services" / "ChannelAxis.swift").read_text(encoding="utf-8")
-    m = re.search(r"static let leadCeiling: Double = ([0-9.]+)", swift)
-    assert m, "потолок заливки не найден в ChannelAxis.swift"
-    assert 2 * float(m.group(1)) <= a.AudioHub.BUF_CAP_S
+    ceilings = [re.search(rf"static let {name}: Double = ([0-9.]+)", swift)
+                for name in ("fillCeiling", "leadCeiling")]
+    assert all(ceilings), "потолок заливки не найден в ChannelAxis.swift"
+    assert 2 * max(float(m.group(1)) for m in ceilings) <= a.AudioHub.BUF_CAP_S
 
 
 def test_смерть_канала_собеседников_после_старта_кричит_один_раз(monkeypatch, tmp_path):

@@ -92,11 +92,34 @@ final class ChannelAxisTests: XCTestCase {
         XCTAssertLessThanOrEqual(ChannelAxis.fillCeiling, 2)
     }
 
+    func testFillThatFailedOnOneChannelShiftsThePairByOneGapAtMost() {
+        // Общая дыра 1,5 с: у системного канала заливка не легла (полный
+        // диск), у микрофона легла. Разнобой пары — одна дыра, не больше
+        // потолка; следующая общая дыра, залитая обоими, его не растит (DS C1).
+        var s = ChannelAxis(rate: rate), m = ChannelAxis(rate: rate)
+        feed(&s, from: 100, count: 50, epoch: 100)
+        feed(&m, from: 100, count: 50, epoch: 100)
+        guard case .fill = s.plan(host: 102.5, epoch: 100),
+              case .fill(let mz) = m.plan(host: 102.5, epoch: 100)
+        else { return XCTFail("дыра 1,5 с — заливка у обоих") }
+        s.fillFailed(host: 102.5, fileBytes: 2 * s.fileFrames)
+        m.didFill(mz)
+        s.didWrite(buf); m.didWrite(buf)
+        let shift = abs(s.fileFrames - m.fileFrames)
+        XCTAssertGreaterThan(shift, 0)
+        XCTAssertLessThanOrEqual(shift, Int(ChannelAxis.fillCeiling) * rate)
+        guard case .fill(let sz) = s.plan(host: 104.5, epoch: 100),
+              case .fill(let mz2) = m.plan(host: 104.5, epoch: 100)
+        else { return XCTFail("вторая дыра — заливка у обоих") }
+        s.didFill(sz); m.didFill(mz2)
+        XCTAssertEqual(abs(s.fileFrames - m.fileFrames), shift)
+    }
+
     func testGapAboveCeilingBreaksAndRestartsCount() {
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 50, epoch: 100)
         let after = 101 + ChannelAxis.fillCeiling + 5
-        guard case .broke(let gap) = axis.plan(host: after, epoch: 100)
+        guard case .broke(let gap, _) = axis.plan(host: after, epoch: 100)
         else { return XCTFail("дыра больше потолка — разрыв, не нули") }
         XCTAssertEqual(gap, ChannelAxis.fillCeiling + 5, accuracy: 0.01)
         axis.didWrite(buf)

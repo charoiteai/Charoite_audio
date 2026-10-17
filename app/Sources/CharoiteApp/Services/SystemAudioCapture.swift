@@ -878,10 +878,10 @@ final class SystemAudioCapture: NSObject {
                             ledger.zerosSinceLog = 0
                         }
                     }
-                case .broke(let gap):
+                case .broke(let gap, let ceiling):
                     lines.append(String(format: "%@: %@ — разрыв %.1f с больше потолка %.0f с, "
                                         + "отсчёт заново", Self.axisLogMark, channel.rawValue,
-                                        gap, ChannelAxis.fillCeiling))
+                                        gap, ceiling))
                 }
             } else {
                 ledger.untimed += 1

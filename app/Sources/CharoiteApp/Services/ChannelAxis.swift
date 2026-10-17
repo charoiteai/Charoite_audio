@@ -25,7 +25,8 @@ struct ChannelAxis {
     /// 0,4–1,2 с за минуту. Решение «залить или разорвать» каждый канал
     /// принимает сам, и любой разнобой каналов в общей дыре (дыра у потолка,
     /// заливка, не легшая на полном диске) сдвигает их друг против друга не
-    /// больше чем на потолок — 2 с, а не 30 (Opus C1, DS C1 круга по правкам).
+    /// больше чем на потолок за одну дыру — 2 с, а не 30 (Opus C1, DS C1 круга
+    /// по правкам). Неудавшаяся заливка остаётся сдвигом до конца потока.
     static let fillCeiling: Double = 2
     /// Потолок ведущих нулей канала, стартовавшего позже эпохи (ожидание
     /// микрофона — до 10 с): второму каналу тут решать нечего. Половина живого
@@ -62,7 +63,7 @@ struct ChannelAxis {
     enum Plan: Equatable {
         case write                    // буфер встаёт как есть
         case fill(zeros: Int)         // сначала столько нулей
-        case broke(gapSeconds: Double)  // разрыв: отсчёт заново
+        case broke(gapSeconds: Double, ceiling: Double)  // разрыв: отсчёт заново
     }
 
     /// Что сделать перед буфером со временем `host` (секунды часов хоста);
@@ -83,7 +84,7 @@ struct ChannelAxis {
         guard abs(host - a.host) < Self.saneSpan else {
             anchor = (host, fileFrames)
             breaks += 1
-            return .broke(gapSeconds: host - a.host)
+            return .broke(gapSeconds: host - a.host, ceiling: Self.saneSpan)
         }
         let want = a.frames + Int(((host - a.host) * Double(rate)).rounded())
         let gap = want - fileFrames
@@ -100,10 +101,11 @@ struct ChannelAxis {
             worstDrift = max(worstDrift, abs(gapSeconds))
             return .write
         }
-        guard gapSeconds <= (lead ? Self.leadCeiling : Self.fillCeiling) else {
+        let ceiling = lead ? Self.leadCeiling : Self.fillCeiling
+        guard gapSeconds <= ceiling else {
             anchor = (host, fileFrames)
             breaks += 1
-            return .broke(gapSeconds: gapSeconds)
+            return .broke(gapSeconds: gapSeconds, ceiling: ceiling)
         }
         return .fill(zeros: gap)
     }

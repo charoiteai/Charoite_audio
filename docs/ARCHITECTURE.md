@@ -53,8 +53,9 @@ the speakers' echo.
 by its own time, not by arrival order: the stream's `synchronizationClock` is
 converted to host time (`CMSyncConvertTime`) and measured from the session
 epoch. A gap over 0.1 s is filled with silence up to 2 s (measured drops are
-0.4–1.2 s; each channel decides alone, so any disagreement between channels
-stays within 2 s); a late channel start gets up to 30 s of leading silence
+0.4–1.2 s; each channel decides alone, so a disagreement between channels
+stays within 2 s per gap, and a fill that failed stays a shift until the
+stream ends); a late channel start gets up to 30 s of leading silence
 (half of `AudioHub.BUF_CAP_S`). A longer gap is a break and the axis is
 re-anchored. A
 buffer earlier than its slot re-anchors too, with a counter — no sound is cut.
