@@ -200,7 +200,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
             continue
         if pcm.exists() and not alive:
             drop_stale_part()
-            log(f"{label}: демон не держит запись и не финализировал — конвертирую .pcm сам")
+            log(f"{label}: демон мёртв и не финализировал — конвертирую .pcm сам")
             return pcm_to_wav(pcm, sr)
         time.sleep(2)
     if wav.exists():
@@ -215,9 +215,12 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
 
 
 def _daemon_alive() -> bool:
-    """Держит ли лок демон. Пока держит — записи финализирует он; консольный
-    v1 под тем же локом записей демона не финализирует (№725)."""
-    return live_gate.daemon_finalizes(_root())
+    """Держит ли кто-то лок встречи. Пока держит — записи финализирует он:
+    и демон, и консольный v1 — тем же `AudioHub`, тем же `.wav.part`
+    (выход 5 №725, DS C1). До сюда пересборка доходит только после ворот
+    `_yield_to_live("пересборка")`, так что держатель здесь — встреча,
+    начатая уже после них."""
+    return live_gate.daemon_alive(_root())
 
 
 def _yield_to_live(what: str, cap: float | None = None) -> None:

@@ -334,14 +334,14 @@ def test_refused_daemon_tells_a_console_holder_from_another_daemon(tmp_path):
 
 def test_console_mark_does_not_outlive_its_holder(tmp_path):
     """Признак консоли — лок ядра, а не метка в файле: вышедшая консоль не оставляет его,
-    и демон в миг своего захвата консолью не выглядит (выход 4 №725, DS C1)."""
+    и демон в миг своего захвата консолью не назван (выход 4 №725, DS C1)."""
     f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
     f.close()
     assert live_gate.console_lock_path(tmp_path).exists(), "файл признака остался — судит лок"
     with live_gate.lock_path(tmp_path).open("w") as daemon:
         fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert live_gate.held_by_console(tmp_path) is False
-        assert live_gate.daemon_finalizes(tmp_path) is True
+        assert live_gate.refusal(tmp_path)[1] is None
 
 
 def test_console_reason_is_not_claimed_on_a_volume_without_flock(tmp_path, monkeypatch):
@@ -376,25 +376,41 @@ def test_daemon_refusal_names_the_console_reason():
     знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725)."""
     body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
     assert "text, reason = live_gate.refusal(_root())" in body
+    assert "open(live_gate.lock_path(_root())" in body, "имя лока — у владельца (выход 5 №725, DS I1)"
     assert "emit_error(text, reason=reason)" in body
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
     assert '"console_meeting"' in swift
 
 
-def test_rebuild_waits_for_the_daemon_but_not_for_a_console_recording(tmp_path):
-    """Пересборка ждёт осиротевший `.part`, только пока лок держит демон: консольный v1
-    его записи не финализирует, ожидание стоило бы канала (выход 3 №725, DS M8)."""
-    import fcntl
-    path = live_gate.lock_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    assert live_gate.daemon_finalizes(tmp_path) is False, "лока нет — никто"
+def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):
+    """Консоль финализирует свои записи тем же `AudioHub` и тем же `.wav.part`: пока она
+    держит лок встречи, пересборка `.part` не удаляет (выход 5 №725, DS C1)."""
+    import rebuild_transcript as rt
+    monkeypatch.setattr(rt, "_root", lambda: tmp_path)
+    assert rt._daemon_alive() is False, "лока нет — никто"
     console, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
     try:
         assert outcome == live_gate.file_locks.TAKEN
-        assert live_gate.daemon_alive(tmp_path) is True, "встреча идёт — фон ждёт"
-        assert live_gate.daemon_finalizes(tmp_path) is False, "но записи демона финализирует не консоль"
+        assert rt._daemon_alive() is True
     finally:
         console.close()
-    with path.open("w") as daemon:             # как демон: свой лок, признака консоли нет
-        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert live_gate.daemon_finalizes(tmp_path) is True
+
+
+def test_console_mark_survives_a_reader_probe(tmp_path):
+    """Признак берётся с ретраями, как лок встречи: SH-проба читателя в миг захвата
+    не отнимает его на всю встречу (выход 5 №725, Sonnet I1)."""
+    path = live_gate.console_lock_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    probe = path.open("a")
+    fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+    def release(_seconds):
+        if not probe.closed:
+            probe.close()
+
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=release)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f.mark is not None
+        assert live_gate.refusal(tmp_path)[1] == "console_meeting"
+    finally:
+        f.close()

@@ -87,12 +87,13 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   root — is `live_gate.daemon_process`: one pattern (`python` with the
   script as its first argument) for the MCP status and the placeholder
   migration, so an editor with `src/daemon.py` open is not a daemon.
-  The console v1 (`src/main.py`) takes the same lock for its meeting and
-  a second one, `logs/console.lock`, as the sign that the holder is the
-  console: the kernel tells who holds, not the file contents. A refused
-  daemon then names the console (`live_gate.refusal`), and the rebuild
-  waits for a `.part` only while the daemon holds the lock
-  (`live_gate.daemon_finalizes`).
+  The console v1 (`src/main.py`) takes the same lock for its meeting and,
+  when it can, a second one, `logs/console.lock`, as the sign that the
+  holder is the console: the kernel tells who holds, not the file contents.
+  A refused daemon then names the console (`live_gate.refusal`); without
+  the sign it only says another window is listening. Both writers finalize
+  their recordings the same way, so the rebuild waits for a `.part` while
+  anyone holds the meeting lock.
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts

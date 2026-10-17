@@ -223,7 +223,7 @@
 - `src/graph_updater.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/live_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/llm.py` ← config/config.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md
-- `src/main.py` ← README.md, docs/MODELS.md, docs/SETUP.md, docs/ru/MODELS.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/MODELS.md, docs/zh/README.md, docs/zh/SETUP.md
+- `src/main.py` ← README.md, docs/ARCHITECTURE.md, docs/MODELS.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/MODELS.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/MODELS.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/mcp_server.py` ← README.md, docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/README.md, docs/ru/SETUP.md, docs/zh/ARCHITECTURE.md, docs/zh/README.md, docs/zh/SETUP.md
 - `src/meeting_archive.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md, docs/zh/ARCHITECTURE.md
 - `src/nli.py` ← docs/ARCHITECTURE.md, docs/FEATURES.md, docs/research/decision-gate.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, pyproject.toml

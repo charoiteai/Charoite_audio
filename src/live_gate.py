@@ -109,22 +109,6 @@ def daemon_alive(root: pathlib.Path) -> bool:
         return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
 
 
-def daemon_finalizes(root: pathlib.Path) -> bool:
-    """Держит ли лок встречи ДЕМОН — тот, кто сам финализирует свои записи.
-
-    С №725 лок держит и консольный v1, а он записи демона не финализирует:
-    пересборка прошлой встречи при живом v1 ждала бы осиротевший `.part`
-    убитого демона все 45 с и теряла канал (выход 3 №725, DS M8). Консоль
-    узнаём по её признаку-локу (`held_by_console`).
-    """
-    try:
-        f = lock_path(root).open("r")
-    except OSError:
-        return False
-    with f:
-        return file_locks.held_by_someone(f) and not held_by_console(root)
-
-
 class ConsoleMeeting:
     """Описатели консольной встречи: лок встречи и признак консоли (может не быть).
 
@@ -166,12 +150,14 @@ def hold_meeting(root: pathlib.Path, *, sleep=time.sleep):
         return None, outcome
     # Признак консоли — вторым локом, под уже взятым локом встречи: демон, которому
     # отказано, называет причину значением, а не «другим окном» (выход 3 №725,
-    # DS I3). Признак не взят — лок встречи остаётся, теряется только эта
-    # различимость; трейсбека нет (выход 4 №725, Sonnet M1 = DS M2).
+    # DS I3). Читает признак только `refusal`. Не взят — лок встречи остаётся,
+    # теряется только причина отказа; трейсбека нет (выход 4 №725, Sonnet M1 = DS M2).
     mark = None
     try:
         mark = console_lock_path(root).open("a")
-        if not file_locks.acquire_exclusive(mark, attempts=1, pause=0, busy=(OSError,)):
+        # ретраи, как у лока встречи: SH-проба читателя признака иначе отнимала
+        # его на всю встречу (выход 5 №725, Sonnet I1)
+        if file_locks.acquire_outcome(mark, busy=(BlockingIOError,), sleep=sleep) != file_locks.TAKEN:
             mark.close()
             mark = None
     except OSError:

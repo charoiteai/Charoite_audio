@@ -754,7 +754,7 @@ def main():
     harden_existing(_root())
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     secure_dir(_root() / "logs")
-    lockf = open(_root() / "logs" / "daemon.lock", "w")
+    lockf = open(live_gate.lock_path(_root()), "w")   # имя лока — у владельца (выход 5 №725, DS I1)
     # Ретраи против микросекундных проб фона — в хелпере. busy=(OSError,) —
     # демон не различает «занято» и «flock не поддержан»: вторым не стартует
     # в обоих случаях (семантика прежнего цикла сохранена, D-П6).
