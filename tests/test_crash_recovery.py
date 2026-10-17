@@ -229,10 +229,11 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     assert slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
 
 
-def test_a_held_meeting_lock_keeps_a_pcm_without_part_until_the_deadline(rec_dir, monkeypatch):
+def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, monkeypatch):
     """Лок встречи держится, `.pcm` есть, `.part` ещё нет: в цикле `.pcm` не
-    трогаем — конвертация только по сроку, как на базе (выход 8 №725, DS C1).
-    Держатель здесь — встреча после ворот, со своим штампом (№728)."""
+    трогаем (выход 8 №725, DS C1). Конвертация по сроку — поведение базы, а не
+    цель: под живым локом это может быть `.pcm` соседки той же минуты (минутное
+    разрешение штампа, шаг Haiku out8); гейт писателя на файле — №728."""
     import live_gate
     import rebuild_transcript as rt
 
