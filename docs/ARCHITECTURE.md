@@ -64,8 +64,9 @@ never decide the shared restart gap differently. The file only grows (the
 daemon tails it): a failed write is not rolled back, the axis re-reads the
 file size, and a fill that failed re-anchors instead of retrying; an
 unreadable size, an odd size that a zero byte could not pad, a
-sample-rate change or a stream without a clock turns the axis off for the rest
-of the recording, and `capture.log` says why (`ОСЬ КАНАЛА`).
+sample-rate change turns the axis off for the rest of the recording, and
+`capture.log` says why (`ОСЬ КАНАЛА`). Buffers of a stream without a clock go
+to the file without the axis, as before, and are counted.
 
 ### Channel labels and the owner — one source (src/channel_labels.py)
 

@@ -677,6 +677,10 @@ final class SystemAudioCapture: NSObject {
             var ledger: [AxisChannel: Ledger] = [:]
             /// Потоки, чей первый буфер канала уже записан в журнал.
             var greeted: Set<String> = []
+            /// Поток, чьи буферы последними легли в канал.
+            var axisStream: [AxisChannel: ObjectIdentifier] = [:]
+            /// Каналы, чей поток отпущен: первый буфер следующего — от себя.
+            var pendingRestart: Set<AxisChannel> = []
         }
         enum AxisChannel: String { case system = "системный", mic = "микрофон" }
         /// Чего ось не видит: буферы, выпавшие до неё (итог в журнал на `close`).
@@ -728,10 +732,16 @@ final class SystemAudioCapture: NSObject {
                 st.micRateByStream[id] = nil
                 st.tombstones.insert(id)
                 // Новый поток — отсчёт каждого канала от его первого буфера, без
-                // заливки дыры пересоздания (Opus C1). Новый поток может занять
-                // тот же адрес — строка первого буфера нужна и ему (Opus M1).
+                // заливки дыры пересоздания (Opus C1). Только канал, который писал
+                // этот поток (или ещё ничей): поздний поток после таймаута сборки
+                // отпускается, когда следующий уже пишет (DS I2, Sonnet M2). Новый
+                // поток может занять тот же адрес — строка первого буфера нужна и
+                // ему (Opus M1).
                 for ch in [AxisChannel.system, .mic] {
-                    st.axes[ch]?.streamRestarted()
+                    if st.axisStream[ch] == nil || st.axisStream[ch] == id {
+                        st.axisStream[ch] = nil
+                        st.pendingRestart.insert(ch)
+                    }
                     st.greeted.remove("\(id.hashValue)-\(ch.rawValue)")
                 }
             }
@@ -833,6 +843,8 @@ final class SystemAudioCapture: NSObject {
                            stream sid: ObjectIdentifier, in st: inout Counters) -> [String] {
             let handle = channel == .system ? systemHandle : micHandle
             var axis = st.axes[channel] ?? ChannelAxis(rate: rate)
+            if st.pendingRestart.remove(channel) != nil { axis.streamRestarted() }
+            st.axisStream[channel] = sid
             var ledger = st.ledger[channel] ?? Ledger()
             var lines: [String] = []
             if !axis.disabled && rate != axis.rate {

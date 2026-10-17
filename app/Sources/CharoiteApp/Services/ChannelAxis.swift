@@ -43,6 +43,7 @@ struct ChannelAxis {
     /// Почему ось выключена — для итога в журнале.
     private(set) var disabledReason: String?
     private var anchor: (host: Double, frames: Int)?
+    private var restarted = false
 
     // Итог для журнала.
     private(set) var gaps = 0
@@ -75,7 +76,7 @@ struct ChannelAxis {
         } else {
             // Первый буфер с временем: файл пуст — от эпохи сессии (поздний
             // старт канала получит ведущие нули), иначе — от себя.
-            lead = fileFrames == 0
+            lead = fileFrames == 0 && !restarted
             a = lead ? (epoch, 0) : (host, fileFrames)
             anchor = a
         }
@@ -115,7 +116,9 @@ struct ChannelAxis {
     }
 
     /// Поток пересоздан: следующий буфер — отсчёт от себя, без заливки дыры.
-    mutating func streamRestarted() { anchor = nil }
+    /// Канал, пустой до пересоздания, тоже от себя: ведущие нули от эпохи
+    /// залили бы ему дыру пересоздания, которой второй канал не залил (Sonnet M3).
+    mutating func streamRestarted() { anchor = nil; restarted = true }
 
     /// Заливка не легла: эта дыра живёт как до №655 — счёт по размеру файла,
     /// отсчёт заново от буфера. Иначе каждый следующий буфер снова планировал

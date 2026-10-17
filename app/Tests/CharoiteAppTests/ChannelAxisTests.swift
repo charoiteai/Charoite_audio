@@ -192,10 +192,17 @@ final class ChannelAxisTests: XCTestCase {
         s.streamRestarted(); m.streamRestarted()
         XCTAssertEqual(s.plan(host: 139, epoch: 100), .write)
         XCTAssertEqual(m.plan(host: 141, epoch: 100), .write)
-        XCTAssertEqual(s.fileFrames / rate, m.fileFrames / 48_000, "каналы на одной шкале")
         // внутри нового потока дыры снова заливаются
         s.didWrite(buf)
         XCTAssertEqual(s.plan(host: 139 + 0.02 + 1, epoch: 100), .fill(zeros: rate))
+    }
+
+    func testChannelEmptyBeforeRestartCountsFromItself() {
+        // Микрофон не дал ни кадра до пересоздания: от эпохи он залил бы дыру
+        // пересоздания, которой системный не залил (Sonnet M3).
+        var m = ChannelAxis(rate: 48_000)
+        m.streamRestarted()
+        XCTAssertEqual(m.plan(host: 112, epoch: 100), .write)
     }
 
     func testFailedFillRebasesInsteadOfGrowingEveryBuffer() {
