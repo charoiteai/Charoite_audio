@@ -420,7 +420,9 @@ class MeetingStatusStore:
         путь не отмечен в `_keyed_alive` (см. `_key`) — LookupError, не
         молчаливый None: по новому имени ключ угадывался бы, и путь мог лечь
         в чужой документ (выход 5 №699, DS C1; №729), а вызывающий должен
-        сказать об отказе в лог (выход 6, DS I1); документа нет — None.
+        сказать об отказе в лог (выход 6, DS I1); документа нет — None;
+        дальше под замком `_update`: статус не `processing` или путь уже
+        новый — None без записи (выход 9, Haiku M1).
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
         if not moved_to.is_file() or not self.directory.is_dir():

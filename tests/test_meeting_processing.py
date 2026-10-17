@@ -667,7 +667,7 @@ def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp
                     "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
 
 
-def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):
+def test_repath_leaves_finished_missing_and_unmoved_alone(tmp_path):
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     store.track(live)
