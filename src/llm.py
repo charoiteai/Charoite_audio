@@ -534,6 +534,10 @@ BACKGROUND_KEEP_ALIVE = "10m"   # не 0: ночной цикл гонит вс�
 #: Шаг переутверждения срока владельцем встречи — втрое короче фонового срока:
 #: два пропуска подряд (сервер занят, сеть) модель ещё не выгружают.
 HOLD_EVERY_S = 180.0
+#: Ключи `sufler.*`, по которым встреча зовёт модель мимо `llm.*` (тезисы,
+#: разметка реплик). Тик срока держит их наравне с лестницей `llm.*`; новый
+#: ключ модели встречи — сюда, сторож `test_hold_knows_every_sufler_model_key`.
+MEETING_MODEL_KEYS = ("think_model", "markup_model")
 
 
 def chat_keep_alive(root: pathlib.Path | None, base_url: str) -> str:
@@ -943,10 +947,19 @@ class LLM:
                       file=sys.stderr, flush=True)
             failed = reason
         try:
-            target._hold_tick(BACKGROUND_KEEP_ALIVE)
-        except Exception:  # noqa: BLE001 — встреча кончилась, срок допишет фон
-            pass
+            _, errors = target._hold_tick(BACKGROUND_KEEP_ALIVE)
+            reason = "; ".join(errors) or None
+        except Exception as e:  # noqa: BLE001 — встреча кончилась, срок допишет фон
+            reason = f"{type(e).__name__}: {e}"
+        if reason:
+            print(f"llm: срок моделей встречи не сдан ({reason})", file=sys.stderr, flush=True)
         return held
+
+    def meeting_models(self) -> set[str]:
+        """Теги моделей встречи: лестница `llm.*` и `sufler.*` из `MEETING_MODEL_KEYS`."""
+        sufler = self._cfg.get("sufler") or {}
+        tags = (self.model, self.fallback, self.small, *(sufler.get(k) for k in MEETING_MODEL_KEYS))
+        return {m if ":" in m else f"{m}:latest" for m in tags if m}
 
     def _hold_tick(self, keep_alive: str) -> tuple[int, list[str]]:
         """Один тик срока — моделям встречи, которые сервер уже держит в памяти.
@@ -956,30 +969,34 @@ class LLM:
         контекст 8192 → 131072; круг opusfix, Sonnet C1). Поэтому тик спрашивает
         `/api/ps` и шлёт срок только резидентным моделям встречи (`model`,
         `fallback`, `small` — лестница `resolve_model` и тихие подсказки, DS C1;
-        `sufler.think_model` — тезисы, opusfix2 Sonnet I1) с тем контекстом,
+        `sufler.think_model`, `sufler.markup_model` — тезисы и разметка,
+        opusfix2 Sonnet I1, opusfix3 Sonnet I1; `meeting_models`) с тем контекстом,
         с которым сервер их держит: модель, загруженную фоном с 16384, тик
         держит, не перезагружая (opusfix2, Sonnet I2). Без `context_length` в
         ответе модель не трогает. С совпавшим контекстом запрос — 7 мс, без
-        загрузки; между `/api/ps` и запросом остаётся окно в миллисекунды,
-        когда модель может уйти (opusfix2, Haiku C1 — принято, Minor).
-        `/api/ps` не 200 — RuntimeError; отказ по одной модели остальным тик
-        не срывает (DS I2). Возвращает принятые и строки отказов.
+        загрузки; между `/api/ps` и запросом модель может уйти — окно
+        длится до запроса этой модели (opusfix2, Haiku C1 — принято, Minor).
+        `/api/ps` не 200 или сеть — исключение; отказ по одной модели, статусом
+        или сетью, остальным тик не срывает (opusfix2 DS I2, opusfix3 Sonnet
+        I3). Возвращает принятые и строки отказов.
         """
         ps_url = f"{self.base}/api/ps"
         r = requests.get(ps_url, timeout=10, **privacy.proxies_for(ps_url))
         if r.status_code != 200:
             raise RuntimeError(f"/api/ps: HTTP {r.status_code}")
-        think = (self._cfg.get("sufler") or {}).get("think_model")
-        mine = {m if ":" in m else f"{m}:latest"
-                for m in (self.model, self.fallback, self.small, think) if m}
+        mine = self.meeting_models()
         resident = [(m.get("name"), m.get("context_length")) for m in r.json().get("models") or []
                     if m.get("name") in mine and isinstance(m.get("context_length"), int)]
         url = f"{self.base}/api/generate"
         held, errors = 0, []
         for name, ctx in resident:
-            g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
-                                         "options": {"num_ctx": ctx}},
-                              timeout=30, **privacy.proxies_for(url))
+            try:
+                g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
+                                             "options": {"num_ctx": ctx}},
+                                  timeout=30, **privacy.proxies_for(url))
+            except requests.RequestException as e:
+                errors.append(f"{name}: {type(e).__name__}: {e}")
+                continue
             g.close()
             if g.status_code == 200:
                 held += 1

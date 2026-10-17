@@ -132,7 +132,7 @@ owner (daemon or console) re-asserts the 90-minute term every 3 minutes for the
 meeting's models that are already in memory, with the context size the server
 holds them at, so a background request that lands last cannot unload them
 during a pause in speech. Models that are not in memory are left alone (a model
-can still leave memory in the milliseconds between the check and the request).
+can still leave memory between the check and the request for it).
 When the meeting ends they get the 10-minute term back.
 
 **Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and

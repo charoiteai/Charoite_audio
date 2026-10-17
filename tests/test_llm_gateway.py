@@ -1755,9 +1755,10 @@ def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock
 class _HoldWire(_Requests):
     """Сервер для тика срока: `/api/ps` отвечает списком резидентных, POST пишется."""
 
-    def __init__(self, resident, fail_gets=(), fail_posts=()):
+    def __init__(self, resident, fail_gets=(), fail_posts=(), drop_posts=()):
         super().__init__(_Resp({}))
         self.resident, self.fail_gets, self.fail_posts = resident, set(fail_gets), set(fail_posts)
+        self.drop_posts = set(drop_posts)
         self.gets, self.posts = [], []
 
     def get(self, url, timeout=None, **kw):
@@ -1768,6 +1769,8 @@ class _HoldWire(_Requests):
 
     def post(self, url, json=None, timeout=None, **kw):
         self.posts.append((url, json))
+        if json["model"] in self.drop_posts:
+            raise requests.ReadTimeout("сервер занят")
         return _Resp({}, status=500) if json["model"] in self.fail_posts else _Resp({})
 
 
@@ -1816,13 +1819,33 @@ def test_hold_never_loads_or_reloads_a_model(monkeypatch):
                           _held("тест-модель:latest", "10m", 16384)]
 
 
-def test_hold_keeps_the_think_model(monkeypatch):
-    """Тезисы идут на sufler.think_model: отдельный тег — тоже модель встречи (opusfix2, Sonnet I1)."""
-    wire = _HoldWire([{"name": "тест-тезисы:latest", "context_length": 8192}])
+def test_hold_keeps_the_think_and_markup_models(monkeypatch):
+    """Тезисы и разметка идут на sufler.think_model и sufler.markup_model: отдельные
+    теги — тоже модели встречи (opusfix2 Sonnet I1, opusfix3 Sonnet I1)."""
+    wire = _HoldWire([{"name": "тест-тезисы:latest", "context_length": 8192},
+                      {"name": "тест-разметка:latest", "context_length": 8192}])
     _подменить_requests(monkeypatch, wire)
-    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": "тест-тезисы"}}
-    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 1
-    assert wire.posts[0] == _held("тест-тезисы:latest", "90m")
+    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": "тест-тезисы",
+                             "markup_model": "тест-разметка"}}
+    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 2
+    assert wire.posts[:2] == [_held("тест-тезисы:latest", "90m"), _held("тест-разметка:latest", "90m")]
+
+
+def test_hold_knows_every_sufler_model_key():
+    """Встреча зовёт модель по ключу sufler.*_model — тик обязан его знать (opusfix3, Sonnet I1)."""
+    used = {k for p in SRC.glob("*.py")
+            for k in re.findall(r'cfg\["sufler"\]\.get\("(\w+_model)"', p.read_text(encoding="utf-8"))}
+    assert used and used <= set(llm_mod.MEETING_MODEL_KEYS), used - set(llm_mod.MEETING_MODEL_KEYS)
+
+
+def test_hold_keeps_each_model_at_its_own_context(monkeypatch):
+    """У каждой резидентной модели свой контекст сервера — в 90m и в сдаче (opusfix3, DS M2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 16384}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 2
+    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-мелкая:latest", "90m", 16384),
+                          _held("тест-модель:latest", "10m"), _held("тест-мелкая:latest", "10m", 16384)]
 
 
 def test_hold_hands_back_even_when_no_tick_landed(monkeypatch):
@@ -1842,6 +1865,20 @@ def test_hold_one_refusing_model_does_not_drop_the_others(monkeypatch, capsys):
     assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
     assert "тест-модель:latest: HTTP 500" in capsys.readouterr().err
     assert _held("тест-мелкая:latest", "90m") in wire.posts
+
+
+def test_hold_network_refusal_of_one_model_does_not_drop_the_others(monkeypatch, capsys):
+    """Занятый сервер бросает ReadTimeout по одной модели — остальные и тик, и сдача держат,
+    отказ сдачи виден в stderr (opusfix3, Sonnet I3, Haiku I2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 8192}],
+                     drop_posts={"тест-модель:latest"})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    err = capsys.readouterr().err
+    assert "не утверждён (тест-модель:latest: ReadTimeout" in err
+    assert "не сдан (тест-модель:latest: ReadTimeout" in err
+    assert wire.posts[-1] == _held("тест-мелкая:latest", "10m")
 
 
 def test_hold_survives_a_failing_tick_and_says_so_once(monkeypatch, capsys):
