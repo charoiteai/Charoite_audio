@@ -316,6 +316,10 @@
       "mode": "help",
       "why": "по коду: argparse"
     },
+    "scripts/decision_evidence_audit.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
     "scripts/dedup_archive.py": {
       "mode": "help",
       "why": "приёмка №340: вход обязан отвечать на --help"
@@ -445,6 +449,14 @@
       "mode": "help",
       "why": "приёмка №340: вход обязан отвечать на --help"
     },
+    "scripts/retrieval_compare.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
+    "scripts/runtime_profile.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
     "scripts/sign_release_manifest.py": {
       "mode": "help",
       "why": "по коду: argparse"
@@ -513,18 +525,6 @@
     "src/voice_memos_bridge.py": {
       "mode": "refuse",
       "why": "по коду: дверь корня name_data_root_or_exit — без CHAROITE_ROOT код 5 и рецепт; №340"
-    },
-    "scripts/retrieval_compare.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
-    },
-    "scripts/decision_evidence_audit.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
-    },
-    "scripts/runtime_profile.py": {
-      "mode": "help",
-      "why": "по коду: argparse"
     }
   },
   "schema_module": "src/charoite_graph/graph_schema.py",
