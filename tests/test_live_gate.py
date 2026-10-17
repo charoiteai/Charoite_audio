@@ -376,8 +376,9 @@ def test_daemon_refusal_names_the_console_reason():
     знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725)."""
     body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
     assert "text, reason = live_gate.refusal(_root())" in body
-    assert re.search(r"open\(\s*live_gate\.lock_path\(_root\(\)\)\s*,", body), (
-        "имя лока — у владельца (выход 5 №725, DS I1); форма вызова, а не подстрока (выход 7, DS M2)")
+    assert '"daemon.lock"' not in body, "литерал имени лока — только у владельца (выход 8, Sonnet M2)"
+    assert re.search(r"(?m)^[^#\n]*open\(\s*live_gate\.lock_path\(_root\(\)\)\s*,", body), (
+        "имя лока — у владельца (выход 5 №725, DS I1); вызов в коде, не в комментарии (выход 8, DS M1)")
     assert "emit_error(text, reason=reason)" in body
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
     assert '"console_meeting"' in swift

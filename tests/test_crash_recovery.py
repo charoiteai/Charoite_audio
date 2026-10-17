@@ -227,3 +227,31 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     assert pcm.exists(), "исходник живой консоли удалён"
     assert not (rec_dir / "s_mic.wav").exists()
     assert slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
+
+
+def test_a_held_meeting_lock_keeps_a_pcm_without_part_until_the_deadline(rec_dir, monkeypatch):
+    """Лок встречи держится, `.pcm` есть, `.part` ещё нет: в цикле `.pcm` не
+    трогаем — конвертация только по сроку, как на базе (выход 8 №725, DS C1).
+    Держатель здесь — встреча после ворот, со своим штампом (№728)."""
+    import live_gate
+    import rebuild_transcript as rt
+
+    root = rec_dir.parent
+    monkeypatch.setattr(rt, "_root", lambda: root)
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
+    slept, converted_after = [], []
+    monkeypatch.setattr(rt.time, "sleep", slept.append)
+    monkeypatch.setattr(rt, "pcm_to_wav", lambda pcm, sr: converted_after.append(
+        (len(slept), rt.time.time() >= deadline[0])) or pcm.with_suffix(".wav"))
+    (root / "logs").mkdir()
+    (rec_dir / "s_mic.pcm").write_bytes(b"\0" * 4096)
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        deadline = [rt.time.time() + rt.WAIT_WAV_S]
+        rt.wait_recording(rec_dir, "s", "mic", 16000)
+    finally:
+        console.close()
+
+    assert len(converted_after) == 1, "по сроку .pcm конвертируется один раз"
+    assert converted_after[0][0] > 0 and converted_after[0][1], "конвертация в цикле при живом локе встречи"

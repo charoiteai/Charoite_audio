@@ -95,7 +95,8 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   their recordings the same way, so the rebuild waits for a `.part` (up to
   45 s) while anyone holds the meeting lock. The meeting lock is not the
   lock of that file: on a volume without flock the writer is invisible and
-  counts as dead — its `.part` is dropped and its `.pcm` converted (№728).
+  counts as dead — while its `.pcm` is still there, the `.part` is dropped
+  and the `.pcm` converted (№728).
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
