@@ -5,6 +5,45 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.96.0](https://github.com/charoiteai/Charoite_audio/compare/v0.95.0...v0.96.0) (2026-10-17)
+
+
+### Features
+
+* **app:** Nemotron diarization button with config check and long-process gate ([#806](https://github.com/charoiteai/Charoite_audio/issues/806)) ([11f5b33](https://github.com/charoiteai/Charoite_audio/commit/11f5b33ea05f738276edcb3ac12a0eb3b1dc3114))
+* **bench:** consolidate retrieval, evidence and runtime measurement tools ([#780](https://github.com/charoiteai/Charoite_audio/issues/780)) ([0baa53a](https://github.com/charoiteai/Charoite_audio/commit/0baa53a00213e13e129f663b349e3ad173b02813))
+* **cloud:** separate model key for meeting debrief, Sonnet by default ([#770](https://github.com/charoiteai/Charoite_audio/issues/770)) ([5149770](https://github.com/charoiteai/Charoite_audio/commit/5149770552b2b49c8b48dec12ad44a8351028cbf))
+* **doctor:** report NLI availability and add a local probe ([#788](https://github.com/charoiteai/Charoite_audio/issues/788)) ([937932b](https://github.com/charoiteai/Charoite_audio/commit/937932b5953b40983675d20e3c8de12ae332c965))
+* **graph:** freshness by the matched block date in meeting-graph search ([#772](https://github.com/charoiteai/Charoite_audio/issues/772)) ([d4dda87](https://github.com/charoiteai/Charoite_audio/commit/d4dda875528d8d873fd256399bc5359236c9968d))
+* **memory:** включить связанные источники в поиск приложения ([#776](https://github.com/charoiteai/Charoite_audio/issues/776)) ([1c74235](https://github.com/charoiteai/Charoite_audio/commit/1c74235887d6ffb86309cb7e29ceda2f3e9d966a))
+* **nemotron:** install disk gate, memory field and offer() in --plan ([#787](https://github.com/charoiteai/Charoite_audio/issues/787)) ([b33525b](https://github.com/charoiteai/Charoite_audio/commit/b33525b0cb7ccbe4b11922ef021a7f15ed0457c4))
+* **tasks:** allow undoing the last status change ([#794](https://github.com/charoiteai/Charoite_audio/issues/794)) ([4bac9c9](https://github.com/charoiteai/Charoite_audio/commit/4bac9c986c9a1424437d8fe6ad01fa66484019c3))
+
+
+### Bug Fixes
+
+* **capture:** one time axis per channel — dropped buffers no longer shift the mic ([#814](https://github.com/charoiteai/Charoite_audio/issues/814)) ([1be3ec7](https://github.com/charoiteai/Charoite_audio/commit/1be3ec70c2ee0ac365a25de5546631d4bc0f1b58))
+* **chat:** preserve reading position during streamed replies ([#790](https://github.com/charoiteai/Charoite_audio/issues/790)) ([2605381](https://github.com/charoiteai/Charoite_audio/commit/2605381520a9b9bc22c1c80150c8e34d2d71fe3f))
+* **ci:** docs-guard — package README/LICENSE scope ([#695](https://github.com/charoiteai/Charoite_audio/issues/695)) ([#807](https://github.com/charoiteai/Charoite_audio/issues/807)) ([97d9ad8](https://github.com/charoiteai/Charoite_audio/commit/97d9ad846d62056b4074426a68dd1c6dda2f4e95))
+* **diarization:** preserve short replies of established Nemotron speakers ([#791](https://github.com/charoiteai/Charoite_audio/issues/791)) ([a1827ef](https://github.com/charoiteai/Charoite_audio/commit/a1827efecc03cf8bc0091ca3eb505897607e11b9))
+* **diarization:** run selected Nemotron on microphone-only recordings ([#789](https://github.com/charoiteai/Charoite_audio/issues/789)) ([b7f2d5e](https://github.com/charoiteai/Charoite_audio/commit/b7f2d5e005d589b8b4d9412f2909ede2f75fa220))
+* **dossier:** validate index schema before lookup ([#796](https://github.com/charoiteai/Charoite_audio/issues/796)) ([8547b5c](https://github.com/charoiteai/Charoite_audio/commit/8547b5cdc00cef5e8f0da2ba40a4c25e6b0a80d8))
+* **gate:** bound zero-shot NLI confidence by absolute support ([#784](https://github.com/charoiteai/Charoite_audio/issues/784)) ([8a91073](https://github.com/charoiteai/Charoite_audio/commit/8a910735bc750d1bf68db23cf550702e8bf5393b))
+* **llm:** the meeting owns the model keep-alive; local model is handed back at stop ([#811](https://github.com/charoiteai/Charoite_audio/issues/811)) ([b77f102](https://github.com/charoiteai/Charoite_audio/commit/b77f1025a63f8214f58599ddcedbc2963111d2a4))
+* **memory:** deterministic graph search bench — drop seed pin, migrate alert keys ([#631](https://github.com/charoiteai/Charoite_audio/issues/631)) ([#771](https://github.com/charoiteai/Charoite_audio/issues/771)) ([df56a53](https://github.com/charoiteai/Charoite_audio/commit/df56a535c1b1c018ed10aa9a669c82d884b6c609))
+* **memory:** deterministic graph search order on score ties ([#768](https://github.com/charoiteai/Charoite_audio/issues/768)) ([60ea056](https://github.com/charoiteai/Charoite_audio/commit/60ea0564d3c89b1dad7122a31fe8eb49f3d1ae83))
+* **nemotron:** expose speech coverage for short and missed voices ([#795](https://github.com/charoiteai/Charoite_audio/issues/795)) ([732e600](https://github.com/charoiteai/Charoite_audio/commit/732e60070e0ab3315ea8c6c8767dfa5501a12e4d))
+* **nemotron:** report live waits including tracker fallbacks ([#793](https://github.com/charoiteai/Charoite_audio/issues/793)) ([bbce9f1](https://github.com/charoiteai/Charoite_audio/commit/bbce9f168e16bc85041b3314a05dc902c59f84b4))
+* **nli:** validate the entailment label order from model metadata ([#783](https://github.com/charoiteai/Charoite_audio/issues/783)) ([7d1d584](https://github.com/charoiteai/Charoite_audio/commit/7d1d58496d09a7a00f2c18fd997dce5cb2f4d5e7))
+* post-merge review of Codex PRs — revert [#791](https://github.com/charoiteai/Charoite_audio/issues/791), safe task undo, doctor version advice ([#695](https://github.com/charoiteai/Charoite_audio/issues/695)) ([#808](https://github.com/charoiteai/Charoite_audio/issues/808)) ([8face92](https://github.com/charoiteai/Charoite_audio/commit/8face924abca18d6588e3ccdb393e5a3ba9963ef))
+* **repo:** harden dossier fallback and repository guards ([#792](https://github.com/charoiteai/Charoite_audio/issues/792)) ([8f20fba](https://github.com/charoiteai/Charoite_audio/commit/8f20fba8d3074d534af2795434b93c1954f11541))
+* **status:** status follows the transcript renamed mid-run; retry finds the running rebuild ([#810](https://github.com/charoiteai/Charoite_audio/issues/810)) ([a8c03d7](https://github.com/charoiteai/Charoite_audio/commit/a8c03d7fd7f13f1163d8904e3695e50505b7dda9))
+* **storage:** validate retention and preserve distinct backups ([#809](https://github.com/charoiteai/Charoite_audio/issues/809)) ([29a023b](https://github.com/charoiteai/Charoite_audio/commit/29a023b99bfaab040a4b6c0de5f7b583759ca9bf))
+* **ui:** keep meeting library usable in narrow windows ([#781](https://github.com/charoiteai/Charoite_audio/issues/781)) ([7a8e3f3](https://github.com/charoiteai/Charoite_audio/commit/7a8e3f357db56c329a7b6803b57b8e5ffebde01c))
+* **ui:** keep task filters accessible at workspace minimum width ([#786](https://github.com/charoiteai/Charoite_audio/issues/786)) ([8fd42ec](https://github.com/charoiteai/Charoite_audio/commit/8fd42ec86bf212f7356a8a77699c4d6a4a79ed3e))
+* **ui:** preserve chat drafts and clarify answer provenance ([#785](https://github.com/charoiteai/Charoite_audio/issues/785)) ([972f2aa](https://github.com/charoiteai/Charoite_audio/commit/972f2aa39021efd31f9ef960fcc43a3c038f9ab2))
+* **ux:** correct context, selection, search and recovery across five screens ([#804](https://github.com/charoiteai/Charoite_audio/issues/804)) ([fc9c3c6](https://github.com/charoiteai/Charoite_audio/commit/fc9c3c6fa67bbf815a897657a19ee9746fdb2961))
+
 ## [0.95.0](https://github.com/charoiteai/Charoite_audio/compare/v0.94.0...v0.95.0) (2026-10-08)
 
 
