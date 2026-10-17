@@ -123,13 +123,13 @@ def _report(part: int, parts: int) -> None:
         print(f"граф: прогресс не записан ({type(e).__name__}: {e})")
 
 
-def _repath() -> None:
+def _repath(moved_to: pathlib.Path) -> None:
     """После наката темы — статусу новое имя стенограммы (№699). Молча, если некому."""
     if _progress is None:
         return
     store, transcript = _progress
     try:
-        store.repath(transcript)
+        store.repath(transcript, moved_to)
     except Exception as e:  # noqa: BLE001 — статус не смеет ронять разбор
         print(f"граф: новый путь стенограммы в статус не записан ({type(e).__name__}: {e})")
 
@@ -2715,7 +2715,9 @@ def main():
         return
     try:
         from meeting_processing import MeetingStatusStore
-        _progress = (MeetingStatusStore(_root()), tpath)
+        store = MeetingStatusStore(_root())
+        store.track(tpath)      # ключ — под исходным именем, до наката темы (№699)
+        _progress = (store, tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
@@ -2830,7 +2832,7 @@ def main():
     title = " ".join(tw).rstrip(",;:")
     if title and not already_titled:  # переименовать логи: дата + о чём общались
         tpath = retitle(tpath, stamp, bare, title)
-        _repath()
+        _repath(tpath)
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)

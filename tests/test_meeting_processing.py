@@ -524,21 +524,74 @@ def test_repath_moves_a_running_status_to_the_titled_name(tmp_path):
     before = json.loads(status.read_text(encoding="utf-8"))
     titled = live.with_name("2026-07-31_1415_План_релиза.md")
     live.rename(titled)
-    assert store.repath(live) == status          # старым путём — как graph_updater
+    assert store.repath(live, titled) == status  # старым путём и новым — как graph_updater
     after = json.loads(status.read_text(encoding="utf-8"))
     assert pathlib.Path(after["transcript_path"]).name == titled.name
     assert pathlib.Path(after["transcript_path"]).is_file()
     assert {k: v for k, v in after.items() if k != "transcript_path"} == \
         {k: v for k, v in before.items() if k != "transcript_path"}
-    assert store.repath(live) is None, "путь уже живой — второй записи нет"
+    assert store.repath(live, titled) is None, "путь уже живой — второй записи нет"
+
+
+def test_repath_writes_its_own_status_among_dead_neighbours(tmp_path):
+    """Выход 1 №699 (DS I1 = Sonnet I1 = Haiku I1): свежий процесс графа считал ключ
+    уже по новому имени — две мёртвые записи той же минуты давали минуту, и путь
+    ложился в чужой документ `…1532`, а свой оставался мёртвым. Ключ — под
+    исходным именем (`track`), до наката темы."""
+    tr = tmp_path / "transcripts"
+    tr.mkdir()
+    st = tmp_path / "logs" / "meeting-status"
+    st.mkdir(parents=True)
+    old = tr / "2026-08-12_153212.md"
+    old.write_text("x", encoding="utf-8")
+
+    def doc(key, path, state):
+        (st / f"{key}.json").write_text(json.dumps(
+            {"key": key, "state": state, "transcript_path": str(path), "updated_at": 1}), encoding="utf-8")
+
+    doc("2026-08-12_153212", old, "processing")
+    doc("2026-08-12_153245", tr / "2026-08-12_153245.md", "error")    # соседка, файл удалён руками
+    doc("2026-08-12_1532", tr / "2026-08-12_1532.md", "processing")   # наследие с минутным ключом
+    store = MeetingStatusStore(tmp_path)                               # свежий, как в graph_updater
+    store.track(old)
+    new = tr / "2026-08-12_1532_Тема.md"
+    old.rename(new)
+    assert store.repath(old, new) == st / "2026-08-12_153212.json"
+    seen = {p.stem: pathlib.Path(json.loads(p.read_text(encoding="utf-8"))["transcript_path"]).name
+            for p in st.glob("*.json")}
+    assert seen == {"2026-08-12_153212": new.name, "2026-08-12_153245": "2026-08-12_153245.md",
+                    "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
+
+
+def test_repath_lands_when_the_status_lock_is_busy(tmp_path, monkeypatch):
+    """Запись одна, следующей до `ready` нет: замок не взят за срок — без него, как исход
+    (выход 1 №699, Sonnet I1)."""
+    import threading
+
+    import meeting_processing
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    status = store.processing(live, "updating_graph", part=1, parts=2)
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.0)
+    lock = meeting_processing.MeetingStatusStore(tmp_path)
+    with lock._locked():
+        out = []
+        t = threading.Thread(target=lambda: out.append(MeetingStatusStore(tmp_path).repath(live, titled)))
+        t.start()
+        t.join(5)
+    assert out == [status]
+    assert pathlib.Path(json.loads(status.read_text(encoding="utf-8"))["transcript_path"]).name == titled.name
 
 
 def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
-    assert store.repath(live) is None, "статуса нет — не заводим"
+    assert store.repath(live, live) is None, "статуса нет — не заводим"
     done = store.ready(live, None)
     raw = done.read_bytes()
-    live.rename(live.with_name("2026-07-31_1415_План_релиза.md"))
-    assert store.repath(live) is None
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    assert store.repath(live, titled) is None
     assert done.read_bytes() == raw, "ready не переписывается"

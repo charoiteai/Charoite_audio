@@ -255,16 +255,18 @@ def test_status_is_repathed_right_after_the_retitle():
     а не с `ready` — иначе приложение до конца разбора видит мёртвый путь."""
     text = (Path(__file__).resolve().parent.parent / "src" / "graph_updater.py").read_text(encoding="utf-8")
     call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
-    assert text[call:].split("\n", 2)[1].strip() == "_repath()"
+    assert text[call:].split("\n", 2)[1].strip() == "_repath(tpath)"
+    track, progress = text.index("store.track(tpath)"), text.index("_progress = (store, tpath)")
+    assert track < progress < call, "ключ статуса — под исходным именем, до наката темы"
 
 
 def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch, capsys):
     monkeypatch.setattr(gu, "_progress", None)
-    gu._repath()                                    # руками по файлу — статуса нет, молча
+    gu._repath(Path("y.md"))                        # руками по файлу — статуса нет, молча
 
     class Broken:
-        def repath(self, transcript):
+        def repath(self, transcript, moved_to):
             raise OSError("диск")
     monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
-    gu._repath()
+    gu._repath(Path("y.md"))
     assert "новый путь стенограммы в статус не записан (OSError: диск)" in capsys.readouterr().out

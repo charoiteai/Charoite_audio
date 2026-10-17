@@ -382,8 +382,19 @@ class MeetingStatusStore:
 
         return self._update(transcript, mutate)
 
-    def repath(self, transcript: pathlib.Path) -> pathlib.Path | None:
-        """Перевести путь стенограммы идущей обработки на её текущее имя.
+    def track(self, transcript: pathlib.Path) -> None:
+        """Запомнить ключ статуса встречи, пока файл под исходным именем.
+
+        Новый процесс (graph_updater) иначе считал ключ уже после наката темы,
+        по новому имени: две мёртвые записи той же минуты давали минутный
+        ключ, и `repath` писал путь в чужой документ, а свой оставлял мёртвым
+        (выход 1 №699, DS I1 = Sonnet I1 = Haiku I1). Под исходным именем своя
+        запись — с живым путём и выигрывает у мёртвых (`_stored_key_for`).
+        """
+        self._key(transcript)
+
+    def repath(self, transcript: pathlib.Path, moved_to: pathlib.Path) -> pathlib.Path | None:
+        """Перевести путь стенограммы идущей обработки на её новое имя.
 
         Накат темы переименовывает файл посреди шага графа, а следующая
         запись статуса — только `ready`: до неё приложение видело мёртвый
@@ -391,22 +402,25 @@ class MeetingStatusStore:
         встреча 12.10 — 55 минут). Только при `processing`: этап, части,
         `updated_at` и попытки не трогаем — это не новый шаг, а то же место
         под новым именем. Статуса нет или путь прежний — не пишем.
+        `transcript` — исходное имя (ключ — через `track`), `moved_to` — то,
+        что вернул переименователь, без угадывания глобом (Sonnet M1).
+        Запись одна, следующей до `ready` нет, поэтому лечь обязана, как
+        исход: замок не взят за срок — без него (Sonnet I1).
         """
-        transcript = pathlib.Path(transcript)
-        if not self.directory.is_dir() or not self._path(transcript).is_file():
+        transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
+        if (not moved_to.is_file() or not self.directory.is_dir()
+                or not self._path(transcript).is_file()):
             return None
+        final = str(moved_to)
 
         def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
-            if current.get("state") != "processing":
-                return None
-            final = str(find_final_transcript(transcript))
-            if current.get("transcript_path") == final:
+            if current.get("state") != "processing" or current.get("transcript_path") == final:
                 return None
             updated = dict(current)
             updated["transcript_path"] = final
             return updated
 
-        return self._update(transcript, mutate)
+        return self._update(transcript, mutate, terminal=True)
 
     def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
         """Этап облачной ревизии — поле `review` поверх статуса, state и stage

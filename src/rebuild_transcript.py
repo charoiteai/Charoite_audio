@@ -2168,14 +2168,19 @@ class RunningElsewhere(RuntimeError):
 def _lock_key(live: pathlib.Path) -> str | None:
     """Ключ замка пересборки — ключ встречи (`live_sidecar.meeting_key`), а не
     имя файла: повтор по имени после наката темы иначе получал минуту, а прогон
-    держал секунды (№699). Минутное имя с прямым сайдкаром без штампа — минута,
-    как на базе, но со строкой: отказ соседке той же минуты иначе неотличим
-    от дубля самой встречи (DS M4 входа 7 №699)."""
-    key = live_sidecar.meeting_key(live)
-    if (key is not None and meeting_stamp.minute_of(key) == key
-            and live_sidecar.read_direct(live) is not None):
-        log(f"замок пересборки по минуте {key}: в сайдкаре нет штампа встречи")
-    return key
+    держал секунды (№699)."""
+    return live_sidecar.meeting_key(live)
+
+
+def _refusal_line(live: pathlib.Path, holder: str) -> str:
+    """Строка отказа второму прогону — с ключом замка. По минуте отказ соседке
+    той же минуты иначе неотличим от дубля самой встречи (DS M4 входа 7 №699);
+    только здесь, а не на каждом прогоне — там строка была шумом и врала
+    о встречах с минутным штампом (выход 1 №699, DS M1, Sonnet M3)."""
+    key = _lock_key(live)
+    note = (", по минуте: посекундного штампа у встречи нет"
+            if key is not None and meeting_stamp.minute_of(key) == key else "")
+    return f"пересборка этой встречи уже идёт ({holder}; замок {key}{note}) — выхожу"
 
 
 def running_elsewhere(live: pathlib.Path) -> int | None:
@@ -2266,12 +2271,12 @@ def main():
     # та же память вдвое и гонка за финальный файл.
     busy = running_elsewhere(live)
     if busy:
-        log(f"пересборка этой встречи уже идёт (pid {busy}) — выхожу")
+        log(_refusal_line(live, f"pid {busy}"))
         return
     try:
         mark = mark_running(live)
     except RunningElsewhere as e:   # проскочили проверку одновременно: решает замок (DS по #455)
-        log(f"пересборка этой встречи уже идёт ({e}) — выхожу")
+        log(_refusal_line(live, str(e)))
         return
     status = MeetingStatusStore(_root())
     pipeline_started = time.time()

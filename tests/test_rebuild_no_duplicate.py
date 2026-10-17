@@ -440,14 +440,17 @@ def test_retry_after_the_title_finds_the_run_by_its_seconds(root):
 
 
 def test_titled_meeting_without_its_stamp_keeps_the_minute_key(root, capsys):
-    """Цена №699: штампа в сайдкаре нет (наследие, сбой записи) — ключ минуты,
-    как на базе, но со строкой, чтобы отказ соседке не читался как дубль."""
+    """Цена №699: штампа в сайдкаре нет (наследие, сбой записи) — ключ минуты, как
+    на базе. Ключ говорит только строка отказа: на каждом прогоне она была шумом
+    (выход 1 №699, DS M1, Sonnet M3)."""
     titled = _live(root, "2026-08-12_1532_Тема")
-    assert rt._lock_key(titled) == "2026-08-12_1532"
-    assert "штампа" not in capsys.readouterr().out   # сайдкара нет — наследие, молча
     _sidecar(titled, None)
     assert rt._lock_key(titled) == "2026-08-12_1532"
-    assert "в сайдкаре нет штампа встречи" in capsys.readouterr().out
+    assert capsys.readouterr().out == "", "ключ замка — молча"
+    line = rt._refusal_line(titled, "pid 7")
+    assert "замок 2026-08-12_1532, по минуте: посекундного штампа у встречи нет" in line
+    seconds = _live(root, "2026-08-12_153212")
+    assert "по минуте" not in rt._refusal_line(seconds, "pid 7")
 
 
 def test_collision_suffix_is_its_own_key_before_and_after_the_title(root):
