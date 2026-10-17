@@ -1832,10 +1832,42 @@ def test_hold_keeps_the_think_and_markup_models(monkeypatch):
 
 
 def test_hold_knows_every_sufler_model_key():
-    """Встреча зовёт модель по ключу sufler.*_model — тик обязан его знать (opusfix3, Sonnet I1)."""
-    used = {k for p in SRC.glob("*.py")
-            for k in re.findall(r'cfg\["sufler"\]\.get\("(\w+_model)"', p.read_text(encoding="utf-8"))}
-    assert used and used <= set(llm_mod.MEETING_MODEL_KEYS), used - set(llm_mod.MEETING_MODEL_KEYS)
+    """Встреча зовёт модель по ключу sufler.*_model — тик обязан его знать (opusfix3, Sonnet I1).
+    По AST всего src/: `.get("x_model")` и `["x_model"]` на выражении с `sufler` — любые
+    кавычки и переносы (opusfix4, Sonnet I1). Псевдоним `s = cfg["sufler"]` не виден — граница сторожа."""
+    import ast
+    used = set()
+    for p in SRC.rglob("*.py"):
+        for n in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get"
+                    and n.args and isinstance(n.args[0], ast.Constant)):
+                recv, key = n.func.value, n.args[0].value
+            elif isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+                recv, key = n.value, n.slice.value
+            else:
+                continue
+            if isinstance(key, str) and re.fullmatch(r"\w+_model", key) and "sufler" in ast.unparse(recv):
+                used.add(key)
+    known = set(llm_mod.MEETING_MODEL_KEYS) | set(llm_mod.NOT_MEETING_MODEL_KEYS)
+    assert {"think_model", "markup_model", "embed_model"} <= used, used
+    assert used <= known, used - known
+
+
+def test_meeting_models_skip_a_non_string_tag():
+    """Нестроковый тег в конфиге не роняет каждый тик (opusfix4, Sonnet M1)."""
+    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": 3, "markup_model": ["x"]}}
+    assert LLM(cfg).meeting_models() == {"тест-модель:latest", "тест-мелкая:latest"}
+
+
+def test_hand_back_has_a_short_timeout(monkeypatch):
+    """Сдача на стопе идёт по моделям подряд: потолок запроса короткий (opusfix4, Sonnet M2)."""
+    seen = []
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    real = wire.post
+    wire.post = lambda url, json=None, timeout=None, **kw: (seen.append(timeout), real(url, json=json))[1]
+    _подменить_requests(monkeypatch, wire)
+    LLM(CFG).hold_meeting_model(_Ticks(1), every=0)
+    assert seen == [30, llm_mod.HAND_BACK_TIMEOUT_S]
 
 
 def test_hold_keeps_each_model_at_its_own_context(monkeypatch):

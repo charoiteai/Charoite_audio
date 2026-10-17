@@ -538,6 +538,12 @@ HOLD_EVERY_S = 180.0
 #: разметка реплик). Тик срока держит их наравне с лестницей `llm.*`; новый
 #: ключ модели встречи — сюда, сторож `test_hold_knows_every_sufler_model_key`.
 MEETING_MODEL_KEYS = ("think_model", "markup_model")
+#: Ключи `sufler.*_model`, которые не модели встречи: эмбеддер держит свой срок
+#: (`EMBED_KEEP_ALIVE`), 90m ему не нужны.
+NOT_MEETING_MODEL_KEYS = ("embed_model",)
+#: Потолок одного запроса сдачи на стопе: сдача идёт по моделям подряд, и на
+#: занятом сервере 30 с на каждую растянули бы её за выход процесса (opusfix4, M2).
+HAND_BACK_TIMEOUT_S = 5.0
 
 
 def chat_keep_alive(root: pathlib.Path | None, base_url: str) -> str:
@@ -947,7 +953,7 @@ class LLM:
                       file=sys.stderr, flush=True)
             failed = reason
         try:
-            _, errors = target._hold_tick(BACKGROUND_KEEP_ALIVE)
+            _, errors = target._hold_tick(BACKGROUND_KEEP_ALIVE, timeout=HAND_BACK_TIMEOUT_S)
             reason = "; ".join(errors) or None
         except Exception as e:  # noqa: BLE001 — встреча кончилась, срок допишет фон
             reason = f"{type(e).__name__}: {e}"
@@ -959,9 +965,9 @@ class LLM:
         """Теги моделей встречи: лестница `llm.*` и `sufler.*` из `MEETING_MODEL_KEYS`."""
         sufler = self._cfg.get("sufler") or {}
         tags = (self.model, self.fallback, self.small, *(sufler.get(k) for k in MEETING_MODEL_KEYS))
-        return {m if ":" in m else f"{m}:latest" for m in tags if m}
+        return {m if ":" in m else f"{m}:latest" for m in tags if isinstance(m, str) and m}
 
-    def _hold_tick(self, keep_alive: str) -> tuple[int, list[str]]:
+    def _hold_tick(self, keep_alive: str, *, timeout: float = 30) -> tuple[int, list[str]]:
         """Один тик срока — моделям встречи, которые сервер уже держит в памяти.
 
         Пустой `/api/generate` модель грузит, если её нет, а с другим
@@ -993,7 +999,7 @@ class LLM:
             try:
                 g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
                                              "options": {"num_ctx": ctx}},
-                                  timeout=30, **privacy.proxies_for(url))
+                                  timeout=timeout, **privacy.proxies_for(url))
             except requests.RequestException as e:
                 errors.append(f"{name}: {type(e).__name__}: {e}")
                 continue
