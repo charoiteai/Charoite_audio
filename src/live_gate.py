@@ -100,6 +100,27 @@ def daemon_alive(root: pathlib.Path) -> bool:
         return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
 
 
+def hold_meeting(root: pathlib.Path, *, sleep=time.sleep):
+    """Взять лок встречи для записи БЕЗ демона (консольный v1): `(описатель | None, исход)`.
+
+    Фон судит о живой встрече только по этому локу — ждёт её (`wait_while_live`)
+    и держит модель 90 минут (`llm.chat_keep_alive`). Встреча v1 без лока была
+    для фона невидимой: разбор рядом ставил модели 10 минут, и пауза речи
+    длиннее срока выгружала её посреди встречи (выход 2 №725, DS I2).
+    Описатель держать открытым до конца встречи — лок снимает ОС со смертью
+    процесса. `BUSY` — встреча уже идёт (демон или второй v1); `NO_FLOCK` —
+    том без flock: писать можно, но фон встречи не увидит.
+    """
+    path = lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = path.open("a")      # не «w»: усечение файла под чужим локом ни к чему
+    outcome = file_locks.acquire_outcome(f, busy=(BlockingIOError,), sleep=sleep)
+    if outcome != file_locks.TAKEN:
+        f.close()
+        return None, outcome
+    return f, outcome
+
+
 #: Процесс демона в таблице процессов: интерпретатор python, его флаги, затем
 #: скрипт первым не-флаговым аргументом. Приложение стартует демона как
 #: `<python> src/daemon.py`. Голый «src/daemon.py» совпадал с редактором, где

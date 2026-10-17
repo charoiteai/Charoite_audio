@@ -1644,9 +1644,14 @@ _ДЕРЖАТЬ_ЛОК = (
 
 @pytest.fixture
 def meeting_root(tmp_path, monkeypatch):
-    """Корень данных клиента — временный: лок демона в нём решает срок."""
+    """Корень данных клиента — временный и НАЗВАННЫЙ, как у точки входа: лок
+    демона в нём решает срок. Подмена `LLM._root` не годится — решение «назван
+    ли корень» берёт канон, и тест держался бы на корне сессии из conftest
+    (выход 2 №725, Haiku M4)."""
+    import charoite_paths
     (tmp_path / "logs").mkdir()
-    monkeypatch.setattr(llm_mod.LLM, "_root", lambda self: tmp_path)
+    monkeypatch.setattr(charoite_paths, "_given", tmp_path)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
     return tmp_path
 
 

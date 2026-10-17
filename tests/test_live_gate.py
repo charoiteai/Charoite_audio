@@ -274,3 +274,34 @@ def test_night_window_checks_the_night_after_waiting_for_the_meeting(tmp_path, m
     assert live_gate.night_window_open(
         tmp_path, "проба", lambda m: None, clock=lambda: стенные[0],
         alive=lambda r: next(встреча), sleep=sleep, now=lambda: 0.0) is False
+
+
+def test_console_meeting_lock_is_seen_by_the_background(tmp_path):
+    """Встреча v1 держит тот же лок, что демон: фон видит её живой (выход 2 №725, DS I2)."""
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f is not None
+        assert live_gate.daemon_alive(tmp_path) is True
+        second, again = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+        assert (second, again) == (None, live_gate.file_locks.BUSY), "вторая встреча — отказ"
+    finally:
+        f.close()
+    assert live_gate.daemon_alive(tmp_path) is False, "лок снят — встречи нет"
+
+
+def test_console_meeting_lock_on_a_volume_without_flock(tmp_path, monkeypatch):
+    """Том без flock: лок не взят, описатель закрыт, исход назван — запись идёт без него."""
+    import errno
+
+    def no_flock(fd, op):
+        raise OSError(errno.ENOTSUP, "flock не поддержан")
+
+    monkeypatch.setattr(live_gate.file_locks.fcntl, "flock", no_flock)
+    assert live_gate.hold_meeting(tmp_path, sleep=lambda s: None) == (None, live_gate.file_locks.NO_FLOCK)
+
+
+def test_console_entry_takes_the_meeting_lock_before_loading_models():
+    """v1 берёт лок встречи до загрузки STT: иначе фон не видит запись (№725)."""
+    body = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
+    main_body = body[body.index("def main():"):]
+    assert main_body.index("live_gate.hold_meeting(") < main_body.index("STT(cfg)")

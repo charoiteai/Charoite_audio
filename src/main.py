@@ -20,6 +20,8 @@ from rich.console import Console  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 
 import fact_check  # noqa: E402
+import file_locks  # noqa: E402
+import live_gate  # noqa: E402
 import threads  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LIVE_KEEP_ALIVE, LLM  # noqa: E402
@@ -69,6 +71,14 @@ def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     cfg = load_cfg()
+    # Лок встречи — как у демона: фон видит запись и не выгружает модель
+    # посреди неё (№725). Описатель живёт до выхода процесса.
+    meeting_lock, outcome = live_gate.hold_meeting(_root())
+    if outcome == file_locks.BUSY:
+        console.print("[red]Встреча уже записывается (демон или другое окно v1) — второй запуск отменён[/red]")
+        return
+    if meeting_lock is None:
+        console.print("[yellow]Лок встречи не взят (том без flock): фоновые задачи запись не увидят[/yellow]")
     console.print(Panel.fit("[bold]Суфлёр v1[/bold] — локально, ничего не покидает машину", style="cyan"))
 
     console.print("[dim]Загружаю STT…[/dim]")

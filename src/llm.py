@@ -543,8 +543,8 @@ def chat_keep_alive(root: pathlib.Path | None, base_url: str) -> str:
 
     Короткий срок — только когда судить есть по чему: сервер на этой машине и
     корень данных назван (`root` не None). Чужой сервер обслуживает и чужие
-    встречи, а в угаданном корне лока демона нет никогда — там 90 минут, как
-    у подсказок до №725 (выход 1, три головы).
+    встречи, а молча выведенный корень может не совпасть с корнем, где лежит
+    лок встречи, — там 90 минут, как у подсказок до №725 (выход 1, три головы).
     """
     if root is None or not privacy.is_loopback_url(base_url):
         return LIVE_KEEP_ALIVE
@@ -905,7 +905,7 @@ class LLM:
         """Срок в тело Ollama-чата: явный из конструктора или по встрече сейчас."""
         if self._keep_alive:
             return self._keep_alive
-        return chat_keep_alive(self._root() if charoite_paths.root_is_named() else None, self.base)
+        return chat_keep_alive(named_root(), self.base)
 
     def _root(self) -> pathlib.Path:
         """Корень данных — на вызове: аренду пишет этот процесс, а читает её
