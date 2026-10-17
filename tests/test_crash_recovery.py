@@ -195,3 +195,33 @@ def test_broken_pipe_stops_the_daemon_instead_of_killing_one_thread():
         d._stop_event = None
 
     assert stop.is_set(), "поток умер бы молча, а главный цикл продолжал слать hb"
+
+
+def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
+    """Консоль v1 финализирует тем же `AudioHub` и тем же `.wav.part`: пока она держит
+    лок встречи, пересборка не удаляет `.part` и не конвертирует `.pcm` — ни в цикле,
+    ни по сроку. Проверяется само решение `wait_recording`, а не только хелпер
+    (выход 6 №725, DS I1)."""
+    import live_gate
+    import rebuild_transcript as rt
+
+    root = rec_dir.parent
+    monkeypatch.setattr(rt, "_root", lambda: root)
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
+    monkeypatch.setattr(rt.time, "sleep", lambda s: None)
+    (root / "logs").mkdir()
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    part = rec_dir / "s_mic.wav.part"
+    part.write_bytes(b"")                           # консоль сейчас финализирует
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        out = rt.wait_recording(rec_dir, "s", "mic", 16000)
+    finally:
+        console.close()
+
+    assert out is None, "полез в конвертацию живой консоли"
+    assert part.exists(), "убрали .part из-под живой консоли"
+    assert pcm.exists(), "исходник живой консоли удалён"
+    assert not (rec_dir / "s_mic.wav").exists()

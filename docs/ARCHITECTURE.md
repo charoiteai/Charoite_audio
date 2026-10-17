@@ -92,8 +92,10 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   holder is the console: the kernel tells who holds, not the file contents.
   A refused daemon then names the console (`live_gate.refusal`); without
   the sign it only says another window is listening. Both writers finalize
-  their recordings the same way, so the rebuild waits for a `.part` while
-  anyone holds the meeting lock.
+  their recordings the same way, so the rebuild waits for a `.part` (up to
+  45 s) while anyone holds the meeting lock. The meeting lock is not the
+  lock of that file: on a volume without flock the writer is invisible
+  (№728).
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
