@@ -316,26 +316,67 @@ def test_console_meeting_lock_without_rights_is_named_not_a_traceback(tmp_path):
 
 
 def test_refused_daemon_tells_a_console_holder_from_another_daemon(tmp_path):
-    """Метка держателя: демон, которому отказано, видит консольный v1 через свой описатель
-    «a+», а после своего захвата метки нет (выход 3 №725, DS I3)."""
+    """Отказ второму демону называет консоль, пока жив её признак-лок; демон-держатель
+    и снятая консоль — «другое окно» без причины (выход 3 №725, DS I3; выход 4, Sonnet M3)."""
+    console_text, reason = live_gate.refusal(tmp_path)
+    assert reason is None, "никого — не консоль"
     f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
     try:
-        with live_gate.lock_path(tmp_path).open("a+") as probe:
-            assert live_gate.held_by_console(probe) is True
+        text, reason = live_gate.refusal(tmp_path)
+        assert reason == "console_meeting" and "консольная запись" in text
+        assert "src/" not in text, "текст видит пользователь — без пути к файлу (Haiku I1)"
     finally:
         f.close()
-    with live_gate.lock_path(tmp_path).open("a+") as own:
-        fcntl.flock(own, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        own.truncate(0)              # как daemon.main() после захвата
-        assert live_gate.held_by_console(own) is False
+    with live_gate.lock_path(tmp_path).open("w") as daemon:   # как daemon.main()
+        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert live_gate.refusal(tmp_path) == (console_text, None), "держит демон — признака консоли нет"
+
+
+def test_console_mark_does_not_outlive_its_holder(tmp_path):
+    """Признак консоли — лок ядра, а не метка в файле: вышедшая консоль не оставляет его,
+    и демон в миг своего захвата консолью не выглядит (выход 4 №725, DS C1)."""
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    f.close()
+    assert live_gate.console_lock_path(tmp_path).exists(), "файл признака остался — судит лок"
+    with live_gate.lock_path(tmp_path).open("w") as daemon:
+        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert live_gate.held_by_console(tmp_path) is False
+        assert live_gate.daemon_finalizes(tmp_path) is True
+
+
+def test_console_reason_is_not_claimed_on_a_volume_without_flock(tmp_path, monkeypatch):
+    """flock отказал не из-за держателя (ENOLCK сетевого тома): консоль не названа,
+    отказ не фатальный — приложение не застревает на «остановите консоль» (выход 4 №725, DS I1)."""
+    import errno
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    f.close()
+
+    def no_lock(fd, op):
+        raise OSError(errno.ENOLCK, "нет блокировок")
+
+    monkeypatch.setattr(live_gate.file_locks.fcntl, "flock", no_lock)
+    assert live_gate.refusal(tmp_path)[1] is None
+
+
+def test_console_meeting_without_its_mark_keeps_the_meeting_lock(tmp_path):
+    """Признак консоли не открылся: лок встречи всё равно взят, теряется только причина
+    отказа демону; трейсбека v1 нет (выход 4 №725, Sonnet M1 = DS M2)."""
+    live_gate.console_lock_path(tmp_path).mkdir(parents=True)   # на месте файла каталог
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f.mark is None
+        assert live_gate.daemon_alive(tmp_path) is True
+        assert live_gate.refusal(tmp_path)[1] is None
+    finally:
+        f.close()
 
 
 def test_daemon_refusal_names_the_console_reason():
-    """Отказ демона при консольной записи — `emit_error` с причиной, которую приложение
+    """Демон отказывает текстом и причиной из `live_gate.refusal`, причину приложение
     знает как фатальную; иначе три «восстанавливаю запись» (выход 3 №725)."""
     body = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
-    assert 'live_gate.held_by_console(lockf)' in body and 'reason="console_meeting"' in body
-    assert 'open(_root() / "logs" / "daemon.lock", "w")' not in body, "«w» стирал бы метку держателя"
+    assert "text, reason = live_gate.refusal(_root())" in body
+    assert "emit_error(text, reason=reason)" in body
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
     assert '"console_meeting"' in swift
 
@@ -354,7 +395,6 @@ def test_rebuild_waits_for_the_daemon_but_not_for_a_console_recording(tmp_path):
         assert live_gate.daemon_finalizes(tmp_path) is False, "но записи демона финализирует не консоль"
     finally:
         console.close()
-    with path.open("a+") as daemon:            # как демон: свой лок, файл пуст
+    with path.open("w") as daemon:             # как демон: свой лок, признака консоли нет
         fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        daemon.truncate(0)
         assert live_gate.daemon_finalizes(tmp_path) is True

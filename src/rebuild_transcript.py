@@ -200,7 +200,7 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
             continue
         if pcm.exists() and not alive:
             drop_stale_part()
-            log(f"{label}: демон мёртв и не финализировал — конвертирую .pcm сам")
+            log(f"{label}: демон не держит запись и не финализировал — конвертирую .pcm сам")
             return pcm_to_wav(pcm, sr)
         time.sleep(2)
     if wav.exists():

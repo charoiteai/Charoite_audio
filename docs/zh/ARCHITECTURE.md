@@ -74,6 +74,10 @@ PortAudio 的麦克风。没有第三条路径：Core Audio tap 流已于 02.09 
   `live_gate.daemon_process`：MCP 状态与占位节点迁移共用同一个模式
   （`python` 且脚本是第一个参数），因此打开了 `src/daemon.py` 的编辑器
   不算守护进程。
+  控制台 v1（`src/main.py`）为自己的会议持有同一把锁，并另持
+  `logs/console.lock` 作为「持有者是控制台」的标志：谁持有由内核判定，
+  而不是文件内容。被拒绝的守护进程会指明是控制台（`live_gate.refusal`），
+  重建只在守护进程持锁时等待 `.part`（`live_gate.daemon_finalizes`）。
 - **忙碌 ≠ 挂掉。** `llm.stream`/`complete` 在调用方的预算内以递增的
   间隔重试 `503/429/502`（实时循环最多 30 秒，图谱抽取最多 10 分钟）；
   `llm_health.probe` 区分 `BUSY`，绝不在别人的生成过程中重启服务器。
