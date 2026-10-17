@@ -68,7 +68,7 @@ Ollama with the MLX runner answers `503` within a quarter of a second on a
 busy model instead of queueing; without a guard, rebuilding an 18-hour
 recording (18.08) left a meeting without hints for 45 minutes. Three rules:
 
-- **"A meeting is on" = the daemon lock** `logs/daemon.lock`: the daemon
+- **"A meeting is on" = the meeting lock** `logs/daemon.lock`: the daemon
   lives exactly as long as the recording. Background work (`graph_updater`,
   `rebuild_transcript`, nightly `wait_for_idle`/dossiers) tests it with a
   non-blocking `flock` and waits while it is held — between chunks of a
@@ -94,8 +94,8 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   the sign it only says another window is listening. Both writers finalize
   their recordings the same way, so the rebuild waits for a `.part` (up to
   45 s) while anyone holds the meeting lock. The meeting lock is not the
-  lock of that file: on a volume without flock the writer is invisible
-  (№728).
+  lock of that file: on a volume without flock the writer is invisible and
+  counts as dead — its `.part` is dropped and its `.pcm` converted (№728).
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429/502` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts

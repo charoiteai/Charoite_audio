@@ -93,7 +93,7 @@ def console_lock_path(root: pathlib.Path) -> pathlib.Path:
 
 
 def daemon_alive(root: pathlib.Path) -> bool:
-    """Держит ли кто-то лок демона — то есть идёт ли сейчас живая встреча.
+    """Держит ли кто-то лок встречи (демон или консоль) — идёт ли живая встреча.
 
     «Встреча идёт» — только когда flock честно отказал ИЗ-ЗА ЧУЖОГО лока
     (BlockingIOError). Нет файла, нет прав, том без flock (SMB/NFS) — судить

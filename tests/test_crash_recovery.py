@@ -208,7 +208,8 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     root = rec_dir.parent
     monkeypatch.setattr(rt, "_root", lambda: root)
     monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
-    monkeypatch.setattr(rt.time, "sleep", lambda s: None)
+    slept = []
+    monkeypatch.setattr(rt.time, "sleep", slept.append)
     (root / "logs").mkdir()
     pcm = rec_dir / "s_mic.pcm"
     pcm.write_bytes(b"\0" * 4096)
@@ -225,3 +226,4 @@ def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
     assert part.exists(), "убрали .part из-под живой консоли"
     assert pcm.exists(), "исходник живой консоли удалён"
     assert not (rec_dir / "s_mic.wav").exists()
+    assert slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
