@@ -28,6 +28,8 @@ struct ChannelAxis {
     /// Ось выключена до конца сессии: пришёл буфер другой частоты. Файл
     /// пишется как до №655 — пересчитать дыру в кадры чужой частоты нельзя.
     private(set) var disabled = false
+    /// Почему ось выключена — для итога в журнале.
+    private(set) var disabledReason: String?
     private var anchor: (host: Double, frames: Int)?
 
     // Итог для журнала.
@@ -98,37 +100,54 @@ struct ChannelAxis {
         gaps += 1
     }
 
-    /// Буфер лёг в файл. Неудачная запись откатывается целиком
-    /// (`FileHandle.appendAll`), поэтому счёт кадров остаётся равен файлу, а
-    /// якорь по времени — верным: место несостоявшегося буфера зальёт следующая дыра.
+    /// Буфер лёг в файл. Якорь по времени не трогается: место буфера, который
+    /// не лёг, зальёт следующая дыра.
     mutating func didWrite(_ frames: Int) { fileFrames += frames }
 
-    /// Запись не удалась: счёт кадров — по позиции файла, а не по памяти оси
-    /// (откат мог не пройти). Позиции нет — ось выключается.
-    mutating func resync(fileFrames frames: Int?) {
-        guard let frames else { return disable() }
-        fileFrames = frames
+    /// Запись не удалась: счёт кадров — по размеру файла, а не по памяти оси
+    /// (откат мог не пройти). Размера нет или он нечётный (полкадра) — ось
+    /// выключается: класть звук дальше по оси уже не на что опереться.
+    mutating func resync(fileBytes bytes: Int?) {
+        guard let bytes, bytes % 2 == 0 else {
+            return disable(bytes == nil ? "размер файла не прочесть" : "в файле полкадра")
+        }
+        fileFrames = bytes / 2
     }
 
-    /// Пришёл буфер другой частоты.
-    mutating func disable() { disabled = true }
+    /// Ось — до конца записи как до №655: буферы подряд, без нулей.
+    mutating func disable(_ reason: String) {
+        guard !disabled else { return }
+        disabled = true
+        disabledReason = reason
+    }
 }
 
 extension FileHandle {
     /// Дописать всё или ничего: при ошибке файл обрезается к смещению до
     /// записи. Иначе часть нулей или буфера легла бы в файл мимо счёта оси, и
     /// канал уехал бы вперёд до конца встречи (выход 1 №655, DS C1, Haiku C2).
+    /// Откат может не пройти — тогда позиция остаётся в конце файла, и
+    /// `endBytes()` вернёт настоящий размер (выход 3, Sonnet I1).
     func appendAll(_ body: (FileHandle) throws -> Void) -> Bool {
-        let at = try? offsetInFile
+        let at = try? offset()
         do {
             try body(self)
             return true
         } catch {
             if let at {
-                try? truncate(atOffset: at)
-                try? seek(toOffset: at)
+                do {
+                    try truncate(atOffset: at)
+                    try seek(toOffset: at)
+                } catch {
+                    _ = try? seekToEnd()
+                }
             }
             return false
         }
     }
+
+    /// Размер файла в байтах; позиция — в конце, куда пойдёт следующая запись.
+    /// Бросающий API: `offsetInFile` на сбойном дескрипторе роняет процесс
+    /// исключением Objective-C, мимо `try?`.
+    func endBytes() -> Int? { (try? seekToEnd()).map { Int($0) } }
 }

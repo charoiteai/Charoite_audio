@@ -783,11 +783,12 @@ final class SystemAudioCapture: NSObject {
                 var lines: [String] = []
                 // Первый буфер каждого потока: время буфера против прихода. Факт
                 // про часы потоков, который код принимает на веру (вход 3 №655).
-                if st.greeted.insert("\(sid.hashValue)-\(channel.rawValue)").inserted, let host {
-                    lines.append(String(format: "%@: %@ — первый буфер потока, %d Гц, приход позже "
-                                        + "времени буфера на %.3f с%@", Self.axisLogMark,
-                                        channel.rawValue, Int(rate), arrived - host,
-                                        stream.synchronizationClock == nil ? ", часов потока нет" : ""))
+                if st.greeted.insert("\(sid.hashValue)-\(channel.rawValue)").inserted {
+                    let lag = host.map { String(format: "приход позже времени буфера на %.3f с", arrived - $0) }
+                        ?? (stream.synchronizationClock == nil ? "часов потока нет, буферы без оси"
+                                                               : "время буфера невалидно")
+                    lines.append("\(Self.axisLogMark): \(channel.rawValue) — первый буфер потока, "
+                                 + "\(Int(rate)) Гц, \(lag)")
                 }
                 return lines + place(pcm, rate: Int(rate), host: host, channel: channel,
                                      stream: sid, in: &st)
@@ -818,8 +819,8 @@ final class SystemAudioCapture: NSObject {
 
         /// Буфер — в файл канала по его оси. Только под `state`. Нули пишутся
         /// лишь перед настоящим звуком: поток без декодированных буферов файл не
-        /// растит. Каждая запись — всё или ничего, поэтому `fileFrames` оси равен
-        /// файлу. Возвращает строки журнала: писать их под замком — открытие
+        /// растит. Каждая запись — всё или ничего; не прошёл откат — счёт оси
+        /// берётся по размеру файла. Возвращает строки журнала: писать их под замком — открытие
         /// файла на очереди SCK.
         private func place(_ pcm: [Int16], rate: Int, host: Double?, channel: AxisChannel,
                            stream sid: ObjectIdentifier, in st: inout Counters) -> [String] {
@@ -828,7 +829,7 @@ final class SystemAudioCapture: NSObject {
             var ledger = st.ledger[channel] ?? Ledger()
             var lines: [String] = []
             if !axis.disabled && rate != axis.rate {
-                axis.disable()
+                axis.disable("смена частоты")
                 lines.append("\(Self.axisLogMark): \(channel.rawValue) — частота \(rate) Гц вместо "
                              + "\(axis.rate), ось выключена до конца записи")
             }
@@ -867,7 +868,12 @@ final class SystemAudioCapture: NSObject {
                 axis.didWrite(pcm.count)
             } else {
                 ledger.writeFailures += 1
-                axis.resync(fileFrames: (try? handle?.offsetInFile).flatMap { $0.map { Int($0) / 2 } })
+                let wasOn = !axis.disabled
+                axis.resync(fileBytes: handle?.endBytes())
+                if wasOn, axis.disabled, let why = axis.disabledReason {
+                    lines.append("\(Self.axisLogMark): \(channel.rawValue) — сбой записи, \(why), "
+                                 + "ось выключена до конца записи")
+                }
             }
             st.axes[channel] = axis
             st.ledger[channel] = ledger
@@ -885,7 +891,7 @@ final class SystemAudioCapture: NSObject {
                               Double(axis.zeroFrames) / Double(axis.rate), axis.breaks, axis.rebases,
                               axis.worstDrift,
                               l.undecoded, l.untimed, l.writeFailures,
-                              axis.disabled ? ", ось выключена (смена частоты)" : "")
+                              axis.disabledReason.map { ", ось выключена (\($0))" } ?? "")
             }
         }
 

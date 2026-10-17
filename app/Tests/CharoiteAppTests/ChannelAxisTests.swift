@@ -144,7 +144,7 @@ final class ChannelAxisTests: XCTestCase {
     func testDisabledAxisWritesAsBefore() {
         var axis = ChannelAxis(rate: 48_000)
         feed(&axis, from: 100, count: 5, epoch: 100)
-        axis.disable()                       // пришёл буфер другой частоты
+        axis.disable("смена частоты")        // пришёл буфер другой частоты
         XCTAssertEqual(axis.plan(host: 200, epoch: 100), .write)
         XCTAssertEqual(axis.gaps, 0)
     }
@@ -173,14 +173,35 @@ final class ChannelAxisTests: XCTestCase {
         XCTAssertEqual(axis.rebases, 1)
     }
 
-    func testResyncTakesFileFramesOrDisables() {
+    func testResyncTakesFileSizeOrDisables() {
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 10, epoch: 100)
-        axis.resync(fileFrames: 7 * buf)            // откат не прошёл до конца — счёт по файлу
+        axis.resync(fileBytes: 2 * 7 * buf)         // откат не прошёл до конца — счёт по файлу
         XCTAssertEqual(axis.fileFrames, 7 * buf)
         XCTAssertFalse(axis.disabled)
-        axis.resync(fileFrames: nil)                // позиции нет — оси нет
+        axis.resync(fileBytes: 2 * 7 * buf + 1)     // полкадра — дальше по оси нельзя
         XCTAssertTrue(axis.disabled)
+        XCTAssertEqual(axis.disabledReason, "в файле полкадра")
         XCTAssertEqual(axis.plan(host: 200, epoch: 100), .write)
+    }
+
+    func testUnreadableSizeDisablesWithReason() {
+        var axis = ChannelAxis(rate: rate)
+        axis.resync(fileBytes: nil)
+        XCTAssertEqual(axis.disabledReason, "размер файла не прочесть")
+    }
+
+    func testFailedRollbackLeavesPositionAtRealEnd() throws {
+        // Дескриптор только на чтение: и запись, и откат падают. Позиция —
+        // в конце файла, а не на смещении до записи (выход 3, Sonnet I1).
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("axis-ro-\(UUID().uuidString).raw")
+        try Data(count: 10).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let h = try FileHandle(forReadingFrom: url)
+        defer { try? h.close() }
+        try h.seek(toOffset: 4)
+        XCTAssertFalse(h.appendAll { try $0.write(contentsOf: Data(count: 6)) })
+        XCTAssertEqual(h.endBytes(), 10)
     }
 }
