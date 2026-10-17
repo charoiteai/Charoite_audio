@@ -34,14 +34,20 @@ struct ChannelAxis {
     private(set) var gaps = 0
     private(set) var zeroFrames = 0
     private(set) var breaks = 0
-    /// Самая большая разница «ось против файла», секунды (для порога).
+    /// Файл впереди оси больше порога — отсчёт заново от буфера (вход в файл
+    /// нельзя отмотать назад).
+    private(set) var rebases = 0
+    /// Самое большое расхождение, оставленное как есть (дрожание под порогом), с.
     private(set) var worstDrift: Double = 0
+    /// Больше — мусор во времени буфера, а не дыра: `Int(...)` от такого упал бы.
+    static let saneSpan: Double = 1e6
 
     init(rate: Int) { self.rate = max(1, rate) }
 
     enum Plan: Equatable {
         case write                    // буфер встаёт как есть
         case fill(zeros: Int)         // сначала столько нулей
+        case trim(frames: Int)        // файл пуст, буфер раньше эпохи: срезать голову
         case broke(gapSeconds: Double)  // разрыв: отсчёт заново
     }
 
@@ -58,11 +64,27 @@ struct ChannelAxis {
             a = fileFrames == 0 ? (epoch, 0) : (host, fileFrames)
             anchor = a
         }
+        guard abs(host - a.host) < Self.saneSpan else {
+            anchor = (host, fileFrames)
+            breaks += 1
+            return .broke(gapSeconds: host - a.host)
+        }
         let want = a.frames + Int(((host - a.host) * Double(rate)).rounded())
         let gap = want - fileFrames
         let gapSeconds = Double(gap) / Double(rate)
-        worstDrift = max(worstDrift, abs(gapSeconds))
-        guard gapSeconds > Self.gapThreshold else { return .write }
+        // Пустой файл: всё, что раньше эпохи сессии, лежало бы до начала записи —
+        // срезается без порога, иначе дрожание под порогом осталось бы сдвигом.
+        if fileFrames == 0 && gap < 0 { return .trim(frames: -gap) }
+        if gapSeconds < -Self.gapThreshold {
+            // Записанное не отмотать: отсчёт заново от этого буфера.
+            anchor = (host, fileFrames)
+            rebases += 1
+            return .write
+        }
+        guard gapSeconds > Self.gapThreshold else {
+            worstDrift = max(worstDrift, abs(gapSeconds))
+            return .write
+        }
         guard gapSeconds <= Self.fillCeiling else {
             anchor = (host, fileFrames)
             breaks += 1
@@ -78,13 +100,27 @@ struct ChannelAxis {
         gaps += 1
     }
 
-    /// Буфер лёг в файл.
+    /// Буфер лёг в файл. Неудачная запись откатывается целиком
+    /// (`FileHandle.appendAll`), поэтому счёт кадров остаётся равен файлу, а
+    /// якорь по времени — верным: место несостоявшегося буфера зальёт следующая дыра.
     mutating func didWrite(_ frames: Int) { fileFrames += frames }
-
-    /// Запись не удалась: сколько кадров дошло до файла, неизвестно — отсчёт
-    /// заново от следующего буфера, иначе дыра копилась бы с каждым сбоем.
-    mutating func writeFailed() { anchor = nil }
 
     /// Пришёл буфер другой частоты.
     mutating func disable() { disabled = true }
+}
+
+extension FileHandle {
+    /// Дописать всё или ничего: при ошибке файл обрезается к смещению до
+    /// записи. Иначе часть нулей или буфера легла бы в файл мимо счёта оси, и
+    /// канал уехал бы вперёд до конца встречи (выход 1 №655, DS C1, Haiku C2).
+    func appendAll(_ body: (FileHandle) throws -> Void) -> Bool {
+        let at = try? offsetInFile
+        do {
+            try body(self)
+            return true
+        } catch {
+            if let at { try? truncate(atOffset: at) }
+            return false
+        }
+    }
 }

@@ -92,20 +92,52 @@ final class ChannelAxisTests: XCTestCase {
                        .fill(zeros: rate))
     }
 
-    func testCeilingIsBelowDaemonLiveBuffer() {
-        // `BUF_CAP_S = 60` в src/audio.py: заливка больше половины вытесняла бы речь
-        XCTAssertLessThanOrEqual(ChannelAxis.fillCeiling, 30)
-    }
-
-    func testWriteFailureRestartsCountInsteadOfGrowingGap() {
+    func testFailedWriteLeavesItsSlotToTheNextGap() {
+        // Запись откатывается целиком, счёт кадров равен файлу — якорь по
+        // времени остаётся, и место несостоявшихся буферов заливает следующая
+        // дыра. Сброс якоря сдвигал бы канал на длину провала (выход 1, Haiku I2).
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 50, epoch: 100)
-        _ = axis.plan(host: 101, epoch: 100)
-        axis.writeFailed()                                            // диск отказал
-        // сбои подряд: без сброса каждый следующий буфер просил бы всё больше нулей
-        XCTAssertEqual(axis.plan(host: 105, epoch: 100), .write)
+        XCTAssertEqual(axis.plan(host: 101, epoch: 100), .write)    // этот буфер не лёг
+        XCTAssertEqual(axis.plan(host: 105, epoch: 100), .fill(zeros: 4 * rate))
+    }
+
+    func testFileAheadOfAxisRebasesAndCounts() {
+        var axis = ChannelAxis(rate: rate)
+        feed(&axis, from: 100, count: 50, epoch: 100)
+        XCTAssertEqual(axis.plan(host: 100.5, epoch: 100), .write)   // файл впереди на 0,5 с
+        XCTAssertEqual(axis.rebases, 1)
         axis.didWrite(buf)
-        XCTAssertEqual(axis.plan(host: 105 + Double(buf) / Double(rate), epoch: 100), .write)
+        // отсчёт от этого буфера: следующая дыра заливается целиком
+        XCTAssertEqual(axis.plan(host: 100.5 + Double(buf) / Double(rate) + 1, epoch: 100),
+                       .fill(zeros: rate))
+    }
+
+    func testGarbageTimeBreaksInsteadOfTrapping() {
+        var axis = ChannelAxis(rate: 48_000)
+        feed(&axis, from: 100, count: 5, epoch: 100)
+        guard case .broke = axis.plan(host: 1e300, epoch: 100)
+        else { return XCTFail("мусорное время — разрыв, а не Int(...) за пределом") }
+    }
+
+    func testAppendAllRollsBackPartialWrite() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("axis-\(UUID().uuidString).raw")
+        FileManager.default.createFile(atPath: url.path, contents: Data(count: 10))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let h = try FileHandle(forWritingTo: url)
+        defer { try? h.close() }
+        try h.seekToEnd()
+        struct Disk: Error {}
+        // первый кусок лёг, второй упал — как заливка нулей на полном диске
+        XCTAssertFalse(h.appendAll { h in
+            try h.write(contentsOf: Data(count: 96_000))
+            throw Disk()
+        })
+        XCTAssertEqual(try h.offsetInFile, 10)
+        XCTAssertTrue(h.appendAll { try $0.write(contentsOf: Data(count: 4)) })
+        try h.synchronize()
+        XCTAssertEqual(try Data(contentsOf: url).count, 14, "в файле нет откаченного куска")
     }
 
     func testDisabledAxisWritesAsBefore() {
@@ -114,5 +146,21 @@ final class ChannelAxisTests: XCTestCase {
         axis.disable()                       // пришёл буфер другой частоты
         XCTAssertEqual(axis.plan(host: 200, epoch: 100), .write)
         XCTAssertEqual(axis.gaps, 0)
+    }
+
+    func testChannelEarlierThanEpochIsTrimmedNotShifted() {
+        // Первый буфер второго канала несёт время раньше эпохи сессии на 0,15 с:
+        // без подрезки канал отстаёт на них до конца, а дыры недоливаются.
+        var axis = ChannelAxis(rate: rate)
+        var t = 99.85
+        for _ in 0..<50 {
+            switch axis.plan(host: t, epoch: 100) {
+            case .trim(let k): axis.didWrite(max(0, buf - k))
+            case .fill(let z): axis.didFill(z); axis.didWrite(buf)
+            default: axis.didWrite(buf)
+            }
+            t += Double(buf) / Double(rate)
+        }
+        XCTAssertEqual(axis.plan(host: t + 1, epoch: 100), .fill(zeros: rate))
     }
 }

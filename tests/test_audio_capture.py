@@ -1653,6 +1653,17 @@ def test_метка_оси_одна_у_писателя_и_читателя():
     assert a.AXIS_LOG_MARK in a.LOSS_LOG_MARKS
 
 
+def test_потолок_заливки_оси_не_больше_половины_живого_буфера():
+    """№655: нули перед буфером ложатся в живой буфер демона (`BUF_CAP_S` на
+    канал). Заливка больше половины вытеснила бы речь до дыры."""
+    import re
+    swift = (pathlib.Path(__file__).resolve().parents[1] / "app" / "Sources" / "CharoiteApp"
+             / "Services" / "ChannelAxis.swift").read_text(encoding="utf-8")
+    m = re.search(r"static let fillCeiling: Double = ([0-9.]+)", swift)
+    assert m, "потолок заливки не найден в ChannelAxis.swift"
+    assert 2 * float(m.group(1)) <= a.AudioHub.BUF_CAP_S
+
+
 def test_смерть_канала_собеседников_после_старта_кричит_один_раз(monkeypatch, tmp_path):
     """№232: сторож переводит канал собеседников в _hung — раньше это была
     тихая строка «перезапуск завис, канал отключён», и человек до конца встречи
