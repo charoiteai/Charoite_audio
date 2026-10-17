@@ -1631,3 +1631,316 @@ def test_a_downed_model_fails_the_stream_at_once(модель_не_отвеча�
     with pytest.raises(requests.RequestException):
         list(LLM(cfg).stream("вопрос"))
     assert модель_не_отвечает == ["вопрос"]
+
+
+# --- срок удержания чат-модели (№725): по встрече в момент запроса ---------
+
+_ДЕРЖАТЬ_ЛОК = (
+    "import fcntl, sys, time\n"
+    "f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX)\n"
+    "print('ready', flush=True); time.sleep(60)\n"
+)
+
+
+@pytest.fixture
+def meeting_root(tmp_path, monkeypatch):
+    """Корень данных клиента — временный и НАЗВАННЫЙ, как у точки входа: лок
+    демона в нём решает срок. Подмена `LLM._root` не годится — решение «назван
+    ли корень» берёт канон, и тест держался бы на корне сессии из conftest
+    (выход 2 №725, Haiku M4)."""
+    import charoite_paths
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(charoite_paths, "_given", tmp_path)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def hold_lock():
+    """Лок демона держит ДРУГОЙ процесс — как живой демон рядом с разбором."""
+    import subprocess
+    procs = []
+
+    def hold(root):
+        p = subprocess.Popen([sys.executable, "-c", _ДЕРЖАТЬ_ЛОК, str(root / "logs" / "daemon.lock")],
+                             stdout=subprocess.PIPE, text=True)
+        procs.append(p)
+        assert p.stdout.readline().strip() == "ready"
+
+    yield hold
+    for p in procs:
+        p.kill()
+        p.wait()
+
+
+def test_complete_without_meeting_releases_the_model_soon(monkeypatch, meeting_root):
+    """Разбор без встречи: ключ в теле есть и короткий — иначе срок наследуется от прошлых 90m."""
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == llm_mod.BACKGROUND_KEEP_ALIVE == "10m"
+
+
+def test_complete_during_meeting_keeps_the_model(monkeypatch, meeting_root, hold_lock):
+    """Фоновый вызов во время встречи не сбивает 90m демона (вход 2, DS C1)."""
+    hold_lock(meeting_root)
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == llm_mod.LIVE_KEEP_ALIVE == "90m"
+
+
+def test_daemon_sees_its_own_lock_as_a_meeting(monkeypatch, meeting_root):
+    """Демон держит лок сам и ничего не передаёт: свой эксклюзив — тоже встреча (вход 3, DS)."""
+    import fcntl
+    lock = (meeting_root / "logs" / "daemon.lock").open("w")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)   # как daemon.main()
+    try:
+        wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+        LLM(CFG).complete("в", model="м")
+        assert wire.sent["json"]["keep_alive"] == "90m"
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def test_explicit_keep_alive_wins_over_the_meeting_rule(monkeypatch, meeting_root):
+    """v1 (`main.py`) держит встречу без лока демона — его срок явный."""
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG, keep_alive="90m").complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == "90m"
+
+
+def test_guessed_root_cannot_tell_a_meeting_and_keeps_the_model(monkeypatch, meeting_root):
+    """Корень не назван — в угаданном от кода корне лока демона нет никогда: 10m сбили бы
+    90m живой встречи в названном корне (выход 1, три головы)."""
+    import charoite_paths
+    monkeypatch.setattr(charoite_paths, "_given", None)
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == "90m"
+
+
+def test_remote_server_is_not_judged_by_the_local_lock(tmp_path):
+    """Чужой сервер обслуживает и чужие встречи — по своему локу о них не судить (выход 1, DS I1)."""
+    (tmp_path / "logs").mkdir()
+    assert llm_mod.chat_keep_alive(tmp_path, "http://127.0.0.1:11434") == "10m"
+    assert llm_mod.chat_keep_alive(tmp_path, "http://10.20.0.5:11434") == "90m"
+    assert llm_mod.chat_keep_alive(None, "http://127.0.0.1:11434") == "90m"
+
+
+@pytest.mark.parametrize("call", ["stream", "stream_messages"])
+def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock, call):
+    """У стримов был литерал 90m: без встречи он держал 35b полтора часа после разбора."""
+    sent: list = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(self, url, payload, busy_wait, timeout=None):
+        sent.append(payload["keep_alive"])
+        raise _Stop
+
+    monkeypatch.setattr(llm_mod.LLM, "_open_stream", capture)
+    client = LLM(CFG)
+    go = (lambda: next(client.stream("в", system="р"))) if call == "stream" else \
+        (lambda: next(client.stream_messages([{"role": "user", "content": "в"}])))
+    with pytest.raises(_Stop):
+        go()
+    hold_lock(meeting_root)
+    with pytest.raises(_Stop):
+        go()
+    assert sent == ["10m", "90m"]
+
+
+class _HoldWire(_Requests):
+    """Сервер для тика срока: `/api/ps` отвечает списком резидентных, POST пишется."""
+
+    def __init__(self, resident, fail_gets=(), fail_posts=(), drop_posts=()):
+        super().__init__(_Resp({}))
+        self.resident, self.fail_gets, self.fail_posts = resident, set(fail_gets), set(fail_posts)
+        self.drop_posts = set(drop_posts)
+        self.gets, self.posts = [], []
+
+    def get(self, url, timeout=None, **kw):
+        self.gets.append(url)
+        if len(self.gets) in self.fail_gets:
+            raise requests.ConnectionError("сервер встал")
+        return _Resp({"models": self.resident})
+
+    def post(self, url, json=None, timeout=None, **kw):
+        self.posts.append((url, json))
+        if json["model"] in self.drop_posts:
+            raise requests.ReadTimeout("сервер занят")
+        return _Resp({}, status=500) if json["model"] in self.fail_posts else _Resp({})
+
+
+class _Ticks(threading.Event):
+    """`stop`, который взводится после `n` тиков и не ждёт."""
+
+    def __init__(self, n):
+        super().__init__()
+        self.n = n
+
+    def wait(self, timeout=None):
+        self.n -= 1
+        return self.n < 0
+
+
+def _held(name, keep_alive, ctx=8192):
+    return (LLM(CFG).base + "/api/generate",
+            {"model": name, "keep_alive": keep_alive, "options": {"num_ctx": ctx}})
+
+
+def test_meeting_owner_reasserts_resident_meeting_models(monkeypatch):
+    """Срок пишет последний запрос: фон поверх вызовов встречи ставит 10m. Владелец
+    встречи переутверждает 90m резидентным моделям встречи (основная и мелкая тихих
+    подсказок) с num_ctx чата, чужую модель не трогает; на стопе — фоновый срок им же
+    (№725, финальный Opus I1, I2; круг opusfix, DS C1, C2, Sonnet C1)."""
+    names = ("тест-модель:latest", "тест-запас:latest", "тест-мелкая:latest")
+    wire = _HoldWire([{"name": n, "context_length": 8192} for n in names + ("чужая:latest",)])
+    _подменить_requests(monkeypatch, wire)
+    cfg = {**CFG, "llm": {**CFG["llm"], "fallback_model": "тест-запас"}}   # лестница целиком
+    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 3
+    assert wire.posts == [_held(n, "90m") for n in names] + [_held(n, "10m") for n in names]
+
+
+def test_hold_never_loads_or_reloads_a_model(monkeypatch):
+    """Пустой запрос грузит модель, а с чужим контекстом перезагружает (опыт 17.10:
+    8192 → 131072): нерезидентной и резидентной без context_length тик не шлёт ничего,
+    модели с контекстом фона (16384) шлёт её же контекст (opusfix2, Sonnet I2, Haiku C2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest"}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(2), every=0) == 0
+    assert wire.posts == [] and len(wire.gets) == 3
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 16384}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    assert wire.posts == [_held("тест-модель:latest", "90m", 16384),
+                          _held("тест-модель:latest", "10m", 16384)]
+
+
+def test_hold_keeps_the_think_and_markup_models(monkeypatch):
+    """Тезисы и разметка идут на sufler.think_model и sufler.markup_model: отдельные
+    теги — тоже модели встречи (opusfix2 Sonnet I1, opusfix3 Sonnet I1)."""
+    wire = _HoldWire([{"name": "тест-тезисы:latest", "context_length": 8192},
+                      {"name": "тест-разметка:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": "тест-тезисы",
+                             "markup_model": "тест-разметка"}}
+    assert LLM(cfg).hold_meeting_model(_Ticks(1), every=0) == 2
+    assert wire.posts[:2] == [_held("тест-тезисы:latest", "90m"), _held("тест-разметка:latest", "90m")]
+
+
+def test_hold_knows_every_sufler_model_key():
+    """Встреча зовёт модель по ключу sufler.*_model — тик обязан его знать (opusfix3, Sonnet I1).
+    По AST всего src/: `.get("x_model")` и `["x_model"]` на выражении с `sufler` — любые
+    кавычки и переносы (opusfix4, Sonnet I1). Псевдоним `s = cfg["sufler"]` не виден — граница сторожа."""
+    import ast
+    used = set()
+    for p in SRC.rglob("*.py"):
+        for n in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get"
+                    and n.args and isinstance(n.args[0], ast.Constant)):
+                recv, key = n.func.value, n.args[0].value
+            elif isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+                recv, key = n.value, n.slice.value
+            else:
+                continue
+            if isinstance(key, str) and re.fullmatch(r"\w+_model", key) and "sufler" in ast.unparse(recv):
+                used.add(key)
+    known = set(llm_mod.MEETING_MODEL_KEYS) | set(llm_mod.NOT_MEETING_MODEL_KEYS)
+    assert {"think_model", "markup_model", "embed_model"} <= used, used
+    assert used <= known, used - known
+
+
+def test_meeting_models_skip_a_non_string_tag():
+    """Нестроковый тег в конфиге не роняет каждый тик (opusfix4, Sonnet M1)."""
+    cfg = {**CFG, "sufler": {**CFG.get("sufler", {}), "think_model": 3, "markup_model": ["x"]}}
+    assert LLM(cfg).meeting_models() == {"тест-модель:latest", "тест-мелкая:latest"}
+
+
+def test_hand_back_has_a_short_timeout(monkeypatch):
+    """Сдача на стопе: потолок короткий и у `/api/ps`, и у срока (opusfix4 Sonnet M2, opusfix5 M1)."""
+    seen, seen_ps = [], []
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    real, real_get = wire.post, wire.get
+    wire.post = lambda url, json=None, timeout=None, **kw: (seen.append(timeout), real(url, json=json))[1]
+    wire.get = lambda url, timeout=None, **kw: (seen_ps.append(timeout), real_get(url))[1]
+    _подменить_requests(monkeypatch, wire)
+    LLM(CFG).hold_meeting_model(_Ticks(1), every=0)
+    assert seen == [30, llm_mod.HAND_BACK_TIMEOUT_S]
+    assert seen_ps == [10, llm_mod.HAND_BACK_TIMEOUT_S]
+
+
+def test_hold_keeps_each_model_at_its_own_context(monkeypatch):
+    """У каждой резидентной модели свой контекст сервера — в 90m и в сдаче (opusfix3, DS M2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 16384}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 2
+    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-мелкая:latest", "90m", 16384),
+                          _held("тест-модель:latest", "10m"), _held("тест-мелкая:latest", "10m", 16384)]
+
+
+def test_hold_hands_back_even_when_no_tick_landed(monkeypatch):
+    """90 минут пишет и сам чат встречи: короткая встреча без тика сдаёт срок тоже (opusfix2, DS I5)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(0), every=0) == 0
+    assert wire.posts == [_held("тест-модель:latest", "10m")]
+
+
+def test_hold_one_refusing_model_does_not_drop_the_others(monkeypatch, capsys):
+    """Отказ по одной модели — строка в stderr, остальные тот же тик держит (opusfix2, DS I2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 8192}],
+                     fail_posts={"тест-модель:latest"})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    assert "тест-модель:latest: HTTP 500" in capsys.readouterr().err
+    assert _held("тест-мелкая:latest", "90m") in wire.posts
+
+
+def test_hold_network_refusal_of_one_model_does_not_drop_the_others(monkeypatch, capsys):
+    """Занятый сервер бросает ReadTimeout по одной модели — остальные и тик, и сдача держат,
+    отказ сдачи виден в stderr (opusfix3, Sonnet I3, Haiku I2)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192},
+                      {"name": "тест-мелкая:latest", "context_length": 8192}],
+                     drop_posts={"тест-модель:latest"})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(1), every=0) == 1
+    err = capsys.readouterr().err
+    assert "не утверждён (тест-модель:latest: ReadTimeout" in err
+    assert "не сдан (тест-модель:latest: ReadTimeout" in err
+    assert wire.posts[-1] == _held("тест-мелкая:latest", "10m")
+
+
+def test_hold_survives_a_failing_tick_and_says_so_once(monkeypatch, capsys):
+    """Сбой сети тик не роняет; одна строка на причину, а не на каждый тик."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}], fail_gets={1, 2})
+    _подменить_requests(monkeypatch, wire)
+    assert LLM(CFG).hold_meeting_model(_Ticks(3), every=0) == 1
+    assert capsys.readouterr().err.count("срок модели встречи не утверждён") == 1
+    assert wire.posts == [_held("тест-модель:latest", "90m"), _held("тест-модель:latest", "10m")]
+
+
+def test_hold_leaves_a_server_on_another_machine_alone(monkeypatch):
+    """Чужому серверу фон короткого срока не шлёт — переутверждать нечего."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    client = LLM(CFG)
+    client.base = "http://10.20.0.5:11434"
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 0
+    assert wire.gets == [] and wire.posts == []
+
+
+def test_cloud_engine_holds_its_local_fallback(monkeypatch):
+    """Облако недоступно — встреча живёт на локальном запасе: его срок держит тик (DS I1)."""
+    wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
+    _подменить_requests(monkeypatch, wire)
+    client = LLM(CFG)
+    client.engine, client.fallback_local, client.fallback_engine = "cloud", True, "ollama"
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 1
+    assert wire.posts[0] == _held("тест-модель:latest", "90m")
+    client.fallback_local = False
+    assert client.hold_meeting_model(_Ticks(1), every=0) == 0

@@ -296,3 +296,52 @@ def test_persistent_silence_at_a_live_server_still_restarts(monkeypatch):
     assert llm_health.ensure_alive(LOCAL, log=said.append, wait=0.05) is False
     assert restarts == [1]
     assert any("молчит" in m for m in said) and any("не ответила" in m for m in said), said
+
+
+@pytest.mark.parametrize("live,want", [(False, "10m"), (True, "90m")])
+def test_probes_carry_the_meeting_keep_alive(monkeypatch, tmp_path, live, want):
+    """Проба тоже последний писатель срока модели: без ключа она наследует или ставит чужой срок (№725)."""
+    import fcntl
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(llm_health, "named_root", lambda: tmp_path)
+    bodies: list = []
+
+    def fake_post(url, json, timeout, **kw):  # noqa: A002 — имя параметра из requests
+        bodies.append(json)
+        r = _Resp()
+        r.text = "{}"
+        return r
+
+    monkeypatch.setattr(llm_health.requests, "post", fake_post)
+    lock = (tmp_path / "logs" / "daemon.lock").open("w")
+    if live:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        llm_health.probe(LOCAL)
+        llm_health.strict_json(LOCAL["llm"]["base_url"], LOCAL["llm"]["model"])
+    finally:
+        lock.close()
+    assert [b["keep_alive"] for b in bodies] == [want, want]
+
+
+def test_probe_to_a_remote_server_keeps_the_model(monkeypatch, tmp_path):
+    """Удалённый сервер обслуживает и чужие встречи: проба по его адресу — 90m при
+    названном корне и свободном локе. Проводка `url`/`base` — без подмены `named_root`
+    (выход 2 №725, Sonnet M2)."""
+    import charoite_paths
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(charoite_paths, "_given", tmp_path)
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path))
+    bodies: list = []
+
+    def fake_post(url, json, timeout, **kw):  # noqa: A002 — имя параметра из requests
+        bodies.append(json)
+        r = _Resp()
+        r.text = "{}"
+        return r
+
+    monkeypatch.setattr(llm_health.requests, "post", fake_post)
+    llm_health.probe(REMOTE)
+    llm_health.strict_json(REMOTE["llm"]["base_url"], REMOTE["llm"]["model"])
+    llm_health.probe(LOCAL)
+    assert [b["keep_alive"] for b in bodies] == ["90m", "90m", "10m"]

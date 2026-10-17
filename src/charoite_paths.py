@@ -321,6 +321,17 @@ def name_data_root_or_exit(module_file: str, *, guess_from_code: bool = False) -
         raise SystemExit(EXIT_ROOT_UNNAMED) from None
 
 
+def root_is_named() -> bool:
+    """Известен ли процессу корень данных: назван точкой входа или `CHAROITE_ROOT`,
+    либо явно взят из кода (`--угадай-корень` демона кладёт его в `_given`).
+
+    Корень, который `resolve_root` молча вывел из положения файла, — не
+    известен: он верен только для данных в дереве кода, и по нему нельзя судить
+    о чужом процессе, например об идущей встрече (№725).
+    """
+    return _given is not None or _from_env() is not None
+
+
 def resolve_root(module_file: str) -> pathlib.Path:
     """Корень ДАННЫХ для модуля.
 

@@ -136,7 +136,7 @@ def test_broken_gateway_stream_falls_back_before_the_first_token(tmp_path, monke
         raise ValueError("Expecting value: line 1 column 1")
 
     monkeypatch.setattr(client, "_sse", broken)
-    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalStub())
+    monkeypatch.setattr(llm, "LLM", lambda cfg, **kw: _LocalStub())
     assert "".join(client._stream_cloud([{"role": "user", "content": "?"}],
                                         num_predict=None, temperature=None,
                                         busy_wait=1.0)) == "локальный ответ"
@@ -273,7 +273,7 @@ def test_fallback_reason_carries_the_gateway_text(tmp_path, monkeypatch):
 
     said = []
     monkeypatch.setattr(client, "_sse", refuse)
-    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalStub())
+    monkeypatch.setattr(llm, "LLM", lambda cfg, **kw: _LocalStub())
     monkeypatch.setattr(llm.sys, "stderr", type("S", (), {
         "write": lambda self, t: said.append(t), "flush": lambda self: None})())
     list(client._stream_cloud([{"role": "user", "content": "?"}],
@@ -305,7 +305,7 @@ def test_digests_from_the_local_reserve_are_not_cached_under_the_cloud_key(tmp_p
         raise ValueError("Expecting value: line 1 column 1")
 
     monkeypatch.setattr(client, "_sse", gateway_down)
-    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalStub())
+    monkeypatch.setattr(llm, "LLM", lambda cfg, **kw: _LocalStub())
     speech = "А" * 10_000
     assert "локальный ответ" in client.fit(speech)
     assert len(sse) == 5 and not llm._fit_cache, "свёртка запаса не легла в кэш"
@@ -340,7 +340,7 @@ def test_digests_from_the_local_reserve_of_complete_are_not_cached_either(tmp_pa
             return "локальная сводка"
 
     monkeypatch.setattr(client, "_post_busy", gateway_down)
-    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalComplete())
+    monkeypatch.setattr(llm, "LLM", lambda cfg, **kw: _LocalComplete())
     speech = "А" * 10_000
     assert "локальная сводка" in client.fit(speech)
     assert len(posts) == 5 and not llm._fit_cache, "свёртка запаса complete() не легла в кэш"
@@ -352,3 +352,21 @@ def test_digests_from_the_local_reserve_of_complete_are_not_cached_either(tmp_pa
     assert len(posts) == 10
     client.fit(speech)
     assert len(posts) == 10, "облачная свёртка — в кэше"
+
+
+def test_local_fallback_carries_the_parent_keep_alive(tmp_path, monkeypatch):
+    """Запасной локальный клиент несёт срок родителя: иначе явный срок v1 терялся бы на уходе с облака (№725)."""
+    client = llm.LLM(_with_key(tmp_path, _cfg()), keep_alive="90m")
+    seen: list = []
+
+    class _LocalComplete:
+        def complete(self, prompt, **_kw):
+            return "локально"
+
+    def gateway_down(*_a, **_kw):
+        raise llm.requests.ConnectionError("шлюз недоступен")
+
+    monkeypatch.setattr(client, "_post_busy", gateway_down)
+    monkeypatch.setattr(llm, "LLM", lambda cfg, **kw: seen.append(kw) or _LocalComplete())
+    assert client.complete("в") == "локально"
+    assert seen == [{"keep_alive": "90m"}]

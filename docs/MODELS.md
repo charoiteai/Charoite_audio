@@ -119,7 +119,21 @@ swap. A realistic estimate of the win is 20–30%. Quantisation differs too
 
 **What it costs.** Cold start doubles: 21 s against 9. After a long idle the
 first prompt on a meeting arrives later; afterwards the model stays resident
-via `keep_alive`.
+via `keep_alive`: 90 minutes after the last request while a meeting is being
+recorded, 10 minutes otherwise (background processing, the night run), so
+the memory is freed soon after the meeting is processed. Every chat request
+from the pipeline sends the term explicitly: Ollama keeps the term of the
+previous request when the key is missing. A remote server, or a process whose
+data folder is not named, always gets 90 minutes — there is no way to tell a
+meeting from there. The app's built-in chat sets its own 30-minute term. A
+meeting recorded by the console mode (`src/main.py`) holds the same meeting
+lock as the daemon, so the background sees it. While recording, the meeting
+owner (daemon or console) re-asserts the 90-minute term every 3 minutes for the
+meeting's models that are already in memory, with the context size the server
+holds them at, so a background request that lands last cannot unload them
+during a pause in speech. Models that are not in memory are left alone (a model
+can still leave memory between the check and the request for it).
+When the meeting ends they get the 10-minute term back.
 
 **Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and
 `sufler.think_model` (the Full profile writes the MLX tag into both).

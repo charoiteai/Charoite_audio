@@ -42,6 +42,11 @@ final class AutostopTests: XCTestCase {
                                           attempts: 0, daemonReason: "privacy_refused"),
             .giveUpFatal("privacy_refused"),
             "отказ адреса модели повтор не лечит: конфиг от трёх попыток не изменится")
+        XCTAssertEqual(
+            SuflerService.restartDecision(wasRecording: true, userStopped: false,
+                                          attempts: 0, daemonReason: "console_meeting"),
+            .giveUpFatal("console_meeting"),
+            "консольную запись повтор не снимет: человек остановит её сам (№725)")
         // повод отказа — часть решения: ветка сервиса не может переспросить
         // другое поле и показать чужой текст (круг 3, DS C1)
         XCTAssertEqual(

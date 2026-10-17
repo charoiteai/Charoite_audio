@@ -6,9 +6,10 @@
 подряд падали с `[LLM: 503 …]` прямо в панель. Ни пересборка, ни ночной
 цикл, ни разбор графа не знали, что рядом идёт встреча.
 
-Признак — лок демона `logs/daemon.lock`: демон живёт ровно столько, сколько
-идёт запись (приложение запускает `daemon.py` на «Старт» и гасит на «Стоп»),
-лок берётся при старте и отпускается смертью процесса. Фоновые процессы
+Признак — лок встречи `logs/daemon.lock`: его держит демон, пока идёт запись
+(приложение запускает `daemon.py` на «Старт» и гасит на «Стоп»), и консольный
+v1 на свою встречу (`hold_meeting`, №725); лок берётся при старте и
+отпускается смертью процесса. Фоновые процессы
 проверяют его неблокирующим flock: лок держится — встреча идёт, фон ждёт.
 
 Гейт — пауза, а не отказ: работа продолжается с того же места, как только
@@ -31,6 +32,11 @@ import time
 from typing import Callable
 
 LOCK_NAME = "daemon.lock"
+
+#: Признак консольного v1 (`src/main.py`): второй лок, его берёт только тот,
+#: кто уже держит лок встречи. Кто держит — говорит ядро, а не содержимое
+#: файла: метка в файле переживала писателя (выход 4 №725, DS C1).
+CONSOLE_LOCK_NAME = "console.lock"
 
 #: До какого момента (unix-время) ночному прогону разрешено работать.
 #: Выставляет `scripts/nightly.sh`; пусто — потолка нет.
@@ -82,8 +88,12 @@ def lock_path(root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(root) / "logs" / LOCK_NAME
 
 
+def console_lock_path(root: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(root) / "logs" / CONSOLE_LOCK_NAME
+
+
 def daemon_alive(root: pathlib.Path) -> bool:
-    """Держит ли кто-то лок демона — то есть идёт ли сейчас живая встреча.
+    """Держит ли кто-то лок встречи (демон или консоль) — идёт ли живая встреча.
 
     «Встреча идёт» — только когда flock честно отказал ИЗ-ЗА ЧУЖОГО лока
     (BlockingIOError). Нет файла, нет прав, том без flock (SMB/NFS) — судить
@@ -98,6 +108,88 @@ def daemon_alive(root: pathlib.Path) -> bool:
         return False
     with f:
         return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
+
+
+class ConsoleMeeting:
+    """Описатели консольной встречи: лок встречи и признак консоли (может не быть).
+
+    Держать до конца встречи; `close()` снимает оба, признак первым — консоли
+    без лока встречи не бывает.
+    """
+
+    def __init__(self, meeting, mark):
+        self.meeting, self.mark = meeting, mark
+
+    def close(self) -> None:
+        if self.mark is not None:
+            self.mark.close()
+        self.meeting.close()
+
+
+def hold_meeting(root: pathlib.Path, *, sleep=time.sleep):
+    """Взять лок встречи для записи БЕЗ демона (консольный v1): `(ConsoleMeeting | None, исход)`.
+
+    Фон судит о живой встрече только по этому локу — ждёт её (`wait_while_live`)
+    и держит модель 90 минут (`llm.chat_keep_alive`). Встреча v1 без лока была
+    для фона невидимой: разбор рядом ставил модели 10 минут, и пауза речи
+    длиннее срока выгружала её посреди встречи (выход 2 №725, DS I2).
+    Описатель держать открытым до конца встречи — лок снимает ОС со смертью
+    процесса. `BUSY` — встреча уже идёт (демон или второй v1); `NO_FLOCK` —
+    том без flock: писать можно, но фон встречи не увидит.
+    """
+    path = lock_path(root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = path.open("a")      # не «w»: усечение файла под чужим локом ни к чему
+    except OSError:
+        # Нет прав, том только для чтения, на месте файла каталог: лок здесь
+        # не берётся — тот же исход, что у тома без flock (выход 3 №725).
+        return None, file_locks.NO_FLOCK
+    outcome = file_locks.acquire_outcome(f, busy=(BlockingIOError,), sleep=sleep)
+    if outcome != file_locks.TAKEN:
+        f.close()
+        return None, outcome
+    # Признак консоли — вторым локом, под уже взятым локом встречи: демон, которому
+    # отказано, называет причину значением, а не «другим окном» (выход 3 №725,
+    # DS I3). Читает признак только `refusal`. Не взят — лок встречи остаётся,
+    # теряется только причина отказа; трейсбека нет (выход 4 №725, Sonnet M1 = DS M2).
+    mark = None
+    try:
+        mark = console_lock_path(root).open("a")
+        # ретраи, как у лока встречи: SH-проба читателя признака иначе отнимала
+        # его на всю встречу (выход 5 №725, Sonnet I1)
+        if file_locks.acquire_outcome(mark, busy=(BlockingIOError,), sleep=sleep) != file_locks.TAKEN:
+            mark.close()
+            mark = None
+    except OSError:
+        if mark is not None:
+            mark.close()
+        mark = None
+    return ConsoleMeeting(f, mark), outcome
+
+
+def held_by_console(root: pathlib.Path) -> bool:
+    """Держит ли лок встречи консольный v1 — по его признаку-локу.
+
+    Признак держит ядро до смерти процесса: прошлая консоль его не оставит,
+    а том без flock (ENOLCK) читается «не консоль» — ложного фатального отказа
+    нет (выход 4 №725, DS C1, DS I1).
+    """
+    try:
+        f = console_lock_path(root).open("r")
+    except OSError:
+        return False
+    with f:
+        return file_locks.held_by_someone(f)
+
+
+def refusal(root: pathlib.Path) -> tuple[str, str | None]:
+    """Текст и причина отказа второму демону. Консольная запись повтором не уходит:
+    причина значением, иначе приложение трижды «восстанавливает» запись (выход 3 №725,
+    DS I3). Без пути к файлу — текст видит пользователь (выход 4 №725, Haiku I1)."""
+    if held_by_console(root):
+        return "⚠️ Идёт консольная запись — остановите её, затем запустите снова", "console_meeting"
+    return "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён", None
 
 
 #: Процесс демона в таблице процессов: интерпретатор python, его флаги, затем

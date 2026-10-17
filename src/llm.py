@@ -39,6 +39,7 @@ from collections.abc import Iterator
 import requests
 
 import charoite_paths
+import live_gate
 import charoite_graph.embed_door as embed_door   # без ребра на узел пакета (слой graph)
 import model_lease
 import once
@@ -363,14 +364,18 @@ def strict_json_sentence(model: str, base: str, reason: str) -> str:
             f"часть разбора и имён может не дойти")
 
 
-def strict_json_probe_body(model: str) -> dict:
-    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима."""
+def strict_json_probe_body(model: str, keep_alive: str) -> dict:
+    """Тело пробы строгого JSON: дешёвый запрос с format, без стрима.
+
+    Срок — обязательный: проба тоже последний писатель срока модели (№725).
+    """
     return {
         "model": model,
         "messages": [{"role": "user", "content": "ok"}],
         "stream": False,
         "format": "json",
         "think": False,
+        "keep_alive": keep_alive,
         "options": {"num_predict": 1},
     }
 
@@ -520,6 +525,54 @@ MLX_MAX_TOKENS_DEFAULT = 4096
 #: таймаут короткий — семантика просто не успевала бы.
 EMBED_KEEP_ALIVE = "30m"
 
+#: Сколько Ollama держит чат-модель после запроса. Срок ставит последний
+#: запрос к модели, а запрос без ключа наследует прошлый срок (опыт 17.10,
+#: №725): 90 минут подсказок встречи продлевались каждым вызовом разбора, и
+#: 35b висела полтора часа после конца встречи. Поэтому ключ — в каждом теле.
+LIVE_KEEP_ALIVE = "90m"
+BACKGROUND_KEEP_ALIVE = "10m"   # не 0: ночной цикл гонит встречи подряд
+#: Шаг переутверждения срока владельцем встречи — втрое короче фонового срока:
+#: два пропуска подряд (сервер занят, сеть) модель ещё не выгружают.
+HOLD_EVERY_S = 180.0
+#: Ключи `sufler.*`, по которым встреча зовёт модель мимо `llm.*` (тезисы,
+#: разметка реплик). Тик срока держит их наравне с лестницей `llm.*`; новый
+#: ключ модели встречи — сюда, сторож `test_hold_knows_every_sufler_model_key`.
+MEETING_MODEL_KEYS = ("think_model", "markup_model")
+#: Ключи `sufler.*_model`, которые не модели встречи: эмбеддер держит свой срок
+#: (`EMBED_KEEP_ALIVE`), 90m ему не нужны.
+NOT_MEETING_MODEL_KEYS = ("embed_model",)
+#: Потолок каждого запроса сдачи на стопе (`/api/ps` и срок по моделям подряд).
+#: Резидентная модель с контекстом сервера отвечает за 10–20 мс и во время
+#: чужой генерации, и во время загрузки другой модели; `/api/ps` при загрузке
+#: 35b — до 10 мс (опыт 17.10: Ollama 0.34.4, NUM_PARALLEL по умолчанию, одна
+#: резидентная qwen3:4b). Не мерено: несколько резидентных моделей подряд и
+#: модель, выгруженная между `/api/ps` и запросом, — тогда запрос грузит её
+#: (окно в `_hold_tick`). Поток сдачи — демон, выход процесса он не держит.
+HAND_BACK_TIMEOUT_S = 5.0
+
+
+def chat_keep_alive(root: pathlib.Path | None, base_url: str) -> str:
+    """Срок удержания чат-модели — по встрече в момент запроса, а не по роли процесса.
+
+    Фоновый вызов, пришедший во время встречи, поставил бы короткий срок
+    поверх 90 минут демона, и пауза речи длиннее срока выгрузила бы модель
+    посреди встречи (№725, вход 2, DS C1). Демон держит свой лок сам и видит
+    себя живым (`daemon_alive` — flock второго описателя). Проверка — 27 мкс.
+
+    Короткий срок — только когда судить есть по чему: сервер на этой машине и
+    корень данных назван (`root` не None). Чужой сервер обслуживает и чужие
+    встречи, а молча выведенный корень может не совпасть с корнем, где лежит
+    лок встречи, — там 90 минут, как у подсказок до №725 (выход 1, три головы).
+    """
+    if root is None or not privacy.is_loopback_url(base_url):
+        return LIVE_KEEP_ALIVE
+    return LIVE_KEEP_ALIVE if live_gate.daemon_alive(root) else BACKGROUND_KEEP_ALIVE
+
+
+def named_root() -> pathlib.Path | None:
+    """Корень данных для `chat_keep_alive`: названный или None, если только угадан от кода."""
+    return charoite_paths.resolve_root(__file__) if charoite_paths.root_is_named() else None
+
 
 def _requests_post(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     """Транспорт двери векторов на `requests`: `(код, тело)`.
@@ -565,8 +618,11 @@ def embedder(cfg: dict, *, model: str | None = None,
 
 
 class LLM:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, *, keep_alive: str | None = None):
         l = cfg["llm"]
+        # Срок удержания чат-модели: явный — только у процесса без лока демона,
+        # который всё же держит встречу (v1 `main.py`); иначе — по встрече.
+        self._keep_alive = keep_alive
         self._cfg = cfg          # для оживления вставшей модели в complete()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
@@ -761,7 +817,7 @@ class LLM:
             "messages": messages,
             "stream": True,
             "think": think,
-            "keep_alive": "90m",  # держать модель в памяти всю встречу
+            "keep_alive": self._chat_keep_alive(),
             "options": options,
         }
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
@@ -863,6 +919,108 @@ class LLM:
     # Мимо швов к модели ходит только дверь векторов embed_door (0,2 с, убить
     # не жалко, аренды не берёт) и проба
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
+    def hold_meeting_model(self, stop: threading.Event, *, every: float = HOLD_EVERY_S) -> int:
+        """Пока встреча идёт, раз в `every` секунд утверждать моделям встречи её срок.
+
+        Срок держит сервер, и пишет его последний запрос. Фоновый запрос,
+        принятый раньше вызовов встречи или повторённый на занятом сервере
+        со старым телом, ложится последним с 10m; процесс с другим корнем
+        данных встречи не видит вовсе; подсказки идут только на речь — пауза
+        дольше 10 минут выгружала бы модель посреди встречи (№725, финальный
+        Opus I1, I2, M1). Владелец встречи (демон, консоль) переписывает срок
+        сам, кто бы ни писал его между тиками (`_hold_tick`). На `stop` — один
+        раз фоновый срок тем же моделям, даже если ни один тик не успел: 90
+        минут пишет и сам чат встречи (круг opusfix, DS C2; opusfix2, DS I5).
+        Поток не ждут: сдачу, не успевшую до выхода процесса, перепишет
+        следующий запрос, как до №725 (долг №572). Облачный движок держит свой
+        локальный запас: туда встреча уходит, когда шлюз недоступен (DS I1).
+        Сбой тика — одна строка в stderr на причину, поток живёт дальше
+        (Sonnet M2, DS M2). Возвращает число принятых утверждений.
+        """
+        target = self
+        if self.engine == "cloud":
+            if not self.fallback_local:
+                return 0
+            target = LLM({**self._cfg, "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                         keep_alive=self._keep_alive)
+        if target.engine != "ollama" or not privacy.is_loopback_url(target.base):
+            return 0
+        held, failed = 0, None
+        while not stop.wait(every):
+            try:
+                ok, errors = target._hold_tick(LIVE_KEEP_ALIVE)
+                held += ok
+                reason = "; ".join(errors) or None
+            except Exception as e:  # noqa: BLE001 — тик не смеет гасить поток встречи
+                reason = f"{type(e).__name__}: {e}"
+            if reason and reason != failed:
+                print(f"llm: срок модели встречи не утверждён ({reason})",
+                      file=sys.stderr, flush=True)
+            failed = reason
+        try:
+            _, errors = target._hold_tick(BACKGROUND_KEEP_ALIVE, timeout=HAND_BACK_TIMEOUT_S)
+            reason = "; ".join(errors) or None
+        except Exception as e:  # noqa: BLE001 — встреча кончилась, срок допишет фон
+            reason = f"{type(e).__name__}: {e}"
+        if reason:
+            print(f"llm: срок моделей встречи не сдан ({reason})", file=sys.stderr, flush=True)
+        return held
+
+    def meeting_models(self) -> set[str]:
+        """Теги моделей встречи: лестница `llm.*` и `sufler.*` из `MEETING_MODEL_KEYS`."""
+        sufler = self._cfg.get("sufler") or {}
+        tags = (self.model, self.fallback, self.small, *(sufler.get(k) for k in MEETING_MODEL_KEYS))
+        return {m if ":" in m else f"{m}:latest" for m in tags if isinstance(m, str) and m}
+
+    def _hold_tick(self, keep_alive: str, *, timeout: float = 30) -> tuple[int, list[str]]:
+        """Один тик срока — моделям встречи, которые сервер уже держит в памяти.
+
+        Пустой `/api/generate` модель грузит, если её нет, а с другим
+        `num_ctx` (или без него) перезагружает (опыт 17.10, phi4-mini:
+        контекст 8192 → 131072; круг opusfix, Sonnet C1). Поэтому тик спрашивает
+        `/api/ps` и шлёт срок только резидентным моделям встречи (`model`,
+        `fallback`, `small` — лестница `resolve_model` и тихие подсказки, DS C1;
+        `sufler.think_model`, `sufler.markup_model` — тезисы и разметка,
+        opusfix2 Sonnet I1, opusfix3 Sonnet I1; `meeting_models`) с тем контекстом,
+        с которым сервер их держит: модель, загруженную фоном с 16384, тик
+        держит, не перезагружая (opusfix2, Sonnet I2). Без `context_length` в
+        ответе модель не трогает. С совпавшим контекстом запрос — 7 мс, без
+        загрузки; между `/api/ps` и запросом модель может уйти — окно
+        длится до запроса этой модели (opusfix2, Haiku C1 — принято, Minor).
+        `/api/ps` не 200 или сеть — исключение; отказ по одной модели, статусом
+        или сетью, остальным тик не срывает (opusfix2 DS I2, opusfix3 Sonnet
+        I3). Возвращает принятые и строки отказов.
+        """
+        ps_url = f"{self.base}/api/ps"
+        r = requests.get(ps_url, timeout=min(10, timeout), **privacy.proxies_for(ps_url))
+        if r.status_code != 200:
+            raise RuntimeError(f"/api/ps: HTTP {r.status_code}")
+        mine = self.meeting_models()
+        resident = [(m.get("name"), m.get("context_length")) for m in r.json().get("models") or []
+                    if m.get("name") in mine and isinstance(m.get("context_length"), int)]
+        url = f"{self.base}/api/generate"
+        held, errors = 0, []
+        for name, ctx in resident:
+            try:
+                g = requests.post(url, json={"model": name, "keep_alive": keep_alive,
+                                             "options": {"num_ctx": ctx}},
+                                  timeout=timeout, **privacy.proxies_for(url))
+            except requests.RequestException as e:
+                errors.append(f"{name}: {type(e).__name__}: {e}")
+                continue
+            g.close()
+            if g.status_code == 200:
+                held += 1
+            else:
+                errors.append(f"{name}: HTTP {g.status_code}")
+        return held, errors
+
+    def _chat_keep_alive(self) -> str:
+        """Срок в тело Ollama-чата: явный из конструктора или по встрече сейчас."""
+        if self._keep_alive:
+            return self._keep_alive
+        return chat_keep_alive(named_root(), self.base)
+
     def _root(self) -> pathlib.Path:
         """Корень данных — на вызове: аренду пишет этот процесс, а читает её
         сторож здоровья по ТЕКУЩЕМУ корню (`llm_health.busy_with_ours`).
@@ -1030,7 +1188,7 @@ class LLM:
         if num_predict:
             options["num_predict"] = num_predict
         payload = {"model": self.resolve_model(), "messages": messages,
-                   "stream": True, "think": False, "keep_alive": "90m",
+                   "stream": True, "think": False, "keep_alive": self._chat_keep_alive(),
                    "options": options}
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
                                timeout=timeout) as r:
@@ -1131,7 +1289,8 @@ class LLM:
         # под облачным ключом — повтор через минуту взял бы её вместо облака
         self._fell_back_local = True
         local = LLM({**self._cfg,
-                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                     keep_alive=self._keep_alive)
         yield from local.stream_messages(messages, num_predict=num_predict,
                                          temperature=temperature,
                                          busy_wait=busy_wait)
@@ -1298,7 +1457,8 @@ class LLM:
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 self._fell_back_local = True     # см. __init__: сводку запаса не кэшировать
                 local = LLM({**self._cfg,
-                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}},
+                             keep_alive=self._keep_alive)
                 # model НЕ передаём: у облака имя своё (cloud_model), и
                 # локальный движок с ним получил бы 404 — пусть берёт своё
                 # из конфига (находка Qwen 3.8 на бенче головы 26.08).
@@ -1333,6 +1493,7 @@ class LLM:
             "model": sent,
             "messages": messages,
             "stream": False,
+            "keep_alive": self._chat_keep_alive(),
             "options": options,
         }
         if think is not None:
