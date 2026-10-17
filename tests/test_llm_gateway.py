@@ -1704,6 +1704,25 @@ def test_explicit_keep_alive_wins_over_the_meeting_rule(monkeypatch, meeting_roo
     assert wire.sent["json"]["keep_alive"] == "90m"
 
 
+def test_guessed_root_cannot_tell_a_meeting_and_keeps_the_model(monkeypatch, meeting_root):
+    """Корень не назван — в угаданном от кода корне лока демона нет никогда: 10m сбили бы
+    90m живой встречи в названном корне (выход 1, три головы)."""
+    import charoite_paths
+    monkeypatch.setattr(charoite_paths, "_given", None)
+    monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    wire = _wire(monkeypatch, _Resp({"message": {"content": "х"}}))
+    LLM(CFG).complete("в", model="м")
+    assert wire.sent["json"]["keep_alive"] == "90m"
+
+
+def test_remote_server_is_not_judged_by_the_local_lock(tmp_path):
+    """Чужой сервер обслуживает и чужие встречи — по своему локу о них не судить (выход 1, DS I1)."""
+    (tmp_path / "logs").mkdir()
+    assert llm_mod.chat_keep_alive(tmp_path, "http://127.0.0.1:11434") == "10m"
+    assert llm_mod.chat_keep_alive(tmp_path, "http://10.20.0.5:11434") == "90m"
+    assert llm_mod.chat_keep_alive(None, "http://127.0.0.1:11434") == "90m"
+
+
 @pytest.mark.parametrize("call", ["stream", "stream_messages"])
 def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock, call):
     """У стримов был литерал 90m: без встречи он держал 35b полтора часа после разбора."""

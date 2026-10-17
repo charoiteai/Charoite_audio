@@ -122,8 +122,10 @@ first prompt on a meeting arrives later; afterwards the model stays resident
 via `keep_alive`: 90 minutes after the last request while a meeting is being
 recorded, 10 minutes otherwise (background processing, the night run), so
 the memory is freed soon after the meeting is processed. Every chat request
-sends the term explicitly: Ollama keeps the term of the previous request when
-the key is missing.
+from the pipeline sends the term explicitly: Ollama keeps the term of the
+previous request when the key is missing. A remote server, or a process whose
+data folder is not named, always gets 90 minutes — there is no way to tell a
+meeting from there. The app's built-in chat sets its own 30-minute term.
 
 **Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and
 `sufler.think_model` (the Full profile writes the MLX tag into both).

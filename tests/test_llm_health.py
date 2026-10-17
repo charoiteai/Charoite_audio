@@ -303,7 +303,7 @@ def test_probes_carry_the_meeting_keep_alive(monkeypatch, tmp_path, live, want):
     """Проба тоже последний писатель срока модели: без ключа она наследует или ставит чужой срок (№725)."""
     import fcntl
     (tmp_path / "logs").mkdir()
-    monkeypatch.setattr(llm_health, "resolve_root", lambda _f: tmp_path)
+    monkeypatch.setattr(llm_health, "named_root", lambda: tmp_path)
     bodies: list = []
 
     def fake_post(url, json, timeout, **kw):  # noqa: A002 — имя параметра из requests
