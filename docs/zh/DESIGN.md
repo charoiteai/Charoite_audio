@@ -2,6 +2,8 @@
 
 *[English](../DESIGN.md) · [Русский](../ru/DESIGN.md) · **中文***
 
+> **简略译本；以英文版为准。** · *Abridged translation; the English version is authoritative.*
+
 两个平台，同一个性格：macOS 应用与 iPhone 伴侣应用由同一套设计令牌构建。代码中的权威来源是各 target 里的 `Theme.swift`（`app/Sources/CharoiteApp/Theme.swift`、`app-ios/Sources/CharoiteiOS/Theme.swift`）；在 macOS 上，`DesignKit.swift` 与 `CharoiteButton.swift` 为其补充表面、警示与按钮令牌。本文档是人类可读的描述及其背后的约定 — 以代码为准。Android 伴侣应用（`app-android/`）尚未改用这套令牌：它使用 Material 3 和自己的一对紫色（`#9B6DFF` / `#6C4BD8`）。
 
 ## 调色板

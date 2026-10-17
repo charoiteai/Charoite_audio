@@ -2,6 +2,8 @@
 
 *[English](../DIARIZATION.md) · [Русский](../ru/DIARIZATION.md) · **中文***
 
+> **简略译本；以英文版为准。** · *Abridged translation; the English version is authoritative.*
+
 Charoite 采用两遍说话人分离：
 
 1. **实时**（会议进行中）：两个声道里的说话人——通话的系统音频和房间里的麦克风——
