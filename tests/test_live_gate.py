@@ -305,6 +305,8 @@ def test_console_entry_takes_the_meeting_lock_before_loading_models():
     body = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
     main_body = body[body.index("def main():"):]
     assert main_body.index("live_gate.hold_meeting(") < main_body.index("STT(cfg)")
+    # описатель — в имени, живущем до конца main(): «_, outcome =» закрыл бы файл и снял лок (DS M7 выхода 3)
+    assert "meeting_lock, outcome = live_gate.hold_meeting(" in main_body
 
 
 def test_console_meeting_lock_without_rights_is_named_not_a_traceback(tmp_path):
@@ -336,3 +338,23 @@ def test_daemon_refusal_names_the_console_reason():
     assert 'open(_root() / "logs" / "daemon.lock", "w")' not in body, "«w» стирал бы метку держателя"
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
     assert '"console_meeting"' in swift
+
+
+def test_rebuild_waits_for_the_daemon_but_not_for_a_console_recording(tmp_path):
+    """Пересборка ждёт осиротевший `.part`, только пока лок держит демон: консольный v1
+    его записи не финализирует, ожидание стоило бы канала (выход 3 №725, DS M8)."""
+    import fcntl
+    path = live_gate.lock_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    assert live_gate.daemon_finalizes(tmp_path) is False, "лока нет — никто"
+    console, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        assert live_gate.daemon_alive(tmp_path) is True, "встреча идёт — фон ждёт"
+        assert live_gate.daemon_finalizes(tmp_path) is False, "но записи демона финализирует не консоль"
+    finally:
+        console.close()
+    with path.open("a+") as daemon:            # как демон: свой лок, файл пуст
+        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        daemon.truncate(0)
+        assert live_gate.daemon_finalizes(tmp_path) is True

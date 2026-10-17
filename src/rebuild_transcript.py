@@ -215,8 +215,9 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
 
 
 def _daemon_alive() -> bool:
-    """Держит ли кто-то лок демона. Пока держит — записи финализирует он."""
-    return live_gate.daemon_alive(_root())
+    """Держит ли лок демон. Пока держит — записи финализирует он; консольный
+    v1 под тем же локом записей демона не финализирует (№725)."""
+    return live_gate.daemon_finalizes(_root())
 
 
 def _yield_to_live(what: str, cap: float | None = None) -> None:

@@ -103,6 +103,22 @@ def daemon_alive(root: pathlib.Path) -> bool:
         return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
 
 
+def daemon_finalizes(root: pathlib.Path) -> bool:
+    """Держит ли лок встречи ДЕМОН — тот, кто сам финализирует свои записи.
+
+    С №725 лок держит и консольный v1, а он записи демона не финализирует:
+    пересборка прошлой встречи при живом v1 ждала бы осиротевший `.part`
+    убитого демона все 45 с и теряла канал (выход 3 №725, DS M8). Консоль
+    узнаём по метке держателя в файле (`hold_meeting`).
+    """
+    try:
+        f = lock_path(root).open("r")
+    except OSError:
+        return False
+    with f:
+        return file_locks.held_by_someone(f) and not held_by_console(f)
+
+
 def hold_meeting(root: pathlib.Path, *, sleep=time.sleep):
     """Взять лок встречи для записи БЕЗ демона (консольный v1): `(описатель | None, исход)`.
 
