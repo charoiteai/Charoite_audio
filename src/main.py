@@ -98,6 +98,8 @@ def main():
     console.print(f"[dim]{cfg['sufler']['hotkey_hint']} · стенограмма: {tr.path}[/dim]\n")
 
     stop = threading.Event()
+    threads.spawn(llm.hold_meeting_model, args=(stop,), name="console-hold", role="console",
+                  detached="срок модели переутверждается до выхода консоли")
     # Статусы хаба — в консоль: предупреждение «собеседников не будет» уходит
     # через on_status в момент start(), и без потребителя CLI его молча терял
     # (демон вешает on_status на emit, здесь до 11.09 не вешал никто).

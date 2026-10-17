@@ -127,7 +127,10 @@ previous request when the key is missing. A remote server, or a process whose
 data folder is not named, always gets 90 minutes — there is no way to tell a
 meeting from there. The app's built-in chat sets its own 30-minute term. A
 meeting recorded by the console mode (`src/main.py`) holds the same meeting
-lock as the daemon, so the background sees it.
+lock as the daemon, so the background sees it. While recording, the meeting
+owner (daemon or console) re-asserts the 90-minute term every 3 minutes with an
+empty request, so a background request that lands last cannot unload the model
+during a pause in speech.
 
 **Rollback** is a tag swap: put `qwen3.6:35b-a3b` into `llm.model` and
 `sufler.think_model` (the Full profile writes the MLX tag into both).

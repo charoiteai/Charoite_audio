@@ -27,6 +27,7 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("daemon.py", "import-prune"),
     ("daemon.py", "orphan-rebuild-chain"),
     ("daemon.py", "llm-warmup"),
+    ("daemon.py", "llm-hold"),
     ("daemon.py", "memory-warm"),
     ("daemon.py", "cloud-thread-refine"),
     ("daemon.py", "frame-drop-report"),
@@ -61,6 +62,7 @@ DETACHED: tuple[tuple[str, str], ...] = (
     ("live_nemotron.py", "nemotron-live-say"),
     ("llm.py", "fit-cache-sweep"),
     ("main.py", "console-warmup"),
+    ("main.py", "console-hold"),
     ("main.py", "console-stt"),
 )
 

@@ -910,6 +910,8 @@ def main():
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
+    threads.spawn(llm.hold_meeting_model, args=(stop,), name="llm-hold", role="process",
+                  detached="срок модели переутверждается до конца встречи, ждать нечего")
     # Живая речь для автостопа: когда в стенограмму последний раз лёг НОВЫЙ
     # текст и звучала ли речь за эту запись вообще. По распознанному тексту, а
     # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и

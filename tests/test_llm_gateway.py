@@ -1750,3 +1750,39 @@ def test_stream_bodies_follow_the_same_rule(monkeypatch, meeting_root, hold_lock
     with pytest.raises(_Stop):
         go()
     assert sent == ["10m", "90m"]
+
+
+class _Accepted:
+    status_code = 200
+
+    def close(self):
+        pass
+
+
+def test_meeting_owner_reasserts_the_meeting_keep_alive():
+    """Срок пишет последний запрос: фон поверх вызовов встречи ставит 10m. Владелец
+    встречи переутверждает 90m пустым /api/generate каждый тик, сбой сети тик не
+    роняет (№725, финальный Opus I1, I2)."""
+    stop = threading.Event()
+    sent: list = []
+
+    def post(url, json, timeout, **kw):
+        sent.append((url, dict(json)))
+        if len(sent) == 2:
+            raise requests.ConnectionError("сервер встал")
+        if len(sent) == 3:
+            stop.set()
+        return _Accepted()
+
+    held = LLM(CFG).hold_meeting_model(stop, every=0, post=post)
+    assert held == 2 and len(sent) == 3
+    assert {u for u, _ in sent} == {LLM(CFG).base + "/api/generate"}
+    assert all(b == {"model": "тест-модель", "keep_alive": "90m"} for _, b in sent)
+
+
+def test_hold_leaves_a_server_on_another_machine_alone():
+    """Чужому серверу фон короткого срока не шлёт — переутверждать нечего."""
+    client = LLM(CFG)
+    client.base = "http://10.20.0.5:11434"
+    assert client.hold_meeting_model(threading.Event(), every=0,
+                                     post=lambda *a, **k: pytest.fail("запрос ушёл")) == 0

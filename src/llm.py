@@ -531,6 +531,9 @@ EMBED_KEEP_ALIVE = "30m"
 #: 35b висела полтора часа после конца встречи. Поэтому ключ — в каждом теле.
 LIVE_KEEP_ALIVE = "90m"
 BACKGROUND_KEEP_ALIVE = "10m"   # не 0: ночной цикл гонит встречи подряд
+#: Шаг переутверждения срока владельцем встречи — втрое короче фонового срока:
+#: два пропуска подряд (сервер занят, сеть) модель ещё не выгружают.
+HOLD_EVERY_S = 180.0
 
 
 def chat_keep_alive(root: pathlib.Path | None, base_url: str) -> str:
@@ -901,6 +904,36 @@ class LLM:
     # Мимо швов к модели ходит только дверь векторов embed_door (0,2 с, убить
     # не жалко, аренды не берёт) и проба
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
+    def hold_meeting_model(self, stop: threading.Event, *, every: float = HOLD_EVERY_S,
+                           post=requests.post) -> int:
+        """Пока встреча идёт, раз в `every` секунд утверждать модели срок встречи.
+
+        Срок держит сервер, и пишет его последний запрос. Фоновый запрос,
+        принятый раньше вызовов встречи или повторённый на занятом сервере
+        со старым телом, ложится последним с 10m; процесс с другим корнем
+        данных встречи не видит вовсе; подсказки идут только на речь — пауза
+        дольше 10 минут выгружала бы модель посреди встречи (№725, финальный
+        Opus I1, I2, M1). Владелец встречи (демон, консоль) переписывает срок
+        сам, кто бы ни писал его между тиками. Пустой `/api/generate` с
+        `model` и `keep_alive` загруженную модель не гоняет — только новый
+        срок (опыт 17.10: 6 мс, `expires_at` 10m → 90m). Только локальная
+        Ollama: короткий срок фон шлёт лишь ей (`chat_keep_alive`). Отказ и
+        сеть — до следующего тика. Возвращает число принятых утверждений.
+        """
+        if self.engine != "ollama" or not privacy.is_loopback_url(self.base):
+            return 0
+        url = f"{self.base}/api/generate"
+        body = {"model": self.model, "keep_alive": LIVE_KEEP_ALIVE}
+        held = 0
+        while not stop.wait(every):
+            try:
+                r = post(url, json=body, timeout=30, **privacy.proxies_for(url))
+            except requests.RequestException:
+                continue
+            held += r.status_code == 200
+            r.close()
+        return held
+
     def _chat_keep_alive(self) -> str:
         """Срок в тело Ollama-чата: явный из конструктора или по встрече сейчас."""
         if self._keep_alive:
