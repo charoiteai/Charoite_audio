@@ -246,3 +246,104 @@ def test_belongs_is_the_one_stamp_boundary_rule():
     assert meeting_stamp.belongs("2026-08-03_1130.json", "2026-08-03_1130")
     assert not meeting_stamp.belongs("2026-08-03_113012.md", "2026-08-03_1130")
     assert not meeting_stamp.belongs("2026-08-03_1130-1_Тема.md", "2026-08-03_1130")
+
+
+# --- статус после наката темы (№699) ------------------------------------------
+
+def test_status_is_repathed_right_after_the_retitle():
+    """Сторож проводки: новый путь уходит в статус сразу после переименования,
+    а не с `ready` — иначе приложение до конца разбора видит мёртвый путь."""
+    text = (Path(__file__).resolve().parent.parent / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
+    assert text[call:].split("\n", 2)[1].strip() == "_repath(tpath)"
+    assert text.index("    _open_progress(tpath)\n") < call, "ключ статуса — под исходным именем, до наката темы"
+
+
+def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch, capsys):
+    monkeypatch.setattr(gu, "_progress", None)
+    gu._repath(Path("y.md"))                        # руками по файлу — статуса нет, молча
+
+    class Broken:
+        calls = 0
+
+        def repath(self, transcript, moved_to):
+            Broken.calls += 1
+            raise OSError("диск")
+    monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
+    gu._repath(Path("y.md"))
+    out = capsys.readouterr().out
+    assert "новый путь стенограммы в статус не записан (OSError: диск)" in out
+    assert Broken.calls == 1 and out.count("не записан") == 1, "не таймаут — без повтора (выход 4, Sonnet M2)"
+
+
+def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
+    """Сбой ключа не гасит статус прогона (выход 2 №699, DS M4) — поведением, а не
+    порядком строк (выход 3, Sonnet M1)."""
+    import meeting_processing
+
+    def broken(self, transcript):
+        raise OSError("каталог")
+    monkeypatch.setattr(gu, "_progress", None)
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", broken)
+    gu._open_progress(Path("x.md"))
+    assert gu._progress is not None and gu._progress[1] == Path("x.md")
+    assert "ключ статуса не запомнен (OSError: каталог)" in capsys.readouterr().out
+
+
+def test_a_refusal_without_a_key_is_logged_once(tmp_path, monkeypatch, capsys):
+    """Стор отказал — ключа под исходным именем нет: строка в лог, без повтора
+    и без записи (выход 6 №699, DS I1 = Sonnet M1 = Haiku I1)."""
+    import meeting_processing
+    old = tmp_path / "2026-07-31_141500.md"
+    titled = tmp_path / "2026-07-31_141500_Тема.md"
+    titled.write_text("x", encoding="utf-8")
+    store = meeting_processing.MeetingStatusStore(tmp_path)
+    monkeypatch.setattr(gu, "_progress", (store, old))
+    gu._repath(titled)
+    assert capsys.readouterr().out == "", "каталога статусов нет — писать нечего, отказа нет (выход 7, Haiku I2)"
+    store.directory.mkdir(parents=True)
+    gu._repath(titled)
+    out = capsys.readouterr().out
+    assert out.count("новый путь стенограммы в статус не записан (LookupError") == 1, out
+    assert "попытка" not in out
+
+
+def test_no_store_means_no_status_and_no_key_line(monkeypatch, capsys):
+    """Стор не открылся — статуса нет; про ключ не говорим (выход 3, DS M3)."""
+    import meeting_processing
+
+    def broken(self, root, **kw):
+        raise OSError("права")
+    monkeypatch.setattr(gu, "_progress", (object(), Path("прошлая.md")))
+    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "__init__", broken)
+    gu._open_progress(Path("x.md"))
+    out = capsys.readouterr().out
+    assert gu._progress is None, "прошлая стенограмма не наследуется (выход 5, Sonnet M1 = DS M3)"
+    assert "статус недоступен (OSError: права)" in out and "ключ статуса" not in out
+
+
+def test_repath_tries_again_while_the_status_lock_is_busy(monkeypatch, capsys):
+    """У короткой встречи следующей записи до `ready` нет: занятый замок — ещё попытка,
+    после последней — строка (выход 3 №699, Haiku I2)."""
+    class Busy:
+        def __init__(self, fails):
+            self.fails, self.calls, self.args = fails, 0, set()
+
+        def repath(self, transcript, moved_to):
+            self.calls += 1
+            self.args.add((transcript, moved_to))
+            if self.calls <= self.fails:
+                raise TimeoutError("замок занят")
+    store = Busy(gu.REPATH_TRIES - 1)
+    monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
+    gu._repath(Path("y.md"))
+    out = capsys.readouterr().out
+    assert store.calls == gu.REPATH_TRIES and store.args == {(Path("x.md"), Path("y.md"))}
+    assert out.count("замок статусов занят, попытка") == gu.REPATH_TRIES - 1 and "не записан" not in out
+    store = Busy(gu.REPATH_TRIES)
+    monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
+    gu._repath(Path("y.md"))
+    out = capsys.readouterr().out
+    assert store.calls == gu.REPATH_TRIES and store.args == {(Path("x.md"), Path("y.md"))}
+    assert "не записан (TimeoutError: замок занят)" in out
+    assert out.count("замок статусов занят, попытка") == gu.REPATH_TRIES - 1

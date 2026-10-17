@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any, Callable
 import graphs
+import live_sidecar
 import meeting_stamp
 
 
@@ -117,7 +118,11 @@ def _looks_main(path: pathlib.Path) -> bool:
 
 
 def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
-    """Return the transcript even if graph_updater renamed it to its title."""
+    """Return the transcript even if graph_updater renamed it to its title.
+
+    Живой файл — ровно `original.resolve()`, без глоба: глоб только для
+    мёртвого пути (выход 4 №699, DS C1).
+    """
     if original.exists():
         return original.resolve()
     # Сначала посекундное имя («…125812_Тема»), потом минутное: вторая
@@ -253,6 +258,7 @@ class MeetingStatusStore:
         self.directory = self.root / "logs" / STATUS_DIR
         self._now = now
         self._keys = {}   # путь стенограммы → ключ статуса, на жизнь процесса
+        self._keyed_alive: set[str] = set()   # ключ посчитан при живом файле — см. `_key`
 
     def processing(self, transcript: pathlib.Path, stage: str,
                    part: int | None = None, parts: int | None = None) -> pathlib.Path:
@@ -378,6 +384,60 @@ class MeetingStatusStore:
                 return None
             updated.pop("names_pending", None)
             updated.pop("names_reason", None)
+            return updated
+
+        return self._update(transcript, mutate)
+
+    def track(self, transcript: pathlib.Path) -> None:
+        """Запомнить ключ статуса встречи, пока файл под исходным именем.
+
+        Новый процесс (graph_updater) иначе считал ключ уже после наката темы,
+        по новому имени: две мёртвые записи той же минуты давали минутный
+        ключ, и `repath` писал путь в чужой документ, а свой оставлял мёртвым
+        (выход 1 №699, DS I1 = Sonnet I1 = Haiku I1). Под исходным именем своя
+        запись — с живым путём и выигрывает у мёртвых (`_stored_key_for`).
+        """
+        self._key(transcript)
+
+    def repath(self, transcript: pathlib.Path, moved_to: pathlib.Path) -> pathlib.Path | None:
+        """Перевести путь стенограммы идущей обработки на её новое имя.
+
+        Накат темы переименовывает файл посреди шага графа, а следующая
+        запись статуса — только `ready`: до неё приложение видело мёртвый
+        путь, отвечало «стенограммы нет на диске» и не давало повтор (№699,
+        встреча 12.10 — 55 минут). Только при `processing`: этап, части,
+        `updated_at` и попытки не трогаем — это не новый шаг, а то же место
+        под новым именем. Статуса нет или путь прежний — не пишем.
+        `transcript` — исходное имя (ключ — см. `_key`), `moved_to` — то,
+        что вернул переименователь, без угадывания глобом (Sonnet M1).
+        Это не исход, поэтому обычная запись под замком: без замка она
+        откатывала бы чужую запись того же окна (выход 2 №699, DS I2). Замок
+        занят дольше срока — TimeoutError. Следующей записи того же писателя
+        до `ready` может не быть (короткая встреча), поэтому повторяет
+        вызывающий (`graph_updater._repath`); сравнение с прочитанным в самой
+        двери записи — долг №615. Порядок проверок: `moved_to` не файл или
+        каталога статусов нет — писать нечего, None без отказа (выход 7);
+        путь не отмечен в `_keyed_alive` (см. `_key`) — LookupError, не
+        молчаливый None: по новому имени ключ угадывался бы, и путь мог лечь
+        в чужой документ (выход 5 №699, DS C1; №729), а вызывающий должен
+        сказать об отказе в лог (выход 6, DS I1); документа нет — None;
+        дальше под замком `_update`: статус не `processing` или путь уже
+        новый — None без записи (выход 9, Haiku M1).
+        """
+        transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
+        if not moved_to.is_file() or not self.directory.is_dir():
+            return None             # писать нечего — и отказа нет (выход 7, Haiku I2 = DS M2)
+        if str(transcript) not in self._keyed_alive:
+            raise LookupError("ключ статуса не посчитан под исходным именем")
+        if not self._path(transcript).is_file():
+            return None
+        final = str(moved_to.resolve())     # путь переименователя, без глоба (выход 3, DS M1)
+
+        def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
+            if current.get("state") != "processing" or current.get("transcript_path") == final:
+                return None
+            updated = dict(current)
+            updated["transcript_path"] = final
             return updated
 
         return self._update(transcript, mutate)
@@ -676,9 +736,19 @@ class MeetingStatusStore:
         повтор по титулованному пути) находит запись той же встречи по тому,
         куда сегодня резолвится её `transcript_path`, и берёт ключ оттуда;
         записи с мёртвым путём уступают живым — мёртвый статус соседки той
-        же минуты не угоняет чужой ключ (DS r1 по #456). Ни `graph_key`, ни
+        же минуты не угоняет чужой ключ (DS r1 по #456). Живой записи нет, а
+        посекундный штамп встречи известен (`live_sidecar.meeting_key`: имя
+        или `stamp` сайдкара после наката темы) — ключ он: повтор по
+        титульному имени иначе получал минуту и писал в чужой документ
+        (выход 2 №699, DS C1 = Sonnet I1 = Haiku I1). Ни `graph_key`, ни
         владения минутой здесь нет: имя статуса не обязано совпадать с именем
         заметки графа, ему достаточно быть неизменным.
+
+        Путь попадает в `_keyed_alive`, только если ПЕРВЫЙ расчёт ключа по
+        нему пришёлся на живой файл (`track`, `processing`, `ready` — любой
+        вызов). Первый расчёт по мёртвому имени кэшируется без отметки, и
+        путь не отмечается и потом, даже если файл под этим именем вернётся;
+        `repath` по нему не пишет (выходы 6–8 №699).
         """
         transcript = pathlib.Path(transcript)
         tp = str(transcript)
@@ -686,16 +756,21 @@ class MeetingStatusStore:
         if cached:
             return cached
         current = find_final_transcript(transcript)
-        key = self._stored_key_for(current)
-        if key is None:
-            stem = current.stem if current.exists() else transcript.stem
-            key = meeting_stamp.stamp_of(stem) or stem
+        own = current if current.exists() else transcript
+        exact = live_sidecar.meeting_key(own)
+        key = self._stored_key_for(current, exact) or exact or own.stem
         key = re.sub(r"[^\w.-]+", "_", key)
         self._keys[tp] = key
+        if transcript.exists():
+            self._keyed_alive.add(tp)
         return key
 
-    def _stored_key_for(self, current: pathlib.Path) -> str | None:
-        """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу."""
+    def _stored_key_for(self, current: pathlib.Path, exact: str | None = None) -> str | None:
+        """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу.
+
+        `exact` — штамп встречи по `live_sidecar.meeting_key`; посекундный
+        берёт верх над записями, у которых путь мёртвый.
+        """
         best: tuple[int, float, int, str] | None = None
         candidates = 0
         for path in self.directory.glob("*.json"):
@@ -723,10 +798,14 @@ class MeetingStatusStore:
                 best = rank
         if best is None:
             return None
+        if best[0] == 0 and exact and meeting_stamp.minute_of(exact) != exact:
+            # точный ключ встречи (секунды или суффикс коллизии) — её собственный
+            return exact
         if best[0] == 0 and candidates > 1:
             # только мёртвые пути и их несколько: свежесть — не признак владения,
             # соседка той же минуты угнала бы ключ и meeting_id (GLM r2) —
-            # не гадаем, дальше сработает детерминированный штамп текущего файла
+            # не гадаем, дальше — минутный `exact` или стем текущего файла;
+            # встреча без `stamp` с одной мёртвой записью соседки — №729
             return None
         return best[3]
 
@@ -748,7 +827,8 @@ class MeetingStatusStore:
         Два режима. Обычная запись (этап, ревизия в работе, пересчёт имён)
         замок обязана взять: занят дольше срока — TimeoutError, файл замка
         не годится — его OSError; запись пропускается, следующая запись
-        того же писателя всё равно придёт. `terminal=True` — исход встречи
+        того же писателя обычно придёт; у `repath` её может не быть, и
+        повторяет вызывающий. `terminal=True` — исход встречи
         (ready, failed, no_speech) и доставленная ревизия (`review` «ok»):
         он обязан лечь. Иначе документ остаётся в `processing`, приложение
         через полчаса рисует ошибку, `unfinished()` через час заново гонит

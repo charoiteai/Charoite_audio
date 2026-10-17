@@ -7,6 +7,8 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
@@ -511,3 +513,172 @@ def test_stale_running_or_retrying_review_expires_into_failed(tmp_path):
     clock[0] += meeting_processing.REVIEW_STALE * 2
     store.unfinished()
     assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "ok", "исход не протухает"
+
+
+def test_a_living_transcript_is_found_as_itself(tmp_path):
+    """Живой файл — ровно `.resolve()`, без глоба: repath пишет путь
+    переименователя, и find_final_transcript дал бы тот же (выход 4 №699,
+    DS C1). Свежая соседка того же штампа с темой не мешает."""
+    live = _transcript(tmp_path)
+    neighbour = live.with_name(live.stem + "_Соседка.md")
+    neighbour.write_text("# Соседка\n" + "текст " * 80, encoding="utf-8")
+    os.utime(neighbour, (time.time() + 60, time.time() + 60))
+    assert find_final_transcript(live) == live.resolve()
+    assert find_final_transcript(neighbour) == neighbour.resolve()
+
+
+def test_repath_moves_a_running_status_to_the_titled_name(tmp_path):
+    """№699: накат темы переименовал стенограмму посреди шага графа, а до
+    `ready` статус держал мёртвый путь — приложение отвечало «стенограммы нет
+    на диске». repath переводит путь и не трогает ни этап, ни часы, ни части."""
+    live = _transcript(tmp_path)
+    clock = iter([100.0, 999.0])
+    store = MeetingStatusStore(tmp_path, now=lambda: next(clock))
+    status = store.processing(live, "updating_graph", part=2, parts=5)
+    before = json.loads(status.read_text(encoding="utf-8"))
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    assert store.repath(live, titled) == status  # старым путём и новым — как graph_updater
+    after = json.loads(status.read_text(encoding="utf-8"))
+    assert pathlib.Path(after["transcript_path"]).name == titled.name
+    assert pathlib.Path(after["transcript_path"]).is_file()
+    assert {k: v for k, v in after.items() if k != "transcript_path"} == \
+        {k: v for k, v in before.items() if k != "transcript_path"}
+    assert store.repath(live, titled) is None, "путь уже живой — второй записи нет"
+
+
+def test_repath_writes_its_own_status_among_dead_neighbours(tmp_path):
+    """Выход 1 №699 (DS I1 = Sonnet I1 = Haiku I1): свежий процесс графа считал ключ
+    уже по новому имени — две мёртвые записи той же минуты давали минуту, и путь
+    ложился в чужой документ `…1532`, а свой оставался мёртвым. Ключ — под
+    исходным именем (`track`), до наката темы."""
+    tr = tmp_path / "transcripts"
+    tr.mkdir()
+    st = tmp_path / "logs" / "meeting-status"
+    st.mkdir(parents=True)
+    old = tr / "2026-08-12_153212.md"
+    old.write_text("x", encoding="utf-8")
+
+    def doc(key, path, state):
+        (st / f"{key}.json").write_text(json.dumps(
+            {"key": key, "state": state, "transcript_path": str(path), "updated_at": 1}), encoding="utf-8")
+
+    doc("2026-08-12_153212", old, "processing")
+    doc("2026-08-12_153245", tr / "2026-08-12_153245.md", "error")    # соседка, файл удалён руками
+    doc("2026-08-12_1532", tr / "2026-08-12_1532.md", "processing")   # наследие с минутным ключом
+    store = MeetingStatusStore(tmp_path)                               # свежий, как в graph_updater
+    store.track(old)
+    new = tr / "2026-08-12_1532_Тема.md"
+    old.rename(new)
+    assert store.repath(old, new) == st / "2026-08-12_153212.json"
+    seen = {p.stem: pathlib.Path(json.loads(p.read_text(encoding="utf-8"))["transcript_path"]).name
+            for p in st.glob("*.json")}
+    assert seen == {"2026-08-12_153212": new.name, "2026-08-12_153245": "2026-08-12_153245.md",
+                    "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
+
+
+def test_repath_waits_for_the_status_lock_and_skips_when_it_is_busy(tmp_path, monkeypatch):
+    """`repath` — не исход: без замка он откатывал бы чужую запись того же окна. Замок
+    занят дольше срока — TimeoutError, документ не тронут (выход 2 №699, DS I2)."""
+    import threading
+
+    import meeting_processing
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    status = store.processing(live, "updating_graph", part=1, parts=2)
+    raw = status.read_bytes()
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    writer_key = MeetingStatusStore(tmp_path)
+    writer_key.track(live)                          # ключ под исходным именем, как graph_updater
+    live.rename(titled)
+    monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.0)
+    lock = meeting_processing.MeetingStatusStore(tmp_path)
+    writer = writer_key
+    with lock._locked():
+        out = []
+
+        def run():
+            try:
+                out.append(writer.repath(live, titled))
+            except TimeoutError as e:
+                out.append(e)
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(5)
+    assert len(out) == 1 and isinstance(out[0], TimeoutError)
+    assert status.read_bytes() == raw, "без замка не пишем"
+
+
+def test_repath_needs_a_key_counted_under_the_living_name(tmp_path):
+    """Выход 5 №699 (DS C1, Sonnet M2, Haiku M2): ключ, которого стор не считал под
+    исходным именем, — угаданный по новому; такой `repath` не пишет и говорит
+    об этом (выход 6, DS I1). Ключ, посчитанный под мёртвым именем, — тоже
+    не свой, хотя он в кэше (выход 6, DS M2). Ключ любого расчёта при живом
+    файле — свой (`processing` здесь, `track` в боевом прогоне)."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    status = store.processing(live, "updating_graph", part=1, parts=2)
+    raw = status.read_bytes()
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    fresh = MeetingStatusStore(tmp_path)            # процесс графа, `track` упал
+    with pytest.raises(LookupError):
+        fresh.repath(live, titled)
+    assert status.read_bytes() == raw
+    assert store.repath(live, titled) == status
+    assert pathlib.Path(json.loads(status.read_text(encoding="utf-8"))["transcript_path"]).name == titled.name
+    late = MeetingStatusStore(tmp_path)
+    late.processing(live, "updating_graph", part=2, parts=2)   # ключ под мёртвым именем — в кэше
+    raw = status.read_bytes()
+    assert str(live) in late._keys
+    with pytest.raises(LookupError):
+        late.repath(live, titled)
+    assert status.read_bytes() == raw
+
+
+def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp_path):
+    """Выход 2 №699 (DS C1 = Sonnet I1 = Haiku I1): повтор идёт по титульному имени,
+    `track` под исходным уже не позвать. Свой документ и соседки минуты — с мёртвыми
+    путями; минутный ключ писал в чужой `…1532`. Ключ — посекундный штамп из `stamp`
+    сайдкара, как у замка пересборки."""
+    import live_sidecar
+    tr = tmp_path / "transcripts"
+    tr.mkdir()
+    st = tmp_path / "logs" / "meeting-status"
+    st.mkdir(parents=True)
+
+    def doc(key, path, state):
+        (st / f"{key}.json").write_text(json.dumps(
+            {"key": key, "state": state, "transcript_path": str(path), "updated_at": 1}), encoding="utf-8")
+
+    doc("2026-08-12_153212", tr / "2026-08-12_153212.md", "error")
+    doc("2026-08-12_153245", tr / "2026-08-12_153245.md", "error")    # соседка, файл удалён руками
+    doc("2026-08-12_1532", tr / "2026-08-12_1532.md", "processing")   # наследие с минутным ключом
+    new = tr / "2026-08-12_1532_Тема.md"
+    new.write_text("x", encoding="utf-8")
+    assert live_sidecar.remember(new, "stamp", "2026-08-12_153212")
+    store = MeetingStatusStore(tmp_path)
+    store.track(new)
+    assert store.processing(new, "updating_graph") == st / "2026-08-12_153212.json"
+    assert store.repath(new, new) is None, "путь уже живой — второй записи нет"
+    seen = {p.stem: pathlib.Path(json.loads(p.read_text(encoding="utf-8"))["transcript_path"]).name
+            for p in st.glob("*.json")}
+    assert seen == {"2026-08-12_153212": new.name, "2026-08-12_153245": "2026-08-12_153245.md",
+                    "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
+
+
+def test_repath_leaves_finished_missing_and_unmoved_alone(tmp_path):
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.track(live)
+    store.directory.mkdir(parents=True, exist_ok=True)   # «нет статуса», а не «нет каталога»
+    assert store.repath(live, live) is None, "статуса нет — не заводим"
+    fresh = MeetingStatusStore(tmp_path)
+    assert fresh.repath(live, tmp_path / "нет.md") is None, (
+        "переименованного файла нет — писать нечего, отказа по ключу нет (выход 8, DS M1)")
+    done = store.ready(live, None)
+    raw = done.read_bytes()
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    assert store.repath(live, titled) is None
+    assert done.read_bytes() == raw, "ready не переписывается"
