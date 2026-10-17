@@ -121,7 +121,10 @@ final class ChannelAxisTests: XCTestCase {
         else { return XCTFail("мусорное время — разрыв, а не Int(...) за пределом") }
     }
 
-    func testAppendAllRollsBackPartialWrite() throws {
+    func testFailedAppendNeverShrinksTheFile() throws {
+        // Демон читает файл хвостом: обрезка под его позицией увела бы чтение
+        // за конец, а перезапуск канала — к началу встречи (Opus C2). Легшая
+        // часть остаётся, позиция — в конце, счёт оси — по размеру.
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("axis-\(UUID().uuidString).raw")
         FileManager.default.createFile(atPath: url.path, contents: Data(count: 10))
@@ -135,10 +138,45 @@ final class ChannelAxisTests: XCTestCase {
             try h.write(contentsOf: Data(count: 96_000))
             throw Disk()
         })
-        XCTAssertEqual(try h.offsetInFile, 10)
+        XCTAssertEqual(h.endBytes(), 96_010)
         XCTAssertTrue(h.appendAll { try $0.write(contentsOf: Data(count: 4)) })
         try h.synchronize()
-        XCTAssertEqual(try Data(contentsOf: url).count, 14, "в файле нет откаченного куска")
+        XCTAssertEqual(try Data(contentsOf: url).count, 96_014, "файл только растёт")
+        var axis = ChannelAxis(rate: rate)
+        axis.resync(fileBytes: 96_014)
+        XCTAssertEqual(axis.fileFrames, 48_007)
+    }
+
+    func testRestartedStreamCountsEachChannelFromItsOwnFirstBuffer() {
+        // Дыра пересоздания общая: системный звук вернулся через 29 с, микрофон —
+        // через 31. Решай каждый канал сам, системный залил бы 29 с, а микрофон
+        // разорвал бы — каналы разошлись бы на ~29 с. Как до №655 — оба от себя
+        // (Opus C1).
+        var s = ChannelAxis(rate: rate), m = ChannelAxis(rate: 48_000)
+        feed(&s, from: 100, count: 500, epoch: 100)
+        for i in 0..<500 {
+            XCTAssertEqual(m.plan(host: 100 + Double(i) * 0.02, epoch: 100), .write)
+            m.didWrite(960)
+        }
+        s.streamRestarted(); m.streamRestarted()
+        XCTAssertEqual(s.plan(host: 139, epoch: 100), .write)
+        XCTAssertEqual(m.plan(host: 141, epoch: 100), .write)
+        XCTAssertEqual(s.fileFrames / rate, m.fileFrames / 48_000, "каналы на одной шкале")
+        // внутри нового потока дыры снова заливаются
+        s.didWrite(buf)
+        XCTAssertEqual(s.plan(host: 139 + 0.02 + 1, epoch: 100), .fill(zeros: rate))
+    }
+
+    func testFailedFillRebasesInsteadOfGrowingEveryBuffer() {
+        // Заливка не легла — дыра живёт как до №655, следующий буфер её не
+        // планирует снова, всё длиннее (Opus I1).
+        var axis = ChannelAxis(rate: rate)
+        feed(&axis, from: 100, count: 50, epoch: 100)
+        guard case .fill = axis.plan(host: 102, epoch: 100) else { return XCTFail("дыра 1 с") }
+        axis.fillFailed(host: 102, fileBytes: 2 * axis.fileFrames)
+        XCTAssertEqual(axis.breaks, 1)
+        axis.didWrite(buf)
+        XCTAssertEqual(axis.plan(host: 102.02, epoch: 100), .write)
     }
 
     func testDisabledAxisWritesAsBefore() {
@@ -176,7 +214,7 @@ final class ChannelAxisTests: XCTestCase {
     func testResyncTakesFileSizeOrDisables() {
         var axis = ChannelAxis(rate: rate)
         feed(&axis, from: 100, count: 10, epoch: 100)
-        axis.resync(fileBytes: 2 * 7 * buf)         // откат не прошёл до конца — счёт по файлу
+        axis.resync(fileBytes: 2 * 7 * buf)         // сбой записи — счёт по файлу
         XCTAssertEqual(axis.fileFrames, 7 * buf)
         XCTAssertFalse(axis.disabled)
         axis.resync(fileBytes: 2 * 7 * buf + 1)     // полкадра — дальше по оси нельзя
@@ -191,9 +229,9 @@ final class ChannelAxisTests: XCTestCase {
         XCTAssertEqual(axis.disabledReason, "размер файла не прочесть")
     }
 
-    func testFailedRollbackLeavesPositionAtRealEnd() throws {
-        // Дескриптор только на чтение: и запись, и откат падают. Позиция —
-        // в конце файла, а не на смещении до записи (выход 3, Sonnet I1).
+    func testFailedWriteLeavesPositionAtRealEnd() throws {
+        // Дескриптор только на чтение: запись падает. Позиция — в конце файла,
+        // куда пойдёт следующая запись (выход 3, Sonnet I1).
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("axis-ro-\(UUID().uuidString).raw")
         try Data(count: 10).write(to: url)
@@ -202,6 +240,7 @@ final class ChannelAxisTests: XCTestCase {
         defer { try? h.close() }
         try h.seek(toOffset: 4)
         XCTAssertFalse(h.appendAll { try $0.write(contentsOf: Data(count: 6)) })
+        XCTAssertEqual(try h.offset(), 10)
         XCTAssertEqual(h.endBytes(), 10)
     }
 }

@@ -55,8 +55,12 @@ converted to host time (`CMSyncConvertTime`) and measured from the session
 epoch. A gap over 0.1 s is filled with silence up to 30 s (half of
 `AudioHub.BUF_CAP_S`); a longer gap is a break and the axis is re-anchored. A
 buffer earlier than its slot re-anchors too, with a counter — no sound is cut.
-Writes are all-or-nothing: a failed write is rolled back to the offset taken
-before it, and the axis re-reads the file size; an unreadable or odd size, a
+Filling works inside one stream only: after the stream is recreated each
+channel counts again from its own first buffer, as before, so the two channels
+never decide the shared restart gap differently. The file only grows (the
+daemon tails it): a failed write is not rolled back, the axis re-reads the
+file size, and a fill that failed re-anchors instead of retrying; an
+unreadable or odd size, a
 sample-rate change or a stream without a clock turns the axis off for the rest
 of the recording, and `capture.log` says why (`ОСЬ КАНАЛА`).
 

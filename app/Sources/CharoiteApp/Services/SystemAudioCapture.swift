@@ -727,6 +727,13 @@ final class SystemAudioCapture: NSObject {
                 st.framesByStream[id] = nil
                 st.micRateByStream[id] = nil
                 st.tombstones.insert(id)
+                // Новый поток — отсчёт каждого канала от его первого буфера, без
+                // заливки дыры пересоздания (Opus C1). Новый поток может занять
+                // тот же адрес — строка первого буфера нужна и ему (Opus M1).
+                for ch in [AxisChannel.system, .mic] {
+                    st.axes[ch]?.streamRestarted()
+                    st.greeted.remove("\(id.hashValue)-\(ch.rawValue)")
+                }
             }
         }
         /// Новый поток занял адрес отпущенного — снять надгробие.
@@ -819,8 +826,8 @@ final class SystemAudioCapture: NSObject {
 
         /// Буфер — в файл канала по его оси. Только под `state`. Нули пишутся
         /// лишь перед настоящим звуком: поток без декодированных буферов файл не
-        /// растит. Каждая запись — всё или ничего; не прошёл откат — счёт оси
-        /// берётся по размеру файла. Возвращает строки журнала: писать их под замком — открытие
+        /// растит. После сбоя записи счёт оси — по размеру файла; не легла
+        /// заливка — дыра остаётся, буфер пишется следом, как до №655. Возвращает строки журнала: писать их под замком — открытие
         /// файла на очереди SCK.
         private func place(_ pcm: [Int16], rate: Int, host: Double?, channel: AxisChannel,
                            stream sid: ObjectIdentifier, in st: inout Counters) -> [String] {
@@ -833,15 +840,19 @@ final class SystemAudioCapture: NSObject {
                 lines.append("\(Self.axisLogMark): \(channel.rawValue) — частота \(rate) Гц вместо "
                              + "\(axis.rate), ось выключена до конца записи")
             }
-            var ok = true
             if let host {
                 if st.epoch == nil { st.epoch = host }
                 switch axis.plan(host: host, epoch: st.epoch ?? host) {
                 case .write:
                     break
                 case .fill(let zeros):
-                    ok = writeZeros(zeros, to: handle)
-                    if ok {
+                    if !writeZeros(zeros, to: handle) {
+                        ledger.writeFailures += 1
+                        axis.fillFailed(host: host, fileBytes: handle?.endBytes())
+                        lines.append("\(Self.axisLogMark): \(channel.rawValue) — заливка не легла, "
+                                     + (axis.disabledReason.map { "\($0), ось выключена до конца записи" }
+                                        ?? "отсчёт заново"))
+                    } else {
                         axis.didFill(zeros)
                         ledger.gapsSinceLog += 1
                         ledger.zerosSinceLog += zeros
@@ -863,8 +874,7 @@ final class SystemAudioCapture: NSObject {
             } else {
                 ledger.untimed += 1
             }
-            if ok { ok = write(pcm, to: handle) }
-            if ok {
+            if write(pcm, to: handle) {
                 axis.didWrite(pcm.count)
             } else {
                 ledger.writeFailures += 1
@@ -883,8 +893,12 @@ final class SystemAudioCapture: NSObject {
         /// Итог оси по каналам — строки журнала на остановке.
         private static func summary(_ st: Counters) -> [String] {
             [AxisChannel.system, .mic].compactMap { ch in
-                guard let axis = st.axes[ch] else { return nil }
                 let l = st.ledger[ch] ?? Ledger()
+                guard let axis = st.axes[ch] else {
+                    // Ни один буфер не свёлся — «микрофон есть, звука нет» (Opus M3).
+                    guard l.undecoded > 0 else { return nil }
+                    return "\(axisLogMark): \(ch.rawValue) итог — оси нет, не свелось \(l.undecoded)"
+                }
                 return String(format: "%@: %@ итог — дыр %d, нулей %.2f с, разрывов %d, "
                               + "переякорений %d, дрожание до %.3f с, не свелось %d, без времени %d, "
                               + "сбоев записи %d%@", axisLogMark, ch.rawValue, axis.gaps,
@@ -929,7 +943,7 @@ final class SystemAudioCapture: NSObject {
         }
 
         /// Вызывать только под `state`: так запись и `close()` не пересекаются.
-        /// `false` — запись не удалась и откачена: в файле её нет.
+        /// `false` — запись не удалась; часть её могла лечь (счёт — по размеру файла).
         private func write(_ pcm: [Int16], to handle: FileHandle?) -> Bool {
             // Бросающий API вместо `write(_:)`: ошибка записи (диск кончился,
             // дескриптор закрыт) — ошибка Swift, а не ObjC-исключение,
@@ -944,7 +958,7 @@ final class SystemAudioCapture: NSObject {
 
         /// Нули кусками не длиннее `silence`: заливка до потолка — под замком на
         /// очереди SCK, и одна большая аллокация на каждую дыру ни к чему.
-        /// Вся заливка — одна запись: упал кусок — откат к началу дыры.
+        /// Упал кусок — легла часть заливки; счёт — по размеру файла.
         private func writeZeros(_ count: Int, to handle: FileHandle?) -> Bool {
             handle?.appendAll { h in
                 var left = count
