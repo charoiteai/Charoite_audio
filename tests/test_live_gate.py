@@ -375,8 +375,9 @@ def test_console_meeting_without_its_mark_keeps_the_meeting_lock(tmp_path):
 
 def test_daemon_refusal_names_the_console_reason(tmp_path):
     """Живой демон при консольной встрече отказывает строкой статуса с причиной
-    `console_meeting` и выходит, не стартуя; что причина фатальна для
-    приложения, стережёт `AutostopTests.swift` (выход 12, DS C2). Иначе три
+    `console_meeting` и выходит, не стартуя; причина, пришедшая от демона,
+    обязана быть в `fatalReasons` приложения — `AutostopTests.swift` сверяет
+    только свой литерал (выход 13, Haiku C1). Иначе три
     «восстанавливаю запись» (выход 3 №725). Поведением, а не сканом `daemon.py`: скан то
     пропускал обход, то падал на равном коде (выходы 8–11); захват лока одной
     функцией в `live_gate` — долг зоны живого контура (№572)."""
@@ -388,7 +389,7 @@ def test_daemon_refusal_names_the_console_reason(tmp_path):
         assert outcome == live_gate.file_locks.TAKEN
         run = subprocess.run([sys.executable, str(ROOT / "src" / "daemon.py")], cwd=ROOT,
                              env=dict(os.environ, CHAROITE_ROOT=str(root)),
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=60)   # меньше потолка pytest (выход 13, M1)
     finally:
         console.close()
     events = []
@@ -401,6 +402,11 @@ def test_daemon_refusal_names_the_console_reason(tmp_path):
     assert refusals and refusals[0].get("reason") == "console_meeting", (run.stdout[:400], run.stderr[-400:])
     assert run.returncode == 0 and "Traceback" not in run.stderr, (
         f"после отказа демон пошёл стартовать (выход 12, DS I3): {run.returncode}, {run.stderr[-400:]!r}")
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
+    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)   # разбор как в test_charoite_paths.py
+    assert m, "в SuflerEndOfRecording.swift нет набора fatalReasons"
+    assert refusals[0]["reason"] in set(re.findall(r'"([^"]+)"', m.group(1))), (
+        "причина демона неизвестна приложению — три перезапуска вместо рецепта (выход 13, Haiku C1)")
 
 
 def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):
