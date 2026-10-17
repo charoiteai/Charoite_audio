@@ -2716,10 +2716,14 @@ def main():
     try:
         from meeting_processing import MeetingStatusStore
         store = MeetingStatusStore(_root())
-        store.track(tpath)      # ключ — под исходным именем, до наката темы (№699)
         _progress = (store, tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
+    if _progress is not None:
+        try:
+            store.track(tpath)  # ключ — под исходным именем, до наката темы (№699)
+        except Exception as e:  # noqa: BLE001 — сбой ключа не гасит статус (выход 2 №699, DS M4)
+            print(f"граф: ключ статуса не запомнен ({type(e).__name__}: {e})")
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
     # РАЗДЕЛЕНЫ намеренно. `speech` — то, что реально прозвучало; `context` —
     # то же плюс живые минутки, которые пишет МОДЕЛЬ по ходу встречи.

@@ -563,26 +563,64 @@ def test_repath_writes_its_own_status_among_dead_neighbours(tmp_path):
                     "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
 
 
-def test_repath_lands_when_the_status_lock_is_busy(tmp_path, monkeypatch):
-    """Запись одна, следующей до `ready` нет: замок не взят за срок — без него, как исход
-    (выход 1 №699, Sonnet I1)."""
+def test_repath_waits_for_the_status_lock_and_skips_when_it_is_busy(tmp_path, monkeypatch):
+    """`repath` — не исход: без замка он откатывал бы чужую запись того же окна. Замок
+    занят дольше срока — TimeoutError, документ не тронут (выход 2 №699, DS I2)."""
     import threading
 
     import meeting_processing
     live = _transcript(tmp_path)
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     status = store.processing(live, "updating_graph", part=1, parts=2)
+    raw = status.read_bytes()
     titled = live.with_name("2026-07-31_1415_План_релиза.md")
     live.rename(titled)
     monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.0)
     lock = meeting_processing.MeetingStatusStore(tmp_path)
     with lock._locked():
         out = []
-        t = threading.Thread(target=lambda: out.append(MeetingStatusStore(tmp_path).repath(live, titled)))
+
+        def run():
+            try:
+                out.append(MeetingStatusStore(tmp_path).repath(live, titled))
+            except TimeoutError as e:
+                out.append(e)
+        t = threading.Thread(target=run)
         t.start()
         t.join(5)
-    assert out == [status]
-    assert pathlib.Path(json.loads(status.read_text(encoding="utf-8"))["transcript_path"]).name == titled.name
+    assert len(out) == 1 and isinstance(out[0], TimeoutError)
+    assert status.read_bytes() == raw, "без замка не пишем"
+
+
+def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp_path):
+    """Выход 2 №699 (DS C1 = Sonnet I1 = Haiku I1): повтор идёт по титульному имени,
+    `track` под исходным уже не позвать. Свой документ и соседки минуты — с мёртвыми
+    путями; минутный ключ писал в чужой `…1532`. Ключ — посекундный штамп из `stamp`
+    сайдкара, как у замка пересборки."""
+    import live_sidecar
+    tr = tmp_path / "transcripts"
+    tr.mkdir()
+    st = tmp_path / "logs" / "meeting-status"
+    st.mkdir(parents=True)
+
+    def doc(key, path, state):
+        (st / f"{key}.json").write_text(json.dumps(
+            {"key": key, "state": state, "transcript_path": str(path), "updated_at": 1}), encoding="utf-8")
+
+    doc("2026-08-12_153212", tr / "2026-08-12_153212.md", "error")
+    doc("2026-08-12_153245", tr / "2026-08-12_153245.md", "error")    # соседка, файл удалён руками
+    doc("2026-08-12_1532", tr / "2026-08-12_1532.md", "processing")   # наследие с минутным ключом
+    new = tr / "2026-08-12_1532_Тема.md"
+    new.write_text("x", encoding="utf-8")
+    assert live_sidecar.remember(new, "stamp", "2026-08-12_153212")
+    store = MeetingStatusStore(tmp_path)
+    store.track(new)
+    assert store.processing(new, "updating_graph") == st / "2026-08-12_153212.json"
+    assert store.repath(new, new) is None, "путь уже живой — второй записи нет"
+    seen = {p.stem: pathlib.Path(json.loads(p.read_text(encoding="utf-8"))["transcript_path"]).name
+            for p in st.glob("*.json")}
+    assert seen == {"2026-08-12_153212": new.name, "2026-08-12_153245": "2026-08-12_153245.md",
+                    "2026-08-12_1532": "2026-08-12_1532.md"}, "чужие документы не тронуты"
 
 
 def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):

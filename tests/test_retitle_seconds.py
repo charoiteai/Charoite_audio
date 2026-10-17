@@ -257,7 +257,7 @@ def test_status_is_repathed_right_after_the_retitle():
     call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
     assert text[call:].split("\n", 2)[1].strip() == "_repath(tpath)"
     track, progress = text.index("store.track(tpath)"), text.index("_progress = (store, tpath)")
-    assert track < progress < call, "ключ статуса — под исходным именем, до наката темы"
+    assert progress < track < call, "ключ статуса — под исходным именем, до наката темы; сбой ключа не гасит статус"
 
 
 def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch, capsys):

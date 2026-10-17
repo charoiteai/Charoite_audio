@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any, Callable
 import graphs
+import live_sidecar
 import meeting_stamp
 
 
@@ -404,14 +405,16 @@ class MeetingStatusStore:
         под новым именем. Статуса нет или путь прежний — не пишем.
         `transcript` — исходное имя (ключ — через `track`), `moved_to` — то,
         что вернул переименователь, без угадывания глобом (Sonnet M1).
-        Запись одна, следующей до `ready` нет, поэтому лечь обязана, как
-        исход: замок не взят за срок — без него (Sonnet I1).
+        Это не исход, поэтому обычная запись под замком: без замка она
+        откатывала бы чужую запись того же окна (выход 2 №699, DS I2). Замок
+        занят дольше срока — TimeoutError, путь ляжет с `ready`; сравнение
+        с прочитанным в самой двери записи — долг №615.
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
         if (not moved_to.is_file() or not self.directory.is_dir()
                 or not self._path(transcript).is_file()):
             return None
-        final = str(moved_to)
+        final = str(find_final_transcript(moved_to))
 
         def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
             if current.get("state") != "processing" or current.get("transcript_path") == final:
@@ -420,7 +423,7 @@ class MeetingStatusStore:
             updated["transcript_path"] = final
             return updated
 
-        return self._update(transcript, mutate, terminal=True)
+        return self._update(transcript, mutate)
 
     def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
         """Этап облачной ревизии — поле `review` поверх статуса, state и stage
@@ -716,7 +719,11 @@ class MeetingStatusStore:
         повтор по титулованному пути) находит запись той же встречи по тому,
         куда сегодня резолвится её `transcript_path`, и берёт ключ оттуда;
         записи с мёртвым путём уступают живым — мёртвый статус соседки той
-        же минуты не угоняет чужой ключ (DS r1 по #456). Ни `graph_key`, ни
+        же минуты не угоняет чужой ключ (DS r1 по #456). Живой записи нет, а
+        посекундный штамп встречи известен (`live_sidecar.meeting_key`: имя
+        или `stamp` сайдкара после наката темы) — ключ он: повтор по
+        титульному имени иначе получал минуту и писал в чужой документ
+        (выход 2 №699, DS C1 = Sonnet I1 = Haiku I1). Ни `graph_key`, ни
         владения минутой здесь нет: имя статуса не обязано совпадать с именем
         заметки графа, ему достаточно быть неизменным.
         """
@@ -726,16 +733,19 @@ class MeetingStatusStore:
         if cached:
             return cached
         current = find_final_transcript(transcript)
-        key = self._stored_key_for(current)
-        if key is None:
-            stem = current.stem if current.exists() else transcript.stem
-            key = meeting_stamp.stamp_of(stem) or stem
+        own = current if current.exists() else transcript
+        exact = live_sidecar.meeting_key(own)
+        key = self._stored_key_for(current, exact) or exact or own.stem
         key = re.sub(r"[^\w.-]+", "_", key)
         self._keys[tp] = key
         return key
 
-    def _stored_key_for(self, current: pathlib.Path) -> str | None:
-        """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу."""
+    def _stored_key_for(self, current: pathlib.Path, exact: str | None = None) -> str | None:
+        """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу.
+
+        `exact` — штамп встречи по `live_sidecar.meeting_key`; посекундный
+        берёт верх над записями, у которых путь мёртвый.
+        """
         best: tuple[int, float, int, str] | None = None
         candidates = 0
         for path in self.directory.glob("*.json"):
@@ -763,6 +773,8 @@ class MeetingStatusStore:
                 best = rank
         if best is None:
             return None
+        if best[0] == 0 and exact and meeting_stamp.minute_of(exact) != exact:
+            return exact
         if best[0] == 0 and candidates > 1:
             # только мёртвые пути и их несколько: свежесть — не признак владения,
             # соседка той же минуты угнала бы ключ и meeting_id (GLM r2) —
