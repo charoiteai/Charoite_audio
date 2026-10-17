@@ -1860,14 +1860,16 @@ def test_meeting_models_skip_a_non_string_tag():
 
 
 def test_hand_back_has_a_short_timeout(monkeypatch):
-    """Сдача на стопе идёт по моделям подряд: потолок запроса короткий (opusfix4, Sonnet M2)."""
-    seen = []
+    """Сдача на стопе: потолок короткий и у `/api/ps`, и у срока (opusfix4 Sonnet M2, opusfix5 M1)."""
+    seen, seen_ps = [], []
     wire = _HoldWire([{"name": "тест-модель:latest", "context_length": 8192}])
-    real = wire.post
+    real, real_get = wire.post, wire.get
     wire.post = lambda url, json=None, timeout=None, **kw: (seen.append(timeout), real(url, json=json))[1]
+    wire.get = lambda url, timeout=None, **kw: (seen_ps.append(timeout), real_get(url))[1]
     _подменить_requests(monkeypatch, wire)
     LLM(CFG).hold_meeting_model(_Ticks(1), every=0)
     assert seen == [30, llm_mod.HAND_BACK_TIMEOUT_S]
+    assert seen_ps == [10, llm_mod.HAND_BACK_TIMEOUT_S]
 
 
 def test_hold_keeps_each_model_at_its_own_context(monkeypatch):

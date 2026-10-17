@@ -541,8 +541,11 @@ MEETING_MODEL_KEYS = ("think_model", "markup_model")
 #: Ключи `sufler.*_model`, которые не модели встречи: эмбеддер держит свой срок
 #: (`EMBED_KEEP_ALIVE`), 90m ему не нужны.
 NOT_MEETING_MODEL_KEYS = ("embed_model",)
-#: Потолок одного запроса сдачи на стопе: сдача идёт по моделям подряд, и на
-#: занятом сервере 30 с на каждую растянули бы её за выход процесса (opusfix4, M2).
+#: Потолок каждого запроса сдачи на стопе (`/api/ps` и срок по моделям подряд).
+#: Резидентная модель с контекстом сервера отвечает за 10–20 мс и во время
+#: чужой генерации, и во время загрузки другой модели (опыт 17.10, qwen3:4b
+#: при генерации 49 с и при загрузке 35b): 5 с — запас, дольше ждёт только
+#: зависший сервер. Поток сдачи — демон, выход процесса он не держит.
 HAND_BACK_TIMEOUT_S = 5.0
 
 
@@ -987,7 +990,7 @@ class LLM:
         I3). Возвращает принятые и строки отказов.
         """
         ps_url = f"{self.base}/api/ps"
-        r = requests.get(ps_url, timeout=10, **privacy.proxies_for(ps_url))
+        r = requests.get(ps_url, timeout=min(10, timeout), **privacy.proxies_for(ps_url))
         if r.status_code != 200:
             raise RuntimeError(f"/api/ps: HTTP {r.status_code}")
         mine = self.meeting_models()
