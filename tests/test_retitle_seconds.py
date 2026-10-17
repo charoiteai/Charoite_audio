@@ -270,7 +270,6 @@ def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch
             Broken.calls += 1
             raise OSError("диск")
     monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
-    monkeypatch.setattr(gu, "_keyed", True)
     gu._repath(Path("y.md"))
     out = capsys.readouterr().out
     assert "новый путь стенограммы в статус не записан (OSError: диск)" in out
@@ -291,49 +290,17 @@ def test_a_failing_track_keeps_the_status_and_says_so(monkeypatch, capsys):
     assert "ключ статуса не запомнен (OSError: каталог)" in capsys.readouterr().out
 
 
-def test_repath_needs_the_key_from_track(monkeypatch, capsys):
-    """Сбой `track` — ключа нет: новый путь не пишем, ключ по новому имени
-    угадывался бы (выход 4 №699, Sonnet M1; №729). `track` прошёл — пишем."""
-    import meeting_processing
-
-    class Rec:
-        def __init__(self):
-            self.calls = []
-
-        def repath(self, transcript, moved_to):
-            self.calls.append((transcript, moved_to))
-
-    def broken(self, transcript):
-        raise OSError("каталог")
-    monkeypatch.setattr(gu, "_progress", None)
-    monkeypatch.setattr(gu, "_keyed", True)
-    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", broken)
-    gu._open_progress(Path("x.md"))
-    assert gu._keyed is False
-    rec = Rec()
-    monkeypatch.setattr(gu, "_progress", (rec, Path("x.md")))
-    gu._repath(Path("y.md"))
-    assert rec.calls == [] and "ключ статуса не запомнен" in capsys.readouterr().out
-    monkeypatch.setattr(meeting_processing.MeetingStatusStore, "track", lambda self, transcript: None)
-    gu._open_progress(Path("x.md"))
-    assert gu._keyed is True
-    rec = Rec()
-    monkeypatch.setattr(gu, "_progress", (rec, Path("x.md")))
-    gu._repath(Path("y.md"))
-    assert rec.calls == [(Path("x.md"), Path("y.md"))]
-
-
 def test_no_store_means_no_status_and_no_key_line(monkeypatch, capsys):
     """Стор не открылся — статуса нет; про ключ не говорим (выход 3, DS M3)."""
     import meeting_processing
 
     def broken(self, root, **kw):
         raise OSError("права")
-    monkeypatch.setattr(gu, "_progress", None)
+    monkeypatch.setattr(gu, "_progress", (object(), Path("прошлая.md")))
     monkeypatch.setattr(meeting_processing.MeetingStatusStore, "__init__", broken)
     gu._open_progress(Path("x.md"))
     out = capsys.readouterr().out
-    assert gu._progress is None
+    assert gu._progress is None, "прошлая стенограмма не наследуется (выход 5, Sonnet M1 = DS M3)"
     assert "статус недоступен (OSError: права)" in out and "ключ статуса" not in out
 
 
@@ -349,7 +316,6 @@ def test_repath_tries_again_while_the_status_lock_is_busy(monkeypatch, capsys):
             self.args.add((transcript, moved_to))
             if self.calls <= self.fails:
                 raise TimeoutError("замок занят")
-    monkeypatch.setattr(gu, "_keyed", True)
     store = Busy(gu.REPATH_TRIES - 1)
     monkeypatch.setattr(gu, "_progress", (store, Path("x.md")))
     gu._repath(Path("y.md"))

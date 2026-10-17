@@ -258,6 +258,9 @@ class MeetingStatusStore:
         self.directory = self.root / "logs" / STATUS_DIR
         self._now = now
         self._keys = {}   # путь стенограммы → ключ статуса, на жизнь процесса
+        # Пути, чей ключ посчитан, пока файл жил под этим именем (`track`,
+        # `processing` до наката темы): только по ним `repath` пишет (выход 5 №699).
+        self._keyed_alive: set[str] = set()
 
     def processing(self, transcript: pathlib.Path, stage: str,
                    part: int | None = None, parts: int | None = None) -> pathlib.Path:
@@ -414,9 +417,14 @@ class MeetingStatusStore:
         занят дольше срока — TimeoutError. Следующей записи того же писателя
         до `ready` может не быть (короткая встреча), поэтому повторяет
         вызывающий (`graph_updater._repath`); сравнение с прочитанным в самой
-        двери записи — долг №615.
+        двери записи — долг №615. Ключ под исходным именем этот стор не считал
+        (`track` упал или не звался) — не пишем: по новому имени ключ
+        угадывался бы, и путь мог лечь в чужой документ (выход 5 №699, DS C1;
+        №729).
         """
         transcript, moved_to = pathlib.Path(transcript), pathlib.Path(moved_to)
+        if str(transcript) not in self._keyed_alive:
+            return None
         if (not moved_to.is_file() or not self.directory.is_dir()
                 or not self._path(transcript).is_file()):
             return None
@@ -744,6 +752,8 @@ class MeetingStatusStore:
         key = self._stored_key_for(current, exact) or exact or own.stem
         key = re.sub(r"[^\w.-]+", "_", key)
         self._keys[tp] = key
+        if transcript.exists():
+            self._keyed_alive.add(tp)
         return key
 
     def _stored_key_for(self, current: pathlib.Path, exact: str | None = None) -> str | None:

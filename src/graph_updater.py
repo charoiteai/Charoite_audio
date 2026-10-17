@@ -110,10 +110,6 @@ from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402,F401
 # Куда докладывать о прогрессе. Ставится в main(), когда известна стенограмма:
 # graph_updater зовут и руками по произвольному файлу, и тогда статуса нет.
 _progress: tuple[object, pathlib.Path] | None = None
-# Ключ статуса запомнен под исходным именем (`track` прошёл). Без него новый
-# путь после наката темы не пишем: ключ по новому имени угадывался бы, и путь
-# мог лечь в чужой документ (выход 4 №699, Sonnet M1; №729).
-_keyed = False
 
 
 def _report(part: int, parts: int) -> None:
@@ -140,9 +136,6 @@ def _repath(moved_to: pathlib.Path) -> None:
     if _progress is None:
         return
     store, transcript = _progress
-    if not _keyed:
-        print("граф: новый путь стенограммы в статус не записан — ключ статуса не запомнен")
-        return
     for attempt in range(1, REPATH_TRIES + 1):
         try:
             store.repath(transcript, moved_to)
@@ -163,8 +156,8 @@ def _open_progress(tpath: pathlib.Path) -> None:
     Ключ — под исходным именем, до наката темы (№699). Сбой ключа не гасит
     статус (выход 2, DS M4): `_progress` ставится до `track`.
     """
-    global _progress, _keyed
-    _keyed = False
+    global _progress
+    _progress = None     # прошлая стенограмма процесса не наследуется (выход 5 №699, Sonnet M1 = DS M3)
     try:
         from meeting_processing import MeetingStatusStore
         store = MeetingStatusStore(_root())
@@ -174,7 +167,6 @@ def _open_progress(tpath: pathlib.Path) -> None:
     _progress = (store, tpath)
     try:
         store.track(tpath)
-        _keyed = True
     except Exception as e:  # noqa: BLE001 — сбой ключа не гасит статус
         print(f"граф: ключ статуса не запомнен ({type(e).__name__}: {e})")
 

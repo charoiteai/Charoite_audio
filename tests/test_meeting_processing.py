@@ -586,15 +586,18 @@ def test_repath_waits_for_the_status_lock_and_skips_when_it_is_busy(tmp_path, mo
     status = store.processing(live, "updating_graph", part=1, parts=2)
     raw = status.read_bytes()
     titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    writer_key = MeetingStatusStore(tmp_path)
+    writer_key.track(live)                          # ключ под исходным именем, как graph_updater
     live.rename(titled)
     monkeypatch.setattr(meeting_processing, "STATUS_LOCK_WAIT_S", 0.0)
     lock = meeting_processing.MeetingStatusStore(tmp_path)
+    writer = writer_key
     with lock._locked():
         out = []
 
         def run():
             try:
-                out.append(MeetingStatusStore(tmp_path).repath(live, titled))
+                out.append(writer.repath(live, titled))
             except TimeoutError as e:
                 out.append(e)
         t = threading.Thread(target=run)
@@ -602,6 +605,22 @@ def test_repath_waits_for_the_status_lock_and_skips_when_it_is_busy(tmp_path, mo
         t.join(5)
     assert len(out) == 1 and isinstance(out[0], TimeoutError)
     assert status.read_bytes() == raw, "без замка не пишем"
+
+
+def test_repath_needs_a_key_counted_under_the_living_name(tmp_path):
+    """Выход 5 №699 (DS C1, Sonnet M2, Haiku M2): ключ, которого стор не считал под
+    исходным именем, — угаданный по новому; такой `repath` не пишет. Ключ из
+    `processing` до наката темы — свой, как из `track`."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    status = store.processing(live, "updating_graph", part=1, parts=2)
+    raw = status.read_bytes()
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    fresh = MeetingStatusStore(tmp_path)            # процесс графа, `track` упал
+    assert fresh.repath(live, titled) is None and status.read_bytes() == raw
+    assert store.repath(live, titled) == status
+    assert pathlib.Path(json.loads(status.read_text(encoding="utf-8"))["transcript_path"]).name == titled.name
 
 
 def test_retry_by_the_titled_name_keeps_its_own_status_among_dead_neighbours(tmp_path):
