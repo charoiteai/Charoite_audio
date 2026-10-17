@@ -23,7 +23,7 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 - **Speaker diarization that ships.** Live "Speaker 1/2/…" labels during the meeting, plus an offline re-pass over the full recording after the meeting for clean paragraphs per speaker. Names are assigned automatically when someone introduces themselves — never guessed.
 - **A knowledge graph, not a pile of notes.** Meetings become episodes; people, systems and decisions become nodes; recurring topics become "Cores" with status and history. During a meeting Charoite whispers "⏮ this was discussed on Jul 15, status was …".
 - **Topic dossiers.** At night a local model builds a summary per cross-cutting topic: current state, chronology, decisions, open questions, who is involved — each point linked to its source node. Search consults the dossier index **first**, so "where does this topic stand" is answered by a written summary instead of a dozen scattered fragments. Rebuilds are incremental: a dossier carries a fingerprint of its sources, and an unchanged topic never wakes the model. Hand-written additions live in the "Author edits" section and survive rebuilds.
-- **Cloud models — optional, at every step.** All five switches are off by default and enabled one by one: post-meeting review (`cloud_enrich`), a second opinion at conversation speed (`cloud_live`, plus `cloud_hints` to refine every hint), dossier review with the right to edit (`cloud_edit_graph`) — these run through the Claude CLI on a subscription, with no API key in the environment. The fifth, `cloud_engine`, moves the whole chat to an OpenAI-compatible gateway you name (its key lives in a separate file), so the laptop no longer holds a large model. What leaves for the cloud and what never does — see [PRIVACY.md](PRIVACY.md).
+- **Cloud models — optional, at every step.** All six switches are off by default and enabled one by one: post-meeting review (`cloud_enrich`), a second opinion at conversation speed (`cloud_live`), refinement of every hint (`cloud_hints`), dossier review with the right to edit (`cloud_edit_graph`) — these run through the Claude CLI on a subscription, with no API key in the environment. The sixth, `cloud_engine`, moves the whole chat to an OpenAI-compatible gateway you name (its key lives in a separate file), so the laptop no longer holds a large model. What leaves for the cloud and what never does — see [PRIVACY.md](PRIVACY.md).
 - **Layered output per meeting**: one-minute Summary (with links to what changed since past meetings) → Minutes → Debrief → full Transcript. Read as deep as you need.
 - **Real-time help**: the meeting thread on screen, an instant local answer when the other side asks you a question (⚡), a digest of the last minutes on demand, live draft minutes, voice notes and dictation.
 - **Claude Code tools.** An MCP server (`src/mcp_server.py`) gives Claude Code the live meeting: status, transcript, hints, minutes and a graph update. It works only with the data folder named at registration (`CHAROITE_ROOT`) — see [Setup](docs/SETUP.md).
@@ -174,6 +174,8 @@ STT models download automatically on first run (GigaAM via `onnx_asr`). Live dia
 
 Without both files Charoite still works, but labels follow channels (you vs. the other side) and the daemon says so when the meeting starts. Embeddings without segmentation leave live labels in a simplified mode and skip re-labelling after the meeting. Details in [docs/DIARIZATION.md](docs/DIARIZATION.md).
 
+Optional: the post-meeting pass can run on [Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) (MLX port) instead of sherpa — `sufler.diarize_backend: nemotron`. Its environment is installed once on your command (`scripts/install_engine.py nemotron`, or the Nemotron button in the app, which checks the config first); when selected it also covers microphone-only recordings. Details in [docs/DIARIZATION.md](docs/DIARIZATION.md#post-meeting-pass-on-nemotron).
+
 ## iPhone companion (app-ios/)
 
 The phone is the microphone on the table, the Mac stays the brain. The
@@ -216,7 +218,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 - [Data and recovery](docs/DATA_AND_RECOVERY.md) — storage, retention, backups and safe recovery
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
-- [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32/64 GB) and iOS**
+- [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (8/16/32/64 GB; on 4 GB — STT only) and iOS**
 - [Security](SECURITY.md) — the threat model: what leaves the machine, prompt-injection isolation, supply chain
 - [Diarization](docs/DIARIZATION.md) — embeddings, segmentation and tuning
 - [Design](docs/DESIGN.md) — shared tokens and UI conventions for macOS and iOS
