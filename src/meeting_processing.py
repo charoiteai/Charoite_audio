@@ -382,6 +382,32 @@ class MeetingStatusStore:
 
         return self._update(transcript, mutate)
 
+    def repath(self, transcript: pathlib.Path) -> pathlib.Path | None:
+        """Перевести путь стенограммы идущей обработки на её текущее имя.
+
+        Накат темы переименовывает файл посреди шага графа, а следующая
+        запись статуса — только `ready`: до неё приложение видело мёртвый
+        путь, отвечало «стенограммы нет на диске» и не давало повтор (№699,
+        встреча 12.10 — 55 минут). Только при `processing`: этап, части,
+        `updated_at` и попытки не трогаем — это не новый шаг, а то же место
+        под новым именем. Статуса нет или путь прежний — не пишем.
+        """
+        transcript = pathlib.Path(transcript)
+        if not self.directory.is_dir() or not self._path(transcript).is_file():
+            return None
+
+        def mutate(current: dict[str, Any]) -> dict[str, Any] | None:
+            if current.get("state") != "processing":
+                return None
+            final = str(find_final_transcript(transcript))
+            if current.get("transcript_path") == final:
+                return None
+            updated = dict(current)
+            updated["transcript_path"] = final
+            return updated
+
+        return self._update(transcript, mutate)
+
     def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
         """Этап облачной ревизии — поле `review` поверх статуса, state и stage
         не трогаем: ревизия идёт отдельным воркером ПОСЛЕ «готово», и

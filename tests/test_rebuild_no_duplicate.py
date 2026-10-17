@@ -408,3 +408,68 @@ def test_any_failure_to_start_the_retry_is_a_line_and_the_parent_does_not_wait(r
     rt.retry_unfinished(_queue_of(t))
     assert len(outs) == 1 and outs[0].closed
     assert [m for m in lines if m.startswith("повтор 2026-08-12_153201.md не запустился (ValueError")], lines
+
+
+def _sidecar(main: pathlib.Path, stamp: str | None) -> None:
+    import json
+    meta = {"stamp": stamp} if stamp else {"transcript_sha256": "0" * 64}
+    main.with_name(main.name + ".live.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _release():
+    for fh in rt._RUNNING_LOCKS:
+        fh.close()
+    rt._RUNNING_LOCKS.clear()
+
+
+def test_retry_after_the_title_finds_the_run_by_its_seconds(root):
+    """№699: прогон стартовал по посекундному имени, накат темы переименовал
+    файл в минутный и записал свой штамп — повтор по новому пути обязан
+    увидеть тот же прогон, а соседка той же минуты — нет."""
+    assert rt.mark_running(_live(root, "2026-08-12_153212")) is not None
+    titled = _live(root, "2026-08-12_1532_Тема")
+    _sidecar(titled, "2026-08-12_153212")
+    neighbour = _live(root, "2026-08-12_153245")
+    try:
+        assert rt.running_elsewhere(titled) is not None
+        assert rt.running_elsewhere(neighbour) is None
+        with pytest.raises(rt.RunningElsewhere):
+            rt.mark_running(titled)
+    finally:
+        _release()
+
+
+def test_titled_meeting_without_its_stamp_keeps_the_minute_key(root, capsys):
+    """Цена №699: штампа в сайдкаре нет (наследие, сбой записи) — ключ минуты,
+    как на базе, но со строкой, чтобы отказ соседке не читался как дубль."""
+    titled = _live(root, "2026-08-12_1532_Тема")
+    assert rt._lock_key(titled) == "2026-08-12_1532"
+    assert "штампа" not in capsys.readouterr().out   # сайдкара нет — наследие, молча
+    _sidecar(titled, None)
+    assert rt._lock_key(titled) == "2026-08-12_1532"
+    assert "в сайдкаре нет штампа встречи" in capsys.readouterr().out
+
+
+def test_collision_suffix_is_its_own_key_before_and_after_the_title(root):
+    """«…1532-1» — своя встреча той же минуты: и до наката темы, и после
+    (штамп «…1532-1» в сайдкаре), а не минута соседки (Haiku I2 входа 7)."""
+    assert rt.mark_running(_live(root, "2026-08-12_1532-1")) is not None
+    titled = _live(root, "2026-08-12_1532_Тема")
+    _sidecar(titled, "2026-08-12_1532-1")
+    try:
+        assert rt.running_elsewhere(titled) is not None
+        assert rt.running_elsewhere(_live(root, "2026-08-12_1532")) is None
+    finally:
+        _release()
+
+
+@pytest.mark.parametrize("value", ["2026-08-12_170012", "2026-08-12_1532", "мусор", 7])
+def test_foreign_or_broken_stamp_falls_back_to_the_minute(root, value):
+    titled = _live(root, "2026-08-12_1532_Тема")
+    import json
+    titled.with_name(titled.name + ".live.json").write_text(json.dumps({"stamp": value}), encoding="utf-8")
+    assert rt._lock_key(titled) == "2026-08-12_1532"
+
+
+def test_derivatives_have_no_lock_key(root):
+    assert rt._lock_key(_live(root, "2026-08-12_1532_live")) is None

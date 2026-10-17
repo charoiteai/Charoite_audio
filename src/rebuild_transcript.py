@@ -2165,6 +2165,19 @@ class RunningElsewhere(RuntimeError):
     """Отметку не взять: замок держит другой прогон — второй заход запрещён."""
 
 
+def _lock_key(live: pathlib.Path) -> str | None:
+    """Ключ замка пересборки — ключ встречи (`live_sidecar.meeting_key`), а не
+    имя файла: повтор по имени после наката темы иначе получал минуту, а прогон
+    держал секунды (№699). Минутное имя с прямым сайдкаром без штампа — минута,
+    как на базе, но со строкой: отказ соседке той же минуты иначе неотличим
+    от дубля самой встречи (DS M4 входа 7 №699)."""
+    key = live_sidecar.meeting_key(live)
+    if (key is not None and meeting_stamp.minute_of(key) == key
+            and live_sidecar.read_direct(live) is not None):
+        log(f"замок пересборки по минуте {key}: в сайдкаре нет штампа встречи")
+    return key
+
+
 def running_elsewhere(live: pathlib.Path) -> int | None:
     """Pid живой пересборки этой же встречи, если она уже идёт.
 
@@ -2189,7 +2202,7 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
     чужим свежим замком снимал бы отметку живого прогона (круг по #455).
     Отметки версий без замка не распознаются — разово, при обновлении.
     """
-    stamp = meeting_stamp.stamp_of(live.stem)
+    stamp = _lock_key(live)
     if not stamp:
         return None
     f = _pid_file(stamp)
@@ -2218,7 +2231,7 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
     окне выхода снимал бы отметку прогона, стартовавшего следом (DS r2 по
     #455). Цена — файл в несколько байт на встречу в logs/.
     """
-    stamp = meeting_stamp.stamp_of(live.stem)
+    stamp = _lock_key(live)
     if not stamp:
         return None
     f = _pid_file(stamp)

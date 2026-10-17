@@ -123,6 +123,17 @@ def _report(part: int, parts: int) -> None:
         print(f"граф: прогресс не записан ({type(e).__name__}: {e})")
 
 
+def _repath() -> None:
+    """После наката темы — статусу новое имя стенограммы (№699). Молча, если некому."""
+    if _progress is None:
+        return
+    store, transcript = _progress
+    try:
+        store.repath(transcript)
+    except Exception as e:  # noqa: BLE001 — статус не смеет ронять разбор
+        print(f"граф: новый путь стенограммы в статус не записан ({type(e).__name__}: {e})")
+
+
 def known_graphs(graph: pathlib.Path) -> list[str]:
     """Графы, которые уже есть в vault, — соседние папки с `_MOC.md`."""
     try:
@@ -2819,6 +2830,7 @@ def main():
     title = " ".join(tw).rstrip(",;:")
     if title and not already_titled:  # переименовать логи: дата + о чём общались
         tpath = retitle(tpath, stamp, bare, title)
+        _repath()
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)

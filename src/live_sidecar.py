@@ -580,6 +580,28 @@ def exact_stamp(live: pathlib.Path) -> str | None:
     return value if _seconds_stamp_of_minute(value, key) else None
 
 
+def meeting_key(live: pathlib.Path) -> str | None:
+    """Ключ встречи, один до и после наката темы: штамп из имени, а у
+    минутного имени — собственный штамп из ключа `stamp` прямого сайдкара.
+
+    Замок пересборки по имени давал повтору другой ключ: прогон стартовал по
+    «…153212.md», накат темы переименовал файл в «…1532_Тема.md», и повтор по
+    новому пути проходил мимо замка (№699). Ключ `stamp` пишут стоп демона,
+    накат темы и rename_meeting — каждый только свой штамп. Мягче
+    `exact_stamp` в одном: годится и суффикс коллизии «…1532-1» — для замка
+    это просто имя встречи, а не время записи. Ключа нет или он чужой
+    минуты — минута из имени, как раньше; производные — None.
+    """
+    key = meeting_stamp.stamp_of(live.stem)
+    if key is None or meeting_stamp.minute_of(key) != key:
+        return key
+    value = (read_direct(live) or {}).get("stamp")
+    if (isinstance(value, str) and value != key and meeting_stamp.stamp_of(value) == value
+            and meeting_stamp.minute_of(value) == key):
+        return value
+    return key
+
+
 def read_direct(live: pathlib.Path) -> dict | None:
     """Содержимое СОБСТВЕННОГО сайдкара стенограммы `<имя>.md.live.json`; None —
     файла нет, не JSON-объект или не читается.

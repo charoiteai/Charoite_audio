@@ -246,3 +246,25 @@ def test_belongs_is_the_one_stamp_boundary_rule():
     assert meeting_stamp.belongs("2026-08-03_1130.json", "2026-08-03_1130")
     assert not meeting_stamp.belongs("2026-08-03_113012.md", "2026-08-03_1130")
     assert not meeting_stamp.belongs("2026-08-03_1130-1_Тема.md", "2026-08-03_1130")
+
+
+# --- статус после наката темы (№699) ------------------------------------------
+
+def test_status_is_repathed_right_after_the_retitle():
+    """Сторож проводки: новый путь уходит в статус сразу после переименования,
+    а не с `ready` — иначе приложение до конца разбора видит мёртвый путь."""
+    text = (Path(__file__).resolve().parent.parent / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    call = text.index("tpath = retitle(tpath, stamp, bare, title)\n")
+    assert text[call:].split("\n", 2)[1].strip() == "_repath()"
+
+
+def test_repath_is_silent_without_a_status_and_never_fails_the_graph(monkeypatch, capsys):
+    monkeypatch.setattr(gu, "_progress", None)
+    gu._repath()                                    # руками по файлу — статуса нет, молча
+
+    class Broken:
+        def repath(self, transcript):
+            raise OSError("диск")
+    monkeypatch.setattr(gu, "_progress", (Broken(), Path("x.md")))
+    gu._repath()
+    assert "новый путь стенограммы в статус не записан (OSError: диск)" in capsys.readouterr().out

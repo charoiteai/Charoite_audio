@@ -511,3 +511,34 @@ def test_stale_running_or_retrying_review_expires_into_failed(tmp_path):
     clock[0] += meeting_processing.REVIEW_STALE * 2
     store.unfinished()
     assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "ok", "исход не протухает"
+
+
+def test_repath_moves_a_running_status_to_the_titled_name(tmp_path):
+    """№699: накат темы переименовал стенограмму посреди шага графа, а до
+    `ready` статус держал мёртвый путь — приложение отвечало «стенограммы нет
+    на диске». repath переводит путь и не трогает ни этап, ни часы, ни части."""
+    live = _transcript(tmp_path)
+    clock = iter([100.0, 999.0])
+    store = MeetingStatusStore(tmp_path, now=lambda: next(clock))
+    status = store.processing(live, "updating_graph", part=2, parts=5)
+    before = json.loads(status.read_text(encoding="utf-8"))
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    assert store.repath(live) == status          # старым путём — как graph_updater
+    after = json.loads(status.read_text(encoding="utf-8"))
+    assert pathlib.Path(after["transcript_path"]).name == titled.name
+    assert pathlib.Path(after["transcript_path"]).is_file()
+    assert {k: v for k, v in after.items() if k != "transcript_path"} == \
+        {k: v for k, v in before.items() if k != "transcript_path"}
+    assert store.repath(live) is None, "путь уже живой — второй записи нет"
+
+
+def test_repath_leaves_finished_and_missing_statuses_alone(tmp_path):
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    assert store.repath(live) is None, "статуса нет — не заводим"
+    done = store.ready(live, None)
+    raw = done.read_bytes()
+    live.rename(live.with_name("2026-07-31_1415_План_релиза.md"))
+    assert store.repath(live) is None
+    assert done.read_bytes() == raw, "ready не переписывается"
