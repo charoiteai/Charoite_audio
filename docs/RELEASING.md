@@ -13,7 +13,8 @@ happens on merge to `main`.
 2. It collects `fix:`/`feat:` commits since the last release into a **release
    PR** titled `chore(main): release X.Y.Z`, updating `CHANGELOG.md`,
    `.github/.release-please-manifest.json` and the iPhone companion's
-   `MARKETING_VERSION` in `app-ios/project.yml` (an `extra-files` entry in
+   `MARKETING_VERSION` in `app-ios/project.yml` and the version in
+   `pyproject.toml` (`extra-files` entries in
    `.github/release-please-config.json`).
 3. Merging that PR tags the commit (`vX.Y.Z`) and creates a GitHub Release —
    as a pre-release until the owner signs it (see the gate below).
@@ -22,9 +23,9 @@ The current version lives in `.github/.release-please-manifest.json` — not in
 a `version.txt` in the repo root. Git tags are the source of truth.
 
 The docs guard lets a release PR through by the content of its diff, not by
-its branch name: a diff made only of `CHANGELOG.md`, the manifest and
-`app-ios/project.yml` needs no documentation. A new `extra-files` entry turns
-the guard red until it is added there on purpose.
+its branch name: a diff made only of `CHANGELOG.md`, the manifest, `app-ios/project.yml` and
+`pyproject.toml` needs no documentation. A test checks that every
+`extra-files` entry is in that list.
 
 ## Squash merges: the PR title IS the commit
 

@@ -13,8 +13,8 @@
 2. Он собирает коммиты `fix:`/`feat:` с последнего релиза в **релизный
    PR** с заголовком `chore(main): release X.Y.Z`, обновляя `CHANGELOG.md`,
    `.github/.release-please-manifest.json` и `MARKETING_VERSION`
-   iPhone-компаньона в `app-ios/project.yml` (запись `extra-files` в
-   `.github/release-please-config.json`).
+   iPhone-компаньона в `app-ios/project.yml` и версию в `pyproject.toml`
+   (записи `extra-files` в `.github/release-please-config.json`).
 3. Мёрдж этого PR ставит на коммит тег (`vX.Y.Z`) и создаёт GitHub Release —
    как pre-release, пока владелец его не подписал (см. гейт ниже).
 
@@ -22,9 +22,9 @@
 `version.txt` в корне репо. Источник истины — git-теги.
 
 Страж документации пропускает релизный PR по составу диффа, а не по имени
-ветки: дифф только из `CHANGELOG.md`, манифеста и `app-ios/project.yml`
-документировать нечего. Новая запись `extra-files` красит стража, пока её не
-впишут туда осознанно.
+ветки: дифф только из `CHANGELOG.md`, манифеста, `app-ios/project.yml` и
+`pyproject.toml` документировать нечего. Что каждая запись `extra-files` есть
+в этом списке, сверяет тест.
 
 ## Squash-мёрджи: заголовок PR И ЕСТЬ коммит
 

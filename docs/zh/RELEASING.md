@@ -9,12 +9,12 @@
 ## 工作原理
 
 1. 每次向 `main` 推送都会运行 `release-please` 工作流。
-2. 它把上次发布以来的 `fix:`/`feat:` 提交收集成一个标题为 `chore(main): release X.Y.Z` 的**发布 PR**，同时更新 `CHANGELOG.md`、`.github/.release-please-manifest.json` 以及 `app-ios/project.yml` 中 iPhone 伴侣应用的 `MARKETING_VERSION`（`.github/release-please-config.json` 里的 `extra-files` 条目）。
+2. 它把上次发布以来的 `fix:`/`feat:` 提交收集成一个标题为 `chore(main): release X.Y.Z` 的**发布 PR**，同时更新 `CHANGELOG.md`、`.github/.release-please-manifest.json` 、`app-ios/project.yml` 中 iPhone 伴侣应用的 `MARKETING_VERSION` 以及 `pyproject.toml` 中的版本（`.github/release-please-config.json` 里的 `extra-files` 条目）。
 3. 合并该 PR 会给提交打标签（`vX.Y.Z`）并创建 GitHub Release — 在所有者签名之前它是 pre-release（见下文门禁）。
 
 当前版本记录在 `.github/.release-please-manifest.json` 里 — 而不是仓库根目录的某个 `version.txt`。Git 标签是权威来源。
 
-文档守卫按 diff 的内容、而不是按分支名放行发布 PR：只包含 `CHANGELOG.md`、manifest 和 `app-ios/project.yml` 的 diff 无需文档。新增一个 `extra-files` 条目会让守卫变红，直到有人有意把它登记进去。
+文档守卫按 diff 的内容、而不是按分支名放行发布 PR：只包含 `CHANGELOG.md`、manifest、`app-ios/project.yml` 和 `pyproject.toml` 的 diff 无需文档。每个 `extra-files` 条目是否都在这个列表里，由测试核对。
 
 ## Squash 合并：PR 标题就是那条提交
 
