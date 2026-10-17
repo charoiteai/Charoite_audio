@@ -2,11 +2,13 @@
 
 Факт 18.08: пересборка 18-часовой записи держала тяжёлую модель, подсказки
 живой встречи 45 минут падали с 503. Здесь проверяется сам признак (лок
-демона занят = встреча идёт) и правило ожидания — без сна и без демона.
+демона занят = встреча идёт) и правило ожидания — без сна; живой демон —
+только в тесте его отказа при консольной встрече (выход 12 №725, Haiku M1).
 """
 from __future__ import annotations
 
 import fcntl
+import os
 import pathlib
 import re
 import shutil
@@ -274,3 +276,168 @@ def test_night_window_checks_the_night_after_waiting_for_the_meeting(tmp_path, m
     assert live_gate.night_window_open(
         tmp_path, "проба", lambda m: None, clock=lambda: стенные[0],
         alive=lambda r: next(встреча), sleep=sleep, now=lambda: 0.0) is False
+
+
+def test_console_meeting_lock_is_seen_by_the_background(tmp_path):
+    """Встреча v1 держит тот же лок, что демон: фон видит её живой (выход 2 №725, DS I2)."""
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f is not None
+        assert live_gate.daemon_alive(tmp_path) is True
+        second, again = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+        assert (second, again) == (None, live_gate.file_locks.BUSY), "вторая встреча — отказ"
+    finally:
+        f.close()
+    assert live_gate.daemon_alive(tmp_path) is False, "лок снят — встречи нет"
+
+
+def test_console_meeting_lock_on_a_volume_without_flock(tmp_path, monkeypatch):
+    """Том без flock: лок не взят, описатель закрыт, исход назван — запись идёт без него."""
+    import errno
+
+    def no_flock(fd, op):
+        raise OSError(errno.ENOTSUP, "flock не поддержан")
+
+    monkeypatch.setattr(live_gate.file_locks.fcntl, "flock", no_flock)
+    assert live_gate.hold_meeting(tmp_path, sleep=lambda s: None) == (None, live_gate.file_locks.NO_FLOCK)
+
+
+def test_console_entry_takes_the_meeting_lock_before_loading_models():
+    """v1 берёт лок встречи до загрузки STT: иначе фон не видит запись (№725)."""
+    body = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
+    main_body = body[body.index("def main():"):]
+    assert main_body.index("live_gate.hold_meeting(") < main_body.index("STT(cfg)")
+    # описатель — в имени, живущем до конца main(): «_, outcome =» закрыл бы файл и снял лок (DS M7 выхода 3)
+    assert "meeting_lock, outcome = live_gate.hold_meeting(" in main_body
+
+
+def test_console_meeting_lock_without_rights_is_named_not_a_traceback(tmp_path):
+    """На месте `logs/` файл: mkdir падает OSError — исход «лок не взят», а не трейсбек v1 (выход 3 №725)."""
+    (tmp_path / "logs").write_text("не каталог")
+    assert live_gate.hold_meeting(tmp_path, sleep=lambda s: None) == (None, live_gate.file_locks.NO_FLOCK)
+
+
+def test_refused_daemon_tells_a_console_holder_from_another_daemon(tmp_path):
+    """Отказ второму демону называет консоль, пока жив её признак-лок; демон-держатель
+    и снятая консоль — «другое окно» без причины (выход 3 №725, DS I3; выход 4, Sonnet M3)."""
+    console_text, reason = live_gate.refusal(tmp_path)
+    assert reason is None, "никого — не консоль"
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        text, reason = live_gate.refusal(tmp_path)
+        assert reason == "console_meeting" and "консольная запись" in text
+        assert "src/" not in text, "текст видит пользователь — без пути к файлу (Haiku I1)"
+    finally:
+        f.close()
+    with live_gate.lock_path(tmp_path).open("w") as daemon:   # как daemon.main()
+        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert live_gate.refusal(tmp_path) == (console_text, None), "держит демон — признака консоли нет"
+
+
+def test_console_mark_does_not_outlive_its_holder(tmp_path):
+    """Признак консоли — лок ядра, а не метка в файле: вышедшая консоль не оставляет его,
+    и демон в миг своего захвата консолью не назван (выход 4 №725, DS C1)."""
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    f.close()
+    assert live_gate.console_lock_path(tmp_path).exists(), "файл признака остался — судит лок"
+    with live_gate.lock_path(tmp_path).open("w") as daemon:
+        fcntl.flock(daemon, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert live_gate.held_by_console(tmp_path) is False
+        assert live_gate.refusal(tmp_path)[1] is None
+
+
+def test_console_reason_is_not_claimed_on_a_volume_without_flock(tmp_path, monkeypatch):
+    """flock отказал не из-за держателя (ENOLCK сетевого тома): консоль не названа,
+    отказ не фатальный — приложение не застревает на «остановите консоль» (выход 4 №725, DS I1)."""
+    import errno
+    f, _ = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    f.close()
+
+    def no_lock(fd, op):
+        raise OSError(errno.ENOLCK, "нет блокировок")
+
+    monkeypatch.setattr(live_gate.file_locks.fcntl, "flock", no_lock)
+    assert live_gate.refusal(tmp_path)[1] is None
+
+
+def test_console_meeting_without_its_mark_keeps_the_meeting_lock(tmp_path):
+    """Признак консоли не открылся: лок встречи всё равно взят, теряется только причина
+    отказа демону; трейсбека v1 нет (выход 4 №725, Sonnet M1 = DS M2)."""
+    live_gate.console_lock_path(tmp_path).mkdir(parents=True)   # на месте файла каталог
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f.mark is None
+        assert live_gate.daemon_alive(tmp_path) is True
+        assert live_gate.refusal(tmp_path)[1] is None
+    finally:
+        f.close()
+
+
+def test_daemon_refusal_names_the_console_reason(tmp_path):
+    """Живой демон при консольной встрече отказывает строкой статуса с причиной
+    `console_meeting` и выходит, не стартуя; причина, пришедшая от демона,
+    обязана быть в `fatalReasons` приложения — `AutostopTests.swift` сверяет
+    только свой литерал (выход 13, Haiku C1). Иначе три
+    «восстанавливаю запись» (выход 3 №725). Поведением, а не сканом `daemon.py`: скан то
+    пропускал обход, то падал на равном коде (выходы 8–11); захват лока одной
+    функцией в `live_gate` — долг зоны живого контура (№572)."""
+    import json
+    root = tmp_path / "data"
+    (root / "logs").mkdir(parents=True)
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        run = subprocess.run([sys.executable, str(ROOT / "src" / "daemon.py")], cwd=ROOT,
+                             env=dict(os.environ, CHAROITE_ROOT=str(root)),
+                             capture_output=True, text=True, timeout=60)   # меньше потолка pytest (выход 13, M1)
+    finally:
+        console.close()
+    events = []
+    for line in run.stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    refusals = [e for e in events if e.get("type") == "status" and e.get("error") is True]
+    assert refusals and refusals[0].get("reason") == "console_meeting", (run.stdout[:400], run.stderr[-400:])
+    assert run.returncode == 0 and "Traceback" not in run.stderr, (
+        f"после отказа демон пошёл стартовать (выход 12, DS I3): {run.returncode}, {run.stderr[-400:]!r}")
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "SuflerEndOfRecording.swift").read_text(encoding="utf-8")
+    m = re.search(r"fatalReasons:\s*Set<String>\s*=\s*\[([^\]]*)\]", swift)   # разбор как в test_charoite_paths.py
+    assert m, "в SuflerEndOfRecording.swift нет набора fatalReasons"
+    assert refusals[0]["reason"] in set(re.findall(r'"([^"]+)"', m.group(1))), (
+        "причина демона неизвестна приложению — три перезапуска вместо рецепта (выход 13, Haiku C1)")
+
+
+def test_rebuild_waits_for_a_console_recording_like_for_the_daemon(tmp_path, monkeypatch):
+    """Консоль финализирует свои записи тем же `AudioHub` и тем же `.wav.part`: пока она
+    держит лок встречи, пересборка `.part` не удаляет (выход 5 №725, DS C1)."""
+    import rebuild_transcript as rt
+    monkeypatch.setattr(rt, "_root", lambda: tmp_path)
+    assert rt._daemon_alive() is False, "лока нет — никто"
+    console, outcome = live_gate.hold_meeting(tmp_path, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        assert rt._daemon_alive() is True
+    finally:
+        console.close()
+
+
+def test_console_mark_survives_a_reader_probe(tmp_path):
+    """Признак берётся с ретраями, как лок встречи: SH-проба читателя в миг захвата
+    не отнимает его на всю встречу (выход 5 №725, Sonnet I1)."""
+    path = live_gate.console_lock_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    probe = path.open("a")
+    fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+    def release(_seconds):
+        if not probe.closed:
+            probe.close()
+
+    f, outcome = live_gate.hold_meeting(tmp_path, sleep=release)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN and f.mark is not None
+        assert live_gate.refusal(tmp_path)[1] == "console_meeting"
+    finally:
+        f.close()

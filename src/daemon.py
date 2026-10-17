@@ -74,6 +74,7 @@ import brain  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import hint_guard  # noqa: E402
+import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
@@ -753,13 +754,17 @@ def main():
     harden_existing(_root())
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     secure_dir(_root() / "logs")
-    lockf = open(_root() / "logs" / "daemon.lock", "w")
+    lockf = open(live_gate.lock_path(_root()), "w")   # имя лока — у владельца (выход 5 №725, DS I1)
     # Ретраи против микросекундных проб фона — в хелпере. busy=(OSError,) —
     # демон не различает «занято» и «flock не поддержан»: вторым не стартует
     # в обоих случаях (семантика прежнего цикла сохранена, D-П6).
     if not file_locks.acquire_exclusive(lockf, attempts=5, pause=0.1,
                                         busy=(OSError,)):
-        emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
+        text, reason = live_gate.refusal(_root())
+        if reason:
+            emit_error(text, reason=reason)
+        else:
+            emit({"type": "status", "text": text})
         return
     cfg = yaml.safe_load((_root() / "config" / "config.yaml").read_text(encoding="utf-8"))
     # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
@@ -905,6 +910,8 @@ def main():
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
+    threads.spawn(llm.hold_meeting_model, args=(stop,), name="llm-hold", role="process",
+                  detached="срок модели переутверждается до конца встречи, ждать нечего")
     # Живая речь для автостопа: когда в стенограмму последний раз лёг НОВЫЙ
     # текст и звучала ли речь за эту запись вообще. По распознанному тексту, а
     # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и

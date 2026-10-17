@@ -20,9 +20,11 @@ from rich.console import Console  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 
 import fact_check  # noqa: E402
+import file_locks  # noqa: E402
+import live_gate  # noqa: E402
 import threads  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
-from llm import LLM  # noqa: E402
+from llm import LIVE_KEEP_ALIVE, LLM  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import Transcript, is_noise  # noqa: E402
 
@@ -69,11 +71,19 @@ def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     cfg = load_cfg()
+    # Лок встречи — как у демона: фон видит запись и не выгружает модель
+    # посреди неё (№725). Описатель живёт до выхода процесса.
+    meeting_lock, outcome = live_gate.hold_meeting(_root())
+    if outcome == file_locks.BUSY:
+        console.print("[red]Встреча уже записывается (демон или другое окно v1) — второй запуск отменён[/red]")
+        return
+    if meeting_lock is None:
+        console.print("[yellow]Лок встречи не взят (нет flock или прав на logs/): фоновые задачи запись не увидят[/yellow]")
     console.print(Panel.fit("[bold]Суфлёр v1[/bold] — локально, ничего не покидает машину", style="cyan"))
 
     console.print("[dim]Загружаю STT…[/dim]")
     stt = STT(cfg)
-    llm = LLM(cfg)
+    llm = LLM(cfg, keep_alive=LIVE_KEEP_ALIVE)   # свои запросы v1 — срок встречи (№725)
     model = llm.resolve_model()
     # Один штамп на запись и стенограмму — как в демоне (daemon.py): иначе на
     # границе секунды файлы каналов и .md расходятся именами, и пересборка
@@ -88,6 +98,8 @@ def main():
     console.print(f"[dim]{cfg['sufler']['hotkey_hint']} · стенограмма: {tr.path}[/dim]\n")
 
     stop = threading.Event()
+    threads.spawn(llm.hold_meeting_model, args=(stop,), name="console-hold", role="console",
+                  detached="срок модели переутверждается до выхода консоли")
     # Статусы хаба — в консоль: предупреждение «собеседников не будет» уходит
     # через on_status в момент start(), и без потребителя CLI его молча терял
     # (демон вешает on_status на emit, здесь до 11.09 не вешал никто).

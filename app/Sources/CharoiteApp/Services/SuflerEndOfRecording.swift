@@ -57,7 +57,9 @@ extension SuflerService {
     /// ЗНАЧЕНИЕМ (`reason` в статусе), а не подстрокой текста —
     /// подстроку не перевести на другой язык и не проверить (№277, №310;
     /// круг 2 по коду №332, DS C1).
-    nonisolated static let fatalReasons: Set<String> = ["root_unnamed", "privacy_refused"]
+    /// Консольная запись (`src/main.py`) держит лок встречи — её повтор тоже
+    /// не снимет: человек остановит её сам (№725).
+    nonisolated static let fatalReasons: Set<String> = ["root_unnamed", "privacy_refused", "console_meeting"]
 
     nonisolated static func restartDecision(wasRecording: Bool, userStopped: Bool,
                                             attempts: Int,

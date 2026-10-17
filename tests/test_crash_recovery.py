@@ -195,3 +195,86 @@ def test_broken_pipe_stops_the_daemon_instead_of_killing_one_thread():
         d._stop_event = None
 
     assert stop.is_set(), "поток умер бы молча, а главный цикл продолжал слать hb"
+
+
+class _Clock:
+    """Часы `wait_recording`: время идёт только во сне, срок не зависит от
+    вытеснения процесса (выход 9 №725, DS I1). Код ставит срок и цикл на
+    `time.time`; `monotonic` со своей эпохой есть, чтобы переход на него
+    целиком проходил, а смешанные часы валили тест. Других членов `time` нет:
+    `perf_counter` и прочие падают здесь, а не уходят в настоящие часы
+    (выходы 10–14)."""
+
+    def __init__(self):
+        self.t, self.slept = 0.0, []
+
+    def time(self):
+        return self.t
+
+    def monotonic(self):
+        # Своя эпоха: срок по одним часам, цикл по другим — тест падает (выход 12, Haiku I1).
+        return self.t + 60     # не 10**6: смешанный мутант — десятки шагов, не полмиллиона (выход 13)
+
+    def sleep(self, s):
+        self.slept.append(s)
+        self.t += s
+
+
+def test_a_live_console_keeps_its_part_and_pcm(rec_dir, monkeypatch):
+    """Консоль v1 финализирует тем же `AudioHub` и тем же `.wav.part`: пока она держит
+    лок встречи, пересборка не удаляет `.part` и не конвертирует `.pcm` — ни в цикле,
+    ни по сроку. Проверяется само решение `wait_recording`, а не только хелпер
+    (выход 6 №725, DS I1)."""
+    import live_gate
+    import rebuild_transcript as rt
+
+    root = rec_dir.parent
+    monkeypatch.setattr(rt, "_root", lambda: root)
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 0.3)
+    clock = _Clock()
+    monkeypatch.setattr(rt, "time", clock)
+    (root / "logs").mkdir()
+    pcm = rec_dir / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * 4096)
+    part = rec_dir / "s_mic.wav.part"
+    part.write_bytes(b"")                           # консоль сейчас финализирует
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        out = rt.wait_recording(rec_dir, "s", "mic", 16000)
+    finally:
+        console.close()
+
+    assert out is None, "полез в конвертацию живой консоли"
+    assert part.exists(), "убрали .part из-под живой консоли"
+    assert pcm.exists(), "исходник живой консоли удалён"
+    assert not (rec_dir / "s_mic.wav").exists()
+    assert clock.slept, "не ждал писателя — сдался сразу (выход 7, Sonnet M1 = DS M1 = Haiku I1)"
+
+
+def test_a_held_meeting_lock_converts_a_bare_pcm_only_at_the_deadline(rec_dir, monkeypatch):
+    """Лок встречи держится, `.pcm` есть, `.part` ещё нет: в цикле `.pcm` не
+    трогаем (выход 8 №725, DS C1). Конвертация по сроку — поведение базы, а не
+    цель: под живым локом это может быть `.pcm` соседки той же минуты (минутное
+    разрешение штампа, шаг Haiku out8); гейт писателя на файле — №728."""
+    import live_gate
+    import rebuild_transcript as rt
+
+    root = rec_dir.parent
+    monkeypatch.setattr(rt, "_root", lambda: root)
+    monkeypatch.setattr(rt, "WAIT_WAV_S", 5)      # три сна по 2 с: конвертация после первого — не по сроку
+    clock, converted_at = _Clock(), []
+    monkeypatch.setattr(rt, "time", clock)
+    monkeypatch.setattr(rt, "pcm_to_wav", lambda pcm, sr: converted_at.append(clock.t) or pcm.with_suffix(".wav"))
+    (root / "logs").mkdir()
+    (rec_dir / "s_mic.pcm").write_bytes(b"\0" * 4096)
+    console, outcome = live_gate.hold_meeting(root, sleep=lambda s: None)
+    try:
+        assert outcome == live_gate.file_locks.TAKEN
+        rt.wait_recording(rec_dir, "s", "mic", 16000)
+    finally:
+        console.close()
+
+    assert len(converted_at) == 1, "по сроку .pcm конвертируется один раз"
+    assert len(clock.slept) == 3 and converted_at[0] >= rt.WAIT_WAV_S, (
+        "конвертация в цикле при живом локе встречи (выход 10, Sonnet M1 = Haiku I3)")

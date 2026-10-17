@@ -867,3 +867,21 @@ def test_inside_app_bundle_is_a_bundle_not_a_suffix(tmp_path):
     assert not cp.inside_app_bundle(tmp_path / "Journal.app" / "данные")
     assert not cp.inside_app_bundle(tmp_path / "Charoite.app.bak" / "данные")
     assert not cp.inside_app_bundle(tmp_path / "my.application")
+
+
+@pytest.mark.parametrize("given,env,want", [
+    (None, None, False),          # корень только выведен из положения файла
+    ("dir", None, True),          # назван точкой входа
+    (None, "dir", True),          # назван окружением
+    (None, "", False),            # пустая переменная — не имя
+    (None, "   ", False),
+])
+def test_root_is_named_table(tmp_path, monkeypatch, given, env, want):
+    """«Корень известен процессу» — по имени, не по угадыванию от кода (№725, выход 2)."""
+    import charoite_paths
+    monkeypatch.setattr(charoite_paths, "_given", tmp_path if given else None)
+    if env is None:
+        monkeypatch.delenv("CHAROITE_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path) if env == "dir" else env)
+    assert charoite_paths.root_is_named() is want
