@@ -11,10 +11,7 @@ final class LiveAnswerProbe: XCTestCase {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { throw XCTSkip("CHAROITE_GRAPH_DIR не задан") }
         let graph = try ProbeTurn.graphDir(raw)
-        let store = FileManager.default.temporaryDirectory
-            .appendingPathComponent("probe-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: store) }
-        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+        try await ProbeTurn.isolateIndex(self)   // семантика как в чате, запись — в копию
 
         let params = ProbeTurn.arm.params
         let outcome = try await ProbeTurn.search("что решили по витрине сертификации",

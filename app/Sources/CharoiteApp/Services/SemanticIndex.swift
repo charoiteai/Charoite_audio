@@ -94,6 +94,13 @@ actor SemanticIndex {
         loaded = !loadStore    // true — не подтягивать файл с диска
     }
 
+    /// Файл процесса тестов, не заявивших свой store: живой индекс тесты берут только явно.
+    static let unclaimedTestStore = FileManager.default.temporaryDirectory
+        .appendingPathComponent("charoite_unclaimed_index_\(ProcessInfo.processInfo.processIdentifier).bin")
+
+    /// Конец подмены: refresh, ждущий эмбеддер, не запишет файл после уборки теста.
+    func endTestSession() { generation += 1 }
+
     /// Пишет ли индекс в подменный файл — гейт живых проб.
     var usesTestStore: Bool { storeOverride != nil }
 
@@ -122,6 +129,12 @@ actor SemanticIndex {
 
     private var storeURL: URL {
         if let storeOverride { return storeOverride }
+        #if DEBUG
+        // Под XCTest без useForTests — не файл приложения: тест демо-графа через
+        // localSearch прунил живой индекс до своей фикстуры (№740, опыт 18.10:
+        // 141 КБ → 8 байт за один прогон ArchiveLinksTests).
+        if NSClassFromString("XCTestCase") != nil { return Self.unclaimedTestStore }
+        #endif
         let url = Self.liveStoreURL
         FileManager.default.createPrivateDirectory(at: url.deletingLastPathComponent())  // индекс хранит текст встреч
         return url

@@ -14,7 +14,8 @@ final class BuildRealIndex: XCTestCase {
         guard ProcessInfo.processInfo.environment["CHAROITE_BUILD_INDEX"] == "1",
               let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { throw XCTSkip("не запрошено") }
-        let graph = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        // пишет в живой индекс приложения — путь разбираем так же строго, как пробы
+        let graph = try ProbeTurn.graphDir(raw)
 
         // Собираем файлы так же, как это делает поиск: с дедупом по содержимому.
         var files: [(path: String, mtime: Double, text: String)] = []
@@ -39,7 +40,12 @@ final class BuildRealIndex: XCTestCase {
             files.append((rel, mtime, text))
         }
         print("INDEX: файлов к индексации \(files.count)")
+        // пустой обход — не тот граф: count() ниже прочёл бы прежний индекс и проба позеленела бы
+        guard !files.isEmpty else { XCTFail("в графе нет ни одного .md: \(graph.path)"); return }
 
+        // живой индекс под XCTest — только явной подменой (№740)
+        _ = FileManager.default.createPrivateDirectory(at: SemanticIndex.liveStoreURL.deletingLastPathComponent())
+        await SemanticIndex.shared.useForTests(store: SemanticIndex.liveStoreURL, loadStore: true, embedder: nil)
         let t0 = Date()
         await SemanticIndex.shared.refresh(files: files)
         let dt = Date().timeIntervalSince(t0)

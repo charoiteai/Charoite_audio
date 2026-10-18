@@ -91,8 +91,14 @@ enum ProbeTurn {
         let live = SemanticIndex.liveStoreURL
         if FileManager.default.fileExists(atPath: live.path) {
             try FileManager.default.copyItem(at: live, to: copy)
+            // копия хранит превью встреч — права не по файлу приложения
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
         }
-        test.addTeardownBlock { try? FileManager.default.removeItem(at: copy) }
+        test.addTeardownBlock {
+            // сначала осиротить хвостовой refresh — иначе его persist воссоздаст копию после уборки
+            await SemanticIndex.shared.endTestSession()
+            try? FileManager.default.removeItem(at: copy)
+        }
         await SemanticIndex.shared.useForTests(store: copy, loadStore: true, embedder: nil)
     }
 

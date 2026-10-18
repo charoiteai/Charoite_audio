@@ -21,7 +21,8 @@ final class MemoryBench: XCTestCase {
         // Бенч запрошен — дальше любой недостающий вход валит прогон, а не пропускает его.
         let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
         let cases = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
-        XCTAssertFalse(cases.isEmpty, "вопросы не разобрались")
+        // пустой набор — диагноз парсера, а не графа: страж пустой выдачи ниже соврал бы
+        guard !cases.isEmpty else { XCTFail("вопросы не разобрались: \(benchPath)"); return }
 
         // Проверяем ОТВЕТ, а не только выдачу поиска: мерить надо то, что
         // доходит до человека.
@@ -43,6 +44,13 @@ final class MemoryBench: XCTestCase {
             dump += "=== \(c.q)\n\(found)\n\n"
             let subject: String
             if withModel {
+                // Без источников модель ответила бы из весов — память это не мерит:
+                // факты вопроса в знаменателе с нулём, как в пробе ответов (круг 7).
+                guard !found.isEmpty else {
+                    mustTotal += c.must.count
+                    report += "\n· \(c.q)\n  факты 0/\(c.must.count), источников нет — модель не спрашиваю"
+                    continue
+                }
                 // Модель не ответила — факты вопроса в знаменателе с нулём: подмена
                 // ответа выдачей поиска засчитывала факты, которых человек не увидит,
                 // а выброс вопроса поднимал процент тем выше, чем больше молчала модель.
