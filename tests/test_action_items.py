@@ -118,7 +118,7 @@ def test_live_draft_minutes_go_through_normalize():
     draft = daemon[: daemon.index("minutes_draft(out)")]
     tail = draft[draft.rindex("if out.strip():"):]
     # normalize живёт в общем входе минуток (№732): черновик зовёт вход,
-    # что вход нормализует — проверяет test_finish_minutes_* в test_meeting_source
+    # что вход нормализует — проверяет tests/test_finish_minutes.py
     assert "meeting_source.finish_minutes(" in tail, (
         "черновиковая запись минуток должна прогонять текст через "
         "общий вход минуток (normalize внутри) до записи на диск")

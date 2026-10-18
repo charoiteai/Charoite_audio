@@ -1207,7 +1207,7 @@ against speech plus note, checkboxes, owner canon and the outsider mark, the
 note line, the machine-path scrub — run in one entry,
 `meeting_source.finish_minutes`, on all four writers (draft, "Minutes", MCP,
 rebuild; before it the draft and MCP skipped the fact check and the rebuild
-skipped the scrub). The app's minutes parser stops at the service tail
+skipped the scrub). The app's minutes parser skips the service tail lines
 (`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
 `fact_check.FOOTNOTE_MARK`).
 

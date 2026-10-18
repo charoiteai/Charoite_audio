@@ -86,6 +86,15 @@ def with_note(doc: str, note: str | None) -> str:
     return doc.rstrip() + "\n\n" + note + "\n"
 
 
+def without_note(doc: str, note: str | None) -> str:
+    """Снять машинную строку оговорки (ровно её текст, не пересказ модели).
+    Вход минуток снимает её до шагов, чтобы повторный проход по готовому
+    документу ставил сноску и оговорку в тот же порядок и давал те же байты."""
+    if not note or note not in doc:
+        return doc
+    return "\n".join(x for x in doc.split("\n") if x != note)
+
+
 def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
                    participants: set[str], lang: str = "ru") -> str:
     """Механические шаги минуток после модели — один вход для всех путей
@@ -98,7 +107,9 @@ def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
     одним написанием и пометка «не участник» (`finalize_assignees`), затем
     строка оговорки, последней — скраб пути машины: хеш паспорта и отметка
     автотекста снимаются с этих байтов. Все шаги идемпотентны: повторный
-    вызов по готовому документу его не меняет."""
+    вызов по готовому документу его не меняет: прежняя оговорка снимается
+    до шагов, прежнюю сноску снимает `annotate`."""
+    doc = without_note(doc, source.recording_note)
     doc = fact_check.annotate(doc, source.canon())
     doc = action_items.normalize(doc)
     doc = action_items.finalize_assignees(doc, participants, owner, lang=lang)

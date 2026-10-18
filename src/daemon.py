@@ -254,9 +254,10 @@ def minutes_document(text: str) -> str:
 def write_minutes(mpath: pathlib.Path, text: str, note) -> str | None:
     """Финальные минутки на диск: скраб пути машины, запись через tmp и
     replace (общий ``safe_write.write_text``), затем ``note`` с теми же
-    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб живёт
-    здесь, у писателя, а не в порядке строк вызывающего: снять его, переставив
-    операторы ``_do_summary``, нельзя.
+    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб здесь —
+    страховка писателя поверх скраба входа ``meeting_source.finish_minutes``
+    (идемпотентен): у пересборки и MCP ``write_minutes`` нет, их скраб — только
+    во входе, снимать его оттуда нельзя.
 
     Возвращает записанный текст. Запись отклонена гейтом писателя — None и
     без ``note``: хеш в live.json обязан описывать байты на диске, иначе
@@ -3236,7 +3237,7 @@ def main():
                     "".join(chunks), source, owner=owner_name,
                     participants=action_items.participants_set(tr.participants(), owner=owner_name),
                     lang=llm.lang)
-                # Скраб, tmp и replace — в write_minutes: обрыв посреди записи
+                # Скраб (страховка поверх входа), tmp и replace — в write_minutes: обрыв посреди записи
                 # не оставит усечённых минуток поверх готовых (аудит 14.08), а
                 # путь машины не уйдёт на диск при любом порядке строк здесь.
                 with minutes_lock:

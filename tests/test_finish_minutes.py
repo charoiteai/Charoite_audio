@@ -91,6 +91,27 @@ def test_footnote_does_not_reach_extraction_prompts():
     assert "TASK 3278" in body
 
 
+
+def test_text_after_the_footnote_survives_extraction():
+    """Снимается строка сноски, а не всё от неё до конца: `review_bridge`
+    дописывает «Поручения» в конец, после сноски (№732, выход DS C1)."""
+    body = ("# Минутки\n## Решения\n- смета\n\n---\n" + fact_check.FOOTNOTE_MARK
+            + " TASK 3242\n\n## Поручения\n- [ ] **Борис** — подготовить отчёт\n")
+    out = meeting_source.without_trace(body)
+    assert fact_check.FOOTNOTE_MARK not in out and "TASK 3242" not in out
+    assert "## Поручения" in out and "**Борис**" in out
+
+
+def test_every_footnote_is_removed_and_annotate_converges():
+    """Две сноски прежнего писателя снимаются обе: иначе первая уходит в
+    извлечение содержанием, а `annotate` не сходится к одной (DS I3)."""
+    f = "\n\n---\n" + fact_check.FOOTNOTE_MARK + " TASK 3242\n"
+    doc = "# M\n- TASK 3278\n" + f + f
+    assert fact_check.FOOTNOTE_MARK not in fact_check.without_footnote(doc)
+    once = fact_check.annotate(doc, SPEECH)
+    assert once.count(fact_check.FOOTNOTE_MARK) <= 1
+    assert fact_check.annotate(once, SPEECH) == once
+
 def _function_source(path: pathlib.Path, name: str) -> str:
     src = path.read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(src)):
@@ -111,13 +132,13 @@ def test_every_minutes_path_goes_through_the_entry():
     for path, name in paths:
         body = _function_source(path, name)
         assert "meeting_source.finish_minutes(" in body, f"{name}: мимо входа минуток"
-        for step in ("fact_check.annotate(", "action_items.normalize(",
-                     "finalize_assignees(", "with_note("):
+        for step in ("fact_check.annotate(", "without_footnote(", "action_items.normalize(",
+                     "finalize_assignees(", "with_note(", "scrub_local_paths("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
 
 
 def test_app_tail_marks_mirror_the_python_writers():
-    """Приложение обрывает разбор минуток на служебном хвосте по своим копиям
+    """Приложение пропускает строки служебного хвоста минуток по своим копиям
     констант: писатели — `channel_trace` и `fact_check`, копия обязана
     совпадать буква в букву, иначе хвост снова уйдёт пунктом в раздел."""
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services" / "MeetingMinutes.swift").read_text(encoding="utf-8")

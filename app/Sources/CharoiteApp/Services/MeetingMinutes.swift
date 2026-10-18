@@ -52,10 +52,12 @@ struct MeetingMinutes: Equatable {
 
     /// Начала строк служебного хвоста, который демон дописывает в минутки
     /// механически: итог неполной записи (`channel_trace.SUMMARY_MARK`) и
-    /// сноска о фактах вне стенограммы (`fact_check.FOOTNOTE_MARK`). Хвост
-    /// стоит в конце документа; без границы он уходил пунктом в последний
-    /// раздел — «Риски» или «Поручения» (№732). Равенство Python-константам
-    /// проверяет `tests/test_finish_minutes.py`.
+    /// сноска о фактах вне стенограммы (`fact_check.FOOTNOTE_MARK`). Обе —
+    /// одна строка; без пропуска она уходила пунктом в последний раздел —
+    /// «Риски» или «Поручения» (№732). Строку пропускаем, а не обрываем на ней
+    /// разбор: после неё бывают разделы (`review_bridge` дописывает
+    /// «Поручения» в конец). Равенство Python-константам проверяет
+    /// `tests/test_finish_minutes.py`.
     static let tailMarks = ["📋 запись неполная", "⚠️ Нет в стенограмме, проверьте:"]
 
     static func parse(_ text: String) -> MeetingMinutes {
@@ -65,8 +67,7 @@ struct MeetingMinutes: Equatable {
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("<!--") || line.hasPrefix("---") { continue }
-            // служебный хвост — до конца документа, разделов после него нет
-            if tailMarks.contains(where: { line.hasPrefix($0) }) { break }
+            if tailMarks.contains(where: { line.hasPrefix($0) }) { continue }
             if let (section, inlineTail) = heading(in: line) {
                 current = section
                 // «- Участники: Иванов, Петров» — содержимое в той же строке.
