@@ -29,23 +29,39 @@ enum NightlyAgent {
 
     /// «19:00, 20:00, 21:00, 04:15» — для подписей, чтобы время не жило
     /// литералом в трёх языках.
-    static var slotsText: String {
+    static var slotsText: String { text(of: slots) }
+
+    static func text(of slots: [(hour: Int, minute: Int)]) -> String {
         slots.map { String(format: "%02d:%02d", $0.hour, $0.minute) }.joined(separator: ", ")
     }
 
-    /// Слоты, которые реально стоят в plist: «HH:MM, …» или nil, если файла
-    /// нет или он не разбирается. Настройки показывают их, а не задуманные:
-    /// ручной plist (`Program`, `sh -c`) не мигрирует, и подпись «19:00…»
-    /// при 04:15 в файле была бы неправдой (круг 6).
-    static func installedSlotsText(at url: URL = plistURL) -> String? {
+    /// Слоты, которые реально стоят в plist, или nil: файла нет, он не
+    /// разбирается или расписание не сводится к списку «час:минута».
+    /// launchd читает пропущенный Hour/Minute как «любой», Weekday/Day/Month
+    /// сужают запуск — такое время подписью не передать, умолчанием тем более
+    /// (круг 7). Настройки показывают эти слоты, а не задуманные: ручной plist
+    /// (`Program`, `sh -c`) не мигрирует (круг 6).
+    static func installedSlots(at url: URL = plistURL) -> [(hour: Int, minute: Int)]? {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
                   as? [String: Any] else { return nil }
         let raw = plist["StartCalendarInterval"]
-        let items = (raw as? [[String: Any]]) ?? (raw as? [String: Any]).map { [$0] } ?? []
-        return items.map {
-            String(format: "%02d:%02d", ($0["Hour"] as? Int) ?? 0, ($0["Minute"] as? Int) ?? 0)
-        }.joined(separator: ", ")
+        let items: [Any] = (raw as? [Any]) ?? (raw is [String: Any] ? [raw as Any] : [])
+        var out: [(hour: Int, minute: Int)] = []
+        for item in items {
+            guard let d = item as? [String: Any], Set(d.keys) == ["Hour", "Minute"],
+                  let h = d["Hour"] as? Int, let m = d["Minute"] as? Int,
+                  (0...23).contains(h), (0...59).contains(m) else { return nil }
+            out.append((h, m))
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// Совпадает ли расписание с нашим как множество: порядок слотов
+    /// в файле launchd не важен.
+    static func isOurSchedule(_ have: [(hour: Int, minute: Int)]) -> Bool {
+        Set(have.map { $0.hour * 60 + $0.minute }) == Set(slots.map { $0.hour * 60 + $0.minute })
+            && have.count == slots.count
     }
 
     static func job(script: String, logPath: String) -> [String: Any] {

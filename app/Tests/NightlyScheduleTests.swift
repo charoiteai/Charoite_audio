@@ -232,15 +232,39 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertFalse(NightlyAgent.needsMigration(installed: try read(url), expected: expected, nightRunning: false))
     }
 
-    /// Подпись Настроек — по слотам файла: старый 04:15 не выдаётся за новые.
-    func testInstalledSlotsTextReadsFile() throws {
+    /// Подпись Настроек — по слотам файла: старый 04:15 не выдаётся за новые,
+    /// а расписание, которое не сводится к «час:минута», — не выдумывается (круг 7).
+    func testInstalledSlotsReadsFile() throws {
         let dir = try tmpDir()
-        let old = dir.appendingPathComponent("old.plist"), cur = dir.appendingPathComponent("cur.plist")
-        try write(oldJob(), to: old)
+        func slots(_ cal: Any?) throws -> [(hour: Int, minute: Int)]? {
+            var job = oldJob()
+            job["StartCalendarInterval"] = cal
+            let url = dir.appendingPathComponent(UUID().uuidString + ".plist")
+            try write(job, to: url)
+            return NightlyAgent.installedSlots(at: url)
+        }
+        XCTAssertEqual(try slots(["Hour": 4, "Minute": 15]).map(NightlyAgent.text(of:)), "04:15")
+        let cur = dir.appendingPathComponent("cur.plist")
         try write(expected, to: cur)
-        XCTAssertEqual(NightlyAgent.installedSlotsText(at: old), "04:15")
-        XCTAssertEqual(NightlyAgent.installedSlotsText(at: cur), NightlyAgent.slotsText)
-        XCTAssertNil(NightlyAgent.installedSlotsText(at: dir.appendingPathComponent("none.plist")))
+        XCTAssertEqual(NightlyAgent.installedSlots(at: cur).map(NightlyAgent.text(of:)), NightlyAgent.slotsText)
+        XCTAssertNil(NightlyAgent.installedSlots(at: dir.appendingPathComponent("none.plist")))
+        XCTAssertNil(try slots(nil), "нет расписания")
+        XCTAssertNil(try slots([[String: Any]]()), "пустой массив")
+        XCTAssertNil(try slots(["Minute": 15]), "каждый час")
+        XCTAssertNil(try slots(["Hour": 4]), "каждую минуту часа")
+        XCTAssertNil(try slots(["Hour": 19, "Minute": 0, "Weekday": 2]), "только вторники")
+        XCTAssertNil(try slots(["Hour": 25, "Minute": 0]), "вне диапазона")
+        XCTAssertNil(try slots(["Hour": 4.5, "Minute": 0]), "дробный час")
+        XCTAssertNil(try slots(["Hour": "4", "Minute": 0]), "строка")
+        XCTAssertNil(try slots([["Hour": 4, "Minute": 15], "x"] as [Any]), "смешанный массив")
+    }
+
+    /// Свои слоты в другом порядке — наше расписание; лишний или пропущенный — нет.
+    func testOurScheduleIsASet() {
+        XCTAssertTrue(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (19, 0)]))
+        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15)]))
+        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (19, 0), (19, 0)]))
+        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (6, 0)]))
     }
 
     /// Метка в нашем файле разошлась с именем — повод переписать.
