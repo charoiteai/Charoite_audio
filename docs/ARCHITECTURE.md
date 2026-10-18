@@ -453,9 +453,11 @@ checked the zone's promises and closed the gaps:
   holds code older than the app (anything but a non-empty `scripts/night_gate.py`
   plus a `nightly.sh` that contains both `CHAROITE_SLOT` and `night_gate.py`), the app keeps the single 04:15
   slot — for such code it is the final state, not an older one: without the gate
-  every slot would be a full night. The app's own agent with `Disabled` in its
-  file is turned back on by Turn on, which clears the flag and keeps the
-  environment keys. A foreign agent with `Disabled` is shown as disabled:
+  every slot would be a full night. The app's own agent with `Disabled` and an
+  hours-and-minutes calendar is turned back on by Turn on, which clears the
+  flag, sets the app's slots and keeps the environment keys. Any other agent
+  with `Disabled` — foreign, or ours with another start trigger or a calendar
+  beyond hours and minutes (Turn on would keep the trigger) — is shown as disabled:
   there is no Turn on, Turn off deletes the file, and the night status ignores it. Only the app's own `ai.charoite.nightly.plist` is touched;
   agents under other labels are not modified. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of

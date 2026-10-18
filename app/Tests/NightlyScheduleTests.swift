@@ -408,6 +408,10 @@ final class NightlyScheduleTests: XCTestCase {
         mine["RunAtLoad"] = true
         mine["Disabled"] = true
         XCTAssertEqual(NightlyAgent.classify(mine, script: "/x/scripts/nightly.sh"), .foreignDisabled)
+        var weekly = oldJob()
+        weekly["StartCalendarInterval"] = ["Weekday": 1, "Hour": 4, "Minute": 15]
+        weekly["Disabled"] = true
+        XCTAssertEqual(NightlyAgent.classify(weekly, script: "/x/scripts/nightly.sh"), .foreignDisabled, "Weekday")
     }
 
     /// Свой скрипт с ручным часом и Disabled включается кнопкой, а не только удаляется.
