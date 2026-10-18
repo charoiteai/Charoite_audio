@@ -280,8 +280,8 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15], disabled: true)), .disabled, "выключенный прежний")
         XCTAssertEqual(try shown { $0["Disabled"] = true; $0["ProgramArguments"] = ["/bin/echo", script] },
                        .foreignDisabled, "выключенный чужой — выключен, «Включить» его не перепишет")
-        XCTAssertEqual(try shown { $0["Disabled"] = true; $0["RunAtLoad"] = true }, .disabled,
-                       "свой выключенный с другим поводом запуска — кнопка его включает (круг 15)")
+        XCTAssertEqual(try shown { $0["Disabled"] = true; $0["RunAtLoad"] = true }, .foreignDisabled,
+                       "выключенный с другим поводом запуска — «Включить» оставил бы повод (круг 16)")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
                        .manual(NightlyAgent.slotsText), "чужая команда")
         XCTAssertEqual(try shown { $0["Program"] = "/bin/zsh" }, .manual(NightlyAgent.slotsText), "Program")
@@ -401,12 +401,13 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertTrue(NightlyAgent.knowsSlots(try fixture().root.path + "/scripts/nightly.sh"))
     }
 
-    /// Свой выключенный агент с RunAtLoad — тоже свой: кнопка его включает (круг 15).
-    func testOwnDisabledOtherTriggerIsOurs() {
+    /// Свой выключенный агент с RunAtLoad — не «Включить»: установка оставила бы
+    /// RunAtLoad и переписала расписание человека (круг 16).
+    func testOwnDisabledOtherTriggerIsNotTurnedOn() {
         var mine = oldJob()
         mine["RunAtLoad"] = true
         mine["Disabled"] = true
-        XCTAssertEqual(NightlyAgent.classify(mine, script: "/x/scripts/nightly.sh"), .disabled)
+        XCTAssertEqual(NightlyAgent.classify(mine, script: "/x/scripts/nightly.sh"), .foreignDisabled)
     }
 
     /// Свой скрипт с ручным часом и Disabled включается кнопкой, а не только удаляется.

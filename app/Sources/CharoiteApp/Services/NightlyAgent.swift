@@ -118,11 +118,12 @@ enum NightlyAgent {
         // чужой выключенный подписан выключенным, но не переписывается (круги 11–12).
         // «Свой» — по команде, а не по часам: свой скрипт с ручным часом тоже
         // включается кнопкой, а не только удаляется (круг 14).
-        // Свой с `RunAtLoad`/`Weekday` — тоже свой (круг 15).
+        // Свой с `RunAtLoad`/`Weekday` — не «Включить»: установка оставила бы его
+        // поводы запуска и переписала расписание (круг 16) — только удаление.
         guard (plist["Disabled"] as? Bool) == true else { return shown }
-        if runsScript(plist, script) { return .disabled }
         switch shown {
         case .ours, .stale: return .disabled
+        case .manual where runsScript(plist, script): return .disabled
         default: return .foreignDisabled
         }
     }
