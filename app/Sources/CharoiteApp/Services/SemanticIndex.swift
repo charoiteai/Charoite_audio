@@ -322,6 +322,14 @@ actor SemanticIndex {
         return out
     }
 
+    #if DEBUG
+    /// mtime записей в файле на диске — проба судит по файлу, а не по памяти
+    /// актора: открытое приложение переписывает файл своим снимком (out10 №632).
+    static func storedMtimes(at url: URL) -> [String: Double]? {
+        (try? Data(contentsOf: url)).flatMap(decode)?.mapValues(\.mtime)
+    }
+    #endif
+
     private static func decode(_ data: Data) -> [String: FileVecs]? {
         var cursor = 0
         func take(_ n: Int) -> Data? {

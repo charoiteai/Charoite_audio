@@ -22,8 +22,11 @@ final class BuildRealIndex: XCTestCase {
         var seen = Set<Int>()
         let urls = (FileManager.default.enumerator(at: graph,
                         includingPropertiesForKeys: [.contentModificationDateKey],
-                        options: [.skipsHiddenFiles])?.compactMap { $0 as? URL } ?? [])
+                        options: [])?.compactMap { $0 as? URL } ?? [])
             .filter { $0.pathExtension == "md" }
+            // как ArchiveSearch: служебное — точка в начале компонента; флаг
+            // UF_HIDDEN (папки iCloud) приложение не пропускает, и проба тоже (out10)
+            .filter { url in !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 } }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
@@ -40,6 +43,9 @@ final class BuildRealIndex: XCTestCase {
             files.append((rel, mtime, text))
         }
         print("INDEX: файлов к индексации \(files.count)")
+        // ключ вне корня — имя файла: два одноимённых схлопнулись бы в одну запись
+        let dup = Dictionary(grouping: files, by: \.path).filter { $0.value.count > 1 }.keys.sorted()
+        guard dup.isEmpty else { XCTFail("одинаковые ключи индекса: \(dup.prefix(5))"); return }
         // пустой обход — не тот граф: count() ниже прочёл бы прежний индекс и проба позеленела бы
         guard !files.isEmpty else { XCTFail("в графе нет ни одного .md: \(graph.path)"); return }
 
@@ -58,7 +64,6 @@ final class BuildRealIndex: XCTestCase {
         }
         let t0 = Date()
         var left = await pending()
-        let need = left
         while left > 0 {
             await SemanticIndex.shared.refresh(files: files)
             let now = await pending()
@@ -70,11 +75,13 @@ final class BuildRealIndex: XCTestCase {
         let chunks = await SemanticIndex.shared.totalChunks()
         print("INDEX: готово за \(Int(dt)) с — файлов \(indexed), блоков \(chunks), не проиндексировано \(left)")
         XCTAssertEqual(left, 0, "не проиндексировано \(left) из \(wanted.count) — Ollama недоступна или нет модели bge-m3")
-        // память — не диск: persist глотает ошибку записи, проба судит по файлу
-        if need > 0 {
-            let written = (try? SemanticIndex.liveStoreURL.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate
-            XCTAssertGreaterThanOrEqual(written ?? .distantPast, t0, "индекс на диске не обновился: \(SemanticIndex.liveStoreURL.path)")
+        // память — не диск: persist глотает ошибку записи, а открытое приложение
+        // переписывает файл своим снимком — проба сверяет каждый файл графа с диском.
+        // Не доиндексировали — причина выше, второе сообщение увело бы от неё.
+        if left == 0 {
+            let onDisk = SemanticIndex.storedMtimes(at: SemanticIndex.liveStoreURL) ?? [:]
+            let absent = wanted.filter { onDisk[$0.path] != $0.mtime }.count
+            XCTAssertEqual(absent, 0, "на диске нет \(absent) из \(wanted.count) файлов: \(SemanticIndex.liveStoreURL.path) — не записан или переписан приложением")
         }
     }
 }
