@@ -143,6 +143,7 @@ def test_busy_graph_does_not_burn_the_budget_on_each_theme(nd, tmp_path, monkeyp
     r = {g.graph.name: g.result() for g in states}
     assert sum(t.startswith("з") for t in nd.calls) == 1, nd.calls
     assert r["Занятый"]["занят"] == 5 and r["Свободный"]["собрано"] == 2
+    assert r["Занятый"]["пропущено"] == 5, r      # сводка считает и хвост (мутант #819)
 
 
 def test_limit_is_per_run_not_per_graph(nd, tmp_path):
@@ -339,3 +340,66 @@ def test_zero_budget_means_the_default(nd, tmp_path, monkeypatch):
     monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
     monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--budget-s", "0"])
     assert nd.main() == 0 and nd.calls == ["одна"]
+
+
+def test_meeting_gate_gets_the_budget_left(nd, tmp_path, monkeypatch):
+    """Мутант #819: окно встречи получало бюджет плюс прошедшее."""
+    graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
+    seen = []
+    monkeypatch.setattr(nd.live_gate, "night_window_open",
+                        lambda *a, default=None, **k: seen.append(default) or True)
+    nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
+    assert seen == [100, 70], seen
+
+
+def test_finished_graph_index_is_written_before_the_run_ends(nd, tmp_path, monkeypatch):
+    """Мутант #819: индекс готового графа ждал конца прогона — SIGKILL его терял."""
+    small = _graph(tmp_path, "Малый", {"м1": None})
+    big = _graph(tmp_path, "Большой", {f"б{i}": None for i in range(3)})
+    seen = []
+    real = nd.generate
+
+    def generate(theme, *a, **k):
+        if theme == "б2":
+            seen.append({e["тема"] for e in dossier.load_index(small / CHAROITE.dossier_dir)})
+        return real(theme, *a, **k)
+
+    monkeypatch.setattr(nd, "generate", generate)
+    nd.run_all([small, big], {}, full=False, dry=False)
+    assert seen == [{"м1"}], seen
+
+
+def test_retry_is_colder_than_the_first_attempt(nd, tmp_path, monkeypatch):
+    """Мутант #819: температура первой попытки и повтора не проверялась."""
+    graph = _graph(tmp_path, "Г", {"одна": None})
+    temps = []
+
+    def generate(theme, members, files, c, temperature=None, **kw):
+        temps.append(temperature)
+        return "не по формату" if len(temps) == 1 else GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert temps == [0.2, 0.05] and r["собрано"] == 1, (temps, r)
+
+
+def test_backup_line_only_when_a_dossier_was_replaced(nd, tmp_path, capsys):
+    """Мутант #819: строка о копии печаталась бы у новой темы."""
+    graph = _graph(tmp_path, "Г", {"старая": "2026-07-20", "новая": None})
+    nd.run(graph, {}, full=False, dry=False, limit=None)
+    lines = capsys.readouterr().out.splitlines()
+    copies = [lines[i + 1] for i, l in enumerate(lines) if "копия прежнего досье:" in l]
+    assert len(copies) == 1 and "· старая:" in copies[0], lines
+
+
+@pytest.mark.parametrize("failures, attempts", [(0, 0), (1, 1)])
+def test_attempts_count_refusals_before_the_model(nd, tmp_path, monkeypatch, failures, attempts):
+    """Мутант #819: повреждённые «Правки автора» — не попытка, нечитаемое досье — попытка."""
+    graph = _graph(tmp_path, "Г", {"одна": None})
+    monkeypatch.setattr(nd, "_manual_for_rebuild", lambda theme, loaded: (False, None, failures))
+    assert nd.run_all([graph], {}, full=False, dry=False).attempts == attempts
+
+
+def test_a_model_call_is_an_attempt(nd, tmp_path):
+    graph = _graph(tmp_path, "Г", {"одна": None, "другая": None})
+    assert nd.run_all([graph], {}, full=False, dry=False).attempts == 2
