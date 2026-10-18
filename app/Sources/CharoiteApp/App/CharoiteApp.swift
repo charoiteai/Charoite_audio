@@ -118,6 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MeetingNotificationService.shared.configure()
         MeetingProcessingService.shared.startMonitoring()
         HealthClock.start()      // свежесть владельцев здоровья для иконки меню-бара (№139)
+        // ночь, включённая прежней версией, — к текущим слотам (выходной круг №630);
+        // launchctl ждёт launchd, а при логине он занят — не на главном потоке
+        let nightRoot = AppSettings.charoiteRoot
+        Task.detached(priority: .utility) { NightlyAgent.migrateIfStale(root: nightRoot) }
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
         // Папка импорта переживает перезапуск: тумблер в Настройках включён —
         // следим с первого запуска, не дожидаясь открытия настроек

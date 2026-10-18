@@ -1283,9 +1283,10 @@ it signals degradation, it does not break the loop.
   old meetings would stop opening. The meeting card reads all three too: before,
   an English meeting showed empty «Decisions» and «Action items» while the file
   had both.
-- **Night cycle in one click** — Settings installs the 04:15 launchd
-  job that runs the nightly loop above (core revision with backups,
-  dossiers, morning brief, memory bench; log in /tmp/charoite_nightly.log);
+- **Night cycle in one click** — Settings installs the launchd job (slots
+  19:00, 20:00, 21:00 and 04:15; the first one that finds the Mac awake runs
+  the night, the rest skip it) that runs the nightly loop above (core revision
+  with backups, dossiers, morning brief, memory bench; log in logs/nightly.log);
   the same button removes it.
 - **Calendar access** (opt-in) — one Settings toggle, "Brief and a nudge to
   record": the calendar feeds the recording nudge, the Prep screen and the

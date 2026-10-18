@@ -114,7 +114,8 @@
 - `scripts/mutate_check.py` ← .github/workflows/ci.yml, scripts/preflight.sh; проба help+refuse
 - `scripts/nemotron_shadow_check.py` ← ручной запуск: сверка журнала тени Nemotron с финальной разметкой, ручной прогон (№478 B); проба help
 - `scripts/nemotron_shadow_replay.py` ← ручной запуск: прогон записи через тень Nemotron без звонка, ручной прогон (№478 B); проба help+refuse
-- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
+- `scripts/night_gate.py` ← scripts/nightly.sh; проба help
+- `scripts/nightly.sh` ← app/Sources/CharoiteApp/Services/NightlyAgent.swift, app/Sources/CharoiteApp/Services/NightlyStatusService.swift, app/Sources/CharoiteApp/Views/Settings/SettingsView.swift; не запускается: shell-скрипт: пробника нет; снимет №364 (проба вместо none)
 - `scripts/nightly_claude_cores.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier.py` ← scripts/nightly.sh; проба help
 - `scripts/nightly_dossier_review.py` ← scripts/nightly.sh; проба help
@@ -189,6 +190,7 @@
 - `scripts/mutate_check.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/FEATURES.md
+- `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/SETUP.md
 - `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md

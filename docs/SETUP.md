@@ -384,8 +384,14 @@ still waiting last in line. On weekdays the revision now runs incrementally
 happens on Sundays or by hand with `NIGHTLY_TIER3_FULL=1`.
 
 For an install from a clone the app schedules it for you: Settings → Nightly
-cycle → Turn on writes the launchd agent below (04:15, log in
-`logs/nightly.log` next to the data). By hand:
+cycle → Turn on writes the launchd agent below (slots 19:00, 20:00, 21:00 and
+04:15 — the night runs in the first one that finds the Mac awake; log in
+`logs/nightly.log` next to the data). An agent installed by an older version
+is brought to these slots when the app starts. If the data folder holds older
+code (anything but a non-empty `scripts/night_gate.py` plus a `nightly.sh` that
+contains both `CHAROITE_SLOT` and `night_gate.py`), the app keeps the single 04:15 slot; do the
+same by hand: keep only the 4:15 dict in the XML below and drop
+`EnvironmentVariables`. By hand:
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
@@ -395,7 +401,14 @@ cycle → Turn on writes the launchd agent below (04:15, log in
   <key>Label</key><string>ai.charoite.nightly</string>
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>/PATH/TO/Charoite_audio/scripts/nightly.sh</string></array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>CHAROITE_SLOT</key><string>1</string></dict>
   <key>StandardOutPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
   <key>StandardErrorPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
 </dict></plist>

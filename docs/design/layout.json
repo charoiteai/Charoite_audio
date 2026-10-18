@@ -414,6 +414,10 @@
       "mode": "help+refuse",
       "why": "по коду: argparse, дверь корня"
     },
+    "scripts/night_gate.py": {
+      "mode": "help",
+      "why": "по коду: argparse"
+    },
     "scripts/nightly.sh": {
       "mode": "none",
       "why": "shell-скрипт: пробника нет",

@@ -93,6 +93,35 @@ FAILED=""
 STATUS_DONE=0
 mkdir -p "$STATUS_DIR"
 
+# Слоты ночи (19:00, 20:00, 21:00, 04:15) ставит приложение, и только им
+# выставлен CHAROITE_SLOT=1: ручной запуск и чужие агенты гейт не видят.
+# Гейт стоит до ловушек и до «идёт»: skip и defer уходят, не тронув
+# nightly.json. Сбой гейта — go: лишний прогон дешевле пропущенной ночи.
+# Исход пишется всегда, с кодом гейта — иначе «почему ночь не шла» не узнать.
+if [ "${CHAROITE_SLOT:-}" = 1 ]; then
+  NIGHT_GATE=${NIGHT_GATE:-"$PY scripts/night_gate.py"}
+  # shellcheck disable=SC2086  # шов: команда со своими аргументами
+  # код — до проверки пустоты: иначе пустой вывод при коде 0 писался бы
+  # кодом теста `[ -n ]` = 1, неотличимо от падения гейта
+  gate_rc=0
+  d=$($NIGHT_GATE decide --root "$CHAROITE_ROOT" 2>/dev/null) || gate_rc=$?
+  [ "$gate_rc" -eq 0 ] && [ -n "$d" ] || d=go
+  # кавычка и обратный слэш сломали бы JSON строкой ниже
+  d=$(printf '%s' "$d" | head -1 | tr -d '\042\134')
+  printf '{"ts":"%s","decision":"%s","rc":%s}\n' "$(date '+%F %T')" "$d" "$gate_rc" \
+    > "$STATUS_DIR/nightly_gate.json" || true
+  case "$d" in
+    # код брифа — код слота: упавший бриф полная ночь считает аварией, и
+    # слот, который ради него и запущен, не вправе выйти 0 (выходной круг 2 №630)
+    brief) echo "night gate: brief ($(date '+%F %T'))"
+           brief_rc=0
+           $PY scripts/morning_brief.py || brief_rc=$?
+           [ "$brief_rc" -eq 0 ] || echo "⚠️ бриф слота не отработал (код $brief_rc)"
+           exit "$brief_rc" ;;
+    skip|defer*) echo "night gate: $d ($(date '+%F %T'))"; exit 0 ;;
+  esac
+fi
+
 # Пишем статус в любом случае — в том числе если прогон оборвут на середине:
 # незавершённый прогон это тоже факт, и человек должен его увидеть.
 write_status() {
