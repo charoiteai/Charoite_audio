@@ -65,8 +65,9 @@ final class NightlyScheduleTests: XCTestCase {
 
     // ─ выходной круг 2 №630: свои ключи, симлинк, вторая метка, порядок записи ─
 
-    /// Свои ключи окружения человека переживают миграцию, CHAROITE_SLOT добавляется.
-    func testReconcileKeepsUserEnvAndLogs() {
+    /// Свои ключи окружения человека переживают миграцию, CHAROITE_SLOT
+    /// добавляется; путь лога — наш (круг 3: /tmp до 16.08 не консервируем).
+    func testReconcileKeepsUserEnvOwnsLogs() {
         var old = oldJob()
         old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/data", "NIGHTLY_MAX_H": "2"]
         old["StandardOutPath"] = "/mine.log"
@@ -74,7 +75,7 @@ final class NightlyScheduleTests: XCTestCase {
         let out = NightlyAgent.reconciled(installed: old, expected: expected)
         XCTAssertEqual(out["EnvironmentVariables"] as? [String: String],
                        ["CHAROITE_ROOT": "/data", "NIGHTLY_MAX_H": "2", "CHAROITE_SLOT": "1"])
-        XCTAssertEqual(out["StandardOutPath"] as? String, "/mine.log")
+        XCTAssertEqual(out["StandardOutPath"] as? String, expected["StandardOutPath"] as? String)
         XCTAssertFalse(NightlyAgent.needsMigration(installed: out, expected: expected, nightRunning: false))
     }
 
@@ -132,10 +133,94 @@ final class NightlyScheduleTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: agents.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: agents.path) }
         var calls: [[String]] = []
+        try XCTSkipIf(geteuid() == 0, "root пишет и в каталог 0555")
         guard case .failed = NightlyAgent.install(root: root, agentsDir: agents, launchctl: { calls.append($0) })
         else { return XCTFail("запись в каталог только для чтения прошла") }
         XCTAssertTrue(calls.isEmpty, "\(calls)")
         XCTAssertEqual((try read(target))["StartCalendarInterval"] as? [String: Int], ["Hour": 4, "Minute": 15])
+    }
+
+    // ─ выходной круг 3 №630: типы окружения, обёртка, лог, один обход каталога ─
+
+    /// `<integer>` в окружении не стирает строковые ключи: приведение к
+    /// `[String: String]` роняло весь словарь.
+    func testIntegerEnvValueKeepsOtherKeys() throws {
+        let (root, agents) = try fixture()
+        var old = oldJob(script: root.path + "/scripts/nightly.sh")
+        old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/data", "NIGHTLY_MAX_H": 2] as [String: Any]
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(old, to: target)
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+        let env = try XCTUnwrap((try read(target))["EnvironmentVariables"] as? [String: Any])
+        XCTAssertEqual(env["CHAROITE_ROOT"] as? String, "/data")
+        XCTAssertEqual(env["NIGHTLY_MAX_H"] as? Int, 2)
+        XCTAssertEqual(env["CHAROITE_SLOT"] as? String, "1")
+    }
+
+    /// Обёртка `caffeinate` вокруг скрипта этой установки переживает миграцию,
+    /// а лог из общего /tmp переезжает к данным.
+    func testWrapperKeptTmpLogMoved() throws {
+        let (root, agents) = try fixture()
+        let script = root.path + "/scripts/nightly.sh"
+        var old = oldJob(script: script)
+        let wrapped = ["/usr/bin/caffeinate", "-i", "/bin/bash", script]
+        old["ProgramArguments"] = wrapped
+        old["StandardOutPath"] = "/tmp/nightly.log"
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(old, to: target)
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+        let back = try read(target)
+        XCTAssertEqual(back["ProgramArguments"] as? [String], wrapped)
+        XCTAssertEqual(back["StandardOutPath"] as? String, root.path + "/logs/nightly.log")
+        XCTAssertEqual((back["StartCalendarInterval"] as? [Any])?.count, 4)
+    }
+
+    /// Только лог в /tmp при правильных слотах — тоже повод переписать.
+    func testTmpLogAloneNeedsMigration() {
+        var cur = expected
+        cur["StandardOutPath"] = "/tmp/nightly.log"
+        XCTAssertTrue(NightlyAgent.needsMigration(installed: cur, expected: expected, nightRunning: false))
+    }
+
+    /// Свой агент уже стоит — вторая метка обновлению не мешает (круг 3: отказ
+    /// держал старые слоты вечно, а настройки показывали «включён»).
+    func testOtherLabelDoesNotBlockUpdate() throws {
+        let (root, agents) = try fixture()
+        let script = root.path + "/scripts/nightly.sh"
+        var other = oldJob(script: script)
+        other["Label"] = "my.own.night"
+        try write(other, to: agents.appendingPathComponent("my.own.night.plist"))
+        try write(oldJob(script: script), to: NightlyAgent.plistURL(in: agents))
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+    }
+
+    /// Выключенный чужой агент ночь не ставит — включению не мешает.
+    func testDisabledOtherAgentIgnored() throws {
+        let (root, agents) = try fixture()
+        var other = oldJob(script: root.path + "/scripts/nightly.sh")
+        other["Label"] = "my.own.night"
+        other["Disabled"] = true
+        try write(other, to: agents.appendingPathComponent("my.own.night.plist"))
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+    }
+
+    /// Скрипт словом внутри строки `sh -c` — тоже вторая ночь.
+    func testShellWrapperIsOtherAgent() throws {
+        let (root, agents) = try fixture()
+        let job: [String: Any] = ["Label": "wrap",
+                                  "ProgramArguments": ["/bin/sh", "-c", "bash \(root.path)/scripts/nightly.sh --fast"]]
+        try write(job, to: agents.appendingPathComponent("wrap.plist"))
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .otherAgent("wrap.plist"))
+    }
+
+    /// Бинарный plist статус «Сегодня» видит так же, как установка.
+    func testBinaryPlistSeenByStatus() throws {
+        let (root, agents) = try fixture()
+        let script = root.path + "/scripts/nightly.sh"
+        try PropertyListSerialization.data(fromPropertyList: oldJob(script: script), format: .binary, options: 0)
+            .write(to: agents.appendingPathComponent("my.own.night.plist"))
+        XCTAssertEqual(NightlyStatus.agentScriptPath(inAgentsAt: agents), script)
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .otherAgent("my.own.night.plist"))
     }
 
     private func tmpDir() throws -> URL {

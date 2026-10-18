@@ -45,17 +45,28 @@ enum NightlyAgent {
         ]
     }
 
-    /// Установленный plist, приведённый к ожидаемому: меняются только слоты и
-    /// `CHAROITE_SLOT`. Свои ключи окружения (`CHAROITE_ROOT`, `NIGHTLY_MAX_H`…)
-    /// и пути логов человек мог вписать руками по SETUP — перезапись целиком их
-    /// стирала, и ночь уходила писать статус в клон (выходной круг 2 №630).
+    /// Установленный plist, приведённый к ожидаемому. Владеем только слотами,
+    /// `CHAROITE_SLOT` и путями логов; остальное — как лежало. Свои ключи
+    /// окружения (`CHAROITE_ROOT`, `NIGHTLY_MAX_H`…) человек вписывает руками по
+    /// SETUP, и перезапись целиком уводила статус ночи в клон (выходной круг 2
+    /// №630). Окружение — `[String: Any]`: одно `<integer>` среди строк роняло
+    /// приведение всего словаря, и стирались все ключи (круг 3). Обёртку
+    /// (`caffeinate`, `arch`) в `ProgramArguments` не трогаем, если она
+    /// запускает скрипт этой установки (круг 3). Логи — всегда наши: у
+    /// включивших ночь до 16.08 там общий /tmp (аудит 16.08, круг 3).
     static func reconciled(installed: [String: Any]?, expected: [String: Any]) -> [String: Any] {
         guard var out = installed else { return expected }
-        for key in ["Label", "ProgramArguments", "StartCalendarInterval"] { out[key] = expected[key] }
-        var env = out["EnvironmentVariables"] as? [String: String] ?? [:]
-        for (k, v) in expected["EnvironmentVariables"] as? [String: String] ?? [:] { env[k] = v }
+        for key in ["Label", "StartCalendarInterval", "StandardOutPath", "StandardErrorPath"] {
+            out[key] = expected[key]
+        }
+        let want = (expected["ProgramArguments"] as? [String])?.last ?? ""
+        let ownWrapper = (out["ProgramArguments"] as? [String]).map {
+            scriptPaths(in: $0).contains { samePath($0, want) }
+        } ?? false
+        if !ownWrapper { out["ProgramArguments"] = expected["ProgramArguments"] }
+        var env = out["EnvironmentVariables"] as? [String: Any] ?? [:]
+        for (k, v) in expected["EnvironmentVariables"] as? [String: Any] ?? [:] { env[k] = v }
         out["EnvironmentVariables"] = env
-        for key in ["StandardOutPath", "StandardErrorPath"] where out[key] == nil { out[key] = expected[key] }
         return out
     }
 
@@ -68,11 +79,11 @@ enum NightlyAgent {
     static func needsMigration(installed: [String: Any]?, expected: [String: Any],
                                nightRunning: Bool) -> Bool {
         guard let installed, !nightRunning,
-              let have = (installed["ProgramArguments"] as? [String])?.last,
+              let have = installed["ProgramArguments"] as? [String],
               let want = (expected["ProgramArguments"] as? [String])?.last,
-              samePath(have, want) else { return false }
+              scriptPaths(in: have).contains(where: { samePath($0, want) }) else { return false }
         let target = reconciled(installed: installed, expected: expected)
-        for key in ["StartCalendarInterval", "EnvironmentVariables"] {
+        for key in ["StartCalendarInterval", "EnvironmentVariables", "StandardOutPath", "StandardErrorPath"] {
             let a = installed[key].map { $0 as AnyObject }
             let b = target[key].map { $0 as AnyObject }
             if !(a?.isEqual(b) ?? (b == nil)) { return true }
@@ -85,22 +96,46 @@ enum NightlyAgent {
             == URL(fileURLWithPath: b).resolvingSymlinksInPath().path
     }
 
+    /// Пути `nightly.sh` в аргументах агента: отдельным аргументом или словом
+    /// внутри строки обёртки (`/bin/sh -c "… /x/scripts/nightly.sh --fast"`).
+    static func scriptPaths(in args: [String]) -> [String] {
+        args.flatMap { $0.split(whereSeparator: \.isWhitespace) }
+            .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
+            .filter { $0.hasSuffix("nightly.sh") }
+    }
+
+    /// Агенты каталога, которые запускают какой-то `nightly.sh`: plist и путь
+    /// скрипта, наш plist первым. Один разбор на установку и на статус «Сегодня»:
+    /// статус искал текстом по UTF-8, установка — `PropertyListSerialization`,
+    /// и бинарный plist одна видела, а другая нет (выходной круг 3 №630).
+    /// Выключенный (`Disabled`) агент ночь не ставит — не в счёт.
+    static func nightlyAgents(in dir: URL) -> [(plist: URL, script: String)] {
+        let ours = plistURL(in: dir).lastPathComponent
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return [] }
+        let sorted = items.filter { $0.pathExtension == "plist" }.sorted {
+            ($0.lastPathComponent == ours ? "" : $0.lastPathComponent)
+                < ($1.lastPathComponent == ours ? "" : $1.lastPathComponent)
+        }
+        return sorted.compactMap { url in
+            guard let data = try? Data(contentsOf: url),
+                  let job = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                  job["Disabled"] as? Bool != true,
+                  let script = scriptPaths(in: job["ProgramArguments"] as? [String] ?? []).first
+            else { return nil }
+            return (url, script)
+        }
+    }
+
     /// Другой plist каталога, который запускает `nightly.sh` этой установки.
     /// launchd не пускает две копии только одной метки: агент под другой
     /// меткой (ручная установка по SETUP, своя обёртка) и наш шли бы в одни
     /// слоты двумя ночами по одному графу (выходной круг 2 №630).
     static func otherAgent(script: String, in dir: URL) -> URL? {
         let ours = plistURL(in: dir).lastPathComponent
-        guard let items = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil) else { return nil }
-        for url in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-        where url.pathExtension == "plist" && url.lastPathComponent != ours {
-            guard let data = try? Data(contentsOf: url),
-                  let job = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let args = job["ProgramArguments"] as? [String] else { continue }
-            if args.contains(where: { $0.hasSuffix("nightly.sh") && samePath($0, script) }) { return url }
-        }
-        return nil
+        return nightlyAgents(in: dir).first {
+            $0.plist.lastPathComponent != ours && samePath($0.script, script)
+        }?.plist
     }
 
     enum InstallResult: Equatable {
@@ -119,7 +154,11 @@ enum NightlyAgent {
                         launchctl run: ([String]) -> Void = launchctl) -> InstallResult {
         let script = root.appendingPathComponent("scripts/nightly.sh")
         guard FileManager.default.fileExists(atPath: script.path) else { return .noScript }
-        if let other = otherAgent(script: script.path, in: dir) {
+        let target = plistURL(in: dir)
+        let existed = FileManager.default.fileExists(atPath: target.path)
+        // Только при создании: свой агент уже стоит — переписать его не хуже,
+        // чем оставить старые слоты, а отказ держал миграцию вечно (круг 3).
+        if !existed, let other = otherAgent(script: script.path, in: dir) {
             return .otherAgent(other.lastPathComponent)
         }
         // Лог ночного прогона — рядом с данными, а не в общем /tmp: туда
@@ -129,7 +168,6 @@ enum NightlyAgent {
         FileManager.default.createPrivateDirectory(at: logDir)
         let logPath = logDir.appendingPathComponent("nightly.log").path
         FileManager.default.createPrivateFile(atPath: logPath)
-        let target = plistURL(in: dir)
         let installed = (try? Data(contentsOf: target)).flatMap {
             try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any]
         }
@@ -151,7 +189,6 @@ enum NightlyAgent {
             try? FileManager.default.removeItem(at: staged)
             return .failed(error.localizedDescription)
         }
-        let existed = FileManager.default.fileExists(atPath: target.path)
         if existed { run(["unload", target.path]) }
         if rename(staged.path, target.path) != 0 {
             let why = String(cString: strerror(errno))
