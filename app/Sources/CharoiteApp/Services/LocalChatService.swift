@@ -192,43 +192,9 @@ final class LocalChatService: ObservableObject {
         // Snapshot the configured endpoint before asynchronous retrieval.
         let inferenceBase = ollamaBase
         let inferenceIsLocal = MemoryScreenPolicy.inferenceIsLocal(base: inferenceBase)
-        // Промпт локализован целиком: при sufler.language: en интерфейс,
-        // панели и поиск по архиву уже отвечали по-английски, а чат — главная
-        // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
-        // потому что этого требовала зашитая здесь строка.
-        var system = L.t("""
-        Ты — Чароит, ассистент владельца этого Mac. \
-        Отвечай по-русски, кратко и по делу. ЧЕСТНОСТЬ: отвечай только \
-        по данным из блоков ниже и из разговора; если блоки не про то, что спросили, — \
-        так и скажи («в памяти этого нет»), не сочиняй. Ты помнишь весь текущий \
-        диалог — «а что я спрашивал», «продолжи», «а по второму пункту» относятся \
-        к нему. Сопоставляй факты из разных встреч: называй повторяющиеся темы, \
-        расхождения и что изменилось со временем, с датами и источниками из блока \
-        графа. На вопрос «кто ты» — «Чароит, ассистент», без имени \
-        вендора модели.
-        """, """
-        You are Charoite, the assistant of this Mac's owner. \
-        Answer in English, briefly and to the point. HONESTY: answer only from the \
-        blocks below and from this conversation; if the blocks are not about what \
-        was asked, say so ("that is not in memory") and do not invent. You remember \
-        the whole current dialogue — "what did I ask", "go on", "what about the \
-        second point" refer to it. Cross-reference facts across meetings: name \
-        recurring topics, contradictions and what changed over time, with dates and \
-        sources from the graph block. To "who are you" — "Charoite, an \
-        assistant", without naming the model vendor.
-        """, """
-        你是 Charoite，这台 Mac 主人的助手。用中文简洁地回答。\
-        诚实原则：只依据下面的资料块和当前对话作答；如果资料块与所问无关，\
-        就直说「记忆中没有这条」，不要编造。你记得整段对话——「我刚才问了什么」\
-        「继续」「第二点呢」都指向它。跨会议比对事实：指出反复出现的主题、\
-        分歧以及随时间发生的变化，并附上图谱资料块中的日期与来源。\
-        被问「你是谁」时回答「Charoite，助手」，不要提模型厂商。
-        """)
-        system += inferenceIsLocal
-            ? L.t("\nМодель отвечает на этом Mac.", "\nThe model responds on this Mac.", "\n模型在此 Mac 上生成回复。")
-            : L.t("\nМодель отвечает на другом сервере, явно выбранном в настройках; не называй этот ответ офлайн или локальным.",
-                  "\nThe model responds on another server explicitly chosen in settings; do not call this response offline or local.",
-                  "\n模型在设置中明确选择的其他服务器上生成回复；请勿称此回复为离线或本地。")
+        // Основа промпта и блок графа — в ChatRetrieval: пробы и бенч памяти
+        // собирают ход тем же кодом (№632).
+        var system = ChatRetrieval.baseSystem(inferenceIsLocal: inferenceIsLocal)
         let startedAt = Date()
         // Тумблер снят ОДИН раз на старте: переключение памяти во время
         // генерации не должно переписывать происхождение уже собранного
@@ -238,23 +204,17 @@ final class LocalChatService: ObservableObject {
         var sourcesInContext = 0
         var weakMatches = false
         if memoryOn {
-            // Поиск по одной последней реплике («а что дальше?») находил мусор:
-            // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
-            let topic = (messages.filter { $0.role == "user" }.suffix(3).map(\.text)
-                .joined(separator: " ") as String).suffix(500)
-            // Бюджет задаётся поиску, а не срезается по хвосту: prefix(5000) резал
-            // ПОСЛЕДНИЙ источник на полуслове и мог оставить от него огрызок,
-            // при этом первый источник имел право занять сколько угодно.
+            let topic = ChatRetrieval.query(from: messages)
             // Сосед по [[ссылке]] без слов запроса — только модели на этом Mac
             // (№695, постфактум-2 по #776).
+            let params = ChatRetrieval.Params.chat
             let outcome = await ArchiveSearch.searchStructured(
-                query: String(topic), limit: 8, snippet: 800, budget: 5000,
+                query: topic, limit: params.limit, snippet: params.snippet, budget: params.budget,
                 includeLinked: inferenceIsLocal)
             guard !Task.isCancelled else { return }
-            var vault = outcome.text
-            // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
-            let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
-            if lowConf { vault.removeFirst() }
+            let context = ChatRetrieval.contextBlock(vault: outcome.text)
+            let vault = context.text
+            let lowConf = context.weak
             // Чипы под ответом — точный список хитов поиска (Outcome.rels);
             // упоминание пути в чужом сниппете источником не считается
             // (круг-1: DS/Codex/GLM). Brain-ветка структуры не отдаёт —
@@ -269,11 +229,7 @@ final class LocalChatService: ObservableObject {
             // видимых (круг-2, DS).
             sourcesInContext = lowConf ? 0 : found.count
             chipSources = lowConf ? [] : found
-            if !vault.isEmpty {
-                system += lowConf
-                    ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
-                    : "\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\n" + vault
-            }
+            system += context.block
             status = vault.isEmpty ? L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容") : (lowConf ? L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配") : L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱"))
         }
         guard !Task.isCancelled else { return }
@@ -300,19 +256,8 @@ final class LocalChatService: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 300
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "model": effModel,
-            "messages": msgs,
-            "stream": true,
-            "think": false,           // критично: дефолтный thinking = ~10с молчания
-            "keep_alive": "30m",
-            // num_ctx как в OllamaService: без него Modelfile-дефолт 262144 →
-            // перезагрузка 23GB модели при переключении чатов и пустой 2-й ответ.
-            // 32768 — потолок для 32 ГБ машины (KV-кэш ~3-5 ГБ при 23 ГБ модели):
-            // система+граф (5К) + история (12К) + ответ дышат свободно. 64К на
-            // 32 ГБ уходит в своп — не поднимать без 64 ГБ RAM.
-            "options": ["temperature": 0.35, "num_ctx": 32768, "num_predict": 2048],
-        ] as [String: Any])
+        req.httpBody = try? JSONSerialization.data(
+            withJSONObject: ChatRetrieval.requestBody(model: effModel, messages: msgs, stream: true))
 
         var sawDone = false
         var doneReason: String?

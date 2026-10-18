@@ -51,7 +51,9 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 from llm import LLM, embedder as build_embedder  # noqa: E402
 
-SNIPPET = 1200   # как в боевом RAG приложения
+# База 5×1200 этого скрипта; те же числа у руки legacy Swift-бенча
+# (ChatRetrieval.Params.legacyProbe) — совпадение ручное, кодом не связано
+SNIPPET = 1200
 LIMIT_FILES = 5
 
 
@@ -196,7 +198,9 @@ BRAIN_ALIVE = "alive"
 # в свой поиск на Swift; бенч ждёт дольше, чтобы напечатать задержку, но вопрос
 # дольше порога в сравнение не берёт — в продукте ответ дал бы другой поиск
 COMPANION_DEADLINE_S = 4.0
-COMPANION_LIMIT, COMPANION_SNIPPET = 8, 800     # параметры чата приложения
+# limit/snippet как у чата (ChatRetrieval.Params.chat в app/); бюджета у
+# протокола companion нет — 5000 чата сюда не переносится (№632)
+COMPANION_LIMIT, COMPANION_SNIPPET = 8, 800
 
 
 class BrainHit(NamedTuple):
