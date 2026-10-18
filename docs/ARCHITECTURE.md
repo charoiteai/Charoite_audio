@@ -438,11 +438,11 @@ checked the zone's promises and closed the gaps:
   by an older version is brought to these slots when the app starts (the app
   owns only the slots, `CHAROITE_SLOT` and the log paths — a log left in the
   shared `/tmp` moves next to the data; your own environment keys and a
-  wrapper such as `caffeinate` around this install's script stay); if another
-  enabled agent already runs this install's `nightly.sh`, the app does not
-  add a second one, and an existing agent of its own is still updated. The 04:15 slot is the last one and never defers. The gate does not
+  wrapper such as `caffeinate` around this install's script stay). Only the
+  app's own `ai.charoite.nightly.plist` is touched; agents under other labels
+  are not parsed. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
-  the same label, and a second label is refused at install. Its outcome and exit code land in `logs/nightly_gate.json`.
+  the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
 
 - **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
   visible to the tail steps too — dedup and the memory bench ran past it and

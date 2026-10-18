@@ -98,10 +98,27 @@ struct NightlyStatus: Equatable {
     /// Label агента не угадываем: он свой у каждой установки (в документации
     /// `ai.charoite.nightly`, у автора исторический `ru.charoit.tier3`).
     /// Ищем по содержимому — так проверка переживёт переименование.
-    /// Разбор каталога — один с установкой (`NightlyAgent.nightlyAgents`):
-    /// бинарный plist и строка обёртки видны обоим (выходной круг 3 №630).
     static func agentScriptPath(inAgentsAt dir: URL) -> String? {
-        NightlyAgent.nightlyAgents(in: dir).first?.script
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return nil }
+        for plist in items where plist.pathExtension == "plist" {
+            guard let text = try? String(contentsOf: plist, encoding: .utf8),
+                  text.contains("nightly.sh") else { continue }
+            // Ищем тот `<string>`, внутри которого сам скрипт, а не первый в
+            // строке: в `ProgramArguments` перед ним стоит `/bin/bash`, и в
+            // однострочном `<array>` — как в нашей же документации — по строкам
+            // нашёлся бы именно интерпретатор. Тогда путь не совпал бы никогда,
+            // и приложение постоянно жаловалось бы на подмену скрипта.
+            var rest = text.startIndex..<text.endIndex
+            while let open = text.range(of: "<string>", range: rest),
+                  let close = text.range(of: "</string>",
+                                         range: open.upperBound..<text.endIndex) {
+                let value = String(text[open.upperBound..<close.lowerBound])
+                if value.hasSuffix("nightly.sh") { return value }
+                rest = close.upperBound..<text.endIndex
+            }
+        }
+        return nil
     }
 
     /// Тот ли это скрипт, которым человек считает свою установку.

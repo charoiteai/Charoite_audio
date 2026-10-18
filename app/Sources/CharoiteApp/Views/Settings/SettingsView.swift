@@ -354,10 +354,6 @@ struct SettingsView: View {
             nightlyNote = L.t("scripts/nightly.sh не найден — проверьте путь установки", "scripts/nightly.sh not found — check the install path", "未找到 scripts/nightly.sh — 请检查安装路径")
         case .failed(let error):
             nightlyNote = L.t("не удалось: \(error)", "failed: \(error)", "失败：\(error)")
-        case .otherAgent(let name):
-            nightlyNote = L.t("ночь уже ставит агент \(name) в ~/Library/LaunchAgents — второй дал бы две ночи сразу; снимите его или оставьте как есть",
-                              "the night is already scheduled by \(name) in ~/Library/LaunchAgents — a second agent would run two nights at once; remove it or keep it",
-                              "~/Library/LaunchAgents 中的 \(name) 已安排夜间任务 — 再装一个会同时运行两次；请移除它或保持原样")
         }
         nightlyTick += 1
     }
