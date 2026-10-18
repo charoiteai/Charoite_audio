@@ -190,6 +190,7 @@
 - `scripts/mutate_check.py` ← CONTRIBUTING.md, docs/ru/CONTRIBUTING.md, docs/ru/tests/README.md, docs/zh/CONTRIBUTING.md, docs/zh/tests/README.md
 - `scripts/nemotron_shadow_check.py` ← docs/DIARIZATION.md, docs/FEATURES.md, docs/ru/DIARIZATION.md
 - `scripts/nemotron_shadow_replay.py` ← docs/FEATURES.md
+- `scripts/night_gate.py` ← docs/ARCHITECTURE.md, docs/ru/ARCHITECTURE.md
 - `scripts/nightly.sh` ← config/memory_bench.example.yaml, docs/ARCHITECTURE.md, docs/FEATURES.md, docs/SETUP.md, docs/ru/ARCHITECTURE.md, docs/ru/FEATURES.md, docs/ru/SETUP.md, docs/ru/scripts/README.md, docs/zh/ARCHITECTURE.md, docs/zh/FEATURES.md, docs/zh/SETUP.md, docs/zh/scripts/README.md, scripts/README.md
 - `scripts/nightly_dossier.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
 - `scripts/nightly_dossier_review.py` ← docs/FEATURES.md, docs/ru/FEATURES.md, docs/zh/FEATURES.md
