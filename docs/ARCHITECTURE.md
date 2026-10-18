@@ -431,13 +431,16 @@ checked the zone's promises and closed the gaps:
   for under a minute and falls asleep mid-run; slots missed during sleep are
   merged into that one run. Slots carry `CHAROITE_SLOT=1`, and
   `scripts/night_gate.py` decides before anything is written: when the last
-  run is `ok` and finished after 19:00 of this night — `brief` before noon
-  (only the morning brief is refreshed: a merged slot fired on wake must not
-  redo the night) and `skip` after it; `defer` on an evening slot running on
+  run is `ok` and finished after 19:00 of this night — `brief` before 19:00
+  (only the day's brief is refreshed: the morning slot or a slot merged on
+  wake during the day must not redo the night) and `skip` from 19:00; `defer` on an evening slot running on
   battery below 30 %; otherwise and on any failure `go`. An agent installed
-  by an older version is brought to these slots when the app starts. The 04:15 slot is the last one and never defers. The gate does not
+  by an older version is brought to these slots when the app starts (only
+  the slots and `CHAROITE_SLOT` change; your own environment keys and log
+  paths stay); if another agent already runs this install's `nightly.sh`,
+  the app does not add a second one. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
-  the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
+  the same label, and a second label is refused at install. Its outcome and exit code land in `logs/nightly_gate.json`.
 
 - **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
   visible to the tail steps too — dedup and the memory bench ran past it and

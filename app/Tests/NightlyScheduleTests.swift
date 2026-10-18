@@ -62,4 +62,106 @@ final class NightlyScheduleTests: XCTestCase {
     func testNoAgentNoMigration() {
         XCTAssertFalse(NightlyAgent.needsMigration(installed: nil, expected: expected, nightRunning: false))
     }
+
+    // ─ выходной круг 2 №630: свои ключи, симлинк, вторая метка, порядок записи ─
+
+    /// Свои ключи окружения человека переживают миграцию, CHAROITE_SLOT добавляется.
+    func testReconcileKeepsUserEnvAndLogs() {
+        var old = oldJob()
+        old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/data", "NIGHTLY_MAX_H": "2"]
+        old["StandardOutPath"] = "/mine.log"
+        XCTAssertTrue(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
+        let out = NightlyAgent.reconciled(installed: old, expected: expected)
+        XCTAssertEqual(out["EnvironmentVariables"] as? [String: String],
+                       ["CHAROITE_ROOT": "/data", "NIGHTLY_MAX_H": "2", "CHAROITE_SLOT": "1"])
+        XCTAssertEqual(out["StandardOutPath"] as? String, "/mine.log")
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: out, expected: expected, nightRunning: false))
+    }
+
+    /// Корень через симлинк — та же установка, миграция идёт.
+    func testSymlinkedRootIsOurs() throws {
+        let dir = try tmpDir()
+        let real = dir.appendingPathComponent("real")
+        try FileManager.default.createDirectory(at: real.appendingPathComponent("scripts"),
+                                                withIntermediateDirectories: true)
+        // путь разрешается только у существующего файла — скрипт есть у любой установки
+        FileManager.default.createFile(atPath: real.path + "/scripts/nightly.sh", contents: Data())
+        let link = dir.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let want = NightlyAgent.job(script: real.path + "/scripts/nightly.sh", logPath: "/l")
+        XCTAssertTrue(NightlyAgent.needsMigration(installed: oldJob(script: link.path + "/scripts/nightly.sh"),
+                                                  expected: want, nightRunning: false))
+    }
+
+    /// Другая метка уже ставит ночь этого корня — второй агент не пишем.
+    func testOtherLabelBlocksInstall() throws {
+        let (root, agents) = try fixture()
+        var other = oldJob(script: root.path + "/scripts/nightly.sh")
+        other["Label"] = "my.own.night"
+        try write(other, to: agents.appendingPathComponent("my.own.night.plist"))
+        var calls: [[String]] = []
+        let r = NightlyAgent.install(root: root, agentsDir: agents) { calls.append($0) }
+        XCTAssertEqual(r, .otherAgent("my.own.night.plist"))
+        XCTAssertTrue(calls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: NightlyAgent.plistURL(in: agents).path))
+    }
+
+    /// Старый plist переписан, свои ключи на месте, порядок unload → load.
+    func testInstallOverOldPlistKeepsEnv() throws {
+        let (root, agents) = try fixture()
+        var old = oldJob(script: root.path + "/scripts/nightly.sh")
+        old["EnvironmentVariables"] = ["NIGHTLY_MAX_H": "2"]
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(old, to: target)
+        var calls: [[String]] = []
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { calls.append($0) }, .done)
+        XCTAssertEqual(calls.map { $0[0] }, ["unload", "load"])
+        let back = try read(target)
+        XCTAssertEqual((back["StartCalendarInterval"] as? [Any])?.count, 4)
+        XCTAssertEqual(back["EnvironmentVariables"] as? [String: String],
+                       ["NIGHTLY_MAX_H": "2", "CHAROITE_SLOT": "1"])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: agents.appendingPathComponent(".\(NightlyAgent.label).plist.new").path))
+    }
+
+    /// Запись не удалась — агент не выгружается: раньше unload шёл до записи.
+    func testFailedWriteLeavesAgentLoaded() throws {
+        let (root, agents) = try fixture()
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(oldJob(script: root.path + "/scripts/nightly.sh"), to: target)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: agents.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: agents.path) }
+        var calls: [[String]] = []
+        guard case .failed = NightlyAgent.install(root: root, agentsDir: agents, launchctl: { calls.append($0) })
+        else { return XCTFail("запись в каталог только для чтения прошла") }
+        XCTAssertTrue(calls.isEmpty, "\(calls)")
+        XCTAssertEqual((try read(target))["StartCalendarInterval"] as? [String: Int], ["Hour": 4, "Minute": 15])
+    }
+
+    private func tmpDir() throws -> URL {
+        let d = FileManager.default.temporaryDirectory.appendingPathComponent("night-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: d) }
+        return d
+    }
+
+    private func fixture() throws -> (root: URL, agents: URL) {
+        let d = try tmpDir()
+        let root = d.appendingPathComponent("root")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("scripts"),
+                                                withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: root.path + "/scripts/nightly.sh", contents: Data())
+        let agents = d.appendingPathComponent("LaunchAgents")
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        return (root, agents)
+    }
+
+    private func write(_ job: [String: Any], to url: URL) throws {
+        try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: url)
+    }
+
+    private func read(_ url: URL) throws -> [String: Any] {
+        try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil)
+                      as? [String: Any])
+    }
 }

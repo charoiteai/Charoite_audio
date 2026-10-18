@@ -437,14 +437,14 @@ def test_go_runs_the_night(tmp_path):
 @pytest.mark.parametrize("brief_rc", [0, 1])
 def test_brief_slot_only_refreshes_the_brief(tmp_path, brief_rc):
     """Утренний слот после вечерней ночи: только бриф дня — тяжёлые шаги не
-    повторяются, итог ночи не трогается, сбой брифа слот не роняет."""
+    повторяются, итог ночи не трогается; код слота — код брифа."""
     (tmp_path / "logs").mkdir()
     before = '{"started":"x","finished":"x","state":"ok","rc":0,"failed":"","slept_s":0}\n'
     (tmp_path / "logs" / "nightly.json").write_text(before)
     stub = (f'#!/bin/sh\necho "$@" >> {tmp_path}/py.calls\n'
             f'case "$1" in *morning_brief.py*) exit {brief_rc} ;; esac\nexit 0\n')
     r = _run(tmp_path, stub, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "echo brief"))
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == brief_rc, r.stdout + r.stderr
     calls = (tmp_path / "py.calls").read_text().splitlines()
     assert [c for c in calls if "scripts/" in c] == ["scripts/morning_brief.py"], calls
     assert (tmp_path / "logs" / "nightly.json").read_text() == before

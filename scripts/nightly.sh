@@ -111,9 +111,13 @@ if [ "${CHAROITE_SLOT:-}" = 1 ]; then
   printf '{"ts":"%s","decision":"%s","rc":%s}\n' "$(date '+%F %T')" "$d" "$gate_rc" \
     > "$STATUS_DIR/nightly_gate.json" || true
   case "$d" in
+    # код брифа — код слота: упавший бриф полная ночь считает аварией, и
+    # слот, который ради него и запущен, не вправе выйти 0 (выходной круг 2 №630)
     brief) echo "night gate: brief ($(date '+%F %T'))"
-           $PY scripts/morning_brief.py || echo "⚠️ бриф утреннего слота не отработал"
-           exit 0 ;;
+           brief_rc=0
+           $PY scripts/morning_brief.py || brief_rc=$?
+           [ "$brief_rc" -eq 0 ] || echo "⚠️ бриф слота не отработал (код $brief_rc)"
+           exit "$brief_rc" ;;
     skip|defer*) echo "night gate: $d ($(date '+%F %T'))"; exit 0 ;;
   esac
 fi
