@@ -93,6 +93,29 @@ FAILED=""
 STATUS_DONE=0
 mkdir -p "$STATUS_DIR"
 
+# Слоты ночи (19:00, 20:00, 21:00, 04:15) ставит приложение, и только им
+# выставлен CHAROITE_SLOT=1: ручной запуск и чужие агенты гейт не видят.
+# Гейт стоит до ловушек и до «идёт»: skip и defer уходят, не тронув
+# nightly.json. Сбой гейта — go: лишний прогон дешевле пропущенной ночи.
+# Исход пишется всегда, с кодом гейта — иначе «почему ночь не шла» не узнать.
+if [ "${CHAROITE_SLOT:-}" = 1 ]; then
+  NIGHT_GATE=${NIGHT_GATE:-"$PY scripts/night_gate.py"}
+  # shellcheck disable=SC2086  # шов: команда со своими аргументами
+  if d=$($NIGHT_GATE decide --root "$CHAROITE_ROOT" 2>/dev/null) && [ -n "$d" ]; then
+    gate_rc=0
+  else
+    gate_rc=$?
+    d=go
+  fi
+  # кавычка и обратный слэш сломали бы JSON строкой ниже
+  d=$(printf '%s' "$d" | head -1 | tr -d '\042\134')
+  printf '{"ts":"%s","decision":"%s","rc":%s}\n' "$(date '+%F %T')" "$d" "$gate_rc" \
+    > "$STATUS_DIR/nightly_gate.json" || true
+  case "$d" in
+    skip|defer*) echo "night gate: $d ($(date '+%F %T'))"; exit 0 ;;
+  esac
+fi
+
 # Пишем статус в любом случае — в том числе если прогон оборвут на середине:
 # незавершённый прогон это тоже факт, и человек должен его увидеть.
 write_status() {

@@ -367,13 +367,7 @@ struct SettingsView: View {
 
         // Пути — настоящими узлами plist, а не интерполяцией в XML: каталог
         // установки с «&» или «<» в имени иначе ломает или подменяет файл.
-        let job: [String: Any] = [
-            "Label": "ai.charoite.nightly",
-            "ProgramArguments": ["/bin/bash", script.path],
-            "StartCalendarInterval": ["Hour": 4, "Minute": 15],
-            "StandardOutPath": logPath,
-            "StandardErrorPath": logPath,
-        ]
+        let job = Self.nightlyJob(script: script.path, logPath: logPath)
         do {
             let data = try PropertyListSerialization.data(
                 fromPropertyList: job, format: .xml, options: 0)
@@ -385,11 +379,29 @@ struct SettingsView: View {
                 withIntermediateDirectories: true)
             try data.write(to: nightlyPlistURL, options: .atomic)
             launchctl(["load", nightlyPlistURL.path])
-            nightlyNote = L.t("готово — первый прогон сегодня в 04:15", "done — first run today at 04:15", "完成 — 今天 04:15 首次运行")
+            nightlyNote = L.t("готово — ночь в 19:00, 20:00, 21:00 или 04:15, что застанет машину", "done — the night runs at 19:00, 20:00, 21:00 or 04:15, whichever finds the Mac awake", "完成 — 夜间任务在 19:00、20:00、21:00 或 04:15 运行，以 Mac 醒着的时刻为准")
         } catch {
             nightlyNote = L.t("не удалось: \(error.localizedDescription)", "failed: \(error.localizedDescription)", "失败：\(error.localizedDescription)")
         }
         nightlyTick += 1
+    }
+
+    /// Слоты ночи. Один запуск в 04:15 терял ночь целиком, если ноутбук спал
+    /// закрытым: пропущенный календарный запуск launchd не повторяет. Вечерние
+    /// слоты дают ночи шанс, а `scripts/night_gate.py` (его зовёт nightly.sh
+    /// при CHAROITE_SLOT=1) не даёт следующему слоту переделать успешную ночь.
+    /// Две копии сразу launchd не запускает — проверять «идёт ли» не нужно.
+    static let nightlySlots: [(hour: Int, minute: Int)] = [(19, 0), (20, 0), (21, 0), (4, 15)]
+
+    static func nightlyJob(script: String, logPath: String) -> [String: Any] {
+        [
+            "Label": "ai.charoite.nightly",
+            "ProgramArguments": ["/bin/bash", script],
+            "StartCalendarInterval": nightlySlots.map { ["Hour": $0.hour, "Minute": $0.minute] },
+            "EnvironmentVariables": ["CHAROITE_SLOT": "1"],
+            "StandardOutPath": logPath,
+            "StandardErrorPath": logPath,
+        ]
     }
 
     private func nightlyDisable() {

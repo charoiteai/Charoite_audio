@@ -419,11 +419,21 @@ state is read with a default, failures stay a line on stderr.
 
 ### What the night promises the morning
 
-The nightly run (`scripts/nightly.sh`, 04:15) grooms the graph while nobody
+The nightly run (`scripts/nightly.sh`) grooms the graph while nobody
 is at the machine: graph doctor, file dedup, memory vectors, an early brief,
 cores revision, dossiers, cloud revisions, folder indexes, a second doctor
 pass, the brief, memory bench. An audit on 26.08 (two independent reviewers)
 checked the zone's promises and closed the gaps:
+
+- **A closed laptop does not lose the night.** The app schedules four slots
+  — 19:00, 20:00, 21:00 and 04:15 — because launchd does not replay a
+  missed calendar run after wake. Slots carry `CHAROITE_SLOT=1`, and
+  `scripts/night_gate.py` decides before anything is written: `skip` when
+  the last run is `ok` and finished after 19:00 of this night, `defer` on an
+  evening slot running on battery below 30 %, otherwise and on any failure
+  `go`. The 04:15 slot is the last one and never defers. The gate does not
+  ask whether a night is running: launchd never starts a second copy of
+  the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
 
 - **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
   visible to the tail steps too — dedup and the memory bench ran past it and
