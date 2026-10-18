@@ -11,11 +11,9 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import action_items  # noqa: E402
 import channel_trace  # noqa: E402
 import fact_check  # noqa: E402
 import meeting_source  # noqa: E402
-import privacy  # noqa: E402
 
 SPEECH = (
     "[10:32] Анна: по TASK 3278 вопросы есть?\n"
@@ -36,19 +34,24 @@ def _finish(doc=DOC, speech=SPEECH, note=NOTE):
         doc, meeting_source.live(speech, note), owner="Анна", participants=PEOPLE, lang="ru")
 
 
+#: байты прежней цепочки «Протокола» демона (annotate → normalize → finalize →
+#: with_note → скраб писателя), сняты на c7665328 до переноса шагов во вход
+OLD_CHAIN_BYTES = (
+    "# Минутки\n\n## Решения\n- TASK 3278 закрыть к 15.08\n- TASK 3242 на препроде\n\n"
+    "## Поручения\n- [ ] **Борис** — подготовить отчёт — пятница\n"
+    "- ⚠ не участник (Виктор): **Виктор** — проверить стенд — 20.09\n\n---\n"
+    "⚠️ Нет в стенограмме, проверьте: 20.09, TASK 3242\n\n"
+    "📋 запись неполная: канал собеседников 10:40–10:52 (12 мин)\n"
+)
+
+
 def test_same_bytes_as_the_old_final_chain():
-    """Новая цепочка на замороженном документе даёт байты прежней цепочки
-    «Протокола» демона (annotate → normalize → finalize → with_note) и
-    скраба писателя: перенос шагов в вход поведения не меняет."""
-    src = meeting_source.live(SPEECH, NOTE)
-    old = fact_check.annotate(DOC, src.canon())
-    old = action_items.normalize(old)
-    old = action_items.finalize_assignees(old, PEOPLE, "Анна", lang="ru")
-    old = meeting_source.with_note(old, NOTE)
-    old, _n = privacy.scrub_local_paths(old)
-    assert _finish() == old
-    assert "TASK 3242" in old.split(fact_check.FOOTNOTE_MARK)[1], "выдуманный номер — в сноске"
-    assert "[ ]" in old, "поручения — чекбоксами окна «Задачи»"
+    """Новая цепочка на замороженном документе даёт байты прежней цепочки,
+    снятые литералом с базы: перенос шагов во вход поведения не меняет, и
+    правка самих шагов не прячется за эталоном из тех же функций (DS M3)."""
+    assert _finish() == OLD_CHAIN_BYTES
+    assert "TASK 3242" in OLD_CHAIN_BYTES.split(fact_check.FOOTNOTE_MARK)[1], "выдуманный номер — в сноске"
+    assert "[ ]" in OLD_CHAIN_BYTES, "поручения — чекбоксами окна «Задачи»"
 
 
 def test_finish_is_idempotent():
@@ -106,11 +109,22 @@ def test_every_footnote_is_removed_and_annotate_converges():
     """Две сноски прежнего писателя снимаются обе: иначе первая уходит в
     извлечение содержанием, а `annotate` не сходится к одной (DS I3)."""
     f = "\n\n---\n" + fact_check.FOOTNOTE_MARK + " TASK 3242\n"
-    doc = "# M\n- TASK 3278\n" + f + f
+    doc = "# M\n- TASK 3278\n- TASK 3242\n" + f + f
     assert fact_check.FOOTNOTE_MARK not in fact_check.without_footnote(doc)
     once = fact_check.annotate(doc, SPEECH)
-    assert once.count(fact_check.FOOTNOTE_MARK) <= 1
+    assert once.count(fact_check.FOOTNOTE_MARK) == 1, "выдумка в теле — сноска ровно одна"
     assert fact_check.annotate(once, SPEECH) == once
+
+
+def test_note_written_in_the_middle_moves_to_the_end():
+    """Модель переписала оговорку дословно посреди текста: вход снимает её
+    строку и ставит одну машинную в конец, повторный проход те же байты
+    (№732, выход 2: Sonnet M3, DS M6)."""
+    doc = DOC.replace("## Поручения", NOTE + "\n\n## Поручения")
+    once = _finish(doc)
+    assert once.count(NOTE) == 1
+    assert once.rstrip("\n").endswith(NOTE)
+    assert _finish(once) == once
 
 def _function_source(path: pathlib.Path, name: str) -> str:
     src = path.read_text(encoding="utf-8")
@@ -133,7 +147,8 @@ def test_every_minutes_path_goes_through_the_entry():
         body = _function_source(path, name)
         assert "meeting_source.finish_minutes(" in body, f"{name}: мимо входа минуток"
         for step in ("fact_check.annotate(", "without_footnote(", "action_items.normalize(",
-                     "finalize_assignees(", "with_note(", "scrub_local_paths("):
+                     "finalize_assignees(", "with_note(", "without_note(",
+                     "scrub_local_paths("):
             assert step not in body, f"{name}: свой шаг {step} мимо входа"
 
 

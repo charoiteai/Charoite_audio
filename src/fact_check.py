@@ -84,8 +84,8 @@ def unanchored(document: str, transcript: str) -> list[str]:
     return sorted(set(bad), key=str.lower)
 
 
-#: начало строки сноски; её ищут `without_footnote` и граница служебного хвоста
-#: в приложении (`MeetingMinutes.tailMarks`) — писатель один, этот модуль
+#: начало строки сноски; её снимает `without_footnote` и пропускает разбор
+#: приложения (`MeetingMinutes.tailMarks`) — писатель один, этот модуль
 FOOTNOTE_MARK = "⚠️ Нет в стенограмме, проверьте:"
 _FOOTNOTE_SEP = "\n\n---\n"
 
