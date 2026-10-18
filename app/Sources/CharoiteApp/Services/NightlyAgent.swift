@@ -38,7 +38,8 @@ enum NightlyAgent {
     /// Что Настройки могут честно сказать об установленном агенте.
     enum Shown: Equatable {
         case unreadable          // файл есть, но не разбирается
-        case disabled            // `Disabled` — launchd его не запускает
+        case disabled            // свой агент с `Disabled` — launchd его не запускает
+        case foreignDisabled     // чужой агент с `Disabled` — не запускается, «Включить» его не трогает
         case otherTrigger        // запуск помимо календаря (`RunAtLoad`, `StartInterval`…)
         case irreducible         // календарь не «час:минута»
         case ours                // наш скрипт, наши слоты и `CHAROITE_SLOT`
@@ -88,12 +89,12 @@ enum NightlyAgent {
     /// который подпись называла ручным (`Weekday`, `RunAtLoad`, круг 10).
     static func classify(_ plist: [String: Any], script: String) -> Shown {
         let shown = schedule(plist, script: script)
-        // «Включить» переписывает файл установкой — флаг значим только у своего
-        // агента; чужой выключенный показываем как чужой и не трогаем (круг 11).
+        // «Включить» переписывает файл установкой — она только у своего агента;
+        // чужой выключенный подписан выключенным, но не переписывается (круги 11–12).
         guard (plist["Disabled"] as? Bool) == true else { return shown }
         switch shown {
         case .ours, .stale: return .disabled
-        default: return shown
+        default: return .foreignDisabled
         }
     }
 

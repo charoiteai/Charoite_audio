@@ -276,7 +276,9 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual(try shown { $0["Disabled"] = true }, .disabled)
         XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15], disabled: true)), .disabled, "выключенный прежний")
         XCTAssertEqual(try shown { $0["Disabled"] = true; $0["ProgramArguments"] = ["/bin/echo", script] },
-                       .manual(NightlyAgent.slotsText), "выключенный чужой — чужой, «Включить» его не перепишет")
+                       .foreignDisabled, "выключенный чужой — выключен, «Включить» его не перепишет")
+        XCTAssertEqual(try shown { $0["Disabled"] = true; $0["RunAtLoad"] = true }, .foreignDisabled,
+                       "выключенный с другим поводом запуска")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
                        .manual(NightlyAgent.slotsText), "чужая команда")
         XCTAssertEqual(try shown { $0["Program"] = "/bin/zsh" }, .manual(NightlyAgent.slotsText), "Program")
