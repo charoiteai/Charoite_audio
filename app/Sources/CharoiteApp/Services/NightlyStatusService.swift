@@ -104,6 +104,11 @@ struct NightlyStatus: Equatable {
         for plist in items where plist.pathExtension == "plist" {
             guard let text = try? String(contentsOf: plist, encoding: .utf8),
                   text.contains("nightly.sh") else { continue }
+            // Выключенный в файле агент launchd не запускает: «не запускалась»
+            // и «идёт из другой папки» о нём — ложная тревога (№630, круг 13).
+            if let dict = (try? PropertyListSerialization.propertyList(
+                    from: Data(text.utf8), format: nil)) as? [String: Any],
+               (dict["Disabled"] as? Bool) == true { continue }
             // Ищем тот `<string>`, внутри которого сам скрипт, а не первый в
             // строке: в `ProgramArguments` перед ним стоит `/bin/bash`, и в
             // однострочном `<array>` — как в нашей же документации — по строкам

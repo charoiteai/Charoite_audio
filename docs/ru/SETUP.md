@@ -371,8 +371,13 @@ GET к публичному API GitHub, когда вы возвращаетес
 полная сверка — по воскресеньям или руками, `NIGHTLY_TIER3_FULL=1`.
 
 Для установки из клона приложение поставит расписание само: Настройки →
-Ночной цикл → Включить пишет launchd-агент ниже (04:15, лог в
-`logs/nightly.log` рядом с данными). Руками:
+Ночной цикл → Включить пишет launchd-агент ниже (слоты 19:00, 20:00, 21:00 и
+04:15 — ночь идёт в первый, который застанет машину; лог в
+`logs/nightly.log` рядом с данными). Агента прежней версии приложение при
+старте приводит к этим слотам. Если в папке данных код старше (всё,
+кроме непустого `scripts/night_gate.py` и `nightly.sh`, где есть и
+`CHAROITE_SLOT`, и `night_gate.py`), приложение оставляет один слот 04:15 — руками так же: в XML
+ниже оставьте только словарь 4:15 и уберите `EnvironmentVariables`. Руками:
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
@@ -382,7 +387,14 @@ GET к публичному API GitHub, когда вы возвращаетес
   <key>Label</key><string>ai.charoite.nightly</string>
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>/ПУТЬ/К/Charoite_audio/scripts/nightly.sh</string></array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>CHAROITE_SLOT</key><string>1</string></dict>
   <key>StandardOutPath</key><string>/ПУТЬ/К/Charoite_audio/logs/nightly.log</string>
   <key>StandardErrorPath</key><string>/ПУТЬ/К/Charoite_audio/logs/nightly.log</string>
 </dict></plist>

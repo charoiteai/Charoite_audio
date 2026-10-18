@@ -573,6 +573,8 @@ LOG_KINDS: dict[str, LogKind] = {
                                      whole=True),
     # тревога бенча памяти для утреннего брифа: переписывается ночью, ретеншн не трогает
     "memory_bench_alert": LogKind("memory_bench_alert", "shared", None, (".json",), sweep=False, whole=True),
+    # исход гейта слотов ночи (№630): единственная запись, почему ночь не шла — ретеншн не трогает
+    "nightly_gate": LogKind("nightly_gate", "shared", None, (".json",), sweep=False, whole=True),
 }
 
 

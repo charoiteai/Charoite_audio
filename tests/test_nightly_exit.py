@@ -90,7 +90,7 @@ FROZEN_CLOCK = (
 SLOW_OK = "#!/bin/sh\nsleep 1\nexit 0\n"
 
 
-def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
+def _run(tmp_path: pathlib.Path, stub: str, **env_extra: str) -> subprocess.CompletedProcess:
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
     shutil.copy(NIGHTLY, tmp_path / "scripts" / "nightly.sh")
@@ -102,6 +102,9 @@ def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
     # детям через `CHAROITE_ROOT`, а у скопированной сюда установки корень
     # другой. Молчание означало бы, что ночной статус ляжет в чужую папку.
     env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    env.pop("CHAROITE_SLOT", None)
+    env.pop("NIGHT_GATE", None)
+    env.update(env_extra)
     return subprocess.run([LAUNCHD_BASH, str(tmp_path / "scripts" / "nightly.sh")],
                           capture_output=True, text=True, timeout=60, env=env)
 
@@ -369,3 +372,80 @@ def test_night_slept_through_is_reported_as_sleep_not_failure(tmp_path):
                        env=dict(os.environ, NIGHTLY_MAX_H="0",
                                 CHAROITE_ROOT=str(tmp_path)))
     assert _status(tmp_path)["state"] == "failed", (_status(tmp_path), r.stdout)
+
+
+def _gate(tmp_path, body: str) -> str:
+    """Шов NIGHT_GATE: заглушка гейта, которая отмечает, что её звали."""
+    gate = tmp_path / "gate.sh"
+    gate.write_text(f"#!/bin/sh\necho called >> {tmp_path}/gate.calls\n{body}\n")
+    gate.chmod(0o755)
+    return str(gate)
+
+
+def _gate_record(tmp_path):
+    import json
+    return json.loads((tmp_path / "logs" / "nightly_gate.json").read_text())
+
+
+def test_manual_run_does_not_ask_the_gate(tmp_path):
+    """Гейт видят только слоты приложения (CHAROITE_SLOT=1); ручной запуск и
+    чужие агенты идут как раньше."""
+    _run(tmp_path, ALL_OK, NIGHT_GATE=_gate(tmp_path, "echo skip"))
+    assert not (tmp_path / "gate.calls").exists()
+    assert _status(tmp_path)["state"] == "ok"
+
+
+@pytest.mark.parametrize("decision", ["skip", "defer battery 20%"])
+def test_skipped_slot_leaves_the_night_status_alone(tmp_path, decision):
+    """skip и defer выходят с кодом 0 до «идёт»: прежний итог ночи не трогается."""
+    (tmp_path / "logs").mkdir()
+    before = '{"started":"x","finished":"x","state":"ok","rc":0,"failed":"","slept_s":0}\n'
+    (tmp_path / "logs" / "nightly.json").write_text(before)
+    r = _run(tmp_path, FAIL_ALL, CHAROITE_SLOT="1",
+             NIGHT_GATE=_gate(tmp_path, f"echo '{decision}'"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / "logs" / "nightly.json").read_text() == before
+    assert _gate_record(tmp_path)["decision"] == decision
+    assert _gate_record(tmp_path)["rc"] == 0
+
+
+def test_broken_gate_means_go_and_its_code_is_kept(tmp_path):
+    """Сбой гейта не гасит ночь: лишний прогон дешевле пропущенной ночи.
+    Код гейта остаётся в nightly_gate.json — иначе сбой не увидеть."""
+    r = _run(tmp_path, ALL_OK, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "exit 7"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / "gate.calls").exists()
+    rec = _gate_record(tmp_path)
+    assert (rec["decision"], rec["rc"]) == ("go", 7)
+    assert _status(tmp_path)["state"] == "ok"
+
+
+def test_silent_gate_is_go_with_its_own_code(tmp_path):
+    """Пустой вывод при коде 0 — go, но с rc 0: прежде туда попадал код
+    проверки пустоты, 1, и молчание читалось как падение гейта."""
+    _run(tmp_path, ALL_OK, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "exit 0"))
+    rec = _gate_record(tmp_path)
+    assert (rec["decision"], rec["rc"]) == ("go", 0)
+
+
+def test_go_runs_the_night(tmp_path):
+    _run(tmp_path, ALL_OK, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "echo go"))
+    assert _gate_record(tmp_path)["decision"] == "go"
+    assert _status(tmp_path)["state"] == "ok"
+
+
+@pytest.mark.parametrize("brief_rc", [0, 1])
+def test_brief_slot_only_refreshes_the_brief(tmp_path, brief_rc):
+    """Утренний слот после вечерней ночи: только бриф дня — тяжёлые шаги не
+    повторяются, итог ночи не трогается; код слота — код брифа."""
+    (tmp_path / "logs").mkdir()
+    before = '{"started":"x","finished":"x","state":"ok","rc":0,"failed":"","slept_s":0}\n'
+    (tmp_path / "logs" / "nightly.json").write_text(before)
+    stub = (f'#!/bin/sh\necho "$@" >> {tmp_path}/py.calls\n'
+            f'case "$1" in *morning_brief.py*) exit {brief_rc} ;; esac\nexit 0\n')
+    r = _run(tmp_path, stub, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "echo brief"))
+    assert r.returncode == brief_rc, r.stdout + r.stderr
+    calls = (tmp_path / "py.calls").read_text().splitlines()
+    assert [c for c in calls if "scripts/" in c] == ["scripts/morning_brief.py"], calls
+    assert (tmp_path / "logs" / "nightly.json").read_text() == before
+    assert _gate_record(tmp_path)["decision"] == "brief"

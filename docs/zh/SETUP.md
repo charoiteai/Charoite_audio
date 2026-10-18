@@ -278,7 +278,8 @@ claude mcp add sufler -e CHAROITE_ROOT="$PWD" -- "$PWD/.venv/bin/python" "$PWD/s
 全量比对放在周日，或用 `NIGHTLY_TIER3_FULL=1` 手动触发。
 
 对于从克隆目录安装的情况，应用可以替你设置定时：设置 → 夜间流程 → 开启 会写入下面的
-launchd 代理（04:15，日志在数据旁的 `logs/nightly.log`）。手动设置：
+launchd 代理（时段 19:00、20:00、21:00 和 04:15——夜间任务在 Mac 醒着的第一个时段运行；日志在数据旁的
+`logs/nightly.log`）。旧版本安装的代理会在应用启动时改为这些时段。手动设置：
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
@@ -288,7 +289,14 @@ launchd 代理（04:15，日志在数据旁的 `logs/nightly.log`）。手动设
   <key>Label</key><string>ai.charoite.nightly</string>
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>/PATH/TO/Charoite_audio/scripts/nightly.sh</string></array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>CHAROITE_SLOT</key><string>1</string></dict>
   <key>StandardOutPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
   <key>StandardErrorPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
 </dict></plist>

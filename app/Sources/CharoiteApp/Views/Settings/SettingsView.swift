@@ -136,23 +136,24 @@ struct SettingsView: View {
             }
             Section(L.t("Ночной цикл", "Nightly cycle", "夜间流程")) {
                 LabeledContent(L.t("Пока вы спите", "While you sleep", "在你入睡时")) {
-                    Text(nightlyInstalled
-                         ? L.t("включён · 04:15 — ревизия ядер, утренний бриф, бенч памяти", "on · 04:15 — core review, morning brief, memory bench", "已开启 · 04:15 — 核心复审、晨间简报、记忆基准")
-                         : L.t("выключен", "off", "已关闭"))
+                    Text(nightlyLabel)
                         .foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button(nightlyInstalled ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
-                        nightlyInstalled ? nightlyDisable() : nightlyEnable()
+                    // свой выключенный в файле агент включается установкой; чужой
+                    // выключенный (`.foreignDisabled`) — «Выключить», то есть удаление файла
+                    let on = nightlyInstalled && !nightlyDisabledInFile
+                    Button(on ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
+                        on ? nightlyDisable() : nightlyEnable()
                     }
                     .charoite(.regular, .s)
                     if !nightlyNote.isEmpty {
                         Text(nightlyNote).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text(L.t("Ставит launchd-задачу на 04:15: Tier-3 ревизия ядер графа (с бэкапами), досье по темам, бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в /tmp/charoite_nightly.log.",
-                         "Installs a launchd job at 04:15: Tier-3 review of graph cores (with backups), topic dossiers, the _Today.md brief and a memory-quality bench. All local; log in /tmp/charoite_nightly.log.",
-                         "在 04:15 安装 launchd 任务：图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 /tmp/charoite_nightly.log。"))
+                Text(L.t("Ставит launchd-задачу на \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))): ночь идёт в первый слот, который застанет машину, остальные слоты её не повторяют. Tier-3 ревизия ядер графа (с бэкапами), досье по темам, бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в logs/nightly.log.",
+                         "Installs a launchd job at \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))): the night runs in the first slot that finds the Mac awake, later slots skip it. Tier-3 review of graph cores (with backups), topic dossiers, the _Today.md brief and a memory-quality bench. All local; log in logs/nightly.log.",
+                         "在 \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))) 安装 launchd 任务：夜间任务在 Mac 醒着的第一个时段运行，之后的时段不再重复。图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 logs/nightly.log。"))
                     .font(.caption).foregroundStyle(.secondary)
 
                 // Облачная поверхность (правило ревизии: поверхность обозначает
@@ -336,75 +337,81 @@ struct SettingsView: View {
         }
     }
 
-    // ─ Ночной цикл: launchd-plist одной кнопкой ─
-
-    private var nightlyPlistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/ai.charoite.nightly.plist")
-    }
+    // ─ Ночной цикл: launchd-plist одной кнопкой (владелец — NightlyAgent) ─
 
     private var nightlyInstalled: Bool {
         _ = nightlyTick   // перерисовка после включения/выключения
-        return FileManager.default.fileExists(atPath: nightlyPlistURL.path)
+        return FileManager.default.fileExists(atPath: NightlyAgent.plistURL.path)
+    }
+
+    private var nightlyDisabledInFile: Bool {
+        _ = nightlyTick
+        return NightlyAgent.shown(script: nightlyScript) == .disabled
+    }
+
+    private var nightlyScript: String {
+        AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh").path
+    }
+
+    /// Подпись по файлу агента: ручной plist честно показывает свои слоты
+    /// рядом со слотами приложения. Совета «Выключить, затем Включить» нет:
+    /// переустановка стирает окружение ручного plist и обрывает идущую ночь (круг 7).
+    private var nightlyLabel: String {
+        guard nightlyInstalled else { return L.t("выключен", "off", "已关闭") }
+        switch NightlyAgent.shown(script: nightlyScript) {
+        case .ours:
+            let have = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
+            return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
+        case .manual(let have):
+            let app = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
+            return L.t("включён, агент настроен вручную · \(have) (приложение ставит \(app))",
+                       "on, agent set up by hand · \(have) (the app installs \(app))",
+                       "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(app)）")
+        case .stale(let have):
+            return L.t("включён · настроен прежней версией приложения (\(have)) — приведу при запуске, если ночь не идёт",
+                       "on · set up by an earlier app version (\(have)) — updated at launch unless the night is running",
+                       "已开启 · 由旧版应用配置（\(have)）— 启动时若夜间任务未在运行则更新")
+        case .irreducible:
+            return L.t("включён, агент настроен вручную · расписание не сводится к часам и минутам",
+                       "on, agent set up by hand · its schedule is not plain hours and minutes",
+                       "已开启，启动代理为手动配置 · 其时间表不是单纯的时与分")
+        case .otherTrigger:
+            return L.t("включён, агент настроен вручную · запускается не только по расписанию",
+                       "on, agent set up by hand · it also starts outside the schedule",
+                       "已开启，启动代理为手动配置 · 它不只按时间表启动")
+        case .disabled:
+            let want = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
+            return L.t("выключен в файле агента (Disabled) — «Включить» снимет флаг и поставит \(want), окружение останется",
+                       "disabled in the agent file (Disabled) — Turn on clears the flag and sets \(want), keeping the environment",
+                       "已在启动代理文件中停用（Disabled）— 「开启」会清除该标志并设为 \(want)，保留环境变量")
+        case .foreignDisabled:
+            return L.t("выключен в файле агента (Disabled), «Включить» его не трогает — «Выключить» удалит файл",
+                       "disabled in the agent file (Disabled), Turn on leaves it alone — Turn off deletes the file",
+                       "已在启动代理文件中停用（Disabled），「开启」不会改动它 —「关闭」会删除该文件")
+        case .unreadable:
+            return L.t("включён · файл агента не читается", "on · the agent file cannot be read", "已开启 · 无法读取启动代理文件")
+        }
     }
 
     @State private var nightlyTick = 0
     @State private var nightlyNote = ""
 
     private func nightlyEnable() {
-        let script = AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh")
-        guard FileManager.default.fileExists(atPath: script.path) else {
+        switch NightlyAgent.install(root: AppSettings.charoiteRoot) {
+        case .done:
+            nightlyNote = L.t("готово — ночь в \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))), что застанет машину", "done — the night runs at \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))), whichever finds the Mac awake", "完成 — 夜间任务在 \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))) 运行，以 Mac 醒着的时刻为准")
+        case .noScript:
             nightlyNote = L.t("scripts/nightly.sh не найден — проверьте путь установки", "scripts/nightly.sh not found — check the install path", "未找到 scripts/nightly.sh — 请检查安装路径")
-            return
-        }
-        // Лог ночного прогона — рядом с данными, а не в общем /tmp: туда
-        // печатаются вопросы бенча памяти, названия ядер и куски ответов из
-        // архива встреч, а /tmp читает любая учётка машины (аудит 16.08).
-        let logDir = AppSettings.charoiteRoot.appendingPathComponent("logs")
-        FileManager.default.createPrivateDirectory(at: logDir)
-        let logPath = logDir.appendingPathComponent("nightly.log").path
-        FileManager.default.createPrivateFile(atPath: logPath)
-
-        // Пути — настоящими узлами plist, а не интерполяцией в XML: каталог
-        // установки с «&» или «<» в имени иначе ломает или подменяет файл.
-        let job: [String: Any] = [
-            "Label": "ai.charoite.nightly",
-            "ProgramArguments": ["/bin/bash", script.path],
-            "StartCalendarInterval": ["Hour": 4, "Minute": 15],
-            "StandardOutPath": logPath,
-            "StandardErrorPath": logPath,
-        ]
-        do {
-            let data = try PropertyListSerialization.data(
-                fromPropertyList: job, format: .xml, options: 0)
-            // ~/Library/LaunchAgents — общий каталог всех агентов пользователя,
-            // не наш: создать при отсутствии, но права не ужимать (0700 ему
-            // ставил createPrivateDirectory — второе мнение по #324, 16.08).
-            try? FileManager.default.createDirectory(
-                at: nightlyPlistURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true)
-            try data.write(to: nightlyPlistURL, options: .atomic)
-            launchctl(["load", nightlyPlistURL.path])
-            nightlyNote = L.t("готово — первый прогон сегодня в 04:15", "done — first run today at 04:15", "完成 — 今天 04:15 首次运行")
-        } catch {
-            nightlyNote = L.t("не удалось: \(error.localizedDescription)", "failed: \(error.localizedDescription)", "失败：\(error.localizedDescription)")
+        case .failed(let error):
+            nightlyNote = L.t("не удалось: \(error)", "failed: \(error)", "失败：\(error)")
         }
         nightlyTick += 1
     }
 
     private func nightlyDisable() {
-        launchctl(["unload", nightlyPlistURL.path])
-        try? FileManager.default.removeItem(at: nightlyPlistURL)
+        NightlyAgent.uninstall()
         nightlyNote = L.t("выключен", "off", "已关闭")
         nightlyTick += 1
-    }
-
-    private func launchctl(_ args: [String]) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = args
-        try? p.run()
-        p.waitUntilExit()
     }
 
     /// «N заметок · последняя встреча DD.MM» — по файловой системе, мгновенно.

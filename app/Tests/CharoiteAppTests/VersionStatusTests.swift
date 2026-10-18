@@ -111,6 +111,11 @@ final class NightlyAgentPathTests: XCTestCase {
 
         XCTAssertEqual(NightlyStatus.agentScriptPath(inAgentsAt: dir),
                        "/Users/test/Project/old/scripts/nightly.sh")
+
+        // Выключенный в файле агент ночь не запускает — статус его не видит (№630, круг 13).
+        try plist.replacingOccurrences(of: "<dict>", with: "<dict><key>Disabled</key><true/>")
+            .write(to: dir.appendingPathComponent("ru.charoit.tier3.plist"), atomically: true, encoding: .utf8)
+        XCTAssertNil(NightlyStatus.agentScriptPath(inAgentsAt: dir))
     }
 }
 

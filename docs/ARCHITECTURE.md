@@ -419,11 +419,49 @@ state is read with a default, failures stay a line on stderr.
 
 ### What the night promises the morning
 
-The nightly run (`scripts/nightly.sh`, 04:15) grooms the graph while nobody
+The nightly run (`scripts/nightly.sh`) grooms the graph while nobody
 is at the machine: graph doctor, file dedup, memory vectors, an early brief,
 cores revision, dossiers, cloud revisions, folder indexes, a second doctor
 pass, the brief, memory bench. An audit on 26.08 (two independent reviewers)
 checked the zone's promises and closed the gaps:
+
+- **A closed laptop does not lose the night.** The app schedules four slots
+  — 19:00, 20:00, 21:00 and 04:15. A single 04:15 lost the night: launchd
+  fires a missed calendar run on wake, but a closed laptop wakes in the dark
+  for under a minute and falls asleep mid-run; slots missed during sleep are
+  merged into that one run. Slots carry `CHAROITE_SLOT=1`, and
+  `scripts/night_gate.py` decides before anything is written: when the last
+  run is `ok` and finished after 19:00 of this night — `brief` before 19:00
+  (only the day's brief is refreshed: the morning slot or a slot merged on
+  wake during the day must not redo the night) and `skip` from 19:00; `defer` on an evening slot running on
+  battery below 30 %; otherwise and on any failure `go`. An agent installed
+  by an older version is brought to these slots when the app starts (the app
+  owns only the label, the slots, `CHAROITE_SLOT` and the log paths — a log
+  left in the shared `/tmp` moves next to the data; your own environment keys
+  stay). Only an agent Settings call the app's own is migrated — exactly
+  `/bin/bash <this install's script>` (the form the app writes), plain
+  hours-and-minutes slots, no other start trigger, not `Disabled` — and any
+  other plist (a `Program` key, a wrapper such as `caffeinate`, another shell,
+  `echo <script>`, `Weekday`, `RunAtLoad`) is
+  left alone — Settings show its own slots next to
+  the app's (or only that its schedule is not plain hours and minutes — `Weekday`,
+  a missing key — or that it also starts outside the schedule — `RunAtLoad`,
+  `StartInterval` and the like). An older version's schedule is only what the
+  app itself wrote — 04:15 alone, or these slots without `CHAROITE_SLOT`; it is
+  shown as such until the next launch migrates it. Any other hours (set by hand
+  per SETUP) make the agent manual, and it is not migrated. If the data folder
+  holds code older than the app (anything but a non-empty `scripts/night_gate.py`
+  plus a `nightly.sh` that contains both `CHAROITE_SLOT` and `night_gate.py`), the app keeps the single 04:15
+  slot — for such code it is the final state, not an older one: without the gate
+  every slot would be a full night. The app's own agent with `Disabled` and an
+  hours-and-minutes calendar is turned back on by Turn on, which clears the
+  flag, sets the app's slots and keeps the environment keys. Any other agent
+  with `Disabled` — foreign, or ours with another start trigger or a calendar
+  beyond hours and minutes (Turn on would keep the trigger) — is shown as disabled:
+  there is no Turn on, Turn off deletes the file, and the night status ignores it. Only the app's own `ai.charoite.nightly.plist` is touched;
+  agents under other labels are not modified. The 04:15 slot is the last one and never defers. The gate does not
+  ask whether a night is running: launchd never starts a second copy of
+  the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
 
 - **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
   visible to the tail steps too — dedup and the memory bench ran past it and
