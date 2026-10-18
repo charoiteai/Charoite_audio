@@ -450,7 +450,8 @@ checked the zone's promises and closed the gaps:
   slots is shown as such until the next launch migrates it; bring it to the app's slots by hand (Turn off then Turn on would drop
   its environment keys and stop a running night). The app's own agent with `Disabled` in its
   file is turned back on by Turn on, which clears the flag and keeps the
-  environment keys. Only the app's own `ai.charoite.nightly.plist` is touched;
+  environment keys. A foreign agent with `Disabled` is shown as disabled:
+  there is no Turn on, Turn off deletes the file, and the night status ignores it. Only the app's own `ai.charoite.nightly.plist` is touched;
   agents under other labels are not modified. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
   the same label. Its outcome and exit code land in `logs/nightly_gate.json`.

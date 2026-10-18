@@ -140,7 +140,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack {
-                    // выключенный в файле агент включается установкой, а не удалением файла
+                    // свой выключенный в файле агент включается установкой; чужой
+                    // выключенный (`.foreignDisabled`) — «Выключить», то есть удаление файла
                     let on = nightlyInstalled && !nightlyDisabledInFile
                     Button(on ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
                         on ? nightlyDisable() : nightlyEnable()
