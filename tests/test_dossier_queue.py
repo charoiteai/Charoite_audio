@@ -244,6 +244,7 @@ def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
         return contextlib.nullcontext(True)
 
     monkeypatch.setattr(nd, "_graph_lock", lock)
+    monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)   # не окно ночи оболочки (Haiku out3 M2)
     nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
     assert waits == [70.0], waits         # 100 с бюджета минус 30 с генерации
     monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(__import__("time").time() + 10))
@@ -285,3 +286,56 @@ def test_need_is_the_generation_not_the_lock_wait(nd, tmp_path, monkeypatch):
     # старт 0 → 230 → 460 → 690; при бюджете 700 четвёртая тема (690 + 30 > 700) не влезает
     r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=700)
     assert r["собрано"] == 3 and r["не_успели"] == 1, r
+
+
+def test_unreadable_stat_of_a_present_dossier_does_not_write(nd, tmp_path, monkeypatch):
+    """Выход out3 №621, DS I1: без снимка запись шла с «файла нет»."""
+    graph = _graph(tmp_path, "Г", {"тема": "2026-07-20"})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    before = path.read_text(encoding="utf-8")
+    monkeypatch.setattr(nd.safe_write, "stat_snapshot", lambda p: None)
+    monkeypatch.setattr(nd.safe_write, "write_text", lambda *a, **k: pytest.fail("запись без снимка"))
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert r["собрано"] == 0 and r["досье_изменилось"] == 1, r
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_zero_lock_wait_is_the_night_not_a_busy_graph(nd, tmp_path, monkeypatch):
+    """Выход out3 №621, Sonnet M1: вышедшая ночь записывала граф в «занятые»."""
+    graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(3)})
+    monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(wait > 0))
+    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default: 0.0)
+    states = nd.run_all([graph], {}, full=False, dry=False).graphs
+    assert not states[0].busy
+
+
+def test_silent_model_and_failed_scan_exit_4(nd, tmp_path, monkeypatch):
+    """Выход out3 №621, Haiku I1: код 2 прятал упавший скан от статуса ночи."""
+    good = _graph(tmp_path, "Живой", {f"ж{i}": None for i in range(3)})
+    bad = _graph(tmp_path, "Сломанный", {"с1": None})
+    real = dossier.scan
+
+    def scan(graph, **kw):
+        if graph == bad:
+            raise UnicodeError("сломанный узел")
+        return real(graph, **kw)
+
+    def boom(*a, **k):
+        raise TimeoutError("стрим молчит")
+
+    monkeypatch.setattr(nd.dossier, "scan", scan)
+    monkeypatch.setattr(nd, "generate", boom)
+    monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(nd, "cfg", lambda: {})
+    monkeypatch.setattr(nd, "all_graphs", lambda: [bad, good])
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--all-graphs"])
+    assert nd.main() == 4
+
+
+def test_zero_budget_means_the_default(nd, tmp_path, monkeypatch):
+    """Выход out3 №621, DS M4: --budget-s 0 давал холостой шаг с кодом 0."""
+    graph = _graph(tmp_path, "Г", {"одна": None})
+    monkeypatch.setattr(nd, "cfg", lambda: {})
+    monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--budget-s", "0"])
+    assert nd.main() == 0 and nd.calls == ["одна"]

@@ -356,7 +356,9 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             # бюджет ушёл бы на ожидание (вход in3 №621, Haiku C1, Sonnet I3).
             print(f"  ⏸ {g.graph.name}: замок графа не взят за {wait:.0f} с "
                   "— его темы уйдут на следующую ночь")
-            g.busy = True
+            # Ожидание в ноль — это вышедшая ночь или бюджет, а не сосед:
+            # хвост с верной причиной отдаст _drive (выход out3 №621).
+            g.busy = wait > 0
             g.skipped += 1
             g.locked += 1
             return False, True, gen_s
@@ -369,6 +371,14 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         if fresh.state != loaded.state or fresh.text != loaded.text:
             print(f"  ⏸ {theme}: досье изменилось за время генерации — "
                   "тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, fresh, fp)
+            return False, True, gen_s
+        if snap is None and fresh.state != "missing":
+            # stat не прочёл файл, который читается: без снимка гейт слеп,
+            # и «не сосчитать» стало бы «файла нет» (выход out3 №621, DS I1).
+            print(f"  ⏸ {theme}: досье не дало снимок перед записью — тема уйдёт на следующую ночь")
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
@@ -553,6 +563,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="ручной потолок тем за прогон")
     ap.add_argument("--find", help="проверить, что найдётся по запросу")
     args = ap.parse_args()
+    if args.budget_s <= 0:   # ноль — не «ничего не делать», а забытое значение (выход out3 №621)
+        args.budget_s = DEFAULT_BUDGET_S
     c = cfg()
 
     if args.find:
@@ -603,7 +615,7 @@ def main() -> int:
     if result.scan_failed:   # до порога: код 2 не прячет пропавший граф (выход out2 №621)
         print(f"⚠️ скан не удался: {', '.join(result.scan_failed)}")
     if отказов >= max(3, попыток // 10):
-        return 2
+        return 4 if result.scan_failed else 2   # 4 — и то и другое (выход out3 №621)
     return 1 if result.scan_failed else 0
 
 
