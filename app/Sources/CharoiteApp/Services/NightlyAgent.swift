@@ -33,6 +33,21 @@ enum NightlyAgent {
         slots.map { String(format: "%02d:%02d", $0.hour, $0.minute) }.joined(separator: ", ")
     }
 
+    /// Слоты, которые реально стоят в plist: «HH:MM, …» или nil, если файла
+    /// нет или он не разбирается. Настройки показывают их, а не задуманные:
+    /// ручной plist (`Program`, `sh -c`) не мигрирует, и подпись «19:00…»
+    /// при 04:15 в файле была бы неправдой (круг 6).
+    static func installedSlotsText(at url: URL = plistURL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
+                  as? [String: Any] else { return nil }
+        let raw = plist["StartCalendarInterval"]
+        let items = (raw as? [[String: Any]]) ?? (raw as? [String: Any]).map { [$0] } ?? []
+        return items.map {
+            String(format: "%02d:%02d", ($0["Hour"] as? Int) ?? 0, ($0["Minute"] as? Int) ?? 0)
+        }.joined(separator: ", ")
+    }
+
     static func job(script: String, logPath: String) -> [String: Any] {
         [
             "Label": label,

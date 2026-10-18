@@ -136,9 +136,7 @@ struct SettingsView: View {
             }
             Section(L.t("Ночной цикл", "Nightly cycle", "夜间流程")) {
                 LabeledContent(L.t("Пока вы спите", "While you sleep", "在你入睡时")) {
-                    Text(nightlyInstalled
-                         ? L.t("включён · \(NightlyAgent.slotsText) — ревизия ядер, утренний бриф, бенч памяти", "on · \(NightlyAgent.slotsText) — core review, morning brief, memory bench", "已开启 · \(NightlyAgent.slotsText) — 核心复审、晨间简报、记忆基准")
-                         : L.t("выключен", "off", "已关闭"))
+                    Text(nightlyLabel)
                         .foregroundStyle(.secondary)
                 }
                 HStack {
@@ -341,6 +339,19 @@ struct SettingsView: View {
     private var nightlyInstalled: Bool {
         _ = nightlyTick   // перерисовка после включения/выключения
         return FileManager.default.fileExists(atPath: NightlyAgent.plistURL.path)
+    }
+
+    /// Подпись по слотам из файла: не приведённый ручной plist честно
+    /// показывает свои слоты и путь к слотам приложения.
+    private var nightlyLabel: String {
+        guard nightlyInstalled else { return L.t("выключен", "off", "已关闭") }
+        let have = NightlyAgent.installedSlotsText() ?? "?"
+        guard have == NightlyAgent.slotsText else {
+            return L.t("включён вручную · \(have) — «Выключить», затем «Включить» ставит слоты \(NightlyAgent.slotsText)",
+                       "on, set up by hand · \(have) — Turn off, then Turn on installs the \(NightlyAgent.slotsText) slots",
+                       "已手动开启 · \(have) — 先关闭再开启，即安装 \(NightlyAgent.slotsText) 时段")
+        }
+        return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
     }
 
     @State private var nightlyTick = 0

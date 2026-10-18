@@ -212,13 +212,35 @@ final class NightlyScheduleTests: XCTestCase {
     }
 
     /// Приведённый plist больше не мигрирует: сравнение — весь словарь.
-    func testReconciledIsStable() {
+    func testReconciledNotMigratedAgain() {
         var old = oldJob()
         old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/x", "NIGHTLY_MAX_H": 3]
         old["KeepAlive"] = false
         let once = NightlyAgent.reconciled(installed: old, expected: expected)
         XCTAssertFalse(NightlyAgent.needsMigration(installed: once, expected: expected, nightRunning: false))
         XCTAssertTrue(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
+    }
+
+    /// Через диск: `<integer>`, `<false/>`, вложенное окружение — приведённый
+    /// plist после записи и чтения не мигрирует снова (круг 6).
+    func testReconciledStableThroughDisk() throws {
+        var old = oldJob()
+        old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/x", "NIGHTLY_MAX_H": 3]
+        old["KeepAlive"] = false
+        let url = try tmpDir().appendingPathComponent("a.plist")
+        try write(NightlyAgent.reconciled(installed: old, expected: expected), to: url)
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: try read(url), expected: expected, nightRunning: false))
+    }
+
+    /// Подпись Настроек — по слотам файла: старый 04:15 не выдаётся за новые.
+    func testInstalledSlotsTextReadsFile() throws {
+        let dir = try tmpDir()
+        let old = dir.appendingPathComponent("old.plist"), cur = dir.appendingPathComponent("cur.plist")
+        try write(oldJob(), to: old)
+        try write(expected, to: cur)
+        XCTAssertEqual(NightlyAgent.installedSlotsText(at: old), "04:15")
+        XCTAssertEqual(NightlyAgent.installedSlotsText(at: cur), NightlyAgent.slotsText)
+        XCTAssertNil(NightlyAgent.installedSlotsText(at: dir.appendingPathComponent("none.plist")))
     }
 
     /// Метка в нашем файле разошлась с именем — повод переписать.
