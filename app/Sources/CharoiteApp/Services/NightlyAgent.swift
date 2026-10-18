@@ -59,10 +59,12 @@ enum NightlyAgent {
             out[key] = expected[key]
         }
         let want = (expected["ProgramArguments"] as? [String])?.last ?? ""
-        let ownWrapper = (out["ProgramArguments"] as? [String])?.contains { samePath($0, want) } ?? false
+        // `Program` launchd исполняет вместо argv[0]: рядом с нашим argv он
+        // запускал бы чужой скрипт (круги 4–5). Ни приложение, ни SETUP его не
+        // пишут — при явной установке команда наша целиком.
+        let ownWrapper = out["Program"] == nil
+            && ((out["ProgramArguments"] as? [String])?.contains { samePath($0, want) } ?? false)
         if !ownWrapper {
-            // Команда — наша целиком: `Program` launchd исполняет вместо argv[0],
-            // и чужой `Program` рядом с нашим argv запускал бы чужой скрипт (круг 4).
             out["ProgramArguments"] = expected["ProgramArguments"]
             out.removeValue(forKey: "Program")
         }
@@ -76,21 +78,18 @@ enum NightlyAgent {
     ///
     /// Только у агента, который запускает скрипт этой установки (пути — после
     /// разрешения симлинков, как `agentPointsElsewhere`): чужой путь — повод для
-    /// предупреждения на «Сегодня», а не для молчаливой подмены. Пока ночь идёт,
-    /// не трогаем: `unload` оборвал бы прогон.
+    /// предупреждения на «Сегодня», а не для молчаливой подмены. Ключ `Program`
+    /// — ручная установка не нашего вида: молча не трогаем (круг 5). Пока ночь
+    /// идёт, не трогаем: `unload` оборвал бы прогон. Отличие — весь словарь
+    /// против `reconciled`: список ключей рядом с ним забывал ключ (круг 5).
     static func needsMigration(installed: [String: Any]?, expected: [String: Any],
                                nightRunning: Bool) -> Bool {
-        guard let installed, !nightRunning,
+        guard let installed, !nightRunning, installed["Program"] == nil,
               let have = installed["ProgramArguments"] as? [String],
               let want = (expected["ProgramArguments"] as? [String])?.last,
               have.contains(where: { samePath($0, want) }) else { return false }
         let target = reconciled(installed: installed, expected: expected)
-        for key in ["Label", "StartCalendarInterval", "EnvironmentVariables", "StandardOutPath", "StandardErrorPath"] {
-            let a = installed[key].map { $0 as AnyObject }
-            let b = target[key].map { $0 as AnyObject }
-            if !(a?.isEqual(b) ?? (b == nil)) { return true }
-        }
-        return false
+        return !(target as NSDictionary).isEqual(to: installed)
     }
 
     static func samePath(_ a: String, _ b: String) -> Bool {

@@ -94,7 +94,6 @@ final class NightlyScheduleTests: XCTestCase {
                                                   expected: want, nightRunning: false))
     }
 
-
     /// Старый plist переписан, свои ключи на месте, порядок unload → load.
     func testInstallOverOldPlistKeepsEnv() throws {
         let (root, agents) = try fixture()
@@ -170,10 +169,6 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertTrue(NightlyAgent.needsMigration(installed: cur, expected: expected, nightRunning: false))
     }
 
-
-
-
-
     /// Корень с пробелом (`Application Support`) — свой агент, миграция идёт.
     /// Разбиение аргументов на слова в круге 3 резало путь, и миграция молчала.
     func testRootWithSpaceMigrates() throws {
@@ -196,6 +191,34 @@ final class NightlyScheduleTests: XCTestCase {
         let out = NightlyAgent.reconciled(installed: old, expected: expected)
         XCTAssertNil(out["Program"])
         XCTAssertEqual(out["ProgramArguments"] as? [String], ["/bin/bash", "/x/scripts/nightly.sh"])
+    }
+
+    /// Чужой `Program` рядом с нашим скриптом в argv: при явной установке
+    /// команда наша целиком (круг 5).
+    func testProgramBesideOwnScriptDroppedOnInstall() {
+        var old = oldJob()
+        old["Program"] = "/other/scripts/nightly.sh"
+        let out = NightlyAgent.reconciled(installed: old, expected: expected)
+        XCTAssertNil(out["Program"])
+        XCTAssertEqual(out["ProgramArguments"] as? [String], ["/bin/bash", "/x/scripts/nightly.sh"])
+    }
+
+    /// Ручной plist с `Program` молча не мигрирует: ни приложение, ни SETUP
+    /// такой не пишут, а `Program` с голым argv[0] — законная обёртка.
+    func testProgramKeyBlocksAutoMigration() {
+        var old = oldJob()
+        old["Program"] = "/usr/bin/caffeinate"
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
+    }
+
+    /// Приведённый plist больше не мигрирует: сравнение — весь словарь.
+    func testReconciledIsStable() {
+        var old = oldJob()
+        old["EnvironmentVariables"] = ["CHAROITE_ROOT": "/x", "NIGHTLY_MAX_H": 3]
+        old["KeepAlive"] = false
+        let once = NightlyAgent.reconciled(installed: old, expected: expected)
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: once, expected: expected, nightRunning: false))
+        XCTAssertTrue(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
     }
 
     /// Метка в нашем файле разошлась с именем — повод переписать.

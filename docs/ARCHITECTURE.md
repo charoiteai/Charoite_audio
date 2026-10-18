@@ -436,11 +436,13 @@ checked the zone's promises and closed the gaps:
   wake during the day must not redo the night) and `skip` from 19:00; `defer` on an evening slot running on
   battery below 30 %; otherwise and on any failure `go`. An agent installed
   by an older version is brought to these slots when the app starts (the app
-  owns only the slots, `CHAROITE_SLOT` and the log paths — a log left in the
-  shared `/tmp` moves next to the data; your own environment keys and a
-  wrapper such as `caffeinate` around this install's script stay). Only the
-  app's own `ai.charoite.nightly.plist` is touched; agents under other labels
-  are not parsed. The 04:15 slot is the last one and never defers. The gate does not
+  owns only the label, the slots, `CHAROITE_SLOT` and the log paths — a log
+  left in the shared `/tmp` moves next to the data; your own environment keys
+  and a wrapper such as `caffeinate` around this install's script stay). Only
+  an agent that runs this install's script is migrated, and a hand-written
+  plist with a `Program` key is left alone; pressing Enable makes the command
+  the app's own. Only the app's own `ai.charoite.nightly.plist` is touched;
+  agents under other labels are not modified. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
   the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
 
