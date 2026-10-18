@@ -101,17 +101,19 @@ mkdir -p "$STATUS_DIR"
 if [ "${CHAROITE_SLOT:-}" = 1 ]; then
   NIGHT_GATE=${NIGHT_GATE:-"$PY scripts/night_gate.py"}
   # shellcheck disable=SC2086  # шов: команда со своими аргументами
-  if d=$($NIGHT_GATE decide --root "$CHAROITE_ROOT" 2>/dev/null) && [ -n "$d" ]; then
-    gate_rc=0
-  else
-    gate_rc=$?
-    d=go
-  fi
+  # код — до проверки пустоты: иначе пустой вывод при коде 0 писался бы
+  # кодом теста `[ -n ]` = 1, неотличимо от падения гейта
+  gate_rc=0
+  d=$($NIGHT_GATE decide --root "$CHAROITE_ROOT" 2>/dev/null) || gate_rc=$?
+  [ "$gate_rc" -eq 0 ] && [ -n "$d" ] || d=go
   # кавычка и обратный слэш сломали бы JSON строкой ниже
   d=$(printf '%s' "$d" | head -1 | tr -d '\042\134')
   printf '{"ts":"%s","decision":"%s","rc":%s}\n' "$(date '+%F %T')" "$d" "$gate_rc" \
     > "$STATUS_DIR/nightly_gate.json" || true
   case "$d" in
+    brief) echo "night gate: brief ($(date '+%F %T'))"
+           $PY scripts/morning_brief.py || echo "⚠️ бриф утреннего слота не отработал"
+           exit 0 ;;
     skip|defer*) echo "night gate: $d ($(date '+%F %T'))"; exit 0 ;;
   esac
 fi

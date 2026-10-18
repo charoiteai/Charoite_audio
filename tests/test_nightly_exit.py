@@ -420,7 +420,32 @@ def test_broken_gate_means_go_and_its_code_is_kept(tmp_path):
     assert _status(tmp_path)["state"] == "ok"
 
 
+def test_silent_gate_is_go_with_its_own_code(tmp_path):
+    """Пустой вывод при коде 0 — go, но с rc 0: прежде туда попадал код
+    проверки пустоты, 1, и молчание читалось как падение гейта."""
+    _run(tmp_path, ALL_OK, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "exit 0"))
+    rec = _gate_record(tmp_path)
+    assert (rec["decision"], rec["rc"]) == ("go", 0)
+
+
 def test_go_runs_the_night(tmp_path):
     _run(tmp_path, ALL_OK, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "echo go"))
     assert _gate_record(tmp_path)["decision"] == "go"
     assert _status(tmp_path)["state"] == "ok"
+
+
+@pytest.mark.parametrize("brief_rc", [0, 1])
+def test_brief_slot_only_refreshes_the_brief(tmp_path, brief_rc):
+    """Утренний слот после вечерней ночи: только бриф дня — тяжёлые шаги не
+    повторяются, итог ночи не трогается, сбой брифа слот не роняет."""
+    (tmp_path / "logs").mkdir()
+    before = '{"started":"x","finished":"x","state":"ok","rc":0,"failed":"","slept_s":0}\n'
+    (tmp_path / "logs" / "nightly.json").write_text(before)
+    stub = (f'#!/bin/sh\necho "$@" >> {tmp_path}/py.calls\n'
+            f'case "$1" in *morning_brief.py*) exit {brief_rc} ;; esac\nexit 0\n')
+    r = _run(tmp_path, stub, CHAROITE_SLOT="1", NIGHT_GATE=_gate(tmp_path, "echo brief"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = (tmp_path / "py.calls").read_text().splitlines()
+    assert [c for c in calls if "scripts/" in c] == ["scripts/morning_brief.py"], calls
+    assert (tmp_path / "logs" / "nightly.json").read_text() == before
+    assert _gate_record(tmp_path)["decision"] == "brief"

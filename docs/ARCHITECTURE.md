@@ -426,12 +426,16 @@ pass, the brief, memory bench. An audit on 26.08 (two independent reviewers)
 checked the zone's promises and closed the gaps:
 
 - **A closed laptop does not lose the night.** The app schedules four slots
-  — 19:00, 20:00, 21:00 and 04:15 — because launchd does not replay a
-  missed calendar run after wake. Slots carry `CHAROITE_SLOT=1`, and
-  `scripts/night_gate.py` decides before anything is written: `skip` when
-  the last run is `ok` and finished after 19:00 of this night, `defer` on an
-  evening slot running on battery below 30 %, otherwise and on any failure
-  `go`. The 04:15 slot is the last one and never defers. The gate does not
+  — 19:00, 20:00, 21:00 and 04:15. A single 04:15 lost the night: launchd
+  fires a missed calendar run on wake, but a closed laptop wakes in the dark
+  for under a minute and falls asleep mid-run; slots missed during sleep are
+  merged into that one run. Slots carry `CHAROITE_SLOT=1`, and
+  `scripts/night_gate.py` decides before anything is written: when the last
+  run is `ok` and finished after 19:00 of this night — `brief` before noon
+  (only the morning brief is refreshed: a merged slot fired on wake must not
+  redo the night) and `skip` after it; `defer` on an evening slot running on
+  battery below 30 %; otherwise and on any failure `go`. An agent installed
+  by an older version is brought to these slots when the app starts. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
   the same label. Its outcome and exit code land in `logs/nightly_gate.json`.
 
