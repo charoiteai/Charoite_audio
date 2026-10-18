@@ -288,12 +288,12 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     # и прежняя метка конца окна исчезла бы вместе с ней
     loop = "\n".join(строки[функции["minutes_loop"].lineno - 1:функции["minutes_loop"].end_lineno])
     assert loop.index("full[-14_000:]") < loop.index("note = trace.summary()") < loop.index("llm.recording_block(note)") < loop.index("Обнови ЧЕРНОВИК")
-    assert "meeting_source.with_note(out, note)" in loop
+    assert "meeting_source.finish_minutes(\n                        out, meeting_source.live(whole, note)" in loop, \
+        "черновик сверяет факты по всей речи, не по окну (№732, Sonnet I1)"
     summ = "\n".join(строки[функции["_do_summary"].lineno - 1:функции["_do_summary"].end_lineno])
     assert 'source = meeting_source.live(tr.full() or "(пусто)", trace.summary())' in summ
     assert "llm.minutes(source.speech, recording_note=source.recording_note)" in summ
-    assert 'fact_check.annotate("".join(chunks), source.canon())' in summ, "сверка — по тому же множеству, что видела модель"
-    assert "meeting_source.with_note(doc, source.recording_note)" in summ
+    assert '"".join(chunks), source, owner=owner_name' in summ, "сверка — по тому же множеству, что видела модель"
 
     gu = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
     block = gu[gu.index("source = meeting_source.of(tpath, file_text)"):gu.index("Составь разбор строго по разделам")]
@@ -331,7 +331,7 @@ def test_every_prompt_builder_puts_the_note_after_its_own_cut():
     assert "text = meeting_source.with_note(text, recording_note)" in gen
     assert "context = meeting_source.content_of(" in gu2, "извлечение — по содержанию без следа записи"
     assert "LLM(cfg).minutes(speech, recording_note=source.recording_note)" in fin
-    assert "fact_check.annotate(doc, source.canon())" in fin and "meeting_source.with_note(doc, source.recording_note)" in fin
+    assert "meeting_source.finish_minutes(\n        doc, source, owner=user_name" in fin
     passport = rt[rt.index("def record_minutes_passport("):rt.index("\ndef ", rt.index("def record_minutes_passport(") + 1)]
     assert "meeting_source.of(live, final_text).sha()" in passport, "паспорт — тем же объектом, что fresh-проверка"
 

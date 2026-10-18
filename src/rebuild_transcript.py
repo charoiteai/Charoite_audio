@@ -57,7 +57,6 @@ import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
 import action_items  # noqa: E402
-import fact_check  # noqa: E402
 import channel_labels  # noqa: E402
 import speaker_names  # noqa: E402
 import graphs  # noqa: E402
@@ -1977,22 +1976,15 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     if not doc:
         log("минутки не пересобраны (модель промолчала) — перештамповка")
         return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
-    # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
-    # стенограммой и чекбоксы в формат окна «Задачи».
-    # сверка фактов — по тому же множеству, что видела модель (речь + оговорка):
-    # иначе «всего 140 мин» из оговорки уходило бы в сноску как выдумка (DS I5)
-    doc = action_items.normalize(fact_check.annotate(doc, source.canon()))
-    # строка о неполной записи — механически, не поручением модели (критика GLM)
-    doc = meeting_source.with_note(doc, source.recording_note)
-    # Поручение тому, кого на встрече не было, — пометка, не задача (05.09:
-    # минутки приписали поручение упомянутому, а не присутствующему).
-    # Владелец — одним написанием ДО пометки (порядок — контракт функции):
-    # пересборка — четвёртый путь записи минуток, без него она возвращала бы
-    # «**Марку**» поверх «**Марк**» (№188, круг 2 по #536).
+    # Те же шаги, что у кнопки «Протокол», — общим входом минуток (№732):
+    # сверка по тому множеству, что видела модель (речь + оговорка, DS I5),
+    # чекбоксы, владелец одним написанием до пометки «не участник» (№188),
+    # строка о неполной записи механически, скраб пути машины.
     sufler = cfg.get("sufler") or {}
     user_name = str(sufler.get("user_name") or "")
-    doc = action_items.finalize_assignees(
-        doc, action_items.participants_of(speech, owner=user_name), user_name,
+    doc = meeting_source.finish_minutes(
+        doc, source, owner=user_name,
+        participants=action_items.participants_of(speech, owner=user_name),
         lang=str(sufler.get("language") or "ru"))
     if current is not None:
         prev_dir = live.parent / ".prev"
