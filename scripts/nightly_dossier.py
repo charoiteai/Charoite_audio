@@ -146,7 +146,7 @@ LOCK_WAIT = 5 * 60          # дольше держит только завис�
 
 
 @contextlib.contextmanager
-def _graph_lock(graph: pathlib.Path):
+def _graph_lock(graph: pathlib.Path, wait: float = LOCK_WAIT):
     """Общий замок пишущих в граф: разбор встречи, облачная ревизия — и мы.
 
     Локальная сборка досье замок не брала вовсе, хотя переписывает те же
@@ -162,7 +162,7 @@ def _graph_lock(graph: pathlib.Path):
         print(f"  замок графа не взять ({e}) — не пишу")
         yield False
         return
-    with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
+    with file_locks.graph_lock(lock_dir, wait) as taken:
         yield taken
 
 
@@ -180,19 +180,6 @@ clock = time.monotonic
 # Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
 NEW, CHANGED, SAME = 1, 2, 3
 _CLASS_WORD = {NEW: "новое", CHANGED: "изменилось", SAME: "без изменений"}
-
-
-def _fits(budget_s: float | None, started: float, need: float) -> bool:
-    """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда
-    (та же арифметика, что `mutate_check.fits`)."""
-    return budget_s is None or budget_s - (clock() - started) >= need
-
-
-def _mtime(path: pathlib.Path) -> int | None:
-    try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return None
 
 
 class _GraphRun:
@@ -260,7 +247,7 @@ class Candidate:
     sys.modules, а dataclass ищет там свой модуль для строковых аннотаций."""
 
     def __init__(self, g: _GraphRun, theme: str, members: list[str], fp: str, cls: int,
-                 собрано: str, loaded: dossier.DossierLoad, mtime: int | None):
+                 собрано: str, loaded: dossier.DossierLoad, mtime: tuple[int, int] | None):
         self.g, self.theme, self.members, self.fp = g, theme, members, fp
         self.cls, self.собрано, self.loaded, self.mtime = cls, собрано, loaded, mtime
 
@@ -281,7 +268,7 @@ def _scan(graph: pathlib.Path, full: bool, today: str, stamp: str) -> tuple[_Gra
             g.unchanged += 1
             continue
         cls = NEW if loaded.state == "missing" else SAME if same else CHANGED
-        found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, _mtime(path)))
+        found.append(Candidate(g, theme, members, fp, cls, _собрано(loaded), loaded, safe_write.stat_snapshot(path)))
     g.pending = len(found)
     return g, found
 
@@ -310,12 +297,13 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict) -> tuple[bool, bool]:
-    """Собрать одну тему. Возвращает (собрана, звали ли модель)."""
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool, bool]:
+    """Собрать одну тему. Возвращает (собрана, звали ли модель); `lock_wait` —
+    сколько ждать замок, считается в момент записи, после генерации."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
     loaded = cand.loaded
-    if _mtime(path) != cand.mtime:
+    if safe_write.stat_snapshot(path) != cand.mtime:
         # Досье правили после скана (автор в Obsidian): снимок устарел, иначе
         # сверка после генерации выбросит её как «изменилось за время
         # генерации» (вход in3 №621, DS M2).
@@ -357,13 +345,14 @@ def _build(cand: Candidate, c: dict) -> tuple[bool, bool]:
         text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
     copy = None
-    with _graph_lock(g.graph) as taken:
+    wait = lock_wait()
+    with _graph_lock(g.graph, wait) as taken:
         if not taken:
             # Занятость — свойство графа на прогон, а не темы: без отметки
             # каждая его тема ждала бы замок пять минут после генерации, и
             # бюджет ушёл бы на ожидание (вход in3 №621, Haiku C1, Sonnet I3).
             print(f"  ⏸ {g.graph.name}: граф занят соседом дольше "
-                  f"{LOCK_WAIT // 60} мин — его темы уйдут на следующую ночь")
+                  f"{wait / 60:.0f} мин — его темы уйдут на следующую ночь")
             g.busy = True
             g.skipped += 1
             g.locked += 1
@@ -414,7 +403,10 @@ def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
 
 
 def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
-           limit: int | None, budget_s: float | None, started: float) -> None:
+           limit: int | None, budget_s: float | None, started: float) -> int:
+    """Пройти очередь; вернуть число попыток с моделью — знаменатель порога
+    «модель молчала» (выход out1 №621: «занят» и «изменилось» тоже попытки)."""
+    attempts = 0
     built = 0                 # --limit — потолок прогона, а не графа (аудит 26.08, Codex)
     spent: list[float] = []   # все попытки с моделью, и отказы тоже (вход in3, DS M1)
     budget = None if full else budget_s   # --full обещает «всё», бюджет его не режет
@@ -437,57 +429,81 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             g.done(dry)
             continue
         need = sum(spent) / len(spent) if spent else NEED_START_S
-        if not _fits(budget, started, need):
+        if not live_gate.fits(budget, started, need, clock()):
             _tail(queue[i:], "бюджет шага досье вышел", dry)
-            return
+            return attempts
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
         # его — досье подождёт, но не дольше остатка бюджета. Окно — одна
         # дверь у владельца гейта, потолок ночи внутри.
         gate = {} if budget is None else {"default": budget - (clock() - started)}
         if not live_gate.night_window_open(_root(), what="досье", **gate):
             _tail(queue[i:], "время ночного прогона вышло", dry)
-            return
-        if not _fits(budget, started, need):
+            return attempts
+        if not live_gate.fits(budget, started, need, clock()):
             _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
-            return
+            return attempts
         t0 = clock()
-        ok, called = _build(cand, c)
-        if called:
+        # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
+        # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
+        def lock_wait() -> float:
+            return LOCK_WAIT if budget is None else max(0.0, min(LOCK_WAIT, budget - (clock() - started)))
+        refused = g.отказы
+        ok, called = _build(cand, c, lock_wait)
+        if called and not g.busy:   # ожидание занятого замка — не цена темы
             spent.append(clock() - t0)
+        attempts += called or g.отказы > refused   # нечитаемое досье — отказ без модели
         built += ok
         g.done(dry)
+    return attempts
+
+
+class RunResult:
+    """Итог прогона: графы, попытки с моделью, графы с упавшим сканом."""
+
+    def __init__(self):
+        self.graphs: list[_GraphRun] = []
+        self.attempts = 0
+        self.scan_failed: list[str] = []
 
 
 def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
             limit: int | None = None, budget_s: float | None = None,
-            started: float | None = None) -> list[_GraphRun]:
+            started: float | None = None) -> "RunResult":
     """Все графы одной очередью: скан всех, порядок `queue_order`, сборка до
     бюджета. Индекс каждого графа пишется, даже если прогон оборвался."""
     started = clock() if started is None else started
     today = date.today().isoformat()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
-    states: list[_GraphRun] = []
+    out = RunResult()
     candidates: list[Candidate] = []
     try:
         for path in paths:
-            g, found = _scan(path, full, today, stamp)
-            states.append(g)
+            # Граф — единица отказа: прежний цикл по графам успевал собрать
+            # графы до сломанного, а общий скан без этой границы отменял бы
+            # работу всех (выход out1 №621, Sonnet I1, DS I1).
+            try:
+                g, found = _scan(path, full, today, stamp)
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ скан {path.name} не удался ({type(e).__name__}: {e}) — граф пропущен")
+                out.scan_failed.append(path.name)
+                continue
+            out.graphs.append(g)
             candidates += found
             print(f"скан {path.name}: тем {len(g.cl)}, к сборке {len(found)}")
-        _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
-               budget_s=budget_s, started=started)
+        out.attempts = _drive(queue_order(candidates), c, full=full, dry=dry, limit=limit,
+                              budget_s=budget_s, started=started)
     finally:
         # Исключение или SIGTERM посреди очереди не оставляет графы со старым
         # индексом (вход in3 №621, Sonnet I2, DS I2).
-        for g in states:
+        for g in out.graphs:
             g.write_index(dry)
-    return states
+    return out
 
 
 def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int | None,
         budget_s: float | None = None) -> dict:
     """Один граф — та же очередь из одного графа."""
-    g = run_all([graph], c, full=full, dry=dry, limit=limit, budget_s=budget_s)[0]
+    g = run_all([graph], c, full=full, dry=dry, limit=limit, budget_s=budget_s).graphs[0]
     g.report()
     return g.result()
 
@@ -544,10 +560,10 @@ def main() -> int:
             print(f"{g}: нет такой папки")
 
     signal.signal(signal.SIGTERM, _terminate)
-    states = run_all(present, c, full=args.full, dry=args.dry, limit=args.limit,
+    result = run_all(present, c, full=args.full, dry=args.dry, limit=args.limit,
                      budget_s=args.budget_s, started=started)
     total = отказов = 0
-    for g in states:
+    for g in result.graphs:
         r = g.result()
         print(f"=== {r['граф']}: тем: {r['тем']}, собрано: {r['собрано']}, пропущено: {r['пропущено']}, битые: {r['битые']}"
               + (f", отказов модели: {r['отказы']}" if r["отказы"] else ""))
@@ -556,7 +572,7 @@ def main() -> int:
         отказов += r["отказы"]
 
     print(f"итого собрано досье: {total}")
-    попыток = total + отказов
+    попыток = result.attempts
     if отказов:
         print(f"отказов модели: {отказов} из {попыток} попыток")
     # Молчащая модель — это не успех.
@@ -570,6 +586,9 @@ def main() -> int:
     # (вход in3 №621, Sonnet I1).
     if отказов >= max(3, попыток // 10):
         return 2
+    if result.scan_failed:
+        print(f"скан не удался: {', '.join(result.scan_failed)}")
+        return 1
     return 0
 
 

@@ -260,11 +260,15 @@ meeting's path, and meetings without a date in the path follow the dated ones.
 The model reads what it selected from oldest to newest. Rebuilds are incremental: a
 dossier carries a fingerprint of its sources (microsecond precision — an edit
 landing in the same second as the scan used to go unnoticed), and an unchanged
-fingerprint means the model is not called. Topics without a dossier yet come
-FIRST in the night's queue: sorting by cluster size alone gave every slot to
-the large topics while small new ones waited indefinitely. The per-run cap is
-shared across graphs rather than applied to each. Once a week (the Sunday
-run) every dossier is rebuilt: `--full` no longer stops at that cap. Writes
+fingerprint means the model is not called. All graphs share one night queue:
+one topic from every graph with work comes before anyone's second topic, and
+inside a graph topics without a dossier come first, then the longest-unbuilt,
+then the largest. The step holds a time budget (`--budget-s`, 40 minutes); the
+rest of the queue waits for the next night and every graph's index stays
+complete. The old cap of 12 topics across all graphs gave the night to the
+large graph while small ones went months without a fresh dossier. Once a week
+(the Sunday run) every dossier is rebuilt: `--full` is cut neither by the
+budget nor by a manual `--limit`. Writes
 take the shared graph lock — the same one the meeting pipeline and the cloud
 review take. Hand-written additions live in the
 `## Правки автора` ("author edits") section and survive rebuilds. To check what a query would

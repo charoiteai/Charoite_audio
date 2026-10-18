@@ -87,6 +87,16 @@ def night_wait_cap(default: float = 3600.0, now: Callable[[], float] = time.time
         return default              # мусор в переменной — не повод ждать без меры
     return max(0.0, min(default, left))
 
+def fits(budget_s: float | None, started: float, need: float, now: float) -> bool:
+    """Хватит ли остатка бюджета на `need` секунд. Без бюджета — всегда.
+
+    Одна арифметика для всех шагов с бюджетом по времени (мутатор, досье):
+    копии в скриптах разошлись бы при первой правке одной из них (выход
+    out1 №621, DS C1). Часы — у вызывающего: у каждого свой шов `clock`.
+    """
+    return budget_s is None or budget_s - (now - started) >= need
+
+
 def lock_path(root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(root) / "logs" / LOCK_NAME
 

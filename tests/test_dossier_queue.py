@@ -138,8 +138,8 @@ def test_busy_graph_does_not_burn_the_budget_on_each_theme(nd, tmp_path, monkeyp
     busy = _graph(tmp_path, "Занятый", {f"з{i}": None for i in range(5)})
     free = _graph(tmp_path, "Свободный", {f"с{i}": None for i in range(2)})
     monkeypatch.setattr(nd, "_graph_lock",
-                        lambda graph: contextlib.nullcontext(graph != busy))
-    states = nd.run_all([busy, free], {}, full=False, dry=False)
+                        lambda graph, *a: contextlib.nullcontext(graph != busy))
+    states = nd.run_all([busy, free], {}, full=False, dry=False).graphs
     r = {g.graph.name: g.result() for g in states}
     assert sum(t.startswith("з") for t in nd.calls) == 1, nd.calls
     assert r["Занятый"]["занят"] == 5 and r["Свободный"]["собрано"] == 2
@@ -148,7 +148,7 @@ def test_busy_graph_does_not_burn_the_budget_on_each_theme(nd, tmp_path, monkeyp
 def test_limit_is_per_run_not_per_graph(nd, tmp_path):
     a = _graph(tmp_path, "А", {"а1": None, "а2": None})
     b = _graph(tmp_path, "Б", {"б1": None, "б2": None})
-    states = nd.run_all([a, b], {}, full=False, dry=False, limit=1)
+    states = nd.run_all([a, b], {}, full=False, dry=False, limit=1).graphs
     assert sum(g.built for g in states) == 1
 
 
@@ -182,6 +182,7 @@ def test_slow_failures_under_budget_still_exit_2(nd, tmp_path, monkeypatch):
 
     monkeypatch.setattr(nd, "generate", boom)
     monkeypatch.setattr(nd, "cfg", lambda: {})
+    monkeypatch.setattr(nd.signal, "signal", lambda *a: None)   # обработчик SIGTERM не остаётся в pytest
     monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--graph", str(graph), "--budget-s", "150"])
     assert nd.main() == 2
 
@@ -206,8 +207,42 @@ def test_author_edit_after_scan_is_read_before_the_build(nd, tmp_path, monkeypat
 def test_dry_plan_has_no_ceiling_and_names_the_graph(nd, tmp_path, capsys):
     a = _graph(tmp_path, "А", {f"а{i}": None for i in range(30)})
     b = _graph(tmp_path, "Б", {"б1": "2026-07-20"})
-    states = nd.run_all([a, b], {}, full=False, dry=True, limit=1)
+    states = nd.run_all([a, b], {}, full=False, dry=True, limit=1).graphs
     assert sum(g.built for g in states) == 31 and nd.calls == []
     plan = [line for line in capsys.readouterr().out.splitlines() if "[план]" in line]
     assert plan[1].split("· ")[0].endswith("Б ") and "(изменилось)" in plan[1]
     assert not (a / CHAROITE.dossier_dir / dossier.INDEX_JSON).exists()
+
+
+def test_failed_scan_of_one_graph_does_not_cancel_the_others(nd, tmp_path, monkeypatch):
+    """Выход out1 №621: общий скан без границы графа отменял работу всех графов."""
+    good = _graph(tmp_path, "Живой", {"ж1": None})
+    bad = _graph(tmp_path, "Сломанный", {"с1": None})
+    real = dossier.scan
+
+    def scan(graph, **kw):
+        if graph == bad:
+            raise UnicodeError("сломанный узел")
+        return real(graph, **kw)
+
+    monkeypatch.setattr(nd.dossier, "scan", scan)
+    monkeypatch.setattr(nd.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(nd, "cfg", lambda: {})
+    monkeypatch.setattr(nd, "all_graphs", lambda: [bad, good])
+    monkeypatch.setattr(nd.sys, "argv", ["nightly_dossier.py", "--all-graphs"])
+    assert nd.main() == 1
+    assert nd.calls == ["ж1"]
+
+
+def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
+    """Выход out1 №621, Sonnet I2: замок ждал пять минут сверх бюджета."""
+    graph = _graph(tmp_path, "Г", {"одна": None})
+    waits = []
+
+    def lock(graph, wait=nd.LOCK_WAIT):
+        waits.append(wait)
+        return contextlib.nullcontext(True)
+
+    monkeypatch.setattr(nd, "_graph_lock", lock)
+    nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
+    assert waits == [70.0], waits         # 100 с бюджета минус 30 с генерации

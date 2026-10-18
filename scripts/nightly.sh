@@ -268,7 +268,11 @@ fi
 if overdue; then
   skip_late "досье" "досье(поздно)"
 else
-  $PY scripts/nightly_dossier.py --all-graphs --budget-s "${DOSSIER_BUDGET:-2400}" $DOSSIER_MODE || {
+  # Мусор в DOSSIER_BUDGET уронил бы argparse с кодом 2 — тем же, что
+  # «модель молчала» (выход out1 №621, DS I2); санируем, как NIGHTLY_MAX_H.
+  DOSSIER_BUDGET=${DOSSIER_BUDGET:-2400}
+  case "$DOSSIER_BUDGET" in (""|*[!0-9]*) DOSSIER_BUDGET=2400;; esac
+  $PY scripts/nightly_dossier.py --all-graphs --budget-s "$DOSSIER_BUDGET" $DOSSIER_MODE || {
     case $? in
       2) echo "⚠️ досье собирались без модели — темы остались без разбора"
          FAILED="$FAILED досье(модель-молчала)" ;;
