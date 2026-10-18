@@ -26,7 +26,6 @@ import live_gate
 import live_sidecar
 import meeting_source
 import meeting_stamp
-import privacy
 from config_loader import fingerprint, load_user_or_example
 from llm import LLM, LLMHTTPError, forget_fit
 
@@ -333,22 +332,17 @@ def sufler_make_minutes() -> str:
     # ДО ответа (модель недоступна или пуста) кэш сохраняют: он заведён ради
     # повтора, и трогать договорённость нельзя (№265, PRIVACY; №663).
     try:
-        # Поручения — в чекбоксы ДО записи: это был третий путь записи минуток
-        # (после авто-черновика и ручного «Протокола»), и единственный без
-        # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
-        out = action_items.normalize(out)
+        # Механические шаги — общим входом минуток (№732): сверка фактов
+        # (раньше этот путь шёл без неё), чекбоксы (№141), владелец одним
+        # написанием до пометки «не участник» (#536), строка итога и скраб
+        # пути машины — до записи и паспорта: хеш снимается с тех же байтов,
+        # что лягут на диск (№504).
         _sufler = _cfg().get("sufler") or {}
-        # владелец — одним написанием, потом пометка «не участник» — как в демоне:
-        # иначе пересборка этим путём возвращала бы «**Марку**» поверх «**Марк**»
-        # (Important GLM r1 по #536); порядок — контракт finalize_assignees
         user_name = str(_sufler.get("user_name") or "")
-        out = action_items.finalize_assignees(
-            out, action_items.participants_of(transcript, owner=user_name), user_name,
+        out = meeting_source.finish_minutes(
+            out, source, owner=user_name,
+            participants=action_items.participants_of(transcript, owner=user_name),
             lang=str(_sufler.get("language") or "ru"))
-        out = meeting_source.with_note(out, source.recording_note)   # строка итога — механически
-        # Путь машины, повторённый моделью из речи или заметки, — до записи и
-        # паспорта: хеш снимается с тех же байтов, что лягут на диск (№504).
-        out, _scrub = privacy.scrub_local_paths(out)
         # Общий писатель хранит прежнюю версию, проверяет правку за время модели
         # и выдаёт паспорт той же записью, что остальные производные встречи.
         wrote = live_sidecar.write_derivative(f, mpath, "minutes", out, source.sha(),

@@ -1240,7 +1240,14 @@ its own cut; the debrief takes its window from the end of SPEECH and receives
 the live tail theses as a separate "model's notes, not speech" block. The
 rebuild restores the summary from the sidecar into the "Co-thinking" tail
 through the tail's format owner (`transcript.append_note`; no section —
-creates one), with no duplicate on a second run.
+creates one), with no duplicate on a second run. The post-model steps of minutes — fact check
+against speech plus note, checkboxes, owner canon and the outsider mark, the
+note line, the machine-path scrub — run in one entry,
+`meeting_source.finish_minutes`, on all four writers (draft, "Minutes", MCP,
+rebuild; before it the draft and MCP skipped the fact check and the rebuild
+skipped the scrub). The app's minutes parser skips the service tail lines
+(`MeetingMinutes.tailMarks` mirrors `channel_trace.SUMMARY_MARK` and
+`fact_check.FOOTNOTE_MARK`).
 
 **Why a phone recording stopped is a value that travels with the file.** On
 07.09 one meeting arrived on the Mac as three pieces with no call in between,
@@ -1882,8 +1889,18 @@ that target so its signatures cannot rot — behaviour runs only by hand — and
 private graph or local model must not look like a successful product test.
 
 Without `CHAROITE_BENCH_ANSWERS` it measures only what search delivers;
-with it, the full path through synthesis. The report lands in
-`/tmp/charoite_bench.txt` with the missing facts named.
+with it, the full path through synthesis. The turn is assembled by the same
+code as the chat (`ChatRetrieval`: the chat's query builder over the question, 8×800 with a
+5000-character budget, the chat prompt). Search runs on the local engine over
+the graph folder: a chat that goes through a running brain server (:8100) is
+not measured. `CHAROITE_BENCH_ARM=legacy` switches to the former search
+parameters (5×1200) for comparison. A question the model did not answer keeps
+its facts in the total with zero hits, and the run fails with its own message
+rather than as a quality drop. The report lands in
+`$TMPDIR/charoite_bench_<arm>.txt` (the per-user temporary folder, not the
+shared `/tmp`) with the missing facts named, and what search delivered — in
+`$TMPDIR/charoite_bench_<arm>_found.txt`; both are readable by the owner only
+(0600), and a report that could not be written fails the run.
 
 The question set stays outside the repository — it is about real meetings.
 Format is deliberately trivial:

@@ -67,7 +67,10 @@ actor SemanticIndex {
     private var storeOverride: URL?
 
     #if DEBUG
-    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) async {
+    /// `embedder: nil` — настоящий эмбеддер (живые пробы); `loadStore` — начать
+    /// с содержимого `store`, а не с пустого индекса.
+    func useForTests(store: URL, loadStore: Bool = false,
+                     embedder: (([String]) async -> [[Float]]?)?) async {
         // Актор реентерабелен, а localSearch порождает НЕструктурированный
         // Task.detached с refresh — хвост прошлого теста может жить прямо
         // сейчас, вися на await эмбеддера и держа флаг indexing. gen-токен
@@ -88,8 +91,25 @@ actor SemanticIndex {
         storeOverride = store
         embedOverride = embedder
         index = [:]
-        loaded = true      // не подтягивать настоящий файл с диска
+        loaded = !loadStore    // true — не подтягивать файл с диска
     }
+
+    /// Файл процесса тестов, не заявивших свой store: живой индекс тесты берут только явно.
+    static let unclaimedTestStore = FileManager.default.temporaryDirectory
+        .appendingPathComponent("charoite_unclaimed_index_\(UUID().uuidString).bin")
+
+    /// Конец подмены: refresh, ждущий эмбеддер, не запишет файл после уборки
+    /// теста, а запоздавший — уйдёт в файл процесса, не в чужую копию (круг 8).
+    func endTestSession() {
+        generation += 1
+        storeOverride = nil
+        embedOverride = nil
+        index = [:]
+        loaded = false
+    }
+
+    /// Пишет ли индекс в подменный файл — гейт живых проб.
+    var usesTestStore: Bool { storeOverride != nil }
 
     /// Сохранённый mtime записи — проверки инвалидации в тестах.
     func storedMtime(of path: String) -> Double? {
@@ -104,16 +124,27 @@ actor SemanticIndex {
     }
     #endif
 
+    /// Файл индекса приложения — один на учётку.
+    /// v2: формат сменился с «вектор на файл» на «векторы блоков».
+    /// Старый semantic_index.json просто перестаёт читаться — индекс
+    /// соберётся заново фоном, ломать нечего.
+    static var liveStoreURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Charoite", isDirectory: true)
+            .appendingPathComponent("semantic_index_v2.bin")
+    }
+
     private var storeURL: URL {
         if let storeOverride { return storeOverride }
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-            .appendingPathComponent("Charoite", isDirectory: true)
-        FileManager.default.createPrivateDirectory(at: dir)  // индекс хранит текст встреч
-        // v2: формат сменился с «вектор на файл» на «векторы блоков».
-        // Старый semantic_index.json просто перестаёт читаться — индекс
-        // соберётся заново фоном, ломать нечего.
-        return dir.appendingPathComponent("semantic_index_v2.bin")
+        #if DEBUG
+        // Под XCTest без useForTests — не файл приложения: тест демо-графа через
+        // localSearch прунил живой индекс до своей фикстуры (№740, опыт 18.10:
+        // 141 КБ → 8 байт за один прогон ArchiveLinksTests).
+        if NSClassFromString("XCTestCase") != nil { return Self.unclaimedTestStore }
+        #endif
+        let url = Self.liveStoreURL
+        FileManager.default.createPrivateDirectory(at: url.deletingLastPathComponent())  // индекс хранит текст встреч
+        return url
     }
 
     private func embedTexts(_ texts: [String]) async -> [[Float]]? {
@@ -240,6 +271,9 @@ actor SemanticIndex {
                              vec: Self.unit(emb)))
             }
         }
+        // Ранний выход по отказу эмбеддера минует проверку в цикле, а за его
+        // await индекс могли подменить — готовые батчи не пишем в чужой store (круг 8).
+        guard gen == generation else { return }
         // Файл записываем, только если проиндексированы ВСЕ его блоки: иначе
         // mtime сохранится при половине блоков, и оставшиеся не доедут уже
         // никогда — файл будет считаться свежим.
@@ -287,6 +321,14 @@ actor SemanticIndex {
         }
         return out
     }
+
+    #if DEBUG
+    /// mtime записей в файле на диске — проба судит по файлу, а не по памяти
+    /// актора: открытое приложение переписывает файл своим снимком (out10 №632).
+    static func storedMtimes(at url: URL) -> [String: Double]? {
+        (try? Data(contentsOf: url)).flatMap(decode)?.mapValues(\.mtime)
+    }
+    #endif
 
     private static func decode(_ data: Data) -> [String: FileVecs]? {
         var cursor = 0
