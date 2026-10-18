@@ -16,10 +16,10 @@ final class MemoryBench: XCTestCase {
     private struct Case { let q: String; let must: [String] }
 
     func testRecallOfExpectedFacts() async throws {
-        guard let benchPath = ProcessInfo.processInfo.environment["CHAROITE_BENCH"],
-              let graphRaw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
-              !benchPath.isEmpty, !graphRaw.isEmpty else { throw XCTSkip("бенч не задан") }
-        let graph = URL(fileURLWithPath: (graphRaw as NSString).expandingTildeInPath)
+        let env = ProcessInfo.processInfo.environment
+        guard let benchPath = env["CHAROITE_BENCH"], !benchPath.isEmpty else { throw XCTSkip("бенч не задан") }
+        // Бенч запрошен — дальше любой недостающий вход валит прогон, а не пропускает его.
+        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"] ?? "")
         let cases = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
         XCTAssertFalse(cases.isEmpty, "вопросы не разобрались")
 
@@ -27,6 +27,8 @@ final class MemoryBench: XCTestCase {
         // доходит до человека.
         let withModel = ProcessInfo.processInfo.environment["CHAROITE_BENCH_ANSWERS"] == "1"
         let (armName, params) = ProbeTurn.arm
+        let reportPath = try ProbeTurn.reportPath("bench_\(armName)")
+        let foundPath = try ProbeTurn.reportPath("bench_\(armName)_found")
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
             : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)")
@@ -69,11 +71,6 @@ final class MemoryBench: XCTestCase {
                 + "(\(Int(ratio * 100))%)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
         print(report)
-        guard let reportPath = ProbeTurn.reportPath("bench_\(armName)"),
-              let foundPath = ProbeTurn.reportPath("bench_\(armName)_found") else {
-            XCTFail("временный каталог не свой (TMPDIR=\(NSTemporaryDirectory())) — отчёт некуда писать")
-            return
-        }
         guard ProbeTurn.writePrivate(report, to: reportPath) else {
             XCTFail("отчёт не записан, прежний мог остаться: \(reportPath)")
             return

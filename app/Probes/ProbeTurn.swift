@@ -59,17 +59,36 @@ enum ProbeTurn {
         return text
     }
 
+    /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
+    struct SetupError: Error, CustomStringConvertible { let description: String }
+
+    /// Папка графа из окружения — существующий каталог, иначе проба падает,
+    /// а не зеленеет на пустом поиске (круги 4–5).
+    static func graphDir(_ raw: String) throws -> URL {
+        let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+            throw SetupError(description: "папки графа нет: \(url.path) — проверь CHAROITE_GRAPH_DIR")
+        }
+        return url
+    }
+
     /// Каталог отчётов — свой у каждой учётки (`NSTemporaryDirectory()`,
     /// `/var/folders/…/T`), а не общий `/tmp`. На Darwin его отдаёт система, а
     /// не `TMPDIR` (опыт out4: `TMPDIR=/private/tmp` — отчёт всё равно в
     /// `/var/folders`); проверка — страховка: не симлинк, владелец — эта
-    /// учётка, без записи группе и прочим. nil — писать некуда, вызывающий падает.
-    static func reportPath(_ name: String) -> String? {
+    /// учётка, без записи группе и прочим. Зовётся до работы пробы (круг 5).
+    static func reportPath(_ name: String) throws -> String {
         var dir = NSTemporaryDirectory()
         while dir.count > 1, dir.hasSuffix("/") { dir.removeLast() }
         var st = stat()
-        guard lstat(dir, &st) == 0, st.st_mode & S_IFMT == S_IFDIR, st.st_uid == getuid(),
-              st.st_mode & (S_IWGRP | S_IWOTH) == 0 else { return nil }
+        let why: String?
+        if lstat(dir, &st) != 0 { why = "нет каталога" }
+        else if st.st_mode & S_IFMT != S_IFDIR { why = "не каталог (симлинк?)" }
+        else if st.st_uid != getuid() { why = "владелец uid \(st.st_uid), а не \(getuid())" }
+        else if st.st_mode & (S_IWGRP | S_IWOTH) != 0 { why = "запись группе/прочим, режим \(String(st.st_mode & 0o7777, radix: 8))" }
+        else { why = nil }
+        if let why { throw SetupError(description: "временный каталог \(dir) не годится для отчёта: \(why)") }
         return (dir as NSString).appendingPathComponent("charoite_\(name).txt")
     }
 

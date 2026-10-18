@@ -17,21 +17,16 @@ final class AnswerQualityProbe: XCTestCase {
     ]
 
     func testAnswers() async throws {
-        guard ProcessInfo.processInfo.environment["CHAROITE_ANSWER_PROBE"] == "1",
-              let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
-              !raw.isEmpty else { throw XCTSkip("не запрошено") }
-        let graph = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: graph.path, isDirectory: &isDir), isDir.boolValue else {
-            XCTFail("папки графа нет: \(graph.path) — проверь CHAROITE_GRAPH_DIR")
-            return
-        }
-
+        let env = ProcessInfo.processInfo.environment
+        guard env["CHAROITE_ANSWER_PROBE"] == "1" else { throw XCTSkip("не запрошено") }
+        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"] ?? "")
         let (armName, params) = ProbeTurn.arm
+        let out = try ProbeTurn.reportPath("answer_probe_\(armName)")
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
-        var unanswered = 0
+        var unanswered = 0, emptySearch = 0
         for q in questions {
             let outcome = await ProbeTurn.search(q, params: params, root: graph)
+            if outcome.text.isEmpty { emptySearch += 1 }
             report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(outcome.text.count) знаков):\n"
             for s in outcome.rels ?? [] { report += "   · \(s)\n" }
             let answer = await ProbeTurn.answer(question: q, vault: outcome.text)
@@ -40,10 +35,6 @@ final class AnswerQualityProbe: XCTestCase {
         }
         // print из XCTest теряется при перенаправлении вывода — пишем в файл.
         print(report)
-        guard let out = ProbeTurn.reportPath("answer_probe_\(armName)") else {
-            XCTFail("временный каталог не свой (TMPDIR=\(NSTemporaryDirectory())) — отчёт некуда писать")
-            return
-        }
         guard ProbeTurn.writePrivate(report, to: out) else {
             XCTFail("отчёт не записан, прежний мог остаться: \(out)")
             return
@@ -51,6 +42,8 @@ final class AnswerQualityProbe: XCTestCase {
         print("отчёт: \(out)")
         // Молчание модели — не ответ: зелёная проба при остановленной Ollama
         // ничего не проверила (круг 3).
+        // Пустой поиск по одному вопросу — законный результат, по всем — не тот граф.
+        XCTAssertLessThan(emptySearch, questions.count, "поиск пуст по всем вопросам — проверь граф: \(graph.path)")
         XCTAssertEqual(unanswered, 0, "модель не ответила на \(unanswered) из \(questions.count) — "
                        + "проверь Ollama (\(ProbeTurn.model)); смотри \(out)")
     }
