@@ -50,6 +50,7 @@ final class BuildRealIndex: XCTestCase {
         // refresh берёт за вызов не больше потолка блоков фонового поиска (48):
         // гоняем, пока очередь убывает; файлы без блоков в индекс не попадают никогда.
         let wanted = files.filter { !Chunker.chunks(of: $0.text, title: ($0.path as NSString).deletingPathExtension).isEmpty }
+        guard !wanted.isEmpty else { XCTFail("ни в одном файле графа нет блоков: \(graph.path)"); return }
         func pending() async -> Int {
             var n = 0
             for f in wanted where await SemanticIndex.shared.storedMtime(of: f.path) != f.mtime { n += 1 }
@@ -57,6 +58,7 @@ final class BuildRealIndex: XCTestCase {
         }
         let t0 = Date()
         var left = await pending()
+        let need = left
         while left > 0 {
             await SemanticIndex.shared.refresh(files: files)
             let now = await pending()
@@ -68,5 +70,11 @@ final class BuildRealIndex: XCTestCase {
         let chunks = await SemanticIndex.shared.totalChunks()
         print("INDEX: готово за \(Int(dt)) с — файлов \(indexed), блоков \(chunks), не проиндексировано \(left)")
         XCTAssertEqual(left, 0, "не проиндексировано \(left) из \(wanted.count) — Ollama недоступна или нет модели bge-m3")
+        // память — не диск: persist глотает ошибку записи, проба судит по файлу
+        if need > 0 {
+            let written = (try? SemanticIndex.liveStoreURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+            XCTAssertGreaterThanOrEqual(written ?? .distantPast, t0, "индекс на диске не обновился: \(SemanticIndex.liveStoreURL.path)")
+        }
     }
 }

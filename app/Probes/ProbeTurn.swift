@@ -119,7 +119,8 @@ enum ProbeTurn {
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
             throw SetupError(description: "папки графа нет: \(url.path) — проверь CHAROITE_GRAPH_DIR")
         }
-        return url
+        // канонический путь: ключи индекса — от него, как в ArchiveSearch (симлинк в корне, /tmp)
+        return url.resolvingSymlinksInPath()
     }
 
     /// Каталог отчётов — свой у каждой учётки (`NSTemporaryDirectory()`,
