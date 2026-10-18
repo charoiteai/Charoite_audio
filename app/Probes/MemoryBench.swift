@@ -68,11 +68,13 @@ final class MemoryBench: XCTestCase {
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
-        let reportPath = "/tmp/charoite_bench_\(armName).txt"
-        let foundPath = "/tmp/charoite_bench_\(armName)_found.txt"
-        XCTAssertTrue(ProbeTurn.writePrivate(report, to: reportPath), "отчёт не записан: \(reportPath)")
-        XCTAssertTrue(ProbeTurn.writePrivate(dump, to: foundPath), "выдача не записана: \(foundPath)")
+        let reportPath = ProbeTurn.reportPath("bench_\(armName)")
+        let foundPath = ProbeTurn.reportPath("bench_\(armName)_found")
         print(report)
+        guard ProbeTurn.writePrivate(report, to: reportPath), ProbeTurn.writePrivate(dump, to: foundPath) else {
+            XCTFail("новый отчёт не записан, прежний мог остаться: \(reportPath), \(foundPath)")
+            return
+        }
         // Молчание модели — не просадка памяти: свой диагноз до порога.
         guard unanswered.isEmpty else {
             XCTFail("модель не ответила на \(unanswered.count) из \(cases.count) — проверь Ollama "

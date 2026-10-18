@@ -59,11 +59,18 @@ enum ProbeTurn {
         return text
     }
 
+    /// Каталог отчётов — свой у каждой учётки (`NSTemporaryDirectory()`,
+    /// `/var/folders/…/T`), а не общий `/tmp`: чужой файл или симлинк на месте
+    /// отчёта невозможен по построению, а не отбивается свойствами записи (круг 3).
+    static func reportPath(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("charoite_\(name).txt")
+    }
+
     /// Отчёт пробы несёт сниппеты встреч и ответы модели — только владельцу
-    /// файла (0600), а не всем пользователям машины через общий `/tmp`.
-    /// `createFile` пишет атомарно: симлинк на месте отчёта заменяется, а не
-    /// проходится насквозь (опыт out2), прежний отчёт живёт до замены.
-    /// false — отчёта нет, и вызывающий обязан упасть, а не молчать.
+    /// (0600). `createFile` ставит новый файл на место прежнего (опыт out3:
+    /// новый inode и 0600 поверх 0644; каталог без записи — false, прежний
+    /// файл не тронут). false — нового отчёта нет, прежний мог остаться:
+    /// вызывающий падает и дальше на этот путь не ссылается.
     static func writePrivate(_ text: String, to path: String) -> Bool {
         FileManager.default.createFile(atPath: path, contents: Data(text.utf8),
                                        attributes: [.posixPermissions: PrivateFiles.fileMode])

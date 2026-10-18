@@ -1859,9 +1859,10 @@ not measured. `CHAROITE_BENCH_ARM=legacy` switches to the former search
 parameters (5×1200) for comparison. A question the model did not answer keeps
 its facts in the total with zero hits, and the run fails with its own message
 rather than as a quality drop. The report lands in
-`/tmp/charoite_bench_<arm>.txt` with the missing facts named, and what search
-delivered — in `/tmp/charoite_bench_<arm>_found.txt`; both are readable by
-the owner only (0600), and a report that could not be written fails the run.
+`$TMPDIR/charoite_bench_<arm>.txt` (the per-user temporary folder, not the
+shared `/tmp`) with the missing facts named, and what search delivered — in
+`$TMPDIR/charoite_bench_<arm>_found.txt`; both are readable by the owner only
+(0600), and a report that could not be written fails the run.
 
 The question set stays outside the repository — it is about real meetings.
 Format is deliberately trivial:

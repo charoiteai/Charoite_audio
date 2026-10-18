@@ -24,16 +24,25 @@ final class AnswerQualityProbe: XCTestCase {
 
         let (armName, params) = ProbeTurn.arm
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
+        var unanswered = 0
         for q in questions {
             let outcome = await ProbeTurn.search(q, params: params, root: graph)
             report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(outcome.text.count) знаков):\n"
             for s in outcome.rels ?? [] { report += "   · \(s)\n" }
-            let answer = await ProbeTurn.answer(question: q, vault: outcome.text) ?? "(модель не ответила)"
-            report += "ОТВЕТ МОДЕЛИ:\n\(answer)\n"
+            let answer = await ProbeTurn.answer(question: q, vault: outcome.text)
+            if answer == nil { unanswered += 1 }
+            report += "ОТВЕТ МОДЕЛИ:\n\(answer ?? "(модель не ответила)")\n"
         }
         // print из XCTest теряется при перенаправлении вывода — пишем в файл.
-        let out = "/tmp/charoite_answer_probe_\(armName).txt"
-        XCTAssertTrue(ProbeTurn.writePrivate(report, to: out), "отчёт не записан: \(out)")
+        let out = ProbeTurn.reportPath("answer_probe_\(armName)")
         print(report)
+        guard ProbeTurn.writePrivate(report, to: out) else {
+            XCTFail("новый отчёт не записан, прежний мог остаться: \(out)")
+            return
+        }
+        // Молчание модели — не ответ: зелёная проба при остановленной Ollama
+        // ничего не проверила (круг 3).
+        XCTAssertEqual(unanswered, 0, "модель не ответила на \(unanswered) из \(questions.count) — "
+                       + "проверь Ollama (\(ProbeTurn.model)); смотри \(out)")
     }
 }
