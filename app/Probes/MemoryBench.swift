@@ -68,13 +68,21 @@ final class MemoryBench: XCTestCase {
         report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
-        let reportPath = ProbeTurn.reportPath("bench_\(armName)")
-        let foundPath = ProbeTurn.reportPath("bench_\(armName)_found")
         print(report)
-        guard ProbeTurn.writePrivate(report, to: reportPath), ProbeTurn.writePrivate(dump, to: foundPath) else {
-            XCTFail("новый отчёт не записан, прежний мог остаться: \(reportPath), \(foundPath)")
+        guard let reportPath = ProbeTurn.reportPath("bench_\(armName)"),
+              let foundPath = ProbeTurn.reportPath("bench_\(armName)_found") else {
+            XCTFail("временный каталог не свой (TMPDIR=\(NSTemporaryDirectory())) — отчёт некуда писать")
             return
         }
+        guard ProbeTurn.writePrivate(report, to: reportPath) else {
+            XCTFail("отчёт не записан, прежний мог остаться: \(reportPath)")
+            return
+        }
+        guard ProbeTurn.writePrivate(dump, to: foundPath) else {
+            XCTFail("выдача не записана, прежняя могла остаться: \(foundPath) (отчёт записан: \(reportPath))")
+            return
+        }
+        print("отчёт: \(reportPath)\nвыдача: \(foundPath)")
         // Молчание модели — не просадка памяти: свой диагноз до порога.
         guard unanswered.isEmpty else {
             XCTFail("модель не ответила на \(unanswered.count) из \(cases.count) — проверь Ollama "

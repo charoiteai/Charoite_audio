@@ -60,10 +60,17 @@ enum ProbeTurn {
     }
 
     /// Каталог отчётов — свой у каждой учётки (`NSTemporaryDirectory()`,
-    /// `/var/folders/…/T`), а не общий `/tmp`: чужой файл или симлинк на месте
-    /// отчёта невозможен по построению, а не отбивается свойствами записи (круг 3).
-    static func reportPath(_ name: String) -> String {
-        (NSTemporaryDirectory() as NSString).appendingPathComponent("charoite_\(name).txt")
+    /// `/var/folders/…/T`), а не общий `/tmp`. На Darwin его отдаёт система, а
+    /// не `TMPDIR` (опыт out4: `TMPDIR=/private/tmp` — отчёт всё равно в
+    /// `/var/folders`); проверка — страховка: не симлинк, владелец — эта
+    /// учётка, без записи группе и прочим. nil — писать некуда, вызывающий падает.
+    static func reportPath(_ name: String) -> String? {
+        var dir = NSTemporaryDirectory()
+        while dir.count > 1, dir.hasSuffix("/") { dir.removeLast() }
+        var st = stat()
+        guard lstat(dir, &st) == 0, st.st_mode & S_IFMT == S_IFDIR, st.st_uid == getuid(),
+              st.st_mode & (S_IWGRP | S_IWOTH) == 0 else { return nil }
+        return (dir as NSString).appendingPathComponent("charoite_\(name).txt")
     }
 
     /// Отчёт пробы несёт сниппеты встреч и ответы модели — только владельцу

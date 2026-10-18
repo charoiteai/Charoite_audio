@@ -21,6 +21,11 @@ final class AnswerQualityProbe: XCTestCase {
               let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { throw XCTSkip("не запрошено") }
         let graph = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: graph.path, isDirectory: &isDir), isDir.boolValue else {
+            XCTFail("папки графа нет: \(graph.path) — проверь CHAROITE_GRAPH_DIR")
+            return
+        }
 
         let (armName, params) = ProbeTurn.arm
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
@@ -34,12 +39,16 @@ final class AnswerQualityProbe: XCTestCase {
             report += "ОТВЕТ МОДЕЛИ:\n\(answer ?? "(модель не ответила)")\n"
         }
         // print из XCTest теряется при перенаправлении вывода — пишем в файл.
-        let out = ProbeTurn.reportPath("answer_probe_\(armName)")
         print(report)
-        guard ProbeTurn.writePrivate(report, to: out) else {
-            XCTFail("новый отчёт не записан, прежний мог остаться: \(out)")
+        guard let out = ProbeTurn.reportPath("answer_probe_\(armName)") else {
+            XCTFail("временный каталог не свой (TMPDIR=\(NSTemporaryDirectory())) — отчёт некуда писать")
             return
         }
+        guard ProbeTurn.writePrivate(report, to: out) else {
+            XCTFail("отчёт не записан, прежний мог остаться: \(out)")
+            return
+        }
+        print("отчёт: \(out)")
         // Молчание модели — не ответ: зелёная проба при остановленной Ollama
         // ничего не проверила (круг 3).
         XCTAssertEqual(unanswered, 0, "модель не ответила на \(unanswered) из \(questions.count) — "
