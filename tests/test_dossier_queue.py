@@ -158,11 +158,11 @@ def test_crash_mid_queue_still_writes_every_index(nd, tmp_path, monkeypatch):
     real = safe_write.write_text
     writes = []
 
-    def write(path, text):
+    def write(path, text, **kw):
         writes.append(path)
         if len(writes) == 2:
             raise PermissionError(13, "Permission denied")
-        return real(path, text)
+        return real(path, text, **kw)
 
     monkeypatch.setattr(nd.safe_write, "write_text", write)
     with pytest.raises(PermissionError):
@@ -246,3 +246,42 @@ def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
     monkeypatch.setattr(nd, "_graph_lock", lock)
     nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
     assert waits == [70.0], waits         # 100 с бюджета минус 30 с генерации
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(__import__("time").time() + 10))
+    waits.clear()
+    _graph(tmp_path, "Г2", {"вторая": None})
+    nd.run(tmp_path / "Г2", {}, full=True, dry=False, limit=None)
+    assert 0 < waits[0] <= 10, waits       # и потолок ночи — у --full тоже
+
+
+def test_author_edit_between_check_and_write_is_not_overwritten(nd, tmp_path, monkeypatch):
+    """Выход out2 №621, DS C1: правка между сверкой и replace затиралась."""
+    graph = _graph(tmp_path, "Г", {"тема": "2026-07-20"})
+    path = graph / CHAROITE.dossier_dir / "тема.md"
+    real_backup = dossier.backup
+
+    def backup(folder, stamp, p, **kw):
+        out = real_backup(folder, stamp, p, **kw)
+        p.write_text(p.read_text(encoding="utf-8") + "\nправка автора в окне\n", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(nd.dossier, "backup", backup)
+    r = nd.run(graph, {}, full=False, dry=False, limit=None)
+    assert r["собрано"] == 0 and r["досье_изменилось"] == 1, r
+    assert "правка автора в окне" in path.read_text(encoding="utf-8")
+    assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {"тема"}
+
+
+def test_need_is_the_generation_not_the_lock_wait(nd, tmp_path, monkeypatch):
+    """Выход out2 №621, Haiku I1: ожидание взятого замка раздувало `need`."""
+    graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(4)})
+
+    @contextlib.contextmanager
+    def slow_lock(graph, wait=nd.LOCK_WAIT):
+        nd.fake_clock.t += 200          # сосед держал замок, но отпустил
+        yield True
+
+    monkeypatch.setattr(nd, "_graph_lock", slow_lock)
+    # 30 с генерации + 200 с замка на тему; need по генерации = 30:
+    # старт 0 → 230 → 460 → 690; при бюджете 700 четвёртая тема (690 + 30 > 700) не влезает
+    r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=700)
+    assert r["собрано"] == 3 and r["не_успели"] == 1, r

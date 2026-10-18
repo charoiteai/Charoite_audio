@@ -297,8 +297,9 @@ def queue_order(candidates: list[Candidate]) -> list[Candidate]:
     return [c for _, c in sorted(keyed, key=lambda kc: kc[0])]
 
 
-def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool, bool]:
-    """Собрать одну тему. Возвращает (собрана, звали ли модель); `lock_wait` —
+def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool, bool, float | None]:
+    """Собрать одну тему. Возвращает (собрана, звали ли модель, секунды
+    генерации — цена темы для `need`, без ожидания замка); `lock_wait` —
     сколько ждать замок, считается в момент записи, после генерации."""
     g, theme, members, fp = cand.g, cand.theme, cand.members, cand.fp
     path = g.folder / f"{theme}.md"
@@ -317,8 +318,9 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             # а не молчание модели: тема уйдёт на следующую ночь.
             g.skipped += 1
             g.broken_manual += 1
-        return False, False
+        return False, False, None
     t0 = time.time()
+    g0 = clock()
     body = ""
     for attempt in (1, 2):          # вторая попытка чуть холоднее
         try:
@@ -338,7 +340,8 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         # «Принято, что дальше?» на всех темах выходила с кодом 0 и
         # статусом «ok» (аудит 17.08). Прежнее досье в индексе остаётся.
         g.отказы += 1
-        return False, True
+        return False, True, clock() - g0
+    gen_s = clock() - g0
 
     text = dossier.render(theme, body, members, g.files, fp, g.today)
     if manual:
@@ -351,12 +354,16 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             # Занятость — свойство графа на прогон, а не темы: без отметки
             # каждая его тема ждала бы замок пять минут после генерации, и
             # бюджет ушёл бы на ожидание (вход in3 №621, Haiku C1, Sonnet I3).
-            print(f"  ⏸ {g.graph.name}: граф занят соседом дольше "
-                  f"{wait / 60:.0f} мин — его темы уйдут на следующую ночь")
+            print(f"  ⏸ {g.graph.name}: замок графа не взят за {wait:.0f} с "
+                  "— его темы уйдут на следующую ночь")
             g.busy = True
             g.skipped += 1
             g.locked += 1
-            return False, True
+            return False, True, gen_s
+        # Снимок — до сверочного чтения: правка автора между сверкой и
+        # replace не затирается, запись идёт через гейт `expect` (выход out2
+        # №621, DS C1; окно было и в базе).
+        snap = safe_write.stat_snapshot(path)
         # Второе чтение только сверяет и ничего не решает — решение 3 («одно чтение на тему») держится на снимке `loaded`, а в `битые` попадает только `reads`.
         fresh = dossier.load_dossier(path)
         if fresh.state != loaded.state or fresh.text != loaded.text:
@@ -365,7 +372,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
             g.skipped += 1
             g.changed += 1
             g.keep(theme, members, fresh, fp)
-            return False, True
+            return False, True, gen_s
         g.folder.mkdir(parents=True, exist_ok=True)
         # копия прежнего досье: пересборка сохраняла только «Правки автора» и
         # стирала тело с редактурой облачной ревизии без единой копии
@@ -376,9 +383,14 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         except OSError as e:
             print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
             g.отказы += 1
-            return False, True
+            return False, True, gen_s
         # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
-        safe_write.write_text(path, text)
+        if not safe_write.write_text(path, text, expect=snap, expect_absent=snap is None):
+            print(f"  ⏸ {theme}: досье изменилось перед записью — тема уйдёт на следующую ночь")
+            g.skipped += 1
+            g.changed += 1
+            g.keep(theme, members, dossier.load_dossier(path), fp)
+            return False, True, gen_s
     g.built += 1
     if copy is not None:
         print(f"  копия прежнего досье: {CHAROITE.dossier_dir}/.backup/{g.stamp}/")
@@ -388,7 +400,7 @@ def _build(cand: Candidate, c: dict, lock_wait=lambda: LOCK_WAIT) -> tuple[bool,
         "источников": len(members), "собрано": g.today, "отпечаток": fp,
         "ключи": dossier.keywords(theme + " " + " ".join(members) + " " + body),
     }
-    return True, True
+    return True, True, gen_s
 
 
 def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
@@ -442,15 +454,16 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
         if not live_gate.fits(budget, started, need, clock()):
             _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
             return attempts
-        t0 = clock()
         # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
         # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
         def lock_wait() -> float:
-            return LOCK_WAIT if budget is None else max(0.0, min(LOCK_WAIT, budget - (clock() - started)))
+            # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
+            return live_gate.night_wait_cap(
+                LOCK_WAIT if budget is None else min(LOCK_WAIT, budget - (clock() - started)))
         refused = g.отказы
-        ok, called = _build(cand, c, lock_wait)
-        if called and not g.busy:   # ожидание занятого замка — не цена темы
-            spent.append(clock() - t0)
+        ok, called, gen_s = _build(cand, c, lock_wait)
+        if gen_s is not None:      # цена темы — генерация, без ожидания замка (Haiku I1)
+            spent.append(gen_s)
         attempts += called or g.отказы > refused   # нечитаемое досье — отказ без модели
         built += ok
         g.done(dry)
@@ -503,7 +516,10 @@ def run_all(paths: list[pathlib.Path], c: dict, *, full: bool, dry: bool,
 def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int | None,
         budget_s: float | None = None) -> dict:
     """Один граф — та же очередь из одного графа."""
-    g = run_all([graph], c, full=full, dry=dry, limit=limit, budget_s=budget_s).graphs[0]
+    result = run_all([graph], c, full=full, dry=dry, limit=limit, budget_s=budget_s)
+    if not result.graphs:
+        raise RuntimeError(f"скан графа {graph} не удался")
+    g = result.graphs[0]
     g.report()
     return g.result()
 
@@ -584,12 +600,11 @@ def main() -> int:
     # а не «любой отказ». Знаменатель — попытки, а не темы: бюджет пускает
     # 40–80 попыток из ~950 тем, и порог по темам не срабатывал бы вовсе
     # (вход in3 №621, Sonnet I1).
+    if result.scan_failed:   # до порога: код 2 не прячет пропавший граф (выход out2 №621)
+        print(f"⚠️ скан не удался: {', '.join(result.scan_failed)}")
     if отказов >= max(3, попыток // 10):
         return 2
-    if result.scan_failed:
-        print(f"скан не удался: {', '.join(result.scan_failed)}")
-        return 1
-    return 0
+    return 1 if result.scan_failed else 0
 
 
 if __name__ == "__main__":
