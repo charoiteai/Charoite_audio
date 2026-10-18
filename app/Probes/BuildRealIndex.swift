@@ -53,17 +53,15 @@ final class BuildRealIndex: XCTestCase {
         guard !files.isEmpty else { XCTFail("в графе нет ни одного .md: \(graph.path)"); return }
 
         // Открытое приложение пишет тот же файл своим снимком: последний
-        // писатель затирает записи другого (out11). Сверяем сам файл, а не
-        // префикс HOME; `swift run` идёт без bundle id (out12). Замок писателя — №534.
-        guard let pw = getpwuid(getuid()) else { XCTFail("нет passwd-записи для uid \(getuid())"); return }
-        let appStore = URL(fileURLWithPath: String(cString: pw.pointee.pw_dir))
-            .appendingPathComponent("Library/Application Support/Charoite/semantic_index_v2.bin")
-        let sameFile = SemanticIndex.liveStoreURL.resolvingSymlinksInPath().path == appStore.resolvingSymlinksInPath().path
+        // писатель затирает записи другого (out11). Какой файл у приложения,
+        // извне не узнать — у него своё окружение (`CFFIXED_USER_HOME`, out13),
+        // поэтому отказ при любом открытом; `swift run` идёт без bundle id (out12).
+        // Замок писателя на файле индекса — №534.
         let appOpen = NSWorkspace.shared.runningApplications.contains {
             $0.bundleIdentifier == "ai.charoite.app" || $0.executableURL?.lastPathComponent == "CharoiteApp"
         }
-        guard !(appOpen && sameFile) else {
-            XCTFail("Чароит открыт и пишет тот же индекс — закрой приложение и повтори"); return
+        guard !appOpen else {
+            XCTFail("Чароит открыт и может писать тот же индекс — закрой приложение и повтори"); return
         }
 
         // живой индекс под XCTest — только явной подменой (№740)
