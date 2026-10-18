@@ -250,7 +250,16 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual(try shown(cal([["Hour": 4, "Minute": 15], ["Hour": 21, "Minute": 0],
                                       ["Hour": 20, "Minute": 0], ["Hour": 19, "Minute": 0]])), .ours,
                        "другой порядок тех же слотов")
-        XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15])), .manual("04:15"))
+        XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15])), .stale("04:15"), "прежняя версия")
+        XCTAssertEqual(try shown { $0["EnvironmentVariables"] = [String: Any]() }, .stale(NightlyAgent.slotsText),
+                       "без CHAROITE_SLOT")
+        XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/sh", "-c", "/bin/bash \(script)"] },
+                       .manual(NightlyAgent.slotsText), "скрипт внутри строки sh -c")
+        XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/open", script, "-g"] },
+                       .manual(NightlyAgent.slotsText), "скрипт не последний аргумент")
+        XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/caffeinate", "-i", "/bin/bash", script] },
+                       .ours, "обёртка caffeinate")
+        XCTAssertEqual(try shown { $0["Disabled"] = true }, .disabled)
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
                        .manual(NightlyAgent.slotsText), "чужая команда")
         XCTAssertEqual(try shown { $0["Program"] = "/bin/zsh" }, .manual(NightlyAgent.slotsText), "Program")
@@ -263,15 +272,39 @@ final class NightlyScheduleTests: XCTestCase {
             ("дробный час", cal(["Hour": 4.5, "Minute": 0])), ("целый real", cal(["Hour": 4.0, "Minute": 0])),
             ("bool", cal(["Hour": true, "Minute": 0])), ("строка", cal(["Hour": "4", "Minute": 0])),
             ("смешанный массив", cal([["Hour": 4, "Minute": 15], "x"] as [Any])),
+        ] as [(String, (inout [String: Any]) -> Void)] {
+            XCTAssertEqual(try shown(edit), .irreducible, why)
+        }
+        for (why, edit) in [
             ("StartInterval", { $0["StartInterval"] = 3600 }), ("RunAtLoad", { $0["RunAtLoad"] = true }),
             ("KeepAlive", { $0["KeepAlive"] = true }), ("KeepAlive словарь", { $0["KeepAlive"] = ["SuccessfulExit": false] }),
             ("WatchPaths", { $0["WatchPaths"] = ["/x"] }), ("StartOnMount", { $0["StartOnMount"] = true }),
+            ("Sockets", { $0["Sockets"] = ["s": ["SockServiceName": "9999"]] }),
+            ("MachServices", { $0["MachServices"] = ["x.y": true] }),
         ] as [(String, (inout [String: Any]) -> Void)] {
-            XCTAssertEqual(try shown(edit), .irreducible, why)
+            XCTAssertEqual(try shown(edit), .otherTrigger, why)
         }
         let broken = dir.appendingPathComponent("broken.plist")
         try Data("<plist><dict><key>".utf8).write(to: broken)
         XCTAssertEqual(NightlyAgent.shown(at: broken, script: script), .unreadable)
+    }
+
+    /// Миграция приводит слоты и не снимает чужие поводы запуска: `RunAtLoad`
+    /// человека остаётся, подпись честно говорит «не только по расписанию» (круг 9).
+    func testMigrationKeepsOtherTrigger() {
+        var old = oldJob()
+        old["RunAtLoad"] = true
+        XCTAssertTrue(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
+        let out = NightlyAgent.reconciled(installed: old, expected: expected)
+        XCTAssertEqual(out["RunAtLoad"] as? Bool, true)
+        XCTAssertEqual((out["StartCalendarInterval"] as? [[String: Int]])?.count, NightlyAgent.slots.count)
+    }
+
+    /// Скрипт внутри строки `sh -c` — не наш агент: миграция его не трогает (круг 9).
+    func testShellStringNotMigrated() {
+        var old = oldJob()
+        old["ProgramArguments"] = ["/bin/sh", "-c", "/bin/bash /x/scripts/nightly.sh"]
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
     }
 
     /// Метка в нашем файле разошлась с именем — повод переписать.

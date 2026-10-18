@@ -355,10 +355,20 @@ struct SettingsView: View {
             return L.t("включён, агент настроен вручную · \(have) (приложение ставит \(NightlyAgent.slotsText))",
                        "on, agent set up by hand · \(have) (the app installs \(NightlyAgent.slotsText))",
                        "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(NightlyAgent.slotsText)）")
+        case .stale(let have):
+            return L.t("включён · слоты прежней версии \(have) — приложение обновит их при следующем запуске",
+                       "on · previous version's slots \(have) — the app updates them on next launch",
+                       "已开启 · 旧版本时段 \(have) — 应用下次启动时更新")
         case .irreducible:
             return L.t("включён, агент настроен вручную · расписание не сводится к часам и минутам",
                        "on, agent set up by hand · its schedule is not plain hours and minutes",
                        "已开启，启动代理为手动配置 · 其时间表不是单纯的时与分")
+        case .otherTrigger:
+            return L.t("включён, агент настроен вручную · запускается не только по расписанию",
+                       "on, agent set up by hand · it also starts outside the schedule",
+                       "已开启，启动代理为手动配置 · 它不只按时间表启动")
+        case .disabled:
+            return L.t("выключен в файле агента (Disabled)", "disabled in the agent file (Disabled)", "已在启动代理文件中停用（Disabled）")
         case .unreadable:
             return L.t("включён · файл агента не читается", "on · the agent file cannot be read", "已开启 · 无法读取启动代理文件")
         }

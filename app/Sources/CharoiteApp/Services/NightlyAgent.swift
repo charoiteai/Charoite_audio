@@ -38,14 +38,19 @@ enum NightlyAgent {
     /// Что Настройки могут честно сказать об установленном агенте.
     enum Shown: Equatable {
         case unreadable          // файл есть, но не разбирается
-        case ours                // скрипт этой установки, наши слоты, других поводов запуска нет
-        case manual(String)      // чистые «час:минута», но не наши слоты или не наша команда
-        case irreducible         // иные поводы запуска или календарь не «час:минута»
+        case disabled            // `Disabled` — launchd его не запускает
+        case otherTrigger        // запуск помимо календаря (`RunAtLoad`, `StartInterval`…)
+        case irreducible         // календарь не «час:минута»
+        case ours                // наш скрипт, наши слоты и `CHAROITE_SLOT`
+        case stale(String)       // наш скрипт, слоты прежней версии — миграция при старте
+        case manual(String)      // чистые «час:минута», команда не наша
     }
 
     /// Ключи, по которым launchd запускает агента помимо календаря.
     private static func hasOtherTrigger(_ plist: [String: Any]) -> Bool {
-        if plist["StartInterval"] != nil || plist["LaunchEvents"] != nil { return true }
+        for key in ["StartInterval", "LaunchEvents", "Sockets", "MachServices"] where plist[key] != nil {
+            return true
+        }
         for key in ["RunAtLoad", "StartOnMount"] where (plist[key] as? Bool) == true { return true }
         if let keep = plist["KeepAlive"], (keep as? Bool) != false { return true }
         for key in ["WatchPaths", "QueueDirectories"] where !((plist[key] as? [Any])?.isEmpty ?? true) {
@@ -65,14 +70,15 @@ enum NightlyAgent {
     /// пропущенный Hour/Minute как «любой», Weekday/Day/Month сужают запуск,
     /// `StartInterval`/`RunAtLoad`/`KeepAlive`… запускают помимо календаря —
     /// такое время подписью не передать, умолчанием тем более (круги 7–8).
-    /// «Наш» — тот же признак, что у `needsMigration`: без `Program`, скрипт
-    /// этой установки в `ProgramArguments`. Ручной plist не мигрирует (круг 6),
-    /// поэтому подпись показывает его слоты, а не задуманные.
+    /// «Наш скрипт» — `runsScript`, тот же признак, что у миграции; наш, но со
+    /// слотами прежней версии — `.stale`, его приведёт `migrateIfStale` (круг 9).
+    /// Ручной plist не мигрирует (круг 6), подпись показывает его слоты.
     static func shown(at url: URL = plistURL, script: String) -> Shown {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
                   as? [String: Any] else { return .unreadable }
-        guard !hasOtherTrigger(plist) else { return .irreducible }
+        if (plist["Disabled"] as? Bool) == true { return .disabled }
+        guard !hasOtherTrigger(plist) else { return .otherTrigger }
         let raw = plist["StartCalendarInterval"]
         let items: [Any] = (raw as? [Any]) ?? (raw is [String: Any] ? [raw as Any] : [])
         var have: [(hour: Int, minute: Int)] = []
@@ -83,10 +89,10 @@ enum NightlyAgent {
             have.append((h, m))
         }
         guard !have.isEmpty else { return .irreducible }
-        let ourCommand = plist["Program"] == nil
-            && ((plist["ProgramArguments"] as? [String])?.contains { samePath($0, script) } ?? false)
+        guard runsScript(plist, script) else { return .manual(text(of: have)) }
         let key = { (s: [(hour: Int, minute: Int)]) in s.map { $0.hour * 60 + $0.minute }.sorted() }
-        return ourCommand && key(have) == key(slots) ? .ours : .manual(text(of: have))
+        let slot = (plist["EnvironmentVariables"] as? [String: Any])?["CHAROITE_SLOT"] as? String
+        return key(have) == key(slots) && slot == "1" ? .ours : .stale(text(of: have))
     }
 
     static func job(script: String, logPath: String) -> [String: Any] {
@@ -118,9 +124,7 @@ enum NightlyAgent {
         // `Program` launchd исполняет вместо argv[0]: рядом с нашим argv он
         // запускал бы чужой скрипт (круги 4–5). Ни приложение, ни SETUP его не
         // пишут — при явной установке команда наша целиком.
-        let ownWrapper = out["Program"] == nil
-            && ((out["ProgramArguments"] as? [String])?.contains { samePath($0, want) } ?? false)
-        if !ownWrapper {
+        if !runsScript(out, want) {
             out["ProgramArguments"] = expected["ProgramArguments"]
             out.removeValue(forKey: "Program")
         }
@@ -140,12 +144,21 @@ enum NightlyAgent {
     /// против `reconciled`: список ключей рядом с ним забывал ключ (круг 5).
     static func needsMigration(installed: [String: Any]?, expected: [String: Any],
                                nightRunning: Bool) -> Bool {
-        guard let installed, !nightRunning, installed["Program"] == nil,
-              let have = installed["ProgramArguments"] as? [String],
+        guard let installed, !nightRunning,
               let want = (expected["ProgramArguments"] as? [String])?.last,
-              have.contains(where: { samePath($0, want) }) else { return false }
+              runsScript(installed, want) else { return false }
         let target = reconciled(installed: installed, expected: expected)
         return !(target as NSDictionary).isEqual(to: installed)
+    }
+
+    /// Агент исполняет скрипт этой установки: `Program` нет (launchd исполнял бы
+    /// его вместо argv[0], круги 4–5), скрипт — последний аргумент: так пишет
+    /// приложение и обёртка `caffeinate …/bin/bash <скрипт>`, а не строка `sh -c`
+    /// и не аргумент чужой программы (круг 9). Один признак для подписи,
+    /// приведения и миграции.
+    static func runsScript(_ plist: [String: Any], _ script: String) -> Bool {
+        plist["Program"] == nil
+            && ((plist["ProgramArguments"] as? [String])?.last.map { samePath($0, script) } ?? false)
     }
 
     static func samePath(_ a: String, _ b: String) -> Bool {
