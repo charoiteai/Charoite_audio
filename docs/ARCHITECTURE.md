@@ -446,9 +446,13 @@ checked the zone's promises and closed the gaps:
   left alone — Settings show its own slots next to
   the app's (or only that its schedule is not plain hours and minutes — `Weekday`,
   a missing key — or that it also starts outside the schedule — `RunAtLoad`,
-  `StartInterval` and the like); the app's own agent with an older version's
-  slots is shown as such until the next launch migrates it; bring it to the app's slots by hand (Turn off then Turn on would drop
-  its environment keys and stop a running night). The app's own agent with `Disabled` in its
+  `StartInterval` and the like). An older version's schedule is only what the
+  app itself wrote — 04:15 alone, or these slots without `CHAROITE_SLOT`; it is
+  shown as such until the next launch migrates it. Any other hours (set by hand
+  per SETUP) make the agent manual, and it is not migrated. If the data folder
+  holds code older than the app (its `nightly.sh` does not know
+  `CHAROITE_SLOT`), the app keeps the single 04:15 slot: without the gate every
+  slot would be a full night. The app's own agent with `Disabled` in its
   file is turned back on by Turn on, which clears the flag and keeps the
   environment keys. A foreign agent with `Disabled` is shown as disabled:
   there is no Turn on, Turn off deletes the file, and the night status ignores it. Only the app's own `ai.charoite.nightly.plist` is touched;

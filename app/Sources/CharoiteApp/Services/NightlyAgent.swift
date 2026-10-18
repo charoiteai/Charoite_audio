@@ -27,6 +27,23 @@ enum NightlyAgent {
     /// Две копии сразу launchd не запускает — в пределах одной метки.
     static let slots: [(hour: Int, minute: Int)] = [(19, 0), (20, 0), (21, 0), (4, 15)]
 
+    /// Расписание прежнего приложения — единственное, что оно писало.
+    static let legacySlots: [(hour: Int, minute: Int)] = [(4, 15)]
+
+    /// Умеет ли скрипт гейт слотов. Код в папке данных бывает старше
+    /// приложения (DMG поверх прежнего клона): четыре слота без гейта —
+    /// четыре полных ночи с облачными шагами (финальный Opus №630). Скрипта
+    /// нет — не судим: установка всё равно вернёт `.noScript`.
+    static func knowsSlots(_ script: String) -> Bool {
+        guard let text = try? String(contentsOfFile: script, encoding: .utf8) else { return true }
+        return text.contains("CHAROITE_SLOT")
+    }
+
+    /// Слоты, которые этот скрипт выдержит: с гейтом — вечер и утро, без — прежний 04:15.
+    static func slots(for script: String) -> [(hour: Int, minute: Int)] {
+        knowsSlots(script) ? slots : legacySlots
+    }
+
     /// «19:00, 20:00, 21:00, 04:15» — для подписей, чтобы время не жило
     /// литералом в трёх языках.
     static var slotsText: String { text(of: slots) }
@@ -113,15 +130,23 @@ enum NightlyAgent {
         guard runsScript(plist, script) else { return .manual(text(of: have)) }
         let key = { (s: [(hour: Int, minute: Int)]) in s.map { $0.hour * 60 + $0.minute }.sorted() }
         let slot = (plist["EnvironmentVariables"] as? [String: Any])?["CHAROITE_SLOT"] as? String
-        return key(have) == key(slots) && slot == "1" ? .ours : .stale(text(of: have))
+        // «Прежнее» — только то, что писало приложение: 04:15 или наши слоты без
+        // гейта (или наоборот, у скрипта без гейта). Иной набор поставил человек
+        // по SETUP — он ручной, миграция его не трогает (финальный Opus №630).
+        let ours = knowsSlots(script)
+            ? (key(have) == key(slots) && slot == "1")
+            : key(have) == key(legacySlots)
+        if ours { return .ours }
+        let written = [legacySlots, slots].contains { key($0) == key(have) }
+        return written ? .stale(text(of: have)) : .manual(text(of: have))
     }
 
     static func job(script: String, logPath: String) -> [String: Any] {
         [
             "Label": label,
             "ProgramArguments": ["/bin/bash", script],
-            "StartCalendarInterval": slots.map { ["Hour": $0.hour, "Minute": $0.minute] },
-            "EnvironmentVariables": ["CHAROITE_SLOT": "1"],
+            "StartCalendarInterval": slots(for: script).map { ["Hour": $0.hour, "Minute": $0.minute] },
+            "EnvironmentVariables": knowsSlots(script) ? ["CHAROITE_SLOT": "1"] : [String: String](),
             "StandardOutPath": logPath,
             "StandardErrorPath": logPath,
         ]

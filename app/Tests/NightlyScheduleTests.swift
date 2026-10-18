@@ -86,7 +86,7 @@ final class NightlyScheduleTests: XCTestCase {
         try FileManager.default.createDirectory(at: real.appendingPathComponent("scripts"),
                                                 withIntermediateDirectories: true)
         // путь разрешается только у существующего файла — скрипт есть у любой установки
-        FileManager.default.createFile(atPath: real.path + "/scripts/nightly.sh", contents: Data())
+        FileManager.default.createFile(atPath: real.path + "/scripts/nightly.sh", contents: gatedScript)
         let link = dir.appendingPathComponent("link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
         let want = NightlyAgent.job(script: real.path + "/scripts/nightly.sh", logPath: "/l")
@@ -259,6 +259,8 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15])), .stale("04:15"), "прежняя версия")
         XCTAssertEqual(try shown { $0["EnvironmentVariables"] = [String: Any]() }, .stale(NightlyAgent.slotsText),
                        "без CHAROITE_SLOT")
+        XCTAssertEqual(try shown(cal(["Hour": 2, "Minute": 30])), .manual("02:30"),
+                       "свой час по SETUP — не прежняя версия, не мигрирует")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/sh", "-c", "/bin/bash \(script)"] },
                        .manual(NightlyAgent.slotsText), "скрипт внутри строки sh -c")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/open", script, "-g"] },
@@ -357,6 +359,31 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertTrue(NightlyAgent.needsMigration(installed: cur, expected: expected, nightRunning: false))
     }
 
+    /// Код в папке данных старше приложения (DMG поверх прежнего клона): без
+    /// гейта четыре слота — четыре полных ночи. Ставится прежний 04:15, а
+    /// четыре слота, уже записанные такому скрипту, сводятся обратно.
+    func testScriptWithoutGateKeepsOneSlot() throws {
+        let (root, agents) = try fixture(script: Data("echo night\n".utf8))
+        let script = root.path + "/scripts/nightly.sh"
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(NightlyAgent.job(script: script, logPath: "/l"), to: target)
+        XCTAssertEqual(NightlyAgent.shown(at: target, script: script), .ours)
+        var four = oldJob(script: script)
+        four["StartCalendarInterval"] = NightlyAgent.slots.map { ["Hour": $0.hour, "Minute": $0.minute] }
+        four["EnvironmentVariables"] = ["CHAROITE_SLOT": "1"]
+        try write(four, to: target)
+        XCTAssertEqual(NightlyAgent.shown(at: target, script: script), .stale(NightlyAgent.slotsText))
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+        XCTAssertEqual((try read(target)["StartCalendarInterval"] as? [Any])?.count, 1)
+    }
+
+    /// Свой час по SETUP переживает старт приложения.
+    func testManualHourIsNotMigrated() {
+        var mine = oldJob()
+        mine["StartCalendarInterval"] = ["Hour": 2, "Minute": 30]
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: mine, expected: expected, nightRunning: false))
+    }
+
     private func tmpDir() throws -> URL {
         let d = FileManager.default.temporaryDirectory.appendingPathComponent("night-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
@@ -364,12 +391,15 @@ final class NightlyScheduleTests: XCTestCase {
         return d
     }
 
-    private func fixture() throws -> (root: URL, agents: URL) {
+    /// Скрипт этой версии: знает гейт слотов. Без строки — код старше приложения.
+    private let gatedScript = Data("if [ \"${CHAROITE_SLOT:-}\" = 1 ]; then :; fi\n".utf8)
+
+    private func fixture(script: Data? = nil) throws -> (root: URL, agents: URL) {
         let d = try tmpDir()
         let root = d.appendingPathComponent("root")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("scripts"),
                                                 withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: root.path + "/scripts/nightly.sh", contents: Data())
+        FileManager.default.createFile(atPath: root.path + "/scripts/nightly.sh", contents: script ?? gatedScript)
         let agents = d.appendingPathComponent("LaunchAgents")
         try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
         return (root, agents)
