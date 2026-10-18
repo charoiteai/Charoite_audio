@@ -10,14 +10,14 @@ final class LiveAnswerProbe: XCTestCase {
     func testShowWhatModelReceives() async throws {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { throw XCTSkip("CHAROITE_GRAPH_DIR не задан") }
-        let graph = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        let graph = try ProbeTurn.graphDir(raw)
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("probe-\(UUID().uuidString).bin")
         defer { try? FileManager.default.removeItem(at: store) }
         await SemanticIndex.shared.useForTests(store: store) { _ in nil }
 
         let params = ProbeTurn.arm.params
-        let outcome = await ProbeTurn.search("что решили по витрине сертификации",
+        let outcome = try await ProbeTurn.search("что решили по витрине сертификации",
                                              params: params, root: graph)
         let out = outcome.text
         let rels = outcome.rels ?? []

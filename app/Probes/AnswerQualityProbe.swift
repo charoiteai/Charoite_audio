@@ -18,17 +18,23 @@ final class AnswerQualityProbe: XCTestCase {
 
     func testAnswers() async throws {
         let env = ProcessInfo.processInfo.environment
-        guard env["CHAROITE_ANSWER_PROBE"] == "1" else { throw XCTSkip("не запрошено") }
-        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"] ?? "")
+        guard try ProbeTurn.flag("CHAROITE_ANSWER_PROBE") else { throw XCTSkip("не запрошено") }
+        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
         let (armName, params) = ProbeTurn.arm
         let out = try ProbeTurn.reportPath("answer_probe_\(armName)")
+        try await ProbeTurn.isolateIndex(self)
         var report = ProbeTurn.header("ПРОБА ОТВЕТОВ")
         var unanswered = 0, emptySearch = 0
         for q in questions {
-            let outcome = await ProbeTurn.search(q, params: params, root: graph)
-            if outcome.text.isEmpty { emptySearch += 1 }
+            let outcome = try await ProbeTurn.search(q, params: params, root: graph)
             report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(outcome.text.count) знаков):\n"
             for s in outcome.rels ?? [] { report += "   · \(s)\n" }
+            // ответ без источников — из весов модели, качество памяти он не показывает
+            guard !outcome.text.isEmpty else {
+                emptySearch += 1
+                report += "(источников нет — модель не спрашиваю)\n"
+                continue
+            }
             let answer = await ProbeTurn.answer(question: q, vault: outcome.text)
             if answer == nil { unanswered += 1 }
             report += "ОТВЕТ МОДЕЛИ:\n\(answer ?? "(модель не ответила)")\n"
@@ -40,10 +46,10 @@ final class AnswerQualityProbe: XCTestCase {
             return
         }
         print("отчёт: \(out)")
-        // Молчание модели — не ответ: зелёная проба при остановленной Ollama
-        // ничего не проверила (круг 3).
         // Пустой поиск по одному вопросу — законный результат, по всем — не тот граф.
         XCTAssertLessThan(emptySearch, questions.count, "поиск пуст по всем вопросам — проверь граф: \(graph.path)")
+        // Молчание модели — не ответ: зелёная проба при остановленной Ollama
+        // ничего не проверила (круг 3).
         XCTAssertEqual(unanswered, 0, "модель не ответила на \(unanswered) из \(questions.count) — "
                        + "проверь Ollama (\(ProbeTurn.model)); смотри \(out)")
     }

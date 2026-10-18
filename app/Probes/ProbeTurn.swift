@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import CharoiteApp
 
 /// Ход чата для проб и бенча памяти — тем же кодом, что в приложении (№632):
@@ -27,9 +28,16 @@ enum ProbeTurn {
         MemoryScreenPolicy.inferenceIsLocal(base: AppSettings.ollamaURL)
     }
 
+    /// Поиск фоном зовёт `SemanticIndex.refresh(pruneMissing: true)` по графу
+    /// пробы: без подмены файла индекса проба на чужом графе стирает индекс
+    /// приложения (18.10: синтетика из трёх встреч оставила в нём одну).
+    /// Поэтому поиск пробы — только после `isolateIndex`.
     static func search(_ query: String, params: ChatRetrieval.Params,
-                       root: URL) async -> ArchiveSearch.Outcome {
-        await ArchiveSearch.localSearchOutcome(
+                       root: URL) async throws -> ArchiveSearch.Outcome {
+        guard await SemanticIndex.shared.usesTestStore else {
+            throw SetupError(description: "индекс приложения не подменён — сначала ProbeTurn.isolateIndex")
+        }
+        return await ArchiveSearch.localSearchOutcome(
             query: ChatRetrieval.query(from: [.init(role: "user", text: query)]), limit: params.limit, snippet: params.snippet, budget: params.budget,
             root: root, includeLinked: inferenceIsLocal)
     }
@@ -62,10 +70,44 @@ enum ProbeTurn {
     /// Отказ подготовки пробы: тест бросает его и падает с причиной до работы.
     struct SetupError: Error, CustomStringConvertible { let description: String }
 
-    /// Папка графа из окружения — существующий каталог, иначе проба падает,
-    /// а не зеленеет на пустом поиске (круги 4–5).
-    static func graphDir(_ raw: String) throws -> URL {
-        let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+    /// Флаг пробы из окружения: пусто или 0 — нет, 1 — да; прочее — ошибка,
+    /// а не тихий пропуск (`=true` не должен значить «не запрошено»).
+    static func flag(_ name: String) throws -> Bool {
+        let v = (ProcessInfo.processInfo.environment[name] ?? "")
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        switch v {
+        case "", "0", "false", "no": return false
+        case "1", "true", "yes": return true
+        default: throw SetupError(description: "\(name)=\(v): ждём 1 или 0")
+        }
+    }
+
+    /// Индекс пробы — копия файла приложения во временном каталоге, эмбеддер
+    /// настоящий: семантика как в чате, запись и прунинг — только в копию.
+    static func isolateIndex(_ test: XCTestCase) async throws {
+        let dir = (try reportPath("index") as NSString).deletingLastPathComponent
+        let copy = URL(fileURLWithPath: dir)
+            .appendingPathComponent("charoite_probe_index_\(UUID().uuidString).bin")
+        let live = SemanticIndex.liveStoreURL
+        if FileManager.default.fileExists(atPath: live.path) {
+            try FileManager.default.copyItem(at: live, to: copy)
+        }
+        test.addTeardownBlock { try? FileManager.default.removeItem(at: copy) }
+        await SemanticIndex.shared.useForTests(store: copy, loadStore: true, embedder: nil)
+    }
+
+    /// Папка графа из окружения — абсолютный путь к существующему каталогу,
+    /// иначе проба падает, а не зеленеет на пустом поиске (круги 4–5). Пустое
+    /// значение `URL(fileURLWithPath:)` превратил бы в текущий каталог, а
+    /// относительный путь приложение разрешает от корня данных, не от cwd (круг 6).
+    static func graphDir(_ raw: String?) throws -> URL {
+        let raw = raw?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard !raw.isEmpty else { throw SetupError(description: "CHAROITE_GRAPH_DIR не задан") }
+        let path = (raw as NSString).expandingTildeInPath
+        guard path.hasPrefix("/") else {
+            throw SetupError(description: "CHAROITE_GRAPH_DIR=\(raw) — относительный путь; нужен абсолютный или с ~")
+        }
+        let url = URL(fileURLWithPath: path)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
             throw SetupError(description: "папки графа нет: \(url.path) — проверь CHAROITE_GRAPH_DIR")
@@ -83,7 +125,7 @@ enum ProbeTurn {
         while dir.count > 1, dir.hasSuffix("/") { dir.removeLast() }
         var st = stat()
         let why: String?
-        if lstat(dir, &st) != 0 { why = "нет каталога" }
+        if lstat(dir, &st) != 0 { why = "lstat: \(String(cString: strerror(errno)))" }
         else if st.st_mode & S_IFMT != S_IFDIR { why = "не каталог (симлинк?)" }
         else if st.st_uid != getuid() { why = "владелец uid \(st.st_uid), а не \(getuid())" }
         else if st.st_mode & (S_IWGRP | S_IWOTH) != 0 { why = "запись группе/прочим, режим \(String(st.st_mode & 0o7777, radix: 8))" }

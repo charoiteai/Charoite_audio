@@ -67,7 +67,10 @@ actor SemanticIndex {
     private var storeOverride: URL?
 
     #if DEBUG
-    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) async {
+    /// `embedder: nil` — настоящий эмбеддер (живые пробы); `loadStore` — начать
+    /// с содержимого `store`, а не с пустого индекса.
+    func useForTests(store: URL, loadStore: Bool = false,
+                     embedder: (([String]) async -> [[Float]]?)?) async {
         // Актор реентерабелен, а localSearch порождает НЕструктурированный
         // Task.detached с refresh — хвост прошлого теста может жить прямо
         // сейчас, вися на await эмбеддера и держа флаг indexing. gen-токен
@@ -88,8 +91,11 @@ actor SemanticIndex {
         storeOverride = store
         embedOverride = embedder
         index = [:]
-        loaded = true      // не подтягивать настоящий файл с диска
+        loaded = !loadStore    // true — не подтягивать файл с диска
     }
+
+    /// Пишет ли индекс в подменный файл — гейт живых проб.
+    var usesTestStore: Bool { storeOverride != nil }
 
     /// Сохранённый mtime записи — проверки инвалидации в тестах.
     func storedMtime(of path: String) -> Double? {
@@ -104,16 +110,21 @@ actor SemanticIndex {
     }
     #endif
 
+    /// Файл индекса приложения — один на учётку.
+    /// v2: формат сменился с «вектор на файл» на «векторы блоков».
+    /// Старый semantic_index.json просто перестаёт читаться — индекс
+    /// соберётся заново фоном, ломать нечего.
+    static var liveStoreURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Charoite", isDirectory: true)
+            .appendingPathComponent("semantic_index_v2.bin")
+    }
+
     private var storeURL: URL {
         if let storeOverride { return storeOverride }
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-            .appendingPathComponent("Charoite", isDirectory: true)
-        FileManager.default.createPrivateDirectory(at: dir)  // индекс хранит текст встреч
-        // v2: формат сменился с «вектор на файл» на «векторы блоков».
-        // Старый semantic_index.json просто перестаёт читаться — индекс
-        // соберётся заново фоном, ломать нечего.
-        return dir.appendingPathComponent("semantic_index_v2.bin")
+        let url = Self.liveStoreURL
+        FileManager.default.createPrivateDirectory(at: url.deletingLastPathComponent())  // индекс хранит текст встреч
+        return url
     }
 
     private func embedTexts(_ texts: [String]) async -> [[Float]]? {

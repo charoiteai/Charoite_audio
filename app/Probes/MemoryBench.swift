@@ -19,24 +19,27 @@ final class MemoryBench: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         guard let benchPath = env["CHAROITE_BENCH"], !benchPath.isEmpty else { throw XCTSkip("бенч не задан") }
         // Бенч запрошен — дальше любой недостающий вход валит прогон, а не пропускает его.
-        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"] ?? "")
+        let graph = try ProbeTurn.graphDir(env["CHAROITE_GRAPH_DIR"])
         let cases = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
         XCTAssertFalse(cases.isEmpty, "вопросы не разобрались")
 
         // Проверяем ОТВЕТ, а не только выдачу поиска: мерить надо то, что
         // доходит до человека.
-        let withModel = ProcessInfo.processInfo.environment["CHAROITE_BENCH_ANSWERS"] == "1"
+        let withModel = try ProbeTurn.flag("CHAROITE_BENCH_ANSWERS")
         let (armName, params) = ProbeTurn.arm
         let reportPath = try ProbeTurn.reportPath("bench_\(armName)")
         let foundPath = try ProbeTurn.reportPath("bench_\(armName)_found")
+        try await ProbeTurn.isolateIndex(self)
         var report = ProbeTurn.header(withModel
             ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
             : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)")
         var hitTotal = 0, mustTotal = 0
         var unanswered: [String] = []
         var dump = ""   // выдача поиска по вопросам — видно, что дошло до модели
+        var emptyFound = 0
         for c in cases {
-            let found = await ProbeTurn.search(c.q, params: params, root: graph).text
+            let found = try await ProbeTurn.search(c.q, params: params, root: graph).text
+            if found.isEmpty { emptyFound += 1 }
             dump += "=== \(c.q)\n\(found)\n\n"
             let subject: String
             if withModel {
@@ -80,6 +83,11 @@ final class MemoryBench: XCTestCase {
             return
         }
         print("отчёт: \(reportPath)\nвыдача: \(foundPath)")
+        // Пустая выдача по всем вопросам — не тот граф: модель ответила бы из весов (круг 6).
+        guard emptyFound < cases.count else {
+            XCTFail("поиск пуст по всем вопросам — проверь граф: \(graph.path)")
+            return
+        }
         // Молчание модели — не просадка памяти: свой диагноз до порога.
         guard unanswered.isEmpty else {
             XCTFail("модель не ответила на \(unanswered.count) из \(cases.count) — проверь Ollama "
