@@ -96,10 +96,17 @@ actor SemanticIndex {
 
     /// Файл процесса тестов, не заявивших свой store: живой индекс тесты берут только явно.
     static let unclaimedTestStore = FileManager.default.temporaryDirectory
-        .appendingPathComponent("charoite_unclaimed_index_\(ProcessInfo.processInfo.processIdentifier).bin")
+        .appendingPathComponent("charoite_unclaimed_index_\(UUID().uuidString).bin")
 
-    /// Конец подмены: refresh, ждущий эмбеддер, не запишет файл после уборки теста.
-    func endTestSession() { generation += 1 }
+    /// Конец подмены: refresh, ждущий эмбеддер, не запишет файл после уборки
+    /// теста, а запоздавший — уйдёт в файл процесса, не в чужую копию (круг 8).
+    func endTestSession() {
+        generation += 1
+        storeOverride = nil
+        embedOverride = nil
+        index = [:]
+        loaded = false
+    }
 
     /// Пишет ли индекс в подменный файл — гейт живых проб.
     var usesTestStore: Bool { storeOverride != nil }
@@ -264,6 +271,9 @@ actor SemanticIndex {
                              vec: Self.unit(emb)))
             }
         }
+        // Ранний выход по отказу эмбеддера минует проверку в цикле, а за его
+        // await индекс могли подменить — готовые батчи не пишем в чужой store (круг 8).
+        guard gen == generation else { return }
         // Файл записываем, только если проиндексированы ВСЕ его блоки: иначе
         // mtime сохранится при половине блоков, и оставшиеся не доедут уже
         // никогда — файл будет считаться свежим.

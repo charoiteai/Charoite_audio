@@ -46,12 +46,27 @@ final class BuildRealIndex: XCTestCase {
         // живой индекс под XCTest — только явной подменой (№740)
         _ = FileManager.default.createPrivateDirectory(at: SemanticIndex.liveStoreURL.deletingLastPathComponent())
         await SemanticIndex.shared.useForTests(store: SemanticIndex.liveStoreURL, loadStore: true, embedder: nil)
+        addTeardownBlock { await SemanticIndex.shared.endTestSession() }
+        // refresh берёт за вызов не больше потолка блоков фонового поиска (48):
+        // гоняем, пока очередь убывает; файлы без блоков в индекс не попадают никогда.
+        let wanted = files.filter { !Chunker.chunks(of: $0.text, title: ($0.path as NSString).deletingPathExtension).isEmpty }
+        func pending() async -> Int {
+            var n = 0
+            for f in wanted where await SemanticIndex.shared.storedMtime(of: f.path) != f.mtime { n += 1 }
+            return n
+        }
         let t0 = Date()
-        await SemanticIndex.shared.refresh(files: files)
+        var left = await pending()
+        while left > 0 {
+            await SemanticIndex.shared.refresh(files: files)
+            let now = await pending()
+            guard now < left else { break }   // Ollama не отвечает — дальше не сдвинемся
+            left = now
+        }
         let dt = Date().timeIntervalSince(t0)
         let indexed = await SemanticIndex.shared.count()
         let chunks = await SemanticIndex.shared.totalChunks()
-        print("INDEX: готово за \(Int(dt)) с — файлов \(indexed), блоков \(chunks)")
-        XCTAssertGreaterThan(indexed, 0, "индекс пуст — Ollama недоступна или нет модели bge-m3")
+        print("INDEX: готово за \(Int(dt)) с — файлов \(indexed), блоков \(chunks), не проиндексировано \(left)")
+        XCTAssertEqual(left, 0, "не проиндексировано \(left) из \(wanted.count) — Ollama недоступна или нет модели bge-m3")
     }
 }
