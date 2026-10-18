@@ -380,9 +380,10 @@ struct SettingsView: View {
                        "on, agent set up by hand · it also starts outside the schedule",
                        "已开启，启动代理为手动配置 · 它不只按时间表启动")
         case .disabled:
-            return L.t("выключен в файле агента (Disabled) — «Включить» снимет флаг, окружение останется",
-                       "disabled in the agent file (Disabled) — Turn on clears the flag and keeps the environment",
-                       "已在启动代理文件中停用（Disabled）— 「开启」会清除该标志并保留环境变量")
+            let want = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
+            return L.t("выключен в файле агента (Disabled) — «Включить» снимет флаг и поставит \(want), окружение останется",
+                       "disabled in the agent file (Disabled) — Turn on clears the flag and sets \(want), keeping the environment",
+                       "已在启动代理文件中停用（Disabled）— 「开启」会清除该标志并设为 \(want)，保留环境变量")
         case .foreignDisabled:
             return L.t("выключен в файле агента (Disabled), агент настроен вручную — «Выключить» удалит файл",
                        "disabled in the agent file (Disabled), agent set up by hand — Turn off deletes the file",
