@@ -69,8 +69,9 @@ final class MemoryBench: XCTestCase {
                 + "(\(Int(ratio * 100))%)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
         let reportPath = "/tmp/charoite_bench_\(armName).txt"
-        ProbeTurn.writePrivate(report, to: reportPath)
-        ProbeTurn.writePrivate(dump, to: "/tmp/charoite_bench_\(armName)_found.txt")
+        let foundPath = "/tmp/charoite_bench_\(armName)_found.txt"
+        XCTAssertTrue(ProbeTurn.writePrivate(report, to: reportPath), "отчёт не записан: \(reportPath)")
+        XCTAssertTrue(ProbeTurn.writePrivate(dump, to: foundPath), "выдача не записана: \(foundPath)")
         print(report)
         // Молчание модели — не просадка памяти: свой диагноз до порога.
         guard unanswered.isEmpty else {

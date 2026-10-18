@@ -1852,7 +1852,7 @@ private graph or local model must not look like a successful product test.
 
 Without `CHAROITE_BENCH_ANSWERS` it measures only what search delivers;
 with it, the full path through synthesis. The turn is assembled by the same
-code as the chat (`ChatRetrieval`: query from the last questions, 8×800 with a
+code as the chat (`ChatRetrieval`: the chat's query builder over the question, 8×800 with a
 5000-character budget, the chat prompt). Search runs on the local engine over
 the graph folder: a chat that goes through a running brain server (:8100) is
 not measured. `CHAROITE_BENCH_ARM=legacy` switches to the former search
@@ -1861,7 +1861,7 @@ its facts in the total with zero hits, and the run fails with its own message
 rather than as a quality drop. The report lands in
 `/tmp/charoite_bench_<arm>.txt` with the missing facts named, and what search
 delivered — in `/tmp/charoite_bench_<arm>_found.txt`; both are readable by
-the owner only (0600).
+the owner only (0600), and a report that could not be written fails the run.
 
 The question set stays outside the repository — it is about real meetings.
 Format is deliberately trivial:

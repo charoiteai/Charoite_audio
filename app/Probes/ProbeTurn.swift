@@ -34,7 +34,8 @@ enum ProbeTurn {
             root: root, includeLinked: inferenceIsLocal)
     }
 
-    /// Ответ модели или nil — модель не ответила (такой вопрос вне счёта).
+    /// Ответ модели или nil — модель не ответила (бенч считает такой вопрос
+    /// с нулём фактов и падает своим сообщением).
     static func answer(question: String, vault: String) async -> String? {
         let local = inferenceIsLocal
         let system = ChatRetrieval.baseSystem(inferenceIsLocal: local)
@@ -60,11 +61,12 @@ enum ProbeTurn {
 
     /// Отчёт пробы несёт сниппеты встреч и ответы модели — только владельцу
     /// файла (0600), а не всем пользователям машины через общий `/tmp`.
-    static func writePrivate(_ text: String, to path: String) {
-        let fm = FileManager.default
-        try? fm.removeItem(atPath: path)
-        fm.createFile(atPath: path, contents: Data(text.utf8),
-                      attributes: [.posixPermissions: 0o600])
+    /// `createFile` пишет атомарно: симлинк на месте отчёта заменяется, а не
+    /// проходится насквозь (опыт out2), прежний отчёт живёт до замены.
+    /// false — отчёта нет, и вызывающий обязан упасть, а не молчать.
+    static func writePrivate(_ text: String, to path: String) -> Bool {
+        FileManager.default.createFile(atPath: path, contents: Data(text.utf8),
+                                       attributes: [.posixPermissions: PrivateFiles.fileMode])
     }
 
     /// Шапка отчёта: рука, параметры, движок и модель — чтобы два отчёта
