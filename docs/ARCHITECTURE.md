@@ -439,13 +439,18 @@ checked the zone's promises and closed the gaps:
   owns only the label, the slots, `CHAROITE_SLOT` and the log paths — a log
   left in the shared `/tmp` moves next to the data; your own environment keys
   and a wrapper such as `caffeinate` around this install's script stay). Only
-  an agent that runs this install's script is migrated, and a hand-written
-  plist with a `Program` key is left alone — Settings show its own slots next to
+  an agent Settings call the app's own is migrated — this install's script run
+  directly or by `bash`/`sh`/`zsh` (optionally behind `caffeinate` or `arch`),
+  plain hours-and-minutes slots, no other start trigger, not `Disabled` — and
+  any other plist (a `Program` key, `echo <script>`, `Weekday`, `RunAtLoad`) is
+  left alone — Settings show its own slots next to
   the app's (or only that its schedule is not plain hours and minutes — `Weekday`,
   a missing key — or that it also starts outside the schedule — `RunAtLoad`,
   `StartInterval` and the like); the app's own agent with an older version's
   slots is shown as such until the next launch migrates it; bring it to the app's slots by hand (Turn off then Turn on would drop
-  its environment keys and stop a running night). Only the app's own `ai.charoite.nightly.plist` is touched;
+  its environment keys and stop a running night). An agent with `Disabled` in its
+  file is turned back on by Turn on, which clears the flag and keeps the
+  environment keys. Only the app's own `ai.charoite.nightly.plist` is touched;
   agents under other labels are not modified. The 04:15 slot is the last one and never defers. The gate does not
   ask whether a night is running: launchd never starts a second copy of
   the same label. Its outcome and exit code land in `logs/nightly_gate.json`.

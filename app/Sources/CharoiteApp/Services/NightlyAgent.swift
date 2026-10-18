@@ -42,13 +42,16 @@ enum NightlyAgent {
         case otherTrigger        // запуск помимо календаря (`RunAtLoad`, `StartInterval`…)
         case irreducible         // календарь не «час:минута»
         case ours                // наш скрипт, наши слоты и `CHAROITE_SLOT`
-        case stale(String)       // наш скрипт, слоты прежней версии — миграция при старте
+        case stale(String)       // наш скрипт, слоты или гейт прежней версии — миграция при старте
         case manual(String)      // чистые «час:минута», команда не наша
     }
 
-    /// Ключи, по которым launchd запускает агента помимо календаря.
+    /// Ключи, по которым launchd запускает агента помимо календаря. Пустой
+    /// словарь `Sockets`/`MachServices`/`LaunchEvents` повода не даёт (круг 10).
     private static func hasOtherTrigger(_ plist: [String: Any]) -> Bool {
-        for key in ["StartInterval", "LaunchEvents", "Sockets", "MachServices"] where plist[key] != nil {
+        if plist["StartInterval"] != nil { return true }
+        for key in ["LaunchEvents", "Sockets", "MachServices"] where plist[key] != nil {
+            if let d = plist[key] as? [String: Any], d.isEmpty { continue }
             return true
         }
         for key in ["RunAtLoad", "StartOnMount"] where (plist[key] as? Bool) == true { return true }
@@ -77,6 +80,13 @@ enum NightlyAgent {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
                   as? [String: Any] else { return .unreadable }
+        return classify(plist, script: script)
+    }
+
+    /// Один ответ на «что за агент лежит в файле»: его читают подпись Настроек
+    /// и миграция. Раньше миграция решала своим признаком и переписывала агент,
+    /// который подпись называла ручным (`Weekday`, `RunAtLoad`, круг 10).
+    static func classify(_ plist: [String: Any], script: String) -> Shown {
         if (plist["Disabled"] as? Bool) == true { return .disabled }
         guard !hasOtherTrigger(plist) else { return .otherTrigger }
         let raw = plist["StartCalendarInterval"]
@@ -117,6 +127,9 @@ enum NightlyAgent {
     /// включивших ночь до 16.08 там общий /tmp (аудит 16.08, круг 3).
     static func reconciled(installed: [String: Any]?, expected: [String: Any]) -> [String: Any] {
         guard var out = installed else { return expected }
+        // Установка — это включение: выключенный в файле агент кнопкой
+        // «Включить» снова запускается; миграция `.disabled` не трогает (круг 10).
+        out.removeValue(forKey: "Disabled")
         for key in ["Label", "StartCalendarInterval", "StandardOutPath", "StandardErrorPath"] {
             out[key] = expected[key]
         }
@@ -145,20 +158,33 @@ enum NightlyAgent {
     static func needsMigration(installed: [String: Any]?, expected: [String: Any],
                                nightRunning: Bool) -> Bool {
         guard let installed, !nightRunning,
-              let want = (expected["ProgramArguments"] as? [String])?.last,
-              runsScript(installed, want) else { return false }
+              let want = (expected["ProgramArguments"] as? [String])?.last else { return false }
+        // Мигрирует только то, что подпись называет нашим (круг 10).
+        switch classify(installed, script: want) {
+        case .ours, .stale: break
+        default: return false
+        }
         let target = reconciled(installed: installed, expected: expected)
         return !(target as NSDictionary).isEqual(to: installed)
     }
 
     /// Агент исполняет скрипт этой установки: `Program` нет (launchd исполнял бы
-    /// его вместо argv[0], круги 4–5), скрипт — последний аргумент: так пишет
-    /// приложение и обёртка `caffeinate …/bin/bash <скрипт>`, а не строка `sh -c`
-    /// и не аргумент чужой программы (круг 9). Один признак для подписи,
-    /// приведения и миграции.
+    /// его вместо argv[0], круги 4–5), а команда — одна из известных форм:
+    /// `<скрипт>` или `bash|sh|zsh <скрипт>`, возможно за обёрткой `caffeinate`
+    /// или `arch` с флагами. Последнего аргумента мало: `echo <скрипт>`,
+    /// `bash -n <скрипт>`, `sh -c "…" <скрипт>` его не исполняют (круг 10).
+    /// Неизвестная форма — не наша, по умолчанию безопасно.
     static func runsScript(_ plist: [String: Any], _ script: String) -> Bool {
-        plist["Program"] == nil
-            && ((plist["ProgramArguments"] as? [String])?.last.map { samePath($0, script) } ?? false)
+        guard plist["Program"] == nil, var args = plist["ProgramArguments"] as? [String] else { return false }
+        if let first = args.first, ["/usr/bin/caffeinate", "/usr/bin/arch"].contains(first) {
+            args.removeFirst()
+            while args.first?.hasPrefix("-") == true { args.removeFirst() }
+        }
+        switch args.count {
+        case 1: return samePath(args[0], script)
+        case 2: return ["/bin/bash", "/bin/sh", "/bin/zsh"].contains(args[0]) && samePath(args[1], script)
+        default: return false
+        }
     }
 
     static func samePath(_ a: String, _ b: String) -> Bool {

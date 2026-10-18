@@ -140,8 +140,10 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button(nightlyInstalled ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
-                        nightlyInstalled ? nightlyDisable() : nightlyEnable()
+                    // выключенный в файле агент включается установкой, а не удалением файла
+                    let on = nightlyInstalled && !nightlyDisabledInFile
+                    Button(on ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
+                        on ? nightlyDisable() : nightlyEnable()
                     }
                     .charoite(.regular, .s)
                     if !nightlyNote.isEmpty {
@@ -341,13 +343,21 @@ struct SettingsView: View {
         return FileManager.default.fileExists(atPath: NightlyAgent.plistURL.path)
     }
 
+    private var nightlyDisabledInFile: Bool {
+        _ = nightlyTick
+        return NightlyAgent.shown(script: nightlyScript) == .disabled
+    }
+
+    private var nightlyScript: String {
+        AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh").path
+    }
+
     /// Подпись по файлу агента: ручной plist честно показывает свои слоты
     /// рядом со слотами приложения. Совета «Выключить, затем Включить» нет:
     /// переустановка стирает окружение ручного plist и обрывает идущую ночь (круг 7).
     private var nightlyLabel: String {
         guard nightlyInstalled else { return L.t("выключен", "off", "已关闭") }
-        let script = AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh").path
-        switch NightlyAgent.shown(script: script) {
+        switch NightlyAgent.shown(script: nightlyScript) {
         case .ours:
             let have = NightlyAgent.slotsText
             return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
@@ -356,9 +366,9 @@ struct SettingsView: View {
                        "on, agent set up by hand · \(have) (the app installs \(NightlyAgent.slotsText))",
                        "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(NightlyAgent.slotsText)）")
         case .stale(let have):
-            return L.t("включён · слоты прежней версии \(have) — приложение обновит их при следующем запуске",
-                       "on · previous version's slots \(have) — the app updates them on next launch",
-                       "已开启 · 旧版本时段 \(have) — 应用下次启动时更新")
+            return L.t("включён · настроен прежней версией приложения (\(have)) — приведу при запуске, если ночь не идёт",
+                       "on · set up by an earlier app version (\(have)) — updated at launch unless the night is running",
+                       "已开启 · 由旧版应用配置（\(have)）— 启动时若夜间任务未在运行则更新")
         case .irreducible:
             return L.t("включён, агент настроен вручную · расписание не сводится к часам и минутам",
                        "on, agent set up by hand · its schedule is not plain hours and minutes",
@@ -368,7 +378,9 @@ struct SettingsView: View {
                        "on, agent set up by hand · it also starts outside the schedule",
                        "已开启，启动代理为手动配置 · 它不只按时间表启动")
         case .disabled:
-            return L.t("выключен в файле агента (Disabled)", "disabled in the agent file (Disabled)", "已在启动代理文件中停用（Disabled）")
+            return L.t("выключен в файле агента (Disabled) — «Включить» снимет флаг, окружение останется",
+                       "disabled in the agent file (Disabled) — Turn on clears the flag and keeps the environment",
+                       "已在启动代理文件中停用（Disabled）— 「开启」会清除该标志并保留环境变量")
         case .unreadable:
             return L.t("включён · файл агента не читается", "on · the agent file cannot be read", "已开启 · 无法读取启动代理文件")
         }

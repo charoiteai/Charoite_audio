@@ -259,6 +259,13 @@ final class NightlyScheduleTests: XCTestCase {
                        .manual(NightlyAgent.slotsText), "скрипт не последний аргумент")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/caffeinate", "-i", "/bin/bash", script] },
                        .ours, "обёртка caffeinate")
+        XCTAssertEqual(try shown { $0["ProgramArguments"] = [script] }, .ours, "скрипт сам")
+        for (why, args) in [("echo", ["/bin/echo", script]), ("bash -n", ["/bin/bash", "-n", script]),
+                            ("sh -c с аргументом", ["/bin/sh", "-c", "echo hi", script]),
+                            ("чужая обёртка", ["/usr/bin/logger", "/bin/bash", script])] {
+            XCTAssertEqual(try shown { $0["ProgramArguments"] = args }, .manual(NightlyAgent.slotsText), why)
+        }
+        XCTAssertEqual(try shown { $0["Sockets"] = [String: Any]() }, .ours, "пустой Sockets — не повод")
         XCTAssertEqual(try shown { $0["Disabled"] = true }, .disabled)
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
                        .manual(NightlyAgent.slotsText), "чужая команда")
@@ -291,13 +298,37 @@ final class NightlyScheduleTests: XCTestCase {
 
     /// Миграция приводит слоты и не снимает чужие поводы запуска: `RunAtLoad`
     /// человека остаётся, подпись честно говорит «не только по расписанию» (круг 9).
-    func testMigrationKeepsOtherTrigger() {
-        var old = oldJob()
-        old["RunAtLoad"] = true
-        XCTAssertTrue(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false))
-        let out = NightlyAgent.reconciled(installed: old, expected: expected)
-        XCTAssertEqual(out["RunAtLoad"] as? Bool, true)
-        XCTAssertEqual((out["StartCalendarInterval"] as? [[String: Int]])?.count, NightlyAgent.slots.count)
+    /// Миграция — только у агента, которого подпись называет нашим: ручное
+    /// расписание и другие поводы запуска приводит человек (круг 10).
+    func testMigrationOnlyForOursOrStale() {
+        for (why, edit) in [
+            ("RunAtLoad", { $0["RunAtLoad"] = true }),
+            ("только вторники", { $0["StartCalendarInterval"] = ["Hour": 19, "Minute": 0, "Weekday": 2] }),
+            ("каждый час", { $0["StartCalendarInterval"] = ["Minute": 15] }),
+            ("пустой массив", { $0["StartCalendarInterval"] = [[String: Any]]() }),
+            ("нет расписания", { $0.removeValue(forKey: "StartCalendarInterval") }),
+            ("Disabled", { $0["Disabled"] = true }),
+            ("echo", { $0["ProgramArguments"] = ["/bin/echo", "/x/scripts/nightly.sh"] }),
+        ] as [(String, (inout [String: Any]) -> Void)] {
+            var old = oldJob()
+            edit(&old)
+            XCTAssertFalse(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false), why)
+        }
+    }
+
+    /// «Включить» на выключенном в файле агенте снимает `Disabled`, окружение остаётся.
+    func testInstallClearsDisabledKeepsEnv() throws {
+        let (root, agents) = try fixture()
+        var cur = NightlyAgent.job(script: root.path + "/scripts/nightly.sh",
+                                   logPath: root.path + "/logs/nightly.log")
+        cur["Disabled"] = true
+        cur["EnvironmentVariables"] = ["CHAROITE_SLOT": "1", "NIGHTLY_MAX_H": "3"]
+        let target = NightlyAgent.plistURL(in: agents)
+        try write(cur, to: target)
+        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
+        let back = try read(target)
+        XCTAssertNil(back["Disabled"])
+        XCTAssertEqual((back["EnvironmentVariables"] as? [String: Any])?["NIGHTLY_MAX_H"] as? String, "3")
     }
 
     /// Скрипт внутри строки `sh -c` — не наш агент: миграция его не трогает (круг 9).
