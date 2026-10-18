@@ -32,11 +32,17 @@ enum NightlyAgent {
 
     /// Умеет ли скрипт гейт слотов. Код в папке данных бывает старше
     /// приложения (DMG поверх прежнего клона): четыре слота без гейта —
-    /// четыре полных ночи с облачными шагами (финальный Opus №630). Скрипта
-    /// нет — не судим: установка всё равно вернёт `.noScript`.
+    /// четыре полных ночи с облачными шагами (финальный Opus №630). Гейт —
+    /// два файла: `nightly.sh` читает `CHAROITE_SLOT` и зовёт `night_gate.py`,
+    /// а сбой гейта даёт `go` — нужны оба. Байты, не текст: bash исполнит и
+    /// скрипт не в UTF-8 (круг 14). Скрипта нет — не судим: установка вернёт `.noScript`.
     static func knowsSlots(_ script: String) -> Bool {
-        guard let text = try? String(contentsOfFile: script, encoding: .utf8) else { return true }
-        return text.contains("CHAROITE_SLOT")
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: script) else { return true }
+        let gate = URL(fileURLWithPath: script).deletingLastPathComponent().appendingPathComponent("night_gate.py")
+        guard fm.fileExists(atPath: gate.path),
+              let data = fm.contents(atPath: script) else { return false }
+        return data.range(of: Data("CHAROITE_SLOT".utf8)) != nil
     }
 
     /// Слоты, которые этот скрипт выдержит: с гейтом — вечер и утро, без — прежний 04:15.
@@ -108,9 +114,12 @@ enum NightlyAgent {
         let shown = schedule(plist, script: script)
         // «Включить» переписывает файл установкой — она только у своего агента;
         // чужой выключенный подписан выключенным, но не переписывается (круги 11–12).
+        // «Свой» — по команде, а не по часам: свой скрипт с ручным часом тоже
+        // включается кнопкой, а не только удаляется (круг 14).
         guard (plist["Disabled"] as? Bool) == true else { return shown }
         switch shown {
         case .ours, .stale: return .disabled
+        case .manual where runsScript(plist, script): return .disabled
         default: return .foreignDisabled
         }
     }
@@ -301,7 +310,7 @@ enum NightlyAgent {
         guard needsMigration(installed: installed, expected: job(script: script, logPath: logPath),
                              nightRunning: running) else { return }
         switch install(root: root) {
-        case .done: NSLog("ночь: агент приведён к слотам \(slotsText)")
+        case .done: NSLog("ночь: агент приведён к слотам \(text(of: slots(for: script)))")
         case .noScript: NSLog("ночь: миграция агента — scripts/nightly.sh не найден")
         case .failed(let why): NSLog("ночь: миграция агента не удалась — \(why)")
         }

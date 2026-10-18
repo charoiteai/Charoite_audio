@@ -450,9 +450,10 @@ checked the zone's promises and closed the gaps:
   app itself wrote — 04:15 alone, or these slots without `CHAROITE_SLOT`; it is
   shown as such until the next launch migrates it. Any other hours (set by hand
   per SETUP) make the agent manual, and it is not migrated. If the data folder
-  holds code older than the app (its `nightly.sh` does not know
-  `CHAROITE_SLOT`), the app keeps the single 04:15 slot: without the gate every
-  slot would be a full night. The app's own agent with `Disabled` in its
+  holds code older than the app (`scripts/night_gate.py` is missing or
+  `nightly.sh` does not know `CHAROITE_SLOT`), the app keeps the single 04:15
+  slot — for such code it is the final state, not an older one: without the gate
+  every slot would be a full night. The app's own agent with `Disabled` in its
   file is turned back on by Turn on, which clears the flag and keeps the
   environment keys. A foreign agent with `Disabled` is shown as disabled:
   there is no Turn on, Turn off deletes the file, and the night status ignores it. Only the app's own `ai.charoite.nightly.plist` is touched;

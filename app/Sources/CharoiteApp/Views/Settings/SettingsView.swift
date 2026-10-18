@@ -360,12 +360,13 @@ struct SettingsView: View {
         guard nightlyInstalled else { return L.t("выключен", "off", "已关闭") }
         switch NightlyAgent.shown(script: nightlyScript) {
         case .ours:
-            let have = NightlyAgent.slotsText
+            let have = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
             return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
         case .manual(let have):
-            return L.t("включён, агент настроен вручную · \(have) (приложение ставит \(NightlyAgent.slotsText))",
-                       "on, agent set up by hand · \(have) (the app installs \(NightlyAgent.slotsText))",
-                       "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(NightlyAgent.slotsText)）")
+            let app = NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))
+            return L.t("включён, агент настроен вручную · \(have) (приложение ставит \(app))",
+                       "on, agent set up by hand · \(have) (the app installs \(app))",
+                       "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(app)）")
         case .stale(let have):
             return L.t("включён · настроен прежней версией приложения (\(have)) — приведу при запуске, если ночь не идёт",
                        "on · set up by an earlier app version (\(have)) — updated at launch unless the night is running",

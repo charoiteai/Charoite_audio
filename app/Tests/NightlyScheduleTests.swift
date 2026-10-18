@@ -87,6 +87,7 @@ final class NightlyScheduleTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         // путь разрешается только у существующего файла — скрипт есть у любой установки
         FileManager.default.createFile(atPath: real.path + "/scripts/nightly.sh", contents: gatedScript)
+        FileManager.default.createFile(atPath: real.path + "/scripts/night_gate.py", contents: Data())
         let link = dir.appendingPathComponent("link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
         let want = NightlyAgent.job(script: real.path + "/scripts/nightly.sh", logPath: "/l")
@@ -377,6 +378,27 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual((try read(target)["StartCalendarInterval"] as? [Any])?.count, 1)
     }
 
+    /// Гейт — два файла: строка в скрипте без night_gate.py (сбой гейта — go)
+    /// и скрипт не в UTF-8 (bash его исполнит) не дают четырёх слотов (круг 14).
+    func testGateNeedsBothFilesReadAsBytes() throws {
+        let (root, _) = try fixture(gate: false)
+        XCTAssertFalse(NightlyAgent.knowsSlots(root.path + "/scripts/nightly.sh"), "нет night_gate.py")
+        var plain = Data("# caf".utf8); plain.append(0xE9); plain.append(contentsOf: Data("\necho night\n".utf8))
+        let (root2, _) = try fixture(script: plain)
+        XCTAssertFalse(NightlyAgent.knowsSlots(root2.path + "/scripts/nightly.sh"), "latin-1 без флага")
+        var latin = Data("# caf".utf8); latin.append(0xE9); latin.append(contentsOf: Data("\n[ \"${CHAROITE_SLOT:-}\" = 1 ]\n".utf8))
+        let (root3, _) = try fixture(script: latin)
+        XCTAssertTrue(NightlyAgent.knowsSlots(root3.path + "/scripts/nightly.sh"), "latin-1 с флагом — по байтам")
+    }
+
+    /// Свой скрипт с ручным часом и Disabled включается кнопкой, а не только удаляется.
+    func testOwnScriptManualHourDisabledIsOurs() {
+        var mine = oldJob()
+        mine["StartCalendarInterval"] = ["Hour": 2, "Minute": 30]
+        mine["Disabled"] = true
+        XCTAssertEqual(NightlyAgent.classify(mine, script: "/x/scripts/nightly.sh"), .disabled)
+    }
+
     /// Свой час по SETUP переживает старт приложения.
     func testManualHourIsNotMigrated() {
         var mine = oldJob()
@@ -394,12 +416,13 @@ final class NightlyScheduleTests: XCTestCase {
     /// Скрипт этой версии: знает гейт слотов. Без строки — код старше приложения.
     private let gatedScript = Data("if [ \"${CHAROITE_SLOT:-}\" = 1 ]; then :; fi\n".utf8)
 
-    private func fixture(script: Data? = nil) throws -> (root: URL, agents: URL) {
+    private func fixture(script: Data? = nil, gate: Bool = true) throws -> (root: URL, agents: URL) {
         let d = try tmpDir()
         let root = d.appendingPathComponent("root")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("scripts"),
                                                 withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: root.path + "/scripts/nightly.sh", contents: script ?? gatedScript)
+        if gate { FileManager.default.createFile(atPath: root.path + "/scripts/night_gate.py", contents: Data()) }
         let agents = d.appendingPathComponent("LaunchAgents")
         try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
         return (root, agents)
