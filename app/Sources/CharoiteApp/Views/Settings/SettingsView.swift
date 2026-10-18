@@ -151,9 +151,9 @@ struct SettingsView: View {
                         Text(nightlyNote).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text(L.t("Ставит launchd-задачу на \(NightlyAgent.slotsText): ночь идёт в первый слот, который застанет машину, остальные слоты её не повторяют. Tier-3 ревизия ядер графа (с бэкапами), досье по темам, бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в logs/nightly.log.",
-                         "Installs a launchd job at \(NightlyAgent.slotsText): the night runs in the first slot that finds the Mac awake, later slots skip it. Tier-3 review of graph cores (with backups), topic dossiers, the _Today.md brief and a memory-quality bench. All local; log in logs/nightly.log.",
-                         "在 \(NightlyAgent.slotsText) 安装 launchd 任务：夜间任务在 Mac 醒着的第一个时段运行，之后的时段不再重复。图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 logs/nightly.log。"))
+                Text(L.t("Ставит launchd-задачу на \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))): ночь идёт в первый слот, который застанет машину, остальные слоты её не повторяют. Tier-3 ревизия ядер графа (с бэкапами), досье по темам, бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в logs/nightly.log.",
+                         "Installs a launchd job at \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))): the night runs in the first slot that finds the Mac awake, later slots skip it. Tier-3 review of graph cores (with backups), topic dossiers, the _Today.md brief and a memory-quality bench. All local; log in logs/nightly.log.",
+                         "在 \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))) 安装 launchd 任务：夜间任务在 Mac 醒着的第一个时段运行，之后的时段不再重复。图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 logs/nightly.log。"))
                     .font(.caption).foregroundStyle(.secondary)
 
                 // Облачная поверхность (правило ревизии: поверхность обозначает
@@ -398,7 +398,7 @@ struct SettingsView: View {
     private func nightlyEnable() {
         switch NightlyAgent.install(root: AppSettings.charoiteRoot) {
         case .done:
-            nightlyNote = L.t("готово — ночь в \(NightlyAgent.slotsText), что застанет машину", "done — the night runs at \(NightlyAgent.slotsText), whichever finds the Mac awake", "完成 — 夜间任务在 \(NightlyAgent.slotsText) 运行，以 Mac 醒着的时刻为准")
+            nightlyNote = L.t("готово — ночь в \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))), что застанет машину", "done — the night runs at \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))), whichever finds the Mac awake", "完成 — 夜间任务在 \(NightlyAgent.text(of: NightlyAgent.slots(for: nightlyScript))) 运行，以 Mac 醒着的时刻为准")
         case .noScript:
             nightlyNote = L.t("scripts/nightly.sh не найден — проверьте путь установки", "scripts/nightly.sh not found — check the install path", "未找到 scripts/nightly.sh — 请检查安装路径")
         case .failed(let error):

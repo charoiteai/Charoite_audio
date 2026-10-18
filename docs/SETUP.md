@@ -388,8 +388,10 @@ cycle → Turn on writes the launchd agent below (slots 19:00, 20:00, 21:00 and
 04:15 — the night runs in the first one that finds the Mac awake; log in
 `logs/nightly.log` next to the data). An agent installed by an older version
 is brought to these slots when the app starts. If the data folder holds older
-code (`scripts/night_gate.py` is missing or `nightly.sh` does not know
-`CHAROITE_SLOT`), the app keeps the single 04:15 slot; do the same by hand. By hand:
+code (no non-empty `scripts/night_gate.py`, or `nightly.sh` neither knows
+`CHAROITE_SLOT` nor calls the gate), the app keeps the single 04:15 slot; do the
+same by hand: keep only the 4:15 dict in the XML below and drop
+`EnvironmentVariables`. By hand:
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->

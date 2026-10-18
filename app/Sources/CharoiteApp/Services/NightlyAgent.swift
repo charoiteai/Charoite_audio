@@ -35,14 +35,16 @@ enum NightlyAgent {
     /// четыре полных ночи с облачными шагами (финальный Opus №630). Гейт —
     /// два файла: `nightly.sh` читает `CHAROITE_SLOT` и зовёт `night_gate.py`,
     /// а сбой гейта даёт `go` — нужны оба. Байты, не текст: bash исполнит и
-    /// скрипт не в UTF-8 (круг 14). Скрипта нет — не судим: установка вернёт `.noScript`.
+    /// скрипт не в UTF-8 (круг 14). Скрипт должен и звать гейт, и гейт —
+    /// не пустой файл: пустой отвечает «go» в каждый слот (круг 15).
+    /// Скрипта нет — не судим: установка вернёт `.noScript`.
     static func knowsSlots(_ script: String) -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: script) else { return true }
         let gate = URL(fileURLWithPath: script).deletingLastPathComponent().appendingPathComponent("night_gate.py")
-        guard fm.fileExists(atPath: gate.path),
+        guard let size = (try? fm.attributesOfItem(atPath: gate.path))?[.size] as? Int, size > 0,
               let data = fm.contents(atPath: script) else { return false }
-        return data.range(of: Data("CHAROITE_SLOT".utf8)) != nil
+        return ["CHAROITE_SLOT", "night_gate.py"].allSatisfy { data.range(of: Data($0.utf8)) != nil }
     }
 
     /// Слоты, которые этот скрипт выдержит: с гейтом — вечер и утро, без — прежний 04:15.
@@ -116,10 +118,11 @@ enum NightlyAgent {
         // чужой выключенный подписан выключенным, но не переписывается (круги 11–12).
         // «Свой» — по команде, а не по часам: свой скрипт с ручным часом тоже
         // включается кнопкой, а не только удаляется (круг 14).
+        // Свой с `RunAtLoad`/`Weekday` — тоже свой (круг 15).
         guard (plist["Disabled"] as? Bool) == true else { return shown }
+        if runsScript(plist, script) { return .disabled }
         switch shown {
         case .ours, .stale: return .disabled
-        case .manual where runsScript(plist, script): return .disabled
         default: return .foreignDisabled
         }
     }
