@@ -53,10 +53,16 @@ final class BuildRealIndex: XCTestCase {
         guard !files.isEmpty else { XCTFail("в графе нет ни одного .md: \(graph.path)"); return }
 
         // Открытое приложение пишет тот же файл своим снимком: последний
-        // писатель затирает записи другого (out11). Чужой HOME — другой файл.
-        let realHome = String(cString: getpwuid(getuid()).pointee.pw_dir)
-        let appOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: "ai.charoite.app").isEmpty
-        guard !(appOpen && SemanticIndex.liveStoreURL.path.hasPrefix(realHome + "/")) else {
+        // писатель затирает записи другого (out11). Сверяем сам файл, а не
+        // префикс HOME; `swift run` идёт без bundle id (out12). Замок писателя — №534.
+        guard let pw = getpwuid(getuid()) else { XCTFail("нет passwd-записи для uid \(getuid())"); return }
+        let appStore = URL(fileURLWithPath: String(cString: pw.pointee.pw_dir))
+            .appendingPathComponent("Library/Application Support/Charoite/semantic_index_v2.bin")
+        let sameFile = SemanticIndex.liveStoreURL.resolvingSymlinksInPath().path == appStore.resolvingSymlinksInPath().path
+        let appOpen = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "ai.charoite.app" || $0.executableURL?.lastPathComponent == "CharoiteApp"
+        }
+        guard !(appOpen && sameFile) else {
             XCTFail("Чароит открыт и пишет тот же индекс — закрой приложение и повтори"); return
         }
 
