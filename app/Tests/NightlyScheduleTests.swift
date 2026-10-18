@@ -159,6 +159,13 @@ final class NightlyScheduleTests: XCTestCase {
         }
     }
 
+    /// `Disabled=false` — агент уже включён: ключ не повод для миграции (круг 11).
+    func testDisabledFalseDoesNotMigrate() {
+        var cur = expected
+        cur["Disabled"] = false
+        XCTAssertFalse(NightlyAgent.needsMigration(installed: cur, expected: expected, nightRunning: false))
+    }
+
     /// Только лог в /tmp при правильных слотах — тоже повод переписать.
     func testTmpLogAloneNeedsMigration() {
         var cur = expected
