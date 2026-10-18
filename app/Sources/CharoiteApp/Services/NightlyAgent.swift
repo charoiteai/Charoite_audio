@@ -87,7 +87,17 @@ enum NightlyAgent {
     /// и миграция. Раньше миграция решала своим признаком и переписывала агент,
     /// который подпись называла ручным (`Weekday`, `RunAtLoad`, круг 10).
     static func classify(_ plist: [String: Any], script: String) -> Shown {
-        if (plist["Disabled"] as? Bool) == true { return .disabled }
+        let shown = schedule(plist, script: script)
+        // «Включить» переписывает файл установкой — флаг значим только у своего
+        // агента; чужой выключенный показываем как чужой и не трогаем (круг 11).
+        guard (plist["Disabled"] as? Bool) == true else { return shown }
+        switch shown {
+        case .ours, .stale: return .disabled
+        default: return shown
+        }
+    }
+
+    private static func schedule(_ plist: [String: Any], script: String) -> Shown {
         guard !hasOtherTrigger(plist) else { return .otherTrigger }
         let raw = plist["StartCalendarInterval"]
         let items: [Any] = (raw as? [Any]) ?? (raw is [String: Any] ? [raw as Any] : [])
@@ -175,16 +185,11 @@ enum NightlyAgent {
     /// `bash -n <скрипт>`, `sh -c "…" <скрипт>` его не исполняют (круг 10).
     /// Неизвестная форма — не наша, по умолчанию безопасно.
     static func runsScript(_ plist: [String: Any], _ script: String) -> Bool {
-        guard plist["Program"] == nil, var args = plist["ProgramArguments"] as? [String] else { return false }
-        if let first = args.first, ["/usr/bin/caffeinate", "/usr/bin/arch"].contains(first) {
-            args.removeFirst()
-            while args.first?.hasPrefix("-") == true { args.removeFirst() }
-        }
-        switch args.count {
-        case 1: return samePath(args[0], script)
-        case 2: return ["/bin/bash", "/bin/sh", "/bin/zsh"].contains(args[0]) && samePath(args[1], script)
-        default: return false
-        }
+        // Своим считаем ровно то, что пишет `job()`: обёртки и другие оболочки
+        // со своими флагами разбирать не берёмся — такой агент ручной (круг 11).
+        guard plist["Program"] == nil, let args = plist["ProgramArguments"] as? [String],
+              args.count == 2, args[0] == "/bin/bash", args[1].hasPrefix("/") else { return false }
+        return samePath(args[1], script)
     }
 
     static func samePath(_ a: String, _ b: String) -> Bool {

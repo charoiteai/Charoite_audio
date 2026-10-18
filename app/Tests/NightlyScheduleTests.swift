@@ -144,22 +144,19 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertEqual(env["CHAROITE_SLOT"] as? String, "1")
     }
 
-    /// Обёртка `caffeinate` вокруг скрипта этой установки переживает миграцию,
-    /// а лог из общего /tmp переезжает к данным.
-    func testWrapperKeptTmpLogMoved() throws {
-        let (root, agents) = try fixture()
-        let script = root.path + "/scripts/nightly.sh"
-        var old = oldJob(script: script)
-        let wrapped = ["/usr/bin/caffeinate", "-i", "/bin/bash", script]
-        old["ProgramArguments"] = wrapped
-        old["StandardOutPath"] = "/tmp/nightly.log"
-        let target = NightlyAgent.plistURL(in: agents)
-        try write(old, to: target)
-        XCTAssertEqual(NightlyAgent.install(root: root, agentsDir: agents) { _ in }, .done)
-        let back = try read(target)
-        XCTAssertEqual(back["ProgramArguments"] as? [String], wrapped)
-        XCTAssertEqual(back["StandardOutPath"] as? String, root.path + "/logs/nightly.log")
-        XCTAssertEqual((back["StartCalendarInterval"] as? [Any])?.count, 4)
+    /// Обёртка `caffeinate` (и флаги с аргументом, `-t <сек>`) — ручной агент:
+    /// разбирать чужие флаги не берёмся, миграция и установка его не трогают (круг 11).
+    func testWrapperIsManualNotMigrated() throws {
+        let script = "/x/scripts/nightly.sh"
+        for wrapped in [["/usr/bin/caffeinate", "-i", "/bin/bash", script],
+                        ["/usr/bin/caffeinate", "-t", script],
+                        ["/usr/bin/arch", "-arm64", "/bin/bash", script]] {
+            var old = oldJob(script: script)
+            old["ProgramArguments"] = wrapped
+            XCTAssertEqual(NightlyAgent.classify(old, script: script), .manual("04:15"), "\(wrapped)")
+            XCTAssertFalse(NightlyAgent.needsMigration(installed: old, expected: expected, nightRunning: false),
+                           "\(wrapped)")
+        }
     }
 
     /// Только лог в /tmp при правильных слотах — тоже повод переписать.
@@ -245,7 +242,9 @@ final class NightlyScheduleTests: XCTestCase {
             try write(job, to: url)
             return NightlyAgent.shown(at: url, script: script)
         }
-        func cal(_ v: Any?) -> (inout [String: Any]) -> Void { { $0["StartCalendarInterval"] = v } }
+        func cal(_ v: Any?, disabled: Bool = false) -> (inout [String: Any]) -> Void {
+            { $0["StartCalendarInterval"] = v; if disabled { $0["Disabled"] = true } }
+        }
         XCTAssertEqual(try shown { _ in }, .ours)
         XCTAssertEqual(try shown(cal([["Hour": 4, "Minute": 15], ["Hour": 21, "Minute": 0],
                                       ["Hour": 20, "Minute": 0], ["Hour": 19, "Minute": 0]])), .ours,
@@ -257,16 +256,20 @@ final class NightlyScheduleTests: XCTestCase {
                        .manual(NightlyAgent.slotsText), "скрипт внутри строки sh -c")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/open", script, "-g"] },
                        .manual(NightlyAgent.slotsText), "скрипт не последний аргумент")
-        XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/usr/bin/caffeinate", "-i", "/bin/bash", script] },
-                       .ours, "обёртка caffeinate")
-        XCTAssertEqual(try shown { $0["ProgramArguments"] = [script] }, .ours, "скрипт сам")
         for (why, args) in [("echo", ["/bin/echo", script]), ("bash -n", ["/bin/bash", "-n", script]),
+                            ("обёртка caffeinate", ["/usr/bin/caffeinate", "-i", "/bin/bash", script]),
+                            ("caffeinate -t", ["/usr/bin/caffeinate", "-t", script]),
+                            ("скрипт сам", [script]), ("sh", ["/bin/sh", script]),
+                            ("относительный путь", ["/bin/bash", "scripts/nightly.sh"]),
                             ("sh -c с аргументом", ["/bin/sh", "-c", "echo hi", script]),
                             ("чужая обёртка", ["/usr/bin/logger", "/bin/bash", script])] {
             XCTAssertEqual(try shown { $0["ProgramArguments"] = args }, .manual(NightlyAgent.slotsText), why)
         }
         XCTAssertEqual(try shown { $0["Sockets"] = [String: Any]() }, .ours, "пустой Sockets — не повод")
         XCTAssertEqual(try shown { $0["Disabled"] = true }, .disabled)
+        XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15], disabled: true)), .disabled, "выключенный прежний")
+        XCTAssertEqual(try shown { $0["Disabled"] = true; $0["ProgramArguments"] = ["/bin/echo", script] },
+                       .manual(NightlyAgent.slotsText), "выключенный чужой — чужой, «Включить» его не перепишет")
         XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
                        .manual(NightlyAgent.slotsText), "чужая команда")
         XCTAssertEqual(try shown { $0["Program"] = "/bin/zsh" }, .manual(NightlyAgent.slotsText), "Program")
