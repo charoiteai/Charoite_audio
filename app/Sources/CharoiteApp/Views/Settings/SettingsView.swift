@@ -385,9 +385,9 @@ struct SettingsView: View {
                        "disabled in the agent file (Disabled) — Turn on clears the flag and sets \(want), keeping the environment",
                        "已在启动代理文件中停用（Disabled）— 「开启」会清除该标志并设为 \(want)，保留环境变量")
         case .foreignDisabled:
-            return L.t("выключен в файле агента (Disabled), его не переписать установкой — «Выключить» удалит файл",
-                       "disabled in the agent file (Disabled), install cannot rewrite it — Turn off deletes the file",
-                       "已在启动代理文件中停用（Disabled），安装无法改写 —「关闭」会删除该文件")
+            return L.t("выключен в файле агента (Disabled), «Включить» его не трогает — «Выключить» удалит файл",
+                       "disabled in the agent file (Disabled), Turn on leaves it alone — Turn off deletes the file",
+                       "已在启动代理文件中停用（Disabled），「开启」不会改动它 —「关闭」会删除该文件")
         case .unreadable:
             return L.t("включён · файл агента не читается", "on · the agent file cannot be read", "已开启 · 无法读取启动代理文件")
         }

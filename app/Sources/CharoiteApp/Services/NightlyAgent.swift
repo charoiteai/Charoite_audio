@@ -64,7 +64,7 @@ enum NightlyAgent {
     enum Shown: Equatable {
         case unreadable          // файл есть, но не разбирается
         case disabled            // свой агент с `Disabled` и календарём «час:минута» — «Включить» его перепишет
-        case foreignDisabled     // прочий агент с `Disabled` (чужой или свой с другим поводом) — только удаление
+        case foreignDisabled     // прочий с `Disabled`: чужой, свой с другим поводом или календарём не «час:минута» — только удаление
         case otherTrigger        // запуск помимо календаря (`RunAtLoad`, `StartInterval`…)
         case irreducible         // календарь не «час:минута»
         case ours                // наш скрипт, наши слоты и `CHAROITE_SLOT`
