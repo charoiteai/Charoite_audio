@@ -24,9 +24,10 @@ final class BuildRealIndex: XCTestCase {
                         includingPropertiesForKeys: [.contentModificationDateKey],
                         options: [])?.compactMap { $0 as? URL } ?? [])
             .filter { $0.pathExtension == "md" }
-            // как ArchiveSearch: служебное — точка в начале компонента; флаг
-            // UF_HIDDEN (папки iCloud) приложение не пропускает, и проба тоже (out10)
-            // только внутри корня: граф под ~/.что-то иначе пуст целиком (out11)
+            // служебное — точка в начале компонента; флаг UF_HIDDEN (папки iCloud)
+            // приложение не пропускает, и проба тоже (out10). Компоненты — только
+            // внутри корня: граф под ~/.что-то иначе пуст целиком (out11;
+            // ArchiveSearch смотрит весь путь — долг приложения)
             .filter { url in !url.pathComponents.dropFirst(graph.pathComponents.count)
                 .contains { $0.hasPrefix(".") && $0.count > 1 } }
             .sorted { a, b in
@@ -50,6 +51,14 @@ final class BuildRealIndex: XCTestCase {
         guard dup.isEmpty else { XCTFail("одинаковые ключи индекса: \(dup.prefix(5))"); return }
         // пустой обход — не тот граф: count() ниже прочёл бы прежний индекс и проба позеленела бы
         guard !files.isEmpty else { XCTFail("в графе нет ни одного .md: \(graph.path)"); return }
+
+        // Открытое приложение пишет тот же файл своим снимком: последний
+        // писатель затирает записи другого (out11). Чужой HOME — другой файл.
+        let realHome = String(cString: getpwuid(getuid()).pointee.pw_dir)
+        let appOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: "ai.charoite.app").isEmpty
+        guard !(appOpen && SemanticIndex.liveStoreURL.path.hasPrefix(realHome + "/")) else {
+            XCTFail("Чароит открыт и пишет тот же индекс — закрой приложение и повтори"); return
+        }
 
         // живой индекс под XCTest — только явной подменой (№740)
         _ = FileManager.default.createPrivateDirectory(at: SemanticIndex.liveStoreURL.deletingLastPathComponent())
