@@ -26,7 +26,9 @@ final class BuildRealIndex: XCTestCase {
             .filter { $0.pathExtension == "md" }
             // как ArchiveSearch: служебное — точка в начале компонента; флаг
             // UF_HIDDEN (папки iCloud) приложение не пропускает, и проба тоже (out10)
-            .filter { url in !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 } }
+            // только внутри корня: граф под ~/.что-то иначе пуст целиком (out11)
+            .filter { url in !url.pathComponents.dropFirst(graph.pathComponents.count)
+                .contains { $0.hasPrefix(".") && $0.count > 1 } }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
@@ -79,7 +81,9 @@ final class BuildRealIndex: XCTestCase {
         // переписывает файл своим снимком — проба сверяет каждый файл графа с диском.
         // Не доиндексировали — причина выше, второе сообщение увело бы от неё.
         if left == 0 {
-            let onDisk = SemanticIndex.storedMtimes(at: SemanticIndex.liveStoreURL) ?? [:]
+            guard let onDisk = SemanticIndex.storedMtimes(at: SemanticIndex.liveStoreURL) else {
+                XCTFail("файл индекса не читается: \(SemanticIndex.liveStoreURL.path)"); return
+            }
             let absent = wanted.filter { onDisk[$0.path] != $0.mtime }.count
             XCTAssertEqual(absent, 0, "на диске нет \(absent) из \(wanted.count) файлов: \(SemanticIndex.liveStoreURL.path) — не записан или переписан приложением")
         }
