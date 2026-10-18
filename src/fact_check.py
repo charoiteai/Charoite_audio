@@ -84,10 +84,26 @@ def unanchored(document: str, transcript: str) -> list[str]:
     return sorted(set(bad), key=str.lower)
 
 
+#: начало строки сноски; её ищут `without_footnote` и граница служебного хвоста
+#: в приложении (`MeetingMinutes.footnoteMark`) — писатель один, этот модуль
+FOOTNOTE_MARK = "⚠️ Нет в стенограмме, проверьте:"
+_FOOTNOTE_SEP = "\n\n---\n"
+
+
+def without_footnote(document: str) -> str:
+    """Документ без сноски `annotate` (и всего, что дописано после неё)."""
+    cut = document.rfind(_FOOTNOTE_SEP + FOOTNOTE_MARK)
+    return document if cut < 0 else document[:cut] + "\n"
+
+
 def annotate(document: str, transcript: str) -> str:
-    """Дописывает сноску о ненайденных фактах. Текст документа не трогает."""
+    """Дописывает сноску о ненайденных фактах. Текст документа не трогает.
+
+    Прежняя сноска снимается до сверки: её факты по построению не в
+    стенограмме, и второй вызов дописывал второй блок (№732, Sonnet I2)."""
+    if _FOOTNOTE_SEP + FOOTNOTE_MARK in document:
+        document = without_footnote(document)
     bad = unanchored(document, transcript)
     if not bad:
         return document
-    return (document.rstrip() +
-            "\n\n---\n⚠️ Нет в стенограмме, проверьте: " + ", ".join(bad) + "\n")
+    return document.rstrip() + _FOOTNOTE_SEP + FOOTNOTE_MARK + " " + ", ".join(bad) + "\n"

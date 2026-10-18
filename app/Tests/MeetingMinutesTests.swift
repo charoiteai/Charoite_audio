@@ -124,4 +124,34 @@ final class MeetingMinutesTests: XCTestCase {
         XCTAssertTrue(MeetingMinutes.parse("<!-- черновик -->\n\n").isEmpty,
                       "один комментарий — не повод показывать переключатель")
     }
+
+    /// Хвост, который демон дописывает механически (сноска сверки фактов и
+    /// итог неполной записи), — не пункт последнего раздела (№732).
+    func testСлужебныйХвостНеПопадаетВРазделы() {
+        let minutes = MeetingMinutes.parse("""
+        ## Поручения
+        - [ ] **Борис** — подготовить отчёт — пятница
+
+        ---
+        ⚠️ Нет в стенограмме, проверьте: TASK 3242
+
+        📋 запись неполная: канал собеседников 10:40–10:52 (12 мин)
+        """)
+        XCTAssertEqual(minutes.tasks.count, 1)
+        XCTAssertEqual(minutes.tasks.first?.text.contains("Борис"), true)
+    }
+
+    /// Голый `---` в теле — разделитель модели, а не граница хвоста: разделы
+    /// после него разбираются как раньше.
+    func testГолыйРазделительНеОбрываетРазбор() {
+        let minutes = MeetingMinutes.parse("""
+        ## Решения
+        - Выпустить в пятницу
+        ---
+        ## Риски
+        - Стенд занят
+        """)
+        XCTAssertEqual(minutes.decisions.count, 1)
+        XCTAssertEqual(minutes.risks.count, 1)
+    }
 }

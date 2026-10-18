@@ -28,8 +28,11 @@ import dataclasses
 import pathlib
 from typing import NamedTuple
 
+import action_items
 import channel_trace
+import fact_check
 import live_sidecar
+import privacy
 import transcript
 
 
@@ -83,6 +86,27 @@ def with_note(doc: str, note: str | None) -> str:
     return doc.rstrip() + "\n\n" + note + "\n"
 
 
+def finish_minutes(doc: str, source: MeetingSource, *, owner: str,
+                   participants: set[str], lang: str = "ru") -> str:
+    """Механические шаги минуток после модели — один вход для всех путей
+    записи (черновик и «Протокол» демона, MCP, пересборка). Каждый путь
+    держал свою цепочку: черновик и MCP шли без сверки фактов, пересборка
+    без скраба пути машины, порядок шагов расходился (№732).
+
+    Порядок — контракт: сверка со стенограммой по тому множеству, что видела
+    модель (речь + оговорка), затем чекбоксы окна «Задачи», затем владелец
+    одним написанием и пометка «не участник» (`finalize_assignees`), затем
+    строка оговорки, последней — скраб пути машины: хеш паспорта и отметка
+    автотекста снимаются с этих байтов. Все шаги идемпотентны: повторный
+    вызов по готовому документу его не меняет."""
+    doc = fact_check.annotate(doc, source.canon())
+    doc = action_items.normalize(doc)
+    doc = action_items.finalize_assignees(doc, participants, owner, lang=lang)
+    doc = with_note(doc, source.recording_note)
+    doc, _n = privacy.scrub_local_paths(doc)
+    return doc
+
+
 def content_of(text: str) -> str:
     """Содержание встречи для ИЗВЛЕЧЕНИЯ (узлы графа, факты памяти): речь и
     живые тезисы контура, без следа записи в хвосте — строк события канала и
@@ -100,6 +124,7 @@ def without_trace(text: str) -> str:
     """Текст без строк следа записи — для документов, где речи нет (минутки в
     промпт): строка итога дописана в них механически и в извлечении читалась
     бы как тема встречи."""
+    text = fact_check.without_footnote(text)
     kept = "\n".join(line for line in text.splitlines() if not channel_trace.is_trace_line(line))
     return kept + ("\n" if text.endswith("\n") else "")
 

@@ -117,11 +117,13 @@ def test_live_draft_minutes_go_through_normalize():
     # литералом в цикле. Якорь — вызов, порядок normalize до записи тот же.
     draft = daemon[: daemon.index("minutes_draft(out)")]
     tail = draft[draft.rindex("if out.strip():"):]
-    assert "action_items.normalize(out)" in tail, (
+    # normalize живёт в общем входе минуток (№732): черновик зовёт вход,
+    # что вход нормализует — проверяет test_finish_minutes_* в test_meeting_source
+    assert "meeting_source.finish_minutes(" in tail, (
         "черновиковая запись минуток должна прогонять текст через "
-        "action_items.normalize до записи на диск")
-    assert tail.index("action_items.normalize(out)") < tail.index("minutes_lock"), (
-        "normalize обязан отработать ДО входа в блок записи под замком")
+        "общий вход минуток (normalize внутри) до записи на диск")
+    assert tail.index("meeting_source.finish_minutes(") < tail.index("minutes_lock"), (
+        "вход минуток обязан отработать ДО входа в блок записи под замком")
 
 
 def test_normalize_handles_the_bare_caps_section_of_2026_08_31():
