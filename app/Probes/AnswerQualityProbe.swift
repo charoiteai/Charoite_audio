@@ -32,8 +32,7 @@ final class AnswerQualityProbe: XCTestCase {
             report += "ОТВЕТ МОДЕЛИ:\n\(answer)\n"
         }
         // print из XCTest теряется при перенаправлении вывода — пишем в файл.
-        let out = URL(fileURLWithPath: "/tmp/charoite_answer_probe_\(armName).txt")
-        try? report.write(to: out, atomically: true, encoding: .utf8)
+        ProbeTurn.writePrivate(report, to: "/tmp/charoite_answer_probe_\(armName).txt")
         print(report)
     }
 }

@@ -1119,7 +1119,11 @@ Ollama 仍会静默截断输入。上限是运行器的物理批大小 2048 个 
 图谱或本地模型不能伪装成一次成功的产品测试。
 
 不带 `CHAROITE_BENCH_ANSWERS` 时，它只衡量检索交付了什么；带上之后，衡量的是
-经过综合的完整路径。报告落在 `/tmp/charoite_bench.txt`，并点名缺失的事实。
+经过综合的完整路径。轮次与聊天由同一段代码组装（`ChatRetrieval`）；检索走图谱目录上的
+本地引擎，经由运行中的 brain 服务器（:8100）的聊天不在衡量范围内。
+`CHAROITE_BENCH_ARM=legacy` 切换到以前的检索参数（5×1200）以作比较。报告落在
+`/tmp/charoite_bench_<arm>.txt`，并点名缺失的事实；检索结果在
+`/tmp/charoite_bench_<arm>_found.txt`，两者仅所有者可读（0600）。
 
 问题集留在仓库之外——它关乎真实会议。格式刻意做得极简：
 

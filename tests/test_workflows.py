@@ -85,6 +85,7 @@ def test_swift_live_probes_compile_but_do_not_run_in_gates():
         "DictationPreviewProbe.swift",
         "LiveAnswerProbe.swift",
         "MemoryBench.swift",
+        "ProbeTurn.swift",  # общий ход проб (№632), сам не проба
         "SearchPerfProbe.swift",
     }
     actual = {path.name for path in (APP / "Probes").glob("*.swift")}

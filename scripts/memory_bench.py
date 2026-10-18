@@ -51,8 +51,8 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 from llm import LLM, embedder as build_embedder  # noqa: E402
 
-# База 5×1200 — рука ChatRetrieval.Params.legacyProbe в пробах приложения;
-# не менять: по ней сравниваются руки бенча (№632)
+# База 5×1200 этого скрипта; те же числа у руки legacy Swift-бенча
+# (ChatRetrieval.Params.legacyProbe) — совпадение ручное, кодом не связано
 SNIPPET = 1200
 LIMIT_FILES = 5
 

@@ -23,9 +23,8 @@ final class MemoryBench: XCTestCase {
         let cases = try parse(URL(fileURLWithPath: (benchPath as NSString).expandingTildeInPath))
         XCTAssertFalse(cases.isEmpty, "вопросы не разобрались")
 
-        // Проверяем ОТВЕТ, а не только выдачу поиска: часть ожидаемых фактов —
-        // это формулировки самого ответа («неизвестно»), их в документах нет
-        // и быть не может. Мерить надо то, что доходит до человека.
+        // Проверяем ОТВЕТ, а не только выдачу поиска: мерить надо то, что
+        // доходит до человека.
         let withModel = ProcessInfo.processInfo.environment["CHAROITE_BENCH_ANSWERS"] == "1"
         let (armName, params) = ProbeTurn.arm
         var report = ProbeTurn.header(withModel
@@ -39,10 +38,12 @@ final class MemoryBench: XCTestCase {
             dump += "=== \(c.q)\n\(found)\n\n"
             let subject: String
             if withModel {
-                // Модель не ответила — вопрос вне счёта, отдельной строкой: подмена
-                // ответа выдачей поиска засчитывала факты, которых человек не увидит.
+                // Модель не ответила — факты вопроса в знаменателе с нулём: подмена
+                // ответа выдачей поиска засчитывала факты, которых человек не увидит,
+                // а выброс вопроса поднимал процент тем выше, чем больше молчала модель.
                 guard let answer = await ProbeTurn.answer(question: c.q, vault: found) else {
                     unanswered.append(c.q)
+                    mustTotal += c.must.count
                     continue
                 }
                 subject = answer
@@ -60,7 +61,7 @@ final class MemoryBench: XCTestCase {
             if withModel { report += "\n  ответ: " + subject.replacingOccurrences(of: "\n", with: "\n  ") }
         }
         if !unanswered.isEmpty {
-            report += "\n\nМОДЕЛЬ НЕ ОТВЕТИЛА (вне счёта): \(unanswered.count)\n"
+            report += "\n\nМОДЕЛЬ НЕ ОТВЕТИЛА (факты в счёте с нулём): \(unanswered.count)\n"
                 + unanswered.map { "· \($0)" }.joined(separator: "\n")
         }
         let ratio = Double(hitTotal) / Double(max(mustTotal, 1))
@@ -68,10 +69,15 @@ final class MemoryBench: XCTestCase {
                 + "(\(Int(ratio * 100))%)\n"
         // файл — по руке: второй прогон другой руки не затирает первый
         let reportPath = "/tmp/charoite_bench_\(armName).txt"
-        try? report.write(to: URL(fileURLWithPath: reportPath), atomically: true, encoding: .utf8)
-        try? dump.write(to: URL(fileURLWithPath: "/tmp/charoite_bench_\(armName)_found.txt"),
-                        atomically: true, encoding: .utf8)
+        ProbeTurn.writePrivate(report, to: reportPath)
+        ProbeTurn.writePrivate(dump, to: "/tmp/charoite_bench_\(armName)_found.txt")
         print(report)
+        // Молчание модели — не просадка памяти: свой диагноз до порога.
+        guard unanswered.isEmpty else {
+            XCTFail("модель не ответила на \(unanswered.count) из \(cases.count) — проверь Ollama "
+                    + "(\(ProbeTurn.model)); смотри \(reportPath)")
+            return
+        }
         // Порог ниже текущего уровня, но не вдвое: при 0.5 падение с 13/14 до
         // 8/14 прошло бы незамеченным, а это уже другой продукт. Запас нужен,
         // потому что граф живой — вопросы про его содержимое естественно

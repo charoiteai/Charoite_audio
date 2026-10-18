@@ -5,8 +5,12 @@ import Foundation
 /// поиск с параметрами руки, основа промпта и блок графа из `ChatRetrieval`,
 /// то же тело запроса без стрима и с температурой 0.
 ///
-/// Движок — локальный Swift-поиск по папке графа (`localSearchOutcome`):
-/// brain-сервер (:8100) пробы обходят нарочно, и отчёт это пишет.
+/// Расходится с чатом намеренно, и отчёт пишет движок и руку:
+/// - движок — локальный Swift-поиск по папке графа (`localSearchOutcome`);
+///   чат с поднятым brain-сервером (:8100) идёт через него, этот путь бенч
+///   не меряет (№743);
+/// - одна реплика вместо истории, без стрима, температура 0;
+/// - модель зафиксирована: подмены на лёгкую во время встречи нет.
 enum ProbeTurn {
     /// Модель синтеза зафиксирована: бенч сравнивает правки, а не модели.
     static let model = "qwen3.6:35b-a3b"
@@ -26,7 +30,7 @@ enum ProbeTurn {
     static func search(_ query: String, params: ChatRetrieval.Params,
                        root: URL) async -> ArchiveSearch.Outcome {
         await ArchiveSearch.localSearchOutcome(
-            query: query, limit: params.limit, snippet: params.snippet, budget: params.budget,
+            query: ChatRetrieval.query(from: [.init(role: "user", text: query)]), limit: params.limit, snippet: params.snippet, budget: params.budget,
             root: root, includeLinked: inferenceIsLocal)
     }
 
@@ -54,6 +58,15 @@ enum ProbeTurn {
         return text
     }
 
+    /// Отчёт пробы несёт сниппеты встреч и ответы модели — только владельцу
+    /// файла (0600), а не всем пользователям машины через общий `/tmp`.
+    static func writePrivate(_ text: String, to path: String) {
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: path)
+        fm.createFile(atPath: path, contents: Data(text.utf8),
+                      attributes: [.posixPermissions: 0o600])
+    }
+
     /// Шапка отчёта: рука, параметры, движок и модель — чтобы два отчёта
     /// нельзя было сравнить, не видя, чем они отличаются.
     static func header(_ title: String) -> String {
@@ -64,8 +77,9 @@ enum ProbeTurn {
 }
 
 extension ChatRetrieval.Params {
-    /// Прежние параметры проб: 5×1200, бюджет поиска по умолчанию — только
-    /// для сравнения рук в бенче, в продукте их нет.
+    /// Прежние параметры поиска проб: 5×1200, бюджет по умолчанию — только
+    /// для сравнения рук в бенче, в продукте их нет. Прежние только в поиске:
+    /// промпт, `num_predict` и температура — общие с рукой чата.
     static let legacyProbe = ChatRetrieval.Params(limit: 5, snippet: 1200,
                                                   budget: ArchiveSearch.defaultBudget)
 }
