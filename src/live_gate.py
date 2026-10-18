@@ -75,14 +75,17 @@ def night_wait_cap(default: float = 3600.0, now: Callable[[], float] = time.time
     (0). None не возвращается никогда: у гейта None значит «без потолка», и это
     ровно то, от чего функция существует (круги 4–6 по №338).
     """
+    # Отрицательный `default` — остаток бюджета, ушедший в минус между
+    # проверкой и вызовом: ждать нечего, а не ValueError у гейта (вход in3 №621).
+    default = max(0.0, float(default))
     raw = os.environ.get(NIGHTLY_UNTIL_ENV)
     if not raw:
-        return float(default)
+        return default
     try:
         left = float(raw) - now()
     except ValueError:
-        return float(default)       # мусор в переменной — не повод ждать без меры
-    return max(0.0, min(float(default), left))
+        return default              # мусор в переменной — не повод ждать без меры
+    return max(0.0, min(default, left))
 
 def lock_path(root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(root) / "logs" / LOCK_NAME

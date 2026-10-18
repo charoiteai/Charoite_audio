@@ -74,22 +74,9 @@ def test_the_theme_core_itself_reaches_the_prompt():
     assert "Тема" in members[:dossier.MAX_SOURCES]
 
 
-def test_unbuilt_dossiers_go_first_in_the_queue(tmp_path):
-    """Иначе большие «несвежие» темы забирают все слоты ночи навсегда."""
-    folder = tmp_path / "Досье"
-    folder.mkdir()
-    (folder / "Большая.md").write_text("есть", encoding="utf-8")
-    cl = {"Большая": ["a", "b", "c", "d"], "Новая": ["e", "f", "g"]}
-    order = sorted(cl.items(),
-                   key=lambda kv: ((folder / f"{kv[0]}.md").exists(), -len(kv[1])))
-    assert [t for t, _ in order] == ["Новая", "Большая"]
-
-
-def test_full_rebuild_is_not_capped_by_the_nightly_limit():
-    """«--full» обещало «пересобрать все темы», а упиралось в потолок 12."""
-    src = (SCRIPTS / "nightly_dossier.py").read_text(encoding="utf-8")
-    assert "if not full and built >= limit:" in src, \
-        "полный прогон снова ограничен лимитом ночи"
+# Порядок очереди досье и «--full не режется потолком» — поведенческими
+# тестами в tests/test_dossier_queue.py: прежние здесь копировали формулу
+# сортировки и искали литерал в исходнике (вход in3 №621, DS C3).
 
 
 def test_nightly_runs_a_full_dossier_pass_weekly():
@@ -194,9 +181,8 @@ def test_the_index_is_written_atomically_and_without_the_lock():
     src = (SRC / "charoite_graph" / "dossier.py").read_text(encoding="utf-8")
     assert "tmp.replace(folder / INDEX_JSON)" in src
     assert "tmp_md.replace(folder / INDEX_MD)" in src
-    night = (SCRIPTS / "nightly_dossier.py").read_text(encoding="utf-8")
-    tail = night[night.index("if not dry and entries:"):]
-    assert "_graph_lock" not in tail.split("return {")[0], "индекс снова под замком"
+    # Индекс при занятом графе пишется — поведение: test_dossier_encoding.py,
+    # test_every_exit_reuses_loaded_dossier[locked].
 
 
 def test_links_are_read_only_from_the_surviving_file(tmp_path):

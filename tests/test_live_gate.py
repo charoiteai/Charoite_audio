@@ -441,3 +441,12 @@ def test_console_mark_survives_a_reader_probe(tmp_path):
         assert live_gate.refusal(tmp_path)[1] == "console_meeting"
     finally:
         f.close()
+
+
+def test_night_wait_cap_never_returns_a_negative_wait(monkeypatch):
+    """Остаток бюджета ушёл в минус между проверкой и вызовом гейта — ждать
+    нечего; отрицательный потолок ронял `wait_while_live` (вход in3 №621)."""
+    monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    assert live_gate.night_wait_cap(-5.0) == 0.0
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "9999999999")
+    assert live_gate.night_wait_cap(-5.0, now=lambda: 0.0) == 0.0
