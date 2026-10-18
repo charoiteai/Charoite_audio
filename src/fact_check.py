@@ -84,10 +84,40 @@ def unanchored(document: str, transcript: str) -> list[str]:
     return sorted(set(bad), key=str.lower)
 
 
+#: начало строки сноски; её снимает `without_footnote` и пропускает разбор
+#: приложения (`MeetingMinutes.tailMarks`) — писатель один, этот модуль
+FOOTNOTE_MARK = "⚠️ Нет в стенограмме, проверьте:"
+_FOOTNOTE_SEP = "\n\n---\n"
+
+
+def without_footnote(document: str) -> str:
+    """Документ без сносок `annotate`: снимается строка сноски и её `---`,
+    всё прочее остаётся на месте. Резать «от сноски до конца» нельзя: после
+    неё дописывают другие писатели (`review_bridge` ставит «Поручения» в
+    конец), и извлечение теряло их молча (№732, выход DS C1). Снимаются все
+    сноски, не только последняя: прежний писатель оставлял две (DS I3)."""
+    if FOOTNOTE_MARK not in document:
+        return document
+    out: list[str] = []
+    for line in document.split("\n"):
+        if line.startswith(FOOTNOTE_MARK):
+            if out and out[-1] == "---":
+                out.pop()
+                if out and out[-1] == "":
+                    out.pop()
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def annotate(document: str, transcript: str) -> str:
-    """Дописывает сноску о ненайденных фактах. Текст документа не трогает."""
+    """Дописывает сноску о ненайденных фактах. Тело документа не трогает;
+    прежнюю сноску снимает и пишет новую.
+
+    Прежняя сноска снимается до сверки: её факты по построению не в
+    стенограмме, и второй вызов дописывал второй блок (№732, Sonnet I2)."""
+    document = without_footnote(document)
     bad = unanchored(document, transcript)
     if not bad:
         return document
-    return (document.rstrip() +
-            "\n\n---\n⚠️ Нет в стенограмме, проверьте: " + ", ".join(bad) + "\n")
+    return document.rstrip() + _FOOTNOTE_SEP + FOOTNOTE_MARK + " " + ", ".join(bad) + "\n"

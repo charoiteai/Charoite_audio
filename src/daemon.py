@@ -45,7 +45,6 @@ import cloud  # noqa: E402
 import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import speech_gate  # noqa: E402
-import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
 from charoite_graph import embed_door  # noqa: E402
 import llm as llm_mod  # noqa: E402
@@ -255,9 +254,10 @@ def minutes_document(text: str) -> str:
 def write_minutes(mpath: pathlib.Path, text: str, note) -> str | None:
     """Финальные минутки на диск: скраб пути машины, запись через tmp и
     replace (общий ``safe_write.write_text``), затем ``note`` с теми же
-    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб живёт
-    здесь, у писателя, а не в порядке строк вызывающего: снять его, переставив
-    операторы ``_do_summary``, нельзя.
+    байтами — по ним пересборка узнаёт нетронутый автотекст. Скраб здесь —
+    страховка писателя поверх скраба входа ``meeting_source.finish_minutes``
+    (идемпотентен): у пересборки и MCP ``write_minutes`` нет, их скраб — только
+    во входе, снимать его оттуда нельзя.
 
     Возвращает записанный текст. Запись отклонена гейтом писателя — None и
     без ``note``: хеш в live.json обязан описывать байты на диске, иначе
@@ -3066,6 +3066,9 @@ def main():
             # знаков, и Ollama молча режет ГОЛОВУ. Черновику отдаём начало
             # (повестка, участники) и хвост (свежие решения) — тот же приём,
             # что у финальных минуток (_fit) и debrief_excerpt.
+            # сверка фактов черновика — по всей речи, не по окну: даты из
+            # срезанной середины иначе числились бы выдуманными (№732, Sonnet I1)
+            whole = full
             if len(full) > 18_000:
                 full = full[:3_000] + "\n\n[… середина опущена …]\n\n" + full[-14_000:]
             # оговорка о неполной записи — блоком ПОСЛЕ обрезки окна, снаружи
@@ -3100,16 +3103,13 @@ def main():
                     # автоматической финализации после стопа нет — черновик и
                     # есть итоговые минутки встречи, и его проза была невидима
                     # окну задач (жалоба 31.08: «58 задач как месяц назад»).
-                    out = action_items.normalize(out)
-                    # исполнитель — только участник встречи (05.09: поручение
-                    # ушло упомянутому, а не присутствующему)
-                    # Владелец — одним написанием (окно «Задачи» ищет его целым
-                    # словом user_name), и ТОЛЬКО потом пометка: порядок —
-                    # контракт finalize_assignees (№188, DS r2 по #536)
-                    out = action_items.finalize_assignees(
-                        out, action_items.participants_set(tr.participants(), owner=owner_name),
-                        owner_name, lang=llm.lang)
-                    out = meeting_source.with_note(out, note)   # строка итога — не поручение модели
+                    # Исполнитель — только участник встречи (05.09), владелец —
+                    # одним написанием, строка итога — механически: шаги и их
+                    # порядок — у общего входа минуток (№732)
+                    out = meeting_source.finish_minutes(
+                        out, meeting_source.live(whole, note), owner=owner_name,
+                        participants=action_items.participants_set(tr.participants(), owner=owner_name),
+                        lang=llm.lang)
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
                     # если за это время человек нажал «Протокол», финальные
@@ -3229,22 +3229,15 @@ def main():
             # выглядели полными (аудит 18.08). Файл — только с полного ответа.
             if chunks and ok:  # минутки — отдельным файлом рядом со стенограммой
                 mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
-                # сверка номеров задач и дат со стенограммой: выдуманный
-                # номер внешне неотличим от настоящего, но в тексте его нет
-                # сверка — по речи И оговорке: минуты пропажи канала, взятые
-                # моделью из блока о записи, не должны помечаться как выдуманные
-                doc = fact_check.annotate("".join(chunks), source.canon())
-                # Поручения — в формат, который видит окно «Задачи». Модель
-                # формулирует их правильно (имя, суть, срок), но заворачивает
-                # в свой markdown и теряет скобки чекбокса: на рабочем графе
-                # из 138 файлов минуток чекбоксы нашлись в двух, и окно задач
-                # стояло пустым при живых поручениях на каждой встрече.
-                doc = action_items.normalize(doc)
-                doc = action_items.finalize_assignees(          # канон владельца → пометка (№188)
-                    doc, action_items.participants_set(tr.participants(), owner=owner_name),
-                    owner_name, lang=llm.lang)
-                doc = meeting_source.with_note(doc, source.recording_note)
-                # Скраб, tmp и replace — в write_minutes: обрыв посреди записи
+                # Сверка номеров и дат по речи И оговорке, чекбоксы окна
+                # «Задачи» (на рабочем графе из 138 файлов минуток чекбоксы
+                # нашлись в двух), канон владельца → пометка (№188), строка
+                # итога — общим входом минуток (№732)
+                doc = meeting_source.finish_minutes(
+                    "".join(chunks), source, owner=owner_name,
+                    participants=action_items.participants_set(tr.participants(), owner=owner_name),
+                    lang=llm.lang)
+                # Скраб (страховка поверх входа), tmp и replace — в write_minutes: обрыв посреди записи
                 # не оставит усечённых минуток поверх готовых (аудит 14.08), а
                 # путь машины не уйдёт на диск при любом порядке строк здесь.
                 with minutes_lock:
