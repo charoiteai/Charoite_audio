@@ -27,14 +27,28 @@ final class MemoryBench: XCTestCase {
         // это формулировки самого ответа («неизвестно»), их в документах нет
         // и быть не может. Мерить надо то, что доходит до человека.
         let withModel = ProcessInfo.processInfo.environment["CHAROITE_BENCH_ANSWERS"] == "1"
-        var report = withModel
-            ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез)\n"
-            : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)\n"
+        let (armName, params) = ProbeTurn.arm
+        var report = ProbeTurn.header(withModel
+            ? "БЕНЧ ПАМЯТИ (сквозной: поиск → синтез тем же ходом, что чат)"
+            : "БЕНЧ ПАМЯТИ (только выдача поиска; CHAROITE_BENCH_ANSWERS=1 — со синтезом)")
         var hitTotal = 0, mustTotal = 0
+        var unanswered: [String] = []
+        var dump = ""   // выдача поиска по вопросам — видно, что дошло до модели
         for c in cases {
-            let found = await ArchiveSearch.localSearch(query: c.q, limit: 5,
-                                                        snippet: 1200, root: graph)
-            let subject = withModel ? (await answer(question: c.q, context: found) ?? found) : found
+            let found = await ProbeTurn.search(c.q, params: params, root: graph).text
+            dump += "=== \(c.q)\n\(found)\n\n"
+            let subject: String
+            if withModel {
+                // Модель не ответила — вопрос вне счёта, отдельной строкой: подмена
+                // ответа выдачей поиска засчитывала факты, которых человек не увидит.
+                guard let answer = await ProbeTurn.answer(question: c.q, vault: found) else {
+                    unanswered.append(c.q)
+                    continue
+                }
+                subject = answer
+            } else {
+                subject = found
+            }
             let low = norm(subject)
             let hits = c.must.filter { low.contains(norm($0)) }
             hitTotal += hits.count
@@ -42,12 +56,21 @@ final class MemoryBench: XCTestCase {
             let missed = c.must.filter { !low.contains(norm($0)) }
             report += "\n· \(c.q)\n  факты \(hits.count)/\(c.must.count)"
             if !missed.isEmpty { report += ", нет: \(missed.joined(separator: ", "))" }
+            // ответ целиком — разбор потерянного факта глазами без второго прогона
+            if withModel { report += "\n  ответ: " + subject.replacingOccurrences(of: "\n", with: "\n  ") }
+        }
+        if !unanswered.isEmpty {
+            report += "\n\nМОДЕЛЬ НЕ ОТВЕТИЛА (вне счёта): \(unanswered.count)\n"
+                + unanswered.map { "· \($0)" }.joined(separator: "\n")
         }
         let ratio = Double(hitTotal) / Double(max(mustTotal, 1))
-        report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов в выдаче поиска "
+        report += "\n\nИТОГО: \(hitTotal)/\(mustTotal) фактов \(withModel ? "в ответе" : "в выдаче поиска") "
                 + "(\(Int(ratio * 100))%)\n"
-        try? report.write(to: URL(fileURLWithPath: "/tmp/charoite_bench.txt"),
-                          atomically: true, encoding: .utf8)
+        // файл — по руке: второй прогон другой руки не затирает первый
+        let reportPath = "/tmp/charoite_bench_\(armName).txt"
+        try? report.write(to: URL(fileURLWithPath: reportPath), atomically: true, encoding: .utf8)
+        try? dump.write(to: URL(fileURLWithPath: "/tmp/charoite_bench_\(armName)_found.txt"),
+                        atomically: true, encoding: .utf8)
         print(report)
         // Порог ниже текущего уровня, но не вдвое: при 0.5 падение с 13/14 до
         // 8/14 прошло бы незамеченным, а это уже другой продукт. Запас нужен,
@@ -55,40 +78,7 @@ final class MemoryBench: XCTestCase {
         // дрейфуют, и краснеть от этого бенч не должен.
         XCTAssertGreaterThan(ratio, 0.75,
                              "качество памяти просело: \(hitTotal)/\(mustTotal) — "
-                             + "смотри /tmp/charoite_bench.txt, там видно, какие факты потерялись")
-    }
-
-    /// Синтез ответа локальной моделью — тот же путь, что в приложении.
-    private func answer(question: String, context: String) async -> String? {
-        guard let url = URL(string: AppSettings.ollamaURL + "/api/chat") else { return nil }
-        let prompt = """
-        Фрагменты архива встреч:
-
-        \(context)
-
-        Вопрос: \(question)
-
-        Отвечай кратко и только по фрагментам. Если ответа в них нет — скажи «неизвестно».
-        """
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 600
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "model": "qwen3.6:35b-a3b", "stream": false, "think": false,
-            // temperature 0: бенч должен сравнивать ПРАВКИ, а не ловить
-            // разброс генерации. С дефолтной температурой один и тот же код
-            // давал 11, 13 и снова 11 из 14 — по таким числам нельзя судить,
-            // помогла правка или повезло.
-            "options": ["num_ctx": 32768, "num_predict": 400, "temperature": 0],
-            "messages": [["role": "user", "content": prompt]],
-        ] as [String: Any])
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.connectionProxyDictionary = [:]     // системный прокси ломает localhost
-        guard let (data, _) = try? await URLSession(configuration: cfg).data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msg = obj["message"] as? [String: Any] else { return nil }
-        return msg["content"] as? String
+                             + "смотри \(reportPath), там видно, какие факты потерялись")
     }
 
     private func norm(_ s: String) -> String {

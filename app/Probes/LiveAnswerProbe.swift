@@ -16,14 +16,13 @@ final class LiveAnswerProbe: XCTestCase {
         defer { try? FileManager.default.removeItem(at: store) }
         await SemanticIndex.shared.useForTests(store: store) { _ in nil }
 
-        let out = await ArchiveSearch.localSearch(query: "что решили по витрине сертификации",
-                                                  limit: 5, snippet: 1200, root: graph)
-        let sources = out.components(separatedBy: "\n\n")
-        print("=== ЧТО ПОЛУЧАЕТ МОДЕЛЬ (\(out.count) знаков, \(sources.count) источников) ===")
-        for (i, s) in sources.enumerated() {
-            let head = s.split(whereSeparator: \.isNewline).first ?? ""
-            print("  \(i + 1). \(head) — \(s.count) знаков")
-        }
+        let params = ProbeTurn.arm.params
+        let outcome = await ProbeTurn.search("что решили по витрине сертификации",
+                                             params: params, root: graph)
+        let out = outcome.text
+        let rels = outcome.rels ?? []
+        print(ProbeTurn.header("=== ЧТО ПОЛУЧАЕТ МОДЕЛЬ (\(out.count) знаков, \(rels.count) источников) ==="))
+        for (i, rel) in rels.enumerated() { print("  \(i + 1). \(rel)") }
         XCTAssertFalse(out.isEmpty)
     }
 }
