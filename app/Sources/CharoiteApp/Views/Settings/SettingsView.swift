@@ -341,24 +341,27 @@ struct SettingsView: View {
         return FileManager.default.fileExists(atPath: NightlyAgent.plistURL.path)
     }
 
-    /// Подпись по слотам из файла: не приведённый ручной plist честно
-    /// показывает свои слоты рядом со слотами приложения.
+    /// Подпись по файлу агента: ручной plist честно показывает свои слоты
+    /// рядом со слотами приложения. Совета «Выключить, затем Включить» нет:
+    /// переустановка стирает окружение ручного plist и обрывает идущую ночь (круг 7).
     private var nightlyLabel: String {
         guard nightlyInstalled else { return L.t("выключен", "off", "已关闭") }
-        // Совета «Выключить, затем Включить» нет: переустановка стирает
-        // окружение ручного plist и обрывает идущую ночь (круг 7).
-        guard let slots = NightlyAgent.installedSlots() else {
-            return L.t("включён · расписание в файле агента не сводится к часам и минутам",
-                       "on · the agent file's schedule is not plain hours and minutes",
-                       "已开启 · 代理文件的时间表不是单纯的时与分")
+        let script = AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh").path
+        switch NightlyAgent.shown(script: script) {
+        case .ours:
+            let have = NightlyAgent.slotsText
+            return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
+        case .manual(let have):
+            return L.t("включён, агент настроен вручную · \(have) (приложение ставит \(NightlyAgent.slotsText))",
+                       "on, agent set up by hand · \(have) (the app installs \(NightlyAgent.slotsText))",
+                       "已开启，启动代理为手动配置 · \(have)（应用安装的是 \(NightlyAgent.slotsText)）")
+        case .irreducible:
+            return L.t("включён, агент настроен вручную · расписание не сводится к часам и минутам",
+                       "on, agent set up by hand · its schedule is not plain hours and minutes",
+                       "已开启，启动代理为手动配置 · 其时间表不是单纯的时与分")
+        case .unreadable:
+            return L.t("включён · файл агента не читается", "on · the agent file cannot be read", "已开启 · 无法读取启动代理文件")
         }
-        let have = NightlyAgent.text(of: slots)
-        guard NightlyAgent.isOurSchedule(slots) else {
-            return L.t("включён, расписание из файла агента · \(have) (у приложения \(NightlyAgent.slotsText))",
-                       "on, schedule from the agent file · \(have) (the app's is \(NightlyAgent.slotsText))",
-                       "已开启，时间表来自代理文件 · \(have)（应用的是 \(NightlyAgent.slotsText)）")
-        }
-        return L.t("включён · \(have) — ревизия ядер, утренний бриф, бенч памяти", "on · \(have) — core review, morning brief, memory bench", "已开启 · \(have) — 核心复审、晨间简报、记忆基准")
     }
 
     @State private var nightlyTick = 0

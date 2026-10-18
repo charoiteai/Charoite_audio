@@ -35,33 +35,58 @@ enum NightlyAgent {
         slots.map { String(format: "%02d:%02d", $0.hour, $0.minute) }.joined(separator: ", ")
     }
 
-    /// Слоты, которые реально стоят в plist, или nil: файла нет, он не
-    /// разбирается или расписание не сводится к списку «час:минута».
-    /// launchd читает пропущенный Hour/Minute как «любой», Weekday/Day/Month
-    /// сужают запуск — такое время подписью не передать, умолчанием тем более
-    /// (круг 7). Настройки показывают эти слоты, а не задуманные: ручной plist
-    /// (`Program`, `sh -c`) не мигрирует (круг 6).
-    static func installedSlots(at url: URL = plistURL) -> [(hour: Int, minute: Int)]? {
-        guard let data = try? Data(contentsOf: url),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
-                  as? [String: Any] else { return nil }
-        let raw = plist["StartCalendarInterval"]
-        let items: [Any] = (raw as? [Any]) ?? (raw is [String: Any] ? [raw as Any] : [])
-        var out: [(hour: Int, minute: Int)] = []
-        for item in items {
-            guard let d = item as? [String: Any], Set(d.keys) == ["Hour", "Minute"],
-                  let h = d["Hour"] as? Int, let m = d["Minute"] as? Int,
-                  (0...23).contains(h), (0...59).contains(m) else { return nil }
-            out.append((h, m))
-        }
-        return out.isEmpty ? nil : out
+    /// Что Настройки могут честно сказать об установленном агенте.
+    enum Shown: Equatable {
+        case unreadable          // файл есть, но не разбирается
+        case ours                // скрипт этой установки, наши слоты, других поводов запуска нет
+        case manual(String)      // чистые «час:минута», но не наши слоты или не наша команда
+        case irreducible         // иные поводы запуска или календарь не «час:минута»
     }
 
-    /// Совпадает ли расписание с нашим как множество: порядок слотов
-    /// в файле launchd не важен.
-    static func isOurSchedule(_ have: [(hour: Int, minute: Int)]) -> Bool {
-        Set(have.map { $0.hour * 60 + $0.minute }) == Set(slots.map { $0.hour * 60 + $0.minute })
-            && have.count == slots.count
+    /// Ключи, по которым launchd запускает агента помимо календаря.
+    private static func hasOtherTrigger(_ plist: [String: Any]) -> Bool {
+        if plist["StartInterval"] != nil || plist["LaunchEvents"] != nil { return true }
+        for key in ["RunAtLoad", "StartOnMount"] where (plist[key] as? Bool) == true { return true }
+        if let keep = plist["KeepAlive"], (keep as? Bool) != false { return true }
+        for key in ["WatchPaths", "QueueDirectories"] where !((plist[key] as? [Any])?.isEmpty ?? true) {
+            return true
+        }
+        return false
+    }
+
+    /// Целое plist, а не `<real>` и не `<true/>`: `as? Int` мостит и то, и другое.
+    private static func plistInt(_ v: Any?) -> Int? {
+        guard let n = v as? NSNumber, CFGetTypeID(n) == CFNumberGetTypeID(),
+              !CFNumberIsFloatType(n) else { return nil }
+        return n.intValue
+    }
+
+    /// Разбор установленного plist для подписи Настроек. launchd читает
+    /// пропущенный Hour/Minute как «любой», Weekday/Day/Month сужают запуск,
+    /// `StartInterval`/`RunAtLoad`/`KeepAlive`… запускают помимо календаря —
+    /// такое время подписью не передать, умолчанием тем более (круги 7–8).
+    /// «Наш» — тот же признак, что у `needsMigration`: без `Program`, скрипт
+    /// этой установки в `ProgramArguments`. Ручной plist не мигрирует (круг 6),
+    /// поэтому подпись показывает его слоты, а не задуманные.
+    static func shown(at url: URL = plistURL, script: String) -> Shown {
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
+                  as? [String: Any] else { return .unreadable }
+        guard !hasOtherTrigger(plist) else { return .irreducible }
+        let raw = plist["StartCalendarInterval"]
+        let items: [Any] = (raw as? [Any]) ?? (raw is [String: Any] ? [raw as Any] : [])
+        var have: [(hour: Int, minute: Int)] = []
+        for item in items {
+            guard let d = item as? [String: Any], Set(d.keys) == ["Hour", "Minute"],
+                  let h = plistInt(d["Hour"]), let m = plistInt(d["Minute"]),
+                  (0...23).contains(h), (0...59).contains(m) else { return .irreducible }
+            have.append((h, m))
+        }
+        guard !have.isEmpty else { return .irreducible }
+        let ourCommand = plist["Program"] == nil
+            && ((plist["ProgramArguments"] as? [String])?.contains { samePath($0, script) } ?? false)
+        let key = { (s: [(hour: Int, minute: Int)]) in s.map { $0.hour * 60 + $0.minute }.sorted() }
+        return ourCommand && key(have) == key(slots) ? .ours : .manual(text(of: have))
     }
 
     static func job(script: String, logPath: String) -> [String: Any] {

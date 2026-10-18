@@ -232,39 +232,46 @@ final class NightlyScheduleTests: XCTestCase {
         XCTAssertFalse(NightlyAgent.needsMigration(installed: try read(url), expected: expected, nightRunning: false))
     }
 
-    /// Подпись Настроек — по слотам файла: старый 04:15 не выдаётся за новые,
-    /// а расписание, которое не сводится к «час:минута», — не выдумывается (круг 7).
-    func testInstalledSlotsReadsFile() throws {
+    /// Подпись Настроек — по файлу агента: старый 04:15 не выдаётся за новые,
+    /// расписание, которое не сводится к «час:минута», и иные поводы запуска не
+    /// выдумываются, чужая команда с нашими слотами — не наш агент (круги 7–8).
+    func testShownReadsFile() throws {
         let dir = try tmpDir()
-        func slots(_ cal: Any?) throws -> [(hour: Int, minute: Int)]? {
-            var job = oldJob()
-            job["StartCalendarInterval"] = cal
+        let script = "/x/scripts/nightly.sh"
+        func shown(_ edit: (inout [String: Any]) -> Void) throws -> NightlyAgent.Shown {
+            var job = expected
+            edit(&job)
             let url = dir.appendingPathComponent(UUID().uuidString + ".plist")
             try write(job, to: url)
-            return NightlyAgent.installedSlots(at: url)
+            return NightlyAgent.shown(at: url, script: script)
         }
-        XCTAssertEqual(try slots(["Hour": 4, "Minute": 15]).map(NightlyAgent.text(of:)), "04:15")
-        let cur = dir.appendingPathComponent("cur.plist")
-        try write(expected, to: cur)
-        XCTAssertEqual(NightlyAgent.installedSlots(at: cur).map(NightlyAgent.text(of:)), NightlyAgent.slotsText)
-        XCTAssertNil(NightlyAgent.installedSlots(at: dir.appendingPathComponent("none.plist")))
-        XCTAssertNil(try slots(nil), "нет расписания")
-        XCTAssertNil(try slots([[String: Any]]()), "пустой массив")
-        XCTAssertNil(try slots(["Minute": 15]), "каждый час")
-        XCTAssertNil(try slots(["Hour": 4]), "каждую минуту часа")
-        XCTAssertNil(try slots(["Hour": 19, "Minute": 0, "Weekday": 2]), "только вторники")
-        XCTAssertNil(try slots(["Hour": 25, "Minute": 0]), "вне диапазона")
-        XCTAssertNil(try slots(["Hour": 4.5, "Minute": 0]), "дробный час")
-        XCTAssertNil(try slots(["Hour": "4", "Minute": 0]), "строка")
-        XCTAssertNil(try slots([["Hour": 4, "Minute": 15], "x"] as [Any]), "смешанный массив")
-    }
-
-    /// Свои слоты в другом порядке — наше расписание; лишний или пропущенный — нет.
-    func testOurScheduleIsASet() {
-        XCTAssertTrue(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (19, 0)]))
-        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15)]))
-        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (19, 0), (19, 0)]))
-        XCTAssertFalse(NightlyAgent.isOurSchedule([(4, 15), (21, 0), (20, 0), (6, 0)]))
+        func cal(_ v: Any?) -> (inout [String: Any]) -> Void { { $0["StartCalendarInterval"] = v } }
+        XCTAssertEqual(try shown { _ in }, .ours)
+        XCTAssertEqual(try shown(cal([["Hour": 4, "Minute": 15], ["Hour": 21, "Minute": 0],
+                                      ["Hour": 20, "Minute": 0], ["Hour": 19, "Minute": 0]])), .ours,
+                       "другой порядок тех же слотов")
+        XCTAssertEqual(try shown(cal(["Hour": 4, "Minute": 15])), .manual("04:15"))
+        XCTAssertEqual(try shown { $0["ProgramArguments"] = ["/bin/bash", "/other/nightly.sh"] },
+                       .manual(NightlyAgent.slotsText), "чужая команда")
+        XCTAssertEqual(try shown { $0["Program"] = "/bin/zsh" }, .manual(NightlyAgent.slotsText), "Program")
+        XCTAssertEqual(try shown { $0["KeepAlive"] = false }, .ours, "KeepAlive false — не повод")
+        for (why, edit) in [
+            ("нет расписания", cal(nil)), ("пустой массив", cal([[String: Any]]())),
+            ("каждый час", cal(["Minute": 15])), ("каждую минуту часа", cal(["Hour": 4])),
+            ("только вторники", cal(["Hour": 19, "Minute": 0, "Weekday": 2])),
+            ("вне диапазона", cal(["Hour": 25, "Minute": 0])),
+            ("дробный час", cal(["Hour": 4.5, "Minute": 0])), ("целый real", cal(["Hour": 4.0, "Minute": 0])),
+            ("bool", cal(["Hour": true, "Minute": 0])), ("строка", cal(["Hour": "4", "Minute": 0])),
+            ("смешанный массив", cal([["Hour": 4, "Minute": 15], "x"] as [Any])),
+            ("StartInterval", { $0["StartInterval"] = 3600 }), ("RunAtLoad", { $0["RunAtLoad"] = true }),
+            ("KeepAlive", { $0["KeepAlive"] = true }), ("KeepAlive словарь", { $0["KeepAlive"] = ["SuccessfulExit": false] }),
+            ("WatchPaths", { $0["WatchPaths"] = ["/x"] }), ("StartOnMount", { $0["StartOnMount"] = true }),
+        ] as [(String, (inout [String: Any]) -> Void)] {
+            XCTAssertEqual(try shown(edit), .irreducible, why)
+        }
+        let broken = dir.appendingPathComponent("broken.plist")
+        try Data("<plist><dict><key>".utf8).write(to: broken)
+        XCTAssertEqual(NightlyAgent.shown(at: broken, script: script), .unreadable)
     }
 
     /// Метка в нашем файле разошлась с именем — повод переписать.
