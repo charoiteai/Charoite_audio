@@ -58,6 +58,8 @@ class _Clock:
 def nd(monkeypatch):
     mod = _script()
     clock = _Clock()
+    # потолок ночи разработчика или CI не протекает в тесты бюджета (выход out1 №749, Haiku M3)
+    monkeypatch.delenv(mod.live_gate.NIGHTLY_UNTIL_ENV, raising=False)
     monkeypatch.setattr(mod, "clock", clock)
     monkeypatch.setattr(mod.live_gate, "night_window_open", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_graph_lock", lambda *a: contextlib.nullcontext(True))
@@ -137,10 +139,20 @@ def test_full_with_a_budget_is_cut_and_the_rest_waits(nd, tmp_path, capsys):
     (0.0, True, 2400.0),       # ноль — забытое значение и у --full (вход in1 №749, DS M1)
     (-5.0, False, 2400.0),
     (7200.0, True, 7200.0),
+    (float("nan"), True, 2400.0),     # nan и inf — не «никогда» и не «вечно» (выход out1, Haiku M2)
+    (float("inf"), False, 2400.0),
 ])
-def test_budget_is_resolved_once_without_a_night_ceiling(nd, monkeypatch, given, full, expected):
-    monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+def test_budget_is_resolved_once(nd, monkeypatch, given, full, expected):
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, "1")   # потолок в бюджет не подмешивается
     assert nd.resolve_budget(given, full) == expected
+
+
+class _Wall:
+    def __init__(self, t):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 def _main_full(nd, tmp_path, monkeypatch, graph, *extra):
@@ -157,17 +169,65 @@ def test_sunday_full_leaves_the_night_tail_its_time(nd, tmp_path, monkeypatch, c
     резерв, — а не дойти до потолка и отдать хвост ночи в «(поздно)». Окно
     ночи — настоящее (`night_window_open` с потолком в окружении, вход in1,
     DS I6)."""
-    import time
     graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(6)})
     monkeypatch.setattr(nd.live_gate, "night_window_open", _REAL_WINDOW)
-    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
-                       str(time.time() + nd.live_gate.NIGHT_TAIL_S + 100))
+    wall = _Wall(1.0e9)
+    monkeypatch.setattr(nd, "wall_clock", wall)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(wall.t + nd.live_gate.NIGHT_TAIL_S + 100))
+
+    def generate(theme, members, files, c, **kw):
+        nd.calls.append(theme)
+        nd.fake_clock.t += 30
+        wall.t += 30
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
     assert _main_full(nd, tmp_path, monkeypatch, graph) == 0
     out = capsys.readouterr().out
     # 40 с на старте, дальше 30 с: темы на 0, 30 и 60 с; на 90 с остаток < 30
     assert len(nd.calls) == 3, nd.calls
-    assert "бюджет шага досье вышел" in out and "время ночного прогона вышло" not in out
-    assert not nd.live_gate.night_is_over()                # ночь ещё идёт — хвосту есть время
+    assert "до конца ночи — только время шагов после досье" in out
+    assert "время ночного прогона вышло" not in out
+    assert not nd.live_gate.night_is_over(wall)            # ночь ещё идёт — хвосту есть время
+
+
+def test_sleep_mid_rebuild_does_not_eat_the_night_tail(nd, tmp_path, monkeypatch, capsys):
+    """Выход out1 №749 (Sonnet I1, DS I1, Haiku I2): машина проспала посреди
+    пересборки — монотонные часы шага стоят, стена ушла. Резерв хвоста,
+    посчитанный один раз на старте, сон съедал: шаг шёл до самого потолка.
+    Теперь он считается по стене на каждой теме."""
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(10)})
+    wall = _Wall(1.0e9)
+    until = wall.t + nd.live_gate.NIGHT_TAIL_S + 3600
+    monkeypatch.setattr(nd, "wall_clock", wall)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(until))
+
+    def generate(theme, members, files, c, **kw):
+        nd.calls.append(theme)
+        nd.fake_clock.t += 30
+        wall.t += 30 + (3500 if len(nd.calls) == 2 else 0)   # после второй темы — сон 3500 с
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    assert _main_full(nd, tmp_path, monkeypatch, graph, "--budget-s", "7200") == 0
+    # ночь до резерва: 3600 − 2×30 − 3500 = 40 ≥ 30 — третья тема, после неё 10 < 30
+    assert len(nd.calls) == 3, nd.calls
+    assert wall.t <= until - nd.live_gate.NIGHT_TAIL_S
+    assert "до конца ночи — только время шагов после досье" in capsys.readouterr().out
+
+
+def test_no_night_left_for_the_step_builds_nothing_and_writes_the_index(nd, tmp_path, monkeypatch, capsys):
+    """Резерв хвоста съеден до старта шага: ни одной темы, индекс полный, в логе
+    — что кончилась ночь, а не бюджет (выход out1 №749, DS I2, DS M1)."""
+    import time
+    graph = _graph(tmp_path, "Г", {f"тема{i}": "2026-07-20" for i in range(3)})
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
+                       str(time.time() + nd.live_gate.NIGHT_TAIL_S - 1))
+    assert _main_full(nd, tmp_path, monkeypatch, graph) == 0
+    assert nd.calls == []
+    assert {e["тема"] for e in dossier.load_index(graph / CHAROITE.dossier_dir)} == {
+        f"тема{i}" for i in range(3)}
+    assert "до конца ночи — только время шагов после досье" in capsys.readouterr().out
 
 
 def test_manual_full_without_a_ceiling_rebuilds_everything(nd, tmp_path, monkeypatch):
@@ -309,11 +369,13 @@ def test_lock_wait_is_capped_by_the_budget_left(nd, tmp_path, monkeypatch):
     monkeypatch.delenv(nd.live_gate.NIGHTLY_UNTIL_ENV, raising=False)   # не окно ночи оболочки (Haiku out3 M2)
     nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
     assert waits == [70.0], waits         # 100 с бюджета минус 30 с генерации
-    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV, str(__import__("time").time() + 10))
+    # и ночь до резерва хвоста — у --full без бюджета тоже (№749)
+    monkeypatch.setenv(nd.live_gate.NIGHTLY_UNTIL_ENV,
+                       str(__import__("time").time() + nd.live_gate.NIGHT_TAIL_S + 60))
     waits.clear()
     _graph(tmp_path, "Г2", {"вторая": None})
     nd.run(tmp_path / "Г2", {}, full=True, dry=False, limit=None)
-    assert 0 < waits[0] <= 10, waits       # и потолок ночи — у --full тоже
+    assert 0 < waits[0] <= 60, waits
 
 
 def test_author_edit_between_check_and_write_is_not_overwritten(nd, tmp_path, monkeypatch):

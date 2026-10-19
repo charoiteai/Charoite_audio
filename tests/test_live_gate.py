@@ -458,26 +458,57 @@ def test_fits_is_one_arithmetic_for_every_budget():
     assert not live_gate.fits(100, 0.0, 41, now=60)
 
 
-@pytest.mark.parametrize("until, requested, expected", [
-    (None, 7200.0, 7200.0),            # потолка нет — бюджет как есть
-    (None, None, None),                # и «без бюджета» остаётся им
-    ("12800", 7200.0, 1000.0),         # потолок близко: 12800 − 10000 − 1800
-    ("30000", 7200.0, 7200.0),         # потолок далеко — бюджет не трогаем
-    ("12800", None, 1000.0),           # «без бюджета» под потолком — остаток до резерва
-    ("11000", 7200.0, 0.0),            # резерв уже съеден — шагу не начинать
-    ("мусор", 7200.0, 7200.0),
-    ("inf", 7200.0, 7200.0),
-    ("nan", 7200.0, 7200.0),
-])
-def test_step_budget_leaves_the_night_tail(monkeypatch, until, requested, expected):
-    """№749: бюджет шага урезается до «потолок − сейчас − резерв хвоста»."""
+_UNTILS = [None, "12800", "30000", "11000", "мусор", "inf", "-inf", "nan"]
+# Ночь до резерва хвоста при стене 10000 и резерве 1800: None — потолка нет
+_NIGHT = {None: None, "12800": 1000.0, "30000": 18200.0, "11000": 0.0,
+          "мусор": None, "inf": None, "-inf": 0.0, "nan": None}
+
+
+@pytest.mark.parametrize("until", _UNTILS)
+@pytest.mark.parametrize("budget, spent", [(None, 0.0), (7200.0, 0.0), (7200.0, 7000.0), (100.0, 200.0)])
+def test_step_left_is_the_smaller_of_the_budget_and_the_night(monkeypatch, until, budget, spent):
+    """№749: остаток шага — меньшее из своего бюджета (монотонные часы шага)
+    и ночи до резерва хвоста (стена); каждое значение окружения пересечено
+    с «без бюджета» (выход out1 №749, DS M1)."""
     if until is None:
         monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
     else:
         monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, until)
-    assert live_gate.step_budget(requested, 1800.0, now=lambda: 10000.0) == expected
+    night = _NIGHT[until]
+    own = None if budget is None else budget - spent
+    expected = night if own is None else own if night is None else min(own, night)
+    assert live_gate.night_left(1800.0, wall=lambda: 10000.0) == night
+    got = live_gate.step_left(budget, 500.0, 500.0 + spent, tail_s=1800.0, wall=lambda: 10000.0)
+    assert got == expected
 
 
-def test_step_budget_reads_the_real_clock_and_the_tail_constant(monkeypatch):
+def test_step_left_reads_the_wall_on_every_call(monkeypatch):
+    """Сон машины: монотонные часы шага стоят, стена ушла — резерв хвоста
+    обязан сократиться, а не остаться числом со старта (выход out1 №749)."""
+    wall = [10000.0]
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "14000")
+    assert live_gate.step_left(7200.0, 0.0, 0.0, tail_s=1800.0, wall=lambda: wall[0]) == 2200.0
+    wall[0] += 2000                                   # проспали 2000 с, monotonic стоит
+    assert live_gate.step_left(7200.0, 0.0, 0.0, tail_s=1800.0, wall=lambda: wall[0]) == 200.0
+
+
+def test_night_left_reads_the_real_clock_and_the_tail_constant(monkeypatch):
     monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, str(time.time() + live_gate.NIGHT_TAIL_S + 100))
-    assert 95 <= live_gate.step_budget(7200.0) <= 100
+    assert 95 <= live_gate.night_left() <= 100
+
+
+@pytest.mark.parametrize("until", _UNTILS)
+def test_every_reader_of_the_night_ceiling_parses_it_the_same(monkeypatch, until):
+    """Один разбор потолка (`_until`): конец ночи, потолок ожидания и остаток
+    ночи согласны на каждом значении окружения (выход out1 №749, DS M6)."""
+    if until is None:
+        monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, until)
+    over = live_gate.night_is_over(now=lambda: 10000.0)
+    cap = live_gate.night_wait_cap(1e9, now=lambda: 10000.0)
+    left = live_gate.night_left(0.0, wall=lambda: 10000.0)
+    if left is None:
+        assert cap == 1e9 and not over
+    else:
+        assert cap == left and over == (left == 0.0)

@@ -15,8 +15,8 @@
 вторых тем, внутри графа — несобранные, потом давно собранные. Шаг держит
 бюджет по времени (`--budget-s`, по умолчанию 40 минут, у `--full` без него —
 без бюджета) и под ночным потолком оставляет время шагам после себя
-(`live_gate.step_budget`); остаток очереди — следующей ночью, индекс каждого
-графа при этом полный.
+(`live_gate.step_left`); остаток очереди — следующей ночью (у `--full` темы
+без изменений — следующим воскресеньем), индекс каждого графа при этом полный.
 
 Запускается из nightly.sh ПОСЛЕ tier3 — чтобы досье собирались по уже
 причёсанным ядрам, без дублей.
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import pathlib
 import signal
 import sys
@@ -178,6 +179,7 @@ NEED_START_S = 40.0
 
 # Шов часов: бюджет тесты судят подменённым временем, а не сном (как в mutate_check)
 clock = time.monotonic
+wall_clock = time.time   # потолок ночи — unix-время; тесты подменяют его отдельно от clock
 
 # Классы кандидата: досье нет / отпечаток разошёлся / без изменений (только --full)
 NEW, CHANGED, SAME = 1, 2, 3
@@ -426,6 +428,26 @@ def _tail(queue: list[Candidate], reason: str, dry: bool) -> None:
         cand.g.done(dry)
 
 
+def _rest(budget: float | None, started: float) -> float | None:
+    """Остаток шага: свой бюджет по `clock`, резерв хвоста ночи по стене."""
+    return live_gate.step_left(budget, started, clock(), wall=wall_clock)
+
+
+def _short(budget: float | None, started: float, need: float) -> bool:
+    rest = _rest(budget, started)
+    return rest is not None and rest < need
+
+
+def _why_short(budget: float | None, started: float) -> str:
+    """Что кончилось: свой бюджет шага или ночь до резерва хвоста — в логе
+    разное (выход out1 №749, DS I2: «бюджет вышел» при обрезке ночью врал)."""
+    own = None if budget is None else budget - (clock() - started)
+    night = live_gate.night_left(wall=wall_clock)
+    if night is not None and (own is None or night < own):
+        return "до конца ночи — только время шагов после досье"
+    return "бюджет шага досье вышел"
+
+
 def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
            limit: int | None, budget_s: float | None, started: float) -> int:
     """Пройти очередь; вернуть число попыток с моделью — знаменатель порога
@@ -453,25 +475,27 @@ def _drive(queue: list[Candidate], c: dict, *, full: bool, dry: bool,
             g.done(dry)
             continue
         need = sum(spent) / len(spent) if spent else NEED_START_S
-        if not live_gate.fits(budget, started, need, clock()):
-            _tail(queue[i:], "бюджет шага досье вышел", dry)
+        if _short(budget, started, need):
+            _tail(queue[i:], _why_short(budget, started), dry)
             break
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
-        # его — досье подождёт, но не дольше остатка бюджета. Окно — одна
+        # его — досье подождёт, но не дольше остатка шага. Окно — одна
         # дверь у владельца гейта, потолок ночи внутри.
-        gate = {} if budget is None else {"default": budget - (clock() - started)}
-        if not live_gate.night_window_open(_root(), what="досье", **gate):
+        rest = _rest(budget, started)
+        gate = {} if rest is None else {"default": rest}
+        if not live_gate.night_window_open(_root(), what="досье", clock=wall_clock, **gate):
             _tail(queue[i:], "время ночного прогона вышло", dry)
             break
-        if not live_gate.fits(budget, started, need, clock()):
-            _tail(queue[i:], "бюджет шага досье вышел, пока ждали конца встречи", dry)
+        if _short(budget, started, need):
+            _tail(queue[i:], _why_short(budget, started) + ", пока ждали конца встречи", dry)
             break
-        # Замок ждёт не дольше остатка бюджета: пять минут соседа на последней
+        # Замок ждёт не дольше остатка шага: пять минут соседа на последней
         # теме перебирали бы бюджет на всё ожидание (выход out1 №621, Sonnet I2).
         def lock_wait() -> float:
             # и потолок ночи — у его владельца (выход out2 №621, Sonnet I1)
+            rest = _rest(budget, started)
             return live_gate.night_wait_cap(
-                LOCK_WAIT if budget is None else min(LOCK_WAIT, budget - (clock() - started)))
+                LOCK_WAIT if rest is None else min(LOCK_WAIT, rest))
         refused, before = g.отказы, g.built
         gen_s = _build(cand, c, lock_wait)
         called = gen_s is not None   # флаг «звали модель» дублировал это (мутанты #819)
@@ -551,16 +575,16 @@ def resolve_budget(budget_s: float | None, full: bool) -> float | None:
     """Бюджет прогона — одно место, `_drive` о `--full` не знает.
 
     Не задан: `--full` — без бюджета (ручная пересборка «всего»), иначе
-    умолчание. Ноль и минус — не «ничего не делать», а забытое значение
-    (выход out3 №621), и с `--full` тоже. Под ночным потолком бюджет
-    урезается так, чтобы шагам после досье хватило ночи: воскресный `--full`
-    без бюджета доходил до потолка, и хвост ночи уходил в «(поздно)» (№749).
+    умолчание. Ноль, минус, nan и inf — не «ничего не делать» и не «вечно»,
+    а забытое значение (выход out3 №621), и с `--full` тоже. Резерв хвоста
+    ночи сюда не входит: его `_drive` проверяет по стене на каждой теме
+    (`live_gate.step_left`).
     """
     if budget_s is None:
-        budget_s = None if full else DEFAULT_BUDGET_S
-    elif budget_s <= 0:
-        budget_s = DEFAULT_BUDGET_S
-    return live_gate.step_budget(budget_s)
+        return None if full else DEFAULT_BUDGET_S
+    if not (math.isfinite(budget_s) and budget_s > 0):   # и nan, inf (выход out1, Haiku M2)
+        return DEFAULT_BUDGET_S
+    return budget_s
 
 
 def _terminate(signum, frame):  # noqa: ARG001
