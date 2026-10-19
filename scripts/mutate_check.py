@@ -345,19 +345,25 @@ def verdict_code(f: Facts) -> int:
 RUN_LOG_KIND = "mutation_run"
 
 
+def run_caps() -> list[int]:
+    """Политика потолков прогона — часть ключа и манифеста журнала."""
+    return [WORST_RUN_FACTOR, BASE_RUN_FACTOR, MUTANT_BASE_MARGIN]
+
+
 def run_key(rng: str, max_n: int | None, timeout: int, sample: str) -> str:
     """Ключ прогона: разрешённый диапазон (SHA), выборка, таймаут, версия формата.
     `--jobs`, `--budget-s`, `--force` в него не входят — они меняют, сколько
     успели, а не что судили. Правка теста сдвигает HEAD — и ключ: «убит» по
-    старым тестам на новые не переносится (входные круги 1–2 по №469)."""
+    старым тестам на новые не переносится (входные круги 1–2 по №469). Потолки
+    прогона — тоже: «убит» под прежним потолком под новым не переносится (№661)."""
     raw = json.dumps({"v": FACTS_VERSION, "range": rng, "max": max_n, "timeout": timeout,
-                      "sample": sample}, sort_keys=True)
+                      "sample": sample, "caps": run_caps()}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _manifest(rng: str, args: argparse.Namespace, totals: ScanTotals) -> dict:
     return {"manifest": FACTS_VERSION, "range": rng, "max": args.max,
-            "timeout": args.timeout, "sample": totals.sample}
+            "timeout": args.timeout, "sample": totals.sample, "caps": run_caps()}
 
 
 def journal_add(path: pathlib.Path, row: dict) -> None:
@@ -414,10 +420,11 @@ def journal_open(data_root: pathlib.Path, totals: ScanTotals, k: int, rng: str,
                                f"(ретеншн logs/) — запусти прогон без --resume")
     if args.resume != totals.run:
         old = manifests[0]
-        diff = [name for name in ("range", "max", "timeout", "sample")
+        diff = [name for name in ("range", "max", "timeout", "sample", "caps")
                 if old.get(name) != manifest[name]]
         what = {"range": "диапазон (новый коммит)", "max": "--max", "timeout": "--timeout",
-                "sample": "выборка (код в области изменился)"}
+                "sample": "выборка (код в области изменился)",
+                "caps": "потолки прогона (версия мутатора)"}
         raise PreparationError(f"ключ {args.resume} — прогон другой выборки: разошлись "
                                + (", ".join(what[d] for d in diff) or "версия формата")
                                + f"; ключ этой выборки — {totals.run}")
@@ -970,13 +977,61 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
 
 
 #: Худший прогон набора — во столько раз дольше `--timeout`: потолок теста в
-#: pytest один, а тестов в наборе много. Этот же множитель держит бюджет прогона
-#: и потолок шага мутатора в CI (`tests/test_workflows.py`, №395).
+#: pytest один, а тестов в наборе много. Это нижний потолок прогона и предел
+#: перебега бюджета: шаг мутатора в CI держит `budget + overrun_s` (№395).
 WORST_RUN_FACTOR = 4
+#: Потолок базового прогона набора. Был тем же 4 × --timeout, и зелёный набор
+#: дольше 480 с в CI читался как «база красная» — судилось 0 (№661: база двух
+#: наборов в CI — 393–410 с у зелёных шардов, 483–484 с у «красных»).
+BASE_RUN_FACTOR = 8
+#: Потолок мутанта — не ниже стольких длительностей базы его набора: иначе
+#: зелёный долгий набор давал бы мутантам «убит» по потолку, а не по тестам.
+MUTANT_BASE_MARGIN = 2
+
+PASSED, FAILED, TIMEOUT = "passed", "failed", "timeout"
 
 
-def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
-    """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
+@dataclasses.dataclass(frozen=True)
+class RunResult:
+    """Исход одного прогона набора. Три состояния, а не bool: False значил и
+    «упал», и «не уложился в потолок», и база долгого набора читалась красной
+    (№661). Истинность объекта не спрашивается — только `.status`."""
+    status: str
+    rc: int | None = None
+    seconds: float = 0.0
+    tail: str = ""
+
+    def __bool__(self) -> bool:
+        raise TypeError("RunResult: сравнивай .status, а не истинность")
+
+
+def overrun_s(timeout: int) -> int:
+    """Насколько прогон вправе выйти за остаток бюджета: потолок шага в CI
+    считает бюджет плюс это число (`tests/test_workflows.py`)."""
+    return WORST_RUN_FACTOR * timeout
+
+
+def base_cap(timeout: int) -> int:
+    """Потолок базового прогона набора, секунд."""
+    return BASE_RUN_FACTOR * timeout
+
+
+def mutant_cap(timeout: int, base_s: float) -> float:
+    """Потолок прогона мутанта: не ниже `WORST_RUN_FACTOR × timeout` и не ниже
+    `MUTANT_BASE_MARGIN` длительностей базы его набора."""
+    return max(WORST_RUN_FACTOR * timeout, MUTANT_BASE_MARGIN * base_s)
+
+
+def _tail(*parts: object, lines: int = 30) -> str:
+    """Хвост вывода pytest: строка или байты (`TimeoutExpired` отдаёт байты)."""
+    text = "".join(p.decode("utf-8", errors="replace") if isinstance(p, bytes) else (p or "")
+                   for p in parts)
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int, cap: float) -> RunResult:
+    """Прогон набора с потолком `cap` секунд: `passed` — зелёный (мутант выжил,
+    тесты его не заметили), `failed` — красный, `timeout` — не уложился в потолок."""
     # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
     # размеру: два мутанта одной длины, записанные в одну секунду, для него
     # один файл — второй исполняется байткодом первого, и вердикт достаётся
@@ -1000,20 +1055,24 @@ def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
         r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "-p", "no:xdist", "--timeout", str(timeout)],
                            cwd=cwd, env=env, capture_output=True, text=True,
-                           timeout=timeout * WORST_RUN_FACTOR)
-    except subprocess.TimeoutExpired:
-        return False          # завис — считаем убитым: поведение изменилось
-    return r.returncode == 0
+                           timeout=cap)
+    except subprocess.TimeoutExpired as e:
+        return RunResult(TIMEOUT, tail=_tail(e.stdout, e.stderr))
+    return RunResult(PASSED if r.returncode == 0 else FAILED, rc=r.returncode,
+                     tail="" if r.returncode == 0 else _tail(r.stdout, r.stderr))
 
 
 # Причина в отчёте, пока прогон идёт: оборвёт раннер — на диске останется она
 RUNNING = "прогон не дошёл до конца плана"
 #: Остановка до первого мутанта: база ещё идёт или покраснела. Отчёт пишется и
-#: тогда — база с худшим случаем 4 × --timeout на набор бывает самым длинным этапом
+#: тогда — база с худшим случаем `base_cap` на набор бывает самым длинным этапом
 #: прогона, и job, оборванный на ней, раньше не оставлял отчёта вовсе (DeepSeek по
 #: PR #640, та же дыра в #637).
 BASE_RUNNING = "базовый прогон не закончен"
 BASE_RED = "база красная"
+#: Набор базы зелёный, но не уложился в `base_cap`: тесты не падали, мутанты не
+#: судятся — догон локально с бо́льшим `--timeout` (№661).
+BASE_SLOW = "база не уложилась в потолок"
 #: Копия дерева не собралась (клон или checkout): план есть, отчёт и машинная
 #: строка пишутся, как у красной базы; исход — «сломалась сама проверка».
 COPY_FAILED = "копия дерева не собралась"
@@ -1030,17 +1089,25 @@ def suite_key(work: pathlib.Path, module: pathlib.Path) -> tuple[str, ...]:
     return tuple(tests_for(work, module))
 
 
-def timed_run(cwd: pathlib.Path, suite: tuple[str, ...], timeout: int) -> tuple[bool, float]:
-    """`run_tests` с замером: (исход, секунды). Обёртка, а не новая подпись
-    `run_tests`: её подменяют тесты."""
+def timed_run(cwd: pathlib.Path, suite: tuple[str, ...], timeout: int, cap: float) -> RunResult:
+    """`run_tests` с замером по шву `clock`: секунды ставит обёртка, а не
+    `run_tests` — её подменяют тесты."""
     t0 = clock()
-    ok = run_tests(cwd, list(suite), timeout)
-    return ok, clock() - t0
+    r = run_tests(cwd, list(suite), timeout, cap)
+    return dataclasses.replace(r, seconds=clock() - t0)
 
 
 def fits(budget_s: float | None, started: float, need: float) -> bool:
     """Хватит ли остатка бюджета на `need` секунд — `live_gate.fits` по своим часам."""
     return live_gate.fits(budget_s, started, need, clock())
+
+
+def admits(budget_s: float | None, started: float, estimate: float, cap: float, timeout: int) -> bool:
+    """Допуск прогона: остатка хватает на ожидаемые `estimate` секунд, и прогон до
+    своего потолка `cap` выйдет за бюджет не больше чем на `overrun_s`. Одна точка
+    для базы и мутанта: потолок мутанта растёт с базой, а шаг CI считает только
+    `budget + overrun_s` (№661, вход in1: DS C2)."""
+    return fits(budget_s, started, max(estimate, cap - overrun_s(timeout)))
 
 
 def render_report(f: Facts, skipped: list | None = None,
@@ -1131,8 +1198,9 @@ def _resume_arg(value: str) -> str:
 #: Потолок `--jobs`. Замер №444 B (27.09, машина владельца): четыре доли разом на
 #: одном `.git` — 59 с против 193 с последовательно (3,3×), выживших 0 = 0; четыре
 #: полных pytest разом — 266–274 с против 253 с у одного. Потолок прогона мутанта —
-#: WORST_RUN_FACTOR × `--timeout` (480 с при умолчании), и нагрузка четырёх долей до
-#: него не доводит. Больше четырёх не мерено.
+#: тогда был WORST_RUN_FACTOR × `--timeout` (480 с при умолчании), и нагрузка четырёх
+#: долей до него не доводила; с №661 он растёт с базой набора (`mutant_cap`), замер
+#: под новый потолок — долг №575. Больше четырёх не мерено.
 JOBS_MAX = 4
 
 
@@ -1272,6 +1340,7 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
     |---|---|---|
     | нечитаемый файл или старый формат, файлов не N, разные N, повтор или пропуск K, ΣM ≠ P, разные выборка, зоны или ревизии | «шарды не покрыли план» | 1 |
     | выжил мутант в критичной зоне, красная база или сбой подготовки | «держит мерж» | 1 |
+    | база не уложилась в потолок `base_cap` | «сломалась сама проверка» + рецепт догона `--only-critical` с бо́льшим `--timeout` | 1 |
     | выборка судилась не вся (бюджет, встреча, не применилось, не прочитан файл) | «неполный исход» | 1 |
     | выборка пуста, в строках нет кода | заметка «мутировать нечего» | 0 |
     | выборка пуста, код есть, операторов нет | предупреждение «слепое пятно мутатора» | 0 |
@@ -1328,6 +1397,9 @@ def merge_shards(directory: pathlib.Path, report: pathlib.Path | None = None) ->
                           "слепое пятно мутатора, см. отчёты шардов"), 0
         elif f.broken:
             head, code = f"сломалась сама проверка: {f.broken}", 1
+            if BASE_SLOW in f.broken:
+                head += ("; база зелёная, но не уложилась в потолок — догнать до мержа: "
+                         "mutate_check.py --range <тот же> --only-critical --timeout <вдвое больше>")
         elif f.critical_survivors:
             head, code = (f"держит мерж: выжили мутанты в критичных зонах — "
                           f"{len(f.critical_survivors)}"), 1
@@ -1556,7 +1628,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max", type=_max_arg, default=SAMPLE_MAX,
                     help="выборка: до N мутантов на диапазон — критичные зоны первыми, "
                          "поровну по файлам, по хешу личности мутанта; «all» — весь план")
-    ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
+    ap.add_argument("--timeout", type=int, default=120, help="потолок одного теста, секунд; потолок набора — "
+                         "4× у мутанта (не меньше 2× его базы), 8× у базы")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
     ap.add_argument("--shard", type=_shard_arg, default=None,
                     help="доля выборки K/N (1 ≤ K ≤ N): берёт мутантов с индексом "
@@ -1774,36 +1847,50 @@ def main(argv: list[str]) -> int:
         for cache in work.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
         print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
-        # Явный цикл, а не включение: из него выходят по бюджету. Набор ещё не
-        # мерили — берём худший случай, потолок `run_tests` (4 × --timeout).
-        broken: list[tuple[str, ...]] = []
+        # Явный цикл, а не включение: из него выходят по бюджету и на первом
+        # непрошедшем наборе — дальше мутанты всё равно не судятся. Набор ещё
+        # не мерили — оценка `WORST_RUN_FACTOR × --timeout`, потолок `base_cap`;
+        # допуск один с мутантом (`admits`).
+        cap = base_cap(args.timeout)
         for ts in sorted(subsets):
-            if not fits(args.budget_s, started, WORST_RUN_FACTOR * args.timeout):
+            if not admits(args.budget_s, started, WORST_RUN_FACTOR * args.timeout, cap, args.timeout):
                 aborted = "бюджет"
                 print(f"⏹ бюджет — базовый прогон не уложится, мутанты не "
                       f"запускаются ({len(durations)}/{len(subsets)} наборов)")
                 break
-            ok, durations[ts] = timed_run(work, ts, args.timeout)
-            if not ok:
-                broken.append(ts)
-            save(BASE_RUNNING)
-        if broken:
-            print("\nБАЗА КРАСНАЯ: без единой мутации падают наборы:")
-            for ts in broken:
-                print("  " + " ".join(ts))
-            print("В отдельном дереве нет того, что лежит в .gitignore "
-                  "(модели, конфиг, данные).\nМутанты этих модулей "
-                  "засчитались бы убитыми — считать их бессмысленно.")
-            facts.broken, facts.broken_rc = BASE_RED, 2
-            save(BASE_RED)
+            r = timed_run(work, ts, args.timeout, cap)
+            durations[ts] = r.seconds
+            print(f"  {r.seconds:.0f} с · {r.status} · {' '.join(ts)}")
+            if r.status == PASSED:
+                save(BASE_RUNNING)
+                continue
+            if r.status == TIMEOUT:
+                # Тесты не падали — набор не уложился в потолок. Мутанты не
+                # судятся, как у красной базы, но причина своя: владельцу нужен
+                # догон с бо́льшим --timeout, а не поиск сломанного теста (№661).
+                reason = f"{BASE_SLOW} {cap} с"
+                print(f"\nБАЗА НЕ УЛОЖИЛАСЬ В ПОТОЛОК {cap} с: {' '.join(ts)}\n"
+                      f"Мутанты не судятся. Догон: mutate_check.py --range <тот же> "
+                      f"--only-critical --timeout {args.timeout * 2}")
+            else:
+                reason = BASE_RED
+                print(f"\nБАЗА КРАСНАЯ: без единой мутации падает набор (rc {r.rc}):\n"
+                      f"  {' '.join(ts)}\n{r.tail}\n"
+                      "В отдельном дереве нет того, что лежит в .gitignore "
+                      "(модели, конфиг, данные).\nМутанты этих модулей "
+                      "засчитались бы убитыми — считать их бессмысленно.")
+            facts.broken, facts.broken_rc = reason, 2
+            save(reason)
             return 2
         for i, mut in enumerate([] if aborted else todo, 1):
             suite = suite_key(work, mut.path)
             # Бюджет — вне гварда занятости: `--force` идёт поверх встречи, но
             # не поверх потолка job. Оценка — замер этого набора в базе; таймаут
             # мутанта под остаток НЕ урезается: истёкший прогон считается
-            # «убит», и урезание дало бы ложные убийства (№395).
-            if not fits(args.budget_s, started, durations[suite]):
+            # «убит», и урезание дало бы ложные убийства (№395). Потолок растёт
+            # с базой набора — `admits` держит перебег бюджета в `overrun_s`.
+            cap = mutant_cap(args.timeout, durations[suite])
+            if not admits(args.budget_s, started, durations[suite], cap, args.timeout):
                 aborted = "бюджет"
             # Живой контур и ночь важнее метрики: началась запись или ночной
             # цикл — прерываемся между мутантами (круг-1, DS: координация
@@ -1835,17 +1922,20 @@ def main(argv: list[str]) -> int:
                 continue
             target.write_text(mutated, encoding="utf-8")
             try:
-                alive, spent = timed_run(work, suite, args.timeout)
+                r = timed_run(work, suite, args.timeout, cap)
             finally:
                 target.write_text(original, encoding="utf-8")
             facts.tested += 1
             facts.critical_tested += mut.critical
-            mark = "ВЫЖИЛ" if alive else "убит"
+            alive = r.status == PASSED
+            # Потолок = «убит» (решение 30.09), но видно, что убил потолок, а не тест
+            capped = f"потолок {cap:.0f} с" if r.status == TIMEOUT else ""
+            mark = "ВЫЖИЛ" if alive else (f"убит ({capped})" if capped else "убит")
             zone = " (критичная зона)" if alive and mut.critical else ""
             print(f"  [{i}/{len(todo)}] {mark}: {mut}{zone}")
             if alive:
                 facts.survivors.append(survivor_row(mut, root))
-            note(mut, "survived" if alive else "killed", spent)
+            note(mut, "survived" if alive else "killed", r.seconds, why=capped)
             # На диске всегда проверенное к этому моменту: оборвёт раннер —
             # отчёт скажет, сколько успели, а не пропадёт целиком
             save(RUNNING)
