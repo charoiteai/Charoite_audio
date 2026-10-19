@@ -433,3 +433,49 @@ def test_closed_night_sends_the_whole_queue_to_tomorrow_once(nd, tmp_path, monke
     r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=100)
     assert nd.calls == [] and r["не_успели"] == 2 and r["пропущено"] == 2, r
     assert capsys.readouterr().out.count("время ночного прогона вышло") == 1
+
+
+def _raise(*a, **k):
+    raise OSError("диск")
+
+
+@pytest.mark.parametrize("path", ["refusal", "changed", "no_snapshot", "backup", "write"])
+def test_a_failed_build_still_costs_its_generation(nd, tmp_path, monkeypatch, path):
+    """Мутанты #819 (`return gen_s` → `return None`): генерация без записи — тоже цена темы для `need`."""
+    graph = _graph(tmp_path, "Г", {"т1": "2026-07-20", "т2": "2026-07-20"})
+
+    def generate(theme, *a, **k):
+        nd.calls.append(theme)
+        nd.fake_clock.t += 100
+        if path == "refusal":
+            raise RuntimeError("модель молчит")
+        if path == "changed":
+            p = graph / CHAROITE.dossier_dir / f"{theme}.md"
+            p.write_text(p.read_text(encoding="utf-8") + "\nправка\n", encoding="utf-8")
+        return GOOD
+
+    monkeypatch.setattr(nd, "generate", generate)
+    if path == "no_snapshot":
+        monkeypatch.setattr(nd.safe_write, "stat_snapshot", lambda p: None)
+    if path == "backup":
+        monkeypatch.setattr(nd.dossier, "backup", _raise)
+    if path == "write":
+        monkeypatch.setattr(nd.safe_write, "write_text", lambda *a, **k: False)
+    # первая тема — 100 с генерации; вторая с need 100 в остаток 50 не влезает, с NEED_START_S 40 влезла бы
+    r = nd.run(graph, {}, full=False, dry=False, limit=None, budget_s=150)
+    assert len(nd.calls) == 1 and r["не_успели"] == 1, (nd.calls, r)
+
+
+def test_a_build_that_found_the_graph_locked_is_an_attempt(nd, tmp_path, monkeypatch):
+    """Мутант #819: тема, у которой модель отработала, а замок не дался, — попытка."""
+    graph = _graph(tmp_path, "Г", {"одна": None})
+    monkeypatch.setattr(nd, "_graph_lock", lambda graph, wait=nd.LOCK_WAIT: contextlib.nullcontext(False))
+    monkeypatch.setattr(nd.live_gate, "night_wait_cap", lambda default: default)
+    assert nd.run_all([graph], {}, full=False, dry=False).attempts == 1
+
+
+def test_limit_counts_only_the_new_builds(nd, tmp_path):
+    """Мутант #819 (`g.built - before` → `+`): уже собранное графом не сокращает лимит дважды."""
+    graph = _graph(tmp_path, "Г", {f"т{i}": None for i in range(4)})
+    states = nd.run_all([graph], {}, full=False, dry=False, limit=3).graphs
+    assert states[0].built == 3 and states[0].over_limit == 1
