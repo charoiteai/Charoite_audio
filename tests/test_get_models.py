@@ -950,6 +950,7 @@ def test_a_truncated_archive_is_a_reason_and_leaves_no_part(monkeypatch, tmp_pat
         raise EOFError("Compressed file ended before the end-of-stream marker was reached")
 
     monkeypatch.setattr(get_models, "_extract_onnx", truncated)
-    with pytest.raises(SystemExit, match="не удалось сохранить модель seg.onnx"):
+    with pytest.raises(SystemExit, match="не удалось сохранить модель seg.onnx") as exc:
         get_models.download("https://example.invalid/seg.tar.bz2", dest, expect_mb=1)
+    assert "Compressed file ended" in str(exc.value)
     assert not dest.with_suffix(".onnx.part").exists()
