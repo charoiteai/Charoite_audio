@@ -537,7 +537,8 @@ def _download_locked(url: str, dest: pathlib.Path, part: pathlib.Path, expect_mb
 
 
 def _drop_part(part: pathlib.Path) -> None:
-    """Убрать `.part`, который не продолжить, вместе с его источником `.part.src`.
+    """Убрать `.part`, который вызывающий решил не продолжать (нечем сверить, попытки
+    исчерпаны или публикация не удалась), вместе с источником `.part.src`.
     Каждый файл — под своим `suppress`: уборка не подменяет причину отказа."""
     for leftover in (part, part.with_name(part.name + ".src")):
         with contextlib.suppress(OSError):

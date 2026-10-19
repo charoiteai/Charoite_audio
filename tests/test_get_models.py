@@ -1018,3 +1018,38 @@ def test_a_network_break_keeps_the_part_only_with_a_sum(monkeypatch, tmp_path, w
                             sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
     assert part.exists() is with_sum
     assert part.with_name(part.name + ".src").exists() is with_sum
+
+
+@pytest.mark.parametrize("with_sum", [False, True])
+def test_six_short_answers_are_a_reason_and_leave_nothing(monkeypatch, tmp_path, with_sum):
+    """Зеркало каждый раз отдаёт кусок и молча рвёт: после шести попыток — «не докачалось»,
+    `.part` и источник убраны одним хелпером (круг по правкам №643, Sonnet M1)."""
+    import hashlib
+    import io
+
+    body = b"s" * 10_000
+
+    def short(req, timeout=0):             # noqa: ANN001, ARG001
+        rng = req.get_header("Range")
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+
+        class Response(io.BytesIO):
+            status = 206 if rng else 200
+            headers = {"Content-Length": str(len(body) - start)}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):        # noqa: ANN002
+                self.close()
+
+        return Response(body[start:start + 1000])
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", short)
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(".txt.part")
+    with pytest.raises(SystemExit, match="не докачалось"):
+        get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False,
+                            sha256=hashlib.sha256(body).hexdigest() if with_sum else "")
+    assert not part.exists()
+    assert not part.with_name(part.name + ".src").exists()

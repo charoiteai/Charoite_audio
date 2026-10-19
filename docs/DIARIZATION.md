@@ -467,7 +467,7 @@ connecting. The outcome is honest: **0** — installed and the probe is green;
 **`EXIT_INSTALL_BUSY` (12)** — the machine is busy (a meeting being processed, a
 live recording, the night cycle, a test mutation), another install is running, or
 another process holds the download of the same model file and it has not
-progressed for 300 s (a live download is waited for);
+progressed for several minutes (a live download is waited for);
 the refusal names the reasons and asks to wait for them to finish — the
 night-cycle reason carries the status file and how many minutes ago it was
 updated, so an abandoned `running` is told from a night actually under way; the
