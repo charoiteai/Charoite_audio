@@ -721,13 +721,18 @@ def ensure_voice_set(root: pathlib.Path) -> None:
 
     Ставится тем же загрузчиком `get_models`, что `--diar`: веса нужны и без
     окружения Nemotron — на них уходит пересборка, если движок не разметил. Отказ
-    загрузки — `SystemExit` из `get_models.download`, его переводит `main`."""
+    загрузки — `SystemExit` из `get_models.download`, его переводит `main`; «цель
+    качает другой процесс» (`DownloadBusy`, №643) — здесь же в `InstallBusy`:
+    подкласс `SystemExit` до `except InstallBusy` в `main` не дошёл бы."""
     for dest, min_bytes, model in _voice_targets(root):
         if get_models.check(dest, min_bytes=min_bytes) is None:
             print(f"набор голосов: {dest} уже на месте")
             continue
         print(f"набор голосов: {dest.name}…")
-        get_models.download(model.url, dest, model.size_mb, sha256=model.sha256)
+        try:
+            get_models.download(model.url, dest, model.size_mb, sha256=model.sha256)
+        except get_models.DownloadBusy as e:
+            raise InstallBusy(get_models._exit_text(e)) from None
 
 
 def install(name: str, root: pathlib.Path) -> int:

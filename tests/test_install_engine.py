@@ -757,6 +757,20 @@ def test_the_voice_set_is_checked_and_fetched_in_process(tmp_path, monkeypatch):
     assert calls == [("segmentation.onnx", get_models.SEGMENTATION[get_models.SEG_DEFAULT].url)]
 
 
+def test_a_busy_voice_set_target_is_install_busy(tmp_path, monkeypatch):
+    """«Цель качает другой процесс» у загрузчика — подкласс `SystemExit`; `main` ловит
+    `InstallBusy` раньше общего `SystemExit` только после перевода на этом шве — иначе
+    «занято» стало бы отказом с кодом 1 (вход №643, Haiku C1)."""
+    monkeypatch.setattr(ie.get_models, "check", lambda dest, min_bytes: "нет")
+
+    def busy(url, dest, size, sha256=""):  # noqa: ARG001
+        raise get_models.DownloadBusy("идёт другая загрузка segmentation.onnx")
+
+    monkeypatch.setattr(ie.get_models, "download", busy)
+    with pytest.raises(ie.InstallBusy, match="идёт другая загрузка segmentation.onnx"):
+        ie.ensure_voice_set(tmp_path)
+
+
 def test_a_cancel_inside_the_real_voice_set_download_is_code_13(tmp_path, monkeypatch, capsys):
     """Отмена посреди настоящей загрузки набора голосов: подменённый `urlopen` бросает
     `InstallCancelled`, загрузчик ловит только `URLError`/`OSError` — отмена доходит до
