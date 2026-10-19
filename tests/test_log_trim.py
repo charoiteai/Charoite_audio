@@ -46,7 +46,7 @@ def test_swift_mirror_is_wired_before_daemon_log_opens():
 
 """
     svc = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
-           / "SuflerService.swift").read_text(encoding="utf-8")
+           / "DaemonLaunch.swift").read_text(encoding="utf-8")   # запуск переехал из SuflerService (№619)
     assert svc.index("LogTrim.trim(errURL)") < svc.index("FileHandle(forWritingTo: errURL)")
 
 
